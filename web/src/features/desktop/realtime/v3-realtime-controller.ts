@@ -33,7 +33,7 @@ const ACTIVE_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch
 export interface DesktopV3RealtimeController {
   ensureSessionSubscription(sessionId: string): void
   ensureSessionHistory(sessionId: string): Promise<void>
-  start(preferredSessionId?: string): Promise<void>
+  start(preferredSessionId?: string | null): Promise<void>
   stop(reason?: string): void
 }
 
@@ -50,7 +50,7 @@ interface DesktopV3RealtimeControllerDeps {
   hydrate?: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
   readEventsPage?: (input: { sessionId: string; afterSeq: number; limit?: number }) => Promise<DesktopV3SessionEventsPage>
   ensureSession?: () => Promise<unknown>
-  bootstrap?: (input?: { preferredSessionId?: string; restorePersisted?: boolean }) => Promise<unknown>
+  bootstrap?: (input?: { preferredSessionId?: string | null; restorePersisted?: boolean }) => Promise<unknown>
   openSocket?: (input: { endpointCursor: string }) => WebSocket | Promise<WebSocket>
 }
 
@@ -62,11 +62,13 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly hydrate: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
   private readonly readEventsPage: (input: { sessionId: string; afterSeq: number; limit?: number }) => Promise<DesktopV3SessionEventsPage>
   private readonly ensureSessionIdentity: () => Promise<unknown>
-  private readonly bootstrap: (input?: { preferredSessionId?: string; restorePersisted?: boolean }) => Promise<unknown>
+  private readonly bootstrap: (input?: { preferredSessionId?: string | null; restorePersisted?: boolean }) => Promise<unknown>
   private readonly transport: DesktopV3RealtimeTransport
   private readonly hydrateBySession = new Map<string, Promise<void>>()
   private readonly markedActiveRepairBySession = new Map<string, { runId: string; afterSeq: number }>()
   private readonly activeRepairByRun = new Map<string, Promise<void>>()
+  private readonly pendingHistoryRepair = new Set<string>()
+  private firstResumeSent?: Deferred<void>
   private unsubscribeCache?: () => void
   private startPromise?: Promise<void>
   private stopped = false
@@ -96,11 +98,11 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
           status: mapTransportStatus(status),
           error: status === 'error' || status === 'stale' ? reason : undefined,
         })
-        if (status === 'open') {
-          queueMicrotask(() => this.startMarkedActiveRunRepairs())
-        }
       },
+      onResumeSent: () => this.handleResumeSent(),
       onRehydrateRequested: async (_reason, frame) => {
+        const selectedSessionId = this.getSnapshot().selectedSessionId?.trim()
+        if (selectedSessionId) this.pendingHistoryRepair.add(selectedSessionId)
         if ((frame as { bootstrap_required?: boolean } | null)?.bootstrap_required) {
           await this.bootstrap({
             preferredSessionId: this.getSnapshot().selectedSessionId,
@@ -128,9 +130,10 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     })
   }
 
-  start(preferredSessionId?: string): Promise<void> {
+  start(preferredSessionId?: string | null): Promise<void> {
     if (this.startPromise) return this.startPromise
     this.stopped = false
+    this.firstResumeSent = createDeferred<void>()
     this.startPromise = this.startUncached(preferredSessionId)
     return this.startPromise
   }
@@ -143,6 +146,9 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.hydrateBySession.clear()
     this.markedActiveRepairBySession.clear()
     this.activeRepairByRun.clear()
+    this.pendingHistoryRepair.clear()
+    this.firstResumeSent?.reject(new Error(reason))
+    this.firstResumeSent = undefined
     this.transport.stop(reason)
   }
 
@@ -164,7 +170,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     await this.hydrateSessionOnce(sessionId)
   }
 
-  private async startUncached(preferredSessionId?: string): Promise<void> {
+  private async startUncached(preferredSessionId?: string | null): Promise<void> {
     await this.ensureSessionIdentity()
     this.assertNotStopped()
 
@@ -178,7 +184,9 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
     this.dispatch({ type: 'reconnect.applySnapshot', snapshot: reconnect })
 
-    const selectedSessionId = preferredSessionId?.trim() || this.getSnapshot().selectedSessionId
+    const selectedSessionId = preferredSessionId === null
+      ? undefined
+      : preferredSessionId?.trim() || this.getSnapshot().selectedSessionId
     const resume = this.buildResume(reconnect, selectedSessionId)
 
     this.dispatch({
@@ -201,6 +209,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.markActiveRunsFromReconnect(reconnect)
     this.assertNotStopped()
     await this.transport.start()
+    await this.waitForFirstResumeSent()
+    this.assertNotStopped()
 
     if (selectedSessionId) void this.hydrateSessionOnce(selectedSessionId)
   }
@@ -211,12 +221,12 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     }
   }
 
-  private buildResume(reconnect: SessionsReconnectResponse, preferredSessionId?: string): NonNullable<SessionsReconnectResponse['realtime']>['resume'] {
+  private buildResume(reconnect: SessionsReconnectResponse, preferredSessionId?: string | null): NonNullable<SessionsReconnectResponse['realtime']>['resume'] {
     if (!reconnect.realtime?.resume) {
       throw new Error('Desktop V3 reconnect response is missing realtime.resume')
     }
     const resume = structuredClone(reconnect.realtime.resume)
-    const selectedSessionId = preferredSessionId?.trim()
+    const selectedSessionId = preferredSessionId === null ? undefined : preferredSessionId?.trim()
     if (!selectedSessionId) return resume
 
     const subscriptions = [...(resume.subscriptions ?? [])]
@@ -229,6 +239,24 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     }
     resume.subscriptions = subscriptions
     return resume
+  }
+
+  private async waitForFirstResumeSent(): Promise<void> {
+    const firstResumeSent = this.firstResumeSent
+    if (!firstResumeSent) return
+    await firstResumeSent.promise
+  }
+
+  private handleResumeSent(): void {
+    this.firstResumeSent?.resolve()
+    this.firstResumeSent = undefined
+
+    for (const sessionId of Array.from(this.pendingHistoryRepair)) {
+      this.pendingHistoryRepair.delete(sessionId)
+      void this.hydrateSessionOnce(sessionId)
+    }
+
+    this.startMarkedActiveRunRepairs()
   }
 
   private handleFrame(frame: RealtimeMessage): void {
@@ -478,13 +506,13 @@ export function deriveCurrentRunIntent(
 }
 
 export function retainDesktopV3RealtimeController(input: {
-  preferredSessionId?: string
+  preferredSessionId?: string | null
 } = {}): DesktopV3RealtimeLease {
   desktopV3RealtimeRetainCount += 1
   const generation = desktopV3RealtimeGeneration
 
   if (!retainedDesktopV3RealtimeController) {
-    const controller = new DesktopV3RealtimeControllerRuntime()
+    const controller = desktopV3RealtimeControllerFactory()
     const ready = controller.start(input.preferredSessionId).catch((error) => {
       if (desktopV3RealtimeGeneration === generation) {
         retainedDesktopV3RealtimeController = undefined
@@ -526,6 +554,12 @@ export function resetDesktopV3RealtimeControllerForTests(): void {
   retainedDesktopV3RealtimeController = undefined
   desktopV3RealtimeRetainCount = 0
   desktopV3RealtimeGeneration += 1
+  desktopV3RealtimeControllerFactory = () => new DesktopV3RealtimeControllerRuntime()
+}
+
+export function setDesktopV3RealtimeControllerFactoryForTests(factory: () => DesktopV3RealtimeControllerRuntime): void {
+  resetDesktopV3RealtimeControllerForTests()
+  desktopV3RealtimeControllerFactory = factory
 }
 
 let retainedDesktopV3RealtimeController: {
@@ -534,6 +568,23 @@ let retainedDesktopV3RealtimeController: {
 } | undefined
 let desktopV3RealtimeRetainCount = 0
 let desktopV3RealtimeGeneration = 0
+let desktopV3RealtimeControllerFactory = () => new DesktopV3RealtimeControllerRuntime()
+
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve: (value: T | PromiseLike<T>) => void
+  reject: (reason?: unknown) => void
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+  return { promise, resolve, reject }
+}
 
 function normalizeTransportWorksets(
   worksets: RealtimeWorksetSubscriptionRequest[] | undefined,

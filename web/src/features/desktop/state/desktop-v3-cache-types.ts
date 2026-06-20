@@ -553,7 +553,7 @@ export interface CacheEvent {
 }
 
 export type DesktopV3CacheAction =
-  | { type: 'desktopV3Cache.restore'; owner: PersistedDesktopV3OwnerV1; selectedMessageTail?: PersistedDesktopV3MessageTailV1; preferredSessionId?: string }
+  | { type: 'desktopV3Cache.restore'; owner: PersistedDesktopV3OwnerV1; selectedMessageTail?: PersistedDesktopV3MessageTailV1; preferredSessionId?: string | null }
   | { type: 'desktopV3Cache.restoreMessageTails'; tails: PersistedDesktopV3MessageTailV1[] }
   | { type: 'desktopV3Cache.applyHydrationPlan'; reusedSessionIds: string[]; hydrateSessionIds: string[] }
   | { type: 'desktopSidebarBootstrap.update'; patch: Partial<DesktopSidebarBootstrapState> }

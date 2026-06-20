@@ -6,9 +6,13 @@ import {
   DesktopV3RealtimeControllerRuntime,
   buildDesktopV3ReconnectInput,
   mapTransportStatus,
+  requireDesktopV3RealtimeControllerReady,
+  resetDesktopV3RealtimeControllerForTests,
+  retainDesktopV3RealtimeController,
+  setDesktopV3RealtimeControllerFactoryForTests,
 } from './v3-realtime-controller'
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
-import { projectionA, reconnectFixture, runIntentA, sessionA } from '../state/desktop-v3-cache.backend-fixtures'
+import { hydrateSnapshotFixture, messageA1, messageA2, projectionA, reconnectFixture, runIntentA, sessionA } from '../state/desktop-v3-cache.backend-fixtures'
 import type { SessionV3RealtimeResumeWire } from '../session-v3/types'
 import type { DesktopV3CacheAction, DesktopV3CacheState, V3SessionEvent } from '../state/desktop-v3-cache-types'
 
@@ -207,6 +211,132 @@ test('Desktop V3 realtime transport sends one resume containing workset and know
   transport.stop()
 })
 
+test('Desktop V3 realtime controller ready waits for socket open and resume before hydration', async () => {
+  let state = readyControllerState()
+  const sockets: FakeWebSocket[] = []
+  const hydrateRequests: unknown[] = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [sessionA.id],
+      workset_id: 'global-scope',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect',
+          subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
+          worksets: [{
+            workset_id: 'global-scope',
+            subscription_id: 'workset-sub',
+            selector: { kind: 'global', global: true },
+            resources: ['run_intents'],
+            auto_subscribe_sessions: true,
+          }],
+        },
+      },
+    }),
+    hydrate: async (input) => {
+      hydrateRequests.push(input)
+      return hydrateSnapshotFixture({
+        sessions_by_id: { [sessionA.id]: sessionA },
+        projections_by_session: { [sessionA.id]: projectionA },
+        session_order: [sessionA.id],
+        messages_by_session: { [sessionA.id]: [messageA1, messageA2] },
+        run_intents_by_session: {},
+      })
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  let ready = false
+  const readyPromise = controller.start(sessionA.id).then(() => {
+    ready = true
+  })
+  await flushAsyncWork()
+
+  assert.equal(sockets.length, 1)
+  assert.equal(sockets[0].readyState, FakeWebSocket.CONNECTING)
+  assert.equal(ready, false)
+  assert.equal(hydrateRequests.length, 0)
+
+  sockets[0].open()
+  await readyPromise
+  assert.equal(ready, true)
+  await waitFor(() => hydrateRequests.length === 1)
+  controller.stop()
+})
+
+test('Desktop V3 retained realtime controller releases connecting startup without opening later', async () => {
+  resetDesktopV3RealtimeControllerForTests()
+  let state = readyControllerState()
+  const sockets: FakeWebSocket[] = []
+  setDesktopV3RealtimeControllerFactoryForTests(() => new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: {},
+      projections_by_session: {},
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [],
+      workset_id: 'global-scope',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect',
+          subscriptions: [],
+          worksets: [],
+        },
+      },
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  }))
+
+  const first = retainDesktopV3RealtimeController()
+  const second = retainDesktopV3RealtimeController()
+  await flushAsyncWork()
+  assert.equal(sockets.length, 1)
+  assert.equal(sockets[0].readyState, FakeWebSocket.CONNECTING)
+
+  second.release()
+  first.release()
+  assert.equal(sockets[0].closed, true)
+  sockets[0].open()
+  await assert.rejects(first.ready, /released/)
+  await assert.rejects(requireDesktopV3RealtimeControllerReady(), /not retained/)
+  assert.equal(sockets.length, 1)
+  resetDesktopV3RealtimeControllerForTests()
+})
+
 test('Desktop V3 reconnect input requires exact principal-global sidebar scope', () => {
   const state = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
@@ -346,8 +476,10 @@ test('Desktop V3 active-run repair defers websocket overlay and rebuilds once fr
     },
   })
 
-  await controller.start()
+  const ready = controller.start()
+  await waitFor(() => sockets.length > 0)
   sockets[0].open()
+  await ready
   await waitFor(() => readRequests.length === 1)
 
   sockets[0].emit({
@@ -499,8 +631,10 @@ test('Desktop V3 active-run repair abandons an in-flight page after terminal web
     },
   })
 
-  await controller.start()
+  const ready = controller.start()
+  await waitFor(() => sockets.length > 0)
   sockets[0].open()
+  await ready
   await waitFor(() => readRequests.length === 1)
 
   sockets[0].emit({
@@ -690,8 +824,10 @@ test('Desktop V3 active-run repair defers only events for the repaired run', asy
     },
   })
 
-  await controller.start()
+  const ready = controller.start()
+  await waitFor(() => sockets.length > 0)
   sockets[0].open()
+  await ready
   await waitFor(() => readRequests.length === 1)
 
   sockets[0].emit({
@@ -879,8 +1015,10 @@ test('Desktop V3 active-run repair applies replacement-run overlays from HTTP pa
     },
   })
 
-  await controller.start()
+  const ready = controller.start()
+  await waitFor(() => sockets.length > 0)
   sockets[0].open()
+  await ready
   await waitFor(() => readRequests.length === 1)
   await waitFor(() => state.currentRunIntentBySession[sessionA.id]?.run_id === runB.run_id)
 
@@ -937,6 +1075,117 @@ test('Desktop V3 active-run repair applies replacement-run overlays from HTTP pa
   controller.stop()
 })
 
+test('Desktop V3 cursor-error rehydrate repairs selected transcript after replacement resume', async () => {
+  let state = readyControllerState()
+  state.selectedSessionId = sessionA.id
+  state.sessionsById[sessionA.id] = { kind: 'full', session: { ...sessionA, message_count: 2 }, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = { ...projectionA, last_event_seq: 2, projection_high_watermark_seq: 2 }
+  state.messagesBySession[sessionA.id] = {
+    items: [messageA1],
+    byMessageId: { [messageA1.id]: 0 },
+    byGlobalSeq: { [String(messageA1.global_seq)]: 0 },
+    sourceMessageCount: 1,
+    sourceLastMessageAt: messageA1.created_at,
+    sourceProjectionHighWatermarkSeq: 1,
+    source: 'network',
+  }
+
+  const sockets: FakeWebSocket[] = []
+  const hydrateRequests: unknown[] = []
+  let reconnectCount = 0
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => {
+      reconnectCount += 1
+      return reconnectFixture({
+        snapshot_endpoint_cursor: `cursor-reconnect-${reconnectCount}`,
+        sessions_by_id: { [sessionA.id]: { ...sessionA, message_count: 2 } },
+        projections_by_session: { [sessionA.id]: { ...projectionA, last_event_seq: 2, projection_high_watermark_seq: 2 } },
+        run_intents_by_session: {},
+        current_run_intent_by_session: {},
+        messages_by_session: {},
+        events_by_session: {},
+        session_order: [sessionA.id],
+        workset_id: 'global-scope',
+        realtime: {
+          stream_path: '/v3/realtime/stream',
+          resume: {
+            protocol: 'v3.realtime',
+            protocol_version: 1,
+            kind: 'resume',
+            endpoint_cursor: `cursor-reconnect-${reconnectCount}`,
+            subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
+            worksets: [{
+              workset_id: 'global-scope',
+              subscription_id: 'workset-sub',
+              selector: { kind: 'global', global: true },
+              resources: ['run_intents'],
+              auto_subscribe_sessions: true,
+            }],
+          },
+        },
+      })
+    },
+    hydrate: async (input) => {
+      hydrateRequests.push(input)
+      return hydrateSnapshotFixture({
+        sessions_by_id: { [sessionA.id]: { ...sessionA, message_count: 2 } },
+        projections_by_session: { [sessionA.id]: { ...projectionA, last_event_seq: 2, projection_high_watermark_seq: 2 } },
+        session_order: [sessionA.id],
+        messages_by_session: { [sessionA.id]: [messageA1, messageA2] },
+      })
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  let ready: Promise<void> | undefined
+  try {
+    ready = controller.start(sessionA.id)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    await waitFor(() => hydrateRequests.length === 1)
+    await waitFor(() => state.messagesBySession[sessionA.id]?.items.length === 2)
+    await flushAsyncWork()
+
+    state.messagesBySession[sessionA.id] = {
+      items: [messageA1],
+      byMessageId: { [messageA1.id]: 0 },
+      byGlobalSeq: { [String(messageA1.global_seq)]: 0 },
+      sourceMessageCount: 1,
+      sourceLastMessageAt: messageA1.created_at,
+      sourceProjectionHighWatermarkSeq: 1,
+      source: 'network',
+    }
+
+    sockets[0].emit({
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'cursor.error',
+      reason: 'stale cursor',
+    })
+    await waitFor(() => sockets.length === 2)
+    assert.equal(hydrateRequests.length, 1)
+
+    sockets[1].open()
+    await waitFor(() => hydrateRequests.length === 2)
+    assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), [messageA1.id, messageA2.id])
+    assert.deepEqual(new Set(state.messagesBySession[sessionA.id].items.map((message) => message.id)).size, 2)
+  } finally {
+    controller.stop()
+    await ready?.catch(() => {})
+  }
+})
+
 test('Desktop V3 transport status maps to cache status', () => {
   assert.equal(mapTransportStatus('stopped'), 'closed')
   assert.equal(mapTransportStatus('closed'), 'closed')
@@ -947,6 +1196,24 @@ test('Desktop V3 transport status maps to cache status', () => {
   assert.equal(mapTransportStatus('stale'), 'stale')
   assert.equal(mapTransportStatus('error'), 'error')
 })
+
+function readyControllerState(): DesktopV3CacheState {
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
+  state.syncScopesById['global-scope'] = {
+    scopeId: 'global-scope',
+    surface: 'desktop',
+    streamKind: 'v3.sync.snapshot',
+    selectorFilterHash: 'global-hash',
+    resourceSet: 'run_intents',
+    selector: { kind: 'global', global: true },
+    endpointCursor: 'cursor-bootstrap',
+    replayPath: '/v3/sync/stream',
+    replayTransport: 'http_post',
+    needsBootstrap: false,
+  }
+  return state
+}
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
   const started = Date.now()

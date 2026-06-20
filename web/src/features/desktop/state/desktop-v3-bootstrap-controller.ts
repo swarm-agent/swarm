@@ -8,7 +8,7 @@ import type { DesktopV3CacheAction, DesktopV3CacheState, SyncSnapshotResponse, V
 import type { PersistedDesktopV3MessageTailV1, PersistedDesktopV3OwnerV1 } from './desktop-v3-cache-persisted-types'
 
 export interface BootstrapDesktopV3SidebarDeps {
-  preferredSessionId?: string
+  preferredSessionId?: string | null
   restorePersisted?: boolean
   postBootstrap?: () => Promise<SyncSnapshotResponse>
   postHydrate?: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
@@ -136,7 +136,7 @@ export function bootstrapDesktopV3SidebarMetadataOnly(
 }
 
 export async function restoreDesktopV3CacheFromActiveOwner(input: {
-  preferredSessionId?: string
+  preferredSessionId?: string | null
   dispatch: (action: DesktopV3CacheAction) => void
   loadActiveOwnerKey?: () => string | undefined
   readOwner?: (ownerKey: string) => Promise<PersistedDesktopV3OwnerV1 | undefined>
@@ -153,7 +153,9 @@ export async function restoreDesktopV3CacheFromActiveOwner(input: {
       return false
     }
 
-    const effectiveSessionId = input.preferredSessionId?.trim() || owner.selectedSessionId
+    const effectiveSessionId = input.preferredSessionId === null
+      ? undefined
+      : input.preferredSessionId?.trim() || owner.selectedSessionId
     const selectedMessageTail = effectiveSessionId
       ? await (input.readMessageTail ?? readDesktopV3MessageTail)(owner.ownerKey, effectiveSessionId)
       : undefined

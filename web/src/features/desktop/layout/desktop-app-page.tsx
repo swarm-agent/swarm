@@ -1769,7 +1769,7 @@ export function DesktopAppPage() {
   const isFlowRoute = Boolean(workspaceFlowDetailMatch || workspaceFlowMatch)
   const routeWorkspaceSlug = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.workspaceSlug : workspaceFlowMatch ? workspaceFlowMatch.workspaceSlug : workspaceSessionMatch ? workspaceSessionMatch.workspaceSlug : workspaceMatch ? workspaceMatch.workspaceSlug : '').trim()
   const routeSessionId = (!isFlowRoute && workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
-  const initialDesktopV3RouteSessionId = useRef(routeSessionId)
+  const initialDesktopV3PreferredSessionId = useRef<string | null | undefined>(routeSessionId || (workspaceMatch ? null : undefined))
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, selectingPath, saveWorkspace, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -2317,12 +2317,12 @@ export function DesktopAppPage() {
 
     void (async () => {
       const bootstrap = await bootstrapDesktopV3SidebarMetadataOnly({
-        preferredSessionId: initialDesktopV3RouteSessionId.current,
+        preferredSessionId: initialDesktopV3PreferredSessionId.current,
       })
       if (cancelled) return
 
       const realtimeLease = retainDesktopV3RealtimeController({
-        preferredSessionId: initialDesktopV3RouteSessionId.current,
+        preferredSessionId: initialDesktopV3PreferredSessionId.current,
       })
       stopRealtime = realtimeLease.release
       await realtimeLease.ready
@@ -2333,7 +2333,7 @@ export function DesktopAppPage() {
         bootstrapResponse: bootstrap.response,
         preBootstrapCachedProjections: bootstrap.preBootstrapCachedProjections,
         selectedMessageTail: bootstrap.restoredSelectedMessageTail,
-        preferredSessionId: initialDesktopV3RouteSessionId.current,
+        preferredSessionId: initialDesktopV3PreferredSessionId.current,
         currentSelectedSessionId: getDesktopV3CacheSnapshot().selectedSessionId,
         ownerKey: bootstrap.restoredOwnerKey,
       })

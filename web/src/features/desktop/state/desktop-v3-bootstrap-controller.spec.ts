@@ -194,6 +194,39 @@ test('bootstrap controller restores route-preferred selection without falling ba
   assert.deepEqual(readTailSessionIds, [sessionB.id])
 })
 
+test('bootstrap controller honors explicit workspace route with no selected session over persisted selection', async () => {
+  resetDesktopV3BootstrapControllerForTests()
+  let state = createEmptyDesktopV3CacheState()
+  const readTailSessionIds: string[] = []
+
+  await bootstrapDesktopV3Sidebar({
+    preferredSessionId: null,
+    loadActiveOwnerKey: () => persistedOwner.key,
+    readOwner: async () => persistedOwnerRecordFixture(),
+    readMessageTail: async (_ownerKey, sessionId) => {
+      readTailSessionIds.push(sessionId)
+      return undefined
+    },
+    postBootstrap: async () => snapshotFixture({
+      scope_id: 'scope-network',
+      sessions_by_id: {},
+      projections_by_session: {},
+      session_order: [],
+      messages_by_session: {},
+      run_intents_by_session: {},
+    }),
+    postHydrate: async () => {
+      throw new Error('hydrate should not run for workspace new-session route')
+    },
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+  })
+
+  assert.deepEqual(readTailSessionIds, [])
+  assert.equal(state.selectedSessionId, undefined)
+})
+
 test('bootstrap controller preserves restored cached state when network bootstrap fails', async () => {
   resetDesktopV3BootstrapControllerForTests()
   let state = createEmptyDesktopV3CacheState()

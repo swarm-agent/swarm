@@ -14,7 +14,7 @@ interface HydrateDesktopV3InitialSessionsInput {
   bootstrapResponse?: SyncSnapshotResponse
   preBootstrapCachedProjections?: Record<string, V3SessionProjection>
   selectedMessageTail?: PersistedDesktopV3MessageTailV1
-  preferredSessionId?: string
+  preferredSessionId?: string | null
   currentSelectedSessionId?: string
   ownerKey?: string
   readMessageTails?: (ownerKey: string, sessionIds: string[]) => Promise<PersistedDesktopV3MessageTailV1[]>
@@ -34,7 +34,9 @@ const inFlightBySessionSet = new Map<string, Promise<void>>()
 
 export function hydrateDesktopV3InitialSessions(input: HydrateDesktopV3InitialSessionsInput): Promise<void> {
   const sessionIds = normalizeOrderedSessionIds(input.sessionIds)
-  const preferredSessionId = normalizeOptionalSessionId(input.preferredSessionId) ?? normalizeOptionalSessionId(input.currentSelectedSessionId)
+  const preferredSessionId = input.preferredSessionId === null
+    ? undefined
+    : normalizeOptionalSessionId(input.preferredSessionId) ?? normalizeOptionalSessionId(input.currentSelectedSessionId)
   const inFlightKey = normalizeSessionIdSetKey(preferredSessionId ? [preferredSessionId, ...sessionIds] : sessionIds)
   const existing = inFlightBySessionSet.get(inFlightKey)
   if (existing) {
@@ -62,12 +64,14 @@ export function planDesktopV3SelectiveHydration(input: {
   bootstrapResponse: SyncSnapshotResponse
   preBootstrapCachedProjections?: Record<string, V3SessionProjection>
   persistedTailsBySession?: Record<string, PersistedDesktopV3MessageTailV1 | undefined>
-  preferredSessionId?: string
+  preferredSessionId?: string | null
   currentSelectedSessionId?: string
   sessionIds?: string[]
 }): DesktopV3SelectiveHydrationPlan {
   const response = input.bootstrapResponse
-  const preferredSessionId = normalizeOptionalSessionId(input.preferredSessionId) ?? normalizeOptionalSessionId(input.currentSelectedSessionId)
+  const preferredSessionId = input.preferredSessionId === null
+    ? undefined
+    : normalizeOptionalSessionId(input.preferredSessionId) ?? normalizeOptionalSessionId(input.currentSelectedSessionId)
   const bootstrapOrder = normalizeOrderedSessionIds(input.sessionIds ?? response.session_order ?? [])
   const bootstrapOrderSet = new Set(bootstrapOrder)
   const candidateSessionIds = preferredSessionId && !bootstrapOrderSet.has(preferredSessionId)
@@ -100,7 +104,7 @@ export function resetDesktopV3InitialHydrateControllerForTests(): void {
 async function hydrateDesktopV3InitialSessionsUncached(
   input: HydrateDesktopV3InitialSessionsInput & {
     sessionIds: string[]
-    preferredSessionId?: string
+    preferredSessionId?: string | null
     postHydrate: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
     dispatch: (action: DesktopV3CacheAction) => void
   },
@@ -303,7 +307,7 @@ function normalizeOrderedSessionIds(sessionIds: string[]): string[] {
   return normalized
 }
 
-function normalizeOptionalSessionId(sessionId: string | undefined): string | undefined {
+function normalizeOptionalSessionId(sessionId: string | null | undefined): string | undefined {
   const normalized = sessionId?.trim()
   return normalized || undefined
 }

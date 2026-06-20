@@ -185,7 +185,7 @@ export function applyPersistedRestore(
     sourceProjectionHighWatermarkSeq?: number
     hydratedAt?: number
   },
-  preferredSessionId?: string,
+  preferredSessionId?: string | null,
 ): DesktopV3CacheState {
   state.syncScopesById = {}
   for (const [scopeId, scope] of Object.entries(owner.syncScopesById)) {
@@ -235,7 +235,9 @@ export function applyPersistedRestore(
     }
   }
 
-  const effectiveSessionId = preferredSessionId?.trim() || owner.selectedSessionId
+  const effectiveSessionId = preferredSessionId === null
+    ? undefined
+    : preferredSessionId?.trim() || owner.selectedSessionId
   state.selectedSessionId = effectiveSessionId
   if (selectedMessageTail !== undefined) {
     state.messagesBySession[selectedMessageTail.sessionId] = buildMessageListCache(selectedMessageTail.messages, {
