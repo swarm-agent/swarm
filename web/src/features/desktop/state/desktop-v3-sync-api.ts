@@ -21,11 +21,8 @@ export interface DesktopV3HydrateInput {
 export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
   surface: 'desktop',
   selector: {
-    kind: 'recent',
+    kind: 'global',
     global: true,
-    recent: {
-      limit: 50,
-    },
   },
   history: {
     mode: 'none',

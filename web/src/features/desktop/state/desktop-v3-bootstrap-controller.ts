@@ -7,8 +7,9 @@ import { postDesktopV3SyncBootstrap, postDesktopV3SyncHydrate, type DesktopV3Hyd
 import type { DesktopV3CacheAction, DesktopV3CacheState, SyncSnapshotResponse, V3SessionProjection } from './desktop-v3-cache-types'
 import type { PersistedDesktopV3MessageTailV1, PersistedDesktopV3OwnerV1 } from './desktop-v3-cache-persisted-types'
 
-interface BootstrapDesktopV3SidebarDeps {
+export interface BootstrapDesktopV3SidebarDeps {
   preferredSessionId?: string
+  restorePersisted?: boolean
   postBootstrap?: () => Promise<SyncSnapshotResponse>
   postHydrate?: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
   dispatch?: (action: DesktopV3CacheAction) => void
@@ -19,9 +20,50 @@ interface BootstrapDesktopV3SidebarDeps {
   readMessageTails?: (ownerKey: string, sessionIds: string[]) => Promise<PersistedDesktopV3MessageTailV1[]>
 }
 
-let bootstrapInFlight: Promise<void> | null = null
+export interface DesktopV3BootstrapMetadataResult {
+  response: SyncSnapshotResponse
+  preBootstrapCachedProjections: Record<string, V3SessionProjection>
+  restoredOwnerKey?: string
+  restoredSelectedMessageTail?: PersistedDesktopV3MessageTailV1
+}
+
+let bootstrapInFlight: Promise<DesktopV3BootstrapMetadataResult> | null = null
 
 export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = {}): Promise<void> {
+  const dispatch = deps.dispatch ?? dispatchDesktopV3Cache
+  const getSnapshot = deps.getSnapshot ?? getDesktopV3CacheSnapshot
+  const postHydrate = deps.postHydrate ?? postDesktopV3SyncHydrate
+  const readMessageTails = deps.readMessageTails ?? readDesktopV3MessageTails
+
+  return bootstrapDesktopV3SidebarMetadataOnly(deps)
+    .then(async (bootstrap) => {
+      await hydrateDesktopV3InitialSessions({
+        sessionIds: bootstrap.response.session_order ?? [],
+        bootstrapResponse: bootstrap.response,
+        preBootstrapCachedProjections: bootstrap.preBootstrapCachedProjections,
+        selectedMessageTail: bootstrap.restoredSelectedMessageTail,
+        preferredSessionId: deps.preferredSessionId,
+        currentSelectedSessionId: getSnapshot().selectedSessionId,
+        ownerKey: bootstrap.restoredOwnerKey,
+        readMessageTails,
+        postHydrate,
+        dispatch,
+      })
+    })
+    .catch((error: unknown) => {
+      dispatch({
+        type: 'desktopSidebarBootstrap.update',
+        patch: {
+          status: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+    })
+}
+
+export function bootstrapDesktopV3SidebarMetadataOnly(
+  deps: BootstrapDesktopV3SidebarDeps = {},
+): Promise<DesktopV3BootstrapMetadataResult> {
   if (bootstrapInFlight) {
     return bootstrapInFlight
   }
@@ -29,25 +71,29 @@ export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = 
   const dispatch = deps.dispatch ?? dispatchDesktopV3Cache
   const getSnapshot = deps.getSnapshot ?? getDesktopV3CacheSnapshot
   const postBootstrap = deps.postBootstrap ?? postDesktopV3SyncBootstrap
-  const postHydrate = deps.postHydrate ?? postDesktopV3SyncHydrate
   const loadActiveOwnerKey = deps.loadActiveOwnerKey ?? loadDesktopV3CacheActiveOwnerKey
   const readOwner = deps.readOwner ?? readDesktopV3Owner
   const readMessageTail = deps.readMessageTail ?? readDesktopV3MessageTail
-  const readMessageTails = deps.readMessageTails ?? readDesktopV3MessageTails
 
   let restoredOwnerKey: string | undefined
   let restoredSelectedMessageTail: PersistedDesktopV3MessageTailV1 | undefined
-  bootstrapInFlight = restoreDesktopV3CacheFromActiveOwner({
-    preferredSessionId: deps.preferredSessionId,
-    dispatch,
-    loadActiveOwnerKey,
-    readOwner,
-    readMessageTail,
-    onRestored: (result) => {
-      restoredOwnerKey = result.ownerKey
-      restoredSelectedMessageTail = result.selectedMessageTail
-    },
-  })
+  const restorePersisted = deps.restorePersisted !== false
+
+  const restore = restorePersisted
+    ? restoreDesktopV3CacheFromActiveOwner({
+      preferredSessionId: deps.preferredSessionId,
+      dispatch,
+      loadActiveOwnerKey,
+      readOwner,
+      readMessageTail,
+      onRestored: (result) => {
+        restoredOwnerKey = result.ownerKey
+        restoredSelectedMessageTail = result.selectedMessageTail
+      },
+    })
+    : Promise.resolve(false)
+
+  bootstrapInFlight = restore
     .then((restored) => {
       if (!restored) {
         dispatch({
@@ -62,7 +108,7 @@ export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = 
       }
       return postBootstrap()
     })
-    .then(async (response) => {
+    .then((response) => {
       const preBootstrapCachedProjections = cloneProjections(getSnapshot().projectionsBySession)
       dispatch(bootstrapResponseToAction(response))
       dispatch({
@@ -75,27 +121,12 @@ export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = 
           source: 'network',
         },
       })
-      await hydrateDesktopV3InitialSessions({
-        sessionIds: response.session_order ?? [],
-        bootstrapResponse: response,
+      return {
+        response,
         preBootstrapCachedProjections,
-        selectedMessageTail: restoredSelectedMessageTail,
-        preferredSessionId: deps.preferredSessionId,
-        currentSelectedSessionId: getSnapshot().selectedSessionId,
-        ownerKey: restoredOwnerKey,
-        readMessageTails,
-        postHydrate,
-        dispatch,
-      })
-    })
-    .catch((error: unknown) => {
-      dispatch({
-        type: 'desktopSidebarBootstrap.update',
-        patch: {
-          status: 'error',
-          error: error instanceof Error ? error.message : String(error),
-        },
-      })
+        restoredOwnerKey,
+        restoredSelectedMessageTail,
+      }
     })
     .finally(() => {
       bootstrapInFlight = null

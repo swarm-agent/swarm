@@ -3,7 +3,6 @@ import type { CSSProperties, FormEvent, JSX, PointerEvent as ReactPointerEvent, 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
 import { Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
-import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -55,11 +54,14 @@ import {
   sessionParentSessionID,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
-import { bootstrapDesktopV3Sidebar } from '../state/desktop-v3-bootstrap-controller'
+import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
+import { hydrateDesktopV3InitialSessions } from '../state/desktop-v3-initial-hydrate-controller'
 import { startDesktopV3PersistenceController } from '../state/desktop-v3-persistence-controller'
-import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { selectDesktopSidebarRows, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
+import { requireDesktopV3RealtimeControllerReady, retainDesktopV3RealtimeController } from '../realtime/v3-realtime-controller'
+import { postDesktopV3AppendMessage } from '../session-v3/write-api'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import type { LiveRunOverlay, MessageMutationConflictResponse, MessageSnapshot, PendingUserMessage, SessionMessageMutationResponse, V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 
@@ -126,8 +128,10 @@ function DesktopV3ChatPane({
     const content = draft.trim()
     if (!selectedSessionId || !content || sending) return
 
-    const clientRequestId = `desktop-v3-message:${selectedSessionId}:${crypto.randomUUID()}`
-    const messageId = `pending:${clientRequestId}`
+    const operationId = crypto.randomUUID()
+    const clientRequestId = `desktop-v3-existing-message:${selectedSessionId}:${operationId}`
+    const messageId = `desktop-v3-message:${operationId}`
+    const runId = `desktop-v3-run:${operationId}`
     setDraft('')
     setSendError(null)
     setSending(true)
@@ -143,7 +147,7 @@ function DesktopV3ChatPane({
     })
 
     try {
-      const response = await commitDesktopV3Message(selectedSessionId, clientRequestId, content)
+      const response = await commitDesktopV3Message(selectedSessionId, clientRequestId, messageId, runId, content)
       dispatchDesktopV3Cache({ type: 'mutation.messageResult', raw: response, clientRequestId, messageId })
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
@@ -222,20 +226,17 @@ function DesktopV3ChatPane({
 async function commitDesktopV3Message(
   sessionId: string,
   clientRequestId: string,
+  messageId: string,
+  runId: string,
   content: string,
 ): Promise<SessionMessageMutationResponse | MessageMutationConflictResponse> {
-  return requestJson<SessionMessageMutationResponse | MessageMutationConflictResponse>(
-    `/v3/sessions/${encodeURIComponent(sessionId)}/messages`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        client_request_id: clientRequestId,
-        role: 'user',
-        content,
-      }),
-    },
-  )
+  return postDesktopV3AppendMessage(sessionId, {
+    client_request_id: clientRequestId,
+    message_id: messageId,
+    run_id: runId,
+    role: 'user',
+    content,
+  })
 }
 
 function DesktopV3CommittedMessage({ message }: { message: MessageSnapshot }) {
@@ -2310,10 +2311,71 @@ export function DesktopAppPage() {
   )
 
   useEffect(() => {
+    let cancelled = false
+    let stopRealtime: (() => void) | undefined
     const stopPersistence = startDesktopV3PersistenceController()
-    void bootstrapDesktopV3Sidebar({ preferredSessionId: initialDesktopV3RouteSessionId.current })
-    return stopPersistence
+
+    void (async () => {
+      const bootstrap = await bootstrapDesktopV3SidebarMetadataOnly({
+        preferredSessionId: initialDesktopV3RouteSessionId.current,
+      })
+      if (cancelled) return
+
+      const realtimeLease = retainDesktopV3RealtimeController({
+        preferredSessionId: initialDesktopV3RouteSessionId.current,
+      })
+      stopRealtime = realtimeLease.release
+      await realtimeLease.ready
+      if (cancelled) return
+
+      await hydrateDesktopV3InitialSessions({
+        sessionIds: bootstrap.response.session_order ?? [],
+        bootstrapResponse: bootstrap.response,
+        preBootstrapCachedProjections: bootstrap.preBootstrapCachedProjections,
+        selectedMessageTail: bootstrap.restoredSelectedMessageTail,
+        preferredSessionId: initialDesktopV3RouteSessionId.current,
+        currentSelectedSessionId: getDesktopV3CacheSnapshot().selectedSessionId,
+        ownerKey: bootstrap.restoredOwnerKey,
+      })
+    })().catch((error: unknown) => {
+      if (cancelled) return
+      dispatchDesktopV3Cache({
+        type: 'desktopSidebarBootstrap.update',
+        patch: {
+          status: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+    })
+
+    return () => {
+      cancelled = true
+      stopRealtime?.()
+      stopPersistence()
+    }
   }, [])
+
+  useEffect(() => {
+    const sessionId = routeSessionId.trim()
+    if (!sessionId) return
+
+    dispatchDesktopV3Cache(selectSession(sessionId))
+    void requireDesktopV3RealtimeControllerReady()
+      .then((controller) => controller.ensureSessionHistory(sessionId))
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        if (!message.includes('not retained by the desktop page')) {
+          console.error('[desktop-v3] failed to hydrate route session', error)
+        }
+      })
+  }, [routeSessionId])
+
+  useEffect(() => {
+    if (routeSessionId.trim()) return
+    if (!routeWorkspace?.path) return
+
+    dispatchDesktopV3Cache(selectSession(undefined))
+  }, [routeSessionId, routeWorkspace?.path])
 
   const sessionsByWorkspace = useMemo<Map<string, DesktopSessionRecord[]>>(() => {
     const grouped = new Map<string, DesktopSessionRecord[]>()
@@ -2506,6 +2568,7 @@ export function DesktopAppPage() {
   const chatWorkspacePath = selectedWorkspace?.path || ''
 
   const handleStartNewSessionInWorkspace = useCallback((wsPath: string, wsName: string) => {
+    dispatchDesktopV3Cache(selectSession(undefined))
     setMobileSidebarOpen(false)
     const workspaceSlug = workspaceSlugByPath.get(wsPath)
       ?? workspaceRouteSlugBase({ path: wsPath, workspaceName: wsName })

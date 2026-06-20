@@ -3,7 +3,7 @@ import { DesktopV3RealtimeTransport, type DesktopV3RealtimeTransportStatus } fro
 import type { SessionV3RealtimeWorksetSubscriptionRequestWire } from '../session-v3/types'
 import { getDesktopV3SessionEventsPage, type DesktopV3SessionEventsPage } from '../session-v3/read-api'
 import { openDesktopV3RealtimeTransportSocket } from './client'
-import { bootstrapDesktopV3Sidebar } from '../state/desktop-v3-bootstrap-controller'
+import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, subscribeDesktopV3Cache, type DesktopV3CacheMutation } from '../state/desktop-v3-cache-store'
 import { decodeSessionEventPayload, hydrateResponseToAction, realtimeFrameToActions } from '../state/desktop-v3-cache-wire'
 import {
@@ -69,6 +69,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly activeRepairByRun = new Map<string, Promise<void>>()
   private unsubscribeCache?: () => void
   private startPromise?: Promise<void>
+  private stopped = false
 
   constructor(deps: DesktopV3RealtimeControllerDeps = {}) {
     this.getSnapshot = deps.getSnapshot ?? getDesktopV3CacheSnapshot
@@ -79,7 +80,10 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.readEventsPage = deps.readEventsPage ?? getDesktopV3SessionEventsPage
     this.ensureSessionIdentity = deps.ensureSession ?? ensureDesktopSession
     this.bootstrap = deps.bootstrap ?? (async (input) => {
-      await bootstrapDesktopV3Sidebar({ preferredSessionId: input?.preferredSessionId })
+      await bootstrapDesktopV3SidebarMetadataOnly({
+        preferredSessionId: input?.preferredSessionId,
+        restorePersisted: input?.restorePersisted,
+      })
     })
 
     this.transport = new DesktopV3RealtimeTransport({
@@ -126,11 +130,13 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
   start(preferredSessionId?: string): Promise<void> {
     if (this.startPromise) return this.startPromise
+    this.stopped = false
     this.startPromise = this.startUncached(preferredSessionId)
     return this.startPromise
   }
 
   stop(reason = 'Desktop V3 realtime controller stopped'): void {
+    this.stopped = true
     this.unsubscribeCache?.()
     this.unsubscribeCache = undefined
     this.startPromise = undefined
@@ -160,10 +166,12 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
   private async startUncached(preferredSessionId?: string): Promise<void> {
     await this.ensureSessionIdentity()
+    this.assertNotStopped()
 
     const reconnect = await this.reconnect(
       buildDesktopV3ReconnectInput(this.getSnapshot(), DESKTOP_V3_CLIENT_ID),
     )
+    this.assertNotStopped()
     if (!reconnect.realtime?.resume) {
       throw new Error('Desktop V3 reconnect response is missing realtime.resume')
     }
@@ -191,9 +199,16 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     })
 
     this.markActiveRunsFromReconnect(reconnect)
+    this.assertNotStopped()
     await this.transport.start()
 
     if (selectedSessionId) void this.hydrateSessionOnce(selectedSessionId)
+  }
+
+  private assertNotStopped(): void {
+    if (this.stopped) {
+      throw new Error('Desktop V3 realtime controller startup was cancelled')
+    }
   }
 
   private buildResume(reconnect: SessionsReconnectResponse, preferredSessionId?: string): NonNullable<SessionsReconnectResponse['realtime']>['resume'] {
