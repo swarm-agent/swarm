@@ -8,12 +8,15 @@ import type {
   PendingUserMessage,
   RealtimeMessage,
   SessionEventPayload,
+  SessionCreateMutationResponse,
   SessionMessageMutationResponse,
+  SessionMutationErrorResponse,
   SessionsReconnectResponse,
   SubscriptionCache,
   SyncSnapshotResponse,
   V3RealtimeOutboxRecord,
   V3SessionEvent,
+  V3SessionProjection,
   V3SessionRunIntent,
   V3SessionTombstone,
   WorksetCache,
@@ -106,10 +109,15 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       state.realtime.endpointCursor = action.resume.endpoint_cursor
       return state
     case 'realtime.applyEvent':
-      applyCacheEvent(state, action.event)
+      applyCacheEvent(state, action.event, {
+        applyLiveOverlay: action.deferLiveOverlay !== true,
+      })
       if (action.endpointCursor) {
         state.realtime.endpointCursor = action.endpointCursor
       }
+      return state
+    case 'liveRun.rebuildFromEvents':
+      rebuildLiveRunFromStoredEvents(state, action.sessionId, action.runId, action.afterSeq)
       return state
     case 'realtime.worksetSessionDiscovered':
       applyWorksetSessionDiscovered(state, action.frame)
@@ -123,6 +131,20 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'realtime.control':
     case 'realtime.unknownFrame':
       return applyRealtimeFrame(state, { frame: action.frame })
+    case 'realtime.statusChanged':
+      state.realtime.status = action.status
+      state.realtime.errorCode = action.errorCode
+      state.realtime.error = action.error
+      if (action.status === 'open') {
+        state.realtime.needsReconnect = false
+        state.realtime.errorCode = undefined
+        state.realtime.error = undefined
+      } else if (action.status === 'error' || action.status === 'stale') {
+        state.realtime.needsReconnect = true
+      }
+      return state
+    case 'mutation.sessionCreateResult':
+      return applySessionCreateMutationResult(state, action.raw, action.sidebarScopeId)
     case 'mutation.messageResult':
       return applyMessageMutationResult(state, action.raw, action.clientRequestId, action.messageId)
     case 'pendingUser.upsert':
@@ -369,20 +391,12 @@ export function applyHydrate(
   requireProtocol(snapshot.scope_id, 'snapshot.scope_id')
   requireProtocol(snapshot.sync_scope, 'snapshot.sync_scope')
   requireProtocol(snapshot.snapshot_endpoint_cursor, 'snapshot.snapshot_endpoint_cursor')
+  const preHydrateProjections = { ...state.projectionsBySession }
+  const preHydrateSessions = { ...state.sessionsById }
   writeSyncScope(state, snapshot)
-  upsertSessions(state, snapshot.sessions_by_id)
-  mergeRecord(state.projectionsBySession, onlyRequested(snapshot.projections_by_session, requested))
+  applyHydrateSessionsAndProjections(state, snapshot, requested, preHydrateProjections, preHydrateSessions)
   applyTombstonesBySession(state, snapshot.tombstones_by_session)
-  if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'run_intents')) {
-    replaceRunIntentsBySession(state, snapshot.run_intents_by_session, requested)
-  }
-  mergeSnapshotResources(state, snapshot, snapshot.scope_id, requested)
-  if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'messages')) {
-    applyMessagesBySessionFromSnapshot(state, snapshot.messages_by_session)
-  }
-  if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'events')) {
-    applyEventsBySessionFromSnapshot(state, snapshot.events_by_session)
-  }
+  applyHydrateAuthoritativeResources(state, snapshot, requested, preHydrateProjections)
 
   for (const sessionId of requested) {
     const record = state.sessionsById[sessionId]
@@ -392,6 +406,87 @@ export function applyHydrate(
   }
 
   return state
+}
+
+function applyHydrateSessionsAndProjections(
+  state: DesktopV3CacheState,
+  snapshot: SyncSnapshotResponse,
+  requested: Set<string>,
+  preHydrateProjections: Record<string, SyncSnapshotResponse['projections_by_session'][string]>,
+  preHydrateSessions: DesktopV3CacheState['sessionsById'],
+): void {
+  for (const sessionId of requested) {
+    const incomingProjection = snapshot.projections_by_session?.[sessionId]
+    const existingProjection = preHydrateProjections[sessionId]
+    const fresh = projectionSeq(incomingProjection) >= projectionSeq(existingProjection)
+    const incomingSession = snapshot.sessions_by_id?.[sessionId]
+    if (incomingSession && (fresh || !preHydrateSessions[sessionId])) {
+      const existing = state.sessionsById[sessionId]
+      state.sessionsById[sessionId] = {
+        kind: 'full',
+        session: incomingSession,
+        needsHydrate: existing?.needsHydrate ?? true,
+      }
+    }
+    if (incomingProjection && (fresh || !existingProjection)) {
+      state.projectionsBySession[sessionId] = incomingProjection
+    }
+  }
+}
+
+function applyHydrateAuthoritativeResources(
+  state: DesktopV3CacheState,
+  snapshot: SyncSnapshotResponse,
+  requested: Set<string>,
+  preHydrateProjections: Record<string, V3SessionProjection | undefined>,
+): void {
+  const resourceSet = snapshot.sync_scope.resource_set
+  mergeSnapshotResources(state, snapshot, snapshot.scope_id, requested)
+
+  if (syncResourceSetContains(resourceSet, 'messages')) {
+    for (const sessionId of requested) {
+      if (!hasOwn(snapshot.messages_by_session, sessionId)) continue
+      const incoming = snapshot.messages_by_session?.[sessionId] ?? []
+      if (hydrateProjectionIsFresh(snapshot, sessionId, preHydrateProjections)) {
+        replaceMessagesForSession(state, sessionId, incoming)
+      } else {
+        mergeHistoricalMessagesForSession(state, sessionId, incoming)
+      }
+    }
+  }
+
+  if (syncResourceSetContains(resourceSet, 'events')) {
+    for (const sessionId of requested) {
+      if (!hasOwn(snapshot.events_by_session, sessionId)) continue
+      const incoming = snapshot.events_by_session?.[sessionId] ?? []
+      if (hydrateProjectionIsFresh(snapshot, sessionId, preHydrateProjections)) {
+        state.eventsBySession[sessionId] = sortEvents(incoming)
+      } else {
+        mergeEventsForSession(state, sessionId, incoming)
+      }
+    }
+  }
+
+  if (syncResourceSetContains(resourceSet, 'run_intents')) {
+    for (const sessionId of requested) {
+      if (hasOwn(snapshot.tombstones_by_session, sessionId)
+        || hydrateProjectionIsFresh(snapshot, sessionId, preHydrateProjections)) {
+        replaceRunIntentsForSession(state, sessionId, snapshot.run_intents_by_session?.[sessionId] ?? [])
+      } else {
+        for (const runIntent of snapshot.run_intents_by_session?.[sessionId] ?? []) {
+          upsertRunIntent(state, sessionId, runIntent)
+        }
+      }
+    }
+  }
+}
+
+function hydrateProjectionIsFresh(
+  snapshot: SyncSnapshotResponse,
+  sessionId: string,
+  preHydrateProjections: Record<string, V3SessionProjection | undefined>,
+): boolean {
+  return projectionSeq(snapshot.projections_by_session?.[sessionId]) >= projectionSeq(preHydrateProjections[sessionId])
 }
 
 export function applySyncStreamBatch(
@@ -431,13 +526,35 @@ export function applyReconnectSnapshot(
 ): DesktopV3CacheState {
   state.realtime.endpointCursor = raw.snapshot_endpoint_cursor
   state.realtime.surface = raw.surface ?? state.realtime.surface
+
+  const resources = reconnectResourceSet(raw)
+  const authoritativeSessionIds = new Set([
+    ...Object.keys(raw.sessions_by_id ?? {}),
+    ...(raw.session_order ?? []),
+  ])
+
   upsertSessions(state, raw.sessions_by_id)
   mergeRecord(state.projectionsBySession, raw.projections_by_session)
-  mergeRunIntentsBySession(state, raw.run_intents_by_session)
-  mergeRecord(state.currentRunIntentBySession, raw.current_run_intent_by_session)
-  mergeOptionalResources(state, raw)
-  applyMessagesBySessionFromSnapshot(state, raw.messages_by_session)
-  applyEventsBySessionFromSnapshot(state, raw.events_by_session)
+
+  if (resources.has('run_intents')) {
+    replaceRunIntentsBySession(state, raw.run_intents_by_session, authoritativeSessionIds)
+    applyCurrentRunIntentsFromReconnect(state, raw, authoritativeSessionIds)
+  } else {
+    mergeRunIntentsBySession(state, raw.run_intents_by_session)
+    mergeRecord(state.currentRunIntentBySession, raw.current_run_intent_by_session)
+  }
+
+  mergeReconnectOptionalResources(state, raw, resources, authoritativeSessionIds)
+  if (resources.has('messages')) {
+    applyMessagesBySessionFromSnapshot(state, raw.messages_by_session)
+  } else {
+    mergeMessagesBySessionFromSnapshot(state, raw.messages_by_session)
+  }
+  if (resources.has('events')) {
+    applyEventsBySessionFromSnapshot(state, raw.events_by_session)
+  } else {
+    mergeEventsBySessionFromSnapshot(state, raw.events_by_session)
+  }
 
   for (const subscription of raw.subscriptions ?? []) {
     const id = subscriptionId(subscription)
@@ -445,7 +562,7 @@ export function applyReconnectSnapshot(
   }
 
   for (const workset of raw.worksets ?? []) {
-    const id = worksetId(workset)
+    const id = worksetId(workset as unknown as Record<string, unknown>)
     if (id) state.worksetsById[id] = { ...state.worksetsById[id], ...workset }
   }
 
@@ -531,6 +648,46 @@ export function applyRealtimeFrame(
   }
 }
 
+export function applySessionCreateMutationResult(
+  state: DesktopV3CacheState,
+  raw: SessionCreateMutationResponse | SessionMutationErrorResponse,
+  sidebarScopeId: string,
+): DesktopV3CacheState {
+  if (raw.ok === false) return state
+
+  const sessionId = raw.session_id.trim()
+  if (!sessionId || raw.session.id !== sessionId) {
+    throw new Error('Desktop V3 create response has inconsistent session identity')
+  }
+
+  state.sessionsById[sessionId] = {
+    kind: 'full',
+    session: raw.session,
+    needsHydrate: false,
+  }
+  state.projectionsBySession[sessionId] = raw.projection
+  delete state.tombstonesBySession[sessionId]
+
+  state.sessionOrderByScope[sidebarScopeId] = prependUnique(
+    state.sessionOrderByScope[sidebarScopeId] ?? [],
+    sessionId,
+  )
+
+  const workset = state.worksetsById[sidebarScopeId]
+  if (workset) {
+    workset.sessionIds = prependUnique(workset.sessionIds ?? [], sessionId)
+    workset.inactiveSessionIds = (workset.inactiveSessionIds ?? [])
+      .filter((id) => id !== sessionId)
+  }
+
+  const outbox = raw.realtime_outbox ?? raw.mutation?.realtime_outbox
+  if (outbox) {
+    applyCacheEvent(state, outboxRecordToCacheEvent(outbox))
+  }
+
+  return state
+}
+
 export function applyMessageMutationResult(
   state: DesktopV3CacheState,
   raw: SessionMessageMutationResponse | MessageMutationConflictResponse,
@@ -590,22 +747,29 @@ export function upsertPendingUserMessage(
   return state
 }
 
-export function applyCacheEvent(state: DesktopV3CacheState, event: CacheEvent): DesktopV3CacheState {
+export function applyCacheEvent(
+  state: DesktopV3CacheState,
+  event: CacheEvent,
+  options: { applyLiveOverlay?: boolean } = {},
+): DesktopV3CacheState {
   const { sessionId, projection, payload, eventType } = event
-
-  if (projection) {
-    state.projectionsBySession[sessionId] = projection
+  const existingProjection = state.projectionsBySession[sessionId]
+  if (projectionSeq(projection) >= projectionSeq(existingProjection)) {
+    if (projection) state.projectionsBySession[sessionId] = projection
   }
 
   if (event.sessionEvent) {
     const existingEvents = state.eventsBySession[sessionId] ?? []
-    const index = existingEvents.findIndex((entry) => entry.id === event.sessionEvent?.id)
-    if (index >= 0) {
-      existingEvents[index] = event.sessionEvent
-      state.eventsBySession[sessionId] = existingEvents
-    } else {
-      state.eventsBySession[sessionId] = [...existingEvents, event.sessionEvent].sort((left, right) => left.seq - right.seq)
+    const duplicateIndex = existingEvents.findIndex((entry) =>
+      entry.id === event.sessionEvent?.id
+      || entry.seq === event.sessionEvent?.seq,
+    )
+    if (duplicateIndex >= 0) {
+      // Durable session events are immutable. Do not apply the same delta twice.
+      return state
     }
+    state.eventsBySession[sessionId] = [...existingEvents, event.sessionEvent]
+      .sort((left, right) => left.seq - right.seq)
   }
 
   if (payload.session) {
@@ -638,7 +802,9 @@ export function applyCacheEvent(state: DesktopV3CacheState, event: CacheEvent): 
   }
 
   applyScalarSessionPatchIfPresent(state, sessionId, payload, eventType)
-  applyLiveRunOverlayFromEvent(state, event)
+  if (options.applyLiveOverlay !== false) {
+    applyLiveRunOverlayFromEvent(state, event)
+  }
 
   return state
 }
@@ -735,27 +901,56 @@ export function applyTombstone(
   }
 }
 
-export function applyWorksetSessionDiscovered(state: DesktopV3CacheState, frame: RealtimeMessage): void {
-  const worksetIdValue = stringField(frame.workset_id)
+export function applyWorksetSessionDiscovered(
+  state: DesktopV3CacheState,
+  frame: RealtimeMessage,
+): void {
+  const discoveredWorksetId = stringField(frame.workset_id)
   const sessionId = stringField(frame.session_id)
-  if (!worksetIdValue || !sessionId) return
+  if (!discoveredWorksetId || !sessionId) return
 
   if (!state.sessionsById[sessionId]) {
     state.sessionsById[sessionId] = {
       kind: 'stub',
       id: sessionId,
       needsHydrate: true,
-      discoveredByWorksetId: worksetIdValue,
+      discoveredByWorksetId: discoveredWorksetId,
       discoveredAt: Date.now(),
     }
   }
 
-  state.sessionOrderByScope[worksetIdValue] = appendUnique(state.sessionOrderByScope[worksetIdValue] ?? [], sessionId)
-  const workset = state.worksetsById[worksetIdValue] ?? { workset_id: worksetIdValue, worksetId: worksetIdValue }
-  workset.sessionIds = appendUnique(workset.sessionIds ?? [], sessionId)
+  const scopeIds = new Set<string>([discoveredWorksetId])
+  if (state.desktopSidebarBootstrap.scopeId) {
+    scopeIds.add(state.desktopSidebarBootstrap.scopeId)
+  }
+  for (const scopeId of scopeIds) {
+    const current = state.sessionOrderByScope[scopeId] ?? []
+    state.sessionOrderByScope[scopeId] = [sessionId, ...current.filter((id) => id !== sessionId)]
+  }
+
+  const workset = state.worksetsById[discoveredWorksetId] ?? {
+    workset_id: discoveredWorksetId,
+    worksetId: discoveredWorksetId,
+  }
+  workset.sessionIds = [sessionId, ...(workset.sessionIds ?? []).filter((id) => id !== sessionId)]
   workset.inactiveSessionIds = (workset.inactiveSessionIds ?? []).filter((id) => id !== sessionId)
-  state.worksetsById[worksetIdValue] = workset
-  state.realtime.endpointCursor = frame.endpoint_cursor
+  state.worksetsById[discoveredWorksetId] = workset
+
+  const subscriptionId = stringField(frame.subscription_id)
+  if (subscriptionId) {
+    state.subscriptionsById[subscriptionId] = {
+      ...state.subscriptionsById[subscriptionId],
+      subscription_id: subscriptionId,
+      session_id: sessionId,
+      workset_id: discoveredWorksetId,
+      autoSubscribed: Boolean(frame.auto_subscribed),
+      endpoint_cursor: state.realtime.endpointCursor,
+      status: 'active',
+    }
+  }
+
+  // Intentionally do not update state.realtime.endpointCursor here.
+  // The matching durable event for this same endpoint record must be applied first.
 }
 
 export function applyWorksetSessionRemoved(state: DesktopV3CacheState, frame: RealtimeMessage): void {
@@ -764,11 +959,20 @@ export function applyWorksetSessionRemoved(state: DesktopV3CacheState, frame: Re
   if (!worksetIdValue || !sessionId) return
 
   state.sessionOrderByScope[worksetIdValue] = (state.sessionOrderByScope[worksetIdValue] ?? []).filter((id) => id !== sessionId)
+  if (state.desktopSidebarBootstrap.scopeId) {
+    const scopeId = state.desktopSidebarBootstrap.scopeId
+    state.sessionOrderByScope[scopeId] = (state.sessionOrderByScope[scopeId] ?? []).filter((id) => id !== sessionId)
+  }
   const workset = state.worksetsById[worksetIdValue] ?? { workset_id: worksetIdValue, worksetId: worksetIdValue }
   workset.sessionIds = (workset.sessionIds ?? []).filter((id) => id !== sessionId)
   workset.inactiveSessionIds = appendUnique(workset.inactiveSessionIds ?? [], sessionId)
   state.worksetsById[worksetIdValue] = workset
-  state.realtime.endpointCursor = frame.endpoint_cursor
+
+  const subscriptionId = stringField(frame.subscription_id)
+  if (subscriptionId) {
+    delete state.subscriptionsById[subscriptionId]
+  }
+  // Discovery/removal frames do not advance the global realtime cursor.
 }
 
 export function markCursorError(
@@ -811,19 +1015,61 @@ export function applyMessagesBySessionFromSnapshot(
   if (!messagesBySession) return state
 
   for (const [sessionId, messages] of Object.entries(messagesBySession)) {
-    const sessionRecord = state.sessionsById[sessionId]
-    const session = sessionRecord?.kind === 'full' ? sessionRecord.session : undefined
-    state.messagesBySession[sessionId] = buildMessageListCache(messages, {
-      sourceMessageCount: session?.message_count,
-      sourceLastMessageAt: session?.last_message_at,
-      sourceProjectionHighWatermarkSeq: state.projectionsBySession[sessionId]?.projection_high_watermark_seq,
-      hydratedAt: Date.now(),
-      source: 'network',
-    })
-    removeCommittedPendingForSession(state, sessionId, messages)
+    replaceMessagesForSession(state, sessionId, messages)
   }
 
   return state
+}
+
+function replaceMessagesForSession(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  messages: MessageSnapshot[],
+): void {
+  const sessionRecord = state.sessionsById[sessionId]
+  const session = sessionRecord?.kind === 'full' ? sessionRecord.session : undefined
+  state.messagesBySession[sessionId] = buildMessageListCache(messages, {
+    sourceMessageCount: session?.message_count,
+    sourceLastMessageAt: session?.last_message_at,
+    sourceProjectionHighWatermarkSeq: state.projectionsBySession[sessionId]?.projection_high_watermark_seq,
+    hydratedAt: Date.now(),
+    source: 'network',
+  })
+  removeCommittedPendingForSession(state, sessionId, messages)
+}
+
+function mergeHistoricalMessagesForSession(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  incoming: MessageSnapshot[],
+): void {
+  const existing = state.messagesBySession[sessionId]
+  const sessionRecord = state.sessionsById[sessionId]
+  const session = sessionRecord?.kind === 'full' ? sessionRecord.session : undefined
+  const merged = buildMessageListCache([...(existing?.items ?? []), ...incoming], {
+    knownTail: existing?.knownTail,
+    knownFull: existing?.knownFull,
+    sourceMessageCount: Math.max(existing?.sourceMessageCount ?? 0, session?.message_count ?? 0, incoming.length),
+    sourceLastMessageAt: Math.max(existing?.sourceLastMessageAt ?? 0, session?.last_message_at ?? 0, ...incoming.map((message) => message.created_at)),
+    sourceProjectionHighWatermarkSeq: Math.max(
+      existing?.sourceProjectionHighWatermarkSeq ?? 0,
+      state.projectionsBySession[sessionId]?.projection_high_watermark_seq ?? 0,
+    ),
+    hydratedAt: Math.max(existing?.hydratedAt ?? 0, Date.now()),
+    source: 'network',
+  })
+  state.messagesBySession[sessionId] = merged
+  removeCommittedPendingForSession(state, sessionId, incoming)
+}
+
+function mergeMessagesBySessionFromSnapshot(
+  state: DesktopV3CacheState,
+  messagesBySession: Record<string, MessageSnapshot[]> | undefined,
+): void {
+  if (!messagesBySession) return
+  for (const [sessionId, messages] of Object.entries(messagesBySession)) {
+    if (messages.length > 0) mergeHistoricalMessagesForSession(state, sessionId, messages)
+  }
 }
 
 interface BuildMessageListCacheOptions {
@@ -926,6 +1172,72 @@ function writeSyncScope(state: DesktopV3CacheState, snapshot: SyncSnapshotRespon
   }
 }
 
+function reconnectResourceSet(raw: SessionsReconnectResponse): Set<string> {
+  const resources = new Set<string>()
+  for (const workset of raw.worksets ?? []) {
+    for (const resource of workset.resources ?? []) {
+      const normalized = resource.trim()
+      if (normalized) resources.add(normalized)
+    }
+  }
+  return resources
+}
+
+function mergeReconnectOptionalResources(
+  state: DesktopV3CacheState,
+  raw: SessionsReconnectResponse,
+  resources: Set<string>,
+  authoritativeSessionIds: Set<string>,
+): void {
+  if (resources.has('active_plan')) {
+    replaceRecordBySession(state.plansBySession, raw.plans_by_session, authoritativeSessionIds)
+  } else {
+    mergeRecord(state.plansBySession, raw.plans_by_session)
+  }
+  if (resources.has('plan_revisions')) {
+    replaceRecordBySession(state.planRevisionsBySession, raw.plan_revisions_by_session, authoritativeSessionIds)
+  } else {
+    mergeRecord(state.planRevisionsBySession, raw.plan_revisions_by_session)
+  }
+  mergeRecord(state.permissionsBySession, raw.permissions_by_session)
+  mergeRecord(state.usageBySession, raw.usage_by_session)
+  mergeRecord(state.preferencesBySession, raw.preferences_by_session)
+  mergeRecord(state.agentModelPolicyBySession, raw.agent_model_policy_by_session)
+  if (resources.has('messages') || resources.has('events')) {
+    replaceRecordBySession(state.historyManifestsBySession, raw.history_manifests_by_session, authoritativeSessionIds)
+    mergeRecord(state.historyChunksById, raw.history_chunks_by_id)
+  } else {
+    mergeRecord(state.historyManifestsBySession, raw.history_manifests_by_session)
+    mergeRecord(state.historyChunksById, raw.history_chunks_by_id)
+  }
+}
+
+function applyCurrentRunIntentsFromReconnect(
+  state: DesktopV3CacheState,
+  raw: SessionsReconnectResponse,
+  authoritativeSessionIds: Set<string>,
+): void {
+  for (const sessionId of authoritativeSessionIds) {
+    const explicit = raw.current_run_intent_by_session?.[sessionId]
+    const derived = explicit ?? deriveCurrentRunIntent(raw.run_intents_by_session?.[sessionId] ?? [])
+    if (derived) {
+      state.currentRunIntentBySession[sessionId] = derived
+    } else {
+      delete state.currentRunIntentBySession[sessionId]
+    }
+  }
+}
+
+function deriveCurrentRunIntent(intents: V3SessionRunIntent[]): V3SessionRunIntent | undefined {
+  return [...intents]
+    .filter((intent) => ACTIVE_RUN_INTENT_STATUSES.has(intent.status.trim().toLowerCase()))
+    .sort((left, right) =>
+      right.updated_at - left.updated_at
+      || right.event_seq - left.event_seq
+      || right.run_id.localeCompare(left.run_id),
+    )[0]
+}
+
 function mergeSnapshotResources(
   state: DesktopV3CacheState,
   snapshot: SyncSnapshotResponse,
@@ -961,21 +1273,6 @@ function mergeSnapshotResources(
   if (snapshot.watermarks !== undefined) state.watermarksByScope[scopeId] = snapshot.watermarks
 }
 
-function mergeOptionalResources(
-  state: DesktopV3CacheState,
-  raw: Partial<SyncSnapshotResponse> | SessionsReconnectResponse,
-  requested?: Set<string>,
-): void {
-  mergeRecord(state.plansBySession, maybeOnlyRequested(raw.plans_by_session, requested))
-  mergeRecord(state.planRevisionsBySession, maybeOnlyRequested(raw.plan_revisions_by_session, requested))
-  mergeRecord(state.permissionsBySession, maybeOnlyRequested(raw.permissions_by_session, requested))
-  mergeRecord(state.usageBySession, maybeOnlyRequested(raw.usage_by_session, requested))
-  mergeRecord(state.preferencesBySession, maybeOnlyRequested(raw.preferences_by_session, requested))
-  mergeRecord(state.agentModelPolicyBySession, maybeOnlyRequested(raw.agent_model_policy_by_session, requested))
-  mergeRecord(state.historyManifestsBySession, maybeOnlyRequested(raw.history_manifests_by_session, requested))
-  mergeRecord(state.historyChunksById, raw.history_chunks_by_id)
-}
-
 function upsertSessions(state: DesktopV3CacheState, sessionsById: Record<string, SessionSnapshot> | undefined): void {
   if (!sessionsById) return
   for (const [sessionId, session] of Object.entries(sessionsById)) {
@@ -1005,24 +1302,34 @@ function replaceRunIntentsBySession(
   const scopedRunIntentsBySession = onlyRequested(runIntentsBySession, authoritativeSessionIds)
 
   for (const sessionId of authoritativeSessionIds) {
-    delete state.runIntentsBySession[sessionId]
-    delete state.currentRunIntentBySession[sessionId]
+    replaceRunIntentsForSession(state, sessionId, scopedRunIntentsBySession?.[sessionId] ?? [])
+  }
+}
 
-    const incomingRunIds = new Set((scopedRunIntentsBySession?.[sessionId] ?? []).map((intent) => intent.run_id))
-    const liveRuns = state.liveRunsBySession[sessionId]
-    if (liveRuns) {
-      for (const runId of Object.keys(liveRuns)) {
-        if (!incomingRunIds.has(runId)) {
-          delete liveRuns[runId]
-        }
+function replaceRunIntentsForSession(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  runIntents: V3SessionRunIntent[],
+): void {
+  delete state.runIntentsBySession[sessionId]
+  delete state.currentRunIntentBySession[sessionId]
+
+  const incomingRunIds = new Set(runIntents.map((intent) => intent.run_id))
+  const liveRuns = state.liveRunsBySession[sessionId]
+  if (liveRuns) {
+    for (const runId of Object.keys(liveRuns)) {
+      if (!incomingRunIds.has(runId)) {
+        delete liveRuns[runId]
       }
-      if (Object.keys(liveRuns).length === 0) {
-        delete state.liveRunsBySession[sessionId]
-      }
+    }
+    if (Object.keys(liveRuns).length === 0) {
+      delete state.liveRunsBySession[sessionId]
     }
   }
 
-  mergeRunIntentsBySession(state, scopedRunIntentsBySession)
+  for (const runIntent of runIntents) {
+    upsertRunIntent(state, sessionId, runIntent)
+  }
 }
 
 function applyTombstonesBySession(state: DesktopV3CacheState, tombstonesBySession: Record<string, V3SessionTombstone> | undefined): void {
@@ -1035,8 +1342,27 @@ function applyTombstonesBySession(state: DesktopV3CacheState, tombstonesBySessio
 function applyEventsBySessionFromSnapshot(state: DesktopV3CacheState, eventsBySession: Record<string, V3SessionEvent[]> | undefined): void {
   if (!eventsBySession) return
   for (const [sessionId, events] of Object.entries(eventsBySession)) {
-    state.eventsBySession[sessionId] = [...events].sort((left, right) => left.seq - right.seq)
+    state.eventsBySession[sessionId] = sortEvents(events)
   }
+}
+
+function mergeEventsBySessionFromSnapshot(state: DesktopV3CacheState, eventsBySession: Record<string, V3SessionEvent[]> | undefined): void {
+  if (!eventsBySession) return
+  for (const [sessionId, events] of Object.entries(eventsBySession)) {
+    if (events.length > 0) mergeEventsForSession(state, sessionId, events)
+  }
+}
+
+function mergeEventsForSession(state: DesktopV3CacheState, sessionId: string, incoming: V3SessionEvent[]): void {
+  const byIdentity = new Map<string, V3SessionEvent>()
+  for (const event of [...(state.eventsBySession[sessionId] ?? []), ...incoming]) {
+    byIdentity.set(event.id || `${event.session_id}:${event.seq}`, event)
+  }
+  state.eventsBySession[sessionId] = sortEvents([...byIdentity.values()])
+}
+
+function sortEvents(events: V3SessionEvent[]): V3SessionEvent[] {
+  return [...events].sort((left, right) => left.seq - right.seq || left.id.localeCompare(right.id))
 }
 
 function applyScalarSessionPatchIfPresent(
@@ -1102,6 +1428,46 @@ function createLiveRunOverlay(sessionId: string, runId: string): LiveRunOverlay 
   }
 }
 
+function rebuildLiveRunFromStoredEvents(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  runId: string,
+  afterSeq: number,
+): void {
+  const current = state.currentRunIntentBySession[sessionId]
+  if (!current || current.run_id !== runId) return
+
+  state.liveRunsBySession[sessionId] ??= {}
+  state.liveRunsBySession[sessionId][runId] = {
+    sessionId,
+    runId,
+    status: normalizeLiveRunStatus(current.status),
+    toolCallsByCallId: {},
+    lastEventSeqSeen: current.event_seq,
+  }
+
+  const seen = new Set<string>()
+  const events = sortEvents(state.eventsBySession[sessionId] ?? [])
+    .filter((event) => event.seq > afterSeq)
+  for (const sessionEvent of events) {
+    const identity = sessionEvent.id || `${sessionEvent.session_id}:${sessionEvent.seq}`
+    if (seen.has(identity)) continue
+    seen.add(identity)
+    const payload = decodeSessionEventPayload(sessionEvent)
+    const runIntent = recordValue(payload.runIntent) ?? recordValue(payload.run_intent)
+    const payloadRunId = stringValue(payload.run_id) || stringValue(runIntent?.run_id)
+    if (payloadRunId !== runId) continue
+    applyLiveRunOverlayFromEvent(state, {
+      source: 'sync-stream',
+      sessionId,
+      eventType: sessionEvent.event_type,
+      sessionEvent,
+      projection: state.projectionsBySession[sessionId],
+      payload,
+    })
+  }
+}
+
 function applyLiveRunOverlayFromEvent(
   state: DesktopV3CacheState,
   event: CacheEvent,
@@ -1141,6 +1507,52 @@ function applyLiveRunOverlayFromEvent(
       liveRun.status = liveRun.status === 'pending_executor' ? 'running' : liveRun.status
       liveRun.assistantDraft = {
         content: `${liveRun.assistantDraft?.content ?? ''}${delta}`,
+        updatedAt,
+      }
+      return
+    }
+
+    case 'session.reasoning.started':
+      liveRun.status = 'running'
+      liveRun.reasoning = {
+        state: 'running',
+        summary: stringValue(payload.summary),
+        text: stringValue(payload.text),
+        updatedAt,
+      }
+      return
+
+    case 'session.reasoning.delta': {
+      const current = liveRun.reasoning ?? {
+        state: 'running' as const,
+        summary: '',
+        text: '',
+        updatedAt,
+      }
+      liveRun.status = 'running'
+      liveRun.reasoning = {
+        state: 'running',
+        summary: `${current.summary}${stringValue(payload.summary_delta)}`,
+        text: `${current.text}${
+          stringValue(payload.text_delta)
+          || stringValue(payload.delta)
+        }`,
+        updatedAt,
+      }
+      return
+    }
+
+    case 'session.reasoning.completed': {
+      const current = liveRun.reasoning ?? {
+        state: 'running' as const,
+        summary: '',
+        text: '',
+        updatedAt,
+      }
+      liveRun.reasoning = {
+        state: 'completed',
+        summary: stringValue(payload.summary) || current.summary,
+        text: stringValue(payload.text) || current.text,
         updatedAt,
       }
       return
@@ -1307,10 +1719,6 @@ function onlyRequested<T>(map: Record<string, T> | undefined, requested: Set<str
   return result
 }
 
-function maybeOnlyRequested<T>(map: Record<string, T> | undefined, requested?: Set<string>): Record<string, T> | undefined {
-  return requested ? onlyRequested(map, requested) : map
-}
-
 function mergeRecord<T>(target: Record<string, T>, source: Record<string, T | undefined> | undefined): void {
   if (!source) return
   for (const [key, value] of Object.entries(source)) {
@@ -1331,6 +1739,21 @@ function messageGlobalSeqKey(message: MessageSnapshot): string {
 
 function appendUnique(values: string[], value: string): string[] {
   return values.includes(value) ? values : [...values, value]
+}
+
+function prependUnique(items: string[], value: string): string[] {
+  return [value, ...items.filter((item) => item !== value)]
+}
+
+function projectionSeq(projection: V3SessionProjection | undefined): number {
+  return Math.max(
+    projection?.last_event_seq ?? 0,
+    projection?.projection_high_watermark_seq ?? 0,
+  )
+}
+
+function hasOwn<T>(record: Record<string, T> | undefined, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record ?? {}, key)
 }
 
 function stringField(value: unknown): string | undefined {

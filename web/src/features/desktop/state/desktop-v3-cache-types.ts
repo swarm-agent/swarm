@@ -187,16 +187,18 @@ export interface ReconnectSubscription {
 }
 
 export interface RealtimeSubscriptionRequest {
-  subscription_id?: string
-  session_id?: string
-  [key: string]: unknown
+  session_id: string
+  subscription_id: string
+  endpoint_cursor?: string
 }
 
 export interface RealtimeWorksetSubscriptionRequest {
-  workset_id?: string
-  selector?: SyncSelector | Record<string, unknown>
-  session_ids?: string[]
-  [key: string]: unknown
+  workset_id: string
+  subscription_id: string
+  surface?: string
+  selector: SyncSelector
+  resources?: string[]
+  auto_subscribe_sessions?: boolean
 }
 
 export interface ReconnectDiagnostic {
@@ -211,7 +213,7 @@ export interface SessionsReconnectResponse {
   snapshot_endpoint_cursor: string
   sessions_by_id: Record<string, SessionSnapshot>
   projections_by_session: Record<string, V3SessionProjection>
-  run_intents_by_session: Record<string, V3SessionRunIntent[]>
+  run_intents_by_session?: Record<string, V3SessionRunIntent[]>
   current_run_intent_by_session?: Record<string, V3SessionRunIntent>
   subscriptions: ReconnectSubscription[]
   session_order: string[]
@@ -277,7 +279,13 @@ export interface RealtimeMessage {
   prevRev?: number
   event_type?: string
   event?: V3SessionEvent
+  workset_subscription_id?: string
+  auto_subscribed?: boolean
   projection?: V3SessionProjection
+  high_watermark_seq?: number
+  last_seq?: number
+  next_seq?: number
+  reason?: string
   error_code?: string
   error?: string
   bootstrap_required?: boolean
@@ -335,6 +343,23 @@ export interface SessionMessageMutationResponse {
   realtime_outbox: V3RealtimeOutboxRecord | null
 }
 
+export interface SessionCreateMutationResponse {
+  ok: true
+  session_id: string
+  session: SessionSnapshot
+  projection: V3SessionProjection
+  mutation: SessionMutationResult
+  realtime_outbox: V3RealtimeOutboxRecord | null
+}
+
+export interface SessionMutationErrorResponse {
+  ok: false
+  error?: string
+  error_code?: string
+  conflict?: unknown
+  [key: string]: unknown
+}
+
 export interface SyncScopeCache {
   scopeId: string
   surface: string
@@ -351,7 +376,7 @@ export interface SyncScopeCache {
 }
 
 export interface RealtimeCache {
-  status: 'closed' | 'connecting' | 'open' | 'reconnecting' | 'auth_denied'
+  status: 'closed' | 'connecting' | 'open' | 'reconnecting' | 'auth_denied' | 'error' | 'stale'
   surface: string
   streamPath?: '/v3/realtime/stream'
   endpointCursor?: string
@@ -440,6 +465,12 @@ export interface LiveRunOverlay {
       updatedAt: number
     }
   >
+  reasoning?: {
+    state: 'running' | 'completed'
+    summary: string
+    text: string
+    updatedAt: number
+  }
   lastEventSeqSeen?: number
 }
 
@@ -533,11 +564,14 @@ export type DesktopV3CacheAction =
   | { type: 'syncStream.applyBatch'; scopeId: string; endpointCursor: string; events: CacheEvent[]; hasMore: boolean; replayInstructions: SyncReplayInstructions }
   | { type: 'reconnect.applySnapshot'; snapshot: SessionsReconnectResponse }
   | { type: 'realtime.storeResume'; streamPath: '/v3/realtime/stream'; resume: RealtimeMessage }
-  | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string }
+  | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string; deferLiveOverlay?: boolean }
+  | { type: 'liveRun.rebuildFromEvents'; sessionId: string; runId: string; afterSeq: number }
   | { type: 'realtime.worksetSessionDiscovered'; frame: RealtimeMessage }
   | { type: 'realtime.worksetSessionRemoved'; frame: RealtimeMessage }
   | { type: 'realtime.cursorError'; frame: RealtimeMessage }
   | { type: 'realtime.control'; frame: RealtimeMessage }
   | { type: 'realtime.unknownFrame'; frame: RealtimeMessage }
+  | { type: 'realtime.statusChanged'; status: RealtimeCache['status']; errorCode?: string; error?: string }
+  | { type: 'mutation.sessionCreateResult'; raw: SessionCreateMutationResponse | SessionMutationErrorResponse; sidebarScopeId: string }
   | { type: 'mutation.messageResult'; raw: SessionMessageMutationResponse | MessageMutationConflictResponse; clientRequestId: string; messageId: string }
   | { type: 'pendingUser.upsert'; input: Omit<PendingUserMessage, 'role' | 'status'> }

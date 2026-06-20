@@ -2,8 +2,10 @@ import type {
   CacheEvent,
   DesktopV3CacheAction,
   RealtimeMessage,
+  SessionCreateMutationResponse,
   SessionEventPayload,
   SessionMessageMutationResponse,
+  SessionMutationErrorResponse,
   MessageMutationConflictResponse,
   SessionsReconnectResponse,
   SyncSnapshotResponse,
@@ -22,10 +24,10 @@ export function bootstrapResponseToAction(raw: SyncSnapshotResponse): DesktopV3C
   }
 }
 
-export function selectSession(sessionId: string): DesktopV3CacheAction {
+export function selectSession(sessionId?: string): DesktopV3CacheAction {
   return {
     type: 'session.select',
-    sessionId,
+    sessionId: sessionId?.trim() || undefined,
   }
 }
 
@@ -101,6 +103,17 @@ export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAc
 
     default:
       return [{ type: 'realtime.unknownFrame', frame }]
+  }
+}
+
+export function sessionCreateResponseToAction(
+  raw: SessionCreateMutationResponse | SessionMutationErrorResponse,
+  sidebarScopeId: string,
+): DesktopV3CacheAction {
+  return {
+    type: 'mutation.sessionCreateResult',
+    raw,
+    sidebarScopeId,
   }
 }
 

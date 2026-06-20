@@ -298,8 +298,14 @@ function DesktopV3ToolMessage({ content, toolMessage }: { content: string; toolM
 
 function DesktopV3LiveRun({ run }: { run: LiveRunOverlay }) {
   const toolCalls = Object.values(run.toolCallsByCallId).sort((left, right) => left.updatedAt - right.updatedAt || left.callId.localeCompare(right.callId))
+  const reasoningContent = [run.reasoning?.summary, run.reasoning?.text]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join('\n\n')
   return (
     <div className="flex flex-col gap-3">
+      {reasoningContent ? (
+        <DesktopV3AssistantMessage content={reasoningContent} role="reasoning" />
+      ) : null}
       {toolCalls.map((tool) => (
         <DesktopV3LiveToolCall key={tool.callId} tool={tool} />
       ))}
