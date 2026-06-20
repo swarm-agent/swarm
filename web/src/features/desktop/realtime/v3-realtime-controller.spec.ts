@@ -1186,6 +1186,128 @@ test('Desktop V3 cursor-error rehydrate repairs selected transcript after replac
   }
 })
 
+test('Desktop V3 cursor-error repair queues behind overlapping hydrate before refetching transcript', async () => {
+  let state = readyControllerState()
+  state.selectedSessionId = sessionA.id
+  state.sessionsById[sessionA.id] = { kind: 'full', session: { ...sessionA, message_count: 2 }, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = { ...projectionA, last_event_seq: 1, projection_high_watermark_seq: 1 }
+  state.messagesBySession[sessionA.id] = {
+    items: [messageA1],
+    byMessageId: { [messageA1.id]: 0 },
+    byGlobalSeq: { [String(messageA1.global_seq)]: 0 },
+    sourceMessageCount: 1,
+    sourceLastMessageAt: messageA1.created_at,
+    sourceProjectionHighWatermarkSeq: 1,
+    source: 'network',
+  }
+
+  const sockets: FakeWebSocket[] = []
+  const hydrateRequests: unknown[] = []
+  let reconnectCount = 0
+  let releaseFirstHydrate!: () => void
+  const firstHydrate = new Promise<void>((resolve) => {
+    releaseFirstHydrate = resolve
+  })
+  const reconnectProjection = { ...projectionA, last_event_seq: 2, projection_high_watermark_seq: 2 }
+
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => {
+      reconnectCount += 1
+      return reconnectFixture({
+        snapshot_endpoint_cursor: `cursor-reconnect-${reconnectCount}`,
+        sessions_by_id: { [sessionA.id]: { ...sessionA, message_count: 2 } },
+        projections_by_session: { [sessionA.id]: reconnectProjection },
+        run_intents_by_session: {},
+        current_run_intent_by_session: {},
+        messages_by_session: {},
+        events_by_session: {},
+        session_order: [sessionA.id],
+        workset_id: 'global-scope',
+        realtime: {
+          stream_path: '/v3/realtime/stream',
+          resume: {
+            protocol: 'v3.realtime',
+            protocol_version: 1,
+            kind: 'resume',
+            endpoint_cursor: `cursor-reconnect-${reconnectCount}`,
+            subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
+            worksets: [{
+              workset_id: 'global-scope',
+              subscription_id: 'workset-sub',
+              selector: { kind: 'global', global: true },
+              resources: ['run_intents'],
+              auto_subscribe_sessions: true,
+            }],
+          },
+        },
+      })
+    },
+    hydrate: async (input) => {
+      hydrateRequests.push(input)
+      if (hydrateRequests.length === 1) {
+        await firstHydrate
+        return hydrateSnapshotFixture({
+          sessions_by_id: { [sessionA.id]: { ...sessionA, message_count: 1, last_message_at: messageA1.created_at } },
+          projections_by_session: { [sessionA.id]: { ...projectionA, last_event_seq: 1, projection_high_watermark_seq: 1 } },
+          session_order: [sessionA.id],
+          messages_by_session: { [sessionA.id]: [messageA1] },
+          selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+        })
+      }
+      return hydrateSnapshotFixture({
+        sessions_by_id: { [sessionA.id]: { ...sessionA, message_count: 2 } },
+        projections_by_session: { [sessionA.id]: reconnectProjection },
+        session_order: [sessionA.id],
+        messages_by_session: { [sessionA.id]: [messageA1, messageA2] },
+        selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+      })
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  let ready: Promise<void> | undefined
+  try {
+    ready = controller.start(sessionA.id)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    await waitFor(() => hydrateRequests.length === 1)
+
+    sockets[0].emit({
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'cursor.error',
+      reason: 'stale cursor',
+    })
+    await waitFor(() => sockets.length === 2)
+    sockets[1].open()
+    await flushAsyncWork()
+    assert.equal(hydrateRequests.length, 1)
+
+    releaseFirstHydrate()
+    await waitFor(() => hydrateRequests.length === 2)
+    await waitFor(() => state.messagesBySession[sessionA.id]?.items.length === 2)
+
+    assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), [messageA1.id, messageA2.id])
+    assert.deepEqual(new Set(state.messagesBySession[sessionA.id].items.map((message) => message.id)).size, 2)
+    assert.equal(state.realtime.endpointCursor, 'cursor-reconnect-2')
+  } finally {
+    controller.stop()
+    releaseFirstHydrate()
+    await ready?.catch(() => {})
+  }
+})
+
 test('Desktop V3 transport status maps to cache status', () => {
   assert.equal(mapTransportStatus('stopped'), 'closed')
   assert.equal(mapTransportStatus('closed'), 'closed')

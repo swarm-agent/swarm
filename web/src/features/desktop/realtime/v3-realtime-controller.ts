@@ -248,15 +248,42 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   }
 
   private handleResumeSent(): void {
+    const isStartupResume = this.firstResumeSent !== undefined
     this.firstResumeSent?.resolve()
     this.firstResumeSent = undefined
 
+    // Also catch selection changes that happened while reconnect was running.
+    // Startup selection is hydrated explicitly after the first resume.
+    const selectedSessionId = this.getSnapshot().selectedSessionId?.trim()
+    if (!isStartupResume && selectedSessionId) {
+      this.pendingHistoryRepair.add(selectedSessionId)
+    }
+
     for (const sessionId of Array.from(this.pendingHistoryRepair)) {
-      this.pendingHistoryRepair.delete(sessionId)
-      void this.hydrateSessionOnce(sessionId)
+      void this.repairHistoryAfterResume(sessionId).catch((error) => {
+        console.error('[desktop-v3] selected transcript repair failed', error)
+      })
     }
 
     this.startMarkedActiveRunRepairs()
+  }
+
+  private async repairHistoryAfterResume(sessionId: string): Promise<void> {
+    // This request may have started before the reconnect snapshot.
+    const preReconnectHydrate = this.hydrateBySession.get(sessionId)
+    if (preReconnectHydrate) {
+      await preReconnectHydrate.catch(() => undefined)
+    }
+
+    if (this.stopped || !this.pendingHistoryRepair.has(sessionId)) {
+      return
+    }
+
+    // hydrateSessionOnce now re-evaluates completeness against the newer
+    // reconnect projection and starts another request if needed.
+    await this.hydrateSessionOnce(sessionId)
+
+    this.pendingHistoryRepair.delete(sessionId)
   }
 
   private handleFrame(frame: RealtimeMessage): void {

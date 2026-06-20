@@ -1063,17 +1063,13 @@ function mergeHistoricalMessagesForSession(
   incoming: MessageSnapshot[],
 ): void {
   const existing = state.messagesBySession[sessionId]
-  const sessionRecord = state.sessionsById[sessionId]
-  const session = sessionRecord?.kind === 'full' ? sessionRecord.session : undefined
-  const merged = buildMessageListCache([...(existing?.items ?? []), ...incoming], {
+  const mergedItems = [...(existing?.items ?? []), ...incoming]
+  const merged = buildMessageListCache(mergedItems, {
     knownTail: existing?.knownTail,
     knownFull: existing?.knownFull,
-    sourceMessageCount: Math.max(existing?.sourceMessageCount ?? 0, session?.message_count ?? 0, incoming.length),
-    sourceLastMessageAt: Math.max(existing?.sourceLastMessageAt ?? 0, session?.last_message_at ?? 0, ...incoming.map((message) => message.created_at)),
-    sourceProjectionHighWatermarkSeq: Math.max(
-      existing?.sourceProjectionHighWatermarkSeq ?? 0,
-      state.projectionsBySession[sessionId]?.projection_high_watermark_seq ?? 0,
-    ),
+    sourceMessageCount: Math.max(existing?.sourceMessageCount ?? 0, incoming.length, mergedItems.length),
+    sourceLastMessageAt: Math.max(existing?.sourceLastMessageAt ?? 0, ...incoming.map((message) => message.created_at)),
+    sourceProjectionHighWatermarkSeq: existing?.sourceProjectionHighWatermarkSeq,
     hydratedAt: Math.max(existing?.hydratedAt ?? 0, Date.now()),
     source: 'network',
   })
