@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import { bootstrapDesktopV3Sidebar, resetDesktopV3BootstrapControllerForTests } from './desktop-v3-bootstrap-controller'
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
-import { hydrateDesktopV3InitialSessions, planDesktopV3SelectiveHydration, resetDesktopV3InitialHydrateControllerForTests } from './desktop-v3-initial-hydrate-controller'
+import { buildPostReconnectHydrationSnapshot, hydrateDesktopV3InitialSessions, planDesktopV3SelectiveHydration, resetDesktopV3InitialHydrateControllerForTests } from './desktop-v3-initial-hydrate-controller'
 import type { DesktopV3CacheAction, SessionSnapshot, V3SessionProjection } from './desktop-v3-cache-types'
 import type { DesktopV3HydrateInput } from './desktop-v3-sync-api'
 import { hydrateResponseToAction } from './desktop-v3-cache-wire'
@@ -641,4 +641,134 @@ test('hydrate failure keeps cached transcript rendered and needsHydrate true whi
   assert.equal(state.sessionsById[sessions[0].id]?.needsHydrate, true)
   assert.equal(state.messagesBySession[sessions[11].id].items[0].content, 'network')
   assert.equal(state.sessionsById[sessions[11].id]?.needsHydrate, false)
+})
+
+
+test('post-reconnect initial hydrate uses reconnect membership and projection authority', async () => {
+  resetDesktopV3InitialHydrateControllerForTests()
+  let state = createEmptyDesktopV3CacheState()
+  const scopeId = 'global-scope'
+  const bootstrapSessionA = { ...sessionA, message_count: 5, last_message_at: 5 }
+  const reconnectSessionA = { ...sessionA, message_count: 6, last_message_at: 6 }
+  const reconnectSessionB = { ...sessionB, message_count: 2, last_message_at: 2 }
+  const projectionA5 = generatedProjection(sessionA.id, 5)
+  const projectionA6 = generatedProjection(sessionA.id, 6)
+  const projectionB2 = generatedProjection(sessionB.id, 2)
+  const persistedTailA = generatedTail(bootstrapSessionA, projectionA5)
+  const hydrateBodies: DesktopV3HydrateInput[] = []
+
+  const bootstrapResponse = snapshotFixture({
+    scope_id: scopeId,
+    snapshot_endpoint_cursor: 'cursor-bootstrap-a5',
+    sessions_by_id: { [sessionA.id]: bootstrapSessionA },
+    projections_by_session: { [sessionA.id]: projectionA5 },
+    session_order: [sessionA.id],
+    messages_by_session: {},
+  })
+
+  state = desktopV3CacheReducer(state, {
+    type: 'snapshot.apply',
+    source: 'bootstrap',
+    scopeId,
+    snapshot: bootstrapResponse,
+  })
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId }
+  state = desktopV3CacheReducer(state, {
+    type: 'desktopV3Cache.restoreMessageTails',
+    tails: [persistedTailA],
+  })
+
+  state = desktopV3CacheReducer(state, {
+    type: 'reconnect.applySnapshot',
+    snapshot: {
+      ok: true,
+      rev: 2,
+      snapshot_endpoint_cursor: 'cursor-reconnect-c11',
+      sessions_by_id: {
+        [sessionA.id]: reconnectSessionA,
+        [sessionB.id]: reconnectSessionB,
+      },
+      projections_by_session: {
+        [sessionA.id]: projectionA6,
+        [sessionB.id]: projectionB2,
+      },
+      subscriptions: [
+        { subscription_id: `sub-${sessionA.id}`, session_id: sessionA.id, status: 'active' },
+        { subscription_id: `sub-${sessionB.id}`, session_id: sessionB.id, status: 'active' },
+      ],
+      session_order: [sessionA.id, sessionB.id],
+      diagnostics_by_session: {},
+      workset_id: scopeId,
+      surface: 'desktop',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect-c11',
+          subscriptions: [
+            { subscription_id: `sub-${sessionA.id}`, session_id: sessionA.id, endpoint_cursor: 'cursor-reconnect-c11' },
+            { subscription_id: `sub-${sessionB.id}`, session_id: sessionB.id, endpoint_cursor: 'cursor-reconnect-c11' },
+          ],
+          worksets: [],
+        },
+      },
+    },
+  })
+  state = desktopV3CacheReducer(state, {
+    type: 'realtime.storeResume',
+    streamPath: '/v3/realtime/stream',
+    resume: {
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'resume',
+      endpoint_cursor: 'cursor-reconnect-c11',
+      subscriptions: [],
+      worksets: [],
+    },
+  })
+
+  const postReconnectSnapshot = buildPostReconnectHydrationSnapshot(bootstrapResponse, state, scopeId)
+  const selective = planDesktopV3SelectiveHydration({
+    bootstrapResponse: postReconnectSnapshot,
+    preBootstrapCachedProjections: { [sessionA.id]: projectionA5 },
+    persistedTailsBySession: { [sessionA.id]: persistedTailA },
+    sessionIds: state.sessionOrderByScope[scopeId],
+  })
+  assert.deepEqual(selective.hydrateSessionIds, [sessionA.id, sessionB.id])
+  assert.deepEqual(selective.reusedSessionIds, [])
+
+  await hydrateDesktopV3InitialSessions({
+    scopeId,
+    forceNetworkHydrate: true,
+    sessionIds: state.sessionOrderByScope[scopeId],
+    postHydrate: async (body) => {
+      hydrateBodies.push(body)
+      return hydrateSnapshotFixture({
+        scope_id: 'hydrate-scope',
+        snapshot_endpoint_cursor: 'cursor-hydrate-after-reconnect',
+        selector: { kind: 'session_ids', session_ids: body.session_ids },
+        sessions_by_id: Object.fromEntries(body.session_ids.map((id) => [id, id === sessionA.id ? reconnectSessionA : reconnectSessionB])),
+        projections_by_session: Object.fromEntries(body.session_ids.map((id) => [id, id === sessionA.id ? projectionA6 : projectionB2])),
+        session_order: body.session_ids,
+        messages_by_session: Object.fromEntries(body.session_ids.map((id) => [id, id === sessionA.id
+          ? [{ id: 'msg-a-6', session_id: sessionA.id, global_seq: 6, role: 'assistant', content: 'seq 6', created_at: 6 }]
+          : [{ id: 'msg-b-1', session_id: sessionB.id, global_seq: 1, role: 'user', content: 'b 1', created_at: 1 }, { id: 'msg-b-2', session_id: sessionB.id, global_seq: 2, role: 'assistant', content: 'b 2', created_at: 2 }]
+        ])),
+      })
+    },
+    dispatch: (action) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+  })
+
+  assert.deepEqual(hydrateBodies.map((body) => body.session_ids), [[sessionA.id, sessionB.id]])
+  assert.equal(state.messagesBySession[sessionA.id].source, 'network')
+  assert.equal(state.messagesBySession[sessionA.id].sourceProjectionHighWatermarkSeq, 6)
+  assert.equal(state.messagesBySession[sessionA.id].items.some((message) => message.global_seq === 6), true)
+  assert.equal(state.messagesBySession[sessionB.id].items.length, 2)
+  assert.equal(state.messagesBySession[sessionB.id].sourceProjectionHighWatermarkSeq, 2)
+  assert.equal(state.realtime.endpointCursor, 'cursor-reconnect-c11')
+  assert.equal(state.realtime.resumeFrame?.endpoint_cursor, 'cursor-reconnect-c11')
 })

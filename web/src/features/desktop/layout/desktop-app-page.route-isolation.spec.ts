@@ -73,12 +73,14 @@ test('Desktop V3 refresh startup order and workspace route selection are guarded
 
   assert.match(
     source,
-    /const bootstrap = await bootstrapDesktopV3SidebarMetadataOnly[\s\S]*?const realtimeLease = retainDesktopV3RealtimeController[\s\S]*?await realtimeLease\.ready[\s\S]*?await hydrateDesktopV3InitialSessions/,
+    /const bootstrap = await bootstrapDesktopV3SidebarMetadataOnly[\s\S]*?const realtimeLease = retainDesktopV3RealtimeController[\s\S]*?await realtimeLease\.ready[\s\S]*?const afterReconnect = getDesktopV3CacheSnapshot\(\)[\s\S]*?sessionIds: reconnectSessionIds\.filter/,
   )
   assert.match(
     source,
     /dispatchDesktopV3Cache\(selectSession\(undefined\)\)/,
   )
+  assert.match(source, /forceNetworkHydrate:\s*true/)
+  assert.match(source, /await controller\.ensureSessionHistory\(selectedSessionId\)/)
   assert.doesNotMatch(source, /selectedSessionId=\{routeSessionId \|\| selectedDesktopV3SessionId\}/)
   assert.doesNotMatch(source, /<DesktopV3ChatPane[\s\S]*selectedSessionId=\{selectedDesktopV3SessionId\}/)
 })

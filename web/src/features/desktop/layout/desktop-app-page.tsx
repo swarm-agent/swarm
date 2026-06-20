@@ -54,7 +54,7 @@ import {
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
 import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
-import { hydrateDesktopV3InitialSessions } from '../state/desktop-v3-initial-hydrate-controller'
+import { buildPostReconnectHydrationSnapshot, hydrateDesktopV3InitialSessions } from '../state/desktop-v3-initial-hydrate-controller'
 import { startDesktopV3PersistenceController } from '../state/desktop-v3-persistence-controller'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { selectDesktopSidebarRows, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
@@ -2061,13 +2061,33 @@ export function DesktopAppPage() {
       await realtimeLease.ready
       if (cancelled) return
 
+      const afterReconnect = getDesktopV3CacheSnapshot()
+      const scopeId = afterReconnect.desktopSidebarBootstrap.scopeId?.trim()
+      if (!scopeId) {
+        throw new Error('Desktop V3 initial hydrate requires reconnect sidebar scope')
+      }
+
+      const preferred = initialDesktopV3PreferredSessionId.current
+      const selectedSessionId = preferred === null
+        ? undefined
+        : preferred?.trim() || afterReconnect.selectedSessionId?.trim()
+      const reconnectSessionIds = afterReconnect.sessionOrderByScope[scopeId] ?? []
+      const controller = await requireDesktopV3RealtimeControllerReady()
+      if (selectedSessionId) {
+        await controller.ensureSessionHistory(selectedSessionId)
+      }
+
       await hydrateDesktopV3InitialSessions({
-        sessionIds: bootstrap.response.session_order ?? [],
-        bootstrapResponse: bootstrap.response,
-        preBootstrapCachedProjections: bootstrap.preBootstrapCachedProjections,
-        selectedMessageTail: bootstrap.restoredSelectedMessageTail,
-        preferredSessionId: initialDesktopV3PreferredSessionId.current,
-        currentSelectedSessionId: getDesktopV3CacheSnapshot().selectedSessionId,
+        scopeId,
+        forceNetworkHydrate: true,
+        sessionIds: reconnectSessionIds.filter((sessionId) => sessionId !== selectedSessionId),
+        bootstrapResponse: buildPostReconnectHydrationSnapshot(
+          bootstrap.response,
+          getDesktopV3CacheSnapshot(),
+          scopeId,
+        ),
+        preferredSessionId: null,
+        currentSelectedSessionId: undefined,
         ownerKey: bootstrap.restoredOwnerKey,
       })
     })().catch((error: unknown) => {
