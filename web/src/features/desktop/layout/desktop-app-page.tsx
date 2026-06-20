@@ -2030,15 +2030,6 @@ export function DesktopAppPage() {
     () => desktopSidebarRows.map(desktopSessionRecordFromV3SidebarRow),
     [desktopSidebarRows],
   )
-  const desktopV3SessionNodes = useMemo(
-    () => buildSidebarSessionTree(desktopStateSessions, sidebarNow, true),
-    [desktopStateSessions, sidebarNow],
-  )
-  const flattenedDesktopV3SessionNodes = useMemo(
-    () => flattenVisibleSidebarSessionNodes(desktopV3SessionNodes, expandedAgentSessions, routeSessionId),
-    [desktopV3SessionNodes, expandedAgentSessions, routeSessionId],
-  )
-
   useEffect(() => {
     const sessionId = routeSessionId.trim()
     if (!sessionId) return
@@ -3104,65 +3095,6 @@ export function DesktopAppPage() {
                   </div>
                   {flowMenuError ? <div className="border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[11px] text-[var(--app-warning)]">{flowMenuError}</div> : null}
                 </div>
-              ) : desktopSidebarBootstrap.scopeId ? (
-                <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                  <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'px-1 py-1')}>
-                    <div className="min-w-0">
-                      <div className="truncate text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Recent sessions</div>
-                      <div className="mt-0.5 truncate text-[11px] text-[var(--app-text-subtle)]">
-                        {desktopSidebarBootstrap.status === 'loading' ? 'Loading…' : `${desktopStateSessions.length} sessions`}
-                      </div>
-                    </div>
-                    <SidebarActionRail>
-                      <SidebarActionRailSpacer />
-                      <SidebarActionRailSpacer />
-                    </SidebarActionRail>
-                  </div>
-                  {desktopSidebarBootstrap.status === 'error' && desktopSidebarBootstrap.error ? (
-                    <div className="mx-1 mb-2 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[11px] text-[var(--app-warning)]">
-                      {desktopSidebarBootstrap.error}
-                    </div>
-                  ) : null}
-                  <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-0.5 overflow-y-auto">
-                    {flattenedDesktopV3SessionNodes.length === 0 ? (
-                      <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">
-                        {desktopSidebarBootstrap.status === 'loading' ? 'Loading sessions…' : 'No sessions yet.'}
-                      </div>
-                    ) : flattenedDesktopV3SessionNodes.map((node) => {
-                      const workspacePath = node.session.workspacePath.trim()
-                      const workspaceName = node.session.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
-                      const workspaceSlug = workspaceSlugByPath.get(workspacePath)
-                        ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName })
-                      const routeOptions = buildDesktopChatRouteOptions({
-                        hostSwarmName: swarmName,
-                        workspacePath,
-                        workspaceName,
-                        topologyRoutes: [],
-                      })
-
-                      return (
-                        <SessionRow
-                          key={node.session.id}
-                          active={routeSessionId === node.session.id}
-                          now={sidebarNow}
-                          session={node.session}
-                          fallbackSwarmName={swarmName}
-                          routeOptions={routeOptions}
-                          workspaceSlug={workspaceSlug}
-                          depth={node.depth}
-                          childLabel={node.label}
-                          childAssignmentLabel={node.assignmentLabel}
-                          childKind={node.kind}
-                          agentSummary={summarizeSubagentDescendants(node)}
-                          agentsExpanded={Boolean(expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, routeSessionId || undefined)}
-                          onSelect={handleSelectSession}
-                          onPrefetch={handlePrefetchSession}
-                          onToggleAgents={handleToggleAgentSessions}
-                        />
-                      )
-                    })}
-                  </div>
-                </section>
               ) : visibleSidebarWorkspaceEntries.map((workspace, index) => {
                 const workspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
                 const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow, Boolean(desktopSidebarBootstrap.scopeId))
@@ -3364,6 +3296,13 @@ export function DesktopAppPage() {
             initialHydrateStatus={desktopInitialHydrate.status}
             renderedMessages={selectedDesktopV3Messages}
             messagesLoaded={selectedDesktopV3MessagesLoaded}
+            session={sessionById.get(routeSessionId) ?? null}
+            routeOptions={sessionById.get(routeSessionId) ? buildDesktopChatRouteOptions({
+              hostSwarmName: swarmName,
+              workspacePath: sessionById.get(routeSessionId)?.workspacePath ?? '',
+              workspaceName: sessionById.get(routeSessionId)?.workspaceName ?? '',
+              topologyRoutes: [],
+            }) : []}
           />
         ) : isFlowRoute ? (
           <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[var(--app-bg)] px-3 pb-[calc(var(--app-safe-area-bottom)_+_1.25rem)] pt-[calc(var(--app-safe-area-top)_+_1rem)] sm:px-6 sm:py-8">
@@ -3392,7 +3331,6 @@ export function DesktopAppPage() {
               topologyRoutes: routeWorkspace.topologyRoutes,
             })}
             pendingWorktreeBranch={pendingWorktreeBranchByWorkspace[routeWorkspace.path]}
-            agentName="swarm"
           />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">

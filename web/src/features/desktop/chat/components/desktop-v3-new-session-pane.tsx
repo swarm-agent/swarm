@@ -1,10 +1,13 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { LoaderCircle } from 'lucide-react'
-import { Button } from '../../../../components/ui/button'
+import { useQuery } from '@tanstack/react-query'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
+import { draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled } from '../../settings/swarm/types/swarm-settings'
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
-import { RoutePicker } from './route-picker'
+import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
+import type { AgentStateRecord, ModelOptionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
+import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import {
   clearDesktopV3NewSessionOperation,
   createDesktopV3NewSessionOperation,
@@ -15,12 +18,61 @@ import {
   type DesktopV3NewSessionPreference,
 } from '../../session-v3/new-session-flow'
 
+const EMPTY_AGENT_STATE: AgentStateRecord = {
+  profiles: [],
+  activePrimary: '',
+  activeSubagent: {},
+  version: 0,
+  providerDefaultsPreview: null,
+  toolInventory: null,
+}
+
+function optionKey(provider: string, model: string, contextMode = ''): string {
+  return `${provider}:${model}:${contextMode.trim().toLowerCase()}`
+}
+
+function preferenceFromResolved(resolved: ResolvedSessionPreference | undefined): SessionPreferenceRecord {
+  return {
+    provider: resolved?.preference.provider ?? '',
+    model: resolved?.preference.model ?? '',
+    thinking: resolved?.preference.thinking ?? '',
+    serviceTier: resolved?.preference.serviceTier ?? '',
+    contextMode: resolved?.preference.contextMode ?? '',
+    updatedAt: resolved?.preference.updatedAt ?? 0,
+  }
+}
+
+function preferenceFromOption(option: ModelOptionRecord | null, current: SessionPreferenceRecord): SessionPreferenceRecord {
+  if (!option) return current
+  return {
+    ...current,
+    provider: option.provider,
+    model: option.model,
+    thinking: current.thinking || option.thinking,
+    contextMode: option.contextMode,
+  }
+}
+
+function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | 'off' {
+  return preference.serviceTier.trim().toLowerCase() === 'fast' ? 'on' : 'off'
+}
+
+function preferenceForRequest(preference: SessionPreferenceRecord): DesktopV3NewSessionPreference {
+  return {
+    provider: preference.provider,
+    model: preference.model,
+    thinking: preference.thinking,
+    serviceTier: preference.serviceTier,
+    contextMode: preference.contextMode,
+  }
+}
+
 export interface DesktopV3NewSessionPaneProps {
   workspace: WorkspaceEntry
   workspaceSlug: string
   routeOptions: DesktopChatRoute[]
   pendingWorktreeBranch?: string | null
-  agentName: string
+  agentName?: string
   preference?: DesktopV3NewSessionPreference
 }
 
@@ -42,8 +94,8 @@ export function DesktopV3NewSessionPane({
   workspaceSlug,
   routeOptions,
   pendingWorktreeBranch,
-  agentName: agentNameProp,
-  preference,
+  agentName: agentNameProp = '',
+  preference: preferenceProp,
 }: DesktopV3NewSessionPaneProps) {
   const navigate = useNavigate()
   const mountedRef = useRef(true)
@@ -52,6 +104,16 @@ export function DesktopV3NewSessionPane({
     [workspace.path],
   )
   const operationRef = useRef<DesktopV3NewSessionOperation | null>(storedOperation)
+  const agentStateQuery = useQuery(agentStateQueryOptions())
+  const modelOptionsQuery = useQuery(modelOptionsQueryOptions())
+  const draftPreferenceQuery = useQuery(draftModelQueryOptions())
+  const uiSettingsQuery = useQuery(uiSettingsQueryOptions())
+  const agentState = agentStateQuery.data ?? EMPTY_AGENT_STATE
+  const modelOptions = modelOptionsQuery.data ?? []
+  const uiSettings = uiSettingsQuery.data
+  const defaultMode = normalizeDefaultNewSessionMode(uiSettings?.chat?.default_new_session_mode)
+  const thinkingTagsEnabled = normalizeThinkingTagsEnabled(uiSettings)
+
   const writableRoutes = useMemo(
     () => routeOptions.filter((route) => {
       const target = getDesktopSessionCreateTarget(route)
@@ -71,13 +133,23 @@ export function DesktopV3NewSessionPane({
   }, [routeOptions, writableRoutes.length])
   const [selectedRouteId, setSelectedRouteId] = useState(writableRoutes[0]?.id ?? routeOptions[0]?.id ?? '')
   const selectedRoute = useMemo(
-    () => writableRoutes.find((route) => route.id === selectedRouteId) ?? writableRoutes[0] ?? routeOptions[0],
+    () => writableRoutes.find((route) => route.id === selectedRouteId) ?? writableRoutes[0] ?? routeOptions[0] ?? null,
     [routeOptions, selectedRouteId, writableRoutes],
   )
   const retainedOperation = operationRef.current
   const [draft, setDraft] = useState(retainedOperation?.firstMessageRequest.content ?? '')
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
+  const [mode, setMode] = useState<'auto' | 'plan'>(defaultMode)
+  const [selectedAgent, setSelectedAgent] = useState(agentNameProp.trim() || agentState.activePrimary || '')
+  const [preference, setPreference] = useState<SessionPreferenceRecord>(() => ({
+    ...preferenceFromResolved(draftPreferenceQuery.data),
+    provider: preferenceProp?.provider ?? draftPreferenceQuery.data?.preference.provider ?? '',
+    model: preferenceProp?.model ?? draftPreferenceQuery.data?.preference.model ?? '',
+    thinking: preferenceProp?.thinking ?? draftPreferenceQuery.data?.preference.thinking ?? '',
+    serviceTier: preferenceProp?.serviceTier ?? draftPreferenceQuery.data?.preference.serviceTier ?? '',
+    contextMode: preferenceProp?.contextMode ?? draftPreferenceQuery.data?.preference.contextMode ?? '',
+  }))
 
   useEffect(() => {
     mountedRef.current = true
@@ -85,6 +157,30 @@ export function DesktopV3NewSessionPane({
       mountedRef.current = false
     }
   }, [])
+
+  useEffect(() => {
+    setMode(defaultMode)
+  }, [defaultMode])
+
+  useEffect(() => {
+    const active = agentNameProp.trim() || agentState.activePrimary || ''
+    if (active) setSelectedAgent((current) => current || active)
+  }, [agentNameProp, agentState.activePrimary])
+
+  useEffect(() => {
+    const resolved = preferenceFromResolved(draftPreferenceQuery.data)
+    setPreference((current) => {
+      if (current.provider || current.model) return current
+      return {
+        ...resolved,
+        provider: preferenceProp?.provider ?? resolved.provider,
+        model: preferenceProp?.model ?? resolved.model,
+        thinking: preferenceProp?.thinking ?? resolved.thinking,
+        serviceTier: preferenceProp?.serviceTier ?? resolved.serviceTier,
+        contextMode: preferenceProp?.contextMode ?? resolved.contextMode,
+      }
+    })
+  }, [draftPreferenceQuery.data, preferenceProp])
 
   useEffect(() => {
     if (writableRoutes.length === 0) return
@@ -101,17 +197,42 @@ export function DesktopV3NewSessionPane({
     }
   }, [workspace.path])
 
+  const selectedModelKey = optionKey(preference.provider, preference.model, preference.contextMode)
+  const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
+  const selectedModelAvailable = Boolean(selectedModelOption)
+  const fastSupported = selectedModelOption ? supportsCodexFastMode(selectedModelOption.provider, selectedModelOption.model) : false
+  const selectedContextWindow = selectedModelOption
+    ? effectiveContextWindow(selectedModelOption.provider, selectedModelOption.model, selectedModelOption.contextMode, selectedModelOption.contextWindow)
+    : draftPreferenceQuery.data?.contextWindow ?? 0
+  const contextLabel = selectedContextWindow > 0 ? `${formatContextWindow(selectedContextWindow)} ctx` : 'ctx'
   const hasRetainedOperation = Boolean(operationRef.current)
-  const submitLabel = hasRetainedOperation ? 'Retry starting session' : 'Start session'
+  const selectedAgentName = selectedAgent.trim()
   const canSubmit = Boolean(
     !starting
       && selectedRoute
       && !unsupportedReason
+      && selectedAgentName
+      && selectedModelAvailable
       && (hasRetainedOperation || draft.trim()),
   )
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  function handleModelSelect(key: string) {
+    const option = modelOptions.find((candidate) => candidate.key === key) ?? null
+    setPreference((current) => preferenceFromOption(option, current))
+  }
+
+  function handleThinkingChange(value: string) {
+    setPreference((current) => ({ ...current, thinking: value.trim() === 'off' ? '' : value.trim() }))
+  }
+
+  function handleFastChange(value: 'on' | 'off') {
+    setPreference((current) => ({
+      ...current,
+      serviceTier: value === 'on' && fastSupported ? 'fast' : '',
+    }))
+  }
+
+  async function handleSubmit() {
     if (starting || !selectedRoute) return
 
     setStarting(true)
@@ -119,18 +240,21 @@ export function DesktopV3NewSessionPane({
     try {
       const existingOperation = operationRef.current
       const operation = existingOperation ?? (() => {
-        const agentName = agentNameProp.trim()
+        const agentName = selectedAgentName
         if (!agentName) {
           throw new Error('New Desktop V3 session requires agent_name')
+        }
+        if (!selectedModelAvailable) {
+          throw new Error('Select a model before starting the session')
         }
         return createDesktopV3NewSessionOperation({
           workspacePath: workspace.path,
           workspaceName: workspace.workspaceName,
           route: selectedRoute,
           prompt: draft,
-          mode: 'auto',
+          mode,
           agentName,
-          preference,
+          preference: preferenceForRequest(preference),
           sessionMetadata: {
             source: 'desktop-v3',
             workspace_path: workspace.path,
@@ -195,74 +319,43 @@ export function DesktopV3NewSessionPane({
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]" data-testid="desktop-v3-new-session-pane">
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">New Desktop V3 session</p>
-            <h1 className="mt-2 text-2xl font-semibold text-[var(--app-text)]">Start in {workspace.workspaceName || workspace.path}</h1>
-            <p className="mt-2 text-sm text-[var(--app-text-muted)]">
-              This route creates a new durable session, subscribes it on the global V3 socket, then sends the first message.
-            </p>
-          </div>
-
-          {selectedRoute && routeOptions.length > 1 ? (
-            <div className="max-w-sm">
-              <RoutePicker
-                currentRoute={selectedRoute}
-                routes={routeOptions}
-                onSelect={setSelectedRouteId}
-                disabled={starting || hasRetainedOperation}
-                title="Route new session to"
-              />
-            </div>
-          ) : null}
-
-          {unsupportedReason ? (
-            <div className="rounded-2xl border border-[var(--app-danger-border,var(--app-border))] bg-[var(--app-danger-bg,var(--app-surface))] px-4 py-3 text-sm text-[var(--app-danger)]" role="alert">
-              {unsupportedReason}
-            </div>
-          ) : null}
-
-          {hasRetainedOperation ? (
-            <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm text-[var(--app-text-muted)]">
-              A pending new-session operation is retained for safe retry. Edits are disabled until it succeeds or you abandon it.
-              <div className="mt-3">
-                <Button type="button" variant="ghost" onClick={handleAbandonRetainedOperation} disabled={starting}>
-                  Abandon retained operation
-                </Button>
-              </div>
-            </div>
-          ) : null}
-        </div>
+        <div className="mx-auto flex h-full w-full max-w-3xl flex-col justify-end" />
       </div>
-
-      <form onSubmit={handleSubmit} className="border-t border-[var(--app-border)] bg-[var(--app-bg)] px-4 pb-[calc(var(--app-safe-area-bottom)_+_1rem)] pt-3 sm:px-8" data-testid="desktop-v3-new-session-composer">
-        <div className="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 shadow-sm focus-within:border-[var(--app-border-strong)]">
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault()
-                event.currentTarget.form?.requestSubmit()
-              }
-            }}
-            rows={1}
-            placeholder={hasRetainedOperation ? 'Retained first prompt' : 'Start a new session…'}
-            aria-label="Start a new Desktop V3 session"
-            data-testid="desktop-v3-new-session-input"
-            disabled={starting || hasRetainedOperation}
-            className="max-h-40 min-h-10 flex-1 resize-none bg-transparent py-2 text-sm leading-5 text-[var(--app-text)] outline-none placeholder:text-[var(--app-text-subtle)] disabled:opacity-80"
-          />
-          <Button type="submit" disabled={!canSubmit} className="h-10 rounded-xl px-4" data-testid="desktop-v3-new-session-send">
-            {starting ? <LoaderCircle size={16} className="animate-spin" /> : submitLabel}
-          </Button>
-        </div>
-        {startError ? (
-          <div className="mx-auto mt-2 w-full max-w-3xl text-xs text-[var(--app-danger)]" role="alert">
-            {startError}
-          </div>
-        ) : null}
-      </form>
+      <DesktopV3AgenticComposer
+        draft={draft}
+        onDraftChange={setDraft}
+        placeholder={hasRetainedOperation ? 'Retained first prompt' : `Message ${workspace.workspaceName || 'workspace'}…`}
+        inputLabel="Start a new Desktop V3 session"
+        disabled={starting || Boolean(unsupportedReason)}
+        locked={hasRetainedOperation}
+        busy={starting}
+        canSubmit={canSubmit}
+        error={startError || unsupportedReason}
+        retainedNotice={hasRetainedOperation ? 'A pending new-session operation is retained for safe retry. Edits are disabled until it succeeds or you abandon it.' : null}
+        onAbandonRetained={handleAbandonRetainedOperation}
+        onSubmit={handleSubmit}
+        mode={mode}
+        onModeChange={setMode}
+        currentAgent={selectedAgentName || agentState.activePrimary || 'Agent'}
+        selectedPrimaryAgent={selectedAgentName || agentState.activePrimary || ''}
+        agents={agentState.profiles}
+        onAgentSelect={setSelectedAgent}
+        modelOptions={modelOptions}
+        selectedModelKey={selectedModelKey}
+        selectedModelAvailable={selectedModelAvailable}
+        onModelSelect={handleModelSelect}
+        thinking={preference.thinking}
+        onThinkingChange={handleThinkingChange}
+        thinkingTagsEnabled={thinkingTagsEnabled}
+        fast={fastToggleFromPreference(preference)}
+        onFastChange={handleFastChange}
+        route={selectedRoute}
+        routeOptions={routeOptions}
+        onRouteSelect={setSelectedRouteId}
+        routeTitle="Route this chat through the host or a linked child swarm."
+        contextLabel={contextLabel}
+        compactDisabled
+      />
     </div>
   )
 }
