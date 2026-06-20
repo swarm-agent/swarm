@@ -176,6 +176,61 @@ func TestSessionsV3ReconnectWorksetContractIncludesRealtimeResume(t *testing.T) 
 	if err := ValidateV3RealtimeMessage(resume); err != nil {
 		t.Fatalf("reconnect realtime resume rejected by contract: %v", err)
 	}
+	for _, resource := range resume.Worksets[0].Resources {
+		if !v3RealtimeWorksetResourceAllowed(resource) {
+			t.Fatalf("resume included sync-only resource %q in %+v", resource, resume.Worksets[0].Resources)
+		}
+	}
+	for _, forbidden := range []string{"permissions", "usage", "preferences", "agent_model_policy"} {
+		if sessionsV3ReconnectContainsString(resume.Worksets[0].Resources, forbidden) {
+			t.Fatalf("resume included websocket-unsupported resource %q in %+v", forbidden, resume.Worksets[0].Resources)
+		}
+	}
+}
+
+func TestSessionsV3ReconnectRealtimeResumeAcceptedByStreamUnmodified(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "reconnect-resume-unmodified", "Reconnect Resume Unmodified", "/workspace/reconnect-resume")
+	recordSessionsV3ReconnectRunIntent(t, server, created.ID, "run-resume-unmodified", sessionruntime.RunIntentPendingExecutor, 1000)
+
+	payload := postSessionsV3ReconnectBody(t, server, `{
+		"surface":"desktop",
+		"client_id":"desktop-client-resume-unmodified",
+		"workset":{
+			"workset_id":"desktop:global",
+			"selector":{"kind":"global","global":true,"recent":{"limit":10}},
+			"resources":{"messages":true,"events":true,"run_intents":true},
+			"include_active":true,
+			"auto_subscribe_sessions":true
+		}
+	}`)
+	resume := payload.Realtime.Resume
+	if len(resume.Worksets) != 1 {
+		t.Fatalf("resume worksets = %+v, want one", resume.Worksets)
+	}
+	if sessionsV3ReconnectContainsString(resume.Worksets[0].Resources, "permissions") {
+		t.Fatalf("unmodified reconnect resume still contains permissions: %+v", resume.Worksets[0].Resources)
+	}
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+
+	hello := readV3RealtimeFrameIncludingHello(t, conn)
+	if hello.Kind != V3RealtimeKindHello {
+		t.Fatalf("first realtime frame = %+v, want hello", hello)
+	}
+	writeV3RealtimeMessage(t, conn, resume)
+	for i := 0; i < 4; i++ {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind == V3RealtimeKindAuthDenied {
+			t.Fatalf("unmodified reconnect resume rejected by stream: %+v", frame)
+		}
+		if frame.Kind == V3RealtimeKindReplayStart || frame.Kind == V3RealtimeKindReplayDone || frame.Kind == V3RealtimeKindEndpointWatermark {
+			return
+		}
+	}
+	t.Fatalf("stream did not accept unmodified reconnect resume before timeout")
 }
 
 func TestSessionsV3ReconnectGlobalWorksetMatchesBootstrapPrincipalScope(t *testing.T) {
@@ -408,6 +463,15 @@ func postSessionsV3SyncBootstrapRawBytes(t *testing.T, server *Server, body stri
 		t.Fatalf("sync bootstrap status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	return rec.Body.Bytes()
+}
+
+func sessionsV3ReconnectContainsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func stringSlicesEqual(left, right []string) bool {

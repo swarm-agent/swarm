@@ -715,20 +715,18 @@ func canonicalV3RealtimeWorksetSelector(selector V3RealtimeWorksetSelector) (V3R
 	return selector, nil
 }
 
+func v3RealtimeWorksetResourceAllowed(resource string) bool {
+	switch strings.TrimSpace(resource) {
+	case "sessions", "projections", "events", "messages", "run_intents", "active_plan", "plan_revisions", "membership", "tombstones":
+		return true
+	default:
+		return false
+	}
+}
+
 func canonicalV3RealtimeWorksetResources(resources []string) ([]string, error) {
 	if len(resources) == 0 {
 		return nil, nil
-	}
-	allowed := map[string]struct{}{
-		"sessions":       {},
-		"projections":    {},
-		"events":         {},
-		"messages":       {},
-		"run_intents":    {},
-		"active_plan":    {},
-		"plan_revisions": {},
-		"membership":     {},
-		"tombstones":     {},
 	}
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(resources))
@@ -737,7 +735,7 @@ func canonicalV3RealtimeWorksetResources(resources []string) ([]string, error) {
 		if resource == "" {
 			continue
 		}
-		if _, ok := allowed[resource]; !ok {
+		if !v3RealtimeWorksetResourceAllowed(resource) {
 			return nil, fmt.Errorf("unsupported v3 realtime workset resource %q", resource)
 		}
 		if _, ok := seen[resource]; ok {

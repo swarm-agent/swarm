@@ -304,7 +304,7 @@ func (s *Server) sessionsV3ReconnectWorksetResponse(principal identity.Principal
 		SubscriptionID:        sessionsV3ReconnectWorksetSubscriptionID(clientID, worksetID),
 		Surface:               surface,
 		Selector:              selector,
-		Resources:             sessionsV3SyncResourceSet(worksetReq.Resources, worksetReq.History, worksetReq.IncludeActive),
+		Resources:             sessionsV3ReconnectRealtimeResourceSet(worksetReq.Resources, worksetReq.History, worksetReq.IncludeActive),
 		AutoSubscribeSessions: req.Workset.AutoSubscribeSessions,
 	}}
 	return sessionsV3ReconnectResponseMap(sessionsV3ReconnectResponseInput{
@@ -389,6 +389,20 @@ func sessionsV3ReconnectResponseMap(input sessionsV3ReconnectResponseInput) map[
 		}
 	}
 	return response
+}
+
+func sessionsV3ReconnectRealtimeResourceSet(resources sessionsV3WorksetResources, history sessionsV3WorksetHistory, includeActive bool) []string {
+	filtered := make([]string, 0)
+	for _, resource := range sessionsV3SyncResourceSet(resources, history, includeActive) {
+		if v3RealtimeWorksetResourceAllowed(resource) {
+			filtered = append(filtered, resource)
+		}
+	}
+	resourceSet, err := canonicalV3RealtimeWorksetResources(filtered)
+	if err != nil {
+		return []string{"membership", "projections", "sessions", "tombstones"}
+	}
+	return resourceSet
 }
 
 func sessionsV3ReconnectWorksetRequestForOptions(req sessionsV3ReconnectWorksetRequest) (sessionsV3WorksetRequest, V3RealtimeWorksetSelector) {
