@@ -68,19 +68,16 @@ test('Desktop V3 route split keeps Path A and Path B source boundaries separate'
   assert.doesNotMatch(existingPane, /new-session-flow/)
 })
 
-test('Desktop V3 refresh startup order and workspace route selection are guarded', async () => {
+test('Desktop V3 route selection stays isolated from runtime ownership', async () => {
   const source = await readDesktopAppPage()
 
-  assert.match(
-    source,
-    /const bootstrap = await bootstrapDesktopV3SidebarMetadataOnly[\s\S]*?const realtimeLease = retainDesktopV3RealtimeController[\s\S]*?await realtimeLease\.ready[\s\S]*?const afterReconnect = getDesktopV3CacheSnapshot\(\)[\s\S]*?sessionIds: reconnectSessionIds\.filter/,
-  )
+  assert.doesNotMatch(source, /bootstrapDesktopV3SidebarMetadataOnly/)
+  assert.doesNotMatch(source, /retainDesktopV3RealtimeController/)
   assert.match(
     source,
     /dispatchDesktopV3Cache\(selectSession\(undefined\)\)/,
   )
-  assert.match(source, /forceNetworkHydrate:\s*true/)
-  assert.match(source, /await controller\.ensureSessionHistory\(selectedSessionId\)/)
+  assert.match(source, /requireDesktopV3RealtimeControllerReady\(\)/)
   assert.doesNotMatch(source, /selectedSessionId=\{routeSessionId \|\| selectedDesktopV3SessionId\}/)
   assert.doesNotMatch(source, /<DesktopV3ChatPane[\s\S]*selectedSessionId=\{selectedDesktopV3SessionId\}/)
 })

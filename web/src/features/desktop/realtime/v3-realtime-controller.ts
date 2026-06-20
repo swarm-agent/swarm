@@ -33,7 +33,7 @@ const ACTIVE_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch
 export interface DesktopV3RealtimeController {
   ensureSessionSubscription(sessionId: string): void
   ensureSessionHistory(sessionId: string): Promise<void>
-  start(preferredSessionId?: string | null): Promise<void>
+  start(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void>
   stop(reason?: string): void
 }
 
@@ -70,6 +70,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly activeRepairByRun = new Map<string, Promise<void>>()
   private readonly pendingHistoryRepair = new Set<string>()
   private firstResumeSent?: Deferred<void>
+  private startupCancellation?: Deferred<never>
   private unsubscribeCache?: () => void
   private startPromise?: Promise<void>
   private stopped = false
@@ -131,16 +132,26 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     })
   }
 
-  start(preferredSessionId?: string | null): Promise<void> {
+  start(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void> {
     if (this.startPromise) return this.startPromise
     this.stopped = false
+    this.startupCancellation = createDeferred<never>()
+    this.startupCancellation.promise.catch(() => undefined)
     this.firstResumeSent = createDeferred<void>()
-    this.startPromise = this.startUncached(preferredSessionId)
+    const startPromise = this.startUncached(preferredSessionId, bootstrapReady).finally(() => {
+      if (this.startPromise === startPromise) {
+        this.startupCancellation = undefined
+      }
+    })
+    this.startPromise = startPromise
     return this.startPromise
   }
 
   stop(reason = 'Desktop V3 realtime controller stopped'): void {
     this.stopped = true
+    const stopError = new Error(reason)
+    this.startupCancellation?.reject(stopError)
+    this.startupCancellation = undefined
     this.unsubscribeCache?.()
     this.unsubscribeCache = undefined
     this.startPromise = undefined
@@ -149,7 +160,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.markedActiveRepairBySession.clear()
     this.activeRepairByRun.clear()
     this.pendingHistoryRepair.clear()
-    this.firstResumeSent?.reject(new Error(reason))
+    this.firstResumeSent?.resolve()
     this.firstResumeSent = undefined
     this.transport.stop(reason)
   }
@@ -172,13 +183,16 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     await this.hydrateSessionOnce(sessionId)
   }
 
-  private async startUncached(preferredSessionId?: string | null): Promise<void> {
-    await this.ensureSessionIdentity()
+  private async startUncached(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void> {
+    await this.awaitUnlessStopped(this.ensureSessionIdentity())
     this.assertNotStopped()
 
-    const reconnect = await this.reconnect(
+    await this.waitForSidebarBootstrap(preferredSessionId, bootstrapReady)
+    this.assertNotStopped()
+
+    const reconnect = await this.awaitUnlessStopped(this.reconnect(
       buildDesktopV3ReconnectInput(this.getSnapshot(), DESKTOP_V3_CLIENT_ID),
-    )
+    ))
     this.assertNotStopped()
     if (!reconnect.realtime?.resume) {
       throw new Error('Desktop V3 reconnect response is missing realtime.resume')
@@ -210,11 +224,29 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
     this.markActiveRunsFromReconnect(reconnect)
     this.assertNotStopped()
-    await this.transport.start()
+    await this.awaitUnlessStopped(this.transport.start())
     await this.waitForFirstResumeSent()
     this.assertNotStopped()
 
     if (selectedSessionId) void this.hydrateSessionOnce(selectedSessionId)
+  }
+
+  private async waitForSidebarBootstrap(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void> {
+    if (bootstrapReady) {
+      await this.awaitUnlessStopped(bootstrapReady)
+      return
+    }
+    if (this.getSnapshot().desktopSidebarBootstrap.scopeId?.trim()) return
+    await this.awaitUnlessStopped(this.bootstrap({
+      preferredSessionId,
+      restorePersisted: true,
+    }))
+  }
+
+  private async awaitUnlessStopped<T>(promise: Promise<T>): Promise<T> {
+    const cancellation = this.startupCancellation?.promise
+    if (!cancellation) return promise
+    return Promise.race([promise, cancellation])
   }
 
   private assertNotStopped(): void {
@@ -246,7 +278,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private async waitForFirstResumeSent(): Promise<void> {
     const firstResumeSent = this.firstResumeSent
     if (!firstResumeSent) return
-    await firstResumeSent.promise
+    await this.awaitUnlessStopped(firstResumeSent.promise)
   }
 
   private handleResumeSent(): void {
@@ -545,43 +577,80 @@ export function deriveCurrentRunIntent(
 }
 
 export function retainDesktopV3RealtimeController(input: {
+  ownerKey?: string
   preferredSessionId?: string | null
+  bootstrap?: Promise<unknown>
 } = {}): DesktopV3RealtimeLease {
-  desktopV3RealtimeRetainCount += 1
-  const generation = desktopV3RealtimeGeneration
+  const ownerKey = input.ownerKey?.trim()
+  let retained = retainedDesktopV3RealtimeController
+  if (retained) {
+    clearPendingDesktopV3RealtimeRelease(retained)
+  }
 
-  if (!retainedDesktopV3RealtimeController) {
+  if (!retained) {
     const controller = desktopV3RealtimeControllerFactory()
-    const ready = controller.start(input.preferredSessionId).catch((error) => {
-      if (desktopV3RealtimeGeneration === generation) {
-        retainedDesktopV3RealtimeController = undefined
-        desktopV3RealtimeRetainCount = 0
+    const generation = desktopV3RealtimeGeneration
+    const created: RetainedDesktopV3RealtimeController = {
+      controller,
+      ready: Promise.resolve(),
+      ownerTokens: new Map<string, symbol>(),
+      anonymousRetainCount: 0,
+    }
+    const bootstrapReady = input.bootstrap?.then((value) => {
+      if (retainedDesktopV3RealtimeController !== created || retainedDesktopV3RealtimeCount(created) <= 0) {
+        throw new Error('Desktop V3 realtime lease released')
+      }
+      return value
+    })
+    created.ready = controller.start(input.preferredSessionId, bootstrapReady).catch((error) => {
+      const stillCurrent = retainedDesktopV3RealtimeController === created && desktopV3RealtimeGeneration === generation
+      if (stillCurrent) {
+        controller.stop('Desktop V3 realtime controller startup failed')
+        if (retainedDesktopV3RealtimeCount(created) <= 0) {
+          retainedDesktopV3RealtimeController = undefined
+          desktopV3RealtimeGeneration += 1
+        }
       }
       throw error
     })
-    retainedDesktopV3RealtimeController = { controller, ready }
+    retained = created
+    retainedDesktopV3RealtimeController = created
   }
 
-  const retained = retainedDesktopV3RealtimeController
+  const ownerToken = ownerKey ? Symbol(ownerKey) : undefined
+  if (ownerKey && ownerToken) {
+    retained.ownerTokens.set(ownerKey, ownerToken)
+  } else {
+    retained.anonymousRetainCount += 1
+  }
+
+  let released = false
   return {
     ready: retained.ready,
     release: () => {
-      if (desktopV3RealtimeRetainCount <= 0) return
-      desktopV3RealtimeRetainCount -= 1
-      if (desktopV3RealtimeRetainCount === 0) {
-        desktopV3RealtimeGeneration += 1
-        retained.controller.stop('Desktop V3 realtime lease released')
-        if (retainedDesktopV3RealtimeController === retained) {
-          retainedDesktopV3RealtimeController = undefined
+      if (released) return
+      released = true
+      const current = retainedDesktopV3RealtimeController
+      if (current !== retained) return
+      if (ownerKey) {
+        if (ownerToken && current.ownerTokens.get(ownerKey) === ownerToken) {
+          current.ownerTokens.delete(ownerKey)
         }
+      } else if (current.anonymousRetainCount > 0) {
+        current.anonymousRetainCount -= 1
       }
+      releaseDesktopV3RealtimeControllerIfUnused(
+        current,
+        'Desktop V3 realtime lease released',
+        Boolean(ownerKey),
+      )
     },
   }
 }
 
 export async function requireDesktopV3RealtimeControllerReady(): Promise<DesktopV3RealtimeController> {
   const retained = retainedDesktopV3RealtimeController
-  if (!retained || desktopV3RealtimeRetainCount <= 0) {
+  if (!retained || retainedDesktopV3RealtimeCount(retained) <= 0) {
     throw new Error('Desktop V3 realtime controller is not retained by the desktop page')
   }
   await retained.ready
@@ -589,9 +658,11 @@ export async function requireDesktopV3RealtimeControllerReady(): Promise<Desktop
 }
 
 export function resetDesktopV3RealtimeControllerForTests(): void {
-  retainedDesktopV3RealtimeController?.controller.stop('Desktop V3 realtime controller reset')
+  if (retainedDesktopV3RealtimeController) {
+    clearPendingDesktopV3RealtimeRelease(retainedDesktopV3RealtimeController)
+    retainedDesktopV3RealtimeController.controller.stop('Desktop V3 realtime controller reset')
+  }
   retainedDesktopV3RealtimeController = undefined
-  desktopV3RealtimeRetainCount = 0
   desktopV3RealtimeGeneration += 1
   desktopV3RealtimeControllerFactory = () => new DesktopV3RealtimeControllerRuntime()
 }
@@ -601,13 +672,54 @@ export function setDesktopV3RealtimeControllerFactoryForTests(factory: () => Des
   desktopV3RealtimeControllerFactory = factory
 }
 
-let retainedDesktopV3RealtimeController: {
-  controller: DesktopV3RealtimeControllerRuntime
-  ready: Promise<void>
-} | undefined
-let desktopV3RealtimeRetainCount = 0
+let retainedDesktopV3RealtimeController: RetainedDesktopV3RealtimeController | undefined
 let desktopV3RealtimeGeneration = 0
 let desktopV3RealtimeControllerFactory = () => new DesktopV3RealtimeControllerRuntime()
+
+interface RetainedDesktopV3RealtimeController {
+  controller: DesktopV3RealtimeControllerRuntime
+  ready: Promise<void>
+  ownerTokens: Map<string, symbol>
+  anonymousRetainCount: number
+  releaseTimer?: ReturnType<typeof setTimeout>
+}
+
+function retainedDesktopV3RealtimeCount(retained: RetainedDesktopV3RealtimeController): number {
+  return retained.ownerTokens.size + retained.anonymousRetainCount
+}
+
+function clearPendingDesktopV3RealtimeRelease(retained: RetainedDesktopV3RealtimeController): void {
+  if (!retained.releaseTimer) return
+  clearTimeout(retained.releaseTimer)
+  retained.releaseTimer = undefined
+}
+
+function releaseDesktopV3RealtimeControllerIfUnused(
+  retained: RetainedDesktopV3RealtimeController,
+  reason: string,
+  delayed: boolean,
+): void {
+  if (retainedDesktopV3RealtimeCount(retained) > 0) return
+
+  const stop = () => {
+    if (retainedDesktopV3RealtimeController !== retained) return
+    clearPendingDesktopV3RealtimeRelease(retained)
+    if (retainedDesktopV3RealtimeCount(retained) > 0) return
+    desktopV3RealtimeGeneration += 1
+    retained.controller.stop(reason)
+    if (retainedDesktopV3RealtimeController === retained) {
+      retainedDesktopV3RealtimeController = undefined
+    }
+  }
+
+  if (!delayed) {
+    stop()
+    return
+  }
+
+  clearPendingDesktopV3RealtimeRelease(retained)
+  retained.releaseTimer = setTimeout(stop, 0)
+}
 
 interface Deferred<T> {
   promise: Promise<T>

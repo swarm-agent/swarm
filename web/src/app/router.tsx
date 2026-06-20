@@ -1,4 +1,5 @@
 import { createRootRoute, createRoute, createRouter, lazyRouteComponent } from '@tanstack/react-router'
+import { DesktopV3RuntimeProvider } from '../features/desktop/runtime/desktop-v3-runtime-provider'
 import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-vault-shell'
 
 const WorkspaceHomePage = lazyRouteComponent(() => import('../features/workspaces/pages/workspace-home-page'), 'WorkspaceHomePage')
@@ -14,16 +15,24 @@ const FlowRedirectRoute = lazyRouteComponent(() => import('./flow-redirect-route
 const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'flow'])
 const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'flow'])
 
-function currentWorkspaceSessionRoute(pathname: string): { sessionId: string } | null {
+function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
   const parts = pathname.split('/').map((part) => decodeURIComponent(part).trim()).filter(Boolean)
-  if (parts.length !== 2) {
+  if (parts.length !== 1 && parts.length !== 2) {
     return null
   }
   const [workspaceSlug, sessionId] = parts
-  if (!workspaceSlug || !sessionId || ROOT_RESERVED_ROUTE_SEGMENTS.has(workspaceSlug) || WORKSPACE_RESERVED_ROUTE_SEGMENTS.has(sessionId)) {
+  if (!workspaceSlug || ROOT_RESERVED_ROUTE_SEGMENTS.has(workspaceSlug)) {
     return null
   }
-  return { sessionId }
+  if (sessionId && WORKSPACE_RESERVED_ROUTE_SEGMENTS.has(sessionId)) {
+    return null
+  }
+  return { sessionId: sessionId || undefined }
+}
+
+function currentWorkspaceSessionRoute(pathname: string): { sessionId: string } | null {
+  const route = currentWorkspaceRoute(pathname)
+  return route?.sessionId ? { sessionId: route.sessionId } : null
 }
 
 if (typeof window !== 'undefined') {
@@ -77,8 +86,24 @@ function validateSettingsSearch(search: Record<string, unknown>): { tab?: string
 }
 
 const rootRoute = createRootRoute({
-  component: DesktopVaultShell,
+  component: DesktopRootShell,
 })
+
+function DesktopRootShell() {
+  const initialPreferredSessionId = initialDesktopV3PreferredSessionId()
+  return (
+    <DesktopV3RuntimeProvider initialPreferredSessionId={initialPreferredSessionId}>
+      <DesktopVaultShell />
+    </DesktopV3RuntimeProvider>
+  )
+}
+
+function initialDesktopV3PreferredSessionId(): string | null | undefined {
+  if (typeof window === 'undefined') return undefined
+  const route = currentWorkspaceRoute(window.location.pathname)
+  if (!route) return undefined
+  return route.sessionId || null
+}
 
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,

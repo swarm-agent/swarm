@@ -211,11 +211,190 @@ test('Desktop V3 realtime transport sends one resume containing workset and know
   transport.stop()
 })
 
-test('Desktop V3 realtime controller ready waits for socket open and resume before hydration', async () => {
+test('Desktop V3 realtime controller waits for delayed sidebar bootstrap before reconnecting', async () => {
+  let state = createEmptyDesktopV3CacheState()
+  const sockets: FakeWebSocket[] = []
+  const hydrateRequests: unknown[] = []
+  let reconnectCount = 0
+  let releaseBootstrap!: () => void
+  const bootstrapReady = new Promise<void>((resolve) => {
+    releaseBootstrap = resolve
+  })
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => {
+      reconnectCount += 1
+      return reconnectFixture({
+        snapshot_endpoint_cursor: 'cursor-reconnect',
+        sessions_by_id: { [sessionA.id]: sessionA },
+        projections_by_session: { [sessionA.id]: projectionA },
+        run_intents_by_session: {},
+        current_run_intent_by_session: {},
+        session_order: [sessionA.id],
+        workset_id: 'global-scope',
+        realtime: {
+          stream_path: '/v3/realtime/stream',
+          resume: {
+            protocol: 'v3.realtime',
+            protocol_version: 1,
+            kind: 'resume',
+            endpoint_cursor: 'cursor-reconnect',
+            subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
+            worksets: [{
+              workset_id: 'global-scope',
+              subscription_id: 'workset-sub',
+              selector: { kind: 'global', global: true },
+              resources: ['run_intents'],
+              auto_subscribe_sessions: true,
+            }],
+          },
+        },
+      })
+    },
+    hydrate: async (input) => {
+      hydrateRequests.push(input)
+      return hydrateSnapshotFixture({
+        sessions_by_id: { [sessionA.id]: sessionA },
+        projections_by_session: { [sessionA.id]: projectionA },
+        session_order: [sessionA.id],
+        messages_by_session: { [sessionA.id]: [messageA1, messageA2] },
+        run_intents_by_session: {},
+      })
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  let ready = false
+  const readyPromise = controller.start(sessionA.id, bootstrapReady).then(() => {
+    ready = true
+  })
+  await flushAsyncWork()
+
+  assert.equal(sockets.length, 0)
+  assert.equal(reconnectCount, 0)
+  assert.equal(ready, false)
+  assert.equal(hydrateRequests.length, 0)
+
+  state = readyControllerState()
+  releaseBootstrap()
+  await waitFor(() => sockets.length === 1)
+  assert.equal(reconnectCount, 1)
+  assert.equal(sockets[0].readyState, FakeWebSocket.CONNECTING)
+
+  sockets[0].open()
+  await readyPromise
+  assert.equal(ready, true)
+  await waitFor(() => hydrateRequests.length === 1)
+  controller.stop()
+})
+
+test('Desktop V3 immediate send waits for retained realtime bootstrap and first resume', async () => {
+  resetDesktopV3RealtimeControllerForTests()
+  let state = createEmptyDesktopV3CacheState()
+  const sockets: FakeWebSocket[] = []
+  let reconnectCount = 0
+  let releaseBootstrap!: () => void
+  const bootstrapReady = new Promise<void>((resolve) => {
+    releaseBootstrap = resolve
+  })
+  setDesktopV3RealtimeControllerFactoryForTests(() => new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => {
+      reconnectCount += 1
+      return reconnectFixture({
+        snapshot_endpoint_cursor: 'cursor-reconnect',
+        sessions_by_id: { [sessionA.id]: sessionA },
+        projections_by_session: { [sessionA.id]: projectionA },
+        run_intents_by_session: {},
+        current_run_intent_by_session: {},
+        session_order: [sessionA.id],
+        workset_id: 'global-scope',
+        realtime: {
+          stream_path: '/v3/realtime/stream',
+          resume: {
+            protocol: 'v3.realtime',
+            protocol_version: 1,
+            kind: 'resume',
+            endpoint_cursor: 'cursor-reconnect',
+            subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
+            worksets: [{
+              workset_id: 'global-scope',
+              subscription_id: 'workset-sub',
+              selector: { kind: 'global', global: true },
+              resources: ['run_intents'],
+              auto_subscribe_sessions: true,
+            }],
+          },
+        },
+      })
+    },
+    hydrate: async (input) => hydrateSnapshotFixture({
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      session_order: (input.session_ids ?? []).filter((sessionId) => sessionId === sessionA.id),
+      messages_by_session: { [sessionA.id]: [messageA1] },
+      run_intents_by_session: {},
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  }))
+
+  const lease = retainDesktopV3RealtimeController({
+    ownerKey: 'desktop-shell',
+    preferredSessionId: sessionA.id,
+    bootstrap: bootstrapReady,
+  })
+  let immediateReady = false
+  const immediateSendReady = requireDesktopV3RealtimeControllerReady().then((controller) => {
+    immediateReady = true
+    return controller
+  })
+
+  await flushAsyncWork()
+  assert.equal(sockets.length, 0)
+  assert.equal(reconnectCount, 0)
+  assert.equal(immediateReady, false)
+
+  state = readyControllerState()
+  releaseBootstrap()
+  await waitFor(() => sockets.length === 1)
+  assert.equal(reconnectCount, 1)
+  await flushAsyncWork()
+  assert.equal(immediateReady, false)
+
+  sockets[0].open()
+  const controller = await immediateSendReady
+  assert.equal(immediateReady, true)
+  assert.equal(controller, await requireDesktopV3RealtimeControllerReady())
+  assert.equal(sockets.length, 1)
+  await lease.ready
+  lease.release()
+  resetDesktopV3RealtimeControllerForTests()
+})
+
+test('Desktop V3 workspace and session route switching keeps exactly one retained socket', async () => {
+  resetDesktopV3RealtimeControllerForTests()
   let state = readyControllerState()
   const sockets: FakeWebSocket[] = []
   const hydrateRequests: unknown[] = []
-  const controller = new DesktopV3RealtimeControllerRuntime({
+  setDesktopV3RealtimeControllerFactoryForTests(() => new DesktopV3RealtimeControllerRuntime({
     getSnapshot: () => state,
     dispatch: (action: DesktopV3CacheAction) => {
       state = desktopV3CacheReducer(state, action)
@@ -250,11 +429,12 @@ test('Desktop V3 realtime controller ready waits for socket open and resume befo
     }),
     hydrate: async (input) => {
       hydrateRequests.push(input)
+      const requested = new Set(input.session_ids ?? [])
       return hydrateSnapshotFixture({
-        sessions_by_id: { [sessionA.id]: sessionA },
-        projections_by_session: { [sessionA.id]: projectionA },
-        session_order: [sessionA.id],
-        messages_by_session: { [sessionA.id]: [messageA1, messageA2] },
+        sessions_by_id: Object.fromEntries(Object.entries({ [sessionA.id]: sessionA, [sessionB.id]: sessionB }).filter(([sessionId]) => requested.has(sessionId))),
+        projections_by_session: Object.fromEntries(Object.entries({ [sessionA.id]: projectionA, [sessionB.id]: projectionB }).filter(([sessionId]) => requested.has(sessionId))),
+        session_order: (input.session_ids ?? []).filter((sessionId) => requested.has(sessionId)),
+        messages_by_session: Object.fromEntries(Object.entries({ [sessionA.id]: [messageA1], [sessionB.id]: [messageA2] }).filter(([sessionId]) => requested.has(sessionId))),
         run_intents_by_session: {},
       })
     },
@@ -263,24 +443,30 @@ test('Desktop V3 realtime controller ready waits for socket open and resume befo
       sockets.push(socket)
       return socket as unknown as WebSocket
     },
-  })
+  }))
 
-  let ready = false
-  const readyPromise = controller.start(sessionA.id).then(() => {
-    ready = true
-  })
-  await flushAsyncWork()
-
-  assert.equal(sockets.length, 1)
-  assert.equal(sockets[0].readyState, FakeWebSocket.CONNECTING)
-  assert.equal(ready, false)
-  assert.equal(hydrateRequests.length, 0)
-
+  const lease = retainDesktopV3RealtimeController({ ownerKey: 'desktop-shell', preferredSessionId: null })
+  await waitFor(() => sockets.length === 1)
   sockets[0].open()
-  await readyPromise
-  assert.equal(ready, true)
-  await waitFor(() => hydrateRequests.length === 1)
-  controller.stop()
+  await lease.ready
+  assert.equal(sockets.length, 1)
+
+  const controller = await requireDesktopV3RealtimeControllerReady()
+  await controller.ensureSessionHistory(sessionA.id)
+  assert.equal(sockets.length, 1)
+
+  await requireDesktopV3RealtimeControllerReady()
+  await controller.ensureSessionHistory(sessionB.id)
+  assert.equal(sockets.length, 1)
+  assert.deepEqual(
+    hydrateRequests.map((request) => (request as { session_ids: string[] }).session_ids),
+    [[sessionA.id], [sessionB.id]],
+  )
+
+  lease.release()
+  await flushAsyncWork()
+  assert.equal(sockets[0].closed, true)
+  resetDesktopV3RealtimeControllerForTests()
 })
 
 test('Desktop V3 direct route session missing from reconnect is explicitly subscribed and hydrated after resume', async () => {
@@ -504,6 +690,155 @@ test('Desktop V3 retained realtime controller releases connecting startup withou
   await assert.rejects(first.ready, /released/)
   await assert.rejects(requireDesktopV3RealtimeControllerReady(), /not retained/)
   assert.equal(sockets.length, 1)
+  resetDesktopV3RealtimeControllerForTests()
+})
+
+test('Desktop V3 retained realtime controller handles unmount before delayed bootstrap opens a socket', async () => {
+  resetDesktopV3RealtimeControllerForTests()
+  let state = createEmptyDesktopV3CacheState()
+  const sockets: FakeWebSocket[] = []
+  let reconnectCount = 0
+  let releaseBootstrap!: () => void
+  const bootstrapReady = new Promise<void>((resolve) => {
+    releaseBootstrap = resolve
+  })
+
+  setDesktopV3RealtimeControllerFactoryForTests(() => new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => {
+      reconnectCount += 1
+      return reconnectFixture({
+        snapshot_endpoint_cursor: 'cursor-reconnect',
+        sessions_by_id: {},
+        projections_by_session: {},
+        run_intents_by_session: {},
+        current_run_intent_by_session: {},
+        session_order: [],
+        workset_id: 'global-scope',
+        realtime: {
+          stream_path: '/v3/realtime/stream',
+          resume: {
+            protocol: 'v3.realtime',
+            protocol_version: 1,
+            kind: 'resume',
+            endpoint_cursor: 'cursor-reconnect',
+            subscriptions: [],
+            worksets: [],
+          },
+        },
+      })
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  }))
+
+  const lease = retainDesktopV3RealtimeController({
+    ownerKey: 'desktop-shell',
+    bootstrap: bootstrapReady,
+  })
+  const readyRejects = assert.rejects(lease.ready, /released/)
+  await flushAsyncWork()
+  lease.release()
+  await flushAsyncWork()
+  releaseBootstrap()
+  await readyRejects
+  await assert.rejects(requireDesktopV3RealtimeControllerReady(), /not retained/)
+  assert.equal(reconnectCount, 0)
+  assert.equal(sockets.length, 0)
+  resetDesktopV3RealtimeControllerForTests()
+})
+
+test('Desktop V3 retained realtime controller keeps one owner lease through Strict Mode remount', async () => {
+  resetDesktopV3RealtimeControllerForTests()
+  let state = readyControllerState()
+  const sockets: FakeWebSocket[] = []
+  setDesktopV3RealtimeControllerFactoryForTests(() => new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: {},
+      projections_by_session: {},
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [],
+      workset_id: 'global-scope',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect',
+          subscriptions: [],
+          worksets: [],
+        },
+      },
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  }))
+
+  const first = retainDesktopV3RealtimeController({ ownerKey: 'desktop-shell' })
+  await waitFor(() => sockets.length === 1)
+  const second = retainDesktopV3RealtimeController({ ownerKey: 'desktop-shell' })
+  await flushAsyncWork()
+
+  assert.equal(sockets.length, 1)
+  assert.equal(sockets[0].closed, false)
+  first.release()
+  await flushAsyncWork()
+  assert.equal(sockets[0].closed, false)
+
+  sockets[0].open()
+  await second.ready
+  await requireDesktopV3RealtimeControllerReady()
+
+  second.release()
+  await flushAsyncWork()
+  assert.equal(sockets[0].closed, true)
+  await assert.rejects(requireDesktopV3RealtimeControllerReady(), /not retained/)
+  resetDesktopV3RealtimeControllerForTests()
+})
+
+test('Desktop V3 retained realtime controller reports bootstrap failure without creating a controller on ready require', async () => {
+  resetDesktopV3RealtimeControllerForTests()
+  const bootstrapFailure = Promise.reject(new Error('bootstrap failed'))
+  bootstrapFailure.catch(() => undefined)
+  setDesktopV3RealtimeControllerFactoryForTests(() => new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => createEmptyDesktopV3CacheState(),
+    dispatch: () => {},
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => {
+      throw new Error('reconnect should wait for bootstrap')
+    },
+  }))
+
+  const lease = retainDesktopV3RealtimeController({
+    ownerKey: 'desktop-shell',
+    bootstrap: bootstrapFailure,
+  })
+
+  await assert.rejects(lease.ready, /bootstrap failed/)
+  await assert.rejects(requireDesktopV3RealtimeControllerReady(), /bootstrap failed/)
+  lease.release()
+  await assert.rejects(requireDesktopV3RealtimeControllerReady(), /not retained/)
   resetDesktopV3RealtimeControllerForTests()
 })
 

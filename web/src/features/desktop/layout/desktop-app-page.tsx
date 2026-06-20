@@ -53,13 +53,10 @@ import {
   sessionParentSessionID,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
-import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
-import { buildPostReconnectHydrationSnapshot, hydrateDesktopV3InitialSessions } from '../state/desktop-v3-initial-hydrate-controller'
-import { startDesktopV3PersistenceController } from '../state/desktop-v3-persistence-controller'
-import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { selectDesktopSidebarRows, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
-import { requireDesktopV3RealtimeControllerReady, retainDesktopV3RealtimeController } from '../realtime/v3-realtime-controller'
+import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import type { DesktopV3SidebarRow } from '../state/desktop-v3-cache-selectors'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 
@@ -1505,7 +1502,6 @@ export function DesktopAppPage() {
   const isFlowRoute = Boolean(workspaceFlowDetailMatch || workspaceFlowMatch)
   const routeWorkspaceSlug = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.workspaceSlug : workspaceFlowMatch ? workspaceFlowMatch.workspaceSlug : workspaceSessionMatch ? workspaceSessionMatch.workspaceSlug : workspaceMatch ? workspaceMatch.workspaceSlug : '').trim()
   const routeSessionId = (!isFlowRoute && workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
-  const initialDesktopV3PreferredSessionId = useRef<string | null | undefined>(routeSessionId || (workspaceMatch ? null : undefined))
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, selectingPath, saveWorkspace, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -2042,71 +2038,6 @@ export function DesktopAppPage() {
     () => flattenVisibleSidebarSessionNodes(desktopV3SessionNodes, expandedAgentSessions, routeSessionId),
     [desktopV3SessionNodes, expandedAgentSessions, routeSessionId],
   )
-
-  useEffect(() => {
-    let cancelled = false
-    let stopRealtime: (() => void) | undefined
-    const stopPersistence = startDesktopV3PersistenceController()
-
-    void (async () => {
-      const bootstrap = await bootstrapDesktopV3SidebarMetadataOnly({
-        preferredSessionId: initialDesktopV3PreferredSessionId.current,
-      })
-      if (cancelled) return
-
-      const realtimeLease = retainDesktopV3RealtimeController({
-        preferredSessionId: initialDesktopV3PreferredSessionId.current,
-      })
-      stopRealtime = realtimeLease.release
-      await realtimeLease.ready
-      if (cancelled) return
-
-      const afterReconnect = getDesktopV3CacheSnapshot()
-      const scopeId = afterReconnect.desktopSidebarBootstrap.scopeId?.trim()
-      if (!scopeId) {
-        throw new Error('Desktop V3 initial hydrate requires reconnect sidebar scope')
-      }
-
-      const preferred = initialDesktopV3PreferredSessionId.current
-      const selectedSessionId = preferred === null
-        ? undefined
-        : preferred?.trim() || afterReconnect.selectedSessionId?.trim()
-      const reconnectSessionIds = afterReconnect.sessionOrderByScope[scopeId] ?? []
-      const controller = await requireDesktopV3RealtimeControllerReady()
-      if (selectedSessionId) {
-        await controller.ensureSessionHistory(selectedSessionId)
-      }
-
-      await hydrateDesktopV3InitialSessions({
-        scopeId,
-        forceNetworkHydrate: true,
-        sessionIds: reconnectSessionIds.filter((sessionId) => sessionId !== selectedSessionId),
-        bootstrapResponse: buildPostReconnectHydrationSnapshot(
-          bootstrap.response,
-          getDesktopV3CacheSnapshot(),
-          scopeId,
-        ),
-        preferredSessionId: null,
-        currentSelectedSessionId: undefined,
-        ownerKey: bootstrap.restoredOwnerKey,
-      })
-    })().catch((error: unknown) => {
-      if (cancelled) return
-      dispatchDesktopV3Cache({
-        type: 'desktopSidebarBootstrap.update',
-        patch: {
-          status: 'error',
-          error: error instanceof Error ? error.message : String(error),
-        },
-      })
-    })
-
-    return () => {
-      cancelled = true
-      stopRealtime?.()
-      stopPersistence()
-    }
-  }, [])
 
   useEffect(() => {
     const sessionId = routeSessionId.trim()
