@@ -14,6 +14,7 @@ import {
   type DesktopV3HydrateInput,
 } from '../state/desktop-v3-sync-api'
 import type {
+  CacheEvent,
   DesktopV3CacheAction,
   DesktopV3CacheState,
   RealtimeCache,
@@ -217,12 +218,17 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
   private handleFrame(frame: RealtimeMessage): void {
     const sessionId = frame.session_id?.trim() || frame.event?.session_id?.trim() || ''
-    const deferLiveOverlay = frame.kind === 'event'
-      && Boolean(sessionId && this.markedActiveRepairBySession.has(sessionId))
+    const marked = sessionId
+      ? this.markedActiveRepairBySession.get(sessionId)
+      : undefined
 
     for (const action of realtimeFrameToActions(frame)) {
+      const deferLiveOverlay = action.type === 'realtime.applyEvent'
+        && marked !== undefined
+        && cacheEventRunId(action.event) === marked.runId
+
       this.dispatch(
-        action.type === 'realtime.applyEvent' && deferLiveOverlay
+        deferLiveOverlay
           ? { ...action, deferLiveOverlay: true }
           : action,
       )
@@ -373,6 +379,12 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       afterSeq: runStartSeq,
     })
   }
+}
+
+function cacheEventRunId(event: CacheEvent): string {
+  return event.payload.run_id?.trim()
+    || event.payload.run_intent?.run_id?.trim()
+    || ''
 }
 
 export function buildDesktopV3ReconnectInput(
