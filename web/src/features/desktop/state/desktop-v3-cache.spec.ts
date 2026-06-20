@@ -811,6 +811,60 @@ test('reconnect feeds same cache and stores resume frame exactly', () => {
   assert.equal(state.subscriptionsById['sub-a'].status, 'active')
 })
 
+test('reconnect repopulates Path A and Path B sessions, visible order, and principal subscriptions', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
+  const raw = reconnectFixture({
+    workset_id: 'global-scope',
+    sessions_by_id: {
+      [sessionA.id]: sessionA,
+      [sessionB.id]: sessionB,
+    },
+    projections_by_session: {
+      [sessionA.id]: projectionA,
+      [sessionB.id]: projectionB,
+    },
+    run_intents_by_session: { [sessionA.id]: [runIntentA] },
+    current_run_intent_by_session: { [sessionA.id]: runIntentA },
+    session_order: [sessionB.id, sessionA.id],
+    subscriptions: [
+      { subscription_id: 'sub-b', session_id: sessionB.id, status: 'active', endpoint_cursor: 'cursor-reconnect' },
+      { subscription_id: 'sub-a', session_id: sessionA.id, status: 'active', endpoint_cursor: 'cursor-reconnect' },
+    ],
+    realtime: {
+      stream_path: '/v3/realtime/stream',
+      resume: {
+        protocol: 'v3.realtime',
+        protocol_version: 1,
+        kind: 'resume',
+        endpoint_cursor: 'cursor-reconnect',
+        subscriptions: [
+          { subscription_id: 'sub-b', session_id: sessionB.id, endpoint_cursor: 'cursor-reconnect' },
+          { subscription_id: 'sub-a', session_id: sessionA.id, endpoint_cursor: 'cursor-reconnect' },
+        ],
+        worksets: [{
+          workset_id: 'global-scope',
+          subscription_id: 'workset-sub',
+          selector: { kind: 'global', global: true },
+          resources: ['run_intents'],
+          auto_subscribe_sessions: true,
+        }],
+      },
+    },
+  })
+
+  desktopV3CacheReducer(state, reconnectResponseToActions(raw)[0])
+
+  assert.equal(state.sessionsById[sessionA.id]?.kind, 'full')
+  assert.equal(state.sessionsById[sessionB.id]?.kind, 'full')
+  assert.deepEqual(state.sessionOrderByScope['global-scope'], [sessionB.id, sessionA.id])
+  assert.deepEqual(
+    Object.values(state.subscriptionsById).map((subscription) => subscription.session_id).sort(),
+    [sessionA.id, sessionB.id],
+  )
+  assert.equal(state.worksetsById['global-scope'].sessionIds?.length, 2)
+})
+
 test('realtime control frames update cursors/status without mutating transcripts', () => {
   const state = bootstrappedState()
   applyRealtimeFrame(state, { frame: realtimeFrameFixture({ kind: 'hello', endpoint_cursor: 'cursor-hello', event: undefined }) })

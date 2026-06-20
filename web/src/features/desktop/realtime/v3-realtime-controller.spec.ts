@@ -12,7 +12,7 @@ import {
   setDesktopV3RealtimeControllerFactoryForTests,
 } from './v3-realtime-controller'
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
-import { hydrateSnapshotFixture, messageA1, messageA2, projectionA, reconnectFixture, runIntentA, sessionA } from '../state/desktop-v3-cache.backend-fixtures'
+import { hydrateSnapshotFixture, messageA1, messageA2, projectionA, projectionB, reconnectFixture, runIntentA, sessionA, sessionB } from '../state/desktop-v3-cache.backend-fixtures'
 import type { SessionV3RealtimeResumeWire } from '../session-v3/types'
 import type { DesktopV3CacheAction, DesktopV3CacheState, V3SessionEvent } from '../state/desktop-v3-cache-types'
 
@@ -280,6 +280,83 @@ test('Desktop V3 realtime controller ready waits for socket open and resume befo
   await readyPromise
   assert.equal(ready, true)
   await waitFor(() => hydrateRequests.length === 1)
+  controller.stop()
+})
+
+test('Desktop V3 direct route session missing from reconnect is explicitly subscribed and hydrated after resume', async () => {
+  let state = readyControllerState()
+  const sockets: FakeWebSocket[] = []
+  const hydrateRequests: unknown[] = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [sessionA.id],
+      workset_id: 'global-scope',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect',
+          subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
+          worksets: [{
+            workset_id: 'global-scope',
+            subscription_id: 'workset-sub',
+            selector: { kind: 'global', global: true },
+            resources: ['run_intents'],
+            auto_subscribe_sessions: true,
+          }],
+        },
+      },
+    }),
+    hydrate: async (input) => {
+      hydrateRequests.push(input)
+      return hydrateSnapshotFixture({
+        sessions_by_id: { [sessionB.id]: sessionB },
+        projections_by_session: { [sessionB.id]: projectionB },
+        session_order: [sessionB.id],
+        messages_by_session: { [sessionB.id]: [messageA1] },
+        run_intents_by_session: {},
+        selector: { kind: 'session_ids', session_ids: [sessionB.id] },
+      })
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start(sessionB.id)
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+
+  const resume = sockets[0].sent[0] as SessionV3RealtimeResumeWire
+  assert.deepEqual(
+    resume.subscriptions?.map((subscription) => subscription.session_id),
+    [sessionA.id, sessionB.id],
+  )
+  assert.equal(
+    resume.subscriptions?.find((subscription) => subscription.session_id === sessionB.id)?.endpoint_cursor,
+    'cursor-reconnect',
+  )
+  await waitFor(() => hydrateRequests.length === 1)
+  assert.deepEqual(
+    (hydrateRequests[0] as { session_ids: string[] }).session_ids,
+    [sessionB.id],
+  )
   controller.stop()
 })
 

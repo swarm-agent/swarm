@@ -67,3 +67,18 @@ test('Desktop V3 route split keeps Path A and Path B source boundaries separate'
   assert.match(existingPane, /from '\.\.\/\.\.\/session-v3\/existing-session-flow'/)
   assert.doesNotMatch(existingPane, /new-session-flow/)
 })
+
+test('Desktop V3 refresh startup order and workspace route selection are guarded', async () => {
+  const source = await readDesktopAppPage()
+
+  assert.match(
+    source,
+    /const bootstrap = await bootstrapDesktopV3SidebarMetadataOnly[\s\S]*?const realtimeLease = retainDesktopV3RealtimeController[\s\S]*?await realtimeLease\.ready[\s\S]*?await hydrateDesktopV3InitialSessions/,
+  )
+  assert.match(
+    source,
+    /dispatchDesktopV3Cache\(selectSession\(undefined\)\)/,
+  )
+  assert.doesNotMatch(source, /selectedSessionId=\{routeSessionId \|\| selectedDesktopV3SessionId\}/)
+  assert.doesNotMatch(source, /<DesktopV3ChatPane[\s\S]*selectedSessionId=\{selectedDesktopV3SessionId\}/)
+})
