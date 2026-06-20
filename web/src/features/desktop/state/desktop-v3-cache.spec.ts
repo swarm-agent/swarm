@@ -513,6 +513,60 @@ test('hydrate run intents obey resource set authority', () => {
   assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
 })
 
+test('older active run intent cannot revive current intent after terminal state', () => {
+  const state = bootstrappedState()
+  const terminalIntent = {
+    ...runIntentA,
+    status: 'completed',
+    updated_at: 50,
+    event_seq: 5,
+  }
+  const olderActiveIntent = {
+    ...runIntentA,
+    status: 'running',
+    updated_at: 40,
+    event_seq: 4,
+  }
+  const terminalEvent: V3SessionEvent = {
+    id: 'evt-terminal-5',
+    session_id: sessionA.id,
+    seq: 5,
+    event_type: 'session.run.completed',
+    payload: { run_id: runIntentA.run_id, status: 'completed', run_intent: terminalIntent },
+    ts_unix_ms: 5,
+  }
+  const olderActiveEvent: V3SessionEvent = {
+    id: 'evt-older-active-4',
+    session_id: sessionA.id,
+    seq: 4,
+    event_type: 'session.run.running',
+    payload: { run_id: runIntentA.run_id, status: 'running', run_intent: olderActiveIntent },
+    ts_unix_ms: 4,
+  }
+
+  applyCacheEvent(state, {
+    source: 'realtime',
+    sessionId: sessionA.id,
+    eventType: terminalEvent.event_type,
+    sessionEvent: terminalEvent,
+    projection: { ...projectionA, last_event_seq: 5, projection_high_watermark_seq: 5 },
+    payload: terminalEvent.payload as Record<string, unknown>,
+  })
+  applyCacheEvent(state, {
+    source: 'sync-stream',
+    sessionId: sessionA.id,
+    eventType: olderActiveEvent.event_type,
+    sessionEvent: olderActiveEvent,
+    projection: { ...projectionA, last_event_seq: 4, projection_high_watermark_seq: 4 },
+    payload: olderActiveEvent.payload as Record<string, unknown>,
+  })
+
+  assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
+  assert.equal(state.runIntentsBySession[sessionA.id]?.[runIntentA.run_id]?.status, 'completed')
+  assert.equal(state.runIntentsBySession[sessionA.id]?.[runIntentA.run_id]?.event_seq, 5)
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.status, 'completed')
+})
+
 test('hydrate requested tombstone without run-intent key clears stale run state', () => {
   const state = bootstrappedState()
   assert.equal(state.currentRunIntentBySession[sessionA.id]?.run_id, 'run-a')

@@ -875,10 +875,12 @@ export function upsertRunIntent(
 ): void {
   const byRunId = state.runIntentsBySession[sessionId] ?? {}
   const existing = byRunId[runIntent.run_id]
-  if (!existing || runIntent.event_seq >= existing.event_seq) {
-    byRunId[runIntent.run_id] = runIntent
-    state.runIntentsBySession[sessionId] = byRunId
+  if (existing && runIntent.event_seq < existing.event_seq) {
+    return
   }
+
+  byRunId[runIntent.run_id] = runIntent
+  state.runIntentsBySession[sessionId] = byRunId
 
   if (ACTIVE_RUN_INTENT_STATUSES.has(runIntent.status)) {
     state.currentRunIntentBySession[sessionId] = runIntent

@@ -26,6 +26,7 @@ import type {
 } from '../state/desktop-v3-cache-types'
 
 const DESKTOP_V3_CLIENT_ID = `desktop:${crypto.randomUUID()}`
+const ACTIVE_REPAIR_PAGE_SIZE = 500
 const ACTIVE_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
 
 export interface DesktopV3RealtimeController {
@@ -330,8 +331,15 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       const page = await this.readEventsPage({
         sessionId,
         afterSeq: cursor,
-        limit: 500,
+        limit: ACTIVE_REPAIR_PAGE_SIZE,
       })
+
+      const currentBeforeApply = this.getSnapshot().currentRunIntentBySession[sessionId]
+      if (!currentBeforeApply
+        || currentBeforeApply.run_id !== expectedRunId
+        || !ACTIVE_INTENT_STATUSES.has(currentBeforeApply.status.trim().toLowerCase())) {
+        return
+      }
 
       const ordered = [...page.events].sort((a, b) => a.seq - b.seq)
       for (const event of ordered) {
