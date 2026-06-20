@@ -65,6 +65,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly bootstrap: (input?: { preferredSessionId?: string | null; restorePersisted?: boolean }) => Promise<unknown>
   private readonly transport: DesktopV3RealtimeTransport
   private readonly hydrateBySession = new Map<string, Promise<void>>()
+  private readonly discoveryHydrateAttemptedBySession = new Set<string>()
   private readonly markedActiveRepairBySession = new Map<string, { runId: string; afterSeq: number }>()
   private readonly activeRepairByRun = new Map<string, Promise<void>>()
   private readonly pendingHistoryRepair = new Set<string>()
@@ -144,6 +145,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.unsubscribeCache = undefined
     this.startPromise = undefined
     this.hydrateBySession.clear()
+    this.discoveryHydrateAttemptedBySession.clear()
     this.markedActiveRepairBySession.clear()
     this.activeRepairByRun.clear()
     this.pendingHistoryRepair.clear()
@@ -305,7 +307,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     }
 
     if (frame.kind === 'workset.session.discovered' && sessionId) {
-      void this.hydrateSessionOnce(sessionId)
+      this.hydrateAutoDiscoveredSessionOnce(sessionId)
     }
   }
 
@@ -314,6 +316,16 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     if (!normalized) return
     this.ensureSessionSubscription(normalized)
     await this.hydrateSessionOnce(normalized)
+  }
+
+  private hydrateAutoDiscoveredSessionOnce(sessionId: string): void {
+    const normalized = sessionId.trim()
+    if (!normalized) return
+    if (this.discoveryHydrateAttemptedBySession.has(normalized)) return
+    this.discoveryHydrateAttemptedBySession.add(normalized)
+    void this.hydrateSessionOnce(normalized).catch((error) => {
+      console.error('[desktop-v3] auto-discovered session hydrate failed', error)
+    })
   }
 
   private hydrateSessionOnce(sessionId: string): Promise<void> {

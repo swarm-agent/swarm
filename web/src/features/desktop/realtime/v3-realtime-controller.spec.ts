@@ -360,6 +360,99 @@ test('Desktop V3 direct route session missing from reconnect is explicitly subsc
   controller.stop()
 })
 
+test('Desktop V3 auto-discovered session hydrates once across duplicate discovery frames', async () => {
+  let state = readyControllerState()
+  const sockets: FakeWebSocket[] = []
+  const hydrateRequests: unknown[] = []
+  let releaseFirstHydrate!: () => void
+  const firstHydrate = new Promise<void>((resolve) => {
+    releaseFirstHydrate = resolve
+  })
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: {},
+      projections_by_session: {},
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [],
+      workset_id: 'global-scope',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect',
+          subscriptions: [],
+          worksets: [{
+            workset_id: 'global-scope',
+            subscription_id: 'workset-sub',
+            selector: { kind: 'global', global: true },
+            resources: ['run_intents'],
+            auto_subscribe_sessions: true,
+          }],
+        },
+      },
+    }),
+    hydrate: async (input) => {
+      hydrateRequests.push(input)
+      await firstHydrate
+      return hydrateSnapshotFixture({
+        sessions_by_id: { [sessionB.id]: sessionB },
+        projections_by_session: { [sessionB.id]: projectionB },
+        messages_by_session: {},
+        run_intents_by_session: {},
+        session_order: [sessionB.id],
+        selector: { kind: 'session_ids', session_ids: [sessionB.id] },
+      })
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start()
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+
+    const discoveryFrame = {
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'workset.session.discovered',
+      workset_id: 'global-scope',
+      session_id: sessionB.id,
+      subscription_id: 'sub-session-b',
+      auto_subscribed: true,
+      endpoint_cursor: 'cursor-discovered',
+    }
+
+    sockets[0].emit(discoveryFrame)
+    sockets[0].emit(discoveryFrame)
+    await waitFor(() => hydrateRequests.length === 1)
+    assert.deepEqual((hydrateRequests[0] as { session_ids: string[] }).session_ids, [sessionB.id])
+
+    releaseFirstHydrate()
+    await waitFor(() => state.projectionsBySession[sessionB.id] !== undefined)
+    sockets[0].emit(discoveryFrame)
+    await flushAsyncWork()
+    assert.equal(hydrateRequests.length, 1)
+  } finally {
+    controller.stop()
+    releaseFirstHydrate()
+  }
+})
+
 test('Desktop V3 retained realtime controller releases connecting startup without opening later', async () => {
   resetDesktopV3RealtimeControllerForTests()
   let state = readyControllerState()

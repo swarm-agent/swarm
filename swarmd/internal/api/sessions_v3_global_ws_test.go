@@ -368,7 +368,31 @@ func TestSessionsV3CreateReachesGlobalWebsocketSessionWildcard(t *testing.T) {
 	writeGlobalWSFrame(t, conn, map[string]any{"type": "subscribe", "channel": "session:*"})
 	readGlobalWSFrame(t, conn, "subscribed")
 
-	created := createGlobalV3TestSession(t, server.sessions, "session-global-created-ws", "create-global-created-ws")
+	result, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       "session-global-created-ws",
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "create-global-created-ws",
+		IdempotencyKey:  "create-global-created-ws",
+		PayloadHash:     "hash-create-global-created-ws",
+		Kind:            sessionruntime.SessionMutationCreateSession,
+		Session: &pebblestore.SessionSnapshot{
+			ID:             "session-global-created-ws",
+			UserID:         testPrincipal().UserID,
+			AccountScopeID: testPrincipal().AccountScopeID,
+			WorkspacePath:  "/workspace/global-v3",
+			WorkspaceName:  "global-v3",
+			Title:          "session-global-created-ws",
+		},
+		NowUnixMs: 1000,
+	})
+	if err != nil {
+		t.Fatalf("create websocket session: %v", err)
+	}
+	if result.Session == nil {
+		t.Fatalf("create websocket result missing session: %+v", result)
+	}
+	created := *result.Session
 
 	frame := readGlobalWSFrame(t, conn, "event")
 	if frame.Event == nil {
