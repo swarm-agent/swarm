@@ -1,0 +1,130 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+
+import {
+  completeDesktopV3ExistingMessage,
+} from './desktop-v3-existing-conversation-pane'
+import {
+  completeDesktopV3NewSessionStarted,
+} from './desktop-v3-new-session-pane'
+import {
+  createDesktopV3ExistingMessageOperation,
+  persistDesktopV3ExistingMessageOperation,
+  loadDesktopV3ExistingMessageOperation,
+} from '../../session-v3/existing-session-flow'
+import {
+  createDesktopV3NewSessionOperation,
+  persistDesktopV3NewSessionOperation,
+  loadDesktopV3NewSessionOperation,
+} from '../../session-v3/new-session-flow'
+import type { DesktopChatRoute } from '../services/chat-routing'
+
+const route: DesktopChatRoute = {
+  id: 'swarm:swarm-self:binding:binding-self',
+  label: 'Self',
+  swarmId: 'swarm-self',
+  targetKind: 'host',
+  targetRelationship: 'self',
+  hostSwarmId: 'swarm-self',
+  hostSwarmName: 'Host',
+  hostWorkspacePath: '/workspace-a',
+  hostWorkspaceName: 'workspace-a',
+  runtimeWorkspacePath: '/workspace-a',
+  workspaceBindingId: 'binding-self',
+  workspaceName: 'workspace-a',
+}
+
+function withSessionStorage(run: (storage: Map<string, string>) => void): void {
+  const previousWindow = globalThis.window
+  const storage = new Map<string, string>()
+  globalThis.window = {
+    sessionStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    },
+  } as Window & typeof globalThis
+  try {
+    run(storage)
+  } finally {
+    globalThis.window = previousWindow
+  }
+}
+
+test('Existing A completion after navigation does not clear or overwrite existing B retained operation', () => withSessionStorage(() => {
+  const operationA = createDesktopV3ExistingMessageOperation({
+    sessionId: 'session-a',
+    prompt: 'blocked A',
+  })
+  const operationB = createDesktopV3ExistingMessageOperation({
+    sessionId: 'session-b',
+    prompt: 'retained B',
+  })
+  persistDesktopV3ExistingMessageOperation(operationA)
+  persistDesktopV3ExistingMessageOperation(operationB)
+
+  let draftB = operationB.request.content
+  let operationRefB = operationB
+  completeDesktopV3ExistingMessage({
+    sessionId: 'session-a',
+    operation: operationA,
+    mountedRef: { current: false },
+    setOperation: () => {
+      operationRefB = operationA
+    },
+    setDraft: (nextDraft) => {
+      draftB = nextDraft
+    },
+  })
+
+  assert.equal(loadDesktopV3ExistingMessageOperation('session-a'), null)
+  assert.equal(loadDesktopV3ExistingMessageOperation('session-b')?.operationId, operationB.operationId)
+  assert.equal(operationRefB.operationId, operationB.operationId)
+  assert.equal(draftB, operationB.request.content)
+}))
+
+test('Workspace A creation completion after navigation does not navigate away from workspace B or clear B retained operation', () => withSessionStorage(() => {
+  const operationA = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace-a',
+    workspaceName: 'workspace-a',
+    route,
+    prompt: 'blocked A',
+    agentName: 'swarm',
+  })
+  const operationB = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace-b',
+    workspaceName: 'workspace-b',
+    route: {
+      ...route,
+      hostWorkspacePath: '/workspace-b',
+      runtimeWorkspacePath: '/workspace-b',
+      workspaceName: 'workspace-b',
+    },
+    prompt: 'retained B',
+    agentName: 'swarm',
+  })
+  persistDesktopV3NewSessionOperation(operationA)
+  persistDesktopV3NewSessionOperation(operationB)
+
+  let visibleWorkspacePath = '/workspace-b'
+  let operationRefB = operationB
+  const navigations: string[] = []
+  completeDesktopV3NewSessionStarted({
+    workspacePath: '/workspace-a',
+    operation: operationA,
+    mountedRef: { current: false },
+    setOperation: () => {
+      operationRefB = operationA
+    },
+    navigateToSession: (sessionId) => {
+      visibleWorkspacePath = '/workspace-a'
+      navigations.push(sessionId)
+    },
+  })
+
+  assert.equal(loadDesktopV3NewSessionOperation('/workspace-a'), null)
+  assert.equal(loadDesktopV3NewSessionOperation('/workspace-b')?.operationId, operationB.operationId)
+  assert.equal(operationRefB.operationId, operationB.operationId)
+  assert.equal(visibleWorkspacePath, '/workspace-b')
+  assert.deepEqual(navigations, [])
+}))

@@ -3408,6 +3408,7 @@ export function DesktopAppPage() {
           </div>
         ) : routeSessionId ? (
           <DesktopV3ExistingConversationPane
+            key={`existing:${routeSessionId}`}
             sessionId={routeSessionId}
             initialHydrateStatus={desktopInitialHydrate.status}
             renderedMessages={selectedDesktopV3Messages}
@@ -3430,6 +3431,7 @@ export function DesktopAppPage() {
           </div>
         ) : routeWorkspace?.path ? (
           <DesktopV3NewSessionPane
+            key={`new:${routeWorkspace.path}`}
             workspace={routeWorkspace}
             workspaceSlug={routeWorkspaceSlug}
             routeOptions={buildDesktopChatRouteOptions({

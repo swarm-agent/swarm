@@ -24,6 +24,19 @@ export interface DesktopV3ExistingConversationPaneProps {
   metadata?: Record<string, unknown>
 }
 
+export function completeDesktopV3ExistingMessage(input: {
+  sessionId: string
+  operation: DesktopV3ExistingMessageOperation
+  mountedRef: { current: boolean }
+  setOperation: (operation: DesktopV3ExistingMessageOperation | null) => void
+  setDraft: (draft: string) => void
+}): void {
+  clearDesktopV3ExistingMessageOperation(input.sessionId, input.operation.operationId)
+  if (!input.mountedRef.current) return
+  input.setOperation(null)
+  input.setDraft('')
+}
+
 export function DesktopV3ExistingConversationPane({
   sessionId,
   initialHydrateStatus,
@@ -32,6 +45,7 @@ export function DesktopV3ExistingConversationPane({
   metadata,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim()
+  const mountedRef = useRef(true)
   const operationRef = useRef<DesktopV3ExistingMessageOperation | null>(
     loadDesktopV3ExistingMessageOperation(normalizedSessionId),
   )
@@ -46,6 +60,13 @@ export function DesktopV3ExistingConversationPane({
     || renderedMessages.pendingUser.length > 0
     || renderedMessages.liveRuns.length > 0
   const canSend = Boolean(normalizedSessionId && !sending && (hasRetainedOperation || draft.trim()))
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     const operation = loadDesktopV3ExistingMessageOperation(normalizedSessionId)
@@ -76,13 +97,23 @@ export function DesktopV3ExistingConversationPane({
       persistDesktopV3ExistingMessageOperation(operation)
 
       await continueDesktopV3Conversation(operation)
-      clearDesktopV3ExistingMessageOperation(normalizedSessionId, operation.operationId)
-      operationRef.current = null
-      setDraft('')
+      completeDesktopV3ExistingMessage({
+        sessionId: normalizedSessionId,
+        operation,
+        mountedRef,
+        setOperation: (nextOperation) => {
+          operationRef.current = nextOperation
+        },
+        setDraft,
+      })
     } catch (error) {
-      setSendError(error instanceof Error ? error.message : String(error))
+      if (mountedRef.current) {
+        setSendError(error instanceof Error ? error.message : String(error))
+      }
     } finally {
-      setSending(false)
+      if (mountedRef.current) {
+        setSending(false)
+      }
     }
   }
 

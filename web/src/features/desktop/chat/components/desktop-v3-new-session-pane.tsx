@@ -24,6 +24,19 @@ export interface DesktopV3NewSessionPaneProps {
   preference?: DesktopV3NewSessionPreference
 }
 
+export function completeDesktopV3NewSessionStarted(input: {
+  workspacePath: string
+  operation: DesktopV3NewSessionOperation
+  mountedRef: { current: boolean }
+  setOperation: (operation: DesktopV3NewSessionOperation | null) => void
+  navigateToSession: (sessionId: string) => void
+}): void {
+  clearDesktopV3NewSessionOperation(input.workspacePath, input.operation.operationId)
+  if (!input.mountedRef.current) return
+  input.setOperation(null)
+  input.navigateToSession(input.operation.sessionId)
+}
+
 export function DesktopV3NewSessionPane({
   workspace,
   workspaceSlug,
@@ -33,6 +46,7 @@ export function DesktopV3NewSessionPane({
   preference,
 }: DesktopV3NewSessionPaneProps) {
   const navigate = useNavigate()
+  const mountedRef = useRef(true)
   const storedOperation = useMemo(
     () => loadDesktopV3NewSessionOperation(workspace.path),
     [workspace.path],
@@ -64,6 +78,13 @@ export function DesktopV3NewSessionPane({
   const [draft, setDraft] = useState(retainedOperation?.firstMessageRequest.content ?? '')
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     if (writableRoutes.length === 0) return
@@ -128,20 +149,32 @@ export function DesktopV3NewSessionPane({
 
       await startNewDesktopV3Session({
         operation,
-        onSessionStarted: (sessionId) => {
-          clearDesktopV3NewSessionOperation(workspace.path, operation.operationId)
-          operationRef.current = null
-          void navigate({
-            to: '/$workspaceSlug/$sessionId',
-            params: { workspaceSlug, sessionId },
-            replace: true,
+        onSessionStarted: () => {
+          completeDesktopV3NewSessionStarted({
+            workspacePath: workspace.path,
+            operation,
+            mountedRef,
+            setOperation: (nextOperation) => {
+              operationRef.current = nextOperation
+            },
+            navigateToSession: (sessionId) => {
+              void navigate({
+                to: '/$workspaceSlug/$sessionId',
+                params: { workspaceSlug, sessionId },
+                replace: true,
+              })
+            },
           })
         },
       })
     } catch (error) {
-      setStartError(error instanceof Error ? error.message : String(error))
+      if (mountedRef.current) {
+        setStartError(error instanceof Error ? error.message : String(error))
+      }
     } finally {
-      setStarting(false)
+      if (mountedRef.current) {
+        setStarting(false)
+      }
     }
   }
 
