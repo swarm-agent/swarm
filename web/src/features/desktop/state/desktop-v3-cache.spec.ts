@@ -10,6 +10,7 @@ import {
 } from './desktop-v3-cache-wire'
 import {
   applyBootstrapSnapshot,
+  applyCacheEvent,
   applyHydrateSnapshot,
   applyMessageMutationResult,
   applyRealtimeFrame,
@@ -560,6 +561,91 @@ test('hydrate optional plan resources clear stale restored plans only when in sc
 
   assert.equal(state.plansBySession[sessionB.id], undefined)
   assert.deepEqual(state.planRevisionsBySession[sessionB.id], [])
+})
+
+test('stale hydrate merges history but does not replace newer optional resources', () => {
+  const state = bootstrappedState()
+  state.projectionsBySession[sessionB.id] = {
+    ...projectionB,
+    last_event_seq: 9,
+    projection_high_watermark_seq: 9,
+  }
+  state.plansBySession[sessionB.id] = { id: 'new-live-plan' }
+  state.planRevisionsBySession[sessionB.id] = [{ id: 'new-live-revision' }]
+  state.permissionsBySession[sessionB.id] = { id: 'new-permission' }
+  state.usageBySession[sessionB.id] = { tokens: 10 }
+  state.preferencesBySession[sessionB.id] = { model: 'new' }
+  state.agentModelPolicyBySession[sessionB.id] = { policy: 'new' }
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    projections_by_session: { [sessionB.id]: projectionB },
+    plans_by_session: {},
+    plan_revisions_by_session: { [sessionB.id]: [] },
+    permissions_by_session: { [sessionB.id]: { id: 'old-permission' } },
+    usage_by_session: { [sessionB.id]: { tokens: 1 } },
+    preferences_by_session: { [sessionB.id]: { model: 'old' } },
+    agent_model_policy_by_session: { [sessionB.id]: { policy: 'old' } },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'session-b-hash',
+      resource_set: 'messages,active_plan,plan_revisions,permissions,usage,preferences,agent_model_policy',
+    },
+    scope_id: 'session-b-hash:messages,active_plan,plan_revisions,permissions,usage,preferences,agent_model_policy',
+  }), [sessionB.id])
+
+  assert.deepEqual(state.plansBySession[sessionB.id], { id: 'new-live-plan' })
+  assert.deepEqual(state.planRevisionsBySession[sessionB.id], [{ id: 'new-live-revision' }])
+  assert.deepEqual(state.permissionsBySession[sessionB.id], { id: 'new-permission' })
+  assert.deepEqual(state.usageBySession[sessionB.id], { tokens: 10 })
+  assert.deepEqual(state.preferencesBySession[sessionB.id], { model: 'new' })
+  assert.deepEqual(state.agentModelPolicyBySession[sessionB.id], { policy: 'new' })
+  assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), ['msg-b-1'])
+})
+
+test('stored events dedupe by immutable session sequence even with different ids', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const first = {
+    id: 'evt-first-id',
+    session_id: sessionA.id,
+    seq: 10,
+    event_type: 'session.assistant.delta',
+    payload: { run_id: 'run-live', delta: 'A' },
+    ts_unix_ms: 10,
+  }
+  const duplicateSeq = {
+    ...first,
+    id: 'evt-second-id',
+    payload: { run_id: 'run-live', delta: 'B' },
+  }
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA },
+    projections_by_session: { [sessionA.id]: { ...projectionA, last_event_seq: 10, projection_high_watermark_seq: 10 } },
+    messages_by_session: {},
+    events_by_session: { [sessionA.id]: [first, duplicateSeq] },
+    session_order: [sessionA.id],
+    selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'session-a-hash',
+      resource_set: 'events',
+    },
+    scope_id: 'session-a-hash:events',
+  }), [sessionA.id])
+
+  assert.deepEqual(state.eventsBySession[sessionA.id].map((event) => event.id), ['evt-second-id'])
+
+  applyCacheEvent(state, {
+    source: 'realtime',
+    sessionId: sessionA.id,
+    eventType: first.event_type,
+    sessionEvent: { ...first, id: 'evt-third-id' },
+    payload: first.payload,
+  })
+
+  assert.deepEqual(state.eventsBySession[sessionA.id].map((event) => event.id), ['evt-second-id'])
 })
 
 test('hydrate rejects non-requested payload membership', () => {

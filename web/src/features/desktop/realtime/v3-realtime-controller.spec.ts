@@ -2,7 +2,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { DesktopV3RealtimeTransport } from '../session-v3/transport'
+import {
+  DesktopV3RealtimeControllerRuntime,
+  buildDesktopV3ReconnectInput,
+  mapTransportStatus,
+} from './v3-realtime-controller'
+import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
+import { projectionA, reconnectFixture, runIntentA, sessionA } from '../state/desktop-v3-cache.backend-fixtures'
 import type { SessionV3RealtimeResumeWire } from '../session-v3/types'
+import type { DesktopV3CacheAction, DesktopV3CacheState, V3SessionEvent } from '../state/desktop-v3-cache-types'
 
 if (typeof window === 'undefined') {
   Object.defineProperty(globalThis, 'window', {
@@ -198,3 +206,192 @@ test('Desktop V3 realtime transport sends one resume containing workset and know
   assert.equal('after_seq' in resumes[0], false)
   transport.stop()
 })
+
+test('Desktop V3 reconnect input requires exact principal-global sidebar scope', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
+  state.syncScopesById['global-scope'] = {
+    scopeId: 'global-scope',
+    surface: 'desktop',
+    streamKind: 'v3.sync.snapshot',
+    selectorFilterHash: 'global-hash',
+    resourceSet: 'run_intents',
+    selector: { kind: 'global', global: true },
+    endpointCursor: 'cursor-bootstrap',
+    replayPath: '/v3/sync/stream',
+    replayTransport: 'http_post',
+    needsBootstrap: false,
+  }
+
+  const input = buildDesktopV3ReconnectInput(state, 'client-a')
+  assert.equal(input.workset.workset_id, 'global-scope')
+  assert.deepEqual(input.workset.selector, { kind: 'global', global: true })
+  assert.deepEqual(input.workset.history, { mode: 'none' })
+  assert.equal(input.workset.resources.events, false)
+  assert.equal(input.workset.resources.run_intents, true)
+  assert.equal(input.workset.auto_subscribe_sessions, true)
+
+  state.syncScopesById['global-scope'].selector = { kind: 'recent', global: true }
+  assert.throws(
+    () => buildDesktopV3ReconnectInput(state, 'client-a'),
+    /principal-wide global selector/,
+  )
+})
+
+test('Desktop V3 active-run repair defers websocket overlay and rebuilds once from stored event sequence', async () => {
+  let state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
+  state.syncScopesById['global-scope'] = {
+    scopeId: 'global-scope',
+    surface: 'desktop',
+    streamKind: 'v3.sync.snapshot',
+    selectorFilterHash: 'global-hash',
+    resourceSet: 'run_intents',
+    selector: { kind: 'global', global: true },
+    endpointCursor: 'cursor-bootstrap',
+    replayPath: '/v3/sync/stream',
+    replayTransport: 'http_post',
+    needsBootstrap: false,
+  }
+
+  const sockets: FakeWebSocket[] = []
+  const repairEvent: V3SessionEvent = {
+    id: 'evt-repair-3',
+    session_id: sessionA.id,
+    seq: 3,
+    event_type: 'session.assistant.delta',
+    payload: { run_id: runIntentA.run_id, delta: 'repair-' },
+    ts_unix_ms: 3,
+  }
+  const liveEvent: V3SessionEvent = {
+    id: 'evt-live-4',
+    session_id: sessionA.id,
+    seq: 4,
+    event_type: 'session.assistant.delta',
+    payload: { run_id: runIntentA.run_id, delta: 'live' },
+    ts_unix_ms: 4,
+  }
+  const duplicateLiveFromRepair: V3SessionEvent = {
+    ...liveEvent,
+    id: 'evt-live-4-duplicate-http',
+    payload: { run_id: runIntentA.run_id, delta: 'SHOULD_NOT_APPLY' },
+  }
+  const readRequests: Array<{ sessionId: string; afterSeq: number; limit?: number }> = []
+  let releaseFirstRepairPage!: () => void
+  const firstRepairPage = new Promise<void>((resolve) => {
+    releaseFirstRepairPage = resolve
+  })
+
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      run_intents_by_session: { [sessionA.id]: [runIntentA] },
+      current_run_intent_by_session: { [sessionA.id]: runIntentA },
+      session_order: [sessionA.id],
+      workset_id: 'global-scope',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect',
+          subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
+          worksets: [{
+            workset_id: 'global-scope',
+            subscription_id: 'workset-sub',
+            selector: { kind: 'global', global: true },
+            resources: ['run_intents'],
+            auto_subscribe_sessions: true,
+          }],
+        },
+      },
+    }),
+    readEventsPage: async (input) => {
+      readRequests.push(input)
+      if (readRequests.length === 1) {
+        await firstRepairPage
+        return {
+          ok: true,
+          session_id: input.sessionId,
+          events: [repairEvent, duplicateLiveFromRepair],
+          projection: { ...projectionA, last_event_seq: 4, projection_high_watermark_seq: 4 },
+          high_watermark_seq: 4,
+          next_seq: 4,
+          applied_seq: 4,
+        }
+      }
+      return {
+        ok: true,
+        session_id: input.sessionId,
+        events: [],
+        projection: { ...projectionA, last_event_seq: 4, projection_high_watermark_seq: 4 },
+        high_watermark_seq: 4,
+        next_seq: 4,
+        applied_seq: 4,
+      }
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  await controller.start()
+  sockets[0].open()
+  await waitFor(() => readRequests.length === 1)
+
+  sockets[0].emit({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    session_id: sessionA.id,
+    event_type: liveEvent.event_type,
+    event: liveEvent,
+    projection: { ...projectionA, last_event_seq: 4, projection_high_watermark_seq: 4 },
+    endpoint_cursor: 'cursor-live-4',
+  })
+
+  assert.equal(state.realtime.endpointCursor, 'cursor-live-4')
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft, undefined)
+
+  releaseFirstRepairPage()
+  await waitFor(() => state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content === 'repair-live')
+
+  assert.deepEqual(
+    state.eventsBySession[sessionA.id].map((event) => `${event.seq}:${event.id}`),
+    ['3:evt-repair-3', '4:evt-live-4'],
+  )
+  assert.equal(state.realtime.endpointCursor, 'cursor-live-4')
+  controller.stop()
+})
+
+test('Desktop V3 transport status maps to cache status', () => {
+  assert.equal(mapTransportStatus('stopped'), 'closed')
+  assert.equal(mapTransportStatus('closed'), 'closed')
+  assert.equal(mapTransportStatus('connecting'), 'connecting')
+  assert.equal(mapTransportStatus('open'), 'open')
+  assert.equal(mapTransportStatus('reopening'), 'reconnecting')
+  assert.equal(mapTransportStatus('rehydrating'), 'reconnecting')
+  assert.equal(mapTransportStatus('stale'), 'stale')
+  assert.equal(mapTransportStatus('error'), 'error')
+})
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const started = Date.now()
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error('timed out waiting for condition')
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}

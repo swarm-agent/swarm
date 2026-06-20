@@ -441,7 +441,8 @@ function applyHydrateAuthoritativeResources(
   preHydrateProjections: Record<string, V3SessionProjection | undefined>,
 ): void {
   const resourceSet = snapshot.sync_scope.resource_set
-  mergeSnapshotResources(state, snapshot, snapshot.scope_id, requested)
+  const freshRequested = freshHydrateSessionIds(snapshot, requested, preHydrateProjections)
+  mergeSnapshotResources(state, snapshot, snapshot.scope_id, freshRequested)
 
   if (syncResourceSetContains(resourceSet, 'messages')) {
     for (const sessionId of requested) {
@@ -460,7 +461,7 @@ function applyHydrateAuthoritativeResources(
       if (!hasOwn(snapshot.events_by_session, sessionId)) continue
       const incoming = snapshot.events_by_session?.[sessionId] ?? []
       if (hydrateProjectionIsFresh(snapshot, sessionId, preHydrateProjections)) {
-        state.eventsBySession[sessionId] = sortEvents(incoming)
+        state.eventsBySession[sessionId] = sortEvents(dedupeEventsByIdentity(incoming))
       } else {
         mergeEventsForSession(state, sessionId, incoming)
       }
@@ -487,6 +488,20 @@ function hydrateProjectionIsFresh(
   preHydrateProjections: Record<string, V3SessionProjection | undefined>,
 ): boolean {
   return projectionSeq(snapshot.projections_by_session?.[sessionId]) >= projectionSeq(preHydrateProjections[sessionId])
+}
+
+function freshHydrateSessionIds(
+  snapshot: SyncSnapshotResponse,
+  requested: Set<string>,
+  preHydrateProjections: Record<string, V3SessionProjection | undefined>,
+): Set<string> {
+  const fresh = new Set<string>()
+  for (const sessionId of requested) {
+    if (hasOwn(snapshot.tombstones_by_session, sessionId) || hydrateProjectionIsFresh(snapshot, sessionId, preHydrateProjections)) {
+      fresh.add(sessionId)
+    }
+  }
+  return fresh
 }
 
 export function applySyncStreamBatch(
@@ -1342,7 +1357,7 @@ function applyTombstonesBySession(state: DesktopV3CacheState, tombstonesBySessio
 function applyEventsBySessionFromSnapshot(state: DesktopV3CacheState, eventsBySession: Record<string, V3SessionEvent[]> | undefined): void {
   if (!eventsBySession) return
   for (const [sessionId, events] of Object.entries(eventsBySession)) {
-    state.eventsBySession[sessionId] = sortEvents(events)
+    state.eventsBySession[sessionId] = sortEvents(dedupeEventsByIdentity(events))
   }
 }
 
@@ -1354,11 +1369,40 @@ function mergeEventsBySessionFromSnapshot(state: DesktopV3CacheState, eventsBySe
 }
 
 function mergeEventsForSession(state: DesktopV3CacheState, sessionId: string, incoming: V3SessionEvent[]): void {
-  const byIdentity = new Map<string, V3SessionEvent>()
-  for (const event of [...(state.eventsBySession[sessionId] ?? []), ...incoming]) {
-    byIdentity.set(event.id || `${event.session_id}:${event.seq}`, event)
+  state.eventsBySession[sessionId] = sortEvents(dedupeEventsByIdentity([
+    ...(state.eventsBySession[sessionId] ?? []),
+    ...incoming,
+  ]))
+}
+
+function dedupeEventsByIdentity(events: V3SessionEvent[]): V3SessionEvent[] {
+  const deduped: V3SessionEvent[] = []
+  const indexById = new Map<string, number>()
+  const indexBySeq = new Map<string, number>()
+
+  for (const event of events) {
+    const id = event.id?.trim()
+    const seqKey = eventSeqKey(event)
+    const existingById = id ? indexById.get(id) : undefined
+    const existingBySeq = indexBySeq.get(seqKey)
+    const existingIndex = existingById ?? existingBySeq
+
+    if (existingIndex !== undefined) {
+      const previous = deduped[existingIndex]
+      if (previous.id) indexById.delete(previous.id)
+      indexBySeq.delete(eventSeqKey(previous))
+      deduped[existingIndex] = event
+      if (id) indexById.set(id, existingIndex)
+      indexBySeq.set(seqKey, existingIndex)
+      continue
+    }
+
+    const index = deduped.push(event) - 1
+    if (id) indexById.set(id, index)
+    indexBySeq.set(seqKey, index)
   }
-  state.eventsBySession[sessionId] = sortEvents([...byIdentity.values()])
+
+  return deduped
 }
 
 function sortEvents(events: V3SessionEvent[]): V3SessionEvent[] {
@@ -1446,13 +1490,16 @@ function rebuildLiveRunFromStoredEvents(
     lastEventSeqSeen: current.event_seq,
   }
 
-  const seen = new Set<string>()
-  const events = sortEvents(state.eventsBySession[sessionId] ?? [])
+  const seenIds = new Set<string>()
+  const seenSeqs = new Set<string>()
+  const events = sortEvents(dedupeEventsByIdentity(state.eventsBySession[sessionId] ?? []))
     .filter((event) => event.seq > afterSeq)
   for (const sessionEvent of events) {
-    const identity = sessionEvent.id || `${sessionEvent.session_id}:${sessionEvent.seq}`
-    if (seen.has(identity)) continue
-    seen.add(identity)
+    const id = sessionEvent.id?.trim()
+    const seqKey = eventSeqKey(sessionEvent)
+    if ((id && seenIds.has(id)) || seenSeqs.has(seqKey)) continue
+    if (id) seenIds.add(id)
+    seenSeqs.add(seqKey)
     const payload = decodeSessionEventPayload(sessionEvent)
     const runIntent = recordValue(payload.runIntent) ?? recordValue(payload.run_intent)
     const payloadRunId = stringValue(payload.run_id) || stringValue(runIntent?.run_id)
@@ -1735,6 +1782,10 @@ function replaceRecordBySession<T>(target: Record<string, T>, source: Record<str
 
 function messageGlobalSeqKey(message: MessageSnapshot): string {
   return `${message.session_id}:${message.global_seq}`
+}
+
+function eventSeqKey(event: V3SessionEvent): string {
+  return `${event.session_id}:${event.seq}`
 }
 
 function appendUnique(values: string[], value: string): string[] {

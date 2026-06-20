@@ -1,6 +1,6 @@
 import { requestJson } from '../../../app/api'
 
-import type { SyncHistory, SyncResources, SyncSelector, SyncSnapshotResponse } from './desktop-v3-cache-types'
+import type { SessionsReconnectResponse, SyncHistory, SyncResources, SyncSelector, SyncSnapshotResponse } from './desktop-v3-cache-types'
 
 export interface DesktopV3BootstrapInput {
   surface: 'desktop' | string
@@ -87,6 +87,29 @@ export async function postDesktopV3SyncHydrate(
     headers: {
       'Content-Type': 'application/json',
     },
+    body: JSON.stringify(input),
+  })
+}
+
+export interface DesktopV3ReconnectInput {
+  surface: 'desktop'
+  client_id: string
+  workset: {
+    workset_id: string
+    selector: SyncSelector
+    history: SyncHistory
+    resources: SyncResources
+    include_active: boolean
+    auto_subscribe_sessions: boolean
+  }
+}
+
+export async function postDesktopV3Reconnect(
+  input: DesktopV3ReconnectInput,
+): Promise<SessionsReconnectResponse> {
+  return requestJson<SessionsReconnectResponse>('/v3/sessions:reconnect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
 }
