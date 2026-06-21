@@ -9,9 +9,10 @@ import {
   DESKTOP_V3_CACHE_SCHEMA_VERSION,
   validatePersistedDesktopV3MessageTailV1,
   validatePersistedDesktopV3OwnerV1,
+  type PersistedDesktopV3LiveRunOverlayV1,
   type PersistedDesktopV3OwnerV1,
 } from './desktop-v3-cache-persisted-types'
-import type { MessageSnapshot } from './desktop-v3-cache-types'
+import type { MessageSnapshot, SessionSnapshot } from './desktop-v3-cache-types'
 
 const owner = createDesktopV3CacheOwner({
   origin: 'https://desktop.example.test/app',
@@ -55,6 +56,101 @@ function ownerRecordFixture(overrides: Partial<PersistedDesktopV3OwnerV1> = {}):
         runIntents: [runIntentA],
       },
     },
+    ...overrides,
+  }
+}
+
+
+function sessionFixture(id: string): SessionSnapshot {
+  return {
+    ...sessionA,
+    id,
+    title: `Session ${id}`,
+    created_at: 100 + id.charCodeAt(id.length - 1),
+    updated_at: 200 + id.charCodeAt(id.length - 1),
+    message_count: 0,
+    last_message_at: 0,
+  }
+}
+
+function ownerRecordWithLiveSessions(sessionIds: string[]): PersistedDesktopV3OwnerV1 {
+  const base = ownerRecordFixture()
+  const sidebarSessionsById: PersistedDesktopV3OwnerV1['sidebarSessionsById'] = {}
+  for (const sessionId of sessionIds) {
+    sidebarSessionsById[sessionId] = { session: sessionFixture(sessionId) }
+  }
+  return {
+    ...base,
+    selectedSessionId: sessionIds[0],
+    sessionOrderByScope: {
+      [base.sidebarScopeId]: sessionIds,
+    },
+    sidebarSessionsById,
+  }
+}
+
+function liveRunOverlayFixture(
+  sessionId: string,
+  runId: string,
+  overrides: Partial<PersistedDesktopV3LiveRunOverlayV1> = {},
+): PersistedDesktopV3LiveRunOverlayV1 {
+  return {
+    sessionId,
+    runId,
+    status: 'running',
+    assistantDraft: {
+      content: `draft:${sessionId}`,
+      updatedAt: 1_000,
+      timelineSeq: 2,
+    },
+    assistantSegments: [{
+      id: `segment:${sessionId}`,
+      content: `segment:${sessionId}`,
+      createdAt: 1_001,
+      updatedAt: 1_002,
+      timelineSeq: 3,
+    }],
+    toolCallsByCallId: {
+      [`call:${sessionId}`]: {
+        callId: `call:${sessionId}`,
+        stepId: `step:${sessionId}`,
+        toolInstanceId: `tool-instance:${sessionId}`,
+        toolName: 'read',
+        argumentsText: '{"path":"file.txt"}',
+        outputText: `tool output:${sessionId}`,
+        status: 'running',
+        createdAt: 1_003,
+        updatedAt: 1_004,
+        timelineSeq: 4,
+      },
+    },
+    reasoning: {
+      key: `reasoning:${sessionId}`,
+      reasoningId: `reasoning-id:${sessionId}`,
+      reasoningKey: `reasoning-key:${sessionId}`,
+      stepId: `reasoning-step:${sessionId}`,
+      step: 1,
+      state: 'running',
+      summary: `summary:${sessionId}`,
+      text: `reasoning text:${sessionId}`,
+      startedAt: 1_005,
+      completedAt: null,
+      updatedAt: 1_006,
+      timelineSeq: 5,
+      updatedSeq: 6,
+    },
+    reasoningByKey: {
+      [`reasoning:${sessionId}`]: {
+        key: `reasoning:${sessionId}`,
+        state: 'completed',
+        summary: `summary by key:${sessionId}`,
+        text: `reasoning by key:${sessionId}`,
+        startedAt: null,
+        completedAt: 1_007,
+        updatedAt: 1_008,
+      },
+    },
+    lastEventSeqSeen: 7,
     ...overrides,
   }
 }
@@ -271,4 +367,121 @@ test('persisted numeric metadata must be non-negative safe integers', () => {
     persistedAt: 456,
     messages: [{ ...messageA1, created_at: Number.MAX_SAFE_INTEGER + 1 }],
   }), /created_at must be a non-negative safe integer/)
+})
+
+
+test('persisted owner roundtrips five live sessions and realtime cursor', () => {
+  const sessionIds = ['session-a', 'session-b', 'session-c', 'session-d', 'session-e']
+  const record = ownerRecordWithLiveSessions(sessionIds)
+  record.realtimeEndpointCursor = 'opaque-cursor-5'
+  record.liveRunsBySession = Object.fromEntries(sessionIds.map((sessionId, index) => [
+    sessionId,
+    { [`run-${index + 1}`]: liveRunOverlayFixture(sessionId, `run-${index + 1}`) },
+  ]))
+
+  const result = validatePersistedDesktopV3OwnerV1(record, owner.key)
+
+  assert.equal(result.ok, true)
+  assert.equal(result.ok && result.value.realtimeEndpointCursor, 'opaque-cursor-5')
+  assert.deepEqual(result.ok && Object.keys(result.value.liveRunsBySession ?? {}).sort(), sessionIds)
+  assert.deepEqual(result.ok && result.value.liveRunsBySession, record.liveRunsBySession)
+})
+
+test('persisted owner accepts legacy records without liveRunsBySession', () => {
+  const record = ownerRecordWithLiveSessions([sessionA.id])
+  delete record.liveRunsBySession
+  delete record.realtimeEndpointCursor
+
+  const result = validatePersistedDesktopV3OwnerV1(record, owner.key)
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.ok && result.value.liveRunsBySession, {})
+  assert.equal(result.ok && result.value.realtimeEndpointCursor, undefined)
+})
+
+test('persisted owner rejects outer session id mismatch', () => {
+  const record = ownerRecordWithLiveSessions([sessionA.id])
+  record.liveRunsBySession = {
+    [sessionA.id]: {
+      'run-live': liveRunOverlayFixture('other-session', 'run-live'),
+    },
+  }
+
+  const result = validatePersistedDesktopV3OwnerV1(record, owner.key)
+
+  assert.equal(result.ok, false)
+  assert.match(result.ok ? '' : result.reason, /sessionId mismatch/)
+})
+
+test('persisted owner rejects outer run id mismatch', () => {
+  const record = ownerRecordWithLiveSessions([sessionA.id])
+  record.liveRunsBySession = {
+    [sessionA.id]: {
+      'run-live': liveRunOverlayFixture(sessionA.id, 'other-run'),
+    },
+  }
+
+  const result = validatePersistedDesktopV3OwnerV1(record, owner.key)
+
+  assert.equal(result.ok, false)
+  assert.match(result.ok ? '' : result.reason, /runId mismatch/)
+})
+
+test('persisted owner rejects tool map key mismatch', () => {
+  const record = ownerRecordWithLiveSessions([sessionA.id])
+  record.liveRunsBySession = {
+    [sessionA.id]: {
+      'run-live': liveRunOverlayFixture(sessionA.id, 'run-live', {
+        toolCallsByCallId: {
+          'call-map': { callId: 'call-payload', updatedAt: 1 },
+        },
+      }),
+    },
+  }
+
+  const result = validatePersistedDesktopV3OwnerV1(record, owner.key)
+
+  assert.equal(result.ok, false)
+  assert.match(result.ok ? '' : result.reason, /callId mismatch/)
+})
+
+test('persisted owner rejects tombstoned live session', () => {
+  const record = ownerRecordWithLiveSessions([sessionA.id])
+  record.sidebarSessionsById[sessionA.id].tombstone = { ...tombstoneB, session_id: sessionA.id }
+  record.liveRunsBySession = {
+    [sessionA.id]: {
+      'run-live': liveRunOverlayFixture(sessionA.id, 'run-live'),
+    },
+  }
+
+  const result = validatePersistedDesktopV3OwnerV1(record, owner.key)
+
+  assert.equal(result.ok, false)
+  assert.match(result.ok ? '' : result.reason, /tombstoned session/)
+})
+
+test('persisted owner rejects unsafe sequence and timestamp values', () => {
+  const record = ownerRecordWithLiveSessions([sessionA.id])
+  record.liveRunsBySession = {
+    [sessionA.id]: {
+      'run-live': liveRunOverlayFixture(sessionA.id, 'run-live', {
+        lastEventSeqSeen: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    },
+  }
+
+  const unsafeSeq = validatePersistedDesktopV3OwnerV1(record, owner.key)
+  assert.equal(unsafeSeq.ok, false)
+  assert.match(unsafeSeq.ok ? '' : unsafeSeq.reason, /lastEventSeqSeen must be a non-negative safe integer/)
+
+  record.liveRunsBySession[sessionA.id]['run-live'] = liveRunOverlayFixture(sessionA.id, 'run-live', {
+    assistantDraft: {
+      content: 'draft',
+      updatedAt: -1,
+    },
+  })
+
+  const unsafeTimestamp = validatePersistedDesktopV3OwnerV1(record, owner.key)
+  assert.equal(unsafeTimestamp.ok, false)
+  assert.match(unsafeTimestamp.ok ? '' : unsafeTimestamp.reason, /assistantDraft.updatedAt must be a non-negative safe integer/)
 })

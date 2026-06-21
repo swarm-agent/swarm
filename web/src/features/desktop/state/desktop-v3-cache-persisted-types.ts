@@ -17,6 +17,69 @@ export interface PersistedDesktopV3SidebarSessionV1 {
   runIntents?: V3SessionRunIntent[]
 }
 
+export type PersistedDesktopV3LiveRunStatusV1 =
+  | 'pending_executor'
+  | 'running'
+  | 'dispatch_blocked'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
+  | 'expired'
+
+export interface PersistedDesktopV3LiveReasoningV1 {
+  key?: string
+  reasoningId?: string
+  reasoningKey?: string
+  stepId?: string
+  step?: number
+  state: 'running' | 'completed' | 'error'
+  summary: string
+  text: string
+  startedAt: number | null
+  completedAt?: number | null
+  updatedAt: number
+  timelineSeq?: number
+  updatedSeq?: number
+}
+
+export interface PersistedDesktopV3LiveToolCallV1 {
+  callId: string
+  stepId?: string
+  toolInstanceId?: string
+  toolName?: string
+  argumentsText?: string
+  outputText?: string
+  errorText?: string
+  durationMs?: number
+  status?: string
+  createdAt?: number
+  updatedAt: number
+  timelineSeq?: number
+}
+
+export interface PersistedDesktopV3LiveRunOverlayV1 {
+  sessionId: string
+  runId: string
+  status: PersistedDesktopV3LiveRunStatusV1
+  assistantDraft?: {
+    content: string
+    updatedAt: number
+    timelineSeq?: number
+  }
+  assistantSegments?: Array<{
+    id: string
+    content: string
+    createdAt: number
+    updatedAt: number
+    timelineSeq?: number
+  }>
+  toolCallsByCallId: Record<string, PersistedDesktopV3LiveToolCallV1>
+  reasoning?: PersistedDesktopV3LiveReasoningV1
+  reasoningByKey?: Record<string, PersistedDesktopV3LiveReasoningV1>
+  lastEventSeqSeen?: number
+}
+
 export interface PersistedDesktopV3OwnerV1 {
   schemaVersion: typeof DESKTOP_V3_CACHE_SCHEMA_VERSION
   ownerKey: string
@@ -27,6 +90,12 @@ export interface PersistedDesktopV3OwnerV1 {
   syncScopesById: Record<string, SyncScopeCache>
   sessionOrderByScope: Record<string, string[]>
   sidebarSessionsById: Record<string, PersistedDesktopV3SidebarSessionV1>
+
+  realtimeEndpointCursor?: string
+  liveRunsBySession?: Record<
+    string,
+    Record<string, PersistedDesktopV3LiveRunOverlayV1>
+  >
 }
 
 export interface PersistedDesktopV3MessageTailV1 {
@@ -87,6 +156,19 @@ export function validatePersistedDesktopV3OwnerV1(
     const sidebarSessionsById = validateSidebarSessionsById(record.sidebarSessionsById, owner)
     validateOwnerReferences({ selectedSessionId, sidebarScopeId, syncScopesById, sessionOrderByScope, sidebarSessionsById })
 
+    const liveRunsBySession =
+      record.liveRunsBySession === undefined
+        ? {}
+        : validatePersistedDesktopV3LiveRunsBySessionV1(
+            record.liveRunsBySession,
+            sidebarSessionsById,
+          )
+
+    const realtimeEndpointCursor = optionalString(
+      record.realtimeEndpointCursor,
+      'realtimeEndpointCursor',
+    )
+
     return {
       ok: true,
       value: {
@@ -99,6 +181,8 @@ export function validatePersistedDesktopV3OwnerV1(
         syncScopesById,
         sessionOrderByScope,
         sidebarSessionsById,
+        realtimeEndpointCursor,
+        liveRunsBySession,
       },
     }
   } catch (error) {
@@ -267,6 +351,228 @@ function validateSidebarSessionsById(
       tombstone: sidebar.tombstone === undefined ? undefined : validateTombstone(sidebar.tombstone, sessionId, `sidebarSessionsById.${sessionId}.tombstone`, owner),
       runIntents: sidebar.runIntents === undefined ? undefined : validateRunIntents(sidebar.runIntents, sessionId, `sidebarSessionsById.${sessionId}.runIntents`, owner),
     }
+  }
+  return output
+}
+
+
+function validatePersistedDesktopV3LiveRunsBySessionV1(
+  value: unknown,
+  sidebarSessionsById: Record<string, PersistedDesktopV3SidebarSessionV1>,
+): Record<string, Record<string, PersistedDesktopV3LiveRunOverlayV1>> {
+  const input = recordValue(value, 'liveRunsBySession')
+  const output: Record<string, Record<string, PersistedDesktopV3LiveRunOverlayV1>> = {}
+
+  for (const [rawSessionId, rawRunsById] of Object.entries(input)) {
+    const sessionId = requiredMapKey(rawSessionId, 'liveRunsBySession session key')
+    const sidebarSession = sidebarSessionsById[sessionId]
+    if (!sidebarSession) {
+      throw new Error(`liveRunsBySession.${sessionId} references missing sidebar session`)
+    }
+    if (sidebarSession.tombstone) {
+      throw new Error(`liveRunsBySession.${sessionId} references tombstoned session`)
+    }
+
+    const runsInput = recordValue(rawRunsById, `liveRunsBySession.${sessionId}`)
+    const runsOutput: Record<string, PersistedDesktopV3LiveRunOverlayV1> = {}
+    for (const [rawRunId, rawOverlay] of Object.entries(runsInput)) {
+      const runId = requiredMapKey(rawRunId, `liveRunsBySession.${sessionId} run key`)
+      runsOutput[runId] = validatePersistedDesktopV3LiveRunOverlayV1(rawOverlay, sessionId, runId)
+    }
+    output[sessionId] = runsOutput
+  }
+
+  return output
+}
+
+function validatePersistedDesktopV3LiveRunOverlayV1(
+  value: unknown,
+  outerSessionId: string,
+  outerRunId: string,
+): PersistedDesktopV3LiveRunOverlayV1 {
+  const record = recordValue(value, `liveRunsBySession.${outerSessionId}.${outerRunId}`)
+  const sessionId = requiredString(record.sessionId, `liveRunsBySession.${outerSessionId}.${outerRunId}.sessionId`)
+  const runId = requiredString(record.runId, `liveRunsBySession.${outerSessionId}.${outerRunId}.runId`)
+  if (sessionId !== outerSessionId) {
+    throw new Error(`liveRunsBySession.${outerSessionId}.${outerRunId}.sessionId mismatch`)
+  }
+  if (runId !== outerRunId) {
+    throw new Error(`liveRunsBySession.${outerSessionId}.${outerRunId}.runId mismatch`)
+  }
+
+  const output: PersistedDesktopV3LiveRunOverlayV1 = {
+    sessionId,
+    runId,
+    status: validatePersistedDesktopV3LiveRunStatusV1(record.status, `liveRunsBySession.${outerSessionId}.${outerRunId}.status`),
+    toolCallsByCallId: validatePersistedDesktopV3LiveToolCallsByCallIdV1(
+      record.toolCallsByCallId,
+      `liveRunsBySession.${outerSessionId}.${outerRunId}.toolCallsByCallId`,
+    ),
+    lastEventSeqSeen: optionalNonNegativeSafeInteger(record.lastEventSeqSeen, `liveRunsBySession.${outerSessionId}.${outerRunId}.lastEventSeqSeen`),
+  }
+
+  if (record.assistantDraft !== undefined) {
+    output.assistantDraft = validatePersistedDesktopV3AssistantDraftV1(
+      record.assistantDraft,
+      `liveRunsBySession.${outerSessionId}.${outerRunId}.assistantDraft`,
+    )
+  }
+  if (record.assistantSegments !== undefined) {
+    output.assistantSegments = validatePersistedDesktopV3AssistantSegmentsV1(
+      record.assistantSegments,
+      `liveRunsBySession.${outerSessionId}.${outerRunId}.assistantSegments`,
+    )
+  }
+  if (record.reasoning !== undefined) {
+    output.reasoning = validatePersistedDesktopV3LiveReasoningV1(
+      record.reasoning,
+      `liveRunsBySession.${outerSessionId}.${outerRunId}.reasoning`,
+    )
+  }
+  if (record.reasoningByKey !== undefined) {
+    output.reasoningByKey = validatePersistedDesktopV3LiveReasoningByKeyV1(
+      record.reasoningByKey,
+      `liveRunsBySession.${outerSessionId}.${outerRunId}.reasoningByKey`,
+    )
+  }
+
+  return output
+}
+
+function validatePersistedDesktopV3LiveReasoningV1(
+  value: unknown,
+  label: string,
+): PersistedDesktopV3LiveReasoningV1 {
+  const record = recordValue(value, label)
+  const output: PersistedDesktopV3LiveReasoningV1 = {
+    state: validatePersistedDesktopV3LiveReasoningStateV1(record.state, `${label}.state`),
+    summary: requiredStringValue(record.summary, `${label}.summary`),
+    text: requiredStringValue(record.text, `${label}.text`),
+    startedAt: nullableNonNegativeSafeInteger(record.startedAt, `${label}.startedAt`),
+    updatedAt: nonNegativeSafeInteger(record.updatedAt, `${label}.updatedAt`),
+  }
+  assignOptional(output, 'key', optionalString(record.key, `${label}.key`))
+  assignOptional(output, 'reasoningId', optionalString(record.reasoningId, `${label}.reasoningId`))
+  assignOptional(output, 'reasoningKey', optionalString(record.reasoningKey, `${label}.reasoningKey`))
+  assignOptional(output, 'stepId', optionalString(record.stepId, `${label}.stepId`))
+  assignOptional(output, 'step', optionalNonNegativeSafeInteger(record.step, `${label}.step`))
+  assignOptional(output, 'completedAt', optionalNullableNonNegativeSafeInteger(record.completedAt, `${label}.completedAt`))
+  assignOptional(output, 'timelineSeq', optionalNonNegativeSafeInteger(record.timelineSeq, `${label}.timelineSeq`))
+  assignOptional(output, 'updatedSeq', optionalNonNegativeSafeInteger(record.updatedSeq, `${label}.updatedSeq`))
+  return output
+}
+
+function validatePersistedDesktopV3LiveToolCallV1(
+  value: unknown,
+  mapCallId: string,
+  label: string,
+): PersistedDesktopV3LiveToolCallV1 {
+  const record = recordValue(value, label)
+  const callId = requiredString(record.callId, `${label}.callId`)
+  if (callId !== mapCallId) {
+    throw new Error(`${label}.callId mismatch`)
+  }
+  const output: PersistedDesktopV3LiveToolCallV1 = {
+    callId,
+    updatedAt: nonNegativeSafeInteger(record.updatedAt, `${label}.updatedAt`),
+  }
+  assignOptional(output, 'stepId', optionalString(record.stepId, `${label}.stepId`))
+  assignOptional(output, 'toolInstanceId', optionalString(record.toolInstanceId, `${label}.toolInstanceId`))
+  assignOptional(output, 'toolName', optionalString(record.toolName, `${label}.toolName`))
+  assignOptional(output, 'argumentsText', optionalStringValue(record.argumentsText, `${label}.argumentsText`))
+  assignOptional(output, 'outputText', optionalStringValue(record.outputText, `${label}.outputText`))
+  assignOptional(output, 'errorText', optionalStringValue(record.errorText, `${label}.errorText`))
+  assignOptional(output, 'durationMs', optionalNonNegativeSafeInteger(record.durationMs, `${label}.durationMs`))
+  assignOptional(output, 'status', optionalString(record.status, `${label}.status`))
+  assignOptional(output, 'createdAt', optionalNonNegativeSafeInteger(record.createdAt, `${label}.createdAt`))
+  assignOptional(output, 'timelineSeq', optionalNonNegativeSafeInteger(record.timelineSeq, `${label}.timelineSeq`))
+  return output
+}
+
+function validatePersistedDesktopV3LiveRunStatusV1(value: unknown, label: string): PersistedDesktopV3LiveRunStatusV1 {
+  switch (value) {
+    case 'pending_executor':
+    case 'running':
+    case 'dispatch_blocked':
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+    case 'interrupted':
+    case 'expired':
+      return value
+    default:
+      throw new Error(`${label} is not a valid live run status`)
+  }
+}
+
+function validatePersistedDesktopV3LiveReasoningStateV1(value: unknown, label: string): PersistedDesktopV3LiveReasoningV1['state'] {
+  switch (value) {
+    case 'running':
+    case 'completed':
+    case 'error':
+      return value
+    default:
+      throw new Error(`${label} is not a valid live reasoning state`)
+  }
+}
+
+function validatePersistedDesktopV3AssistantDraftV1(
+  value: unknown,
+  label: string,
+): NonNullable<PersistedDesktopV3LiveRunOverlayV1['assistantDraft']> {
+  const record = recordValue(value, label)
+  return {
+    content: requiredStringValue(record.content, `${label}.content`),
+    updatedAt: nonNegativeSafeInteger(record.updatedAt, `${label}.updatedAt`),
+    timelineSeq: optionalNonNegativeSafeInteger(record.timelineSeq, `${label}.timelineSeq`),
+  }
+}
+
+function validatePersistedDesktopV3AssistantSegmentsV1(
+  value: unknown,
+  label: string,
+): NonNullable<PersistedDesktopV3LiveRunOverlayV1['assistantSegments']> {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array`)
+  }
+  return value.map((entry, index) => {
+    const segment = recordValue(entry, `${label}.${index}`)
+    return {
+      id: requiredString(segment.id, `${label}.${index}.id`),
+      content: requiredStringValue(segment.content, `${label}.${index}.content`),
+      createdAt: nonNegativeSafeInteger(segment.createdAt, `${label}.${index}.createdAt`),
+      updatedAt: nonNegativeSafeInteger(segment.updatedAt, `${label}.${index}.updatedAt`),
+      timelineSeq: optionalNonNegativeSafeInteger(segment.timelineSeq, `${label}.${index}.timelineSeq`),
+    }
+  })
+}
+
+function validatePersistedDesktopV3LiveToolCallsByCallIdV1(
+  value: unknown,
+  label: string,
+): Record<string, PersistedDesktopV3LiveToolCallV1> {
+  const input = recordValue(value, label)
+  const output: Record<string, PersistedDesktopV3LiveToolCallV1> = {}
+  for (const [rawCallId, rawTool] of Object.entries(input)) {
+    const callId = requiredMapKey(rawCallId, `${label} key`)
+    output[callId] = validatePersistedDesktopV3LiveToolCallV1(rawTool, callId, `${label}.${callId}`)
+  }
+  return output
+}
+
+function validatePersistedDesktopV3LiveReasoningByKeyV1(
+  value: unknown,
+  label: string,
+): Record<string, PersistedDesktopV3LiveReasoningV1> {
+  const input = recordValue(value, label)
+  const output: Record<string, PersistedDesktopV3LiveReasoningV1> = {}
+  for (const [rawKey, rawReasoning] of Object.entries(input)) {
+    const mapKey = requiredMapKey(rawKey, `${label} key`)
+    const reasoning = validatePersistedDesktopV3LiveReasoningV1(rawReasoning, `${label}.${mapKey}`)
+    if (reasoning.key !== undefined && reasoning.key !== mapKey) {
+      throw new Error(`${label}.${mapKey}.key mismatch`)
+    }
+    output[mapKey] = reasoning
   }
   return output
 }
@@ -464,6 +770,12 @@ function optionalRecord(value: unknown, label: string): Record<string, unknown> 
   return recordValue(value, label)
 }
 
+function assignOptional<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined): void {
+  if (value !== undefined) {
+    target[key] = value
+  }
+}
+
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new Error(`${label} is required`)
@@ -493,6 +805,18 @@ function optionalString(value: unknown, label: string): string | undefined {
   return requiredString(value, label)
 }
 
+function requiredStringValue(value: unknown, label: string): string {
+  if (typeof value !== 'string') {
+    throw new Error(`${label} must be a string`)
+  }
+  return value
+}
+
+function optionalStringValue(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined
+  return requiredStringValue(value, label)
+}
+
 function optionalStringArray(value: unknown, label: string): string[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
@@ -518,6 +842,16 @@ function nonNegativeSafeInteger(value: unknown, label: string): number {
 function optionalNonNegativeSafeInteger(value: unknown, label: string): number | undefined {
   if (value === undefined) return undefined
   return nonNegativeSafeInteger(value, label)
+}
+
+function nullableNonNegativeSafeInteger(value: unknown, label: string): number | null {
+  if (value === null) return null
+  return nonNegativeSafeInteger(value, label)
+}
+
+function optionalNullableNonNegativeSafeInteger(value: unknown, label: string): number | null | undefined {
+  if (value === undefined) return undefined
+  return nullableNonNegativeSafeInteger(value, label)
 }
 
 function requiredBoolean(value: unknown, label: string): boolean {
