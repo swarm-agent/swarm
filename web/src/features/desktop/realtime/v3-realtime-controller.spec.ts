@@ -18,7 +18,7 @@ import {
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { hydrateSnapshotFixture, messageA1, messageA2, projectionA, projectionB, reconnectFixture, runIntentA, sessionA, sessionB } from '../state/desktop-v3-cache.backend-fixtures'
 import type { SessionV3RealtimeResumeWire } from '../session-v3/types'
-import type { DesktopV3CacheAction, DesktopV3CacheState, V3SessionEvent } from '../state/desktop-v3-cache-types'
+import type { DesktopV3CacheAction, DesktopV3CacheState, RealtimeMessage, V3SessionEvent } from '../state/desktop-v3-cache-types'
 
 if (typeof window === 'undefined') {
   Object.defineProperty(globalThis, 'window', {
@@ -231,6 +231,9 @@ test('Desktop V3 realtime controller waits for delayed sidebar bootstrap before 
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -317,6 +320,9 @@ test('Desktop V3 immediate send waits for retained realtime bootstrap and first 
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -405,6 +411,9 @@ test('Desktop V3 workspace and session route switching keeps exactly one retaine
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -484,6 +493,9 @@ test('Desktop V3 direct route session missing from reconnect is explicitly subsc
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -565,6 +577,9 @@ test('Desktop V3 auto-discovered session hydrates once across duplicate discover
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: {},
@@ -654,6 +669,9 @@ test('Desktop V3 retained realtime controller releases connecting startup withou
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: {},
@@ -714,6 +732,9 @@ test('Desktop V3 retained realtime controller handles unmount before delayed boo
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -771,6 +792,9 @@ test('Desktop V3 retained realtime controller keeps one owner lease through Stri
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: {},
@@ -829,6 +853,9 @@ test('Desktop V3 retained realtime controller reports bootstrap failure without 
     dispatch: () => {},
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       throw new Error('reconnect should wait for bootstrap')
     },
@@ -928,6 +955,9 @@ test('Desktop V3 active-run repair defers websocket overlay and rebuilds once fr
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -1002,7 +1032,7 @@ test('Desktop V3 active-run repair defers websocket overlay and rebuilds once fr
     endpoint_cursor: 'cursor-live-4',
   })
 
-  assert.equal(state.realtime.endpointCursor, 'cursor-live-4')
+  await waitFor(() => state.realtime.endpointCursor === 'cursor-live-4')
   assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft, undefined)
 
   releaseFirstRepairPage()
@@ -1093,6 +1123,9 @@ test('Desktop V3 active-run repair abandons an in-flight page after terminal web
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -1157,9 +1190,9 @@ test('Desktop V3 active-run repair abandons an in-flight page after terminal web
     endpoint_cursor: 'cursor-terminal-5',
   })
 
+  await waitFor(() => state.realtime.endpointCursor === 'cursor-terminal-5')
   assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
   assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.status, 'completed')
-  assert.equal(state.realtime.endpointCursor, 'cursor-terminal-5')
 
   releaseRepairPage()
   await waitFor(() => repairPageReturned)
@@ -1286,6 +1319,9 @@ test('Desktop V3 active-run repair defers only events for the repaired run', asy
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -1370,6 +1406,7 @@ test('Desktop V3 active-run repair defers only events for the repaired run', asy
     endpoint_cursor: 'cursor-run-b-7',
   })
 
+  await waitFor(() => state.liveRunsBySession[sessionA.id]?.[runB.run_id]?.assistantDraft?.content === 'run-b-delta')
   assert.equal(
     state.liveRunsBySession[sessionA.id]?.[runB.run_id]?.assistantDraft?.content,
     'run-b-delta',
@@ -1391,7 +1428,7 @@ test('Desktop V3 active-run repair defers only events for the repaired run', asy
     state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.status,
     'completed',
   )
-  assert.equal(state.realtime.endpointCursor, 'cursor-run-b-7')
+  await waitFor(() => state.realtime.endpointCursor === 'cursor-run-b-7')
   assert.deepEqual(
     state.eventsBySession[sessionA.id].map((event) => `${event.seq}:${event.id}`),
     ['5:evt-terminal-5', '6:evt-run-b-running-6', '7:evt-run-b-delta-7'],
@@ -1479,6 +1516,9 @@ test('Desktop V3 active-run repair applies replacement-run overlays from HTTP pa
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -1565,6 +1605,7 @@ test('Desktop V3 active-run repair applies replacement-run overlays from HTTP pa
     endpoint_cursor: 'cursor-run-b-7',
   })
 
+  await waitFor(() => state.liveRunsBySession[sessionA.id]?.[runB.run_id]?.assistantDraft?.content === 'run-b-delta')
   assert.equal(
     state.currentRunIntentBySession[sessionA.id]?.run_id,
     runB.run_id,
@@ -1577,10 +1618,7 @@ test('Desktop V3 active-run repair applies replacement-run overlays from HTTP pa
     state.liveRunsBySession[sessionA.id]?.[runA.run_id]?.status,
     'completed',
   )
-  assert.equal(
-    state.realtime.endpointCursor,
-    'cursor-run-b-7',
-  )
+  await waitFor(() => state.realtime.endpointCursor === 'cursor-run-b-7')
   controller.stop()
 })
 
@@ -1609,6 +1647,9 @@ test('Desktop V3 cursor-error rehydrate repairs selected transcript after replac
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -1726,6 +1767,9 @@ test('Desktop V3 cursor-error repair queues behind overlapping hydrate before re
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -1898,6 +1942,172 @@ test('Desktop V3 realtime event persists before publication and cursor advance',
   assert.equal(await resetDesktopV3CacheDBForTests(), true)
 })
 
+test('failed write leaves state and endpoint cursor unchanged', async () => {
+  let state = readyControllerState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+  state.realtime.endpointCursor = 'cursor-reconnect'
+
+  const sockets: FakeWebSocket[] = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => false,
+    saveActiveOwnerKey: () => true,
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [sessionA.id],
+      workset_id: 'global-scope',
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start()
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+
+  sockets[0].emit(realtimeDeltaFrame('evt-failed-1', 1, 'cursor-failed-1', 'lost'))
+  await flushAsyncWork()
+  await waitFor(() => sockets[0].closed)
+
+  assert.equal(state.realtime.endpointCursor, 'cursor-reconnect')
+  assert.equal(state.eventsBySession[sessionA.id], undefined)
+  assert.equal(state.liveRunsBySession[sessionA.id], undefined)
+  controller.stop()
+})
+
+test('A-E interleaved frames publish in endpoint order', async () => {
+  let state = readyControllerState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+  state.realtime.endpointCursor = 'cursor-reconnect'
+
+  const sockets: FakeWebSocket[] = []
+  const writes: string[] = []
+  const releases: Array<() => void> = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async (owner) => {
+      writes.push(owner.realtimeEndpointCursor ?? '')
+      await new Promise<void>((resolve) => releases.push(resolve))
+      return true
+    },
+    saveActiveOwnerKey: () => true,
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [sessionA.id],
+      workset_id: 'global-scope',
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start()
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+
+  for (const label of ['A', 'B', 'C', 'D', 'E']) {
+    sockets[0].emit(realtimeDeltaFrame(`evt-${label}`, label.charCodeAt(0), `cursor-${label}`, label))
+  }
+
+  await waitFor(() => writes.length === 1)
+  assert.equal(state.realtime.endpointCursor, 'cursor-reconnect')
+  for (let index = 0; index < releases.length; index += 1) {
+    releases[index]()
+    await waitFor(() => writes.length >= Math.min(index + 2, 5))
+  }
+
+  await waitFor(() => state.realtime.endpointCursor === 'cursor-E')
+  assert.deepEqual(writes, ['cursor-A', 'cursor-B', 'cursor-C', 'cursor-D', 'cursor-E'])
+  assert.deepEqual(state.eventsBySession[sessionA.id].map((event) => event.id), ['evt-A', 'evt-B', 'evt-C', 'evt-D', 'evt-E'])
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content, 'ABCDE')
+  controller.stop()
+})
+
+test('final message and overlay cleanup are one IndexedDB transaction', async () => {
+  assert.equal(await resetDesktopV3CacheDBForTests(), true)
+  const owner = testDesktopV3CacheOwner()
+  let state = readyControllerState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+  state.realtime.endpointCursor = 'cursor-reconnect'
+
+  const sockets: FakeWebSocket[] = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => owner,
+    now: () => 7_000,
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [sessionA.id],
+      workset_id: 'global-scope',
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start()
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+
+  sockets[0].emit(realtimeDeltaFrame('evt-final-delta', 1, 'cursor-final-delta', 'done'))
+  await waitFor(() => state.realtime.endpointCursor === 'cursor-final-delta')
+  sockets[0].emit(realtimeFinalMessageFrame('evt-final-message', 2, 'cursor-final-message'))
+  await waitFor(() => state.realtime.endpointCursor === 'cursor-final-message')
+
+  const durableOwner = await readDesktopV3Owner(owner.key)
+  assert.equal(durableOwner?.realtimeEndpointCursor, 'cursor-final-message')
+  assert.equal(durableOwner?.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.assistantDraft, undefined)
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft, undefined)
+  assert.equal(state.messagesBySession[sessionA.id]?.items[0]?.id, 'message-final')
+  controller.stop()
+  assert.equal(await resetDesktopV3CacheDBForTests(), true)
+})
+
 test('Desktop V3 transport status maps to cache status', () => {
   assert.equal(mapTransportStatus('stopped'), 'closed')
   assert.equal(mapTransportStatus('closed'), 'closed')
@@ -1908,6 +2118,71 @@ test('Desktop V3 transport status maps to cache status', () => {
   assert.equal(mapTransportStatus('stale'), 'stale')
   assert.equal(mapTransportStatus('error'), 'error')
 })
+
+function realtimeDeltaFrame(id: string, seq: number, endpointCursor: string, delta: string): RealtimeMessage {
+  return {
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    session_id: sessionA.id,
+    event_type: 'session.assistant.delta',
+    event: {
+      id,
+      session_id: sessionA.id,
+      event_type: 'session.assistant.delta',
+      seq,
+      payload: {
+        run_id: runIntentA.run_id,
+        run_intent: runIntentA,
+        delta,
+      },
+      ts_unix_ms: seq,
+    },
+    projection: { ...projectionA, last_event_seq: seq, projection_high_watermark_seq: seq },
+    endpoint_cursor: endpointCursor,
+  }
+}
+
+function realtimeFinalMessageFrame(id: string, seq: number, endpointCursor: string): RealtimeMessage {
+  return {
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    session_id: sessionA.id,
+    event_type: 'session.message.completed',
+    event: {
+      id,
+      session_id: sessionA.id,
+      event_type: 'session.message.completed',
+      seq,
+      payload: {
+        run_id: runIntentA.run_id,
+        run_intent: { ...runIntentA, status: 'completed', event_seq: seq },
+        message: {
+          id: 'message-final',
+          session_id: sessionA.id,
+          global_seq: seq,
+          role: 'assistant',
+          content: 'done',
+          metadata: { run_id: runIntentA.run_id },
+          created_at: seq,
+        },
+      },
+      ts_unix_ms: seq,
+    },
+    projection: { ...projectionA, last_event_seq: seq, projection_high_watermark_seq: seq },
+    endpoint_cursor: endpointCursor,
+  }
+}
+
+function testDesktopV3CacheOwner() {
+  return createDesktopV3CacheOwner({
+    origin: 'https://desktop.example.test',
+    accountScopeId: 'acct-test',
+    userId: 'user-test',
+    surface: 'desktop',
+  })
+}
 
 function readyControllerState(): DesktopV3CacheState {
   const state = createEmptyDesktopV3CacheState()

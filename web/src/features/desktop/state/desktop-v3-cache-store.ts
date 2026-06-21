@@ -29,10 +29,20 @@ export function subscribeDesktopV3Cache(listener: DesktopV3CacheListener): () =>
 export function dispatchDesktopV3Cache(action: DesktopV3CacheAction): void {
   const previousState = store.getState()
   const nextState = desktopV3CacheReducer({ ...previousState }, action)
+  replaceDesktopV3CacheSnapshotAfterDurableCommit(previousState, nextState, [action])
+}
+
+export function replaceDesktopV3CacheSnapshotAfterDurableCommit(
+  previousState: DesktopV3CacheState,
+  nextState: DesktopV3CacheState,
+  actions: DesktopV3CacheAction[],
+): void {
   store.setState(nextState, true)
-  const mutation: DesktopV3CacheMutation = { action, previousState, nextState }
-  for (const listener of mutationListeners) {
-    listener(mutation)
+  for (const action of actions) {
+    const mutation: DesktopV3CacheMutation = { action, previousState, nextState }
+    for (const listener of mutationListeners) {
+      listener(mutation)
+    }
   }
 }
 

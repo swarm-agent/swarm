@@ -125,6 +125,8 @@ export class DesktopV3RealtimeTransport {
   private reopenTimer: number | null = null
   private livenessTimer: number | null = null
   private rehydrateInFlight: Promise<void> | null = null
+  private messageQueue: Array<{ socket: WebSocket; raw: unknown; generation: number }> = []
+  private drainingMessages = false
   private endpointCursor = ''
   private desired = false
   private generation = 0
@@ -334,11 +336,7 @@ export class DesktopV3RealtimeTransport {
     socket.addEventListener('message', (event) => {
       if (generation !== this.generation || this.socket !== socket) return
       this.noteActivity(generation)
-      void this.handleMessage(event.data, generation).catch((error) => {
-        if (generation !== this.generation || this.socket !== socket) return
-        this.emitStatus('error', errorMessage(error, 'V3 realtime frame handling failed'))
-        this.forceReopen('frame handling failed')
-      })
+      this.enqueueSocketMessage(socket, event.data, generation)
     })
 
     socket.addEventListener('error', () => {
@@ -358,6 +356,39 @@ export class DesktopV3RealtimeTransport {
       this.emitStatus('reopening', 'V3 realtime socket closed')
       this.scheduleReopen('socket closed')
     })
+  }
+
+  private enqueueSocketMessage(socket: WebSocket, raw: unknown, generation: number): void {
+    this.messageQueue.push({ socket, raw, generation })
+    if (!this.drainingMessages) {
+      void this.drainSocketMessages()
+    }
+  }
+
+  private async drainSocketMessages(): Promise<void> {
+    if (this.drainingMessages) return
+    this.drainingMessages = true
+    try {
+      while (this.messageQueue.length > 0) {
+        const next = this.messageQueue.shift()
+        if (!next) continue
+        if (next.generation !== this.generation || this.socket !== next.socket) continue
+        try {
+          await this.handleMessage(next.raw, next.generation)
+        } catch (error) {
+          if (next.generation !== this.generation || this.socket !== next.socket) continue
+          this.messageQueue = this.messageQueue.filter((queued) => queued.generation !== next.generation)
+          this.emitStatus('error', errorMessage(error, 'V3 realtime frame handling failed'))
+          this.forceReopen('frame handling failed')
+          break
+        }
+      }
+    } finally {
+      this.drainingMessages = false
+      if (this.messageQueue.length > 0) {
+        void this.drainSocketMessages()
+      }
+    }
   }
 
   private async handleMessage(raw: unknown, generation: number): Promise<void> {
