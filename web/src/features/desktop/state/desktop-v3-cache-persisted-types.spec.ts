@@ -485,3 +485,45 @@ test('persisted owner rejects unsafe sequence and timestamp values', () => {
   assert.equal(unsafeTimestamp.ok, false)
   assert.match(unsafeTimestamp.ok ? '' : unsafeTimestamp.reason, /assistantDraft.updatedAt must be a non-negative safe integer/)
 })
+
+
+test('persisted owner rejects inherited live session keys', () => {
+  const record = ownerRecordWithLiveSessions([sessionA.id])
+
+  record.liveRunsBySession = JSON.parse(
+    '{"constructor":{}}',
+  )
+
+  const result =
+    validatePersistedDesktopV3OwnerV1(record, owner.key)
+
+  assert.equal(result.ok, false)
+  assert.match(
+    result.ok ? '' : result.reason,
+    /references missing sidebar session/,
+  )
+})
+
+test('persisted owner rejects prototype-mutating run keys', () => {
+  const record = ownerRecordWithLiveSessions([sessionA.id])
+
+  record.liveRunsBySession = JSON.parse(JSON.stringify({
+    [sessionA.id]: {
+      ['__proto__']: {
+        sessionId: sessionA.id,
+        runId: '__proto__',
+        status: 'running',
+        toolCallsByCallId: {},
+      },
+    },
+  }))
+
+  const result =
+    validatePersistedDesktopV3OwnerV1(record, owner.key)
+
+  assert.equal(result.ok, false)
+  assert.match(
+    result.ok ? '' : result.reason,
+    /not a valid map key/,
+  )
+})

@@ -339,7 +339,8 @@ function validateSidebarSessionsById(
 ): Record<string, PersistedDesktopV3SidebarSessionV1> {
   const input = recordValue(value, 'sidebarSessionsById')
   const output: Record<string, PersistedDesktopV3SidebarSessionV1> = {}
-  for (const [sessionId, rawSidebar] of Object.entries(input)) {
+  for (const [rawSessionId, rawSidebar] of Object.entries(input)) {
+    const sessionId = requiredMapKey(rawSessionId, 'sidebarSessionsById key')
     const sidebar = recordValue(rawSidebar, `sidebarSessionsById.${sessionId}`)
     const session = validateSession(sidebar.session, `sidebarSessionsById.${sessionId}.session`, owner)
     if (session.id !== sessionId) {
@@ -365,10 +366,10 @@ function validatePersistedDesktopV3LiveRunsBySessionV1(
 
   for (const [rawSessionId, rawRunsById] of Object.entries(input)) {
     const sessionId = requiredMapKey(rawSessionId, 'liveRunsBySession session key')
-    const sidebarSession = sidebarSessionsById[sessionId]
-    if (!sidebarSession) {
+    if (!hasOwnRecord(sidebarSessionsById, sessionId)) {
       throw new Error(`liveRunsBySession.${sessionId} references missing sidebar session`)
     }
+    const sidebarSession = sidebarSessionsById[sessionId]
     if (sidebarSession.tombstone) {
       throw new Error(`liveRunsBySession.${sessionId} references tombstoned session`)
     }
@@ -790,14 +791,29 @@ function requiredContent(value: unknown, label: string): string {
   return value
 }
 
-function requiredMapKey(value: string, label: string): string {
+function requiredMapKey(
+  value: string,
+  label: string,
+): string {
   if (value.trim() === '') {
     throw new Error(`${label} is required`)
   }
   if (value !== value.trim()) {
-    throw new Error(`${label} must not include leading or trailing whitespace`)
+    throw new Error(
+      `${label} must not include leading or trailing whitespace`,
+    )
+  }
+  if (value === '__proto__') {
+    throw new Error(`${label} is not a valid map key`)
   }
   return value
+}
+
+function hasOwnRecord(
+  record: Record<string, unknown>,
+  key: string,
+): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key)
 }
 
 function optionalString(value: unknown, label: string): string | undefined {
