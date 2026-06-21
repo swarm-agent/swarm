@@ -148,6 +148,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
           resume,
         })
         this.markActiveRunsFromReconnect(reconnect)
+        await this.repairMarkedActiveRuns()
+
         return {
           endpointCursor: resume.endpoint_cursor,
           snapshotEndpointCursor: reconnect.snapshot_endpoint_cursor,
@@ -249,7 +251,9 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     })
 
     this.markActiveRunsFromReconnect(reconnect)
+    await this.repairMarkedActiveRuns()
     this.assertNotStopped()
+
     await this.awaitUnlessStopped(this.transport.start())
     await this.waitForFirstResumeSent()
     this.assertNotStopped()
@@ -325,7 +329,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       })
     }
 
-    this.startMarkedActiveRunRepairs()
   }
 
   private async repairHistoryAfterResume(sessionId: string): Promise<void> {
@@ -437,27 +440,43 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     }
   }
 
-  private startMarkedActiveRunRepairs(): void {
+  private async repairMarkedActiveRuns(): Promise<void> {
+    const repairs: Promise<void>[] = []
+
     for (const [sessionId, marked] of this.markedActiveRepairBySession) {
       const key = `${sessionId}:${marked.runId}`
-      if (this.activeRepairByRun.has(key)) continue
+      if (this.activeRepairByRun.has(key)) {
+        repairs.push(this.activeRepairByRun.get(key)!)
+        continue
+      }
+
+      let completed = false
 
       const pending = this.repairActiveRun(
         sessionId,
         marked.runId,
         marked.afterSeq,
-      ).catch((error) => {
-        console.error('[desktop-v3] active-run repair failed', error)
-      }).finally(() => {
-        this.activeRepairByRun.delete(key)
-        const current = this.markedActiveRepairBySession.get(sessionId)
-        if (current?.runId === marked.runId) {
-          this.markedActiveRepairBySession.delete(sessionId)
-        }
-      })
+      )
+        .then(() => {
+          completed = true
+        })
+        .finally(() => {
+          this.activeRepairByRun.delete(key)
+
+          if (completed) {
+            const current = this.markedActiveRepairBySession.get(sessionId)
+
+            if (current?.runId === marked.runId) {
+              this.markedActiveRepairBySession.delete(sessionId)
+            }
+          }
+        })
 
       this.activeRepairByRun.set(key, pending)
+      repairs.push(pending)
     }
+
+    await Promise.all(repairs)
   }
 
   private async repairActiveRun(
@@ -573,7 +592,13 @@ export class DesktopV3StreamCommitController {
         throw new DesktopV3StreamCommitError('Desktop V3 cache owner changed after stream commit')
       }
 
-      this.deps.saveActiveOwnerKey(owner.key)
+      const savedActiveOwner = this.deps.saveActiveOwnerKey(owner.key)
+      if (!savedActiveOwner) {
+        throw new DesktopV3StreamCommitError(
+          'Desktop V3 active owner key persistence failed',
+        )
+      }
+
       if (this.deps.replaceSnapshotAfterDurableCommit) {
         this.deps.replaceSnapshotAfterDurableCommit(previousState, nextState, actions)
       } else {

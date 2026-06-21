@@ -906,6 +906,8 @@ test('Desktop V3 reconnect input requires exact principal-global sidebar scope',
 })
 
 test('Desktop V3 active-run repair merges websocket and HTTP events through durable sequence', async () => {
+  assert.equal(await resetDesktopV3CacheDBForTests(), true)
+  const owner = testDesktopV3CacheOwner()
   let state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
   state.syncScopesById['global-scope'] = {
@@ -938,11 +940,6 @@ test('Desktop V3 active-run repair merges websocket and HTTP events through dura
     payload: { run_id: runIntentA.run_id, delta: 'live' },
     ts_unix_ms: 4,
   }
-  const duplicateLiveFromRepair: V3SessionEvent = {
-    ...liveEvent,
-    id: 'evt-live-4-duplicate-http',
-    payload: { run_id: runIntentA.run_id, delta: 'SHOULD_NOT_APPLY' },
-  }
   const readRequests: Array<{ sessionId: string; afterSeq: number; limit?: number }> = []
   let releaseFirstRepairPage!: () => void
   const firstRepairPage = new Promise<void>((resolve) => {
@@ -956,8 +953,7 @@ test('Desktop V3 active-run repair merges websocket and HTTP events through dura
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
+    resolveOwner: () => owner,
     saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
@@ -992,21 +988,21 @@ test('Desktop V3 active-run repair merges websocket and HTTP events through dura
         return {
           ok: true,
           session_id: input.sessionId,
-          events: [repairEvent, duplicateLiveFromRepair],
-          projection: { ...projectionA, last_event_seq: 4, projection_high_watermark_seq: 4 },
-          high_watermark_seq: 4,
+          events: [repairEvent],
+          projection: { ...projectionA, last_event_seq: 3, projection_high_watermark_seq: 3 },
+          high_watermark_seq: 3,
           next_seq: 4,
-          applied_seq: 4,
+          applied_seq: 3,
         }
       }
       return {
         ok: true,
         session_id: input.sessionId,
         events: [],
-        projection: { ...projectionA, last_event_seq: 4, projection_high_watermark_seq: 4 },
-        high_watermark_seq: 4,
+        projection: { ...projectionA, last_event_seq: 3, projection_high_watermark_seq: 3 },
+        high_watermark_seq: 3,
         next_seq: 4,
-        applied_seq: 4,
+        applied_seq: 3,
       }
     },
     openSocket: () => {
@@ -1017,10 +1013,14 @@ test('Desktop V3 active-run repair merges websocket and HTTP events through dura
   })
 
   const ready = controller.start()
-  await waitFor(() => sockets.length > 0)
+  await waitFor(() => readRequests.length === 1)
+  await flushAsyncWork()
+  assert.equal(sockets.length, 0)
+
+  releaseFirstRepairPage()
+  await waitFor(() => sockets.length === 1)
   sockets[0].open()
   await ready
-  await waitFor(() => readRequests.length === 1)
 
   sockets[0].emit({
     protocol: 'v3.realtime',
@@ -1034,21 +1034,27 @@ test('Desktop V3 active-run repair merges websocket and HTTP events through dura
   })
 
   await waitFor(() => state.realtime.endpointCursor === 'cursor-live-4')
-  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content, 'live')
-
-  releaseFirstRepairPage()
-  await flushAsyncWork()
-  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content, 'live')
+  assert.equal(
+    state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content,
+    'repair-live',
+  )
 
   assert.deepEqual(
     state.eventsBySession[sessionA.id].map((event) => `${event.seq}:${event.id}`),
     ['3:evt-repair-3', '4:evt-live-4'],
   )
   assert.equal(state.realtime.endpointCursor, 'cursor-live-4')
+
+  const durableOwner = await readDesktopV3Owner(owner.key)
+  assert.equal(
+    durableOwner?.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content,
+    'repair-live',
+  )
   controller.stop()
+  assert.equal(await resetDesktopV3CacheDBForTests(), true)
 })
 
-test('Desktop V3 active-run repair abandons an in-flight page after terminal websocket event', async () => {
+test('Desktop V3 active-run repair completes before terminal websocket event', async () => {
   let state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
   state.syncScopesById['global-scope'] = {
@@ -1176,10 +1182,15 @@ test('Desktop V3 active-run repair abandons an in-flight page after terminal web
   })
 
   const ready = controller.start()
+  await waitFor(() => readRequests.length === 1)
+  await flushAsyncWork()
+  assert.equal(sockets.length, 0)
+
+  releaseRepairPage()
+  await waitFor(() => repairPageReturned)
   await waitFor(() => sockets.length > 0)
   sockets[0].open()
   await ready
-  await waitFor(() => readRequests.length === 1)
 
   sockets[0].emit({
     protocol: 'v3.realtime',
@@ -1196,19 +1207,17 @@ test('Desktop V3 active-run repair abandons an in-flight page after terminal web
   assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
   assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.status, 'completed')
 
-  releaseRepairPage()
-  await waitFor(() => repairPageReturned)
   await flushAsyncWork()
 
   assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
   assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.status, 'completed')
-  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft, undefined)
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content, 'stale-repair')
   assert.equal(state.runIntentsBySession[sessionA.id]?.[runIntentA.run_id]?.status, 'completed')
   assert.equal(state.runIntentsBySession[sessionA.id]?.[runIntentA.run_id]?.event_seq, 5)
   assert.deepEqual(state.sessionsById[sessionA.id]?.kind === 'full' ? state.sessionsById[sessionA.id]?.session.lifecycle : undefined, { status: 'completed' })
   assert.deepEqual(
     state.eventsBySession[sessionA.id].map((event) => `${event.seq}:${event.id}`),
-    ['5:evt-terminal-5'],
+    ['3:evt-repair-running-3', '4:evt-repair-delta-4', '5:evt-terminal-5'],
   )
   assert.equal(state.realtime.endpointCursor, 'cursor-terminal-5')
   controller.stop()
@@ -1372,10 +1381,15 @@ test('Desktop V3 active-run repair defers only events for the repaired run', asy
   })
 
   const ready = controller.start()
+  await waitFor(() => readRequests.length === 1)
+  await flushAsyncWork()
+  assert.equal(sockets.length, 0)
+
+  releaseRepairPage()
+  await waitFor(() => repairPageReturned)
   await waitFor(() => sockets.length > 0)
   sockets[0].open()
   await ready
-  await waitFor(() => readRequests.length === 1)
 
   sockets[0].emit({
     protocol: 'v3.realtime',
@@ -1414,8 +1428,6 @@ test('Desktop V3 active-run repair defers only events for the repaired run', asy
     'run-b-delta',
   )
 
-  releaseRepairPage()
-  await waitFor(() => repairPageReturned)
   await flushAsyncWork()
 
   assert.equal(
@@ -1433,7 +1445,7 @@ test('Desktop V3 active-run repair defers only events for the repaired run', asy
   await waitFor(() => state.realtime.endpointCursor === 'cursor-run-b-7')
   assert.deepEqual(
     state.eventsBySession[sessionA.id].map((event) => `${event.seq}:${event.id}`),
-    ['5:evt-terminal-5', '6:evt-run-b-running-6', '7:evt-run-b-delta-7'],
+    ['3:evt-repair-running-3', '4:evt-repair-delta-4', '5:evt-terminal-5', '6:evt-run-b-running-6', '7:evt-run-b-delta-7'],
   )
   controller.stop()
 })
@@ -1880,6 +1892,7 @@ test('Desktop V3 realtime event persists before publication and cursor advance',
     subscribe: () => () => {},
     ensureSession: async () => ({}),
     resolveOwner: () => owner,
+    saveActiveOwnerKey: () => true,
     now: () => 5_000,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
@@ -1987,6 +2000,57 @@ test('failed write leaves state and endpoint cursor unchanged', async () => {
   controller.stop()
 })
 
+test('active-owner storage failure leaves state and cursor unchanged', async () => {
+  let state = readyControllerState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+  state.realtime.endpointCursor = 'cursor-reconnect'
+
+  const sockets: FakeWebSocket[] = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => false,
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [sessionA.id],
+      workset_id: 'global-scope',
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start()
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+
+  sockets[0].emit(realtimeDeltaFrame('evt-active-owner-failed', 1, 'cursor-failed-active-owner', 'lost'))
+  await waitFor(() => sockets.length === 2)
+  sockets[1].open()
+  await waitFor(() => sockets[1].sent.length > 0)
+
+  assert.equal(state.realtime.endpointCursor, 'cursor-reconnect')
+  assert.equal(state.eventsBySession[sessionA.id], undefined)
+  assert.equal(state.liveRunsBySession[sessionA.id], undefined)
+  assert.equal((sockets[1].sent[0] as SessionV3RealtimeResumeWire).endpoint_cursor, 'cursor-reconnect')
+  controller.stop()
+})
+
 test('A-E interleaved frames publish in endpoint order', async () => {
   let state = readyControllerState()
   state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
@@ -2068,6 +2132,7 @@ test('final message and overlay cleanup are one IndexedDB transaction', async ()
     subscribe: () => () => {},
     ensureSession: async () => ({}),
     resolveOwner: () => owner,
+    saveActiveOwnerKey: () => true,
     now: () => 7_000,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
