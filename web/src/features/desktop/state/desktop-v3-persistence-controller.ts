@@ -210,9 +210,31 @@ export function createDesktopV3PersistenceController(
         persistedAt,
       )
 
+      let currentOwner: DesktopV3CacheOwner | undefined
+      try {
+        currentOwner = await resolveOwner()
+      } catch {
+        return
+      }
+      if (currentOwner?.key !== owner.key) return
+
       const wrote = await writeOwnerAndTails(ownerRecord, tails)
       if (!wrote) {
         throw new Error('Desktop V3 IndexedDB transaction failed')
+      }
+
+      try {
+        currentOwner = await resolveOwner()
+      } catch {
+        return
+      }
+      if (currentOwner?.key !== owner.key) {
+        if (dirtyOwnerKey === owner.key) {
+          ownerDirtyVersion = 0
+          tailDirtyVersions.clear()
+          dirtyOwnerKey = undefined
+        }
+        return
       }
 
       saveActiveOwnerKey(owner.key)

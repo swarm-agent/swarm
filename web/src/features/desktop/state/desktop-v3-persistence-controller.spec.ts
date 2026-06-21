@@ -564,14 +564,15 @@ test('failed IndexedDB write leaves in-memory cache usable', async () => {
   }
 })
 
-test('owner change cannot write data into the previous owner partition', async () => {
+test('owner change after snapshot cannot write into previous owner partition', async () => {
   await resetHarness()
-  let resolveCalls = 0
+  let currentOwner = ownerA
   const writes: string[] = []
   const controller = createDesktopV3PersistenceController({
-    resolveOwner: () => {
-      resolveCalls += 1
-      return resolveCalls === 1 ? ownerA : ownerB
+    resolveOwner: () => currentOwner,
+    getSnapshot: () => {
+      currentOwner = ownerB
+      return getDesktopV3CacheSnapshot()
     },
     writeOwnerAndTails: async (record) => {
       writes.push(record.ownerKey)
@@ -587,6 +588,34 @@ test('owner change cannot write data into the previous owner partition', async (
   await controller.flushNow()
 
   assert.deepEqual(writes, [])
+  controller.stop()
+  await resetHarness()
+})
+
+test('owner change during write cannot reactivate previous owner', async () => {
+  await resetHarness()
+  let currentOwner = ownerA
+  const writes: string[] = []
+  const activeOwnerKeys: string[] = []
+  const controller = createDesktopV3PersistenceController({
+    resolveOwner: () => currentOwner,
+    writeOwnerAndTails: async (record) => {
+      writes.push(record.ownerKey)
+      currentOwner = ownerB
+      return true
+    },
+    saveActiveOwnerKey: (ownerKey) => {
+      activeOwnerKeys.push(ownerKey)
+      return true
+    },
+  })
+  controller.start()
+
+  dispatchDesktopV3Cache(bootstrapResponseToAction(snapshotFixture({ messages_by_session: {}, events_by_session: {} })))
+  await controller.flushNow()
+
+  assert.deepEqual(writes, [ownerA.key])
+  assert.equal(activeOwnerKeys.includes(ownerA.key), false)
   controller.stop()
   await resetHarness()
 })
