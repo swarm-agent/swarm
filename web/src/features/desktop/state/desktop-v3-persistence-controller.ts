@@ -10,7 +10,7 @@ import {
   type PersistedDesktopV3OwnerV1,
 } from './desktop-v3-cache-persisted-types'
 import { getDesktopV3CacheSnapshot, subscribeDesktopV3Cache, type DesktopV3CacheMutation } from './desktop-v3-cache-store'
-import type { DesktopV3CacheAction, DesktopV3CacheState } from './desktop-v3-cache-types'
+import type { DesktopV3CacheAction, DesktopV3CacheState, LiveRunOverlay } from './desktop-v3-cache-types'
 
 const DEFAULT_DEBOUNCE_MS = 75
 
@@ -332,6 +332,12 @@ export function buildPersistedDesktopV3OwnerV1FromState(
     ? state.selectedSessionId
     : undefined
 
+  const liveRunsBySession =
+    buildPersistedDesktopV3LiveRunsBySessionV1FromState(
+      state,
+      sidebarSessionsById,
+    )
+
   return {
     schemaVersion: DESKTOP_V3_CACHE_SCHEMA_VERSION,
     ownerKey: owner.key,
@@ -342,7 +348,58 @@ export function buildPersistedDesktopV3OwnerV1FromState(
     syncScopesById: cloneSyncScopes(state.syncScopesById),
     sessionOrderByScope,
     sidebarSessionsById,
+    realtimeEndpointCursor:
+      state.realtime.endpointCursor?.trim() || undefined,
+    liveRunsBySession:
+      Object.keys(liveRunsBySession).length > 0
+        ? liveRunsBySession
+        : undefined,
   }
+}
+
+export function buildPersistedDesktopV3LiveRunsBySessionV1FromState(
+  state: DesktopV3CacheState,
+  sidebarSessionsById: PersistedDesktopV3OwnerV1['sidebarSessionsById'],
+): NonNullable<PersistedDesktopV3OwnerV1['liveRunsBySession']> {
+  const output: NonNullable<
+    PersistedDesktopV3OwnerV1['liveRunsBySession']
+  > = {}
+
+  for (const [sessionId, runsById] of Object.entries(
+    state.liveRunsBySession,
+  )) {
+    if (!sidebarSessionsById[sessionId]) continue
+    if (state.tombstonesBySession[sessionId]) continue
+
+    for (const [runId, run] of Object.entries(runsById)) {
+      if (run.sessionId !== sessionId) continue
+      if (run.runId !== runId) continue
+      if (!isPersistableDesktopV3LiveRun(run)) continue
+
+      output[sessionId] ??= {}
+      output[sessionId][runId] = structuredClone(run)
+    }
+  }
+
+  return output
+}
+
+export function isPersistableDesktopV3LiveRun(
+  run: LiveRunOverlay,
+): boolean {
+  const active =
+    run.status === 'pending_executor'
+    || run.status === 'running'
+    || run.status === 'dispatch_blocked'
+
+  const hasVisibleState =
+    Boolean(run.assistantDraft?.content)
+    || Boolean(run.assistantSegments?.some((segment) => segment.content))
+    || Object.keys(run.toolCallsByCallId).length > 0
+    || Boolean(run.reasoning)
+    || Object.keys(run.reasoningByKey ?? {}).length > 0
+
+  return active || hasVisibleState
 }
 
 export function buildPersistedDesktopV3MessageTailV1FromState(

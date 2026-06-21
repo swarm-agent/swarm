@@ -1,3 +1,4 @@
+import type { PersistedDesktopV3OwnerV1 } from './desktop-v3-cache-persisted-types'
 import type {
   CacheEvent,
   DesktopV3CacheAction,
@@ -166,18 +167,7 @@ export function applyBootstrapSnapshot(
 
 export function applyPersistedRestore(
   state: DesktopV3CacheState,
-  owner: {
-    selectedSessionId?: string
-    sidebarScopeId: string
-    syncScopesById: DesktopV3CacheState['syncScopesById']
-    sessionOrderByScope: DesktopV3CacheState['sessionOrderByScope']
-    sidebarSessionsById: Record<string, {
-      session: SessionSnapshot
-      projection?: DesktopV3CacheState['projectionsBySession'][string]
-      tombstone?: DesktopV3CacheState['tombstonesBySession'][string]
-      runIntents?: V3SessionRunIntent[]
-    }>
-  },
+  owner: PersistedDesktopV3OwnerV1,
   selectedMessageTail?: {
     sessionId: string
     messages: MessageSnapshot[]
@@ -236,6 +226,11 @@ export function applyPersistedRestore(
     }
   }
 
+  restorePersistedDesktopV3LiveRuns(state, owner)
+
+  state.realtime.endpointCursor =
+    owner.realtimeEndpointCursor?.trim() || undefined
+
   const effectiveSessionId = preferredSessionId === null
     ? undefined
     : preferredSessionId?.trim() || owner.selectedSessionId
@@ -269,6 +264,29 @@ export function applyPersistedRestore(
   state.realtime.needsBootstrap = true
 
   return state
+}
+
+function restorePersistedDesktopV3LiveRuns(
+  state: DesktopV3CacheState,
+  owner: PersistedDesktopV3OwnerV1,
+): void {
+  state.liveRunsBySession = {}
+
+  for (const [sessionId, runsById] of Object.entries(
+    owner.liveRunsBySession ?? {},
+  )) {
+    if (state.tombstonesBySession[sessionId]) continue
+    if (state.sessionsById[sessionId]?.kind !== 'full') continue
+
+    for (const [runId, persisted] of Object.entries(runsById)) {
+      if (persisted.sessionId !== sessionId) continue
+      if (persisted.runId !== runId) continue
+
+      state.liveRunsBySession[sessionId] ??= {}
+      state.liveRunsBySession[sessionId][runId] =
+        structuredClone(persisted)
+    }
+  }
 }
 
 export function restorePersistedMessageTails(

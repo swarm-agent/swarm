@@ -10,12 +10,14 @@ import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, resetDesktopV3CacheForTests } from './desktop-v3-cache-store'
 import { restoreDesktopV3CacheFromActiveOwner } from './desktop-v3-bootstrap-controller'
 import {
+  buildPersistedDesktopV3LiveRunsBySessionV1FromState,
   buildPersistedDesktopV3MessageTailV1FromState,
   buildPersistedDesktopV3OwnerV1FromState,
   createDesktopV3PersistenceController,
   startDesktopV3PersistenceController,
   stopDesktopV3PersistenceControllerForTests,
 } from './desktop-v3-persistence-controller'
+import { selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
 import { bootstrapResponseToAction, hydrateResponseToAction, selectSession } from './desktop-v3-cache-wire'
 import {
   hydrateSnapshotFixture,
@@ -28,8 +30,10 @@ import {
   sessionA,
   sessionB,
   snapshotFixture,
+  tombstoneB,
 } from './desktop-v3-cache.backend-fixtures'
-import type { DesktopV3CacheAction, DesktopV3CacheState, MessageSnapshot } from './desktop-v3-cache-types'
+import type { PersistedDesktopV3MessageTailV1, PersistedDesktopV3OwnerV1 } from './desktop-v3-cache-persisted-types'
+import type { DesktopV3CacheAction, DesktopV3CacheState, LiveRunOverlay, MessageSnapshot, SessionSnapshot } from './desktop-v3-cache-types'
 
 const ownerA = createDesktopV3CacheOwner({
   origin: 'https://desktop.example.test',
@@ -77,6 +81,127 @@ function tailFromMessages(sessionId: string, messages: MessageSnapshot[]) {
     sessionId,
     persistedAt: 1_000,
     messages,
+  })
+}
+
+function sessionFixture(id: string, index: number): SessionSnapshot {
+  const base = id === sessionA.id ? sessionA : id === sessionB.id ? sessionB : sessionA
+  return {
+    ...base,
+    id,
+    title: `Session ${id}`,
+    created_at: 100 + index,
+    updated_at: 200 + index,
+    message_count: 0,
+    last_message_at: 0,
+  }
+}
+
+function liveRunOverlayFixture(sessionId: string, runId: string, index = 0): LiveRunOverlay {
+  return {
+    sessionId,
+    runId,
+    status: 'running',
+    assistantDraft: {
+      content: `assistant draft ${sessionId}`,
+      updatedAt: 1_000 + index,
+      timelineSeq: 10 + index,
+    },
+    assistantSegments: [{
+      id: `segment-${sessionId}`,
+      content: `assistant segment ${sessionId}`,
+      createdAt: 1_010 + index,
+      updatedAt: 1_011 + index,
+      timelineSeq: 11 + index,
+    }],
+    toolCallsByCallId: {
+      [`call-${sessionId}`]: {
+        callId: `call-${sessionId}`,
+        stepId: `step-${sessionId}`,
+        toolInstanceId: `tool-${sessionId}`,
+        toolName: 'read',
+        argumentsText: `{"session":"${sessionId}"}`,
+        outputText: `tool output ${sessionId}`,
+        status: 'running',
+        createdAt: 1_020 + index,
+        updatedAt: 1_021 + index,
+        timelineSeq: 12 + index,
+      },
+    },
+    reasoning: {
+      key: `reasoning-${sessionId}`,
+      reasoningId: `reasoning-id-${sessionId}`,
+      reasoningKey: `reasoning-key-${sessionId}`,
+      stepId: `reasoning-step-${sessionId}`,
+      step: index,
+      state: 'running',
+      summary: `reasoning summary ${sessionId}`,
+      text: `reasoning text ${sessionId}`,
+      startedAt: 1_030 + index,
+      completedAt: null,
+      updatedAt: 1_031 + index,
+      timelineSeq: 13 + index,
+      updatedSeq: 14 + index,
+    },
+    reasoningByKey: {
+      [`reasoning-map-${sessionId}`]: {
+        key: `reasoning-map-${sessionId}`,
+        state: 'running',
+        summary: `mapped reasoning summary ${sessionId}`,
+        text: `mapped reasoning text ${sessionId}`,
+        startedAt: 1_040 + index,
+        updatedAt: 1_041 + index,
+      },
+    },
+    lastEventSeqSeen: 50 + index,
+  }
+}
+
+function stateWithFiveLiveSessions(): DesktopV3CacheState {
+  const sessionIds = ['session-a', 'session-b', 'session-c', 'session-d', 'session-e']
+  const sessionsById = Object.fromEntries(sessionIds.map((id, index) => [id, sessionFixture(id, index)]))
+  const projectionsBySession = Object.fromEntries(sessionIds.map((id, index) => [id, {
+    ...projectionA,
+    session_id: id,
+    last_event_seq: 50 + index,
+    projection_high_watermark_seq: 50 + index,
+    updated_at: 200 + index,
+  }]))
+  const runIntentsBySession = Object.fromEntries(sessionIds.map((id, index) => [id, [{
+    ...runIntentA,
+    session_id: id,
+    run_id: `run-${id}`,
+    status: 'running',
+    event_seq: 50 + index,
+  }]]))
+
+  const state = apply([
+    bootstrapResponseToAction(snapshotFixture({
+      sessions_by_id: sessionsById,
+      projections_by_session: projectionsBySession,
+      messages_by_session: { [sessionA.id]: [messageA1] },
+      events_by_session: {},
+      run_intents_by_session: runIntentsBySession,
+      session_order: sessionIds,
+      tombstones_by_session: {},
+    })),
+    selectSession(sessionA.id),
+  ])
+  state.realtime.endpointCursor = 'opaque-realtime-cursor-5'
+  state.liveRunsBySession = Object.fromEntries(sessionIds.map((id, index) => [id, {
+    [`run-${id}`]: liveRunOverlayFixture(id, `run-${id}`, index),
+  }]))
+  return state
+}
+
+function restoreOwnerIntoEmptyState(
+  owner: PersistedDesktopV3OwnerV1,
+  selectedMessageTail?: PersistedDesktopV3MessageTailV1,
+): DesktopV3CacheState {
+  return desktopV3CacheReducer(createEmptyDesktopV3CacheState(), {
+    type: 'desktopV3Cache.restore',
+    owner,
+    selectedMessageTail,
   })
 }
 
@@ -327,8 +452,9 @@ test('metadata-only bootstrap does not erase a persisted transcript', async () =
   await resetHarness()
 })
 
-test('transient live-run overlays are never written', () => {
+test('persistable live-run overlays are written to the owner record but never transcript tails', () => {
   const state = persistedStateFixture()
+  state.realtime.endpointCursor = 'opaque-realtime-cursor-1'
   state.liveRunsBySession[sessionA.id] = {
     'run-live': {
       sessionId: sessionA.id,
@@ -343,9 +469,72 @@ test('transient live-run overlays are never written', () => {
 
   const owner = buildPersistedDesktopV3OwnerV1FromState(state, ownerA, 1_000)
   const tail = buildPersistedDesktopV3MessageTailV1FromState(state, ownerA.key, sessionA.id, 1_000)
-  assert.equal(JSON.stringify(owner).includes('draft assistant text'), false)
-  assert.equal(JSON.stringify(owner).includes('streaming tool delta'), false)
+
+  assert.equal(owner?.realtimeEndpointCursor, 'opaque-realtime-cursor-1')
+  assert.deepEqual(owner?.liveRunsBySession?.[sessionA.id]?.['run-live'], state.liveRunsBySession[sessionA.id]['run-live'])
   assert.equal(JSON.stringify(tail).includes('draft assistant text'), false)
+  assert.equal(JSON.stringify(tail).includes('streaming tool delta'), false)
+})
+
+test('restore populates live overlays for A-E while selected session is A', () => {
+  const state = stateWithFiveLiveSessions()
+  const owner = buildPersistedDesktopV3OwnerV1FromState(state, ownerA, 1_000)
+  assert.ok(owner)
+
+  const restored = restoreOwnerIntoEmptyState(owner, tailFromMessages(sessionA.id, [messageA1]))
+
+  assert.equal(restored.selectedSessionId, sessionA.id)
+  assert.equal(restored.realtime.endpointCursor, 'opaque-realtime-cursor-5')
+  assert.deepEqual(Object.keys(restored.liveRunsBySession).sort(), ['session-a', 'session-b', 'session-c', 'session-d', 'session-e'])
+  assert.deepEqual(restored.liveRunsBySession, owner.liveRunsBySession)
+})
+
+test('offscreen E renders without reading E message tail', () => {
+  const state = stateWithFiveLiveSessions()
+  const owner = buildPersistedDesktopV3OwnerV1FromState(state, ownerA, 1_000)
+  assert.ok(owner)
+
+  const restored = restoreOwnerIntoEmptyState(owner, tailFromMessages(sessionA.id, [messageA1]))
+  const rendered = selectRenderedSessionMessages(restored, 'session-e')
+
+  assert.equal(restored.selectedSessionId, sessionA.id)
+  assert.equal(restored.messagesBySession['session-e'], undefined)
+  assert.equal(rendered.committed.length, 0)
+  assert.equal(rendered.liveRuns.length, 1)
+  assert.equal(rendered.liveRuns[0].assistantDraft?.content, 'assistant draft session-e')
+  assert.equal(rendered.liveRuns[0].toolCallsByCallId['call-session-e']?.outputText, 'tool output session-e')
+})
+
+test('restore ignores missing and tombstoned live sessions', () => {
+  const state = stateWithFiveLiveSessions()
+  const owner = buildPersistedDesktopV3OwnerV1FromState(state, ownerA, 1_000)
+  assert.ok(owner)
+
+  owner.sidebarSessionsById['session-b'].tombstone = { ...tombstoneB, session_id: 'session-b' }
+  owner.liveRunsBySession = {
+    [sessionA.id]: owner.liveRunsBySession?.[sessionA.id] ?? {},
+    [sessionB.id]: owner.liveRunsBySession?.[sessionB.id] ?? {},
+    'session-missing': {
+      'run-session-missing': liveRunOverlayFixture('session-missing', 'run-session-missing'),
+    },
+  }
+
+  const restored = restoreOwnerIntoEmptyState(owner)
+
+  assert.ok(restored.liveRunsBySession[sessionA.id]?.['run-session-a'])
+  assert.equal(restored.liveRunsBySession[sessionB.id], undefined)
+  assert.equal(restored.liveRunsBySession['session-missing'], undefined)
+})
+
+test('restore retains assistant tool and reasoning state byte-for-byte', () => {
+  const state = stateWithFiveLiveSessions()
+  const owner = buildPersistedDesktopV3OwnerV1FromState(state, ownerA, 1_000)
+  assert.ok(owner)
+
+  const restored = restoreOwnerIntoEmptyState(owner)
+
+  assert.deepEqual(restored.liveRunsBySession, owner.liveRunsBySession)
+  assert.notEqual(restored.liveRunsBySession[sessionA.id]?.['run-session-a'], owner.liveRunsBySession?.[sessionA.id]?.['run-session-a'])
 })
 
 test('failed IndexedDB write leaves in-memory cache usable', async () => {
