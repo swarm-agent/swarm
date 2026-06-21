@@ -398,8 +398,13 @@ export function DesktopV3AgenticComposer({
     if (!mobileSettingsOpen && !intermediateSettingsOpen) return
     function handleClickOutside(event: MouseEvent) {
       const target = event.target as Node
-      if (mobileSettingsRef.current?.contains(target) || mobileSettingsTriggerRef.current?.contains(target)) return
-      if (intermediateSettingsRef.current?.contains(target) || intermediateSettingsTriggerRef.current?.contains(target)) return
+      if (
+        mobileSettingsRef.current?.contains(target) ||
+        mobileSettingsTriggerRef.current?.contains(target) ||
+        intermediateSettingsRef.current?.contains(target) ||
+        intermediateSettingsTriggerRef.current?.contains(target) ||
+        !document.getElementById('root')?.contains(target)
+      ) return
       setMobileSettingsOpen(false)
       setIntermediateSettingsOpen(false)
     }
