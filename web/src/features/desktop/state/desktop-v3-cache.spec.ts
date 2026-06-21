@@ -29,6 +29,7 @@ import {
   messageA2,
   messageB1,
   messageMutationFixture,
+  outboxFixture,
   projectionA,
   projectionB,
   reconnectFixture,
@@ -1098,6 +1099,38 @@ test('wire adapters normalize frame/event boundaries', () => {
   if (actions[0].type === 'realtime.applyEvent') {
     assert.equal(actions[0].event.payload.message?.id, messageB1.id)
   }
+})
+
+test('mutation response does not apply realtime outbox twice', () => {
+  const state = bootstrappedState()
+  const outbox = outboxFixture({
+    event: {
+      id: 'evt-mutation-outbox-delta',
+      session_id: sessionA.id,
+      seq: 9,
+      event_type: 'session.assistant.delta',
+      payload: {
+        run_id: runIntentA.run_id,
+        run_intent: runIntentA,
+        delta: 'must-not-apply',
+      },
+      ts_unix_ms: 9,
+    },
+    projection: { ...projectionA, last_event_seq: 9, projection_high_watermark_seq: 9 },
+  })
+
+  applyMessageMutationResult(
+    state,
+    messageMutationFixture({
+      realtime_outbox: outbox,
+      mutation: { realtime_outbox: outbox },
+    }),
+    'client-1',
+    messageA1.id,
+  )
+
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft, undefined)
+  assert.equal(Boolean(state.eventsBySession[sessionA.id]?.some((event) => event.id === 'evt-mutation-outbox-delta')), false)
 })
 
 test('session create replay does not regress fresher reconnect state or duplicate first message/run', () => {

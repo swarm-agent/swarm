@@ -585,8 +585,8 @@ export type DesktopV3CacheAction =
   | { type: 'syncStream.applyBatch'; scopeId: string; endpointCursor: string; events: CacheEvent[]; hasMore: boolean; replayInstructions: SyncReplayInstructions }
   | { type: 'reconnect.applySnapshot'; snapshot: SessionsReconnectResponse }
   | { type: 'realtime.storeResume'; streamPath: '/v3/realtime/stream'; resume: RealtimeMessage }
-  | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string; deferLiveOverlay?: boolean; durabilityCommitted?: boolean }
-  | { type: 'liveRun.rebuildFromEvents'; sessionId: string; runId: string; afterSeq: number }
+  | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string; durabilityCommitted?: boolean }
+  | { type: 'liveRun.mergeRepairEvents'; sessionId: string; runId: string; events: CacheEvent[] }
   | { type: 'realtime.worksetSessionDiscovered'; frame: RealtimeMessage }
   | { type: 'realtime.worksetSessionRemoved'; frame: RealtimeMessage }
   | { type: 'realtime.cursorError'; frame: RealtimeMessage }

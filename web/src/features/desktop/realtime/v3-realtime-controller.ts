@@ -20,7 +20,6 @@ import {
   type DesktopV3HydrateInput,
 } from '../state/desktop-v3-sync-api'
 import type {
-  CacheEvent,
   DesktopV3CacheAction,
   DesktopV3CacheState,
   RealtimeCache,
@@ -62,6 +61,7 @@ interface DesktopV3RealtimeControllerDeps {
   writeOwnerAndTails?: (owner: PersistedDesktopV3OwnerV1, tails: PersistedDesktopV3MessageTailV1[]) => Promise<boolean> | boolean
   saveActiveOwnerKey?: (ownerKey: string) => boolean
   replaceSnapshotAfterDurableCommit?: (previousState: DesktopV3CacheState, nextState: DesktopV3CacheState, actions: DesktopV3CacheAction[]) => void
+  streamCommit?: DesktopV3StreamCommitController
   now?: () => number
 }
 
@@ -76,7 +76,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly bootstrap: (input?: { preferredSessionId?: string | null; restorePersisted?: boolean }) => Promise<unknown>
   private readonly transport: DesktopV3RealtimeTransport
   private readonly resolveOwner: () => Promise<DesktopV3CacheOwner | undefined> | DesktopV3CacheOwner | undefined
-  private readonly streamCommitter: DesktopV3StreamCommitController
+  private readonly streamCommit: DesktopV3StreamCommitController
   private readonly now: () => number
   private readonly hydrateBySession = new Map<string, Promise<void>>()
   private readonly discoveryHydrateAttemptedBySession = new Set<string>()
@@ -105,7 +105,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     })
     this.resolveOwner = deps.resolveOwner ?? resolveCurrentDesktopV3CacheOwner
     this.now = deps.now ?? Date.now
-    this.streamCommitter = new DesktopV3StreamCommitController({
+    this.streamCommit = deps.streamCommit ?? new DesktopV3StreamCommitController({
       getSnapshot: this.getSnapshot,
       dispatch: this.dispatch,
       resolveOwner: this.resolveOwner,
@@ -348,21 +348,29 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
   private async handleFrame(frame: RealtimeMessage): Promise<void> {
     const sessionId = frame.session_id?.trim() || frame.event?.session_id?.trim() || ''
-    const actions = realtimeFrameToActions(frame).map((action) => {
-      if (action.type !== 'realtime.applyEvent') return action
-      const marked = sessionId ? this.markedActiveRepairBySession.get(sessionId) : undefined
-      const deferLiveOverlay = marked !== undefined && cacheEventRunId(action.event) === marked.runId
-      return {
-        ...action,
-        ...(deferLiveOverlay ? { deferLiveOverlay: true } : {}),
+
+    try {
+      await commitDesktopV3StreamFrame(this.streamCommit, frame)
+      if (frame.kind === 'workset.session.discovered' && sessionId) {
+        this.hydrateAutoDiscoveredSessionOnce(sessionId)
       }
+    } catch (error) {
+      this.handleDurableStreamCommitFailure(error)
+      throw error
+    }
+  }
+
+  private handleDurableStreamCommitFailure(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error)
+
+    this.dispatch({
+      type: 'realtime.statusChanged',
+      status: 'stale',
+      errorCode: 'durable_cache_commit_failed',
+      error: message,
     })
 
-    await this.streamCommitter.commitActions(actions)
-
-    if (frame.kind === 'workset.session.discovered' && sessionId) {
-      this.hydrateAutoDiscoveredSessionOnce(sessionId)
-    }
+    this.transport.reopenFromDurableCursor('Desktop V3 durable cache commit failed')
   }
 
   private async ensureSession(sessionId: string): Promise<void> {
@@ -439,12 +447,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
         marked.runId,
         marked.afterSeq,
       ).catch((error) => {
-        this.dispatch({
-          type: 'liveRun.rebuildFromEvents',
-          sessionId,
-          runId: marked.runId,
-          afterSeq: marked.afterSeq,
-        })
         console.error('[desktop-v3] active-run repair failed', error)
       }).finally(() => {
         this.activeRepairByRun.delete(key)
@@ -484,21 +486,20 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       }
 
       const ordered = [...page.events].sort((a, b) => a.seq - b.seq)
-      for (const event of ordered) {
-        const cacheEvent: CacheEvent = {
-          source: 'sync-stream',
+      if (ordered.length > 0) {
+        await this.streamCommit.commitActions([{
+          type: 'liveRun.mergeRepairEvents',
           sessionId,
-          eventType: event.event_type,
-          sessionEvent: event,
-          projection: page.projection,
-          payload: decodeSessionEventPayload(event),
-        }
-
-        this.dispatch({
-          type: 'realtime.applyEvent',
-          event: cacheEvent,
-          deferLiveOverlay: cacheEventRunId(cacheEvent) === expectedRunId,
-        })
+          runId: expectedRunId,
+          events: ordered.map((event) => ({
+            source: 'sync-stream',
+            sessionId,
+            eventType: event.event_type,
+            sessionEvent: event,
+            projection: page.projection,
+            payload: decodeSessionEventPayload(event),
+          })),
+        }])
       }
 
       const latestCurrent = this.getSnapshot().currentRunIntentBySession[sessionId]
@@ -509,14 +510,14 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       if (lastReturnedSeq <= cursor || lastReturnedSeq >= targetSeq) break
       cursor = lastReturnedSeq
     }
-
-    this.dispatch({
-      type: 'liveRun.rebuildFromEvents',
-      sessionId,
-      runId: expectedRunId,
-      afterSeq: runStartSeq,
-    })
   }
+}
+
+export function commitDesktopV3StreamFrame(
+  streamCommit: DesktopV3StreamCommitController,
+  frame: RealtimeMessage,
+): Promise<void> {
+  return streamCommit.commitActions(realtimeFrameToActions(frame))
 }
 
 export class DesktopV3StreamCommitError extends Error {
@@ -599,16 +600,37 @@ function buildDesktopV3StreamCommitTails(
   ownerKey: string,
   persistedAt: number,
 ): PersistedDesktopV3MessageTailV1[] {
-  const sessionIds = new Set<string>()
+  return committedMessageTailSessionIds(actions)
+    .map((sessionId) => buildPersistedDesktopV3MessageTailV1FromState(state, ownerKey, sessionId, persistedAt))
+    .filter((tail): tail is PersistedDesktopV3MessageTailV1 => tail !== undefined)
+}
+
+export function committedMessageTailSessionIds(actions: readonly DesktopV3CacheAction[]): string[] {
+  const ids = new Set<string>()
+
   for (const action of actions) {
     if (action.type === 'realtime.applyEvent' && action.event.payload.message) {
-      sessionIds.add(action.event.sessionId)
+      ids.add(action.event.sessionId)
+    }
+
+    if (action.type === 'mutation.messageResult' && action.raw.ok && action.raw.message) {
+      ids.add(action.raw.session_id || action.raw.message.session_id)
+    }
+
+    if (action.type === 'syncStream.applyBatch') {
+      for (const event of action.events) {
+        if (event.payload.message) ids.add(event.sessionId)
+      }
+    }
+
+    if (action.type === 'liveRun.mergeRepairEvents') {
+      for (const event of action.events) {
+        if (event.payload.message) ids.add(event.sessionId)
+      }
     }
   }
 
-  return Array.from(sessionIds)
-    .map((sessionId) => buildPersistedDesktopV3MessageTailV1FromState(state, ownerKey, sessionId, persistedAt))
-    .filter((tail): tail is PersistedDesktopV3MessageTailV1 => tail !== undefined)
+  return [...ids].sort()
 }
 
 async function resolveDesktopV3StreamOwner(
@@ -629,12 +651,6 @@ function resolveCurrentDesktopV3CacheOwner(): DesktopV3CacheOwner | undefined {
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   return typeof (value as { then?: unknown } | undefined)?.then === 'function'
-}
-
-function cacheEventRunId(event: CacheEvent): string {
-  return event.payload.run_id?.trim()
-    || event.payload.run_intent?.run_id?.trim()
-    || ''
 }
 
 export function buildDesktopV3ReconnectInput(

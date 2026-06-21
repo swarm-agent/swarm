@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto'
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 
 import { DesktopV3RealtimeTransport } from '../session-v3/transport'
 import { createDesktopV3CacheOwner } from '../state/desktop-v3-cache-owner'
@@ -904,7 +905,7 @@ test('Desktop V3 reconnect input requires exact principal-global sidebar scope',
   )
 })
 
-test('Desktop V3 active-run repair defers websocket overlay and rebuilds once from stored event sequence', async () => {
+test('Desktop V3 active-run repair merges websocket and HTTP events through durable sequence', async () => {
   let state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
   state.syncScopesById['global-scope'] = {
@@ -1033,10 +1034,11 @@ test('Desktop V3 active-run repair defers websocket overlay and rebuilds once fr
   })
 
   await waitFor(() => state.realtime.endpointCursor === 'cursor-live-4')
-  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft, undefined)
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content, 'live')
 
   releaseFirstRepairPage()
-  await waitFor(() => state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content === 'repair-live')
+  await flushAsyncWork()
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content, 'live')
 
   assert.deepEqual(
     state.eventsBySession[sessionA.id].map((event) => `${event.seq}:${event.id}`),
@@ -1436,7 +1438,7 @@ test('Desktop V3 active-run repair defers only events for the repaired run', asy
   controller.stop()
 })
 
-test('Desktop V3 active-run repair applies replacement-run overlays from HTTP page', async () => {
+test('Desktop V3 active-run repair ignores replacement-run overlays from HTTP page', async () => {
   let state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
   state.syncScopesById['global-scope'] = {
@@ -1569,16 +1571,10 @@ test('Desktop V3 active-run repair applies replacement-run overlays from HTTP pa
   sockets[0].open()
   await ready
   await waitFor(() => readRequests.length === 1)
-  await waitFor(() => state.currentRunIntentBySession[sessionA.id]?.run_id === runB.run_id)
+  await waitFor(() => state.currentRunIntentBySession[sessionA.id] === undefined)
 
-  assert.equal(
-    state.currentRunIntentBySession[sessionA.id]?.run_id,
-    runB.run_id,
-  )
-  assert.equal(
-    state.liveRunsBySession[sessionA.id]?.[runB.run_id]?.assistantDraft?.content,
-    'run-b-delta',
-  )
+  assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runB.run_id], undefined)
   assert.equal(
     state.liveRunsBySession[sessionA.id]?.[runA.run_id]?.status,
     'completed',
@@ -2108,6 +2104,210 @@ test('final message and overlay cleanup are one IndexedDB transaction', async ()
   assert.equal(await resetDesktopV3CacheDBForTests(), true)
 })
 
+test('repair events use the durable stream committer', async () => {
+  let state = readyControllerState()
+  const owner = testDesktopV3CacheOwner()
+  const sockets: FakeWebSocket[] = []
+  const persistedDrafts: string[] = []
+  const repairEvent: V3SessionEvent = {
+    id: 'evt-repair-delta',
+    session_id: sessionA.id,
+    event_type: 'session.assistant.delta',
+    seq: 3,
+    payload: {
+      run_id: runIntentA.run_id,
+      run_intent: { ...runIntentA, event_seq: 3 },
+      delta: 'repair-durable',
+    },
+    ts_unix_ms: 3,
+  }
+
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => owner,
+    writeOwnerAndTails: async (persistedOwner) => {
+      persistedDrafts.push(
+        persistedOwner.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content ?? '',
+      )
+      return true
+    },
+    saveActiveOwnerKey: () => true,
+    readEventsPage: async () => ({
+      ok: true,
+      session_id: sessionA.id,
+      events: [repairEvent],
+      projection: { ...projectionA, last_event_seq: 3, projection_high_watermark_seq: 3 },
+      high_watermark_seq: 3,
+      next_seq: 4,
+      applied_seq: 3,
+    }),
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      run_intents_by_session: { [sessionA.id]: [runIntentA] },
+      current_run_intent_by_session: { [sessionA.id]: runIntentA },
+      session_order: [sessionA.id],
+      workset_id: 'global-scope',
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start()
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+
+  await waitFor(() => state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content === 'repair-durable')
+  assert.ok(persistedDrafts.includes('repair-durable'))
+  controller.stop()
+})
+
+test('commit failure reopens from previous durable cursor', async () => {
+  let state = readyControllerState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+  state.realtime.endpointCursor = 'cursor-reconnect'
+
+  const sockets: FakeWebSocket[] = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => false,
+    saveActiveOwnerKey: () => true,
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [sessionA.id],
+      workset_id: 'global-scope',
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start()
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+
+  sockets[0].emit(realtimeDeltaFrame('evt-reopen-failed', 1, 'cursor-failed', 'lost'))
+  await waitFor(() => sockets.length === 2)
+  sockets[1].open()
+  await waitFor(() => sockets[1].sent.length > 0)
+
+  assert.equal((sockets[1].sent[0] as SessionV3RealtimeResumeWire).endpoint_cursor, 'cursor-reconnect')
+  assert.equal(state.realtime.endpointCursor, 'cursor-reconnect')
+  controller.stop()
+})
+
+test('workset discovery commits before background hydrate starts', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-reconnect'
+
+  const sockets: FakeWebSocket[] = []
+  const releases: Array<() => void> = []
+  const hydrateRequests: string[][] = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => {
+      await new Promise<void>((resolve) => releases.push(resolve))
+      return true
+    },
+    saveActiveOwnerKey: () => true,
+    hydrate: async (input) => {
+      hydrateRequests.push(input.session_ids)
+      return hydrateSnapshotFixture({
+        sessions_by_id: { 'session-discovered': { ...sessionA, id: 'session-discovered' } },
+        projections_by_session: { 'session-discovered': { ...projectionA, session_id: 'session-discovered' } },
+        session_order: ['session-discovered'],
+        messages_by_session: { 'session-discovered': [] },
+        selector: { kind: 'session_ids', session_ids: ['session-discovered'] },
+      })
+    },
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: {},
+      projections_by_session: {},
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [],
+      workset_id: 'global-scope',
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start()
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+
+  sockets[0].emit({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'workset.session.discovered',
+    workset_id: 'global-scope',
+    session_id: 'session-discovered',
+    subscription_id: 'sub-discovered',
+    auto_subscribed: true,
+    endpoint_cursor: 'cursor-discovered',
+  })
+
+  await waitFor(() => releases.length === 1)
+  assert.deepEqual(hydrateRequests, [])
+  releases[0]()
+  await waitFor(() => hydrateRequests.length === 1)
+  assert.equal(state.sessionsById['session-discovered']?.kind, 'full')
+  controller.stop()
+})
+
+test('Desktop V3 has exactly one production live-event ingress', async () => {
+  const realtimeController = await readSource(
+    'web/src/features/desktop/realtime/v3-realtime-controller.ts',
+  )
+  const cacheReducer = await readSource(
+    'web/src/features/desktop/state/desktop-v3-cache-reducer.ts',
+  )
+
+  assert.match(realtimeController, /commitDesktopV3StreamFrame/)
+  assert.doesNotMatch(
+    realtimeController,
+    /this\.dispatch\(\{\s*type:\s*['"]realtime\.applyEvent['"]/,
+  )
+  assert.doesNotMatch(realtimeController, /\/v3\/sessions\/.*\/stream/)
+  assert.doesNotMatch(cacheReducer, /outboxRecordToCacheEvent\(outbox\)/)
+})
+
 test('Desktop V3 transport status maps to cache status', () => {
   assert.equal(mapTransportStatus('stopped'), 'closed')
   assert.equal(mapTransportStatus('closed'), 'closed')
@@ -2200,6 +2400,11 @@ function readyControllerState(): DesktopV3CacheState {
     needsBootstrap: false,
   }
   return state
+}
+
+async function readSource(path: string): Promise<string> {
+  const localPath = path.startsWith('web/') ? path.slice('web/'.length) : path
+  return readFile(localPath, 'utf8')
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {

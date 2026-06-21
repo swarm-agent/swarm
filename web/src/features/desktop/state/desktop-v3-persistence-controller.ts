@@ -481,7 +481,7 @@ export function classifyDesktopV3PersistenceAction(
     case 'reconnect.applySnapshot':
     case 'realtime.storeResume':
     case 'realtime.applyEvent':
-    case 'liveRun.rebuildFromEvents':
+    case 'liveRun.mergeRepairEvents':
     case 'realtime.statusChanged':
     case 'mutation.sessionCreateResult':
     case 'realtime.worksetSessionDiscovered':

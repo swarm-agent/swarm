@@ -258,6 +258,22 @@ export class DesktopV3RealtimeTransport {
     this.forceReopen(reason)
   }
 
+  reopenFromDurableCursor(reason: string): void {
+    const durableCursor = normalizeString(this.options.getEndpointCursor?.())
+    if (durableCursor) {
+      this.endpointCursor = durableCursor
+    }
+    this.messageQueue = []
+    if (!this.desired) {
+      this.desired = true
+    }
+    this.clearScheduledReopen()
+    this.clearLiveness()
+    this.closeOwnedSocket()
+    this.emitStatus('reopening', reason)
+    void this.connect().catch((error) => this.emitStatus('error', errorMessage(error, reason)))
+  }
+
   diagnostics(): DesktopV3RealtimeTransportDiagnostics {
     return {
       desired: this.desired,

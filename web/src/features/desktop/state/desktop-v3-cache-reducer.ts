@@ -16,7 +16,6 @@ import type {
   SessionsReconnectResponse,
   SubscriptionCache,
   SyncSnapshotResponse,
-  V3RealtimeOutboxRecord,
   V3SessionEvent,
   V3SessionProjection,
   V3SessionRunIntent,
@@ -25,7 +24,7 @@ import type {
   SessionSnapshot,
   MessageMutationConflictResponse,
 } from './desktop-v3-cache-types'
-import { decodeSessionEventPayload, normalizeRealtimeEventFrame, outboxRecordToCacheEvent } from './desktop-v3-cache-wire'
+import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 
 const ACTIVE_RUN_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
 const TERMINAL_RUN_INTENT_STATUSES = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'expired'])
@@ -111,15 +110,13 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       state.realtime.endpointCursor = action.resume.endpoint_cursor
       return state
     case 'realtime.applyEvent':
-      applyCacheEvent(state, action.event, {
-        applyLiveOverlay: action.deferLiveOverlay !== true,
-      })
+      applyCacheEvent(state, action.event)
       if (action.endpointCursor) {
         state.realtime.endpointCursor = action.endpointCursor
       }
       return state
-    case 'liveRun.rebuildFromEvents':
-      rebuildLiveRunFromStoredEvents(state, action.sessionId, action.runId, action.afterSeq)
+    case 'liveRun.mergeRepairEvents':
+      mergeLiveRunRepairEvents(state, action.sessionId, action.runId, action.events)
       return state
     case 'realtime.worksetSessionDiscovered':
       applyWorksetSessionDiscovered(state, action.frame)
@@ -719,11 +716,6 @@ export function applySessionCreateMutationResult(
       .filter((id) => id !== sessionId)
   }
 
-  const outbox = raw.realtime_outbox ?? raw.mutation?.realtime_outbox
-  if (outbox) {
-    applyCacheEvent(state, outboxRecordToCacheEvent(outbox))
-  }
-
   return state
 }
 
@@ -753,10 +745,6 @@ export function applyMessageMutationResult(
   }
   if (raw.run_intent) {
     upsertRunIntent(state, raw.run_intent.session_id || raw.session_id, raw.run_intent)
-  }
-  const outbox = raw.realtime_outbox ?? raw.mutation?.realtime_outbox
-  if (outbox) {
-    applyCacheEvent(state, outboxRecordToCacheEvent(outbox))
   }
   return state
 }
@@ -789,7 +777,6 @@ export function upsertPendingUserMessage(
 export function applyCacheEvent(
   state: DesktopV3CacheState,
   event: CacheEvent,
-  options: { applyLiveOverlay?: boolean } = {},
 ): DesktopV3CacheState {
   const { sessionId, projection, payload, eventType } = event
   const existingProjection = state.projectionsBySession[sessionId]
@@ -842,9 +829,7 @@ export function applyCacheEvent(
   }
 
   applyScalarSessionPatchIfPresent(state, sessionId, payload, eventType)
-  if (options.applyLiveOverlay !== false) {
-    applyLiveRunOverlayFromEvent(state, event)
-  }
+  applyLiveRunOverlayFromEvent(state, event)
 
   return state
 }
@@ -917,7 +902,6 @@ export function upsertRunIntent(
   const liveRuns = state.liveRunsBySession[sessionId] ?? {}
   const liveRun = liveRuns[runIntent.run_id] ?? createLiveRunOverlay(sessionId, runIntent.run_id)
   liveRun.status = normalizeLiveRunStatus(runIntent.status)
-  liveRun.lastEventSeqSeen = Math.max(liveRun.lastEventSeqSeen ?? 0, runIntent.event_seq)
   liveRuns[runIntent.run_id] = liveRun
   state.liveRunsBySession[sessionId] = liveRuns
 }
@@ -1496,46 +1480,25 @@ function createLiveRunOverlay(sessionId: string, runId: string): LiveRunOverlay 
   }
 }
 
-function rebuildLiveRunFromStoredEvents(
+function cacheEventRunId(event: CacheEvent): string {
+  return event.payload.run_id?.trim()
+    || event.payload.run_intent?.run_id?.trim()
+    || stringFromMetadata(event.payload.message?.metadata, 'run_id')
+    || stringFromMetadata(event.payload.message?.metadata, 'runId')
+    || ''
+}
+
+function mergeLiveRunRepairEvents(
   state: DesktopV3CacheState,
   sessionId: string,
   runId: string,
-  afterSeq: number,
+  events: CacheEvent[],
 ): void {
-  const current = state.currentRunIntentBySession[sessionId]
-  if (!current || current.run_id !== runId) return
-
-  state.liveRunsBySession[sessionId] ??= {}
-  state.liveRunsBySession[sessionId][runId] = {
-    sessionId,
-    runId,
-    status: normalizeLiveRunStatus(current.status),
-    toolCallsByCallId: {},
-    lastEventSeqSeen: current.event_seq,
-  }
-
-  const seenIds = new Set<string>()
-  const seenSeqs = new Set<string>()
-  const events = sortEvents(dedupeEventsByIdentity(state.eventsBySession[sessionId] ?? []))
-    .filter((event) => event.seq > afterSeq)
-  for (const sessionEvent of events) {
-    const id = sessionEvent.id?.trim()
-    const seqKey = eventSeqKey(sessionEvent)
-    if ((id && seenIds.has(id)) || seenSeqs.has(seqKey)) continue
-    if (id) seenIds.add(id)
-    seenSeqs.add(seqKey)
-    const payload = decodeSessionEventPayload(sessionEvent)
-    const runIntent = recordValue(payload.runIntent) ?? recordValue(payload.run_intent)
-    const payloadRunId = stringValue(payload.run_id) || stringValue(runIntent?.run_id)
-    if (payloadRunId !== runId) continue
-    applyLiveRunOverlayFromEvent(state, {
-      source: 'sync-stream',
-      sessionId,
-      eventType: sessionEvent.event_type,
-      sessionEvent,
-      projection: state.projectionsBySession[sessionId],
-      payload,
-    })
+  for (const event of [...events].sort(
+    (left, right) => (left.sessionEvent?.seq ?? 0) - (right.sessionEvent?.seq ?? 0),
+  )) {
+    if (cacheEventRunId(event) !== runId) continue
+    applyCacheEvent(state, event)
   }
 }
 
@@ -1560,7 +1523,11 @@ function applyLiveRunOverlayFromEvent(
   }
 
   const liveRun = ensureLiveRunOverlay(state, sessionId, runId)
-  liveRun.lastEventSeqSeen = Math.max(liveRun.lastEventSeqSeen ?? 0, eventSeq)
+  const priorEventSeq = liveRun.lastEventSeqSeen ?? 0
+  if (eventSeq > 0 && eventSeq <= priorEventSeq) {
+    return
+  }
+  liveRun.lastEventSeqSeen = Math.max(priorEventSeq, eventSeq)
 
   switch (event.eventType) {
     case 'session.assistant.delta':
@@ -1941,10 +1908,6 @@ function subscriptionId(subscription: SubscriptionCache | Record<string, unknown
 
 function worksetId(workset: WorksetCache | Record<string, unknown>): string | undefined {
   return stringField(workset.workset_id) || stringField(workset.worksetId)
-}
-
-export function cacheEventFromOutbox(raw: V3RealtimeOutboxRecord): CacheEvent {
-  return outboxRecordToCacheEvent(raw)
 }
 
 export function payloadFromEventPayload(payload: unknown): SessionEventPayload {
