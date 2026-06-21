@@ -3331,6 +3331,11 @@ export function DesktopAppPage() {
               workspaceName: sessionById.get(routeSessionId)?.workspaceName ?? '',
               topologyRoutes: [],
             }) : []}
+            onOpenChats={() => setMobileSidebarOpen(true)}
+            onNewSession={() => {
+              const routeSession = sessionById.get(routeSessionId)
+              if (routeSession?.workspacePath) handleStartNewSessionInWorkspace(routeSession.workspacePath, routeSession.workspaceName)
+            }}
           />
         ) : isFlowRoute ? (
           <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[var(--app-bg)] px-3 pb-[calc(var(--app-safe-area-bottom)_+_1.25rem)] pt-[calc(var(--app-safe-area-top)_+_1rem)] sm:px-6 sm:py-8">
@@ -3359,6 +3364,7 @@ export function DesktopAppPage() {
               topologyRoutes: routeWorkspace.topologyRoutes,
             })}
             pendingWorktreeBranch={pendingWorktreeBranchByWorkspace[routeWorkspace.path]}
+            onOpenChats={() => setMobileSidebarOpen(true)}
           />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">

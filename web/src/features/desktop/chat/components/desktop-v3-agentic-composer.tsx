@@ -17,7 +17,6 @@ import { DesktopMentionPanel } from './desktop-mention-panel'
 import { DesktopSlashCommandPanel } from './desktop-slash-command-panel'
 import { ModePicker } from './mode-picker'
 import { ModelPicker } from './model-picker'
-import { RoutePicker } from './route-picker'
 import { ThinkingPicker } from './thinking-picker'
 
 const THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
@@ -201,10 +200,6 @@ export function DesktopV3AgenticComposer({
   thinkingTagsBusy = false,
   fast,
   onFastChange,
-  route,
-  routeOptions = [],
-  onRouteSelect,
-  routeTitle,
   contextLabel,
   contextTooltip,
   onCompact,
@@ -253,7 +248,6 @@ export function DesktopV3AgenticComposer({
   const selectedModel = useMemo(() => modelOptions.find((option) => option.key === selectedModelKey) ?? null, [modelOptions, selectedModelKey])
   const normalizedThinking = normalizeThinking(thinking)
   const fastSupported = selectedModel ? supportsCodexFastMode(selectedModel.provider, selectedModel.model) : false
-  const showRoutePicker = Boolean(route && routeOptions.length > 1 && onRouteSelect)
   const effectiveModelPickerSignal = modelPickerOpenSignal + internalModelPickerSignal
   const dictationComposer = dictationEnabled
     ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
@@ -635,7 +629,6 @@ export function DesktopV3AgenticComposer({
                 {compactButton(false)}
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {showRoutePicker && route ? <RoutePicker currentRoute={route} routes={routeOptions} onSelect={onRouteSelect!} disabled={composerDisabled || canStop} title={routeTitle} /> : null}
                 <Button size="sm" className="h-10 w-10 shrink-0 rounded-xl border border-transparent bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <Send size={20} />}
                 </Button>
@@ -651,7 +644,7 @@ export function DesktopV3AgenticComposer({
                   {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" /> : null}
                 </div>
               ) : null}
-              <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_minmax(0,0.7fr)_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_minmax(0,0.7fr)_40px] sm:gap-2">
+              <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_40px] sm:gap-2">
                 <button ref={mobileSettingsTriggerRef} type="button" onClick={() => setMobileSettingsOpen(!mobileSettingsOpen)} className="flex h-10 min-w-0 items-center gap-1.5 overflow-hidden rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] px-2 text-left shadow-sm transition hover:bg-[var(--app-surface-hover)]" title="Open mode, agent, model, thinking, and speed settings">
                   <Settings2 size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
                   <span className="flex min-w-0 flex-col leading-tight">
@@ -660,11 +653,6 @@ export function DesktopV3AgenticComposer({
                   </span>
                 </button>
                 {compactButton(true)}
-                {showRoutePicker && route ? (
-                  <div className="flex min-w-0 overflow-hidden [&>div]:w-full [&>div>button]:w-full">
-                    <RoutePicker currentRoute={route} routes={routeOptions} onSelect={onRouteSelect!} disabled={composerDisabled || canStop} title={routeTitle} />
-                  </div>
-                ) : <span />}
                 <Button size="sm" className="h-10 w-10 shrink-0 rounded-xl border border-transparent bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <Send size={20} />}
                 </Button>

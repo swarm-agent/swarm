@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, LoaderCircle, XCircle } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
@@ -10,10 +10,12 @@ import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import type { DesktopSessionRecord } from '../../types/realtime'
 import type { StructuredToolMessage, ToolMessageState, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
 import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
-import { agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeThinkingTagsEnabled } from '../../settings/swarm/types/swarm-settings'
+import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
+import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
 import { updateSessionV3Agent, updateSessionV3Mode, updateSessionV3Preference, stopSessionV3Run } from '../../session-v3/api'
 import {
   clearDesktopV3ExistingMessageOperation,
@@ -222,6 +224,8 @@ export interface DesktopV3ExistingConversationPaneProps {
   metadata?: Record<string, unknown>
   session?: DesktopSessionRecord | null
   routeOptions?: DesktopChatRoute[]
+  onOpenChats?: () => void
+  onNewSession?: () => void
 }
 
 export function completeDesktopV3ExistingMessage(input: {
@@ -245,8 +249,11 @@ export function DesktopV3ExistingConversationPane({
   metadata,
   session,
   routeOptions = [],
+  onOpenChats,
+  onNewSession,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim()
+  const queryClient = useQueryClient()
   const mountedRef = useRef(true)
   const operationRef = useRef<DesktopV3ExistingMessageOperation | null>(
     loadDesktopV3ExistingMessageOperation(normalizedSessionId),
@@ -269,6 +276,7 @@ export function DesktopV3ExistingConversationPane({
   const [draft, setDraft] = useState(retainedOperation?.request.content ?? '')
   const [sendError, setSendError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
+  const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
   const [mode, setMode] = useState<'auto' | 'plan'>((session?.mode || cacheSession?.mode) === 'plan' ? 'plan' : 'auto')
   const [selectedAgent, setSelectedAgent] = useState(initialAgent)
   const [preference, setPreference] = useState<SessionPreferenceRecord>(cachedPreference)
@@ -407,6 +415,22 @@ export function DesktopV3ExistingConversationPane({
     }
   }
 
+  async function handleThinkingTagsToggle(enabled: boolean) {
+    if (thinkingTagsSaving) return
+    setThinkingTagsSaving(true)
+    setSendError(null)
+    try {
+      const updated = await saveThinkingTagsSetting(enabled)
+      queryClient.setQueryData(uiSettingsQueryKey(), updated)
+    } catch (error) {
+      if (mountedRef.current) {
+        setSendError(error instanceof Error ? error.message : 'Failed to update thinking tags setting')
+      }
+    } finally {
+      if (mountedRef.current) setThinkingTagsSaving(false)
+    }
+  }
+
   async function handleStop() {
     if (!normalizedSessionId || !currentRun?.runId) return
     try {
@@ -438,6 +462,14 @@ export function DesktopV3ExistingConversationPane({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]" data-testid="desktop-v3-existing-conversation-pane">
+      <DesktopV3ChatHeader
+        title={session?.title || cacheSession?.title || 'Conversation'}
+        workspaceName={session?.workspaceName || cacheSession?.workspace_name || 'Workspace'}
+        mode={mode}
+        running={Boolean(currentRun)}
+        onOpenChats={onOpenChats}
+        onNewSession={onNewSession}
+      />
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
           {initialHydrateStatus === 'loading' && !messagesLoaded ? (
@@ -490,6 +522,8 @@ export function DesktopV3ExistingConversationPane({
         thinking={preference.thinking}
         onThinkingChange={handleThinkingChange}
         thinkingTagsEnabled={thinkingTagsEnabled}
+        onThinkingTagsToggle={(enabled) => { void handleThinkingTagsToggle(enabled) }}
+        thinkingTagsBusy={thinkingTagsSaving}
         fast={fastToggleFromPreference(preference)}
         onFastChange={handleFastChange}
         route={route}
@@ -515,7 +549,7 @@ function DesktopV3RenderItemView({ item, thinkingTagsEnabled, timerNow }: { item
     case 'live-tool':
       return <DesktopV3LiveToolCall tool={item.tool} />
     case 'live-working':
-      return <DesktopV3WorkingMessage />
+      return null
     default:
       return null
   }
@@ -564,7 +598,7 @@ function DesktopV3UserMessage({ content, pendingLabel }: { content: string; pend
 }
 
 function DesktopV3PendingUserMessage({ message }: { message: PendingUserMessage }) {
-  return <DesktopV3UserMessage content={message.content} pendingLabel={message.status === 'failed' ? message.error || 'failed' : 'sending'} />
+  return <DesktopV3UserMessage content={message.content} pendingLabel={message.status === 'failed' ? message.error || 'failed' : undefined} />
 }
 
 function DesktopV3AssistantMessage({ content, role }: { content: string; role: string }) {
@@ -601,16 +635,6 @@ function DesktopV3ReasoningMessage({ item, thinkingTagsEnabled, timerNow }: { it
         </div>
         {body ? <ChatMarkdown content={body} /> : null}
       </div>
-    </div>
-  )
-}
-
-function DesktopV3WorkingMessage() {
-  return (
-    <div className="flex justify-start text-xs text-[var(--app-text-subtle)]">
-      <span className="inline-flex items-center gap-2">
-        <LoaderCircle size={13} className="animate-spin" /> assistant is working
-      </span>
     </div>
   )
 }

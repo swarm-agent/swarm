@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
-import { draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled } from '../../settings/swarm/types/swarm-settings'
+import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
 import type { AgentStateRecord, ModelOptionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
+import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
 import {
   clearDesktopV3NewSessionOperation,
   createDesktopV3NewSessionOperation,
@@ -74,6 +76,7 @@ export interface DesktopV3NewSessionPaneProps {
   pendingWorktreeBranch?: string | null
   agentName?: string
   preference?: DesktopV3NewSessionPreference
+  onOpenChats?: () => void
 }
 
 export function completeDesktopV3NewSessionStarted(input: {
@@ -96,8 +99,10 @@ export function DesktopV3NewSessionPane({
   pendingWorktreeBranch,
   agentName: agentNameProp = '',
   preference: preferenceProp,
+  onOpenChats,
 }: DesktopV3NewSessionPaneProps) {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const mountedRef = useRef(true)
   const storedOperation = useMemo(
     () => loadDesktopV3NewSessionOperation(workspace.path),
@@ -140,6 +145,7 @@ export function DesktopV3NewSessionPane({
   const [draft, setDraft] = useState(retainedOperation?.firstMessageRequest.content ?? '')
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
+  const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
   const [mode, setMode] = useState<'auto' | 'plan'>(defaultMode)
   const [selectedAgent, setSelectedAgent] = useState(agentNameProp.trim() || agentState.activePrimary || '')
   const [preference, setPreference] = useState<SessionPreferenceRecord>(() => ({
@@ -232,6 +238,22 @@ export function DesktopV3NewSessionPane({
     }))
   }
 
+  async function handleThinkingTagsToggle(enabled: boolean) {
+    if (thinkingTagsSaving) return
+    setThinkingTagsSaving(true)
+    setStartError(null)
+    try {
+      const updated = await saveThinkingTagsSetting(enabled)
+      queryClient.setQueryData(uiSettingsQueryKey(), updated)
+    } catch (error) {
+      if (mountedRef.current) {
+        setStartError(error instanceof Error ? error.message : 'Failed to update thinking tags setting')
+      }
+    } finally {
+      if (mountedRef.current) setThinkingTagsSaving(false)
+    }
+  }
+
   async function handleSubmit() {
     if (starting || !selectedRoute) return
 
@@ -318,6 +340,13 @@ export function DesktopV3NewSessionPane({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]" data-testid="desktop-v3-new-session-pane">
+      <DesktopV3ChatHeader
+        title="New conversation"
+        workspaceName={workspace.workspaceName || workspace.path}
+        mode={mode}
+        running={starting}
+        onOpenChats={onOpenChats}
+      />
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
         <div className="mx-auto flex h-full w-full max-w-3xl flex-col justify-end" />
       </div>
@@ -347,6 +376,8 @@ export function DesktopV3NewSessionPane({
         thinking={preference.thinking}
         onThinkingChange={handleThinkingChange}
         thinkingTagsEnabled={thinkingTagsEnabled}
+        onThinkingTagsToggle={(enabled) => { void handleThinkingTagsToggle(enabled) }}
+        thinkingTagsBusy={thinkingTagsSaving}
         fast={fastToggleFromPreference(preference)}
         onFastChange={handleFastChange}
         route={selectedRoute}
