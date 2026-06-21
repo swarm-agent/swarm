@@ -1,7 +1,11 @@
+import 'fake-indexeddb/auto'
+
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { DesktopV3RealtimeTransport } from '../session-v3/transport'
+import { createDesktopV3CacheOwner } from '../state/desktop-v3-cache-owner'
+import { readDesktopV3Owner, resetDesktopV3CacheDBForTests } from '../state/desktop-v3-cache-db'
 import {
   DesktopV3RealtimeControllerRuntime,
   buildDesktopV3ReconnectInput,
@@ -1811,6 +1815,87 @@ test('Desktop V3 cursor-error repair queues behind overlapping hydrate before re
     releaseFirstHydrate()
     await ready?.catch(() => {})
   }
+})
+
+test('Desktop V3 realtime event persists before publication and cursor advance', async () => {
+  assert.equal(await resetDesktopV3CacheDBForTests(), true)
+  const owner = createDesktopV3CacheOwner({
+    origin: 'https://desktop.example.test',
+    accountScopeId: 'acct-a',
+    userId: 'user-a',
+    surface: 'desktop',
+  })
+  let state = readyControllerState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+  state.realtime.endpointCursor = 'cursor-reconnect'
+
+  const sockets: FakeWebSocket[] = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => owner,
+    now: () => 5_000,
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [sessionA.id],
+      workset_id: 'global-scope',
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start()
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+
+  sockets[0].emit({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    session_id: sessionA.id,
+    event_type: 'session.assistant.delta',
+    event: {
+      id: 'evt-durable-before-publication',
+      session_id: sessionA.id,
+      event_type: 'session.assistant.delta',
+      seq: 3,
+      payload: {
+        run_id: runIntentA.run_id,
+        run_intent: runIntentA,
+        delta: 'durable-first',
+      },
+      ts_unix_ms: 5_000,
+    },
+    projection: { ...projectionA, last_event_seq: 3, projection_high_watermark_seq: 3 },
+    endpoint_cursor: 'cursor-live-3',
+  })
+
+  assert.equal(state.realtime.endpointCursor, 'cursor-reconnect')
+  await waitFor(() => state.realtime.endpointCursor === 'cursor-live-3')
+  const durableOwner = await readDesktopV3Owner(owner.key)
+  assert.equal(
+    durableOwner?.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content,
+    'durable-first',
+  )
+  assert.equal(durableOwner?.realtimeEndpointCursor, 'cursor-live-3')
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content, 'durable-first')
+
+  controller.stop()
+  assert.equal(await resetDesktopV3CacheDBForTests(), true)
 })
 
 test('Desktop V3 transport status maps to cache status', () => {

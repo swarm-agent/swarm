@@ -58,7 +58,7 @@ export interface DesktopV3RealtimeTransportOptions {
   getEndpointCursor?: () => string | null | undefined
   openSocket?: DesktopV3RealtimeTransportOpenSocket
   onStatus?: (event: DesktopV3RealtimeTransportStatusEvent) => void
-  onFrame?: (event: DesktopV3RealtimeTransportFrameEvent) => void
+  onFrame?: (event: DesktopV3RealtimeTransportFrameEvent) => Promise<void> | void
   onCursor?: (event: DesktopV3RealtimeTransportCursorEvent) => void
   onResumeSent?: (resume: SessionV3RealtimeResumeWire, meta: DesktopV3RealtimeTransportMeta) => void
   onRehydrateRequested?: (reason: string, frame: SessionV3RealtimeFrameWire | null, meta: DesktopV3RealtimeTransportMeta) => Promise<DesktopV3RealtimeTransportRehydrateResult | void> | DesktopV3RealtimeTransportRehydrateResult | void
@@ -334,7 +334,11 @@ export class DesktopV3RealtimeTransport {
     socket.addEventListener('message', (event) => {
       if (generation !== this.generation || this.socket !== socket) return
       this.noteActivity(generation)
-      void this.handleMessage(event.data, generation)
+      void this.handleMessage(event.data, generation).catch((error) => {
+        if (generation !== this.generation || this.socket !== socket) return
+        this.emitStatus('error', errorMessage(error, 'V3 realtime frame handling failed'))
+        this.forceReopen('frame handling failed')
+      })
     })
 
     socket.addEventListener('error', () => {
@@ -365,13 +369,16 @@ export class DesktopV3RealtimeTransport {
     const endpointCursor = frameEndpointCursor(frame)
     const committedCursorBeforeFrame = this.currentEndpointCursor()
 
-    this.options.onFrame?.({
+    const frameResult = this.options.onFrame?.({
       frame,
       kind,
       sessionId,
       endpointCursor,
       ...this.meta(),
     })
+    if (isPromiseLike(frameResult)) {
+      await frameResult
+    }
 
     this.noteWorksetSessionFrame(frame, committedCursorBeforeFrame)
 
@@ -718,6 +725,10 @@ function reopenDelayMs(attempt: number, baseOverride?: number, maxOverride?: num
   const jitterWindow = Math.max(1, Math.floor(baseDelay * REOPEN_JITTER_RATIO))
   const jitterOffset = Math.floor((Math.random() * (jitterWindow * 2 + 1)) - jitterWindow)
   return Math.max(base, baseDelay + jitterOffset)
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return typeof (value as { then?: unknown } | undefined)?.then === 'function'
 }
 
 function socketStateName(socket: WebSocket | null): DesktopV3RealtimeTransportSocketState {

@@ -1,9 +1,13 @@
-import { ensureDesktopSession } from '../../../app/api'
+import { ensureDesktopSession, getDesktopSessionIdentitySnapshot } from '../../../app/api'
 import { DesktopV3RealtimeTransport, type DesktopV3RealtimeTransportStatus } from '../session-v3/transport'
 import type { SessionV3RealtimeWorksetSubscriptionRequestWire } from '../session-v3/types'
 import { getDesktopV3SessionEventsPage, type DesktopV3SessionEventsPage } from '../session-v3/read-api'
 import { openDesktopV3RealtimeTransportSocket } from './client'
 import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
+import { createDesktopV3CacheOwnerFromIdentity, type DesktopV3CacheOwner } from '../state/desktop-v3-cache-owner'
+import { desktopV3CachePersistenceCoordinator, persistDesktopV3OwnerAndTails } from '../state/desktop-v3-cache-persistence-coordinator'
+import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
+import { buildPersistedDesktopV3MessageTailV1FromState, buildPersistedDesktopV3OwnerV1FromState } from '../state/desktop-v3-persistence-controller'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, subscribeDesktopV3Cache, type DesktopV3CacheMutation } from '../state/desktop-v3-cache-store'
 import { decodeSessionEventPayload, hydrateResponseToAction, realtimeFrameToActions } from '../state/desktop-v3-cache-wire'
 import {
@@ -52,6 +56,8 @@ interface DesktopV3RealtimeControllerDeps {
   ensureSession?: () => Promise<unknown>
   bootstrap?: (input?: { preferredSessionId?: string | null; restorePersisted?: boolean }) => Promise<unknown>
   openSocket?: (input: { endpointCursor: string }) => WebSocket | Promise<WebSocket>
+  resolveOwner?: () => Promise<DesktopV3CacheOwner | undefined> | DesktopV3CacheOwner | undefined
+  now?: () => number
 }
 
 export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeController {
@@ -64,6 +70,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly ensureSessionIdentity: () => Promise<unknown>
   private readonly bootstrap: (input?: { preferredSessionId?: string | null; restorePersisted?: boolean }) => Promise<unknown>
   private readonly transport: DesktopV3RealtimeTransport
+  private readonly resolveOwner: () => Promise<DesktopV3CacheOwner | undefined> | DesktopV3CacheOwner | undefined
+  private readonly now: () => number
   private readonly hydrateBySession = new Map<string, Promise<void>>()
   private readonly discoveryHydrateAttemptedBySession = new Set<string>()
   private readonly markedActiveRepairBySession = new Map<string, { runId: string; afterSeq: number }>()
@@ -89,6 +97,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
         restorePersisted: input?.restorePersisted,
       })
     })
+    this.resolveOwner = deps.resolveOwner ?? resolveCurrentDesktopV3CacheOwner
+    this.now = deps.now ?? Date.now
 
     this.transport = new DesktopV3RealtimeTransport({
       getEndpointCursor: () => this.getSnapshot().realtime.endpointCursor,
@@ -320,27 +330,101 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.pendingHistoryRepair.delete(sessionId)
   }
 
-  private handleFrame(frame: RealtimeMessage): void {
+  private handleFrame(frame: RealtimeMessage): Promise<void> | void {
     const sessionId = frame.session_id?.trim() || frame.event?.session_id?.trim() || ''
     const marked = sessionId
       ? this.markedActiveRepairBySession.get(sessionId)
       : undefined
+    let chain: Promise<void> | undefined
+
+    const finishFrame = () => {
+      if (frame.kind === 'workset.session.discovered' && sessionId) {
+        this.hydrateAutoDiscoveredSessionOnce(sessionId)
+      }
+    }
 
     for (const action of realtimeFrameToActions(frame)) {
-      const deferLiveOverlay = action.type === 'realtime.applyEvent'
-        && marked !== undefined
-        && cacheEventRunId(action.event) === marked.runId
+      const run = () => {
+        const deferLiveOverlay = action.type === 'realtime.applyEvent'
+          && marked !== undefined
+          && cacheEventRunId(action.event) === marked.runId
 
-      this.dispatch(
-        deferLiveOverlay
-          ? { ...action, deferLiveOverlay: true }
-          : action,
-      )
+        const publishAction = action.type === 'realtime.applyEvent'
+          ? {
+              ...action,
+              ...(deferLiveOverlay ? { deferLiveOverlay: true } : {}),
+            }
+          : action
+
+        const committed = this.commitRealtimeActionBeforePublication(publishAction)
+        if (isPromiseLike(committed)) {
+          return committed.then(() => {
+            this.dispatch(publishAction)
+          })
+        }
+        this.dispatch(publishAction)
+        return undefined
+      }
+
+      if (chain) {
+        chain = chain.then(() => run())
+      } else {
+        const result = run()
+        if (isPromiseLike(result)) chain = result
+      }
     }
 
-    if (frame.kind === 'workset.session.discovered' && sessionId) {
-      this.hydrateAutoDiscoveredSessionOnce(sessionId)
+    if (chain) {
+      return chain.then(finishFrame)
     }
+    finishFrame()
+    return undefined
+  }
+
+  private commitRealtimeActionBeforePublication(action: DesktopV3CacheAction): Promise<void> | void {
+    if (action.type !== 'realtime.applyEvent') return undefined
+    if (action.durabilityCommitted) return undefined
+
+    const owner = this.resolveOwner()
+    if (isPromiseLike(owner)) {
+      return owner.then((resolvedOwner) => this.commitRealtimeActionForOwner(action, resolvedOwner))
+    }
+    return this.commitRealtimeActionForOwner(action, owner)
+  }
+
+  private commitRealtimeActionForOwner(
+    action: Extract<DesktopV3CacheAction, { type: 'realtime.applyEvent' }>,
+    owner: DesktopV3CacheOwner | undefined,
+  ): Promise<void> | void {
+    if (!owner) return undefined
+
+    return desktopV3CachePersistenceCoordinator.enqueue(async () => {
+      const state = desktopV3CacheReducer(structuredClone(this.getSnapshot()), {
+        ...action,
+        durabilityCommitted: true,
+      })
+      const persistedAt = this.now()
+      const ownerRecord = buildPersistedDesktopV3OwnerV1FromState(state, owner, persistedAt)
+      if (!ownerRecord) return
+
+      const tails = action.event.payload.message
+        ? [buildPersistedDesktopV3MessageTailV1FromState(
+            state,
+            owner.key,
+            action.event.sessionId,
+            persistedAt,
+          )].filter((tail): tail is NonNullable<typeof tail> => tail !== undefined)
+        : []
+
+      const currentOwner = this.resolveOwner()
+      const resolvedCurrentOwner = isPromiseLike(currentOwner) ? await currentOwner : currentOwner
+      if (resolvedCurrentOwner?.key !== owner.key) return
+
+      const wrote = await persistDesktopV3OwnerAndTails(ownerRecord, tails)
+      if (!wrote) {
+        throw new Error('Desktop V3 realtime persistence transaction failed')
+      }
+    })
   }
 
   private async ensureSession(sessionId: string): Promise<void> {
@@ -495,6 +579,19 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       afterSeq: runStartSeq,
     })
   }
+}
+
+function resolveCurrentDesktopV3CacheOwner(): DesktopV3CacheOwner | undefined {
+  try {
+    const identity = getDesktopSessionIdentitySnapshot()
+    return identity ? createDesktopV3CacheOwnerFromIdentity(identity) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return typeof (value as { then?: unknown } | undefined)?.then === 'function'
 }
 
 function cacheEventRunId(event: CacheEvent): string {
