@@ -840,8 +840,69 @@ export function applyCacheEvent(
 
   applyScalarSessionPatchIfPresent(state, sessionId, payload, eventType)
   applyLiveRunOverlayFromEvent(state, event)
+  if (payload.message) {
+    reconcileLiveRunWithCommittedMessage(
+      state,
+      sessionId,
+      payload.message,
+      resolveDesktopV3CacheEventRunId(event),
+      payload.run_intent?.status,
+    )
+  }
+  commitCompletedReasoningEvent(state, event)
 
   return state
+}
+
+function commitCompletedReasoningEvent(state: DesktopV3CacheState, event: CacheEvent): void {
+  if (event.eventType !== 'session.reasoning.completed') return
+
+  const payload = event.payload ?? {}
+  const runId = resolveDesktopV3CacheEventRunId(event)
+  if (!runId) return
+
+  const sessionId = event.sessionId
+  const key = reasoningOverlayKey(payload)
+  const liveReasoning = state.liveRunsBySession[sessionId]?.[runId]?.reasoningByKey?.[key]
+    ?? state.liveRunsBySession[sessionId]?.[runId]?.reasoning
+  const text = stringValue(payload.text)
+    || stringValue(payload.summary)
+    || liveReasoning?.text
+    || liveReasoning?.summary
+    || ''
+  const content = text.trim()
+  if (!content) return
+
+  const seq = event.sessionEvent?.seq ?? event.projection?.last_event_seq ?? 0
+  const createdAt = Number(
+    payload.recorded_at
+      ?? payload.updated_at
+      ?? event.sessionEvent?.ts_unix_ms
+      ?? Date.now(),
+  )
+  const id = stringValue(payload.message_id)
+    || `reasoning:${sessionId}:${runId}:${key}:${seq || createdAt}`
+
+  const status = state.runIntentsBySession[sessionId]?.[runId]?.status
+  const message: MessageSnapshot = {
+    id,
+    session_id: sessionId,
+    global_seq: resolveCommittedReasoningMessageSeq(state, sessionId, id, seq),
+    role: 'reasoning',
+    content,
+    created_at: createdAt,
+    metadata: {
+      run_id: runId,
+      reasoning_overlay_key: key,
+      reasoning_id: stringValue(payload.reasoning_id) || undefined,
+      reasoning_key: stringValue(payload.reasoning_key) || undefined,
+      step_id: stringValue(payload.step_id) || undefined,
+      source_event_type: event.eventType,
+    },
+  }
+
+  upsertCommittedMessage(state, sessionId, message, runId, status)
+  reconcileLiveRunWithCommittedMessage(state, sessionId, message, runId, status)
 }
 
 export function upsertCommittedMessage(
@@ -1355,7 +1416,7 @@ function replaceRunIntentsForSession(
   const liveRuns = state.liveRunsBySession[sessionId]
   if (liveRuns) {
     for (const runId of Object.keys(liveRuns)) {
-      if (!incomingRunIds.has(runId)) {
+      if (!incomingRunIds.has(runId) && !hasUncanonicalizedLiveState(liveRuns[runId])) {
         delete liveRuns[runId]
       }
     }
@@ -1484,10 +1545,7 @@ function finalizeLiveRunForCommittedMessage(
 ): void {
   if (message.role !== 'assistant') return
 
-  const runId = explicitRunId?.trim()
-    || stringFromMetadata(message.metadata, 'run_id')
-    || stringFromMetadata(message.metadata, 'runId')
-
+  const runId = resolveCommittedMessageRunId(message, explicitRunId)
   if (!runId) return
 
   const runs = state.liveRunsBySession[sessionId]
@@ -1501,13 +1559,155 @@ function finalizeLiveRunForCommittedMessage(
     || state.runIntentsBySession[sessionId]?.[runId]?.status
     || run.status
 
-  if (TERMINAL_RUN_INTENT_STATUSES.has(status)) {
-    delete runs[runId]
+  cleanupTerminalLiveRunIfCanonicalized(state, sessionId, runId, status)
+}
+
+function reconcileLiveRunWithCommittedMessage(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  message: MessageSnapshot,
+  explicitRunId?: string,
+  explicitRunStatus?: string,
+): void {
+  const runId = resolveCommittedMessageRunId(message, explicitRunId)
+  if (!runId) return
+
+  const runs = state.liveRunsBySession[sessionId]
+  const run = runs?.[runId]
+  if (!run) return
+
+  switch (message.role) {
+    case 'assistant':
+      delete run.assistantDraft
+      delete run.assistantSegments
+      break
+    case 'tool':
+      reconcileCommittedToolMessage(run, message)
+      break
+    case 'reasoning':
+      reconcileCommittedReasoningMessage(run, message)
+      break
+    default:
+      break
   }
 
+  const status = explicitRunStatus?.trim()
+    || state.runIntentsBySession[sessionId]?.[runId]?.status
+    || run.status
+  cleanupTerminalLiveRunIfCanonicalized(state, sessionId, runId, status)
+}
+
+function hasUncanonicalizedLiveState(run: LiveRunOverlay): boolean {
+  return Boolean(run.assistantDraft?.content)
+    || Boolean(run.assistantSegments?.some((segment) => segment.content))
+    || Object.keys(run.toolCallsByCallId).length > 0
+    || Boolean(run.reasoning)
+    || Object.keys(run.reasoningByKey ?? {}).length > 0
+}
+
+function cleanupTerminalLiveRunIfCanonicalized(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  runId: string,
+  status?: string,
+): void {
+  const runs = state.liveRunsBySession[sessionId]
+  const run = runs?.[runId]
+  if (!runs || !run) return
+  if (status && TERMINAL_RUN_INTENT_STATUSES.has(status) && !hasUncanonicalizedLiveState(run)) {
+    delete runs[runId]
+  }
   if (Object.keys(runs).length === 0) {
     delete state.liveRunsBySession[sessionId]
   }
+}
+
+function reconcileCommittedToolMessage(run: LiveRunOverlay, message: MessageSnapshot): void {
+  const metadata = message.metadata ?? {}
+  const content = parseJsonRecord(message.content)
+  const callId = stringFromMetadata(metadata, 'call_id')
+    || stringFromMetadata(metadata, 'callId')
+    || stringField(content?.call_id)
+    || stringField(content?.callId)
+  const toolInstanceId = stringFromMetadata(metadata, 'tool_instance_id')
+    || stringFromMetadata(metadata, 'toolInstanceId')
+    || stringField(content?.tool_instance_id)
+    || stringField(content?.toolInstanceId)
+
+  for (const [existingCallId, tool] of Object.entries(run.toolCallsByCallId)) {
+    const callMatches = Boolean(callId) && tool.callId === callId
+    const instanceMatches = Boolean(toolInstanceId) && tool.toolInstanceId === toolInstanceId
+    if (callMatches || instanceMatches) {
+      delete run.toolCallsByCallId[existingCallId]
+    }
+  }
+}
+
+function reconcileCommittedReasoningMessage(run: LiveRunOverlay, message: MessageSnapshot): void {
+  const metadata = message.metadata ?? {}
+  const key = stringFromMetadata(metadata, 'reasoning_overlay_key')
+    || stringFromMetadata(metadata, 'reasoning_key')
+    || stringFromMetadata(metadata, 'reasoningKey')
+    || stringFromMetadata(metadata, 'reasoning_id')
+    || stringFromMetadata(metadata, 'reasoningId')
+  const normalizedContent = normalizeCommittedContent(message.content)
+  const byKey = run.reasoningByKey ?? {}
+
+  for (const [existingKey, reasoning] of Object.entries(byKey)) {
+    const keyMatches = Boolean(key) && (
+      existingKey === key
+      || reasoning.key === key
+      || reasoning.reasoningKey === key
+      || reasoning.reasoningId === key
+    )
+    const contentMatches = normalizedContent !== '' && (
+      normalizeCommittedContent(reasoning.text) === normalizedContent
+      || normalizeCommittedContent(reasoning.summary) === normalizedContent
+    )
+    if (keyMatches || contentMatches) {
+      delete byKey[existingKey]
+    }
+  }
+
+  if (run.reasoning) {
+    const activeKeyMatches = Boolean(key) && (
+      run.reasoning.key === key
+      || run.reasoning.reasoningKey === key
+      || run.reasoning.reasoningId === key
+    )
+    const activeContentMatches = normalizedContent !== '' && (
+      normalizeCommittedContent(run.reasoning.text) === normalizedContent
+      || normalizeCommittedContent(run.reasoning.summary) === normalizedContent
+    )
+    if (activeKeyMatches || activeContentMatches) {
+      delete run.reasoning
+    }
+  }
+
+  if (Object.keys(byKey).length > 0) {
+    run.reasoningByKey = byKey
+    if (!run.reasoning) {
+      run.reasoning = Object.values(byKey).sort((left, right) => (right.updatedSeq ?? 0) - (left.updatedSeq ?? 0))[0]
+    }
+  } else {
+    delete run.reasoningByKey
+    if (run.reasoning && key) {
+      const activeKeyMatches = run.reasoning.key === key
+        || run.reasoning.reasoningKey === key
+        || run.reasoning.reasoningId === key
+      if (activeKeyMatches) delete run.reasoning
+    }
+  }
+}
+
+function resolveCommittedMessageRunId(message: MessageSnapshot, explicitRunId?: string): string {
+  const content = parseJsonRecord(message.content)
+  return explicitRunId?.trim()
+    || stringFromMetadata(message.metadata, 'run_id')
+    || stringFromMetadata(message.metadata, 'runId')
+    || stringField(content?.run_id)
+    || stringField(content?.runId)
+    || ''
 }
 
 function createLiveRunOverlay(sessionId: string, runId: string): LiveRunOverlay {
@@ -1923,6 +2123,26 @@ function messageGlobalSeqKey(message: MessageSnapshot): string {
   return `${message.session_id}:${message.global_seq}`
 }
 
+function resolveCommittedReasoningMessageSeq(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  messageId: string,
+  preferredSeq: number,
+): number {
+  const list = state.messagesBySession[sessionId]
+  const existingIndex = list?.byMessageId[messageId]
+  if (existingIndex !== undefined) return list.items[existingIndex].global_seq
+
+  const safePreferredSeq = preferredSeq > 0 ? preferredSeq : 1
+  const preferredKey = `${sessionId}:${safePreferredSeq}`
+  const conflictingIndex = list?.byGlobalSeq[preferredKey]
+  if (conflictingIndex === undefined || list?.items[conflictingIndex]?.id === messageId) {
+    return safePreferredSeq
+  }
+
+  return Math.max(safePreferredSeq, ...(list?.items.map((message) => message.global_seq) ?? [0])) + 1
+}
+
 function eventSeqKey(event: V3SessionEvent): string {
   return `${event.session_id}:${event.seq}`
 }
@@ -1965,6 +2185,19 @@ function recordValue(value: unknown): Record<string, unknown> | undefined {
 function stringFromMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = metadata?.[key]
   return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function parseJsonRecord(value: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(value)
+    return recordValue(parsed)
+  } catch {
+    return undefined
+  }
+}
+
+function normalizeCommittedContent(value: string): string {
+  return value.trim().replace(/\s+/g, ' ')
 }
 
 function subscriptionId(subscription: SubscriptionCache | Record<string, unknown>): string | undefined {

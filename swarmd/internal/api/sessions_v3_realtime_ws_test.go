@@ -1068,6 +1068,99 @@ func TestV3RealtimeSingleConnectionInterleavesSessionsBySessionID(t *testing.T) 
 	}
 }
 
+func TestV3RealtimeFiveSessionsInterleaveByEndpointSeq(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, 0), Worksets: []V3RealtimeWorksetSubscriptionRequest{v3RealtimeGlobalWorksetRequestForTest()}})
+
+	sessionIDs := []string{"session-realtime-five-a", "session-realtime-five-b", "session-realtime-five-c", "session-realtime-five-d", "session-realtime-five-e"}
+	allEventFrames := make([]V3RealtimeMessage, 0, len(sessionIDs)*3)
+	createdBySession := make(map[string]sessionruntime.SessionMutationResult, len(sessionIDs))
+	for index, sessionID := range sessionIDs {
+		created := createV3RealtimeTestSessionResult(t, server, sessionID, fmt.Sprintf("create-realtime-five-%d", index))
+		createdBySession[sessionID] = created
+
+		discovered := readV3RealtimeFrame(t, conn)
+		assertV3RealtimeFrame(t, discovered, V3RealtimeKindWorksetSessionDiscovered, sessionID, 0)
+		if discovered.WorksetID != "desktop:global" || !discovered.AutoSubscribed || discovered.SubscriptionID == "" {
+			t.Fatalf("five-session discovery frame = %+v", discovered)
+		}
+		assertV3RealtimeSignedCursorSeq(t, server, discovered.EndpointCursor, created.RealtimeOutbox.EndpointSeq)
+
+		event := readV3RealtimeFrame(t, conn)
+		assertV3RealtimeFrame(t, event, V3RealtimeKindEvent, sessionID, created.Event.Seq)
+		assertV3RealtimeSignedCursorSeq(t, server, event.EndpointCursor, created.RealtimeOutbox.EndpointSeq)
+		allEventFrames = append(allEventFrames, event)
+	}
+
+	appendOrder := []string{
+		sessionIDs[0], sessionIDs[1], sessionIDs[2], sessionIDs[3], sessionIDs[4],
+		sessionIDs[0], sessionIDs[2], sessionIDs[4], sessionIDs[1], sessionIDs[3],
+	}
+	appendResults := make([]sessionruntime.SessionMutationResult, 0, len(appendOrder))
+	for index, sessionID := range appendOrder {
+		appendResults = append(appendResults, appendV3RealtimeTestMessage(t, server, sessionID, fmt.Sprintf("message-realtime-five-%02d", index), fmt.Sprintf("five-session content %02d", index)))
+	}
+
+	for index, want := range appendResults {
+		frame := readV3RealtimeFrame(t, conn)
+		assertV3RealtimeFrame(t, frame, V3RealtimeKindEvent, appendOrder[index], want.Event.Seq)
+		assertV3RealtimeSignedCursorSeq(t, server, frame.EndpointCursor, want.RealtimeOutbox.EndpointSeq)
+		allEventFrames = append(allEventFrames, frame)
+	}
+
+	outboxRows, err := sessionSvc.ListRealtimeOutboxAfter(0, len(allEventFrames)+5)
+	if err != nil {
+		t.Fatalf("list five-session realtime outbox: %v", err)
+	}
+	if len(outboxRows) != len(allEventFrames) {
+		t.Fatalf("outbox row count = %d, websocket event frames = %d", len(outboxRows), len(allEventFrames))
+	}
+
+	seenEndpointSeq := make(map[uint64]bool, len(allEventFrames))
+	perSessionSeqs := make(map[string][]uint64, len(sessionIDs))
+	var previousEndpointSeq uint64
+	for index, frame := range allEventFrames {
+		if frame.Rev <= previousEndpointSeq {
+			t.Fatalf("endpoint_seq regressed at frame %d: prev=%d frame=%+v", index, previousEndpointSeq, frame)
+		}
+		previousEndpointSeq = frame.Rev
+		seenEndpointSeq[frame.Rev] = true
+		perSessionSeqs[frame.SessionID] = append(perSessionSeqs[frame.SessionID], frame.Event.Seq)
+	}
+
+	for _, row := range outboxRows {
+		if !seenEndpointSeq[row.EndpointSeq] {
+			t.Fatalf("durable outbox row %+v did not produce exactly one websocket event; seen=%v", row, seenEndpointSeq)
+		}
+		seenEndpointSeq[row.EndpointSeq] = false
+	}
+	for endpointSeq, stillTrue := range seenEndpointSeq {
+		if stillTrue {
+			t.Fatalf("websocket event endpoint_seq %d has no durable outbox row", endpointSeq)
+		}
+	}
+
+	for _, sessionID := range sessionIDs {
+		seqs := perSessionSeqs[sessionID]
+		if len(seqs) != 3 {
+			t.Fatalf("session %s event seqs = %v, want create plus two appends", sessionID, seqs)
+		}
+		for index, seq := range seqs {
+			want := uint64(index + 1)
+			if seq != want {
+				t.Fatalf("session %s event seqs = %v, want contiguous starting at 1", sessionID, seqs)
+			}
+		}
+		if createdBySession[sessionID].Session == nil {
+			t.Fatalf("session %s was not created for global workset subscription", sessionID)
+		}
+	}
+}
+
 func TestV3RealtimeSourceGuardRequiresNativeOutboxAndRejectsOldTransport(t *testing.T) {
 	for _, file := range []string{"sessions_v3_realtime_ws.go", "sessions_v3_realtime_hub.go", "sessions_v3_outbox.go"} {
 		body := readSourceFileForTest(t, file)

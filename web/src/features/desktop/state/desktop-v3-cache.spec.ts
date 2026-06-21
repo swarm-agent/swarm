@@ -42,6 +42,7 @@ import {
   tombstoneB,
 } from './desktop-v3-cache.backend-fixtures'
 import { selectDesktopSidebarRows, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
+import { buildDesktopV3ConversationRenderItems } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { createDesktopV3CacheOwner } from './desktop-v3-cache-owner'
 import { buildPersistedDesktopV3MessageTailV1, DESKTOP_V3_CACHE_SCHEMA_VERSION } from './desktop-v3-cache-persisted-types'
 import type { CacheEvent, DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, V3SessionEvent } from './desktop-v3-cache-types'
@@ -1271,8 +1272,9 @@ test('assistant completion works when message metadata has no run_id', () => {
   assert.equal(state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft, undefined)
 })
 
-test('terminal assistant completion removes the complete live run', () => {
+test('terminal assistant completion preserves uncanonicalized reasoning', () => {
   const state = bootstrappedState()
+  applyRealtimeFrame(state, { frame: deltaFrame('session.reasoning.delta', { reasoning_key: 'summary-1', delta: 'thinking' }, 2, 'cursor-reasoning') })
   applyRealtimeFrame(state, { frame: deltaFrame('session.assistant.delta', { delta: 'draft' }, 3, 'cursor-draft') })
 
   const finalMessage: MessageSnapshot = {
@@ -1298,7 +1300,157 @@ test('terminal assistant completion removes the complete live run', () => {
     }, 'cursor-final'),
   })
 
-  assert.equal(state.liveRunsBySession[sessionA.id]?.['run-live'], undefined)
+  const liveRun = state.liveRunsBySession[sessionA.id]?.['run-live']
+  assert.ok(liveRun)
+  assert.equal(liveRun.assistantDraft, undefined)
+  assert.equal(liveRun.assistantSegments, undefined)
+  assert.equal(liveRun.reasoning?.text, 'thinking')
+  assert.equal(liveRun.reasoningByKey?.['step:summary-1']?.text, 'thinking')
+})
+
+function renderSignature(state: DesktopV3CacheState): string[] {
+  return buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+    .map((item) => {
+      if (item.type === 'message') return `message:${item.message.role}:${item.message.id}:${item.message.content}`
+      if (item.type === 'live-tool') return `live-tool:${item.id}:${item.tool.callId}:${item.tool.outputText ?? ''}`
+      if (item.type === 'live-reasoning') return `live-reasoning:${item.id}:${item.text}:${item.summary}:${item.state}`
+      if (item.type === 'live-assistant') return `live-assistant:${item.id}:${item.content}`
+      return item.type
+    })
+}
+
+function restoreForRenderIdentity(state: DesktopV3CacheState): DesktopV3CacheState {
+  return desktopV3CacheReducer(createEmptyDesktopV3CacheState(), {
+    type: 'desktopV3Cache.restore',
+    owner: {
+      schemaVersion: DESKTOP_V3_CACHE_SCHEMA_VERSION,
+      ownerKey: persistedOwner.key,
+      owner: persistedOwner,
+      persistedAt: 1_000,
+      selectedSessionId: sessionA.id,
+      sidebarScopeId: 'scope-render-identity',
+      syncScopesById: {},
+      sessionOrderByScope: { 'scope-render-identity': [sessionA.id] },
+      sidebarSessionsById: {
+        [sessionA.id]: {
+          session: sessionA,
+          projection: { ...projectionA, last_event_seq: 9, projection_high_watermark_seq: 9 },
+          runIntents: [{ ...runIntentA, run_id: 'run-live', status: 'completed', event_seq: 9 }],
+        },
+      },
+      realtimeEndpointCursor: state.realtime.endpointCursor,
+      liveRunsBySession: structuredClone(state.liveRunsBySession),
+    },
+    selectedMessageTail: buildPersistedDesktopV3MessageTailV1({
+      ownerKey: persistedOwner.key,
+      sessionId: sessionA.id,
+      persistedAt: 1_000,
+      messages: state.messagesBySession[sessionA.id].items,
+      sourceMessageCount: state.messagesBySession[sessionA.id].items.length,
+      sourceLastMessageAt: Math.max(...state.messagesBySession[sessionA.id].items.map((message) => message.created_at)),
+      sourceProjectionHighWatermarkSeq: 9,
+    }),
+  })
+}
+
+function applyCommittedToolEvent(state: DesktopV3CacheState, seq = 6): void {
+  const toolMessage: MessageSnapshot = {
+    id: `msg-tool-${seq}`,
+    session_id: sessionA.id,
+    global_seq: seq,
+    role: 'tool',
+    content: JSON.stringify({
+      path_id: 'run.tool-history.v2',
+      run_id: 'run-live',
+      call_id: 'call-1',
+      tool_instance_id: 'tool-instance-1',
+      tool: 'search',
+      output: '{"summary":"done"}',
+    }),
+    metadata: {
+      run_id: 'run-live',
+      call_id: 'call-1',
+      tool_instance_id: 'tool-instance-1',
+    },
+    created_at: 30 + seq,
+  }
+  applyRealtimeFrame(state, {
+    frame: eventFrame('session.tool.completed', {
+      id: `evt-tool-commit-${seq}`,
+      session_id: sessionA.id,
+      seq,
+      event_type: 'session.tool.completed',
+      payload: {
+        run_id: 'run-live',
+        call_id: 'call-1',
+        tool_instance_id: 'tool-instance-1',
+        tool_name: 'search',
+        output: '{"summary":"done"}',
+        status: 'completed',
+        message: toolMessage,
+        run_intent: { ...runIntentA, run_id: 'run-live', status: 'completed', event_seq: seq },
+      },
+      ts_unix_ms: 40 + seq,
+    }, `cursor-tool-commit-${seq}`),
+  })
+}
+
+function applyCommittedReasoningEvent(state: DesktopV3CacheState, seq = 8): void {
+  applyRealtimeFrame(state, {
+    frame: eventFrame('session.reasoning.completed', {
+      id: `evt-reasoning-complete-${seq}`,
+      session_id: sessionA.id,
+      seq,
+      event_type: 'session.reasoning.completed',
+      payload: {
+        run_id: 'run-live',
+        reasoning_key: 'summary-1',
+        text: 'thinking done',
+        run_intent: { ...runIntentA, run_id: 'run-live', status: 'completed', event_seq: seq },
+      },
+      ts_unix_ms: 50 + seq,
+    }, `cursor-reasoning-complete-${seq}`),
+  })
+}
+
+test('committed tool message removes matching live tool and renders once', () => {
+  const state = bootstrappedState()
+  applyRealtimeFrame(state, { frame: deltaFrame('session.tool.started', { call_id: 'call-1', tool_instance_id: 'tool-instance-1', tool_name: 'search' }, 5, 'cursor-tool-start') })
+
+  applyCommittedToolEvent(state, 6)
+
+  assert.equal(state.liveRunsBySession[sessionA.id]?.['run-live']?.toolCallsByCallId['call-1'], undefined)
+  assert.equal(state.messagesBySession[sessionA.id].items.filter((message) => message.role === 'tool').length, 1)
+  const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+  assert.equal(rendered.filter((item) => item.type === 'live-tool').length, 0)
+  assert.equal(rendered.filter((item) => item.type === 'message' && item.message.role === 'tool').length, 1)
+})
+
+test('reasoning completion commits one reasoning message and renders once', () => {
+  const state = bootstrappedState()
+  applyRealtimeFrame(state, { frame: deltaFrame('session.reasoning.delta', { reasoning_key: 'summary-1', delta: 'thinking done' }, 7, 'cursor-reasoning-delta') })
+
+  applyCommittedReasoningEvent(state, 8)
+  applyCommittedReasoningEvent(state, 8)
+
+  assert.equal(state.messagesBySession[sessionA.id].items.filter((message) => message.role === 'reasoning').length, 1)
+  assert.equal(state.liveRunsBySession[sessionA.id]?.['run-live']?.reasoning, undefined)
+  assert.equal(state.liveRunsBySession[sessionA.id]?.['run-live']?.reasoningByKey, undefined)
+  const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+  assert.equal(rendered.filter((item) => item.type === 'live-reasoning').length, 0)
+  assert.equal(rendered.filter((item) => item.type === 'message' && item.message.role === 'reasoning').length, 1)
+})
+
+test('tool and thinking render identically before and after refresh', () => {
+  const state = bootstrappedState()
+  applyRealtimeFrame(state, { frame: deltaFrame('session.tool.started', { call_id: 'call-1', tool_instance_id: 'tool-instance-1', tool_name: 'search' }, 5, 'cursor-tool-start') })
+  applyCommittedToolEvent(state, 6)
+  applyRealtimeFrame(state, { frame: deltaFrame('session.reasoning.delta', { reasoning_key: 'summary-1', delta: 'thinking done' }, 7, 'cursor-reasoning-delta') })
+  applyCommittedReasoningEvent(state, 8)
+
+  const beforeRefresh = renderSignature(state)
+  const restored = restoreForRenderIdentity(state)
+  assert.deepEqual(renderSignature(restored), beforeRefresh)
 })
 
 test('tombstone removes all live and run state', () => {

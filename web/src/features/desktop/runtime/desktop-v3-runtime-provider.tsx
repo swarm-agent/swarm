@@ -6,6 +6,7 @@ import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from '../state/desk
 import { readDesktopV3MessageTails } from '../state/desktop-v3-cache-db'
 import { buildPostReconnectHydrationSnapshot, hydrateDesktopV3InitialSessions } from '../state/desktop-v3-initial-hydrate-controller'
 import { startDesktopV3PersistenceController } from '../state/desktop-v3-persistence-controller'
+import { installDesktopV3StreamCacheTestHooksForTestbench } from '../state/desktop-v3-stream-cache-test-hooks'
 
 const DESKTOP_V3_RUNTIME_PROVIDER_OWNER_KEY = 'desktop-v3-runtime-provider'
 
@@ -36,6 +37,7 @@ export function DesktopV3RuntimeProvider({ children, initialPreferredSessionId }
 
     let cancelled = false
     const stopPersistence = startDesktopV3PersistenceController()
+    const uninstallTestHooks = installDesktopV3StreamCacheTestHooksForTestbench()
 
     void startDesktopV3RuntimeHydration(runtime, () => cancelled).catch((error: unknown) => {
       if (cancelled) return
@@ -52,6 +54,7 @@ export function DesktopV3RuntimeProvider({ children, initialPreferredSessionId }
       cancelled = true
       runtime.release()
       stopPersistence()
+      uninstallTestHooks()
       if (runtimeRef.current === runtime) {
         runtimeRef.current = null
       }

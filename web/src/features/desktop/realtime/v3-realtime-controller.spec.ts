@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises'
 
 import { DesktopV3RealtimeTransport } from '../session-v3/transport'
 import { createDesktopV3CacheOwner } from '../state/desktop-v3-cache-owner'
+import { selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { readDesktopV3Owner, resetDesktopV3CacheDBForTests } from '../state/desktop-v3-cache-db'
 import {
   DesktopV3RealtimeControllerRuntime,
@@ -2313,6 +2314,180 @@ test('A-E interleaved frames publish in endpoint order', async () => {
   controller.stop()
 })
 
+test('five simultaneous streams persist, restore, and finalize deterministically', async () => {
+  assert.equal(await resetDesktopV3CacheDBForTests(), true)
+  const owner = testDesktopV3CacheOwner()
+  let state = readyControllerState()
+  const sessionIds = ['session-a', 'session-b', 'session-c', 'session-d', 'session-e']
+  const sessions = Object.fromEntries(sessionIds.map((sessionId, index) => [sessionId, {
+    ...sessionA,
+    id: sessionId,
+    title: `Session ${sessionId.toUpperCase()}`,
+    created_at: 100 + index,
+    updated_at: 200 + index,
+    message_count: 0,
+    last_message_at: 0,
+  }]))
+  const projections = Object.fromEntries(sessionIds.map((sessionId, index) => [sessionId, {
+    ...projectionA,
+    session_id: sessionId,
+    last_event_seq: 0,
+    projection_high_watermark_seq: 0,
+    updated_at: 200 + index,
+  }]))
+  const runIntents = Object.fromEntries(sessionIds.map((sessionId, index) => [sessionId, [{
+    ...runIntentA,
+    session_id: sessionId,
+    run_id: `run-${sessionId}`,
+    status: 'running',
+    event_seq: 0,
+    created_at: 300 + index,
+    updated_at: 300 + index,
+  }]]))
+
+  for (const sessionId of sessionIds) {
+    state.sessionsById[sessionId] = { kind: 'full', session: sessions[sessionId], needsHydrate: false }
+    state.projectionsBySession[sessionId] = projections[sessionId]
+    state.runIntentsBySession[sessionId] = { [`run-${sessionId}`]: runIntents[sessionId][0] }
+    state.currentRunIntentBySession[sessionId] = runIntents[sessionId][0]
+  }
+  state.sessionOrderByScope['global-scope'] = sessionIds
+  state.selectedSessionId = 'session-a'
+  state.realtime.endpointCursor = 'cursor-reconnect'
+
+  const sockets: FakeWebSocket[] = []
+  const hydrateRequests: string[][] = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => owner,
+    saveActiveOwnerKey: () => true,
+    now: () => 9_000,
+    hydrate: async (input) => {
+      hydrateRequests.push(input.selector.session_ids ?? [])
+      return hydrateSnapshotFixture({ session_order: [], sessions_by_id: {}, projections_by_session: {}, messages_by_session: {} })
+    },
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: sessions,
+      projections_by_session: projections,
+      run_intents_by_session: runIntents,
+      current_run_intent_by_session: Object.fromEntries(sessionIds.map((sessionId) => [sessionId, runIntents[sessionId][0]])),
+      session_order: sessionIds,
+      workset_id: 'global-scope',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect',
+          subscriptions: [],
+          worksets: [{
+            workset_id: 'global-scope',
+            subscription_id: 'workset-sub',
+            selector: { kind: 'global', global: true },
+            auto_subscribe_sessions: true,
+          }],
+        },
+      },
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start(null)
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+  assert.equal(sockets.length, 1)
+
+  const interleaved: Array<{ sessionId: string; seq: number; eventType: string; payload: Record<string, unknown> }> = [
+    { sessionId: 'session-a', seq: 1, eventType: 'session.assistant.delta', payload: { delta: 'A-draft' } },
+    { sessionId: 'session-b', seq: 1, eventType: 'session.reasoning.delta', payload: { reasoning_key: 'reasoning-b', text_delta: 'B-thinks' } },
+    { sessionId: 'session-c', seq: 1, eventType: 'session.tool.started', payload: { call_id: 'call-c', tool_name: 'read', arguments: '{"file":"c"}' } },
+    { sessionId: 'session-d', seq: 1, eventType: 'session.assistant.delta', payload: { delta: 'D-draft' } },
+    { sessionId: 'session-e', seq: 1, eventType: 'session.tool.started', payload: { call_id: 'call-e', tool_name: 'grep', arguments: '{"query":"e"}' } },
+    { sessionId: 'session-a', seq: 2, eventType: 'session.tool.started', payload: { call_id: 'call-a', tool_name: 'read', arguments: '{"file":"a"}' } },
+    { sessionId: 'session-b', seq: 2, eventType: 'session.assistant.delta', payload: { delta: 'B-answer' } },
+    { sessionId: 'session-c', seq: 2, eventType: 'session.tool.delta', payload: { call_id: 'call-c', output_delta: 'C-output' } },
+    { sessionId: 'session-d', seq: 2, eventType: 'session.reasoning.delta', payload: { reasoning_key: 'reasoning-d', text_delta: 'D-thinks' } },
+    { sessionId: 'session-e', seq: 2, eventType: 'session.tool.delta', payload: { call_id: 'call-e', output_delta: 'E-output' } },
+  ]
+
+  interleaved.forEach((frame, index) => {
+    sockets[0].emit(cp9RealtimeEventFrame({
+      ...frame,
+      endpointCursor: `cursor-cp9-${index + 1}`,
+    }))
+  })
+
+  await waitFor(() => state.realtime.endpointCursor === 'cursor-cp9-10')
+  const persisted = await readDesktopV3Owner(owner.key)
+  assert.equal(persisted?.realtimeEndpointCursor, 'cursor-cp9-10')
+  assert.deepEqual(Object.keys(persisted?.liveRunsBySession ?? {}).sort(), sessionIds)
+  assert.equal(persisted?.liveRunsBySession?.['session-a']?.['run-session-a']?.assistantSegments?.[0]?.content, 'A-draft')
+  assert.equal(persisted?.liveRunsBySession?.['session-b']?.['run-session-b']?.reasoning?.text, 'B-thinks')
+  assert.equal(persisted?.liveRunsBySession?.['session-c']?.['run-session-c']?.toolCallsByCallId['call-c']?.outputText, 'C-output')
+  assert.equal(persisted?.liveRunsBySession?.['session-e']?.['run-session-e']?.toolCallsByCallId['call-e']?.outputText, 'E-output')
+
+  assert.ok(persisted)
+  const restored = desktopV3CacheReducer(createEmptyDesktopV3CacheState(), {
+    type: 'desktopV3Cache.restore',
+    owner: persisted,
+  })
+  assert.deepEqual(restored.liveRunsBySession, persisted.liveRunsBySession)
+  assert.equal(selectRenderedSessionMessages(restored, 'session-e').liveRuns[0]?.toolCallsByCallId['call-e']?.outputText, 'E-output')
+  assert.deepEqual(hydrateRequests, [])
+
+  for (const sessionId of sessionIds) {
+    const seq = 3
+    sockets[0].emit(cp9RealtimeEventFrame({
+      sessionId,
+      seq,
+      eventType: 'session.assistant.completed',
+      endpointCursor: `cursor-cp9-final-${sessionId}`,
+      payload: {
+        status: 'completed',
+        message: {
+          id: `msg-final-${sessionId}`,
+          session_id: sessionId,
+          global_seq: seq,
+          role: 'assistant',
+          content: `final ${sessionId}`,
+          metadata: {},
+          created_at: 10_000 + seq,
+        },
+        run_intent: { ...runIntents[sessionId][0], status: 'completed', event_seq: seq },
+      },
+    }))
+  }
+  await waitFor(() => state.realtime.endpointCursor === 'cursor-cp9-final-session-e')
+
+  for (const sessionId of sessionIds) {
+    const rendered = selectRenderedSessionMessages(state, sessionId)
+    assert.equal(rendered.committed.filter((message) => message.role === 'assistant').length, 1)
+    assert.equal(rendered.liveRuns.length, 1)
+    assert.equal(rendered.liveRuns[0].assistantDraft, undefined)
+    assert.equal(rendered.liveRuns[0].assistantSegments, undefined)
+  }
+  assert.equal(state.liveRunsBySession['session-a']?.['run-session-a']?.toolCallsByCallId['call-a']?.toolName, 'read')
+  assert.equal(state.liveRunsBySession['session-b']?.['run-session-b']?.reasoning?.text, 'B-thinks')
+  assert.equal(state.liveRunsBySession['session-c']?.['run-session-c']?.toolCallsByCallId['call-c']?.outputText, 'C-output')
+  assert.equal(state.liveRunsBySession['session-d']?.['run-session-d']?.reasoning?.text, 'D-thinks')
+  assert.equal(state.liveRunsBySession['session-e']?.['run-session-e']?.toolCallsByCallId['call-e']?.outputText, 'E-output')
+
+  controller.stop()
+  assert.equal(await resetDesktopV3CacheDBForTests(), true)
+})
+
 test('final message and overlay cleanup are one IndexedDB transaction', async () => {
   assert.equal(await resetDesktopV3CacheDBForTests(), true)
   const owner = testDesktopV3CacheOwner()
@@ -2668,6 +2843,41 @@ test('Desktop V3 transport status maps to cache status', () => {
   assert.equal(mapTransportStatus('stale'), 'stale')
   assert.equal(mapTransportStatus('error'), 'error')
 })
+
+function cp9RealtimeEventFrame(input: {
+  sessionId: string
+  seq: number
+  eventType: string
+  endpointCursor: string
+  payload: Record<string, unknown>
+}): RealtimeMessage {
+  const runId = `run-${input.sessionId}`
+  return {
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    session_id: input.sessionId,
+    event_type: input.eventType,
+    event: {
+      id: `evt-cp9-${input.sessionId}-${input.seq}-${input.eventType}`,
+      session_id: input.sessionId,
+      event_type: input.eventType,
+      seq: input.seq,
+      payload: {
+        run_id: runId,
+        ...input.payload,
+      },
+      ts_unix_ms: input.seq,
+    },
+    projection: {
+      ...projectionA,
+      session_id: input.sessionId,
+      last_event_seq: input.seq,
+      projection_high_watermark_seq: input.seq,
+    },
+    endpoint_cursor: input.endpointCursor,
+  }
+}
 
 function realtimeDeltaFrame(id: string, seq: number, endpointCursor: string, delta: string): RealtimeMessage {
   return {
