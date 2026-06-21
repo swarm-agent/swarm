@@ -21,6 +21,13 @@ test('DesktopV3RuntimeProvider synchronously retains one realtime lease with del
   assert.match(source, /await runtime\.realtimeLease\.ready[\s\S]*?await hydrateDesktopV3InitialSessions/)
 })
 
+test('warm restore does not force network hydrate', async () => {
+  const source = await readRuntimeProvider()
+
+  assert.doesNotMatch(source, /forceNetworkHydrate:\s*true/)
+  assert.match(source, /await hydrateDesktopV3InitialSessions\(\{\s*scopeId,\s*sessionIds:/s)
+})
+
 test('DesktopV3RuntimeProvider wraps the root desktop shell so route changes keep one socket', async () => {
   const source = await readRouter()
 

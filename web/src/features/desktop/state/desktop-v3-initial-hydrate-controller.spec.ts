@@ -27,6 +27,7 @@ const expectedInitialHydrateBody = {
   history: {
     mode: 'tail',
     max_messages_per_session: 200,
+    manifest_policy: 'manifest',
   },
   resources: {
     messages: true,

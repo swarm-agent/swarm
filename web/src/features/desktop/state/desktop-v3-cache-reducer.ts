@@ -557,13 +557,17 @@ export function applyReconnectSnapshot(
   state: DesktopV3CacheState,
   raw: SessionsReconnectResponse,
 ): DesktopV3CacheState {
-  state.realtime.endpointCursor = raw.snapshot_endpoint_cursor
+  if (!state.realtime.endpointCursor) {
+    state.realtime.endpointCursor = raw.snapshot_endpoint_cursor
+  }
   state.realtime.surface = raw.surface ?? state.realtime.surface
 
   const resources = reconnectResourceSet(raw)
   const authoritativeSessionIds = new Set([
     ...Object.keys(raw.sessions_by_id ?? {}),
     ...(raw.session_order ?? []),
+    ...Object.keys(raw.current_run_intent_by_session ?? {}),
+    ...Object.keys(raw.run_intents_by_session ?? {}),
   ])
 
   upsertSessions(state, raw.sessions_by_id)

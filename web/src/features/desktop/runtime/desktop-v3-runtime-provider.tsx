@@ -113,7 +113,6 @@ async function startDesktopV3RuntimeHydration(
 
   await hydrateDesktopV3InitialSessions({
     scopeId,
-    forceNetworkHydrate: true,
     sessionIds: reconnectSessionIds.filter((sessionId) => sessionId !== selectedSessionId),
     bootstrapResponse: buildPostReconnectHydrationSnapshot(
       bootstrap.response,

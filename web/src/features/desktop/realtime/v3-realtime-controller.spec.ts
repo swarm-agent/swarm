@@ -1630,6 +1630,204 @@ test('Desktop V3 active-run repair ignores replacement-run overlays from HTTP pa
   controller.stop()
 })
 
+test('warm restore resumes from persisted realtime cursor', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-persisted-warm'
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+
+  const sockets: FakeWebSocket[] = []
+  const openCursors: string[] = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect-newer',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [sessionA.id],
+      workset_id: 'global-scope',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect-newer',
+          subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id, endpoint_cursor: 'cursor-reconnect-newer' }],
+          worksets: [{
+            workset_id: 'global-scope',
+            subscription_id: 'workset-sub',
+            selector: { kind: 'global', global: true },
+            resources: ['run_intents'],
+            auto_subscribe_sessions: true,
+          }],
+        },
+      },
+    }),
+    openSocket: ({ endpointCursor }) => {
+      openCursors.push(endpointCursor)
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start(null)
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+
+  const resume = sockets[0].sent[0] as SessionV3RealtimeResumeWire
+  assert.deepEqual(openCursors, ['cursor-persisted-warm'])
+  assert.equal(resume.endpoint_cursor, 'cursor-persisted-warm')
+  assert.equal(resume.subscriptions?.[0]?.endpoint_cursor, 'cursor-persisted-warm')
+  assert.equal(state.realtime.endpointCursor, 'cursor-persisted-warm')
+  controller.stop()
+})
+
+test('expired persisted cursor takes the explicit cursor-error recovery path', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-persisted-expired'
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+
+  const sockets: FakeWebSocket[] = []
+  let reconnectCount = 0
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
+    reconnect: async () => {
+      reconnectCount += 1
+      return reconnectFixture({
+        snapshot_endpoint_cursor: `cursor-reconnect-${reconnectCount}`,
+        sessions_by_id: { [sessionA.id]: sessionA },
+        projections_by_session: { [sessionA.id]: projectionA },
+        run_intents_by_session: {},
+        current_run_intent_by_session: {},
+        session_order: [sessionA.id],
+        workset_id: 'global-scope',
+        realtime: {
+          stream_path: '/v3/realtime/stream',
+          resume: {
+            protocol: 'v3.realtime',
+            protocol_version: 1,
+            kind: 'resume',
+            endpoint_cursor: `cursor-reconnect-${reconnectCount}`,
+            subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
+            worksets: [],
+          },
+        },
+      })
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start(null)
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+  assert.equal((sockets[0].sent[0] as SessionV3RealtimeResumeWire).endpoint_cursor, 'cursor-persisted-expired')
+
+  sockets[0].emit({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'cursor.error',
+    reason: 'expired cursor',
+  })
+  await waitFor(() => sockets.length === 2)
+  sockets[1].open()
+  await waitFor(() => sockets[1].sent.length > 0)
+
+  assert.equal((sockets[1].sent[0] as SessionV3RealtimeResumeWire).endpoint_cursor, 'cursor-reconnect-2')
+  assert.equal(state.realtime.endpointCursor, 'cursor-reconnect-2')
+  controller.stop()
+})
+
+test('active repair considers run-intent keys outside session_order', async () => {
+  let state: DesktopV3CacheState = readyControllerState()
+  const repairEvent: V3SessionEvent = {
+    id: 'evt-outside-order-6',
+    session_id: sessionA.id,
+    seq: 6,
+    event_type: 'session.assistant.delta',
+    payload: { run_id: runIntentA.run_id, delta: 'outside-order' },
+    ts_unix_ms: 6,
+  }
+  const activeIntent = { ...runIntentA, status: 'running', event_seq: 5, updated_at: 5 }
+  const sockets: FakeWebSocket[] = []
+  const readRequests: Array<{ sessionId: string; afterSeq: number; limit?: number }> = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      run_intents_by_session: { [sessionA.id]: [activeIntent] },
+      current_run_intent_by_session: { [sessionA.id]: activeIntent },
+      session_order: [],
+      workset_id: 'global-scope',
+    }),
+    readEventsPage: async (input) => {
+      readRequests.push(input)
+      return {
+        ok: true,
+        session_id: input.sessionId,
+        events: [repairEvent],
+        projection: { ...projectionA, last_event_seq: 6, projection_high_watermark_seq: 6 },
+        high_watermark_seq: 6,
+        next_seq: 7,
+        applied_seq: 6,
+      }
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start(null)
+  await waitFor(() => readRequests.length === 1)
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+
+  assert.deepEqual(readRequests.map((request) => [request.sessionId, request.afterSeq]), [[sessionA.id, 5]])
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content, 'outside-order')
+  controller.stop()
+})
+
 test('Desktop V3 cursor-error rehydrate repairs selected transcript after replacement resume', async () => {
   let state = readyControllerState()
   state.selectedSessionId = sessionA.id

@@ -140,8 +140,15 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
         const reconnect = await this.reconnect(
           buildDesktopV3ReconnectInput(this.getSnapshot(), DESKTOP_V3_CLIENT_ID),
         )
+        const durableResumeCursor = frame
+          ? undefined
+          : this.getSnapshot().realtime.endpointCursor?.trim()
         this.dispatch({ type: 'reconnect.applySnapshot', snapshot: reconnect })
-        const resume = this.buildResume(reconnect, this.getSnapshot().selectedSessionId)
+        const resume = this.buildResume(
+          reconnect,
+          this.getSnapshot().selectedSessionId,
+          durableResumeCursor,
+        )
         this.dispatch({
           type: 'realtime.storeResume',
           streamPath: reconnect.realtime?.stream_path ?? '/v3/realtime/stream',
@@ -218,6 +225,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     await this.waitForSidebarBootstrap(preferredSessionId, bootstrapReady)
     this.assertNotStopped()
 
+    const durableResumeCursor = this.getSnapshot().realtime.endpointCursor?.trim()
+
     const reconnect = await this.awaitUnlessStopped(this.reconnect(
       buildDesktopV3ReconnectInput(this.getSnapshot(), DESKTOP_V3_CLIENT_ID),
     ))
@@ -231,7 +240,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     const selectedSessionId = preferredSessionId === null
       ? undefined
       : preferredSessionId?.trim() || this.getSnapshot().selectedSessionId
-    const resume = this.buildResume(reconnect, selectedSessionId)
+    const resume = this.buildResume(reconnect, selectedSessionId, durableResumeCursor)
 
     this.dispatch({
       type: 'realtime.storeResume',
@@ -285,11 +294,23 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     }
   }
 
-  private buildResume(reconnect: SessionsReconnectResponse, preferredSessionId?: string | null): NonNullable<SessionsReconnectResponse['realtime']>['resume'] {
+  private buildResume(
+    reconnect: SessionsReconnectResponse,
+    preferredSessionId?: string | null,
+    durableResumeCursor?: string,
+  ): NonNullable<SessionsReconnectResponse['realtime']>['resume'] {
     if (!reconnect.realtime?.resume) {
       throw new Error('Desktop V3 reconnect response is missing realtime.resume')
     }
+
     const resume = structuredClone(reconnect.realtime.resume)
+    const endpointCursor = durableResumeCursor?.trim() || reconnect.snapshot_endpoint_cursor
+    resume.endpoint_cursor = endpointCursor
+    resume.subscriptions = (resume.subscriptions ?? []).map((subscription) => ({
+      ...subscription,
+      endpoint_cursor: endpointCursor,
+    }))
+
     const selectedSessionId = preferredSessionId === null ? undefined : preferredSessionId?.trim()
     if (!selectedSessionId) return resume
 
@@ -298,7 +319,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       subscriptions.push({
         session_id: selectedSessionId,
         subscription_id: `${DESKTOP_V3_CLIENT_ID}:session:${selectedSessionId}`,
-        endpoint_cursor: reconnect.snapshot_endpoint_cursor,
+        endpoint_cursor: endpointCursor,
       })
     }
     resume.subscriptions = subscriptions
@@ -426,10 +447,21 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
   private markActiveRunsFromReconnect(raw: SessionsReconnectResponse): void {
     this.markedActiveRepairBySession.clear()
-    for (const sessionId of raw.session_order ?? []) {
+    const sessionIds = new Set<string>([
+      ...(raw.session_order ?? []),
+      ...Object.keys(raw.current_run_intent_by_session ?? {}),
+      ...Object.keys(raw.run_intents_by_session ?? {}),
+    ])
+
+    for (const sessionId of sessionIds) {
       const explicit = raw.current_run_intent_by_session?.[sessionId]
       const intent = explicit ?? deriveCurrentRunIntent(raw.run_intents_by_session?.[sessionId] ?? [])
       if (!intent) continue
+
+      const restored = this.getSnapshot().liveRunsBySession[sessionId]?.[intent.run_id]
+      if (restored && (restored.lastEventSeqSeen ?? 0) >= intent.event_seq) {
+        continue
+      }
 
       const status = intent.status.trim().toLowerCase()
       if (!ACTIVE_INTENT_STATUSES.has(status)) continue
