@@ -1,7 +1,10 @@
 import { ensureDesktopSession, getDesktopSessionIdentitySnapshot } from '../../../app/api'
 
 import { saveDesktopV3CacheActiveOwnerKey } from './desktop-v3-cache-active-owner'
-import { writeDesktopV3OwnerAndTails } from './desktop-v3-cache-db'
+import {
+  desktopV3CachePersistenceCoordinator,
+  persistDesktopV3OwnerAndTails,
+} from './desktop-v3-cache-persistence-coordinator'
 import { createDesktopV3CacheOwnerFromIdentity, type DesktopV3CacheOwner } from './desktop-v3-cache-owner'
 import {
   buildPersistedDesktopV3MessageTailV1,
@@ -75,7 +78,7 @@ export function createDesktopV3PersistenceController(
   const subscribe = deps.subscribe ?? subscribeDesktopV3Cache
   const getSnapshot = deps.getSnapshot ?? getDesktopV3CacheSnapshot
   const resolveOwner = deps.resolveOwner ?? resolveCurrentDesktopV3CacheOwner
-  const writeOwnerAndTails = deps.writeOwnerAndTails ?? writeDesktopV3OwnerAndTails
+  const writeOwnerAndTails = deps.writeOwnerAndTails ?? persistDesktopV3OwnerAndTails
   const saveActiveOwnerKey = deps.saveActiveOwnerKey ?? saveDesktopV3CacheActiveOwnerKey
   const now = deps.now ?? Date.now
   const scheduler = deps.scheduler ?? globalDesktopV3PersistenceScheduler
@@ -129,13 +132,13 @@ export function createDesktopV3PersistenceController(
     }
     if (immediate) {
       clearPendingTimer()
-      void flushNow()
+      void flushNow().catch(() => undefined)
       return
     }
     if (pendingTimer !== undefined) return
     pendingTimer = scheduler.setTimeout(() => {
       pendingTimer = undefined
-      void flushNow()
+      void flushNow().catch(() => undefined)
     }, debounceMs)
   }
 
@@ -154,6 +157,25 @@ export function createDesktopV3PersistenceController(
       .catch(() => undefined)
   }
 
+  const buildDirtyTailsFromCurrentState = (
+    state: DesktopV3CacheState,
+    ownerKey: string,
+    pendingVersions: Map<string, number>,
+    persistedAt: number,
+  ): PersistedDesktopV3MessageTailV1[] => {
+    const tails: PersistedDesktopV3MessageTailV1[] = []
+    for (const sessionId of pendingVersions.keys()) {
+      const tail = buildPersistedDesktopV3MessageTailV1FromState(state, ownerKey, sessionId, persistedAt)
+      if (!tail) continue
+
+      const signatureKey = persistedTailSignatureKey(ownerKey, sessionId)
+      const signature = persistedTailSignature(tail)
+      if (lastWrittenTailSignatures.get(signatureKey) === signature) continue
+      tails.push(tail)
+    }
+    return tails
+  }
+
   const flushOnce = async (): Promise<void> => {
     const pendingTailVersions = new Map(tailDirtyVersions)
     const pendingOwnerVersion = ownerDirtyVersion
@@ -161,86 +183,57 @@ export function createDesktopV3PersistenceController(
     const expectedOwnerKey = dirtyOwnerKey
     if (!expectedOwnerKey) return
 
-    let owner: DesktopV3CacheOwner | undefined
-    try {
-      owner = await resolveOwner()
-    } catch {
-      return
-    }
-    if (!owner) return
-    if (owner.key !== expectedOwnerKey) {
-      ownerDirtyVersion = 0
-      tailDirtyVersions.clear()
-      dirtyOwnerKey = undefined
-      return
-    }
-
-    const state = getSnapshot()
-    const persistedAt = now()
-    const ownerRecord = buildPersistedDesktopV3OwnerV1FromState(state, owner, persistedAt)
-    if (!ownerRecord) return
-
-    const tails: PersistedDesktopV3MessageTailV1[] = []
-    const tailIdsAttempted = new Set<string>()
-    for (const sessionId of pendingTailVersions.keys()) {
-      const tail = buildPersistedDesktopV3MessageTailV1FromState(state, owner.key, sessionId, persistedAt)
-      tailIdsAttempted.add(sessionId)
-      if (!tail) continue
-
-      const signatureKey = persistedTailSignatureKey(owner.key, sessionId)
-      const signature = persistedTailSignature(tail)
-      if (lastWrittenTailSignatures.get(signatureKey) === signature) continue
-      tails.push(tail)
-    }
-
-    let currentOwner: DesktopV3CacheOwner | undefined
-    try {
-      currentOwner = await resolveOwner()
-    } catch {
-      return
-    }
-    if (currentOwner?.key !== owner.key) return
-
-    let wrote = false
-    try {
-      wrote = await writeOwnerAndTails(ownerRecord, tails)
-    } catch {
-      wrote = false
-    }
-    if (!wrote) return
-
-    try {
-      currentOwner = await resolveOwner()
-    } catch {
-      return
-    }
-    if (currentOwner?.key !== owner.key) {
-      if (dirtyOwnerKey === owner.key) {
+    await desktopV3CachePersistenceCoordinator.enqueue(async () => {
+      let owner: DesktopV3CacheOwner | undefined
+      try {
+        owner = await resolveOwner()
+      } catch {
+        return
+      }
+      if (!owner) return
+      if (owner.key !== expectedOwnerKey) {
         ownerDirtyVersion = 0
         tailDirtyVersions.clear()
         dirtyOwnerKey = undefined
+        return
       }
-      return
-    }
 
-    saveActiveOwnerKey(owner.key)
-    if (ownerDirtyVersion === pendingOwnerVersion) ownerDirtyVersion = 0
-    for (const [sessionId, dirtyVersion] of pendingTailVersions.entries()) {
-      if (tailDirtyVersions.get(sessionId) === dirtyVersion) {
-        tailDirtyVersions.delete(sessionId)
+      const state = getSnapshot()
+      const persistedAt = now()
+      const ownerRecord = buildPersistedDesktopV3OwnerV1FromState(state, owner, persistedAt)
+      if (!ownerRecord) return
+
+      const tails = buildDirtyTailsFromCurrentState(
+        state,
+        owner.key,
+        pendingTailVersions,
+        persistedAt,
+      )
+
+      const wrote = await writeOwnerAndTails(ownerRecord, tails)
+      if (!wrote) {
+        throw new Error('Desktop V3 IndexedDB transaction failed')
       }
-    }
-    for (const tail of tails) {
-      lastWrittenTailSignatures.set(persistedTailSignatureKey(owner.key, tail.sessionId), persistedTailSignature(tail))
-    }
-    for (const sessionId of tailIdsAttempted) {
-      if (!state.messagesBySession[sessionId] && tailDirtyVersions.get(sessionId) === pendingTailVersions.get(sessionId)) {
-        tailDirtyVersions.delete(sessionId)
+
+      saveActiveOwnerKey(owner.key)
+      if (ownerDirtyVersion === pendingOwnerVersion) ownerDirtyVersion = 0
+      for (const [sessionId, dirtyVersion] of pendingTailVersions.entries()) {
+        if (tailDirtyVersions.get(sessionId) === dirtyVersion) {
+          tailDirtyVersions.delete(sessionId)
+        }
       }
-    }
-    if (ownerDirtyVersion === 0 && tailDirtyVersions.size === 0 && dirtyOwnerKey === owner.key) {
-      dirtyOwnerKey = undefined
-    }
+      for (const tail of tails) {
+        lastWrittenTailSignatures.set(persistedTailSignatureKey(owner.key, tail.sessionId), persistedTailSignature(tail))
+      }
+      for (const sessionId of pendingTailVersions.keys()) {
+        if (!state.messagesBySession[sessionId] && tailDirtyVersions.get(sessionId) === pendingTailVersions.get(sessionId)) {
+          tailDirtyVersions.delete(sessionId)
+        }
+      }
+      if (ownerDirtyVersion === 0 && tailDirtyVersions.size === 0 && dirtyOwnerKey === owner.key) {
+        dirtyOwnerKey = undefined
+      }
+    })
   }
 
   const flushNow = async (): Promise<void> => {

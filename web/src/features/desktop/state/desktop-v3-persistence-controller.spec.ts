@@ -1,10 +1,15 @@
 import 'fake-indexeddb/auto'
 
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import { createDesktopV3CacheOwner } from './desktop-v3-cache-owner'
 import { readDesktopV3MessageTail, readDesktopV3Owner, resetDesktopV3CacheDBForTests } from './desktop-v3-cache-db'
+import {
+  desktopV3CachePersistenceCoordinator,
+  persistDesktopV3OwnerAndTails,
+} from './desktop-v3-cache-persistence-coordinator'
 import { buildPersistedDesktopV3MessageTailV1 } from './desktop-v3-cache-persisted-types'
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, resetDesktopV3CacheForTests } from './desktop-v3-cache-store'
@@ -545,12 +550,18 @@ test('failed IndexedDB write leaves in-memory cache usable', async () => {
   })
   controller.start()
 
-  dispatchDesktopV3Cache(bootstrapResponseToAction(snapshotFixture({ messages_by_session: {}, events_by_session: {} })))
-  await controller.flushNow()
+  try {
+    dispatchDesktopV3Cache(bootstrapResponseToAction(snapshotFixture({ messages_by_session: {}, events_by_session: {} })))
+    await assert.rejects(
+      controller.flushNow(),
+      /Desktop V3 IndexedDB transaction failed/,
+    )
 
-  assert.equal(getDesktopV3CacheSnapshot().sessionsById[sessionA.id]?.kind, 'full')
-  controller.stop()
-  await resetHarness()
+    assert.equal(getDesktopV3CacheSnapshot().sessionsById[sessionA.id]?.kind, 'full')
+  } finally {
+    controller.stop()
+    await resetHarness()
+  }
 })
 
 test('owner change cannot write data into the previous owner partition', async () => {
@@ -611,4 +622,151 @@ test('write reset memory restore reproduces durable state', async () => {
 
   controller.stop()
   await resetHarness()
+})
+
+async function readStateSource(relativePath: string): Promise<string> {
+  return readFile(new URL(relativePath, import.meta.url), 'utf8')
+}
+
+test('normal persistence cannot overwrite a later durable stream commit', async () => {
+  await resetHarness()
+  const controller = createDesktopV3PersistenceController({
+    resolveOwner: () => ownerA,
+    now: () => 1_000,
+  })
+  controller.start()
+
+  resetDesktopV3CacheForTests(persistedStateFixture())
+  dispatchDesktopV3Cache({ type: 'session.select', sessionId: sessionA.id })
+
+  await desktopV3CachePersistenceCoordinator.enqueue(async () => {
+    const current = getDesktopV3CacheSnapshot()
+    resetDesktopV3CacheForTests({
+      ...current,
+      realtime: { ...current.realtime, endpointCursor: 'cursor-from-durable-stream' },
+      liveRunsBySession: {
+        ...current.liveRunsBySession,
+        [sessionA.id]: {
+          'run-durable': {
+            sessionId: sessionA.id,
+            runId: 'run-durable',
+            status: 'running',
+            assistantDraft: { content: 'durable stream draft', updatedAt: 2_000 },
+            toolCallsByCallId: {},
+          },
+        },
+      },
+    })
+  })
+
+  await controller.flushNow()
+
+  const owner = await readDesktopV3Owner(ownerA.key)
+  assert.equal(owner?.realtimeEndpointCursor, 'cursor-from-durable-stream')
+  assert.equal(owner?.liveRunsBySession?.[sessionA.id]?.['run-durable']?.assistantDraft?.content, 'durable stream draft')
+
+  controller.stop()
+  await resetHarness()
+})
+
+test('stream commit followed by normal flush writes the latest state', async () => {
+  await resetHarness()
+  const controller = createDesktopV3PersistenceController({
+    resolveOwner: () => ownerA,
+    now: () => 2_000,
+  })
+  controller.start()
+
+  resetDesktopV3CacheForTests(persistedStateFixture())
+  await desktopV3CachePersistenceCoordinator.enqueue(async () => {
+    const current = getDesktopV3CacheSnapshot()
+    resetDesktopV3CacheForTests({
+      ...current,
+      realtime: { ...current.realtime, endpointCursor: 'cursor-before-normal-flush' },
+      liveRunsBySession: {
+        [sessionA.id]: {
+          'run-before-normal': {
+            sessionId: sessionA.id,
+            runId: 'run-before-normal',
+            status: 'running',
+            assistantDraft: { content: 'stream state before normal flush', updatedAt: 2_100 },
+            toolCallsByCallId: {},
+          },
+        },
+      },
+    })
+  })
+
+  dispatchDesktopV3Cache({ type: 'session.select', sessionId: sessionA.id })
+  await controller.flushNow()
+
+  const owner = await readDesktopV3Owner(ownerA.key)
+  assert.equal(owner?.realtimeEndpointCursor, 'cursor-before-normal-flush')
+  assert.equal(owner?.liveRunsBySession?.[sessionA.id]?.['run-before-normal']?.assistantDraft?.content, 'stream state before normal flush')
+
+  controller.stop()
+  await resetHarness()
+})
+
+test('coordinator serializes writes in submission order', async () => {
+  const order: string[] = []
+  let releaseFirst!: () => void
+  const firstCanFinish = new Promise<void>((resolve) => {
+    releaseFirst = resolve
+  })
+
+  const first = desktopV3CachePersistenceCoordinator.enqueue(async () => {
+    order.push('first-start')
+    await firstCanFinish
+    order.push('first-end')
+    return 'first'
+  })
+  const second = desktopV3CachePersistenceCoordinator.enqueue(async () => {
+    order.push('second')
+    return 'second'
+  })
+
+  await Promise.resolve()
+  assert.deepEqual(order, ['first-start'])
+  releaseFirst()
+  assert.deepEqual(await Promise.all([first, second]), ['first', 'second'])
+  assert.deepEqual(order, ['first-start', 'first-end', 'second'])
+})
+
+test('owner and final assistant message tail commit atomically', async () => {
+  await resetHarness()
+  const state = persistedStateFixture()
+  state.liveRunsBySession[sessionA.id] = {
+    'run-final': {
+      sessionId: sessionA.id,
+      runId: 'run-final',
+      status: 'completed',
+      assistantDraft: { content: 'final draft before tail', updatedAt: 3_000 },
+      toolCallsByCallId: {},
+    },
+  }
+  state.realtime.endpointCursor = 'cursor-final-commit'
+  const owner = buildPersistedDesktopV3OwnerV1FromState(state, ownerA, 3_100)
+  const tail = buildPersistedDesktopV3MessageTailV1FromState(state, ownerA.key, sessionA.id, 3_100)
+  assert.ok(owner)
+  assert.ok(tail)
+
+  const wrote = await desktopV3CachePersistenceCoordinator.enqueue(() =>
+    persistDesktopV3OwnerAndTails(owner, [tail]),
+  )
+
+  assert.equal(wrote, true)
+  assert.equal((await readDesktopV3Owner(ownerA.key))?.realtimeEndpointCursor, 'cursor-final-commit')
+  assert.deepEqual((await readDesktopV3MessageTail(ownerA.key, sessionA.id))?.messages.map((message) => message.id), [messageA1.id, messageA2.id])
+
+  await resetHarness()
+})
+
+test('production owner and tail writes are only imported by the persistence coordinator', async () => {
+  const coordinator = await readStateSource('./desktop-v3-cache-persistence-coordinator.ts')
+  const persistenceController = await readStateSource('./desktop-v3-persistence-controller.ts')
+
+  assert.match(coordinator, /import \{ writeDesktopV3OwnerAndTails \} from '\.\/desktop-v3-cache-db'/)
+  assert.doesNotMatch(persistenceController, /from '\.\/desktop-v3-cache-db'/)
+  assert.match(persistenceController, /desktopV3CachePersistenceCoordinator\.enqueue\(async \(\) => \{/)
 })
