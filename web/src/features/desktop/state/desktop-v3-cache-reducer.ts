@@ -24,6 +24,7 @@ import type {
   SessionSnapshot,
   MessageMutationConflictResponse,
 } from './desktop-v3-cache-types'
+import type { DesktopPermissionRecord } from '../types/realtime'
 import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 
 const ACTIVE_RUN_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
@@ -224,6 +225,7 @@ export function applyPersistedRestore(
   }
 
   restorePersistedDesktopV3LiveRuns(state, owner)
+  state.permissionsBySession = structuredClone(owner.permissionsBySession ?? {})
 
   state.realtime.endpointCursor =
     owner.realtimeEndpointCursor?.trim() || undefined
@@ -834,6 +836,8 @@ export function applyCacheEvent(
     state.usageBySession[sessionId] = payload.usage_summary
   }
 
+  applyPermissionEvent(state, event)
+
   if (payload.tombstone || eventType === 'session.deleted') {
     applyTombstone(state, sessionId, payload.tombstone)
   }
@@ -852,6 +856,116 @@ export function applyCacheEvent(
   commitCompletedReasoningEvent(state, event)
 
   return state
+}
+
+function applyPermissionEvent(state: DesktopV3CacheState, event: CacheEvent): void {
+  if (event.eventType !== 'permission.requested' && event.eventType !== 'permission.updated' && !event.payload.permission) return
+  const permission = normalizePermissionRecord(event.payload.permission, event.sessionId)
+  if (!permission) return
+  upsertPermissionRecord(state, permission)
+}
+
+function normalizePermissionRecord(value: unknown, fallbackSessionId: string): DesktopPermissionRecord | undefined {
+  const source = recordValue(value)
+  if (!source) return undefined
+  const id = stringValue(source.id).trim()
+  const sessionId = stringValue(source.session_id).trim() || stringValue(source.sessionId).trim() || fallbackSessionId
+  if (!id || !sessionId) return undefined
+  const savedRule = recordValue(source.saved_rule) ?? recordValue(source.savedRule)
+  return {
+    id,
+    sessionId,
+    runId: stringValue(source.run_id).trim() || stringValue(source.runId).trim(),
+    callId: stringValue(source.call_id).trim() || stringValue(source.callId).trim(),
+    toolName: stringValue(source.tool_name).trim() || stringValue(source.toolName).trim(),
+    toolArguments: stringValue(source.tool_arguments) || stringValue(source.toolArguments),
+    approvedArguments: stringValue(source.approved_arguments).trim() || stringValue(source.approvedArguments).trim() || undefined,
+    savedRule: savedRule ? {
+      id: stringValue(savedRule.id).trim(),
+      kind: stringValue(savedRule.kind).trim(),
+      decision: stringValue(savedRule.decision).trim(),
+      tool: stringValue(savedRule.tool).trim() || undefined,
+      pattern: stringValue(savedRule.pattern).trim() || undefined,
+      createdAt: numberValue(savedRule.created_at) || numberValue(savedRule.createdAt) || undefined,
+      updatedAt: numberValue(savedRule.updated_at) || numberValue(savedRule.updatedAt) || undefined,
+    } : undefined,
+    status: stringValue(source.status).trim(),
+    decision: stringValue(source.decision).trim(),
+    reason: stringValue(source.reason).trim(),
+    requirement: stringValue(source.requirement).trim(),
+    mode: stringValue(source.mode).trim(),
+    createdAt: numberValue(source.created_at) || numberValue(source.createdAt),
+    updatedAt: numberValue(source.updated_at) || numberValue(source.updatedAt),
+    resolvedAt: numberValue(source.resolved_at) || numberValue(source.resolvedAt),
+    permissionRequestedAt: numberValue(source.permission_requested_at) || numberValue(source.permissionRequestedAt),
+  }
+}
+
+function normalizePermissionRecords(values: unknown[] | undefined, sessionId: string): DesktopPermissionRecord[] {
+  return (values ?? [])
+    .map((value) => normalizePermissionRecord(value, sessionId))
+    .filter((permission): permission is DesktopPermissionRecord => Boolean(permission && permission.status.trim().toLowerCase() === 'pending'))
+    .sort(comparePermissions)
+}
+
+function replacePermissionsBySession(
+  target: DesktopV3CacheState['permissionsBySession'],
+  source: Record<string, unknown[] | undefined> | undefined,
+  sessionIds: Set<string>,
+): void {
+  for (const sessionId of sessionIds) {
+    delete target[sessionId]
+  }
+  if (!source) return
+  for (const sessionId of sessionIds) {
+    const permissions = normalizePermissionRecords(source[sessionId], sessionId)
+    if (permissions.length > 0) {
+      target[sessionId] = permissions
+    }
+  }
+}
+
+function mergePermissionsBySession(
+  target: DesktopV3CacheState['permissionsBySession'],
+  source: Record<string, unknown[] | undefined> | undefined,
+): void {
+  if (!source) return
+  for (const [sessionId, values] of Object.entries(source)) {
+    const permissions = normalizePermissionRecords(values, sessionId)
+    if (permissions.length > 0) {
+      target[sessionId] = permissions
+    }
+  }
+}
+
+function upsertPermissionRecord(state: DesktopV3CacheState, permission: DesktopPermissionRecord): void {
+  const sessionId = permission.sessionId || ''
+  if (!sessionId) return
+  const current = state.permissionsBySession[sessionId] ?? []
+  const existing = current.find((entry) => entry.id === permission.id)
+  if (existing && comparePermissionFreshness(permission, existing) < 0) {
+    return
+  }
+  const next = [...current.filter((entry) => entry.id !== permission.id), permission].sort(comparePermissions)
+  state.permissionsBySession[sessionId] = next
+}
+
+function permissionFreshness(permission: DesktopPermissionRecord): number {
+  return Math.max(permission.resolvedAt || 0, permission.updatedAt || 0, permission.permissionRequestedAt || 0, permission.createdAt || 0)
+}
+
+function terminalPermissionRank(permission: DesktopPermissionRecord): number {
+  return permission.status.trim().toLowerCase() === 'pending' ? 0 : 1
+}
+
+function comparePermissionFreshness(left: DesktopPermissionRecord, right: DesktopPermissionRecord): number {
+  return permissionFreshness(left) - permissionFreshness(right)
+    || terminalPermissionRank(left) - terminalPermissionRank(right)
+}
+
+function comparePermissions(left: DesktopPermissionRecord, right: DesktopPermissionRecord): number {
+  return (left.permissionRequestedAt || left.createdAt || left.updatedAt || 0) - (right.permissionRequestedAt || right.createdAt || right.updatedAt || 0)
+    || left.id.localeCompare(right.id)
 }
 
 function commitCompletedReasoningEvent(state: DesktopV3CacheState, event: CacheEvent): void {
@@ -1297,7 +1411,7 @@ function mergeReconnectOptionalResources(
   } else {
     mergeRecord(state.planRevisionsBySession, raw.plan_revisions_by_session)
   }
-  mergeRecord(state.permissionsBySession, raw.permissions_by_session)
+  mergePermissionsBySession(state.permissionsBySession, raw.permissions_by_session)
   mergeRecord(state.usageBySession, raw.usage_by_session)
   mergeRecord(state.preferencesBySession, raw.preferences_by_session)
   mergeRecord(state.agentModelPolicyBySession, raw.agent_model_policy_by_session)
@@ -1351,7 +1465,7 @@ function mergeSnapshotResources(
     replaceRecordBySession(state.planRevisionsBySession, snapshot.plan_revisions_by_session, authoritativeSessionIds)
   }
   if (syncResourceSetContains(resourceSet, 'permissions')) {
-    replaceRecordBySession(state.permissionsBySession, snapshot.permissions_by_session, authoritativeSessionIds)
+    replacePermissionsBySession(state.permissionsBySession, snapshot.permissions_by_session, authoritativeSessionIds)
   }
   if (syncResourceSetContains(resourceSet, 'usage')) {
     replaceRecordBySession(state.usageBySession, snapshot.usage_by_session, authoritativeSessionIds)

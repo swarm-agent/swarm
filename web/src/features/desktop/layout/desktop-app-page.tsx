@@ -11,10 +11,10 @@ import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-worksp
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
-import type { DesktopSessionRecord } from '../types/realtime'
+import type { DesktopPermissionRecord, DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
-import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
+import { countApprovalRequiredPermissions, permissionRequiresApproval } from '../permissions/services/permission-payload'
 import { buildWorkspaceRouteSlugMap, resolveWorkspaceBySlug, workspaceRouteSlugBase } from '../../workspaces/launcher/services/workspace-route'
 import type { WorkspaceEntry } from '../../workspaces/launcher/types/workspace'
 import { WorkspaceTodoModal } from '../../workspaces/todos/components/workspace-todo-modal'
@@ -40,6 +40,8 @@ import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/ap
 import { approveRemoteSwarmPairing, fetchPendingRemoteSwarmPairings, type RemoteSwarmPendingPairing } from '../onboarding/api'
 import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from '../swarm/components/managed-host-link-request-modal'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
+import { DesktopPermissionModal } from '../permissions/components/desktop-permission-modal'
+import { resolveSessionPermission } from '../chat/queries/chat-queries'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { buildDesktopChatRouteOptions, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
@@ -229,7 +231,8 @@ export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): 
   const runIntent = desktopRunIntentFromV3(row.currentRunIntent ?? Object.values(row.runIntents)[0])
   const runIntentActive = runIntent ? ['pending_executor', 'running', 'dispatch_blocked'].includes(runIntent.status) : false
   const runIntentBlocked = runIntent?.status === 'dispatch_blocked'
-  const liveStatus = runIntentBlocked ? 'blocked' : runIntentActive ? 'running' : 'idle'
+  const pendingPermissionCount = row.pendingPermissionCount
+  const liveStatus = pendingPermissionCount > 0 || runIntentBlocked ? 'blocked' : runIntentActive ? 'running' : 'idle'
   const updatedAt = row.projection?.updated_at ?? session.updated_at ?? session.last_message_at ?? session.created_at ?? 0
 
   return {
@@ -244,7 +247,7 @@ export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): 
     messageCount: session.message_count ?? 0,
     updatedAt,
     createdAt: session.created_at ?? updatedAt,
-    permissionsHydrated: false,
+    permissionsHydrated: true,
     worktreeEnabled: session.worktree_enabled,
     worktreeRootPath: session.worktree_root_path,
     worktreeBaseBranch: session.worktree_base_branch,
@@ -282,8 +285,8 @@ export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): 
       reasoningStartedAt: null,
       awaitingAck: false,
     },
-    pendingPermissions: [],
-    pendingPermissionCount: 0,
+    pendingPermissions: row.pendingPermissions,
+    pendingPermissionCount,
     usage: null,
   }
 }
@@ -752,6 +755,11 @@ function sidebarFlowRow(record: FlowSummaryRecord): SidebarFlowRow {
     detail: sidebarFlowDetail(record),
     raw: record,
   }
+}
+
+function comparePendingPermissions(left: DesktopPermissionRecord, right: DesktopPermissionRecord): number {
+  return (left.permissionRequestedAt || left.createdAt || left.updatedAt || 0) - (right.permissionRequestedAt || right.createdAt || right.updatedAt || 0)
+    || left.id.localeCompare(right.id)
 }
 
 function sessionPendingPermissionCount(session: DesktopSessionRecord): number {
@@ -2074,6 +2082,26 @@ export function DesktopAppPage() {
     () => new Map(desktopStateSessions.map((session) => [session.id, session] as const)),
     [desktopStateSessions],
   )
+  const selectedPermission = useMemo(() => {
+    const pending = desktopStateSessions.flatMap((session) => session.pendingPermissions
+      .filter((permission) => permissionRequiresApproval(permission, session.mode))
+      .map((permission) => ({ permission, session })))
+    pending.sort((left, right) => {
+      const leftSelected = left.session.id === routeSessionId ? 0 : 1
+      const rightSelected = right.session.id === routeSessionId ? 0 : 1
+      return leftSelected - rightSelected || comparePendingPermissions(left.permission, right.permission)
+    })
+    return pending[0] ?? null
+  }, [desktopStateSessions, routeSessionId])
+  const handleResolvePermission = useCallback(async (
+    action: 'approve' | 'deny' | 'approve_always' | 'always_allow' | 'always_deny',
+    reason: string,
+    approvedArguments?: Record<string, unknown>,
+  ) => {
+    const permission = selectedPermission?.permission
+    if (!permission) return
+    await resolveSessionPermission(permission.sessionId, permission.id, action, reason, approvedArguments, { sessionApi: 'v3' })
+  }, [selectedPermission])
 
   const workspaceSlugByPath = useMemo(() => {
     const routeWorkspaces: Array<Pick<WorkspaceEntry, 'path' | 'workspaceName'>> = mergedSidebarWorkspaceEntries.map((workspace) => ({
@@ -3348,6 +3376,15 @@ export function DesktopAppPage() {
         tab={quickSettingsTab}
         onClose={() => setQuickSettingsTab(null)}
         onOpenFullSettings={handleOpenSettingsTab}
+      />
+
+      <DesktopPermissionModal
+        open={Boolean(selectedPermission)}
+        permission={selectedPermission?.permission ?? null}
+        pendingCount={desktopStateSessions.reduce((count, session) => count + sessionPendingPermissionCount(session), 0)}
+        sessionMode={selectedPermission?.session.mode ?? 'auto'}
+        onOpenChange={() => undefined}
+        onResolve={handleResolvePermission}
       />
 
       {todoModal ? (

@@ -1,4 +1,5 @@
 import type { PersistedDesktopV3MessageTailV1, PersistedDesktopV3OwnerV1 } from './desktop-v3-cache-persisted-types'
+import type { DesktopPermissionRecord } from '../types/realtime'
 
 export type SyncSelectorKind = '' | 'global' | 'recent' | 'session_ids' | 'workspace' | 'tui'
 
@@ -141,7 +142,7 @@ export interface SyncSnapshotResponse {
   events_by_session?: Record<string, V3SessionEvent[]>
   plans_by_session?: Record<string, unknown>
   plan_revisions_by_session?: Record<string, unknown[]>
-  permissions_by_session?: Record<string, unknown>
+  permissions_by_session?: Record<string, unknown[]>
   usage_by_session?: Record<string, unknown>
   preferences_by_session?: Record<string, unknown>
   agent_model_policy_by_session?: Record<string, unknown>
@@ -225,7 +226,7 @@ export interface SessionsReconnectResponse {
   events_by_session?: Record<string, V3SessionEvent[]>
   plans_by_session?: Record<string, unknown>
   plan_revisions_by_session?: Record<string, unknown[]>
-  permissions_by_session?: Record<string, unknown>
+  permissions_by_session?: Record<string, unknown[]>
   usage_by_session?: Record<string, unknown>
   preferences_by_session?: Record<string, unknown>
   agent_model_policy_by_session?: Record<string, unknown>
@@ -303,6 +304,7 @@ export interface SessionEventPayload {
   turn_usage?: unknown
   usage_summary?: unknown
   tombstone?: V3SessionTombstone
+  permission?: unknown
   message_id?: string
   role?: string
   run_id?: string
@@ -552,7 +554,7 @@ export interface DesktopV3CacheState {
   worksetsById: Record<string, WorksetCache>
   plansBySession: Record<string, unknown>
   planRevisionsBySession: Record<string, unknown[]>
-  permissionsBySession: Record<string, unknown>
+  permissionsBySession: Record<string, DesktopPermissionRecord[]>
   usageBySession: Record<string, unknown>
   preferencesBySession: Record<string, unknown>
   agentModelPolicyBySession: Record<string, unknown>

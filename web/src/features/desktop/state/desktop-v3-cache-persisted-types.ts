@@ -1,3 +1,4 @@
+import type { DesktopPermissionRecord } from '../types/realtime'
 import type {
   MessageSnapshot,
   SyncScopeCache,
@@ -90,6 +91,7 @@ export interface PersistedDesktopV3OwnerV1 {
   syncScopesById: Record<string, SyncScopeCache>
   sessionOrderByScope: Record<string, string[]>
   sidebarSessionsById: Record<string, PersistedDesktopV3SidebarSessionV1>
+  permissionsBySession?: Record<string, DesktopPermissionRecord[]>
 
   realtimeEndpointCursor?: string
   liveRunsBySession?: Record<
@@ -163,6 +165,9 @@ export function validatePersistedDesktopV3OwnerV1(
             record.liveRunsBySession,
             sidebarSessionsById,
           )
+    const permissionsBySession = record.permissionsBySession === undefined
+      ? undefined
+      : validatePersistedDesktopV3PermissionsBySessionV1(record.permissionsBySession, sidebarSessionsById)
 
     const realtimeEndpointCursor = optionalString(
       record.realtimeEndpointCursor,
@@ -181,6 +186,7 @@ export function validatePersistedDesktopV3OwnerV1(
         syncScopesById,
         sessionOrderByScope,
         sidebarSessionsById,
+        permissionsBySession,
         realtimeEndpointCursor,
         liveRunsBySession,
       },
@@ -356,6 +362,64 @@ function validateSidebarSessionsById(
   return output
 }
 
+
+
+function validatePersistedDesktopV3PermissionsBySessionV1(
+  value: unknown,
+  sidebarSessionsById: Record<string, PersistedDesktopV3SidebarSessionV1>,
+): Record<string, DesktopPermissionRecord[]> {
+  const input = recordValue(value, 'permissionsBySession')
+  const output: Record<string, DesktopPermissionRecord[]> = {}
+  for (const [rawSessionId, rawPermissions] of Object.entries(input)) {
+    const sessionId = requiredMapKey(rawSessionId, 'permissionsBySession session key')
+    if (!hasOwnRecord(sidebarSessionsById, sessionId)) {
+      throw new Error(`permissionsBySession.${sessionId} references missing sidebar session`)
+    }
+    if (!Array.isArray(rawPermissions)) {
+      throw new Error(`permissionsBySession.${sessionId} must be an array`)
+    }
+    const permissions = rawPermissions.map((rawPermission, index) => validatePersistedDesktopV3PermissionV1(rawPermission, sessionId, `permissionsBySession.${sessionId}.${index}`))
+    if (permissions.length > 0) output[sessionId] = permissions
+  }
+  return output
+}
+
+function validatePersistedDesktopV3PermissionV1(value: unknown, sessionId: string, label: string): DesktopPermissionRecord {
+  const permission = recordValue(value, label)
+  const id = requiredString(permission.id, `${label}.id`)
+  const permissionSessionId = requiredString(permission.sessionId, `${label}.sessionId`)
+  if (permissionSessionId !== sessionId) {
+    throw new Error(`${label}.sessionId must match ${sessionId}`)
+  }
+  const savedRule = optionalRecord(permission.savedRule, `${label}.savedRule`)
+  return {
+    id,
+    sessionId: permissionSessionId,
+    runId: requiredStringValue(permission.runId, `${label}.runId`),
+    callId: requiredStringValue(permission.callId, `${label}.callId`),
+    toolName: requiredStringValue(permission.toolName, `${label}.toolName`),
+    toolArguments: requiredStringValue(permission.toolArguments, `${label}.toolArguments`),
+    approvedArguments: optionalStringValue(permission.approvedArguments, `${label}.approvedArguments`),
+    savedRule: savedRule ? {
+      id: requiredStringValue(savedRule.id, `${label}.savedRule.id`),
+      kind: requiredStringValue(savedRule.kind, `${label}.savedRule.kind`),
+      decision: requiredStringValue(savedRule.decision, `${label}.savedRule.decision`),
+      tool: optionalStringValue(savedRule.tool, `${label}.savedRule.tool`),
+      pattern: optionalStringValue(savedRule.pattern, `${label}.savedRule.pattern`),
+      createdAt: savedRule.createdAt === undefined ? undefined : nonNegativeSafeInteger(savedRule.createdAt, `${label}.savedRule.createdAt`),
+      updatedAt: savedRule.updatedAt === undefined ? undefined : nonNegativeSafeInteger(savedRule.updatedAt, `${label}.savedRule.updatedAt`),
+    } : undefined,
+    status: requiredStringValue(permission.status, `${label}.status`),
+    decision: requiredStringValue(permission.decision, `${label}.decision`),
+    reason: requiredStringValue(permission.reason, `${label}.reason`),
+    requirement: requiredStringValue(permission.requirement, `${label}.requirement`),
+    mode: requiredStringValue(permission.mode, `${label}.mode`),
+    createdAt: nonNegativeSafeInteger(permission.createdAt, `${label}.createdAt`),
+    updatedAt: nonNegativeSafeInteger(permission.updatedAt, `${label}.updatedAt`),
+    resolvedAt: nonNegativeSafeInteger(permission.resolvedAt, `${label}.resolvedAt`),
+    permissionRequestedAt: nonNegativeSafeInteger(permission.permissionRequestedAt, `${label}.permissionRequestedAt`),
+  }
+}
 
 function validatePersistedDesktopV3LiveRunsBySessionV1(
   value: unknown,

@@ -630,7 +630,23 @@ test('stale hydrate merges history but does not replace newer optional resources
   }
   state.plansBySession[sessionB.id] = { id: 'new-live-plan' }
   state.planRevisionsBySession[sessionB.id] = [{ id: 'new-live-revision' }]
-  state.permissionsBySession[sessionB.id] = { id: 'new-permission' }
+  state.permissionsBySession[sessionB.id] = [{
+    id: 'new-permission',
+    sessionId: sessionB.id,
+    runId: 'run-b',
+    callId: 'call-b',
+    toolName: 'bash',
+    toolArguments: '{}',
+    status: 'pending',
+    decision: '',
+    reason: '',
+    requirement: '',
+    mode: 'auto',
+    createdAt: 10,
+    updatedAt: 10,
+    resolvedAt: 0,
+    permissionRequestedAt: 10,
+  }]
   state.usageBySession[sessionB.id] = { tokens: 10 }
   state.preferencesBySession[sessionB.id] = { model: 'new' }
   state.agentModelPolicyBySession[sessionB.id] = { policy: 'new' }
@@ -639,7 +655,18 @@ test('stale hydrate merges history but does not replace newer optional resources
     projections_by_session: { [sessionB.id]: projectionB },
     plans_by_session: {},
     plan_revisions_by_session: { [sessionB.id]: [] },
-    permissions_by_session: { [sessionB.id]: { id: 'old-permission' } },
+    permissions_by_session: { [sessionB.id]: [{
+      id: 'old-permission',
+      session_id: sessionB.id,
+      run_id: 'run-b',
+      call_id: 'call-old',
+      tool_name: 'bash',
+      tool_arguments: '{}',
+      status: 'pending',
+      mode: 'auto',
+      updated_at: 1,
+      permission_requested_at: 1,
+    }] },
     usage_by_session: { [sessionB.id]: { tokens: 1 } },
     preferences_by_session: { [sessionB.id]: { model: 'old' } },
     agent_model_policy_by_session: { [sessionB.id]: { policy: 'old' } },
@@ -654,7 +681,7 @@ test('stale hydrate merges history but does not replace newer optional resources
 
   assert.deepEqual(state.plansBySession[sessionB.id], { id: 'new-live-plan' })
   assert.deepEqual(state.planRevisionsBySession[sessionB.id], [{ id: 'new-live-revision' }])
-  assert.deepEqual(state.permissionsBySession[sessionB.id], { id: 'new-permission' })
+  assert.deepEqual(state.permissionsBySession[sessionB.id]?.map((permission) => permission.id), ['new-permission'])
   assert.deepEqual(state.usageBySession[sessionB.id], { tokens: 10 })
   assert.deepEqual(state.preferencesBySession[sessionB.id], { model: 'new' })
   assert.deepEqual(state.agentModelPolicyBySession[sessionB.id], { policy: 'new' })
@@ -704,6 +731,112 @@ test('stored events dedupe by immutable session sequence even with different ids
   })
 
   assert.deepEqual(state.eventsBySession[sessionA.id].map((event) => event.id), ['evt-second-id'])
+})
+
+
+test('permission realtime events upsert pending records and terminal updates remove them from selectors', () => {
+  const state = bootstrappedState()
+  applyCacheEvent(state, {
+    source: 'realtime',
+    sessionId: sessionA.id,
+    eventType: 'permission.requested',
+    sessionEvent: {
+      id: 'evt-permission-requested',
+      session_id: sessionA.id,
+      seq: 30,
+      event_type: 'permission.requested',
+      ts_unix_ms: 30,
+      payload: {
+        permission: {
+          id: 'perm-a',
+          session_id: sessionA.id,
+          run_id: 'run-live',
+          call_id: 'call-a',
+          tool_name: 'bash',
+          tool_arguments: '{"cmd":"echo hi"}',
+          status: 'pending',
+          requirement: 'approval',
+          mode: 'auto',
+          created_at: 30,
+          updated_at: 30,
+          permission_requested_at: 30,
+        },
+      },
+    },
+    payload: {
+      permission: {
+        id: 'perm-a',
+        session_id: sessionA.id,
+        run_id: 'run-live',
+        call_id: 'call-a',
+        tool_name: 'bash',
+        tool_arguments: '{"cmd":"echo hi"}',
+        status: 'pending',
+        requirement: 'approval',
+        mode: 'auto',
+        created_at: 30,
+        updated_at: 30,
+        permission_requested_at: 30,
+      },
+    },
+  })
+
+  let row = selectDesktopSidebarRows(state).find((entry) => entry.sessionId === sessionA.id)
+  assert.equal(row?.pendingPermissionCount, 1)
+  assert.equal(row?.pendingPermissions[0].id, 'perm-a')
+
+  applyCacheEvent(state, {
+    source: 'realtime',
+    sessionId: sessionA.id,
+    eventType: 'permission.updated',
+    sessionEvent: {
+      id: 'evt-permission-updated',
+      session_id: sessionA.id,
+      seq: 31,
+      event_type: 'permission.updated',
+      ts_unix_ms: 31,
+      payload: {
+        permission: {
+          id: 'perm-a',
+          session_id: sessionA.id,
+          run_id: 'run-live',
+          call_id: 'call-a',
+          tool_name: 'bash',
+          tool_arguments: '{"cmd":"echo hi"}',
+          status: 'approved',
+          decision: 'allow_once',
+          requirement: 'approval',
+          mode: 'auto',
+          created_at: 30,
+          updated_at: 31,
+          resolved_at: 31,
+          permission_requested_at: 30,
+        },
+      },
+    },
+    payload: {
+      permission: {
+        id: 'perm-a',
+        session_id: sessionA.id,
+        run_id: 'run-live',
+        call_id: 'call-a',
+        tool_name: 'bash',
+        tool_arguments: '{"cmd":"echo hi"}',
+        status: 'approved',
+        decision: 'allow_once',
+        requirement: 'approval',
+        mode: 'auto',
+        created_at: 30,
+        updated_at: 31,
+        resolved_at: 31,
+        permission_requested_at: 30,
+      },
+    },
+  })
+
+  row = selectDesktopSidebarRows(state).find((entry) => entry.sessionId === sessionA.id)
+  assert.equal(row?.pendingPermissionCount, 0)
+  assert.equal(state.permissionsBySession[sessionA.id][0].status, 'approved')
 })
 
 test('hydrate rejects non-requested payload membership', () => {

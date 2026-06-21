@@ -1,3 +1,4 @@
+import type { DesktopPermissionRecord } from '../types/realtime'
 import type { DesktopV3CacheState, LiveRunOverlay, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 
 export interface DesktopV3SidebarRow {
@@ -7,6 +8,8 @@ export interface DesktopV3SidebarRow {
   tombstone?: V3SessionTombstone
   runIntents: Record<string, V3SessionRunIntent>
   currentRunIntent?: V3SessionRunIntent
+  pendingPermissions: DesktopPermissionRecord[]
+  pendingPermissionCount: number
 }
 
 export interface RenderedSessionMessages {
@@ -41,6 +44,8 @@ export function selectDesktopSidebarRows(state: DesktopV3CacheState, scopeId = s
       tombstone: state.tombstonesBySession[sessionId],
       runIntents: state.runIntentsBySession[sessionId] ?? {},
       currentRunIntent: state.currentRunIntentBySession[sessionId],
+      pendingPermissions: (state.permissionsBySession[sessionId] ?? []).filter((permission) => permission.status.trim().toLowerCase() === 'pending'),
+      pendingPermissionCount: (state.permissionsBySession[sessionId] ?? []).filter((permission) => permission.status.trim().toLowerCase() === 'pending').length,
     })
   }
   return rows

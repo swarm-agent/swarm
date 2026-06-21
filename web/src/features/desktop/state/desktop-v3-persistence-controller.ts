@@ -363,6 +363,7 @@ export function buildPersistedDesktopV3OwnerV1FromState(
     syncScopesById: cloneSyncScopes(state.syncScopesById),
     sessionOrderByScope,
     sidebarSessionsById,
+    permissionsBySession: clonePermissionsBySession(state.permissionsBySession, sidebarSessionsById),
     realtimeEndpointCursor:
       state.realtime.endpointCursor?.trim() || undefined,
     liveRunsBySession:
@@ -372,7 +373,20 @@ export function buildPersistedDesktopV3OwnerV1FromState(
   }
 }
 
-export function buildPersistedDesktopV3LiveRunsBySessionV1FromState(
+export function clonePermissionsBySession(
+  permissionsBySession: DesktopV3CacheState['permissionsBySession'],
+  sidebarSessionsById: PersistedDesktopV3OwnerV1['sidebarSessionsById'],
+): PersistedDesktopV3OwnerV1['permissionsBySession'] {
+  const output: NonNullable<PersistedDesktopV3OwnerV1['permissionsBySession']> = {}
+  for (const [sessionId, permissions] of Object.entries(permissionsBySession)) {
+    if (!sidebarSessionsById[sessionId]) continue
+    const pending = permissions.filter((permission) => permission.status.trim().toLowerCase() === 'pending')
+    if (pending.length > 0) output[sessionId] = structuredClone(pending)
+  }
+  return Object.keys(output).length > 0 ? output : undefined
+}
+
+function buildPersistedDesktopV3LiveRunsBySessionV1FromState(
   state: DesktopV3CacheState,
   sidebarSessionsById: PersistedDesktopV3OwnerV1['sidebarSessionsById'],
 ): NonNullable<PersistedDesktopV3OwnerV1['liveRunsBySession']> {
