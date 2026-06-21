@@ -1501,6 +1501,7 @@ function mergeLiveRunRepairEvents(
   for (const event of [...events].sort(
     (left, right) => (left.sessionEvent?.seq ?? 0) - (right.sessionEvent?.seq ?? 0),
   )) {
+    if (event.sessionId !== sessionId) continue
     if (cacheEventRunId(event) !== runId) continue
     applyCacheEvent(state, event)
   }

@@ -140,7 +140,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
         const reconnect = await this.reconnect(
           buildDesktopV3ReconnectInput(this.getSnapshot(), DESKTOP_V3_CLIENT_ID),
         )
-        const durableResumeCursor = frame
+        const cursorWasRejected = frame?.kind === 'cursor.error'
+        const durableResumeCursor = cursorWasRejected
           ? undefined
           : this.getSnapshot().realtime.endpointCursor?.trim()
         this.dispatch({ type: 'reconnect.applySnapshot', snapshot: reconnect })
@@ -434,15 +435,16 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
   private sessionMessageTailComplete(sessionId: string): boolean {
     const state = this.getSnapshot()
-    const projection = state.projectionsBySession[sessionId]
     const messages = state.messagesBySession[sessionId]
     const record = state.sessionsById[sessionId]
     const session = record?.kind === 'full' ? record.session : undefined
-    if (!projection || !messages) return false
-    const projectionHighWatermark = projectionSeq(projection)
-    return (messages.sourceProjectionHighWatermarkSeq ?? 0) >= projectionHighWatermark
-      && (session?.message_count === undefined || (messages.sourceMessageCount ?? 0) >= session.message_count)
-      && (session?.last_message_at === undefined || (messages.sourceLastMessageAt ?? 0) >= session.last_message_at)
+
+    if (!messages || !session) return false
+
+    return Number.isSafeInteger(messages.sourceMessageCount)
+      && Number.isSafeInteger(messages.sourceLastMessageAt)
+      && (messages.sourceMessageCount ?? -1) >= session.message_count
+      && (messages.sourceLastMessageAt ?? -1) >= session.last_message_at
   }
 
   private markActiveRunsFromReconnect(raw: SessionsReconnectResponse): void {
@@ -459,7 +461,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       if (!intent) continue
 
       const restored = this.getSnapshot().liveRunsBySession[sessionId]?.[intent.run_id]
-      if (restored && (restored.lastEventSeqSeen ?? 0) >= intent.event_seq) {
+      const restoredSeq = restored?.lastEventSeqSeen ?? 0
+      if (restoredSeq >= intent.event_seq) {
         continue
       }
 
@@ -467,7 +470,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       if (!ACTIVE_INTENT_STATUSES.has(status)) continue
       this.markedActiveRepairBySession.set(sessionId, {
         runId: intent.run_id,
-        afterSeq: intent.event_seq,
+        afterSeq: restoredSeq,
       })
     }
   }

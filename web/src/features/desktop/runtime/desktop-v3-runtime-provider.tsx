@@ -3,6 +3,7 @@ import { useEffect, useRef, type ReactNode } from 'react'
 import { requireDesktopV3RealtimeControllerReady, retainDesktopV3RealtimeController, type DesktopV3RealtimeLease } from '../realtime/v3-realtime-controller'
 import { bootstrapDesktopV3SidebarMetadataOnly, type DesktopV3BootstrapMetadataResult } from '../state/desktop-v3-bootstrap-controller'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
+import { readDesktopV3MessageTails } from '../state/desktop-v3-cache-db'
 import { buildPostReconnectHydrationSnapshot, hydrateDesktopV3InitialSessions } from '../state/desktop-v3-initial-hydrate-controller'
 import { startDesktopV3PersistenceController } from '../state/desktop-v3-persistence-controller'
 
@@ -119,9 +120,12 @@ async function startDesktopV3RuntimeHydration(
       getDesktopV3CacheSnapshot(),
       scopeId,
     ),
+    preBootstrapCachedProjections: bootstrap.preBootstrapCachedProjections,
+    selectedMessageTail: bootstrap.restoredSelectedMessageTail,
     preferredSessionId: null,
     currentSelectedSessionId: undefined,
     ownerKey: bootstrap.restoredOwnerKey,
+    readMessageTails: readDesktopV3MessageTails,
   })
 }
 

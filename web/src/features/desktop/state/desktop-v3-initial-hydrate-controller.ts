@@ -306,17 +306,14 @@ function isReusableCachedSession(input: {
   tail?: PersistedDesktopV3MessageTailV1
 }): boolean {
   const remoteSession = input.response.sessions_by_id?.[input.sessionId]
-  const remoteProjection = input.response.projections_by_session?.[input.sessionId]
   const tail = input.tail
   const cachedProjection = input.cachedProjection
-  if (!tail || !cachedProjection || !remoteSession || !remoteProjection) return false
+  if (!tail || !cachedProjection || !remoteSession) return false
   if (isTombstoned(input.response, input.sessionId)) return false
-  if (!isSafeNumber(tail.sourceMessageCount) || !isSafeNumber(tail.sourceLastMessageAt) || !isSafeNumber(tail.sourceProjectionHighWatermarkSeq)) return false
-  return tail.sourceMessageCount === remoteSession.message_count
-    && tail.sourceLastMessageAt === remoteSession.last_message_at
-    && tail.sourceProjectionHighWatermarkSeq === remoteProjection.projection_high_watermark_seq
-    && cachedProjection.last_event_seq === remoteProjection.last_event_seq
-    && cachedProjection.projection_high_watermark_seq === remoteProjection.projection_high_watermark_seq
+  return Number.isSafeInteger(tail.sourceMessageCount)
+    && Number.isSafeInteger(tail.sourceLastMessageAt)
+    && (tail.sourceMessageCount ?? -1) >= remoteSession.message_count
+    && (tail.sourceLastMessageAt ?? -1) >= remoteSession.last_message_at
 }
 
 function isTombstoned(response: SyncSnapshotResponse, sessionId: string): boolean {
@@ -342,10 +339,6 @@ function normalizeOptionalSessionId(sessionId: string | null | undefined): strin
 
 function normalizeSessionIdSetKey(sessionIds: string[]): string {
   return [...normalizeOrderedSessionIds(sessionIds)].sort().join('\u0000')
-}
-
-function isSafeNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
 function chunk<T>(values: T[], size: number): T[][] {

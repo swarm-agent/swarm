@@ -1,3 +1,5 @@
+import 'fake-indexeddb/auto'
+
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -7,9 +9,11 @@ import { buildPostReconnectHydrationSnapshot, hydrateDesktopV3InitialSessions, p
 import type { DesktopV3CacheAction, SessionSnapshot, V3SessionProjection } from './desktop-v3-cache-types'
 import type { DesktopV3HydrateInput } from './desktop-v3-sync-api'
 import { hydrateResponseToAction } from './desktop-v3-cache-wire'
+import { readDesktopV3MessageTails, resetDesktopV3CacheDBForTests, writeDesktopV3OwnerAndTails } from './desktop-v3-cache-db'
 import {
   hydrateSnapshotFixture,
   messageA1,
+  messageA2,
   messageB1,
   projectionA,
   projectionB,
@@ -376,7 +380,7 @@ test('selective planner reuses unchanged warm cache and hydrates fail-closed sta
   assert.deepEqual(warm.reusedSessionIds, sessions.map((session) => session.id))
 
   const changedProjection = { ...projections[sessions[12].id], projection_high_watermark_seq: 999 }
-  assert.deepEqual(planDesktopV3SelectiveHydration({
+  const projectionOnlyAdvance = planDesktopV3SelectiveHydration({
     bootstrapResponse: snapshotFixture({
       sessions_by_id: Object.fromEntries(sessions.map((session) => [session.id, session])),
       projections_by_session: { ...projections, [sessions[12].id]: changedProjection },
@@ -385,7 +389,9 @@ test('selective planner reuses unchanged warm cache and hydrates fail-closed sta
     }),
     preBootstrapCachedProjections: projections,
     persistedTailsBySession: tails,
-  }).hydrateSessionIds, [sessions[12].id])
+  })
+  assert.equal(projectionOnlyAdvance.hydrateSessionIds.includes(sessions[12].id), false)
+  assert.equal(projectionOnlyAdvance.reusedSessionIds.includes(sessions[12].id), true)
 
   assert.deepEqual(planDesktopV3SelectiveHydration({
     bootstrapResponse: snapshotFixture({
@@ -423,7 +429,7 @@ test('selective planner reuses unchanged warm cache and hydrates fail-closed sta
   }).hydrateSessionIds, [changedLastMessage.id])
 
   const staleTail = generatedTail(sessions[5], projections[sessions[5].id], {
-    sourceProjectionHighWatermarkSeq: projections[sessions[5].id].projection_high_watermark_seq - 1,
+    sourceMessageCount: sessions[5].message_count - 1,
   })
   assert.deepEqual(planDesktopV3SelectiveHydration({
     bootstrapResponse: snapshotFixture({
@@ -742,7 +748,6 @@ test('post-reconnect initial hydrate uses reconnect membership and projection au
 
   await hydrateDesktopV3InitialSessions({
     scopeId,
-    forceNetworkHydrate: true,
     sessionIds: state.sessionOrderByScope[scopeId],
     postHydrate: async (body) => {
       hydrateBodies.push(body)
@@ -772,4 +777,125 @@ test('post-reconnect initial hydrate uses reconnect membership and projection au
   assert.equal(state.messagesBySession[sessionB.id].sourceProjectionHighWatermarkSeq, 2)
   assert.equal(state.realtime.endpointCursor, 'cursor-reconnect-c11')
   assert.equal(state.realtime.resumeFrame?.endpoint_cursor, 'cursor-reconnect-c11')
+})
+
+test('valid warm active-stream restore makes zero sync hydrate requests', async () => {
+  resetDesktopV3InitialHydrateControllerForTests()
+  assert.equal(await resetDesktopV3CacheDBForTests(), true)
+
+  const scopeId = 'global-scope'
+  const warmSessionA = { ...sessionA, message_count: 2, last_message_at: messageA2.created_at }
+  const warmSessionB = { ...sessionB, message_count: 1, last_message_at: messageB1.created_at }
+  const tailProjectionA = { ...projectionA, last_event_seq: 2, projection_high_watermark_seq: 2 }
+  const tailProjectionB = { ...projectionB, last_event_seq: 1, projection_high_watermark_seq: 1 }
+  const liveProjectionA = { ...projectionA, last_event_seq: 9, projection_high_watermark_seq: 9 }
+  const liveProjectionB = { ...projectionB, last_event_seq: 7, projection_high_watermark_seq: 7 }
+  const owner = ownerRecordForSessions(
+    [warmSessionA, warmSessionB],
+    { [sessionA.id]: liveProjectionA, [sessionB.id]: liveProjectionB },
+    sessionA.id,
+  )
+  const tailA = generatedTail(warmSessionA, tailProjectionA, {
+    messages: [messageA1, messageA2],
+    sourceProjectionHighWatermarkSeq: tailProjectionA.projection_high_watermark_seq,
+  })
+  const tailB = generatedTail(warmSessionB, tailProjectionB, {
+    messages: [messageB1],
+    sourceProjectionHighWatermarkSeq: tailProjectionB.projection_high_watermark_seq,
+  })
+  assert.equal(await writeDesktopV3OwnerAndTails(owner, [tailA, tailB]), true)
+
+  let state = createEmptyDesktopV3CacheState()
+  state = desktopV3CacheReducer(state, {
+    type: 'desktopV3Cache.restore',
+    owner,
+    selectedMessageTail: tailA,
+  })
+
+  const bootstrapResponse = snapshotFixture({
+    scope_id: scopeId,
+    sessions_by_id: { [sessionA.id]: warmSessionA, [sessionB.id]: warmSessionB },
+    projections_by_session: { [sessionA.id]: liveProjectionA, [sessionB.id]: liveProjectionB },
+    session_order: [sessionA.id, sessionB.id],
+    messages_by_session: {},
+  })
+  state = desktopV3CacheReducer(state, {
+    type: 'snapshot.apply',
+    source: 'bootstrap',
+    scopeId,
+    snapshot: bootstrapResponse,
+  })
+  state = desktopV3CacheReducer(state, {
+    type: 'reconnect.applySnapshot',
+    snapshot: {
+      ok: true,
+      rev: 2,
+      snapshot_endpoint_cursor: 'cursor-reconnect-live',
+      sessions_by_id: { [sessionA.id]: warmSessionA, [sessionB.id]: warmSessionB },
+      projections_by_session: { [sessionA.id]: liveProjectionA, [sessionB.id]: liveProjectionB },
+      run_intents_by_session: { [sessionA.id]: [{ session_id: sessionA.id, run_id: 'run-live-a', status: 'running', created_at: 9, updated_at: 9, event_seq: 9 }] },
+      current_run_intent_by_session: { [sessionA.id]: { session_id: sessionA.id, run_id: 'run-live-a', status: 'running', created_at: 9, updated_at: 9, event_seq: 9 } },
+      subscriptions: [
+        { subscription_id: `sub-${sessionA.id}`, session_id: sessionA.id, status: 'active' },
+        { subscription_id: `sub-${sessionB.id}`, session_id: sessionB.id, status: 'active' },
+      ],
+      session_order: [sessionA.id, sessionB.id],
+      diagnostics_by_session: {},
+      workset_id: scopeId,
+      surface: 'desktop',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect-live',
+          subscriptions: [],
+          worksets: [],
+        },
+      },
+    },
+  })
+
+  const hydrateBodies: DesktopV3HydrateInput[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    if (String(input) === '/v3/sync/hydrate') {
+      const body = JSON.parse(String(init?.body ?? '{}')) as DesktopV3HydrateInput
+      hydrateBodies.push(body)
+      return new Response(JSON.stringify(hydrateSnapshotFixture({
+        selector: { kind: 'session_ids', session_ids: body.session_ids },
+        sessions_by_id: Object.fromEntries(body.session_ids.map((id) => [id, id === sessionA.id ? warmSessionA : warmSessionB])),
+        projections_by_session: Object.fromEntries(body.session_ids.map((id) => [id, id === sessionA.id ? liveProjectionA : liveProjectionB])),
+        session_order: body.session_ids,
+        messages_by_session: {},
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    throw new Error(`unexpected fetch ${String(input)}`)
+  }
+
+  try {
+    await hydrateDesktopV3InitialSessions({
+      scopeId,
+      sessionIds: [sessionB.id],
+      bootstrapResponse: buildPostReconnectHydrationSnapshot(bootstrapResponse, state, scopeId),
+      preBootstrapCachedProjections: { [sessionA.id]: liveProjectionA, [sessionB.id]: liveProjectionB },
+      selectedMessageTail: tailA,
+      preferredSessionId: null,
+      currentSelectedSessionId: undefined,
+      ownerKey: persistedOwner.key,
+      readMessageTails: readDesktopV3MessageTails,
+      dispatch: (action) => {
+        state = desktopV3CacheReducer(state, action)
+      },
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.equal(hydrateBodies.length, 0)
+  assert.equal(state.messagesBySession[sessionA.id].source, 'persisted')
+  assert.equal(state.messagesBySession[sessionB.id].source, 'persisted')
+  assert.equal(state.sessionsById[sessionB.id]?.needsHydrate, false)
+  assert.equal(await resetDesktopV3CacheDBForTests(), true)
 })
