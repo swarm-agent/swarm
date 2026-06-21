@@ -1484,12 +1484,33 @@ function createLiveRunOverlay(sessionId: string, runId: string): LiveRunOverlay 
   }
 }
 
-function cacheEventRunId(event: CacheEvent): string {
+export function resolveDesktopV3CacheEventRunId(event: CacheEvent): string {
   return event.payload.run_id?.trim()
     || event.payload.run_intent?.run_id?.trim()
     || stringFromMetadata(event.payload.message?.metadata, 'run_id')
     || stringFromMetadata(event.payload.message?.metadata, 'runId')
     || ''
+}
+
+function isLiveRunOutputEventType(eventType: string): boolean {
+  switch (eventType) {
+    case 'session.assistant.delta':
+    case 'session.message.delta':
+    case 'session.reasoning.started':
+    case 'session.reasoning.delta':
+    case 'session.reasoning.completed':
+    case 'session.reasoning.failed':
+    case 'session.reasoning.error':
+    case 'session.tool.started':
+    case 'session.tool.delta':
+    case 'session.tool.completed':
+    case 'session.tool.failed':
+    case 'session.tool.cancelled':
+    case 'session.tool.canceled':
+      return true
+    default:
+      return false
+  }
 }
 
 function mergeLiveRunRepairEvents(
@@ -1502,7 +1523,7 @@ function mergeLiveRunRepairEvents(
     (left, right) => (left.sessionEvent?.seq ?? 0) - (right.sessionEvent?.seq ?? 0),
   )) {
     if (event.sessionId !== sessionId) continue
-    if (cacheEventRunId(event) !== runId) continue
+    if (resolveDesktopV3CacheEventRunId(event) !== runId) continue
     applyCacheEvent(state, event)
   }
 }
@@ -1524,6 +1545,10 @@ function applyLiveRunOverlayFromEvent(
   const runIntent = recordValue(payload.runIntent) ?? recordValue(payload.run_intent)
   const runId = stringValue(payload.run_id) || stringValue(runIntent?.run_id)
   if (!runId) {
+    return
+  }
+
+  if (!isLiveRunOutputEventType(event.eventType)) {
     return
   }
 

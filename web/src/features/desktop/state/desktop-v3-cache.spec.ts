@@ -44,7 +44,7 @@ import {
 import { selectDesktopSidebarRows, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
 import { createDesktopV3CacheOwner } from './desktop-v3-cache-owner'
 import { buildPersistedDesktopV3MessageTailV1, DESKTOP_V3_CACHE_SCHEMA_VERSION } from './desktop-v3-cache-persisted-types'
-import type { DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, V3SessionEvent } from './desktop-v3-cache-types'
+import type { CacheEvent, DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, V3SessionEvent } from './desktop-v3-cache-types'
 
 function bootstrappedState(): DesktopV3CacheState {
   return applyBootstrapSnapshot(createEmptyDesktopV3CacheState(), snapshotFixture())
@@ -1001,6 +1001,214 @@ test('realtime session.tool.delta appends output and terminal event replaces fin
   assert.equal(tool.status, 'completed')
   assert.equal(tool.durationMs, 42)
 })
+
+test('restored assistant delta with old seq is ignored', () => {
+  const state = bootstrappedState()
+  state.liveRunsBySession[sessionA.id] = {
+    'run-live': {
+      sessionId: sessionA.id,
+      runId: 'run-live',
+      status: 'running',
+      toolCallsByCallId: {},
+      lastEventSeqSeen: 7,
+      assistantDraft: { content: 'persisted', updatedAt: 7, timelineSeq: 4 },
+    },
+  }
+
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-replayed-assistant-6',
+    session_id: sessionA.id,
+    seq: 6,
+    event_type: 'session.assistant.delta',
+    payload: { run_id: 'run-live', delta: '-duplicate' },
+    ts_unix_ms: 6,
+  }))
+
+  const liveRun = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(liveRun.assistantDraft?.content, 'persisted')
+  assert.equal(liveRun.lastEventSeqSeen, 7)
+})
+
+test('restored tool delta with old seq is ignored', () => {
+  const state = bootstrappedState()
+  state.liveRunsBySession[sessionA.id] = {
+    'run-live': {
+      sessionId: sessionA.id,
+      runId: 'run-live',
+      status: 'running',
+      toolCallsByCallId: {
+        'call-1': {
+          callId: 'call-1',
+          toolName: 'read',
+          outputText: 'persisted-output',
+          status: 'running',
+          updatedAt: 7,
+          timelineSeq: 5,
+        },
+      },
+      lastEventSeqSeen: 7,
+    },
+  }
+
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-replayed-tool-6',
+    session_id: sessionA.id,
+    seq: 6,
+    event_type: 'session.tool.delta',
+    payload: { run_id: 'run-live', call_id: 'call-1', output_delta: '-duplicate' },
+    ts_unix_ms: 6,
+  }))
+
+  const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-1']
+  assert.equal(tool.outputText, 'persisted-output')
+  assert.equal(state.liveRunsBySession[sessionA.id]['run-live'].lastEventSeqSeen, 7)
+})
+
+test('restored reasoning delta with old seq is ignored', () => {
+  const state = bootstrappedState()
+  state.liveRunsBySession[sessionA.id] = {
+    'run-live': {
+      sessionId: sessionA.id,
+      runId: 'run-live',
+      status: 'running',
+      toolCallsByCallId: {},
+      reasoning: {
+        key: 'summary-1',
+        reasoningKey: 'summary-1',
+        state: 'running',
+        summary: '',
+        text: 'persisted-reasoning',
+        startedAt: 5,
+        completedAt: null,
+        updatedAt: 7,
+        timelineSeq: 5,
+        updatedSeq: 7,
+      },
+      reasoningByKey: {
+        'summary-1': {
+          key: 'summary-1',
+          reasoningKey: 'summary-1',
+          state: 'running',
+          summary: '',
+          text: 'persisted-reasoning',
+          startedAt: 5,
+          completedAt: null,
+          updatedAt: 7,
+          timelineSeq: 5,
+          updatedSeq: 7,
+        },
+      },
+      lastEventSeqSeen: 7,
+    },
+  }
+
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-replayed-reasoning-6',
+    session_id: sessionA.id,
+    seq: 6,
+    event_type: 'session.reasoning.delta',
+    payload: { run_id: 'run-live', reasoning_key: 'summary-1', text_delta: '-duplicate' },
+    ts_unix_ms: 6,
+  }))
+
+  const liveRun = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(liveRun.reasoning?.text, 'persisted-reasoning')
+  assert.equal(liveRun.reasoningByKey?.['summary-1']?.text, 'persisted-reasoning')
+  assert.equal(liveRun.lastEventSeqSeen, 7)
+})
+
+test('new seq appends exactly once after restore', () => {
+  const state = bootstrappedState()
+  state.liveRunsBySession[sessionA.id] = {
+    'run-live': {
+      sessionId: sessionA.id,
+      runId: 'run-live',
+      status: 'running',
+      toolCallsByCallId: {},
+      lastEventSeqSeen: 7,
+      assistantDraft: { content: 'persisted', updatedAt: 7, timelineSeq: 4 },
+    },
+  }
+
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-new-assistant-8',
+    session_id: sessionA.id,
+    seq: 8,
+    event_type: 'session.assistant.delta',
+    payload: { run_id: 'run-live', delta: '-new' },
+    ts_unix_ms: 8,
+  }))
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-replayed-new-assistant-8',
+    session_id: sessionA.id,
+    seq: 8,
+    event_type: 'session.assistant.delta',
+    payload: { run_id: 'run-live', delta: '-new' },
+    ts_unix_ms: 8,
+  }))
+
+  const liveRun = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(liveRun.assistantDraft?.content, 'persisted-new')
+  assert.equal(liveRun.lastEventSeqSeen, 8)
+})
+
+test('repair merge keeps restored overlay and ignores replayed old output events', () => {
+  const state = bootstrappedState()
+  state.liveRunsBySession[sessionA.id] = {
+    'run-live': {
+      sessionId: sessionA.id,
+      runId: 'run-live',
+      status: 'running',
+      toolCallsByCallId: {},
+      lastEventSeqSeen: 7,
+      assistantDraft: { content: 'persisted', updatedAt: 7, timelineSeq: 4 },
+    },
+  }
+
+  desktopV3CacheReducer(state, {
+    type: 'liveRun.mergeRepairEvents',
+    sessionId: sessionA.id,
+    runId: 'run-live',
+    events: [
+      cacheEvent({
+        id: 'evt-repair-new-8',
+        session_id: sessionA.id,
+        seq: 8,
+        event_type: 'session.assistant.delta',
+        payload: { run_id: 'run-live', delta: '-repair' },
+        ts_unix_ms: 8,
+      }),
+      cacheEvent({
+        id: 'evt-repair-old-6',
+        session_id: sessionA.id,
+        seq: 6,
+        event_type: 'session.assistant.delta',
+        payload: { run_id: 'run-live', delta: '-old' },
+        ts_unix_ms: 6,
+      }),
+    ],
+  })
+
+  const liveRun = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(liveRun.assistantDraft?.content, 'persisted-repair')
+  assert.equal(liveRun.lastEventSeqSeen, 8)
+})
+
+function cacheEvent(event: V3SessionEvent): CacheEvent {
+  return {
+    source: 'realtime',
+    sessionId: event.session_id,
+    eventType: event.event_type,
+    sessionEvent: event,
+    projection: {
+      session_id: event.session_id,
+      last_event_seq: event.seq,
+      projection_high_watermark_seq: event.seq,
+      updated_at: event.ts_unix_ms,
+    },
+    payload: event.payload as CacheEvent['payload'],
+  }
+}
 
 test('committed assistant final message clears matching live assistant draft', () => {
   const state = bootstrappedState()

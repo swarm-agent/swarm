@@ -9,6 +9,7 @@ import { createDesktopV3CacheOwner } from '../state/desktop-v3-cache-owner'
 import { readDesktopV3Owner, resetDesktopV3CacheDBForTests } from '../state/desktop-v3-cache-db'
 import {
   DesktopV3RealtimeControllerRuntime,
+  DesktopV3StreamCommitController,
   buildDesktopV3ReconnectInput,
   mapTransportStatus,
   requireDesktopV3RealtimeControllerReady,
@@ -2552,6 +2553,92 @@ test('workset discovery commits before background hydrate starts', async () => {
   await waitFor(() => hydrateRequests.length === 1)
   assert.equal(state.sessionsById['session-discovered']?.kind, 'full')
   controller.stop()
+})
+
+test('repair and live events racing through one queue remain ordered', async () => {
+  let state = readyControllerState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+  state.liveRunsBySession[sessionA.id] = {
+    [runIntentA.run_id]: {
+      sessionId: sessionA.id,
+      runId: runIntentA.run_id,
+      status: 'running',
+      toolCallsByCallId: {},
+      lastEventSeqSeen: 3,
+      assistantDraft: { content: 'abc', updatedAt: 3, timelineSeq: 1 },
+    },
+  }
+
+  const persistedDrafts: string[] = []
+  const commit = new DesktopV3StreamCommitController({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async (owner) => {
+      persistedDrafts.push(
+        owner.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content ?? '',
+      )
+      return true
+    },
+    saveActiveOwnerKey: () => true,
+    now: () => 9_000,
+  })
+
+  const repair = commit.commitActions([{
+    type: 'liveRun.mergeRepairEvents',
+    sessionId: sessionA.id,
+    runId: runIntentA.run_id,
+    events: [{
+      source: 'sync-stream',
+      sessionId: sessionA.id,
+      eventType: 'session.assistant.delta',
+      sessionEvent: {
+        id: 'evt-repair-4',
+        session_id: sessionA.id,
+        seq: 4,
+        event_type: 'session.assistant.delta',
+        payload: { run_id: runIntentA.run_id, delta: 'd' },
+        ts_unix_ms: 4,
+      },
+      projection: { ...projectionA, last_event_seq: 4, projection_high_watermark_seq: 4 },
+      payload: { run_id: runIntentA.run_id, delta: 'd' },
+    }],
+  }])
+  const live = commit.commitActions([{
+    type: 'realtime.applyEvent',
+    endpointCursor: 'cursor-live-5',
+    event: {
+      source: 'realtime',
+      sessionId: sessionA.id,
+      eventType: 'session.assistant.delta',
+      sessionEvent: {
+        id: 'evt-live-5',
+        session_id: sessionA.id,
+        seq: 5,
+        event_type: 'session.assistant.delta',
+        payload: { run_id: runIntentA.run_id, delta: 'e' },
+        ts_unix_ms: 5,
+      },
+      projection: { ...projectionA, last_event_seq: 5, projection_high_watermark_seq: 5 },
+      payload: { run_id: runIntentA.run_id, delta: 'e' },
+    },
+  }])
+
+  await Promise.all([repair, live])
+
+  const liveRun = state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]
+  assert.equal(liveRun?.assistantDraft?.content, 'abcde')
+  assert.equal(liveRun?.lastEventSeqSeen, 5)
+  assert.equal(state.realtime.endpointCursor, 'cursor-live-5')
+  assert.deepEqual(persistedDrafts, ['abcd', 'abcde'])
+  assert.deepEqual(
+    state.eventsBySession[sessionA.id].map((event) => `${event.seq}:${event.id}`),
+    ['4:evt-repair-4', '5:evt-live-5'],
+  )
 })
 
 test('Desktop V3 has exactly one production live-event ingress', async () => {
