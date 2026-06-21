@@ -9,7 +9,7 @@ import type { LiveRunOverlay, MessageSnapshot, PendingUserMessage } from '../../
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import type { DesktopSessionRecord } from '../../types/realtime'
 import type { StructuredToolMessage, ToolMessageState, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
-import { resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
+import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
 import { agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeThinkingTagsEnabled } from '../../settings/swarm/types/swarm-settings'
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
@@ -200,6 +200,18 @@ export function buildDesktopV3ConversationRenderItems(renderedMessages: Rendered
     items.push(...buildDesktopV3LiveRunRenderItems(run, { assistantMessages, reasoningMessages }))
   }
   return orderDesktopV3LiveRenderItems(items)
+}
+
+export function resolveDesktopV3StopRunRequest(input: { route: DesktopChatRoute | null | undefined; runId: string | null | undefined }): { runId: string; targetSwarmId: string } {
+  const runId = input.runId?.trim() ?? ''
+  if (!runId) {
+    throw new Error('Desktop V3 stop requires run_id')
+  }
+  const target = getDesktopSessionStopTarget(input.route)
+  if (target.sessionApi !== 'v3') {
+    throw new Error(target.unsupportedReason)
+  }
+  return { runId, targetSwarmId: target.targetSwarmId }
 }
 
 export interface DesktopV3ExistingConversationPaneProps {
@@ -398,7 +410,8 @@ export function DesktopV3ExistingConversationPane({
   async function handleStop() {
     if (!normalizedSessionId || !currentRun?.runId) return
     try {
-      await stopSessionV3Run(normalizedSessionId, { runId: currentRun.runId })
+      const stopRequest = resolveDesktopV3StopRunRequest({ route, runId: currentRun.runId })
+      await stopSessionV3Run(normalizedSessionId, stopRequest)
     } catch (error) {
       if (mountedRef.current) {
         setSendError(error instanceof Error ? error.message : String(error))

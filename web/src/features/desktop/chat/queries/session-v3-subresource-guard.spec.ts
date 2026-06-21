@@ -98,7 +98,11 @@ test('Desktop V3 stop uses explicit Sessions API v3 mutation helper, not V2 stop
   await withMockFetch(async (calls) => {
     const { stopSessionV3Run } = await import('../../session-v3/api')
 
-    await stopSessionV3Run('session-raw', { runId: 'run-1', targetSwarmId: 'primary-swarm' })
+    await assert.rejects(
+      () => stopSessionV3Run('session-raw', { runId: 'run-1', targetSwarmId: '' }),
+      /Desktop V3 stop requires target_swarm_id/,
+    )
+    await stopSessionV3Run('session-raw', { runId: 'run-1', targetSwarmId: ' primary-swarm ' })
 
     assert.equal(calls.length, 1)
     assert.equal(String(calls[0].input), '/v3/sessions/session-raw/run/stop')

@@ -135,6 +135,35 @@ test('legacy routed session metadata is not accepted for native v2 route reconst
   assert.equal(route, null)
 })
 
+test('v3 primary session metadata reconstructs primary stop target route', () => {
+  const route = desktopChatRouteFromSessionMetadata(sessionRecord({
+    workspacePath: '/host/workspace',
+    workspaceName: 'swarm-go',
+    runtimeWorkspacePath: '/host/workspace',
+    metadata: {
+      swarm_v3_execution_class: 'primary',
+      swarm_v3_runtime_swarm_id: 'primary-swarm',
+      swarm_v3_runtime_kind: 'host',
+      swarm_v3_authority_host_swarm_id: 'primary-swarm',
+      swarm_v3_workspace_binding_id: 'binding-primary',
+      local_workspace_binding_id: 'binding-primary',
+      swarm_v3_source_workspace_name: 'swarm-go',
+      swarm_v3_source_workspace_path: '/host/workspace',
+      swarm_v3_runtime_workspace_path: '/host/workspace',
+    },
+  }))
+
+  assert.equal(route?.id, 'swarm:primary-swarm:binding:binding-primary')
+  assert.equal(route?.swarmId, 'primary-swarm')
+  assert.equal(route?.targetKind, 'host')
+  assert.equal(route?.targetRelationship, 'self')
+  assert.deepEqual(getDesktopSessionStopTarget(route), {
+    sessionApi: 'v3',
+    endpoint: '/v3/sessions/{session_id}/run/stop',
+    targetSwarmId: 'primary-swarm',
+  })
+})
+
 test('v2 local-container mirrored session resolves to matching container route instead of primary', () => {
   const hostRoute: DesktopChatRoute = {
     id: 'swarm:primary-swarm:binding:binding-primary',

@@ -84,19 +84,21 @@ export async function updateSessionV3Agent(sessionId: string, agentName: string)
 
 export async function stopSessionV3Run(
   sessionId: string,
-  input: { runId: string; targetSwarmId?: string },
+  input: { runId: string; targetSwarmId: string },
 ): Promise<SessionV3RunStopResponseWire> {
   const normalizedSessionId = sessionId.trim()
   const runId = input.runId.trim()
+  const targetSwarmId = input.targetSwarmId.trim()
   if (!normalizedSessionId) throw new Error('Desktop V3 stop requires session_id')
   if (!runId) throw new Error('Desktop V3 stop requires run_id')
+  if (!targetSwarmId) throw new Error('Desktop V3 stop requires target_swarm_id')
   return requestJson(`/v3/sessions/${encodeURIComponent(normalizedSessionId)}/run/stop`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       type: 'run.stop',
       run_id: runId,
-      target_swarm_id: input.targetSwarmId,
+      target_swarm_id: targetSwarmId,
     }),
   })
 }

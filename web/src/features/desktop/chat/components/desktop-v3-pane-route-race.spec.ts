@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   buildDesktopV3LiveRunRenderItems,
   completeDesktopV3ExistingMessage,
+  resolveDesktopV3StopRunRequest,
 } from './desktop-v3-existing-conversation-pane'
 import {
   completeDesktopV3NewSessionStarted,
@@ -130,6 +131,30 @@ test('Workspace A creation completion after navigation does not navigate away fr
   assert.deepEqual(navigations, [])
 }))
 
+
+test('Desktop V3 stop resolves required target_swarm_id from the selected primary route', () => {
+  assert.deepEqual(resolveDesktopV3StopRunRequest({ route, runId: ' run-1 ' }), {
+    runId: 'run-1',
+    targetSwarmId: 'swarm-self',
+  })
+})
+
+test('Desktop V3 stop rejects unsupported routes instead of calling another stop path', () => {
+  assert.throws(
+    () => resolveDesktopV3StopRunRequest({
+      route: { ...route, swarmId: '', targetRelationship: 'self', targetKind: 'host' },
+      runId: 'run-1',
+    }),
+    /Sessions API stop requires a selected primary swarm_id/,
+  )
+  assert.throws(
+    () => resolveDesktopV3StopRunRequest({
+      route: { ...route, swarmId: 'child-swarm', targetRelationship: 'child', targetKind: 'container' },
+      runId: 'run-1',
+    }),
+    /Desktop stop only supports the primary self V3 target/,
+  )
+})
 
 test('Desktop V3 live run render items preserve backend event order', () => {
   const items = buildDesktopV3LiveRunRenderItems({

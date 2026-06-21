@@ -165,8 +165,45 @@ function inferV2TargetRelationship(metadata: Record<string, unknown> | null | un
   return ''
 }
 
+function inferV3TargetRelationship(metadata: Record<string, unknown> | null | undefined): string {
+  const executionClass = sessionMetadataString(metadata, 'swarm_v3_execution_class').toLowerCase()
+  if (executionClass === 'primary') {
+    return 'self'
+  }
+  return ''
+}
+
 export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecord | null | undefined): DesktopChatRoute | null {
   const metadata = session?.metadata
+  const v3MetadataSwarmId = sessionMetadataString(metadata, 'swarm_v3_runtime_swarm_id')
+  if (v3MetadataSwarmId) {
+    const workspaceBindingId = sessionMetadataString(metadata, 'swarm_v3_workspace_binding_id') || sessionMetadataString(metadata, 'local_workspace_binding_id')
+    const workspaceName = sessionMetadataString(metadata, 'swarm_v3_source_workspace_name') || session?.workspaceName?.trim() || ''
+    if (!workspaceBindingId) {
+      return null
+    }
+    const id = desktopChatRouteID(v3MetadataSwarmId, workspaceName, workspaceBindingId)
+    if (!id) {
+      return null
+    }
+    const label = v3MetadataSwarmId
+    return {
+      id,
+      label,
+      swarmId: v3MetadataSwarmId,
+      targetKind: sessionMetadataString(metadata, 'swarm_v3_runtime_kind') || 'host',
+      targetRelationship: inferV3TargetRelationship(metadata),
+      hostSwarmId: sessionMetadataString(metadata, 'swarm_v3_authority_host_swarm_id') || v3MetadataSwarmId,
+      hostSwarmName: '',
+      hostWorkspacePath: sessionMetadataString(metadata, 'swarm_v3_source_workspace_path') || session?.workspacePath?.trim() || '',
+      hostWorkspaceName: workspaceName,
+      runtimeWorkspacePath: session?.runtimeWorkspacePath?.trim() || sessionMetadataString(metadata, 'swarm_v3_runtime_workspace_path'),
+      workspaceBindingId,
+      workspaceName,
+      targetSwarmName: label,
+    }
+  }
+
   const metadataSwarmId = sessionMetadataString(metadata, 'swarm_v2_runtime_swarm_id')
   const runtimeWorkspacePath = session?.runtimeWorkspacePath?.trim()
     || sessionMetadataString(metadata, 'swarm_v2_runtime_workspace_path')
