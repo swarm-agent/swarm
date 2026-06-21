@@ -2361,8 +2361,8 @@ test('final message and overlay cleanup are one IndexedDB transaction', async ()
 
   const durableOwner = await readDesktopV3Owner(owner.key)
   assert.equal(durableOwner?.realtimeEndpointCursor, 'cursor-final-message')
-  assert.equal(durableOwner?.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.assistantDraft, undefined)
-  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft, undefined)
+  assert.equal(durableOwner?.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id], undefined)
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id], undefined)
   assert.equal(state.messagesBySession[sessionA.id]?.items[0]?.id, 'message-final')
   controller.stop()
   assert.equal(await resetDesktopV3CacheDBForTests(), true)
@@ -2699,11 +2699,11 @@ function realtimeFinalMessageFrame(id: string, seq: number, endpointCursor: stri
     protocol_version: 1,
     kind: 'event',
     session_id: sessionA.id,
-    event_type: 'session.message.completed',
+    event_type: 'session.assistant.completed',
     event: {
       id,
       session_id: sessionA.id,
-      event_type: 'session.message.completed',
+      event_type: 'session.assistant.completed',
       seq,
       payload: {
         run_id: runIntentA.run_id,
@@ -2714,7 +2714,7 @@ function realtimeFinalMessageFrame(id: string, seq: number, endpointCursor: stri
           global_seq: seq,
           role: 'assistant',
           content: 'done',
-          metadata: { run_id: runIntentA.run_id },
+          metadata: {},
           created_at: seq,
         },
       },

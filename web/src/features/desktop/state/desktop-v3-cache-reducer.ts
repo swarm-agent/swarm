@@ -811,12 +811,18 @@ export function applyCacheEvent(
     }
   }
 
-  if (payload.message) {
-    upsertCommittedMessage(state, sessionId, payload.message)
-  }
-
   if (payload.run_intent) {
     upsertRunIntent(state, sessionId, payload.run_intent)
+  }
+
+  if (payload.message) {
+    upsertCommittedMessage(
+      state,
+      sessionId,
+      payload.message,
+      resolveDesktopV3CacheEventRunId(event),
+      payload.run_intent?.status,
+    )
   }
 
   const record = state.sessionsById[sessionId]
@@ -842,6 +848,8 @@ export function upsertCommittedMessage(
   state: DesktopV3CacheState,
   sessionId: string,
   message: MessageSnapshot,
+  sourceRunId?: string,
+  sourceRunStatus?: string,
 ): void {
   const list = state.messagesBySession[sessionId] ?? buildMessageListCache([])
   const idIndex = list.byMessageId[message.id]
@@ -879,7 +887,7 @@ export function upsertCommittedMessage(
     source: 'network',
   })
   removeCommittedPendingForSession(state, sessionId, [message])
-  maybeClearLiveAssistantOverlay(state, sessionId, message)
+  finalizeLiveRunForCommittedMessage(state, sessionId, message, sourceRunId, sourceRunStatus)
 }
 
 export function upsertRunIntent(
@@ -929,6 +937,9 @@ export function applyTombstone(
     if (!workset.inactiveSessionIds) workset.inactiveSessionIds = []
     if (!workset.inactiveSessionIds.includes(sessionId)) workset.inactiveSessionIds.push(sessionId)
   }
+  delete state.liveRunsBySession[sessionId]
+  delete state.currentRunIntentBySession[sessionId]
+  delete state.runIntentsBySession[sessionId]
 }
 
 export function applyWorksetSessionDiscovered(
@@ -1464,14 +1475,38 @@ function pendingMatchesCommitted(pending: PendingUserMessage, message: MessageSn
     && pending.createdAt <= message.created_at
 }
 
-function maybeClearLiveAssistantOverlay(state: DesktopV3CacheState, sessionId: string, message: MessageSnapshot): void {
+function finalizeLiveRunForCommittedMessage(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  message: MessageSnapshot,
+  explicitRunId?: string,
+  explicitRunStatus?: string,
+): void {
   if (message.role !== 'assistant') return
-  const runId = stringFromMetadata(message.metadata, 'run_id') || stringFromMetadata(message.metadata, 'runId')
+
+  const runId = explicitRunId?.trim()
+    || stringFromMetadata(message.metadata, 'run_id')
+    || stringFromMetadata(message.metadata, 'runId')
+
   if (!runId) return
-  const liveRun = state.liveRunsBySession[sessionId]?.[runId]
-  if (liveRun) {
-    delete liveRun.assistantDraft
-    delete liveRun.assistantSegments
+
+  const runs = state.liveRunsBySession[sessionId]
+  const run = runs?.[runId]
+  if (!run) return
+
+  delete run.assistantDraft
+  delete run.assistantSegments
+
+  const status = explicitRunStatus?.trim()
+    || state.runIntentsBySession[sessionId]?.[runId]?.status
+    || run.status
+
+  if (TERMINAL_RUN_INTENT_STATUSES.has(status)) {
+    delete runs[runId]
+  }
+
+  if (Object.keys(runs).length === 0) {
+    delete state.liveRunsBySession[sessionId]
   }
 }
 

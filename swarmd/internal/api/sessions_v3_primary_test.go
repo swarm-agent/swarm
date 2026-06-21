@@ -3366,6 +3366,62 @@ func TestSessionsV3ExecutorRecordsFailurePayload(t *testing.T) {
 	}
 }
 
+func TestSessionsV3AssistantCompletedCarriesRunIdentity(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := installSessionsV3TestProvider(server, "assistant final with run identity")
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "assistant-run-identity-create", "run identity", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "assistant-run-identity-message", "complete with run identity")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want 1", runner.callCount)
+	}
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+
+	var completed *sessionruntime.SessionEvent
+	for _, event := range events {
+		if event.EventType == "session.assistant.completed" {
+			copy := event
+			completed = &copy
+		}
+	}
+	if completed == nil {
+		t.Fatalf("missing session.assistant.completed event: %+v", events)
+	}
+
+	var payload struct {
+		RunID     string `json:"run_id"`
+		RunIntent struct {
+			RunID string `json:"run_id"`
+		} `json:"run_intent"`
+		Message struct {
+			ID      string `json:"id"`
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(completed.Payload, &payload); err != nil {
+		t.Fatalf("decode assistant completed payload: %v", err)
+	}
+	if strings.TrimSpace(payload.RunID) == "" {
+		t.Fatalf("assistant completed payload missing run_id: %s", string(completed.Payload))
+	}
+	if payload.RunIntent.RunID != payload.RunID {
+		t.Fatalf("assistant completed run_intent.run_id = %q, want payload.run_id %q payload=%s", payload.RunIntent.RunID, payload.RunID, string(completed.Payload))
+	}
+	if payload.Message.ID == "" || payload.Message.Role != "assistant" || payload.Message.Content != "assistant final with run identity" {
+		t.Fatalf("assistant completed payload missing committed assistant message: %+v payload=%s", payload.Message, string(completed.Payload))
+	}
+}
+
 func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{

@@ -1210,31 +1210,178 @@ function cacheEvent(event: V3SessionEvent): CacheEvent {
   }
 }
 
-test('committed assistant final message clears matching live assistant draft', () => {
+test('assistant completion clears overlay using payload run_id', () => {
   const state = bootstrappedState()
   applyRealtimeFrame(state, { frame: deltaFrame('session.assistant.delta', { delta: 'draft' }, 3, 'cursor-draft') })
 
   const finalMessage: MessageSnapshot = {
     ...messageA2,
-    id: 'msg-final-live',
+    id: 'msg-final-live-payload-run',
     global_seq: 3,
     content: 'draft',
-    metadata: { run_id: 'run-live' },
+    metadata: {},
     created_at: 30,
   }
   applyRealtimeFrame(state, {
-    frame: eventFrame('message.stored', {
-      id: 'evt-final-live',
+    frame: eventFrame('session.assistant.completed', {
+      id: 'evt-final-live-payload-run',
       session_id: sessionA.id,
       seq: 4,
-      event_type: 'message.stored',
-      payload: { message: finalMessage },
+      event_type: 'session.assistant.completed',
+      payload: {
+        run_id: 'run-live',
+        message: finalMessage,
+        run_intent: { ...runIntentA, run_id: 'run-live', status: 'running', event_seq: 4 },
+      },
       ts_unix_ms: 31,
     }, 'cursor-final'),
   })
 
-  assert.equal(state.messagesBySession[sessionA.id].items.some((message) => message.id === 'msg-final-live'), true)
+  assert.equal(state.messagesBySession[sessionA.id].items.some((message) => message.id === 'msg-final-live-payload-run'), true)
   assert.equal(state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft, undefined)
+  assert.equal(state.liveRunsBySession[sessionA.id]['run-live'].assistantSegments, undefined)
+})
+
+test('assistant completion works when message metadata has no run_id', () => {
+  const state = bootstrappedState()
+  applyRealtimeFrame(state, { frame: deltaFrame('session.assistant.delta', { delta: 'draft' }, 3, 'cursor-draft') })
+
+  const finalMessage: MessageSnapshot = {
+    ...messageA2,
+    id: 'msg-final-live-run-intent',
+    global_seq: 3,
+    content: 'draft',
+    metadata: {},
+    created_at: 30,
+  }
+  applyRealtimeFrame(state, {
+    frame: eventFrame('session.assistant.completed', {
+      id: 'evt-final-live-run-intent',
+      session_id: sessionA.id,
+      seq: 4,
+      event_type: 'session.assistant.completed',
+      payload: {
+        message: finalMessage,
+        run_intent: { ...runIntentA, run_id: 'run-live', status: 'running', event_seq: 4 },
+      },
+      ts_unix_ms: 31,
+    }, 'cursor-final'),
+  })
+
+  assert.equal(state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft, undefined)
+})
+
+test('terminal assistant completion removes the complete live run', () => {
+  const state = bootstrappedState()
+  applyRealtimeFrame(state, { frame: deltaFrame('session.assistant.delta', { delta: 'draft' }, 3, 'cursor-draft') })
+
+  const finalMessage: MessageSnapshot = {
+    ...messageA2,
+    id: 'msg-final-live-terminal',
+    global_seq: 3,
+    content: 'draft',
+    metadata: {},
+    created_at: 30,
+  }
+  applyRealtimeFrame(state, {
+    frame: eventFrame('session.assistant.completed', {
+      id: 'evt-final-live-terminal',
+      session_id: sessionA.id,
+      seq: 4,
+      event_type: 'session.assistant.completed',
+      payload: {
+        run_id: 'run-live',
+        message: finalMessage,
+        run_intent: { ...runIntentA, run_id: 'run-live', status: 'completed', event_seq: 4 },
+      },
+      ts_unix_ms: 31,
+    }, 'cursor-final'),
+  })
+
+  assert.equal(state.liveRunsBySession[sessionA.id]?.['run-live'], undefined)
+})
+
+test('tombstone removes all live and run state', () => {
+  const state = bootstrappedState()
+  applyRealtimeFrame(state, { frame: deltaFrame('session.assistant.delta', { delta: 'draft' }, 3, 'cursor-draft') })
+
+  applyRealtimeFrame(state, {
+    frame: eventFrame('session.deleted', {
+      id: 'evt-session-a-deleted',
+      session_id: sessionA.id,
+      seq: 4,
+      event_type: 'session.deleted',
+      payload: { tombstone: { ...tombstoneB, session_id: sessionA.id } },
+      ts_unix_ms: 31,
+    }, 'cursor-deleted'),
+  })
+
+  assert.equal(state.liveRunsBySession[sessionA.id], undefined)
+  assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
+  assert.equal(state.runIntentsBySession[sessionA.id], undefined)
+})
+
+test('refresh after finalization cannot resurrect the draft', () => {
+  const state = bootstrappedState()
+  applyRealtimeFrame(state, { frame: deltaFrame('session.assistant.delta', { delta: 'draft' }, 3, 'cursor-draft') })
+
+  const finalMessage: MessageSnapshot = {
+    ...messageA2,
+    id: 'msg-final-live-refresh',
+    global_seq: 3,
+    content: 'draft',
+    metadata: {},
+    created_at: 30,
+  }
+  applyRealtimeFrame(state, {
+    frame: eventFrame('session.assistant.completed', {
+      id: 'evt-final-live-refresh',
+      session_id: sessionA.id,
+      seq: 4,
+      event_type: 'session.assistant.completed',
+      payload: {
+        run_id: 'run-live',
+        message: finalMessage,
+        run_intent: { ...runIntentA, run_id: 'run-live', status: 'completed', event_seq: 4 },
+      },
+      ts_unix_ms: 31,
+    }, 'cursor-final'),
+  })
+
+  const restored = desktopV3CacheReducer(createEmptyDesktopV3CacheState(), {
+    type: 'desktopV3Cache.restore',
+    owner: {
+      schemaVersion: DESKTOP_V3_CACHE_SCHEMA_VERSION,
+      ownerKey: persistedOwner.key,
+      owner: persistedOwner,
+      persistedAt: 1_000,
+      selectedSessionId: sessionA.id,
+      sidebarScopeId: 'scope-refresh-final',
+      syncScopesById: {},
+      sessionOrderByScope: { 'scope-refresh-final': [sessionA.id] },
+      sidebarSessionsById: {
+        [sessionA.id]: {
+          session: sessionA,
+          projection: { ...projectionA, last_event_seq: 4, projection_high_watermark_seq: 4 },
+          runIntents: [{ ...runIntentA, run_id: 'run-live', status: 'completed', event_seq: 4 }],
+        },
+      },
+      realtimeEndpointCursor: state.realtime.endpointCursor,
+      liveRunsBySession: structuredClone(state.liveRunsBySession),
+    },
+    selectedMessageTail: buildPersistedDesktopV3MessageTailV1({
+      ownerKey: persistedOwner.key,
+      sessionId: sessionA.id,
+      persistedAt: 1_000,
+      messages: state.messagesBySession[sessionA.id].items,
+      sourceMessageCount: 3,
+      sourceLastMessageAt: finalMessage.created_at,
+      sourceProjectionHighWatermarkSeq: 4,
+    }),
+  })
+
+  assert.equal(restored.liveRunsBySession[sessionA.id]?.['run-live'], undefined)
+  assert.equal(restored.messagesBySession[sessionA.id].items.some((message) => message.id === finalMessage.id), true)
 })
 
 test('live run selector returns stable sequence/update/run id ordering', () => {
