@@ -902,6 +902,47 @@ test('realtime assistant and message deltas append assistant draft without commi
   assert.equal(state.messagesBySession[sessionA.id].items.length, beforeCommittedCount)
 })
 
+test('realtime reasoning deltas replace coalesced snapshots instead of appending each snapshot', () => {
+  const state = bootstrappedState()
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.started', {
+      reasoning_key: 'summary-1',
+    }, 5, 'cursor-reasoning-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'summary-1',
+      delta: 'inspect',
+    }, 6, 'cursor-reasoning-delta-1'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'summary-1',
+      delta: 'inspect files',
+    }, 7, 'cursor-reasoning-delta-2'),
+  })
+
+  const reasoning = state.liveRunsBySession[sessionA.id]['run-live'].reasoning
+  assert.equal(reasoning?.text, 'inspect files')
+  assert.equal(reasoning?.summary, '')
+  assert.equal(reasoning?.timelineSeq, 5)
+  assert.equal(reasoning?.updatedSeq, 7)
+})
+
+test('realtime stream objects retain backend ordering sequence on live overlays', () => {
+  const state = bootstrappedState()
+
+  applyRealtimeFrame(state, { frame: deltaFrame('session.reasoning.delta', { reasoning_key: 'summary-1', delta: 'thinking' }, 3, 'cursor-order-reasoning') })
+  applyRealtimeFrame(state, { frame: deltaFrame('session.tool.started', { call_id: 'call-1', tool_name: 'search' }, 4, 'cursor-order-tool') })
+  applyRealtimeFrame(state, { frame: deltaFrame('session.assistant.delta', { delta: 'answer' }, 5, 'cursor-order-assistant') })
+
+  const liveRun = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(liveRun.reasoning?.timelineSeq, 3)
+  assert.equal(liveRun.toolCallsByCallId['call-1']?.timelineSeq, 4)
+  assert.equal(liveRun.assistantDraft?.timelineSeq, 5)
+})
+
 test('realtime session.tool.started creates live tool overlay before output deltas arrive', () => {
   const state = bootstrappedState()
 

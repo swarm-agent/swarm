@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  buildDesktopV3LiveRunRenderItems,
   completeDesktopV3ExistingMessage,
 } from './desktop-v3-existing-conversation-pane'
 import {
@@ -128,3 +129,39 @@ test('Workspace A creation completion after navigation does not navigate away fr
   assert.equal(visibleWorkspacePath, '/workspace-b')
   assert.deepEqual(navigations, [])
 }))
+
+
+test('Desktop V3 live run render items preserve backend event order', () => {
+  const items = buildDesktopV3LiveRunRenderItems({
+    sessionId: 'session-a',
+    runId: 'run-a',
+    status: 'running',
+    assistantDraft: { content: 'answer', updatedAt: 50, timelineSeq: 5 },
+    toolCallsByCallId: {
+      'call-1': { callId: 'call-1', toolName: 'search', updatedAt: 40, timelineSeq: 4 },
+    },
+    reasoning: {
+      key: 'reasoning-1',
+      state: 'running',
+      summary: '',
+      text: 'thinking',
+      startedAt: 30,
+      updatedAt: 30,
+      timelineSeq: 3,
+    },
+    reasoningByKey: {
+      'reasoning-1': {
+        key: 'reasoning-1',
+        state: 'running',
+        summary: '',
+        text: 'thinking',
+        startedAt: 30,
+        updatedAt: 30,
+        timelineSeq: 3,
+      },
+    },
+    lastEventSeqSeen: 5,
+  })
+
+  assert.deepEqual(items.map((item) => item.type), ['live-reasoning', 'live-tool', 'live-assistant'])
+})

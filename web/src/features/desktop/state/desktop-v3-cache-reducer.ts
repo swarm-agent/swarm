@@ -3,6 +3,7 @@ import type {
   DesktopV3CacheAction,
   DesktopV3CacheState,
   LiveRunOverlay,
+  LiveRunReasoningOverlay,
   MessageListCache,
   MessageSnapshot,
   PendingUserMessage,
@@ -1464,6 +1465,7 @@ function maybeClearLiveAssistantOverlay(state: DesktopV3CacheState, sessionId: s
   const liveRun = state.liveRunsBySession[sessionId]?.[runId]
   if (liveRun) {
     delete liveRun.assistantDraft
+    delete liveRun.assistantSegments
   }
 }
 
@@ -1545,6 +1547,9 @@ function applyLiveRunOverlayFromEvent(
   switch (event.eventType) {
     case 'session.assistant.delta':
     case 'session.message.delta': {
+      if (liveRun.reasoning?.state === 'running') {
+        completeLiveReasoningOverlay(liveRun, updatedAt, eventSeq)
+      }
       const delta =
         stringValue(payload.delta) ||
         stringValue(payload.text_delta) ||
@@ -1559,55 +1564,21 @@ function applyLiveRunOverlayFromEvent(
       liveRun.assistantDraft = {
         content: `${liveRun.assistantDraft?.content ?? ''}${delta}`,
         updatedAt,
+        timelineSeq: liveRun.assistantDraft?.timelineSeq || eventSeq,
       }
       return
     }
 
     case 'session.reasoning.started':
-      liveRun.status = 'running'
-      liveRun.reasoning = {
-        state: 'running',
-        summary: stringValue(payload.summary),
-        text: stringValue(payload.text),
-        updatedAt,
+    case 'session.reasoning.delta':
+    case 'session.reasoning.completed':
+    case 'session.reasoning.failed':
+    case 'session.reasoning.error':
+      if (liveRun.assistantDraft?.content) {
+        flushLiveAssistantDraftToSegment(liveRun)
       }
+      applyLiveReasoningOverlay(liveRun, payload, event.eventType, eventSeq, updatedAt)
       return
-
-    case 'session.reasoning.delta': {
-      const current = liveRun.reasoning ?? {
-        state: 'running' as const,
-        summary: '',
-        text: '',
-        updatedAt,
-      }
-      liveRun.status = 'running'
-      liveRun.reasoning = {
-        state: 'running',
-        summary: `${current.summary}${stringValue(payload.summary_delta)}`,
-        text: `${current.text}${
-          stringValue(payload.text_delta)
-          || stringValue(payload.delta)
-        }`,
-        updatedAt,
-      }
-      return
-    }
-
-    case 'session.reasoning.completed': {
-      const current = liveRun.reasoning ?? {
-        state: 'running' as const,
-        summary: '',
-        text: '',
-        updatedAt,
-      }
-      liveRun.reasoning = {
-        state: 'completed',
-        summary: stringValue(payload.summary) || current.summary,
-        text: stringValue(payload.text) || current.text,
-        updatedAt,
-      }
-      return
-    }
 
     case 'session.tool.started':
     case 'session.tool.delta':
@@ -1615,6 +1586,9 @@ function applyLiveRunOverlayFromEvent(
     case 'session.tool.failed':
     case 'session.tool.cancelled':
     case 'session.tool.canceled': {
+      if (liveRun.assistantDraft?.content) {
+        flushLiveAssistantDraftToSegment(liveRun)
+      }
       const callId = stringValue(payload.call_id)
       if (!callId) {
         return
@@ -1666,6 +1640,7 @@ function applyLiveRunOverlayFromEvent(
       tool.durationMs = numberValue(payload.duration_ms) || tool.durationMs
       tool.status = stringValue(payload.status) || (isFailed ? 'failed' : isCancelled ? 'cancelled' : isTerminal ? 'completed' : 'running')
       tool.updatedAt = updatedAt
+      tool.timelineSeq = tool.timelineSeq || eventSeq
 
       liveRun.toolCallsByCallId[callId] = tool
       return
@@ -1689,6 +1664,116 @@ function ensureLiveRunOverlay(
     toolCallsByCallId: {},
   }
   return state.liveRunsBySession[sessionId][runId]
+}
+
+function reasoningOverlayKey(payload: Record<string, unknown>): string {
+  const reasoningId = stringValue(payload.reasoning_id).trim()
+  if (reasoningId) return reasoningId
+  const reasoningKey = stringValue(payload.reasoning_key).trim()
+  const stepId = stringValue(payload.step_id).trim()
+  if (stepId || reasoningKey) return `${stepId || 'step'}:${reasoningKey || 'reasoning'}`
+  const step = numberValue(payload.step)
+  return `step-${step > 0 ? step : 1}:reasoning`
+}
+
+function applyLiveReasoningOverlay(
+  liveRun: LiveRunOverlay,
+  payload: Record<string, unknown>,
+  eventType: string,
+  eventSeq: number,
+  updatedAt: number,
+): void {
+  const key = reasoningOverlayKey(payload)
+  const byKey = liveRun.reasoningByKey ?? {}
+  const existing = byKey[key] ?? (liveRun.reasoning?.key === key ? liveRun.reasoning : undefined)
+  const current: LiveRunReasoningOverlay = existing ?? {
+    key,
+    state: 'running',
+    summary: '',
+    text: '',
+    startedAt: updatedAt,
+    completedAt: null,
+    updatedAt,
+    timelineSeq: eventSeq,
+    updatedSeq: eventSeq,
+  }
+  const isStarted = eventType === 'session.reasoning.started'
+  const isCompleted = eventType === 'session.reasoning.completed'
+  const isError = eventType === 'session.reasoning.failed' || eventType === 'session.reasoning.error'
+  const textSnapshot = stringValue(payload.text) || stringValue(payload.delta)
+  const textDelta = stringValue(payload.text_delta)
+  const summarySnapshot = stringValue(payload.summary)
+  const summaryDelta = stringValue(payload.summary_delta)
+  const nextState: LiveRunReasoningOverlay['state'] = isError ? 'error' : isCompleted ? 'completed' : 'running'
+  const next: LiveRunReasoningOverlay = {
+    ...current,
+    key,
+    reasoningId: stringValue(payload.reasoning_id) || current.reasoningId,
+    reasoningKey: stringValue(payload.reasoning_key) || current.reasoningKey,
+    stepId: stringValue(payload.step_id) || current.stepId,
+    step: numberValue(payload.step) || current.step,
+    state: nextState,
+    summary: summarySnapshot || (summaryDelta ? `${current.summary}${summaryDelta}` : current.summary),
+    text: textSnapshot || (textDelta ? `${current.text}${textDelta}` : current.text),
+    startedAt: current.startedAt ?? updatedAt,
+    completedAt: isCompleted || isError ? updatedAt : current.completedAt ?? null,
+    updatedAt,
+    timelineSeq: current.timelineSeq || eventSeq,
+    updatedSeq: eventSeq,
+  }
+  if (isStarted && existing) {
+    next.text = existing.text
+    next.summary = existing.summary
+    next.state = existing.state === 'completed' || existing.state === 'error' ? existing.state : 'running'
+    next.completedAt = existing.completedAt
+  }
+  byKey[key] = next
+  liveRun.reasoningByKey = byKey
+  liveRun.reasoning = next
+  liveRun.status = liveRun.status === 'pending_executor' ? 'running' : liveRun.status
+}
+
+function completeLiveReasoningOverlay(liveRun: LiveRunOverlay, updatedAt: number, eventSeq: number): void {
+  const current = liveRun.reasoning
+  if (!current || current.state !== 'running') return
+  const completed: LiveRunReasoningOverlay = {
+    ...current,
+    state: 'completed',
+    completedAt: current.completedAt ?? updatedAt,
+    updatedAt,
+    updatedSeq: Math.max(current.updatedSeq ?? 0, eventSeq),
+  }
+  liveRun.reasoning = completed
+  if (current.key) {
+    liveRun.reasoningByKey = { ...(liveRun.reasoningByKey ?? {}), [current.key]: completed }
+  }
+}
+
+function appendLiveAssistantOverlaySegment(
+  liveRun: LiveRunOverlay,
+  draft: NonNullable<LiveRunOverlay['assistantDraft']>,
+): NonNullable<LiveRunOverlay['assistantSegments']> {
+  const content = draft.content.trim()
+  if (!content) return liveRun.assistantSegments ?? []
+  const timelineSeq = draft.timelineSeq ?? liveRun.lastEventSeqSeen ?? 0
+  const createdAt = draft.updatedAt || Date.now()
+  return [
+    ...(liveRun.assistantSegments ?? []),
+    {
+      id: `live-assistant:${liveRun.runId}:${timelineSeq}:${liveRun.assistantSegments?.length ?? 0}`,
+      content,
+      createdAt,
+      updatedAt: draft.updatedAt,
+      timelineSeq,
+    },
+  ]
+}
+
+function flushLiveAssistantDraftToSegment(liveRun: LiveRunOverlay): void {
+  const draft = liveRun.assistantDraft
+  if (!draft?.content.trim()) return
+  liveRun.assistantSegments = appendLiveAssistantOverlaySegment(liveRun, draft)
+  delete liveRun.assistantDraft
 }
 
 function normalizeLiveRunStatus(status: string): LiveRunOverlay['status'] {

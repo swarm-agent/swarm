@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { LoaderCircle } from 'lucide-react'
+import { CheckCircle2, LoaderCircle, XCircle } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
 import { buildStructuredToolMessage, parseStructuredToolMessage } from '../services/tool-message'
@@ -80,6 +80,128 @@ function preferencesEqual(left: SessionPreferenceRecord, right: SessionPreferenc
     && left.contextMode === right.contextMode
 }
 
+type DesktopV3RenderItem =
+  | { type: 'message'; message: MessageSnapshot; timelineSeq?: number }
+  | { type: 'pending-user'; message: PendingUserMessage; timelineSeq?: number }
+  | { type: 'live-assistant'; id: string; content: string; timelineSeq?: number }
+  | { type: 'live-reasoning'; id: string; text: string; summary: string; state: NonNullable<LiveRunOverlay['reasoning']>['state']; startedAt: number | null; completedAt?: number | null; timelineSeq?: number }
+  | { type: 'live-tool'; id: string; tool: LiveRunOverlay['toolCallsByCallId'][string]; timelineSeq?: number }
+  | { type: 'live-working'; id: string; timelineSeq?: number }
+
+function numericTimelineSeq(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+}
+
+function renderItemTimelineSeq(item: DesktopV3RenderItem): number {
+  switch (item.type) {
+    case 'message':
+      return numericTimelineSeq(item.timelineSeq ?? item.message.global_seq)
+    case 'pending-user':
+      return numericTimelineSeq(item.timelineSeq ?? item.message.createdAt)
+    default:
+      return numericTimelineSeq(item.timelineSeq)
+  }
+}
+
+export function orderDesktopV3LiveRenderItems(items: DesktopV3RenderItem[]): DesktopV3RenderItem[] {
+  return items
+    .map((item, index) => ({ item, index, seq: renderItemTimelineSeq(item) }))
+    .sort((left, right) => {
+      const leftSequenced = left.seq > 0
+      const rightSequenced = right.seq > 0
+      if (leftSequenced && rightSequenced && left.seq !== right.seq) {
+        return left.seq - right.seq
+      }
+      if (leftSequenced !== rightSequenced) {
+        return leftSequenced ? -1 : 1
+      }
+      return left.index - right.index
+    })
+    .map((entry) => entry.item)
+}
+
+function reasoningElapsedLabel(startedAt: number | null, completedAt: number | null | undefined, now: number): string {
+  if (typeof startedAt !== 'number' || startedAt <= 0) return ''
+  const endAt = typeof completedAt === 'number' && completedAt > startedAt ? completedAt : now
+  const elapsed = Math.max(0, endAt - startedAt)
+  if (elapsed < 1000) return `${elapsed}ms`
+  if (elapsed < 60_000) return `${(elapsed / 1000).toFixed(1)}s`
+  return `${(elapsed / 60_000).toFixed(1)}m`
+}
+
+function reasoningHeadline(state: NonNullable<LiveRunOverlay['reasoning']>['state'], startedAt: number | null, completedAt: number | null | undefined, now: number): string {
+  const label = state === 'error' ? 'Thinking failed' : 'Thinking'
+  const elapsed = reasoningElapsedLabel(startedAt, state === 'running' ? null : completedAt, now)
+  return elapsed ? `${label} · ${elapsed}` : label
+}
+
+function reasoningBody(text: string, summary: string, thinkingTagsEnabled: boolean): string {
+  if (!thinkingTagsEnabled) return ''
+  return text.trim() || summary.trim() || 'Thinking…'
+}
+
+function normalizeReplayContent(content: string): string {
+  return content.trim().replace(/\s+/g, ' ')
+}
+
+function canonicalContentSet(messages: MessageSnapshot[], role: string): Set<string> {
+  const contents = new Set<string>()
+  for (const message of messages) {
+    if (message.role !== role) continue
+    const normalized = normalizeReplayContent(message.content)
+    if (normalized) contents.add(normalized)
+  }
+  return contents
+}
+
+export function buildDesktopV3LiveRunRenderItems(run: LiveRunOverlay, options: { assistantMessages?: Set<string>; reasoningMessages?: Set<string> } = {}): DesktopV3RenderItem[] {
+  const items: DesktopV3RenderItem[] = []
+  for (const segment of run.assistantSegments ?? []) {
+    const content = segment.content.trim()
+    if (!content || options.assistantMessages?.has(normalizeReplayContent(content))) continue
+    items.push({ type: 'live-assistant', id: segment.id, content, timelineSeq: segment.timelineSeq })
+  }
+  const reasoningRecords = Object.values(run.reasoningByKey ?? (run.reasoning ? { active: run.reasoning } : {}))
+  for (const reasoning of reasoningRecords) {
+    const text = reasoning.text.trim()
+    const summary = reasoning.summary.trim()
+    if (reasoning.state === 'completed' && (options.reasoningMessages?.has(normalizeReplayContent(text)) || options.reasoningMessages?.has(normalizeReplayContent(summary)))) continue
+    if (!text && !summary && reasoning.state !== 'running') continue
+    items.push({
+      type: 'live-reasoning',
+      id: `live-reasoning:${reasoning.key || reasoning.reasoningId || reasoning.reasoningKey || run.runId}`,
+      text,
+      summary,
+      state: reasoning.state,
+      startedAt: reasoning.startedAt,
+      completedAt: reasoning.completedAt,
+      timelineSeq: reasoning.timelineSeq,
+    })
+  }
+  for (const tool of Object.values(run.toolCallsByCallId)) {
+    items.push({ type: 'live-tool', id: `live-tool:${tool.toolInstanceId || tool.callId}`, tool, timelineSeq: tool.timelineSeq })
+  }
+  if (run.assistantDraft?.content) {
+    items.push({ type: 'live-assistant', id: `live-assistant:${run.runId}:draft`, content: run.assistantDraft.content, timelineSeq: run.assistantDraft.timelineSeq })
+  } else if (run.status === 'running' || run.status === 'pending_executor') {
+    items.push({ type: 'live-working', id: `live-working:${run.runId}`, timelineSeq: (run.lastEventSeqSeen ?? 0) + 1 })
+  }
+  return orderDesktopV3LiveRenderItems(items)
+}
+
+export function buildDesktopV3ConversationRenderItems(renderedMessages: RenderedSessionMessages): DesktopV3RenderItem[] {
+  const assistantMessages = canonicalContentSet(renderedMessages.committed, 'assistant')
+  const reasoningMessages = canonicalContentSet(renderedMessages.committed, 'reasoning')
+  const items: DesktopV3RenderItem[] = [
+    ...renderedMessages.committed.map((message) => ({ type: 'message' as const, message, timelineSeq: message.global_seq })),
+    ...renderedMessages.pendingUser.map((message) => ({ type: 'pending-user' as const, message, timelineSeq: message.createdAt })),
+  ]
+  for (const run of renderedMessages.liveRuns) {
+    items.push(...buildDesktopV3LiveRunRenderItems(run, { assistantMessages, reasoningMessages }))
+  }
+  return orderDesktopV3LiveRenderItems(items)
+}
+
 export interface DesktopV3ExistingConversationPaneProps {
   sessionId: string
   initialHydrateStatus: 'idle' | 'loading' | 'cached' | 'ready' | 'error'
@@ -157,6 +279,12 @@ export function DesktopV3ExistingConversationPane({
     [routeOptions, session],
   )
   const canSend = Boolean(normalizedSessionId && !sending && selectedAgent.trim() && selectedModelAvailable && (hasRetainedOperation || draft.trim()))
+  const renderItems = useMemo(() => buildDesktopV3ConversationRenderItems(renderedMessages), [renderedMessages])
+  const hasRunningReasoning = renderedMessages.liveRuns.some((run) => {
+    if (run.reasoning?.state === 'running') return true
+    return Object.values(run.reasoningByKey ?? {}).some((reasoning) => reasoning.state === 'running')
+  })
+  const [timerNow, setTimerNow] = useState(() => Date.now())
 
   useEffect(() => {
     mountedRef.current = true
@@ -174,7 +302,13 @@ export function DesktopV3ExistingConversationPane({
 
   useEffect(() => {
     scrollTailRef.current?.scrollIntoView({ block: 'end' })
-  }, [normalizedSessionId, renderedMessages.committed.length, renderedMessages.pendingUser.length, renderedMessages.liveRuns.length])
+  }, [normalizedSessionId, renderItems.length])
+
+  useEffect(() => {
+    if (!hasRunningReasoning) return
+    const timer = window.setInterval(() => setTimerNow(Date.now()), 250)
+    return () => window.clearInterval(timer)
+  }, [hasRunningReasoning])
 
   useEffect(() => {
     setMode((session?.mode || cacheSession?.mode) === 'plan' ? 'plan' : 'auto')
@@ -302,14 +436,14 @@ export function DesktopV3ExistingConversationPane({
           {!hasMessages && initialHydrateStatus !== 'loading' && initialHydrateStatus !== 'error' ? (
             <DesktopV3ChatInlineState title="Empty conversation" description="Send a message to continue this session." />
           ) : null}
-          {renderedMessages.committed.map((message) => (
-            <DesktopV3CommittedMessage key={message.id} message={message} />
-          ))}
-          {renderedMessages.pendingUser.map((message) => (
-            <DesktopV3PendingUserMessage key={message.clientRequestId} message={message} />
-          ))}
-          {renderedMessages.liveRuns.map((run) => (
-            <DesktopV3LiveRun key={run.runId} run={run} />
+          {renderItems.map((item, index) => (
+            <DesktopV3RenderItemView
+              key={item.type === 'message' ? item.message.id : item.type === 'pending-user' ? item.message.clientRequestId : item.id}
+              item={item}
+              thinkingTagsEnabled={thinkingTagsEnabled}
+              timerNow={timerNow}
+              index={index}
+            />
           ))}
           <div ref={scrollTailRef} />
         </div>
@@ -355,16 +489,44 @@ export function DesktopV3ExistingConversationPane({
   )
 }
 
-function DesktopV3CommittedMessage({ message }: { message: MessageSnapshot }) {
+function DesktopV3RenderItemView({ item, thinkingTagsEnabled, timerNow }: { item: DesktopV3RenderItem; thinkingTagsEnabled: boolean; timerNow: number; index: number }) {
+  switch (item.type) {
+    case 'message':
+      return <DesktopV3CommittedMessage message={item.message} thinkingTagsEnabled={thinkingTagsEnabled} timerNow={timerNow} />
+    case 'pending-user':
+      return <DesktopV3PendingUserMessage message={item.message} />
+    case 'live-assistant':
+      return <DesktopV3AssistantMessage content={item.content} role="assistant" />
+    case 'live-reasoning':
+      return <DesktopV3ReasoningMessage item={item} thinkingTagsEnabled={thinkingTagsEnabled} timerNow={timerNow} />
+    case 'live-tool':
+      return <DesktopV3LiveToolCall tool={item.tool} />
+    case 'live-working':
+      return <DesktopV3WorkingMessage />
+    default:
+      return null
+  }
+}
+
+function DesktopV3CommittedMessage({ message, thinkingTagsEnabled, timerNow }: { message: MessageSnapshot; thinkingTagsEnabled: boolean; timerNow: number }) {
   const role = message.role || 'message'
   const toolMessage = parseStructuredToolMessage(message.content)
   if (toolMessage || role === 'tool') {
-    return <DesktopV3ToolMessage content={message.content} toolMessage={toolMessage} />
+    return <DesktopV3ToolMessage content={message.content} toolMessage={toolMessage} thinkingTagsEnabled={thinkingTagsEnabled} />
   }
   if (role === 'user') {
     return <DesktopV3UserMessage content={message.content} />
   }
-  if (role === 'assistant' || role === 'reasoning') {
+  if (role === 'reasoning') {
+    return (
+      <DesktopV3ReasoningMessage
+        item={{ type: 'live-reasoning', id: message.id, text: message.content, summary: message.content, state: 'completed', startedAt: null, completedAt: null, timelineSeq: message.global_seq }}
+        thinkingTagsEnabled={thinkingTagsEnabled}
+        timerNow={timerNow}
+      />
+    )
+  }
+  if (role === 'assistant') {
     return <DesktopV3AssistantMessage content={message.content} role={role} />
   }
   return (
@@ -403,38 +565,39 @@ function DesktopV3AssistantMessage({ content, role }: { content: string; role: s
   )
 }
 
-function DesktopV3ToolMessage({ content, toolMessage }: { content: string; toolMessage: StructuredToolMessage | null }) {
+function DesktopV3ToolMessage({ content, toolMessage, thinkingTagsEnabled = true }: { content: string; toolMessage: StructuredToolMessage | null; thinkingTagsEnabled?: boolean }) {
   return (
     <div className="flex justify-start">
       <div className="min-w-0 max-w-[82%]">
-        <ChatMarkdown content={content} toolMessage={toolMessage ?? undefined} />
+        <ChatMarkdown content={content} toolMessage={toolMessage ?? undefined} thinkingTagsEnabled={thinkingTagsEnabled} />
       </div>
     </div>
   )
 }
 
-function DesktopV3LiveRun({ run }: { run: LiveRunOverlay }) {
-  const toolCalls = Object.values(run.toolCallsByCallId).sort((left, right) => left.updatedAt - right.updatedAt || left.callId.localeCompare(right.callId))
-  const reasoningContent = [run.reasoning?.summary, run.reasoning?.text]
-    .filter((value): value is string => Boolean(value?.trim()))
-    .join('\n\n')
+function DesktopV3ReasoningMessage({ item, thinkingTagsEnabled, timerNow }: { item: Extract<DesktopV3RenderItem, { type: 'live-reasoning' }>; thinkingTagsEnabled: boolean; timerNow: number }) {
+  const body = reasoningBody(item.text, item.summary, thinkingTagsEnabled)
+  const label = reasoningHeadline(item.state, item.startedAt, item.completedAt ?? null, timerNow)
+  const StateIcon = item.state === 'running' ? LoaderCircle : item.state === 'error' ? XCircle : CheckCircle2
   return (
-    <div className="flex flex-col gap-3">
-      {reasoningContent ? (
-        <DesktopV3AssistantMessage content={reasoningContent} role="reasoning" />
-      ) : null}
-      {toolCalls.map((tool) => (
-        <DesktopV3LiveToolCall key={tool.callId} tool={tool} />
-      ))}
-      {run.assistantDraft?.content ? (
-        <DesktopV3AssistantMessage content={run.assistantDraft.content} role="assistant" />
-      ) : run.status === 'running' || run.status === 'pending_executor' ? (
-        <div className="flex justify-start text-xs text-[var(--app-text-subtle)]">
-          <span className="inline-flex items-center gap-2">
-            <LoaderCircle size={13} className="animate-spin" /> assistant is working
-          </span>
+    <div className="flex justify-start">
+      <div className="min-w-0 max-w-[82%] text-sm leading-6 text-[var(--app-text)] opacity-80">
+        <div className="mb-1 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
+          <StateIcon size={12} className={item.state === 'running' ? 'animate-spin text-[var(--app-primary)]' : item.state === 'error' ? 'text-[var(--app-danger)]' : 'text-[var(--app-text-subtle)]'} />
+          {label}
         </div>
-      ) : null}
+        {body ? <ChatMarkdown content={body} /> : null}
+      </div>
+    </div>
+  )
+}
+
+function DesktopV3WorkingMessage() {
+  return (
+    <div className="flex justify-start text-xs text-[var(--app-text-subtle)]">
+      <span className="inline-flex items-center gap-2">
+        <LoaderCircle size={13} className="animate-spin" /> assistant is working
+      </span>
     </div>
   )
 }
@@ -455,6 +618,7 @@ function DesktopV3LiveToolCall({ tool }: { tool: LiveRunOverlay['toolCallsByCall
     durationMs: tool.durationMs,
     state,
   })
+  if (parsed && tool.timelineSeq) parsed.timelineSeq = tool.timelineSeq
   return <DesktopV3ToolMessage content="" toolMessage={parsed} />
 }
 

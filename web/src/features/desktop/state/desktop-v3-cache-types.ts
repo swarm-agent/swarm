@@ -448,7 +448,15 @@ export interface LiveRunOverlay {
   assistantDraft?: {
     content: string
     updatedAt: number
+    timelineSeq?: number
   }
+  assistantSegments?: Array<{
+    id: string
+    content: string
+    createdAt: number
+    updatedAt: number
+    timelineSeq?: number
+  }>
   toolCallsByCallId: Record<
     string,
     {
@@ -463,15 +471,28 @@ export interface LiveRunOverlay {
       status?: string
       createdAt?: number
       updatedAt: number
+      timelineSeq?: number
     }
   >
-  reasoning?: {
-    state: 'running' | 'completed'
-    summary: string
-    text: string
-    updatedAt: number
-  }
+  reasoning?: LiveRunReasoningOverlay
+  reasoningByKey?: Record<string, LiveRunReasoningOverlay>
   lastEventSeqSeen?: number
+}
+
+export interface LiveRunReasoningOverlay {
+  key?: string
+  reasoningId?: string
+  reasoningKey?: string
+  stepId?: string
+  step?: number
+  state: 'running' | 'completed' | 'error'
+  summary: string
+  text: string
+  startedAt: number | null
+  completedAt?: number | null
+  updatedAt: number
+  timelineSeq?: number
+  updatedSeq?: number
 }
 
 export interface SubscriptionCache extends Record<string, unknown> {
