@@ -2028,7 +2028,7 @@ export function DesktopAppPage() {
   const desktopSidebarBootstrap = useDesktopV3CacheSelector((state) => state.desktopSidebarBootstrap)
   const desktopInitialHydrate = useDesktopV3CacheSelector((state) => state.desktopInitialHydrate)
   const selectedDesktopV3Messages = useDesktopV3CacheSelector((state) => (
-    routeSessionId ? selectRenderedSessionMessages(state, routeSessionId) : { committed: [], pendingUser: [], liveRuns: [] }
+    routeSessionId ? selectRenderedSessionMessages(state, routeSessionId) : { committed: [], pendingUser: [], liveRuns: [], runIntents: [] }
   ))
   const selectedDesktopV3MessagesLoaded = useDesktopV3CacheSelector((state) => (
     routeSessionId ? Boolean(state.messagesBySession[routeSessionId]) : false

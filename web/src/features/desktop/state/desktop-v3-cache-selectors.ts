@@ -16,6 +16,9 @@ export interface RenderedSessionMessages {
   committed: MessageSnapshot[]
   pendingUser: PendingUserMessage[]
   liveRuns: LiveRunOverlay[]
+  runIntents: V3SessionRunIntent[]
+  currentRunIntent?: V3SessionRunIntent
+  latestRunIntent?: V3SessionRunIntent
 }
 
 export function selectScopeEndpointCursor(state: DesktopV3CacheState, scopeId: string): string | undefined {
@@ -81,11 +84,29 @@ export function selectLiveRuns(state: DesktopV3CacheState, sessionId: string): L
   })
 }
 
+export function selectSessionRunIntents(state: DesktopV3CacheState, sessionId: string): V3SessionRunIntent[] {
+  return Object.values(state.runIntentsBySession[sessionId] ?? {}).sort((left, right) => {
+    const leftSeq = typeof left.event_seq === 'number' ? left.event_seq : 0
+    const rightSeq = typeof right.event_seq === 'number' ? right.event_seq : 0
+    if (leftSeq !== rightSeq) return leftSeq - rightSeq
+
+    const leftUpdated = typeof left.updated_at === 'number' ? left.updated_at : 0
+    const rightUpdated = typeof right.updated_at === 'number' ? right.updated_at : 0
+    if (leftUpdated !== rightUpdated) return leftUpdated - rightUpdated
+
+    return left.run_id.localeCompare(right.run_id)
+  })
+}
+
 export function selectRenderedSessionMessages(state: DesktopV3CacheState, sessionId: string): RenderedSessionMessages {
+  const runIntents = selectSessionRunIntents(state, sessionId)
   return {
     committed: selectCommittedMessages(state, sessionId),
     pendingUser: selectPendingUserMessages(state, sessionId),
     liveRuns: selectLiveRuns(state, sessionId),
+    runIntents,
+    currentRunIntent: state.currentRunIntentBySession[sessionId],
+    latestRunIntent: runIntents[runIntents.length - 1],
   }
 }
 

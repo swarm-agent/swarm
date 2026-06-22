@@ -17,6 +17,7 @@ import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thi
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
+import { DesktopV3RunStatusBar, buildDesktopV3RunStatusModel } from './desktop-v3-run-status'
 import {
   sessionV3AgentSettingsMutationResponse,
   sessionV3ModeSettingsMutationResponse,
@@ -330,11 +331,20 @@ export function DesktopV3ExistingConversationPane({
     const record = state.sessionsById[normalizedSessionId]
     return record?.kind === 'full' ? record.session : null
   })
+  const storedOperation = operationRef.current
   const currentRun = renderedMessages.liveRuns.find((run) => run.status === 'running' || run.status === 'pending_executor') ?? null
+  const pendingStartAt = !renderedMessages.currentRunIntent
+    ? renderedMessages.pendingUser.find((message) => message.status === 'pending')?.createdAt ?? storedOperation?.createdAt ?? null
+    : null
+  const runStatusModel = buildDesktopV3RunStatusModel({
+    currentRunIntent: renderedMessages.currentRunIntent,
+    latestRunIntent: renderedMessages.latestRunIntent,
+    liveRuns: renderedMessages.liveRuns,
+    pendingStartAt,
+  })
   const sessionMetadata = session?.metadata ?? cacheSession?.metadata ?? metadata
   const initialAgent = metadataString(sessionMetadata, 'agent_name') || metadataString(sessionMetadata, 'resolved_agent_name') || agentState.activePrimary || ''
-  const retainedOperation = operationRef.current
-  const [draft, setDraft] = useState(retainedOperation?.request.content ?? '')
+  const [draft, setDraft] = useState(storedOperation?.request.content ?? '')
   const [sendError, setSendError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
@@ -344,7 +354,7 @@ export function DesktopV3ExistingConversationPane({
   const unlockedPreferenceRef = useRef<SessionPreferenceRecord>(cachedPreference)
   const scrollTailRef = useRef<HTMLDivElement | null>(null)
 
-  const hasRetainedOperation = Boolean(retainedOperation)
+  const hasStoredOperation = Boolean(storedOperation)
   const hasMessages = renderedMessages.committed.length > 0
     || renderedMessages.pendingUser.length > 0
     || renderedMessages.liveRuns.length > 0
@@ -370,12 +380,13 @@ export function DesktopV3ExistingConversationPane({
     () => resolveDesktopChatRouteFromSession(session ?? null, routeOptions, routeOptions[0] ?? null),
     [routeOptions, session],
   )
-  const canSend = Boolean(normalizedSessionId && !sending && selectedAgent.trim() && selectedModelAvailable && (hasRetainedOperation || draft.trim()))
+  const canSend = Boolean(normalizedSessionId && !sending && selectedAgent.trim() && selectedModelAvailable && (hasStoredOperation || draft.trim()))
   const renderItems = useMemo(() => buildDesktopV3ConversationRenderItems(renderedMessages), [renderedMessages])
   const hasRunningReasoning = renderedMessages.liveRuns.some((run) => {
     if (run.reasoning?.state === 'running') return true
     return Object.values(run.reasoningByKey ?? {}).some((reasoning) => reasoning.state === 'running')
   })
+  const statusTimerActive = Boolean(runStatusModel?.active) || hasRunningReasoning
   const [timerNow, setTimerNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -397,10 +408,10 @@ export function DesktopV3ExistingConversationPane({
   }, [normalizedSessionId, renderItems.length])
 
   useEffect(() => {
-    if (!hasRunningReasoning) return
+    if (!statusTimerActive) return
     const timer = window.setInterval(() => setTimerNow(Date.now()), 250)
     return () => window.clearInterval(timer)
-  }, [hasRunningReasoning])
+  }, [statusTimerActive])
 
   useEffect(() => {
     setMode(normalizeSessionMode(session?.mode || cacheSession?.mode))
@@ -569,19 +580,6 @@ export function DesktopV3ExistingConversationPane({
     }
   }
 
-  function handleAbandonRetainedOperation() {
-    const operation = operationRef.current
-    if (!operation) return
-    const confirmed = window.confirm(
-      'Abandon this pending existing-message operation? The message or run may already exist. Retrying is the safest way to avoid duplicates.',
-    )
-    if (!confirmed) return
-    clearDesktopV3ExistingMessageOperation(normalizedSessionId, operation.operationId)
-    operationRef.current = null
-    setDraft('')
-    setSendError(null)
-  }
-
   if (!normalizedSessionId) {
     return <DesktopV3ChatStateCard title="Select a session" description="Choose a session from the sidebar to view its conversation." />
   }
@@ -620,19 +618,17 @@ export function DesktopV3ExistingConversationPane({
         </div>
       </div>
 
+      <DesktopV3RunStatusBar model={runStatusModel} now={timerNow} />
       <DesktopV3AgenticComposer
         draft={draft}
         onDraftChange={setDraft}
-        placeholder={hasRetainedOperation ? 'Retained message' : 'Message Swarm…'}
+        placeholder="Message Swarm…"
         inputLabel="Continue Desktop V3 conversation"
         disabled={sending}
-        locked={hasRetainedOperation}
         busy={sending}
         canSubmit={canSend}
         canStop={Boolean(currentRun)}
         error={sendError}
-        retainedNotice={hasRetainedOperation ? 'A pending message is retained for safe retry. Edits are disabled until it succeeds or you abandon it.' : null}
-        onAbandonRetained={handleAbandonRetainedOperation}
         onSubmit={handleSubmit}
         onStop={handleStop}
         mode={mode}

@@ -10,6 +10,7 @@ import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } fr
 import type { AgentStateRecord, ModelOptionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
+import { DesktopV3RunStatusBar, buildDesktopV3RunStatusModel } from './desktop-v3-run-status'
 import {
   clearDesktopV3NewSessionOperation,
   createDesktopV3NewSessionOperation,
@@ -141,11 +142,12 @@ export function DesktopV3NewSessionPane({
     () => writableRoutes.find((route) => route.id === selectedRouteId) ?? writableRoutes[0] ?? routeOptions[0] ?? null,
     [routeOptions, selectedRouteId, writableRoutes],
   )
-  const retainedOperation = operationRef.current
-  const [draft, setDraft] = useState(retainedOperation?.firstMessageRequest.content ?? '')
+  const currentOperation = operationRef.current
+  const [draft, setDraft] = useState(currentOperation?.firstMessageRequest.content ?? '')
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
+  const [timerNow, setTimerNow] = useState(() => Date.now())
   const [mode, setMode] = useState<DesktopSessionMode>(defaultMode)
   const [selectedAgent, setSelectedAgent] = useState(agentNameProp.trim() || agentState.activePrimary || '')
   const [preference, setPreference] = useState<SessionPreferenceRecord>(() => ({
@@ -172,6 +174,12 @@ export function DesktopV3NewSessionPane({
     const active = agentNameProp.trim() || agentState.activePrimary || ''
     if (active) setSelectedAgent((current) => current || active)
   }, [agentNameProp, agentState.activePrimary])
+
+  useEffect(() => {
+    if (!starting) return
+    const timer = window.setInterval(() => setTimerNow(Date.now()), 250)
+    return () => window.clearInterval(timer)
+  }, [starting])
 
   useEffect(() => {
     const resolved = preferenceFromResolved(draftPreferenceQuery.data)
@@ -211,7 +219,6 @@ export function DesktopV3NewSessionPane({
     ? effectiveContextWindow(selectedModelOption.provider, selectedModelOption.model, selectedModelOption.contextMode, selectedModelOption.contextWindow)
     : draftPreferenceQuery.data?.contextWindow ?? 0
   const contextLabel = selectedContextWindow > 0 ? `${formatContextWindow(selectedContextWindow)} ctx` : 'ctx'
-  const hasRetainedOperation = Boolean(operationRef.current)
   const selectedAgentName = selectedAgent.trim()
   const canSubmit = Boolean(
     !starting
@@ -219,8 +226,11 @@ export function DesktopV3NewSessionPane({
       && !unsupportedReason
       && selectedAgentName
       && selectedModelAvailable
-      && (hasRetainedOperation || draft.trim()),
+      && (operationRef.current || draft.trim()),
   )
+  const runStatusModel = buildDesktopV3RunStatusModel({
+    pendingStartAt: operationRef.current?.createdAt ?? (starting ? Date.now() : null),
+  })
 
   function handleModelSelect(key: string) {
     const option = modelOptions.find((candidate) => candidate.key === key) ?? null
@@ -325,19 +335,6 @@ export function DesktopV3NewSessionPane({
     }
   }
 
-  function handleAbandonRetainedOperation() {
-    const operation = operationRef.current
-    if (!operation) return
-    const confirmed = window.confirm(
-      'Abandon this pending new-session operation? The session or first message may already exist. Retrying is the safest way to avoid duplicates.',
-    )
-    if (!confirmed) return
-    clearDesktopV3NewSessionOperation(workspace.path, operation.operationId)
-    operationRef.current = null
-    setDraft('')
-    setStartError(null)
-  }
-
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]" data-testid="desktop-v3-new-session-pane">
       <DesktopV3ChatHeader
@@ -350,18 +347,16 @@ export function DesktopV3NewSessionPane({
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
         <div className="mx-auto flex h-full w-full max-w-3xl flex-col justify-end" />
       </div>
+      <DesktopV3RunStatusBar model={runStatusModel} now={timerNow} />
       <DesktopV3AgenticComposer
         draft={draft}
         onDraftChange={setDraft}
-        placeholder={hasRetainedOperation ? 'Retained first prompt' : `Message ${workspace.workspaceName || 'workspace'}…`}
+        placeholder={`Message ${workspace.workspaceName || 'workspace'}…`}
         inputLabel="Start a new Desktop V3 session"
         disabled={starting || Boolean(unsupportedReason)}
-        locked={hasRetainedOperation}
         busy={starting}
         canSubmit={canSubmit}
         error={startError || unsupportedReason}
-        retainedNotice={hasRetainedOperation ? 'A pending new-session operation is retained for safe retry. Edits are disabled until it succeeds or you abandon it.' : null}
-        onAbandonRetained={handleAbandonRetainedOperation}
         onSubmit={handleSubmit}
         mode={mode}
         onModeChange={setMode}

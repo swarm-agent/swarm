@@ -121,16 +121,13 @@ export interface DesktopV3AgenticComposerProps {
   placeholder: string
   inputLabel: string
   disabled?: boolean
-  locked?: boolean
   busy?: boolean
   canSubmit: boolean
   canStop?: boolean
   submitLabel?: string
   error?: string | null
-  retainedNotice?: string | null
   onSubmit: () => void | Promise<void>
   onStop?: () => void | Promise<void>
-  onAbandonRetained?: () => void
   mode: DesktopSessionMode
   onModeChange: (mode: DesktopSessionMode) => void
   showModePicker?: boolean
@@ -175,16 +172,13 @@ export function DesktopV3AgenticComposer({
   placeholder,
   inputLabel,
   disabled = false,
-  locked = false,
   busy = false,
   canSubmit,
   canStop = false,
   submitLabel: _submitLabel,
   error,
-  retainedNotice,
   onSubmit,
   onStop,
-  onAbandonRetained,
   mode,
   onModeChange,
   showModePicker = true,
@@ -243,7 +237,7 @@ export function DesktopV3AgenticComposer({
   const intermediateSettingsRef = useRef<HTMLDivElement | null>(null)
   const intermediateSettingsTriggerRef = useRef<HTMLButtonElement | null>(null)
 
-  const composerDisabled = disabled || locked
+  const composerDisabled = disabled
   const showDictationButton = true
   const dictationButtonDisabled = composerDisabled || !dictationSupported
   const selectableAgents = useMemo(() => agents.filter((agent) => agent.enabled !== false), [agents])
@@ -561,14 +555,6 @@ export function DesktopV3AgenticComposer({
       <div className="grid gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 focus-within:pb-[calc(1rem+var(--app-safe-area-bottom))] sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5">
         {error ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]" role="alert">{error}</div> : null}
         {dictationError ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning-text)]">{dictationError}</div> : null}
-        {retainedNotice ? (
-          <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text-muted)]">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span>{retainedNotice}</span>
-              {onAbandonRetained ? <Button type="button" variant="ghost" onClick={onAbandonRetained} disabled={busy}>Abandon retained operation</Button> : null}
-            </div>
-          </div>
-        ) : null}
         {modelLockNotice ? (
           <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text-muted)]">
             <div className="flex flex-wrap items-center justify-between gap-2">
