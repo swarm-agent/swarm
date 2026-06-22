@@ -228,14 +228,11 @@ export function DesktopV3AgenticComposer({
   const [dictationListening, setDictationListening] = useState(false)
   const [dictationError, setDictationError] = useState<string | null>(null)
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false)
-  const [intermediateSettingsOpen, setIntermediateSettingsOpen] = useState(false)
   const [slashSelectionIndex, setSlashSelectionIndex] = useState(0)
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
   const [internalModelPickerSignal, setInternalModelPickerSignal] = useState(0)
   const mobileSettingsRef = useRef<HTMLDivElement | null>(null)
   const mobileSettingsTriggerRef = useRef<HTMLButtonElement | null>(null)
-  const intermediateSettingsRef = useRef<HTMLDivElement | null>(null)
-  const intermediateSettingsTriggerRef = useRef<HTMLButtonElement | null>(null)
 
   const composerDisabled = disabled
   const showDictationButton = true
@@ -400,22 +397,19 @@ export function DesktopV3AgenticComposer({
   }, [composerDisabled, showDictationButton, stopDictation])
 
   useEffect(() => {
-    if (!mobileSettingsOpen && !intermediateSettingsOpen) return
+    if (!mobileSettingsOpen) return
     function handleClickOutside(event: MouseEvent) {
       const target = event.target as Node
       if (
         mobileSettingsRef.current?.contains(target) ||
         mobileSettingsTriggerRef.current?.contains(target) ||
-        intermediateSettingsRef.current?.contains(target) ||
-        intermediateSettingsTriggerRef.current?.contains(target) ||
         !document.getElementById('root')?.contains(target)
       ) return
       setMobileSettingsOpen(false)
-      setIntermediateSettingsOpen(false)
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [mobileSettingsOpen, intermediateSettingsOpen])
+  }, [mobileSettingsOpen])
 
   const handleDictationToggle = useCallback(() => {
     if (dictationButtonDisabled) return
@@ -623,21 +617,8 @@ export function DesktopV3AgenticComposer({
                 ) : null}
                 <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={onAgentSelect} />
                 <ModelPicker options={modelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={onModelSelect} openSignal={effectiveModelPickerSignal} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
-                <div className="hidden min-[1100px]:contents">
-                  <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
-                  {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" /> : null}
-                </div>
-                <div className="relative hidden min-[1000px]:block min-[1100px]:hidden">
-                  {intermediateSettingsOpen ? (
-                    <div ref={intermediateSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[260px] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
-                      <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
-                      {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" /> : null}
-                    </div>
-                  ) : null}
-                  <button ref={intermediateSettingsTriggerRef} type="button" onClick={() => setIntermediateSettingsOpen(!intermediateSettingsOpen)} title="Thinking and speed settings" aria-haspopup="menu" aria-expanded={intermediateSettingsOpen} className="inline-flex h-10 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                    <span className="truncate">{normalizedThinking}</span>
-                  </button>
-                </div>
+                <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
+                {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" /> : null}
                 {compactButton(false)}
               </div>
               <div className="flex shrink-0 items-center gap-2">
