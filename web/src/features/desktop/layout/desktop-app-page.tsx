@@ -1118,7 +1118,11 @@ export function compareSidebarSessions(left: DesktopSessionRecord, right: Deskto
       return leftActive ? -1 : 1
     }
 
-    const anchorDelta = sessionSidebarSortAnchor(right) - sessionSidebarSortAnchor(left)
+    const leftAnchor = sessionSidebarSortAnchor(left)
+    const rightAnchor = sessionSidebarSortAnchor(right)
+    const anchorDelta = leftActive && rightActive
+      ? leftAnchor - rightAnchor
+      : rightAnchor - leftAnchor
     if (anchorDelta !== 0) {
       return anchorDelta
     }
@@ -2025,7 +2029,6 @@ export function DesktopAppPage() {
     saveStoredValue(DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY, JSON.stringify(workspaceLayout))
   }, [workspaceLayout])
 
-  const desktopSidebarBootstrap = useDesktopV3CacheSelector((state) => state.desktopSidebarBootstrap)
   const desktopInitialHydrate = useDesktopV3CacheSelector((state) => state.desktopInitialHydrate)
   const selectedDesktopV3Messages = useDesktopV3CacheSelector((state) => (
     routeSessionId ? selectRenderedSessionMessages(state, routeSessionId) : { committed: [], pendingUser: [], liveRuns: [], runIntents: [] }
@@ -3125,7 +3128,7 @@ export function DesktopAppPage() {
                 </div>
               ) : visibleSidebarWorkspaceEntries.map((workspace, index) => {
                 const workspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
-                const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow, Boolean(desktopSidebarBootstrap.scopeId))
+                const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow)
                 const flattenedSessionNodes = flattenVisibleSidebarSessionNodes(sessionNodes, expandedAgentSessions, routeSessionId)
                 const layout = workspaceLayout[workspace.path]
                 const collapsed = layout?.collapsed ?? true

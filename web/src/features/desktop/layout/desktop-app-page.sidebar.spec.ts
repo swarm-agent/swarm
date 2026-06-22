@@ -160,7 +160,7 @@ test('sidebar labels do not fall back to live tool history', () => {
   assert.equal(sessionActivityLabel(session), '')
 })
 
-test('sidebar active sort anchors to run start time, not latest DB live event', () => {
+test('sidebar active sort keeps earlier active positions above newer live activity', () => {
   const olderRunWithFreshToolEvent = makeSession('older-run-fresh-tool', {
     updatedAt: 20_000,
     createdAt: 1_000,
@@ -189,10 +189,10 @@ test('sidebar active sort anchors to run start time, not latest DB live event', 
     },
   })
 
-  assert.equal(compareSidebarSessions(newerRunWithoutFreshEvent, olderRunWithFreshToolEvent, 20_500) < 0, true)
+  assert.equal(compareSidebarSessions(olderRunWithFreshToolEvent, newerRunWithoutFreshEvent, 20_500) < 0, true)
 })
 
-test('sidebar active sort keeps initial start-time order when an older row streams', () => {
+test('sidebar active sort keeps first-started position order when an older row streams', () => {
   const sessions = [
     makeSession('0', { updatedAt: 50_000, createdAt: 50_000, runIntent: activeRunIntent('0', 'run-0', 50_000), live: { ...makeSession('base').live, status: 'running', startedAt: 50_000, lastEventAt: 50_000 } }),
     makeSession('1', { updatedAt: 40_000, createdAt: 40_000, runIntent: activeRunIntent('1', 'run-1', 40_000), live: { ...makeSession('base').live, status: 'running', startedAt: 40_000, lastEventAt: 40_000 } }),
@@ -201,7 +201,24 @@ test('sidebar active sort keeps initial start-time order when an older row strea
     makeSession('4', { updatedAt: 10_000, createdAt: 10_000, runIntent: activeRunIntent('4', 'run-4', 10_000), live: { ...makeSession('base').live, status: 'running', startedAt: 10_000, lastEventAt: 10_000 } }),
   ]
 
-  assert.deepEqual([...sessions].sort((left, right) => compareSidebarSessions(left, right, 100_500)).map((session) => session.id), ['0', '1', '2', '3', '4'])
+  assert.deepEqual([...sessions].sort((left, right) => compareSidebarSessions(left, right, 100_500)).map((session) => session.id), ['4', '3', '2', '1', '0'])
+})
+
+test('sidebar active sort positions a restarted old conversation by its new run start', () => {
+  const existingActive = makeSession('existing-active', {
+    updatedAt: 60_000,
+    createdAt: 60_000,
+    runIntent: activeRunIntent('existing-active', 'run-existing', 60_000),
+    live: { ...makeSession('base').live, status: 'running', startedAt: 60_000, lastEventAt: 60_000 },
+  })
+  const restartedOldConversation = makeSession('restarted-old', {
+    updatedAt: 100_000,
+    createdAt: 1_000,
+    runIntent: activeRunIntent('restarted-old', 'run-restarted', 100_000),
+    live: { ...makeSession('base').live, status: 'running', startedAt: 100_000, lastEventAt: 100_000 },
+  })
+
+  assert.equal(compareSidebarSessions(existingActive, restartedOldConversation, 100_500) < 0, true)
 })
 
 test('sidebar active sort keeps active DB sessions pinned above recent idle rows', () => {
