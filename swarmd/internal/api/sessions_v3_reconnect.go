@@ -298,7 +298,12 @@ func (s *Server) sessionsV3ReconnectWorksetResponse(principal identity.Principal
 		worksetID = "workset:" + v3SyncDeterministicSelectorHash(v3SyncCanonicalSelector(selector))
 	}
 	clientID := strings.TrimSpace(req.ClientID)
-	subscriptions := sessionsV3ReconnectSubscriptions(clientID, workset.SessionOrder, signedSnapshotEndpointCursor)
+	activeIntents, err := s.sessionsV3ReconnectActiveRunIntents(principal)
+	if err != nil {
+		return nil, err
+	}
+	subscriptionOrder := sessionsV3ReconnectWorksetSubscriptionOrder(selector, workset.SessionOrder, activeIntents)
+	subscriptions := sessionsV3ReconnectSubscriptions(clientID, subscriptionOrder, signedSnapshotEndpointCursor)
 	worksets := []V3RealtimeWorksetSubscriptionRequest{{
 		WorksetID:             worksetID,
 		SubscriptionID:        sessionsV3ReconnectWorksetSubscriptionID(clientID, worksetID),
@@ -444,6 +449,37 @@ func sessionsV3ReconnectWorksetRequestForOptions(req sessionsV3ReconnectWorksetR
 		Resources:     req.Resources,
 		IncludeActive: req.IncludeActive,
 	}, selector
+}
+
+func sessionsV3ReconnectWorksetSubscriptionOrder(selector V3RealtimeWorksetSelector, worksetOrder []string, activeIntents []sessionruntime.SessionRunIntent) []string {
+	if strings.TrimSpace(selector.Kind) == "session_ids" {
+		return worksetOrder
+	}
+	activeSessionIDs := make(map[string]struct{}, len(activeIntents))
+	for _, intent := range activeIntents {
+		sessionID := strings.TrimSpace(intent.SessionID)
+		if sessionID == "" {
+			continue
+		}
+		activeSessionIDs[sessionID] = struct{}{}
+	}
+	out := make([]string, 0, len(worksetOrder))
+	seen := make(map[string]struct{}, len(worksetOrder))
+	for _, sessionID := range worksetOrder {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" {
+			continue
+		}
+		if _, active := activeSessionIDs[sessionID]; !active {
+			continue
+		}
+		if _, ok := seen[sessionID]; ok {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+		out = append(out, sessionID)
+	}
+	return out
 }
 
 func sessionsV3ReconnectSubscriptions(clientID string, sessionOrder []string, endpointCursor string) []sessionsV3ReconnectSubscription {
