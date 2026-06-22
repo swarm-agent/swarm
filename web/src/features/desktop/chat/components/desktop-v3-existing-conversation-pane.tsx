@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { CheckCircle2, LoaderCircle, XCircle } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
@@ -8,7 +9,7 @@ import type { RenderedSessionMessages } from '../../state/desktop-v3-cache-selec
 import type { LiveRunOverlay, MessageSnapshot, PendingUserMessage } from '../../state/desktop-v3-cache-types'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import type { DesktopSessionRecord } from '../../types/realtime'
-import type { StructuredToolMessage, ToolMessageState, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
+import type { StructuredToolMessage, ToolMessageState, AgentProfileRecord, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
 import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
 import { agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
@@ -67,6 +68,55 @@ function preferenceFromOption(option: ModelOptionRecord | null, current: Session
     model: option.model,
     thinking: current.thinking || option.thinking,
     contextMode: option.contextMode,
+  }
+}
+
+type AgentModelLockState = {
+  profile: AgentProfileRecord | null
+  locked: boolean
+  agentName: string
+  provider: string
+  model: string
+  thinking: string
+  disabledReason: string
+}
+
+function findAgentProfile(agents: AgentProfileRecord[], agentName: string): AgentProfileRecord | null {
+  const normalizedAgentName = agentName.trim()
+  if (!normalizedAgentName) return null
+  return agents.find((agent) => agent.name === normalizedAgentName)
+    ?? agents.find((agent) => agent.name.trim().toLowerCase() === normalizedAgentName.toLowerCase())
+    ?? null
+}
+
+export function resolveDesktopV3AgentModelLock(agents: AgentProfileRecord[], selectedAgentName: string): AgentModelLockState {
+  const profile = findAgentProfile(agents, selectedAgentName)
+  const provider = profile?.provider.trim() ?? ''
+  const model = profile?.model.trim() ?? ''
+  const agentName = profile?.name.trim() || selectedAgentName.trim()
+  const locked = Boolean(provider && model)
+  return {
+    profile,
+    locked,
+    agentName,
+    provider,
+    model,
+    thinking: profile?.thinking.trim() ?? '',
+    disabledReason: locked && agentName
+      ? `To change models for ${agentName}, set the model to Default in Settings → Agents.`
+      : '',
+  }
+}
+
+function preferenceFromAgentModelLock(lock: AgentModelLockState, current: SessionPreferenceRecord, modelOptions: ModelOptionRecord[]): SessionPreferenceRecord {
+  if (!lock.locked) return current
+  const matchingOption = modelOptions.find((option) => option.provider === lock.provider && option.model === lock.model) ?? null
+  return {
+    ...current,
+    provider: lock.provider,
+    model: lock.model,
+    thinking: lock.thinking || current.thinking || matchingOption?.thinking || '',
+    contextMode: matchingOption?.contextMode ?? '',
   }
 }
 
@@ -253,6 +303,8 @@ export function DesktopV3ExistingConversationPane({
   onNewSession,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim()
+  const navigate = useNavigate()
+  const matchRoute = useMatchRoute()
   const queryClient = useQueryClient()
   const mountedRef = useRef(true)
   const operationRef = useRef<DesktopV3ExistingMessageOperation | null>(
@@ -280,12 +332,17 @@ export function DesktopV3ExistingConversationPane({
   const [mode, setMode] = useState<DesktopSessionMode>(normalizeSessionMode(session?.mode || cacheSession?.mode))
   const [selectedAgent, setSelectedAgent] = useState(initialAgent)
   const [preference, setPreference] = useState<SessionPreferenceRecord>(cachedPreference)
+  const unlockedPreferenceRef = useRef<SessionPreferenceRecord>(cachedPreference)
   const scrollTailRef = useRef<HTMLDivElement | null>(null)
 
   const hasRetainedOperation = Boolean(retainedOperation)
   const hasMessages = renderedMessages.committed.length > 0
     || renderedMessages.pendingUser.length > 0
     || renderedMessages.liveRuns.length > 0
+  const selectedAgentModelLock = useMemo(
+    () => resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent || agentState.activePrimary || ''),
+    [agentState.activePrimary, agentState.profiles, selectedAgent],
+  )
   const selectedModelKey = optionKey(preference.provider, preference.model, preference.contextMode)
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
   const selectedModelAvailable = Boolean(selectedModelOption)
@@ -294,6 +351,12 @@ export function DesktopV3ExistingConversationPane({
     ? effectiveContextWindow(selectedModelOption.provider, selectedModelOption.model, selectedModelOption.contextMode, selectedModelOption.contextWindow)
     : 0
   const contextLabel = selectedContextWindow > 0 ? `${formatContextWindow(selectedContextWindow)} ctx` : 'ctx'
+  const workspaceSettingsMatch = matchRoute({ to: '/$workspaceSlug/settings', fuzzy: false })
+    ?? matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
+    ?? matchRoute({ to: '/$workspaceSlug', fuzzy: false })
+  const routeWorkspaceSlug = workspaceSettingsMatch && 'workspaceSlug' in workspaceSettingsMatch
+    ? String(workspaceSettingsMatch.workspaceSlug ?? '').trim()
+    : ''
   const route = useMemo(
     () => resolveDesktopChatRouteFromSession(session ?? null, routeOptions, routeOptions[0] ?? null),
     [routeOptions, session],
@@ -339,39 +402,80 @@ export function DesktopV3ExistingConversationPane({
   }, [initialAgent])
 
   useEffect(() => {
+    if (selectedAgentModelLock.locked) return
+    unlockedPreferenceRef.current = cachedPreference
     setPreference((current) => preferencesEqual(current, cachedPreference) ? current : cachedPreference)
-  }, [cachedPreference])
+  }, [cachedPreference, selectedAgentModelLock.locked])
+
+  useEffect(() => {
+    if (!selectedAgentModelLock.locked) return
+    setPreference((current) => preferenceFromAgentModelLock(selectedAgentModelLock, current, modelOptions))
+  }, [modelOptions, selectedAgentModelLock])
+
+  function handleAgentSelect(agentName: string) {
+    setSelectedAgent(agentName)
+    const lock = resolveDesktopV3AgentModelLock(agentState.profiles, agentName)
+    if (lock.locked) {
+      setPreference((current) => {
+        unlockedPreferenceRef.current = current
+        return preferenceFromAgentModelLock(lock, current, modelOptions)
+      })
+      return
+    }
+    setPreference(unlockedPreferenceRef.current)
+  }
+
+  function handleOpenAgentSettings() {
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab: 'agents' } })
+      return
+    }
+    void navigate({ to: '/settings', search: { tab: 'agents' } })
+  }
 
   function handleModelSelect(key: string) {
+    if (selectedAgentModelLock.locked) return
     const option = modelOptions.find((candidate) => candidate.key === key) ?? null
-    setPreference((current) => preferenceFromOption(option, current))
+    setPreference((current) => {
+      const next = preferenceFromOption(option, current)
+      unlockedPreferenceRef.current = next
+      return next
+    })
   }
 
   function handleThinkingChange(value: string) {
-    setPreference((current) => ({ ...current, thinking: value.trim() === 'off' ? '' : value.trim() }))
+    if (selectedAgentModelLock.locked) return
+    setPreference((current) => {
+      const next = { ...current, thinking: value.trim() === 'off' ? '' : value.trim() }
+      unlockedPreferenceRef.current = next
+      return next
+    })
   }
 
   function handleFastChange(value: 'on' | 'off') {
-    setPreference((current) => ({
-      ...current,
-      serviceTier: value === 'on' && fastSupported ? 'fast' : '',
-    }))
+    if (selectedAgentModelLock.locked) return
+    setPreference((current) => {
+      const next = {
+        ...current,
+        serviceTier: value === 'on' && fastSupported ? 'fast' : '',
+      }
+      unlockedPreferenceRef.current = next
+      return next
+    })
   }
 
   async function persistVisibleSettings() {
     if (!normalizedSessionId) return
-    const tasks: Array<Promise<unknown>> = []
     if (normalizeSessionMode(session?.mode || cacheSession?.mode) !== mode) {
-      tasks.push(updateSessionV3Mode(normalizedSessionId, mode))
+      await updateSessionV3Mode(normalizedSessionId, mode)
     }
     const currentAgent = initialAgent.trim()
     if (selectedAgent.trim() && selectedAgent.trim() !== currentAgent) {
-      tasks.push(updateSessionV3Agent(normalizedSessionId, selectedAgent.trim()))
+      await updateSessionV3Agent(normalizedSessionId, selectedAgent.trim())
     }
     if (!preferencesEqual(preference, cachedPreference)) {
-      tasks.push(updateSessionV3Preference(normalizedSessionId, preference))
+      await updateSessionV3Preference(normalizedSessionId, preference)
     }
-    if (tasks.length > 0) await Promise.all(tasks)
   }
 
   async function handleSubmit() {
@@ -514,11 +618,15 @@ export function DesktopV3ExistingConversationPane({
         currentAgent={selectedAgent || agentState.activePrimary || 'Agent'}
         selectedPrimaryAgent={selectedAgent || agentState.activePrimary || ''}
         agents={agentState.profiles}
-        onAgentSelect={setSelectedAgent}
+        onAgentSelect={handleAgentSelect}
         modelOptions={modelOptions}
         selectedModelKey={selectedModelKey}
         selectedModelAvailable={selectedModelAvailable}
         onModelSelect={handleModelSelect}
+        modelPickerDisabled={selectedAgentModelLock.locked}
+        modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
+        modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
+        onOpenAgentSettings={handleOpenAgentSettings}
         thinking={preference.thinking}
         onThinkingChange={handleThinkingChange}
         thinkingTagsEnabled={thinkingTagsEnabled}

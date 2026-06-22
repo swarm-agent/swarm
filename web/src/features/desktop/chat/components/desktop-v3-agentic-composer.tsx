@@ -144,6 +144,10 @@ export interface DesktopV3AgenticComposerProps {
   selectedModelAvailable: boolean
   onModelSelect: (key: string) => void
   modelPickerOpenSignal?: number
+  modelPickerDisabled?: boolean
+  modelPickerDisabledReason?: string
+  modelLockNotice?: string
+  onOpenAgentSettings?: () => void
   thinking: string
   onThinkingChange: (value: string) => void
   thinkingTagsEnabled?: boolean
@@ -194,6 +198,10 @@ export function DesktopV3AgenticComposer({
   selectedModelAvailable,
   onModelSelect,
   modelPickerOpenSignal = 0,
+  modelPickerDisabled = false,
+  modelPickerDisabledReason = '',
+  modelLockNotice = '',
+  onOpenAgentSettings,
   thinking,
   onThinkingChange,
   thinkingTagsEnabled,
@@ -247,6 +255,8 @@ export function DesktopV3AgenticComposer({
   const mentionPaletteIsActive = useMemo(() => mentionPaletteActive(draft, mentionSubagents), [draft, mentionSubagents])
   const mentionPaletteMatches = useMemo(() => chatMentionCandidates(mentionPaletteQuery(draft), mentionSubagents), [draft, mentionSubagents])
   const selectedModel = useMemo(() => modelOptions.find((option) => option.key === selectedModelKey) ?? null, [modelOptions, selectedModelKey])
+  const modelPickerLocked = modelPickerDisabled || Boolean(modelLockNotice.trim())
+  const modelPickerReason = modelPickerDisabledReason || modelLockNotice
   const normalizedThinking = normalizeThinking(thinking)
   const fastSupported = selectedModel ? supportsCodexFastMode(selectedModel.provider, selectedModel.model) : false
   const effectiveModelPickerSignal = modelPickerOpenSignal + internalModelPickerSignal
@@ -559,6 +569,14 @@ export function DesktopV3AgenticComposer({
             </div>
           </div>
         ) : null}
+        {modelLockNotice ? (
+          <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text-muted)]">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>{modelLockNotice}</span>
+              {onOpenAgentSettings ? <Button type="button" variant="ghost" onClick={onOpenAgentSettings}>Settings → Agents</Button> : null}
+            </div>
+          </div>
+        ) : null}
         {mentionPaletteIsActive ? (
           <DesktopMentionPanel matches={mentionPaletteMatches} selectedIndex={mentionSelectionIndex} onHover={setMentionSelectionIndex} onSelect={handleMentionInsert} />
         ) : slashPalette.active ? (
@@ -618,15 +636,15 @@ export function DesktopV3AgenticComposer({
                   </span>
                 ) : null}
                 <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={onAgentSelect} />
-                <ModelPicker options={modelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={onModelSelect} openSignal={effectiveModelPickerSignal} />
+                <ModelPicker options={modelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={onModelSelect} openSignal={effectiveModelPickerSignal} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
                 <div className="hidden min-[1100px]:contents">
-                  <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} />
+                  <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
                   {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" /> : null}
                 </div>
                 <div className="relative hidden min-[1000px]:block min-[1100px]:hidden">
                   {intermediateSettingsOpen ? (
                     <div ref={intermediateSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[260px] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
-                      <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} />
+                      <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
                       {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" /> : null}
                     </div>
                   ) : null}
@@ -647,8 +665,8 @@ export function DesktopV3AgenticComposer({
                 <div ref={mobileSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[max(260px,100%)] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
                   {showModePicker ? <ModePicker mode={mode} onSelect={onModeChange} /> : null}
                   <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={onAgentSelect} dropdownAlign="left" />
-                  <ModelPicker options={modelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={onModelSelect} openSignal={effectiveModelPickerSignal} />
-                  <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} />
+                  <ModelPicker options={modelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={onModelSelect} openSignal={effectiveModelPickerSignal} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
+                  <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
                   {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" /> : null}
                 </div>
               ) : null}

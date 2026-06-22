@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   buildDesktopV3LiveRunRenderItems,
   completeDesktopV3ExistingMessage,
+  resolveDesktopV3AgentModelLock,
   resolveDesktopV3StopRunRequest,
 } from './desktop-v3-existing-conversation-pane'
 import {
@@ -20,6 +21,7 @@ import {
   loadDesktopV3NewSessionOperation,
 } from '../../session-v3/new-session-flow'
 import type { DesktopChatRoute } from '../services/chat-routing'
+import type { AgentProfileRecord } from '../types/chat'
 
 const route: DesktopChatRoute = {
   id: 'swarm:swarm-self:binding:binding-self',
@@ -189,4 +191,45 @@ test('Desktop V3 live run render items preserve backend event order', () => {
   })
 
   assert.deepEqual(items.map((item) => item.type), ['live-reasoning', 'live-tool', 'live-assistant'])
+})
+
+function agentProfile(overrides: Partial<AgentProfileRecord>): AgentProfileRecord {
+  return {
+    name: 'swarm',
+    mode: 'primary',
+    description: '',
+    provider: '',
+    model: '',
+    thinking: '',
+    prompt: '',
+    runtimeMode: 'plan_auto',
+    executionSetting: '',
+    exitPlanModeEnabled: true,
+    toolScope: null,
+    toolContract: null,
+    enabled: true,
+    protected: false,
+    updatedAt: 0,
+    ...overrides,
+  }
+}
+
+test('Desktop V3 agent model lock is derived synchronously from loaded agent profiles', () => {
+  const locked = resolveDesktopV3AgentModelLock([
+    agentProfile({ name: 'swarm', provider: 'codex', model: 'gpt-5.4', thinking: 'high' }),
+    agentProfile({ name: 'default-agent', provider: '', model: '', thinking: '' }),
+  ], 'swarm')
+
+  assert.equal(locked.locked, true)
+  assert.equal(locked.provider, 'codex')
+  assert.equal(locked.model, 'gpt-5.4')
+  assert.equal(locked.thinking, 'high')
+  assert.match(locked.disabledReason, /set the model to Default in Settings → Agents/)
+
+  const unlocked = resolveDesktopV3AgentModelLock([
+    agentProfile({ name: 'default-agent', provider: '', model: '', thinking: '' }),
+  ], 'default-agent')
+
+  assert.equal(unlocked.locked, false)
+  assert.equal(unlocked.disabledReason, '')
 })
