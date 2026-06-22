@@ -316,9 +316,9 @@ test('startNewDesktopV3Session performs create, subscribe/select, then first mes
       'capture-cursor',
       `create:${operation.sessionId}`,
       'dispatch:mutation.sessionCreateResult',
-      `connect:${operation.sessionId}:cursor-before-create`,
       'dispatch:session.select',
       'dispatch:pendingUser.upsert',
+      `connect:${operation.sessionId}:cursor-before-create`,
       `message:${operation.sessionId}:${operation.firstMessageRequest.message_id}`,
       'dispatch:mutation.messageResult',
       `navigate:${operation.sessionId}`,
@@ -391,8 +391,8 @@ test('startNewDesktopV3Session skips selection when delayed create resolves afte
       'capture-cursor',
       `create:${operation.sessionId}`,
       'dispatch:mutation.sessionCreateResult',
-      `connect:${operation.sessionId}:cursor-before-create`,
       'dispatch:pendingUser.upsert',
+      `connect:${operation.sessionId}:cursor-before-create`,
       `message:${operation.sessionId}:${operation.firstMessageRequest.message_id}`,
       'dispatch:mutation.messageResult',
     ])
@@ -456,6 +456,8 @@ test('Desktop V3 new session captures cursor before create and appends only afte
       'capture-cursor',
       'create',
       'dispatch:mutation.sessionCreateResult',
+      'dispatch:session.select',
+      'dispatch:pendingUser.upsert',
       `connect:start:${operation.sessionId}:cursor-before-create`,
     ])
     connect.resolve()
@@ -464,10 +466,10 @@ test('Desktop V3 new session captures cursor before create and appends only afte
       'capture-cursor',
       'create',
       'dispatch:mutation.sessionCreateResult',
-      `connect:start:${operation.sessionId}:cursor-before-create`,
-      `connect:complete:${operation.sessionId}`,
       'dispatch:session.select',
       'dispatch:pendingUser.upsert',
+      `connect:start:${operation.sessionId}:cursor-before-create`,
+      `connect:complete:${operation.sessionId}`,
       'message',
       'dispatch:mutation.messageResult',
       `navigate:${operation.sessionId}`,
@@ -519,9 +521,15 @@ test('Desktop V3 new session rejected connectSession appends no message and does
     }), /subscribe rejected/)
     assert.equal(appended, false)
     assert.equal(navigated, false)
-    assert.deepEqual(actions.map((action) => action.type), ['mutation.sessionCreateResult'])
-    assert.equal(actions.some((action) => action.type === 'pendingUser.upsert'), false)
-    assert.equal(actions.some((action) => action.type === 'mutation.messageResult'), false)
+    assert.deepEqual(actions.map((action) => action.type), [
+      'mutation.sessionCreateResult',
+      'session.select',
+      'pendingUser.upsert',
+      'mutation.messageResult',
+    ])
+    const failed = actions.at(-1)
+    assert.equal(failed?.type, 'mutation.messageResult')
+    assert.equal(failed?.raw.ok, false)
   } finally {
     restore()
   }

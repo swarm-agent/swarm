@@ -273,8 +273,8 @@ export async function startNewDesktopV3Session(input: {
 
   flowDeps.dispatch(sessionCreateResponseToAction(rawCreate, sidebarScopeId))
 
-  // Create is durable. Subscribe locally, and select only if the owning route is still current.
-  await controller.connectSession({ sessionId: operation.sessionId, endpointCursor })
+  // Create is durable. Select only if the owning route is still current, then expose
+  // the pending user message while the live stream attachment is acknowledged.
   if (input.shouldSelectSession?.() ?? true) {
     flowDeps.dispatch(selectSession(operation.sessionId))
   }
@@ -290,6 +290,18 @@ export async function startNewDesktopV3Session(input: {
       createdAt: operation.createdAt,
     },
   })
+
+  try {
+    await controller.connectSession({ sessionId: operation.sessionId, endpointCursor })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    flowDeps.dispatch(messageMutationResponseToAction(
+      { ok: false, error: message },
+      operation.firstMessageRequest.client_request_id,
+      operation.firstMessageRequest.message_id,
+    ))
+    throw error
+  }
 
   let rawMessage: SessionMessageMutationResponse | MessageMutationConflictResponse
   try {
