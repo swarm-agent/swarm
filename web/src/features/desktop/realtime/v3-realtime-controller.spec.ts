@@ -4,7 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
-import { DesktopV3RealtimeTransport } from '../session-v3/transport'
+import { DesktopV3RealtimeTransport, SESSION_CONNECT_ACK_TIMEOUT_MS } from '../session-v3/transport'
 import { createDesktopV3CacheOwner } from '../state/desktop-v3-cache-owner'
 import { selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { readDesktopV3Owner, resetDesktopV3CacheDBForTests } from '../state/desktop-v3-cache-db'
@@ -103,11 +103,13 @@ test('Desktop V3 realtime transport persists endpoint.watermark cursor without a
   assert.deepEqual(delivered, ['endpoint.watermark'])
 
   socket.sent = []
-  await transport.subscribeSession({
+  const connect = transport.subscribeSession({
     session_id: 'session-a',
     subscription_id: 'sub-a',
     endpoint_cursor: 'v3c1.test_payload_2.test_signature_2',
   })
+  connect.catch(() => undefined)
+  await flushAsyncWork()
 
   assert.equal(resumes.length, 1, 'open-socket subscription must not send another resume')
   assert.deepEqual(socket.sent.map((frame) => (frame as RealtimeMessage).kind), ['subscribe.session'])
@@ -115,6 +117,8 @@ test('Desktop V3 realtime transport persists endpoint.watermark cursor without a
   assert.equal(subscription.endpoint_cursor, 'v3c1.test_payload_2.test_signature_2')
   assert.equal('after_seq' in subscription, false)
   assert.equal('after_rev' in subscription, false)
+  socket.emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'replay.complete', session_id: 'session-a', subscription_id: 'sub-a', endpoint_cursor: 'v3c1.test_payload_3.test_signature_3' })
+  await connect
   transport.stop()
 })
 
@@ -202,11 +206,12 @@ test('Desktop V3 realtime transport sends one resume containing workset and know
     selector: { kind: 'global', global: true },
     auto_subscribe_sessions: true,
   })
-  await transport.subscribeSession({
+  const connect = transport.subscribeSession({
     session_id: 'session-a',
     subscription_id: 'sub-a',
     endpoint_cursor: 'session-cursor-a',
   })
+  connect.catch(() => undefined)
 
   await transport.start()
   socket.open()
@@ -217,6 +222,8 @@ test('Desktop V3 realtime transport sends one resume containing workset and know
   assert.deepEqual(resumes[0].subscriptions?.map((subscription) => subscription.session_id), ['session-a'])
   assert.deepEqual(resumes[0].worksets?.map((workset) => workset.workset_id), ['desktop-workset'])
   assert.equal('after_seq' in resumes[0], false)
+  socket.emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'replay.complete', session_id: 'session-a', subscription_id: 'sub-a', endpoint_cursor: 'v3c1.after_replay.payload.signature' })
+  await connect
   transport.stop()
 })
 
@@ -3246,11 +3253,13 @@ test('Desktop V3 open transport adds one session with subscribe.session and no r
   socket.open()
   socket.sent = []
 
-  await transport.subscribeSession({
+  const connect = transport.subscribeSession({
     session_id: 'session-new',
     subscription_id: 'sub-new',
     endpoint_cursor: 'cursor-0',
   })
+  connect.catch(() => undefined)
+  await flushAsyncWork()
 
   assert.deepEqual(socket.sent.map((frame) => (frame as RealtimeMessage).kind), ['subscribe.session'])
   assert.equal(socket.sent.filter((frame) => (frame as RealtimeMessage).kind === 'resume').length, 0)
@@ -3260,7 +3269,196 @@ test('Desktop V3 open transport adds one session with subscribe.session and no r
   const unsubscribe = socket.sent[1] as RealtimeMessage
   assert.equal(unsubscribe.session_id, 'session-new')
   assert.equal(unsubscribe.subscription_id, 'sub-new')
+  await assert.rejects(connect, /unsubscribed/i)
   transport.stop()
+})
+
+test('Desktop V3 open transport resolves only on replay.complete and reuses ready subscription without another frame', async () => {
+  const socket = new FakeWebSocket()
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'cursor-0',
+    openSocket: () => socket as unknown as WebSocket,
+    livenessTimeoutMs: 60_000,
+  })
+  await transport.start()
+  socket.open()
+  socket.sent = []
+
+  const connect = transport.subscribeSession({
+    session_id: 'session-ready',
+    subscription_id: 'sub-ready',
+    endpoint_cursor: 'cursor-0',
+  })
+  connect.catch(() => undefined)
+  await flushAsyncWork()
+  assert.deepEqual(socket.sent.map((frame) => (frame as RealtimeMessage).kind), ['subscribe.session'])
+
+  socket.emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'replay.started', session_id: 'session-ready', subscription_id: 'sub-ready' })
+  await flushAsyncWork()
+  socket.sent = []
+  const replayEvent = {
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    session_id: 'session-ready',
+    subscription_id: 'sub-ready',
+    endpoint_cursor: 'cursor-1',
+    event: {
+      id: 'event-session-ready',
+      session_id: 'session-ready',
+      event_type: 'session.created',
+      seq: 1,
+      payload: {},
+    },
+  }
+  socket.emit(replayEvent)
+  await flushAsyncWork()
+
+  let resolved = false
+  connect.then(() => {
+    resolved = true
+  }).catch(() => undefined)
+  assert.equal(resolved, false, 'replayed event is not acknowledgement')
+
+  socket.emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'replay.complete', session_id: 'session-ready', subscription_id: 'sub-ready', endpoint_cursor: 'cursor-2' })
+  await connect
+
+  await transport.subscribeSession({
+    session_id: 'session-ready',
+    subscription_id: 'sub-ready',
+    endpoint_cursor: 'cursor-2',
+  })
+  assert.deepEqual(socket.sent, [], 'already-ready subscription must not send another frame')
+  transport.stop()
+})
+
+test('Desktop V3 open transport rejects pending connect on acknowledgement timeout', async () => {
+  const socket = new FakeWebSocket()
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'cursor-0',
+    openSocket: () => socket as unknown as WebSocket,
+    livenessTimeoutMs: 60_000,
+  })
+  await transport.start()
+  socket.open()
+
+  const originalSetTimeout = window.setTimeout
+  const originalClearTimeout = window.clearTimeout
+  let timeoutCallback: (() => void) | undefined
+  let timeoutDelay = 0
+  Object.defineProperty(window, 'setTimeout', {
+    value: ((callback: () => void, delay?: number) => {
+      timeoutCallback = callback
+      timeoutDelay = delay ?? 0
+      return 12345
+    }) as typeof window.setTimeout,
+    configurable: true,
+  })
+  Object.defineProperty(window, 'clearTimeout', {
+    value: (() => undefined) as typeof window.clearTimeout,
+    configurable: true,
+  })
+
+  try {
+    const connect = transport.subscribeSession({
+      session_id: 'session-timeout',
+      subscription_id: 'sub-timeout',
+      endpoint_cursor: 'cursor-0',
+    })
+    connect.catch(() => undefined)
+    await flushAsyncWork()
+    assert.equal(timeoutDelay, SESSION_CONNECT_ACK_TIMEOUT_MS)
+    timeoutCallback?.()
+    await assert.rejects(connect, /timed out/i)
+  } finally {
+    Object.defineProperty(window, 'setTimeout', { value: originalSetTimeout, configurable: true })
+    Object.defineProperty(window, 'clearTimeout', { value: originalClearTimeout, configurable: true })
+    transport.stop()
+  }
+})
+
+test('Desktop V3 open transport keeps pending connect across reconnect resume', async () => {
+  const sockets: FakeWebSocket[] = []
+  const resumes: SessionV3RealtimeResumeWire[] = []
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'cursor-0',
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+    onResumeSent: (resume) => resumes.push(resume),
+    reopenBaseDelayMs: 1,
+    reopenMaxDelayMs: 1,
+    livenessTimeoutMs: 60_000,
+  })
+
+  await transport.start()
+  sockets[0].open()
+  const connect = transport.subscribeSession({
+    session_id: 'session-reconnect',
+    subscription_id: 'sub-reconnect',
+    endpoint_cursor: 'cursor-0',
+  })
+  connect.catch(() => undefined)
+  await flushAsyncWork()
+  assert.deepEqual(sockets[0].sent.map((frame) => (frame as RealtimeMessage).kind), ['resume', 'subscribe.session'])
+
+  sockets[0].close()
+  await waitFor(() => sockets.length === 2)
+  sockets[1].open()
+  await flushAsyncWork()
+  assert.equal(resumes.length, 2)
+  assert.deepEqual(resumes[1].subscriptions?.map((subscription) => subscription.session_id), ['session-reconnect'])
+
+  let resolved = false
+  connect.then(() => {
+    resolved = true
+  }).catch(() => undefined)
+  assert.equal(resolved, false)
+  sockets[1].emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'replay.complete', session_id: 'session-reconnect', subscription_id: 'sub-reconnect', endpoint_cursor: 'cursor-1' })
+  await connect
+  assert.equal(resolved, true)
+  transport.stop()
+})
+
+test('Desktop V3 open transport rejects pending connect on auth denied and stop', async () => {
+  const socket = new FakeWebSocket()
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'cursor-0',
+    openSocket: () => socket as unknown as WebSocket,
+    livenessTimeoutMs: 60_000,
+  })
+  await transport.start()
+  socket.open()
+
+  const denied = transport.subscribeSession({
+    session_id: 'session-denied',
+    subscription_id: 'sub-denied',
+    endpoint_cursor: 'cursor-0',
+  })
+  denied.catch(() => undefined)
+  await flushAsyncWork()
+  socket.emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'auth.denied', session_id: 'session-denied', subscription_id: 'sub-denied', reason: 'subscription denied' })
+  await assert.rejects(denied, /subscription denied/i)
+
+  const socket2 = new FakeWebSocket()
+  const transport2 = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'cursor-0',
+    openSocket: () => socket2 as unknown as WebSocket,
+    livenessTimeoutMs: 60_000,
+  })
+  await transport2.start()
+  socket2.open()
+  const stopped = transport2.subscribeSession({
+    session_id: 'session-stop',
+    subscription_id: 'sub-stop',
+    endpoint_cursor: 'cursor-0',
+  })
+  stopped.catch(() => undefined)
+  await flushAsyncWork()
+  transport2.stop('test stop rejection')
+  await assert.rejects(stopped, /test stop rejection/i)
 })
 
 test('Desktop V3 real controller connectSession resolves only after matching replay.complete', async () => {

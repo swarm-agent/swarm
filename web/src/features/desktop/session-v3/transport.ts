@@ -16,6 +16,7 @@ const REOPEN_BASE_DELAY_MS = 1_500
 const REOPEN_MAX_DELAY_MS = 15_000
 const REOPEN_JITTER_RATIO = 0.2
 const LIVENESS_TIMEOUT_MS = 45_000
+export const SESSION_CONNECT_ACK_TIMEOUT_MS = 30_000
 
 export type DesktopV3RealtimeTransportSocketState = 'none' | 'connecting' | 'open' | 'closing' | 'closed'
 export type DesktopV3RealtimeTransportStatus = 'stopped' | 'connecting' | 'open' | 'reopening' | 'rehydrating' | 'stale' | 'closed' | 'error'
@@ -100,6 +101,19 @@ type SessionRegistryEntry = DesktopV3RealtimeTransportSessionRegistryEntry
 
 type WorksetRegistryEntry = DesktopV3RealtimeTransportWorksetRegistryEntry
 
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve: (value: T | PromiseLike<T>) => void
+  reject: (reason?: unknown) => void
+}
+
+interface PendingSessionSubscription {
+  subscriptionId: string
+  deferred: Deferred<void>
+  sentGeneration?: number
+  timeoutId?: number
+}
+
 export function buildDesktopV3RealtimeResume(input: {
   endpointCursor: string
   subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]
@@ -147,6 +161,8 @@ function buildSessionUnsubscribeFrame(subscription: SessionV3RealtimeSubscriptio
 export class DesktopV3RealtimeTransport {
   private readonly sessions = new Map<string, SessionRegistryEntry>()
   private readonly worksets = new Map<string, WorksetRegistryEntry>()
+  private readonly pendingSessionSubscriptions = new Map<string, PendingSessionSubscription>()
+  private readonly readySessionSubscriptions = new Map<string, { subscriptionId: string; generation: number }>()
   private socket: WebSocket | null = null
   private connecting: Promise<void> | null = null
   private reopenTimer: number | null = null
@@ -175,6 +191,7 @@ export class DesktopV3RealtimeTransport {
     this.clearScheduledReopen()
     this.clearLiveness()
     this.closeOwnedSocket()
+    this.rejectAllPendingSessionSubscriptions(new Error(reason))
     this.reopenAttempt = 0
     this.lastActivityAt = 0
     this.emitStatus('stopped', reason)
@@ -184,6 +201,7 @@ export class DesktopV3RealtimeTransport {
     this.stop('transport disposed')
     this.sessions.clear()
     this.worksets.clear()
+    this.readySessionSubscriptions.clear()
   }
 
   setEndpointCursor(endpointCursor: string | null | undefined, source: DesktopV3RealtimeTransportCursorEvent['source'] = 'manual'): void {
@@ -196,19 +214,48 @@ export class DesktopV3RealtimeTransport {
     if (!entry.endpoint_cursor) {
       return Promise.reject(new Error('Desktop V3 realtime subscribe.session requires endpoint_cursor.'))
     }
+
+    const ready = this.readySessionSubscriptions.get(entry.session_id)
+    if (
+      ready
+      && ready.subscriptionId === entry.subscription_id
+      && ready.generation === this.generation
+      && this.socket?.readyState === WebSocket.OPEN
+    ) {
+      return Promise.resolve()
+    }
+
     this.sessions.set(entry.session_id, {
       ...entry,
       autoDiscovered: false,
       updatedAt: this.now(),
     })
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify(buildSessionSubscribeFrame(entry)))
-      return Promise.resolve()
+
+    let pending = this.pendingSessionSubscriptions.get(entry.session_id)
+    if (pending && pending.subscriptionId !== entry.subscription_id) {
+      this.rejectPendingSessionSubscription(
+        entry.session_id,
+        new Error('Desktop V3 session subscription was replaced before acknowledgement.'),
+      )
+      pending = undefined
     }
-    if (this.desired) {
+    if (!pending) {
+      pending = this.createPendingSessionSubscription(entry.session_id, entry.subscription_id)
+      this.pendingSessionSubscriptions.set(entry.session_id, pending)
+    }
+
+    if (this.socket?.readyState === WebSocket.OPEN && pending.sentGeneration !== this.generation) {
+      try {
+        this.socket.send(JSON.stringify(buildSessionSubscribeFrame(entry)))
+        pending.sentGeneration = this.generation
+      } catch (error) {
+        this.rejectPendingSessionSubscription(entry.session_id, error)
+      }
+    } else if (this.desired) {
       void this.connect().catch((error) => this.emitStatus('error', errorMessage(error, 'session subscription connect failed')))
     }
-    return Promise.resolve()
+
+    return pending.deferred.promise
   }
 
   unsubscribeSession(sessionId: string): void {
@@ -216,6 +263,11 @@ export class DesktopV3RealtimeTransport {
     if (!normalizedSessionId) return
     const existing = this.sessions.get(normalizedSessionId)
     this.sessions.delete(normalizedSessionId)
+    this.readySessionSubscriptions.delete(normalizedSessionId)
+    this.rejectPendingSessionSubscription(
+      normalizedSessionId,
+      new Error('Desktop V3 session subscription was unsubscribed before acknowledgement.'),
+    )
     if (existing && this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify(buildSessionUnsubscribeFrame(existing)))
     }
@@ -355,6 +407,7 @@ export class DesktopV3RealtimeTransport {
   private async openConnection(endpointCursor: string): Promise<void> {
     this.clearScheduledReopen()
     this.generation += 1
+    this.readySessionSubscriptions.clear()
     const generation = this.generation
     this.emitStatus('connecting', 'opening V3 realtime transport')
     try {
@@ -407,6 +460,7 @@ export class DesktopV3RealtimeTransport {
       this.clearLiveness()
       if (generation !== this.generation || this.socket !== socket) return
       this.socket = null
+      this.readySessionSubscriptions.clear()
       if (!this.desired) {
         this.emitStatus('closed', 'V3 realtime transport closed')
         return
@@ -475,6 +529,8 @@ export class DesktopV3RealtimeTransport {
       this.advanceEndpointCursor(endpointCursor, 'frame')
     }
 
+    this.acknowledgeSessionSubscriptionIfComplete(kind, frame, sessionId)
+
     if (kind === 'cursor.error') {
       await this.requestRehydrate(
         frame.reason || frame.error || frame.error_code || 'V3 realtime cursor error',
@@ -490,7 +546,9 @@ export class DesktopV3RealtimeTransport {
       return
     }
     if (kind === 'auth.denied') {
-      this.markStale(frame.reason || frame.error || 'V3 realtime auth denied')
+      const reason = frame.reason || frame.error || 'V3 realtime auth denied'
+      this.rejectDeniedSessionSubscription(frame, reason)
+      this.markStale(reason)
     }
   }
 
@@ -498,6 +556,12 @@ export class DesktopV3RealtimeTransport {
     if (socket.readyState !== WebSocket.OPEN) return
     const resume = this.resumePayload()
     socket.send(JSON.stringify(resume))
+    for (const subscription of resume.subscriptions ?? []) {
+      const pending = this.pendingSessionSubscriptions.get(subscription.session_id)
+      if (pending?.subscriptionId === subscription.subscription_id) {
+        pending.sentGeneration = this.generation
+      }
+    }
     this.options.onResumeSent?.(resume, this.meta())
   }
 
@@ -545,6 +609,85 @@ export class DesktopV3RealtimeTransport {
   private assertRegistryReplacementAllowed(): void {
     if (this.socket?.readyState === WebSocket.OPEN) {
       throw new Error('Realtime registry replacement is only allowed before socket open or during recovery')
+    }
+  }
+
+  private acknowledgeSessionSubscriptionIfComplete(
+    kind: string,
+    frame: SessionV3RealtimeFrameWire,
+    sessionId: string,
+  ): void {
+    if (kind !== 'replay.complete') return
+    const pending = this.pendingSessionSubscriptions.get(sessionId)
+    if (!pending || pending.subscriptionId !== normalizeString(frame.subscription_id)) return
+    this.readySessionSubscriptions.set(sessionId, {
+      subscriptionId: pending.subscriptionId,
+      generation: this.generation,
+    })
+    this.resolvePendingSessionSubscription(sessionId)
+  }
+
+  private createPendingSessionSubscription(sessionId: string, subscriptionId: string): PendingSessionSubscription {
+    const deferred = createDeferred<void>()
+    const pending: PendingSessionSubscription = {
+      subscriptionId,
+      deferred,
+    }
+    pending.timeoutId = window.setTimeout(() => {
+      const current = this.pendingSessionSubscriptions.get(sessionId)
+      if (current !== pending) return
+      this.rejectPendingSessionSubscription(
+        sessionId,
+        new Error('Desktop V3 session subscription acknowledgement timed out.'),
+      )
+    }, SESSION_CONNECT_ACK_TIMEOUT_MS)
+    return pending
+  }
+
+  private resolvePendingSessionSubscription(sessionId: string): void {
+    const pending = this.pendingSessionSubscriptions.get(sessionId)
+    if (!pending) return
+    this.clearPendingSessionSubscriptionTimeout(pending)
+    this.pendingSessionSubscriptions.delete(sessionId)
+    pending.deferred.resolve()
+  }
+
+  private rejectPendingSessionSubscription(sessionId: string, reason: unknown): void {
+    const pending = this.pendingSessionSubscriptions.get(sessionId)
+    if (!pending) return
+    this.clearPendingSessionSubscriptionTimeout(pending)
+    this.pendingSessionSubscriptions.delete(sessionId)
+    pending.deferred.reject(reason)
+  }
+
+  private rejectAllPendingSessionSubscriptions(reason: unknown): void {
+    for (const sessionId of Array.from(this.pendingSessionSubscriptions.keys())) {
+      this.rejectPendingSessionSubscription(sessionId, reason)
+    }
+  }
+
+  private rejectDeniedSessionSubscription(frame: SessionV3RealtimeFrameWire, reason: string): void {
+    const sessionId = frameSessionId(frame)
+    const subscriptionId = normalizeString(frame.subscription_id)
+    if (sessionId) {
+      const pending = this.pendingSessionSubscriptions.get(sessionId)
+      if (pending && (!subscriptionId || pending.subscriptionId === subscriptionId)) {
+        this.rejectPendingSessionSubscription(sessionId, new Error(reason))
+      }
+      return
+    }
+    if (!subscriptionId) return
+    for (const [pendingSessionId, pending] of this.pendingSessionSubscriptions) {
+      if (pending.subscriptionId === subscriptionId) {
+        this.rejectPendingSessionSubscription(pendingSessionId, new Error(reason))
+      }
+    }
+  }
+
+  private clearPendingSessionSubscriptionTimeout(pending: PendingSessionSubscription): void {
+    if (pending.timeoutId !== undefined) {
+      window.clearTimeout(pending.timeoutId)
+      pending.timeoutId = undefined
     }
   }
 
@@ -669,6 +812,7 @@ export class DesktopV3RealtimeTransport {
     this.clearScheduledReopen()
     this.clearLiveness()
     this.closeOwnedSocket()
+    this.rejectAllPendingSessionSubscriptions(new Error(reason))
     this.desired = false
     this.emitStatus('stale', reason)
   }
@@ -678,6 +822,7 @@ export class DesktopV3RealtimeTransport {
     this.socket = null
     this.connecting = null
     this.generation += 1
+    this.readySessionSubscriptions.clear()
     if (socket && socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) {
       socket.close()
     }
@@ -818,6 +963,16 @@ function reopenDelayMs(attempt: number, baseOverride?: number, maxOverride?: num
   const jitterWindow = Math.max(1, Math.floor(baseDelay * REOPEN_JITTER_RATIO))
   const jitterOffset = Math.floor((Math.random() * (jitterWindow * 2 + 1)) - jitterWindow)
   return Math.max(base, baseDelay + jitterOffset)
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: Deferred<T>['resolve']
+  let reject!: Deferred<T>['reject']
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
