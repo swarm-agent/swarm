@@ -246,7 +246,7 @@ test('Path A retries valid retained operation unchanged', () => withSessionStora
   assert.deepEqual(loaded?.firstMessageRequest, JSON.parse(JSON.stringify(operation.firstMessageRequest)))
 }))
 
-test('startNewDesktopV3Session performs create, subscribe/select, then first message before navigation', async () => {
+test('startNewDesktopV3Session performs create, awaits subscribe/select, then first message before navigation', async () => {
   const operation = createDesktopV3NewSessionOperation({
     workspacePath: '/workspace',
     workspaceName: 'workspace',
@@ -258,10 +258,17 @@ test('startNewDesktopV3Session performs create, subscribe/select, then first mes
   state.desktopSidebarBootstrap.scopeId = 'scope-global'
   const calls: string[] = []
   const actions: DesktopV3CacheAction[] = []
+  let releaseSubscription!: () => void
+  const subscriptionReady = new Promise<void>((resolve) => {
+    releaseSubscription = resolve
+  })
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionSubscription: (sessionId: string) => calls.push(`subscribe:${sessionId}`),
+      ensureSessionSubscription: (sessionId: string) => {
+        calls.push(`subscribe:${sessionId}`)
+        return subscriptionReady
+      },
       ensureSessionHistory: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,
@@ -282,13 +289,18 @@ test('startNewDesktopV3Session performs create, subscribe/select, then first mes
 
   try {
     let navigated = ''
-    const result = await startNewDesktopV3Session({
+    const started = startNewDesktopV3Session({
       operation,
       onSessionStarted: (sessionId) => {
         calls.push(`navigate:${sessionId}`)
         navigated = sessionId
       },
     })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    assert.equal(calls.includes(`subscribe:${operation.sessionId}`), true)
+    assert.equal(calls.some((call) => call.startsWith('message:')), false)
+    releaseSubscription()
+    const result = await started
 
     assert.equal(result.sessionId, operation.sessionId)
     assert.equal(navigated, operation.sessionId)
@@ -324,7 +336,10 @@ test('startNewDesktopV3Session skips selection when delayed create resolves afte
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionSubscription: (sessionId: string) => calls.push(`subscribe:${sessionId}`),
+      ensureSessionSubscription: (sessionId: string) => {
+        calls.push(`subscribe:${sessionId}`)
+        return Promise.resolve()
+      },
       ensureSessionHistory: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,
@@ -390,7 +405,7 @@ test('startNewDesktopV3Session keeps operation unresolved when first message fai
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionSubscription: () => undefined,
+      ensureSessionSubscription: () => Promise.resolve(),
       ensureSessionHistory: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,

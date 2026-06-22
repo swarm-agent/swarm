@@ -272,8 +272,9 @@ export async function startNewDesktopV3Session(input: {
 
   flowDeps.dispatch(sessionCreateResponseToAction(rawCreate, sidebarScopeId))
 
-  // Create is durable. Subscribe locally, and select only if the owning route is still current.
-  controller.ensureSessionSubscription(operation.sessionId)
+  // Create is durable. Subscribe the new session on the already-open realtime stream
+  // and wait for replay.complete before appending the first message/run.
+  await controller.ensureSessionSubscription(operation.sessionId)
   if (input.shouldSelectSession?.() ?? true) {
     flowDeps.dispatch(selectSession(operation.sessionId))
   }

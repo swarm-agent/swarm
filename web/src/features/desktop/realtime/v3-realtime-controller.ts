@@ -36,7 +36,7 @@ const ACTIVE_REPAIR_PAGE_SIZE = 500
 const ACTIVE_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
 
 export interface DesktopV3RealtimeController {
-  ensureSessionSubscription(sessionId: string): void
+  ensureSessionSubscription(sessionId: string): Promise<void>
   ensureSessionHistory(sessionId: string): Promise<void>
   start(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void>
   stop(reason?: string): void
@@ -201,14 +201,14 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.transport.stop(reason)
   }
 
-  ensureSessionSubscription(sessionId: string): void {
+  ensureSessionSubscription(sessionId: string): Promise<void> {
     const normalized = sessionId.trim()
-    if (!normalized) return
+    if (!normalized) return Promise.resolve()
 
     const cursor = this.getSnapshot().realtime.endpointCursor
-    if (!cursor) return
+    if (!cursor) return Promise.resolve()
 
-    this.transport.registerSession({
+    return this.transport.registerSessionAndWait({
       session_id: normalized,
       subscription_id: `${DESKTOP_V3_CLIENT_ID}:session:${normalized}`,
       endpoint_cursor: cursor,
@@ -401,7 +401,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private async ensureSession(sessionId: string): Promise<void> {
     const normalized = sessionId.trim()
     if (!normalized) return
-    this.ensureSessionSubscription(normalized)
+    await this.ensureSessionSubscription(normalized)
     await this.hydrateSessionOnce(normalized)
   }
 

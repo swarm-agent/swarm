@@ -66,6 +66,44 @@ class FakeWebSocket extends EventTarget {
   }
 }
 
+test('Desktop V3 realtime transport sends subscribe.session and waits for replay.complete', async () => {
+  const socket = new FakeWebSocket()
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'C0',
+    openSocket: () => socket as unknown as WebSocket,
+    livenessTimeoutMs: 60_000,
+  })
+
+  await transport.start()
+  socket.open()
+  const ready = transport.registerSessionAndWait({
+    session_id: 'session-a',
+    subscription_id: 'sub-a',
+    endpoint_cursor: 'stale-session-cursor',
+  })
+  await Promise.resolve()
+
+  assert.deepEqual(socket.sent.at(-1), {
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'subscribe.session',
+    session_id: 'session-a',
+    subscription_id: 'sub-a',
+    endpoint_cursor: 'C0',
+  })
+
+  socket.emit({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'replay.complete',
+    session_id: 'session-a',
+    subscription_id: 'sub-a',
+    endpoint_cursor: 'C1',
+  })
+  await ready
+  transport.stop()
+})
+
 test('Desktop V3 realtime transport persists endpoint.watermark cursor without application mutation', async () => {
   const delivered: string[] = []
   const resumes: SessionV3RealtimeResumeWire[] = []
@@ -108,11 +146,12 @@ test('Desktop V3 realtime transport persists endpoint.watermark cursor without a
     endpoint_cursor: 'stale-session-cursor',
   })
 
-  const latestResume = resumes[resumes.length - 1]
-  assert.equal(latestResume.endpoint_cursor, 'v3c1.test_payload_2.test_signature_2')
-  assert.equal(latestResume.subscriptions?.[0]?.endpoint_cursor, 'v3c1.test_payload_2.test_signature_2')
-  assert.equal('after_seq' in (latestResume.subscriptions?.[0] ?? {}), false)
-  assert.equal('after_rev' in (latestResume.subscriptions?.[0] ?? {}), false)
+  const latestSubscribe = socket.sent.at(-1) as Record<string, unknown>
+  assert.equal(latestSubscribe.kind, 'subscribe.session')
+  assert.equal(latestSubscribe.endpoint_cursor, 'v3c1.test_payload_2.test_signature_2')
+  assert.equal(latestSubscribe.session_id, 'session-a')
+  assert.equal('after_seq' in latestSubscribe, false)
+  assert.equal('after_rev' in latestSubscribe, false)
   transport.stop()
 })
 

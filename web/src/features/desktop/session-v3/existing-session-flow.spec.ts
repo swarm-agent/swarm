@@ -138,7 +138,10 @@ test('continueDesktopV3Conversation subscribes, starts hydrate, appends message,
   const restore = setDesktopV3ExistingSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionSubscription: (sessionId: string) => calls.push(`subscribe:${sessionId}`),
+      ensureSessionSubscription: (sessionId: string) => {
+        calls.push(`subscribe:${sessionId}`)
+        return Promise.resolve()
+      },
       ensureSessionHistory: async (sessionId: string) => {
         calls.push(`hydrate:${sessionId}`)
         await hydratePromise
@@ -215,7 +218,7 @@ test('continueDesktopV3Conversation requires queued or running run intent', asyn
   const restore = setDesktopV3ExistingSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionSubscription: () => undefined,
+      ensureSessionSubscription: () => Promise.resolve(),
       ensureSessionHistory: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,
