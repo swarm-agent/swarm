@@ -143,10 +143,6 @@ export async function continueDesktopV3Conversation(
 
   const controller = await flowDeps.requireControllerReady()
   const endpointCursor = controller.currentEndpointCursor()
-  await controller.connectSession({ sessionId, endpointCursor })
-  void controller.ensureSessionHistory(sessionId).catch((error) => {
-    console.error('[desktop-v3] existing-session history hydrate failed', error)
-  })
 
   flowDeps.dispatch({
     type: 'pendingUser.upsert',
@@ -159,6 +155,23 @@ export async function continueDesktopV3Conversation(
       createdAt: operation.createdAt,
     },
   })
+
+  const historyPromise = controller.ensureSessionHistory(sessionId)
+  historyPromise.catch((error) => {
+    console.error('[desktop-v3] existing-session history hydrate failed', error)
+  })
+
+  try {
+    await controller.connectSession({ sessionId, endpointCursor })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    flowDeps.dispatch(messageMutationResponseToAction(
+      { ok: false, error: message },
+      operation.request.client_request_id,
+      operation.request.message_id,
+    ))
+    throw error
+  }
 
   let raw: SessionMessageMutationResponse | MessageMutationConflictResponse
   try {

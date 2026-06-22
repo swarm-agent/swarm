@@ -183,9 +183,9 @@ test('continueDesktopV3Conversation subscribes, starts hydrate, appends message,
     assert.equal(response.session_id, 'session-1')
     assert.deepEqual(calls, [
       'capture-cursor',
-      'connect:session-1:cursor-before-send',
-      'hydrate:session-1',
       'dispatch:pendingUser.upsert',
+      'hydrate:session-1',
+      'connect:session-1:cursor-before-send',
       `message:session-1:${operation.request.message_id}`,
       'dispatch:mutation.messageResult',
     ])
@@ -235,6 +235,11 @@ test('Desktop V3 existing session does not append before connectSession resolves
   try {
     const started = continueDesktopV3Conversation(operation)
     await flushAsyncWork()
+    assert.deepEqual(calls, [
+      'dispatch:pendingUser.upsert',
+      'hydrate:session-1',
+      'connect:start:session-1:cursor-before-send',
+    ])
     assert.equal(calls.includes(`message:session-1:${operation.request.message_id}`), false, `message append must wait for connectSession: ${calls.join(',')}`)
     connect.resolve()
     await flushAsyncWork()
