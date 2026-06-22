@@ -142,7 +142,7 @@ export async function continueDesktopV3Conversation(
   }
 
   const controller = await flowDeps.requireControllerReady()
-  await controller.ensureSessionSubscription(sessionId)
+  controller.ensureSessionSubscription(sessionId)
   void controller.ensureSessionHistory(sessionId).catch((error) => {
     console.error('[desktop-v3] existing-session history hydrate failed', error)
   })
