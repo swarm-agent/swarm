@@ -760,8 +760,8 @@ export function DesktopV3ExistingConversationPane({
         onNewSession={onNewSession}
       />
       <div className="relative min-h-0 flex-1">
-        <div ref={scrollContainerRef} className="h-full min-h-0 overflow-y-auto px-4 py-6 sm:px-8">
-          <div ref={contentRef} className="mx-auto flex w-full max-w-3xl flex-col gap-5">
+        <div ref={scrollContainerRef} className="h-full min-h-0 overflow-y-auto py-6 [scrollbar-gutter:stable]">
+          <div ref={contentRef} className="mx-auto flex min-h-full w-full max-w-[70rem] flex-col gap-5 px-8 sm:px-12">
           {initialHydrateStatus === 'loading' && !messagesLoaded ? (
             <DesktopV3ChatInlineState title="Loading conversation…" description="Hydrating cached message tails." />
           ) : null}
@@ -882,7 +882,7 @@ function DesktopV3CommittedMessage({ message, thinkingTagsEnabled, timerNow }: {
   }
   return (
     <div className="flex justify-start">
-      <div className="max-w-[78%] rounded-2xl border border-[var(--app-border)] px-4 py-3 text-sm text-[var(--app-text)]">
+      <div className="max-w-[calc(100%-2rem)] rounded-2xl border border-[var(--app-border)] px-4 py-3 text-sm text-[var(--app-text)]">
         <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">{role}</div>
         <ChatMarkdown content={message.content} />
       </div>
@@ -892,8 +892,8 @@ function DesktopV3CommittedMessage({ message, thinkingTagsEnabled, timerNow }: {
 
 function DesktopV3UserMessage({ content, pendingLabel }: { content: string; pendingLabel?: string }) {
   return (
-    <div className="flex justify-end">
-      <div className="max-w-[78%] rounded-3xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
+    <div className="flex justify-end pr-0">
+      <div className="max-w-[70%] rounded-3xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
         <div className="whitespace-pre-wrap break-words">{content}</div>
         {pendingLabel ? <div className="mt-1 text-right text-[10px] uppercase tracking-[0.12em] opacity-70">{pendingLabel}</div> : null}
       </div>
@@ -908,7 +908,7 @@ function DesktopV3PendingUserMessage({ message }: { message: PendingUserMessage 
 function DesktopV3AssistantMessage({ content, role }: { content: string; role: string }) {
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[82%] text-sm leading-6 text-[var(--app-text)]">
+      <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)]">
         {role === 'reasoning' ? <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">reasoning</div> : null}
         <ChatMarkdown content={content} />
       </div>
@@ -919,7 +919,7 @@ function DesktopV3AssistantMessage({ content, role }: { content: string; role: s
 function DesktopV3ToolMessage({ content, toolMessage, thinkingTagsEnabled = true }: { content: string; toolMessage: StructuredToolMessage | null; thinkingTagsEnabled?: boolean }) {
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[82%]">
+      <div className="min-w-0 max-w-[calc(100%-2rem)]">
         <ChatMarkdown content={content} toolMessage={toolMessage ?? undefined} thinkingTagsEnabled={thinkingTagsEnabled} />
       </div>
     </div>
@@ -932,7 +932,7 @@ function DesktopV3ReasoningMessage({ item, thinkingTagsEnabled, timerNow }: { it
   const StateIcon = item.state === 'running' ? LoaderCircle : item.state === 'error' ? XCircle : CheckCircle2
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[82%] text-sm leading-6 text-[var(--app-text)] opacity-80">
+      <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)] opacity-80">
         <div className="mb-1 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
           <StateIcon size={12} className={item.state === 'running' ? 'animate-spin text-[var(--app-primary)]' : item.state === 'error' ? 'text-[var(--app-danger)]' : 'text-[var(--app-text-subtle)]'} />
           {label}

@@ -345,8 +345,8 @@ export function DesktopV3NewSessionPane({
         runStatusNow={timerNow}
         onOpenChats={onOpenChats}
       />
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-        <div className="mx-auto flex h-full w-full max-w-3xl flex-col justify-end" />
+      <div className="min-h-0 flex-1 py-6">
+        <div className="mx-auto flex h-full w-full max-w-[70rem] flex-col justify-end px-4 sm:px-6" />
       </div>
       <DesktopV3AgenticComposer
         draft={draft}
