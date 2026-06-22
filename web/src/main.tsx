@@ -13,9 +13,15 @@ if (isIOS && navigatorWithStandalone.standalone === true) {
   document.documentElement.classList.add('ios-standalone-pwa')
 }
 
-if ('serviceWorker' in navigator && window.isSecureContext) {
+if (import.meta.env.PROD && 'serviceWorker' in navigator && window.isSecureContext) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => undefined)
+  })
+} else if (import.meta.env.DEV && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.getRegistrations()
+      .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+      .catch(() => undefined)
   })
 }
 
