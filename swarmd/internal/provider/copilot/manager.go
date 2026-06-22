@@ -533,7 +533,7 @@ func (s *turnState) applyEvent(event sdk.SessionEvent, onEvent func(providerifac
 		}
 		s.reasoningDeltas += delta
 		if onEvent != nil {
-			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: delta})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: s.reasoningDeltas})
 		}
 	case *sdk.AssistantReasoningData:
 		text := strings.TrimSpace(data.Content)

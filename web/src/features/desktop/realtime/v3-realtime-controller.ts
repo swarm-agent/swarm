@@ -35,6 +35,9 @@ import type {
 const DESKTOP_V3_CLIENT_ID = `desktop:${crypto.randomUUID()}`
 const ACTIVE_REPAIR_PAGE_SIZE = 500
 const ACTIVE_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
+const REASONING_DELTA_PERSISTENCE_FLUSH_MS = 120
+
+type DesktopV3ReasoningFlushTimer = ReturnType<typeof setTimeout>
 
 export interface DesktopV3SessionConnectInput {
   sessionId: string
@@ -122,6 +125,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       replaceSnapshotAfterDurableCommit: deps.replaceSnapshotAfterDurableCommit
         ?? (deps.dispatch ? undefined : replaceDesktopV3CacheSnapshotAfterDurableCommit),
       now: this.now,
+      onAsyncCommitFailure: (error) => this.handleDurableStreamCommitFailure(error),
     })
 
     this.transport = new DesktopV3RealtimeTransport({
@@ -205,6 +209,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.activeRepairByRun.clear()
     this.pendingHistoryRepair.clear()
     this.connectingSessionIds.clear()
+    this.streamCommit.cancelPendingReasoningDeltas()
     this.firstResumeSent?.resolve()
     this.firstResumeSent = undefined
     this.transport.stop(reason)
@@ -696,15 +701,57 @@ interface DesktopV3StreamCommitControllerDeps {
   saveActiveOwnerKey: (ownerKey: string) => boolean
   replaceSnapshotAfterDurableCommit?: (previousState: DesktopV3CacheState, nextState: DesktopV3CacheState, actions: DesktopV3CacheAction[]) => void
   now: () => number
+  coalescedReasoningFlushMs?: number
+  setTimeout?: (handler: () => void, timeoutMs: number) => DesktopV3ReasoningFlushTimer
+  clearTimeout?: (timer: DesktopV3ReasoningFlushTimer) => void
+  onAsyncCommitFailure?: (error: unknown) => void
 }
 
 export class DesktopV3StreamCommitController {
+  private pendingReasoningDeltaActions: DesktopV3CacheAction[] = []
+  private pendingReasoningFlushTimer?: DesktopV3ReasoningFlushTimer
+  private pendingReasoningOwnerKey?: string
+  private reasoningFlushGeneration = 0
+
   constructor(private readonly deps: DesktopV3StreamCommitControllerDeps) {}
+
+  cancelPendingReasoningDeltas(): void {
+    this.reasoningFlushGeneration++
+    this.cancelReasoningDeltaFlushTimer()
+    this.pendingReasoningDeltaActions = []
+    this.pendingReasoningOwnerKey = undefined
+  }
 
   commitActions(actions: DesktopV3CacheAction[]): Promise<void> {
     if (actions.length === 0) return Promise.resolve()
 
+    if (actions.every(isVolatileReasoningDeltaAction)) {
+      return this.commitVolatileReasoningDeltaActions(actions)
+    }
+
+    return this.commitDurableActions(actions)
+  }
+
+  private commitVolatileReasoningDeltaActions(actions: DesktopV3CacheAction[]): Promise<void> {
     return desktopV3CachePersistenceCoordinator.enqueue(async () => {
+      const owner = await resolveDesktopV3StreamOwner(this.deps.resolveOwner)
+      if (!owner) {
+        throw new DesktopV3StreamCommitError('Desktop V3 cache owner is unavailable')
+      }
+      if (this.pendingReasoningOwnerKey && this.pendingReasoningOwnerKey !== owner.key) {
+        this.cancelPendingReasoningDeltas()
+      }
+      this.pendingReasoningOwnerKey = owner.key
+      for (const action of actions) this.deps.dispatch(stripVolatileReasoningDurableCursor(action))
+      this.pendingReasoningDeltaActions.push(...actions)
+      this.scheduleReasoningDeltaFlush()
+    })
+  }
+
+  private commitDurableActions(actions: DesktopV3CacheAction[]): Promise<void> {
+    return desktopV3CachePersistenceCoordinator.enqueue(async () => {
+      this.cancelPendingReasoningDeltas()
+
       const owner = await resolveDesktopV3StreamOwner(this.deps.resolveOwner)
       if (!owner) {
         throw new DesktopV3StreamCommitError('Desktop V3 cache owner is unavailable')
@@ -712,34 +759,7 @@ export class DesktopV3StreamCommitController {
 
       const previousState = this.deps.getSnapshot()
       const nextState = reduceDesktopV3CacheActions(previousState, actions)
-      const persistedAt = this.deps.now()
-      const ownerRecord = buildPersistedDesktopV3OwnerV1FromState(nextState, owner, persistedAt)
-      if (!ownerRecord) {
-        throw new DesktopV3StreamCommitError('Desktop V3 owner record could not be built')
-      }
-
-      const tails = buildDesktopV3StreamCommitTails(actions, nextState, owner.key, persistedAt)
-      const currentOwner = await resolveDesktopV3StreamOwner(this.deps.resolveOwner)
-      if (currentOwner?.key !== owner.key) {
-        throw new DesktopV3StreamCommitError('Desktop V3 cache owner changed before stream commit')
-      }
-
-      const wrote = await this.deps.writeOwnerAndTails(ownerRecord, tails)
-      if (!wrote) {
-        throw new DesktopV3StreamCommitError('Desktop V3 stream persistence transaction failed')
-      }
-
-      const latestOwner = await resolveDesktopV3StreamOwner(this.deps.resolveOwner)
-      if (latestOwner?.key !== owner.key) {
-        throw new DesktopV3StreamCommitError('Desktop V3 cache owner changed after stream commit')
-      }
-
-      const savedActiveOwner = this.deps.saveActiveOwnerKey(owner.key)
-      if (!savedActiveOwner) {
-        throw new DesktopV3StreamCommitError(
-          'Desktop V3 active owner key persistence failed',
-        )
-      }
+      await this.writeDurableSnapshot(nextState, owner, actions)
 
       if (this.deps.replaceSnapshotAfterDurableCommit) {
         this.deps.replaceSnapshotAfterDurableCommit(previousState, nextState, actions)
@@ -748,6 +768,107 @@ export class DesktopV3StreamCommitController {
       }
     })
   }
+
+  private scheduleReasoningDeltaFlush(): void {
+    if (this.pendingReasoningFlushTimer) return
+
+    const setTimer = this.deps.setTimeout ?? globalThis.setTimeout.bind(globalThis)
+    const flushMs = Math.max(0, this.deps.coalescedReasoningFlushMs ?? REASONING_DELTA_PERSISTENCE_FLUSH_MS)
+    const generation = this.reasoningFlushGeneration
+    this.pendingReasoningFlushTimer = setTimer(() => {
+      this.pendingReasoningFlushTimer = undefined
+      void this.flushPendingReasoningDeltas(generation).catch((error) => {
+        if (this.deps.onAsyncCommitFailure) {
+          this.deps.onAsyncCommitFailure(error)
+        } else {
+          console.error('[desktop-v3] reasoning delta persistence flush failed', error)
+        }
+      })
+    }, flushMs)
+  }
+
+  private cancelReasoningDeltaFlushTimer(): void {
+    const timer = this.pendingReasoningFlushTimer
+    if (!timer) return
+    this.pendingReasoningFlushTimer = undefined
+    const clearTimer = this.deps.clearTimeout ?? globalThis.clearTimeout.bind(globalThis)
+    clearTimer(timer)
+  }
+
+  private flushPendingReasoningDeltas(generation: number): Promise<void> {
+    return desktopV3CachePersistenceCoordinator.enqueue(async () => {
+      if (generation !== this.reasoningFlushGeneration) return
+      const actions = this.pendingReasoningDeltaActions
+      const ownerKey = this.pendingReasoningOwnerKey
+      if (actions.length === 0 || !ownerKey) return
+      this.pendingReasoningDeltaActions = []
+      this.pendingReasoningOwnerKey = undefined
+
+      const owner = await resolveDesktopV3StreamOwner(this.deps.resolveOwner)
+      if (!owner) {
+        throw new DesktopV3StreamCommitError('Desktop V3 cache owner is unavailable')
+      }
+      if (owner.key !== ownerKey) return
+
+      const previousState = this.deps.getSnapshot()
+      const nextState = reduceDesktopV3CacheActions(previousState, actions)
+      if (generation !== this.reasoningFlushGeneration) return
+      await this.writeDurableSnapshot(nextState, owner, actions)
+      if (generation !== this.reasoningFlushGeneration) return
+
+      if (this.deps.replaceSnapshotAfterDurableCommit) {
+        this.deps.replaceSnapshotAfterDurableCommit(previousState, nextState, actions)
+      } else {
+        for (const action of actions) this.deps.dispatch(action)
+      }
+    })
+  }
+
+  private async writeDurableSnapshot(
+    state: DesktopV3CacheState,
+    owner: DesktopV3CacheOwner,
+    actions: DesktopV3CacheAction[],
+  ): Promise<void> {
+    const persistedAt = this.deps.now()
+    const ownerRecord = buildPersistedDesktopV3OwnerV1FromState(state, owner, persistedAt)
+    if (!ownerRecord) {
+      throw new DesktopV3StreamCommitError('Desktop V3 owner record could not be built')
+    }
+
+    const tails = buildDesktopV3StreamCommitTails(actions, state, owner.key, persistedAt)
+    const currentOwner = await resolveDesktopV3StreamOwner(this.deps.resolveOwner)
+    if (currentOwner?.key !== owner.key) {
+      throw new DesktopV3StreamCommitError('Desktop V3 cache owner changed before stream commit')
+    }
+
+    const wrote = await this.deps.writeOwnerAndTails(ownerRecord, tails)
+    if (!wrote) {
+      throw new DesktopV3StreamCommitError('Desktop V3 stream persistence transaction failed')
+    }
+
+    const latestOwner = await resolveDesktopV3StreamOwner(this.deps.resolveOwner)
+    if (latestOwner?.key !== owner.key) {
+      throw new DesktopV3StreamCommitError('Desktop V3 cache owner changed after stream commit')
+    }
+
+    const savedActiveOwner = this.deps.saveActiveOwnerKey(owner.key)
+    if (!savedActiveOwner) {
+      throw new DesktopV3StreamCommitError(
+        'Desktop V3 active owner key persistence failed',
+      )
+    }
+  }
+}
+
+function isVolatileReasoningDeltaAction(action: DesktopV3CacheAction): boolean {
+  return action.type === 'realtime.applyEvent'
+    && action.event.source === 'realtime'
+    && action.event.eventType === 'session.reasoning.delta'
+}
+
+function stripVolatileReasoningDurableCursor(action: DesktopV3CacheAction): DesktopV3CacheAction {
+  if (!isVolatileReasoningDeltaAction(action)) return action
+  return { ...action, endpointCursor: undefined }
 }
 
 export function reduceDesktopV3CacheActions(
@@ -776,7 +897,10 @@ export function committedMessageTailSessionIds(actions: readonly DesktopV3CacheA
   const ids = new Set<string>()
 
   for (const action of actions) {
-    if (action.type === 'realtime.applyEvent' && action.event.payload.message) {
+    if (action.type === 'realtime.applyEvent' && (
+      action.event.payload.message
+      || action.event.eventType === 'session.reasoning.completed'
+    )) {
       ids.add(action.event.sessionId)
     }
 

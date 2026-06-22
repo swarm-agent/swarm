@@ -3255,6 +3255,111 @@ func TestSessionsV3ExecutorCoalescesProviderReasoningDeltas(t *testing.T) {
 	}
 }
 
+func TestSessionV3MergeReasoningSnapshotOrChunkKeepsLatestSnapshot(t *testing.T) {
+	if got := sessionV3MergeReasoningSnapshotOrChunk("thinking through files", "thinking"); got != "thinking through files" {
+		t.Fatalf("shorter stale reasoning snapshot regressed state to %q", got)
+	}
+	if got := sessionV3MergeReasoningSnapshotOrChunk("thinking", "thinking through files"); got != "thinking through files" {
+		t.Fatalf("longer reasoning snapshot = %q, want latest snapshot", got)
+	}
+	if got := sessionV3MergeReasoningSnapshotOrChunk("old draft", "replacement draft"); got != "replacement draft" {
+		t.Fatalf("non-prefix reasoning snapshot = %q, want replacement", got)
+	}
+}
+
+func TestSessionsV3ExecutorReasoningSnapshotSizeFlushUsesIncrementalChange(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	baseSnapshot := strings.Repeat("a", 16)
+	finalSnapshot := baseSnapshot + "bcd"
+	runner := installSessionsV3TestProvider(server, "final answer after long reasoning snapshot")
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if onEvent != nil {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-long", Delta: baseSnapshot})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-long", Delta: baseSnapshot + "b"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-long", Delta: baseSnapshot + "bc"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-long", Delta: finalSnapshot})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "final answer after long reasoning snapshot"})
+		}
+		return provideriface.Response{Text: "final answer after long reasoning snapshot", StopReason: "stop"}, nil
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	exec.reasoningDeltaFlushMaxBytes = len(baseSnapshot)
+	exec.reasoningDeltaFlushMaxDelay = time.Hour
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "long-reasoning-snapshot-create", "long reasoning snapshot", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "long-reasoning-snapshot-message", "coalesce long reasoning snapshots")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 50)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var got []string
+	for _, event := range events {
+		if event.EventType != "session.reasoning.delta" {
+			continue
+		}
+		var payload struct {
+			Delta string `json:"delta"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode reasoning delta payload: %v", err)
+		}
+		got = append(got, payload.Delta)
+	}
+	if len(got) != 2 || got[0] != baseSnapshot || got[1] != finalSnapshot {
+		t.Fatalf("reasoning snapshot deltas = %#v, want [%q %q]", got, baseSnapshot, finalSnapshot)
+	}
+}
+
+func TestSessionsV3ExecutorReasoningSnapshotNewlineFlushUsesIncrementalChange(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	firstSnapshot := "line one\nline two"
+	finalSnapshot := firstSnapshot + " plus final detail"
+	runner := installSessionsV3TestProvider(server, "final answer after newline reasoning snapshot")
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if onEvent != nil {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-newline", Delta: firstSnapshot})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-newline", Delta: firstSnapshot + " plus"})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, ReasoningKey: "summary-newline", Delta: finalSnapshot})
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "final answer after newline reasoning snapshot"})
+		}
+		return provideriface.Response{Text: "final answer after newline reasoning snapshot", StopReason: "stop"}, nil
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	exec.reasoningDeltaFlushMaxBytes = 1024
+	exec.reasoningDeltaFlushMaxDelay = time.Hour
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "newline-reasoning-snapshot-create", "newline reasoning snapshot", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "newline-reasoning-snapshot-message", "coalesce newline reasoning snapshots")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 50)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var got []string
+	for _, event := range events {
+		if event.EventType != "session.reasoning.delta" {
+			continue
+		}
+		var payload struct {
+			Delta string `json:"delta"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode reasoning delta payload: %v", err)
+		}
+		got = append(got, payload.Delta)
+	}
+	if len(got) != 2 || got[0] != firstSnapshot || got[1] != finalSnapshot {
+		t.Fatalf("reasoning snapshot deltas = %#v, want [%q %q]", got, firstSnapshot, finalSnapshot)
+	}
+}
+
 func TestSessionsV3ExecutorFlushesProviderDeltaAtSizeBoundary(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{deltas: []string{"ab", "cd", "ef"}, text: "abcdef"}

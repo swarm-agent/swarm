@@ -2555,6 +2555,231 @@ test('final message and overlay cleanup are one IndexedDB transaction', async ()
   assert.equal(await resetDesktopV3CacheDBForTests(), true)
 })
 
+test('burst realtime reasoning deltas coalesce persistence writes', async () => {
+  let state = readyControllerState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+  state.runIntentsBySession[sessionA.id] = { [runIntentA.run_id]: runIntentA }
+  state.currentRunIntentBySession[sessionA.id] = runIntentA
+
+  const persistedReasoning: string[] = []
+  const scheduledFlushes: Array<() => void> = []
+  const commit = new DesktopV3StreamCommitController({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async (owner) => {
+      persistedReasoning.push(
+        owner.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.reasoning?.text ?? '',
+      )
+      return true
+    },
+    saveActiveOwnerKey: () => true,
+    now: () => 9_000,
+    setTimeout: (handler) => {
+      scheduledFlushes.push(handler)
+      return scheduledFlushes.length as unknown as ReturnType<typeof setTimeout>
+    },
+    clearTimeout: () => {},
+  })
+
+  for (const [index, textDelta] of ['one', ' two', ' three'].entries()) {
+    await commit.commitActions([realtimeReasoningAction({
+      id: `evt-reasoning-${index + 1}`,
+      seq: index + 1,
+      endpointCursor: `cursor-reasoning-${index + 1}`,
+      payload: { text_delta: textDelta },
+    })])
+  }
+
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.reasoning?.text, 'one two three')
+  assert.equal(state.realtime.endpointCursor, undefined)
+  assert.deepEqual(persistedReasoning, [])
+  assert.equal(scheduledFlushes.length, 1)
+
+  scheduledFlushes[0]?.()
+  await waitFor(() => persistedReasoning.length === 1)
+  assert.deepEqual(persistedReasoning, ['one two three'])
+  assert.deepEqual(state.eventsBySession[sessionA.id].map((event) => event.id), [
+    'evt-reasoning-1',
+    'evt-reasoning-2',
+    'evt-reasoning-3',
+  ])
+})
+
+test('pending realtime reasoning delta flush can be cancelled before persistence', async () => {
+  let state = readyControllerState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+  state.runIntentsBySession[sessionA.id] = { [runIntentA.run_id]: runIntentA }
+  state.currentRunIntentBySession[sessionA.id] = runIntentA
+
+  const persistedReasoning: string[] = []
+  const scheduledFlushes: Array<() => void> = []
+  let clearCount = 0
+  const commit = new DesktopV3StreamCommitController({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async (owner) => {
+      persistedReasoning.push(
+        owner.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.reasoning?.text ?? '',
+      )
+      return true
+    },
+    saveActiveOwnerKey: () => true,
+    now: () => 9_000,
+    setTimeout: (handler) => {
+      scheduledFlushes.push(handler)
+      return scheduledFlushes.length as unknown as ReturnType<typeof setTimeout>
+    },
+    clearTimeout: () => {
+      clearCount += 1
+    },
+  })
+
+  await commit.commitActions([realtimeReasoningAction({
+    id: 'evt-reasoning-cancelled-delta',
+    seq: 1,
+    endpointCursor: 'cursor-reasoning-cancelled-delta',
+    payload: { text_delta: 'cancelled thinking' },
+  })])
+
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.reasoning?.text, 'cancelled thinking')
+  assert.equal(state.realtime.endpointCursor, undefined)
+  assert.equal(scheduledFlushes.length, 1)
+
+  commit.cancelPendingReasoningDeltas()
+  assert.equal(clearCount, 1)
+
+  scheduledFlushes[0]?.()
+  await flushAsyncWork()
+  assert.deepEqual(persistedReasoning, [])
+  assert.equal(state.realtime.endpointCursor, undefined)
+})
+
+test('pending realtime reasoning delta flush is skipped after owner switch', async () => {
+  let state = readyControllerState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+  state.runIntentsBySession[sessionA.id] = { [runIntentA.run_id]: runIntentA }
+  state.currentRunIntentBySession[sessionA.id] = runIntentA
+
+  const ownerA = testDesktopV3CacheOwner()
+  const ownerB = createDesktopV3CacheOwner({
+    origin: 'https://desktop.example.test',
+    accountScopeId: 'acct-test-2',
+    userId: 'user-test',
+    surface: 'desktop',
+  })
+  let currentOwner = ownerA
+  const persistedOwners: string[] = []
+  const scheduledFlushes: Array<() => void> = []
+  const commit = new DesktopV3StreamCommitController({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    resolveOwner: () => currentOwner,
+    writeOwnerAndTails: async (owner) => {
+      persistedOwners.push(owner.ownerKey)
+      return true
+    },
+    saveActiveOwnerKey: () => true,
+    now: () => 9_000,
+    setTimeout: (handler) => {
+      scheduledFlushes.push(handler)
+      return scheduledFlushes.length as unknown as ReturnType<typeof setTimeout>
+    },
+    clearTimeout: () => {},
+  })
+
+  await commit.commitActions([realtimeReasoningAction({
+    id: 'evt-reasoning-owner-delta',
+    seq: 1,
+    endpointCursor: 'cursor-reasoning-owner-delta',
+    payload: { text_delta: 'owner scoped thinking' },
+  })])
+
+  currentOwner = ownerB
+  scheduledFlushes[0]?.()
+  await flushAsyncWork()
+
+  assert.deepEqual(persistedOwners, [])
+  assert.equal(state.realtime.endpointCursor, undefined)
+})
+
+test('terminal reasoning completed flushes latest coalesced state immediately', async () => {
+  let state = readyControllerState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+  state.runIntentsBySession[sessionA.id] = { [runIntentA.run_id]: runIntentA }
+  state.currentRunIntentBySession[sessionA.id] = runIntentA
+
+  const persistedReasoning: string[] = []
+  const scheduledFlushes: Array<() => void> = []
+  let clearCount = 0
+  const commit = new DesktopV3StreamCommitController({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async (owner, tails) => {
+      persistedReasoning.push(
+        tails[0]?.messages.find((message) => message.role === 'reasoning')?.content
+        ?? owner.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.reasoning?.text
+        ?? '',
+      )
+      return true
+    },
+    saveActiveOwnerKey: () => true,
+    now: () => 9_000,
+    setTimeout: (handler) => {
+      scheduledFlushes.push(handler)
+      return scheduledFlushes.length as unknown as ReturnType<typeof setTimeout>
+    },
+    clearTimeout: () => {
+      clearCount += 1
+    },
+  })
+
+  await commit.commitActions([realtimeReasoningAction({
+    id: 'evt-reasoning-delta',
+    seq: 1,
+    endpointCursor: 'cursor-reasoning-delta',
+    payload: { text_delta: 'latest thinking' },
+  })])
+
+  await commit.commitActions([realtimeReasoningAction({
+    id: 'evt-reasoning-completed',
+    seq: 2,
+    endpointCursor: 'cursor-reasoning-completed',
+    eventType: 'session.reasoning.completed',
+  })])
+
+  assert.equal(clearCount, 1)
+  assert.equal(scheduledFlushes.length, 1)
+  assert.deepEqual(persistedReasoning, ['latest thinking'])
+  assert.equal(
+    state.messagesBySession[sessionA.id]?.items.find((message) => message.role === 'reasoning')?.content,
+    'latest thinking',
+  )
+  assert.equal(state.realtime.endpointCursor, 'cursor-reasoning-completed')
+
+  scheduledFlushes[0]?.()
+  await flushAsyncWork()
+  assert.deepEqual(persistedReasoning, ['latest thinking'])
+})
+
 test('repair events use the durable stream committer', async () => {
   let state = readyControllerState()
   const owner = testDesktopV3CacheOwner()
@@ -2912,6 +3137,46 @@ function realtimeDeltaFrame(id: string, seq: number, endpointCursor: string, del
     },
     projection: { ...projectionA, last_event_seq: seq, projection_high_watermark_seq: seq },
     endpoint_cursor: endpointCursor,
+  }
+}
+
+function realtimeReasoningAction(input: {
+  id: string
+  seq: number
+  endpointCursor: string
+  eventType?: 'session.reasoning.delta' | 'session.reasoning.completed'
+  payload?: Record<string, unknown>
+}): DesktopV3CacheAction {
+  const eventType = input.eventType ?? 'session.reasoning.delta'
+  return {
+    type: 'realtime.applyEvent',
+    endpointCursor: input.endpointCursor,
+    event: {
+      source: 'realtime',
+      sessionId: sessionA.id,
+      eventType,
+      sessionEvent: {
+        id: input.id,
+        session_id: sessionA.id,
+        event_type: eventType,
+        seq: input.seq,
+        payload: {
+          run_id: runIntentA.run_id,
+          run_intent: { ...runIntentA, event_seq: input.seq },
+          reasoning_key: 'summary-1',
+          ...input.payload,
+        },
+        ts_unix_ms: input.seq,
+      },
+      projection: { ...projectionA, last_event_seq: input.seq, projection_high_watermark_seq: input.seq },
+      payload: {
+        run_id: runIntentA.run_id,
+        run_intent: { ...runIntentA, event_seq: input.seq },
+        reasoning_key: 'summary-1',
+        ...(eventType === 'session.reasoning.completed' ? { text: 'latest thinking' } : undefined),
+        ...input.payload,
+      },
+    },
   }
 }
 

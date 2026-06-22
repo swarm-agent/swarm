@@ -531,10 +531,13 @@ func sessionV3MergeReasoningSnapshotOrChunk(previous, incoming string) string {
 	if incoming == "" {
 		return previous
 	}
-	if previous == "" || strings.HasPrefix(incoming, previous) || strings.HasPrefix(previous, incoming) {
+	if previous == "" || strings.HasPrefix(incoming, previous) {
 		return incoming
 	}
-	return strings.TrimSpace(previous + incoming)
+	if strings.HasPrefix(previous, incoming) {
+		return previous
+	}
+	return incoming
 }
 
 type sessionV3AssistantDeltaCoalescer struct {
@@ -614,14 +617,15 @@ func (c *sessionV3AssistantDeltaCoalescer) shouldFlush(delta string) bool {
 }
 
 type sessionV3ReasoningDeltaCoalescer struct {
-	exec            *sessionV3Executor
-	job             sessionV3ExecutorJob
-	step            int
-	reasoningKey    string
-	latestSnapshot  string
-	bufferStartedAt time.Time
-	nextDeltaIndex  int
-	flushCount      int
+	exec                *sessionV3Executor
+	job                 sessionV3ExecutorJob
+	step                int
+	reasoningKey        string
+	latestSnapshot      string
+	lastFlushedSnapshot string
+	bufferStartedAt     time.Time
+	nextDeltaIndex      int
+	flushCount          int
 }
 
 func newSessionV3ReasoningDeltaCoalescer(exec *sessionV3Executor, job sessionV3ExecutorJob, step int, reasoningKey string) *sessionV3ReasoningDeltaCoalescer {
@@ -654,7 +658,13 @@ func (c *sessionV3ReasoningDeltaCoalescer) Flush() error {
 		return errors.New("v3 reasoning delta coalescer missing executor")
 	}
 	snapshot := strings.TrimSpace(c.latestSnapshot)
+	if snapshot == strings.TrimSpace(c.lastFlushedSnapshot) {
+		c.latestSnapshot = ""
+		c.bufferStartedAt = time.Time{}
+		return nil
+	}
 	c.latestSnapshot = ""
+	c.lastFlushedSnapshot = snapshot
 	c.bufferStartedAt = time.Time{}
 	c.nextDeltaIndex++
 	if _, err := c.exec.recordReasoningEvent(c.job, "session.reasoning.delta", c.step, c.nextDeltaIndex, c.reasoningKey, snapshot, ""); err != nil {
@@ -678,14 +688,15 @@ func (c *sessionV3ReasoningDeltaCoalescer) shouldFlush(snapshot string) bool {
 	if c.exec == nil {
 		return true
 	}
+	changed := c.incrementalSnapshotChange(snapshot)
 	maxBytes := c.exec.reasoningDeltaFlushMaxBytes
 	if maxBytes <= 0 {
 		maxBytes = sessionV3ReasoningDeltaFlushMaxBytes
 	}
-	if len(snapshot) >= maxBytes {
+	if len(changed) >= maxBytes {
 		return true
 	}
-	if strings.Contains(snapshot, "\n") {
+	if strings.Contains(changed, "\n") {
 		return true
 	}
 	maxDelay := c.exec.reasoningDeltaFlushMaxDelay
@@ -693,6 +704,21 @@ func (c *sessionV3ReasoningDeltaCoalescer) shouldFlush(snapshot string) bool {
 		return true
 	}
 	return false
+}
+
+func (c *sessionV3ReasoningDeltaCoalescer) incrementalSnapshotChange(snapshot string) string {
+	if c == nil {
+		return strings.TrimSpace(snapshot)
+	}
+	snapshot = strings.TrimSpace(snapshot)
+	previous := strings.TrimSpace(c.lastFlushedSnapshot)
+	if snapshot == "" || previous == "" {
+		return snapshot
+	}
+	if strings.HasPrefix(snapshot, previous) {
+		return strings.TrimSpace(strings.TrimPrefix(snapshot, previous))
+	}
+	return snapshot
 }
 
 type sessionV3ResolvedRuntime struct {
