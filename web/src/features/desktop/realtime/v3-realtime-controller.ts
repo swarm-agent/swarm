@@ -24,6 +24,7 @@ import type {
   DesktopV3CacheState,
   RealtimeCache,
   RealtimeMessage,
+  RealtimeSubscriptionRequest,
   RealtimeWorksetSubscriptionRequest,
   SessionsReconnectResponse,
   SyncSnapshotResponse,
@@ -235,32 +236,21 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     await this.waitForSidebarBootstrap(preferredSessionId, bootstrapReady)
     this.assertNotStopped()
 
-    const durableResumeCursor = this.getSnapshot().realtime.endpointCursor?.trim()
-
-    const reconnect = await this.awaitUnlessStopped(this.reconnect(
-      buildDesktopV3ReconnectInput(this.getSnapshot(), DESKTOP_V3_CLIENT_ID),
-    ))
-    this.assertNotStopped()
-    if (!reconnect.realtime?.resume) {
-      throw new Error('Desktop V3 reconnect response is missing realtime.resume')
-    }
-
-    this.dispatch({ type: 'reconnect.applySnapshot', snapshot: reconnect })
-
-    const selectedSessionId = preferredSessionId === null
-      ? undefined
-      : preferredSessionId?.trim() || this.getSnapshot().selectedSessionId
-    const resume = this.buildResume(reconnect, selectedSessionId, durableResumeCursor)
+    const initial = buildDesktopV3InitialRealtimeResume(
+      this.getSnapshot(),
+      DESKTOP_V3_CLIENT_ID,
+      preferredSessionId,
+    )
 
     this.dispatch({
       type: 'realtime.storeResume',
-      streamPath: reconnect.realtime?.stream_path ?? '/v3/realtime/stream',
-      resume,
+      streamPath: '/v3/realtime/stream',
+      resume: initial.resume,
     })
 
-    this.transport.setEndpointCursor(resume.endpoint_cursor, 'snapshot')
-    this.transport.setWorksets(normalizeTransportWorksets(resume.worksets), { replace: true })
-    this.transport.setSessions(resume.subscriptions ?? [], { replace: true })
+    this.transport.setEndpointCursor(initial.endpointCursor, 'snapshot')
+    this.transport.setWorksets(normalizeTransportWorksets(initial.worksets), { replace: true })
+    this.transport.setSessions(initial.subscriptions, { replace: true })
 
     this.unsubscribeCache?.()
     this.unsubscribeCache = this.subscribe((mutation) => {
@@ -269,7 +259,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       if (sessionId) void this.ensureSession(sessionId)
     })
 
-    this.markActiveRunsFromReconnect(reconnect)
+    this.markActiveRunsFromCacheState(this.getSnapshot())
     await this.repairMarkedActiveRuns()
     this.assertNotStopped()
 
@@ -277,6 +267,9 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     await this.waitForFirstResumeSent()
     this.assertNotStopped()
 
+    const selectedSessionId = preferredSessionId === null
+      ? undefined
+      : preferredSessionId?.trim() || this.getSnapshot().selectedSessionId
     if (selectedSessionId) void this.hydrateSessionOnce(selectedSessionId)
   }
 
@@ -454,6 +447,25 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       && Number.isSafeInteger(messages.sourceLastMessageAt)
       && (messages.sourceMessageCount ?? -1) >= session.message_count
       && (messages.sourceLastMessageAt ?? -1) >= session.last_message_at
+  }
+
+  private markActiveRunsFromCacheState(state: DesktopV3CacheState): void {
+    this.markedActiveRepairBySession.clear()
+    for (const [sessionId, intent] of Object.entries(state.currentRunIntentBySession)) {
+      if (!intent) continue
+      const status = intent.status.trim().toLowerCase()
+      if (!ACTIVE_INTENT_STATUSES.has(status)) continue
+
+      const restored = state.liveRunsBySession[sessionId]?.[intent.run_id]
+      const restoredSeq = restored?.lastEventSeqSeen ?? 0
+      const targetSeq = projectionSeq(state.projectionsBySession[sessionId])
+      if (targetSeq <= 0 || restoredSeq >= targetSeq) continue
+
+      this.markedActiveRepairBySession.set(sessionId, {
+        runId: intent.run_id,
+        afterSeq: restoredSeq,
+      })
+    }
   }
 
   private markActiveRunsFromReconnect(raw: SessionsReconnectResponse): void {
@@ -720,6 +732,90 @@ function resolveCurrentDesktopV3CacheOwner(): DesktopV3CacheOwner | undefined {
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   return typeof (value as { then?: unknown } | undefined)?.then === 'function'
+}
+
+export function buildDesktopV3InitialRealtimeResume(
+  state: DesktopV3CacheState,
+  clientId: string,
+  preferredSessionId?: string | null,
+): {
+  endpointCursor: string
+  subscriptions: RealtimeSubscriptionRequest[]
+  worksets: RealtimeWorksetSubscriptionRequest[]
+  resume: RealtimeMessage
+} {
+  const sidebarScopeId = state.desktopSidebarBootstrap.scopeId?.trim()
+  if (!sidebarScopeId) {
+    throw new Error('Desktop V3 initial realtime requires the bootstrapped sidebar scope')
+  }
+
+  const sidebarScope = state.syncScopesById[sidebarScopeId]
+  if (!sidebarScope) {
+    throw new Error(`Desktop V3 initial realtime missing scope ${sidebarScopeId}`)
+  }
+
+  if (sidebarScope.selector.kind !== 'global' || !sidebarScope.selector.global) {
+    throw new Error('Desktop V3 initial realtime requires the principal-wide global selector')
+  }
+
+  const endpointCursor = sidebarScope.endpointCursor?.trim()
+  if (!endpointCursor) {
+    throw new Error('Desktop V3 initial realtime requires the bootstrap endpoint cursor')
+  }
+
+  const selectedSessionId = preferredSessionId === null
+    ? undefined
+    : preferredSessionId?.trim() || state.selectedSessionId?.trim()
+  const activeSessionIDs = new Set<string>()
+  for (const [sessionId, intent] of Object.entries(state.currentRunIntentBySession)) {
+    if (!intent) continue
+    if (!ACTIVE_INTENT_STATUSES.has(intent.status.trim().toLowerCase())) continue
+    const normalized = intent.session_id?.trim() || sessionId.trim()
+    if (normalized) activeSessionIDs.add(normalized)
+  }
+
+  const sessionOrder = state.sessionOrderByScope[sidebarScopeId] ?? []
+  const orderedSessionIDs: string[] = []
+  const seen = new Set<string>()
+  const append = (sessionId: string | null | undefined) => {
+    const normalized = sessionId?.trim()
+    if (!normalized || seen.has(normalized)) return
+    seen.add(normalized)
+    orderedSessionIDs.push(normalized)
+  }
+
+  append(selectedSessionId)
+  for (const sessionId of sessionOrder) {
+    const normalized = sessionId.trim()
+    if (activeSessionIDs.has(normalized)) append(normalized)
+  }
+  for (const sessionId of [...activeSessionIDs].filter((sessionId) => !seen.has(sessionId)).sort()) {
+    append(sessionId)
+  }
+
+  const subscriptions = orderedSessionIDs.map((sessionId) => ({
+    session_id: sessionId,
+    subscription_id: `${clientId}:session:${sessionId}`,
+    endpoint_cursor: endpointCursor,
+  }))
+  const worksets: RealtimeWorksetSubscriptionRequest[] = [{
+    workset_id: sidebarScopeId,
+    subscription_id: `${clientId}:workset:${sidebarScopeId}`,
+    surface: 'desktop',
+    selector: sidebarScope.selector,
+    resources: ['membership', 'projections', 'run_intents', 'sessions', 'tombstones'],
+    auto_subscribe_sessions: true,
+  }]
+  const resume: RealtimeMessage = {
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'resume',
+    endpoint_cursor: endpointCursor,
+    subscriptions,
+    worksets,
+  }
+
+  return { endpointCursor, subscriptions, worksets, resume }
 }
 
 export function buildDesktopV3ReconnectInput(

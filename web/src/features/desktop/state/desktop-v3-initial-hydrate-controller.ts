@@ -99,6 +99,14 @@ export function planDesktopV3SelectiveHydration(input: {
   return { reusedSessionIds, hydrateSessionIds }
 }
 
+export function buildPostRealtimeConnectHydrationSnapshot(
+  base: SyncSnapshotResponse,
+  cache: DesktopV3CacheState,
+  scopeId: string,
+): SyncSnapshotResponse {
+  return buildPostReconnectHydrationSnapshot(base, cache, scopeId)
+}
+
 export function buildPostReconnectHydrationSnapshot(
   base: SyncSnapshotResponse,
   cache: DesktopV3CacheState,

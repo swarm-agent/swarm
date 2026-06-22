@@ -4,7 +4,7 @@ import { requireDesktopV3RealtimeControllerReady, retainDesktopV3RealtimeControl
 import { bootstrapDesktopV3SidebarMetadataOnly, type DesktopV3BootstrapMetadataResult } from '../state/desktop-v3-bootstrap-controller'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import { readDesktopV3MessageTails } from '../state/desktop-v3-cache-db'
-import { buildPostReconnectHydrationSnapshot, hydrateDesktopV3InitialSessions } from '../state/desktop-v3-initial-hydrate-controller'
+import { buildPostRealtimeConnectHydrationSnapshot, hydrateDesktopV3InitialSessions } from '../state/desktop-v3-initial-hydrate-controller'
 import { startDesktopV3PersistenceController } from '../state/desktop-v3-persistence-controller'
 import { installDesktopV3StreamCacheTestHooksForTestbench } from '../state/desktop-v3-stream-cache-test-hooks'
 
@@ -98,17 +98,17 @@ async function startDesktopV3RuntimeHydration(
   await runtime.realtimeLease.ready
   if (isCancelled()) return
 
-  const afterReconnect = getDesktopV3CacheSnapshot()
-  const scopeId = afterReconnect.desktopSidebarBootstrap.scopeId?.trim()
+  const afterRealtimeConnect = getDesktopV3CacheSnapshot()
+  const scopeId = afterRealtimeConnect.desktopSidebarBootstrap.scopeId?.trim()
   if (!scopeId) {
-    throw new Error('Desktop V3 initial hydrate requires reconnect sidebar scope')
+    throw new Error('Desktop V3 initial hydrate requires bootstrapped sidebar scope')
   }
 
   const preferred = runtime.initialPreferredSessionId
   const selectedSessionId = preferred === null
     ? undefined
-    : preferred?.trim() || afterReconnect.selectedSessionId?.trim()
-  const reconnectSessionIds = afterReconnect.sessionOrderByScope[scopeId] ?? []
+    : preferred?.trim() || afterRealtimeConnect.selectedSessionId?.trim()
+  const sidebarSessionIds = afterRealtimeConnect.sessionOrderByScope[scopeId] ?? []
   const controller = await requireDesktopV3RealtimeControllerReady()
   if (selectedSessionId) {
     await controller.ensureSessionHistory(selectedSessionId)
@@ -117,8 +117,8 @@ async function startDesktopV3RuntimeHydration(
 
   await hydrateDesktopV3InitialSessions({
     scopeId,
-    sessionIds: reconnectSessionIds.filter((sessionId) => sessionId !== selectedSessionId),
-    bootstrapResponse: buildPostReconnectHydrationSnapshot(
+    sessionIds: sidebarSessionIds.filter((sessionId) => sessionId !== selectedSessionId),
+    bootstrapResponse: buildPostRealtimeConnectHydrationSnapshot(
       bootstrap.response,
       getDesktopV3CacheSnapshot(),
       scopeId,

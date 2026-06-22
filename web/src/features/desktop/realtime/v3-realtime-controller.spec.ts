@@ -3178,6 +3178,12 @@ test('Desktop V3 cold startup resume contains selected plus active sessions, not
     resolveOwner: () => testDesktopV3CacheOwner(),
     writeOwnerAndTails: async () => true,
     saveActiveOwnerKey: () => true,
+    hydrate: async () => hydrateSnapshotFixture({
+      sessions_by_id: {},
+      projections_by_session: {},
+      messages_by_session: {},
+      session_order: [],
+    }),
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: {},
@@ -3218,10 +3224,10 @@ test('Desktop V3 cold startup resume contains selected plus active sessions, not
     await ready
     const resume = sockets[0].sent[0] as RealtimeMessage
     assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id), ['selected-inactive', activeA, activeB])
-    assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.subscription_id), [
-      'desktop:test:session:selected-inactive',
-      'desktop:test:session:active-a',
-      'desktop:test:session:active-b',
+    assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.subscription_id?.endsWith(`:session:${subscription.session_id}`)), [
+      true,
+      true,
+      true,
     ])
     assert.equal(resume.worksets?.length, 1)
   } finally {
@@ -3493,6 +3499,12 @@ test('Desktop V3 300-member bootstrap does not create 300 subscriptions', async 
     resolveOwner: () => testDesktopV3CacheOwner(),
     writeOwnerAndTails: async () => true,
     saveActiveOwnerKey: () => true,
+    hydrate: async () => hydrateSnapshotFixture({
+      sessions_by_id: {},
+      projections_by_session: {},
+      messages_by_session: {},
+      session_order: [],
+    }),
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: {},
