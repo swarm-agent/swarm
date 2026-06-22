@@ -204,24 +204,28 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   }
 
   currentEndpointCursor(): string {
-    return this.getSnapshot().realtime.endpointCursor?.trim() ?? ''
+    const cursor = this.getSnapshot().realtime.endpointCursor?.trim()
+    if (!cursor) {
+      throw new Error('Desktop V3 realtime has no durable endpoint cursor')
+    }
+    return cursor
   }
 
-  async connectSession(input: { sessionId: string; endpointCursor?: string | null }): Promise<void> {
-    this.ensureSessionSubscription(input.sessionId)
-  }
-
-  ensureSessionSubscription(sessionId: string): void {
-    const normalized = sessionId.trim()
-    if (!normalized) return
-
-    const cursor = this.getSnapshot().realtime.endpointCursor
-    if (!cursor) return
-
-    this.transport.registerSession({
-      session_id: normalized,
-      subscription_id: `${DESKTOP_V3_CLIENT_ID}:session:${normalized}`,
-      endpoint_cursor: cursor,
+  connectSession(input: { sessionId: string; endpointCursor?: string | null }): Promise<void> {
+    const sessionId = input.sessionId.trim()
+    if (!sessionId) {
+      return Promise.reject(new Error('Desktop V3 session connect requires sessionId'))
+    }
+    let endpointCursor: string
+    try {
+      endpointCursor = input.endpointCursor?.trim() || this.currentEndpointCursor()
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    return this.transport.subscribeSession({
+      session_id: sessionId,
+      subscription_id: `${DESKTOP_V3_CLIENT_ID}:session:${sessionId}`,
+      endpoint_cursor: endpointCursor,
     })
   }
 
@@ -403,7 +407,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private async ensureSession(sessionId: string): Promise<void> {
     const normalized = sessionId.trim()
     if (!normalized) return
-    this.ensureSessionSubscription(normalized)
+    await this.connectSession({ sessionId: normalized })
     await this.hydrateSessionOnce(normalized)
   }
 

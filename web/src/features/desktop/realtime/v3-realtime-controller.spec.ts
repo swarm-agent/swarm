@@ -103,10 +103,10 @@ test('Desktop V3 realtime transport persists endpoint.watermark cursor without a
   assert.deepEqual(delivered, ['endpoint.watermark'])
 
   socket.sent = []
-  transport.registerSession({
+  await transport.subscribeSession({
     session_id: 'session-a',
     subscription_id: 'sub-a',
-    endpoint_cursor: 'stale-session-cursor',
+    endpoint_cursor: 'v3c1.test_payload_2.test_signature_2',
   })
 
   assert.equal(resumes.length, 1, 'open-socket subscription must not send another resume')
@@ -202,7 +202,7 @@ test('Desktop V3 realtime transport sends one resume containing workset and know
     selector: { kind: 'global', global: true },
     auto_subscribe_sessions: true,
   })
-  transport.registerSession({
+  await transport.subscribeSession({
     session_id: 'session-a',
     subscription_id: 'sub-a',
     endpoint_cursor: 'session-cursor-a',
@@ -3246,7 +3246,7 @@ test('Desktop V3 open transport adds one session with subscribe.session and no r
   socket.open()
   socket.sent = []
 
-  transport.registerSession({
+  await transport.subscribeSession({
     session_id: 'session-new',
     subscription_id: 'sub-new',
     endpoint_cursor: 'cursor-0',
@@ -3254,6 +3254,12 @@ test('Desktop V3 open transport adds one session with subscribe.session and no r
 
   assert.deepEqual(socket.sent.map((frame) => (frame as RealtimeMessage).kind), ['subscribe.session'])
   assert.equal(socket.sent.filter((frame) => (frame as RealtimeMessage).kind === 'resume').length, 0)
+  transport.unsubscribeSession('session-new')
+  assert.deepEqual(socket.sent.map((frame) => (frame as RealtimeMessage).kind), ['subscribe.session', 'unsubscribe.session'])
+  assert.equal(socket.sent.filter((frame) => (frame as RealtimeMessage).kind === 'resume').length, 0)
+  const unsubscribe = socket.sent[1] as RealtimeMessage
+  assert.equal(unsubscribe.session_id, 'session-new')
+  assert.equal(unsubscribe.subscription_id, 'sub-new')
   transport.stop()
 })
 

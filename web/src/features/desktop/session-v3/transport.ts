@@ -4,7 +4,9 @@ import {
   SESSION_V3_REALTIME_RESUME_KIND,
   type SessionV3RealtimeFrameWire,
   type SessionV3RealtimeResumeWire,
+  type SessionV3RealtimeSubscribeWire,
   type SessionV3RealtimeSubscriptionRequestWire,
+  type SessionV3RealtimeUnsubscribeWire,
   type SessionV3RealtimeWorksetSubscriptionRequestWire,
   type SessionV3SyncSnapshot,
 } from './types'
@@ -117,6 +119,31 @@ export function buildDesktopV3RealtimeResume(input: {
   }
 }
 
+function buildSessionSubscribeFrame(subscription: SessionV3RealtimeSubscriptionRequestWire): SessionV3RealtimeSubscribeWire {
+  const endpointCursor = normalizeString(subscription.endpoint_cursor)
+  if (!endpointCursor) {
+    throw new Error('Desktop V3 realtime subscribe.session requires endpoint_cursor.')
+  }
+  return {
+    protocol: SESSION_V3_REALTIME_PROTOCOL,
+    protocol_version: SESSION_V3_REALTIME_PROTOCOL_VERSION,
+    kind: 'subscribe.session',
+    session_id: subscription.session_id,
+    subscription_id: subscription.subscription_id,
+    endpoint_cursor: endpointCursor,
+  }
+}
+
+function buildSessionUnsubscribeFrame(subscription: SessionV3RealtimeSubscriptionRequestWire): SessionV3RealtimeUnsubscribeWire {
+  return {
+    protocol: SESSION_V3_REALTIME_PROTOCOL,
+    protocol_version: SESSION_V3_REALTIME_PROTOCOL_VERSION,
+    kind: 'unsubscribe.session',
+    session_id: subscription.session_id,
+    subscription_id: subscription.subscription_id,
+  }
+}
+
 export class DesktopV3RealtimeTransport {
   private readonly sessions = new Map<string, SessionRegistryEntry>()
   private readonly worksets = new Map<string, WorksetRegistryEntry>()
@@ -163,26 +190,40 @@ export class DesktopV3RealtimeTransport {
     this.advanceEndpointCursor(endpointCursor, source)
   }
 
-  registerSession(subscription: SessionV3RealtimeSubscriptionRequestWire): void {
-    const entry = normalizeSessionSubscription(subscription, this.currentEndpointCursor(), false)
-    if (!entry) return
+  subscribeSession(subscription: SessionV3RealtimeSubscriptionRequestWire): Promise<void> {
+    const entry = normalizeSessionSubscription(subscription, this.currentEndpointCursor(), true)
+    if (!entry) return Promise.resolve()
+    if (!entry.endpoint_cursor) {
+      return Promise.reject(new Error('Desktop V3 realtime subscribe.session requires endpoint_cursor.'))
+    }
     this.sessions.set(entry.session_id, {
       ...entry,
       autoDiscovered: false,
       updatedAt: this.now(),
     })
-    this.syncOpenSocketResume('session registered')
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(buildSessionSubscribeFrame(entry)))
+      return Promise.resolve()
+    }
+    if (this.desired) {
+      void this.connect().catch((error) => this.emitStatus('error', errorMessage(error, 'session subscription connect failed')))
+    }
+    return Promise.resolve()
   }
 
-  unregisterSession(sessionId: string): void {
+  unsubscribeSession(sessionId: string): void {
     const normalizedSessionId = normalizeString(sessionId)
     if (!normalizedSessionId) return
+    const existing = this.sessions.get(normalizedSessionId)
     this.sessions.delete(normalizedSessionId)
-    this.syncOpenSocketResume('session unregistered')
+    if (existing && this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(buildSessionUnsubscribeFrame(existing)))
+    }
   }
 
   setSessions(subscriptions: SessionV3RealtimeSubscriptionRequestWire[], options: { replace?: boolean } = {}): void {
     if (options.replace) {
+      this.assertRegistryReplacementAllowed()
       this.sessions.clear()
     }
     const endpointCursor = this.currentEndpointCursor()
@@ -212,6 +253,7 @@ export class DesktopV3RealtimeTransport {
 
   setWorksets(worksets: SessionV3RealtimeWorksetSubscriptionRequestWire[], options: { replace?: boolean } = {}): void {
     if (options.replace) {
+      this.assertRegistryReplacementAllowed()
       this.worksets.clear()
     }
     for (const workset of normalizeWorksetSubscriptions(worksets)) {
@@ -466,6 +508,7 @@ export class DesktopV3RealtimeTransport {
     subscriptionFallbackEndpointCursor?: string | null
   }): void {
     if (input.replace) {
+      this.assertRegistryReplacementAllowed()
       this.sessions.clear()
       this.worksets.clear()
     }
@@ -493,12 +536,15 @@ export class DesktopV3RealtimeTransport {
   }
 
   private syncOpenSocketResume(reason: string): void {
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      this.sendResume(this.socket)
-      return
-    }
+    if (this.socket?.readyState === WebSocket.OPEN) return
     if (this.desired) {
       void this.connect().catch((error) => this.emitStatus('error', errorMessage(error, reason)))
+    }
+  }
+
+  private assertRegistryReplacementAllowed(): void {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      throw new Error('Realtime registry replacement is only allowed before socket open or during recovery')
     }
   }
 

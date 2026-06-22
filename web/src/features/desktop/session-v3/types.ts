@@ -296,6 +296,23 @@ export interface SessionV3SyncSubscriptionWire extends SessionV3RealtimeSubscrip
   endpoint_cursor: string
 }
 
+export interface SessionV3RealtimeSubscribeWire {
+  protocol: 'v3.realtime'
+  protocol_version: 1
+  kind: 'subscribe.session'
+  session_id: string
+  subscription_id: string
+  endpoint_cursor: string
+}
+
+export interface SessionV3RealtimeUnsubscribeWire {
+  protocol: 'v3.realtime'
+  protocol_version: 1
+  kind: 'unsubscribe.session'
+  session_id: string
+  subscription_id: string
+}
+
 export interface SessionV3RealtimeResumeWire {
   protocol: SessionV3RealtimeProtocol
   protocol_version: SessionV3RealtimeProtocolVersion
