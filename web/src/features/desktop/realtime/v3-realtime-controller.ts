@@ -90,6 +90,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly markedActiveRepairBySession = new Map<string, { runId: string; afterSeq: number }>()
   private readonly activeRepairByRun = new Map<string, Promise<void>>()
   private readonly pendingHistoryRepair = new Set<string>()
+  private readonly connectingSessionIds = new Set<string>()
   private firstResumeSent?: Deferred<void>
   private startupCancellation?: Deferred<never>
   private unsubscribeCache?: () => void
@@ -203,6 +204,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.markedActiveRepairBySession.clear()
     this.activeRepairByRun.clear()
     this.pendingHistoryRepair.clear()
+    this.connectingSessionIds.clear()
     this.firstResumeSent?.resolve()
     this.firstResumeSent = undefined
     this.transport.stop(reason)
@@ -227,11 +229,17 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     } catch (error) {
       return Promise.reject(error)
     }
-    return this.transport.subscribeSession({
+    this.connectingSessionIds.add(sessionId)
+    const connect = this.transport.subscribeSession({
       session_id: sessionId,
       subscription_id: `${DESKTOP_V3_CLIENT_ID}:session:${sessionId}`,
       endpoint_cursor: endpointCursor,
     })
+    connect.finally(() => {
+      this.connectingSessionIds.delete(sessionId)
+      this.reconcileDesiredSessionConnections()
+    }).catch(() => undefined)
+    return connect
   }
 
   async ensureSessionHistory(sessionId: string): Promise<void> {
@@ -263,10 +271,12 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
     this.unsubscribeCache?.()
     this.unsubscribeCache = this.subscribe((mutation) => {
+      this.reconcileDesiredSessionConnections()
       if (mutation?.action.type !== 'session.select') return
       const sessionId = mutation.action.sessionId?.trim()
-      if (sessionId) void this.ensureSession(sessionId)
+      if (sessionId) void this.hydrateSessionOnce(sessionId)
     })
+    this.reconcileDesiredSessionConnections()
 
     this.markActiveRunsFromCacheState(this.getSnapshot())
     await this.repairMarkedActiveRuns()
@@ -324,17 +334,37 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     }))
 
     const selectedSessionId = preferredSessionId === null ? undefined : preferredSessionId?.trim()
-    if (!selectedSessionId) return resume
-
-    const subscriptions = [...(resume.subscriptions ?? [])]
-    if (!subscriptions.some((subscription) => subscription.session_id === selectedSessionId)) {
-      subscriptions.push({
-        session_id: selectedSessionId,
-        subscription_id: `${DESKTOP_V3_CLIENT_ID}:session:${selectedSessionId}`,
+    const subscriptions = new Map<string, RealtimeSubscriptionRequest>()
+    for (const subscription of resume.subscriptions ?? []) {
+      const sessionId = subscription.session_id?.trim()
+      if (!sessionId || subscriptions.has(sessionId)) continue
+      subscriptions.set(sessionId, {
+        ...subscription,
+        session_id: sessionId,
         endpoint_cursor: endpointCursor,
       })
     }
-    resume.subscriptions = subscriptions
+
+    const addRecoverySubscription = (sessionId: string | null | undefined) => {
+      const normalized = sessionId?.trim()
+      if (!normalized || subscriptions.has(normalized)) return
+      subscriptions.set(normalized, {
+        session_id: normalized,
+        subscription_id: `${DESKTOP_V3_CLIENT_ID}:session:${normalized}`,
+        endpoint_cursor: endpointCursor,
+      })
+    }
+
+    addRecoverySubscription(selectedSessionId)
+    for (const pending of Object.values(this.getSnapshot().pendingUserByClientRequestId)) {
+      if (pending.status !== 'pending') continue
+      addRecoverySubscription(pending.sessionId)
+    }
+    for (const sessionId of this.connectingSessionIds) {
+      addRecoverySubscription(sessionId)
+    }
+
+    resume.subscriptions = Array.from(subscriptions.values())
     return resume
   }
 
@@ -409,11 +439,57 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.transport.reopenFromDurableCursor('Desktop V3 durable cache commit failed')
   }
 
-  private async ensureSession(sessionId: string): Promise<void> {
+  private reconcileDesiredSessionConnections(): void {
+    if (this.stopped) return
+    const state = this.getSnapshot()
+    const desired = new Set<string>()
+    const addDesired = (sessionId: string | null | undefined) => {
+      const normalized = sessionId?.trim()
+      if (normalized) desired.add(normalized)
+    }
+
+    addDesired(state.selectedSessionId)
+
+    for (const [sessionId, intent] of Object.entries(state.currentRunIntentBySession)) {
+      if (!intent) continue
+      if (ACTIVE_INTENT_STATUSES.has(intent.status.trim().toLowerCase())) {
+        addDesired(sessionId)
+      }
+    }
+
+    for (const pending of Object.values(state.pendingUserByClientRequestId)) {
+      if (pending.status === 'pending') addDesired(pending.sessionId)
+    }
+
+    for (const sessionId of this.connectingSessionIds) {
+      addDesired(sessionId)
+    }
+
+    const diagnostics = this.transport.diagnostics()
+    if (diagnostics.status === 'rehydrating' || diagnostics.status === 'stale') return
+
+    const registered = new Map(diagnostics.sessions.map((session) => [session.session_id, session]))
+
+    for (const sessionId of desired) {
+      if (registered.has(sessionId)) continue
+      const connect = this.connectSession({ sessionId })
+      connect.catch((error) => {
+        if (!this.stopped) {
+          console.error('[desktop-v3] desired session connection failed', error)
+        }
+      })
+    }
+
+    for (const [sessionId, session] of registered) {
+      if (desired.has(sessionId)) continue
+      if (session.autoDiscovered && this.autoDiscoveredSessionHydrationPending(sessionId)) continue
+      this.transport.unsubscribeSession(sessionId)
+    }
+  }
+
+  private autoDiscoveredSessionHydrationPending(sessionId: string): boolean {
     const normalized = sessionId.trim()
-    if (!normalized) return
-    await this.connectSession({ sessionId: normalized })
-    await this.hydrateSessionOnce(normalized)
+    return normalized ? this.hydrateBySession.has(normalized) : false
   }
 
   private hydrateAutoDiscoveredSessionOnce(sessionId: string): void {
@@ -439,6 +515,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       this.dispatch(hydrateResponseToAction(response, [normalized]))
     })().finally(() => {
       this.hydrateBySession.delete(normalized)
+      this.reconcileDesiredSessionConnections()
     })
     this.hydrateBySession.set(normalized, promise)
     return promise

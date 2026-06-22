@@ -1763,7 +1763,7 @@ test('expired persisted cursor takes the explicit cursor-error recovery path', a
   await waitFor(() => sockets.length === 1)
   sockets[0].open()
   await ready
-  assert.equal((sockets[0].sent[0] as SessionV3RealtimeResumeWire).endpoint_cursor, 'cursor-persisted-expired')
+  assert.equal((sockets[0].sent[0] as SessionV3RealtimeResumeWire).endpoint_cursor, 'cursor-bootstrap')
 
   sockets[0].emit({
     protocol: 'v3.realtime',
@@ -1775,8 +1775,8 @@ test('expired persisted cursor takes the explicit cursor-error recovery path', a
   sockets[1].open()
   await waitFor(() => sockets[1].sent.length > 0)
 
-  assert.equal((sockets[1].sent[0] as SessionV3RealtimeResumeWire).endpoint_cursor, 'cursor-reconnect-2')
-  assert.equal(state.realtime.endpointCursor, 'cursor-reconnect-2')
+  assert.equal((sockets[1].sent[0] as SessionV3RealtimeResumeWire).endpoint_cursor, 'cursor-reconnect-1')
+  assert.equal(state.realtime.endpointCursor, 'cursor-reconnect-1')
   controller.stop()
 })
 
@@ -2073,7 +2073,7 @@ test('Desktop V3 cursor-error repair queues behind overlapping hydrate before re
 
     assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), [messageA1.id, messageA2.id])
     assert.deepEqual(new Set(state.messagesBySession[sessionA.id].items.map((message) => message.id)).size, 2)
-    assert.equal(state.realtime.endpointCursor, 'cursor-reconnect-2')
+    assert.equal(state.realtime.endpointCursor, 'cursor-reconnect-1')
   } finally {
     controller.stop()
     releaseFirstHydrate()
@@ -3041,6 +3041,7 @@ test('slow-consumer recovery resumes from last durable cursor', async () => {
   state.sessionOrderByScope['global-scope'] = [sessionA.id]
 
   const sockets: FakeWebSocket[] = []
+  let reconnectCount = 0
   const controller = new DesktopV3RealtimeControllerRuntime({
     getSnapshot: () => state,
     dispatch: (action: DesktopV3CacheAction) => {
@@ -3051,26 +3052,29 @@ test('slow-consumer recovery resumes from last durable cursor', async () => {
     resolveOwner: () => testDesktopV3CacheOwner(),
     writeOwnerAndTails: async () => true,
     saveActiveOwnerKey: () => true,
-    reconnect: async () => reconnectFixture({
-      snapshot_endpoint_cursor: 'cursor-12',
-      sessions_by_id: { [sessionA.id]: sessionA },
-      projections_by_session: { [sessionA.id]: projectionA },
-      run_intents_by_session: {},
-      current_run_intent_by_session: {},
-      session_order: [sessionA.id],
-      workset_id: 'global-scope',
-      realtime: {
-        stream_path: '/v3/realtime/stream',
-        resume: {
-          protocol: 'v3.realtime',
-          protocol_version: 1,
-          kind: 'resume',
-          endpoint_cursor: 'cursor-12',
-          subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
-          worksets: [],
+    reconnect: async () => {
+      reconnectCount += 1
+      return reconnectFixture({
+        snapshot_endpoint_cursor: 'cursor-12',
+        sessions_by_id: { [sessionA.id]: sessionA },
+        projections_by_session: { [sessionA.id]: projectionA },
+        run_intents_by_session: {},
+        current_run_intent_by_session: {},
+        session_order: [sessionA.id],
+        workset_id: 'global-scope',
+        realtime: {
+          stream_path: '/v3/realtime/stream',
+          resume: {
+            protocol: 'v3.realtime',
+            protocol_version: 1,
+            kind: 'resume',
+            endpoint_cursor: 'cursor-12',
+            subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
+            worksets: [],
+          },
         },
-      },
-    }),
+      })
+    },
     openSocket: () => {
       const socket = new FakeWebSocket()
       sockets.push(socket)
@@ -3082,7 +3086,8 @@ test('slow-consumer recovery resumes from last durable cursor', async () => {
   await waitFor(() => sockets.length === 1)
   sockets[0].open()
   await ready
-  assert.equal((sockets[0].sent[0] as SessionV3RealtimeResumeWire).endpoint_cursor, 'cursor-5')
+  assert.equal((sockets[0].sent[0] as SessionV3RealtimeResumeWire).endpoint_cursor, 'cursor-bootstrap')
+  state.realtime.endpointCursor = 'cursor-5'
 
   sockets[0].emit({
     protocol: 'v3.realtime',
@@ -3094,6 +3099,7 @@ test('slow-consumer recovery resumes from last durable cursor', async () => {
   sockets[1].open()
   await waitFor(() => sockets[1].sent.length > 0)
 
+  assert.equal(reconnectCount, 1)
   assert.equal((sockets[1].sent[0] as SessionV3RealtimeResumeWire).endpoint_cursor, 'cursor-5')
   assert.equal(state.realtime.endpointCursor, 'cursor-5')
   controller.stop()
@@ -3681,6 +3687,426 @@ test('Desktop V3 recovery still calls HTTP reconnect after cursor.error', async 
   }
 })
 
+test('Desktop V3 normal socket close reopens with resume and without HTTP reconnect', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-bootstrap'
+  const sockets: FakeWebSocket[] = []
+  let reconnectCount = 0
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
+    reconnect: async () => {
+      reconnectCount += 1
+      return reconnectFixture()
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start(null)
+    ready.catch(() => undefined)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    assert.equal(reconnectCount, 0)
+    assert.deepEqual(sockets[0].sent.map((frame) => (frame as RealtimeMessage).kind), ['resume'])
+
+    sockets[0].close()
+    await waitFor(() => sockets.length === 2, 3_000)
+    sockets[1].open()
+    await waitFor(() => sockets[1].sent.length > 0)
+
+    assert.equal(reconnectCount, 0)
+    assert.deepEqual(sockets[1].sent.map((frame) => (frame as RealtimeMessage).kind), ['resume'])
+    assert.equal((sockets[1].sent[0] as RealtimeMessage).endpoint_cursor, 'cursor-bootstrap')
+  } finally {
+    controller.stop()
+  }
+})
+
+test('Desktop V3 recovery resume contains active selected and pending sessions without global membership', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-durable'
+  state.selectedSessionId = 'selected-inactive'
+  const inactiveIds = Array.from({ length: 300 }, (_, index) => `inactive-${index}`)
+  state.sessionOrderByScope['global-scope'] = ['selected-inactive', ...inactiveIds, 'active-run', 'pending-send', 'pending-connect']
+  state.pendingUserByClientRequestId['client-pending'] = {
+    clientRequestId: 'client-pending',
+    messageId: 'message-pending',
+    sessionId: 'pending-send',
+    role: 'user',
+    content: 'pending',
+    createdAt: 1,
+    status: 'pending',
+  }
+
+  const sockets: FakeWebSocket[] = []
+  let reconnectCount = 0
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
+    hydrate: async () => hydrateSnapshotFixture({
+      sessions_by_id: {},
+      projections_by_session: {},
+      messages_by_session: {},
+      session_order: [],
+    }),
+    reconnect: async () => {
+      reconnectCount += 1
+      return reconnectFixture({
+        snapshot_endpoint_cursor: 'cursor-reconnect',
+        sessions_by_id: {},
+        projections_by_session: {},
+        run_intents_by_session: {},
+        current_run_intent_by_session: {},
+        session_order: state.sessionOrderByScope['global-scope'],
+        workset_id: 'global-scope',
+        realtime: {
+          stream_path: '/v3/realtime/stream',
+          resume: {
+            protocol: 'v3.realtime',
+            protocol_version: 1,
+            kind: 'resume',
+            endpoint_cursor: 'cursor-reconnect',
+            subscriptions: [{ subscription_id: 'backend-active', session_id: 'active-run' }],
+            worksets: [{ workset_id: 'global-scope', subscription_id: 'workset-sub', selector: { kind: 'global', global: true }, auto_subscribe_sessions: true }],
+          },
+        },
+      })
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start('selected-inactive')
+    ready.catch(() => undefined)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+
+    const pendingConnect = controller.connectSession({ sessionId: 'pending-connect', endpointCursor: 'cursor-before-connect' })
+    pendingConnect.catch(() => undefined)
+    await flushAsyncWork()
+
+    sockets[0].emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'cursor.error', error: 'rejected', bootstrap_required: false })
+    await waitFor(() => reconnectCount === 1)
+    await waitFor(() => sockets.length === 2)
+    sockets[1].open()
+    await waitFor(() => sockets[1].sent.length > 0)
+
+    const resume = sockets[1].sent[0] as RealtimeMessage
+    assert.deepEqual(
+      resume.subscriptions?.map((subscription) => subscription.session_id),
+      ['active-run', 'selected-inactive', 'pending-send', 'pending-connect'],
+    )
+    assert.equal(resume.subscriptions?.some((subscription) => inactiveIds.includes(subscription.session_id)), false)
+    assert.equal(resume.subscriptions?.length, 4)
+  } finally {
+    controller.stop()
+  }
+})
+
+test('Desktop V3 desired-session reconciliation removes inactive sessions selected sequentially', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-bootstrap'
+  const sockets: FakeWebSocket[] = []
+  const listeners = new Set<(mutation?: { action: DesktopV3CacheAction; previousState: DesktopV3CacheState; nextState: DesktopV3CacheState }) => void>()
+  const dispatch = (action: DesktopV3CacheAction) => {
+    const previousState = state
+    state = desktopV3CacheReducer({ ...state }, action)
+    const mutation = { action, previousState, nextState: state }
+    for (const listener of listeners) listener(mutation)
+  }
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
+    hydrate: async () => hydrateSnapshotFixture({
+      sessions_by_id: {},
+      projections_by_session: {},
+      messages_by_session: {},
+      session_order: [],
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start(null)
+    ready.catch(() => undefined)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    sockets[0].sent = []
+
+    for (let index = 0; index < 100; index += 1) {
+      const sessionId = `selected-${index}`
+      dispatch({ type: 'session.select', sessionId })
+      await waitFor(() => sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'subscribe.session' && (frame as RealtimeMessage).session_id === sessionId))
+      const subscribe = [...sockets[0].sent].reverse().find((frame) => (frame as RealtimeMessage).kind === 'subscribe.session' && (frame as RealtimeMessage).session_id === sessionId) as RealtimeMessage
+      sockets[0].emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'replay.complete', session_id: sessionId, subscription_id: subscribe.subscription_id, endpoint_cursor: `cursor-${index}` })
+      await flushAsyncWork()
+    }
+
+    const frames = sockets[0].sent.map((frame) => frame as RealtimeMessage)
+    assert.equal(frames.filter((frame) => frame.kind === 'resume').length, 0)
+    assert.equal(frames.filter((frame) => frame.kind === 'subscribe.session').length, 100)
+    assert.equal(frames.filter((frame) => frame.kind === 'unsubscribe.session').length, 99)
+    assert.equal(frames.some((frame) => frame.kind === 'unsubscribe.session' && frame.session_id === 'selected-99'), false)
+  } finally {
+    controller.stop()
+  }
+})
+
+
+test('Desktop V3 desired-session reconciliation keeps running background session when selection changes', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-bootstrap'
+  state.selectedSessionId = 'selected-a'
+  state.sessionOrderByScope['global-scope'] = ['selected-a', 'background-running', 'selected-b']
+  state.currentRunIntentBySession['background-running'] = {
+    session_id: 'background-running',
+    run_id: 'run-background',
+    status: 'running',
+    created_at: 1,
+    updated_at: 1,
+    event_seq: 1,
+  }
+  const sockets: FakeWebSocket[] = []
+  const listeners = new Set<(mutation?: { action: DesktopV3CacheAction; previousState: DesktopV3CacheState; nextState: DesktopV3CacheState }) => void>()
+  const dispatch = (action: DesktopV3CacheAction) => {
+    const previousState = state
+    state = desktopV3CacheReducer({ ...state }, action)
+    const mutation = { action, previousState, nextState: state }
+    for (const listener of listeners) listener(mutation)
+  }
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
+    hydrate: async () => hydrateSnapshotFixture({
+      sessions_by_id: {},
+      projections_by_session: {},
+      messages_by_session: {},
+      session_order: [],
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start('selected-a')
+    ready.catch(() => undefined)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    const initialResume = sockets[0].sent[0] as RealtimeMessage
+    assert.deepEqual(initialResume.subscriptions?.map((subscription) => subscription.session_id), ['selected-a', 'background-running'])
+    sockets[0].sent = []
+
+    dispatch({ type: 'session.select', sessionId: 'selected-b' })
+    await waitFor(() => sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'subscribe.session' && (frame as RealtimeMessage).session_id === 'selected-b'))
+    const subscribe = sockets[0].sent.find((frame) => (frame as RealtimeMessage).kind === 'subscribe.session' && (frame as RealtimeMessage).session_id === 'selected-b') as RealtimeMessage
+    sockets[0].emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'replay.complete', session_id: 'selected-b', subscription_id: subscribe.subscription_id, endpoint_cursor: 'cursor-selected-b' })
+    await flushAsyncWork()
+
+    const frames = sockets[0].sent.map((frame) => frame as RealtimeMessage)
+    assert.equal(frames.some((frame) => frame.kind === 'unsubscribe.session' && frame.session_id === 'background-running'), false)
+    assert.equal(frames.some((frame) => frame.kind === 'unsubscribe.session' && frame.session_id === 'selected-a'), true)
+    assert.equal(frames.filter((frame) => frame.kind === 'resume').length, 0)
+  } finally {
+    controller.stop()
+  }
+})
+
+
+test('Desktop V3 desired-session reconciliation removes terminal unselected background session', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-bootstrap'
+  state.selectedSessionId = 'selected-a'
+  state.sessionOrderByScope['global-scope'] = ['selected-a', 'background-running']
+  state.currentRunIntentBySession['background-running'] = {
+    session_id: 'background-running',
+    run_id: 'run-background',
+    status: 'running',
+    created_at: 1,
+    updated_at: 1,
+    event_seq: 1,
+  }
+  const sockets: FakeWebSocket[] = []
+  const listeners = new Set<(mutation?: { action: DesktopV3CacheAction; previousState: DesktopV3CacheState; nextState: DesktopV3CacheState }) => void>()
+  const notify = (action: DesktopV3CacheAction, previousState: DesktopV3CacheState) => {
+    const mutation = { action, previousState, nextState: state }
+    for (const listener of listeners) listener(mutation)
+  }
+  const dispatch = (action: DesktopV3CacheAction) => {
+    const previousState = state
+    state = desktopV3CacheReducer({ ...state }, action)
+    notify(action, previousState)
+  }
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
+    hydrate: async () => hydrateSnapshotFixture({
+      sessions_by_id: {},
+      projections_by_session: {},
+      messages_by_session: {},
+      session_order: [],
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start('selected-a')
+    ready.catch(() => undefined)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    sockets[0].sent = []
+
+    const previousState = state
+    state = {
+      ...state,
+      currentRunIntentBySession: {
+        ...state.currentRunIntentBySession,
+        'background-running': undefined,
+      },
+    }
+    notify({ type: 'realtime.control', frame: { protocol: 'v3.realtime', protocol_version: 1, kind: 'replay.complete' } }, previousState)
+
+    await waitFor(() => sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'unsubscribe.session' && (frame as RealtimeMessage).session_id === 'background-running'))
+    assert.equal(sockets[0].sent.filter((frame) => (frame as RealtimeMessage).kind === 'resume').length, 0)
+  } finally {
+    controller.stop()
+  }
+})
+
+
+test('Desktop V3 auto-discovered inactive session remains during hydrate then unsubscribes', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-bootstrap'
+  const sockets: FakeWebSocket[] = []
+  const listeners = new Set<(mutation?: { action: DesktopV3CacheAction; previousState: DesktopV3CacheState; nextState: DesktopV3CacheState }) => void>()
+  const hydrateDeferred = createDeferredValue<ReturnType<typeof hydrateSnapshotFixture>>()
+  let hydrateStarted = false
+  const dispatch = (action: DesktopV3CacheAction) => {
+    const previousState = state
+    state = desktopV3CacheReducer({ ...state }, action)
+    const mutation = { action, previousState, nextState: state }
+    for (const listener of listeners) listener(mutation)
+  }
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
+    hydrate: async () => {
+      hydrateStarted = true
+      return hydrateDeferred.promise
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start(null)
+    ready.catch(() => undefined)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    sockets[0].sent = []
+
+    sockets[0].emit({
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'workset.session.discovered',
+      workset_id: 'global-scope',
+      session_id: 'auto-inactive',
+      subscription_id: 'auto-sub-inactive',
+      auto_subscribed: true,
+      endpoint_cursor: 'cursor-auto',
+    })
+    await waitFor(() => hydrateStarted)
+    await flushAsyncWork()
+    assert.equal(sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'unsubscribe.session'), false)
+
+    hydrateDeferred.resolve(hydrateSnapshotFixture({
+      sessions_by_id: {},
+      projections_by_session: {},
+      messages_by_session: {},
+      session_order: [],
+    }))
+    await waitFor(() => sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'unsubscribe.session' && (frame as RealtimeMessage).session_id === 'auto-inactive'))
+    assert.equal(sockets[0].sent.filter((frame) => (frame as RealtimeMessage).kind === 'resume').length, 0)
+  } finally {
+    controller.stop()
+  }
+})
+
+
 test('Desktop V3 300-member bootstrap does not create 300 subscriptions', async () => {
   let state = readyControllerState()
   state.realtime.endpointCursor = 'cursor-bootstrap'
@@ -3779,6 +4205,16 @@ function readyControllerState(): DesktopV3CacheState {
 async function readSource(path: string): Promise<string> {
   const localPath = path.startsWith('web/') ? path.slice('web/'.length) : path
   return readFile(localPath, 'utf8')
+}
+
+function createDeferredValue<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason?: unknown) => void } {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+  return { promise, resolve, reject }
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
