@@ -316,7 +316,8 @@ export function DesktopV3ExistingConversationPane({
   const agentState = agentStateQuery.data ?? EMPTY_AGENT_STATE
   const modelOptions = modelOptionsQuery.data ?? []
   const thinkingTagsEnabled = normalizeThinkingTagsEnabled(uiSettingsQuery.data)
-  const cachedPreference = useDesktopV3CacheSelector((state) => normalizePreference(state.preferencesBySession[normalizedSessionId]))
+  const rawCachedPreference = useDesktopV3CacheSelector((state) => state.preferencesBySession[normalizedSessionId])
+  const cachedPreference = useMemo(() => normalizePreference(rawCachedPreference), [rawCachedPreference])
   const cacheSession = useDesktopV3CacheSelector((state) => {
     const record = state.sessionsById[normalizedSessionId]
     return record?.kind === 'full' ? record.session : null

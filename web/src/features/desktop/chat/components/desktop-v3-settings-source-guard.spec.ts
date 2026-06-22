@@ -7,6 +7,9 @@ test('Desktop V3 existing composer derives agent model locks from existing agent
 
   assert.match(source, /useQuery\(agentStateQueryOptions\(\)\)/)
   assert.match(source, /resolveDesktopV3AgentModelLock\(agentState\.profiles/)
+  assert.match(source, /rawCachedPreference\s*=\s*useDesktopV3CacheSelector\(\(state\)\s*=>\s*state\.preferencesBySession\[normalizedSessionId\]\)/)
+  assert.match(source, /cachedPreference\s*=\s*useMemo\(\(\)\s*=>\s*normalizePreference\(rawCachedPreference\), \[rawCachedPreference\]\)/)
+  assert.doesNotMatch(source, /useDesktopV3CacheSelector\(\(state\)\s*=>\s*normalizePreference\(state\.preferencesBySession/)
   assert.doesNotMatch(source, /fetchAgentState\(/)
   assert.doesNotMatch(source, /fetchAgentProfile/)
   assert.doesNotMatch(source, /Promise\.all\(tasks\)/)
