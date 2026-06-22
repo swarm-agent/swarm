@@ -61,6 +61,20 @@ function withSessionStorage(run: (storage: Map<string, string>) => void): void {
   }
 }
 
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void; reject: (reason?: unknown) => void } {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+  return { promise, resolve, reject }
+}
+
+async function flushAsyncWork(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
 test('Path B operation contains stable existing-session message payload', () => {
   const operation = createDesktopV3ExistingMessageOperation({
     sessionId: ' session-1 ',
@@ -138,7 +152,13 @@ test('continueDesktopV3Conversation subscribes, starts hydrate, appends message,
   const restore = setDesktopV3ExistingSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionSubscription: (sessionId: string) => calls.push(`subscribe:${sessionId}`),
+      currentEndpointCursor: () => {
+        calls.push('capture-cursor')
+        return 'cursor-before-send'
+      },
+      connectSession: async (input: { sessionId: string; endpointCursor?: string }) => {
+        calls.push(`connect:${input.sessionId}:${input.endpointCursor}`)
+      },
       ensureSessionHistory: async (sessionId: string) => {
         calls.push(`hydrate:${sessionId}`)
         await hydratePromise
@@ -162,7 +182,8 @@ test('continueDesktopV3Conversation subscribes, starts hydrate, appends message,
     resolveHydrate?.()
     assert.equal(response.session_id, 'session-1')
     assert.deepEqual(calls, [
-      'subscribe:session-1',
+      'capture-cursor',
+      'connect:session-1:cursor-before-send',
       'hydrate:session-1',
       'dispatch:pendingUser.upsert',
       `message:session-1:${operation.request.message_id}`,
@@ -172,6 +193,90 @@ test('continueDesktopV3Conversation subscribes, starts hydrate, appends message,
     assert.equal(actions[1]?.type, 'mutation.messageResult')
   } finally {
     resolveHydrate?.()
+    restore()
+  }
+})
+
+
+test('Desktop V3 existing session does not append before connectSession resolves', async () => {
+  const operation = createDesktopV3ExistingMessageOperation({
+    sessionId: 'session-1',
+    prompt: 'continue',
+  })
+  const state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
+  const connect = deferred<void>()
+  const hydrate = deferred<void>()
+  const calls: string[] = []
+  const restore = setDesktopV3ExistingSessionFlowDepsForTests({
+    getSnapshot: () => state,
+    requireControllerReady: async () => ({
+      currentEndpointCursor: () => 'cursor-before-send',
+      connectSession: async (input: { sessionId: string; endpointCursor?: string }) => {
+        calls.push(`connect:start:${input.sessionId}:${input.endpointCursor}`)
+        await connect.promise
+        calls.push(`connect:complete:${input.sessionId}`)
+      },
+      ensureSessionHistory: async (sessionId: string) => {
+        calls.push(`hydrate:${sessionId}`)
+        await hydrate.promise
+      },
+      start: async () => undefined,
+      stop: () => undefined,
+    }),
+    dispatch: (action) => {
+      calls.push(`dispatch:${action.type}`)
+    },
+    postAppendMessage: async (sessionId, request) => {
+      calls.push(`message:${sessionId}:${request.message_id}`)
+      return makeMessageResponse(operation)
+    },
+  })
+
+  try {
+    const started = continueDesktopV3Conversation(operation)
+    await flushAsyncWork()
+    assert.equal(calls.includes(`message:session-1:${operation.request.message_id}`), false, `message append must wait for connectSession: ${calls.join(',')}`)
+    connect.resolve()
+    await flushAsyncWork()
+    assert.equal(calls.includes(`message:session-1:${operation.request.message_id}`), true, 'message append should not wait for hydrate')
+    hydrate.resolve()
+    await started
+  } finally {
+    connect.resolve()
+    hydrate.resolve()
+    restore()
+  }
+})
+
+test('Desktop V3 existing session rejected connectSession appends no message', async () => {
+  const operation = createDesktopV3ExistingMessageOperation({
+    sessionId: 'session-1',
+    prompt: 'continue',
+  })
+  const state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
+  let appended = false
+  const restore = setDesktopV3ExistingSessionFlowDepsForTests({
+    getSnapshot: () => state,
+    requireControllerReady: async () => ({
+      currentEndpointCursor: () => 'cursor-before-send',
+      connectSession: async () => {
+        throw new Error('subscribe rejected')
+      },
+      ensureSessionHistory: async () => undefined,
+      start: async () => undefined,
+      stop: () => undefined,
+    }),
+    dispatch: () => undefined,
+    postAppendMessage: async () => {
+      appended = true
+      return makeMessageResponse(operation)
+    },
+  })
+
+  try {
+    await assert.rejects(continueDesktopV3Conversation(operation), /subscribe rejected/)
+    assert.equal(appended, false)
+  } finally {
     restore()
   }
 })
@@ -215,7 +320,8 @@ test('continueDesktopV3Conversation requires queued or running run intent', asyn
   const restore = setDesktopV3ExistingSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionSubscription: () => undefined,
+      currentEndpointCursor: () => 'cursor-before-send',
+      connectSession: async () => undefined,
       ensureSessionHistory: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,

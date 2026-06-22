@@ -102,6 +102,20 @@ function withSessionStorage(run: (storage: Map<string, string>) => void): void {
   }
 }
 
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void; reject: (reason?: unknown) => void } {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+  return { promise, resolve, reject }
+}
+
+async function flushAsyncWork(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
 test('Path A operation contains stable create and first-message wire payloads', () => {
   const operation = createDesktopV3NewSessionOperation({
     workspacePath: '/workspace',
@@ -261,7 +275,13 @@ test('startNewDesktopV3Session performs create, subscribe/select, then first mes
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionSubscription: (sessionId: string) => calls.push(`subscribe:${sessionId}`),
+      currentEndpointCursor: () => {
+        calls.push('capture-cursor')
+        return 'cursor-before-create'
+      },
+      connectSession: async (input: { sessionId: string; endpointCursor?: string }) => {
+        calls.push(`connect:${input.sessionId}:${input.endpointCursor}`)
+      },
       ensureSessionHistory: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,
@@ -293,9 +313,10 @@ test('startNewDesktopV3Session performs create, subscribe/select, then first mes
     assert.equal(result.sessionId, operation.sessionId)
     assert.equal(navigated, operation.sessionId)
     assert.deepEqual(calls, [
+      'capture-cursor',
       `create:${operation.sessionId}`,
       'dispatch:mutation.sessionCreateResult',
-      `subscribe:${operation.sessionId}`,
+      `connect:${operation.sessionId}:cursor-before-create`,
       'dispatch:session.select',
       'dispatch:pendingUser.upsert',
       `message:${operation.sessionId}:${operation.firstMessageRequest.message_id}`,
@@ -324,7 +345,13 @@ test('startNewDesktopV3Session skips selection when delayed create resolves afte
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionSubscription: (sessionId: string) => calls.push(`subscribe:${sessionId}`),
+      currentEndpointCursor: () => {
+        calls.push('capture-cursor')
+        return 'cursor-before-create'
+      },
+      connectSession: async (input: { sessionId: string; endpointCursor?: string }) => {
+        calls.push(`connect:${input.sessionId}:${input.endpointCursor}`)
+      },
       ensureSessionHistory: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,
@@ -361,15 +388,135 @@ test('startNewDesktopV3Session skips selection when delayed create resolves afte
 
     assert.equal(result.sessionId, operation.sessionId)
     assert.deepEqual(calls, [
+      'capture-cursor',
       `create:${operation.sessionId}`,
       'dispatch:mutation.sessionCreateResult',
-      `subscribe:${operation.sessionId}`,
+      `connect:${operation.sessionId}:cursor-before-create`,
       'dispatch:pendingUser.upsert',
       `message:${operation.sessionId}:${operation.firstMessageRequest.message_id}`,
       'dispatch:mutation.messageResult',
     ])
     assert.equal(actions.some((action) => action.type === 'session.select'), false)
     assert.equal(state.selectedSessionId, 'session-b')
+    assert.equal(navigated, false)
+  } finally {
+    restore()
+  }
+})
+
+
+test('Desktop V3 new session captures cursor before create and appends only after connectSession resolves', async () => {
+  const operation = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    prompt: 'start',
+    agentName: 'swarm',
+  })
+  const state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap.scopeId = 'scope-global'
+  const connect = deferred<void>()
+  const calls: string[] = []
+  const restore = setDesktopV3NewSessionFlowDepsForTests({
+    getSnapshot: () => state,
+    requireControllerReady: async () => ({
+      currentEndpointCursor: () => {
+        calls.push('capture-cursor')
+        return 'cursor-before-create'
+      },
+      connectSession: async (input: { sessionId: string; endpointCursor?: string }) => {
+        calls.push(`connect:start:${input.sessionId}:${input.endpointCursor}`)
+        await connect.promise
+        calls.push(`connect:complete:${input.sessionId}`)
+      },
+      ensureSessionHistory: async () => undefined,
+      start: async () => undefined,
+      stop: () => undefined,
+    }),
+    dispatch: (action) => {
+      calls.push(`dispatch:${action.type}`)
+    },
+    postCreateSession: async () => {
+      calls.push('create')
+      return makeCreateResponse(operation)
+    },
+    postAppendMessage: async () => {
+      calls.push('message')
+      return makeMessageResponse(operation)
+    },
+  })
+
+  try {
+    const started = startNewDesktopV3Session({
+      operation,
+      onSessionStarted: (sessionId) => calls.push(`navigate:${sessionId}`),
+    })
+    await flushAsyncWork()
+    assert.deepEqual(calls, [
+      'capture-cursor',
+      'create',
+      'dispatch:mutation.sessionCreateResult',
+      `connect:start:${operation.sessionId}:cursor-before-create`,
+    ])
+    connect.resolve()
+    await started
+    assert.deepEqual(calls, [
+      'capture-cursor',
+      'create',
+      'dispatch:mutation.sessionCreateResult',
+      `connect:start:${operation.sessionId}:cursor-before-create`,
+      `connect:complete:${operation.sessionId}`,
+      'dispatch:session.select',
+      'dispatch:pendingUser.upsert',
+      'message',
+      'dispatch:mutation.messageResult',
+      `navigate:${operation.sessionId}`,
+    ])
+  } finally {
+    connect.resolve()
+    restore()
+  }
+})
+
+test('Desktop V3 new session rejected connectSession appends no message and does not navigate', async () => {
+  const operation = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    prompt: 'start',
+    agentName: 'swarm',
+  })
+  const state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap.scopeId = 'scope-global'
+  let appended = false
+  let navigated = false
+  const restore = setDesktopV3NewSessionFlowDepsForTests({
+    getSnapshot: () => state,
+    requireControllerReady: async () => ({
+      currentEndpointCursor: () => 'cursor-before-create',
+      connectSession: async () => {
+        throw new Error('subscribe rejected')
+      },
+      ensureSessionHistory: async () => undefined,
+      start: async () => undefined,
+      stop: () => undefined,
+    }),
+    dispatch: () => undefined,
+    postCreateSession: async () => makeCreateResponse(operation),
+    postAppendMessage: async () => {
+      appended = true
+      return makeMessageResponse(operation)
+    },
+  })
+
+  try {
+    await assert.rejects(startNewDesktopV3Session({
+      operation,
+      onSessionStarted: () => {
+        navigated = true
+      },
+    }), /subscribe rejected/)
+    assert.equal(appended, false)
     assert.equal(navigated, false)
   } finally {
     restore()
@@ -390,7 +537,8 @@ test('startNewDesktopV3Session keeps operation unresolved when first message fai
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionSubscription: () => undefined,
+      currentEndpointCursor: () => 'cursor-before-create',
+      connectSession: async () => undefined,
       ensureSessionHistory: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,

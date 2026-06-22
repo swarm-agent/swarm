@@ -271,13 +271,121 @@ func TestSessionsV3ReconnectGlobalWorksetMatchesBootstrapPrincipalScope(t *testi
 	if !stringSlicesEqual(reconnect.SessionOrder, bootstrap.SessionOrder) {
 		t.Fatalf("global reconnect order = %+v, bootstrap order = %+v", reconnect.SessionOrder, bootstrap.SessionOrder)
 	}
+	for _, sessionID := range want {
+		if reconnect.SessionsByID[sessionID].ID != sessionID {
+			t.Fatalf("global reconnect sessions_by_id missing visible principal session %s: %+v", sessionID, reconnect.SessionsByID)
+		}
+	}
 	for _, leaked := range []string{"reconnect-global-other-user", "reconnect-global-blank-user", "reconnect-global-other-account"} {
 		if _, ok := reconnect.SessionsByID[leaked]; ok {
 			t.Fatalf("global reconnect leaked %s: %+v", leaked, reconnect.SessionOrder)
 		}
 	}
-	if len(reconnect.Subscriptions) != len(want) {
-		t.Fatalf("global reconnect subscriptions = %+v, want one per principal session", reconnect.Subscriptions)
+	if len(reconnect.Subscriptions) != 0 {
+		t.Fatalf("global reconnect subscriptions = %+v, want none without active runs", reconnect.Subscriptions)
+	}
+	if len(reconnect.Realtime.Resume.Subscriptions) != 0 {
+		t.Fatalf("global reconnect resume subscriptions = %+v, want none without active runs", reconnect.Realtime.Resume.Subscriptions)
+	}
+	if len(reconnect.Realtime.Resume.Worksets) != 1 || reconnect.Realtime.Resume.Worksets[0].Selector.Kind != "global" || !reconnect.Realtime.Resume.Worksets[0].Selector.Global {
+		t.Fatalf("global reconnect resume worksets = %+v, want one global workset", reconnect.Realtime.Resume.Worksets)
+	}
+}
+
+func TestSessionsV3ReconnectGlobalWorksetReturnsFullMembershipButOnlyActiveSubscriptions(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	store := server.sessions.Store()
+
+	for i := 0; i < 300; i++ {
+		sessionID := fmt.Sprintf("reconnect-global-inactive-%03d", i)
+		seedSessionsV3ReconnectStoreSession(t, store, sessionID, testPrincipal().UserID, testPrincipal().AccountScopeID, fmt.Sprintf("/workspace/reconnect-global-inactive-%03d", i), int64(1000+i))
+	}
+	activeA := "reconnect-global-active-a"
+	activeB := "reconnect-global-active-b"
+	seedSessionsV3ReconnectStoreSession(t, store, activeA, testPrincipal().UserID, testPrincipal().AccountScopeID, "/workspace/reconnect-global-active-a", 5000)
+	seedSessionsV3ReconnectStoreSession(t, store, activeB, testPrincipal().UserID, testPrincipal().AccountScopeID, "/workspace/reconnect-global-active-b", 6000)
+	seedSessionsV3ReconnectStoreSession(t, store, "reconnect-global-active-other-user", "other-user", testPrincipal().AccountScopeID, "/workspace/reconnect-global-active-other-user", 7000)
+	seedSessionsV3ReconnectStoreSession(t, store, "reconnect-global-active-other-account", testPrincipal().UserID, "other-account", "/workspace/reconnect-global-active-other-account", 8000)
+	recordSessionsV3ReconnectRunIntent(t, server, activeA, "run-active-a", sessionruntime.RunIntentPendingExecutor, 9000)
+	recordSessionsV3ReconnectRunIntent(t, server, activeB, "run-active-b", sessionruntime.RunIntentPendingExecutor, 9050)
+	recordSessionsV3ReconnectRunIntent(t, server, activeB, "run-active-b", sessionruntime.RunIntentRunning, 9100)
+	recordSessionsV3ReconnectRunIntent(t, server, "reconnect-global-active-other-user", "run-other-user", sessionruntime.RunIntentPendingExecutor, 9150)
+	recordSessionsV3ReconnectRunIntent(t, server, "reconnect-global-active-other-user", "run-other-user", sessionruntime.RunIntentRunning, 9200)
+	recordSessionsV3ReconnectRunIntent(t, server, "reconnect-global-active-other-account", "run-other-account", sessionruntime.RunIntentPendingExecutor, 9250)
+	recordSessionsV3ReconnectRunIntent(t, server, "reconnect-global-active-other-account", "run-other-account", sessionruntime.RunIntentRunning, 9300)
+
+	reconnect := postSessionsV3ReconnectBody(t, server, `{
+		"surface":"desktop",
+		"client_id":"desktop-client-global-active",
+		"workset":{
+			"workset_id":"desktop:global",
+			"selector":{"kind":"global","global":true},
+			"history":{"mode":"none"},
+			"resources":{"run_intents":true},
+			"include_active":true,
+			"auto_subscribe_sessions":true
+		}
+	}`)
+
+	if len(reconnect.SessionOrder) != 302 {
+		t.Fatalf("session_order len = %d, want 302", len(reconnect.SessionOrder))
+	}
+	if len(reconnect.SessionsByID) != 302 {
+		t.Fatalf("sessions_by_id len = %d, want 302", len(reconnect.SessionsByID))
+	}
+	if len(reconnect.Subscriptions) != 2 {
+		t.Fatalf("subscriptions = %+v, want exactly two active sessions", reconnect.Subscriptions)
+	}
+	if len(reconnect.Realtime.Resume.Subscriptions) != 2 {
+		t.Fatalf("resume subscriptions = %+v, want exactly two active sessions", reconnect.Realtime.Resume.Subscriptions)
+	}
+	if got := sessionsV3ReconnectResumeSubscriptionIDs(reconnect.Realtime.Resume.Subscriptions); !stringSlicesEqual(got, []string{activeB, activeA}) {
+		t.Fatalf("resume subscription session IDs = %+v, want [%s %s]", got, activeB, activeA)
+	}
+	if got := sessionsV3ReconnectSubscriptionIDs(reconnect.Subscriptions); !stringSlicesEqual(got, []string{activeB, activeA}) {
+		t.Fatalf("subscription session IDs = %+v, want [%s %s]", got, activeB, activeA)
+	}
+	for i := 0; i < 300; i++ {
+		inactiveID := fmt.Sprintf("reconnect-global-inactive-%03d", i)
+		for _, subscribedID := range sessionsV3ReconnectSubscriptionIDs(reconnect.Subscriptions) {
+			if subscribedID == inactiveID {
+				t.Fatalf("inactive session %s was explicitly subscribed: %+v", inactiveID, reconnect.Subscriptions)
+			}
+		}
+	}
+	if len(reconnect.Realtime.Resume.Worksets) != 1 || reconnect.Realtime.Resume.Worksets[0].Selector.Kind != "global" {
+		t.Fatalf("resume worksets = %+v, want one global workset", reconnect.Realtime.Resume.Worksets)
+	}
+}
+
+func TestSessionsV3ReconnectExplicitSessionIDsRemainExplicit(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	store := server.sessions.Store()
+	seedSessionsV3ReconnectStoreSession(t, store, "reconnect-explicit-inactive", testPrincipal().UserID, testPrincipal().AccountScopeID, "/workspace/reconnect-explicit-inactive", 1000)
+
+	reconnect := postSessionsV3ReconnectBody(t, server, `{
+		"surface":"desktop",
+		"client_id":"desktop-client-explicit",
+		"workset":{
+			"workset_id":"desktop:explicit",
+			"selector":{"kind":"session_ids","session_ids":["reconnect-explicit-inactive"]},
+			"history":{"mode":"none"},
+			"resources":{"run_intents":true},
+			"auto_subscribe_sessions":true
+		}
+	}`)
+
+	if !stringSlicesEqual(reconnect.SessionOrder, []string{"reconnect-explicit-inactive"}) {
+		t.Fatalf("explicit session_order = %+v", reconnect.SessionOrder)
+	}
+	if got := sessionsV3ReconnectSubscriptionIDs(reconnect.Subscriptions); !stringSlicesEqual(got, []string{"reconnect-explicit-inactive"}) {
+		t.Fatalf("explicit subscriptions = %+v, want one requested inactive session", reconnect.Subscriptions)
+	}
+	if got := len(reconnect.Realtime.Resume.Subscriptions); got != 1 {
+		t.Fatalf("explicit resume subscriptions len = %d, want 1", got)
+	}
+	if got := sessionsV3ReconnectResumeSubscriptionIDs(reconnect.Realtime.Resume.Subscriptions); !stringSlicesEqual(got, []string{"reconnect-explicit-inactive"}) {
+		t.Fatalf("explicit resume subscription IDs = %+v, want [reconnect-explicit-inactive]", got)
 	}
 }
 
@@ -550,6 +658,22 @@ func recordSessionsV3ReconnectLifecycle(t *testing.T, server *Server, sessionID 
 	}); err != nil {
 		t.Fatalf("record lifecycle: %v", err)
 	}
+}
+
+func sessionsV3ReconnectSubscriptionIDs(subscriptions []sessionsV3ReconnectSubscription) []string {
+	out := make([]string, 0, len(subscriptions))
+	for _, sub := range subscriptions {
+		out = append(out, sub.SessionID)
+	}
+	return out
+}
+
+func sessionsV3ReconnectResumeSubscriptionIDs(subscriptions []V3RealtimeSubscriptionRequest) []string {
+	out := make([]string, 0, len(subscriptions))
+	for _, sub := range subscriptions {
+		out = append(out, sub.SessionID)
+	}
+	return out
 }
 
 func assertSessionsV3ReconnectSubscription(t *testing.T, payload sessionsV3ReconnectTestPayload, sessionID string) {

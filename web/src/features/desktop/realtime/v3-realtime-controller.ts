@@ -36,7 +36,8 @@ const ACTIVE_REPAIR_PAGE_SIZE = 500
 const ACTIVE_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
 
 export interface DesktopV3RealtimeController {
-  ensureSessionSubscription(sessionId: string): void
+  currentEndpointCursor(): string
+  connectSession(input: { sessionId: string; endpointCursor?: string | null }): Promise<void>
   ensureSessionHistory(sessionId: string): Promise<void>
   start(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void>
   stop(reason?: string): void
@@ -199,6 +200,14 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.firstResumeSent?.resolve()
     this.firstResumeSent = undefined
     this.transport.stop(reason)
+  }
+
+  currentEndpointCursor(): string {
+    return this.getSnapshot().realtime.endpointCursor?.trim() ?? ''
+  }
+
+  async connectSession(input: { sessionId: string; endpointCursor?: string | null }): Promise<void> {
+    this.ensureSessionSubscription(input.sessionId)
   }
 
   ensureSessionSubscription(sessionId: string): void {

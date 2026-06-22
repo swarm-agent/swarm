@@ -20,7 +20,7 @@ import {
 } from './v3-realtime-controller'
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { hydrateSnapshotFixture, messageA1, messageA2, projectionA, projectionB, reconnectFixture, runIntentA, sessionA, sessionB } from '../state/desktop-v3-cache.backend-fixtures'
-import type { SessionV3RealtimeResumeWire } from '../session-v3/types'
+import type { SessionV3RealtimeResumeWire, SessionV3RealtimeSubscriptionRequestWire } from '../session-v3/types'
 import type { DesktopV3CacheAction, DesktopV3CacheState, RealtimeMessage, V3SessionEvent } from '../state/desktop-v3-cache-types'
 
 if (typeof window === 'undefined') {
@@ -102,18 +102,24 @@ test('Desktop V3 realtime transport persists endpoint.watermark cursor without a
   })
   assert.deepEqual(delivered, ['endpoint.watermark'])
 
-  transport.registerSession({
+  socket.sent = []
+  const subscribeSession = (transport as DesktopV3RealtimeTransport & {
+    subscribeSession(subscription: SessionV3RealtimeSubscriptionRequestWire): Promise<void>
+  }).subscribeSession({
     session_id: 'session-a',
     subscription_id: 'sub-a',
     endpoint_cursor: 'stale-session-cursor',
   })
+  subscribeSession.catch(() => undefined)
 
-  const latestResume = resumes[resumes.length - 1]
-  assert.equal(latestResume.endpoint_cursor, 'v3c1.test_payload_2.test_signature_2')
-  assert.equal(latestResume.subscriptions?.[0]?.endpoint_cursor, 'v3c1.test_payload_2.test_signature_2')
-  assert.equal('after_seq' in (latestResume.subscriptions?.[0] ?? {}), false)
-  assert.equal('after_rev' in (latestResume.subscriptions?.[0] ?? {}), false)
+  assert.equal(resumes.length, 1, 'open-socket subscription must not send another resume')
+  assert.deepEqual(socket.sent.map((frame) => (frame as RealtimeMessage).kind), ['subscribe.session'])
+  const subscription = socket.sent[0] as RealtimeMessage
+  assert.equal(subscription.endpoint_cursor, 'v3c1.test_payload_2.test_signature_2')
+  assert.equal('after_seq' in subscription, false)
+  assert.equal('after_rev' in subscription, false)
   transport.stop()
+  await subscribeSession
 })
 
 test('Desktop V3 realtime transport does not advance cursor for auto-discovery before durable event', async () => {
@@ -297,12 +303,13 @@ test('Desktop V3 realtime controller waits for delayed sidebar bootstrap before 
   state = readyControllerState()
   releaseBootstrap()
   await waitFor(() => sockets.length === 1)
-  assert.equal(reconnectCount, 1)
+  assert.equal(reconnectCount, 0)
   assert.equal(sockets[0].readyState, FakeWebSocket.CONNECTING)
 
   sockets[0].open()
   await readyPromise
   assert.equal(ready, true)
+  assert.equal(reconnectCount, 0)
   await waitFor(() => hydrateRequests.length === 1)
   controller.stop()
 })
@@ -388,7 +395,7 @@ test('Desktop V3 immediate send waits for retained realtime bootstrap and first 
   state = readyControllerState()
   releaseBootstrap()
   await waitFor(() => sockets.length === 1)
-  assert.equal(reconnectCount, 1)
+  assert.equal(reconnectCount, 0)
   await flushAsyncWork()
   assert.equal(immediateReady, false)
 
@@ -398,6 +405,7 @@ test('Desktop V3 immediate send waits for retained realtime bootstrap and first 
   assert.equal(controller, await requireDesktopV3RealtimeControllerReady())
   assert.equal(sockets.length, 1)
   await lease.ready
+  assert.equal(reconnectCount, 0)
   lease.release()
   resetDesktopV3RealtimeControllerForTests()
 })
@@ -503,8 +511,8 @@ test('Desktop V3 direct route session missing from reconnect is explicitly subsc
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
       projections_by_session: { [sessionA.id]: projectionA },
-      run_intents_by_session: {},
-      current_run_intent_by_session: {},
+      run_intents_by_session: { [sessionA.id]: [runIntentA] },
+      current_run_intent_by_session: { [sessionA.id]: runIntentA },
       session_order: [sessionA.id],
       workset_id: 'global-scope',
       realtime: {
@@ -552,6 +560,7 @@ test('Desktop V3 direct route session missing from reconnect is explicitly subsc
   assert.deepEqual(
     resume.subscriptions?.map((subscription) => subscription.session_id),
     [sessionA.id, sessionB.id],
+    'startup resume must contain active sessionA plus selected sessionB only',
   )
   assert.equal(
     resume.subscriptions?.find((subscription) => subscription.session_id === sessionB.id)?.endpoint_cursor,
@@ -3085,6 +3094,341 @@ test('slow-consumer recovery resumes from last durable cursor', async () => {
   assert.equal((sockets[1].sent[0] as SessionV3RealtimeResumeWire).endpoint_cursor, 'cursor-5')
   assert.equal(state.realtime.endpointCursor, 'cursor-5')
   controller.stop()
+})
+
+
+test('Desktop V3 cold startup opens realtime from bootstrap cursor without HTTP reconnect', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-bootstrap'
+  state.selectedSessionId = sessionA.id
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = projectionA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
+  const sockets: FakeWebSocket[] = []
+  let reconnectCount = 0
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
+    reconnect: async () => {
+      reconnectCount += 1
+      return reconnectFixture({
+        snapshot_endpoint_cursor: 'cursor-reconnect',
+        sessions_by_id: { [sessionA.id]: sessionA },
+        projections_by_session: { [sessionA.id]: projectionA },
+        run_intents_by_session: {},
+        current_run_intent_by_session: {},
+        session_order: [sessionA.id],
+      })
+    },
+    hydrate: async () => hydrateSnapshotFixture({
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      session_order: [sessionA.id],
+      messages_by_session: { [sessionA.id]: [messageA1, messageA2] },
+      run_intents_by_session: {},
+    }),
+    openSocket: ({ endpointCursor }) => {
+      assert.equal(endpointCursor, 'cursor-bootstrap')
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start(sessionA.id)
+    ready.catch(() => undefined)
+    await waitFor(() => sockets.length === 1)
+    assert.equal(reconnectCount, 0)
+    sockets[0].open()
+    await ready
+    assert.equal(reconnectCount, 0)
+    assert.equal((sockets[0].sent[0] as RealtimeMessage).endpoint_cursor, 'cursor-bootstrap')
+  } finally {
+    controller.stop()
+  }
+})
+
+test('Desktop V3 cold startup resume contains selected plus active sessions, not global membership', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-bootstrap'
+  state.selectedSessionId = 'selected-inactive'
+  const inactiveIds = Array.from({ length: 300 }, (_, index) => `inactive-${index}`)
+  const activeA = 'active-a'
+  const activeB = 'active-b'
+  state.sessionOrderByScope['global-scope'] = ['selected-inactive', activeA, ...inactiveIds, activeB]
+  state.currentRunIntentBySession[activeA] = { session_id: activeA, run_id: 'run-a', status: 'running', created_at: 1, updated_at: 1, event_seq: 1 }
+  state.currentRunIntentBySession[activeB] = { session_id: activeB, run_id: 'run-b', status: 'pending_executor', created_at: 1, updated_at: 2, event_seq: 1 }
+  const reconnectSubscriptions = state.sessionOrderByScope['global-scope'].map((sessionId) => ({
+    session_id: sessionId,
+    subscription_id: `desktop:test:session:${sessionId}`,
+    endpoint_cursor: 'cursor-reconnect',
+  }))
+  const sockets: FakeWebSocket[] = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: {},
+      projections_by_session: {},
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: state.sessionOrderByScope['global-scope'],
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect',
+          subscriptions: reconnectSubscriptions,
+          worksets: [{
+            workset_id: 'global-scope',
+            subscription_id: 'workset-sub',
+            selector: { kind: 'global', global: true },
+            resources: ['membership', 'projections', 'run_intents', 'sessions', 'tombstones'],
+            auto_subscribe_sessions: true,
+          }],
+        },
+      },
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start('selected-inactive')
+    ready.catch(() => undefined)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    const resume = sockets[0].sent[0] as RealtimeMessage
+    assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id), ['selected-inactive', activeA, activeB])
+    assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.subscription_id), [
+      'desktop:test:session:selected-inactive',
+      'desktop:test:session:active-a',
+      'desktop:test:session:active-b',
+    ])
+    assert.equal(resume.worksets?.length, 1)
+  } finally {
+    controller.stop()
+  }
+})
+
+test('Desktop V3 open transport adds one session with subscribe.session and no resume', async () => {
+  const socket = new FakeWebSocket()
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'cursor-0',
+    openSocket: () => socket as unknown as WebSocket,
+    livenessTimeoutMs: 60_000,
+  })
+  await transport.start()
+  socket.open()
+  socket.sent = []
+
+  const pending = (transport as DesktopV3RealtimeTransport & {
+    subscribeSession(subscription: SessionV3RealtimeSubscriptionRequestWire): Promise<void>
+  }).subscribeSession({
+    session_id: 'session-new',
+    subscription_id: 'sub-new',
+    endpoint_cursor: 'cursor-0',
+  })
+  pending?.catch(() => undefined)
+
+  assert.deepEqual(socket.sent.map((frame) => (frame as RealtimeMessage).kind), ['subscribe.session'])
+  assert.equal(socket.sent.filter((frame) => (frame as RealtimeMessage).kind === 'resume').length, 0)
+  transport.stop()
+})
+
+test('Desktop V3 connectSession remains pending until matching replay.complete', async () => {
+  const socket = new FakeWebSocket()
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'cursor-0',
+    openSocket: () => socket as unknown as WebSocket,
+    onFrame: async () => undefined,
+    livenessTimeoutMs: 60_000,
+  })
+  await transport.start()
+  socket.open()
+
+  let resolved = false
+  const connect = (transport as DesktopV3RealtimeTransport & {
+    subscribeSession(subscription: SessionV3RealtimeSubscriptionRequestWire): Promise<void>
+  }).subscribeSession({
+    session_id: 'session-new',
+    subscription_id: 'sub-new',
+    endpoint_cursor: 'cursor-0',
+  }).then(() => {
+    resolved = true
+  })
+  await flushAsyncWork()
+  assert.equal(resolved, false)
+
+  socket.emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'replay.started', session_id: 'session-new', subscription_id: 'sub-new' })
+  await flushAsyncWork()
+  assert.equal(resolved, false)
+  socket.emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'event', session_id: 'session-new', endpoint_cursor: 'cursor-1', event: { id: 'evt-create', session_id: 'session-new', seq: 1, event_type: 'session.created', payload: {}, ts_unix_ms: 1 } })
+  await flushAsyncWork()
+  assert.equal(resolved, false)
+  socket.emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'replay.complete', session_id: 'session-new', subscription_id: 'sub-new', endpoint_cursor: 'cursor-1' })
+  await connect
+  assert.equal(resolved, true)
+  transport.stop()
+})
+
+test('Desktop V3 connectSession ignores replay.complete for another subscription ID', async () => {
+  const socket = new FakeWebSocket()
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'cursor-0',
+    openSocket: () => socket as unknown as WebSocket,
+    onFrame: async () => undefined,
+    livenessTimeoutMs: 60_000,
+  })
+  await transport.start()
+  socket.open()
+
+  let resolved = false
+  const connect = (transport as DesktopV3RealtimeTransport & {
+    subscribeSession(subscription: SessionV3RealtimeSubscriptionRequestWire): Promise<void>
+  }).subscribeSession({
+    session_id: 'session-new',
+    subscription_id: 'sub-new',
+    endpoint_cursor: 'cursor-0',
+  }).then(() => {
+    resolved = true
+  }).catch(() => undefined)
+  socket.emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'replay.complete', session_id: 'session-new', subscription_id: 'other-sub', endpoint_cursor: 'cursor-1' })
+  await flushAsyncWork()
+  assert.equal(resolved, false)
+  transport.stop()
+  await connect
+})
+
+test('Desktop V3 recovery still calls HTTP reconnect after cursor.error', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-bootstrap'
+  const sockets: FakeWebSocket[] = []
+  let reconnectCount = 0
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
+    reconnect: async () => {
+      reconnectCount += 1
+      return reconnectFixture({
+        snapshot_endpoint_cursor: `cursor-reconnect-${reconnectCount}`,
+        sessions_by_id: {},
+        projections_by_session: {},
+        run_intents_by_session: {},
+        current_run_intent_by_session: {},
+        session_order: [],
+      })
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start()
+    ready.catch(() => undefined)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    const reconnectCountAfterStartup = reconnectCount
+    sockets[0].emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'cursor.error', error: 'rejected', bootstrap_required: false })
+    await waitFor(() => reconnectCount === reconnectCountAfterStartup + 1)
+  } finally {
+    controller.stop()
+  }
+})
+
+test('Desktop V3 300-member bootstrap does not create 300 subscriptions', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-bootstrap'
+  state.selectedSessionId = 'selected-inactive'
+  const inactiveIds = Array.from({ length: 300 }, (_, index) => `inactive-${index}`)
+  state.sessionOrderByScope['global-scope'] = ['selected-inactive', ...inactiveIds]
+  const sockets: FakeWebSocket[] = []
+  const reconnectSubscriptions = state.sessionOrderByScope['global-scope'].map((sessionId) => ({
+    session_id: sessionId,
+    subscription_id: `desktop:test:session:${sessionId}`,
+    endpoint_cursor: 'cursor-reconnect',
+  }))
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    resolveOwner: () => testDesktopV3CacheOwner(),
+    writeOwnerAndTails: async () => true,
+    saveActiveOwnerKey: () => true,
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: {},
+      projections_by_session: {},
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: state.sessionOrderByScope['global-scope'],
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect',
+          subscriptions: reconnectSubscriptions,
+          worksets: [{ workset_id: 'global-scope', subscription_id: 'workset-sub', selector: { kind: 'global', global: true }, auto_subscribe_sessions: true }],
+        },
+      },
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start('selected-inactive')
+    ready.catch(() => undefined)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    const resume = sockets[0].sent[0] as RealtimeMessage
+    assert.equal(resume.subscriptions?.length, 1)
+    assert.equal(resume.subscriptions?.[0]?.session_id, 'selected-inactive')
+  } finally {
+    controller.stop()
+  }
 })
 
 function testDesktopV3CacheOwner() {

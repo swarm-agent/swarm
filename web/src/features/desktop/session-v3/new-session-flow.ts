@@ -261,6 +261,7 @@ export async function startNewDesktopV3Session(input: {
   }
 
   const controller = await flowDeps.requireControllerReady()
+  const endpointCursor = controller.currentEndpointCursor()
 
   const rawCreate = await flowDeps.postCreateSession(operation.createRequest)
   if (rawCreate.ok === false) {
@@ -273,7 +274,7 @@ export async function startNewDesktopV3Session(input: {
   flowDeps.dispatch(sessionCreateResponseToAction(rawCreate, sidebarScopeId))
 
   // Create is durable. Subscribe locally, and select only if the owning route is still current.
-  controller.ensureSessionSubscription(operation.sessionId)
+  await controller.connectSession({ sessionId: operation.sessionId, endpointCursor })
   if (input.shouldSelectSession?.() ?? true) {
     flowDeps.dispatch(selectSession(operation.sessionId))
   }
