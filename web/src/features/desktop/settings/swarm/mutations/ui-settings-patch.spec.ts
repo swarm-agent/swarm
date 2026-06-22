@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { saveDefaultNewSessionMode } from './save-default-new-session-mode'
 import { saveThinkingTagsSetting } from './save-thinking-tags-setting'
 import { saveSwarmSettings } from './save-swarm-settings'
 import { saveLocalContainerUpdateWarningDismissal } from './save-local-container-update-warning-dismissal'
@@ -64,6 +65,36 @@ test('saveSwarmSettings sends only swarm name patch and returns refreshed target
       swarm: { name: 'Primary Renamed' },
     })
     assert(seenURLs.some((url) => url.includes('/v1/swarm/targets')), 'expected immediate target refresh')
+  } finally {
+    restore()
+  }
+})
+
+test('saveDefaultNewSessionMode preserves existing chat fields and writes default mode', async () => {
+  let capturedBody = ''
+  const restore = installFetchMock(async (_input, init) => {
+    capturedBody = String(init?.body ?? '')
+    return new Response(JSON.stringify({
+      chat: { thinking_tags: false, default_new_session_mode: 'plan', default_workspace_routes: { '/repo': 'self' } },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+
+  try {
+    const response = await saveDefaultNewSessionMode({
+      current: { chat: { thinking_tags: false, default_workspace_routes: { '/repo': 'self' } } },
+      mode: 'plan',
+    })
+    assert.equal(response.chat?.default_new_session_mode, 'plan')
+    assert.deepEqual(JSON.parse(capturedBody), {
+      chat: {
+        thinking_tags: false,
+        default_workspace_routes: { '/repo': 'self' },
+        default_new_session_mode: 'plan',
+      },
+    })
   } finally {
     restore()
   }

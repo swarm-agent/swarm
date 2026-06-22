@@ -1,4 +1,6 @@
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
+import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
+import { normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
 import { getDesktopSessionCreateTarget } from '../chat/services/chat-routing'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
@@ -42,7 +44,7 @@ export interface CreateDesktopV3NewSessionOperationInput {
   route: DesktopChatRoute
   prompt: string
   title?: string
-  mode?: 'auto' | 'plan'
+  mode?: DesktopSessionMode
   agentName: string
   preference?: DesktopV3NewSessionPreference
   sessionMetadata?: Record<string, unknown>
@@ -109,7 +111,7 @@ export function createDesktopV3NewSessionOperation(
       target_relationship: targetRelationship,
       host_workspace_path: input.route.hostWorkspacePath?.trim() || undefined,
       runtime_workspace_path: input.route.runtimeWorkspacePath?.trim() || undefined,
-      mode: input.mode,
+      mode: normalizeSessionMode(input.mode),
       agent_name: agentName,
       metadata: input.sessionMetadata,
       preference: input.preference

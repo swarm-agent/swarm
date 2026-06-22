@@ -11,7 +11,7 @@ import type { DesktopSessionRecord } from '../../types/realtime'
 import type { StructuredToolMessage, ToolMessageState, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
 import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
 import { agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
-import { normalizeThinkingTagsEnabled } from '../../settings/swarm/types/swarm-settings'
+import { normalizeSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
@@ -277,7 +277,7 @@ export function DesktopV3ExistingConversationPane({
   const [sendError, setSendError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
-  const [mode, setMode] = useState<'auto' | 'plan'>((session?.mode || cacheSession?.mode) === 'plan' ? 'plan' : 'auto')
+  const [mode, setMode] = useState<DesktopSessionMode>(normalizeSessionMode(session?.mode || cacheSession?.mode))
   const [selectedAgent, setSelectedAgent] = useState(initialAgent)
   const [preference, setPreference] = useState<SessionPreferenceRecord>(cachedPreference)
   const scrollTailRef = useRef<HTMLDivElement | null>(null)
@@ -331,7 +331,7 @@ export function DesktopV3ExistingConversationPane({
   }, [hasRunningReasoning])
 
   useEffect(() => {
-    setMode((session?.mode || cacheSession?.mode) === 'plan' ? 'plan' : 'auto')
+    setMode(normalizeSessionMode(session?.mode || cacheSession?.mode))
   }, [cacheSession?.mode, session?.mode])
 
   useEffect(() => {
@@ -361,7 +361,7 @@ export function DesktopV3ExistingConversationPane({
   async function persistVisibleSettings() {
     if (!normalizedSessionId) return
     const tasks: Array<Promise<unknown>> = []
-    if ((session?.mode || cacheSession?.mode || 'auto') !== mode) {
+    if (normalizeSessionMode(session?.mode || cacheSession?.mode) !== mode) {
       tasks.push(updateSessionV3Mode(normalizedSessionId, mode))
     }
     const currentAgent = initialAgent.trim()

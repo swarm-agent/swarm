@@ -3,6 +3,7 @@ import { LoaderCircle, Mic, Minimize2, Send, Settings2, Square } from 'lucide-re
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
+import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import type { DesktopChatRoute } from '../services/chat-routing'
 import { supportsCodexFastMode } from '../services/model-options'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
@@ -130,8 +131,8 @@ export interface DesktopV3AgenticComposerProps {
   onSubmit: () => void | Promise<void>
   onStop?: () => void | Promise<void>
   onAbandonRetained?: () => void
-  mode: 'auto' | 'plan'
-  onModeChange: (mode: 'auto' | 'plan') => void
+  mode: DesktopSessionMode
+  onModeChange: (mode: DesktopSessionMode) => void
   showModePicker?: boolean
   executionLabel?: string
   currentAgent: string
@@ -541,7 +542,9 @@ export function DesktopV3AgenticComposer({
     </button>
   )
 
-  const settingsSummary = `${mode} · ${selectedModel?.label || 'Model'} · ${normalizedThinking}${fastSupported ? ` · fast ${fast}` : ''}`
+  const selectedAgentRuntimeMode = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent)?.runtimeMode || ''
+  const runtimeSummary = selectedAgentRuntimeMode ? ` · ${selectedAgentRuntimeMode.replace('_', ' ')}` : ''
+  const settingsSummary = `${mode}${runtimeSummary} · ${selectedModel?.label || 'Model'} · ${normalizedThinking}${fastSupported ? ` · fast ${fast}` : ''}`
 
   return (
     <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-v3-agentic-composer">
@@ -642,7 +645,7 @@ export function DesktopV3AgenticComposer({
             <div className="relative flex w-full min-w-0 min-[1000px]:hidden">
               {mobileSettingsOpen ? (
                 <div ref={mobileSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[max(260px,100%)] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
-                  <ModePicker mode={mode} onSelect={onModeChange} />
+                  {showModePicker ? <ModePicker mode={mode} onSelect={onModeChange} /> : null}
                   <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={onAgentSelect} dropdownAlign="left" />
                   <ModelPicker options={modelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={onModelSelect} openSignal={effectiveModelPickerSignal} />
                   <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} />

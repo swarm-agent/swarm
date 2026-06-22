@@ -28,9 +28,10 @@ import {
 import type { DesktopOnboardingStatus, DesktopSwarmGroupMember, DesktopSwarmGroupState, DesktopOnboardingConfig, DesktopOnboardingNetwork, DesktopOnboardingPairing } from './types/dashboard-status'
 import { uiSettingsQueryKey } from '../../queries/query-options'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
+import { saveDefaultNewSessionMode } from '../settings/swarm/mutations/save-default-new-session-mode'
 import { saveLocalContainerUpdateWarningDismissal } from '../settings/swarm/mutations/save-local-container-update-warning-dismissal'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
-import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { localContainerUpdateWarningDismissed, normalizeDefaultNewSessionMode, normalizeSwarmSettings, type DesktopSessionMode, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { AddSwarmModal } from './components/add-swarm-modal'
 import { fetchSwarmTargets, type SwarmTarget } from './api/swarm-targets'
 import { deleteSwarmMirrorResources, fetchSwarmMirrorResources, type SwarmMirrorResource, type SwarmMirrorResources, type SwarmMirrorWorkspaceResource } from './api/swarm-mirror'
@@ -1498,6 +1499,7 @@ export function DesktopSwarmDashboard() {
   const addContainerDisabled = loading || busy
   const visiblePendingPairings = activePendingPairings(pendingPairings)
   const localNameDirty = localNameDraft.trim() !== localSwarmName.trim()
+  const defaultNewSessionMode = normalizeDefaultNewSessionMode(uiSettings?.chat?.default_new_session_mode)
   const frontendOrigin = typeof window !== 'undefined' ? window.location.origin : ''
   const browserProtocol = typeof window !== 'undefined' ? window.location.protocol : 'http:'
   const configuredHost = onboardingStatus?.config.host || '127.0.0.1'
@@ -1929,6 +1931,28 @@ export function DesktopSwarmDashboard() {
       setStatus(`Saved swarm name as ${savedName}.`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save swarm name')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleSaveDefaultNewSessionMode = async (mode: DesktopSessionMode) => {
+    if (!uiSettings) {
+      setError('UI settings are not loaded yet.')
+      return
+    }
+    if (mode === defaultNewSessionMode) return
+    setBusy(true)
+    setError(null)
+    setStatus(null)
+    try {
+      const saved = await saveDefaultNewSessionMode({ current: uiSettings, mode })
+      setUISettings(saved)
+      queryClient.setQueryData(uiSettingsQueryKey(), saved)
+      queryClient.setQueryData(['ui-settings', 'swarm'], normalizeSwarmSettings(saved))
+      setStatus(`Default new chat mode set to ${normalizeDefaultNewSessionMode(saved.chat?.default_new_session_mode)}.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save default new chat mode')
     } finally {
       setBusy(false)
     }
@@ -2548,6 +2572,27 @@ export function DesktopSwarmDashboard() {
           ) : !hasPeerGroup ? (
             <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">No peer group exists yet. Local containers still work; use Link a Managed Host or create a peer group when you want to connect another machine.</div>
           ) : null}
+
+          <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-transparent p-3">
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_220px] sm:items-center">
+              <div>
+                <div className="text-sm font-semibold text-[var(--app-text)]">Default new chat mode</div>
+                <div className="text-xs text-[var(--app-text-muted)]">
+                  Used by the Desktop input bar before a new V3 session exists. Agent runtime defaults are configured in Agents.
+                </div>
+              </div>
+              <Select
+                value={defaultNewSessionMode}
+                onChange={(event) => void handleSaveDefaultNewSessionMode(event.target.value as DesktopSessionMode)}
+                disabled={busy || !uiSettings}
+                aria-label="Default new chat mode"
+                className="h-10 min-h-0 w-full rounded-xl bg-[var(--app-surface)] py-2 text-sm font-medium"
+              >
+                <option value="auto">Auto</option>
+                <option value="plan">Plan</option>
+              </Select>
+            </div>
+          </div>
 
           <div className="mt-5 grid gap-4 lg:grid-cols-[1.2fr_1fr]">
             <div className="space-y-3">

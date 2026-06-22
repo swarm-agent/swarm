@@ -132,10 +132,23 @@ test('Path A operation contains stable create and first-message wire payloads', 
   assert.equal(operation.createRequest.swarm_id, 'swarm-self')
   assert.equal(operation.createRequest.workspace_binding_id, 'binding-self')
   assert.equal(operation.createRequest.agent_name, 'swarm')
+  assert.equal(operation.createRequest.mode, 'auto')
   assert.equal(operation.firstMessageRequest.client_request_id, `desktop-v3-first-message:${operation.operationId}`)
   assert.equal(operation.firstMessageRequest.message_id, `desktop-v3-message:${operation.operationId}`)
   assert.equal(operation.firstMessageRequest.run_id, `desktop-v3-run:${operation.operationId}`)
   assert.equal(operation.firstMessageRequest.content, 'hello')
+})
+
+test('Path A operation defaults omitted session mode to auto', () => {
+  const operation = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    prompt: 'hello',
+    agentName: 'swarm',
+  })
+
+  assert.equal(operation.createRequest.mode, 'auto')
 })
 
 test('Path A operation rejects missing writable create authority before HTTP', () => {

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Check, ChevronsUp, NotepadText } from 'lucide-react'
+import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 
 interface ModePickerProps {
-  mode: 'plan' | 'auto'
-  onSelect: (mode: 'plan' | 'auto') => void
+  mode: DesktopSessionMode
+  onSelect: (mode: DesktopSessionMode) => void
 }
 
 const DROPDOWN_WIDTH = 180
@@ -15,7 +16,7 @@ export function ModePicker({ mode, onSelect }: ModePickerProps) {
   const dropdownRef = useRef<HTMLDivElement | null>(null)
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null)
 
-  const modes: Array<'plan' | 'auto'> = ['plan', 'auto']
+  const modes: DesktopSessionMode[] = ['plan', 'auto']
   const ModeIcon = mode === 'plan' ? NotepadText : ChevronsUp
 
   useLayoutEffect(() => {
@@ -73,7 +74,7 @@ export function ModePicker({ mode, onSelect }: ModePickerProps) {
     }
   }, [open])
 
-  const handleSelect = useCallback((m: 'plan' | 'auto') => {
+  const handleSelect = useCallback((m: DesktopSessionMode) => {
     onSelect(m)
     setOpen(false)
   }, [onSelect])

@@ -3,7 +3,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import { draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
-import { normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled } from '../../settings/swarm/types/swarm-settings'
+import { normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
@@ -146,7 +146,7 @@ export function DesktopV3NewSessionPane({
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
-  const [mode, setMode] = useState<'auto' | 'plan'>(defaultMode)
+  const [mode, setMode] = useState<DesktopSessionMode>(defaultMode)
   const [selectedAgent, setSelectedAgent] = useState(agentNameProp.trim() || agentState.activePrimary || '')
   const [preference, setPreference] = useState<SessionPreferenceRecord>(() => ({
     ...preferenceFromResolved(draftPreferenceQuery.data),

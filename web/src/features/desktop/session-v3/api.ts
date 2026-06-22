@@ -1,5 +1,7 @@
 import { requestJson } from '../../../app/api'
 import type { ResolvedSessionPreference } from '../chat/types/chat'
+import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
+import { normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
 import type {
   SessionV3PermissionResolveRequestWire,
   SessionV3PermissionResolveResponseWire,
@@ -56,18 +58,19 @@ export async function updateSessionV3Preference(
   return mapPreferenceResponse(response)
 }
 
-export async function updateSessionV3Mode(sessionId: string, mode: 'auto' | 'plan'): Promise<string> {
+export async function updateSessionV3Mode(sessionId: string, mode: DesktopSessionMode): Promise<DesktopSessionMode> {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) throw new Error('Desktop V3 mode update requires session_id')
+  const normalizedMode = normalizeSessionMode(mode)
   const response = await requestJson<{ ok?: boolean; mode?: string }>(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/mode`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode }),
+      body: JSON.stringify({ mode: normalizedMode }),
     },
   )
-  return String(response.mode ?? mode).trim() || mode
+  return normalizeSessionMode(response.mode ?? normalizedMode)
 }
 
 export async function updateSessionV3Agent(sessionId: string, agentName: string): Promise<void> {

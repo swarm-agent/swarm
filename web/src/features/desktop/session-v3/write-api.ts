@@ -1,4 +1,5 @@
 import { requestJson } from '../../../app/api'
+import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 
 import type {
   MessageMutationConflictResponse,
@@ -19,7 +20,7 @@ export interface DesktopV3CreateSessionRequest {
   target_relationship: 'self'
   host_workspace_path?: string
   runtime_workspace_path?: string
-  mode?: 'auto' | 'plan' | string
+  mode?: DesktopSessionMode
   agent_name?: string
   metadata?: Record<string, unknown>
   preference?: {

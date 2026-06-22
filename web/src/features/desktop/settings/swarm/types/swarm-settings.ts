@@ -29,10 +29,12 @@ export interface UIToolSettingsWire {
   image?: UIToolImageSettingsWire
 }
 
+export type DesktopSessionMode = 'auto' | 'plan'
+
 export interface UIChatSettingsWire {
   show_header?: boolean
   thinking_tags?: boolean
-  default_new_session_mode?: 'auto' | 'plan'
+  default_new_session_mode?: DesktopSessionMode
   default_workspace_routes?: Record<string, string>
   tool_stream?: Record<string, unknown>
 }
@@ -60,7 +62,7 @@ export interface GlobalThemeSettings {
 
 export interface SwarmSettings {
   name: string
-  defaultNewSessionMode: 'auto' | 'plan'
+  defaultNewSessionMode: DesktopSessionMode
   updatedAt: number
   raw: UISettingsWire
 }
@@ -70,8 +72,12 @@ export function normalizeSwarmName(value: string): string {
   return trimmed || DEFAULT_SWARM_NAME
 }
 
-export function normalizeDefaultNewSessionMode(value: unknown): 'auto' | 'plan' {
+export function normalizeSessionMode(value: unknown): DesktopSessionMode {
   return typeof value === 'string' && value.trim().toLowerCase() === 'plan' ? 'plan' : 'auto'
+}
+
+export function normalizeDefaultNewSessionMode(value: unknown): DesktopSessionMode {
+  return normalizeSessionMode(value)
 }
 
 export function normalizeGlobalThemeSettings(payload?: UISettingsWire | null): GlobalThemeSettings {
@@ -117,6 +123,16 @@ export function withDefaultWorkspaceRoute(current: UISettingsWire, workspacePath
     chat: {
       ...(current.chat ?? {}),
       default_workspace_routes: routes,
+    },
+  }
+}
+
+export function withDefaultNewSessionMode(current: UISettingsWire, mode: DesktopSessionMode): UISettingsWire {
+  return {
+    ...current,
+    chat: {
+      ...(current.chat ?? {}),
+      default_new_session_mode: normalizeSessionMode(mode),
     },
   }
 }
