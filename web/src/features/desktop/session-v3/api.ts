@@ -49,6 +49,8 @@ export function sessionV3ModeSettingsMutationResponse(
     ok: response.ok ?? true,
     session_id: response.session_id ?? fallbackSessionId,
     mode,
+    turn_usage: response.turn_usage,
+    usage_summary: response.usage_summary,
     mutation: mutationRecord(response.mutation),
     realtime_outbox: response.realtime_outbox,
   }
@@ -64,6 +66,8 @@ export function sessionV3AgentSettingsMutationResponse(
     metadata: response.metadata,
     agent: response.agent,
     agent_model_policy: response.agent_model_policy,
+    turn_usage: response.turn_usage,
+    usage_summary: response.usage_summary,
     mutation: mutationRecord(response.mutation),
     realtime_outbox: response.realtime_outbox,
   }
@@ -80,6 +84,8 @@ export function sessionV3PreferenceSettingsMutationResponse(
     preference: resolved.preference,
     context_window: resolved.contextWindow,
     max_output_tokens: resolved.maxOutputTokens,
+    turn_usage: response.turn_usage,
+    usage_summary: response.usage_summary,
     mutation: mutationRecord(response.mutation),
     realtime_outbox: response.realtime_outbox,
   }

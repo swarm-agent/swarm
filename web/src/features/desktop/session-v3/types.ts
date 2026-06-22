@@ -397,6 +397,8 @@ export interface SessionV3MutationResponseWire {
   active_run_intent?: SessionV3RunIntentWire | null
   run_intent?: SessionV3RunIntentWire | null
   metadata?: SessionV3JsonRecord
+  turn_usage?: unknown | null
+  usage_summary?: unknown | null
   realtime_outbox?: SessionV3RealtimeOutboxWire | null
   mutation?: SessionV3MutationWire | null
 }

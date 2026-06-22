@@ -1983,3 +1983,160 @@ test('session settings mutation updates mode metadata preference policy and proj
   assert.deepEqual(state.agentModelPolicyBySession[sessionA.id], { agent_name: 'explorer', locked: false })
   assert.equal(state.projectionsBySession[sessionA.id].last_event_seq, 30)
 })
+
+test('usage summary events update context cache turn by turn without timestamp regressions', () => {
+  const state = bootstrappedState()
+
+  applyCacheEvent(state, {
+    source: 'realtime',
+    sessionId: sessionA.id,
+    eventType: 'run.usage.updated',
+    sessionEvent: {
+      id: 'evt-usage-1',
+      session_id: sessionA.id,
+      seq: 40,
+      event_type: 'run.usage.updated',
+      payload: {
+        usage_summary: {
+          session_id: sessionA.id,
+          provider: 'codex',
+          model: 'gpt-5.4',
+          source: 'provider',
+          context_window: 1000,
+          total_tokens: 100,
+          remaining_tokens: 900,
+          updated_at: 100,
+        },
+      },
+      ts_unix_ms: 100,
+    },
+    projection: { session_id: sessionA.id, last_event_seq: 40, projection_high_watermark_seq: 40, updated_at: 100 },
+    payload: {
+      usage_summary: {
+        session_id: sessionA.id,
+        provider: 'codex',
+        model: 'gpt-5.4',
+        source: 'provider',
+        context_window: 1000,
+        total_tokens: 100,
+        remaining_tokens: 900,
+        updated_at: 100,
+      },
+    },
+  })
+
+  assert.equal((state.usageBySession[sessionA.id] as Record<string, unknown>).remaining_tokens, 900)
+
+  applyCacheEvent(state, {
+    source: 'realtime',
+    sessionId: sessionA.id,
+    eventType: 'run.usage.updated',
+    sessionEvent: {
+      id: 'evt-usage-older',
+      session_id: sessionA.id,
+      seq: 41,
+      event_type: 'run.usage.updated',
+      payload: {
+        usage_summary: {
+          session_id: sessionA.id,
+          context_window: 1000,
+          total_tokens: 200,
+          remaining_tokens: 800,
+          updated_at: 90,
+        },
+      },
+      ts_unix_ms: 90,
+    },
+    projection: { session_id: sessionA.id, last_event_seq: 41, projection_high_watermark_seq: 41, updated_at: 90 },
+    payload: {
+      usage_summary: {
+        session_id: sessionA.id,
+        context_window: 1000,
+        total_tokens: 200,
+        remaining_tokens: 800,
+        updated_at: 90,
+      },
+    },
+  })
+
+  assert.equal((state.usageBySession[sessionA.id] as Record<string, unknown>).remaining_tokens, 900)
+  assert.equal((state.usageBySession[sessionA.id] as Record<string, unknown>).updated_at, 100)
+
+  applyCacheEvent(state, {
+    source: 'realtime',
+    sessionId: sessionA.id,
+    eventType: 'run.usage.updated',
+    sessionEvent: {
+      id: 'evt-usage-newer',
+      session_id: sessionA.id,
+      seq: 42,
+      event_type: 'run.usage.updated',
+      payload: {
+        usage_summary: {
+          session_id: sessionA.id,
+          provider: 'codex',
+          model: 'gpt-5.4',
+          source: 'provider',
+          context_window: 1000,
+          total_tokens: 150,
+          remaining_tokens: 850,
+          updated_at: 110,
+        },
+      },
+      ts_unix_ms: 110,
+    },
+    projection: { session_id: sessionA.id, last_event_seq: 42, projection_high_watermark_seq: 42, updated_at: 110 },
+    payload: {
+      usage_summary: {
+        session_id: sessionA.id,
+        provider: 'codex',
+        model: 'gpt-5.4',
+        source: 'provider',
+        context_window: 1000,
+        total_tokens: 150,
+        remaining_tokens: 850,
+        updated_at: 110,
+      },
+    },
+  })
+
+  assert.equal((state.usageBySession[sessionA.id] as Record<string, unknown>).remaining_tokens, 850)
+  assert.equal((state.usageBySession[sessionA.id] as Record<string, unknown>).total_tokens, 150)
+})
+
+test('session preference settings mutation repairs cached context window baseline immediately', () => {
+  const state = bootstrappedState()
+  state.usageBySession[sessionA.id] = {
+    session_id: sessionA.id,
+    provider: 'codex',
+    model: 'old-model',
+    source: 'provider',
+    context_window: 1000,
+    total_tokens: 100,
+    remaining_tokens: 900,
+    updated_at: 10,
+  }
+
+  applySessionSettingsMutationResult(state, {
+    ok: true,
+    session_id: sessionA.id,
+    preference: {
+      provider: 'codex',
+      model: 'gpt-5.4',
+      thinking: 'medium',
+      serviceTier: '',
+      contextMode: '1m',
+      updatedAt: 50,
+    },
+    context_window: 2000,
+    max_output_tokens: 4096,
+  })
+
+  const usage = state.usageBySession[sessionA.id] as Record<string, unknown>
+  assert.equal(usage.provider, 'codex')
+  assert.equal(usage.model, 'gpt-5.4')
+  assert.equal(usage.context_window, 2000)
+  assert.equal(usage.total_tokens, 100)
+  assert.equal(usage.remaining_tokens, 1900)
+  assert.equal(usage.updated_at, 50)
+})

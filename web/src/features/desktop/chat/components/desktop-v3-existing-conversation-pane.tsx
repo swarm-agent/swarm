@@ -69,6 +69,44 @@ function normalizePreference(value: unknown): SessionPreferenceRecord {
   }
 }
 
+type NormalizedUsageSummary = {
+  contextWindow: number
+  remainingTokens: number
+  totalTokens: number
+  updatedAt: number
+}
+
+function normalizeUsageSummary(value: unknown): NormalizedUsageSummary | null {
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+  if (!record) return null
+  const contextWindow = finiteNumber(record.context_window ?? record.contextWindow)
+  const totalTokens = finiteNumber(record.total_tokens ?? record.totalTokens)
+  const remainingTokens = finiteNumber(record.remaining_tokens ?? record.remainingTokens)
+  const updatedAt = finiteNumber(record.updated_at ?? record.updatedAt)
+  if (contextWindow <= 0 && totalTokens <= 0 && remainingTokens <= 0 && updatedAt <= 0) return null
+  return { contextWindow, remainingTokens, totalTokens, updatedAt }
+}
+
+function finiteNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0
+}
+
+function formatDesktopV3ContextLabel(contextWindow: number, remainingTokens?: number): string {
+  if (contextWindow <= 0) return 'ctx'
+  if (typeof remainingTokens === 'number') {
+    return `${formatContextWindow(remainingTokens)} / ${formatContextWindow(contextWindow)} ctx`
+  }
+  return `${formatContextWindow(contextWindow)} ctx`
+}
+
+function formatDesktopV3ContextTooltip(contextWindow: number, usage: NormalizedUsageSummary | null): string {
+  if (usage && contextWindow > 0) {
+    return `Remaining context ${formatContextWindow(usage.remainingTokens)} of ${formatContextWindow(contextWindow)}. Total tokens ${usage.totalTokens.toLocaleString()}.`
+  }
+  if (contextWindow > 0) return `Context window ${formatContextWindow(contextWindow)}`
+  return 'Context window unavailable'
+}
+
 function preferenceFromOption(option: ModelOptionRecord | null, current: SessionPreferenceRecord): SessionPreferenceRecord {
   if (!option) return current
   return {
@@ -326,6 +364,7 @@ export function DesktopV3ExistingConversationPane({
   const modelOptions = modelOptionsQuery.data ?? []
   const thinkingTagsEnabled = normalizeThinkingTagsEnabled(uiSettingsQuery.data)
   const rawCachedPreference = useDesktopV3CacheSelector((state) => state.preferencesBySession[normalizedSessionId])
+  const rawCachedUsage = useDesktopV3CacheSelector((state) => state.usageBySession[normalizedSessionId])
   const cachedPreference = useMemo(() => normalizePreference(rawCachedPreference), [rawCachedPreference])
   const cacheSession = useDesktopV3CacheSelector((state) => {
     const record = state.sessionsById[normalizedSessionId]
@@ -366,10 +405,15 @@ export function DesktopV3ExistingConversationPane({
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
   const selectedModelAvailable = Boolean(selectedModelOption)
   const fastSupported = selectedModelOption ? supportsCodexFastMode(selectedModelOption.provider, selectedModelOption.model) : false
+  const cachedUsage = useMemo(() => normalizeUsageSummary(rawCachedUsage), [rawCachedUsage])
   const selectedContextWindow = selectedModelOption
     ? effectiveContextWindow(selectedModelOption.provider, selectedModelOption.model, selectedModelOption.contextMode, selectedModelOption.contextWindow)
     : 0
-  const contextLabel = selectedContextWindow > 0 ? `${formatContextWindow(selectedContextWindow)} ctx` : 'ctx'
+  const effectiveContextWindowValue = cachedUsage?.contextWindow && cachedUsage.contextWindow > 0
+    ? cachedUsage.contextWindow
+    : selectedContextWindow
+  const contextLabel = formatDesktopV3ContextLabel(effectiveContextWindowValue, cachedUsage?.remainingTokens)
+  const contextTooltip = formatDesktopV3ContextTooltip(effectiveContextWindowValue, cachedUsage)
   const workspaceSettingsMatch = matchRoute({ to: '/$workspaceSlug/settings', fuzzy: false })
     ?? matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
     ?? matchRoute({ to: '/$workspaceSlug', fuzzy: false })
@@ -656,6 +700,7 @@ export function DesktopV3ExistingConversationPane({
         routeOptions={routeOptions}
         routeTitle="Changing the route starts a new session in this workspace."
         contextLabel={contextLabel}
+        contextTooltip={contextTooltip}
         compactDisabled
       />
     </div>

@@ -343,6 +343,8 @@ export interface SessionMessageMutationResponse {
   session_id: string
   message: MessageSnapshot | null
   run_intent: V3SessionRunIntent | null
+  turn_usage?: unknown
+  usage_summary?: unknown
   mutation: SessionMutationResult
   realtime_outbox: V3RealtimeOutboxRecord | null
 }
@@ -366,6 +368,8 @@ export interface SessionSettingsMutationResponse {
   max_output_tokens?: number
   agent?: Record<string, unknown>
   agent_model_policy?: unknown
+  turn_usage?: unknown
+  usage_summary?: unknown
   mutation?: SessionMutationResult | null
   realtime_outbox?: unknown
   [key: string]: unknown

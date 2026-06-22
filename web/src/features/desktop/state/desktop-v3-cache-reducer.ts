@@ -746,6 +746,9 @@ export function applyMessageMutationResult(
   if (raw.message) {
     upsertCommittedMessage(state, raw.session_id || raw.message.session_id, raw.message)
   }
+  const sessionId = raw.session_id || raw.message?.session_id || raw.run_intent?.session_id || ''
+  applyUsageSummaryFromUnknown(state, sessionId, raw.usage_summary)
+  applyUsageSummaryFromUnknown(state, sessionId, recordValue(raw.mutation)?.usage_summary)
   delete state.pendingUserByClientRequestId[clientRequestId]
   for (const [pendingClientRequestId, pending] of Object.entries(state.pendingUserByClientRequestId)) {
     if (pending.messageId === messageId) {
@@ -788,6 +791,9 @@ export function applySessionSettingsMutationResult(
   if (raw.agent_model_policy !== undefined) {
     state.agentModelPolicyBySession[sessionId] = raw.agent_model_policy
   }
+  applyUsageSummaryFromUnknown(state, sessionId, raw.usage_summary)
+  applyUsageSummaryFromUnknown(state, sessionId, recordValue(raw.mutation)?.usage_summary)
+  applyUsageContextBaselineFromSettings(state, sessionId, raw)
 
   return state
 }
@@ -884,9 +890,7 @@ export function applyCacheEvent(
     record.session.lifecycle = payload.lifecycle
   }
 
-  if (payload.usage_summary) {
-    state.usageBySession[sessionId] = payload.usage_summary
-  }
+  applyUsageSummaryFromEventPayload(state, sessionId, payload)
 
   applyPermissionEvent(state, event)
 
@@ -1464,7 +1468,7 @@ function mergeReconnectOptionalResources(
     mergeRecord(state.planRevisionsBySession, raw.plan_revisions_by_session)
   }
   mergePermissionsBySession(state.permissionsBySession, raw.permissions_by_session)
-  mergeRecord(state.usageBySession, raw.usage_by_session)
+  mergeUsageBySession(state, raw.usage_by_session)
   mergeRecord(state.preferencesBySession, raw.preferences_by_session)
   mergeRecord(state.agentModelPolicyBySession, raw.agent_model_policy_by_session)
   if (resources.has('messages') || resources.has('events')) {
@@ -1520,7 +1524,7 @@ function mergeSnapshotResources(
     replacePermissionsBySession(state.permissionsBySession, snapshot.permissions_by_session, authoritativeSessionIds)
   }
   if (syncResourceSetContains(resourceSet, 'usage')) {
-    replaceRecordBySession(state.usageBySession, snapshot.usage_by_session, authoritativeSessionIds)
+    replaceUsageBySession(state, snapshot.usage_by_session, authoritativeSessionIds)
   }
   if (syncResourceSetContains(resourceSet, 'preferences')) {
     replaceRecordBySession(state.preferencesBySession, snapshot.preferences_by_session, authoritativeSessionIds)
@@ -2286,6 +2290,93 @@ function mergeRecord<T>(target: Record<string, T>, source: Record<string, T | un
   for (const [key, value] of Object.entries(source)) {
     target[key] = value as T
   }
+}
+
+function mergeUsageBySession(state: DesktopV3CacheState, source: Record<string, unknown> | undefined): void {
+  if (!source) return
+  for (const [sessionId, value] of Object.entries(source)) {
+    applyUsageSummaryFromUnknown(state, sessionId, value)
+  }
+}
+
+function replaceUsageBySession(state: DesktopV3CacheState, source: Record<string, unknown> | undefined, sessionIds: Set<string>): void {
+  for (const sessionId of sessionIds) {
+    delete state.usageBySession[sessionId]
+  }
+  mergeUsageBySession(state, onlyRequested(source, sessionIds))
+}
+
+function applyUsageSummaryFromEventPayload(
+  state: DesktopV3CacheState,
+  fallbackSessionId: string,
+  payload: SessionEventPayload,
+): void {
+  applyUsageSummaryFromUnknown(state, fallbackSessionId, payload.usage_summary)
+  applyUsageSummaryFromUnknown(state, fallbackSessionId, recordValue(payload)?.usage_state)
+}
+
+function applyUsageSummaryFromUnknown(
+  state: DesktopV3CacheState,
+  fallbackSessionId: string,
+  value: unknown,
+): void {
+  const summary = recordValue(value)
+  if (!summary) return
+  const sessionId = stringField(summary.session_id)
+    || stringField(summary.sessionId)
+    || fallbackSessionId.trim()
+  if (!sessionId) return
+
+  const existing = recordValue(state.usageBySession[sessionId])
+  const incomingUpdatedAt = usageUpdatedAt(summary)
+  const existingUpdatedAt = usageUpdatedAt(existing)
+  if (existingUpdatedAt > 0 && incomingUpdatedAt > 0 && incomingUpdatedAt < existingUpdatedAt) {
+    return
+  }
+
+  state.usageBySession[sessionId] = summary
+}
+
+function applyUsageContextBaselineFromSettings(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  raw: SessionSettingsMutationResponse,
+): void {
+  const contextWindow = usageNumber(raw.context_window)
+    || usageNumber(recordValue(raw.agent_model_policy)?.context_window)
+  if (contextWindow <= 0) return
+
+  const existing = recordValue(state.usageBySession[sessionId]) ?? {}
+  const preference = recordValue(raw.preference)
+    ?? recordValue(recordValue(raw.agent_model_policy)?.preference)
+    ?? recordValue(state.preferencesBySession[sessionId])
+  const provider = stringValue(preference?.provider).trim() || stringValue(existing.provider).trim()
+  const model = stringValue(preference?.model).trim() || stringValue(existing.model).trim()
+  const totalTokens = usageNumber(existing.total_tokens ?? existing.totalTokens)
+  const updatedAt = Math.max(
+    usageUpdatedAt(existing),
+    usageNumber(preference?.updated_at ?? preference?.updatedAt),
+  )
+
+  state.usageBySession[sessionId] = {
+    ...existing,
+    session_id: sessionId,
+    provider,
+    model,
+    source: stringValue(existing.source).trim() || 'settings_mutation',
+    context_window: contextWindow,
+    total_tokens: totalTokens,
+    remaining_tokens: Math.max(0, contextWindow - totalTokens),
+    updated_at: updatedAt,
+  }
+}
+
+function usageUpdatedAt(value: Record<string, unknown> | undefined): number {
+  return usageNumber(value?.updated_at ?? value?.updatedAt)
+}
+
+function usageNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0
 }
 
 function replaceRecordBySession<T>(target: Record<string, T>, source: Record<string, T | undefined> | undefined, sessionIds: Set<string>): void {

@@ -1536,6 +1536,8 @@ func sessionV3MessageMutationResponse(sessionID string, result sessionruntime.Se
 		"session_id":      sessionID,
 		"message":         result.Message,
 		"run_intent":      result.RunIntent,
+		"turn_usage":      result.TurnUsage,
+		"usage_summary":   result.UsageSummary,
 		"mutation":        sessionV3MutationResultResponse(result),
 		"realtime_outbox": result.RealtimeOutbox,
 	}
