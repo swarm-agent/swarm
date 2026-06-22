@@ -45,7 +45,7 @@ function terminalKind(status: string): DesktopV3RunStatusKind {
 function terminalLabel(kind: DesktopV3RunStatusKind): string {
   switch (kind) {
     case 'failed':
-      return 'Turn failed'
+      return 'Failed'
     case 'stopped':
       return 'Stopped'
     case 'interrupted':
@@ -72,7 +72,7 @@ export function buildDesktopV3RunStatusModel(input: {
   if (currentStatus === 'dispatch_blocked') {
     return {
       kind: 'paused',
-      label: 'User paused session',
+      label: 'Paused',
       startedAt: timestamp(input.currentRunIntent?.created_at),
       endedAt: timestamp(input.currentRunIntent?.updated_at),
       active: false,
@@ -81,7 +81,7 @@ export function buildDesktopV3RunStatusModel(input: {
   if (ACTIVE_RUN_INTENT_STATUSES.has(currentStatus)) {
     return {
       kind: currentStatus === 'pending_executor' ? 'starting' : 'active',
-      label: currentStatus === 'pending_executor' ? 'Starting' : 'Swarming',
+      label: currentStatus === 'pending_executor' ? 'Starting' : 'Running',
       startedAt: timestamp(input.currentRunIntent?.created_at),
       active: true,
     }
@@ -91,7 +91,7 @@ export function buildDesktopV3RunStatusModel(input: {
   if (latestStatus === 'dispatch_blocked') {
     return {
       kind: 'paused',
-      label: 'User paused session',
+      label: 'Paused',
       startedAt: timestamp(input.latestRunIntent?.created_at),
       endedAt: timestamp(input.latestRunIntent?.updated_at),
       active: false,
@@ -100,7 +100,7 @@ export function buildDesktopV3RunStatusModel(input: {
   if (ACTIVE_RUN_INTENT_STATUSES.has(latestStatus)) {
     return {
       kind: latestStatus === 'pending_executor' ? 'starting' : 'active',
-      label: latestStatus === 'pending_executor' ? 'Starting' : 'Swarming',
+      label: latestStatus === 'pending_executor' ? 'Starting' : 'Running',
       startedAt: timestamp(input.latestRunIntent?.created_at),
       active: true,
     }
@@ -108,7 +108,7 @@ export function buildDesktopV3RunStatusModel(input: {
 
   const liveActive = input.liveRuns?.some(liveRunActive) ?? false
   if (liveActive) {
-    return { kind: 'active', label: 'Swarming', active: true }
+    return { kind: 'active', label: 'Running', active: true }
   }
 
   if (TERMINAL_RUN_INTENT_STATUSES.has(latestStatus)) {
@@ -140,24 +140,25 @@ export function formatDesktopV3RunTimer(model: DesktopV3RunStatusModel, now: num
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
-export function DesktopV3RunStatusBar({ model, now }: { model: DesktopV3RunStatusModel | null; now: number }) {
+export function DesktopV3RunStatusPill({ model, now }: { model: DesktopV3RunStatusModel | null; now: number }) {
   if (!model) return null
   const timer = formatDesktopV3RunTimer(model, now)
   const spinning = model.kind === 'starting' || model.kind === 'active'
   return (
-    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-bg)] px-4 py-2 sm:px-6" aria-live="polite" data-testid="desktop-v3-run-status-bar">
-      <div className="mx-auto flex w-full max-w-3xl items-center justify-center">
-        <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-[11px] font-medium text-[var(--app-text-muted)] shadow-sm">
-          {spinning ? <LoaderCircle size={12} className="animate-spin text-[var(--app-primary)]" /> : <span className={cn('h-1.5 w-1.5 rounded-full', model.kind === 'paused' ? 'bg-[var(--app-warning)]' : 'bg-[var(--app-text-subtle)]')} />}
-          <span>{model.label}</span>
-          {timer ? (
-            <>
-              <span className="text-[var(--app-text-subtle)]">·</span>
-              <span className="tabular-nums text-[var(--app-text)]">{timer}</span>
-            </>
-          ) : null}
-        </div>
-      </div>
+    <div
+      className="inline-flex h-9 max-w-[12rem] shrink-0 items-center gap-1.5 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[11px] font-medium text-[var(--app-text-muted)] shadow-sm sm:max-w-none sm:gap-2 sm:px-3"
+      aria-live="polite"
+      data-testid="desktop-v3-run-status-pill"
+      title={timer ? `${model.label} · ${timer}` : model.label}
+    >
+      {spinning ? <LoaderCircle size={12} className="shrink-0 animate-spin text-[var(--app-primary)]" /> : <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', model.kind === 'paused' ? 'bg-[var(--app-warning)]' : 'bg-[var(--app-text-subtle)]')} />}
+      <span className="truncate">{model.label}</span>
+      {timer ? (
+        <>
+          <span className="shrink-0 text-[var(--app-text-subtle)]">·</span>
+          <span className="shrink-0 tabular-nums text-[var(--app-text)]">{timer}</span>
+        </>
+      ) : null}
     </div>
   )
 }

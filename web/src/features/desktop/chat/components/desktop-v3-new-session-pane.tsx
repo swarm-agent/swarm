@@ -10,7 +10,7 @@ import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } fr
 import type { AgentStateRecord, ModelOptionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
-import { DesktopV3RunStatusBar, buildDesktopV3RunStatusModel } from './desktop-v3-run-status'
+import { buildDesktopV3RunStatusModel } from './desktop-v3-run-status'
 import {
   clearDesktopV3NewSessionOperation,
   createDesktopV3NewSessionOperation,
@@ -341,13 +341,13 @@ export function DesktopV3NewSessionPane({
         title="New conversation"
         workspaceName={workspace.workspaceName || workspace.path}
         mode={mode}
-        running={starting}
+        runStatus={runStatusModel}
+        runStatusNow={timerNow}
         onOpenChats={onOpenChats}
       />
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
         <div className="mx-auto flex h-full w-full max-w-3xl flex-col justify-end" />
       </div>
-      <DesktopV3RunStatusBar model={runStatusModel} now={timerNow} />
       <DesktopV3AgenticComposer
         draft={draft}
         onDraftChange={setDraft}

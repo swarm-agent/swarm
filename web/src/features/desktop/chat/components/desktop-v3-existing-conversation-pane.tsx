@@ -17,7 +17,7 @@ import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thi
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
-import { DesktopV3RunStatusBar, buildDesktopV3RunStatusModel } from './desktop-v3-run-status'
+import { buildDesktopV3RunStatusModel } from './desktop-v3-run-status'
 import {
   sessionV3AgentSettingsMutationResponse,
   sessionV3ModeSettingsMutationResponse,
@@ -634,7 +634,8 @@ export function DesktopV3ExistingConversationPane({
         title={session?.title || cacheSession?.title || 'Conversation'}
         workspaceName={session?.workspaceName || cacheSession?.workspace_name || 'Workspace'}
         mode={mode}
-        running={Boolean(currentRun)}
+        runStatus={runStatusModel}
+        runStatusNow={timerNow}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
       />
@@ -662,7 +663,6 @@ export function DesktopV3ExistingConversationPane({
         </div>
       </div>
 
-      <DesktopV3RunStatusBar model={runStatusModel} now={timerNow} />
       <DesktopV3AgenticComposer
         draft={draft}
         onDraftChange={setDraft}
