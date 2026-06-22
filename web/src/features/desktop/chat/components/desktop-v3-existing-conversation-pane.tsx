@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { CheckCircle2, LoaderCircle, XCircle } from 'lucide-react'
+import { ArrowDown, CheckCircle2, LoaderCircle, XCircle } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
 import { buildStructuredToolMessage, parseStructuredToolMessage } from '../services/tool-message'
@@ -186,6 +186,123 @@ type DesktopV3RenderItem =
   | { type: 'live-reasoning'; id: string; text: string; summary: string; state: NonNullable<LiveRunOverlay['reasoning']>['state']; startedAt: number | null; completedAt?: number | null; timelineSeq?: number }
   | { type: 'live-tool'; id: string; tool: LiveRunOverlay['toolCallsByCallId'][string]; timelineSeq?: number }
   | { type: 'live-working'; id: string; timelineSeq?: number }
+
+type DesktopV3ScrollBehavior = 'auto' | 'smooth'
+
+const DESKTOP_V3_BOTTOM_BUFFER_PX = 140
+
+function desktopV3BottomDistance(element: HTMLElement): number {
+  return Math.max(0, element.scrollHeight - element.scrollTop - element.clientHeight)
+}
+
+function useDesktopV3StickyBottomScroll(options: { resetKey: string; itemCount: number; bottomBufferPx?: number }) {
+  const bottomBufferPx = options.bottomBufferPx ?? DESKTOP_V3_BOTTOM_BUFFER_PX
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  const autoFollowRef = useRef(true)
+  const smoothFollowUntilRef = useRef(0)
+  const frameRef = useRef<number | null>(null)
+  const lastScrollHeightRef = useRef(0)
+  const [isAtBottom, setIsAtBottom] = useState(true)
+  const [hasUnseenLatest, setHasUnseenLatest] = useState(false)
+
+  const cancelScheduledScroll = useCallback(() => {
+    if (frameRef.current === null) return
+    window.cancelAnimationFrame(frameRef.current)
+    frameRef.current = null
+  }, [])
+
+  const setPinnedStateFromElement = useCallback((element: HTMLElement) => {
+    const pinned = desktopV3BottomDistance(element) <= bottomBufferPx
+    const keepFollowingSmoothJump = !pinned && smoothFollowUntilRef.current > Date.now()
+    autoFollowRef.current = pinned || keepFollowingSmoothJump
+    setIsAtBottom(pinned || keepFollowingSmoothJump)
+    if (pinned) setHasUnseenLatest(false)
+    return pinned
+  }, [bottomBufferPx])
+
+  const scrollToBottom = useCallback((behavior: DesktopV3ScrollBehavior = 'auto') => {
+    const element = scrollContainerRef.current
+    if (!element) return
+    autoFollowRef.current = true
+    setIsAtBottom(true)
+    setHasUnseenLatest(false)
+    if (behavior === 'smooth') {
+      smoothFollowUntilRef.current = Date.now() + 1200
+      element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' })
+      return
+    }
+    smoothFollowUntilRef.current = 0
+    element.scrollTop = element.scrollHeight
+  }, [])
+
+  const scheduleAutoFollow = useCallback((scheduleOptions: { forceUnseen?: boolean } = {}) => {
+    const element = scrollContainerRef.current
+    const nextScrollHeight = element?.scrollHeight ?? 0
+    const contentAdvanced = scheduleOptions.forceUnseen || nextScrollHeight > lastScrollHeightRef.current + 1
+    lastScrollHeightRef.current = nextScrollHeight
+    if (!autoFollowRef.current) {
+      if (contentAdvanced) setHasUnseenLatest(true)
+      return
+    }
+    if (frameRef.current !== null) return
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null
+      if (!autoFollowRef.current) return
+      scrollToBottom('auto')
+    })
+  }, [scrollToBottom])
+
+  useEffect(() => {
+    const element = scrollContainerRef.current
+    if (!element) return
+    const handleScroll = () => {
+      setPinnedStateFromElement(element)
+    }
+    handleScroll()
+    element.addEventListener('scroll', handleScroll, { passive: true })
+    return () => element.removeEventListener('scroll', handleScroll)
+  }, [setPinnedStateFromElement])
+
+  useEffect(() => {
+    autoFollowRef.current = true
+    lastScrollHeightRef.current = scrollContainerRef.current?.scrollHeight ?? 0
+    setIsAtBottom(true)
+    setHasUnseenLatest(false)
+    scrollToBottom('auto')
+  }, [options.resetKey, scrollToBottom])
+
+  useEffect(() => {
+    scheduleAutoFollow({ forceUnseen: true })
+  }, [options.itemCount, scheduleAutoFollow])
+
+  useEffect(() => {
+    const scrollElement = scrollContainerRef.current
+    const contentElement = contentRef.current
+    if (!scrollElement || !contentElement) return
+    const handleObservedResize = () => scheduleAutoFollow()
+    const handleObservedMutation = () => scheduleAutoFollow({ forceUnseen: true })
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(handleObservedResize)
+    resizeObserver?.observe(scrollElement)
+    resizeObserver?.observe(contentElement)
+    const mutationObserver = typeof MutationObserver === 'undefined' ? null : new MutationObserver(handleObservedMutation)
+    mutationObserver?.observe(contentElement, { childList: true, subtree: true, characterData: true })
+    handleObservedResize()
+    return () => {
+      resizeObserver?.disconnect()
+      mutationObserver?.disconnect()
+      cancelScheduledScroll()
+    }
+  }, [cancelScheduledScroll, scheduleAutoFollow])
+
+  return {
+    scrollContainerRef,
+    contentRef,
+    isAtBottom,
+    hasUnseenLatest,
+    scrollToBottom,
+  }
+}
 
 function numericTimelineSeq(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
@@ -391,7 +508,6 @@ export function DesktopV3ExistingConversationPane({
   const [selectedAgent, setSelectedAgent] = useState(initialAgent)
   const [preference, setPreference] = useState<SessionPreferenceRecord>(cachedPreference)
   const unlockedPreferenceRef = useRef<SessionPreferenceRecord>(cachedPreference)
-  const scrollTailRef = useRef<HTMLDivElement | null>(null)
 
   const hasStoredOperation = Boolean(storedOperation)
   const hasMessages = renderedMessages.committed.length > 0
@@ -426,6 +542,13 @@ export function DesktopV3ExistingConversationPane({
   )
   const canSend = Boolean(normalizedSessionId && !sending && selectedAgent.trim() && selectedModelAvailable && (hasStoredOperation || draft.trim()))
   const renderItems = useMemo(() => buildDesktopV3ConversationRenderItems(renderedMessages), [renderedMessages])
+  const {
+    scrollContainerRef,
+    contentRef,
+    isAtBottom,
+    hasUnseenLatest,
+    scrollToBottom,
+  } = useDesktopV3StickyBottomScroll({ resetKey: normalizedSessionId, itemCount: renderItems.length })
   const hasRunningReasoning = renderedMessages.liveRuns.some((run) => {
     if (run.reasoning?.state === 'running') return true
     return Object.values(run.reasoningByKey ?? {}).some((reasoning) => reasoning.state === 'running')
@@ -446,10 +569,6 @@ export function DesktopV3ExistingConversationPane({
     setDraft(operation?.request.content ?? '')
     setSendError(null)
   }, [normalizedSessionId])
-
-  useEffect(() => {
-    scrollTailRef.current?.scrollIntoView({ block: 'end' })
-  }, [normalizedSessionId, renderItems.length])
 
   useEffect(() => {
     if (!statusTimerActive) return
@@ -560,6 +679,7 @@ export function DesktopV3ExistingConversationPane({
 
     setSending(true)
     setSendError(null)
+    scrollToBottom('smooth')
     try {
       if (!selectedModelAvailable) {
         throw new Error('Select a model before sending')
@@ -639,8 +759,9 @@ export function DesktopV3ExistingConversationPane({
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
       />
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
+      <div className="relative min-h-0 flex-1">
+        <div ref={scrollContainerRef} className="h-full min-h-0 overflow-y-auto px-4 py-6 sm:px-8">
+          <div ref={contentRef} className="mx-auto flex w-full max-w-3xl flex-col gap-5">
           {initialHydrateStatus === 'loading' && !messagesLoaded ? (
             <DesktopV3ChatInlineState title="Loading conversation…" description="Hydrating cached message tails." />
           ) : null}
@@ -650,17 +771,29 @@ export function DesktopV3ExistingConversationPane({
           {!hasMessages && initialHydrateStatus !== 'loading' && initialHydrateStatus !== 'error' ? (
             <DesktopV3ChatInlineState title="Empty conversation" description="Send a message to continue this session." />
           ) : null}
-          {renderItems.map((item, index) => (
-            <DesktopV3RenderItemView
-              key={item.type === 'message' ? item.message.id : item.type === 'pending-user' ? item.message.clientRequestId : item.id}
-              item={item}
-              thinkingTagsEnabled={thinkingTagsEnabled}
-              timerNow={timerNow}
-              index={index}
-            />
-          ))}
-          <div ref={scrollTailRef} />
+            {renderItems.map((item, index) => (
+              <DesktopV3RenderItemView
+                key={item.type === 'message' ? item.message.id : item.type === 'pending-user' ? item.message.clientRequestId : item.id}
+                item={item}
+                thinkingTagsEnabled={thinkingTagsEnabled}
+                timerNow={timerNow}
+                index={index}
+              />
+            ))}
+            <div aria-hidden="true" />
+          </div>
         </div>
+        {!isAtBottom && hasUnseenLatest ? (
+          <button
+            type="button"
+            aria-label="Jump to latest message"
+            title="Jump to latest message"
+            onClick={() => scrollToBottom('smooth')}
+            className="absolute bottom-5 right-5 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] shadow-lg transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+          >
+            <ArrowDown size={18} aria-hidden="true" />
+          </button>
+        ) : null}
       </div>
 
       <DesktopV3AgenticComposer
