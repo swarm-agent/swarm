@@ -13,6 +13,7 @@ import type {
   SessionCreateMutationResponse,
   SessionMessageMutationResponse,
   SessionMutationErrorResponse,
+  SessionSettingsMutationResponse,
   SessionsReconnectResponse,
   SubscriptionCache,
   SyncSnapshotResponse,
@@ -147,6 +148,8 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       return applySessionCreateMutationResult(state, action.raw, action.sidebarScopeId)
     case 'mutation.messageResult':
       return applyMessageMutationResult(state, action.raw, action.clientRequestId, action.messageId)
+    case 'mutation.sessionSettingsResult':
+      return applySessionSettingsMutationResult(state, action.raw)
     case 'pendingUser.upsert':
       return upsertPendingUserMessage(state, action.input)
     default: {
@@ -753,6 +756,55 @@ export function applyMessageMutationResult(
     upsertRunIntent(state, raw.run_intent.session_id || raw.session_id, raw.run_intent)
   }
   return state
+}
+
+export function applySessionSettingsMutationResult(
+  state: DesktopV3CacheState,
+  raw: SessionSettingsMutationResponse,
+): DesktopV3CacheState {
+  if (raw.ok === false) return state
+  applyMutationOutboxEvent(state, raw.mutation)
+
+  const sessionId = stringField(raw.session_id) || stringField(raw.mutation?.session_id)
+  if (!sessionId) return state
+
+  const record = state.sessionsById[sessionId]
+  if (record?.kind === 'full') {
+    if (typeof raw.mode === 'string') {
+      record.session.mode = raw.mode
+    }
+    const metadata = recordValue(raw.metadata)
+    if (metadata) {
+      record.session.metadata = metadata
+    }
+    if (raw.preference !== undefined) {
+      record.session.preference = raw.preference
+    }
+  }
+
+  if (raw.preference !== undefined) {
+    state.preferencesBySession[sessionId] = raw.preference
+  }
+  if (raw.agent_model_policy !== undefined) {
+    state.agentModelPolicyBySession[sessionId] = raw.agent_model_policy
+  }
+
+  return state
+}
+
+function applyMutationOutboxEvent(
+  state: DesktopV3CacheState,
+  mutation: SessionSettingsMutationResponse['mutation'] | undefined | null,
+): void {
+  if (!mutation?.event) return
+  applyCacheEvent(state, {
+    source: 'outbox',
+    sessionId: mutation.event.session_id,
+    eventType: mutation.event.event_type,
+    sessionEvent: mutation.event,
+    projection: mutation.projection,
+    payload: decodeSessionEventPayload(mutation.event),
+  })
 }
 
 export function upsertPendingUserMessage(
@@ -1617,6 +1669,16 @@ function applyScalarSessionPatchIfPresent(
 
   if (typeof payload.title === 'string') record.session.title = payload.title
   if (typeof payload.mode === 'string') record.session.mode = payload.mode
+  if (typeof payload.updated_at === 'number') record.session.updated_at = payload.updated_at
+  const metadata = recordValue(payload.metadata)
+  if (metadata) record.session.metadata = metadata
+  if (payload.preference !== undefined) {
+    record.session.preference = payload.preference
+    state.preferencesBySession[sessionId] = payload.preference
+  }
+  if (payload.agent_model_policy !== undefined) {
+    state.agentModelPolicyBySession[sessionId] = payload.agent_model_policy
+  }
   if (typeof payload.status === 'string' && eventType.startsWith('run.')) {
     const runId = typeof payload.run_id === 'string' ? payload.run_id : undefined
     if (runId) {

@@ -16,6 +16,7 @@ import {
   applyRealtimeFrame,
   applyReconnectSnapshot,
   applySessionCreateMutationResult,
+  applySessionSettingsMutationResult,
   applySyncStreamBatch,
   buildMessageListCache,
   createEmptyDesktopV3CacheState,
@@ -1903,4 +1904,82 @@ test('session create replay does not regress fresher reconnect state or duplicat
   assert.equal(state.currentRunIntentBySession[sessionId]?.run_id, firstRun.run_id)
   assert.equal(state.realtime.endpointCursor, 'cursor-reconnect-7')
   assert.equal(state.syncScopesById['scope-global'].endpointCursor, 'cursor-0')
+})
+
+
+test('session settings mutation updates mode metadata preference policy and projection cache immediately', () => {
+  const state = bootstrappedState()
+  state.preferencesBySession[sessionA.id] = {
+    provider: 'codex',
+    model: 'old-model',
+    thinking: 'medium',
+    serviceTier: '',
+    contextMode: '',
+    updatedAt: 10,
+  }
+
+  applySessionSettingsMutationResult(state, {
+    ok: true,
+    session_id: sessionA.id,
+    mode: 'manual',
+    metadata: {
+      agent_name: 'explorer',
+      resolved_agent_name: 'explorer',
+      runtime_mode: 'read',
+    },
+    preference: {
+      provider: 'fireworks',
+      model: 'deepseek-v4-flash',
+      thinking: '',
+      serviceTier: 'fast',
+      contextMode: '',
+      updatedAt: 30,
+    },
+    agent_model_policy: { agent_name: 'explorer', locked: false },
+    mutation: {
+      event: {
+        id: 'evt-settings-updated',
+        session_id: sessionA.id,
+        seq: 30,
+        event_type: 'session.preference.updated',
+        payload: {
+          session_id: sessionA.id,
+          preference: {
+            provider: 'fireworks',
+            model: 'deepseek-v4-flash',
+            thinking: '',
+            serviceTier: 'fast',
+            contextMode: '',
+            updatedAt: 30,
+          },
+          updated_at: 30,
+        },
+        ts_unix_ms: 30,
+      },
+      projection: {
+        session_id: sessionA.id,
+        last_event_seq: 30,
+        projection_high_watermark_seq: 30,
+        updated_at: 30,
+      },
+    },
+  })
+
+  const record = state.sessionsById[sessionA.id]
+  assert.equal(record.kind, 'full')
+  if (record.kind !== 'full') return
+  assert.equal(record.session.mode, 'manual')
+  assert.equal(record.session.updated_at, 30)
+  assert.equal(record.session.metadata?.agent_name, 'explorer')
+  assert.equal(record.session.metadata?.runtime_mode, 'read')
+  assert.deepEqual(state.preferencesBySession[sessionA.id], {
+    provider: 'fireworks',
+    model: 'deepseek-v4-flash',
+    thinking: '',
+    serviceTier: 'fast',
+    contextMode: '',
+    updatedAt: 30,
+  })
+  assert.deepEqual(state.agentModelPolicyBySession[sessionA.id], { agent_name: 'explorer', locked: false })
+  assert.equal(state.projectionsBySession[sessionA.id].last_event_seq, 30)
 })

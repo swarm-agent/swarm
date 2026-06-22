@@ -15,6 +15,6 @@ test('Desktop V3 existing composer derives agent model locks from existing agent
   assert.doesNotMatch(source, /Promise\.all\(tasks\)/)
   assert.match(
     source,
-    /await updateSessionV3Mode[\s\S]*await updateSessionV3Agent[\s\S]*await updateSessionV3Preference/,
+    /await updateSessionV3Mode[\s\S]*dispatchDesktopV3Cache\(\{[\s\S]*sessionV3ModeSettingsMutationResponse[\s\S]*await updateSessionV3Agent[\s\S]*dispatchDesktopV3Cache\(\{[\s\S]*sessionV3AgentSettingsMutationResponse[\s\S]*await updateSessionV3Preference[\s\S]*dispatchDesktopV3Cache\(\{[\s\S]*sessionV3PreferenceSettingsMutationResponse/,
   )
 })

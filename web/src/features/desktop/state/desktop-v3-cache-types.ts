@@ -333,6 +333,8 @@ export interface MessageMutationConflictResponse {
 
 export interface SessionMutationResult {
   realtime_outbox?: V3RealtimeOutboxRecord | null
+  event?: V3SessionEvent
+  projection?: V3SessionProjection
   [key: string]: unknown
 }
 
@@ -352,6 +354,21 @@ export interface SessionCreateMutationResponse {
   projection: V3SessionProjection
   mutation: SessionMutationResult
   realtime_outbox: V3RealtimeOutboxRecord | null
+}
+
+export interface SessionSettingsMutationResponse {
+  ok?: boolean
+  session_id?: string
+  mode?: string
+  metadata?: Record<string, unknown>
+  preference?: unknown
+  context_window?: number
+  max_output_tokens?: number
+  agent?: Record<string, unknown>
+  agent_model_policy?: unknown
+  mutation?: SessionMutationResult | null
+  realtime_outbox?: unknown
+  [key: string]: unknown
 }
 
 export interface SessionMutationErrorResponse {
@@ -597,4 +614,5 @@ export type DesktopV3CacheAction =
   | { type: 'realtime.statusChanged'; status: RealtimeCache['status']; errorCode?: string; error?: string }
   | { type: 'mutation.sessionCreateResult'; raw: SessionCreateMutationResponse | SessionMutationErrorResponse; sidebarScopeId: string }
   | { type: 'mutation.messageResult'; raw: SessionMessageMutationResponse | MessageMutationConflictResponse; clientRequestId: string; messageId: string }
+  | { type: 'mutation.sessionSettingsResult'; raw: SessionSettingsMutationResponse }
   | { type: 'pendingUser.upsert'; input: Omit<PendingUserMessage, 'role' | 'status'> }

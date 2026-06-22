@@ -480,6 +480,13 @@ export function classifyDesktopV3PersistenceAction(
         tailSessionIds: action.raw.message ? [action.raw.session_id || action.raw.message.session_id] : [],
         immediate: false,
       }
+    case 'mutation.sessionSettingsResult':
+      if (action.raw.ok === false) return noPersistenceDecision()
+      return {
+        persistOwner: true,
+        tailSessionIds: [],
+        immediate: false,
+      }
     case 'syncStream.applyBatch':
       return {
         persistOwner: action.events.length > 0,

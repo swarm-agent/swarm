@@ -1556,6 +1556,7 @@ func sessionV3AgentMutationResponse(sessionID string, session pebblestore.Sessio
 		"ok":                 true,
 		"session_id":         sessionID,
 		"agent":              sessionsV3AgentResource(session),
+		"metadata":           session.Metadata,
 		"agent_model_policy": agentModelPolicy,
 		"mutation":           sessionV3MutationResultResponse(result),
 		"realtime_outbox":    result.RealtimeOutbox,

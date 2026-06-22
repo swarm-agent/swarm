@@ -7,7 +7,7 @@ import { ChatMarkdown } from './chat-markdown'
 import { buildStructuredToolMessage, parseStructuredToolMessage } from '../services/tool-message'
 import type { RenderedSessionMessages } from '../../state/desktop-v3-cache-selectors'
 import type { LiveRunOverlay, MessageSnapshot, PendingUserMessage } from '../../state/desktop-v3-cache-types'
-import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import type { DesktopSessionRecord } from '../../types/realtime'
 import type { StructuredToolMessage, ToolMessageState, AgentProfileRecord, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
 import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
@@ -17,7 +17,15 @@ import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thi
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
-import { updateSessionV3Agent, updateSessionV3Mode, updateSessionV3Preference, stopSessionV3Run } from '../../session-v3/api'
+import {
+  sessionV3AgentSettingsMutationResponse,
+  sessionV3ModeSettingsMutationResponse,
+  sessionV3PreferenceSettingsMutationResponse,
+  updateSessionV3Agent,
+  updateSessionV3Mode,
+  updateSessionV3Preference,
+  stopSessionV3Run,
+} from '../../session-v3/api'
 import {
   clearDesktopV3ExistingMessageOperation,
   continueDesktopV3Conversation,
@@ -468,14 +476,27 @@ export function DesktopV3ExistingConversationPane({
   async function persistVisibleSettings() {
     if (!normalizedSessionId) return
     if (normalizeSessionMode(session?.mode || cacheSession?.mode) !== mode) {
-      await updateSessionV3Mode(normalizedSessionId, mode)
+      const modeResponse = await updateSessionV3Mode(normalizedSessionId, mode)
+      dispatchDesktopV3Cache({
+        type: 'mutation.sessionSettingsResult',
+        raw: sessionV3ModeSettingsMutationResponse(modeResponse, normalizedSessionId, mode),
+      })
     }
     const currentAgent = initialAgent.trim()
     if (selectedAgent.trim() && selectedAgent.trim() !== currentAgent) {
-      await updateSessionV3Agent(normalizedSessionId, selectedAgent.trim())
+      const agentName = selectedAgent.trim()
+      const agentResponse = await updateSessionV3Agent(normalizedSessionId, agentName)
+      dispatchDesktopV3Cache({
+        type: 'mutation.sessionSettingsResult',
+        raw: sessionV3AgentSettingsMutationResponse(agentResponse, normalizedSessionId),
+      })
     }
     if (!preferencesEqual(preference, cachedPreference)) {
-      await updateSessionV3Preference(normalizedSessionId, preference)
+      const preferenceResponse = await updateSessionV3Preference(normalizedSessionId, preference)
+      dispatchDesktopV3Cache({
+        type: 'mutation.sessionSettingsResult',
+        raw: sessionV3PreferenceSettingsMutationResponse(preferenceResponse, normalizedSessionId),
+      })
     }
   }
 
