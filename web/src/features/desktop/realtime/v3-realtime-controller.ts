@@ -860,7 +860,9 @@ export class DesktopV3StreamCommitController {
   }
 }
 
-function isVolatileReasoningDeltaAction(action: DesktopV3CacheAction): boolean {
+function isVolatileReasoningDeltaAction(
+  action: DesktopV3CacheAction,
+): action is Extract<DesktopV3CacheAction, { type: 'realtime.applyEvent' }> {
   return action.type === 'realtime.applyEvent'
     && action.event.source === 'realtime'
     && action.event.eventType === 'session.reasoning.delta'
