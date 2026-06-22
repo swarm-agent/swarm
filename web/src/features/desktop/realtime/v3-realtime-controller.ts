@@ -36,9 +36,14 @@ const DESKTOP_V3_CLIENT_ID = `desktop:${crypto.randomUUID()}`
 const ACTIVE_REPAIR_PAGE_SIZE = 500
 const ACTIVE_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
 
+export interface DesktopV3SessionConnectInput {
+  sessionId: string
+  endpointCursor?: string
+}
+
 export interface DesktopV3RealtimeController {
   currentEndpointCursor(): string
-  connectSession(input: { sessionId: string; endpointCursor?: string | null }): Promise<void>
+  connectSession(input: DesktopV3SessionConnectInput): Promise<void>
   ensureSessionHistory(sessionId: string): Promise<void>
   start(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void>
   stop(reason?: string): void
@@ -211,7 +216,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     return cursor
   }
 
-  connectSession(input: { sessionId: string; endpointCursor?: string | null }): Promise<void> {
+  connectSession(input: DesktopV3SessionConnectInput): Promise<void> {
     const sessionId = input.sessionId.trim()
     if (!sessionId) {
       return Promise.reject(new Error('Desktop V3 session connect requires sessionId'))
