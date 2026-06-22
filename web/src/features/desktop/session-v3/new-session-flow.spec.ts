@@ -490,6 +490,7 @@ test('Desktop V3 new session rejected connectSession appends no message and does
   state.desktopSidebarBootstrap.scopeId = 'scope-global'
   let appended = false
   let navigated = false
+  const actions: DesktopV3CacheAction[] = []
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
@@ -501,7 +502,7 @@ test('Desktop V3 new session rejected connectSession appends no message and does
       start: async () => undefined,
       stop: () => undefined,
     }),
-    dispatch: () => undefined,
+    dispatch: (action) => actions.push(action),
     postCreateSession: async () => makeCreateResponse(operation),
     postAppendMessage: async () => {
       appended = true
@@ -518,6 +519,9 @@ test('Desktop V3 new session rejected connectSession appends no message and does
     }), /subscribe rejected/)
     assert.equal(appended, false)
     assert.equal(navigated, false)
+    assert.deepEqual(actions.map((action) => action.type), ['mutation.sessionCreateResult'])
+    assert.equal(actions.some((action) => action.type === 'pendingUser.upsert'), false)
+    assert.equal(actions.some((action) => action.type === 'mutation.messageResult'), false)
   } finally {
     restore()
   }
