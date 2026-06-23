@@ -1,4 +1,4 @@
-import { requestJson } from '../../../app/api'
+import { apiFetch, requestJson } from '../../../app/api'
 
 import type { SessionsReconnectResponse, SyncHistory, SyncResources, SyncSelector, SyncSnapshotResponse } from './desktop-v3-cache-types'
 
@@ -104,14 +104,41 @@ export async function postDesktopV3SyncBootstrap(
   input: Partial<DesktopV3BootstrapInput> = {},
 ): Promise<SyncSnapshotResponse> {
   const body = buildDesktopV3BootstrapInput(input)
-
-  return requestJson<SyncSnapshotResponse>('/v3/sync/bootstrap', {
+  const requestStartedAt = desktopV3Now()
+  const response = await apiFetch('/v3/sync/bootstrap', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
   })
+  const headersReceivedAt = desktopV3Now()
+  const text = await response.text()
+  const bodyReadAt = desktopV3Now()
+
+  if (!response.ok) {
+    throw new Error(errorMessageFromResponseText(response.status, text))
+  }
+
+  const parseStartedAt = desktopV3Now()
+  const parsed = JSON.parse(text) as SyncSnapshotResponse
+  const parsedAt = desktopV3Now()
+  logDesktopV3BootstrapTiming('network_json', {
+    status: response.status,
+    header_ms: roundTiming(headersReceivedAt - requestStartedAt),
+    body_ms: roundTiming(bodyReadAt - headersReceivedAt),
+    fetch_total_ms: roundTiming(bodyReadAt - requestStartedAt),
+    json_parse_ms: roundTiming(parsedAt - parseStartedAt),
+    total_with_parse_ms: roundTiming(parsedAt - requestStartedAt),
+    response_bytes: byteLength(text),
+    sessions: Object.keys(parsed.sessions_by_id ?? {}).length,
+    session_order: parsed.session_order?.length ?? 0,
+    messages: countArrayMapItems(parsed.messages_by_session),
+    run_intents: countArrayMapItems(parsed.run_intents_by_session),
+    include_active: body.include_active,
+    recent_limit: body.selector.recent?.limit,
+  })
+  return parsed
 }
 
 export async function postDesktopV3SyncHydrate(
@@ -147,4 +174,46 @@ export async function postDesktopV3Reconnect(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
+}
+
+export function logDesktopV3BootstrapTiming(stage: string, detail: Record<string, unknown>): void {
+  if (typeof console === 'undefined') return
+  console.info('[desktop-v3] bootstrap timing', {
+    stage,
+    ...detail,
+  })
+}
+
+export function countArrayMapItems(value: Record<string, unknown[] | undefined> | undefined): number {
+  if (!value) return 0
+  let total = 0
+  for (const items of Object.values(value)) {
+    if (Array.isArray(items)) total += items.length
+  }
+  return total
+}
+
+function errorMessageFromResponseText(status: number, text: string): string {
+  const trimmed = text.trim()
+  if (!trimmed) return `Request failed with status ${status}`
+  try {
+    const payload = JSON.parse(trimmed) as { error?: unknown }
+    if (typeof payload.error === 'string' && payload.error.trim() !== '') return payload.error
+  } catch {
+    // Fall through to raw body.
+  }
+  return trimmed
+}
+
+function desktopV3Now(): number {
+  return globalThis.performance?.now?.() ?? Date.now()
+}
+
+function roundTiming(value: number): number {
+  return Math.round(value * 1000) / 1000
+}
+
+function byteLength(value: string): number {
+  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(value).byteLength
+  return value.length
 }

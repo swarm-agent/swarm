@@ -2,7 +2,7 @@ import { bootstrapResponseToAction } from './desktop-v3-cache-wire'
 import { dispatchDesktopV3Cache, dispatchDesktopV3CacheBatch } from './desktop-v3-cache-store'
 import { hydrateResponseCompletesSession } from './desktop-v3-cache-reducer'
 import { resetDesktopV3InitialHydrateControllerForTests } from './desktop-v3-initial-hydrate-controller'
-import { buildDesktopV3BootstrapInput, postDesktopV3SyncBootstrap, type DesktopV3HydrateInput } from './desktop-v3-sync-api'
+import { buildDesktopV3BootstrapInput, countArrayMapItems, logDesktopV3BootstrapTiming, postDesktopV3SyncBootstrap, type DesktopV3HydrateInput } from './desktop-v3-sync-api'
 import type { DesktopV3BootstrapInput } from './desktop-v3-sync-api'
 import type { DesktopV3CacheAction, SyncSnapshotResponse } from './desktop-v3-cache-types'
 
@@ -58,13 +58,26 @@ export function bootstrapDesktopV3SidebarMetadataOnly(
   })
 
   const bootstrapInput = buildDesktopV3BootstrapInput({}, deps.preferredSessionId)
+  const startedAt = desktopV3BootstrapNow()
   bootstrapInFlight = postBootstrap(bootstrapInput)
     .then((response) => {
+      const beforeApplyAt = desktopV3BootstrapNow()
       dispatchBatch([
         bootstrapResponseToAction(response),
         desktopSidebarBootstrapReadyAction(response),
         desktopInitialHydrateReadyAction(response),
       ])
+      const afterApplyAt = desktopV3BootstrapNow()
+      logDesktopV3BootstrapTiming('zustand_apply', {
+        post_to_apply_start_ms: roundBootstrapTiming(beforeApplyAt - startedAt),
+        apply_ms: roundBootstrapTiming(afterApplyAt - beforeApplyAt),
+        total_to_applied_ms: roundBootstrapTiming(afterApplyAt - startedAt),
+        sessions: Object.keys(response.sessions_by_id ?? {}).length,
+        session_order: response.session_order?.length ?? 0,
+        messages: countArrayMapItems(response.messages_by_session),
+        run_intents: countArrayMapItems(response.run_intents_by_session),
+      })
+      scheduleDesktopV3BootstrapPaintTiming(afterApplyAt)
       return {
         response,
       }
@@ -120,4 +133,22 @@ export function desktopInitialHydrateReadyAction(
       source: 'network',
     },
   }
+}
+
+function scheduleDesktopV3BootstrapPaintTiming(appliedAt: number): void {
+  const requestFrame = globalThis.requestAnimationFrame
+  if (typeof requestFrame !== 'function') return
+  requestFrame(() => {
+    logDesktopV3BootstrapTiming('next_frame_after_apply', {
+      frame_delay_ms: roundBootstrapTiming(desktopV3BootstrapNow() - appliedAt),
+    })
+  })
+}
+
+function desktopV3BootstrapNow(): number {
+  return globalThis.performance?.now?.() ?? Date.now()
+}
+
+function roundBootstrapTiming(value: number): number {
+  return Math.round(value * 1000) / 1000
 }

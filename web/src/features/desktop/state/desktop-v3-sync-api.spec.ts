@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { DESKTOP_STARTUP_MESSAGE_LIMIT, DESKTOP_STARTUP_SESSION_LIMIT, DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT, buildDesktopV3InitialHydrateInput, postDesktopV3SyncBootstrap, postDesktopV3SyncHydrate } from './desktop-v3-sync-api'
+import { DESKTOP_STARTUP_MESSAGE_LIMIT, DESKTOP_STARTUP_SESSION_LIMIT, DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT, buildDesktopV3InitialHydrateInput, countArrayMapItems, postDesktopV3SyncBootstrap, postDesktopV3SyncHydrate } from './desktop-v3-sync-api'
 import { snapshotFixture } from './desktop-v3-cache.backend-fixtures'
 
 test('postDesktopV3SyncBootstrap posts bounded hydrated startup workset payload to bootstrap endpoint', async () => {
@@ -47,6 +47,12 @@ test('buildDesktopV3InitialHydrateInput requests a manifest when the initial mes
       manifest_policy: 'manifest',
     },
   )
+})
+
+
+test('countArrayMapItems totals present arrays and ignores missing values', () => {
+  assert.equal(countArrayMapItems({ a: [1, 2], b: undefined, c: [], d: [3] }), 3)
+  assert.equal(countArrayMapItems(undefined), 0)
 })
 
 
