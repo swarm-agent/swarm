@@ -36,7 +36,10 @@ require_command() {
 }
 
 quote_remote() {
-  printf '%q' "$1"
+  local value="$1"
+  printf "'"
+  printf '%s' "${value}" | sed "s/'/'\\\\''/g"
+  printf "'"
 }
 
 require_clean_git_tree() {
@@ -60,7 +63,7 @@ copy_bundle_to_remote() {
   local remote_bundle_path="$2"
   local remote_bundle_quoted
   remote_bundle_quoted="$(quote_remote "${remote_bundle_path}")"
-  ssh "${SSH_ALIAS}" "set -euo pipefail; mkdir -p -- \"\$(dirname -- ${remote_bundle_quoted})\"; cat > ${remote_bundle_quoted}" <"${bundle_path}"
+  ssh "${SSH_ALIAS}" "bash -c 'set -euo pipefail; remote_bundle_path=\"\$1\"; mkdir -p -- \"\$(dirname -- \"\${remote_bundle_path}\")\"; cat > \"\${remote_bundle_path}\"' bash ${remote_bundle_quoted}" <"${bundle_path}"
 }
 
 cleanup_remote_bundle() {
@@ -137,7 +140,8 @@ trap 'rm -f -- "${LOCAL_BUNDLE}"' EXIT
 create_head_bundle "${LOCAL_BUNDLE}"
 
 if [[ -z "${REMOTE_DIR}" ]]; then
-  REMOTE_DIR="$(ssh "${SSH_ALIAS}" 'set -euo pipefail
+  REMOTE_DIR="$(ssh "${SSH_ALIAS}" 'bash -s' 2>/dev/null <<'REMOTE_DISCOVER_CHECKOUT'
+set -euo pipefail
 for candidate in "$HOME/swarm-go" "$HOME/src/swarm-go" "$HOME/work/swarm-go"; do
   if [ -d "$candidate/.git" ] && [ -f "$candidate/AGENTS.md" ] && [ -x "$candidate/rebuild" ]; then
     printf "%s\n" "$candidate"
@@ -151,13 +155,14 @@ find "$HOME" /opt /srv /tmp -maxdepth 4 -type d -name swarm-go 2>/dev/null \
         exit 0
       fi
     done
-exit 1' 2>/dev/null)" || fail "could not find remote git checkout on ${SSH_ALIAS}; pass --remote-dir"
+exit 1
+REMOTE_DISCOVER_CHECKOUT
+)" || fail "could not find remote git checkout on ${SSH_ALIAS}; pass --remote-dir"
 fi
 
 [[ -n "${REMOTE_DIR}" ]] || fail "empty remote checkout path"
 [[ -n "${DB_PATH}" ]] || fail "empty database path"
 
-service_quoted="$(quote_remote "${SERVICE_UNIT}")"
 REMOTE_BUNDLE_DIR="${SWARM_SSH_FAST_TEST_REMOTE_TMPDIR:-${TMPDIR:-/tmp}}"
 REMOTE_BUNDLE_PATH="${REMOTE_BUNDLE_DIR%/}/swarm-fast-test-${LOCAL_HEAD:0:12}-$$.bundle"
 printf 'ssh-fast-test: remote=%s dir=%s service=%s mode=%s commit=%s branch=%s\n' "${SSH_ALIAS}" "${REMOTE_DIR}" "${SERVICE_UNIT}" "$([[ "${FROM_ZERO}" == "true" ]] && printf from-zero || printf fast)" "${LOCAL_HEAD}" "${LOCAL_BRANCH:-detached}"
@@ -167,11 +172,14 @@ trap 'rm -f -- "${LOCAL_BUNDLE}"; cleanup_remote_bundle "${REMOTE_BUNDLE_PATH}" 
 
 if [[ "${FROM_ZERO}" == "true" ]]; then
   printf 'ssh-fast-test: stopping remote service before checkout update\n'
-  ssh "${SSH_ALIAS}" "set -euo pipefail
-systemctl --user stop ${service_quoted} >/dev/null 2>&1 || true
+  ssh "${SSH_ALIAS}" 'bash -s' -- "${SERVICE_UNIT}" <<'REMOTE_STOP_SERVICE'
+set -euo pipefail
+service_unit="$1"
+systemctl --user stop "${service_unit}" >/dev/null 2>&1 || true
 if command -v sudo >/dev/null 2>&1; then
-  sudo -n systemctl stop ${service_quoted} >/dev/null 2>&1 || true
-fi"
+  sudo -n systemctl stop "${service_unit}" >/dev/null 2>&1 || true
+fi
+REMOTE_STOP_SERVICE
 fi
 
 ssh "${SSH_ALIAS}" 'bash -s' -- "${REMOTE_DIR}" "${FROM_ZERO}" "${DB_PATH}" "${RESTART_SERVICE}" "${SERVICE_UNIT}" "${REMOTE_BUNDLE_PATH}" "${LOCAL_HEAD}" "${LOCAL_BRANCH}" <<'REMOTE_SSH_FAST_TEST'
