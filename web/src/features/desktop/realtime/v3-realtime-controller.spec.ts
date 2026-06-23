@@ -561,14 +561,10 @@ test('Desktop V3 direct route session missing from reconnect is explicitly subsc
   controller.stop()
 })
 
-test('Desktop V3 auto-discovered session hydrates once across duplicate discovery frames', async () => {
+test('Desktop V3 auto-discovered session updates metadata without transcript hydrate', async () => {
   let state = readyControllerState()
   const sockets: FakeWebSocket[] = []
   const hydrateRequests: unknown[] = []
-  let releaseFirstHydrate!: () => void
-  const firstHydrate = new Promise<void>((resolve) => {
-    releaseFirstHydrate = resolve
-  })
   const controller = new DesktopV3RealtimeControllerRuntime({
     getSnapshot: () => state,
     dispatch: (action: DesktopV3CacheAction) => {
@@ -604,7 +600,6 @@ test('Desktop V3 auto-discovered session hydrates once across duplicate discover
     }),
     hydrate: async (input) => {
       hydrateRequests.push(input)
-      await firstHydrate
       return hydrateSnapshotFixture({
         sessions_by_id: { [sessionB.id]: sessionB },
         projections_by_session: { [sessionB.id]: projectionB },
@@ -640,17 +635,15 @@ test('Desktop V3 auto-discovered session hydrates once across duplicate discover
 
     sockets[0].emit(discoveryFrame)
     sockets[0].emit(discoveryFrame)
-    await waitFor(() => hydrateRequests.length === 1)
-    assert.deepEqual((hydrateRequests[0] as { session_ids: string[] }).session_ids, [sessionB.id])
-
-    releaseFirstHydrate()
-    await waitFor(() => state.projectionsBySession[sessionB.id] !== undefined)
-    sockets[0].emit(discoveryFrame)
     await flushAsyncWork()
-    assert.equal(hydrateRequests.length, 1)
+
+    assert.equal(hydrateRequests.length, 0)
+    assert.equal(state.sessionsById[sessionB.id]?.kind, 'stub')
+    assert.deepEqual(state.sessionOrderByScope['global-scope'], [sessionB.id])
+    assert.equal(state.messagesBySession[sessionB.id], undefined)
+    assert.equal(state.subscriptionsById['sub-session-b']?.autoSubscribed, true)
   } finally {
     controller.stop()
-    releaseFirstHydrate()
   }
 })
 
@@ -2065,7 +2058,7 @@ test('commit failure reopens from previous durable cursor', async () => {
   controller.stop()
 })
 
-test('workset discovery commits before background hydrate starts', async () => {
+test('workset discovery commits sidebar metadata without background transcript hydrate', async () => {
   let state = readyControllerState()
   state.realtime.endpointCursor = 'cursor-reconnect'
 
@@ -2120,8 +2113,11 @@ test('workset discovery commits before background hydrate starts', async () => {
     endpoint_cursor: 'cursor-discovered',
   })
 
-  await waitFor(() => hydrateRequests.length === 1)
-  assert.equal(state.sessionsById['session-discovered']?.kind, 'full')
+  await flushAsyncWork()
+  assert.deepEqual(hydrateRequests, [])
+  assert.equal(state.sessionsById['session-discovered']?.kind, 'stub')
+  assert.deepEqual(state.sessionOrderByScope['global-scope'], ['session-discovered'])
+  assert.equal(state.messagesBySession['session-discovered'], undefined)
   controller.stop()
 })
 
@@ -3467,13 +3463,12 @@ test('Desktop V3 desired-session reconciliation removes terminal unselected back
 })
 
 
-test('Desktop V3 auto-discovered inactive session remains during hydrate then unsubscribes', async () => {
+test('Desktop V3 auto-discovered inactive session unsubscribes without transcript hydrate', async () => {
   let state = readyControllerState()
   state.realtime.endpointCursor = 'cursor-bootstrap'
   const sockets: FakeWebSocket[] = []
   const listeners = new Set<(mutation?: { action: DesktopV3CacheAction; previousState: DesktopV3CacheState; nextState: DesktopV3CacheState }) => void>()
-  const hydrateDeferred = createDeferredValue<ReturnType<typeof hydrateSnapshotFixture>>()
-  let hydrateStarted = false
+  const hydrateRequests: unknown[] = []
   const dispatch = (action: DesktopV3CacheAction) => {
     const previousState = state
     state = desktopV3CacheReducer({ ...state }, action)
@@ -3488,9 +3483,14 @@ test('Desktop V3 auto-discovered inactive session remains during hydrate then un
       return () => listeners.delete(listener)
     },
     ensureSession: async () => ({}),
-    hydrate: async () => {
-      hydrateStarted = true
-      return hydrateDeferred.promise
+    hydrate: async (input) => {
+      hydrateRequests.push(input)
+      return hydrateSnapshotFixture({
+        sessions_by_id: {},
+        projections_by_session: {},
+        messages_by_session: {},
+        session_order: [],
+      })
     },
     openSocket: () => {
       const socket = new FakeWebSocket()
@@ -3517,18 +3517,12 @@ test('Desktop V3 auto-discovered inactive session remains during hydrate then un
       auto_subscribed: true,
       endpoint_cursor: 'cursor-auto',
     })
-    await waitFor(() => hydrateStarted)
-    await flushAsyncWork()
-    assert.equal(sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'unsubscribe.session'), false)
 
-    hydrateDeferred.resolve(hydrateSnapshotFixture({
-      sessions_by_id: {},
-      projections_by_session: {},
-      messages_by_session: {},
-      session_order: [],
-    }))
     await waitFor(() => sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'unsubscribe.session' && (frame as RealtimeMessage).session_id === 'auto-inactive'))
+    assert.equal(hydrateRequests.length, 0)
     assert.equal(sockets[0].sent.filter((frame) => (frame as RealtimeMessage).kind === 'resume').length, 0)
+    assert.equal(state.sessionsById['auto-inactive']?.kind, 'stub')
+    assert.equal(state.messagesBySession['auto-inactive'], undefined)
   } finally {
     controller.stop()
   }
@@ -3622,16 +3616,6 @@ function readyControllerState(): DesktopV3CacheState {
 async function readSource(path: string): Promise<string> {
   const localPath = path.startsWith('web/') ? path.slice('web/'.length) : path
   return readFile(localPath, 'utf8')
-}
-
-function createDeferredValue<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason?: unknown) => void } {
-  let resolve!: (value: T) => void
-  let reject!: (reason?: unknown) => void
-  const promise = new Promise<T>((promiseResolve, promiseReject) => {
-    resolve = promiseResolve
-    reject = promiseReject
-  })
-  return { promise, resolve, reject }
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {

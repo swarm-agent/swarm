@@ -77,7 +77,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly transport: DesktopV3RealtimeTransport
   private readonly streamCommit: DesktopV3StreamCommitController
   private readonly hydrateBySession = new Map<string, Promise<void>>()
-  private readonly discoveryHydrateAttemptedBySession = new Set<string>()
   private readonly markedActiveRepairBySession = new Map<string, { runId: string; afterSeq: number }>()
   private readonly activeRepairByRun = new Map<string, Promise<void>>()
   private readonly pendingHistoryRepair = new Set<string>()
@@ -183,7 +182,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.unsubscribeCache = undefined
     this.startPromise = undefined
     this.hydrateBySession.clear()
-    this.discoveryHydrateAttemptedBySession.clear()
     this.markedActiveRepairBySession.clear()
     this.activeRepairByRun.clear()
     this.pendingHistoryRepair.clear()
@@ -395,12 +393,15 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   }
 
   private async handleFrame(frame: RealtimeMessage): Promise<void> {
-    const sessionId = frame.session_id?.trim() || frame.event?.session_id?.trim() || ''
-
     try {
       await commitDesktopV3StreamFrame(this.streamCommit, frame)
-      if (frame.kind === 'workset.session.discovered' && sessionId) {
-        this.hydrateAutoDiscoveredSessionOnce(sessionId)
+      if (frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.removed') {
+        // The transport records auto-discovered subscriptions immediately after
+        // onFrame resolves; reconcile on the next macrotask so hidden sessions
+        // can be unsubscribed without waiting for transcript hydration.
+        setTimeout(() => {
+          if (!this.stopped) this.reconcileDesiredSessionConnections()
+        }, 0)
       }
     } catch (error) {
       this.handleDurableStreamCommitFailure(error)
@@ -464,24 +465,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
     for (const [sessionId, session] of registered) {
       if (desired.has(sessionId)) continue
-      if (session.autoDiscovered && this.autoDiscoveredSessionHydrationPending(sessionId)) continue
       this.transport.unsubscribeSession(sessionId)
     }
-  }
-
-  private autoDiscoveredSessionHydrationPending(sessionId: string): boolean {
-    const normalized = sessionId.trim()
-    return normalized ? this.hydrateBySession.has(normalized) : false
-  }
-
-  private hydrateAutoDiscoveredSessionOnce(sessionId: string): void {
-    const normalized = sessionId.trim()
-    if (!normalized) return
-    if (this.discoveryHydrateAttemptedBySession.has(normalized)) return
-    this.discoveryHydrateAttemptedBySession.add(normalized)
-    void this.hydrateSessionOnce(normalized).catch((error) => {
-      console.error('[desktop-v3] auto-discovered session hydrate failed', error)
-    })
   }
 
   private hydrateSessionOnce(sessionId: string): Promise<void> {
