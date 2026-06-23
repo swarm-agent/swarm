@@ -968,6 +968,7 @@ export function upsertCommittedMessage(
       state.projectionsBySession[sessionId]?.projection_high_watermark_seq ?? 0,
     ),
     hydratedAt: list.hydratedAt,
+    tailHydratedAt: list.tailHydratedAt,
     source: 'network',
   })
   removeCommittedPendingForSession(state, sessionId, [message])
@@ -1158,6 +1159,7 @@ function replaceMessagesForSession(
     sourceLastMessageAt: session?.last_message_at,
     sourceProjectionHighWatermarkSeq: state.projectionsBySession[sessionId]?.projection_high_watermark_seq,
     hydratedAt: Date.now(),
+    tailHydratedAt: Date.now(),
     source: 'network',
   })
   removeCommittedPendingForSession(state, sessionId, messages)
@@ -1177,6 +1179,7 @@ function mergeHistoricalMessagesForSession(
     sourceLastMessageAt: Math.max(existing?.sourceLastMessageAt ?? 0, ...incoming.map((message) => message.created_at)),
     sourceProjectionHighWatermarkSeq: existing?.sourceProjectionHighWatermarkSeq,
     hydratedAt: Math.max(existing?.hydratedAt ?? 0, Date.now()),
+    tailHydratedAt: existing?.tailHydratedAt,
     source: 'network',
   })
   state.messagesBySession[sessionId] = merged
@@ -1200,6 +1203,7 @@ interface BuildMessageListCacheOptions {
   sourceLastMessageAt?: number
   sourceProjectionHighWatermarkSeq?: number
   hydratedAt?: number
+  tailHydratedAt?: number
   source?: MessageListCache['source']
 }
 
@@ -1243,6 +1247,7 @@ export function buildMessageListCache(messages: MessageSnapshot[], options: Buil
     sourceLastMessageAt: options.sourceLastMessageAt,
     sourceProjectionHighWatermarkSeq: options.sourceProjectionHighWatermarkSeq,
     hydratedAt: options.hydratedAt,
+    tailHydratedAt: options.tailHydratedAt,
     source: options.source,
   }
 }

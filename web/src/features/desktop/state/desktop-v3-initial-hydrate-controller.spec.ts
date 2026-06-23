@@ -17,6 +17,7 @@ test('selective hydration reuses only sessions with a complete memory tail', () 
   state.messagesBySession[sessionA.id] = buildMessageListCache([messageA1], {
     sourceMessageCount: sessionA.message_count,
     sourceLastMessageAt: sessionA.last_message_at,
+    tailHydratedAt: 1,
   })
   state.messagesBySession[sessionB.id] = buildMessageListCache([messageB1], {
     sourceMessageCount: sessionB.message_count,

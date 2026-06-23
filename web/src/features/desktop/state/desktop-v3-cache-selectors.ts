@@ -129,7 +129,12 @@ export function isDesktopV3SessionTailReady(
 
   if (!session || !messages) return false
 
-  return Number.isSafeInteger(messages.sourceMessageCount)
+  const hasAuthoritativeTail = messages.knownFull === true
+    || Boolean(messages.knownTail)
+    || Number.isSafeInteger(messages.tailHydratedAt)
+
+  return hasAuthoritativeTail
+    && Number.isSafeInteger(messages.sourceMessageCount)
     && Number.isSafeInteger(messages.sourceLastMessageAt)
     && (messages.sourceMessageCount ?? -1) >= session.message_count
     && (messages.sourceLastMessageAt ?? -1) >= session.last_message_at

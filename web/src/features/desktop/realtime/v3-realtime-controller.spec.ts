@@ -14,8 +14,8 @@ import {
   retainDesktopV3RealtimeController,
   setDesktopV3RealtimeControllerFactoryForTests,
 } from './v3-realtime-controller'
-import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
-import { hydrateSnapshotFixture, messageA1, messageA2, projectionA, projectionB, reconnectFixture, runIntentA, sessionA, sessionB } from '../state/desktop-v3-cache.backend-fixtures'
+import { buildMessageListCache, createEmptyDesktopV3CacheState, desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
+import { hydrateSnapshotFixture, messageA1, messageA2, messageB1, projectionA, projectionB, reconnectFixture, runIntentA, sessionA, sessionB } from '../state/desktop-v3-cache.backend-fixtures'
 import type { SessionV3RealtimeResumeWire } from '../session-v3/types'
 import type { DesktopV3CacheAction, DesktopV3CacheState, RealtimeMessage, V3SessionEvent } from '../state/desktop-v3-cache-types'
 
@@ -3210,6 +3210,63 @@ test('Desktop V3 recovery resume contains active selected and pending sessions w
     controller.stop()
   }
 })
+
+test('Desktop V3 selected live-only session still hydrates transcript history', async () => {
+  let state = readyControllerState()
+  state.sessionsById[sessionB.id] = { kind: 'full', session: sessionB, needsHydrate: false }
+  state.messagesBySession[sessionB.id] = buildMessageListCache([messageB1], {
+    sourceMessageCount: sessionB.message_count,
+    sourceLastMessageAt: sessionB.last_message_at,
+    source: 'network',
+  })
+  const sockets: FakeWebSocket[] = []
+  const hydrateRequests: unknown[] = []
+  const listeners = new Set<(mutation?: { action: DesktopV3CacheAction; previousState: DesktopV3CacheState; nextState: DesktopV3CacheState }) => void>()
+  const dispatch = (action: DesktopV3CacheAction) => {
+    const previousState = state
+    state = desktopV3CacheReducer({ ...state }, action)
+    const mutation = { action, previousState, nextState: state }
+    for (const listener of listeners) listener(mutation)
+  }
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    ensureSession: async () => ({}),
+    hydrate: async (input) => {
+      hydrateRequests.push(input)
+      return hydrateSnapshotFixture({
+        sessions_by_id: { [sessionB.id]: sessionB },
+        projections_by_session: { [sessionB.id]: projectionB },
+        session_order: [sessionB.id],
+        messages_by_session: { [sessionB.id]: [messageB1] },
+      })
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start(null)
+    ready.catch(() => undefined)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+
+    dispatch({ type: 'session.select', sessionId: sessionB.id })
+    await waitFor(() => hydrateRequests.length === 1)
+    assert.deepEqual((hydrateRequests[0] as { session_ids: string[] }).session_ids, [sessionB.id])
+  } finally {
+    controller.stop()
+  }
+})
+
 
 test('Desktop V3 desired-session reconciliation removes inactive sessions selected sequentially', async () => {
   let state = readyControllerState()

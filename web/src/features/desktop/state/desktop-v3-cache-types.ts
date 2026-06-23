@@ -440,6 +440,7 @@ export interface MessageListCache {
   sourceLastMessageAt?: number
   sourceProjectionHighWatermarkSeq?: number
   hydratedAt?: number
+  tailHydratedAt?: number
   source?: MessageListCacheSource
 }
 

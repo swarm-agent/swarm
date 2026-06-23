@@ -42,7 +42,7 @@ import {
   syncStreamFixture,
   tombstoneB,
 } from './desktop-v3-cache.backend-fixtures'
-import { selectDesktopSidebarRows, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
+import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
 import { buildDesktopV3ConversationRenderItems } from '../chat/components/desktop-v3-existing-conversation-pane'
 import type { CacheEvent, DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, V3SessionEvent } from './desktop-v3-cache-types'
 
@@ -148,7 +148,55 @@ test('message event upsert increments stale source count once and preserves hydr
   upsertCommittedMessage(state, sessionA.id, { ...newMessage, content: 'edited' })
   assert.equal(state.messagesBySession[sessionA.id].sourceMessageCount, 1_001)
   assert.equal(state.messagesBySession[sessionA.id].hydratedAt, 777)
+  assert.equal(state.messagesBySession[sessionA.id].tailHydratedAt, undefined)
 })
+
+test('transcript tail readiness requires hydrate provenance, not only matching message watermarks', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.messagesBySession[sessionA.id] = buildMessageListCache([messageA1, messageA2], {
+    sourceMessageCount: sessionA.message_count,
+    sourceLastMessageAt: sessionA.last_message_at,
+    source: 'network',
+  })
+
+  assert.equal(isDesktopV3SessionTailReady(state, sessionA.id), false)
+
+  state.messagesBySession[sessionA.id] = buildMessageListCache([messageA1, messageA2], {
+    sourceMessageCount: sessionA.message_count,
+    sourceLastMessageAt: sessionA.last_message_at,
+    tailHydratedAt: 777,
+    source: 'network',
+  })
+
+  assert.equal(isDesktopV3SessionTailReady(state, sessionA.id), true)
+})
+
+
+test('realtime message for unhydrated hidden session remains live-only for readiness', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.sessionsById[sessionB.id] = { kind: 'full', session: sessionB, needsHydrate: true }
+  applyCacheEvent(state, {
+    source: 'realtime',
+    sessionId: sessionB.id,
+    eventType: 'message.created',
+    payload: { message: messageB1 },
+    projection: { ...projectionB, projection_high_watermark_seq: messageB1.global_seq },
+    sessionEvent: {
+      id: 'evt-hidden-live-message',
+      session_id: sessionB.id,
+      seq: messageB1.global_seq,
+      event_type: 'message.created',
+      payload: { message: messageB1 },
+      ts_unix_ms: messageB1.created_at,
+    },
+  })
+
+  assert.equal(state.messagesBySession[sessionB.id].items[0].id, messageB1.id)
+  assert.equal(state.messagesBySession[sessionB.id].tailHydratedAt, undefined)
+  assert.equal(isDesktopV3SessionTailReady(state, sessionB.id), false)
+})
+
 
 test('metadata-only bootstrap preserves existing transcripts when messages_by_session is omitted', () => {
   const state = bootstrappedState()
