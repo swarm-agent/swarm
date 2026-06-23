@@ -35,6 +35,7 @@ import {
   persistDesktopV3ExistingMessageOperation,
   type DesktopV3ExistingMessageOperation,
 } from '../../session-v3/existing-session-flow'
+import { compactDesktopV3Session } from '../../session-v3/compact-session-flow'
 
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
@@ -503,6 +504,7 @@ export function DesktopV3ExistingConversationPane({
   const [draft, setDraft] = useState(storedOperation?.request.content ?? '')
   const [sendError, setSendError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
+  const [compacting, setCompacting] = useState(false)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
   const [mode, setMode] = useState<DesktopSessionMode>(normalizeSessionMode(session?.mode || cacheSession?.mode))
   const [selectedAgent, setSelectedAgent] = useState(initialAgent)
@@ -540,7 +542,7 @@ export function DesktopV3ExistingConversationPane({
     () => resolveDesktopChatRouteFromSession(session ?? null, routeOptions, routeOptions[0] ?? null),
     [routeOptions, session],
   )
-  const canSend = Boolean(normalizedSessionId && !sending && selectedAgent.trim() && selectedModelAvailable && (hasStoredOperation || draft.trim()))
+  const canSend = Boolean(normalizedSessionId && !sending && !compacting && selectedAgent.trim() && selectedModelAvailable && (hasStoredOperation || draft.trim()))
   const renderItems = useMemo(() => buildDesktopV3ConversationRenderItems(renderedMessages), [renderedMessages])
   const {
     scrollContainerRef,
@@ -553,7 +555,7 @@ export function DesktopV3ExistingConversationPane({
     if (run.reasoning?.state === 'running') return true
     return Object.values(run.reasoningByKey ?? {}).some((reasoning) => reasoning.state === 'running')
   })
-  const statusTimerActive = Boolean(runStatusModel?.active) || hasRunningReasoning
+  const statusTimerActive = Boolean(runStatusModel?.active) || hasRunningReasoning || compacting
   const [timerNow, setTimerNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -675,7 +677,7 @@ export function DesktopV3ExistingConversationPane({
   }
 
   async function handleSubmit() {
-    if (!normalizedSessionId || sending) return
+    if (!normalizedSessionId || sending || compacting) return
 
     setSending(true)
     setSendError(null)
@@ -713,6 +715,28 @@ export function DesktopV3ExistingConversationPane({
       if (mountedRef.current) {
         setSending(false)
       }
+    }
+  }
+
+  async function handleCompact(note: string) {
+    if (!normalizedSessionId || compacting || sending || currentRun) return
+
+    setCompacting(true)
+    setSendError(null)
+    scrollToBottom('smooth')
+    try {
+      await persistVisibleSettings()
+      await compactDesktopV3Session({
+        sessionId: normalizedSessionId,
+        note,
+        agentName: selectedAgent || agentState.activePrimary || '',
+      })
+    } catch (error) {
+      if (mountedRef.current) {
+        setSendError(error instanceof Error ? error.message : String(error))
+      }
+    } finally {
+      if (mountedRef.current) setCompacting(false)
     }
   }
 
@@ -768,6 +792,9 @@ export function DesktopV3ExistingConversationPane({
           {initialHydrateStatus === 'error' && !messagesLoaded && !hasMessages ? (
             <DesktopV3ChatInlineState title="Conversation unavailable" description="Initial message hydrate failed. You can still send from this session while cached state recovers." tone="error" />
           ) : null}
+          {compacting ? (
+            <DesktopV3CompactPendingState />
+          ) : null}
           {!hasMessages && initialHydrateStatus !== 'loading' && initialHydrateStatus !== 'error' ? (
             <DesktopV3ChatInlineState title="Empty conversation" description="Send a message to continue this session." />
           ) : null}
@@ -801,13 +828,14 @@ export function DesktopV3ExistingConversationPane({
         onDraftChange={setDraft}
         placeholder="Message Swarm…"
         inputLabel="Continue Desktop V3 conversation"
-        disabled={sending}
-        busy={sending}
+        disabled={sending || compacting}
+        busy={sending || compacting}
         canSubmit={canSend}
         canStop={Boolean(currentRun)}
         error={sendError}
         onSubmit={handleSubmit}
         onStop={handleStop}
+        onCompact={handleCompact}
         mode={mode}
         onModeChange={setMode}
         currentAgent={selectedAgent || agentState.activePrimary || 'Agent'}
@@ -834,7 +862,7 @@ export function DesktopV3ExistingConversationPane({
         routeTitle="Changing the route starts a new session in this workspace."
         contextLabel={contextLabel}
         contextTooltip={contextTooltip}
-        compactDisabled
+        compactDisabled={compacting || sending || Boolean(currentRun)}
       />
     </div>
   )
@@ -903,6 +931,20 @@ function DesktopV3UserMessage({ content, pendingLabel }: { content: string; pend
 
 function DesktopV3PendingUserMessage({ message }: { message: PendingUserMessage }) {
   return <DesktopV3UserMessage content={message.content} pendingLabel={message.status === 'failed' ? message.error || 'failed' : undefined} />
+}
+
+function DesktopV3CompactPendingState() {
+  return (
+    <div className="flex justify-start">
+      <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)] opacity-80">
+        <div className="mb-1 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
+          <LoaderCircle size={12} className="animate-spin text-[var(--app-primary)]" />
+          Compacting context
+        </div>
+        <div className="text-[var(--app-text-muted)]">Waiting for the backend compact cursor…</div>
+      </div>
+    </div>
+  )
 }
 
 function DesktopV3AssistantMessage({ content, role }: { content: string; role: string }) {

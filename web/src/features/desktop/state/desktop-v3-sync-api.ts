@@ -10,12 +10,19 @@ export interface DesktopV3BootstrapInput {
   include_active: boolean
 }
 
+export interface DesktopV3KnownSessionState {
+  endpoint_cursor?: string
+  applied_seq?: number
+  high_watermark?: number
+}
+
 export interface DesktopV3HydrateInput {
   surface: 'desktop' | string
   session_ids: string[]
   history: SyncHistory
   resources: SyncResources
   include_active: boolean
+  known_sessions?: Record<string, DesktopV3KnownSessionState>
 }
 
 export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {

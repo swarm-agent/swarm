@@ -2,31 +2,48 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"swarm/packages/swarmd/internal/permission"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
-func TestSessionsV3CompactIgnoresLifecycleActiveOnly(t *testing.T) {
+func TestSessionsV3CompactWaitsForTerminalLifecycleCursor(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createSessionsV3PrimaryTestSession(t, server, "compact-lifecycle-only", "Compact Lifecycle Only")
-	recordSessionsV3ReconnectLifecycle(t, server, created.ID, true)
+	created := createSessionsV3PrimaryTestSession(t, server, "compact-terminal", "Compact Terminal")
+	server.runner = compactTerminalRunService{events: []runruntime.StreamEvent{
+		{Type: runruntime.StreamEventSessionLifecycle, Lifecycle: &pebblestore.SessionLifecycleSnapshot{SessionID: created.ID, RunID: "run-compact", Active: true, Phase: "running", OwnerTransport: sessionV3ManualCompactOwnerTransport}},
+		{Type: runruntime.StreamEventSessionLifecycle, Lifecycle: &pebblestore.SessionLifecycleSnapshot{SessionID: created.ID, RunID: "run-compact", Active: false, Phase: "completed", OwnerTransport: sessionV3ManualCompactOwnerTransport}},
+	}}
 
-	resp := postSessionsV3CompactForTest(t, server, created.ID, "compact-lifecycle-only-request", "run-compact")
-	if resp.RunIntent == nil || resp.RunIntent.RunID != "run-compact" || resp.RunIntent.Status != sessionruntime.RunIntentPendingExecutor {
+	resp := postSessionsV3CompactForTest(t, server, created.ID, "compact-terminal-request", "run-compact")
+	if resp.RunIntent == nil || resp.RunIntent.RunID != "run-compact" || resp.RunIntent.Status != sessionruntime.RunIntentCompleted {
 		t.Fatalf("compact response run_intent = %+v", resp.RunIntent)
 	}
-	if resp.Compaction["run_id"] != "run-compact" || resp.Compaction["status"] != "accepted" {
-		t.Fatalf("compact response compaction = %+v", resp.Compaction)
+	if resp.Status != sessionruntime.RunIntentCompleted || resp.Compaction["status"] != sessionruntime.RunIntentCompleted {
+		t.Fatalf("compact response status=%q compaction=%+v", resp.Status, resp.Compaction)
+	}
+	if resp.Terminal["event_type"] != "session.lifecycle.updated" || resp.Terminal["phase"] != "completed" {
+		t.Fatalf("compact terminal = %+v", resp.Terminal)
+	}
+	if resp.RealtimeOutbox == nil || resp.RealtimeOutbox.EndpointCursor == "" || resp.RealtimeOutbox.Event.EventType != "session.lifecycle.updated" {
+		t.Fatalf("compact response missing terminal outbox: %+v", resp.RealtimeOutbox)
 	}
 	active, ok, err := sessionSvc.GetSessionActiveRunIntent(created.ID)
-	if err != nil || !ok || active.RunID != "run-compact" || active.Status != sessionruntime.RunIntentRunning {
-		t.Fatalf("canonical active after compact = %+v ok=%v err=%v", active, ok, err)
+	if err != nil {
+		t.Fatalf("active intent lookup: %v", err)
+	}
+	if ok {
+		t.Fatalf("compact left active run intent: %+v", active)
 	}
 }
 
@@ -47,11 +64,15 @@ func TestSessionsV3CompactRejectsDifferentCanonicalActiveRun(t *testing.T) {
 }
 
 type sessionsV3CompactTestResponse struct {
-	OK         bool                            `json:"ok"`
-	SessionID  string                          `json:"session_id"`
-	RunIntent  *pebblestore.V3SessionRunIntent `json:"run_intent"`
-	Compaction map[string]any                  `json:"compaction"`
-	Mutation   map[string]any                  `json:"mutation"`
+	OK             bool                                `json:"ok"`
+	SessionID      string                              `json:"session_id"`
+	RunID          string                              `json:"run_id"`
+	Status         string                              `json:"status"`
+	RunIntent      *pebblestore.V3SessionRunIntent     `json:"run_intent"`
+	Compaction     map[string]any                      `json:"compaction"`
+	Terminal       map[string]any                      `json:"terminal"`
+	Mutation       map[string]any                      `json:"mutation"`
+	RealtimeOutbox *pebblestore.V3RealtimeOutboxRecord `json:"realtime_outbox"`
 }
 
 func postSessionsV3CompactForTest(t *testing.T, server *Server, sessionID, clientRequestID, runID string) sessionsV3CompactTestResponse {
@@ -74,10 +95,60 @@ func postSessionsV3CompactForTest(t *testing.T, server *Server, sessionID, clien
 	if resp.Mutation == nil || resp.Mutation["session_id"] != sessionID {
 		t.Fatalf("compact response missing mutation: %+v", resp)
 	}
+	if resp.RealtimeOutbox == nil || resp.RealtimeOutbox.SessionID != sessionID || resp.RealtimeOutbox.EndpointCursor == "" {
+		t.Fatalf("compact response missing realtime outbox: %+v", resp)
+	}
 	for _, forbidden := range []string{"session", "messages", "events", "workset_id", "worksets", "subscriptions"} {
 		if _, exists := resp.Mutation[forbidden]; exists {
 			t.Fatalf("compact mutation response included %s: %+v", forbidden, resp.Mutation)
 		}
 	}
 	return resp
+}
+
+type compactTerminalRunService struct {
+	events []runruntime.StreamEvent
+	err    error
+}
+
+func (r compactTerminalRunService) RunTurn(context.Context, string, runruntime.RunRequest, runruntime.RunStartMeta) (runruntime.RunResult, error) {
+	return runruntime.RunResult{}, errors.New("RunTurn should not be used by compact endpoint")
+}
+
+func (r compactTerminalRunService) RunTurnStreaming(_ context.Context, sessionID string, request runruntime.RunRequest, meta runruntime.RunStartMeta, onEvent runruntime.StreamHandler) (runruntime.RunResult, error) {
+	for _, event := range r.events {
+		if event.SessionID == "" {
+			event.SessionID = sessionID
+		}
+		if event.RunID == "" {
+			event.RunID = meta.RunID
+		}
+		if onEvent != nil {
+			onEvent(event)
+		}
+	}
+	if r.err != nil {
+		return runruntime.RunResult{}, r.err
+	}
+	return runruntime.RunResult{SessionID: sessionID, Background: request.Background, TargetKind: request.TargetKind, TargetName: request.TargetName}, nil
+}
+
+func (r compactTerminalRunService) StopSessionRun(string, string, string) error { return nil }
+
+func (r compactTerminalRunService) ExecuteToolForSessionScope(context.Context, string, tool.Call) (string, error) {
+	return "", nil
+}
+
+func (r compactTerminalRunService) ListAgentToolDefinitions() []tool.Definition { return nil }
+
+func (r compactTerminalRunService) ListAgentToolDefinitionsForAccount(string) []tool.Definition {
+	return nil
+}
+
+func (r compactTerminalRunService) ResolveAgentToolContract(pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
+	return runruntime.ResolvedAgentToolContract{}, nil, nil, nil
+}
+
+func (r compactTerminalRunService) ResolveAgentToolContractForAccount(string, pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
+	return runruntime.ResolvedAgentToolContract{}, nil, nil, nil
 }

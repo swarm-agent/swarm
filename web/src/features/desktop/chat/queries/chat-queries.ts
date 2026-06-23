@@ -1,5 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import {
+  apiFetch,
+  readErrorMessage,
   requestJson,
 } from "../../../../app/api";
 import type {
@@ -193,11 +195,18 @@ interface V3MessageCommitResponseWire extends V3HydratedSessionResponseWire {
 interface V3CompactResponseWire {
   ok?: boolean;
   session_id?: string;
+  run_id?: string;
+  status?: string;
+  error?: string;
   run_intent?: V3RunIntentWire | null;
   compaction?: {
     run_id?: string;
     status?: string;
     owner_transport?: string;
+  };
+  terminal?: {
+    event_type?: string;
+    phase?: string;
   };
   mutation?: V3MutationWire | null;
   realtime_outbox?: V3RealtimeOutboxWire | null;
@@ -224,7 +233,12 @@ export interface CompactSessionV3Result {
   sessionId?: string;
   runId?: string;
   status?: string;
+  error?: string;
   ownerTransport?: string;
+  terminal?: {
+    eventType: string;
+    phase: string;
+  };
   session?: DesktopSessionRecord;
   runIntent?: V3RunIntentRecord | null;
   realtimeOutbox?: SendSessionMessageResult['realtimeOutbox'];
@@ -796,9 +810,16 @@ function mapV3CompactResponse(response: V3CompactResponseWire): CompactSessionV3
   return {
     ok: response.ok,
     sessionId: String(response.session_id ?? '').trim(),
-    runId: String(response.compaction?.run_id ?? response.run_intent?.run_id ?? '').trim(),
-    status: String(response.compaction?.status ?? response.run_intent?.status ?? '').trim(),
+    runId: String(response.run_id ?? response.compaction?.run_id ?? response.run_intent?.run_id ?? '').trim(),
+    status: String(response.status ?? response.compaction?.status ?? response.run_intent?.status ?? '').trim(),
+    error: typeof response.error === 'string' ? response.error.trim() : undefined,
     ownerTransport: String(response.compaction?.owner_transport ?? '').trim(),
+    terminal: response.terminal && typeof response.terminal === 'object'
+      ? {
+          eventType: String(response.terminal.event_type ?? '').trim(),
+          phase: String(response.terminal.phase ?? '').trim(),
+        }
+      : undefined,
     runIntent: mapV3RunIntent(response.run_intent),
     realtimeOutbox: mapV3RealtimeOutbox(response.realtime_outbox ?? response.mutation?.realtime_outbox),
     assistantMessage: null,
@@ -1715,7 +1736,7 @@ export async function compactSessionV3(
   }
   const clientRequestId = options.clientRequestId?.trim()
     || `desktop-v3-compact:${normalizedSessionId}:${crypto.randomUUID()}`;
-  const response = await requestJson<V3CompactResponseWire>(
+  const response = await apiFetch(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/compact`,
     {
       method: "POST",
@@ -1730,7 +1751,18 @@ export async function compactSessionV3(
       }),
     },
   );
-  return mapV3CompactResponse(response);
+  if (!response.ok) {
+    let payload: V3CompactResponseWire | null = null;
+    try {
+      payload = await response.clone().json() as V3CompactResponseWire;
+    } catch {
+      throw new Error(await readErrorMessage(response));
+    }
+    const mapped = mapV3CompactResponse(payload);
+    if (mapped.realtimeOutbox?.endpointCursor) return mapped;
+    throw new Error(mapped.error || await readErrorMessage(response));
+  }
+  return mapV3CompactResponse(await response.json() as V3CompactResponseWire);
 }
 
 export async function sendSessionMessage(

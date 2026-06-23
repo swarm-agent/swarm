@@ -12,27 +12,33 @@ async function withFetchStub(
     const url = String(input)
 
     if (url === '/v3/sessions/session-v3/compact') {
-      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
       return jsonResponse({
         ok: true,
-        session: {
-          id: 'session-v3',
-          title: 'V3 session (Compact #2)',
-          workspace_path: '/repo',
-          workspace_name: 'repo',
-          mode: 'auto',
-          session_api: 'v3',
-          message_count: 2,
-          updated_at: 8,
-          created_at: 1,
+        session_id: 'session-v3',
+        run_id: 'run-compact',
+        status: 'completed',
+        run_intent: {
+          session_id: 'session-v3',
+          run_id: 'run-compact',
+          status: 'completed',
+          event_seq: 9,
+          created_at: 7,
+          updated_at: 9,
         },
-        result: {
-          usage_summary: { session_id: 'session-v3', provider: 'test', model: 'gpt-test', source: 'context_compaction_reset', context_window: 1000, remaining_tokens: 1000, updated_at: 8 },
-          assistant_message: { id: 'msg-compact-ack', session_id: 'session-v3', global_seq: 4, role: 'assistant', content: `Manual context compact complete: ${body.note}`, created_at: 8 },
+        compaction: {
+          run_id: 'run-compact',
+          status: 'completed',
+          owner_transport: 'manual_compact',
         },
-        events: [
-          { type: 'message.stored', session_id: 'session-v3', run_id: 'run-compact', message: { id: 'msg-compact-ack', session_id: 'session-v3', global_seq: 4, role: 'assistant', content: `Manual context compact complete: ${body.note}`, created_at: 8 } },
-        ],
+        terminal: {
+          event_type: 'session.lifecycle.updated',
+          phase: 'completed',
+        },
+        realtime_outbox: {
+          endpoint_seq: 456,
+          endpoint_cursor: 'v3c1.terminal-compact-cursor',
+          session_id: 'session-v3',
+        },
       })
     }
 
@@ -187,11 +193,14 @@ test('compactSessionV3 uses only the native Sessions V3 compact endpoint', async
     assert.equal(Object.hasOwn(body, 'target_swarm_id'), false)
     assert.equal(Object.hasOwn(body, 'session_id'), false)
 
-    assert.equal(response.sessionId, '')
-    assert.equal(response.runIntent, null)
-    assert.equal(response.assistantMessage, null)
-    assert.equal(response.usageSummary, null)
-    assert.equal(response.events?.length, 0)
+    assert.equal(response.sessionId, 'session-v3')
+    assert.equal(response.runId, 'run-compact')
+    assert.equal(response.status, 'completed')
+    assert.equal(response.ownerTransport, 'manual_compact')
+    assert.equal(response.terminal?.eventType, 'session.lifecycle.updated')
+    assert.equal(response.terminal?.phase, 'completed')
+    assert.equal(response.runIntent?.status, 'completed')
+    assert.equal(response.realtimeOutbox?.endpointCursor, 'v3c1.terminal-compact-cursor')
   })
 })
 
@@ -213,9 +222,9 @@ test('default desktop send uses Sessions API v3 and rejects legacy endpoint fall
 test('Desktop V3 existing-conversation pane submits through Path B flow only', async () => {
   const source = await readFile(new URL('../../chat/components/desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
 
-  assert.match(source, /data-testid="desktop-v3-existing-composer"/)
-  assert.match(source, /data-testid="desktop-v3-existing-input"/)
-  assert.match(source, /data-testid="desktop-v3-existing-send"/)
+  assert.match(source, /data-testid="desktop-v3-existing-conversation-pane"/)
+  assert.match(source, /<DesktopV3AgenticComposer/)
+  assert.match(source, /onCompact={handleCompact}/)
   assert.match(source, /continueDesktopV3Conversation\(operation\)/)
   assert.match(source, /createDesktopV3ExistingMessageOperation/)
   assert.match(source, /parseStructuredToolMessage\(message\.content\)/)
