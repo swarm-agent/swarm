@@ -1285,7 +1285,10 @@ function writeSyncScope(state: DesktopV3CacheState, snapshot: SyncSnapshotRespon
 
 function reconnectResourceSet(raw: SessionsReconnectResponse): Set<string> {
   const resources = new Set<string>()
-  for (const workset of raw.worksets ?? []) {
+  for (const workset of [
+    ...(raw.worksets ?? []),
+    ...(raw.realtime?.resume?.worksets ?? []),
+  ]) {
     for (const resource of workset.resources ?? []) {
       const normalized = resource.trim()
       if (normalized) resources.add(normalized)

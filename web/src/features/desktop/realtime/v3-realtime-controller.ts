@@ -349,8 +349,12 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       })
     }
 
+    const state = this.getSnapshot()
     addRecoverySubscription(selectedSessionId)
-    for (const pending of Object.values(this.getSnapshot().pendingUserByClientRequestId)) {
+    for (const sessionId of activeRealtimeSessionIds(state)) {
+      addRecoverySubscription(sessionId)
+    }
+    for (const pending of Object.values(state.pendingUserByClientRequestId)) {
       if (pending.status !== 'pending') continue
       addRecoverySubscription(pending.sessionId)
     }
@@ -447,11 +451,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
     addDesired(state.selectedSessionId)
 
-    for (const [sessionId, intent] of Object.entries(state.currentRunIntentBySession)) {
-      if (!intent) continue
-      if (ACTIVE_INTENT_STATUSES.has(intent.status.trim().toLowerCase())) {
-        addDesired(sessionId)
-      }
+    for (const sessionId of activeRealtimeSessionIds(state)) {
+      addDesired(sessionId)
     }
 
     for (const pending of Object.values(state.pendingUserByClientRequestId)) {
@@ -785,13 +786,7 @@ export function buildDesktopV3InitialRealtimeResume(
   const selectedSessionId = preferredSessionId === null
     ? undefined
     : preferredSessionId?.trim() || state.selectedSessionId?.trim()
-  const activeSessionIDs = new Set<string>()
-  for (const [sessionId, intent] of Object.entries(state.currentRunIntentBySession)) {
-    if (!intent) continue
-    if (!ACTIVE_INTENT_STATUSES.has(intent.status.trim().toLowerCase())) continue
-    const normalized = intent.session_id?.trim() || sessionId.trim()
-    if (normalized) activeSessionIDs.add(normalized)
-  }
+  const activeSessionIDs = activeRealtimeSessionIds(state)
 
   const sessionOrder = state.sessionOrderByScope[sidebarScopeId] ?? []
   const orderedSessionIDs: string[] = []
@@ -835,6 +830,17 @@ export function buildDesktopV3InitialRealtimeResume(
   }
 
   return { endpointCursor, subscriptions, worksets, resume }
+}
+
+export function activeRealtimeSessionIds(state: DesktopV3CacheState): Set<string> {
+  const activeSessionIDs = new Set<string>()
+  for (const [sessionId, intent] of Object.entries(state.currentRunIntentBySession)) {
+    if (!intent) continue
+    if (!ACTIVE_INTENT_STATUSES.has(intent.status.trim().toLowerCase())) continue
+    const normalized = intent.session_id?.trim() || sessionId.trim()
+    if (normalized) activeSessionIDs.add(normalized)
+  }
+  return activeSessionIDs
 }
 
 export function cloneDesktopV3SyncSelector(selector: SyncSelector): SyncSelector {

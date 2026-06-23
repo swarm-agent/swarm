@@ -3366,6 +3366,135 @@ test('Desktop V3 recovery resume contains active selected and pending sessions w
   }
 })
 
+test('Desktop V3 reconnect subscribes active run-intent sessions without transcript hydrate', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-bootstrap'
+  state.selectedSessionId = 'selected-inactive'
+  state.sessionOrderByScope['global-scope'] = ['selected-inactive']
+  const activeSessionId = 'active-reconnect'
+  const activeIntent = {
+    session_id: activeSessionId,
+    run_id: 'run-active-reconnect',
+    status: 'running',
+    created_at: 1,
+    updated_at: 2,
+    event_seq: 2,
+  }
+  const sockets: FakeWebSocket[] = []
+  const hydrateRequests: unknown[] = []
+  let reconnectCount = 0
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    hydrate: async (input) => {
+      hydrateRequests.push(input)
+      return hydrateSnapshotFixture({
+        sessions_by_id: {},
+        projections_by_session: {},
+        messages_by_session: {},
+        session_order: [],
+      })
+    },
+    readEventsPage: async (input) => ({
+      ok: true,
+      session_id: input.sessionId,
+      events: [],
+      projection: { session_id: input.sessionId, last_event_seq: 0, projection_high_watermark_seq: 0, updated_at: 0 },
+      high_watermark_seq: 0,
+      next_seq: 0,
+      applied_seq: 0,
+    }),
+    reconnect: async () => {
+      reconnectCount += 1
+      return reconnectFixture({
+        snapshot_endpoint_cursor: 'cursor-reconnect-active',
+        sessions_by_id: {},
+        projections_by_session: {},
+        run_intents_by_session: { [activeSessionId]: [activeIntent] },
+        current_run_intent_by_session: { [activeSessionId]: activeIntent },
+        session_order: ['selected-inactive', activeSessionId],
+        workset_id: 'global-scope',
+        realtime: {
+          stream_path: '/v3/realtime/stream',
+          resume: {
+            protocol: 'v3.realtime',
+            protocol_version: 1,
+            kind: 'resume',
+            endpoint_cursor: 'cursor-reconnect-active',
+            subscriptions: [],
+            worksets: [{
+              workset_id: 'global-scope',
+              subscription_id: 'workset-sub',
+              selector: { kind: 'global', global: true },
+              resources: ['membership', 'projections', 'run_intents', 'sessions', 'tombstones'],
+              auto_subscribe_sessions: true,
+            }],
+          },
+        },
+      })
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start('selected-inactive')
+    ready.catch(() => undefined)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+
+    sockets[0].emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'cursor.error', error: 'rejected', bootstrap_required: false })
+    await waitFor(() => reconnectCount === 1)
+    await waitFor(() => sockets.length === 2)
+    sockets[1].open()
+    await waitFor(() => sockets[1].sent.length > 0)
+
+    const resume = sockets[1].sent[0] as RealtimeMessage
+    assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id), [
+      'selected-inactive',
+      activeSessionId,
+    ])
+    const completedIntent = { ...activeIntent, status: 'completed', updated_at: 3, event_seq: 3 }
+    sockets[1].emit({
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'event',
+      session_id: activeSessionId,
+      endpoint_cursor: 'cursor-active-completed',
+      event_type: 'run.intent.updated',
+      event: {
+        id: 'event-active-completed',
+        session_id: activeSessionId,
+        seq: 3,
+        event_type: 'run.intent.updated',
+        payload: { run_intent: completedIntent },
+        ts_unix_ms: 3,
+      },
+      projection: { session_id: activeSessionId, last_event_seq: 3, projection_high_watermark_seq: 3, updated_at: 3 },
+    })
+    await waitFor(() => state.runIntentsBySession[activeSessionId]?.[activeIntent.run_id]?.status === 'completed')
+
+    assert.equal(
+      hydrateRequests.some((request) => (request as { session_ids?: string[] }).session_ids?.includes(activeSessionId)),
+      false,
+    )
+    assert.equal(state.currentRunIntentBySession[activeSessionId], undefined)
+    assert.equal(state.liveRunsBySession[activeSessionId]?.[activeIntent.run_id]?.status, 'completed')
+    assert.equal(state.messagesBySession[activeSessionId], undefined)
+  } finally {
+    controller.stop()
+  }
+})
+
+
 test('Desktop V3 selected live-only session still hydrates transcript history', async () => {
   let state = readyControllerState()
   state.sessionsById[sessionB.id] = { kind: 'full', session: sessionB, needsHydrate: false }
