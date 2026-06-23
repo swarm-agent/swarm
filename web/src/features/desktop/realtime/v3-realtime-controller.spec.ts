@@ -883,7 +883,7 @@ test('Desktop V3 reconnect input preserves bounded sidebar selector instead of w
   )
 })
 
-test('Desktop V3 active-run repair completes before terminal websocket event', async () => {
+test('Desktop V3 active-run repair does not block websocket startup or stale terminal events', async () => {
   let state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
   state.syncScopesById['global-scope'] = {
@@ -912,6 +912,11 @@ test('Desktop V3 active-run repair completes before terminal websocket event', a
     updated_at: 50,
     event_seq: 5,
   }
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = { ...projectionA, last_event_seq: 3, projection_high_watermark_seq: 3 }
+  state.runIntentsBySession[sessionA.id] = { [activeRepairIntent.run_id]: activeRepairIntent }
+  state.currentRunIntentBySession[sessionA.id] = activeRepairIntent
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
   const olderActiveLifecycleEvent: V3SessionEvent = {
     id: 'evt-repair-running-3',
     session_id: sessionA.id,
@@ -1008,15 +1013,11 @@ test('Desktop V3 active-run repair completes before terminal websocket event', a
   })
 
   const ready = controller.start()
-  await waitFor(() => readRequests.length === 1)
-  await flushAsyncWork()
-  assert.equal(sockets.length, 0)
-
-  releaseRepairPage()
-  await waitFor(() => repairPageReturned)
   await waitFor(() => sockets.length > 0)
   sockets[0].open()
   await ready
+  await waitFor(() => readRequests.length === 1)
+  assert.equal(repairPageReturned, false)
 
   sockets[0].emit({
     protocol: 'v3.realtime',
@@ -1033,17 +1034,19 @@ test('Desktop V3 active-run repair completes before terminal websocket event', a
   assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
   assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.status, 'completed')
 
+  releaseRepairPage()
+  await waitFor(() => repairPageReturned)
   await flushAsyncWork()
 
   assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
   assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.status, 'completed')
-  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content, 'stale-repair')
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content, undefined)
   assert.equal(state.runIntentsBySession[sessionA.id]?.[runIntentA.run_id]?.status, 'completed')
   assert.equal(state.runIntentsBySession[sessionA.id]?.[runIntentA.run_id]?.event_seq, 5)
   assert.deepEqual(state.sessionsById[sessionA.id]?.kind === 'full' ? state.sessionsById[sessionA.id]?.session.lifecycle : undefined, { status: 'completed' })
   assert.deepEqual(
     state.eventsBySession[sessionA.id].map((event) => `${event.seq}:${event.id}`),
-    ['3:evt-repair-running-3', '4:evt-repair-delta-4', '5:evt-terminal-5'],
+    ['5:evt-terminal-5'],
   )
   assert.equal(state.realtime.endpointCursor, 'cursor-terminal-5')
   controller.stop()
@@ -1087,6 +1090,11 @@ test('Desktop V3 active-run repair defers only events for the repaired run', asy
     updated_at: 60,
     event_seq: 6,
   }
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = { ...projectionA, last_event_seq: 3, projection_high_watermark_seq: 3 }
+  state.runIntentsBySession[sessionA.id] = { [activeRepairIntent.run_id]: activeRepairIntent }
+  state.currentRunIntentBySession[sessionA.id] = activeRepairIntent
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
   const staleRunALifecycleEvent: V3SessionEvent = {
     id: 'evt-repair-running-3',
     session_id: sessionA.id,
@@ -1204,15 +1212,13 @@ test('Desktop V3 active-run repair defers only events for the repaired run', asy
   })
 
   const ready = controller.start()
-  await waitFor(() => readRequests.length === 1)
-  await flushAsyncWork()
-  assert.equal(sockets.length, 0)
-
-  releaseRepairPage()
-  await waitFor(() => repairPageReturned)
   await waitFor(() => sockets.length > 0)
   sockets[0].open()
   await ready
+  await waitFor(() => readRequests.length === 1)
+
+  releaseRepairPage()
+  await waitFor(() => repairPageReturned)
 
   sockets[0].emit({
     protocol: 'v3.realtime',
@@ -1310,6 +1316,11 @@ test('Desktop V3 active-run repair ignores replacement-run overlays from HTTP pa
     updated_at: 60,
     event_seq: 6,
   }
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.projectionsBySession[sessionA.id] = { ...projectionA, last_event_seq: 3, projection_high_watermark_seq: 3 }
+  state.runIntentsBySession[sessionA.id] = { [runA.run_id]: runA }
+  state.currentRunIntentBySession[sessionA.id] = runA
+  state.sessionOrderByScope['global-scope'] = [sessionA.id]
   const terminalRunAEvent: V3SessionEvent = {
     id: 'evt-terminal-5',
     session_id: sessionA.id,
@@ -1448,6 +1459,154 @@ test('Desktop V3 active-run repair ignores replacement-run overlays from HTTP pa
   )
   await waitFor(() => state.realtime.endpointCursor === 'cursor-run-b-7')
   controller.stop()
+})
+
+test('Desktop V3 hidden active-run repair is bounded and does not block startup', async () => {
+  let state = readyControllerState()
+  const sockets: FakeWebSocket[] = []
+  const activeIds = Array.from({ length: 100 }, (_, index) => `active-${index}`)
+  const selectedId = activeIds[99]
+  state.selectedSessionId = selectedId
+  state.sessionOrderByScope['global-scope'] = activeIds
+  for (const [index, sessionId] of activeIds.entries()) {
+    const intent = {
+      ...runIntentA,
+      session_id: sessionId,
+      run_id: `run-${index}`,
+      status: 'running',
+      created_at: index,
+      updated_at: index,
+      event_seq: 3,
+    }
+    state.sessionsById[sessionId] = { kind: 'full', session: { ...sessionA, id: sessionId }, needsHydrate: false }
+    state.projectionsBySession[sessionId] = { ...projectionA, session_id: sessionId, last_event_seq: 3, projection_high_watermark_seq: 3 }
+    state.runIntentsBySession[sessionId] = { [intent.run_id]: intent }
+    state.currentRunIntentBySession[sessionId] = intent
+  }
+
+  const readRequests: Array<{ sessionId: string; afterSeq: number; limit?: number }> = []
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    hydrate: async () => hydrateSnapshotFixture({
+      sessions_by_id: { [selectedId]: { ...sessionA, id: selectedId } },
+      projections_by_session: { [selectedId]: { ...projectionA, session_id: selectedId } },
+      messages_by_session: { [selectedId]: [] },
+      session_order: [selectedId],
+    }),
+    readEventsPage: async (input) => {
+      readRequests.push(input)
+      return {
+        ok: true,
+        session_id: input.sessionId,
+        events: [],
+        projection: { ...projectionA, session_id: input.sessionId, last_event_seq: 3, projection_high_watermark_seq: 3 },
+        high_watermark_seq: 3,
+        next_seq: input.afterSeq,
+        applied_seq: input.afterSeq,
+      }
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start(selectedId)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    await waitFor(() => readRequests.length === 26)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    assert.equal(readRequests.length, 26)
+    assert.equal(readRequests.some((request) => request.sessionId === selectedId), true)
+    assert.equal(new Set(readRequests.map((request) => request.sessionId)).size, 26)
+    assert.equal(readRequests.every((request) => request.limit === 100), true)
+  } finally {
+    controller.stop()
+  }
+})
+
+test('Desktop V3 active-run repair drops stale post-stop page commits', async () => {
+  let state = readyControllerState()
+  const sessionId = 'active-stop'
+  const intent = {
+    ...runIntentA,
+    session_id: sessionId,
+    run_id: 'run-stop',
+    status: 'running',
+    event_seq: 3,
+  }
+  state.sessionsById[sessionId] = { kind: 'full', session: { ...sessionA, id: sessionId }, needsHydrate: false }
+  state.projectionsBySession[sessionId] = { ...projectionA, session_id: sessionId, last_event_seq: 3, projection_high_watermark_seq: 3 }
+  state.runIntentsBySession[sessionId] = { [intent.run_id]: intent }
+  state.currentRunIntentBySession[sessionId] = intent
+  state.sessionOrderByScope['global-scope'] = [sessionId]
+
+  const sockets: FakeWebSocket[] = []
+  const repairPage = createDeferredValue<{
+    ok: true
+    session_id: string
+    events: V3SessionEvent[]
+    projection: typeof projectionA
+    high_watermark_seq: number
+    next_seq: number
+    applied_seq: number
+  }>()
+  const readRequests: Array<{ sessionId: string; afterSeq: number; limit?: number }> = []
+  const repairedEvent: V3SessionEvent = {
+    id: 'evt-stop-delta',
+    session_id: sessionId,
+    seq: 3,
+    event_type: 'session.assistant.delta',
+    payload: { run_id: intent.run_id, delta: 'must-not-commit' },
+    ts_unix_ms: 3,
+  }
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    readEventsPage: async (input) => {
+      readRequests.push(input)
+      return repairPage.promise
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  const ready = controller.start()
+  await waitFor(() => sockets.length === 1)
+  sockets[0].open()
+  await ready
+  await waitFor(() => readRequests.length === 1)
+  controller.stop()
+  repairPage.resolve({
+    ok: true,
+    session_id: sessionId,
+    events: [repairedEvent],
+    projection: { ...projectionA, session_id: sessionId, last_event_seq: 3, projection_high_watermark_seq: 3 },
+    high_watermark_seq: 3,
+    next_seq: 3,
+    applied_seq: 3,
+  })
+  await flushAsyncWork()
+  await flushAsyncWork()
+
+  assert.equal(state.eventsBySession[sessionId], undefined)
+  assert.equal(state.liveRunsBySession[sessionId]?.[intent.run_id]?.assistantDraft?.content, undefined)
 })
 
 test('warm runtime resumes from in-memory realtime cursor', async () => {
@@ -3616,6 +3775,16 @@ function readyControllerState(): DesktopV3CacheState {
 async function readSource(path: string): Promise<string> {
   const localPath = path.startsWith('web/') ? path.slice('web/'.length) : path
   return readFile(localPath, 'utf8')
+}
+
+function createDeferredValue<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason?: unknown) => void } {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+  return { promise, resolve, reject }
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {

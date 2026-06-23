@@ -30,7 +30,11 @@ import type {
 } from '../state/desktop-v3-cache-types'
 
 const DESKTOP_V3_CLIENT_ID = `desktop:${crypto.randomUUID()}`
-const ACTIVE_REPAIR_PAGE_SIZE = 500
+const ACTIVE_REPAIR_PAGE_SIZE = 100
+const ACTIVE_REPAIR_HIDDEN_MAX_CONCURRENT = 4
+const ACTIVE_REPAIR_HIDDEN_MAX_SESSIONS_PER_GENERATION = 25
+const ACTIVE_REPAIR_HIDDEN_MAX_PAGES_PER_SESSION = 2
+const ACTIVE_REPAIR_HIDDEN_MAX_EVENTS_PER_GENERATION = 500
 const ACTIVE_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
 
 export interface DesktopV3SessionConnectInput {
@@ -78,13 +82,20 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly streamCommit: DesktopV3StreamCommitController
   private readonly hydrateBySession = new Map<string, Promise<void>>()
   private readonly markedActiveRepairBySession = new Map<string, { runId: string; afterSeq: number }>()
-  private readonly activeRepairByRun = new Map<string, Promise<void>>()
+  private readonly activeRepairByRun = new Map<string, { generation: number }>()
   private readonly pendingHistoryRepair = new Set<string>()
   private readonly connectingSessionIds = new Set<string>()
   private firstResumeSent?: Deferred<void>
   private startupCancellation?: Deferred<never>
   private unsubscribeCache?: () => void
   private startPromise?: Promise<void>
+  private repairGeneration = 0
+  private hiddenRepairInFlight = 0
+  private hiddenRepairBudget = {
+    generation: 0,
+    sessionsStarted: 0,
+    eventsApplied: 0,
+  }
   private stopped = false
 
   constructor(deps: DesktopV3RealtimeControllerDeps = {}) {
@@ -146,7 +157,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
           resume,
         })
         this.markActiveRunsFromReconnect(reconnect)
-        await this.repairMarkedActiveRuns()
+        const generation = this.beginActiveRepairGeneration()
+        setTimeout(() => this.scheduleMarkedActiveRunRepairs(generation), 0)
 
         return {
           endpointCursor: resume.endpoint_cursor,
@@ -161,6 +173,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   start(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void> {
     if (this.startPromise) return this.startPromise
     this.stopped = false
+    this.beginActiveRepairGeneration()
     this.startupCancellation = createDeferred<never>()
     this.startupCancellation.promise.catch(() => undefined)
     this.firstResumeSent = createDeferred<void>()
@@ -184,6 +197,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.hydrateBySession.clear()
     this.markedActiveRepairBySession.clear()
     this.activeRepairByRun.clear()
+    this.repairGeneration += 1
+    this.hiddenRepairInFlight = 0
     this.pendingHistoryRepair.clear()
     this.connectingSessionIds.clear()
     this.firstResumeSent?.resolve()
@@ -260,8 +275,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.reconcileDesiredSessionConnections()
 
     this.markActiveRunsFromCacheState(this.getSnapshot())
-    await this.repairMarkedActiveRuns()
-    this.assertNotStopped()
 
     await this.awaitUnlessStopped(this.transport.start())
     await this.waitForFirstResumeSent()
@@ -271,6 +284,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       ? undefined
       : preferredSessionId?.trim() || this.getSnapshot().selectedSessionId
     if (selectedSessionId) void this.hydrateSessionOnce(selectedSessionId)
+    this.scheduleMarkedActiveRunRepairs(this.repairGeneration)
   }
 
   private async waitForSidebarBootstrap(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void> {
@@ -539,72 +553,133 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     }
   }
 
-  private async repairMarkedActiveRuns(): Promise<void> {
-    const repairs: Promise<void>[] = []
+  private beginActiveRepairGeneration(): number {
+    this.repairGeneration += 1
+    this.hiddenRepairInFlight = 0
+    this.hiddenRepairBudget = {
+      generation: this.repairGeneration,
+      sessionsStarted: 0,
+      eventsApplied: 0,
+    }
+    return this.repairGeneration
+  }
+
+  private scheduleMarkedActiveRunRepairs(generation: number): void {
+    if (this.stopped || generation !== this.repairGeneration) return
+    const selectedSessionId = this.getSnapshot().selectedSessionId?.trim()
+    const hiddenCandidates: Array<[string, { runId: string; afterSeq: number }]> = []
 
     for (const [sessionId, marked] of this.markedActiveRepairBySession) {
-      const key = `${sessionId}:${marked.runId}`
-      if (this.activeRepairByRun.has(key)) {
-        repairs.push(this.activeRepairByRun.get(key)!)
-        continue
+      if (sessionId === selectedSessionId) {
+        this.startActiveRunRepair(sessionId, marked, generation, false)
+      } else {
+        hiddenCandidates.push([sessionId, marked])
       }
-
-      let completed = false
-
-      const pending = this.repairActiveRun(
-        sessionId,
-        marked.runId,
-        marked.afterSeq,
-      )
-        .then(() => {
-          completed = true
-        })
-        .finally(() => {
-          this.activeRepairByRun.delete(key)
-
-          if (completed) {
-            const current = this.markedActiveRepairBySession.get(sessionId)
-
-            if (current?.runId === marked.runId) {
-              this.markedActiveRepairBySession.delete(sessionId)
-            }
-          }
-        })
-
-      this.activeRepairByRun.set(key, pending)
-      repairs.push(pending)
     }
 
-    await Promise.all(repairs)
+    for (const [sessionId, marked] of hiddenCandidates) {
+      if (this.hiddenRepairInFlight >= ACTIVE_REPAIR_HIDDEN_MAX_CONCURRENT) break
+      if (this.hiddenRepairBudget.sessionsStarted >= ACTIVE_REPAIR_HIDDEN_MAX_SESSIONS_PER_GENERATION) break
+      if (this.hiddenRepairBudget.eventsApplied >= ACTIVE_REPAIR_HIDDEN_MAX_EVENTS_PER_GENERATION) break
+      this.startActiveRunRepair(sessionId, marked, generation, true)
+    }
+  }
+
+  private startActiveRunRepair(
+    sessionId: string,
+    marked: { runId: string; afterSeq: number },
+    generation: number,
+    hidden: boolean,
+  ): void {
+    const key = `${sessionId}:${marked.runId}`
+    const existing = this.activeRepairByRun.get(key)
+    if (existing) return
+    if (hidden) {
+      this.hiddenRepairInFlight += 1
+      this.hiddenRepairBudget.sessionsStarted += 1
+    }
+
+    let completed = false
+    this.repairActiveRun(
+      sessionId,
+      marked.runId,
+      marked.afterSeq,
+      generation,
+      hidden,
+    )
+      .then((result) => {
+        completed = result === 'completed'
+      })
+      .catch((error) => {
+        if (!this.stopped && generation === this.repairGeneration) {
+          console.error('[desktop-v3] active run repair failed', error)
+        }
+      })
+      .finally(() => {
+        const currentRepair = this.activeRepairByRun.get(key)
+        if (currentRepair?.generation === generation) {
+          this.activeRepairByRun.delete(key)
+        }
+        if (hidden) {
+          this.hiddenRepairInFlight = Math.max(0, this.hiddenRepairInFlight - 1)
+        }
+        if (completed && generation === this.repairGeneration) {
+          const current = this.markedActiveRepairBySession.get(sessionId)
+          if (current?.runId === marked.runId) {
+            this.markedActiveRepairBySession.delete(sessionId)
+          }
+        }
+        if (hidden && generation === this.repairGeneration && !this.stopped) {
+          this.scheduleMarkedActiveRunRepairs(generation)
+        }
+      })
+
+    this.activeRepairByRun.set(key, { generation })
+  }
+
+  private repairStillCurrent(sessionId: string, expectedRunId: string, generation: number): boolean {
+    if (this.stopped || generation !== this.repairGeneration) return false
+    const current = this.getSnapshot().currentRunIntentBySession[sessionId]
+    if (!current || current.run_id !== expectedRunId) return false
+    return ACTIVE_INTENT_STATUSES.has(current.status.trim().toLowerCase())
   }
 
   private async repairActiveRun(
     sessionId: string,
     expectedRunId: string,
     afterSeq: number,
-  ): Promise<void> {
+    generation: number,
+    hidden: boolean,
+  ): Promise<'completed' | 'cancelled' | 'budget_exhausted'> {
     const runStartSeq = Math.max(0, Math.floor(afterSeq))
     let cursor = runStartSeq
+    let pagesRead = 0
 
     for (;;) {
-      const current = this.getSnapshot().currentRunIntentBySession[sessionId]
-      if (!current || current.run_id !== expectedRunId) return
+      if (!this.repairStillCurrent(sessionId, expectedRunId, generation)) return 'cancelled'
+      if (hidden) {
+        if (pagesRead >= ACTIVE_REPAIR_HIDDEN_MAX_PAGES_PER_SESSION) return 'budget_exhausted'
+        if (this.hiddenRepairBudget.eventsApplied >= ACTIVE_REPAIR_HIDDEN_MAX_EVENTS_PER_GENERATION) return 'budget_exhausted'
+      }
 
       const page = await this.readEventsPage({
         sessionId,
         afterSeq: cursor,
         limit: ACTIVE_REPAIR_PAGE_SIZE,
       })
+      pagesRead += 1
 
-      const currentBeforeApply = this.getSnapshot().currentRunIntentBySession[sessionId]
-      if (!currentBeforeApply
-        || currentBeforeApply.run_id !== expectedRunId
-        || !ACTIVE_INTENT_STATUSES.has(currentBeforeApply.status.trim().toLowerCase())) {
-        return
+      if (!this.repairStillCurrent(sessionId, expectedRunId, generation)) return 'cancelled'
+
+      let ordered = [...page.events].sort((a, b) => a.seq - b.seq)
+      if (hidden) {
+        const remaining = Math.max(0, ACTIVE_REPAIR_HIDDEN_MAX_EVENTS_PER_GENERATION - this.hiddenRepairBudget.eventsApplied)
+        if (remaining <= 0) return 'budget_exhausted'
+        ordered = ordered.slice(0, remaining)
       }
 
-      const ordered = [...page.events].sort((a, b) => a.seq - b.seq)
       if (ordered.length > 0) {
+        if (!this.repairStillCurrent(sessionId, expectedRunId, generation)) return 'cancelled'
         await this.streamCommit.commitActions([{
           type: 'liveRun.mergeRepairEvents',
           sessionId,
@@ -618,16 +693,17 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
             payload: decodeSessionEventPayload(event),
           })),
         }])
+        if (hidden) this.hiddenRepairBudget.eventsApplied += ordered.length
       }
 
-      const latestCurrent = this.getSnapshot().currentRunIntentBySession[sessionId]
-      if (!latestCurrent || latestCurrent.run_id !== expectedRunId) return
+      if (!this.repairStillCurrent(sessionId, expectedRunId, generation)) return 'cancelled'
 
       const lastReturnedSeq = ordered.length > 0 ? ordered[ordered.length - 1].seq : cursor
       const targetSeq = projectionSeq(page.projection)
       if (lastReturnedSeq <= cursor || lastReturnedSeq >= targetSeq) break
       cursor = lastReturnedSeq
     }
+    return 'completed'
   }
 }
 
