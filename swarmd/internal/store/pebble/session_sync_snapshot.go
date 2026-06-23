@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -16,8 +18,8 @@ import (
 
 const (
 	v3SessionTombstoneScopeIndexVersion    = 1
-	v3SyncSnapshotSessionBundleConcurrency = 8
-	v3SyncSnapshotRunIntentScanLimit       = int(^uint(0) >> 1)
+	v3SyncSnapshotSessionBundleConcurrency = 16
+	v3SyncSnapshotRunIntentScanLimit       = 200
 
 	V3SyncSnapshotHistoryModeNone = "none"
 	V3SyncSnapshotHistoryModeTail = "tail"
@@ -129,6 +131,34 @@ type V3SyncSnapshotOmission struct {
 	ManifestRef string `json:"manifest_ref,omitempty"`
 }
 
+type v3SyncSnapshotTimings struct {
+	start     time.Time
+	selected  int
+	selectDur time.Duration
+	revDur    time.Duration
+	bundleDur time.Duration
+	tombDur   time.Duration
+	totalDur  time.Duration
+	messages  int
+	intents   int
+	plans     int
+	omissions int
+}
+
+func newV3SyncSnapshotTimings() *v3SyncSnapshotTimings {
+	if strings.TrimSpace(os.Getenv("SWARM_V3_SYNC_BOOTSTRAP_TIMING")) == "" {
+		return nil
+	}
+	return &v3SyncSnapshotTimings{start: time.Now()}
+}
+
+func (t *v3SyncSnapshotTimings) log() {
+	if t == nil {
+		return
+	}
+	log.Printf("v3 sync bootstrap snapshot timings selected=%d messages=%d run_intents=%d plans=%d omissions=%d select=%s rev=%s bundles=%s tombstones=%s total=%s", t.selected, t.messages, t.intents, t.plans, t.omissions, t.selectDur, t.revDur, t.bundleDur, t.tombDur, t.totalDur)
+}
+
 func (s *SessionStore) BuildV3SyncSnapshot(options V3SyncSnapshotOptions) (result V3SyncSnapshotResult, err error) {
 	return s.BuildV3SyncSnapshotWithContext(options.Context, options)
 }
@@ -196,19 +226,33 @@ func normalizeV3SyncSnapshotOptions(options V3SyncSnapshotOptions) V3SyncSnapsho
 }
 
 func (s *SessionStore) buildV3SyncSnapshotFromReader(reader pebble.Reader, options V3SyncSnapshotOptions) (V3SyncSnapshotResult, error) {
+	timings := newV3SyncSnapshotTimings()
+	defer timings.log()
+
+	phaseStart := time.Now()
 	selected, pagination, err := s.selectV3SyncSnapshotSessions(reader, options)
 	if err != nil {
 		return V3SyncSnapshotResult{}, err
 	}
+	if timings != nil {
+		timings.selected = len(selected)
+		timings.selectDur = time.Since(phaseStart)
+	}
+
+	phaseStart = time.Now()
 	rev, err := readV3RealtimeOutboxSequenceFromReader(reader)
 	if err != nil {
 		return V3SyncSnapshotResult{}, err
+	}
+	if timings != nil {
+		timings.revDur = time.Since(phaseStart)
 	}
 	result := newV3SyncSnapshotResultMaps(len(selected))
 	result.Rev = rev
 	result.Pagination = pagination
 	result.Watermarks = V3SyncSnapshotWatermarks{LoadedAt: time.Now().UnixMilli()}
 
+	phaseStart = time.Now()
 	bundles := make([]V3SyncSnapshotResult, len(selected))
 	group, ctx := errgroup.WithContext(options.Context)
 	bundleOptions := options
@@ -231,13 +275,33 @@ func (s *SessionStore) buildV3SyncSnapshotFromReader(reader pebble.Reader, optio
 	for i := range bundles {
 		mergeV3SyncSessionBundle(&result, bundles[i])
 	}
+	if timings != nil {
+		timings.bundleDur = time.Since(phaseStart)
+	}
+
+	phaseStart = time.Now()
 	if err := s.addV3SyncSnapshotTombstones(reader, options, &result); err != nil {
 		return V3SyncSnapshotResult{}, err
+	}
+	if timings != nil {
+		timings.tombDur = time.Since(phaseStart)
+		for _, messages := range result.MessagesBySession {
+			timings.messages += len(messages)
+		}
+		for _, intents := range result.RunIntentsBySession {
+			timings.intents += len(intents)
+		}
+		timings.plans = len(result.PlansBySession)
+		timings.omissions = len(result.Omissions)
+		timings.totalDur = time.Since(timings.start)
 	}
 	return result, nil
 }
 
 func newV3SyncSnapshotResultMaps(sessionCapacity int) V3SyncSnapshotResult {
+	if sessionCapacity < 0 {
+		sessionCapacity = 0
+	}
 	return V3SyncSnapshotResult{
 		SessionsByID:              make(map[string]SessionSnapshot, sessionCapacity),
 		ProjectionsBySession:      make(map[string]V3SessionProjection, sessionCapacity),
@@ -246,13 +310,13 @@ func newV3SyncSnapshotResultMaps(sessionCapacity int) V3SyncSnapshotResult {
 		RunIntentsBySession:       make(map[string][]V3SessionRunIntent, sessionCapacity),
 		HistoryManifestsBySession: make(map[string][]V3SessionHistoryChunkDescriptor, sessionCapacity),
 		HistoryChunksByID:         map[string]V3SessionHistoryChunk{},
-		Omissions:                 []V3SyncSnapshotOmission{},
+		Omissions:                 make([]V3SyncSnapshotOmission, 0),
 		SessionOrder:              make([]string, 0, sessionCapacity),
 		PermissionsBySession:      make(map[string][]PermissionRecord, sessionCapacity),
 		UsageBySession:            make(map[string]SessionUsageSummary, sessionCapacity),
 		PlansBySession:            make(map[string]SessionPlanSnapshot, sessionCapacity),
 		PlanRevisionsBySession:    make(map[string][]SessionPlanSnapshot, sessionCapacity),
-		TombstonesBySession:       map[string]V3SessionTombstone{},
+		TombstonesBySession:       make(map[string]V3SessionTombstone, sessionCapacity),
 	}
 }
 
@@ -982,7 +1046,11 @@ func (s *SessionStore) addV3SyncSnapshotRunIntents(reader pebble.Reader, options
 		return err
 	}
 	_ = projection
-	intents, err := listV3SessionRunIntentsFromReaderWithContext(options.Context, reader, session.ID, 0, v3SyncSnapshotRunIntentScanLimit)
+	limit := v3SyncSnapshotRunIntentScanLimit
+	if options.History.MaxMessagesPerSession > limit {
+		limit = options.History.MaxMessagesPerSession
+	}
+	intents, err := listV3SessionRunIntentsFromReaderWithContext(options.Context, reader, session.ID, 0, limit)
 	if err != nil {
 		return err
 	}
@@ -1028,7 +1096,7 @@ func v3SyncSnapshotHistoryDescriptor(sessionID, resource string, inline any) (V3
 	chunk := V3SessionHistoryChunk{Resource: resource}
 	switch values := inline.(type) {
 	case *[]MessageSnapshot:
-		messages := append([]MessageSnapshot(nil), (*values)...)
+		messages := *values
 		chunk.Messages = messages
 		if len(messages) > 0 {
 			descriptor.FromSeq = messages[0].GlobalSeq
@@ -1036,7 +1104,7 @@ func v3SyncSnapshotHistoryDescriptor(sessionID, resource string, inline any) (V3
 		}
 		descriptor.MessageCount = len(messages)
 	case *[]V3SessionEvent:
-		events := append([]V3SessionEvent(nil), (*values)...)
+		events := *values
 		chunk.Events = events
 		if len(events) > 0 {
 			descriptor.FromSeq = events[0].Seq

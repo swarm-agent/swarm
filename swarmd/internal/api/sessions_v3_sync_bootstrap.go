@@ -2,10 +2,14 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -80,7 +84,7 @@ func (s *Server) handleSessionsV3SyncBootstrap(w http.ResponseWriter, r *http.Re
 		writeV3SyncCursorHTTPError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, response)
+	writeSessionsV3SyncBootstrapJSON(w, response)
 }
 
 func (s *Server) handleSessionsV3SyncHydrate(w http.ResponseWriter, r *http.Request) {
@@ -424,6 +428,7 @@ type sessionsV3SyncSnapshotResponseBody struct {
 	KnownSessions             map[string]sessionsV3KnownState                          `json:"known_sessions"`
 	TombstonesBySession       map[string]pebblestore.V3SessionTombstone                `json:"tombstones_by_session"`
 	ReplayInstructions        sessionsV3SyncReplayInstructionsResponse                 `json:"replay_instructions"`
+	logTimings                *sessionsV3SyncBootstrapTimings                          `json:"-"`
 }
 
 type sessionsV3SyncScopeResponse struct {
@@ -461,19 +466,43 @@ type sessionsV3SyncPreferenceCacheKey struct {
 }
 
 func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options sessionsV3ResolvedSyncOptions, selector any, resources []string, known map[string]sessionsV3KnownState) (sessionsV3SyncSnapshotResponseBody, error) {
+	timings := newSessionsV3SyncBootstrapTimings()
+	totalStart := time.Now()
+	phaseStart := totalStart
 	scope := v3SyncCursorScopeForSnapshot(options.Principal, options.Surface, "v3.sync.snapshot", selector, resources)
 	if err := s.validateSessionsV3KnownState(scope, known); err != nil {
 		return sessionsV3SyncSnapshotResponseBody{}, err
 	}
+	if timings != nil {
+		timings.scopeDur = time.Since(phaseStart)
+	}
+
+	phaseStart = time.Now()
 	snapshot, err := s.sessions.BuildSyncSnapshotWithContext(ctx, options.Snapshot)
 	if err != nil {
 		return sessionsV3SyncSnapshotResponseBody{}, err
 	}
+	if timings != nil {
+		timings.snapshotDur = time.Since(phaseStart)
+		timings.sessions = len(snapshot.SessionsByID)
+		for _, messages := range snapshot.MessagesBySession {
+			timings.messages += len(messages)
+		}
+		for _, intents := range snapshot.RunIntentsBySession {
+			timings.runIntents += len(intents)
+		}
+	}
+
+	phaseStart = time.Now()
 	snapshotEndpointCursor, err := s.signV3SyncEndpointCursor(scope, snapshot.Rev)
 	if err != nil {
 		return sessionsV3SyncSnapshotResponseBody{}, err
 	}
+	if timings != nil {
+		timings.cursorDur = time.Since(phaseStart)
+	}
 
+	phaseStart = time.Now()
 	preferencesBySession := make(map[string]sessionsV3SyncPreferenceResponse, len(snapshot.SessionsByID))
 	agentModelPolicyBySession := make(map[string]sessionsV3AgentModelPolicy, len(snapshot.SessionsByID))
 	resolvedPreferenceCache := make(map[sessionsV3SyncPreferenceCacheKey]sessionsV3SyncResolvedPreference, len(snapshot.SessionsByID))
@@ -507,8 +536,12 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		}
 		tombstones[sessionID] = tombstone
 	}
+	if timings != nil {
+		timings.decorateDur = time.Since(phaseStart)
+		timings.totalDur = time.Since(totalStart)
+	}
 
-	return sessionsV3SyncSnapshotResponseBody{
+	response := sessionsV3SyncSnapshotResponseBody{
 		OK:                        true,
 		Rev:                       snapshot.Rev,
 		SnapshotEndpointCursor:    snapshotEndpointCursor,
@@ -545,7 +578,65 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 			AfterEndpointCursor:            snapshotEndpointCursor,
 			BootstrapRequiredOnCursorError: true,
 		},
-	}, nil
+	}
+	if timings != nil {
+		response.logTimings = timings
+	}
+	return response, nil
+}
+
+type sessionsV3SyncBootstrapTimings struct {
+	scopeDur    time.Duration
+	snapshotDur time.Duration
+	cursorDur   time.Duration
+	decorateDur time.Duration
+	encodeDur   time.Duration
+	totalDur    time.Duration
+	sessions    int
+	messages    int
+	runIntents  int
+	bytes       int
+}
+
+func newSessionsV3SyncBootstrapTimings() *sessionsV3SyncBootstrapTimings {
+	if strings.TrimSpace(os.Getenv("SWARM_V3_SYNC_BOOTSTRAP_TIMING")) == "" {
+		return nil
+	}
+	return &sessionsV3SyncBootstrapTimings{}
+}
+
+func (t *sessionsV3SyncBootstrapTimings) log() {
+	if t == nil {
+		return
+	}
+	log.Printf("v3 sync bootstrap api timings sessions=%d messages=%d run_intents=%d bytes=%d scope=%s snapshot=%s cursor=%s decorate=%s encode=%s total_before_encode=%s total_with_encode=%s", t.sessions, t.messages, t.runIntents, t.bytes, t.scopeDur, t.snapshotDur, t.cursorDur, t.decorateDur, t.encodeDur, t.totalDur, t.totalDur+t.encodeDur)
+}
+
+func writeSessionsV3SyncBootstrapJSON(w http.ResponseWriter, response sessionsV3SyncSnapshotResponseBody) {
+	timings := response.logTimings
+	response.logTimings = nil
+	if timings == nil {
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+	start := time.Now()
+	payload, err := json.Marshal(response)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	timings.encodeDur = time.Since(start)
+	timings.bytes = len(payload)
+	header := w.Header()
+	if header.Get("Content-Type") == "" {
+		header.Set("Content-Type", "application/json; charset=utf-8")
+	}
+	if header.Get("Cache-Control") == "" {
+		header.Set("Cache-Control", "no-store")
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(append(payload, '\n'))
+	timings.log()
 }
 
 func (s *Server) resolveSessionsV3SyncPreference(preference pebblestore.ModelPreference, cache map[sessionsV3SyncPreferenceCacheKey]sessionsV3SyncResolvedPreference) sessionsV3SyncResolvedPreference {
