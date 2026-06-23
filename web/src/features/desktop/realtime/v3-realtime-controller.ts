@@ -8,7 +8,7 @@ import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, commitDesktopV3CacheSnapshot, subscribeDesktopV3Cache, type DesktopV3CacheMutation } from '../state/desktop-v3-cache-store'
 import { decodeSessionEventPayload, hydrateResponseToAction, realtimeFrameToActions } from '../state/desktop-v3-cache-wire'
 import {
-  buildDesktopV3InitialHydrateInput,
+  buildDesktopV3SelectedSessionHydrateInput,
   postDesktopV3Reconnect,
   postDesktopV3SyncHydrate,
   type DesktopV3ReconnectInput,
@@ -493,7 +493,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     if (existing) return existing
 
     const promise = (async () => {
-      const response = await this.hydrate(buildDesktopV3InitialHydrateInput([normalized]))
+      const response = await this.hydrate(buildDesktopV3SelectedSessionHydrateInput(normalized))
       this.dispatch(hydrateResponseToAction(response, [normalized]))
     })().finally(() => {
       this.hydrateBySession.delete(normalized)

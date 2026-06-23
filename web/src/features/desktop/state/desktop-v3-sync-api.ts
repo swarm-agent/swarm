@@ -58,16 +58,20 @@ export const DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES: SyncResources = {
   plan_revisions: false,
 }
 
-export function buildDesktopV3InitialHydrateInput(sessionIds: string[]): DesktopV3HydrateInput {
+export function buildDesktopV3SelectedSessionHydrateInput(sessionId: string): DesktopV3HydrateInput {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) {
+    throw new Error('Desktop V3 selected-session hydrate requires session_id')
+  }
   return {
     surface: 'desktop',
-    session_ids: sessionIds,
+    session_ids: [normalizedSessionId],
     history: {
       mode: 'tail',
       max_messages_per_session: DESKTOP_STARTUP_MESSAGE_LIMIT,
       manifest_policy: 'manifest',
     },
-    resources: DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES,
+    resources: { ...DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES },
     include_active: true,
   }
 }

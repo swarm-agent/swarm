@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { DESKTOP_STARTUP_MESSAGE_LIMIT, DESKTOP_STARTUP_SESSION_LIMIT, DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT, buildDesktopV3InitialHydrateInput, countArrayMapItems, postDesktopV3SyncBootstrap, postDesktopV3SyncHydrate } from './desktop-v3-sync-api'
+import { DESKTOP_STARTUP_MESSAGE_LIMIT, DESKTOP_STARTUP_SESSION_LIMIT, DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT, buildDesktopV3SelectedSessionHydrateInput, countArrayMapItems, postDesktopV3SyncBootstrap, postDesktopV3SyncHydrate } from './desktop-v3-sync-api'
 import { snapshotFixture } from './desktop-v3-cache.backend-fixtures'
 
 test('postDesktopV3SyncBootstrap posts metadata-only bounded startup workset payload to bootstrap endpoint', async () => {
@@ -40,9 +40,11 @@ test('postDesktopV3SyncBootstrap posts metadata-only bounded startup workset pay
 })
 
 
-test('buildDesktopV3InitialHydrateInput requests a manifest when the initial message tail may be partial', () => {
+test('buildDesktopV3SelectedSessionHydrateInput requests one selected session tail manifest', () => {
+  const input = buildDesktopV3SelectedSessionHydrateInput(' session-a ')
+  assert.deepEqual(input.session_ids, ['session-a'])
   assert.deepEqual(
-    buildDesktopV3InitialHydrateInput(['session-a']).history,
+    input.history,
     {
       mode: 'tail',
       max_messages_per_session: DESKTOP_STARTUP_MESSAGE_LIMIT,
@@ -70,7 +72,7 @@ test('postDesktopV3SyncHydrate posts exact selected-session bounded tail payload
   }) as typeof fetch
 
   try {
-    await postDesktopV3SyncHydrate(buildDesktopV3InitialHydrateInput(['session-b']))
+    await postDesktopV3SyncHydrate(buildDesktopV3SelectedSessionHydrateInput('session-b'))
   } finally {
     globalThis.fetch = originalFetch
   }

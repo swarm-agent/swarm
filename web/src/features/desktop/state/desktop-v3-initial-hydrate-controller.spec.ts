@@ -111,3 +111,41 @@ test('initial hydrate requests only the preferred session and does not batch hyd
   assert.equal(state.messagesBySession[sessionB.id], undefined)
   assert.equal(state.desktopInitialHydrate.status, 'ready')
 })
+
+
+test('initial hydrate uses current selected fallback without hydrating sidebar sessions', async () => {
+  resetDesktopV3InitialHydrateControllerForTests()
+  let state = createEmptyDesktopV3CacheState()
+  const requests: string[][] = []
+
+  await hydrateDesktopV3InitialSessions({
+    sessionIds: [sessionA.id, sessionB.id],
+    currentSelectedSessionId: sessionB.id,
+    bootstrapResponse: snapshotFixture({
+      sessions_by_id: { [sessionA.id]: sessionA, [sessionB.id]: sessionB },
+      projections_by_session: { [sessionA.id]: projectionA, [sessionB.id]: projectionB },
+      session_order: [sessionA.id, sessionB.id],
+      messages_by_session: {},
+    }),
+    postHydrate: async (input) => {
+      const sessionIds = input.session_ids ?? []
+      requests.push(sessionIds)
+      return hydrateSnapshotFixture({
+        selector: { kind: 'session_ids', session_ids: sessionIds },
+        sessions_by_id: { [sessionB.id]: sessionB },
+        projections_by_session: { [sessionB.id]: projectionB },
+        session_order: sessionIds,
+        messages_by_session: { [sessionB.id]: [messageB1] },
+      })
+    },
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    getSnapshot: () => state,
+  })
+
+  assert.deepEqual(requests, [[sessionB.id]])
+  assert.equal(state.messagesBySession[sessionA.id], undefined)
+  assert.equal(state.messagesBySession[sessionB.id].items[0].id, messageB1.id)
+  assert.deepEqual(state.desktopInitialHydrate.requestedSessionIds, [sessionB.id])
+})

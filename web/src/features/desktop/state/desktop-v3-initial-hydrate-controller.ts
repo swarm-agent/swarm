@@ -3,7 +3,7 @@ import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from './desktop-v3-
 import { hydrateResponseCompletesSession } from './desktop-v3-cache-reducer'
 import { isDesktopV3SessionTailReady } from './desktop-v3-cache-selectors'
 import {
-  buildDesktopV3InitialHydrateInput,
+  buildDesktopV3SelectedSessionHydrateInput,
   postDesktopV3SyncHydrate,
   type DesktopV3HydrateInput,
 } from './desktop-v3-sync-api'
@@ -27,9 +27,6 @@ export interface DesktopV3SelectiveHydrationPlan {
   hydrateSessionIds: string[]
 }
 
-const MAX_BACKGROUND_HYDRATE_BATCH_SIZE = 10
-const MAX_BACKGROUND_HYDRATE_CONCURRENCY = 2
-
 const inFlightBySessionSet = new Map<string, Promise<void>>()
 
 export function hydrateDesktopV3InitialSessions(input: HydrateDesktopV3InitialSessionsInput): Promise<void> {
@@ -37,7 +34,7 @@ export function hydrateDesktopV3InitialSessions(input: HydrateDesktopV3InitialSe
   const preferredSessionId = input.preferredSessionId === null
     ? undefined
     : normalizeOptionalSessionId(input.preferredSessionId) ?? normalizeOptionalSessionId(input.currentSelectedSessionId)
-  const inFlightKey = normalizeSessionIdSetKey(preferredSessionId ? [preferredSessionId, ...sessionIds] : sessionIds)
+  const inFlightKey = normalizeSessionIdSetKey(preferredSessionId ? [preferredSessionId] : [])
   const existing = inFlightBySessionSet.get(inFlightKey)
   if (existing) {
     return existing
@@ -88,17 +85,11 @@ export function planDesktopV3SelectiveHydration(input: {
   sessionIds?: string[]
   state?: DesktopV3CacheState
 }): DesktopV3SelectiveHydrationPlan {
-  const response = input.bootstrapResponse
   const preferredSessionId = input.preferredSessionId === null
     ? undefined
     : normalizeOptionalSessionId(input.preferredSessionId) ?? normalizeOptionalSessionId(input.currentSelectedSessionId)
-  const bootstrapOrder = normalizeOrderedSessionIds(input.sessionIds ?? response.session_order ?? [])
-  const bootstrapOrderSet = new Set(bootstrapOrder)
-  const candidateSessionIds = preferredSessionId && !bootstrapOrderSet.has(preferredSessionId)
-    ? [preferredSessionId, ...bootstrapOrder]
-    : bootstrapOrder
-
-  return planDesktopV3Hydration(input.state ?? getDesktopV3CacheSnapshot(), candidateSessionIds)
+  if (!preferredSessionId) return { reusedSessionIds: [], hydrateSessionIds: [] }
+  return planDesktopV3Hydration(input.state ?? getDesktopV3CacheSnapshot(), [preferredSessionId])
 }
 
 export function buildPostRealtimeConnectHydrationSnapshot(
@@ -144,11 +135,11 @@ async function hydrateDesktopV3InitialSessionsUncached(
     getSnapshot: () => DesktopV3CacheState
   },
 ): Promise<void> {
-  const { sessionIds, dispatch, postHydrate, getSnapshot } = input
-  const selectedSessionId = input.preferredSessionId
+  const { dispatch, postHydrate, getSnapshot } = input
+  const selectedSessionId = normalizeOptionalSessionId(input.preferredSessionId)
 
-  if (sessionIds.length === 0 && !selectedSessionId) {
-    dispatchInitialHydrateReady(dispatch, [], [], undefined)
+  if (!selectedSessionId) {
+    dispatchInitialHydrateReady(dispatch, [], [], input.scopeId ?? input.bootstrapResponse?.scope_id)
     return
   }
 
@@ -156,7 +147,7 @@ async function hydrateDesktopV3InitialSessionsUncached(
     type: 'desktopInitialHydrate.update',
     patch: {
       status: 'loading',
-      requestedSessionIds: selectedSessionId ? normalizeOrderedSessionIds([selectedSessionId, ...sessionIds]) : sessionIds,
+      requestedSessionIds: [selectedSessionId],
       hydratedSessionIds: [],
       error: undefined,
       stale: undefined,
@@ -167,10 +158,8 @@ async function hydrateDesktopV3InitialSessionsUncached(
   const completedSessionIds: string[] = []
   const failedErrors: string[] = []
   const selectedPlan = input.forceNetworkHydrate
-    ? { reusedSessionIds: [], hydrateSessionIds: selectedSessionId ? [selectedSessionId] : [] }
-    : selectedSessionId
-      ? planDesktopV3Hydration(getSnapshot(), [selectedSessionId])
-      : { reusedSessionIds: [], hydrateSessionIds: [] }
+    ? { reusedSessionIds: [], hydrateSessionIds: [selectedSessionId] }
+    : planDesktopV3Hydration(getSnapshot(), [selectedSessionId])
 
   if (selectedPlan.reusedSessionIds.length > 0 || selectedPlan.hydrateSessionIds.length > 0) {
     dispatch({
@@ -182,36 +171,17 @@ async function hydrateDesktopV3InitialSessionsUncached(
 
   const selectedHydrateId = selectedPlan.hydrateSessionIds[0]
   if (selectedHydrateId) {
-    await hydrateBatch({ sessionIds: [selectedHydrateId], postHydrate, dispatch, completedSessionIds, failedErrors })
+    await hydrateSelectedSession({ sessionId: selectedHydrateId, postHydrate, dispatch, completedSessionIds, failedErrors })
+  } else {
+    completedSessionIds.push(...selectedPlan.reusedSessionIds)
   }
-
-  const plan = input.forceNetworkHydrate
-    ? { reusedSessionIds: [], hydrateSessionIds: sessionIds }
-    : planDesktopV3Hydration(getSnapshot(), sessionIds)
-
-  const remainingHydrateIds = plan.hydrateSessionIds.filter((sessionId) => sessionId !== selectedHydrateId)
-  if (plan.reusedSessionIds.length > 0 || remainingHydrateIds.length > 0) {
-    dispatch({
-      type: 'desktopV3Cache.applyHydrationPlan',
-      reusedSessionIds: plan.reusedSessionIds,
-      hydrateSessionIds: remainingHydrateIds,
-    })
-  }
-
-  await hydrateBatches({
-    sessionIds: remainingHydrateIds,
-    postHydrate,
-    dispatch,
-    completedSessionIds,
-    failedErrors,
-  })
 
   if (failedErrors.length > 0) {
     dispatch({
       type: 'desktopInitialHydrate.update',
       patch: {
         status: 'error',
-        requestedSessionIds: normalizeOrderedSessionIds([...(selectedHydrateId ? [selectedHydrateId] : []), ...remainingHydrateIds]),
+        requestedSessionIds: [selectedSessionId],
         hydratedSessionIds: normalizeOrderedSessionIds(completedSessionIds),
         error: failedErrors.join('; '),
       },
@@ -221,42 +191,23 @@ async function hydrateDesktopV3InitialSessionsUncached(
 
   dispatchInitialHydrateReady(
     dispatch,
-    normalizeOrderedSessionIds([...(selectedHydrateId ? [selectedHydrateId] : []), ...remainingHydrateIds]),
+    [selectedSessionId],
     normalizeOrderedSessionIds(completedSessionIds),
     input.scopeId ?? input.bootstrapResponse?.scope_id,
   )
 }
 
-async function hydrateBatches(input: {
-  sessionIds: string[]
+async function hydrateSelectedSession(input: {
+  sessionId: string
   postHydrate: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
   dispatch: (action: DesktopV3CacheAction) => void
   completedSessionIds: string[]
   failedErrors: string[]
 }): Promise<void> {
-  const batches = chunk(input.sessionIds, MAX_BACKGROUND_HYDRATE_BATCH_SIZE)
-  let nextBatchIndex = 0
-  const worker = async () => {
-    while (nextBatchIndex < batches.length) {
-      const batch = batches[nextBatchIndex++]
-      await hydrateBatch({ ...input, sessionIds: batch })
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(MAX_BACKGROUND_HYDRATE_CONCURRENCY, batches.length) }, worker))
-}
-
-async function hydrateBatch(input: {
-  sessionIds: string[]
-  postHydrate: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
-  dispatch: (action: DesktopV3CacheAction) => void
-  completedSessionIds: string[]
-  failedErrors: string[]
-}): Promise<void> {
-  if (input.sessionIds.length === 0) return
   try {
-    const response = await input.postHydrate(buildDesktopV3InitialHydrateInput(input.sessionIds))
-    input.dispatch(hydrateResponseToAction(response, input.sessionIds))
-    input.completedSessionIds.push(...completedHydrateSessionIds(response, input.sessionIds))
+    const response = await input.postHydrate(buildDesktopV3SelectedSessionHydrateInput(input.sessionId))
+    input.dispatch(hydrateResponseToAction(response, [input.sessionId]))
+    input.completedSessionIds.push(...completedHydrateSessionIds(response, [input.sessionId]))
   } catch (error) {
     input.failedErrors.push(error instanceof Error ? error.message : String(error))
   }
@@ -308,10 +259,3 @@ function normalizeSessionIdSetKey(sessionIds: string[]): string {
   return [...normalizeOrderedSessionIds(sessionIds)].sort().join('\u0000')
 }
 
-function chunk<T>(values: T[], size: number): T[][] {
-  const output: T[][] = []
-  for (let index = 0; index < values.length; index += size) {
-    output.push(values.slice(index, index + size))
-  }
-  return output
-}

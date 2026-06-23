@@ -1,6 +1,6 @@
 import { compactSessionV3, type CompactSessionV3Result } from '../chat/queries/chat-queries'
 import { dispatchDesktopV3Cache } from '../state/desktop-v3-cache-store'
-import { buildDesktopV3InitialHydrateInput, postDesktopV3SyncHydrate, type DesktopV3HydrateInput } from '../state/desktop-v3-sync-api'
+import { buildDesktopV3SelectedSessionHydrateInput, postDesktopV3SyncHydrate, type DesktopV3HydrateInput } from '../state/desktop-v3-sync-api'
 import type { SyncSnapshotResponse } from '../state/desktop-v3-cache-types'
 import { hydrateResponseToAction } from '../state/desktop-v3-cache-wire'
 
@@ -52,7 +52,7 @@ export async function compactDesktopV3Session(
     throw new Error(response.error || 'Desktop V3 compact did not return a terminal hydrate cursor')
   }
 
-  const hydrateInput = buildDesktopV3InitialHydrateInput([sessionId])
+  const hydrateInput = buildDesktopV3SelectedSessionHydrateInput(sessionId)
   hydrateInput.known_sessions = {
     [sessionId]: { endpoint_cursor: cursor },
   }
