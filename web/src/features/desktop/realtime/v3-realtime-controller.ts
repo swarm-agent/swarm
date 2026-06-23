@@ -478,7 +478,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       })
     }
 
-    for (const [sessionId, session] of registered) {
+    for (const sessionId of registered.keys()) {
       if (desired.has(sessionId)) continue
       this.transport.unsubscribeSession(sessionId)
     }
