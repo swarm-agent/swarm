@@ -4,9 +4,9 @@ import assert from 'node:assert/strict'
 import { bootstrapDesktopV3Sidebar, resetDesktopV3BootstrapControllerForTests } from './desktop-v3-bootstrap-controller'
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
 import type { DesktopV3CacheAction } from './desktop-v3-cache-types'
-import { messageA1, projectionA, snapshotFixture, sessionA } from './desktop-v3-cache.backend-fixtures'
+import { projectionA, snapshotFixture, sessionA } from './desktop-v3-cache.backend-fixtures'
 
-test('bootstrap controller applies hydrated backend bootstrap without second hydrate', async () => {
+test('bootstrap controller applies metadata-only backend bootstrap without marking sidebar transcripts hydrated', async () => {
   resetDesktopV3BootstrapControllerForTests()
   let state = createEmptyDesktopV3CacheState()
   const actions: DesktopV3CacheAction[] = []
@@ -20,13 +20,13 @@ test('bootstrap controller applies hydrated backend bootstrap without second hyd
       sessions_by_id: { [sessionA.id]: sessionA },
       projections_by_session: { [sessionA.id]: projectionA },
       session_order: [sessionA.id],
-      messages_by_session: { [sessionA.id]: [messageA1] },
+      messages_by_session: {},
       run_intents_by_session: {},
       sync_scope: {
         surface: 'desktop',
         stream_kind: 'v3.sync.snapshot',
         selector_filter_hash: 'scope-a',
-        resource_set: 'messages,run_intents',
+        resource_set: 'run_intents',
       },
     }),
     postHydrate: async (input) => {
@@ -49,8 +49,8 @@ test('bootstrap controller applies hydrated backend bootstrap without second hyd
   assert.deepEqual(state.sessionOrderByScope['scope-a'], [sessionA.id])
   assert.equal(state.sessionsById[sessionA.id]?.kind, 'full')
   assert.equal(state.desktopInitialHydrate.status, 'ready')
-  assert.equal(state.desktopInitialHydrate.hydratedSessionIds[0], sessionA.id)
-  assert.equal(state.messagesBySession[sessionA.id].items[0].id, messageA1.id)
+  assert.deepEqual(state.desktopInitialHydrate.hydratedSessionIds, [])
+  assert.equal(state.messagesBySession[sessionA.id], undefined)
 })
 
 test('bootstrap controller coalesces concurrent in-flight backend bootstrap calls only', async () => {

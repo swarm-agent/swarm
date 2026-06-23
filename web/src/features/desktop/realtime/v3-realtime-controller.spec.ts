@@ -857,7 +857,7 @@ test('Desktop V3 retained realtime controller reports bootstrap failure without 
   resetDesktopV3RealtimeControllerForTests()
 })
 
-test('Desktop V3 reconnect input requires exact principal-global sidebar scope', () => {
+test('Desktop V3 reconnect input preserves bounded sidebar selector instead of widening to bare global', () => {
   const state = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
   state.syncScopesById['global-scope'] = {
@@ -866,7 +866,7 @@ test('Desktop V3 reconnect input requires exact principal-global sidebar scope',
     streamKind: 'v3.sync.snapshot',
     selectorFilterHash: 'global-hash',
     resourceSet: 'run_intents',
-    selector: { kind: 'global', global: true },
+    selector: { kind: 'recent', global: true, recent: { limit: 50 }, session_ids: ['session-a'] },
     endpointCursor: 'cursor-bootstrap',
     replayPath: '/v3/sync/stream',
     replayTransport: 'http_post',
@@ -875,16 +875,18 @@ test('Desktop V3 reconnect input requires exact principal-global sidebar scope',
 
   const input = buildDesktopV3ReconnectInput(state, 'client-a')
   assert.equal(input.workset.workset_id, 'global-scope')
-  assert.deepEqual(input.workset.selector, { kind: 'global', global: true })
+  assert.deepEqual(input.workset.selector, { kind: 'recent', global: true, recent: { limit: 50 }, session_ids: ['session-a'] })
+  assert.notDeepEqual(input.workset.selector, { kind: 'global', global: true })
   assert.deepEqual(input.workset.history, { mode: 'none' })
+  assert.equal(input.workset.resources.messages, false)
   assert.equal(input.workset.resources.events, false)
   assert.equal(input.workset.resources.run_intents, true)
   assert.equal(input.workset.auto_subscribe_sessions, true)
 
-  state.syncScopesById['global-scope'].selector = { kind: 'recent', global: true }
+  state.syncScopesById['global-scope'].selector = { kind: 'global', global: true }
   assert.throws(
     () => buildDesktopV3ReconnectInput(state, 'client-a'),
-    /principal-wide global selector/,
+    /bounded sidebar selector/,
   )
 })
 

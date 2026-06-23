@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { DESKTOP_STARTUP_MESSAGE_LIMIT, DESKTOP_STARTUP_SESSION_LIMIT, DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT, buildDesktopV3InitialHydrateInput, countArrayMapItems, postDesktopV3SyncBootstrap, postDesktopV3SyncHydrate } from './desktop-v3-sync-api'
 import { snapshotFixture } from './desktop-v3-cache.backend-fixtures'
 
-test('postDesktopV3SyncBootstrap posts bounded hydrated startup workset payload to bootstrap endpoint', async () => {
+test('postDesktopV3SyncBootstrap posts metadata-only bounded startup workset payload to bootstrap endpoint', async () => {
   const originalFetch = globalThis.fetch
   const calls: Array<{ url: string; init: RequestInit }> = []
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -25,16 +25,18 @@ test('postDesktopV3SyncBootstrap posts bounded hydrated startup workset payload 
   assert.equal(calls[0].url, '/v3/sync/bootstrap')
   assert.equal(calls[0].init.method, 'POST')
   const body = JSON.parse(String(calls[0].init.body))
-  assert.deepEqual(body, DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT)
   assert.equal(body.selector.recent.limit, DESKTOP_STARTUP_SESSION_LIMIT)
-  assert.equal(body.history.max_messages_per_session, DESKTOP_STARTUP_MESSAGE_LIMIT)
-  assert.equal(body.history.manifest_policy, 'manifest')
-  assert.equal(body.resources.messages, true)
+  assert.equal(body.history.mode, 'none')
+  assert.equal('max_messages_per_session' in body.history, false)
+  assert.equal('manifest_policy' in body.history, false)
+  assert.equal(body.resources.messages, false)
   assert.equal(body.resources.events, false)
   assert.equal(body.resources.run_intents, true)
   assert.equal(body.resources.active_plan, true)
   assert.equal(body.resources.plan_revisions, false)
   assert.equal(body.include_active, true)
+  assert.deepEqual(DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.history, { mode: 'none' })
+  assert.equal(DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.resources.messages, false)
 })
 
 
@@ -56,7 +58,7 @@ test('countArrayMapItems totals present arrays and ignores missing values', () =
 })
 
 
-test('postDesktopV3SyncHydrate posts exact Step 2 payload to hydrate endpoint', async () => {
+test('postDesktopV3SyncHydrate posts exact selected-session bounded tail payload to hydrate endpoint', async () => {
   const originalFetch = globalThis.fetch
   const calls: Array<{ url: string; init: RequestInit }> = []
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -68,7 +70,7 @@ test('postDesktopV3SyncHydrate posts exact Step 2 payload to hydrate endpoint', 
   }) as typeof fetch
 
   try {
-    await postDesktopV3SyncHydrate(buildDesktopV3InitialHydrateInput(['session-b', 'session-a']))
+    await postDesktopV3SyncHydrate(buildDesktopV3InitialHydrateInput(['session-b']))
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -78,7 +80,7 @@ test('postDesktopV3SyncHydrate posts exact Step 2 payload to hydrate endpoint', 
   assert.equal(calls[0].init.method, 'POST')
   assert.deepEqual(JSON.parse(String(calls[0].init.body)), {
     surface: 'desktop',
-    session_ids: ['session-b', 'session-a'],
+    session_ids: ['session-b'],
     history: {
       mode: 'tail',
       max_messages_per_session: DESKTOP_STARTUP_MESSAGE_LIMIT,

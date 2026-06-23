@@ -71,13 +71,14 @@ test('initial hydrate requests selected session from backend and stores returned
   assert.equal(state.desktopInitialHydrate.status, 'ready')
 })
 
-test('initial hydrate can hydrate all requested sidebar sessions from backend bounded tails', async () => {
+test('initial hydrate requests only the preferred session and does not batch hydrate sidebar sessions', async () => {
   resetDesktopV3InitialHydrateControllerForTests()
   let state = createEmptyDesktopV3CacheState()
   const requests: string[][] = []
 
   await hydrateDesktopV3InitialSessions({
     sessionIds: [sessionA.id, sessionB.id],
+    preferredSessionId: sessionA.id,
     bootstrapResponse: snapshotFixture({
       sessions_by_id: { [sessionA.id]: sessionA, [sessionB.id]: sessionB },
       projections_by_session: { [sessionA.id]: projectionA, [sessionB.id]: projectionB },
@@ -86,14 +87,17 @@ test('initial hydrate can hydrate all requested sidebar sessions from backend bo
     }),
     preBootstrapCachedProjections: {},
     postHydrate: async (input) => {
+      assert.deepEqual(input.session_ids, [sessionA.id])
+      assert.equal(input.history.mode, 'tail')
+      assert.equal(input.resources.messages, true)
       const sessionIds = input.session_ids ?? []
       requests.push(sessionIds)
       return hydrateSnapshotFixture({
         selector: { kind: 'session_ids', session_ids: sessionIds },
-        sessions_by_id: Object.fromEntries(sessionIds.map((sessionId) => [sessionId, sessionId === sessionA.id ? sessionA : sessionB])),
-        projections_by_session: Object.fromEntries(sessionIds.map((sessionId) => [sessionId, sessionId === sessionA.id ? projectionA : projectionB])),
+        sessions_by_id: { [sessionA.id]: sessionA },
+        projections_by_session: { [sessionA.id]: projectionA },
         session_order: sessionIds,
-        messages_by_session: Object.fromEntries(sessionIds.map((sessionId) => [sessionId, sessionId === sessionA.id ? [messageA1] : [messageB1]])),
+        messages_by_session: { [sessionA.id]: [messageA1] },
       })
     },
     dispatch: (action: DesktopV3CacheAction) => {
@@ -102,8 +106,8 @@ test('initial hydrate can hydrate all requested sidebar sessions from backend bo
     getSnapshot: () => state,
   })
 
-  assert.deepEqual(requests, [[sessionA.id, sessionB.id]])
+  assert.deepEqual(requests, [[sessionA.id]])
   assert.equal(state.messagesBySession[sessionA.id].items[0].id, messageA1.id)
-  assert.equal(state.messagesBySession[sessionB.id].items[0].id, messageB1.id)
+  assert.equal(state.messagesBySession[sessionB.id], undefined)
   assert.equal(state.desktopInitialHydrate.status, 'ready')
 })
