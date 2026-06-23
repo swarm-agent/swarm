@@ -44,20 +44,11 @@ import {
 } from './desktop-v3-cache.backend-fixtures'
 import { selectDesktopSidebarRows, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
 import { buildDesktopV3ConversationRenderItems } from '../chat/components/desktop-v3-existing-conversation-pane'
-import { createDesktopV3CacheOwner } from './desktop-v3-cache-owner'
-import { buildPersistedDesktopV3MessageTailV1, DESKTOP_V3_CACHE_SCHEMA_VERSION } from './desktop-v3-cache-persisted-types'
 import type { CacheEvent, DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, V3SessionEvent } from './desktop-v3-cache-types'
 
 function bootstrappedState(): DesktopV3CacheState {
   return applyBootstrapSnapshot(createEmptyDesktopV3CacheState(), snapshotFixture())
 }
-
-const persistedOwner = createDesktopV3CacheOwner({
-  origin: 'https://desktop.example.test',
-  accountScopeId: 'acct-a',
-  userId: 'user-a',
-  surface: 'desktop',
-})
 
 function deltaFrame(
   eventType: string,
@@ -95,84 +86,6 @@ function eventFrame(eventType: string, event: V3SessionEvent, endpointCursor: st
   })
 }
 
-test('desktopV3Cache.restore rebuilds cached sidebar, selected transcript indexes, cursors, and stale status', () => {
-  let state = bootstrappedState()
-  state.messagesBySession[sessionB.id] = buildMessageListCache([messageB1], { source: 'network' })
-  state.pendingUserByClientRequestId['pending-1'] = {
-    clientRequestId: 'pending-1',
-    messageId: 'pending-msg',
-    sessionId: sessionB.id,
-    role: 'user',
-    content: 'pending',
-    createdAt: 1,
-    status: 'pending',
-  }
-
-  const scopeId = 'persisted-scope'
-  const selectedMessageTail = buildPersistedDesktopV3MessageTailV1({
-    ownerKey: persistedOwner.key,
-    sessionId: sessionA.id,
-    persistedAt: 2_000,
-    messages: [messageA2, messageA1],
-    sourceMessageCount: sessionA.message_count,
-    sourceLastMessageAt: sessionA.last_message_at,
-    sourceProjectionHighWatermarkSeq: projectionA.projection_high_watermark_seq,
-    hydratedAt: 2_001,
-  })
-
-  state = desktopV3CacheReducer(state, {
-    type: 'desktopV3Cache.restore',
-    owner: {
-      schemaVersion: DESKTOP_V3_CACHE_SCHEMA_VERSION,
-      ownerKey: persistedOwner.key,
-      owner: persistedOwner,
-      persistedAt: 1_000,
-      selectedSessionId: sessionA.id,
-      sidebarScopeId: scopeId,
-      syncScopesById: {
-        [scopeId]: {
-          scopeId,
-          surface: 'desktop',
-          streamKind: 'v3.sync.snapshot',
-          selectorFilterHash: 'persisted-selector',
-          resourceSet: 'messages,run_intents',
-          selector: { kind: 'workspace', workspace_path: '/repo' },
-          endpointCursor: 'cursor-persisted',
-          replayPath: '/v3/sync/stream',
-          replayTransport: 'http_post',
-          needsBootstrap: false,
-        },
-      },
-      sessionOrderByScope: { [scopeId]: [sessionA.id, sessionB.id] },
-      sidebarSessionsById: {
-        [sessionA.id]: { session: sessionA, projection: projectionA, runIntents: [runIntentA] },
-        [sessionB.id]: { session: sessionB, projection: projectionB },
-      },
-    },
-    selectedMessageTail,
-  })
-
-  assert.equal(state.desktopSidebarBootstrap.status, 'cached')
-  assert.equal(state.desktopSidebarBootstrap.scopeId, scopeId)
-  assert.equal(state.desktopSidebarBootstrap.stale, true)
-  assert.equal(state.desktopInitialHydrate.status, 'cached')
-  assert.equal(state.desktopInitialHydrate.scopeId, scopeId)
-  assert.equal(state.realtime.needsBootstrap, true)
-  assert.equal(state.syncScopesById[scopeId].endpointCursor, 'cursor-persisted')
-  assert.equal(state.syncScopesById[scopeId].needsBootstrap, true)
-  assert.deepEqual(state.sessionOrderByScope[scopeId], [sessionA.id, sessionB.id])
-  assert.equal(state.selectedSessionId, sessionA.id)
-  assert.equal(state.sessionsById[sessionA.id]?.kind, 'full')
-  assert.equal(state.sessionsById[sessionA.id]?.needsHydrate, true)
-  assert.equal(state.projectionsBySession[sessionA.id].projection_high_watermark_seq, projectionA.projection_high_watermark_seq)
-  assert.equal(state.currentRunIntentBySession[sessionA.id]?.run_id, runIntentA.run_id)
-  assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), [messageA1.id, messageA2.id])
-  assert.deepEqual(state.messagesBySession[sessionA.id].byMessageId, { [messageA1.id]: 0, [messageA2.id]: 1 })
-  assert.deepEqual(state.messagesBySession[sessionA.id].byGlobalSeq, { [`${sessionA.id}:1`]: 0, [`${sessionA.id}:2`]: 1 })
-  assert.equal(state.messagesBySession[sessionA.id].source, 'persisted')
-  assert.equal(state.messagesBySession[sessionB.id], undefined)
-  assert.equal(state.pendingUserByClientRequestId['pending-1']?.content, 'pending')
-})
 
 test('bootstrap stores scoped cursor, scope metadata, orders, message source metadata, run intents, and only present message keys', () => {
   const state = bootstrappedState()
@@ -1453,39 +1366,7 @@ function renderSignature(state: DesktopV3CacheState): string[] {
     })
 }
 
-function restoreForRenderIdentity(state: DesktopV3CacheState): DesktopV3CacheState {
-  return desktopV3CacheReducer(createEmptyDesktopV3CacheState(), {
-    type: 'desktopV3Cache.restore',
-    owner: {
-      schemaVersion: DESKTOP_V3_CACHE_SCHEMA_VERSION,
-      ownerKey: persistedOwner.key,
-      owner: persistedOwner,
-      persistedAt: 1_000,
-      selectedSessionId: sessionA.id,
-      sidebarScopeId: 'scope-render-identity',
-      syncScopesById: {},
-      sessionOrderByScope: { 'scope-render-identity': [sessionA.id] },
-      sidebarSessionsById: {
-        [sessionA.id]: {
-          session: sessionA,
-          projection: { ...projectionA, last_event_seq: 9, projection_high_watermark_seq: 9 },
-          runIntents: [{ ...runIntentA, run_id: 'run-live', status: 'completed', event_seq: 9 }],
-        },
-      },
-      realtimeEndpointCursor: state.realtime.endpointCursor,
-      liveRunsBySession: structuredClone(state.liveRunsBySession),
-    },
-    selectedMessageTail: buildPersistedDesktopV3MessageTailV1({
-      ownerKey: persistedOwner.key,
-      sessionId: sessionA.id,
-      persistedAt: 1_000,
-      messages: state.messagesBySession[sessionA.id].items,
-      sourceMessageCount: state.messagesBySession[sessionA.id].items.length,
-      sourceLastMessageAt: Math.max(...state.messagesBySession[sessionA.id].items.map((message) => message.created_at)),
-      sourceProjectionHighWatermarkSeq: 9,
-    }),
-  })
-}
+
 
 function applyCommittedToolEvent(state: DesktopV3CacheState, seq = 6): void {
   const toolMessage: MessageSnapshot = {
@@ -1575,16 +1456,17 @@ test('reasoning completion commits one reasoning message and renders once', () =
   assert.equal(rendered.filter((item) => item.type === 'message' && item.message.role === 'reasoning').length, 1)
 })
 
-test('tool and thinking render identically before and after refresh', () => {
+test('tool and thinking committed messages render without live duplicates', () => {
   const state = bootstrappedState()
   applyRealtimeFrame(state, { frame: deltaFrame('session.tool.started', { call_id: 'call-1', tool_instance_id: 'tool-instance-1', tool_name: 'search' }, 5, 'cursor-tool-start') })
   applyCommittedToolEvent(state, 6)
   applyRealtimeFrame(state, { frame: deltaFrame('session.reasoning.delta', { reasoning_key: 'summary-1', delta: 'thinking done' }, 7, 'cursor-reasoning-delta') })
   applyCommittedReasoningEvent(state, 8)
 
-  const beforeRefresh = renderSignature(state)
-  const restored = restoreForRenderIdentity(state)
-  assert.deepEqual(renderSignature(restored), beforeRefresh)
+  const rendered = renderSignature(state)
+  assert.equal(rendered.filter((entry) => entry.startsWith('live-tool:')).length, 0)
+  assert.equal(rendered.filter((entry) => entry.startsWith('live-reasoning:')).length, 0)
+  assert.equal(rendered.some((entry) => entry.includes('msg-tool-6')), true)
 })
 
 test('tombstone removes all live and run state', () => {
@@ -1607,7 +1489,7 @@ test('tombstone removes all live and run state', () => {
   assert.equal(state.runIntentsBySession[sessionA.id], undefined)
 })
 
-test('refresh after finalization cannot resurrect the draft', () => {
+test('metadata-only bootstrap after finalization preserves committed final message and no draft', () => {
   const state = bootstrappedState()
   applyRealtimeFrame(state, { frame: deltaFrame('session.assistant.delta', { delta: 'draft' }, 3, 'cursor-draft') })
 
@@ -1634,40 +1516,14 @@ test('refresh after finalization cannot resurrect the draft', () => {
     }, 'cursor-final'),
   })
 
-  const restored = desktopV3CacheReducer(createEmptyDesktopV3CacheState(), {
-    type: 'desktopV3Cache.restore',
-    owner: {
-      schemaVersion: DESKTOP_V3_CACHE_SCHEMA_VERSION,
-      ownerKey: persistedOwner.key,
-      owner: persistedOwner,
-      persistedAt: 1_000,
-      selectedSessionId: sessionA.id,
-      sidebarScopeId: 'scope-refresh-final',
-      syncScopesById: {},
-      sessionOrderByScope: { 'scope-refresh-final': [sessionA.id] },
-      sidebarSessionsById: {
-        [sessionA.id]: {
-          session: sessionA,
-          projection: { ...projectionA, last_event_seq: 4, projection_high_watermark_seq: 4 },
-          runIntents: [{ ...runIntentA, run_id: 'run-live', status: 'completed', event_seq: 4 }],
-        },
-      },
-      realtimeEndpointCursor: state.realtime.endpointCursor,
-      liveRunsBySession: structuredClone(state.liveRunsBySession),
-    },
-    selectedMessageTail: buildPersistedDesktopV3MessageTailV1({
-      ownerKey: persistedOwner.key,
-      sessionId: sessionA.id,
-      persistedAt: 1_000,
-      messages: state.messagesBySession[sessionA.id].items,
-      sourceMessageCount: 3,
-      sourceLastMessageAt: finalMessage.created_at,
-      sourceProjectionHighWatermarkSeq: 4,
-    }),
-  })
+  applyBootstrapSnapshot(state, snapshotFixture({
+    snapshot_endpoint_cursor: 'cursor-after-final-refresh',
+    messages_by_session: {},
+    session_order: [sessionA.id],
+  }))
 
-  assert.equal(restored.liveRunsBySession[sessionA.id]?.['run-live'], undefined)
-  assert.equal(restored.messagesBySession[sessionA.id].items.some((message) => message.id === finalMessage.id), true)
+  assert.equal(state.liveRunsBySession[sessionA.id]?.['run-live'], undefined)
+  assert.equal(state.messagesBySession[sessionA.id].items.some((message) => message.id === finalMessage.id), true)
 })
 
 test('live run selector returns stable sequence/update/run id ordering', () => {

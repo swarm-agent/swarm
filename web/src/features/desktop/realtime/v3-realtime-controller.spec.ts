@@ -1,13 +1,9 @@
-import 'fake-indexeddb/auto'
-
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
 import { DesktopV3RealtimeTransport, SESSION_CONNECT_ACK_TIMEOUT_MS } from '../session-v3/transport'
-import { createDesktopV3CacheOwner } from '../state/desktop-v3-cache-owner'
 import { selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
-import { readDesktopV3Owner, resetDesktopV3CacheDBForTests } from '../state/desktop-v3-cache-db'
 import {
   DesktopV3RealtimeControllerRuntime,
   DesktopV3StreamCommitController,
@@ -243,9 +239,6 @@ test('Desktop V3 realtime controller waits for delayed sidebar bootstrap before 
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -333,9 +326,6 @@ test('Desktop V3 immediate send waits for retained realtime bootstrap and first 
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -425,9 +415,6 @@ test('Desktop V3 workspace and session route switching keeps exactly one retaine
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -507,9 +494,6 @@ test('Desktop V3 direct route session missing from reconnect is explicitly subsc
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -592,9 +576,6 @@ test('Desktop V3 auto-discovered session hydrates once across duplicate discover
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: {},
@@ -684,9 +665,6 @@ test('Desktop V3 retained realtime controller releases connecting startup withou
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: {},
@@ -747,9 +725,6 @@ test('Desktop V3 retained realtime controller handles unmount before delayed boo
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -807,9 +782,6 @@ test('Desktop V3 retained realtime controller keeps one owner lease through Stri
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: {},
@@ -868,9 +840,6 @@ test('Desktop V3 retained realtime controller reports bootstrap failure without 
     dispatch: () => {},
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       throw new Error('reconnect should wait for bootstrap')
     },
@@ -917,155 +886,6 @@ test('Desktop V3 reconnect input requires exact principal-global sidebar scope',
     () => buildDesktopV3ReconnectInput(state, 'client-a'),
     /principal-wide global selector/,
   )
-})
-
-test('Desktop V3 active-run repair merges websocket and HTTP events through durable sequence', async () => {
-  assert.equal(await resetDesktopV3CacheDBForTests(), true)
-  const owner = testDesktopV3CacheOwner()
-  let state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
-  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
-  state.syncScopesById['global-scope'] = {
-    scopeId: 'global-scope',
-    surface: 'desktop',
-    streamKind: 'v3.sync.snapshot',
-    selectorFilterHash: 'global-hash',
-    resourceSet: 'run_intents',
-    selector: { kind: 'global', global: true },
-    endpointCursor: 'cursor-bootstrap',
-    replayPath: '/v3/sync/stream',
-    replayTransport: 'http_post',
-    needsBootstrap: false,
-  }
-
-  const sockets: FakeWebSocket[] = []
-  const repairEvent: V3SessionEvent = {
-    id: 'evt-repair-3',
-    session_id: sessionA.id,
-    seq: 3,
-    event_type: 'session.assistant.delta',
-    payload: { run_id: runIntentA.run_id, delta: 'repair-' },
-    ts_unix_ms: 3,
-  }
-  const liveEvent: V3SessionEvent = {
-    id: 'evt-live-4',
-    session_id: sessionA.id,
-    seq: 4,
-    event_type: 'session.assistant.delta',
-    payload: { run_id: runIntentA.run_id, delta: 'live' },
-    ts_unix_ms: 4,
-  }
-  const readRequests: Array<{ sessionId: string; afterSeq: number; limit?: number }> = []
-  let releaseFirstRepairPage!: () => void
-  const firstRepairPage = new Promise<void>((resolve) => {
-    releaseFirstRepairPage = resolve
-  })
-
-  const controller = new DesktopV3RealtimeControllerRuntime({
-    getSnapshot: () => state,
-    dispatch: (action: DesktopV3CacheAction) => {
-      state = desktopV3CacheReducer(state, action)
-    },
-    subscribe: () => () => {},
-    ensureSession: async () => ({}),
-    resolveOwner: () => owner,
-    saveActiveOwnerKey: () => true,
-    reconnect: async () => reconnectFixture({
-      snapshot_endpoint_cursor: 'cursor-reconnect',
-      sessions_by_id: { [sessionA.id]: sessionA },
-      projections_by_session: { [sessionA.id]: projectionA },
-      run_intents_by_session: { [sessionA.id]: [runIntentA] },
-      current_run_intent_by_session: { [sessionA.id]: runIntentA },
-      session_order: [sessionA.id],
-      workset_id: 'global-scope',
-      realtime: {
-        stream_path: '/v3/realtime/stream',
-        resume: {
-          protocol: 'v3.realtime',
-          protocol_version: 1,
-          kind: 'resume',
-          endpoint_cursor: 'cursor-reconnect',
-          subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
-          worksets: [{
-            workset_id: 'global-scope',
-            subscription_id: 'workset-sub',
-            selector: { kind: 'global', global: true },
-            resources: ['run_intents'],
-            auto_subscribe_sessions: true,
-          }],
-        },
-      },
-    }),
-    readEventsPage: async (input) => {
-      readRequests.push(input)
-      if (readRequests.length === 1) {
-        await firstRepairPage
-        return {
-          ok: true,
-          session_id: input.sessionId,
-          events: [repairEvent],
-          projection: { ...projectionA, last_event_seq: 3, projection_high_watermark_seq: 3 },
-          high_watermark_seq: 3,
-          next_seq: 4,
-          applied_seq: 3,
-        }
-      }
-      return {
-        ok: true,
-        session_id: input.sessionId,
-        events: [],
-        projection: { ...projectionA, last_event_seq: 3, projection_high_watermark_seq: 3 },
-        high_watermark_seq: 3,
-        next_seq: 4,
-        applied_seq: 3,
-      }
-    },
-    openSocket: () => {
-      const socket = new FakeWebSocket()
-      sockets.push(socket)
-      return socket as unknown as WebSocket
-    },
-  })
-
-  const ready = controller.start()
-  await waitFor(() => readRequests.length === 1)
-  await flushAsyncWork()
-  assert.equal(sockets.length, 0)
-
-  releaseFirstRepairPage()
-  await waitFor(() => sockets.length === 1)
-  sockets[0].open()
-  await ready
-
-  sockets[0].emit({
-    protocol: 'v3.realtime',
-    protocol_version: 1,
-    kind: 'event',
-    session_id: sessionA.id,
-    event_type: liveEvent.event_type,
-    event: liveEvent,
-    projection: { ...projectionA, last_event_seq: 4, projection_high_watermark_seq: 4 },
-    endpoint_cursor: 'cursor-live-4',
-  })
-
-  await waitFor(() => state.realtime.endpointCursor === 'cursor-live-4')
-  assert.equal(
-    state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content,
-    'repair-live',
-  )
-
-  assert.deepEqual(
-    state.eventsBySession[sessionA.id].map((event) => `${event.seq}:${event.id}`),
-    ['3:evt-repair-3', '4:evt-live-4'],
-  )
-  assert.equal(state.realtime.endpointCursor, 'cursor-live-4')
-
-  const durableOwner = await readDesktopV3Owner(owner.key)
-  assert.equal(
-    durableOwner?.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content,
-    'repair-live',
-  )
-  controller.stop()
-  assert.equal(await resetDesktopV3CacheDBForTests(), true)
 })
 
 test('Desktop V3 active-run repair completes before terminal websocket event', async () => {
@@ -1145,9 +965,6 @@ test('Desktop V3 active-run repair completes before terminal websocket event', a
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -1344,9 +1161,6 @@ test('Desktop V3 active-run repair defers only events for the repaired run', asy
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -1544,9 +1358,6 @@ test('Desktop V3 active-run repair ignores replacement-run overlays from HTTP pa
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -1644,9 +1455,9 @@ test('Desktop V3 active-run repair ignores replacement-run overlays from HTTP pa
   controller.stop()
 })
 
-test('warm restore resumes from persisted realtime cursor', async () => {
+test('warm runtime resumes from in-memory realtime cursor', async () => {
   let state = readyControllerState()
-  state.realtime.endpointCursor = 'cursor-persisted-warm'
+  state.realtime.endpointCursor = 'cursor-memory-warm'
   state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
   state.projectionsBySession[sessionA.id] = projectionA
   state.sessionOrderByScope['global-scope'] = [sessionA.id]
@@ -1660,9 +1471,6 @@ test('warm restore resumes from persisted realtime cursor', async () => {
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect-newer',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -1703,16 +1511,16 @@ test('warm restore resumes from persisted realtime cursor', async () => {
   await ready
 
   const resume = sockets[0].sent[0] as SessionV3RealtimeResumeWire
-  assert.deepEqual(openCursors, ['cursor-persisted-warm'])
-  assert.equal(resume.endpoint_cursor, 'cursor-persisted-warm')
-  assert.equal(resume.subscriptions?.[0]?.endpoint_cursor, 'cursor-persisted-warm')
-  assert.equal(state.realtime.endpointCursor, 'cursor-persisted-warm')
+  assert.deepEqual(openCursors, ['cursor-memory-warm'])
+  assert.equal(resume.endpoint_cursor, 'cursor-memory-warm')
+  assert.equal(resume.subscriptions?.[0]?.endpoint_cursor, 'cursor-memory-warm')
+  assert.equal(state.realtime.endpointCursor, 'cursor-memory-warm')
   controller.stop()
 })
 
-test('expired persisted cursor takes the explicit cursor-error recovery path', async () => {
+test('expired in-memory cursor takes the explicit cursor-error recovery path', async () => {
   let state = readyControllerState()
-  state.realtime.endpointCursor = 'cursor-persisted-expired'
+  state.realtime.endpointCursor = 'cursor-memory-expired'
   state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
   state.projectionsBySession[sessionA.id] = projectionA
   state.sessionOrderByScope['global-scope'] = [sessionA.id]
@@ -1726,9 +1534,6 @@ test('expired persisted cursor takes the explicit cursor-error recovery path', a
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -1800,9 +1605,6 @@ test('active repair considers run-intent keys outside session_order', async () =
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -1867,9 +1669,6 @@ test('Desktop V3 cursor-error rehydrate repairs selected transcript after replac
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -1987,9 +1786,6 @@ test('Desktop V3 cursor-error repair queues behind overlapping hydrate before re
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -2081,88 +1877,6 @@ test('Desktop V3 cursor-error repair queues behind overlapping hydrate before re
   }
 })
 
-test('Desktop V3 realtime event persists before publication and cursor advance', async () => {
-  assert.equal(await resetDesktopV3CacheDBForTests(), true)
-  const owner = createDesktopV3CacheOwner({
-    origin: 'https://desktop.example.test',
-    accountScopeId: 'acct-a',
-    userId: 'user-a',
-    surface: 'desktop',
-  })
-  let state = readyControllerState()
-  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
-  state.projectionsBySession[sessionA.id] = projectionA
-  state.sessionOrderByScope['global-scope'] = [sessionA.id]
-  state.realtime.endpointCursor = 'cursor-reconnect'
-
-  const sockets: FakeWebSocket[] = []
-  const controller = new DesktopV3RealtimeControllerRuntime({
-    getSnapshot: () => state,
-    dispatch: (action: DesktopV3CacheAction) => {
-      state = desktopV3CacheReducer(state, action)
-    },
-    subscribe: () => () => {},
-    ensureSession: async () => ({}),
-    resolveOwner: () => owner,
-    saveActiveOwnerKey: () => true,
-    now: () => 5_000,
-    reconnect: async () => reconnectFixture({
-      snapshot_endpoint_cursor: 'cursor-reconnect',
-      sessions_by_id: { [sessionA.id]: sessionA },
-      projections_by_session: { [sessionA.id]: projectionA },
-      run_intents_by_session: {},
-      current_run_intent_by_session: {},
-      session_order: [sessionA.id],
-      workset_id: 'global-scope',
-    }),
-    openSocket: () => {
-      const socket = new FakeWebSocket()
-      sockets.push(socket)
-      return socket as unknown as WebSocket
-    },
-  })
-
-  const ready = controller.start()
-  await waitFor(() => sockets.length === 1)
-  sockets[0].open()
-  await ready
-
-  sockets[0].emit({
-    protocol: 'v3.realtime',
-    protocol_version: 1,
-    kind: 'event',
-    session_id: sessionA.id,
-    event_type: 'session.assistant.delta',
-    event: {
-      id: 'evt-durable-before-publication',
-      session_id: sessionA.id,
-      event_type: 'session.assistant.delta',
-      seq: 3,
-      payload: {
-        run_id: runIntentA.run_id,
-        run_intent: runIntentA,
-        delta: 'durable-first',
-      },
-      ts_unix_ms: 5_000,
-    },
-    projection: { ...projectionA, last_event_seq: 3, projection_high_watermark_seq: 3 },
-    endpoint_cursor: 'cursor-live-3',
-  })
-
-  assert.equal(state.realtime.endpointCursor, 'cursor-reconnect')
-  await waitFor(() => state.realtime.endpointCursor === 'cursor-live-3')
-  const durableOwner = await readDesktopV3Owner(owner.key)
-  assert.equal(
-    durableOwner?.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content,
-    'durable-first',
-  )
-  assert.equal(durableOwner?.realtimeEndpointCursor, 'cursor-live-3')
-  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content, 'durable-first')
-
-  controller.stop()
-  assert.equal(await resetDesktopV3CacheDBForTests(), true)
-})
-
 test('failed write leaves state and endpoint cursor unchanged', async () => {
   let state = readyControllerState()
   state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
@@ -2178,9 +1892,6 @@ test('failed write leaves state and endpoint cursor unchanged', async () => {
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => false,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -2212,510 +1923,6 @@ test('failed write leaves state and endpoint cursor unchanged', async () => {
   controller.stop()
 })
 
-test('active-owner storage failure leaves state and cursor unchanged', async () => {
-  let state = readyControllerState()
-  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
-  state.projectionsBySession[sessionA.id] = projectionA
-  state.sessionOrderByScope['global-scope'] = [sessionA.id]
-  state.realtime.endpointCursor = 'cursor-reconnect'
-
-  const sockets: FakeWebSocket[] = []
-  const controller = new DesktopV3RealtimeControllerRuntime({
-    getSnapshot: () => state,
-    dispatch: (action: DesktopV3CacheAction) => {
-      state = desktopV3CacheReducer(state, action)
-    },
-    subscribe: () => () => {},
-    ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => false,
-    reconnect: async () => reconnectFixture({
-      snapshot_endpoint_cursor: 'cursor-reconnect',
-      sessions_by_id: { [sessionA.id]: sessionA },
-      projections_by_session: { [sessionA.id]: projectionA },
-      run_intents_by_session: {},
-      current_run_intent_by_session: {},
-      session_order: [sessionA.id],
-      workset_id: 'global-scope',
-    }),
-    openSocket: () => {
-      const socket = new FakeWebSocket()
-      sockets.push(socket)
-      return socket as unknown as WebSocket
-    },
-  })
-
-  const ready = controller.start()
-  await waitFor(() => sockets.length === 1)
-  sockets[0].open()
-  await ready
-
-  sockets[0].emit(realtimeDeltaFrame('evt-active-owner-failed', 1, 'cursor-failed-active-owner', 'lost'))
-  await waitFor(() => sockets.length === 2)
-  sockets[1].open()
-  await waitFor(() => sockets[1].sent.length > 0)
-
-  assert.equal(state.realtime.endpointCursor, 'cursor-reconnect')
-  assert.equal(state.eventsBySession[sessionA.id], undefined)
-  assert.equal(state.liveRunsBySession[sessionA.id], undefined)
-  assert.equal((sockets[1].sent[0] as SessionV3RealtimeResumeWire).endpoint_cursor, 'cursor-reconnect')
-  controller.stop()
-})
-
-test('A-E interleaved frames publish in endpoint order', async () => {
-  let state = readyControllerState()
-  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
-  state.projectionsBySession[sessionA.id] = projectionA
-  state.sessionOrderByScope['global-scope'] = [sessionA.id]
-  state.realtime.endpointCursor = 'cursor-reconnect'
-
-  const sockets: FakeWebSocket[] = []
-  const writes: string[] = []
-  const releases: Array<() => void> = []
-  const controller = new DesktopV3RealtimeControllerRuntime({
-    getSnapshot: () => state,
-    dispatch: (action: DesktopV3CacheAction) => {
-      state = desktopV3CacheReducer(state, action)
-    },
-    subscribe: () => () => {},
-    ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async (owner) => {
-      writes.push(owner.realtimeEndpointCursor ?? '')
-      await new Promise<void>((resolve) => releases.push(resolve))
-      return true
-    },
-    saveActiveOwnerKey: () => true,
-    reconnect: async () => reconnectFixture({
-      snapshot_endpoint_cursor: 'cursor-reconnect',
-      sessions_by_id: { [sessionA.id]: sessionA },
-      projections_by_session: { [sessionA.id]: projectionA },
-      run_intents_by_session: {},
-      current_run_intent_by_session: {},
-      session_order: [sessionA.id],
-      workset_id: 'global-scope',
-    }),
-    openSocket: () => {
-      const socket = new FakeWebSocket()
-      sockets.push(socket)
-      return socket as unknown as WebSocket
-    },
-  })
-
-  const ready = controller.start()
-  await waitFor(() => sockets.length === 1)
-  sockets[0].open()
-  await ready
-
-  for (const label of ['A', 'B', 'C', 'D', 'E']) {
-    sockets[0].emit(realtimeDeltaFrame(`evt-${label}`, label.charCodeAt(0), `cursor-${label}`, label))
-  }
-
-  await waitFor(() => writes.length === 1)
-  assert.equal(state.realtime.endpointCursor, 'cursor-reconnect')
-  for (let index = 0; index < releases.length; index += 1) {
-    releases[index]()
-    await waitFor(() => writes.length >= Math.min(index + 2, 5))
-  }
-
-  await waitFor(() => state.realtime.endpointCursor === 'cursor-E')
-  assert.deepEqual(writes, ['cursor-A', 'cursor-B', 'cursor-C', 'cursor-D', 'cursor-E'])
-  assert.deepEqual(state.eventsBySession[sessionA.id].map((event) => event.id), ['evt-A', 'evt-B', 'evt-C', 'evt-D', 'evt-E'])
-  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content, 'ABCDE')
-  controller.stop()
-})
-
-test('five simultaneous streams persist, restore, and finalize deterministically', async () => {
-  assert.equal(await resetDesktopV3CacheDBForTests(), true)
-  const owner = testDesktopV3CacheOwner()
-  let state = readyControllerState()
-  const sessionIds = ['session-a', 'session-b', 'session-c', 'session-d', 'session-e']
-  const sessions = Object.fromEntries(sessionIds.map((sessionId, index) => [sessionId, {
-    ...sessionA,
-    id: sessionId,
-    title: `Session ${sessionId.toUpperCase()}`,
-    created_at: 100 + index,
-    updated_at: 200 + index,
-    message_count: 0,
-    last_message_at: 0,
-  }]))
-  const projections = Object.fromEntries(sessionIds.map((sessionId, index) => [sessionId, {
-    ...projectionA,
-    session_id: sessionId,
-    last_event_seq: 0,
-    projection_high_watermark_seq: 0,
-    updated_at: 200 + index,
-  }]))
-  const runIntents = Object.fromEntries(sessionIds.map((sessionId, index) => [sessionId, [{
-    ...runIntentA,
-    session_id: sessionId,
-    run_id: `run-${sessionId}`,
-    status: 'running',
-    event_seq: 0,
-    created_at: 300 + index,
-    updated_at: 300 + index,
-  }]]))
-
-  for (const sessionId of sessionIds) {
-    state.sessionsById[sessionId] = { kind: 'full', session: sessions[sessionId], needsHydrate: false }
-    state.projectionsBySession[sessionId] = projections[sessionId]
-    state.runIntentsBySession[sessionId] = { [`run-${sessionId}`]: runIntents[sessionId][0] }
-    state.currentRunIntentBySession[sessionId] = runIntents[sessionId][0]
-  }
-  state.sessionOrderByScope['global-scope'] = sessionIds
-  state.selectedSessionId = 'session-a'
-  state.realtime.endpointCursor = 'cursor-reconnect'
-
-  const sockets: FakeWebSocket[] = []
-  const hydrateRequests: string[][] = []
-  const controller = new DesktopV3RealtimeControllerRuntime({
-    getSnapshot: () => state,
-    dispatch: (action: DesktopV3CacheAction) => {
-      state = desktopV3CacheReducer(state, action)
-    },
-    subscribe: () => () => {},
-    ensureSession: async () => ({}),
-    resolveOwner: () => owner,
-    saveActiveOwnerKey: () => true,
-    now: () => 9_000,
-    hydrate: async (input) => {
-      hydrateRequests.push(input.selector.session_ids ?? [])
-      return hydrateSnapshotFixture({ session_order: [], sessions_by_id: {}, projections_by_session: {}, messages_by_session: {} })
-    },
-    reconnect: async () => reconnectFixture({
-      snapshot_endpoint_cursor: 'cursor-reconnect',
-      sessions_by_id: sessions,
-      projections_by_session: projections,
-      run_intents_by_session: runIntents,
-      current_run_intent_by_session: Object.fromEntries(sessionIds.map((sessionId) => [sessionId, runIntents[sessionId][0]])),
-      session_order: sessionIds,
-      workset_id: 'global-scope',
-      realtime: {
-        stream_path: '/v3/realtime/stream',
-        resume: {
-          protocol: 'v3.realtime',
-          protocol_version: 1,
-          kind: 'resume',
-          endpoint_cursor: 'cursor-reconnect',
-          subscriptions: [],
-          worksets: [{
-            workset_id: 'global-scope',
-            subscription_id: 'workset-sub',
-            selector: { kind: 'global', global: true },
-            auto_subscribe_sessions: true,
-          }],
-        },
-      },
-    }),
-    openSocket: () => {
-      const socket = new FakeWebSocket()
-      sockets.push(socket)
-      return socket as unknown as WebSocket
-    },
-  })
-
-  const ready = controller.start(null)
-  await waitFor(() => sockets.length === 1)
-  sockets[0].open()
-  await ready
-  assert.equal(sockets.length, 1)
-
-  const interleaved: Array<{ sessionId: string; seq: number; eventType: string; payload: Record<string, unknown> }> = [
-    { sessionId: 'session-a', seq: 1, eventType: 'session.assistant.delta', payload: { delta: 'A-draft' } },
-    { sessionId: 'session-b', seq: 1, eventType: 'session.reasoning.delta', payload: { reasoning_key: 'reasoning-b', text_delta: 'B-thinks' } },
-    { sessionId: 'session-c', seq: 1, eventType: 'session.tool.started', payload: { call_id: 'call-c', tool_name: 'read', arguments: '{"file":"c"}' } },
-    { sessionId: 'session-d', seq: 1, eventType: 'session.assistant.delta', payload: { delta: 'D-draft' } },
-    { sessionId: 'session-e', seq: 1, eventType: 'session.tool.started', payload: { call_id: 'call-e', tool_name: 'grep', arguments: '{"query":"e"}' } },
-    { sessionId: 'session-a', seq: 2, eventType: 'session.tool.started', payload: { call_id: 'call-a', tool_name: 'read', arguments: '{"file":"a"}' } },
-    { sessionId: 'session-b', seq: 2, eventType: 'session.assistant.delta', payload: { delta: 'B-answer' } },
-    { sessionId: 'session-c', seq: 2, eventType: 'session.tool.delta', payload: { call_id: 'call-c', output_delta: 'C-output' } },
-    { sessionId: 'session-d', seq: 2, eventType: 'session.reasoning.delta', payload: { reasoning_key: 'reasoning-d', text_delta: 'D-thinks' } },
-    { sessionId: 'session-e', seq: 2, eventType: 'session.tool.delta', payload: { call_id: 'call-e', output_delta: 'E-output' } },
-  ]
-
-  interleaved.forEach((frame, index) => {
-    sockets[0].emit(cp9RealtimeEventFrame({
-      ...frame,
-      endpointCursor: `cursor-cp9-${index + 1}`,
-    }))
-  })
-
-  await waitFor(() => state.realtime.endpointCursor === 'cursor-cp9-10')
-  const persisted = await readDesktopV3Owner(owner.key)
-  assert.equal(persisted?.realtimeEndpointCursor, 'cursor-cp9-10')
-  assert.deepEqual(Object.keys(persisted?.liveRunsBySession ?? {}).sort(), sessionIds)
-  assert.equal(persisted?.liveRunsBySession?.['session-a']?.['run-session-a']?.assistantSegments?.[0]?.content, 'A-draft')
-  assert.equal(persisted?.liveRunsBySession?.['session-b']?.['run-session-b']?.reasoning?.text, 'B-thinks')
-  assert.equal(persisted?.liveRunsBySession?.['session-c']?.['run-session-c']?.toolCallsByCallId['call-c']?.outputText, 'C-output')
-  assert.equal(persisted?.liveRunsBySession?.['session-e']?.['run-session-e']?.toolCallsByCallId['call-e']?.outputText, 'E-output')
-
-  assert.ok(persisted)
-  const restored = desktopV3CacheReducer(createEmptyDesktopV3CacheState(), {
-    type: 'desktopV3Cache.restore',
-    owner: persisted,
-  })
-  assert.deepEqual(restored.liveRunsBySession, persisted.liveRunsBySession)
-  assert.equal(selectRenderedSessionMessages(restored, 'session-e').liveRuns[0]?.toolCallsByCallId['call-e']?.outputText, 'E-output')
-  assert.deepEqual(hydrateRequests, [])
-
-  for (const sessionId of sessionIds) {
-    const seq = 3
-    sockets[0].emit(cp9RealtimeEventFrame({
-      sessionId,
-      seq,
-      eventType: 'session.assistant.completed',
-      endpointCursor: `cursor-cp9-final-${sessionId}`,
-      payload: {
-        status: 'completed',
-        message: {
-          id: `msg-final-${sessionId}`,
-          session_id: sessionId,
-          global_seq: seq,
-          role: 'assistant',
-          content: `final ${sessionId}`,
-          metadata: {},
-          created_at: 10_000 + seq,
-        },
-        run_intent: { ...runIntents[sessionId][0], status: 'completed', event_seq: seq },
-      },
-    }))
-  }
-  await waitFor(() => state.realtime.endpointCursor === 'cursor-cp9-final-session-e')
-
-  for (const sessionId of sessionIds) {
-    const rendered = selectRenderedSessionMessages(state, sessionId)
-    assert.equal(rendered.committed.filter((message) => message.role === 'assistant').length, 1)
-    assert.equal(rendered.liveRuns.length, 1)
-    assert.equal(rendered.liveRuns[0].assistantDraft, undefined)
-    assert.equal(rendered.liveRuns[0].assistantSegments, undefined)
-  }
-  assert.equal(state.liveRunsBySession['session-a']?.['run-session-a']?.toolCallsByCallId['call-a']?.toolName, 'read')
-  assert.equal(state.liveRunsBySession['session-b']?.['run-session-b']?.reasoning?.text, 'B-thinks')
-  assert.equal(state.liveRunsBySession['session-c']?.['run-session-c']?.toolCallsByCallId['call-c']?.outputText, 'C-output')
-  assert.equal(state.liveRunsBySession['session-d']?.['run-session-d']?.reasoning?.text, 'D-thinks')
-  assert.equal(state.liveRunsBySession['session-e']?.['run-session-e']?.toolCallsByCallId['call-e']?.outputText, 'E-output')
-
-  controller.stop()
-  assert.equal(await resetDesktopV3CacheDBForTests(), true)
-})
-
-test('final message and overlay cleanup are one IndexedDB transaction', async () => {
-  assert.equal(await resetDesktopV3CacheDBForTests(), true)
-  const owner = testDesktopV3CacheOwner()
-  let state = readyControllerState()
-  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
-  state.projectionsBySession[sessionA.id] = projectionA
-  state.sessionOrderByScope['global-scope'] = [sessionA.id]
-  state.realtime.endpointCursor = 'cursor-reconnect'
-
-  const sockets: FakeWebSocket[] = []
-  const controller = new DesktopV3RealtimeControllerRuntime({
-    getSnapshot: () => state,
-    dispatch: (action: DesktopV3CacheAction) => {
-      state = desktopV3CacheReducer(state, action)
-    },
-    subscribe: () => () => {},
-    ensureSession: async () => ({}),
-    resolveOwner: () => owner,
-    saveActiveOwnerKey: () => true,
-    now: () => 7_000,
-    reconnect: async () => reconnectFixture({
-      snapshot_endpoint_cursor: 'cursor-reconnect',
-      sessions_by_id: { [sessionA.id]: sessionA },
-      projections_by_session: { [sessionA.id]: projectionA },
-      run_intents_by_session: {},
-      current_run_intent_by_session: {},
-      session_order: [sessionA.id],
-      workset_id: 'global-scope',
-    }),
-    openSocket: () => {
-      const socket = new FakeWebSocket()
-      sockets.push(socket)
-      return socket as unknown as WebSocket
-    },
-  })
-
-  const ready = controller.start()
-  await waitFor(() => sockets.length === 1)
-  sockets[0].open()
-  await ready
-
-  sockets[0].emit(realtimeDeltaFrame('evt-final-delta', 1, 'cursor-final-delta', 'done'))
-  await waitFor(() => state.realtime.endpointCursor === 'cursor-final-delta')
-  sockets[0].emit(realtimeFinalMessageFrame('evt-final-message', 2, 'cursor-final-message'))
-  await waitFor(() => state.realtime.endpointCursor === 'cursor-final-message')
-
-  const durableOwner = await readDesktopV3Owner(owner.key)
-  assert.equal(durableOwner?.realtimeEndpointCursor, 'cursor-final-message')
-  assert.equal(durableOwner?.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id], undefined)
-  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id], undefined)
-  assert.equal(state.messagesBySession[sessionA.id]?.items[0]?.id, 'message-final')
-  controller.stop()
-  assert.equal(await resetDesktopV3CacheDBForTests(), true)
-})
-
-test('burst realtime reasoning deltas coalesce persistence writes', async () => {
-  let state = readyControllerState()
-  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
-  state.projectionsBySession[sessionA.id] = projectionA
-  state.sessionOrderByScope['global-scope'] = [sessionA.id]
-  state.runIntentsBySession[sessionA.id] = { [runIntentA.run_id]: runIntentA }
-  state.currentRunIntentBySession[sessionA.id] = runIntentA
-
-  const persistedReasoning: string[] = []
-  const scheduledFlushes: Array<() => void> = []
-  const commit = new DesktopV3StreamCommitController({
-    getSnapshot: () => state,
-    dispatch: (action: DesktopV3CacheAction) => {
-      state = desktopV3CacheReducer(state, action)
-    },
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async (owner) => {
-      persistedReasoning.push(
-        owner.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.reasoning?.text ?? '',
-      )
-      return true
-    },
-    saveActiveOwnerKey: () => true,
-    now: () => 9_000,
-    setTimeout: (handler) => {
-      scheduledFlushes.push(handler)
-      return scheduledFlushes.length as unknown as ReturnType<typeof setTimeout>
-    },
-    clearTimeout: () => {},
-  })
-
-  for (const [index, textDelta] of ['one', ' two', ' three'].entries()) {
-    await commit.commitActions([realtimeReasoningAction({
-      id: `evt-reasoning-${index + 1}`,
-      seq: index + 1,
-      endpointCursor: `cursor-reasoning-${index + 1}`,
-      payload: { text_delta: textDelta },
-    })])
-  }
-
-  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.reasoning?.text, 'one two three')
-  assert.equal(state.realtime.endpointCursor, undefined)
-  assert.deepEqual(persistedReasoning, [])
-  assert.equal(scheduledFlushes.length, 1)
-
-  scheduledFlushes[0]?.()
-  await waitFor(() => persistedReasoning.length === 1)
-  assert.deepEqual(persistedReasoning, ['one two three'])
-  assert.deepEqual(state.eventsBySession[sessionA.id].map((event) => event.id), [
-    'evt-reasoning-1',
-    'evt-reasoning-2',
-    'evt-reasoning-3',
-  ])
-})
-
-test('pending realtime reasoning delta flush can be cancelled before persistence', async () => {
-  let state = readyControllerState()
-  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
-  state.projectionsBySession[sessionA.id] = projectionA
-  state.sessionOrderByScope['global-scope'] = [sessionA.id]
-  state.runIntentsBySession[sessionA.id] = { [runIntentA.run_id]: runIntentA }
-  state.currentRunIntentBySession[sessionA.id] = runIntentA
-
-  const persistedReasoning: string[] = []
-  const scheduledFlushes: Array<() => void> = []
-  let clearCount = 0
-  const commit = new DesktopV3StreamCommitController({
-    getSnapshot: () => state,
-    dispatch: (action: DesktopV3CacheAction) => {
-      state = desktopV3CacheReducer(state, action)
-    },
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async (owner) => {
-      persistedReasoning.push(
-        owner.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.reasoning?.text ?? '',
-      )
-      return true
-    },
-    saveActiveOwnerKey: () => true,
-    now: () => 9_000,
-    setTimeout: (handler) => {
-      scheduledFlushes.push(handler)
-      return scheduledFlushes.length as unknown as ReturnType<typeof setTimeout>
-    },
-    clearTimeout: () => {
-      clearCount += 1
-    },
-  })
-
-  await commit.commitActions([realtimeReasoningAction({
-    id: 'evt-reasoning-cancelled-delta',
-    seq: 1,
-    endpointCursor: 'cursor-reasoning-cancelled-delta',
-    payload: { text_delta: 'cancelled thinking' },
-  })])
-
-  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.reasoning?.text, 'cancelled thinking')
-  assert.equal(state.realtime.endpointCursor, undefined)
-  assert.equal(scheduledFlushes.length, 1)
-
-  commit.cancelPendingReasoningDeltas()
-  assert.equal(clearCount, 1)
-
-  scheduledFlushes[0]?.()
-  await flushAsyncWork()
-  assert.deepEqual(persistedReasoning, [])
-  assert.equal(state.realtime.endpointCursor, undefined)
-})
-
-test('pending realtime reasoning delta flush is skipped after owner switch', async () => {
-  let state = readyControllerState()
-  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
-  state.projectionsBySession[sessionA.id] = projectionA
-  state.sessionOrderByScope['global-scope'] = [sessionA.id]
-  state.runIntentsBySession[sessionA.id] = { [runIntentA.run_id]: runIntentA }
-  state.currentRunIntentBySession[sessionA.id] = runIntentA
-
-  const ownerA = testDesktopV3CacheOwner()
-  const ownerB = createDesktopV3CacheOwner({
-    origin: 'https://desktop.example.test',
-    accountScopeId: 'acct-test-2',
-    userId: 'user-test',
-    surface: 'desktop',
-  })
-  let currentOwner = ownerA
-  const persistedOwners: string[] = []
-  const scheduledFlushes: Array<() => void> = []
-  const commit = new DesktopV3StreamCommitController({
-    getSnapshot: () => state,
-    dispatch: (action: DesktopV3CacheAction) => {
-      state = desktopV3CacheReducer(state, action)
-    },
-    resolveOwner: () => currentOwner,
-    writeOwnerAndTails: async (owner) => {
-      persistedOwners.push(owner.ownerKey)
-      return true
-    },
-    saveActiveOwnerKey: () => true,
-    now: () => 9_000,
-    setTimeout: (handler) => {
-      scheduledFlushes.push(handler)
-      return scheduledFlushes.length as unknown as ReturnType<typeof setTimeout>
-    },
-    clearTimeout: () => {},
-  })
-
-  await commit.commitActions([realtimeReasoningAction({
-    id: 'evt-reasoning-owner-delta',
-    seq: 1,
-    endpointCursor: 'cursor-reasoning-owner-delta',
-    payload: { text_delta: 'owner scoped thinking' },
-  })])
-
-  currentOwner = ownerB
-  scheduledFlushes[0]?.()
-  await flushAsyncWork()
-
-  assert.deepEqual(persistedOwners, [])
-  assert.equal(state.realtime.endpointCursor, undefined)
-})
-
 test('terminal reasoning completed flushes latest coalesced state immediately', async () => {
   let state = readyControllerState()
   state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
@@ -2724,31 +1931,10 @@ test('terminal reasoning completed flushes latest coalesced state immediately', 
   state.runIntentsBySession[sessionA.id] = { [runIntentA.run_id]: runIntentA }
   state.currentRunIntentBySession[sessionA.id] = runIntentA
 
-  const persistedReasoning: string[] = []
-  const scheduledFlushes: Array<() => void> = []
-  let clearCount = 0
   const commit = new DesktopV3StreamCommitController({
     getSnapshot: () => state,
     dispatch: (action: DesktopV3CacheAction) => {
       state = desktopV3CacheReducer(state, action)
-    },
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async (owner, tails) => {
-      persistedReasoning.push(
-        tails[0]?.messages.find((message) => message.role === 'reasoning')?.content
-        ?? owner.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.reasoning?.text
-        ?? '',
-      )
-      return true
-    },
-    saveActiveOwnerKey: () => true,
-    now: () => 9_000,
-    setTimeout: (handler) => {
-      scheduledFlushes.push(handler)
-      return scheduledFlushes.length as unknown as ReturnType<typeof setTimeout>
-    },
-    clearTimeout: () => {
-      clearCount += 1
     },
   })
 
@@ -2766,25 +1952,17 @@ test('terminal reasoning completed flushes latest coalesced state immediately', 
     eventType: 'session.reasoning.completed',
   })])
 
-  assert.equal(clearCount, 1)
-  assert.equal(scheduledFlushes.length, 1)
-  assert.deepEqual(persistedReasoning, ['latest thinking'])
   assert.equal(
     state.messagesBySession[sessionA.id]?.items.find((message) => message.role === 'reasoning')?.content,
     'latest thinking',
   )
   assert.equal(state.realtime.endpointCursor, 'cursor-reasoning-completed')
 
-  scheduledFlushes[0]?.()
-  await flushAsyncWork()
-  assert.deepEqual(persistedReasoning, ['latest thinking'])
 })
 
 test('repair events use the durable stream committer', async () => {
   let state = readyControllerState()
-  const owner = testDesktopV3CacheOwner()
   const sockets: FakeWebSocket[] = []
-  const persistedDrafts: string[] = []
   const repairEvent: V3SessionEvent = {
     id: 'evt-repair-delta',
     session_id: sessionA.id,
@@ -2805,14 +1983,6 @@ test('repair events use the durable stream committer', async () => {
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => owner,
-    writeOwnerAndTails: async (persistedOwner) => {
-      persistedDrafts.push(
-        persistedOwner.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content ?? '',
-      )
-      return true
-    },
-    saveActiveOwnerKey: () => true,
     readEventsPage: async () => ({
       ok: true,
       session_id: sessionA.id,
@@ -2844,7 +2014,6 @@ test('repair events use the durable stream committer', async () => {
   await ready
 
   await waitFor(() => state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content === 'repair-durable')
-  assert.ok(persistedDrafts.includes('repair-durable'))
   controller.stop()
 })
 
@@ -2863,9 +2032,6 @@ test('commit failure reopens from previous durable cursor', async () => {
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => false,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -2902,7 +2068,6 @@ test('workset discovery commits before background hydrate starts', async () => {
   state.realtime.endpointCursor = 'cursor-reconnect'
 
   const sockets: FakeWebSocket[] = []
-  const releases: Array<() => void> = []
   const hydrateRequests: string[][] = []
   const controller = new DesktopV3RealtimeControllerRuntime({
     getSnapshot: () => state,
@@ -2911,12 +2076,6 @@ test('workset discovery commits before background hydrate starts', async () => {
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => {
-      await new Promise<void>((resolve) => releases.push(resolve))
-      return true
-    },
-    saveActiveOwnerKey: () => true,
     hydrate: async (input) => {
       hydrateRequests.push(input.session_ids)
       return hydrateSnapshotFixture({
@@ -2959,9 +2118,6 @@ test('workset discovery commits before background hydrate starts', async () => {
     endpoint_cursor: 'cursor-discovered',
   })
 
-  await waitFor(() => releases.length === 1)
-  assert.deepEqual(hydrateRequests, [])
-  releases[0]()
   await waitFor(() => hydrateRequests.length === 1)
   assert.equal(state.sessionsById['session-discovered']?.kind, 'full')
   controller.stop()
@@ -2983,21 +2139,11 @@ test('repair and live events racing through one queue remain ordered', async () 
     },
   }
 
-  const persistedDrafts: string[] = []
   const commit = new DesktopV3StreamCommitController({
     getSnapshot: () => state,
     dispatch: (action: DesktopV3CacheAction) => {
       state = desktopV3CacheReducer(state, action)
     },
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async (owner) => {
-      persistedDrafts.push(
-        owner.liveRunsBySession?.[sessionA.id]?.[runIntentA.run_id]?.assistantDraft?.content ?? '',
-      )
-      return true
-    },
-    saveActiveOwnerKey: () => true,
-    now: () => 9_000,
   })
 
   const repair = commit.commitActions([{
@@ -3046,7 +2192,6 @@ test('repair and live events racing through one queue remain ordered', async () 
   assert.equal(liveRun?.assistantDraft?.content, 'abcde')
   assert.equal(liveRun?.lastEventSeqSeen, 5)
   assert.equal(state.realtime.endpointCursor, 'cursor-live-5')
-  assert.deepEqual(persistedDrafts, ['abcd', 'abcde'])
   assert.deepEqual(
     state.eventsBySession[sessionA.id].map((event) => `${event.seq}:${event.id}`),
     ['4:evt-repair-4', '5:evt-live-5'],
@@ -3255,9 +2400,6 @@ test('active repair starts after restored overlay sequence', async () => {
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'cursor-reconnect',
       sessions_by_id: { [sessionA.id]: sessionA },
@@ -3314,9 +2456,6 @@ test('slow-consumer recovery resumes from last durable cursor', async () => {
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -3387,9 +2526,6 @@ test('Desktop V3 cold startup opens realtime from bootstrap cursor without HTTP 
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -3453,9 +2589,6 @@ test('Desktop V3 cold startup resume contains selected plus active sessions, not
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     hydrate: async () => hydrateSnapshotFixture({
       sessions_by_id: {},
       projections_by_session: {},
@@ -3743,9 +2876,6 @@ test('Desktop V3 real controller connectSession resolves only after matching rep
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'durable-cursor-after-create',
       sessions_by_id: {},
@@ -3827,9 +2957,6 @@ test('Desktop V3 connectSession uses supplied endpoint cursor instead of durable
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => reconnectFixture({
       snapshot_endpoint_cursor: 'durable-cursor-after-create',
       sessions_by_id: {},
@@ -3886,9 +3013,6 @@ test('Desktop V3 connectSession rejects when no endpoint cursor is available', a
     dispatch: () => undefined,
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     openSocket: () => {
       throw new Error('socket should not open without an endpoint cursor')
     },
@@ -3917,9 +3041,6 @@ test('Desktop V3 recovery still calls HTTP reconnect after cursor.error', async 
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture({
@@ -3964,9 +3085,6 @@ test('Desktop V3 normal socket close reopens with resume and without HTTP reconn
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     reconnect: async () => {
       reconnectCount += 1
       return reconnectFixture()
@@ -4025,9 +3143,6 @@ test('Desktop V3 recovery resume contains active selected and pending sessions w
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     hydrate: async () => hydrateSnapshotFixture({
       sessions_by_id: {},
       projections_by_session: {},
@@ -4112,9 +3227,6 @@ test('Desktop V3 desired-session reconciliation removes inactive sessions select
       return () => listeners.delete(listener)
     },
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     hydrate: async () => hydrateSnapshotFixture({
       sessions_by_id: {},
       projections_by_session: {},
@@ -4185,9 +3297,6 @@ test('Desktop V3 desired-session reconciliation keeps running background session
       return () => listeners.delete(listener)
     },
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     hydrate: async () => hydrateSnapshotFixture({
       sessions_by_id: {},
       projections_by_session: {},
@@ -4259,9 +3368,6 @@ test('Desktop V3 desired-session reconciliation removes terminal unselected back
       return () => listeners.delete(listener)
     },
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     hydrate: async () => hydrateSnapshotFixture({
       sessions_by_id: {},
       projections_by_session: {},
@@ -4322,9 +3428,6 @@ test('Desktop V3 auto-discovered inactive session remains during hydrate then un
       return () => listeners.delete(listener)
     },
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     hydrate: async () => {
       hydrateStarted = true
       return hydrateDeferred.promise
@@ -4391,9 +3494,6 @@ test('Desktop V3 300-member bootstrap does not create 300 subscriptions', async 
     },
     subscribe: () => () => {},
     ensureSession: async () => ({}),
-    resolveOwner: () => testDesktopV3CacheOwner(),
-    writeOwnerAndTails: async () => true,
-    saveActiveOwnerKey: () => true,
     hydrate: async () => hydrateSnapshotFixture({
       sessions_by_id: {},
       projections_by_session: {},
@@ -4440,14 +3540,6 @@ test('Desktop V3 300-member bootstrap does not create 300 subscriptions', async 
   }
 })
 
-function testDesktopV3CacheOwner() {
-  return createDesktopV3CacheOwner({
-    origin: 'https://desktop.example.test',
-    accountScopeId: 'acct-test',
-    userId: 'user-test',
-    surface: 'desktop',
-  })
-}
 
 function readyControllerState(): DesktopV3CacheState {
   const state = createEmptyDesktopV3CacheState()

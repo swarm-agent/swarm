@@ -1,4 +1,3 @@
-import type { PersistedDesktopV3OwnerV1 } from './desktop-v3-cache-persisted-types'
 import type {
   CacheEvent,
   DesktopV3CacheAction,
@@ -92,10 +91,6 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'session.select':
       state.selectedSessionId = action.sessionId?.trim() || undefined
       return state
-    case 'desktopV3Cache.restore':
-      return applyPersistedRestore(state, action.owner, action.selectedMessageTail, action.preferredSessionId)
-    case 'desktopV3Cache.restoreMessageTails':
-      return restorePersistedMessageTails(state, action.tails)
     case 'desktopV3Cache.applyHydrationPlan':
       return applyHydrationPlan(state, action.reusedSessionIds, action.hydrateSessionIds)
     case 'snapshot.apply':
@@ -164,161 +159,6 @@ export function applyBootstrapSnapshot(
   raw: SyncSnapshotResponse,
 ): DesktopV3CacheState {
   return applySnapshot(state, { source: 'bootstrap', scopeId: raw.scope_id, snapshot: raw })
-}
-
-export function applyPersistedRestore(
-  state: DesktopV3CacheState,
-  owner: PersistedDesktopV3OwnerV1,
-  selectedMessageTail?: {
-    sessionId: string
-    messages: MessageSnapshot[]
-    sourceMessageCount?: number
-    sourceLastMessageAt?: number
-    sourceProjectionHighWatermarkSeq?: number
-    hydratedAt?: number
-  },
-  preferredSessionId?: string | null,
-): DesktopV3CacheState {
-  state.syncScopesById = {}
-  for (const [scopeId, scope] of Object.entries(owner.syncScopesById)) {
-    state.syncScopesById[scopeId] = {
-      ...scope,
-      needsBootstrap: true,
-      lastErrorCode: undefined,
-      lastError: undefined,
-    }
-  }
-
-  state.sessionOrderByScope = {}
-  for (const [scopeId, order] of Object.entries(owner.sessionOrderByScope)) {
-    state.sessionOrderByScope[scopeId] = [...order]
-  }
-
-  state.sessionsById = {}
-  state.projectionsBySession = {}
-  state.tombstonesBySession = {}
-  state.messagesBySession = {}
-  state.eventsBySession = {}
-  state.runIntentsBySession = {}
-  state.currentRunIntentBySession = {}
-  state.liveRunsBySession = {}
-  state.plansBySession = {}
-  state.planRevisionsBySession = {}
-  state.permissionsBySession = {}
-  state.usageBySession = {}
-  state.preferencesBySession = {}
-  state.agentModelPolicyBySession = {}
-  state.historyManifestsBySession = {}
-  state.historyChunksById = {}
-  state.omissionsByScope = {}
-  state.paginationByScope = {}
-  state.watermarksByScope = {}
-
-  for (const [sessionId, entry] of Object.entries(owner.sidebarSessionsById)) {
-    state.sessionsById[sessionId] = {
-      kind: 'full',
-      session: entry.session,
-      needsHydrate: true,
-    }
-    if (entry.projection) state.projectionsBySession[sessionId] = entry.projection
-    if (entry.tombstone) state.tombstonesBySession[sessionId] = entry.tombstone
-    for (const runIntent of entry.runIntents ?? []) {
-      upsertRunIntent(state, sessionId, runIntent)
-    }
-  }
-
-  restorePersistedDesktopV3LiveRuns(state, owner)
-  state.permissionsBySession = structuredClone(owner.permissionsBySession ?? {})
-
-  state.realtime.endpointCursor =
-    owner.realtimeEndpointCursor?.trim() || undefined
-
-  const effectiveSessionId = preferredSessionId === null
-    ? undefined
-    : preferredSessionId?.trim() || owner.selectedSessionId
-  state.selectedSessionId = effectiveSessionId
-  if (selectedMessageTail !== undefined) {
-    state.messagesBySession[selectedMessageTail.sessionId] = buildMessageListCache(selectedMessageTail.messages, {
-      sourceMessageCount: selectedMessageTail.sourceMessageCount,
-      sourceLastMessageAt: selectedMessageTail.sourceLastMessageAt,
-      sourceProjectionHighWatermarkSeq: selectedMessageTail.sourceProjectionHighWatermarkSeq,
-      hydratedAt: selectedMessageTail.hydratedAt,
-      source: 'persisted',
-    })
-  }
-
-  state.desktopSidebarBootstrap = {
-    status: 'cached',
-    scopeId: owner.sidebarScopeId,
-    error: undefined,
-    stale: true,
-    source: 'persisted',
-  }
-  state.desktopInitialHydrate = {
-    status: selectedMessageTail === undefined ? 'idle' : 'cached',
-    requestedSessionIds: selectedMessageTail === undefined ? [] : [selectedMessageTail.sessionId],
-    hydratedSessionIds: selectedMessageTail === undefined ? [] : [selectedMessageTail.sessionId],
-    scopeId: owner.sidebarScopeId,
-    error: undefined,
-    stale: true,
-    source: selectedMessageTail === undefined ? undefined : 'persisted',
-  }
-  state.realtime.needsBootstrap = true
-
-  return state
-}
-
-function restorePersistedDesktopV3LiveRuns(
-  state: DesktopV3CacheState,
-  owner: PersistedDesktopV3OwnerV1,
-): void {
-  state.liveRunsBySession = {}
-
-  for (const [sessionId, runsById] of Object.entries(
-    owner.liveRunsBySession ?? {},
-  )) {
-    if (state.tombstonesBySession[sessionId]) continue
-    if (state.sessionsById[sessionId]?.kind !== 'full') continue
-
-    for (const [runId, persisted] of Object.entries(runsById)) {
-      if (persisted.sessionId !== sessionId) continue
-      if (persisted.runId !== runId) continue
-
-      state.liveRunsBySession[sessionId] ??= {}
-      state.liveRunsBySession[sessionId][runId] =
-        structuredClone(persisted)
-    }
-  }
-}
-
-export function restorePersistedMessageTails(
-  state: DesktopV3CacheState,
-  tails: Array<{
-    sessionId: string
-    messages: MessageSnapshot[]
-    sourceMessageCount?: number
-    sourceLastMessageAt?: number
-    sourceProjectionHighWatermarkSeq?: number
-    hydratedAt?: number
-  }>,
-): DesktopV3CacheState {
-  const membership = new Set(Object.values(state.sessionOrderByScope).flat())
-  for (const tail of tails) {
-    const sessionId = tail.sessionId.trim()
-    if (!sessionId || !membership.has(sessionId)) continue
-    if (state.tombstonesBySession[sessionId]) continue
-    const existing = state.messagesBySession[sessionId]
-    if (existing?.source === 'network') continue
-    if (existing && isMessageListNewerThanTail(existing, tail)) continue
-    state.messagesBySession[sessionId] = buildMessageListCache(tail.messages, {
-      sourceMessageCount: tail.sourceMessageCount,
-      sourceLastMessageAt: tail.sourceLastMessageAt,
-      sourceProjectionHighWatermarkSeq: tail.sourceProjectionHighWatermarkSeq,
-      hydratedAt: tail.hydratedAt,
-      source: 'persisted',
-    })
-  }
-  return state
 }
 
 export function applyHydrationPlan(
@@ -1406,21 +1246,6 @@ export function hydrateResponseCompletesSession(snapshot: SyncSnapshotResponse, 
     && Object.prototype.hasOwnProperty.call(snapshot.messages_by_session ?? {}, sessionId)
   const hasAuthoritativeTombstone = Object.prototype.hasOwnProperty.call(snapshot.tombstones_by_session ?? {}, sessionId)
   return hasAuthoritativeMessages || hasAuthoritativeTombstone
-}
-
-function isMessageListNewerThanTail(
-  existing: MessageListCache,
-  tail: {
-    sourceMessageCount?: number
-    sourceLastMessageAt?: number
-    sourceProjectionHighWatermarkSeq?: number
-    hydratedAt?: number
-  },
-): boolean {
-  return (existing.hydratedAt ?? 0) > (tail.hydratedAt ?? 0)
-    || (existing.sourceProjectionHighWatermarkSeq ?? 0) > (tail.sourceProjectionHighWatermarkSeq ?? 0)
-    || (existing.sourceLastMessageAt ?? 0) > (tail.sourceLastMessageAt ?? 0)
-    || (existing.sourceMessageCount ?? 0) > (tail.sourceMessageCount ?? 0)
 }
 
 function writeSyncScope(state: DesktopV3CacheState, snapshot: SyncSnapshotResponse): void {

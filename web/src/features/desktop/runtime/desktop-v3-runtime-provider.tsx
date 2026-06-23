@@ -3,9 +3,7 @@ import { useEffect, useRef, type ReactNode } from 'react'
 import { requireDesktopV3RealtimeControllerReady, retainDesktopV3RealtimeController, type DesktopV3RealtimeLease } from '../realtime/v3-realtime-controller'
 import { bootstrapDesktopV3SidebarMetadataOnly, type DesktopV3BootstrapMetadataResult } from '../state/desktop-v3-bootstrap-controller'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
-import { readDesktopV3MessageTails } from '../state/desktop-v3-cache-db'
 import { buildPostRealtimeConnectHydrationSnapshot, hydrateDesktopV3InitialSessions } from '../state/desktop-v3-initial-hydrate-controller'
-import { startDesktopV3PersistenceController } from '../state/desktop-v3-persistence-controller'
 import { installDesktopV3StreamCacheTestHooksForTestbench } from '../state/desktop-v3-stream-cache-test-hooks'
 
 const DESKTOP_V3_RUNTIME_PROVIDER_OWNER_KEY = 'desktop-v3-runtime-provider'
@@ -36,7 +34,6 @@ export function DesktopV3RuntimeProvider({ children, initialPreferredSessionId }
     const runtime = ensureRuntime()
 
     let cancelled = false
-    const stopPersistence = startDesktopV3PersistenceController()
     const uninstallTestHooks = installDesktopV3StreamCacheTestHooksForTestbench()
 
     void startDesktopV3RuntimeHydration(runtime, () => cancelled).catch((error: unknown) => {
@@ -53,7 +50,6 @@ export function DesktopV3RuntimeProvider({ children, initialPreferredSessionId }
     return () => {
       cancelled = true
       runtime.release()
-      stopPersistence()
       uninstallTestHooks()
       if (runtimeRef.current === runtime) {
         runtimeRef.current = null
@@ -124,11 +120,8 @@ async function startDesktopV3RuntimeHydration(
       scopeId,
     ),
     preBootstrapCachedProjections: bootstrap.preBootstrapCachedProjections,
-    selectedMessageTail: bootstrap.restoredSelectedMessageTail,
     preferredSessionId: null,
     currentSelectedSessionId: undefined,
-    ownerKey: bootstrap.restoredOwnerKey,
-    readMessageTails: readDesktopV3MessageTails,
   })
 }
 

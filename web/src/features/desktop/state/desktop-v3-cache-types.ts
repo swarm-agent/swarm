@@ -1,4 +1,3 @@
-import type { PersistedDesktopV3MessageTailV1, PersistedDesktopV3OwnerV1 } from './desktop-v3-cache-persisted-types'
 import type { DesktopPermissionRecord } from '../types/realtime'
 
 export type SyncSelectorKind = '' | 'global' | 'recent' | 'session_ids' | 'workspace' | 'tui'
@@ -426,7 +425,7 @@ export type SessionCacheRecord =
       discoveredAt?: number
     }
 
-export type MessageListCacheSource = 'persisted' | 'network'
+export type MessageListCacheSource = 'network'
 
 export interface MessageListCache {
   items: MessageSnapshot[]
@@ -542,7 +541,7 @@ export interface DesktopSidebarBootstrapState {
   scopeId?: string
   error?: string
   stale?: boolean
-  source?: 'persisted' | 'network'
+  source?: 'network'
 }
 
 export interface DesktopInitialHydrateState {
@@ -552,7 +551,7 @@ export interface DesktopInitialHydrateState {
   scopeId?: string
   error?: string
   stale?: boolean
-  source?: 'persisted' | 'network'
+  source?: 'network'
 }
 
 export interface DesktopV3CacheState {
@@ -597,8 +596,6 @@ export interface CacheEvent {
 }
 
 export type DesktopV3CacheAction =
-  | { type: 'desktopV3Cache.restore'; owner: PersistedDesktopV3OwnerV1; selectedMessageTail?: PersistedDesktopV3MessageTailV1; preferredSessionId?: string | null }
-  | { type: 'desktopV3Cache.restoreMessageTails'; tails: PersistedDesktopV3MessageTailV1[] }
   | { type: 'desktopV3Cache.applyHydrationPlan'; reusedSessionIds: string[]; hydrateSessionIds: string[] }
   | { type: 'desktopSidebarBootstrap.update'; patch: Partial<DesktopSidebarBootstrapState> }
   | { type: 'desktopInitialHydrate.update'; patch: Partial<DesktopInitialHydrateState> }

@@ -7,7 +7,6 @@ test('DesktopAppPage leaves Desktop V3 runtime ownership to the root provider wh
 
   assert.doesNotMatch(source, /bootstrapDesktopV3SidebarMetadataOnly\(/)
   assert.doesNotMatch(source, /retainDesktopV3RealtimeController\(/)
-  assert.doesNotMatch(source, /startDesktopV3PersistenceController\(/)
   assert.doesNotMatch(
     source,
     /useEffect\(\(\) => \{\s*void bootstrapDesktopV3Sidebar\(\{ preferredSessionId: routeSessionId \}\)\s*\}, \[routeSessionId\]\)/,
