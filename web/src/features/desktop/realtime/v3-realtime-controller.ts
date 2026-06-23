@@ -716,10 +716,6 @@ export function buildDesktopV3InitialRealtimeResume(
     throw new Error(`Desktop V3 initial realtime missing scope ${sidebarScopeId}`)
   }
 
-  if (!sidebarScope.selector.global) {
-    throw new Error('Desktop V3 initial realtime requires a principal-wide selector')
-  }
-
   const endpointCursor = sidebarScope.endpointCursor?.trim()
   if (!endpointCursor) {
     throw new Error('Desktop V3 initial realtime requires the bootstrap endpoint cursor')
@@ -764,7 +760,7 @@ export function buildDesktopV3InitialRealtimeResume(
     workset_id: sidebarScopeId,
     subscription_id: `${clientId}:workset:${sidebarScopeId}`,
     surface: 'desktop',
-    selector: desktopGlobalRealtimeSelector(),
+    selector: cloneDesktopV3SyncSelector(sidebarScope.selector),
     resources: ['membership', 'projections', 'run_intents', 'sessions', 'tombstones'],
     auto_subscribe_sessions: true,
   }]
@@ -780,11 +776,20 @@ export function buildDesktopV3InitialRealtimeResume(
   return { endpointCursor, subscriptions, worksets, resume }
 }
 
-export function desktopGlobalRealtimeSelector(): SyncSelector {
-  return {
-    kind: 'global',
-    global: true,
+export function cloneDesktopV3SyncSelector(selector: SyncSelector): SyncSelector {
+  const clone: SyncSelector = { ...selector }
+  if (selector.workspace_paths) clone.workspace_paths = [...selector.workspace_paths]
+  if (selector.session_ids) clone.session_ids = [...selector.session_ids]
+  if (selector.recent) clone.recent = { ...selector.recent }
+  return clone
+}
+
+export function isDesktopV3BoundedSidebarSelector(selector: SyncSelector): boolean {
+  const kind = selector.kind?.trim().toLowerCase()
+  if (kind === 'global' && selector.global && !selector.recent?.limit && !selector.session_ids?.length && !selector.workspace_path?.trim() && !selector.workspace_paths?.length) {
+    return false
   }
+  return Boolean(selector.recent?.limit || selector.session_ids?.length || selector.workspace_path?.trim() || selector.workspace_paths?.length || kind === 'workspace' || kind === 'session_ids' || kind === 'recent' || kind === 'tui')
 }
 
 export function buildDesktopV3ReconnectInput(
@@ -801,8 +806,8 @@ export function buildDesktopV3ReconnectInput(
     throw new Error(`Desktop V3 reconnect missing scope ${sidebarScopeId}`)
   }
 
-  if (!sidebarScope.selector.global) {
-    throw new Error('Desktop V3 reconnect requires a principal-wide selector')
+  if (!isDesktopV3BoundedSidebarSelector(sidebarScope.selector)) {
+    throw new Error('Desktop V3 reconnect requires a bounded sidebar selector')
   }
 
   return {
@@ -810,7 +815,7 @@ export function buildDesktopV3ReconnectInput(
     client_id: clientId,
     workset: {
       workset_id: sidebarScopeId,
-      selector: desktopGlobalRealtimeSelector(),
+      selector: cloneDesktopV3SyncSelector(sidebarScope.selector),
       history: {
         mode: 'none',
       },

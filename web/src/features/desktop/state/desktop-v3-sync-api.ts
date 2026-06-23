@@ -38,12 +38,10 @@ export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
     },
   },
   history: {
-    mode: 'tail',
-    max_messages_per_session: DESKTOP_STARTUP_MESSAGE_LIMIT,
-    manifest_policy: 'manifest',
+    mode: 'none',
   },
   resources: {
-    messages: true,
+    messages: false,
     events: false,
     run_intents: true,
     active_plan: true,

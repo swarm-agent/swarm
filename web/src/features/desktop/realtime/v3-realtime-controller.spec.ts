@@ -2643,7 +2643,7 @@ test('Desktop V3 cold startup resume contains selected plus active sessions, not
       true,
     ])
     assert.equal(resume.worksets?.length, 1)
-    assert.deepEqual(resume.worksets?.[0]?.selector, { kind: 'global', global: true })
+    assert.deepEqual(resume.worksets?.[0]?.selector, { kind: 'recent', global: true, recent: { limit: 50 } })
   } finally {
     controller.stop()
   }
@@ -3553,7 +3553,7 @@ function readyControllerState(): DesktopV3CacheState {
     streamKind: 'v3.sync.snapshot',
     selectorFilterHash: 'global-hash',
     resourceSet: 'run_intents',
-    selector: { kind: 'global', global: true },
+    selector: { kind: 'recent', global: true, recent: { limit: 50 } },
     endpointCursor: 'cursor-bootstrap',
     replayPath: '/v3/sync/stream',
     replayTransport: 'http_post',
