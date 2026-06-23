@@ -619,15 +619,19 @@ export function applySessionSettingsMutationResult(
 
   const record = state.sessionsById[sessionId]
   if (record?.kind === 'full') {
+    let nextSession = record.session
     if (typeof raw.mode === 'string') {
-      record.session.mode = raw.mode
+      nextSession = { ...nextSession, mode: raw.mode }
     }
     const metadata = recordValue(raw.metadata)
     if (metadata) {
-      record.session.metadata = metadata
+      nextSession = { ...nextSession, metadata }
     }
     if (raw.preference !== undefined) {
-      record.session.preference = raw.preference
+      nextSession = { ...nextSession, preference: raw.preference }
+    }
+    if (nextSession !== record.session) {
+      state.sessionsById[sessionId] = { ...record, session: nextSession }
     }
   }
 
@@ -733,7 +737,10 @@ export function applyCacheEvent(
 
   const record = state.sessionsById[sessionId]
   if (payload.lifecycle && record?.kind === 'full') {
-    record.session.lifecycle = payload.lifecycle
+    state.sessionsById[sessionId] = {
+      ...record,
+      session: { ...record.session, lifecycle: payload.lifecycle },
+    }
   }
 
   applyUsageSummaryFromEventPayload(state, sessionId, payload)
@@ -1502,14 +1509,18 @@ function applyScalarSessionPatchIfPresent(
   const record = state.sessionsById[sessionId]
   if (record?.kind !== 'full') return
 
-  if (typeof payload.title === 'string') record.session.title = payload.title
-  if (typeof payload.mode === 'string') record.session.mode = payload.mode
-  if (typeof payload.updated_at === 'number') record.session.updated_at = payload.updated_at
+  let nextSession = record.session
+  if (typeof payload.title === 'string') nextSession = { ...nextSession, title: payload.title }
+  if (typeof payload.mode === 'string') nextSession = { ...nextSession, mode: payload.mode }
+  if (typeof payload.updated_at === 'number') nextSession = { ...nextSession, updated_at: payload.updated_at }
   const metadata = recordValue(payload.metadata)
-  if (metadata) record.session.metadata = metadata
+  if (metadata) nextSession = { ...nextSession, metadata }
   if (payload.preference !== undefined) {
-    record.session.preference = payload.preference
+    nextSession = { ...nextSession, preference: payload.preference }
     state.preferencesBySession[sessionId] = payload.preference
+  }
+  if (nextSession !== record.session) {
+    state.sessionsById[sessionId] = { ...record, session: nextSession }
   }
   if (payload.agent_model_policy !== undefined) {
     state.agentModelPolicyBySession[sessionId] = payload.agent_model_policy

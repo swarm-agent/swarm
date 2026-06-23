@@ -31,7 +31,7 @@ export const DESKTOP_STARTUP_MESSAGE_LIMIT = 200
 export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
   surface: 'desktop',
   selector: {
-    kind: 'global',
+    kind: 'recent',
     global: true,
     recent: {
       limit: DESKTOP_STARTUP_SESSION_LIMIT,
@@ -74,16 +74,36 @@ export function buildDesktopV3InitialHydrateInput(sessionIds: string[]): Desktop
   }
 }
 
+export function buildDesktopV3BootstrapInput(
+  input: Partial<DesktopV3BootstrapInput> = {},
+  preferredSessionId?: string | null,
+): DesktopV3BootstrapInput {
+  const sourceSelector = input.selector ?? DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.selector
+  const preferred = preferredSessionId?.trim()
+  const sessionIds = [...(sourceSelector.session_ids ?? [])]
+  if (preferred && !sessionIds.includes(preferred)) {
+    sessionIds.unshift(preferred)
+  }
+  const selector: SyncSelector = {
+    ...sourceSelector,
+    workspace_paths: sourceSelector.workspace_paths ? [...sourceSelector.workspace_paths] : undefined,
+    session_ids: sessionIds.length > 0 ? sessionIds : undefined,
+    recent: sourceSelector.recent ? { ...sourceSelector.recent } : undefined,
+  }
+
+  return {
+    ...DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT,
+    ...input,
+    selector,
+    history: { ...(input.history ?? DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.history) },
+    resources: { ...(input.resources ?? DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.resources) },
+  }
+}
+
 export async function postDesktopV3SyncBootstrap(
   input: Partial<DesktopV3BootstrapInput> = {},
 ): Promise<SyncSnapshotResponse> {
-  const body: DesktopV3BootstrapInput = {
-    ...DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT,
-    ...input,
-    selector: input.selector ?? DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.selector,
-    history: input.history ?? DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.history,
-    resources: input.resources ?? DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.resources,
-  }
+  const body = buildDesktopV3BootstrapInput(input)
 
   return requestJson<SyncSnapshotResponse>('/v3/sync/bootstrap', {
     method: 'POST',

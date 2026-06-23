@@ -1,6 +1,5 @@
-import { useSyncExternalStore } from 'react'
+import { useStoreWithEqualityFn } from 'zustand/traditional'
 import { createStore } from 'zustand/vanilla'
-
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
 import type { DesktopV3CacheAction, DesktopV3CacheState } from './desktop-v3-cache-types'
 
@@ -27,9 +26,17 @@ export function subscribeDesktopV3Cache(listener: DesktopV3CacheListener): () =>
 }
 
 export function dispatchDesktopV3Cache(action: DesktopV3CacheAction): void {
+  dispatchDesktopV3CacheBatch([action])
+}
+
+export function dispatchDesktopV3CacheBatch(actions: DesktopV3CacheAction[]): void {
+  if (actions.length === 0) return
   const previousState = store.getState()
-  const nextState = desktopV3CacheReducer({ ...previousState }, action)
-  commitDesktopV3CacheSnapshot(previousState, nextState, [action])
+  let nextState: DesktopV3CacheState = { ...previousState }
+  for (const action of actions) {
+    nextState = desktopV3CacheReducer(nextState, action)
+  }
+  commitDesktopV3CacheSnapshot(previousState, nextState, actions)
 }
 
 export function commitDesktopV3CacheSnapshot(
@@ -46,9 +53,11 @@ export function commitDesktopV3CacheSnapshot(
   }
 }
 
-export function useDesktopV3CacheSelector<T>(selector: (state: DesktopV3CacheState) => T): T {
-  const snapshot = useSyncExternalStore(store.subscribe, store.getState, store.getState)
-  return selector(snapshot)
+export function useDesktopV3CacheSelector<T>(
+  selector: (state: DesktopV3CacheState) => T,
+  equalityFn?: (left: T, right: T) => boolean,
+): T {
+  return useStoreWithEqualityFn(store, selector, equalityFn)
 }
 
 export function resetDesktopV3CacheForTests(state: DesktopV3CacheState = createEmptyDesktopV3CacheState()): void {

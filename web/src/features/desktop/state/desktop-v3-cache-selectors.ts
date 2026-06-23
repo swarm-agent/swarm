@@ -42,13 +42,13 @@ export function selectDesktopSidebarRows(state: DesktopV3CacheState, scopeId = s
     if (!record) continue
     rows.push({
       sessionId,
-      record,
-      projection: state.projectionsBySession[sessionId],
-      tombstone: state.tombstonesBySession[sessionId],
-      runIntents: state.runIntentsBySession[sessionId] ?? {},
-      currentRunIntent: state.currentRunIntentBySession[sessionId],
-      pendingPermissions: (state.permissionsBySession[sessionId] ?? []).filter((permission) => permission.status.trim().toLowerCase() === 'pending'),
-      pendingPermissionCount: (state.permissionsBySession[sessionId] ?? []).filter((permission) => permission.status.trim().toLowerCase() === 'pending').length,
+      record: cloneSessionCacheRecord(record),
+      projection: state.projectionsBySession[sessionId] ? { ...state.projectionsBySession[sessionId] } : undefined,
+      tombstone: state.tombstonesBySession[sessionId] ? { ...state.tombstonesBySession[sessionId] } : undefined,
+      runIntents: cloneRunIntentRecord(state.runIntentsBySession[sessionId]),
+      currentRunIntent: cloneRunIntent(state.currentRunIntentBySession[sessionId]),
+      pendingPermissions: clonePendingPermissions(state.permissionsBySession[sessionId]),
+      pendingPermissionCount: countPendingPermissions(state.permissionsBySession[sessionId]),
     })
   }
   return rows
@@ -61,11 +61,12 @@ export function selectCommittedMessages(state: DesktopV3CacheState, sessionId: s
 export function selectPendingUserMessages(state: DesktopV3CacheState, sessionId: string): PendingUserMessage[] {
   return Object.values(state.pendingUserByClientRequestId)
     .filter((pending) => pending.sessionId === sessionId)
+    .map((pending) => ({ ...pending, metadata: pending.metadata ? { ...pending.metadata } : undefined }))
     .sort((left, right) => left.createdAt - right.createdAt || left.messageId.localeCompare(right.messageId))
 }
 
 export function selectLiveRuns(state: DesktopV3CacheState, sessionId: string): LiveRunOverlay[] {
-  return Object.values(state.liveRunsBySession[sessionId] ?? {}).sort((a, b) => {
+  return Object.values(state.liveRunsBySession[sessionId] ?? {}).map(cloneLiveRun).sort((a, b) => {
     const aSeq = a.lastEventSeqSeen ?? 0
     const bSeq = b.lastEventSeqSeen ?? 0
 
@@ -132,4 +133,59 @@ export function isDesktopV3SessionTailReady(
     && Number.isSafeInteger(messages.sourceLastMessageAt)
     && (messages.sourceMessageCount ?? -1) >= session.message_count
     && (messages.sourceLastMessageAt ?? -1) >= session.last_message_at
+}
+
+function cloneSessionCacheRecord(record: SessionCacheRecord): SessionCacheRecord {
+  if (record.kind === 'stub') return { ...record }
+  return {
+    kind: 'full',
+    session: {
+      ...record.session,
+      metadata: record.session.metadata ? { ...record.session.metadata } : undefined,
+      temporary_workspace_roots: record.session.temporary_workspace_roots ? [...record.session.temporary_workspace_roots] : undefined,
+    },
+    needsHydrate: record.needsHydrate,
+  }
+}
+
+function cloneRunIntent(runIntent: V3SessionRunIntent | undefined): V3SessionRunIntent | undefined {
+  return runIntent ? { ...runIntent } : undefined
+}
+
+function cloneRunIntentRecord(runIntents: Record<string, V3SessionRunIntent> | undefined): Record<string, V3SessionRunIntent> {
+  if (!runIntents) return {}
+  const output: Record<string, V3SessionRunIntent> = {}
+  for (const [runId, runIntent] of Object.entries(runIntents)) {
+    output[runId] = { ...runIntent }
+  }
+  return output
+}
+
+function clonePendingPermissions(permissions: DesktopPermissionRecord[] | undefined): DesktopPermissionRecord[] {
+  return (permissions ?? [])
+    .filter((permission) => permission.status.trim().toLowerCase() === 'pending')
+    .map((permission) => ({ ...permission, savedRule: permission.savedRule ? { ...permission.savedRule } : undefined }))
+}
+
+function countPendingPermissions(permissions: DesktopPermissionRecord[] | undefined): number {
+  let count = 0
+  for (const permission of permissions ?? []) {
+    if (permission.status.trim().toLowerCase() === 'pending') count += 1
+  }
+  return count
+}
+
+function cloneLiveRun(run: LiveRunOverlay): LiveRunOverlay {
+  return {
+    ...run,
+    assistantDraft: run.assistantDraft ? { ...run.assistantDraft } : undefined,
+    assistantSegments: run.assistantSegments?.map((segment) => ({ ...segment })),
+    toolCallsByCallId: Object.fromEntries(
+      Object.entries(run.toolCallsByCallId).map(([callId, tool]) => [callId, { ...tool }]),
+    ),
+    reasoning: run.reasoning ? { ...run.reasoning } : undefined,
+    reasoningByKey: run.reasoningByKey ? Object.fromEntries(
+      Object.entries(run.reasoningByKey).map(([key, reasoning]) => [key, { ...reasoning }]),
+    ) : undefined,
+  }
 }

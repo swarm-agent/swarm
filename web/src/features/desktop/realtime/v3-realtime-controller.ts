@@ -716,8 +716,8 @@ export function buildDesktopV3InitialRealtimeResume(
     throw new Error(`Desktop V3 initial realtime missing scope ${sidebarScopeId}`)
   }
 
-  if (sidebarScope.selector.kind !== 'global' || !sidebarScope.selector.global) {
-    throw new Error('Desktop V3 initial realtime requires the principal-wide global selector')
+  if (!sidebarScope.selector.global) {
+    throw new Error('Desktop V3 initial realtime requires a principal-wide selector')
   }
 
   const endpointCursor = sidebarScope.endpointCursor?.trim()
@@ -801,8 +801,8 @@ export function buildDesktopV3ReconnectInput(
     throw new Error(`Desktop V3 reconnect missing scope ${sidebarScopeId}`)
   }
 
-  if (sidebarScope.selector.kind !== 'global' || !sidebarScope.selector.global) {
-    throw new Error('Desktop V3 reconnect requires the principal-wide global selector')
+  if (!sidebarScope.selector.global) {
+    throw new Error('Desktop V3 reconnect requires a principal-wide selector')
   }
 
   return {

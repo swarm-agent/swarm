@@ -2,7 +2,6 @@ import { useEffect, useRef, type ReactNode } from 'react'
 
 import { retainDesktopV3RealtimeController, type DesktopV3RealtimeLease } from '../realtime/v3-realtime-controller'
 import { bootstrapDesktopV3SidebarMetadataOnly, type DesktopV3BootstrapMetadataResult } from '../state/desktop-v3-bootstrap-controller'
-import { hydrateResponseCompletesSession } from '../state/desktop-v3-cache-reducer'
 import { dispatchDesktopV3Cache } from '../state/desktop-v3-cache-store'
 import { installDesktopV3StreamCacheTestHooksForTestbench } from '../state/desktop-v3-stream-cache-test-hooks'
 
@@ -86,30 +85,14 @@ async function startDesktopV3RuntimeHydration(
   runtime: RetainedDesktopV3Runtime,
   isCancelled: () => boolean,
 ): Promise<void> {
-  const bootstrap = await runtime.bootstrapReady
+  await runtime.bootstrapReady
   if (isCancelled()) return
-
-  const sessionIds = bootstrap.response.session_order ?? []
-  const hydratedSessionIds = sessionIds.filter((sessionId) =>
-    hydrateResponseCompletesSession(bootstrap.response, sessionId),
-  )
-
-  dispatchDesktopV3Cache({
-    type: 'desktopInitialHydrate.update',
-    patch: {
-      status: 'ready',
-      requestedSessionIds: sessionIds,
-      hydratedSessionIds,
-      scopeId: bootstrap.response.scope_id,
-      source: 'network',
-      stale: false,
-      error: undefined,
-    },
-  })
 
   // Snapshot rendering must not wait for the websocket. Realtime readiness only
   // closes the snapshot-to-live gap after the bounded hydrated bootstrap renders.
-  await runtime.realtimeLease.ready
+  void runtime.realtimeLease.ready.catch((error: unknown) => {
+    console.error('[desktop-v3] realtime startup failed after bootstrap render', error)
+  })
 }
 
 function normalizePreferredSessionId(sessionId: string | null | undefined): string | null | undefined {

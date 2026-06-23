@@ -55,11 +55,10 @@ import {
   sessionParentSessionID,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
-import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
-import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
-import type { DesktopV3SidebarRow } from '../state/desktop-v3-cache-selectors'
+import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
@@ -211,6 +210,244 @@ function desktopRunIntentFromV3(runIntent: V3SessionRunIntent | undefined) {
     updatedAt: runIntent.updated_at,
     eventSeq: runIntent.event_seq,
   }
+}
+
+const EMPTY_DESKTOP_V3_RENDERED_MESSAGES: RenderedSessionMessages = {
+  committed: [],
+  pendingUser: [],
+  liveRuns: [],
+  runIntents: [],
+}
+
+function runIntentEqual(left: V3SessionRunIntent | undefined, right: V3SessionRunIntent | undefined): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.session_id === right.session_id
+    && left.run_id === right.run_id
+    && left.status === right.status
+    && left.blocked_reason === right.blocked_reason
+    && left.created_at === right.created_at
+    && left.updated_at === right.updated_at
+    && left.event_seq === right.event_seq
+}
+
+function runIntentArrayEqual(left: V3SessionRunIntent[], right: V3SessionRunIntent[]): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (!runIntentEqual(left[index], right[index])) return false
+  }
+  return true
+}
+
+function desktopV3RenderedMessagesEqual(left: RenderedSessionMessages, right: RenderedSessionMessages): boolean {
+  return left.committed === right.committed
+    && pendingUserMessagesEqual(left.pendingUser, right.pendingUser)
+    && liveRunsEqual(left.liveRuns, right.liveRuns)
+    && runIntentArrayEqual(left.runIntents, right.runIntents)
+    && runIntentEqual(left.currentRunIntent, right.currentRunIntent)
+    && runIntentEqual(left.latestRunIntent, right.latestRunIntent)
+}
+
+function pendingUserMessagesEqual(left: RenderedSessionMessages['pendingUser'], right: RenderedSessionMessages['pendingUser']): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index]
+    const b = right[index]
+    if (!a || !b) return false
+    if (a.clientRequestId !== b.clientRequestId
+      || a.messageId !== b.messageId
+      || a.sessionId !== b.sessionId
+      || a.content !== b.content
+      || a.createdAt !== b.createdAt
+      || a.status !== b.status
+      || a.error !== b.error) return false
+  }
+  return true
+}
+
+function liveRunsEqual(left: RenderedSessionMessages['liveRuns'], right: RenderedSessionMessages['liveRuns']): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (!liveRunEqual(left[index], right[index])) return false
+  }
+  return true
+}
+
+function liveRunEqual(left: RenderedSessionMessages['liveRuns'][number] | undefined, right: RenderedSessionMessages['liveRuns'][number] | undefined): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.sessionId === right.sessionId
+    && left.runId === right.runId
+    && left.status === right.status
+    && left.lastEventSeqSeen === right.lastEventSeqSeen
+    && liveAssistantDraftEqual(left.assistantDraft, right.assistantDraft)
+    && liveAssistantSegmentsEqual(left.assistantSegments, right.assistantSegments)
+    && liveReasoningEqual(left.reasoning, right.reasoning)
+    && liveReasoningByKeyEqual(left.reasoningByKey, right.reasoningByKey)
+    && shallowNestedRecordEqual(left.toolCallsByCallId, right.toolCallsByCallId)
+}
+
+function liveAssistantDraftEqual(
+  left: RenderedSessionMessages['liveRuns'][number]['assistantDraft'],
+  right: RenderedSessionMessages['liveRuns'][number]['assistantDraft'],
+): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.content === right.content
+    && left.updatedAt === right.updatedAt
+    && left.timelineSeq === right.timelineSeq
+}
+
+function liveAssistantSegmentsEqual(
+  left: RenderedSessionMessages['liveRuns'][number]['assistantSegments'],
+  right: RenderedSessionMessages['liveRuns'][number]['assistantSegments'],
+): boolean {
+  if (left === right) return true
+  if ((left?.length ?? 0) !== (right?.length ?? 0)) return false
+  for (let index = 0; index < (left?.length ?? 0); index += 1) {
+    const a = left?.[index]
+    const b = right?.[index]
+    if (!a || !b) return false
+    if (a.id !== b.id || a.content !== b.content || a.createdAt !== b.createdAt || a.updatedAt !== b.updatedAt || a.timelineSeq !== b.timelineSeq) return false
+  }
+  return true
+}
+
+function liveReasoningEqual(
+  left: RenderedSessionMessages['liveRuns'][number]['reasoning'],
+  right: RenderedSessionMessages['liveRuns'][number]['reasoning'],
+): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.key === right.key
+    && left.state === right.state
+    && left.summary === right.summary
+    && left.text === right.text
+    && left.startedAt === right.startedAt
+    && left.completedAt === right.completedAt
+    && left.updatedAt === right.updatedAt
+    && left.timelineSeq === right.timelineSeq
+    && left.updatedSeq === right.updatedSeq
+}
+
+function desktopV3SidebarRowsEqual(left: DesktopV3SidebarRow[], right: DesktopV3SidebarRow[]): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (!desktopV3SidebarRowEqual(left[index], right[index])) return false
+  }
+  return true
+}
+
+function desktopV3SidebarRowEqual(left: DesktopV3SidebarRow | undefined, right: DesktopV3SidebarRow | undefined): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.sessionId === right.sessionId
+    && sessionRecordEqual(left.record, right.record)
+    && projectionEqual(left.projection, right.projection)
+    && runIntentEqual(left.currentRunIntent, right.currentRunIntent)
+    && runIntentRecordEqual(left.runIntents, right.runIntents)
+    && left.pendingPermissionCount === right.pendingPermissionCount
+    && pendingPermissionIdsEqual(left.pendingPermissions, right.pendingPermissions)
+}
+
+function sessionRecordEqual(left: DesktopV3SidebarRow['record'], right: DesktopV3SidebarRow['record']): boolean {
+  if (left === right) return true
+  if (left.kind !== right.kind) return false
+  if (left.kind === 'stub' || right.kind === 'stub') {
+    if (left.kind !== 'stub' || right.kind !== 'stub') return false
+    return left.id === right.id
+      && left.needsHydrate === right.needsHydrate
+      && left.discoveredAt === right.discoveredAt
+      && left.discoveredByWorksetId === right.discoveredByWorksetId
+  }
+  const a = left.session
+  const b = right.session
+  return a.id === b.id
+    && a.title === b.title
+    && a.workspace_path === b.workspace_path
+    && a.workspace_name === b.workspace_name
+    && a.mode === b.mode
+    && a.created_at === b.created_at
+    && a.updated_at === b.updated_at
+    && a.message_count === b.message_count
+    && a.last_message_at === b.last_message_at
+    && a.worktree_enabled === b.worktree_enabled
+    && a.worktree_root_path === b.worktree_root_path
+    && a.worktree_base_branch === b.worktree_base_branch
+    && a.worktree_branch === b.worktree_branch
+    && shallowRecordEqual(a.metadata, b.metadata)
+}
+
+function projectionEqual(left: DesktopV3SidebarRow['projection'], right: DesktopV3SidebarRow['projection']): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.session_id === right.session_id
+    && left.last_event_seq === right.last_event_seq
+    && left.projection_high_watermark_seq === right.projection_high_watermark_seq
+    && left.updated_at === right.updated_at
+}
+
+function runIntentRecordEqual(left: Record<string, V3SessionRunIntent>, right: Record<string, V3SessionRunIntent>): boolean {
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(right)
+  if (leftKeys.length !== rightKeys.length) return false
+  for (const key of leftKeys) {
+    if (!runIntentEqual(left[key], right[key])) return false
+  }
+  return true
+}
+
+function pendingPermissionIdsEqual(left: DesktopV3SidebarRow['pendingPermissions'], right: DesktopV3SidebarRow['pendingPermissions']): boolean {
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index]?.id !== right[index]?.id || left[index]?.status !== right[index]?.status) return false
+  }
+  return true
+}
+
+function liveReasoningByKeyEqual(
+  left: RenderedSessionMessages['liveRuns'][number]['reasoningByKey'],
+  right: RenderedSessionMessages['liveRuns'][number]['reasoningByKey'],
+): boolean {
+  const leftKeys = Object.keys(left ?? {})
+  const rightKeys = Object.keys(right ?? {})
+  if (leftKeys.length !== rightKeys.length) return false
+  for (const key of leftKeys) {
+    if (!liveReasoningEqual(left?.[key], right?.[key])) return false
+  }
+  return true
+}
+
+function shallowNestedRecordEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false
+  const a = left as Record<string, unknown>
+  const b = right as Record<string, unknown>
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  if (aKeys.length !== bKeys.length) return false
+  for (const key of aKeys) {
+    if (!shallowRecordEqual(a[key], b[key])) return false
+  }
+  return true
+}
+
+function shallowRecordEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false
+  const a = left as Record<string, unknown>
+  const b = right as Record<string, unknown>
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  if (aKeys.length !== bKeys.length) return false
+  for (const key of aKeys) {
+    if (!Object.is(a[key], b[key])) return false
+  }
+  return true
 }
 
 export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): DesktopSessionRecord {
@@ -2031,12 +2268,12 @@ export function DesktopAppPage() {
 
   const desktopInitialHydrate = useDesktopV3CacheSelector((state) => state.desktopInitialHydrate)
   const selectedDesktopV3Messages = useDesktopV3CacheSelector((state) => (
-    routeSessionId ? selectRenderedSessionMessages(state, routeSessionId) : { committed: [], pendingUser: [], liveRuns: [], runIntents: [] }
-  ))
+    routeSessionId ? selectRenderedSessionMessages(state, routeSessionId) : EMPTY_DESKTOP_V3_RENDERED_MESSAGES
+  ), desktopV3RenderedMessagesEqual)
   const selectedDesktopV3MessagesLoaded = useDesktopV3CacheSelector((state) => (
     routeSessionId ? isDesktopV3SessionTailReady(state, routeSessionId) : false
   ))
-  const desktopSidebarRows = useDesktopV3CacheSelector(selectDesktopSidebarRows)
+  const desktopSidebarRows = useDesktopV3CacheSelector(selectDesktopSidebarRows, desktopV3SidebarRowsEqual)
   const desktopStateSessions = useMemo<DesktopSessionRecord[]>(
     () => desktopSidebarRows.map(desktopSessionRecordFromV3SidebarRow),
     [desktopSidebarRows],
@@ -2047,15 +2284,9 @@ export function DesktopAppPage() {
 
     dispatchDesktopV3Cache(selectSession(sessionId))
 
-    if (isDesktopV3SessionTailReady(getDesktopV3CacheSnapshot(), sessionId)) {
-      return
-    }
-
-    void requireDesktopV3RealtimeControllerReady()
-      .then((controller) => controller.ensureSessionHistory(sessionId))
-      .catch((error: unknown) => {
-        console.error('[desktop-v3] route-session fallback hydrate failed', error)
-      })
+    // Startup history is delivered by the single /v3/sync/bootstrap transaction.
+    // The retained realtime controller owns any later repair for sessions outside
+    // that bounded memory snapshot; the route effect only selects the session.
   }, [routeSessionId])
 
   useEffect(() => {
