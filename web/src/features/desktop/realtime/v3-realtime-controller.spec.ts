@@ -2641,6 +2641,7 @@ test('Desktop V3 cold startup resume contains selected plus active sessions, not
       true,
     ])
     assert.equal(resume.worksets?.length, 1)
+    assert.deepEqual(resume.worksets?.[0]?.selector, { kind: 'global', global: true })
   } finally {
     controller.stop()
   }

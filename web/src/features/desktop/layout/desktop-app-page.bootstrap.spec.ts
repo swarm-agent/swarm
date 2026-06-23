@@ -12,4 +12,9 @@ test('DesktopAppPage leaves Desktop V3 runtime ownership to the root provider wh
     /useEffect\(\(\) => \{\s*void bootstrapDesktopV3Sidebar\(\{ preferredSessionId: routeSessionId \}\)\s*\}, \[routeSessionId\]\)/,
   )
   assert.match(source, /const sessionId = routeSessionId\.trim\(\)/)
+  assert.match(
+    source,
+    /dispatchDesktopV3Cache\(selectSession\(sessionId\)\)\s*if \(isDesktopV3SessionTailReady\(getDesktopV3CacheSnapshot\(\), sessionId\)\) \{\s*return\s*\}\s*void requireDesktopV3RealtimeControllerReady\(\)\s*\.then\(\(controller\) => controller\.ensureSessionHistory\(sessionId\)\)/,
+  )
+  assert.match(source, /console\.error\('\[desktop-v3\] route-session fallback hydrate failed', error\)/)
 })

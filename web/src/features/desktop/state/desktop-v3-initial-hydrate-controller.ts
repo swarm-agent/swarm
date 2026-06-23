@@ -1,6 +1,7 @@
 import { hydrateResponseToAction } from './desktop-v3-cache-wire'
-import { dispatchDesktopV3Cache } from './desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from './desktop-v3-cache-store'
 import { hydrateResponseCompletesSession } from './desktop-v3-cache-reducer'
+import { isDesktopV3SessionTailReady } from './desktop-v3-cache-selectors'
 import {
   buildDesktopV3InitialHydrateInput,
   postDesktopV3SyncHydrate,
@@ -18,6 +19,7 @@ interface HydrateDesktopV3InitialSessionsInput {
   currentSelectedSessionId?: string
   postHydrate?: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
   dispatch?: (action: DesktopV3CacheAction) => void
+  getSnapshot?: () => DesktopV3CacheState
 }
 
 export interface DesktopV3SelectiveHydrationPlan {
@@ -43,6 +45,7 @@ export function hydrateDesktopV3InitialSessions(input: HydrateDesktopV3InitialSe
 
   const dispatch = input.dispatch ?? dispatchDesktopV3Cache
   const postHydrate = input.postHydrate ?? postDesktopV3SyncHydrate
+  const getSnapshot = input.getSnapshot ?? getDesktopV3CacheSnapshot
 
   const promise = hydrateDesktopV3InitialSessionsUncached({
     ...input,
@@ -50,6 +53,7 @@ export function hydrateDesktopV3InitialSessions(input: HydrateDesktopV3InitialSe
     preferredSessionId,
     postHydrate,
     dispatch,
+    getSnapshot,
   }).finally(() => {
     inFlightBySessionSet.delete(inFlightKey)
   })
@@ -58,12 +62,31 @@ export function hydrateDesktopV3InitialSessions(input: HydrateDesktopV3InitialSe
   return promise
 }
 
+export function planDesktopV3Hydration(
+  state: DesktopV3CacheState,
+  sessionIds: string[],
+): DesktopV3SelectiveHydrationPlan {
+  const reusedSessionIds: string[] = []
+  const hydrateSessionIds: string[] = []
+
+  for (const sessionId of normalizeOrderedSessionIds(sessionIds)) {
+    if (isDesktopV3SessionTailReady(state, sessionId)) {
+      reusedSessionIds.push(sessionId)
+    } else {
+      hydrateSessionIds.push(sessionId)
+    }
+  }
+
+  return { reusedSessionIds, hydrateSessionIds }
+}
+
 export function planDesktopV3SelectiveHydration(input: {
   bootstrapResponse: SyncSnapshotResponse
   preBootstrapCachedProjections?: Record<string, V3SessionProjection>
   preferredSessionId?: string | null
   currentSelectedSessionId?: string
   sessionIds?: string[]
+  state?: DesktopV3CacheState
 }): DesktopV3SelectiveHydrationPlan {
   const response = input.bootstrapResponse
   const preferredSessionId = input.preferredSessionId === null
@@ -74,20 +97,8 @@ export function planDesktopV3SelectiveHydration(input: {
   const candidateSessionIds = preferredSessionId && !bootstrapOrderSet.has(preferredSessionId)
     ? [preferredSessionId, ...bootstrapOrder]
     : bootstrapOrder
-  const hydrateSessionIds: string[] = []
 
-  for (const sessionId of candidateSessionIds) {
-    if (isTombstoned(response, sessionId)) continue
-    if (!isReusableMemorySession({
-      sessionId,
-      response,
-      cachedProjection: input.preBootstrapCachedProjections?.[sessionId],
-    })) {
-      hydrateSessionIds.push(sessionId)
-    }
-  }
-
-  return { reusedSessionIds: [], hydrateSessionIds }
+  return planDesktopV3Hydration(input.state ?? getDesktopV3CacheSnapshot(), candidateSessionIds)
 }
 
 export function buildPostRealtimeConnectHydrationSnapshot(
@@ -130,11 +141,11 @@ async function hydrateDesktopV3InitialSessionsUncached(
     preferredSessionId?: string | null
     postHydrate: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
     dispatch: (action: DesktopV3CacheAction) => void
+    getSnapshot: () => DesktopV3CacheState
   },
 ): Promise<void> {
-  const { sessionIds, dispatch, postHydrate } = input
+  const { sessionIds, dispatch, postHydrate, getSnapshot } = input
   const selectedSessionId = input.preferredSessionId
-  const bootstrapResponse = input.bootstrapResponse
 
   if (sessionIds.length === 0 && !selectedSessionId) {
     dispatchInitialHydrateReady(dispatch, [], [], undefined)
@@ -157,17 +168,16 @@ async function hydrateDesktopV3InitialSessionsUncached(
   const failedErrors: string[] = []
   const selectedPlan = input.forceNetworkHydrate
     ? { reusedSessionIds: [], hydrateSessionIds: selectedSessionId ? [selectedSessionId] : [] }
-    : bootstrapResponse && selectedSessionId
-      ? planDesktopV3SelectiveHydration({
-        bootstrapResponse,
-        preBootstrapCachedProjections: input.preBootstrapCachedProjections,
-        preferredSessionId: selectedSessionId,
-        sessionIds: [selectedSessionId],
-      })
-      : { reusedSessionIds: [], hydrateSessionIds: selectedSessionId && !sessionIds.includes(selectedSessionId) ? [selectedSessionId] : [] }
+    : selectedSessionId
+      ? planDesktopV3Hydration(getSnapshot(), [selectedSessionId])
+      : { reusedSessionIds: [], hydrateSessionIds: [] }
 
-  if (selectedPlan.hydrateSessionIds.length > 0) {
-    dispatch({ type: 'desktopV3Cache.applyHydrationPlan', reusedSessionIds: [], hydrateSessionIds: selectedPlan.hydrateSessionIds })
+  if (selectedPlan.reusedSessionIds.length > 0 || selectedPlan.hydrateSessionIds.length > 0) {
+    dispatch({
+      type: 'desktopV3Cache.applyHydrationPlan',
+      reusedSessionIds: selectedPlan.reusedSessionIds,
+      hydrateSessionIds: selectedPlan.hydrateSessionIds,
+    })
   }
 
   const selectedHydrateId = selectedPlan.hydrateSessionIds[0]
@@ -177,19 +187,15 @@ async function hydrateDesktopV3InitialSessionsUncached(
 
   const plan = input.forceNetworkHydrate
     ? { reusedSessionIds: [], hydrateSessionIds: sessionIds }
-    : bootstrapResponse
-      ? planDesktopV3SelectiveHydration({
-        bootstrapResponse,
-        preBootstrapCachedProjections: input.preBootstrapCachedProjections,
-        preferredSessionId: input.preferredSessionId,
-        currentSelectedSessionId: input.currentSelectedSessionId,
-        sessionIds,
-      })
-      : { reusedSessionIds: [], hydrateSessionIds: sessionIds }
+    : planDesktopV3Hydration(getSnapshot(), sessionIds)
 
   const remainingHydrateIds = plan.hydrateSessionIds.filter((sessionId) => sessionId !== selectedHydrateId)
-  if (remainingHydrateIds.length > 0) {
-    dispatch({ type: 'desktopV3Cache.applyHydrationPlan', reusedSessionIds: [], hydrateSessionIds: remainingHydrateIds })
+  if (plan.reusedSessionIds.length > 0 || remainingHydrateIds.length > 0) {
+    dispatch({
+      type: 'desktopV3Cache.applyHydrationPlan',
+      reusedSessionIds: plan.reusedSessionIds,
+      hydrateSessionIds: remainingHydrateIds,
+    })
   }
 
   await hydrateBatches({
@@ -217,7 +223,7 @@ async function hydrateDesktopV3InitialSessionsUncached(
     dispatch,
     normalizeOrderedSessionIds([...(selectedHydrateId ? [selectedHydrateId] : []), ...remainingHydrateIds]),
     normalizeOrderedSessionIds(completedSessionIds),
-    input.scopeId ?? bootstrapResponse?.scope_id,
+    input.scopeId ?? input.bootstrapResponse?.scope_id,
   )
 }
 
@@ -279,24 +285,6 @@ function dispatchInitialHydrateReady(
       source: 'network',
     },
   })
-}
-
-function isReusableMemorySession(input: {
-  sessionId: string
-  response: SyncSnapshotResponse
-  cachedProjection?: V3SessionProjection
-}): boolean {
-  const remoteSession = input.response.sessions_by_id?.[input.sessionId]
-  const cachedProjection = input.cachedProjection
-  if (!cachedProjection || !remoteSession) return false
-  if (isTombstoned(input.response, input.sessionId)) return false
-  return Number.isSafeInteger(cachedProjection.projection_high_watermark_seq)
-    && Number.isSafeInteger(remoteSession.message_count)
-    && cachedProjection.projection_high_watermark_seq >= 0
-}
-
-function isTombstoned(response: SyncSnapshotResponse, sessionId: string): boolean {
-  return response.tombstones_by_session?.[sessionId] !== undefined
 }
 
 function normalizeOrderedSessionIds(sessionIds: string[]): string[] {

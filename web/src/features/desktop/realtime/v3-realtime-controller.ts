@@ -5,7 +5,7 @@ import { getDesktopV3SessionEventsPage, type DesktopV3SessionEventsPage } from '
 import { openDesktopV3RealtimeTransportSocket } from './client'
 import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
 import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
-import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, replaceDesktopV3CacheSnapshotAfterDurableCommit, subscribeDesktopV3Cache, type DesktopV3CacheMutation } from '../state/desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, commitDesktopV3CacheSnapshot, subscribeDesktopV3Cache, type DesktopV3CacheMutation } from '../state/desktop-v3-cache-store'
 import { decodeSessionEventPayload, hydrateResponseToAction, realtimeFrameToActions } from '../state/desktop-v3-cache-wire'
 import {
   buildDesktopV3InitialHydrateInput,
@@ -14,9 +14,11 @@ import {
   type DesktopV3ReconnectInput,
   type DesktopV3HydrateInput,
 } from '../state/desktop-v3-sync-api'
+import { isDesktopV3SessionTailReady } from '../state/desktop-v3-cache-selectors'
 import type {
   DesktopV3CacheAction,
   DesktopV3CacheState,
+  SyncSelector,
   RealtimeCache,
   RealtimeMessage,
   RealtimeSubscriptionRequest,
@@ -59,7 +61,7 @@ interface DesktopV3RealtimeControllerDeps {
   ensureSession?: () => Promise<unknown>
   bootstrap?: (input?: { preferredSessionId?: string | null }) => Promise<unknown>
   openSocket?: (input: { endpointCursor: string }) => WebSocket | Promise<WebSocket>
-  replaceSnapshotAfterDurableCommit?: (previousState: DesktopV3CacheState, nextState: DesktopV3CacheState, actions: DesktopV3CacheAction[]) => void
+  commitSnapshot?: (previousState: DesktopV3CacheState, nextState: DesktopV3CacheState, actions: DesktopV3CacheAction[]) => void
   streamCommit?: DesktopV3StreamCommitController
 }
 
@@ -102,8 +104,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.streamCommit = deps.streamCommit ?? new DesktopV3StreamCommitController({
       getSnapshot: this.getSnapshot,
       dispatch: this.dispatch,
-      replaceSnapshotAfterDurableCommit: deps.replaceSnapshotAfterDurableCommit
-        ?? (deps.dispatch ? undefined : replaceDesktopV3CacheSnapshotAfterDurableCommit),
+      commitSnapshot: deps.commitSnapshot
+        ?? (deps.dispatch ? undefined : commitDesktopV3CacheSnapshot),
     })
 
     this.transport = new DesktopV3RealtimeTransport({
@@ -502,17 +504,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   }
 
   private sessionMessageTailComplete(sessionId: string): boolean {
-    const state = this.getSnapshot()
-    const messages = state.messagesBySession[sessionId]
-    const record = state.sessionsById[sessionId]
-    const session = record?.kind === 'full' ? record.session : undefined
-
-    if (!messages || !session) return false
-
-    return Number.isSafeInteger(messages.sourceMessageCount)
-      && Number.isSafeInteger(messages.sourceLastMessageAt)
-      && (messages.sourceMessageCount ?? -1) >= session.message_count
-      && (messages.sourceLastMessageAt ?? -1) >= session.last_message_at
+    return isDesktopV3SessionTailReady(this.getSnapshot(), sessionId)
   }
 
   private markActiveRunsFromCacheState(state: DesktopV3CacheState): void {
@@ -671,7 +663,7 @@ export class DesktopV3StreamCommitError extends Error {
 interface DesktopV3StreamCommitControllerDeps {
   getSnapshot: () => DesktopV3CacheState
   dispatch: (action: DesktopV3CacheAction) => void
-  replaceSnapshotAfterDurableCommit?: (previousState: DesktopV3CacheState, nextState: DesktopV3CacheState, actions: DesktopV3CacheAction[]) => void
+  commitSnapshot?: (previousState: DesktopV3CacheState, nextState: DesktopV3CacheState, actions: DesktopV3CacheAction[]) => void
 }
 
 
@@ -683,8 +675,8 @@ export class DesktopV3StreamCommitController {
 
     const previousState = this.deps.getSnapshot()
     const nextState = reduceDesktopV3CacheActions(previousState, actions)
-    if (this.deps.replaceSnapshotAfterDurableCommit) {
-      this.deps.replaceSnapshotAfterDurableCommit(previousState, nextState, actions)
+    if (this.deps.commitSnapshot) {
+      this.deps.commitSnapshot(previousState, nextState, actions)
     } else {
       for (const action of actions) this.deps.dispatch(action)
     }
@@ -772,7 +764,7 @@ export function buildDesktopV3InitialRealtimeResume(
     workset_id: sidebarScopeId,
     subscription_id: `${clientId}:workset:${sidebarScopeId}`,
     surface: 'desktop',
-    selector: sidebarScope.selector,
+    selector: desktopGlobalRealtimeSelector(),
     resources: ['membership', 'projections', 'run_intents', 'sessions', 'tombstones'],
     auto_subscribe_sessions: true,
   }]
@@ -786,6 +778,13 @@ export function buildDesktopV3InitialRealtimeResume(
   }
 
   return { endpointCursor, subscriptions, worksets, resume }
+}
+
+export function desktopGlobalRealtimeSelector(): SyncSelector {
+  return {
+    kind: 'global',
+    global: true,
+  }
 }
 
 export function buildDesktopV3ReconnectInput(
@@ -811,7 +810,7 @@ export function buildDesktopV3ReconnectInput(
     client_id: clientId,
     workset: {
       workset_id: sidebarScopeId,
-      selector: sidebarScope.selector,
+      selector: desktopGlobalRealtimeSelector(),
       history: {
         mode: 'none',
       },

@@ -786,7 +786,7 @@ export function DesktopV3ExistingConversationPane({
       <div className="relative min-h-0 flex-1">
         <div ref={scrollContainerRef} className="h-full min-h-0 overflow-y-auto py-6 [scrollbar-gutter:stable]">
           <div ref={contentRef} className="mx-auto flex min-h-full w-full max-w-[70rem] flex-col gap-5 px-8 sm:px-12">
-          {initialHydrateStatus === 'loading' && !messagesLoaded ? (
+          {!messagesLoaded && initialHydrateStatus !== 'error' ? (
             <DesktopV3ChatInlineState title="Loading conversation…" description="Hydrating cached message tails." />
           ) : null}
           {initialHydrateStatus === 'error' && !messagesLoaded && !hasMessages ? (
@@ -795,7 +795,7 @@ export function DesktopV3ExistingConversationPane({
           {compacting ? (
             <DesktopV3CompactPendingState />
           ) : null}
-          {!hasMessages && initialHydrateStatus !== 'loading' && initialHydrateStatus !== 'error' ? (
+          {messagesLoaded && !hasMessages ? (
             <DesktopV3ChatInlineState title="Empty conversation" description="Send a message to continue this session." />
           ) : null}
             {renderItems.map((item, index) => (

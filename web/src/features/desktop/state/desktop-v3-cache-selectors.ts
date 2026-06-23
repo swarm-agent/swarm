@@ -113,3 +113,23 @@ export function selectRenderedSessionMessages(state: DesktopV3CacheState, sessio
 export function selectSessionNeedsHydrate(state: DesktopV3CacheState, sessionId: string): boolean {
   return state.sessionsById[sessionId]?.needsHydrate ?? true
 }
+
+export function isDesktopV3SessionTailReady(
+  state: DesktopV3CacheState,
+  sessionId: string,
+): boolean {
+  const normalized = sessionId.trim()
+  if (!normalized) return false
+  if (state.tombstonesBySession[normalized]) return false
+
+  const record = state.sessionsById[normalized]
+  const messages = state.messagesBySession[normalized]
+  const session = record?.kind === 'full' ? record.session : undefined
+
+  if (!session || !messages) return false
+
+  return Number.isSafeInteger(messages.sourceMessageCount)
+    && Number.isSafeInteger(messages.sourceLastMessageAt)
+    && (messages.sourceMessageCount ?? -1) >= session.message_count
+    && (messages.sourceLastMessageAt ?? -1) >= session.last_message_at
+}

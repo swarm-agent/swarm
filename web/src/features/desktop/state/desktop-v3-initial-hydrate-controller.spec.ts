@@ -3,39 +3,35 @@ import assert from 'node:assert/strict'
 
 import {
   hydrateDesktopV3InitialSessions,
-  planDesktopV3SelectiveHydration,
+  planDesktopV3Hydration,
   resetDesktopV3InitialHydrateControllerForTests,
 } from './desktop-v3-initial-hydrate-controller'
-import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
+import { createEmptyDesktopV3CacheState, desktopV3CacheReducer, buildMessageListCache } from './desktop-v3-cache-reducer'
 import type { DesktopV3CacheAction } from './desktop-v3-cache-types'
 import { hydrateSnapshotFixture, messageA1, messageB1, projectionA, projectionB, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
 
-test('selective hydration plans backend hydrate from memory projections only', () => {
-  const bootstrap = snapshotFixture({
-    sessions_by_id: { [sessionA.id]: sessionA, [sessionB.id]: sessionB },
-    projections_by_session: { [sessionA.id]: projectionA, [sessionB.id]: projectionB },
-    session_order: [sessionA.id, sessionB.id],
-    messages_by_session: {},
+test('selective hydration reuses only sessions with a complete memory tail', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.sessionsById[sessionB.id] = { kind: 'full', session: sessionB, needsHydrate: true }
+  state.messagesBySession[sessionA.id] = buildMessageListCache([messageA1], {
+    sourceMessageCount: sessionA.message_count,
+    sourceLastMessageAt: sessionA.last_message_at,
+  })
+  state.messagesBySession[sessionB.id] = buildMessageListCache([messageB1], {
+    sourceMessageCount: sessionB.message_count,
+    sourceLastMessageAt: sessionB.last_message_at - 1,
   })
 
-  assert.deepEqual(planDesktopV3SelectiveHydration({
-    bootstrapResponse: bootstrap,
-    preBootstrapCachedProjections: {},
-    preferredSessionId: sessionA.id,
-    sessionIds: [sessionA.id, sessionB.id],
-  }), {
-    reusedSessionIds: [],
-    hydrateSessionIds: [sessionA.id, sessionB.id],
+  assert.deepEqual(planDesktopV3Hydration(state, [sessionA.id, sessionB.id]), {
+    reusedSessionIds: [sessionA.id],
+    hydrateSessionIds: [sessionB.id],
   })
 
-  assert.deepEqual(planDesktopV3SelectiveHydration({
-    bootstrapResponse: bootstrap,
-    preBootstrapCachedProjections: { [sessionA.id]: projectionA, [sessionB.id]: projectionB },
-    preferredSessionId: sessionA.id,
-    sessionIds: [sessionA.id, sessionB.id],
-  }), {
+  state.tombstonesBySession[sessionA.id] = { session_id: sessionA.id, deleted: true }
+  assert.deepEqual(planDesktopV3Hydration(state, [sessionA.id]), {
     reusedSessionIds: [],
-    hydrateSessionIds: [],
+    hydrateSessionIds: [sessionA.id],
   })
 })
 
@@ -55,7 +51,7 @@ test('initial hydrate requests selected session from backend and stores returned
     }),
     preBootstrapCachedProjections: {},
     postHydrate: async (input) => {
-      requests.push(input.selector.session_ids ?? [])
+      requests.push(input.session_ids ?? [])
       return hydrateSnapshotFixture({
         selector: { kind: 'session_ids', session_ids: [sessionA.id] },
         sessions_by_id: { [sessionA.id]: sessionA },
@@ -67,6 +63,7 @@ test('initial hydrate requests selected session from backend and stores returned
     dispatch: (action: DesktopV3CacheAction) => {
       state = desktopV3CacheReducer(state, action)
     },
+    getSnapshot: () => state,
   })
 
   assert.deepEqual(requests, [[sessionA.id]])
@@ -89,7 +86,7 @@ test('initial hydrate can hydrate all requested sidebar sessions from backend bo
     }),
     preBootstrapCachedProjections: {},
     postHydrate: async (input) => {
-      const sessionIds = input.selector.session_ids ?? []
+      const sessionIds = input.session_ids ?? []
       requests.push(sessionIds)
       return hydrateSnapshotFixture({
         selector: { kind: 'session_ids', session_ids: sessionIds },
@@ -102,6 +99,7 @@ test('initial hydrate can hydrate all requested sidebar sessions from backend bo
     dispatch: (action: DesktopV3CacheAction) => {
       state = desktopV3CacheReducer(state, action)
     },
+    getSnapshot: () => state,
   })
 
   assert.deepEqual(requests, [[sessionA.id, sessionB.id]])

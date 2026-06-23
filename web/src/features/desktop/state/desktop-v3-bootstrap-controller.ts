@@ -1,7 +1,8 @@
 import { bootstrapResponseToAction } from './desktop-v3-cache-wire'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from './desktop-v3-cache-store'
-import { hydrateDesktopV3InitialSessions, resetDesktopV3InitialHydrateControllerForTests } from './desktop-v3-initial-hydrate-controller'
-import { postDesktopV3SyncBootstrap, postDesktopV3SyncHydrate, type DesktopV3HydrateInput } from './desktop-v3-sync-api'
+import { hydrateResponseCompletesSession } from './desktop-v3-cache-reducer'
+import { resetDesktopV3InitialHydrateControllerForTests } from './desktop-v3-initial-hydrate-controller'
+import { postDesktopV3SyncBootstrap, type DesktopV3HydrateInput } from './desktop-v3-sync-api'
 import type { DesktopV3CacheAction, DesktopV3CacheState, SyncSnapshotResponse, V3SessionProjection } from './desktop-v3-cache-types'
 
 export interface BootstrapDesktopV3SidebarDeps {
@@ -21,19 +22,21 @@ let bootstrapInFlight: Promise<DesktopV3BootstrapMetadataResult> | null = null
 
 export function bootstrapDesktopV3Sidebar(deps: BootstrapDesktopV3SidebarDeps = {}): Promise<void> {
   const dispatch = deps.dispatch ?? dispatchDesktopV3Cache
-  const getSnapshot = deps.getSnapshot ?? getDesktopV3CacheSnapshot
-  const postHydrate = deps.postHydrate ?? postDesktopV3SyncHydrate
 
   return bootstrapDesktopV3SidebarMetadataOnly(deps)
-    .then(async (bootstrap) => {
-      await hydrateDesktopV3InitialSessions({
-        sessionIds: bootstrap.response.session_order ?? [],
-        bootstrapResponse: bootstrap.response,
-        preBootstrapCachedProjections: bootstrap.preBootstrapCachedProjections,
-        preferredSessionId: deps.preferredSessionId,
-        currentSelectedSessionId: getSnapshot().selectedSessionId,
-        postHydrate,
-        dispatch,
+    .then((bootstrap) => {
+      const sessionIds = bootstrap.response.session_order ?? []
+      dispatch({
+        type: 'desktopInitialHydrate.update',
+        patch: {
+          status: 'ready',
+          requestedSessionIds: sessionIds,
+          hydratedSessionIds: sessionIds.filter((sessionId) => hydrateResponseCompletesSession(bootstrap.response, sessionId)),
+          scopeId: bootstrap.response.scope_id,
+          error: undefined,
+          stale: false,
+          source: 'network',
+        },
       })
     })
     .catch((error: unknown) => {

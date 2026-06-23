@@ -1,9 +1,9 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 
-import { requireDesktopV3RealtimeControllerReady, retainDesktopV3RealtimeController, type DesktopV3RealtimeLease } from '../realtime/v3-realtime-controller'
+import { retainDesktopV3RealtimeController, type DesktopV3RealtimeLease } from '../realtime/v3-realtime-controller'
 import { bootstrapDesktopV3SidebarMetadataOnly, type DesktopV3BootstrapMetadataResult } from '../state/desktop-v3-bootstrap-controller'
-import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
-import { buildPostRealtimeConnectHydrationSnapshot, hydrateDesktopV3InitialSessions } from '../state/desktop-v3-initial-hydrate-controller'
+import { hydrateResponseCompletesSession } from '../state/desktop-v3-cache-reducer'
+import { dispatchDesktopV3Cache } from '../state/desktop-v3-cache-store'
 import { installDesktopV3StreamCacheTestHooksForTestbench } from '../state/desktop-v3-stream-cache-test-hooks'
 
 const DESKTOP_V3_RUNTIME_PROVIDER_OWNER_KEY = 'desktop-v3-runtime-provider'
@@ -15,7 +15,6 @@ interface DesktopV3RuntimeProviderProps {
 
 interface RetainedDesktopV3Runtime {
   bootstrapReady: Promise<DesktopV3BootstrapMetadataResult>
-  initialPreferredSessionId?: string | null
   realtimeLease: DesktopV3RealtimeLease
   release: () => void
 }
@@ -74,7 +73,6 @@ function retainDesktopV3Runtime(initialPreferredSessionId?: string | null): Reta
   let released = false
   return {
     bootstrapReady,
-    initialPreferredSessionId: normalizedPreferredSessionId,
     realtimeLease,
     release: () => {
       if (released) return
@@ -91,38 +89,27 @@ async function startDesktopV3RuntimeHydration(
   const bootstrap = await runtime.bootstrapReady
   if (isCancelled()) return
 
-  await runtime.realtimeLease.ready
-  if (isCancelled()) return
+  const sessionIds = bootstrap.response.session_order ?? []
+  const hydratedSessionIds = sessionIds.filter((sessionId) =>
+    hydrateResponseCompletesSession(bootstrap.response, sessionId),
+  )
 
-  const afterRealtimeConnect = getDesktopV3CacheSnapshot()
-  const scopeId = afterRealtimeConnect.desktopSidebarBootstrap.scopeId?.trim()
-  if (!scopeId) {
-    throw new Error('Desktop V3 initial hydrate requires bootstrapped sidebar scope')
-  }
-
-  const preferred = runtime.initialPreferredSessionId
-  const selectedSessionId = preferred === null
-    ? undefined
-    : preferred?.trim() || afterRealtimeConnect.selectedSessionId?.trim()
-  const sidebarSessionIds = afterRealtimeConnect.sessionOrderByScope[scopeId] ?? []
-  const controller = await requireDesktopV3RealtimeControllerReady()
-  if (selectedSessionId) {
-    await controller.ensureSessionHistory(selectedSessionId)
-  }
-  if (isCancelled()) return
-
-  await hydrateDesktopV3InitialSessions({
-    scopeId,
-    sessionIds: sidebarSessionIds.filter((sessionId) => sessionId !== selectedSessionId),
-    bootstrapResponse: buildPostRealtimeConnectHydrationSnapshot(
-      bootstrap.response,
-      getDesktopV3CacheSnapshot(),
-      scopeId,
-    ),
-    preBootstrapCachedProjections: bootstrap.preBootstrapCachedProjections,
-    preferredSessionId: null,
-    currentSelectedSessionId: undefined,
+  dispatchDesktopV3Cache({
+    type: 'desktopInitialHydrate.update',
+    patch: {
+      status: 'ready',
+      requestedSessionIds: sessionIds,
+      hydratedSessionIds,
+      scopeId: bootstrap.response.scope_id,
+      source: 'network',
+      stale: false,
+      error: undefined,
+    },
   })
+
+  // Snapshot rendering must not wait for the websocket. Realtime readiness only
+  // closes the snapshot-to-live gap after the bounded hydrated bootstrap renders.
+  await runtime.realtimeLease.ready
 }
 
 function normalizePreferredSessionId(sessionId: string | null | undefined): string | null | undefined {

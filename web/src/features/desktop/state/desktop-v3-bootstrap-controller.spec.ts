@@ -6,7 +6,7 @@ import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop
 import type { DesktopV3CacheAction } from './desktop-v3-cache-types'
 import { messageA1, projectionA, snapshotFixture, sessionA } from './desktop-v3-cache.backend-fixtures'
 
-test('bootstrap controller applies backend bootstrap and selected hydrate without frontend restore', async () => {
+test('bootstrap controller applies hydrated backend bootstrap without second hydrate', async () => {
   resetDesktopV3BootstrapControllerForTests()
   let state = createEmptyDesktopV3CacheState()
   const actions: DesktopV3CacheAction[] = []
@@ -20,35 +20,18 @@ test('bootstrap controller applies backend bootstrap and selected hydrate withou
       sessions_by_id: { [sessionA.id]: sessionA },
       projections_by_session: { [sessionA.id]: projectionA },
       session_order: [sessionA.id],
-      messages_by_session: {},
+      messages_by_session: { [sessionA.id]: [messageA1] },
       run_intents_by_session: {},
       sync_scope: {
         surface: 'desktop',
         stream_kind: 'v3.sync.snapshot',
         selector_filter_hash: 'scope-a',
-        resource_set: 'run_intents',
+        resource_set: 'messages,run_intents',
       },
     }),
     postHydrate: async (input) => {
-      hydrateRequests.push(input.selector.session_ids ?? [])
-      return snapshotFixture({
-        scope_id: 'hydrate-scope-a',
-        snapshot_endpoint_cursor: 'v3c1.hydrate-a',
-        selector: { kind: 'session_ids', session_ids: [sessionA.id] },
-        sessions_by_id: { [sessionA.id]: sessionA },
-        projections_by_session: { [sessionA.id]: projectionA },
-        session_order: [sessionA.id],
-        messages_by_session: { [sessionA.id]: [messageA1] },
-        run_intents_by_session: {},
-        tombstones_by_session: {},
-        plans_by_session: {},
-        plan_revisions_by_session: {},
-        permissions_by_session: {},
-        usage_by_session: {},
-        preferences_by_session: {},
-        agent_model_policy_by_session: {},
-        history_manifests_by_session: {},
-      })
+      hydrateRequests.push(input.session_ids ?? [])
+      return snapshotFixture({})
     },
     dispatch: (action: DesktopV3CacheAction) => {
       actions.push(action)
@@ -56,9 +39,9 @@ test('bootstrap controller applies backend bootstrap and selected hydrate withou
     },
   })
 
-  assert.equal(actions.some((action) => action.type === 'desktopV3Cache.applyHydrationPlan'), true)
+  assert.equal(actions.some((action) => action.type === 'desktopV3Cache.applyHydrationPlan'), false)
   assert.equal(actions.some((action) => action.type === 'snapshot.apply'), true)
-  assert.deepEqual(hydrateRequests, [[sessionA.id]])
+  assert.deepEqual(hydrateRequests, [])
   assert.equal(state.desktopSidebarBootstrap.status, 'ready')
   assert.equal(state.desktopSidebarBootstrap.source, 'network')
   assert.equal(state.desktopSidebarBootstrap.scopeId, 'scope-a')
@@ -66,6 +49,7 @@ test('bootstrap controller applies backend bootstrap and selected hydrate withou
   assert.deepEqual(state.sessionOrderByScope['scope-a'], [sessionA.id])
   assert.equal(state.sessionsById[sessionA.id]?.kind, 'full')
   assert.equal(state.desktopInitialHydrate.status, 'ready')
+  assert.equal(state.desktopInitialHydrate.hydratedSessionIds[0], sessionA.id)
   assert.equal(state.messagesBySession[sessionA.id].items[0].id, messageA1.id)
 })
 

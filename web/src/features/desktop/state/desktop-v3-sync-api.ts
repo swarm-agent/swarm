@@ -25,19 +25,29 @@ export interface DesktopV3HydrateInput {
   known_sessions?: Record<string, DesktopV3KnownSessionState>
 }
 
+export const DESKTOP_STARTUP_SESSION_LIMIT = 50
+export const DESKTOP_STARTUP_MESSAGE_LIMIT = 200
+
 export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
   surface: 'desktop',
   selector: {
     kind: 'global',
     global: true,
+    recent: {
+      limit: DESKTOP_STARTUP_SESSION_LIMIT,
+    },
   },
   history: {
-    mode: 'none',
+    mode: 'tail',
+    max_messages_per_session: DESKTOP_STARTUP_MESSAGE_LIMIT,
+    manifest_policy: 'manifest',
   },
   resources: {
-    messages: false,
+    messages: true,
     events: false,
     run_intents: true,
+    active_plan: true,
+    plan_revisions: false,
   },
   include_active: true,
 }
@@ -56,7 +66,7 @@ export function buildDesktopV3InitialHydrateInput(sessionIds: string[]): Desktop
     session_ids: sessionIds,
     history: {
       mode: 'tail',
-      max_messages_per_session: 200,
+      max_messages_per_session: DESKTOP_STARTUP_MESSAGE_LIMIT,
       manifest_policy: 'manifest',
     },
     resources: DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES,

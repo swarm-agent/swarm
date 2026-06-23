@@ -55,8 +55,8 @@ import {
   sessionParentSessionID,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
-import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
-import { selectDesktopSidebarRows, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
+import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import type { DesktopV3SidebarRow } from '../state/desktop-v3-cache-selectors'
@@ -2034,7 +2034,7 @@ export function DesktopAppPage() {
     routeSessionId ? selectRenderedSessionMessages(state, routeSessionId) : { committed: [], pendingUser: [], liveRuns: [], runIntents: [] }
   ))
   const selectedDesktopV3MessagesLoaded = useDesktopV3CacheSelector((state) => (
-    routeSessionId ? Boolean(state.messagesBySession[routeSessionId]) : false
+    routeSessionId ? isDesktopV3SessionTailReady(state, routeSessionId) : false
   ))
   const desktopSidebarRows = useDesktopV3CacheSelector(selectDesktopSidebarRows)
   const desktopStateSessions = useMemo<DesktopSessionRecord[]>(
@@ -2046,13 +2046,15 @@ export function DesktopAppPage() {
     if (!sessionId) return
 
     dispatchDesktopV3Cache(selectSession(sessionId))
+
+    if (isDesktopV3SessionTailReady(getDesktopV3CacheSnapshot(), sessionId)) {
+      return
+    }
+
     void requireDesktopV3RealtimeControllerReady()
       .then((controller) => controller.ensureSessionHistory(sessionId))
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error)
-        if (!message.includes('not retained by the desktop page')) {
-          console.error('[desktop-v3] failed to hydrate route session', error)
-        }
+        console.error('[desktop-v3] route-session fallback hydrate failed', error)
       })
   }, [routeSessionId])
 

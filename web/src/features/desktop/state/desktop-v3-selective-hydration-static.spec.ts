@@ -13,8 +13,9 @@ test('CP3 bootstrap does not directly all-session hydrate response.session_order
     source,
     /hydrateDesktopV3InitialSessions\(\{\s*sessionIds:\s*response\.session_order\s*\?\?\s*\[\],\s*postHydrate/s,
   )
-  assert.match(source, /bootstrapResponse:\s*response/)
-  assert.match(source, /preBootstrapCachedProjections/)
+  assert.doesNotMatch(source, /hydrateDesktopV3InitialSessions/)
+  assert.match(source, /desktopInitialHydrate\.update/)
+  assert.match(source, /hydrateResponseCompletesSession/)
 })
 
 test('CP3 adds no production sync stream, reconnect, or realtime calls', () => {

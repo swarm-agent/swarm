@@ -205,6 +205,12 @@ export function applySnapshot(
   if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'events')) {
     applyEventsBySessionFromSnapshot(state, snapshot.events_by_session)
   }
+  for (const sessionId of snapshot.session_order ?? []) {
+    const record = state.sessionsById[sessionId]
+    if (record?.kind === 'full' && hydrateResponseCompletesSession(snapshot, sessionId)) {
+      record.needsHydrate = false
+    }
+  }
 
   return state
 }
