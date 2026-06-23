@@ -1,8 +1,9 @@
 import { bootstrapResponseToAction } from './desktop-v3-cache-wire'
-import { dispatchDesktopV3Cache, dispatchDesktopV3CacheBatch } from './desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, dispatchDesktopV3CacheBatch, getDesktopV3CacheSnapshot } from './desktop-v3-cache-store'
 import { hydrateResponseCompletesSession } from './desktop-v3-cache-reducer'
 import { resetDesktopV3InitialHydrateControllerForTests } from './desktop-v3-initial-hydrate-controller'
 import { buildDesktopV3BootstrapInput, countArrayMapItems, logDesktopV3BootstrapTiming, postDesktopV3SyncBootstrap, type DesktopV3HydrateInput } from './desktop-v3-sync-api'
+import { selectDesktopV3HydratedTranscriptDiagnostics } from './desktop-v3-cache-selectors'
 import type { DesktopV3BootstrapInput } from './desktop-v3-sync-api'
 import type { DesktopV3CacheAction, SyncSnapshotResponse } from './desktop-v3-cache-types'
 
@@ -45,6 +46,7 @@ export function bootstrapDesktopV3SidebarMetadataOnly(
 
   const dispatch = deps.dispatch ?? dispatchDesktopV3Cache
   const dispatchBatch = desktopV3BootstrapDispatchBatch(deps)
+  const getSnapshot = deps.dispatch || deps.dispatchBatch ? undefined : getDesktopV3CacheSnapshot
   const postBootstrap = deps.postBootstrap ?? postDesktopV3SyncBootstrap
 
   dispatch({
@@ -68,6 +70,15 @@ export function bootstrapDesktopV3SidebarMetadataOnly(
         desktopInitialHydrateReadyAction(response),
       ])
       const afterApplyAt = desktopV3BootstrapNow()
+      const transcriptDiagnostics = getSnapshot
+        ? selectDesktopV3HydratedTranscriptDiagnostics(getSnapshot())
+        : {
+          hydratedSessionCount: Object.keys(response.messages_by_session ?? {}).length,
+          hydratedMessageCount: countArrayMapItems(response.messages_by_session),
+          retainedBackgroundHydratedSessionCount: 0,
+          inFlightHydrateSessionCount: 0,
+          evictedTranscriptCount: 0,
+        }
       logDesktopV3BootstrapTiming('zustand_apply', {
         post_to_apply_start_ms: roundBootstrapTiming(beforeApplyAt - startedAt),
         apply_ms: roundBootstrapTiming(afterApplyAt - beforeApplyAt),
@@ -76,6 +87,7 @@ export function bootstrapDesktopV3SidebarMetadataOnly(
         session_order: response.session_order?.length ?? 0,
         messages: countArrayMapItems(response.messages_by_session),
         run_intents: countArrayMapItems(response.run_intents_by_session),
+        ...transcriptDiagnostics,
       })
       scheduleDesktopV3BootstrapPaintTiming(afterApplyAt)
       return {

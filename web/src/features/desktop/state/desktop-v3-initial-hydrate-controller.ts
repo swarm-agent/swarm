@@ -205,11 +205,14 @@ async function hydrateSelectedSession(input: {
   failedErrors: string[]
 }): Promise<void> {
   try {
+    input.dispatch({ type: 'desktopV3Cache.markHydrateInFlight', sessionIds: [input.sessionId], inFlight: true })
     const response = await input.postHydrate(buildDesktopV3SelectedSessionHydrateInput(input.sessionId))
     input.dispatch(hydrateResponseToAction(response, [input.sessionId]))
     input.completedSessionIds.push(...completedHydrateSessionIds(response, [input.sessionId]))
   } catch (error) {
     input.failedErrors.push(error instanceof Error ? error.message : String(error))
+  } finally {
+    input.dispatch({ type: 'desktopV3Cache.markHydrateInFlight', sessionIds: [input.sessionId], inFlight: false })
   }
 }
 

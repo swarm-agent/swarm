@@ -493,9 +493,11 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     if (existing) return existing
 
     const promise = (async () => {
+      this.dispatch({ type: 'desktopV3Cache.markHydrateInFlight', sessionIds: [normalized], inFlight: true })
       const response = await this.hydrate(buildDesktopV3SelectedSessionHydrateInput(normalized))
       this.dispatch(hydrateResponseToAction(response, [normalized]))
     })().finally(() => {
+      this.dispatch({ type: 'desktopV3Cache.markHydrateInFlight', sessionIds: [normalized], inFlight: false })
       this.hydrateBySession.delete(normalized)
       this.reconcileDesiredSessionConnections()
     })

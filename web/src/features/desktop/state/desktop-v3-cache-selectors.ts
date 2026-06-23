@@ -1,5 +1,5 @@
 import type { DesktopPermissionRecord } from '../types/realtime'
-import type { DesktopV3CacheState, LiveRunOverlay, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
+import type { DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 
 export interface DesktopV3SidebarRow {
   sessionId: string
@@ -19,6 +19,14 @@ export interface RenderedSessionMessages {
   runIntents: V3SessionRunIntent[]
   currentRunIntent?: V3SessionRunIntent
   latestRunIntent?: V3SessionRunIntent
+}
+
+export interface DesktopV3HydratedTranscriptDiagnostics {
+  hydratedSessionCount: number
+  hydratedMessageCount: number
+  retainedBackgroundHydratedSessionCount: number
+  inFlightHydrateSessionCount: number
+  evictedTranscriptCount: number
 }
 
 export function selectScopeEndpointCursor(state: DesktopV3CacheState, scopeId: string): string | undefined {
@@ -99,6 +107,30 @@ export function selectSessionRunIntents(state: DesktopV3CacheState, sessionId: s
   })
 }
 
+export function selectDesktopV3HydratedTranscriptDiagnostics(state: DesktopV3CacheState): DesktopV3HydratedTranscriptDiagnostics {
+  const selectedSessionId = state.selectedSessionId?.trim()
+  let hydratedSessionCount = 0
+  let hydratedMessageCount = 0
+  let retainedBackgroundHydratedSessionCount = 0
+
+  for (const [sessionId, list] of Object.entries(state.messagesBySession)) {
+    if (!isHydratedTranscript(list)) continue
+    hydratedSessionCount += 1
+    hydratedMessageCount += list.items.length
+    if (sessionId !== selectedSessionId && (state.hydrateInFlightBySession ?? {})[sessionId] === undefined) {
+      retainedBackgroundHydratedSessionCount += 1
+    }
+  }
+
+  return {
+    hydratedSessionCount,
+    hydratedMessageCount,
+    retainedBackgroundHydratedSessionCount,
+    inFlightHydrateSessionCount: Object.keys(state.hydrateInFlightBySession ?? {}).length,
+    evictedTranscriptCount: Object.keys(state.evictedTranscriptsBySession ?? {}).length,
+  }
+}
+
 export function selectRenderedSessionMessages(state: DesktopV3CacheState, sessionId: string): RenderedSessionMessages {
   const runIntents = selectSessionRunIntents(state, sessionId)
   return {
@@ -138,6 +170,12 @@ export function isDesktopV3SessionTailReady(
     && Number.isSafeInteger(messages.sourceLastMessageAt)
     && (messages.sourceMessageCount ?? -1) >= session.message_count
     && (messages.sourceLastMessageAt ?? -1) >= session.last_message_at
+}
+
+function isHydratedTranscript(list: MessageListCache | undefined): boolean {
+  return Boolean(list?.knownFull)
+    || Boolean(list?.knownTail)
+    || Number.isSafeInteger(list?.tailHydratedAt)
 }
 
 function cloneSessionCacheRecord(record: SessionCacheRecord): SessionCacheRecord {

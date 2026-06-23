@@ -19,6 +19,7 @@ import {
   applySessionSettingsMutationResult,
   applySyncStreamBatch,
   buildMessageListCache,
+  DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS,
   createEmptyDesktopV3CacheState,
   desktopV3CacheReducer,
   upsertCommittedMessage,
@@ -42,9 +43,9 @@ import {
   syncStreamFixture,
   tombstoneB,
 } from './desktop-v3-cache.backend-fixtures'
-import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
+import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopV3HydratedTranscriptDiagnostics, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
 import { buildDesktopV3ConversationRenderItems } from '../chat/components/desktop-v3-existing-conversation-pane'
-import type { CacheEvent, DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, V3SessionEvent } from './desktop-v3-cache-types'
+import type { CacheEvent, DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, SessionSnapshot, V3SessionEvent, V3SessionProjection } from './desktop-v3-cache-types'
 
 function bootstrappedState(): DesktopV3CacheState {
   return applyBootstrapSnapshot(createEmptyDesktopV3CacheState(), snapshotFixture())
@@ -84,6 +85,57 @@ function eventFrame(eventType: string, event: V3SessionEvent, endpointCursor: st
     },
     endpoint_cursor: endpointCursor,
   })
+}
+
+function cp8Session(index: number): SessionSnapshot {
+  return {
+    ...sessionA,
+    id: `session-cp8-${index}`,
+    title: `CP8 Session ${index}`,
+    message_count: 1,
+    last_message_at: 1_000 + index,
+    updated_at: 1_000 + index,
+  }
+}
+
+function cp8Message(sessionId: string, index: number): MessageSnapshot {
+  return {
+    id: `msg-cp8-${index}`,
+    session_id: sessionId,
+    global_seq: 1,
+    role: 'assistant',
+    content: `message ${index}`,
+    created_at: 1_000 + index,
+  }
+}
+
+function cp8Projection(sessionId: string, index: number): V3SessionProjection {
+  return {
+    session_id: sessionId,
+    last_event_seq: 1,
+    projection_high_watermark_seq: 1,
+    updated_at: 1_000 + index,
+  }
+}
+
+function hydrateCp8Session(state: DesktopV3CacheState, session: SessionSnapshot, index: number): void {
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    snapshot_endpoint_cursor: `cursor-cp8-${index}`,
+    sessions_by_id: { [session.id]: session },
+    projections_by_session: { [session.id]: cp8Projection(session.id, index) },
+    messages_by_session: { [session.id]: [cp8Message(session.id, index)] },
+    history_manifests_by_session: { [session.id]: [{ chunk_id: `chunk-cp8-${index}`, resource: 'messages' }] },
+    history_chunks_by_id: { [`chunk-cp8-${index}`]: { chunk_id: `chunk-cp8-${index}`, resource: 'messages', messages: [cp8Message(session.id, index)] } },
+    session_order: [session.id],
+    selector: { kind: 'session_ids', session_ids: [session.id] },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: `session-cp8-${index}-hash`,
+      resource_set: 'messages,events',
+    },
+    scope_id: `session-cp8-${index}-hash:messages,events`,
+  }), [session.id])
 }
 
 
@@ -387,6 +439,93 @@ test('hydrate is scoped to requested sessions and preserves unrelated messages a
   assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), ['msg-a-1', 'msg-a-2'])
   assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), ['msg-b-1'])
   assert.deepEqual(state.sessionOrderByScope['selector-hash:messages,run_intents'], [sessionA.id, sessionB.id])
+})
+
+test('CP8 LRU eviction retains at most bounded non-selected hydrated transcripts', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const selected = cp8Session(0)
+  desktopV3CacheReducer(state, selectSession(selected.id))
+  hydrateCp8Session(state, selected, 0)
+
+  const backgroundSessions = Array.from(
+    { length: DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS + 2 },
+    (_, index) => cp8Session(index + 1),
+  )
+  for (const [index, session] of backgroundSessions.entries()) {
+    hydrateCp8Session(state, session, index + 1)
+  }
+
+  const retainedBackgroundIds = backgroundSessions
+    .map((session) => session.id)
+    .filter((sessionId) => state.messagesBySession[sessionId])
+
+  assert.equal(state.messagesBySession[selected.id]?.items[0].id, 'msg-cp8-0')
+  assert.deepEqual(retainedBackgroundIds, backgroundSessions.slice(-DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS).map((session) => session.id))
+  assert.equal(state.messagesBySession[backgroundSessions[0].id], undefined)
+  assert.equal(state.eventsBySession[backgroundSessions[0].id], undefined)
+  assert.equal(state.historyManifestsBySession[backgroundSessions[0].id], undefined)
+  assert.equal(state.historyChunksById['chunk-cp8-1'], undefined)
+  assert.equal(state.sessionsById[backgroundSessions[0].id]?.needsHydrate, true)
+
+  assert.deepEqual(selectDesktopV3HydratedTranscriptDiagnostics(state), {
+    hydratedSessionCount: DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS + 1,
+    hydratedMessageCount: DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS + 1,
+    retainedBackgroundHydratedSessionCount: DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS,
+    inFlightHydrateSessionCount: 0,
+    evictedTranscriptCount: 2,
+  })
+})
+
+test('CP8 eviction protects selected and in-flight hydrated transcripts', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const selected = cp8Session(0)
+  const inFlight = cp8Session(1)
+  desktopV3CacheReducer(state, selectSession(selected.id))
+  hydrateCp8Session(state, selected, 0)
+  hydrateCp8Session(state, inFlight, 1)
+  desktopV3CacheReducer(state, {
+    type: 'desktopV3Cache.markHydrateInFlight',
+    sessionIds: [inFlight.id],
+    inFlight: true,
+  })
+
+  const backgroundSessions = Array.from(
+    { length: DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS + 2 },
+    (_, index) => cp8Session(index + 2),
+  )
+  for (const [index, session] of backgroundSessions.entries()) {
+    hydrateCp8Session(state, session, index + 2)
+  }
+
+  assert.equal(state.messagesBySession[selected.id]?.items[0].id, 'msg-cp8-0')
+  assert.equal(state.messagesBySession[inFlight.id]?.items[0].id, 'msg-cp8-1')
+  assert.equal(state.messagesBySession[backgroundSessions[0].id], undefined)
+  assert.equal(selectDesktopV3HydratedTranscriptDiagnostics(state).retainedBackgroundHydratedSessionCount, DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS)
+})
+
+test('CP8 stale hydrate response after eviction does not resurrect hidden history', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const selected = cp8Session(0)
+  const stale = cp8Session(1)
+  desktopV3CacheReducer(state, selectSession(selected.id))
+  hydrateCp8Session(state, selected, 0)
+  hydrateCp8Session(state, stale, 1)
+
+  const backgroundSessions = Array.from(
+    { length: DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS + 1 },
+    (_, index) => cp8Session(index + 2),
+  )
+  for (const [index, session] of backgroundSessions.entries()) {
+    hydrateCp8Session(state, session, index + 2)
+  }
+
+  assert.equal(state.messagesBySession[stale.id], undefined)
+  hydrateCp8Session(state, stale, 99)
+
+  assert.equal(state.messagesBySession[stale.id], undefined)
+  assert.equal(state.historyManifestsBySession[stale.id], undefined)
+  assert.equal(state.historyChunksById['chunk-cp8-99'], undefined)
+  assert.equal(state.sessionsById[stale.id]?.needsHydrate, true)
 })
 
 test('hydrate explicit empty message list is authoritative when messages are in scope', () => {

@@ -441,6 +441,7 @@ export interface MessageListCache {
   sourceProjectionHighWatermarkSeq?: number
   hydratedAt?: number
   tailHydratedAt?: number
+  lastAccessedAt?: number
   source?: MessageListCacheSource
 }
 
@@ -567,6 +568,8 @@ export interface DesktopV3CacheState {
   tombstonesBySession: Record<string, V3SessionTombstone>
   messagesBySession: Record<string, MessageListCache>
   eventsBySession: Record<string, V3SessionEvent[]>
+  hydrateInFlightBySession: Record<string, number>
+  evictedTranscriptsBySession: Record<string, number>
   runIntentsBySession: Record<string, Record<string, V3SessionRunIntent>>
   currentRunIntentBySession: Record<string, V3SessionRunIntent | undefined>
   pendingUserByClientRequestId: Record<string, PendingUserMessage>
@@ -598,6 +601,7 @@ export interface CacheEvent {
 
 export type DesktopV3CacheAction =
   | { type: 'desktopV3Cache.applyHydrationPlan'; reusedSessionIds: string[]; hydrateSessionIds: string[] }
+  | { type: 'desktopV3Cache.markHydrateInFlight'; sessionIds: string[]; inFlight: boolean }
   | { type: 'desktopSidebarBootstrap.update'; patch: Partial<DesktopSidebarBootstrapState> }
   | { type: 'desktopInitialHydrate.update'; patch: Partial<DesktopInitialHydrateState> }
   | { type: 'session.select'; sessionId?: string }

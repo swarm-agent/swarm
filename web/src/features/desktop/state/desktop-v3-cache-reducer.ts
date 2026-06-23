@@ -27,6 +27,8 @@ import type {
 import type { DesktopPermissionRecord } from '../types/realtime'
 import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 
+export const DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS = 5
+
 const ACTIVE_RUN_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
 const TERMINAL_RUN_INTENT_STATUSES = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'expired'])
 
@@ -54,6 +56,8 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     tombstonesBySession: {},
     messagesBySession: {},
     eventsBySession: {},
+    hydrateInFlightBySession: {},
+    evictedTranscriptsBySession: {},
     runIntentsBySession: {},
     currentRunIntentBySession: {},
     pendingUserByClientRequestId: {},
@@ -90,9 +94,15 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       return state
     case 'session.select':
       state.selectedSessionId = action.sessionId?.trim() || undefined
+      touchSessionTranscript(state, state.selectedSessionId)
+      enforceHydratedTranscriptRetention(state)
       return state
     case 'desktopV3Cache.applyHydrationPlan':
       return applyHydrationPlan(state, action.reusedSessionIds, action.hydrateSessionIds)
+    case 'desktopV3Cache.markHydrateInFlight':
+      markHydrateInFlight(state, action.sessionIds, action.inFlight)
+      enforceHydratedTranscriptRetention(state)
+      return state
     case 'snapshot.apply':
       return applyBootstrapSnapshot(state, action.snapshot)
     case 'hydrate.apply':
@@ -169,12 +179,133 @@ export function applyHydrationPlan(
   for (const sessionId of reusedSessionIds) {
     const record = state.sessionsById[sessionId]
     if (record?.kind === 'full') record.needsHydrate = false
+    touchSessionTranscript(state, sessionId)
   }
   for (const sessionId of hydrateSessionIds) {
     const record = state.sessionsById[sessionId]
     if (record) record.needsHydrate = true
   }
+  markHydrateInFlight(state, hydrateSessionIds, true)
+  enforceHydratedTranscriptRetention(state)
   return state
+}
+
+function markHydrateInFlight(
+  state: DesktopV3CacheState,
+  sessionIds: string[],
+  inFlight: boolean,
+): void {
+  state.hydrateInFlightBySession ??= {}
+  state.evictedTranscriptsBySession ??= {}
+  const now = Date.now()
+  for (const rawSessionId of sessionIds) {
+    const sessionId = rawSessionId.trim()
+    if (!sessionId) continue
+    if (inFlight) {
+      state.hydrateInFlightBySession[sessionId] = now
+      delete state.evictedTranscriptsBySession[sessionId]
+    } else {
+      delete state.hydrateInFlightBySession[sessionId]
+    }
+  }
+}
+
+function touchSessionTranscript(state: DesktopV3CacheState, sessionId: string | undefined): void {
+  const normalized = sessionId?.trim()
+  if (!normalized) return
+  const list = state.messagesBySession[normalized]
+  if (!list) return
+  state.messagesBySession[normalized] = buildMessageListCache(list.items, {
+    knownTail: list.knownTail,
+    knownFull: list.knownFull,
+    sourceMessageCount: list.sourceMessageCount,
+    sourceLastMessageAt: list.sourceLastMessageAt,
+    sourceProjectionHighWatermarkSeq: list.sourceProjectionHighWatermarkSeq,
+    hydratedAt: list.hydratedAt,
+    tailHydratedAt: list.tailHydratedAt,
+    lastAccessedAt: Date.now(),
+    source: list.source,
+  })
+}
+
+function enforceHydratedTranscriptRetention(state: DesktopV3CacheState): void {
+  state.hydrateInFlightBySession ??= {}
+  state.evictedTranscriptsBySession ??= {}
+  const protectedSessionIds = new Set<string>()
+  const selectedSessionId = state.selectedSessionId?.trim()
+  if (selectedSessionId) protectedSessionIds.add(selectedSessionId)
+  for (const sessionId of Object.keys(state.hydrateInFlightBySession)) {
+    protectedSessionIds.add(sessionId)
+  }
+
+  const candidates = Object.entries(state.messagesBySession)
+    .filter(([sessionId, list]) => isHydratedTranscript(list) && !protectedSessionIds.has(sessionId))
+    .map(([sessionId, list]) => ({
+      sessionId,
+      lastAccessedAt: transcriptLastAccessedAt(list),
+    }))
+    .sort((left, right) => left.lastAccessedAt - right.lastAccessedAt || left.sessionId.localeCompare(right.sessionId))
+
+  const overflow = candidates.length - DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS
+  if (overflow <= 0) return
+
+  const now = Date.now()
+  for (const candidate of candidates.slice(0, overflow)) {
+    evictTranscriptHistory(state, candidate.sessionId, now)
+  }
+}
+
+function evictTranscriptHistory(state: DesktopV3CacheState, sessionId: string, evictedAt: number): void {
+  if (state.selectedSessionId?.trim() === sessionId) return
+  if (state.hydrateInFlightBySession?.[sessionId] !== undefined) return
+
+  delete state.messagesBySession[sessionId]
+  delete state.eventsBySession[sessionId]
+  evictHistoryChunksForSession(state, sessionId)
+  delete state.historyManifestsBySession[sessionId]
+  state.evictedTranscriptsBySession ??= {}
+  state.evictedTranscriptsBySession[sessionId] = evictedAt
+
+  const record = state.sessionsById[sessionId]
+  if (record?.kind === 'full') record.needsHydrate = true
+}
+
+function evictHistoryChunksForSession(state: DesktopV3CacheState, sessionId: string): void {
+  const manifests = state.historyManifestsBySession[sessionId]
+  for (const chunkId of historyChunkIds(manifests)) {
+    delete state.historyChunksById[chunkId]
+  }
+}
+
+function historyChunkIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const chunkIds: string[] = []
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue
+    const chunkId = (entry as { chunk_id?: unknown; chunkId?: unknown }).chunk_id
+      ?? (entry as { chunk_id?: unknown; chunkId?: unknown }).chunkId
+    if (typeof chunkId === 'string' && chunkId.trim()) chunkIds.push(chunkId.trim())
+  }
+  return chunkIds
+}
+
+function hydrateResponseCanApplyHistory(state: DesktopV3CacheState, sessionId: string): boolean {
+  if (!state.evictedTranscriptsBySession?.[sessionId]) return true
+  if (state.selectedSessionId?.trim() === sessionId) return true
+  return state.hydrateInFlightBySession?.[sessionId] !== undefined
+}
+
+function isHydratedTranscript(list: MessageListCache | undefined): boolean {
+  return Boolean(list?.knownFull)
+    || Boolean(list?.knownTail)
+    || Number.isSafeInteger(list?.tailHydratedAt)
+}
+
+function transcriptLastAccessedAt(list: MessageListCache): number {
+  return list.lastAccessedAt
+    ?? list.hydratedAt
+    ?? list.tailHydratedAt
+    ?? 0
 }
 
 export function applySnapshot(
@@ -211,6 +342,8 @@ export function applySnapshot(
       record.needsHydrate = false
     }
   }
+
+  enforceHydratedTranscriptRetention(state)
 
   return state
 }
@@ -269,10 +402,15 @@ export function applyHydrate(
 
   for (const sessionId of requested) {
     const record = state.sessionsById[sessionId]
-    if (record?.kind === 'full' && hydrateResponseCompletesSession(snapshot, sessionId)) {
+    if (record?.kind === 'full'
+      && hydrateResponseCompletesSession(snapshot, sessionId)
+      && hydrateResponseCanApplyHistory(state, sessionId)) {
       record.needsHydrate = false
     }
   }
+
+  markHydrateInFlight(state, action.requestedSessionIds, false)
+  enforceHydratedTranscriptRetention(state)
 
   return state
 }
@@ -316,6 +454,7 @@ function applyHydrateAuthoritativeResources(
   if (syncResourceSetContains(resourceSet, 'messages')) {
     for (const sessionId of requested) {
       if (!hasOwn(snapshot.messages_by_session, sessionId)) continue
+      if (!hydrateResponseCanApplyHistory(state, sessionId)) continue
       const incoming = snapshot.messages_by_session?.[sessionId] ?? []
       if (hydrateProjectionIsFresh(snapshot, sessionId, preHydrateProjections)) {
         replaceMessagesForSession(state, sessionId, incoming)
@@ -328,6 +467,7 @@ function applyHydrateAuthoritativeResources(
   if (syncResourceSetContains(resourceSet, 'events')) {
     for (const sessionId of requested) {
       if (!hasOwn(snapshot.events_by_session, sessionId)) continue
+      if (!hydrateResponseCanApplyHistory(state, sessionId)) continue
       const incoming = snapshot.events_by_session?.[sessionId] ?? []
       if (hydrateProjectionIsFresh(snapshot, sessionId, preHydrateProjections)) {
         state.eventsBySession[sessionId] = sortEvents(dedupeEventsByIdentity(incoming))
@@ -336,6 +476,8 @@ function applyHydrateAuthoritativeResources(
       }
     }
   }
+
+  enforceHydratedTranscriptRetention(state)
 
   if (syncResourceSetContains(resourceSet, 'run_intents')) {
     for (const sessionId of requested) {
@@ -371,6 +513,14 @@ function freshHydrateSessionIds(
     }
   }
   return fresh
+}
+
+function filterHydrateHistorySessionIds(state: DesktopV3CacheState, sessionIds: Set<string>): Set<string> {
+  const filtered = new Set<string>()
+  for (const sessionId of sessionIds) {
+    if (hydrateResponseCanApplyHistory(state, sessionId)) filtered.add(sessionId)
+  }
+  return filtered
 }
 
 export function applySyncStreamBatch(
@@ -467,6 +617,8 @@ export function applyReconnectSnapshot(
     state.realtime.resumeFrame = raw.realtime.resume
     state.realtime.streamPath = raw.realtime.stream_path
   }
+
+  enforceHydratedTranscriptRetention(state)
 
   return state
 }
@@ -1154,12 +1306,15 @@ function replaceMessagesForSession(
 ): void {
   const sessionRecord = state.sessionsById[sessionId]
   const session = sessionRecord?.kind === 'full' ? sessionRecord.session : undefined
+  delete state.evictedTranscriptsBySession?.[sessionId]
   state.messagesBySession[sessionId] = buildMessageListCache(messages, {
+    knownTail: { limit: messages.length, cursor: '' },
     sourceMessageCount: session?.message_count,
     sourceLastMessageAt: session?.last_message_at,
     sourceProjectionHighWatermarkSeq: state.projectionsBySession[sessionId]?.projection_high_watermark_seq,
     hydratedAt: Date.now(),
     tailHydratedAt: Date.now(),
+    lastAccessedAt: Date.now(),
     source: 'network',
   })
   removeCommittedPendingForSession(state, sessionId, messages)
@@ -1180,8 +1335,10 @@ function mergeHistoricalMessagesForSession(
     sourceProjectionHighWatermarkSeq: existing?.sourceProjectionHighWatermarkSeq,
     hydratedAt: Math.max(existing?.hydratedAt ?? 0, Date.now()),
     tailHydratedAt: existing?.tailHydratedAt,
+    lastAccessedAt: Date.now(),
     source: 'network',
   })
+  delete state.evictedTranscriptsBySession?.[sessionId]
   state.messagesBySession[sessionId] = merged
   removeCommittedPendingForSession(state, sessionId, incoming)
 }
@@ -1204,6 +1361,7 @@ interface BuildMessageListCacheOptions {
   sourceProjectionHighWatermarkSeq?: number
   hydratedAt?: number
   tailHydratedAt?: number
+  lastAccessedAt?: number
   source?: MessageListCache['source']
 }
 
@@ -1248,6 +1406,7 @@ export function buildMessageListCache(messages: MessageSnapshot[], options: Buil
     sourceProjectionHighWatermarkSeq: options.sourceProjectionHighWatermarkSeq,
     hydratedAt: options.hydratedAt,
     tailHydratedAt: options.tailHydratedAt,
+    lastAccessedAt: options.lastAccessedAt,
     source: options.source,
   }
 }
@@ -1379,8 +1538,9 @@ function mergeSnapshotResources(
     replaceRecordBySession(state.agentModelPolicyBySession, snapshot.agent_model_policy_by_session, authoritativeSessionIds)
   }
   if (syncResourceSetContains(resourceSet, 'messages') || syncResourceSetContains(resourceSet, 'events')) {
-    replaceRecordBySession(state.historyManifestsBySession, snapshot.history_manifests_by_session, authoritativeSessionIds)
-    mergeRecord(state.historyChunksById, snapshot.history_chunks_by_id)
+    const historySessionIds = filterHydrateHistorySessionIds(state, authoritativeSessionIds)
+    replaceRecordBySession(state.historyManifestsBySession, snapshot.history_manifests_by_session, historySessionIds)
+    mergeHistoryChunksForSessionIds(state, snapshot.history_chunks_by_id, historySessionIds)
   }
   if (snapshot.omissions !== undefined) state.omissionsByScope[scopeId] = snapshot.omissions
   if (snapshot.pagination !== undefined) state.paginationByScope[scopeId] = snapshot.pagination
@@ -2234,6 +2394,23 @@ function replaceRecordBySession<T>(target: Record<string, T>, source: Record<str
     delete target[sessionId]
   }
   mergeRecord(target, onlyRequested(source, sessionIds))
+}
+
+function mergeHistoryChunksForSessionIds(
+  state: DesktopV3CacheState,
+  source: Record<string, unknown> | undefined,
+  sessionIds: Set<string>,
+): void {
+  if (!source) return
+  const allowedChunkIds = new Set<string>()
+  for (const sessionId of sessionIds) {
+    for (const chunkId of historyChunkIds(state.historyManifestsBySession[sessionId])) {
+      allowedChunkIds.add(chunkId)
+    }
+  }
+  for (const [chunkId, chunk] of Object.entries(source)) {
+    if (allowedChunkIds.has(chunkId)) state.historyChunksById[chunkId] = chunk
+  }
 }
 
 function messageGlobalSeqKey(message: MessageSnapshot): string {
