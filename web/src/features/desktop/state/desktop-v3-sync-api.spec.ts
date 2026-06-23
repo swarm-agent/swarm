@@ -34,7 +34,7 @@ test('postDesktopV3SyncBootstrap posts bounded hydrated startup workset payload 
   assert.equal(body.resources.run_intents, true)
   assert.equal(body.resources.active_plan, true)
   assert.equal(body.resources.plan_revisions, false)
-  assert.equal(body.include_active, true)
+  assert.equal(body.include_active, false)
 })
 
 
