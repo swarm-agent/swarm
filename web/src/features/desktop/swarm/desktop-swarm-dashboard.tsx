@@ -2959,7 +2959,6 @@ export function DesktopSwarmDashboard() {
         linkReviewTarget={pendingLinkReviewTarget}
         linkReviewBusy={busy}
         onOpenChange={setLinkRequestOpen}
-        onRefresh={() => { void refresh() }}
         onConfirmationChange={(requestID, confirmed) => setPairingConfirmations((current) => ({ ...current, [requestID]: confirmed }))}
         onDecision={(request, approve) => { void handlePairingDecision(request, approve) }}
         onLinkReviewComplete={async (message) => {

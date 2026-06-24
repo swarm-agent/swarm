@@ -36,6 +36,7 @@ import {
   type DesktopV3ExistingMessageOperation,
 } from '../../session-v3/existing-session-flow'
 import { compactDesktopV3Session } from '../../session-v3/compact-session-flow'
+import { sendSessionMessage } from '../queries/chat-queries'
 
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
@@ -178,6 +179,69 @@ function preferencesEqual(left: SessionPreferenceRecord, right: SessionPreferenc
     && left.thinking === right.thinking
     && left.serviceTier === right.serviceTier
     && left.contextMode === right.contextMode
+}
+
+function firstNonEmpty(...values: string[]): string {
+  for (const value of values) {
+    const normalized = value.trim()
+    if (normalized) return normalized
+  }
+  return ''
+}
+
+type DesktopV3InputSettingsSnapshot = {
+  sessionId: string
+  mode: DesktopSessionMode
+  agent: string
+  preference: SessionPreferenceRecord
+}
+
+function buildDesktopV3ExistingSettingsSnapshot(input: {
+  sessionId: string
+  metadata?: Record<string, unknown>
+  session?: DesktopSessionRecord | null
+  cacheSession?: { mode?: string; metadata?: Record<string, unknown> } | null
+  cachedPreference: SessionPreferenceRecord
+  fallbackAgent: string
+}): DesktopV3InputSettingsSnapshot {
+  return {
+    sessionId: input.sessionId,
+    mode: normalizeSessionMode(input.session?.mode || input.cacheSession?.mode),
+    agent: firstNonEmpty(
+      metadataString(input.metadata, 'agent_name'),
+      metadataString(input.metadata, 'resolved_agent_name'),
+      input.fallbackAgent,
+    ),
+    preference: input.cachedPreference,
+  }
+}
+
+function settingsSnapshotEqual(left: DesktopV3InputSettingsSnapshot, right: DesktopV3InputSettingsSnapshot): boolean {
+  return left.sessionId === right.sessionId
+    && left.mode === right.mode
+    && left.agent === right.agent
+    && preferencesEqual(left.preference, right.preference)
+}
+
+function formatSettingsChangeSummary(input: {
+  previous: DesktopV3InputSettingsSnapshot
+  next: DesktopV3InputSettingsSnapshot
+  previousModelLabel: string
+  nextModelLabel: string
+}): string {
+  const changes: string[] = []
+  if (input.previous.mode !== input.next.mode) changes.push(`mode ${input.previous.mode || 'auto'} → ${input.next.mode || 'auto'}`)
+  if (input.previous.agent !== input.next.agent) changes.push(`agent ${input.previous.agent || 'default'} → ${input.next.agent || 'default'}`)
+  if (!preferencesEqual(input.previous.preference, input.next.preference)) {
+    const previousThinking = input.previous.preference.thinking || 'off'
+    const nextThinking = input.next.preference.thinking || 'off'
+    const previousFast = fastToggleFromPreference(input.previous.preference)
+    const nextFast = fastToggleFromPreference(input.next.preference)
+    changes.push(`model ${input.previousModelLabel || 'default'} → ${input.nextModelLabel || 'default'}`)
+    if (previousThinking !== nextThinking) changes.push(`thinking ${previousThinking} → ${nextThinking}`)
+    if (previousFast !== nextFast) changes.push(`fast ${previousFast} → ${nextFast}`)
+  }
+  return changes.join('; ')
 }
 
 type DesktopV3RenderItem =
@@ -500,28 +564,40 @@ export function DesktopV3ExistingConversationPane({
     pendingStartAt,
   })
   const sessionMetadata = session?.metadata ?? cacheSession?.metadata ?? metadata
-  const initialAgent = metadataString(sessionMetadata, 'agent_name') || metadataString(sessionMetadata, 'resolved_agent_name') || agentState.activePrimary || ''
+  const settingsBaseline = useMemo(() => buildDesktopV3ExistingSettingsSnapshot({
+    sessionId: normalizedSessionId,
+    metadata: sessionMetadata,
+    session,
+    cacheSession,
+    cachedPreference,
+    fallbackAgent: agentState.activePrimary,
+  }), [agentState.activePrimary, cacheSession, cachedPreference, normalizedSessionId, session, sessionMetadata])
   const [draft, setDraft] = useState(storedOperation?.request.content ?? '')
   const [sendError, setSendError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [compacting, setCompacting] = useState(false)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
-  const [mode, setMode] = useState<DesktopSessionMode>(normalizeSessionMode(session?.mode || cacheSession?.mode))
-  const [selectedAgent, setSelectedAgent] = useState(initialAgent)
-  const [preference, setPreference] = useState<SessionPreferenceRecord>(cachedPreference)
-  const unlockedPreferenceRef = useRef<SessionPreferenceRecord>(cachedPreference)
+  const [restartingWithSettings, setRestartingWithSettings] = useState(false)
+  const [mode, setMode] = useState<DesktopSessionMode>(settingsBaseline.mode)
+  const [selectedAgent, setSelectedAgent] = useState(settingsBaseline.agent)
+  const [preference, setPreference] = useState<SessionPreferenceRecord>(settingsBaseline.preference)
+  const initializedSettingsSessionRef = useRef('')
+  const localSettingsDirtyRef = useRef({ agent: false, mode: false, preference: false })
+  const unlockedPreferenceRef = useRef<SessionPreferenceRecord>(settingsBaseline.preference)
 
   const hasStoredOperation = Boolean(storedOperation)
   const hasMessages = renderedMessages.committed.length > 0
     || renderedMessages.pendingUser.length > 0
     || renderedMessages.liveRuns.length > 0
   const selectedAgentModelLock = useMemo(
-    () => resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent || agentState.activePrimary || ''),
-    [agentState.activePrimary, agentState.profiles, selectedAgent],
+    () => resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent),
+    [agentState.profiles, selectedAgent],
   )
   const selectedModelKey = optionKey(preference.provider, preference.model, preference.contextMode)
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
   const selectedModelAvailable = Boolean(selectedModelOption)
+  const baselineModelKey = optionKey(settingsBaseline.preference.provider, settingsBaseline.preference.model, settingsBaseline.preference.contextMode)
+  const baselineModelOption = modelOptions.find((option) => option.key === baselineModelKey) ?? null
   const fastSupported = selectedModelOption ? supportsCodexFastMode(selectedModelOption.provider, selectedModelOption.model) : false
   const cachedUsage = useMemo(() => normalizeUsageSummary(rawCachedUsage), [rawCachedUsage])
   const selectedContextWindow = selectedModelOption
@@ -543,6 +619,22 @@ export function DesktopV3ExistingConversationPane({
     [routeOptions, session],
   )
   const canSend = Boolean(normalizedSessionId && !sending && !compacting && selectedAgent.trim() && selectedModelAvailable && (hasStoredOperation || draft.trim()))
+  const visibleSettingsSnapshot = useMemo<DesktopV3InputSettingsSnapshot>(() => ({
+    sessionId: normalizedSessionId,
+    mode,
+    agent: selectedAgent.trim(),
+    preference,
+  }), [mode, normalizedSessionId, preference, selectedAgent])
+  const visibleSettingsChanged = !settingsSnapshotEqual(settingsBaseline, visibleSettingsSnapshot)
+  const settingsChangeSummary = visibleSettingsChanged
+    ? formatSettingsChangeSummary({
+      previous: settingsBaseline,
+      next: visibleSettingsSnapshot,
+      previousModelLabel: baselineModelOption?.label || settingsBaseline.preference.model,
+      nextModelLabel: selectedModelOption?.label || visibleSettingsSnapshot.preference.model,
+    })
+    : ''
+  const showRestartSettingsAction = Boolean(currentRun && visibleSettingsChanged)
   const renderItems = useMemo(() => buildDesktopV3ConversationRenderItems(renderedMessages), [renderedMessages])
   const {
     scrollContainerRef,
@@ -579,25 +671,42 @@ export function DesktopV3ExistingConversationPane({
   }, [statusTimerActive])
 
   useEffect(() => {
-    setMode(normalizeSessionMode(session?.mode || cacheSession?.mode))
-  }, [cacheSession?.mode, session?.mode])
-
-  useEffect(() => {
-    if (initialAgent) setSelectedAgent(initialAgent)
-  }, [initialAgent])
-
-  useEffect(() => {
-    if (selectedAgentModelLock.locked) return
-    unlockedPreferenceRef.current = cachedPreference
-    setPreference((current) => preferencesEqual(current, cachedPreference) ? current : cachedPreference)
-  }, [cachedPreference, selectedAgentModelLock.locked])
+    if (!normalizedSessionId) return
+    const sessionChanged = initializedSettingsSessionRef.current !== normalizedSessionId
+    if (sessionChanged) {
+      initializedSettingsSessionRef.current = normalizedSessionId
+      localSettingsDirtyRef.current = { agent: false, mode: false, preference: false }
+      setMode(settingsBaseline.mode)
+      setSelectedAgent(settingsBaseline.agent)
+      setPreference(settingsBaseline.preference)
+      unlockedPreferenceRef.current = settingsBaseline.preference
+      return
+    }
+    if (!localSettingsDirtyRef.current.mode) {
+      setMode((current) => current === settingsBaseline.mode ? current : settingsBaseline.mode)
+    }
+    if (!localSettingsDirtyRef.current.agent && settingsBaseline.agent) {
+      setSelectedAgent((current) => current === settingsBaseline.agent ? current : settingsBaseline.agent)
+    }
+    if (!localSettingsDirtyRef.current.preference && (settingsBaseline.preference.provider || settingsBaseline.preference.model)) {
+      unlockedPreferenceRef.current = settingsBaseline.preference
+      setPreference((current) => preferencesEqual(current, settingsBaseline.preference) ? current : settingsBaseline.preference)
+    }
+  }, [normalizedSessionId, settingsBaseline])
 
   useEffect(() => {
     if (!selectedAgentModelLock.locked) return
     setPreference((current) => preferenceFromAgentModelLock(selectedAgentModelLock, current, modelOptions))
   }, [modelOptions, selectedAgentModelLock])
 
+  function handleModeChange(nextMode: DesktopSessionMode) {
+    localSettingsDirtyRef.current.mode = true
+    setMode(nextMode)
+  }
+
   function handleAgentSelect(agentName: string) {
+    localSettingsDirtyRef.current.agent = true
+    localSettingsDirtyRef.current.preference = true
     setSelectedAgent(agentName)
     const lock = resolveDesktopV3AgentModelLock(agentState.profiles, agentName)
     if (lock.locked) {
@@ -620,6 +729,7 @@ export function DesktopV3ExistingConversationPane({
 
   function handleModelSelect(key: string) {
     if (selectedAgentModelLock.locked) return
+    localSettingsDirtyRef.current.preference = true
     const option = modelOptions.find((candidate) => candidate.key === key) ?? null
     setPreference((current) => {
       const next = preferenceFromOption(option, current)
@@ -630,6 +740,7 @@ export function DesktopV3ExistingConversationPane({
 
   function handleThinkingChange(value: string) {
     if (selectedAgentModelLock.locked) return
+    localSettingsDirtyRef.current.preference = true
     setPreference((current) => {
       const next = { ...current, thinking: value.trim() === 'off' ? '' : value.trim() }
       unlockedPreferenceRef.current = next
@@ -639,6 +750,7 @@ export function DesktopV3ExistingConversationPane({
 
   function handleFastChange(value: 'on' | 'off') {
     if (selectedAgentModelLock.locked) return
+    localSettingsDirtyRef.current.preference = true
     setPreference((current) => {
       const next = {
         ...current,
@@ -651,23 +763,23 @@ export function DesktopV3ExistingConversationPane({
 
   async function persistVisibleSettings() {
     if (!normalizedSessionId) return
-    if (normalizeSessionMode(session?.mode || cacheSession?.mode) !== mode) {
+    if (settingsBaseline.mode !== mode) {
       const modeResponse = await updateSessionV3Mode(normalizedSessionId, mode)
       dispatchDesktopV3Cache({
         type: 'mutation.sessionSettingsResult',
         raw: sessionV3ModeSettingsMutationResponse(modeResponse, normalizedSessionId, mode),
       })
     }
-    const currentAgent = initialAgent.trim()
-    if (selectedAgent.trim() && selectedAgent.trim() !== currentAgent) {
-      const agentName = selectedAgent.trim()
-      const agentResponse = await updateSessionV3Agent(normalizedSessionId, agentName)
+    const currentAgent = settingsBaseline.agent.trim()
+    const nextAgent = selectedAgent.trim()
+    if (nextAgent && nextAgent !== currentAgent) {
+      const agentResponse = await updateSessionV3Agent(normalizedSessionId, nextAgent)
       dispatchDesktopV3Cache({
         type: 'mutation.sessionSettingsResult',
         raw: sessionV3AgentSettingsMutationResponse(agentResponse, normalizedSessionId),
       })
     }
-    if (!preferencesEqual(preference, cachedPreference)) {
+    if (!preferencesEqual(preference, settingsBaseline.preference)) {
       const preferenceResponse = await updateSessionV3Preference(normalizedSessionId, preference)
       dispatchDesktopV3Cache({
         type: 'mutation.sessionSettingsResult',
@@ -729,7 +841,7 @@ export function DesktopV3ExistingConversationPane({
       await compactDesktopV3Session({
         sessionId: normalizedSessionId,
         note,
-        agentName: selectedAgent || agentState.activePrimary || '',
+        agentName: selectedAgent || '',
       })
     } catch (error) {
       if (mountedRef.current) {
@@ -765,6 +877,30 @@ export function DesktopV3ExistingConversationPane({
       if (mountedRef.current) {
         setSendError(error instanceof Error ? error.message : String(error))
       }
+    }
+  }
+
+  async function handleRestartWithSettings() {
+    if (!normalizedSessionId || !currentRun?.runId || restartingWithSettings || !settingsChangeSummary) return
+    setRestartingWithSettings(true)
+    setSendError(null)
+    try {
+      const stopRequest = resolveDesktopV3StopRunRequest({ route, runId: currentRun.runId })
+      await stopSessionV3Run(normalizedSessionId, stopRequest)
+      await persistVisibleSettings()
+      await sendSessionMessage(
+        normalizedSessionId,
+        'system',
+        `User has changed their settings (${settingsChangeSummary}); please continue with the new settings.`,
+        route,
+        { sessionApi: 'v3' },
+      )
+    } catch (error) {
+      if (mountedRef.current) {
+        setSendError(error instanceof Error ? error.message : String(error))
+      }
+    } finally {
+      if (mountedRef.current) setRestartingWithSettings(false)
     }
   }
 
@@ -828,8 +964,8 @@ export function DesktopV3ExistingConversationPane({
         onDraftChange={setDraft}
         placeholder="Message Swarm…"
         inputLabel="Continue Desktop V3 conversation"
-        disabled={sending || compacting}
-        busy={sending || compacting}
+        disabled={sending || compacting || restartingWithSettings}
+        busy={sending || compacting || restartingWithSettings}
         canSubmit={canSend}
         canStop={Boolean(currentRun)}
         error={sendError}
@@ -837,9 +973,9 @@ export function DesktopV3ExistingConversationPane({
         onStop={handleStop}
         onCompact={handleCompact}
         mode={mode}
-        onModeChange={setMode}
-        currentAgent={selectedAgent || agentState.activePrimary || 'Agent'}
-        selectedPrimaryAgent={selectedAgent || agentState.activePrimary || ''}
+        onModeChange={handleModeChange}
+        currentAgent={selectedAgent || 'Agent'}
+        selectedPrimaryAgent={selectedAgent || ''}
         agents={agentState.profiles}
         onAgentSelect={handleAgentSelect}
         modelOptions={modelOptions}
@@ -863,6 +999,9 @@ export function DesktopV3ExistingConversationPane({
         contextLabel={contextLabel}
         contextTooltip={contextTooltip}
         compactDisabled={compacting || sending || Boolean(currentRun)}
+        settingsActionLabel={showRestartSettingsAction ? 'Restart loop with new settings?' : ''}
+        settingsActionBusy={restartingWithSettings}
+        onSettingsAction={showRestartSettingsAction ? handleRestartWithSettings : undefined}
       />
     </div>
   )

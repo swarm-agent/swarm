@@ -150,6 +150,7 @@ export function DesktopV3NewSessionPane({
   const [timerNow, setTimerNow] = useState(() => Date.now())
   const [mode, setMode] = useState<DesktopSessionMode>(defaultMode)
   const [selectedAgent, setSelectedAgent] = useState(agentNameProp.trim() || agentState.activePrimary || '')
+  const modeManuallySelectedRef = useRef(false)
   const agentManuallySelectedRef = useRef(false)
   const preferenceManuallyChangedRef = useRef(false)
   const [preference, setPreference] = useState<SessionPreferenceRecord>(() => ({
@@ -169,6 +170,7 @@ export function DesktopV3NewSessionPane({
   }, [])
 
   useEffect(() => {
+    if (modeManuallySelectedRef.current) return
     setMode(defaultMode)
   }, [defaultMode])
 
@@ -176,7 +178,7 @@ export function DesktopV3NewSessionPane({
     const active = agentNameProp.trim() || agentState.activePrimary || ''
     if (!active) return
     setSelectedAgent((current) => {
-      if (agentManuallySelectedRef.current && current.trim()) return current
+      if (agentManuallySelectedRef.current) return current
       return current === active ? current : active
     })
   }, [agentNameProp, agentState.activePrimary])
@@ -198,7 +200,7 @@ export function DesktopV3NewSessionPane({
       contextMode: preferenceProp?.contextMode ?? resolved.contextMode,
     }
     setPreference((current) => {
-      if (preferenceManuallyChangedRef.current && (current.provider || current.model)) return current
+      if (preferenceManuallyChangedRef.current) return current
       if (
         current.provider === nextPreference.provider
         && current.model === nextPreference.model
@@ -270,6 +272,11 @@ export function DesktopV3NewSessionPane({
   function handleAgentSelect(agentName: string) {
     agentManuallySelectedRef.current = true
     setSelectedAgent(agentName)
+  }
+
+  function handleModeChange(nextMode: DesktopSessionMode) {
+    modeManuallySelectedRef.current = true
+    setMode(nextMode)
   }
 
   async function handleThinkingTagsToggle(enabled: boolean) {
@@ -383,7 +390,7 @@ export function DesktopV3NewSessionPane({
         error={startError || unsupportedReason}
         onSubmit={handleSubmit}
         mode={mode}
-        onModeChange={setMode}
+        onModeChange={handleModeChange}
         currentAgent={selectedAgentName || agentState.activePrimary || 'Agent'}
         selectedPrimaryAgent={selectedAgentName || agentState.activePrimary || ''}
         agents={agentState.profiles}

@@ -19,7 +19,6 @@ interface ManagedHostLinkRequestModalProps {
   linkReviewTarget: SwarmTarget | null
   linkReviewBusy?: boolean
   onOpenChange: (open: boolean) => void
-  onRefresh: () => void
   onConfirmationChange: (requestID: string, confirmed: boolean) => void
   onDecision: (request: RemoteSwarmPendingPairing, approve: boolean) => void
   onLinkReviewComplete: (message: string) => Promise<void> | void
@@ -84,7 +83,6 @@ export function ManagedHostLinkRequestModal({
   linkReviewTarget,
   linkReviewBusy = false,
   onOpenChange,
-  onRefresh,
   onConfirmationChange,
   onDecision,
   onLinkReviewComplete,
@@ -169,7 +167,6 @@ export function ManagedHostLinkRequestModal({
           })}
         </div>
         <div className="flex justify-end gap-2 border-t border-[var(--app-border)] px-5 py-3">
-          {!linkReviewTarget ? <Button variant="outline" onClick={onRefresh} disabled={Boolean(busyID)}>Refresh</Button> : null}
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Close</Button>
         </div>
       </DialogPanel>

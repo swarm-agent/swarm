@@ -2075,13 +2075,12 @@ export function DesktopAppPage() {
       }
       setPairingRequestStatus(approve ? `Approved ${request.managed_name || request.managed_swarm_id || 'Managed Host'}. Workspace link/import review is ready.` : `Rejected link request ${requestID}.`)
       void queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
-      refreshPairingRequests()
     } catch (error) {
       setPairingRequestError(error instanceof Error ? error.message : 'Failed to update link request')
     } finally {
       setPairingDecisionBusyID(null)
     }
-  }, [pairingConfirmations, queryClient, refreshPairingRequests])
+  }, [pairingConfirmations, queryClient])
 
   const openTodoModal = useCallback((workspacePath: string, workspaceName: string) => {
     const normalizedPath = workspacePath.trim()
@@ -3871,7 +3870,6 @@ export function DesktopAppPage() {
         now={sidebarNow}
         linkReviewTarget={pairingReplicationTarget}
         onOpenChange={setPairingRequestsOpen}
-        onRefresh={refreshPairingRequests}
         onConfirmationChange={(requestID, confirmed) => setPairingConfirmations((current) => ({ ...current, [requestID]: confirmed }))}
         onDecision={(request, approve) => { void handlePairingDecision(request, approve) }}
         onLinkReviewComplete={async (message: string) => {

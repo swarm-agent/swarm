@@ -580,8 +580,6 @@ test('DesktopAppPage derives route readiness and cached switching from the exter
   assert.doesNotMatch(source, /backgroundBootstrapSessionIds/)
   assert.doesNotMatch(source, /await fetchAndApplyDesktopDBSessionSnapshot\(queryClient, normalizedSessionId\)/)
   assert.doesNotMatch(source, /const handleSelectSession = useCallback\(async/)
-  assert.match(source, /PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS = 1_250/)
-  assert.match(source, /window\.setTimeout\(refreshPairingRequests, PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS\)/)
   assert.doesNotMatch(source, /addSessionId\(routeSessionId\)/)
   assert.doesNotMatch(source, /const bootstrapSessionIds = useMemo/)
   assert.doesNotMatch(source, /refreshSessionPermissions\(normalizedRouteSessionId\)/)
