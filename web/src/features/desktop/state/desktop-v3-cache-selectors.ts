@@ -147,6 +147,12 @@ export function selectSessionNeedsHydrate(state: DesktopV3CacheState, sessionId:
   return state.sessionsById[sessionId]?.needsHydrate ?? true
 }
 
+export function isDesktopV3SessionViewReady(state: DesktopV3CacheState, sessionId: string): boolean {
+  const normalized = sessionId.trim()
+  if (!normalized) return false
+  return Boolean(state.sessionViewsById[normalized])
+}
+
 export function isDesktopV3SessionTailReady(
   state: DesktopV3CacheState,
   sessionId: string,

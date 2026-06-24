@@ -1,20 +1,15 @@
 import { ensureDesktopSession } from '../../../app/api'
 import { DesktopV3RealtimeTransport, type DesktopV3RealtimeTransportStatus } from '../session-v3/transport'
 import type { SessionV3RealtimeWorksetSubscriptionRequestWire } from '../session-v3/types'
-import { getDesktopV3SessionEventsPage, type DesktopV3SessionEventsPage } from '../session-v3/read-api'
 import { openDesktopV3RealtimeTransportSocket } from './client'
 import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
 import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, commitDesktopV3CacheSnapshot, subscribeDesktopV3Cache, type DesktopV3CacheMutation } from '../state/desktop-v3-cache-store'
-import { decodeSessionEventPayload, hydrateResponseToAction, realtimeFrameToActions } from '../state/desktop-v3-cache-wire'
+import { realtimeFrameToActions } from '../state/desktop-v3-cache-wire'
 import {
-  buildDesktopV3SelectedSessionHydrateInput,
   postDesktopV3Reconnect,
-  postDesktopV3SyncHydrate,
   type DesktopV3ReconnectInput,
-  type DesktopV3HydrateInput,
 } from '../state/desktop-v3-sync-api'
-import { isDesktopV3SessionTailReady } from '../state/desktop-v3-cache-selectors'
 import type {
   DesktopV3CacheAction,
   DesktopV3CacheState,
@@ -24,17 +19,10 @@ import type {
   RealtimeSubscriptionRequest,
   RealtimeWorksetSubscriptionRequest,
   SessionsReconnectResponse,
-  SyncSnapshotResponse,
-  V3SessionProjection,
   V3SessionRunIntent,
 } from '../state/desktop-v3-cache-types'
 
 const DESKTOP_V3_CLIENT_ID = `desktop:${crypto.randomUUID()}`
-const ACTIVE_REPAIR_PAGE_SIZE = 100
-const ACTIVE_REPAIR_HIDDEN_MAX_CONCURRENT = 4
-const ACTIVE_REPAIR_HIDDEN_MAX_SESSIONS_PER_GENERATION = 25
-const ACTIVE_REPAIR_HIDDEN_MAX_PAGES_PER_SESSION = 2
-const ACTIVE_REPAIR_HIDDEN_MAX_EVENTS_PER_GENERATION = 500
 const ACTIVE_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
 
 export interface DesktopV3SessionConnectInput {
@@ -60,8 +48,6 @@ interface DesktopV3RealtimeControllerDeps {
   dispatch?: (action: DesktopV3CacheAction) => void
   subscribe?: (listener: (mutation?: DesktopV3CacheMutation) => void) => () => void
   reconnect?: (input: DesktopV3ReconnectInput) => Promise<SessionsReconnectResponse>
-  hydrate?: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
-  readEventsPage?: (input: { sessionId: string; afterSeq: number; limit?: number }) => Promise<DesktopV3SessionEventsPage>
   ensureSession?: () => Promise<unknown>
   bootstrap?: (input?: { preferredSessionId?: string | null }) => Promise<unknown>
   openSocket?: (input: { endpointCursor: string }) => WebSocket | Promise<WebSocket>
@@ -74,28 +60,15 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly dispatch: (action: DesktopV3CacheAction) => void
   private readonly subscribe: (listener: (mutation?: DesktopV3CacheMutation) => void) => () => void
   private readonly reconnect: (input: DesktopV3ReconnectInput) => Promise<SessionsReconnectResponse>
-  private readonly hydrate: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
-  private readonly readEventsPage: (input: { sessionId: string; afterSeq: number; limit?: number }) => Promise<DesktopV3SessionEventsPage>
   private readonly ensureSessionIdentity: () => Promise<unknown>
   private readonly bootstrap: (input?: { preferredSessionId?: string | null }) => Promise<unknown>
   private readonly transport: DesktopV3RealtimeTransport
   private readonly streamCommit: DesktopV3StreamCommitController
-  private readonly hydrateBySession = new Map<string, Promise<void>>()
-  private readonly markedActiveRepairBySession = new Map<string, { runId: string; afterSeq: number }>()
-  private readonly activeRepairByRun = new Map<string, { generation: number }>()
-  private readonly pendingHistoryRepair = new Set<string>()
   private readonly connectingSessionIds = new Set<string>()
   private firstResumeSent?: Deferred<void>
   private startupCancellation?: Deferred<never>
   private unsubscribeCache?: () => void
   private startPromise?: Promise<void>
-  private repairGeneration = 0
-  private hiddenRepairInFlight = 0
-  private hiddenRepairBudget = {
-    generation: 0,
-    sessionsStarted: 0,
-    eventsApplied: 0,
-  }
   private stopped = false
 
   constructor(deps: DesktopV3RealtimeControllerDeps = {}) {
@@ -103,8 +76,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.dispatch = deps.dispatch ?? dispatchDesktopV3Cache
     this.subscribe = deps.subscribe ?? subscribeDesktopV3Cache
     this.reconnect = deps.reconnect ?? postDesktopV3Reconnect
-    this.hydrate = deps.hydrate ?? postDesktopV3SyncHydrate
-    this.readEventsPage = deps.readEventsPage ?? getDesktopV3SessionEventsPage
     this.ensureSessionIdentity = deps.ensureSession ?? ensureDesktopSession
     this.bootstrap = deps.bootstrap ?? (async (input) => {
       await bootstrapDesktopV3SidebarMetadataOnly({
@@ -131,8 +102,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       },
       onResumeSent: () => this.handleResumeSent(),
       onRehydrateRequested: async (_reason, frame) => {
-        const selectedSessionId = this.getSnapshot().selectedSessionId?.trim()
-        if (selectedSessionId) this.pendingHistoryRepair.add(selectedSessionId)
         if ((frame as { bootstrap_required?: boolean } | null)?.bootstrap_required) {
           await this.bootstrap({
             preferredSessionId: this.getSnapshot().selectedSessionId,
@@ -156,9 +125,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
           streamPath: reconnect.realtime?.stream_path ?? '/v3/realtime/stream',
           resume,
         })
-        this.markActiveRunsFromReconnect(reconnect)
-        const generation = this.beginActiveRepairGeneration()
-        setTimeout(() => this.scheduleMarkedActiveRunRepairs(generation), 0)
 
         return {
           endpointCursor: resume.endpoint_cursor,
@@ -173,7 +139,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   start(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void> {
     if (this.startPromise) return this.startPromise
     this.stopped = false
-    this.beginActiveRepairGeneration()
     this.startupCancellation = createDeferred<never>()
     this.startupCancellation.promise.catch(() => undefined)
     this.firstResumeSent = createDeferred<void>()
@@ -186,6 +151,12 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     return this.startPromise
   }
 
+  ensureSessionHistory(sessionId: string): Promise<void> {
+    const normalized = sessionId.trim()
+    if (normalized) this.reconcileDesiredSessionConnections()
+    return Promise.resolve()
+  }
+
   stop(reason = 'Desktop V3 realtime controller stopped'): void {
     this.stopped = true
     const stopError = new Error(reason)
@@ -194,12 +165,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.unsubscribeCache?.()
     this.unsubscribeCache = undefined
     this.startPromise = undefined
-    this.hydrateBySession.clear()
-    this.markedActiveRepairBySession.clear()
-    this.activeRepairByRun.clear()
-    this.repairGeneration += 1
-    this.hiddenRepairInFlight = 0
-    this.pendingHistoryRepair.clear()
     this.connectingSessionIds.clear()
     this.firstResumeSent?.resolve()
     this.firstResumeSent = undefined
@@ -238,10 +203,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     return connect
   }
 
-  async ensureSessionHistory(sessionId: string): Promise<void> {
-    await this.hydrateSessionOnce(sessionId)
-  }
-
   private async startUncached(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void> {
     await this.awaitUnlessStopped(this.ensureSessionIdentity())
     this.assertNotStopped()
@@ -266,25 +227,15 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.transport.setSessions(initial.subscriptions, { replace: true })
 
     this.unsubscribeCache?.()
-    this.unsubscribeCache = this.subscribe((mutation) => {
+    this.unsubscribeCache = this.subscribe(() => {
       this.reconcileDesiredSessionConnections()
-      if (mutation?.action.type !== 'session.select') return
-      const sessionId = mutation.action.sessionId?.trim()
-      if (sessionId) void this.hydrateSessionOnce(sessionId)
     })
     this.reconcileDesiredSessionConnections()
-
-    this.markActiveRunsFromCacheState(this.getSnapshot())
 
     await this.awaitUnlessStopped(this.transport.start())
     await this.waitForFirstResumeSent()
     this.assertNotStopped()
 
-    const selectedSessionId = preferredSessionId === null
-      ? undefined
-      : preferredSessionId?.trim() || this.getSnapshot().selectedSessionId
-    if (selectedSessionId) void this.hydrateSessionOnce(selectedSessionId)
-    this.scheduleMarkedActiveRunRepairs(this.repairGeneration)
   }
 
   private async waitForSidebarBootstrap(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void> {
@@ -373,41 +324,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   }
 
   private handleResumeSent(): void {
-    const isStartupResume = this.firstResumeSent !== undefined
     this.firstResumeSent?.resolve()
     this.firstResumeSent = undefined
-
-    // Also catch selection changes that happened while reconnect was running.
-    // Startup selection is hydrated explicitly after the first resume.
-    const selectedSessionId = this.getSnapshot().selectedSessionId?.trim()
-    if (!isStartupResume && selectedSessionId) {
-      this.pendingHistoryRepair.add(selectedSessionId)
-    }
-
-    for (const sessionId of Array.from(this.pendingHistoryRepair)) {
-      void this.repairHistoryAfterResume(sessionId).catch((error) => {
-        console.error('[desktop-v3] selected transcript repair failed', error)
-      })
-    }
-
-  }
-
-  private async repairHistoryAfterResume(sessionId: string): Promise<void> {
-    // This request may have started before the reconnect snapshot.
-    const preReconnectHydrate = this.hydrateBySession.get(sessionId)
-    if (preReconnectHydrate) {
-      await preReconnectHydrate.catch(() => undefined)
-    }
-
-    if (this.stopped || !this.pendingHistoryRepair.has(sessionId)) {
-      return
-    }
-
-    // hydrateSessionOnce now re-evaluates completeness against the newer
-    // reconnect projection and starts another request if needed.
-    await this.hydrateSessionOnce(sessionId)
-
-    this.pendingHistoryRepair.delete(sessionId)
   }
 
   private async handleFrame(frame: RealtimeMessage): Promise<void> {
@@ -484,230 +402,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     }
   }
 
-  private hydrateSessionOnce(sessionId: string): Promise<void> {
-    const normalized = sessionId.trim()
-    if (!normalized) return Promise.resolve()
-    if (this.sessionMessageTailComplete(normalized)) return Promise.resolve()
-
-    const existing = this.hydrateBySession.get(normalized)
-    if (existing) return existing
-
-    const promise = (async () => {
-      this.dispatch({ type: 'desktopV3Cache.markHydrateInFlight', sessionIds: [normalized], inFlight: true })
-      const response = await this.hydrate(buildDesktopV3SelectedSessionHydrateInput(normalized))
-      this.dispatch(hydrateResponseToAction(response, [normalized]))
-    })().finally(() => {
-      this.dispatch({ type: 'desktopV3Cache.markHydrateInFlight', sessionIds: [normalized], inFlight: false })
-      this.hydrateBySession.delete(normalized)
-      this.reconcileDesiredSessionConnections()
-    })
-    this.hydrateBySession.set(normalized, promise)
-    return promise
-  }
-
-  private sessionMessageTailComplete(sessionId: string): boolean {
-    return isDesktopV3SessionTailReady(this.getSnapshot(), sessionId)
-  }
-
-  private markActiveRunsFromCacheState(state: DesktopV3CacheState): void {
-    this.markedActiveRepairBySession.clear()
-    for (const [sessionId, intent] of Object.entries(state.currentRunIntentBySession)) {
-      if (!intent) continue
-      const status = intent.status.trim().toLowerCase()
-      if (!ACTIVE_INTENT_STATUSES.has(status)) continue
-
-      const restored = state.liveRunsBySession[sessionId]?.[intent.run_id]
-      const restoredSeq = restored?.lastEventSeqSeen ?? 0
-      const targetSeq = projectionSeq(state.projectionsBySession[sessionId])
-      if (targetSeq <= 0 || restoredSeq >= targetSeq) continue
-
-      this.markedActiveRepairBySession.set(sessionId, {
-        runId: intent.run_id,
-        afterSeq: restoredSeq,
-      })
-    }
-  }
-
-  private markActiveRunsFromReconnect(raw: SessionsReconnectResponse): void {
-    this.markedActiveRepairBySession.clear()
-    const sessionIds = new Set<string>([
-      ...(raw.session_order ?? []),
-      ...Object.keys(raw.current_run_intent_by_session ?? {}),
-      ...Object.keys(raw.run_intents_by_session ?? {}),
-    ])
-
-    for (const sessionId of sessionIds) {
-      const explicit = raw.current_run_intent_by_session?.[sessionId]
-      const intent = explicit ?? deriveCurrentRunIntent(raw.run_intents_by_session?.[sessionId] ?? [])
-      if (!intent) continue
-
-      const restored = this.getSnapshot().liveRunsBySession[sessionId]?.[intent.run_id]
-      const restoredSeq = restored?.lastEventSeqSeen ?? 0
-      if (restoredSeq >= intent.event_seq) {
-        continue
-      }
-
-      const status = intent.status.trim().toLowerCase()
-      if (!ACTIVE_INTENT_STATUSES.has(status)) continue
-      this.markedActiveRepairBySession.set(sessionId, {
-        runId: intent.run_id,
-        afterSeq: restoredSeq,
-      })
-    }
-  }
-
-  private beginActiveRepairGeneration(): number {
-    this.repairGeneration += 1
-    this.hiddenRepairInFlight = 0
-    this.hiddenRepairBudget = {
-      generation: this.repairGeneration,
-      sessionsStarted: 0,
-      eventsApplied: 0,
-    }
-    return this.repairGeneration
-  }
-
-  private scheduleMarkedActiveRunRepairs(generation: number): void {
-    if (this.stopped || generation !== this.repairGeneration) return
-    const selectedSessionId = this.getSnapshot().selectedSessionId?.trim()
-    const hiddenCandidates: Array<[string, { runId: string; afterSeq: number }]> = []
-
-    for (const [sessionId, marked] of this.markedActiveRepairBySession) {
-      if (sessionId === selectedSessionId) {
-        this.startActiveRunRepair(sessionId, marked, generation, false)
-      } else {
-        hiddenCandidates.push([sessionId, marked])
-      }
-    }
-
-    for (const [sessionId, marked] of hiddenCandidates) {
-      if (this.hiddenRepairInFlight >= ACTIVE_REPAIR_HIDDEN_MAX_CONCURRENT) break
-      if (this.hiddenRepairBudget.sessionsStarted >= ACTIVE_REPAIR_HIDDEN_MAX_SESSIONS_PER_GENERATION) break
-      if (this.hiddenRepairBudget.eventsApplied >= ACTIVE_REPAIR_HIDDEN_MAX_EVENTS_PER_GENERATION) break
-      this.startActiveRunRepair(sessionId, marked, generation, true)
-    }
-  }
-
-  private startActiveRunRepair(
-    sessionId: string,
-    marked: { runId: string; afterSeq: number },
-    generation: number,
-    hidden: boolean,
-  ): void {
-    const key = `${sessionId}:${marked.runId}`
-    const existing = this.activeRepairByRun.get(key)
-    if (existing) return
-    if (hidden) {
-      this.hiddenRepairInFlight += 1
-      this.hiddenRepairBudget.sessionsStarted += 1
-    }
-
-    let completed = false
-    this.repairActiveRun(
-      sessionId,
-      marked.runId,
-      marked.afterSeq,
-      generation,
-      hidden,
-    )
-      .then((result) => {
-        completed = result === 'completed'
-      })
-      .catch((error) => {
-        if (!this.stopped && generation === this.repairGeneration) {
-          console.error('[desktop-v3] active run repair failed', error)
-        }
-      })
-      .finally(() => {
-        const currentRepair = this.activeRepairByRun.get(key)
-        if (currentRepair?.generation === generation) {
-          this.activeRepairByRun.delete(key)
-        }
-        if (hidden) {
-          this.hiddenRepairInFlight = Math.max(0, this.hiddenRepairInFlight - 1)
-        }
-        if (completed && generation === this.repairGeneration) {
-          const current = this.markedActiveRepairBySession.get(sessionId)
-          if (current?.runId === marked.runId) {
-            this.markedActiveRepairBySession.delete(sessionId)
-          }
-        }
-        if (hidden && generation === this.repairGeneration && !this.stopped) {
-          this.scheduleMarkedActiveRunRepairs(generation)
-        }
-      })
-
-    this.activeRepairByRun.set(key, { generation })
-  }
-
-  private repairStillCurrent(sessionId: string, expectedRunId: string, generation: number): boolean {
-    if (this.stopped || generation !== this.repairGeneration) return false
-    const current = this.getSnapshot().currentRunIntentBySession[sessionId]
-    if (!current || current.run_id !== expectedRunId) return false
-    return ACTIVE_INTENT_STATUSES.has(current.status.trim().toLowerCase())
-  }
-
-  private async repairActiveRun(
-    sessionId: string,
-    expectedRunId: string,
-    afterSeq: number,
-    generation: number,
-    hidden: boolean,
-  ): Promise<'completed' | 'cancelled' | 'budget_exhausted'> {
-    const runStartSeq = Math.max(0, Math.floor(afterSeq))
-    let cursor = runStartSeq
-    let pagesRead = 0
-
-    for (;;) {
-      if (!this.repairStillCurrent(sessionId, expectedRunId, generation)) return 'cancelled'
-      if (hidden) {
-        if (pagesRead >= ACTIVE_REPAIR_HIDDEN_MAX_PAGES_PER_SESSION) return 'budget_exhausted'
-        if (this.hiddenRepairBudget.eventsApplied >= ACTIVE_REPAIR_HIDDEN_MAX_EVENTS_PER_GENERATION) return 'budget_exhausted'
-      }
-
-      const page = await this.readEventsPage({
-        sessionId,
-        afterSeq: cursor,
-        limit: ACTIVE_REPAIR_PAGE_SIZE,
-      })
-      pagesRead += 1
-
-      if (!this.repairStillCurrent(sessionId, expectedRunId, generation)) return 'cancelled'
-
-      let ordered = [...page.events].sort((a, b) => a.seq - b.seq)
-      if (hidden) {
-        const remaining = Math.max(0, ACTIVE_REPAIR_HIDDEN_MAX_EVENTS_PER_GENERATION - this.hiddenRepairBudget.eventsApplied)
-        if (remaining <= 0) return 'budget_exhausted'
-        ordered = ordered.slice(0, remaining)
-      }
-
-      if (ordered.length > 0) {
-        if (!this.repairStillCurrent(sessionId, expectedRunId, generation)) return 'cancelled'
-        await this.streamCommit.commitActions([{
-          type: 'liveRun.mergeRepairEvents',
-          sessionId,
-          runId: expectedRunId,
-          events: ordered.map((event) => ({
-            source: 'sync-stream',
-            sessionId,
-            eventType: event.event_type,
-            sessionEvent: event,
-            projection: page.projection,
-            payload: decodeSessionEventPayload(event),
-          })),
-        }])
-        if (hidden) this.hiddenRepairBudget.eventsApplied += ordered.length
-      }
-
-      if (!this.repairStillCurrent(sessionId, expectedRunId, generation)) return 'cancelled'
-
-      const lastReturnedSeq = ordered.length > 0 ? ordered[ordered.length - 1].seq : cursor
-      const targetSeq = projectionSeq(page.projection)
-      if (lastReturnedSeq <= cursor || lastReturnedSeq >= targetSeq) break
-      cursor = lastReturnedSeq
-    }
-    return 'completed'
-  }
 }
 
 export function commitDesktopV3StreamFrame(
@@ -819,8 +513,8 @@ export function buildDesktopV3InitialRealtimeResume(
     subscription_id: `${clientId}:workset:${sidebarScopeId}`,
     surface: 'desktop',
     selector: cloneDesktopV3SyncSelector(sidebarScope.selector),
-    resources: ['membership', 'projections', 'run_intents', 'sessions', 'tombstones'],
-    auto_subscribe_sessions: true,
+    resources: ['membership', 'projections', 'current_run_state', 'sessions', 'tombstones'],
+    auto_subscribe_sessions: false,
   }]
   const resume: RealtimeMessage = {
     protocol: 'v3.realtime',
@@ -891,12 +585,13 @@ export function buildDesktopV3ReconnectInput(
       resources: {
         messages: false,
         events: false,
-        run_intents: true,
+        run_intents: false,
+        current_run_state: true,
         active_plan: false,
         plan_revisions: false,
       },
       include_active: true,
-      auto_subscribe_sessions: true,
+      auto_subscribe_sessions: false,
     },
   }
 }
@@ -1108,9 +803,3 @@ function normalizeTransportWorksets(
   }))
 }
 
-function projectionSeq(projection: V3SessionProjection | undefined): number {
-  return Math.max(
-    projection?.last_event_seq ?? 0,
-    projection?.projection_high_watermark_seq ?? 0,
-  )
-}

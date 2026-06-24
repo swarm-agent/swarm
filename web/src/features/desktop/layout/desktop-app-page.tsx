@@ -58,6 +58,7 @@ import {
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
+import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 
@@ -2256,12 +2257,7 @@ export function DesktopAppPage() {
   useEffect(() => {
     const sessionId = routeSessionId.trim()
     if (!sessionId) return
-
-    dispatchDesktopV3Cache(selectSession(sessionId))
-
-    // Startup history is delivered by the single /v3/sync/bootstrap transaction.
-    // The retained realtime controller owns any later repair for sessions outside
-    // that bounded memory snapshot; the route effect only selects the session.
+    void selectAndHydrateDesktopV3Session(sessionId)
   }, [routeSessionId])
 
   useEffect(() => {
@@ -2459,7 +2455,7 @@ export function DesktopAppPage() {
 
   const handleSelectSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
-    dispatchDesktopV3Cache(selectSession(normalizedSessionId))
+    void selectAndHydrateDesktopV3Session(normalizedSessionId)
     const session = sessionById.get(normalizedSessionId)
     if (!session?.workspacePath) {
       return

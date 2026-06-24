@@ -45,6 +45,7 @@ export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
     events: false,
     run_intents: false,
     current_run_state: true,
+    session_view: false,
     active_plan: false,
     plan_revisions: false,
   },
@@ -56,6 +57,7 @@ export const DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES: SyncResources = {
   events: false,
   run_intents: true,
   current_run_state: true,
+  session_view: true,
   active_plan: false,
   plan_revisions: false,
 }

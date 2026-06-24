@@ -53,6 +53,7 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     sessionsById: {},
     projectionsBySession: {},
     sessionOrderByScope: {},
+    sessionViewsById: {},
     tombstonesBySession: {},
     messagesBySession: {},
     eventsBySession: {},
@@ -383,6 +384,7 @@ export function applyHydrate(
   assertMapSubset(snapshot.events_by_session, requested, 'events_by_session')
   assertMapSubset(snapshot.run_intents_by_session, requested, 'run_intents_by_session')
   assertMapSubset(snapshot.current_run_state_by_session, requested, 'current_run_state_by_session')
+  assertMapSubset(snapshot.session_views_by_id, requested, 'session_views_by_id')
   assertObjectKeysSubset('tombstones_by_session', snapshot.tombstones_by_session, requested)
   assertObjectKeysSubset('history_manifests_by_session', snapshot.history_manifests_by_session, requested)
 
@@ -475,6 +477,7 @@ function applyHydrateAuthoritativeResources(
 
   enforceHydratedTranscriptRetention(state)
   applyCurrentRunStateFromSyncSnapshot(state, snapshot, requested)
+  applySessionViewsFromSyncSnapshot(state, snapshot, requested)
 
   if (syncResourceSetContains(resourceSet, 'run_intents')) {
     for (const sessionId of requested) {
@@ -565,6 +568,7 @@ export function applyReconnectSnapshot(
     ...Object.keys(raw.sessions_by_id ?? {}),
     ...(raw.session_order ?? []),
     ...Object.keys(raw.current_run_intent_by_session ?? {}),
+    ...Object.keys(raw.current_run_state_by_session ?? {}),
     ...Object.keys(raw.run_intents_by_session ?? {}),
   ])
 
@@ -574,6 +578,8 @@ export function applyReconnectSnapshot(
   if (resources.has('run_intents')) {
     replaceRunIntentsBySession(state, raw.run_intents_by_session, authoritativeSessionIds)
     applyCurrentRunIntentsFromReconnect(state, raw, authoritativeSessionIds)
+  } else if (resources.has('current_run_state')) {
+    applyCurrentRunStateFromReconnect(state, raw, authoritativeSessionIds)
   } else {
     mergeRunIntentsBySession(state, raw.run_intents_by_session)
     mergeRecord(state.currentRunIntentBySession, raw.current_run_intent_by_session)
@@ -1431,6 +1437,39 @@ function mergeReconnectOptionalResources(
   }
 }
 
+function applyCurrentRunStateFromReconnect(
+  state: DesktopV3CacheState,
+  raw: SessionsReconnectResponse,
+  authoritativeSessionIds: Set<string>,
+): void {
+  const snapshotLike: SyncSnapshotResponse = {
+    ok: true,
+    rev: raw.rev,
+    snapshot_endpoint_cursor: raw.snapshot_endpoint_cursor,
+    sessions_by_id: raw.sessions_by_id,
+    projections_by_session: raw.projections_by_session,
+    current_run_state_by_session: raw.current_run_state_by_session,
+    session_order: raw.session_order,
+    sync_scope: {
+      surface: raw.surface ?? 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: raw.workset_id ?? 'reconnect',
+      resource_set: 'current_run_state',
+    },
+    scope_id: raw.workset_id ?? 'reconnect',
+    selector: {},
+    known_sessions: {},
+    tombstones_by_session: {},
+    replay_instructions: {
+      stream_path: '/v3/sync/stream',
+      transport: 'http_post',
+      after_endpoint_cursor: raw.snapshot_endpoint_cursor,
+      bootstrap_required_on_cursor_error: true,
+    },
+  }
+  applyCurrentRunStateFromSyncSnapshot(state, snapshotLike, authoritativeSessionIds)
+}
+
 function applyCurrentRunIntentsFromReconnect(
   state: DesktopV3CacheState,
   raw: SessionsReconnectResponse,
@@ -1500,6 +1539,52 @@ function mergeSnapshotResources(
   if (snapshot.omissions !== undefined) state.omissionsByScope[scopeId] = snapshot.omissions
   if (snapshot.pagination !== undefined) state.paginationByScope[scopeId] = snapshot.pagination
   if (snapshot.watermarks !== undefined) state.watermarksByScope[scopeId] = snapshot.watermarks
+}
+
+function applySessionViewsFromSyncSnapshot(
+  state: DesktopV3CacheState,
+  snapshot: SyncSnapshotResponse,
+  authoritativeSessionIds: Set<string>,
+): void {
+  if (!syncResourceSetContains(snapshot.sync_scope.resource_set, 'session_view')) return
+  const views = onlyRequested(snapshot.session_views_by_id, authoritativeSessionIds)
+  for (const sessionId of authoritativeSessionIds) {
+    const view = views?.[sessionId]
+    if (!view) {
+      delete state.sessionViewsById[sessionId]
+      delete state.permissionsBySession[sessionId]
+      delete state.usageBySession[sessionId]
+      delete state.plansBySession[sessionId]
+      continue
+    }
+
+    state.sessionViewsById[sessionId] = view
+    state.permissionsBySession[sessionId] = [...(view.pending_permissions ?? [])]
+    if (view.usage_summary !== undefined) state.usageBySession[sessionId] = view.usage_summary
+    if (view.active_plan !== undefined) state.plansBySession[sessionId] = view.active_plan
+
+    const settings = view.agentic_settings
+    const authoritativePreference = settings?.effective_preference ?? settings?.stored_preference
+    if (authoritativePreference !== undefined) state.preferencesBySession[sessionId] = authoritativePreference
+    if (settings?.agent_model_policy !== undefined) state.agentModelPolicyBySession[sessionId] = settings.agent_model_policy
+
+    const record = state.sessionsById[sessionId]
+    if (record?.kind === 'full' && settings) {
+      state.sessionsById[sessionId] = {
+        ...record,
+        session: {
+          ...record.session,
+          mode: settings.mode || record.session.mode,
+          preference: settings.stored_preference ?? record.session.preference,
+          metadata: {
+            ...(record.session.metadata ?? {}),
+            agent_name: settings.agent_name || record.session.metadata?.agent_name,
+            resolved_agent_name: settings.resolved_agent_name || record.session.metadata?.resolved_agent_name,
+          },
+        },
+      }
+    }
+  }
 }
 
 function upsertSessions(state: DesktopV3CacheState, sessionsById: Record<string, SessionSnapshot> | undefined): void {

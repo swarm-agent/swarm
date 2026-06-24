@@ -124,6 +124,27 @@ export interface V3RealtimeBootstrap {
   resume: unknown
 }
 
+export interface DesktopV3AgenticSettings {
+  mode: string
+  agent_name: string
+  resolved_agent_name: string
+  runtime_mode?: string
+  stored_preference?: unknown
+  effective_preference?: unknown
+  agent_model_policy?: unknown
+  context_window?: number
+  max_output_tokens?: number
+  projection_seq?: number
+}
+
+export interface DesktopV3SessionView {
+  agentic_settings: DesktopV3AgenticSettings
+  pending_permissions?: DesktopPermissionRecord[]
+  usage_summary?: unknown
+  current_run_state?: V3SessionRunState
+  active_plan?: unknown
+}
+
 export interface V3SessionTombstone {
   session_id: string
   user_id?: string
@@ -164,6 +185,7 @@ export interface SyncSnapshotResponse {
   run_intents_by_session?: Record<string, V3SessionRunIntent[]>
   current_run_state_by_session?: Record<string, V3SessionRunState>
   active_session_ids?: string[]
+  session_views_by_id?: Record<string, DesktopV3SessionView>
   realtime?: V3RealtimeBootstrap
   history_manifests_by_session?: Record<string, unknown>
   history_chunks_by_id?: Record<string, unknown>
@@ -234,6 +256,8 @@ export interface SessionsReconnectResponse {
   projections_by_session: Record<string, V3SessionProjection>
   run_intents_by_session?: Record<string, V3SessionRunIntent[]>
   current_run_intent_by_session?: Record<string, V3SessionRunIntent>
+  current_run_state_by_session?: Record<string, V3SessionRunState>
+  active_session_ids?: string[]
   subscriptions: ReconnectSubscription[]
   session_order: string[]
   diagnostics_by_session: Record<string, ReconnectDiagnostic[]>
@@ -578,6 +602,7 @@ export interface DesktopV3CacheState {
   sessionsById: Record<string, SessionCacheRecord>
   projectionsBySession: Record<string, V3SessionProjection>
   sessionOrderByScope: Record<string, string[]>
+  sessionViewsById: Record<string, DesktopV3SessionView>
   tombstonesBySession: Record<string, V3SessionTombstone>
   messagesBySession: Record<string, MessageListCache>
   eventsBySession: Record<string, V3SessionEvent[]>

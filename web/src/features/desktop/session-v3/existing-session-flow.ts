@@ -1,5 +1,6 @@
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
+import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type {
   MessageMutationConflictResponse,
   SessionMessageMutationResponse,
@@ -105,6 +106,7 @@ interface DesktopV3ExistingSessionFlowDeps {
   requireControllerReady: typeof requireDesktopV3RealtimeControllerReady
   dispatch: typeof dispatchDesktopV3Cache
   postAppendMessage: typeof postDesktopV3AppendMessage
+  hydrateSession: typeof selectAndHydrateDesktopV3Session
 }
 
 let flowDeps: DesktopV3ExistingSessionFlowDeps = {
@@ -112,6 +114,7 @@ let flowDeps: DesktopV3ExistingSessionFlowDeps = {
   requireControllerReady: requireDesktopV3RealtimeControllerReady,
   dispatch: dispatchDesktopV3Cache,
   postAppendMessage: postDesktopV3AppendMessage,
+  hydrateSession: selectAndHydrateDesktopV3Session,
 }
 
 export function setDesktopV3ExistingSessionFlowDepsForTests(
@@ -156,9 +159,9 @@ export async function continueDesktopV3Conversation(
     },
   })
 
-  const historyPromise = controller.ensureSessionHistory(sessionId)
-  historyPromise.catch((error) => {
-    console.error('[desktop-v3] existing-session history hydrate failed', error)
+  const hydratePromise = flowDeps.hydrateSession(sessionId)
+  hydratePromise.catch((error) => {
+    console.error('[desktop-v3] existing-session hydrate failed', error)
   })
 
   try {
