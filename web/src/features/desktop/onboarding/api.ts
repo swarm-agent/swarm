@@ -508,11 +508,6 @@ export async function fetchRemoteSwarmCandidates(): Promise<RemoteSwarmCandidate
   }
 }
 
-export async function fetchPendingRemoteSwarmPairings(): Promise<RemoteSwarmPendingPairing[]> {
-  const response = await requestJson<{ ok?: boolean; items?: RemoteSwarmPendingPairing[]; count?: number }>('/v1/swarm/remote-pairing/pending')
-  return Array.isArray(response.items) ? response.items : []
-}
-
 export async function approveRemoteSwarmPairing(input: {
   requestID: string
   approve: boolean

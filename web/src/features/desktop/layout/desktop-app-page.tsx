@@ -37,7 +37,7 @@ import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settin
 import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
-import { approveRemoteSwarmPairing, fetchPendingRemoteSwarmPairings, type RemoteSwarmPendingPairing } from '../onboarding/api'
+import { approveRemoteSwarmPairing, type RemoteSwarmPendingPairing } from '../onboarding/api'
 import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from '../swarm/components/managed-host-link-request-modal'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopPermissionModal } from '../permissions/components/desktop-permission-modal'
@@ -71,7 +71,6 @@ const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
 type MobileSidebarSwipeState = { startX: number; startY: number; tracking: boolean; completed: boolean; mode: 'open' | 'close' }
 const UPDATE_STATUS_REFETCH_INTERVAL_MS = 5 * 60_000
 const SWARM_TARGET_REFETCH_INTERVAL_MS = 10_000
-const PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS = 1_250
 const SIDEBAR_ACTION_RAIL_WIDTH_CLASS = 'w-[52px]'
 const SIDEBAR_ACTION_ROW_CLASS = `grid min-w-0 grid-cols-[minmax(0,1fr)_52px] items-center gap-2.5`
 const SIDEBAR_ACTION_RAIL_CLASS = `grid ${SIDEBAR_ACTION_RAIL_WIDTH_CLASS} shrink-0 grid-cols-[24px_24px] justify-end gap-1`
@@ -2038,33 +2037,10 @@ export function DesktopAppPage() {
     void queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
   }, [queryClient, swarmTopologySignature])
 
-  const refreshPairingRequests = useCallback(() => {
-    void fetchPendingRemoteSwarmPairings()
-      .then((items) => {
-        setPendingPairingRequests(items)
-        setPairingRequestError(null)
-      })
-      .catch((error) => {
-        setPairingRequestError(error instanceof Error ? error.message : 'Failed to load link requests')
-      })
-  }, [])
-
-  useEffect(() => {
-    // Link-request badges are sidebar/background affordances, not chat-render inputs.
-    // Keep them out of the first-second Desktop bootstrap request set.
-    const initialTimer = window.setTimeout(refreshPairingRequests, PAIRING_REQUEST_INITIAL_REFRESH_DELAY_MS)
-    const pollTimer = window.setInterval(refreshPairingRequests, 5_000)
-    return () => {
-      window.clearTimeout(initialTimer)
-      window.clearInterval(pollTimer)
-    }
-  }, [refreshPairingRequests])
-
   const handleOpenPairingRequests = useCallback(() => {
     setPairingRequestsOpen(true)
     setPairingRequestStatus(null)
-    refreshPairingRequests()
-  }, [refreshPairingRequests])
+  }, [])
 
   const handlePairingDecision = useCallback(async (request: RemoteSwarmPendingPairing, approve: boolean) => {
     const requestID = request.request_id.trim()

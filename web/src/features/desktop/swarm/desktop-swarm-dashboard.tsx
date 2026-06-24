@@ -21,7 +21,6 @@ import {
 } from './api/local-containers'
 import {
   approveRemoteSwarmPairing,
-  fetchPendingRemoteSwarmPairings,
   removeManagedHostLink,
   type RemoteSwarmPendingPairing,
 } from './api/remote-pairing'
@@ -1237,7 +1236,6 @@ export function DesktopSwarmDashboard() {
     launchedContainers: SwarmLocalContainer[],
     nextDeployments: DeployContainerDeployment[],
     nextRemoteSessions: RemoteDeploySession[],
-    nextPendingPairings: RemoteSwarmPendingPairing[],
     nextSwarmTargets: SwarmTarget[],
     nextMirrorResources: SwarmMirrorResources,
     nextFlows: FlowSummaryRecord[],
@@ -1246,27 +1244,25 @@ export function DesktopSwarmDashboard() {
     setLocalContainers(launchedContainers)
     setDeployments(nextDeployments)
     setRemoteSessions(nextRemoteSessions)
-    setPendingPairings(nextPendingPairings)
     setSwarmTargets(nextSwarmTargets)
     setMirrorResources(nextMirrorResources)
     setFlows(nextFlows)
   }
 
   const refresh = async () => {
-    const [state, nextUISettings, runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets, nextMirrorResources, nextFlows] = await Promise.all([
+    const [state, nextUISettings, runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextTargets, nextMirrorResources, nextFlows] = await Promise.all([
       fetchSwarmState(),
       getUISettings(),
       fetchSwarmLocalRuntimeStatus(),
       fetchSwarmLocalContainers(),
       fetchDeployContainers(),
       fetchRemoteDeploySessions(),
-      fetchPendingRemoteSwarmPairings(),
       fetchSwarmTargets(),
       fetchSwarmMirrorResources(),
       fetchFlows(),
     ])
     applyCoreDashboardState(state, nextUISettings)
-    applySupplementalDashboardState(runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets.targets, nextMirrorResources, nextFlows)
+    applySupplementalDashboardState(runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextTargets.targets, nextMirrorResources, nextFlows)
   }
 
   useEffect(() => {
@@ -1368,18 +1364,6 @@ export function DesktopSwarmDashboard() {
         }
       })
 
-    void fetchPendingRemoteSwarmPairings()
-      .then((items) => {
-        if (!cancelled) {
-          setPendingPairings(items)
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError((current) => current ?? (err instanceof Error ? err.message : 'Failed to load pending pairing requests'))
-        }
-      })
-
     void fetchSwarmTargets()
       .then((result) => {
         if (!cancelled) {
@@ -1451,28 +1435,6 @@ export function DesktopSwarmDashboard() {
     return () => {
       cancelled = true
       window.removeEventListener('swarm:mirror-updated', refreshMirrors)
-    }
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    const refreshPendingPairings = () => {
-      void fetchPendingRemoteSwarmPairings()
-        .then((items) => {
-          if (!cancelled) {
-            setPendingPairings(items)
-          }
-        })
-        .catch((err) => {
-          if (!cancelled) {
-            setError((current) => current ?? (err instanceof Error ? err.message : 'Failed to load pending pairing requests'))
-          }
-        })
-    }
-    const timer = window.setInterval(refreshPendingPairings, 5_000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
     }
   }, [])
 

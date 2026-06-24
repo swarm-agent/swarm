@@ -1,6 +1,5 @@
 export {
   approveRemoteSwarmPairing,
-  fetchPendingRemoteSwarmPairings,
   fetchRemoteSwarmCandidates,
   removeManagedHostLink,
   startRemoteSwarmPairing,
