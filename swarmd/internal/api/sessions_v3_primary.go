@@ -189,6 +189,10 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
+	if sessionID, ok := parseSessionV3ConnectPath(r.URL.Path); ok {
+		s.handleSessionV3Connect(w, r, principal, sessionID)
+		return
+	}
 	sessionID, subpath, ok := parseSessionsV3PrimaryPath(r.URL.Path)
 	if !ok {
 		writeError(w, http.StatusBadRequest, errors.New("invalid sessions v3 path"))
@@ -1738,6 +1742,19 @@ func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession) map[string]a
 		response["active_plan"] = hydrated.ActivePlan
 	}
 	return response
+}
+
+func parseSessionV3ConnectPath(path string) (string, bool) {
+	if !strings.HasPrefix(path, sessionsV3PrimaryPrefix) || !strings.HasSuffix(path, ":connect") {
+		return "", false
+	}
+	rest := strings.TrimPrefix(path, sessionsV3PrimaryPrefix)
+	rest = strings.TrimSuffix(rest, ":connect")
+	if rest == "" || strings.Contains(rest, "/") || strings.Contains(rest, "//") {
+		return "", false
+	}
+	sessionID := strings.TrimSpace(rest)
+	return sessionID, sessionID != ""
 }
 
 func parseSessionsV3PrimaryPath(path string) (string, string, bool) {
