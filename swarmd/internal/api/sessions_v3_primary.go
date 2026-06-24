@@ -499,7 +499,7 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 	result, enqueueJob, err := s.acceptSessionsV3Message(principal, sessionID, req)
 	if err != nil {
 		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
-			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "conflict": result.Conflict, "result": result})
+			writeJSON(w, http.StatusConflict, SessionConnectionError{Code: "idempotency_conflict", Message: err.Error(), Retryable: false, Action: SessionErrorAction{Method: http.MethodPost, Path: "/v3/sessions/" + sessionID + "/messages"}})
 			return
 		}
 		if strings.Contains(err.Error(), "not found") {

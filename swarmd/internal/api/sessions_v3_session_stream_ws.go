@@ -170,6 +170,7 @@ func runPhaseFromSessionConnectionEvent(event pebblestore.V3SessionEvent) (strin
 	var payload struct {
 		RunID         string `json:"run_id"`
 		Status        string `json:"status"`
+		Phase         string `json:"phase"`
 		BlockedReason string `json:"blocked_reason"`
 		RunIntent     *struct {
 			RunID         string `json:"run_id"`
@@ -188,8 +189,12 @@ func runPhaseFromSessionConnectionEvent(event pebblestore.V3SessionEvent) (strin
 		status = firstNonEmpty(status, payload.RunIntent.Status)
 		blocked = firstNonEmpty(blocked, payload.RunIntent.BlockedReason)
 	}
-	if runID == "" || status == "" {
+	phase := strings.TrimSpace(payload.Phase)
+	if runID == "" || (status == "" && phase == "") {
 		return "", "", false
+	}
+	if phase != "" {
+		return phase, runID, true
 	}
 	return sessionConnectionRunPhaseFromStatus(status, blocked), runID, true
 }

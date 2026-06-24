@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	gorillaws "github.com/gorilla/websocket"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 func TestSessionV3ConnectReturnsSnapshotAndConnectionContract(t *testing.T) {
@@ -39,6 +41,49 @@ func TestSessionV3ConnectReturnsSnapshotAndConnectionContract(t *testing.T) {
 	if !strings.HasPrefix(resp.Connection.StreamUrl, sessionConnectionStreamPrefix) || strings.Contains(resp.Connection.StreamUrl, "/v3/realtime/stream") {
 		t.Fatalf("stream_url = %q", resp.Connection.StreamUrl)
 	}
+}
+
+func TestSessionConnectionStreamEmitsRunPhaseLifecycle(t *testing.T) {
+	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, t.TempDir())
+	defer func() { _ = closeStore() }()
+	server.SetDataDir(t.TempDir())
+	server.v3SessionExecutor = newSessionV3Executor(server)
+	server.v3SessionExecutor.startDelay = 0
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "session-stream-phases-create", "stream phases", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	connectResp := postSessionV3ConnectForTest(t, server, created.ID, "desktop:stream-phases", "request-stream-phases-1", nil)
+
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	conn := dialSessionConnectionStreamForTest(t, httpServer.URL, connectResp.Connection.StreamUrl)
+	defer conn.Close()
+
+	ready := readSessionConnectionFrameForTest(t, conn)
+	if ready["type"] != "session.ready" || ready["session_id"] != created.ID {
+		t.Fatalf("ready frame = %+v", ready)
+	}
+
+	runID := "run-stream-phases-1"
+	body := `{"client_request_id":"message-stream-phases-1","message_id":"msg-stream-phases-1","run_id":"` + runID + `","role":"user","content":"hello phases"}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/messages", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("message status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	phases := make([]string, 0, 8)
+	for i := 0; i < 30; i++ {
+		frame := readSessionConnectionFrameWithDeadlineForTest(t, conn, 2*time.Second)
+		if frame["type"] != "run.phase" || frame["run_id"] != runID {
+			continue
+		}
+		phases = append(phases, asStringMapValue(frame, "phase"))
+		if phasesContainOrdered(phases, []string{"pending_executor", "executor_started", "provider_request_started", "provider_first_event", "output_streaming", "completed"}) {
+			return
+		}
+	}
+	t.Fatalf("run phases missing lifecycle, got %v", phases)
 }
 
 func TestSessionConnectionStreamReplaysThenReadyAndLiveEvents(t *testing.T) {
@@ -106,6 +151,14 @@ func dialSessionConnectionStreamForTest(t *testing.T, baseURL, streamURL string)
 
 func readSessionConnectionFrameForTest(t *testing.T, conn *gorillaws.Conn) map[string]any {
 	t.Helper()
+	return readSessionConnectionFrameWithDeadlineForTest(t, conn, 0)
+}
+
+func readSessionConnectionFrameWithDeadlineForTest(t *testing.T, conn *gorillaws.Conn, timeout time.Duration) map[string]any {
+	t.Helper()
+	if timeout > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	}
 	_, raw, err := conn.ReadMessage()
 	if err != nil {
 		t.Fatalf("read session connection frame: %v", err)
@@ -115,6 +168,22 @@ func readSessionConnectionFrameForTest(t *testing.T, conn *gorillaws.Conn) map[s
 		t.Fatalf("decode session connection frame %s: %v", string(raw), err)
 	}
 	return frame
+}
+
+func phasesContainOrdered(phases, expected []string) bool {
+	if len(expected) == 0 {
+		return true
+	}
+	next := 0
+	for _, phase := range phases {
+		if phase == expected[next] {
+			next++
+			if next == len(expected) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func asStringMapValue(values map[string]any, key string) string {

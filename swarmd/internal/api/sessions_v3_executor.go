@@ -421,6 +421,62 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 	})
 }
 
+func (e *sessionV3Executor) recordRunPhase(job sessionV3ExecutorJob, phase RunPhase, eventType string) (sessionruntime.SessionMutationResult, error) {
+	if e == nil || e.server == nil {
+		return sessionruntime.SessionMutationResult{}, errors.New("v3 executor is not configured")
+	}
+	if e.isRunCanceled(job) {
+		return sessionruntime.SessionMutationResult{}, context.Canceled
+	}
+	phaseText := strings.TrimSpace(string(phase))
+	if phaseText == "" {
+		return sessionruntime.SessionMutationResult{}, errors.New("run phase is required")
+	}
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" {
+		return sessionruntime.SessionMutationResult{}, errors.New("run phase event type is required")
+	}
+	now := time.Now().UnixMilli()
+	intent := pebblestore.V3SessionRunIntent{
+		SessionID:      job.SessionID,
+		UserID:         job.Principal.UserID,
+		AccountScopeID: job.Principal.AccountScopeID,
+		RunID:          job.RunID,
+		Status:         sessionruntime.RunIntentRunning,
+		UpdatedAt:      now,
+	}
+	payload := struct {
+		SessionID string                         `json:"session_id"`
+		RunID     string                         `json:"run_id"`
+		Status    string                         `json:"status"`
+		Phase     string                         `json:"phase"`
+		RunIntent pebblestore.V3SessionRunIntent `json:"run_intent"`
+	}{SessionID: job.SessionID, RunID: job.RunID, Status: sessionruntime.RunIntentRunning, Phase: phaseText, RunIntent: intent}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, phaseText, eventType, string(raw))
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	clientRequestID := sessionV3ExecutorClientRequestID(eventType, job.RunID)
+	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       job.SessionID,
+		UserID:          job.Principal.UserID,
+		AccountScopeID:  job.Principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       eventType,
+		EventPayload:    raw,
+		RunIntent:       &intent,
+		NowUnixMs:       now,
+	})
+}
+
 func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, deltaIndex int, delta string) (sessionruntime.SessionMutationResult, error) {
 	if e.isRunCanceled(job) {
 		return sessionruntime.SessionMutationResult{}, context.Canceled
@@ -1088,6 +1144,9 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		"model":    modelName,
 		"request":  sessionV3ProviderRequestDiagnostic(baseReq),
 	})
+	if _, err := e.recordRunPhase(job, RunPhaseProviderRequestStarted, "session.provider.request_started"); err != nil {
+		return sessionV3AssistantResponse{}, err
+	}
 	ctx = identity.ContextWithPrincipal(ctx, job.Principal)
 	response, streamed, flushCount, err := e.runProviderToolLoop(ctx, job, resolved, runner, baseReq)
 	if err != nil {
@@ -1196,6 +1255,8 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	var finalStreamed strings.Builder
 	var totalFlushCount int
 	identicalCalls := sessionV3ProviderIdenticalToolCallTracker{}
+	providerFirstEventRecorded := false
+	outputStreamingRecorded := false
 	for step := 1; ; step++ {
 		toolsEnabled := len(baseReq.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none")
 		var toolInvoker provideriface.ToolInvoker
@@ -1256,12 +1317,34 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			summary := strings.TrimSpace(reasoningByKey[activeReasoningKey])
 			_, progressErr = e.recordReasoningEvent(job, "session.reasoning.completed", step, 0, activeReasoningKey, "", summary)
 		}
+		recordProviderFirstEvent := func() {
+			if providerFirstEventRecorded || progressErr != nil {
+				return
+			}
+			_, progressErr = e.recordRunPhase(job, RunPhaseProviderFirstEvent, "session.provider.first_event")
+			if progressErr == nil {
+				providerFirstEventRecorded = true
+			}
+		}
+		recordOutputStreaming := func() {
+			if outputStreamingRecorded || progressErr != nil {
+				return
+			}
+			_, progressErr = e.recordRunPhase(job, RunPhaseOutputStreaming, "session.output.streaming")
+			if progressErr == nil {
+				outputStreamingRecorded = true
+			}
+		}
 		response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
 			streamIndex++
 			e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.stream", "backend.provider", fmt.Sprintf("step-%d-stream-%06d", step, streamIndex), sessionV3ProviderStreamEventDiagnostic(event, step, streamIndex))
+			recordProviderFirstEvent()
 			switch event.Type {
 			case provideriface.StreamEventOutputTextDelta:
 				streamed.WriteString(event.Delta)
+				if strings.TrimSpace(event.Delta) != "" {
+					recordOutputStreaming()
+				}
 				if progressErr == nil {
 					progressErr = coalescer.Add(event.Delta)
 				}
@@ -1290,6 +1373,12 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		})
 		completeActiveReasoning()
 		_ = rebuildReasoningSummary()
+		if err == nil && progressErr == nil && streamIndex == 0 {
+			recordProviderFirstEvent()
+		}
+		if err == nil && progressErr == nil && strings.TrimSpace(firstNonEmpty(streamed.String(), response.Text)) != "" {
+			recordOutputStreaming()
+		}
 		if flushErr := coalescer.Flush(); flushErr != nil && progressErr == nil {
 			progressErr = flushErr
 		}
