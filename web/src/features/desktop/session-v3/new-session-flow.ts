@@ -263,7 +263,12 @@ export async function startNewDesktopV3Session(input: {
   }
 
   const controller = await flowDeps.requireControllerReady()
-  const endpointCursor = controller.currentEndpointCursor()
+  let endpointCursor: string | undefined
+  try {
+    endpointCursor = controller.currentEndpointCursor()
+  } catch (error) {
+    console.error('[desktop-v3] new-session realtime cursor unavailable before create', error)
+  }
 
   const rawCreate = await flowDeps.postCreateSession(operation.createRequest)
   if (rawCreate.ok === false) {
@@ -293,17 +298,20 @@ export async function startNewDesktopV3Session(input: {
     },
   })
 
-  try {
-    await controller.connectSession({ sessionId: operation.sessionId, endpointCursor })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    flowDeps.dispatch(messageMutationResponseToAction(
-      { ok: false, error: message },
-      operation.firstMessageRequest.client_request_id,
-      operation.firstMessageRequest.message_id,
-    ))
-    throw error
-  }
+  const connectPromise = (async () => {
+    try {
+      await controller.connectSession({ sessionId: operation.sessionId, endpointCursor })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error('[desktop-v3] new-session realtime subscribe failed before first append', error)
+      flowDeps.dispatch({
+        type: 'realtime.statusChanged',
+        status: 'stale',
+        errorCode: 'session_subscribe_failed',
+        error: message,
+      })
+    }
+  })()
 
   let rawMessage: SessionMessageMutationResponse | MessageMutationConflictResponse
   try {
@@ -341,6 +349,8 @@ export async function startNewDesktopV3Session(input: {
   if (firstRunStatus !== 'pending_executor' && firstRunStatus !== 'running') {
     throw new Error(`Desktop V3 first run was not queued or running: ${firstRunStatus || 'missing status'}`)
   }
+
+  void connectPromise
 
   // Only now may the new-session pane unmount and become Path B.
   input.onSessionStarted?.(operation.sessionId)

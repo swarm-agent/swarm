@@ -418,7 +418,7 @@ test('startNewDesktopV3Session skips selection when delayed create resolves afte
 })
 
 
-test('Desktop V3 new session captures cursor before create and appends only after connectSession resolves', async () => {
+test('Desktop V3 new session appends first message even if connectSession never resolves', async () => {
   const operation = createDesktopV3NewSessionOperation({
     workspacePath: '/workspace',
     workspaceName: 'workspace',
@@ -460,11 +460,11 @@ test('Desktop V3 new session captures cursor before create and appends only afte
   })
 
   try {
-    const started = startNewDesktopV3Session({
+    const result = await startNewDesktopV3Session({
       operation,
       onSessionStarted: (sessionId) => calls.push(`navigate:${sessionId}`),
     })
-    await flushAsyncWork()
+    assert.equal(result.sessionId, operation.sessionId)
     assert.deepEqual(calls, [
       'capture-cursor',
       'create',
@@ -472,17 +472,6 @@ test('Desktop V3 new session captures cursor before create and appends only afte
       'dispatch:session.select',
       'dispatch:pendingUser.upsert',
       `connect:start:${operation.sessionId}:cursor-before-create`,
-    ])
-    connect.resolve()
-    await started
-    assert.deepEqual(calls, [
-      'capture-cursor',
-      'create',
-      'dispatch:mutation.sessionCreateResult',
-      'dispatch:session.select',
-      'dispatch:pendingUser.upsert',
-      `connect:start:${operation.sessionId}:cursor-before-create`,
-      `connect:complete:${operation.sessionId}`,
       'message',
       'dispatch:mutation.messageResult',
       `navigate:${operation.sessionId}`,
@@ -493,7 +482,7 @@ test('Desktop V3 new session captures cursor before create and appends only afte
   }
 })
 
-test('Desktop V3 new session rejected connectSession appends no message and does not navigate', async () => {
+test('Desktop V3 new session appends first message when create response is replayed with realtime_outbox null', async () => {
   const operation = createDesktopV3NewSessionOperation({
     workspacePath: '/workspace',
     workspaceName: 'workspace',
@@ -504,21 +493,22 @@ test('Desktop V3 new session rejected connectSession appends no message and does
   const state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap.scopeId = 'scope-global'
   let appended = false
-  let navigated = false
   const actions: DesktopV3CacheAction[] = []
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
       currentEndpointCursor: () => 'cursor-before-create',
-      connectSession: async () => {
-        throw new Error('subscribe rejected')
-      },
+      connectSession: async () => undefined,
       ensureSessionHistory: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,
     }),
     dispatch: (action) => actions.push(action),
-    postCreateSession: async () => makeCreateResponse(operation),
+    postCreateSession: async () => ({
+      ...makeCreateResponse(operation),
+      mutation: { replayed: true },
+      realtime_outbox: null,
+    }),
     postAppendMessage: async () => {
       appended = true
       return makeMessageResponse(operation)
@@ -526,23 +516,17 @@ test('Desktop V3 new session rejected connectSession appends no message and does
   })
 
   try {
-    await assert.rejects(startNewDesktopV3Session({
-      operation,
-      onSessionStarted: () => {
-        navigated = true
-      },
-    }), /subscribe rejected/)
-    assert.equal(appended, false)
-    assert.equal(navigated, false)
+    const result = await startNewDesktopV3Session({ operation })
+    assert.equal(result.sessionId, operation.sessionId)
+    assert.equal(appended, true)
+    assert.equal(result.createResponse.realtime_outbox, null)
+    assert.equal(result.createResponse.mutation.replayed, true)
     assert.deepEqual(actions.map((action) => action.type), [
       'mutation.sessionCreateResult',
       'session.select',
       'pendingUser.upsert',
       'mutation.messageResult',
     ])
-    const failed = actions.at(-1)
-    assert.equal(failed?.type, 'mutation.messageResult')
-    assert.equal(failed?.raw.ok, false)
   } finally {
     restore()
   }

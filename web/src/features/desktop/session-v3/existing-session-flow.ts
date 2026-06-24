@@ -145,7 +145,12 @@ export async function continueDesktopV3Conversation(
   }
 
   const controller = await flowDeps.requireControllerReady()
-  const endpointCursor = controller.currentEndpointCursor()
+  let endpointCursor: string | undefined
+  try {
+    endpointCursor = controller.currentEndpointCursor()
+  } catch (error) {
+    console.error('[desktop-v3] existing-session realtime cursor unavailable before append', error)
+  }
 
   flowDeps.dispatch({
     type: 'pendingUser.upsert',
@@ -164,17 +169,20 @@ export async function continueDesktopV3Conversation(
     console.error('[desktop-v3] existing-session hydrate failed', error)
   })
 
-  try {
-    await controller.connectSession({ sessionId, endpointCursor })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    flowDeps.dispatch(messageMutationResponseToAction(
-      { ok: false, error: message },
-      operation.request.client_request_id,
-      operation.request.message_id,
-    ))
-    throw error
-  }
+  const connectPromise = (async () => {
+    try {
+      await controller.connectSession({ sessionId, endpointCursor })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error('[desktop-v3] existing-session realtime subscribe failed before append', error)
+      flowDeps.dispatch({
+        type: 'realtime.statusChanged',
+        status: 'stale',
+        errorCode: 'session_subscribe_failed',
+        error: message,
+      })
+    }
+  })()
 
   let raw: SessionMessageMutationResponse | MessageMutationConflictResponse
   try {
@@ -209,6 +217,8 @@ export async function continueDesktopV3Conversation(
   if (status !== 'pending_executor' && status !== 'running') {
     throw new Error(`Desktop V3 existing-conversation run was not queued or running: ${status || 'missing status'}`)
   }
+
+  void connectPromise
 
   return raw
 }
