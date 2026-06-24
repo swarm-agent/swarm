@@ -1,0 +1,109 @@
+package api
+
+import (
+	"errors"
+	"strings"
+
+	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+)
+
+func (s *Server) sessionsV3SyncSessionViews(options sessionsV3ResolvedSyncOptions, snapshot pebblestore.V3SyncSnapshotResult) (map[string]sessionsV3SessionView, error) {
+	if len(snapshot.SessionOrder) > sessionsV3SyncHydrateMaxSessionViews {
+		return nil, errors.New("sync hydrate resources.session_view cannot target more than 8 sessions")
+	}
+	views := make(map[string]sessionsV3SessionView, len(snapshot.SessionOrder))
+	for _, sessionID := range snapshot.SessionOrder {
+		session, ok := snapshot.SessionsByID[sessionID]
+		if !ok {
+			continue
+		}
+		projection := snapshot.ProjectionsBySession[sessionID]
+		var currentRunState *pebblestore.V3SessionRunState
+		if state, ok := snapshot.CurrentRunStateBySession[sessionID]; ok {
+			stateCopy := state
+			currentRunState = &stateCopy
+		}
+		view, err := s.buildSessionsV3SessionView(options.Principal, session, projection, currentRunState, options.Snapshot.IncludeActivePlan)
+		if err != nil {
+			return nil, err
+		}
+		views[sessionID] = view
+	}
+	return views, nil
+}
+
+func (s *Server) buildSessionsV3SessionView(principal identity.Principal, session pebblestore.SessionSnapshot, projection pebblestore.V3SessionProjection, currentRunState *pebblestore.V3SessionRunState, includeActivePlan bool) (sessionsV3SessionView, error) {
+	if strings.TrimSpace(session.ID) == "" {
+		return sessionsV3SessionView{}, errors.New("session id is required")
+	}
+	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return sessionsV3SessionView{}, errors.New("session is outside principal account scope")
+	}
+	pendingPermissions := []pebblestore.PermissionRecord{}
+	if s.perm != nil {
+		permissions, err := s.perm.ListPending(session.ID, 200)
+		if err != nil {
+			return sessionsV3SessionView{}, err
+		}
+		pendingPermissions = permissions
+	}
+	var usageSummary *pebblestore.SessionUsageSummary
+	if summary, hasSummary, err := s.sessions.GetUsageSummary(session.ID); err != nil {
+		return sessionsV3SessionView{}, err
+	} else if hasSummary {
+		usageSummary = &summary
+	}
+	if currentRunState == nil {
+		if state, ok, err := s.sessions.GetSessionRunState(session.ID); err != nil {
+			return sessionsV3SessionView{}, err
+		} else if ok {
+			currentRunState = &state
+		}
+	}
+
+	storedPreference := normalizeSessionsV3ModelPreference(session.Preference)
+	effectivePreference := storedPreference
+	contextWindow := 0
+	maxOutputTokens := 0
+	if s.model != nil {
+		if resolved, err := s.model.ResolvePreference(storedPreference); err == nil {
+			effectivePreference = normalizeSessionsV3ModelPreference(resolved.Preference)
+			contextWindow = resolved.ContextWindow
+			maxOutputTokens = resolved.MaxOutputTokens
+		}
+	}
+	agentModelPolicy := s.sessionsV3AgentModelPolicy(session, effectivePreference, contextWindow, maxOutputTokens)
+	if agentModelPolicy.Locked {
+		effectivePreference = agentModelPolicy.Preference
+		contextWindow = agentModelPolicy.ContextWindow
+		maxOutputTokens = agentModelPolicy.MaxOutputTokens
+	}
+
+	var activePlan *pebblestore.SessionPlanSnapshot
+	if includeActivePlan {
+		if plan, ok, err := s.sessions.GetActivePlan(session.ID); err != nil {
+			return sessionsV3SessionView{}, err
+		} else if ok {
+			activePlan = &plan
+		}
+	}
+	return sessionsV3SessionView{
+		AgenticSettings: sessionsV3AgenticSettings{
+			Mode:                strings.TrimSpace(session.Mode),
+			AgentName:           sessionsV3MetadataString(session.Metadata, "agent_name"),
+			ResolvedAgentName:   sessionsV3MetadataString(session.Metadata, "resolved_agent_name"),
+			RuntimeMode:         sessionsV3MetadataString(session.Metadata, "runtime_mode"),
+			StoredPreference:    storedPreference,
+			EffectivePreference: effectivePreference,
+			AgentModelPolicy:    agentModelPolicy,
+			ContextWindow:       contextWindow,
+			MaxOutputTokens:     maxOutputTokens,
+			ProjectionSeq:       projection.LastEventSeq,
+		},
+		PendingPermissions: pendingPermissions,
+		UsageSummary:       usageSummary,
+		CurrentRunState:    currentRunState,
+		ActivePlan:         activePlan,
+	}, nil
+}

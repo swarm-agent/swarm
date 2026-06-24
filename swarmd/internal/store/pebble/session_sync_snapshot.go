@@ -84,6 +84,8 @@ type V3SyncSnapshotOptions struct {
 	IncludeRunIntents                  bool
 	IncludeCurrentRunState             bool
 	IncludeActiveSessions              bool
+	IncludeSessionView                 bool
+	IncludeActivePlan                  bool
 }
 
 type V3SyncSnapshotHistoryOptions struct {

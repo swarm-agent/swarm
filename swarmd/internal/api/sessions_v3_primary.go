@@ -1447,19 +1447,15 @@ func (s *Server) hydrateSessionsV3PrimaryWithLimits(principal identity.Principal
 	if strings.TrimSpace(hydrated.Session.AccountScopeID) == "" || strings.TrimSpace(hydrated.Session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
 		return sessionsV3HydratedSession{}, false, nil
 	}
-	pendingPermissions := []pebblestore.PermissionRecord{}
-	if s.perm != nil {
-		permissions, err := s.perm.ListPending(sessionID, 200)
-		if err != nil {
-			return sessionsV3HydratedSession{}, false, err
-		}
-		pendingPermissions = permissions
+	projection := pebblestore.V3SessionProjection{
+		SessionID:                  hydrated.Projection.SessionID,
+		LastEventSeq:               hydrated.Projection.LastEventSeq,
+		ProjectionHighWatermarkSeq: hydrated.Projection.ProjectionHighWatermarkSeq,
+		UpdatedAt:                  hydrated.Projection.UpdatedAt,
 	}
-	var usageSummary *pebblestore.SessionUsageSummary
-	if summary, hasSummary, err := s.sessions.GetUsageSummary(sessionID); err != nil {
+	view, err := s.buildSessionsV3SessionView(principal, hydrated.Session, projection, nil, false)
+	if err != nil {
 		return sessionsV3HydratedSession{}, false, err
-	} else if hasSummary {
-		usageSummary = &summary
 	}
 	var activeRunIntent *pebblestore.V3SessionRunIntent
 	if intent, ok, err := s.sessions.GetSessionActiveRunIntent(sessionID); err != nil {
@@ -1467,28 +1463,15 @@ func (s *Server) hydrateSessionsV3PrimaryWithLimits(principal identity.Principal
 	} else if ok && sessionV3RunIntentStatusActive(intent.Status) {
 		activeRunIntent = &intent
 	}
-	hydrated.Session.Preference = normalizeSessionsV3ModelPreference(hydrated.Session.Preference)
-	preference := hydrated.Session.Preference
-	contextWindow := 0
-	maxOutputTokens := 0
-	if s.model != nil {
-		if resolved, err := s.model.ResolvePreference(hydrated.Session.Preference); err == nil {
-			preference = normalizeSessionsV3ModelPreference(resolved.Preference)
-			contextWindow = resolved.ContextWindow
-			maxOutputTokens = resolved.MaxOutputTokens
-		}
-	}
-	agentModelPolicy := s.sessionsV3AgentModelPolicy(hydrated.Session, preference, contextWindow, maxOutputTokens)
-	if agentModelPolicy.Locked {
-		preference = agentModelPolicy.Preference
-		contextWindow = agentModelPolicy.ContextWindow
-		maxOutputTokens = agentModelPolicy.MaxOutputTokens
-	}
+	preference := view.AgenticSettings.EffectivePreference
+	contextWindow := view.AgenticSettings.ContextWindow
+	maxOutputTokens := view.AgenticSettings.MaxOutputTokens
+	agentModelPolicy := view.AgenticSettings.AgentModelPolicy
 	snapshotEndpointCursor, err := s.signV3SyncEndpointCursorFromLegacy(v3SyncCursorScopeForRealtime(principal, "desktop"), hydrated.SnapshotEndpointCursor)
 	if err != nil {
 		return sessionsV3HydratedSession{}, false, err
 	}
-	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: pendingPermissions, UsageSummary: usageSummary, ActiveRunIntent: activeRunIntent, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, PlanRevisions: []pebblestore.SessionPlanSnapshot{}, AppliedSeq: hydrated.Projection.LastEventSeq, HighWatermark: hydrated.Projection.ProjectionHighWatermarkSeq, SnapshotEndpointCursor: snapshotEndpointCursor}, true, nil
+	return sessionsV3HydratedSession{Session: hydrated.Session, Projection: hydrated.Projection, Messages: hydrated.Messages, Events: hydrated.Events, PendingPermissions: view.PendingPermissions, UsageSummary: view.UsageSummary, ActiveRunIntent: activeRunIntent, Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, AgentModelPolicy: agentModelPolicy, PlanRevisions: []pebblestore.SessionPlanSnapshot{}, AppliedSeq: hydrated.Projection.LastEventSeq, HighWatermark: hydrated.Projection.ProjectionHighWatermarkSeq, SnapshotEndpointCursor: snapshotEndpointCursor}, true, nil
 }
 
 func (s *Server) sessionsV3AgentModelPolicy(session pebblestore.SessionSnapshot, defaultPreference pebblestore.ModelPreference, defaultContextWindow, defaultMaxOutputTokens int) sessionsV3AgentModelPolicy {

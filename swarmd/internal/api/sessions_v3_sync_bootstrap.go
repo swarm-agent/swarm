@@ -42,6 +42,8 @@ type sessionsV3SyncHydrateRequest struct {
 	KnownSessions map[string]sessionsV3KnownState `json:"known_sessions,omitempty"`
 }
 
+const sessionsV3SyncHydrateMaxSessionViews = 8
+
 type sessionsV3SyncSelector struct {
 	Kind           string                  `json:"kind,omitempty"`
 	Global         bool                    `json:"global,omitempty"`
@@ -133,6 +135,9 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, err
 	}
 
+	if req.Resources.SessionView {
+		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("sync bootstrap does not support resources.session_view; use /v3/sync/hydrate")
+	}
 	history, err := sessionsV3SyncHistoryOptionsFromRequest(req.History, req.Resources)
 	if err != nil {
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, err
@@ -170,6 +175,9 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 	if len(ids) == 0 {
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("sync hydrate requires session_ids")
 	}
+	if req.Resources.SessionView && len(ids) > sessionsV3SyncHydrateMaxSessionViews {
+		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("sync hydrate resources.session_view cannot target more than 8 sessions")
+	}
 	if err := validateSessionsV3SyncHydrateSelector(req, ids); err != nil {
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, err
 	}
@@ -190,7 +198,9 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 			SessionIDs:             ids,
 			History:                history,
 			IncludeRunIntents:      req.Resources.RunIntents,
-			IncludeCurrentRunState: req.Resources.CurrentRunState || req.IncludeActive,
+			IncludeCurrentRunState: req.Resources.CurrentRunState || req.IncludeActive || req.Resources.SessionView,
+			IncludeSessionView:     req.Resources.SessionView,
+			IncludeActivePlan:      req.Resources.ActivePlan,
 			// Hydrate is session_ids-targeted. include_active may request compact
 			// active run state for requested sessions, but must never widen
 			// membership beyond the explicit session_ids selector.
@@ -200,7 +210,11 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 		Surface:   normalizeV3SyncSurface(req.Surface),
 	}
 
-	return options, selector, sessionsV3SyncResourceSet(req.Resources, req.History, req.IncludeActive), nil
+	resources := sessionsV3SyncResourceSet(req.Resources, req.History, req.IncludeActive)
+	if req.Resources.SessionView && req.Resources.ActivePlan {
+		resources = append(resources, "active_plan")
+	}
+	return options, selector, resources, nil
 }
 
 func canonicalV3SyncSessionIDs(sessionIDs []string) []string {
@@ -410,6 +424,7 @@ type sessionsV3SyncSnapshotResponseBody struct {
 	RunIntentsBySession       map[string][]pebblestore.V3SessionRunIntent              `json:"run_intents_by_session"`
 	CurrentRunStateBySession  map[string]pebblestore.V3SessionRunState                 `json:"current_run_state_by_session,omitempty"`
 	ActiveSessionIDs          []string                                                 `json:"active_session_ids,omitempty"`
+	SessionViewsByID          map[string]sessionsV3SessionView                         `json:"session_views_by_id,omitempty"`
 	Realtime                  *sessionsV3RealtimeBootstrap                             `json:"realtime,omitempty"`
 	HistoryManifestsBySession map[string][]pebblestore.V3SessionHistoryChunkDescriptor `json:"history_manifests_by_session"`
 	HistoryChunksByID         map[string]pebblestore.V3SessionHistoryChunk             `json:"history_chunks_by_id"`
@@ -443,6 +458,27 @@ type sessionsV3SyncReplayInstructionsResponse struct {
 	Transport                      string `json:"transport"`
 	AfterEndpointCursor            string `json:"after_endpoint_cursor"`
 	BootstrapRequiredOnCursorError bool   `json:"bootstrap_required_on_cursor_error"`
+}
+
+type sessionsV3AgenticSettings struct {
+	Mode                string                      `json:"mode"`
+	AgentName           string                      `json:"agent_name"`
+	ResolvedAgentName   string                      `json:"resolved_agent_name"`
+	RuntimeMode         string                      `json:"runtime_mode,omitempty"`
+	StoredPreference    pebblestore.ModelPreference `json:"stored_preference"`
+	EffectivePreference pebblestore.ModelPreference `json:"effective_preference"`
+	AgentModelPolicy    sessionsV3AgentModelPolicy  `json:"agent_model_policy"`
+	ContextWindow       int                         `json:"context_window"`
+	MaxOutputTokens     int                         `json:"max_output_tokens"`
+	ProjectionSeq       uint64                      `json:"projection_seq"`
+}
+
+type sessionsV3SessionView struct {
+	AgenticSettings    sessionsV3AgenticSettings        `json:"agentic_settings"`
+	PendingPermissions []pebblestore.PermissionRecord   `json:"pending_permissions"`
+	UsageSummary       *pebblestore.SessionUsageSummary `json:"usage_summary,omitempty"`
+	CurrentRunState    *pebblestore.V3SessionRunState   `json:"current_run_state,omitempty"`
+	ActivePlan         *pebblestore.SessionPlanSnapshot `json:"active_plan,omitempty"`
 }
 
 type sessionsV3SyncResolvedPreference struct {
@@ -616,6 +652,7 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		RunIntentsBySession:       snapshot.RunIntentsBySession,
 		CurrentRunStateBySession:  snapshot.CurrentRunStateBySession,
 		ActiveSessionIDs:          snapshot.ActiveSessionIDs,
+		SessionViewsByID:          nil,
 		HistoryManifestsBySession: snapshot.HistoryManifestsBySession,
 		HistoryChunksByID:         snapshot.HistoryChunksByID,
 		Omissions:                 snapshot.Omissions,
@@ -639,6 +676,16 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 			BootstrapRequiredOnCursorError: true,
 		},
 		Realtime: sessionsV3RealtimeBootstrapForSnapshot(snapshotEndpointCursor, options.Surface, selectorValue, resources, snapshot.ActiveSessionIDs),
+	}
+	if options.Snapshot.IncludeSessionView {
+		if len(snapshot.SessionOrder) > sessionsV3SyncHydrateMaxSessionViews {
+			return sessionsV3SyncSnapshotResponseBody{}, errors.New("sync hydrate resources.session_view cannot target more than 8 sessions")
+		}
+		views, err := s.sessionsV3SyncSessionViews(options, snapshot)
+		if err != nil {
+			return sessionsV3SyncSnapshotResponseBody{}, err
+		}
+		response.SessionViewsByID = views
 	}
 	if timings != nil {
 		response.logTimings = timings

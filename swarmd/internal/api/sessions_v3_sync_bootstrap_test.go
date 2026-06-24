@@ -481,13 +481,29 @@ func TestSessionsV3SyncBootstrapRejectsUnboundedWorkspaceSelector(t *testing.T) 
 	}
 }
 
+func TestSessionsV3SyncBootstrapRejectsSessionViewResource(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "sync-bootstrap-session-view", "Sync Bootstrap Session View")
+	body := `{"surface":"desktop","selector":{"kind":"session_ids","session_ids":["` + created.ID + `"]},"resources":{"session_view":true}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bootstrap status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "does not support resources.session_view") {
+		t.Fatalf("bootstrap error did not report hydrate-only session_view: %s", rec.Body.String())
+	}
+}
+
 func TestSessionsV3SyncBootstrapUsesNativeSnapshotBuilderNotLegacyWorkset(t *testing.T) {
 	source, err := os.ReadFile("sessions_v3_sync_bootstrap.go")
 	if err != nil {
 		t.Fatalf("read sync bootstrap source: %v", err)
 	}
 	body := string(source)
-	for _, forbidden := range []string{"BuildSessionWorkset", "V3SessionWorksetOptions", "V3SessionWorksetResult", "sessionsV3SyncPlans", "sessionsV3SyncTombstonesBySession", "ListPending(", "GetUsageSummary(", "GetActivePlan(", "ListPlanRevisions(", "ListSessionTombstonesForAccount("} {
+	for _, forbidden := range []string{"BuildSessionWorkset", "V3SessionWorksetOptions", "V3SessionWorksetResult", "sessionsV3SyncPlans", "sessionsV3SyncTombstonesBySession", "ListSessionTombstonesForAccount("} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("sync bootstrap must not use legacy/out-of-snapshot path %q", forbidden)
 		}
@@ -526,6 +542,89 @@ func TestSessionsV3SyncHydrateTargetsSessionIDs(t *testing.T) {
 	}
 	if payload.ReplayInstructions["after_endpoint_cursor"] != payload.SnapshotEndpointCursor {
 		t.Fatalf("hydrate replay instructions invalid: %+v", payload.ReplayInstructions)
+	}
+}
+
+func TestSessionsV3SyncHydrateReturnsSessionView(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "sync-hydrate-view", "Sync Hydrate View")
+	if err := server.sessions.Store().PutUsageSummary(pebblestore.SessionUsageSummary{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Provider: "test-provider", Model: "test-model", InputTokens: 7, OutputTokens: 11}); err != nil {
+		t.Fatalf("put usage summary: %v", err)
+	}
+	if _, err := server.perm.CreatePending(permission.CreateInput{SessionID: created.ID, RunID: "run-sync-hydrate-view", CallID: "call-sync-hydrate-view", ToolName: "bash", ToolArguments: "{}", Requirement: "approval", Mode: "auto"}); err != nil {
+		t.Fatalf("create pending permission: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	for _, intentStatus := range []string{sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning} {
+		if _, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+			SessionID:       created.ID,
+			UserID:          testPrincipal().UserID,
+			AccountScopeID:  testPrincipal().AccountScopeID,
+			ClientRequestID: "sync-hydrate-view-" + intentStatus,
+			IdempotencyKey:  "sync-hydrate-view-" + intentStatus,
+			PayloadHash:     "sync-hydrate-view-" + intentStatus,
+			RequestHash:     "sync-hydrate-view-" + intentStatus,
+			Kind:            sessionruntime.SessionMutationRecordRunIntent,
+			RunIntent: &pebblestore.V3SessionRunIntent{
+				SessionID:      created.ID,
+				RunID:          "run-sync-hydrate-view",
+				UserID:         testPrincipal().UserID,
+				AccountScopeID: testPrincipal().AccountScopeID,
+				Status:         intentStatus,
+				CreatedAt:      now,
+				UpdatedAt:      now,
+			},
+			NowUnixMs: now,
+		}); err != nil {
+			t.Fatalf("record run intent %s: %v", intentStatus, err)
+		}
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"surface":     "desktop",
+		"session_ids": []string{created.ID},
+		"history":     map[string]any{"mode": "tail", "max_messages_per_session": 200, "manifest_policy": "manifest"},
+		"resources": map[string]any{
+			"messages":          true,
+			"run_intents":       true,
+			"current_run_state": true,
+			"session_view":      true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal hydrate body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, V3SyncHydratePath, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hydrate status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		SessionViewsByID map[string]sessionsV3SessionView `json:"session_views_by_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode hydrate response: %v", err)
+	}
+	view, ok := payload.SessionViewsByID[created.ID]
+	if !ok {
+		t.Fatalf("hydrate missing session view: %+v", payload.SessionViewsByID)
+	}
+	if view.AgenticSettings.Mode == "" || view.AgenticSettings.ProjectionSeq == 0 {
+		t.Fatalf("session view missing agentic settings: %+v", view.AgenticSettings)
+	}
+	if view.AgenticSettings.AgentModelPolicy.AgentName == "" || view.AgenticSettings.AgentModelPolicy.ResolvedAgent == "" {
+		t.Fatalf("session view missing agent model policy: %+v", view.AgenticSettings.AgentModelPolicy)
+	}
+	if len(view.PendingPermissions) != 1 || view.PendingPermissions[0].SessionID != created.ID {
+		t.Fatalf("session view pending permissions = %+v", view.PendingPermissions)
+	}
+	if view.UsageSummary == nil || view.UsageSummary.InputTokens != 7 || view.UsageSummary.OutputTokens != 11 {
+		t.Fatalf("session view usage summary = %+v", view.UsageSummary)
+	}
+	if view.CurrentRunState == nil || !view.CurrentRunState.Active || view.CurrentRunState.RunID != "run-sync-hydrate-view" {
+		t.Fatalf("session view current run state = %+v", view.CurrentRunState)
 	}
 }
 
