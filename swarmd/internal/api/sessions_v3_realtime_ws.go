@@ -954,6 +954,8 @@ func (s *Server) sendV3RealtimeOutboxEvent(conn *transportws.Conn, record sessio
 		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(record.SessionID, "cursor_sign_failed", err.Error(), record.EndpointSeq-1, record.EndpointSeq))
 		return false
 	}
+	event := record.Event
+	event.Payload = sanitizeV3SyncStreamEventPayload(event.EventType, event.Payload)
 	message := V3RealtimeMessage{
 		Protocol:         V3RealtimeProtocol,
 		ProtocolVersion:  V3RealtimeProtocolVersion,
@@ -965,7 +967,7 @@ func (s *Server) sendV3RealtimeOutboxEvent(conn *transportws.Conn, record sessio
 		Rev:              record.EndpointSeq,
 		PrevRev:          record.EndpointSeq - 1,
 		EventType:        record.Event.EventType,
-		Event:            &record.Event,
+		Event:            &event,
 		Projection:       &record.Projection,
 	}
 	return s.sendV3RealtimeMessage(conn, message) == nil

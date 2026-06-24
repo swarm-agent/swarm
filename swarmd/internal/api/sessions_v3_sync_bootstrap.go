@@ -493,6 +493,7 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		if !sessionsV3SyncTombstoneMatchesSelector(tombstone, selectorValue) {
 			continue
 		}
+		tombstone.Session = sessionsV3SyncSessionShell(tombstone.Session)
 		tombstones[sessionID] = tombstone
 	}
 	if timings != nil {
@@ -504,7 +505,7 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		OK:                        true,
 		Rev:                       snapshot.Rev,
 		SnapshotEndpointCursor:    snapshotEndpointCursor,
-		SessionsByID:              snapshot.SessionsByID,
+		SessionsByID:              sessionsV3SyncSessionShells(snapshot.SessionsByID),
 		ProjectionsBySession:      snapshot.ProjectionsBySession,
 		MessagesBySession:         snapshot.MessagesBySession,
 		EventsBySession:           snapshot.EventsBySession,
@@ -657,6 +658,86 @@ func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.Sess
 		policy.MaxOutputTokens = resolved.MaxOutputTokens
 	}
 	return policy
+}
+
+func sessionsV3SyncSessionShells(sessions map[string]pebblestore.SessionSnapshot) map[string]pebblestore.SessionSnapshot {
+	if len(sessions) == 0 {
+		return sessions
+	}
+	out := make(map[string]pebblestore.SessionSnapshot, len(sessions))
+	for sessionID, session := range sessions {
+		out[sessionID] = sessionsV3SyncSessionShell(session)
+	}
+	return out
+}
+
+func sessionsV3SyncSessionShell(session pebblestore.SessionSnapshot) pebblestore.SessionSnapshot {
+	session.Metadata = sessionsV3SyncShellMetadata(session.Metadata)
+	return session
+}
+
+func sessionsV3SyncShellMetadata(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		if !sessionsV3SyncShellMetadataKeyAllowed(key) {
+			continue
+		}
+		out[key] = cloneSessionsV3MetadataValue(value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sessionsV3SyncShellMetadataKeyAllowed(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "agent_name",
+		"resolved_agent_name",
+		"agent_mode",
+		"runtime_mode",
+		"exit_plan_mode_enabled",
+		"swarm_v3_execution_class",
+		"swarm_v3_runtime_swarm_id",
+		"swarm_v3_runtime_kind",
+		"swarm_v3_authority_host_swarm_id",
+		"swarm_v3_authority_container_id",
+		"swarm_v3_workspace_binding_id",
+		"swarm_v3_source_workspace_id",
+		"swarm_v3_source_workspace_generation",
+		"swarm_v3_source_workspace_name",
+		"swarm_v3_source_workspace_path",
+		"swarm_v3_runtime_workspace_path",
+		"swarm_v3_placement_generation",
+		"swarm_v3_binding_generation",
+		"swarm_v3_tui_directory_session",
+		"swarm_v3_tui_cwd_path",
+		"swarm_v3_tui_original_cwd_path",
+		"workspace_id",
+		"local_workspace_binding_id",
+		"parent_session_id",
+		"lineage_kind",
+		"lineage_label",
+		"assignment_label",
+		"subagent",
+		"requested_subagent",
+		"background",
+		"background_agent",
+		"requested_background_agent",
+		"launch_mode",
+		"target_kind",
+		"swarm_target_name",
+		"target_display_name",
+		"source",
+		"flow_id",
+		"owner_transport":
+		return true
+	default:
+		return false
+	}
 }
 
 func sessionsV3SyncTombstoneMatchesSelector(tombstone pebblestore.V3SessionTombstone, selector sessionsV3SyncSelector) bool {

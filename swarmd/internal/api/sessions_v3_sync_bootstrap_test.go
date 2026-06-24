@@ -121,6 +121,44 @@ func TestSessionsV3SyncBootstrapMetadataOnlyDoesNotEmitPerSessionMessageKeys(t *
 	}
 }
 
+func TestSessionsV3SyncBootstrapSessionShellOmitsSettingsOnlyMetadata(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-metadata-shell", "Sync Bootstrap Metadata Shell", "/workspace/metadata-shell")
+
+	body := `{"metadata":{"parent_session_id":"parent-1","lineage_kind":"delegated_subagent","agent_profile":{"name":"forbidden"},"tool_contract":{"preset":"forbidden"},"tool_scope":{"preset":"forbidden"},"prompt":"forbidden","provider":"forbidden","model":"forbidden","purpose":"client-only"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/metadata", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("metadata update status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	bootstrapBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/metadata-shell","recent":{"limit":10}},"history":{"mode":"none"}}`
+	bootstrapReq := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(bootstrapBody))
+	bootstrapReq.Header.Set("Content-Type", "application/json")
+	bootstrapRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bootstrapRec, withTestPrincipal(bootstrapReq))
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d, want %d, body=%s", bootstrapRec.Code, http.StatusOK, bootstrapRec.Body.String())
+	}
+	var payload struct {
+		SessionsByID map[string]pebblestore.SessionSnapshot `json:"sessions_by_id"`
+	}
+	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode bootstrap response: %v", err)
+	}
+	metadata := payload.SessionsByID[created.ID].Metadata
+	for _, key := range []string{"agent_profile", "tool_contract", "tool_scope", "prompt", "provider", "model", "purpose"} {
+		if _, ok := metadata[key]; ok {
+			t.Fatalf("bootstrap shell leaked settings-only metadata %s: %+v", key, metadata)
+		}
+	}
+	if metadata["agent_name"] != "swarm" || metadata["runtime_mode"] == "" || metadata["parent_session_id"] != "parent-1" || metadata["lineage_kind"] != "delegated_subagent" {
+		t.Fatalf("bootstrap shell dropped required identity metadata: %+v", metadata)
+	}
+}
+
 func TestSessionsV3SyncBootstrapRunIntentsRequestedNoHistoryEmitsAuthoritativeEmptyKey(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-zero-run-intents", "Sync Bootstrap Zero Run Intents", "/workspace/zero-run-intents")

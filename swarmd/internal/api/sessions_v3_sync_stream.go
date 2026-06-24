@@ -44,7 +44,7 @@ type sessionsV3SyncStreamEvent struct {
 
 func newSessionsV3SyncStreamEvent(record sessionruntime.RealtimeOutboxRecord) sessionsV3SyncStreamEvent {
 	event := record.Event
-	event.Payload = sanitizeV3SyncStreamEventPayload(event.Payload)
+	event.Payload = sanitizeV3SyncStreamEventPayload(event.EventType, event.Payload)
 	return sessionsV3SyncStreamEvent{
 		SessionID:  record.SessionID,
 		EventType:  record.Event.EventType,
@@ -53,7 +53,7 @@ func newSessionsV3SyncStreamEvent(record sessionruntime.RealtimeOutboxRecord) se
 	}
 }
 
-func sanitizeV3SyncStreamEventPayload(raw json.RawMessage) json.RawMessage {
+func sanitizeV3SyncStreamEventPayload(eventType string, raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return raw
 	}
@@ -61,7 +61,7 @@ func sanitizeV3SyncStreamEventPayload(raw json.RawMessage) json.RawMessage {
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return append(json.RawMessage(nil), raw...)
 	}
-	sanitizeV3SyncStreamValue(value)
+	sanitizeV3SyncStreamValue(eventType, value)
 	out, err := json.Marshal(value)
 	if err != nil {
 		return append(json.RawMessage(nil), raw...)
@@ -69,19 +69,39 @@ func sanitizeV3SyncStreamEventPayload(raw json.RawMessage) json.RawMessage {
 	return out
 }
 
-func sanitizeV3SyncStreamValue(value any) {
+func sanitizeV3SyncStreamValue(eventType string, value any) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for _, key := range []string{"endpoint_seq", "endpoint_cursor", "user_id", "account_scope_id", "created_at"} {
 			delete(typed, key)
 		}
+		if session, ok := typed["session"].(map[string]any); ok {
+			sanitizeV3SyncStreamSessionPayload(session)
+		}
+		if strings.TrimSpace(eventType) == "session.metadata.updated" {
+			if metadata, ok := typed["metadata"].(map[string]any); ok {
+				typed["metadata"] = sessionsV3SyncShellMetadata(metadata)
+			}
+		}
 		for _, child := range typed {
-			sanitizeV3SyncStreamValue(child)
+			sanitizeV3SyncStreamValue(eventType, child)
 		}
 	case []any:
 		for _, child := range typed {
-			sanitizeV3SyncStreamValue(child)
+			sanitizeV3SyncStreamValue(eventType, child)
 		}
+	}
+}
+
+func sanitizeV3SyncStreamSessionPayload(session map[string]any) {
+	metadata, ok := session["metadata"].(map[string]any)
+	if !ok {
+		return
+	}
+	if sanitized := sessionsV3SyncShellMetadata(metadata); len(sanitized) > 0 {
+		session["metadata"] = sanitized
+	} else {
+		delete(session, "metadata")
 	}
 }
 

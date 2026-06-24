@@ -483,6 +483,53 @@ func TestSessionsV3ReconnectMetadataOnlyOmitsUnrequestedResourceMaps(t *testing.
 	}
 }
 
+func TestSessionsV3ReconnectWorksetSessionShellOmitsSettingsOnlyMetadata(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "reconnect-metadata-shell", "Reconnect Metadata Shell", "/workspace/reconnect-metadata-shell")
+
+	body := `{"metadata":{"parent_session_id":"parent-1","lineage_kind":"delegated_subagent","agent_profile":{"name":"forbidden"},"tool_contract":{"preset":"forbidden"},"tool_scope":{"preset":"forbidden"},"prompt":"forbidden","provider":"forbidden","model":"forbidden","purpose":"client-only"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/metadata", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("metadata update status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	raw := postSessionsV3ReconnectRawMap(t, server, fmt.Sprintf(`{
+		"surface":"desktop",
+		"client_id":"desktop-client-metadata-shell",
+		"workset":{
+			"workset_id":"desktop:metadata-shell",
+			"selector":{"kind":"session_ids","session_ids":[%q]},
+			"history":{"mode":"none"},
+			"resources":{"messages":false,"events":false,"run_intents":false,"active_plan":false,"plan_revisions":false},
+			"include_active":false,
+			"auto_subscribe_sessions":true
+		}
+	}`, created.ID))
+	sessionsByID, ok := raw["sessions_by_id"].(map[string]any)
+	if !ok {
+		t.Fatalf("sessions_by_id missing or wrong type: %+v", raw["sessions_by_id"])
+	}
+	session, ok := sessionsByID[created.ID].(map[string]any)
+	if !ok {
+		t.Fatalf("created session missing from sessions_by_id: %+v", sessionsByID)
+	}
+	metadata, ok := session["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("session metadata missing or wrong type: %+v", session["metadata"])
+	}
+	for _, key := range []string{"agent_profile", "tool_contract", "tool_scope", "prompt", "provider", "model", "purpose"} {
+		if _, ok := metadata[key]; ok {
+			t.Fatalf("reconnect shell leaked settings-only metadata %s: %+v", key, metadata)
+		}
+	}
+	if metadata["agent_name"] != "swarm" || metadata["runtime_mode"] == "" || metadata["parent_session_id"] != "parent-1" || metadata["lineage_kind"] != "delegated_subagent" {
+		t.Fatalf("reconnect shell dropped required identity metadata: %+v", metadata)
+	}
+}
+
 func TestSessionsV3ReconnectRequestedRunIntentsRemainAuthoritativeWithoutRemovedMaps(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "reconnect-empty-authoritative", "Reconnect Empty Authoritative", "/workspace/reconnect-empty")

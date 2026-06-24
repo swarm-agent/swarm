@@ -314,7 +314,7 @@ func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, snaps
 		"ok":                           true,
 		"rev":                          workset.Rev,
 		"snapshot_endpoint_cursor":     snapshotEndpointCursor,
-		"sessions_by_id":               workset.SessionsByID,
+		"sessions_by_id":               sessionsV3SyncSessionShells(workset.SessionsByID),
 		"projections_by_session":       workset.ProjectionsBySession,
 		"messages_by_session":          workset.MessagesBySession,
 		"events_by_session":            workset.EventsBySession,

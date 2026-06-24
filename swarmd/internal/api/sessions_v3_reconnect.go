@@ -147,7 +147,7 @@ func (s *Server) sessionsV3ReconnectResponse(principal identity.Principal, req s
 		if err != nil {
 			return nil, err
 		}
-		sessionsByID[sessionID] = hydrated.Session
+		sessionsByID[sessionID] = sessionsV3SyncSessionShell(hydrated.Session)
 		projectionsBySession[sessionID] = hydrated.Projection
 		runIntentsBySession[sessionID] = allIntents
 		currentRunIntentBySession[sessionID] = current
