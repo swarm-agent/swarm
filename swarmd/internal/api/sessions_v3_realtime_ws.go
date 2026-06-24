@@ -493,7 +493,11 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 			return advanced, true, false
 		}
 		if !match.AutoSubscribeSessions {
-			return advanced, true, false
+			if !s.sendV3RealtimeWorksetSessionFrame(conn, V3RealtimeKindWorksetSessionUpdated, match, v3RealtimeSubscription{}, record, scope) {
+				return advanced, false, false
+			}
+			advanced.LastSentEndpointSeq = record.EndpointSeq
+			return advanced, true, true
 		}
 		primeAt := uint64(0)
 		if record.EndpointSeq > 0 {
@@ -717,7 +721,7 @@ func canonicalV3RealtimeWorksetSelector(selector V3RealtimeWorksetSelector) (V3R
 
 func v3RealtimeWorksetResourceAllowed(resource string) bool {
 	switch strings.TrimSpace(resource) {
-	case "sessions", "projections", "events", "messages", "run_intents", "active_plan", "plan_revisions", "membership", "tombstones":
+	case "sessions", "projections", "events", "messages", "run_intents", "current_run_state", "active_plan", "plan_revisions", "membership", "tombstones":
 		return true
 	default:
 		return false
@@ -847,6 +851,24 @@ func (s *Server) sendV3RealtimeWorksetSessionFrame(conn *transportws.Conn, kind 
 		PrevRev:               record.EndpointSeq - 1,
 		EventType:             record.Event.EventType,
 		Projection:            &record.Projection,
+	}
+	if kind == V3RealtimeKindWorksetSessionUpdated || kind == V3RealtimeKindWorksetSessionDiscovered {
+		if session, ok := s.v3RealtimeSessionSnapshotForRecord(record); ok {
+			shell := sessionsV3SyncSessionShell(session)
+			message.Session = &shell
+		} else if session, ok, err := s.sessions.GetSession(record.SessionID); err != nil {
+			_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(record.SessionID, "session_shell_lookup_failed", err.Error(), record.EndpointSeq-1, record.EndpointSeq))
+			return false
+		} else if ok {
+			shell := sessionsV3SyncSessionShell(session)
+			message.Session = &shell
+		}
+		if state, ok, err := s.sessions.GetSessionRunState(record.SessionID); err == nil && ok {
+			message.CurrentRunState = &state
+		} else if err != nil {
+			_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(record.SessionID, "run_state_lookup_failed", err.Error(), record.EndpointSeq-1, record.EndpointSeq))
+			return false
+		}
 	}
 	return s.sendV3RealtimeMessage(conn, message) == nil
 }

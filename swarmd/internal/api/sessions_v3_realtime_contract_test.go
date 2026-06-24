@@ -153,6 +153,7 @@ func TestV3RealtimeContractSeparatesInboundAndOutboundKinds(t *testing.T) {
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindEndpointWatermark, EndpointCursor: "cursor-42"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindHighWater, SessionID: "session-a", EndpointCursor: "cursor-42"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindWorksetSessionDiscovered, WorksetID: "workset-a", WorksetSubscriptionID: "workset-sub-a", SessionID: "session-a", EndpointCursor: "cursor-42", Rev: 42, PrevRev: 41, EventType: "session.created"},
+		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindWorksetSessionUpdated, WorksetID: "workset-a", WorksetSubscriptionID: "workset-sub-a", SessionID: "session-a", EndpointCursor: "cursor-42", Rev: 42, PrevRev: 41, EventType: "session.updated"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindWorksetSessionRemoved, WorksetID: "workset-a", WorksetSubscriptionID: "workset-sub-a", SessionID: "session-a", EndpointCursor: "cursor-42", Rev: 42, PrevRev: 41, EventType: "session.deleted"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, ErrorCode: "auth_denied"},
 		{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSlowConsumer, ErrorCode: "slow_consumer"},

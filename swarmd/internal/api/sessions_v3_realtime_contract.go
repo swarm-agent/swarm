@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const (
@@ -25,6 +26,7 @@ const (
 	V3RealtimeKindUnsubscribe              = "unsubscribe.session"
 	V3RealtimeKindResume                   = "resume"
 	V3RealtimeKindWorksetSessionDiscovered = "workset.session.discovered"
+	V3RealtimeKindWorksetSessionUpdated    = "workset.session.updated"
 	V3RealtimeKindWorksetSessionRemoved    = "workset.session.removed"
 	V3RealtimeKindAuthDenied               = "auth.denied"
 	V3RealtimeKindSlowConsumer             = "slow_consumer.reconnect_required"
@@ -76,6 +78,8 @@ type V3RealtimeMessage struct {
 	EventType                  string                                 `json:"event_type,omitempty"`
 	Event                      *sessionruntime.SessionEvent           `json:"event,omitempty"`
 	Projection                 *sessionruntime.SessionProjection      `json:"projection,omitempty"`
+	Session                    *pebblestore.SessionSnapshot           `json:"session,omitempty"`
+	CurrentRunState            *pebblestore.V3SessionRunState         `json:"current_run_state,omitempty"`
 	ErrorCode                  string                                 `json:"error_code,omitempty"`
 	Error                      string                                 `json:"error,omitempty"`
 	Reason                     string                                 `json:"reason,omitempty"`
@@ -121,7 +125,7 @@ func ValidateV3RealtimeSchemaMessage(message V3RealtimeMessage) error {
 		return nil
 	case V3RealtimeKindEvent:
 		return validateV3RealtimeEventMessage(message)
-	case V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionRemoved:
+	case V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved:
 		return validateV3RealtimeWorksetSessionMessage(message)
 	case V3RealtimeKindReplayStart:
 		return validateV3RealtimeSessionCursorMessage(message)
@@ -193,6 +197,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 		V3RealtimeKindEndpointWatermark,
 		V3RealtimeKindHighWater,
 		V3RealtimeKindWorksetSessionDiscovered,
+		V3RealtimeKindWorksetSessionUpdated,
 		V3RealtimeKindWorksetSessionRemoved,
 		V3RealtimeKindAuthDenied,
 		V3RealtimeKindSlowConsumer:
@@ -204,7 +209,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 
 func v3RealtimeKindAllowed(kind string) bool {
 	switch kind {
-	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
+	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
 		return true
 	default:
 		return false

@@ -298,6 +298,7 @@ export type RealtimeKind =
   | 'unsubscribe.session'
   | 'resume'
   | 'workset.session.discovered'
+  | 'workset.session.updated'
   | 'workset.session.removed'
   | 'auth.denied'
   | 'slow_consumer.reconnect_required'
@@ -316,6 +317,8 @@ export interface RealtimeMessage {
   prevRev?: number
   event_type?: string
   event?: V3SessionEvent
+  session?: SessionSnapshot
+  current_run_state?: V3SessionRunState
   workset_subscription_id?: string
   auto_subscribed?: boolean
   projection?: V3SessionProjection
@@ -651,6 +654,7 @@ export type DesktopV3CacheAction =
   | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string; durabilityCommitted?: boolean }
   | { type: 'liveRun.mergeRepairEvents'; sessionId: string; runId: string; events: CacheEvent[] }
   | { type: 'realtime.worksetSessionDiscovered'; frame: RealtimeMessage }
+  | { type: 'realtime.worksetSessionUpdated'; frame: RealtimeMessage }
   | { type: 'realtime.worksetSessionRemoved'; frame: RealtimeMessage }
   | { type: 'realtime.cursorError'; frame: RealtimeMessage }
   | { type: 'realtime.control'; frame: RealtimeMessage }

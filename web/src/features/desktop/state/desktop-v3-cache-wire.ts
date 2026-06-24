@@ -85,6 +85,9 @@ export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAc
     case 'workset.session.discovered':
       return [{ type: 'realtime.worksetSessionDiscovered', frame }]
 
+    case 'workset.session.updated':
+      return [{ type: 'realtime.worksetSessionUpdated', frame }]
+
     case 'workset.session.removed':
       return [{ type: 'realtime.worksetSessionRemoved', frame }]
 

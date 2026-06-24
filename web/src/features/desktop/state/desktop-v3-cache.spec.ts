@@ -2182,3 +2182,50 @@ test('session preference settings mutation repairs cached context window baselin
   assert.equal(usage.remaining_tokens, 1900)
   assert.equal(usage.updated_at, 50)
 })
+
+test('workset.session.updated applies compact sidebar shell and current run state without subscription', () => {
+  const state = bootstrappedState()
+  const updatedSession: SessionSnapshot = {
+    ...sessionB,
+    title: 'Updated sidebar title',
+    lifecycle: undefined,
+    preference: {},
+    metadata: {
+      agent_name: 'explorer',
+    },
+  }
+
+  const actions = realtimeFrameToActions(realtimeFrameFixture({
+    kind: 'workset.session.updated',
+    workset_id: 'scope-1',
+    workset_subscription_id: 'workset-sub-1',
+    session_id: sessionB.id,
+    endpoint_cursor: 'cursor-workset-update-9',
+    rev: 9,
+    prevRev: 8,
+    event_type: 'session.metadata.updated',
+    session: updatedSession,
+    projection: { ...projectionB, last_event_seq: 9, projection_high_watermark_seq: 9 },
+    current_run_state: {
+      session_id: sessionB.id,
+      run_id: 'run-b-active',
+      active: true,
+      status: 'running',
+      created_at: 10,
+      updated_at: 12,
+      event_seq: 9,
+    },
+  }))
+
+  for (const action of actions) desktopV3CacheReducer(state, action)
+
+  assert.equal(state.sessionsById[sessionB.id]?.kind, 'full')
+  assert.equal(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.title : '', 'Updated sidebar title')
+  assert.equal(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.lifecycle : undefined, undefined)
+  assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.preference : undefined, {})
+  assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.metadata : undefined, { agent_name: 'explorer' })
+  assert.deepEqual(state.sessionOrderByScope['scope-1'], [sessionB.id])
+  assert.equal(state.currentRunIntentBySession[sessionB.id]?.run_id, 'run-b-active')
+  assert.equal(state.subscriptionsById['workset-sub-1'], undefined)
+  assert.equal(state.realtime.endpointCursor, 'cursor-workset-update-9')
+})

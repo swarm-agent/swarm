@@ -129,6 +129,9 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'realtime.worksetSessionDiscovered':
       applyWorksetSessionDiscovered(state, action.frame)
       return state
+    case 'realtime.worksetSessionUpdated':
+      applyWorksetSessionUpdated(state, action.frame)
+      return state
     case 'realtime.worksetSessionRemoved':
       applyWorksetSessionRemoved(state, action.frame)
       return state
@@ -668,6 +671,10 @@ export function applyRealtimeFrame(
       applyWorksetSessionDiscovered(state, frame)
       return state
 
+    case 'workset.session.updated':
+      applyWorksetSessionUpdated(state, frame)
+      return state
+
     case 'workset.session.removed':
       applyWorksetSessionRemoved(state, frame)
       return state
@@ -1197,6 +1204,48 @@ export function applyWorksetSessionDiscovered(
   // The matching durable event for this same endpoint record must be applied first.
 }
 
+export function applyWorksetSessionUpdated(
+  state: DesktopV3CacheState,
+  frame: RealtimeMessage,
+): void {
+  const worksetIdValue = stringField(frame.workset_id)
+  const sessionId = stringField(frame.session_id)
+  if (!worksetIdValue || !sessionId) return
+
+  if (frame.session) {
+    upsertSessions(state, { [sessionId]: frame.session })
+  } else if (!state.sessionsById[sessionId]) {
+    state.sessionsById[sessionId] = {
+      kind: 'stub',
+      id: sessionId,
+      needsHydrate: true,
+      discoveredByWorksetId: worksetIdValue,
+      discoveredAt: Date.now(),
+    }
+  }
+
+  const scopeIds = new Set<string>([worksetIdValue])
+  if (state.desktopSidebarBootstrap.scopeId) {
+    scopeIds.add(state.desktopSidebarBootstrap.scopeId)
+  }
+  for (const scopeId of scopeIds) {
+    const current = state.sessionOrderByScope[scopeId] ?? []
+    state.sessionOrderByScope[scopeId] = [sessionId, ...current.filter((id) => id !== sessionId)]
+  }
+
+  const workset = state.worksetsById[worksetIdValue] ?? {
+    workset_id: worksetIdValue,
+    worksetId: worksetIdValue,
+  }
+  workset.sessionIds = [sessionId, ...(workset.sessionIds ?? []).filter((id) => id !== sessionId)]
+  workset.inactiveSessionIds = (workset.inactiveSessionIds ?? []).filter((id) => id !== sessionId)
+  state.worksetsById[worksetIdValue] = workset
+
+  if (frame.projection) state.projectionsBySession[sessionId] = frame.projection
+  applyCurrentRunStateFrame(state, sessionId, frame.current_run_state)
+  state.realtime.endpointCursor = frame.endpoint_cursor ?? state.realtime.endpointCursor
+}
+
 export function applyWorksetSessionRemoved(state: DesktopV3CacheState, frame: RealtimeMessage): void {
   const worksetIdValue = stringField(frame.workset_id)
   const sessionId = stringField(frame.session_id)
@@ -1504,22 +1553,29 @@ function applyCurrentRunStateFromSyncSnapshot(
   if (!syncResourceSetContains(snapshot.sync_scope.resource_set, 'current_run_state')) return
   const states = snapshot.current_run_state_by_session ?? {}
   for (const sessionId of authoritativeSessionIds) {
-    const runState = states[sessionId]
-    if (runState?.active && runState.run_id?.trim()) {
-      state.currentRunIntentBySession[sessionId] = {
-        session_id: runState.session_id,
-        user_id: runState.user_id,
-        account_scope_id: runState.account_scope_id,
-        run_id: runState.run_id,
-        status: runState.status,
-        blocked_reason: runState.blocked_reason,
-        created_at: runState.created_at,
-        updated_at: runState.updated_at,
-        event_seq: runState.event_seq ?? 0,
-      }
-    } else {
-      delete state.currentRunIntentBySession[sessionId]
+    applyCurrentRunStateFrame(state, sessionId, states[sessionId])
+  }
+}
+
+function applyCurrentRunStateFrame(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  runState: NonNullable<SyncSnapshotResponse['current_run_state_by_session']>[string] | undefined,
+): void {
+  if (runState?.active && runState.run_id?.trim()) {
+    state.currentRunIntentBySession[sessionId] = {
+      session_id: runState.session_id,
+      user_id: runState.user_id,
+      account_scope_id: runState.account_scope_id,
+      run_id: runState.run_id,
+      status: runState.status,
+      blocked_reason: runState.blocked_reason,
+      created_at: runState.created_at,
+      updated_at: runState.updated_at,
+      event_seq: runState.event_seq ?? 0,
     }
+  } else {
+    delete state.currentRunIntentBySession[sessionId]
   }
 }
 

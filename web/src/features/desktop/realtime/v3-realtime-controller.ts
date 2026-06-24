@@ -331,7 +331,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private async handleFrame(frame: RealtimeMessage): Promise<void> {
     try {
       await commitDesktopV3StreamFrame(this.streamCommit, frame)
-      if (frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.removed') {
+      if (frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.updated' || frame.kind === 'workset.session.removed') {
         // The transport records auto-discovered subscriptions immediately after
         // onFrame resolves; reconcile on the next macrotask so hidden sessions
         // can be unsubscribed without waiting for transcript hydration.
