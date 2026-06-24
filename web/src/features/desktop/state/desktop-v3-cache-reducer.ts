@@ -25,6 +25,7 @@ import type {
   MessageMutationConflictResponse,
 } from './desktop-v3-cache-types'
 import type { DesktopPermissionRecord } from '../types/realtime'
+import type { RunPhase, SessionConnectResponse, SessionStartResponse, SessionStreamFrame } from '../session-connection/contract.generated'
 import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 
 export const DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS = 5
@@ -110,6 +111,13 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       return applyHydrateSnapshot(state, action.snapshot, action.requestedSessionIds)
     case 'syncStream.applyBatch':
       return applySyncStreamBatch(state, action)
+    case 'sessionConnection.applySnapshot':
+      return applySessionConnectionSnapshot(state, action.response, action.source)
+    case 'sessionConnection.applyFrame':
+      return applySessionConnectionFrame(state, action.frame)
+    case 'sessionConnection.runPhase':
+      applySessionConnectionRunPhase(state, action.sessionId, action.runId, action.phase, action.eventSeq)
+      return state
     case 'reconnect.applySnapshot':
       return applyReconnectSnapshot(state, action.snapshot)
     case 'realtime.storeResume':
@@ -557,6 +565,128 @@ export function applySyncStreamBatch(
   return state
 }
 
+export function applySessionConnectionSnapshot(
+  state: DesktopV3CacheState,
+  response: SessionConnectResponse | SessionStartResponse,
+  source: 'connect' | 'start' = 'connect',
+): DesktopV3CacheState {
+  const sessionId = response.session_id.trim()
+  const snapshot = response.snapshot
+  const session = recordValue(snapshot.session) as SessionSnapshot | undefined
+  if (sessionId && session) {
+    state.sessionsById[sessionId] = { kind: 'full', session, needsHydrate: false }
+    delete state.tombstonesBySession[sessionId]
+  }
+  state.projectionsBySession[sessionId] = {
+    session_id: sessionId,
+    last_event_seq: snapshot.event_seq,
+    projection_high_watermark_seq: snapshot.event_seq,
+    updated_at: Date.now(),
+  }
+  replaceMessagesForSession(state, sessionId, snapshot.messages as MessageSnapshot[])
+  if (snapshot.current_run) {
+    applySessionConnectionRunPhase(
+      state,
+      sessionId,
+      snapshot.current_run.run_id,
+      snapshot.current_run.phase,
+      snapshot.event_seq,
+    )
+  } else {
+    delete state.currentRunIntentBySession[sessionId]
+  }
+  state.permissionsBySession[sessionId] = snapshot.pending_permissions as DesktopPermissionRecord[]
+  if (snapshot.active_plan !== null) state.plansBySession[sessionId] = snapshot.active_plan
+  if (snapshot.usage !== null) state.usageBySession[sessionId] = snapshot.usage
+  state.realtime.status = 'connecting'
+  state.realtime.streamPath = response.connection.stream_url
+  state.realtime.resumeFrame = undefined
+  state.realtime.endpointCursor = response.connection.resume_token
+  if (source === 'start' && state.desktopSidebarBootstrap.scopeId) {
+    const scopeId = state.desktopSidebarBootstrap.scopeId
+    state.sessionOrderByScope[scopeId] = prependUnique(state.sessionOrderByScope[scopeId] ?? [], sessionId)
+    const workset = state.worksetsById[scopeId]
+    if (workset) {
+      workset.sessionIds = prependUnique(workset.sessionIds ?? [], sessionId)
+      workset.inactiveSessionIds = (workset.inactiveSessionIds ?? []).filter((id) => id !== sessionId)
+    }
+  }
+  touchSessionTranscript(state, sessionId)
+  enforceHydratedTranscriptRetention(state)
+  return state
+}
+
+export function applySessionConnectionFrame(
+  state: DesktopV3CacheState,
+  frame: SessionStreamFrame,
+): DesktopV3CacheState {
+  switch (frame.type) {
+    case 'session.ready':
+      state.realtime.status = 'open'
+      state.realtime.endpointCursor = frame.resume_token
+      return state
+    case 'session.event': {
+      const event = frame.event as V3SessionEvent
+      applyCacheEvent(state, {
+        source: 'realtime',
+        sessionId: frame.session_id,
+        eventType: event.event_type,
+        sessionEvent: event,
+        payload: decodeSessionEventPayload(event),
+      })
+      state.realtime.endpointCursor = frame.resume_token
+      return state
+    }
+    case 'session.reconnect_required':
+      state.realtime.needsReconnect = true
+      state.realtime.status = 'stale'
+      state.realtime.errorCode = frame.reason
+      return state
+    case 'run.phase':
+      applySessionConnectionRunPhase(state, frame.session_id, frame.run_id, frame.phase, frame.event_seq)
+      return state
+  }
+}
+
+export function applySessionConnectionRunPhase(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  runId: string,
+  phase: RunPhase,
+  eventSeq: number,
+): void {
+  const now = Date.now()
+  const status = runPhaseToRunIntentStatus(phase)
+  upsertRunIntent(state, sessionId, {
+    session_id: sessionId,
+    run_id: runId,
+    status,
+    created_at: now,
+    updated_at: now,
+    event_seq: eventSeq,
+  })
+}
+
+function runPhaseToRunIntentStatus(phase: RunPhase): string {
+  switch (phase) {
+    case 'accepted':
+    case 'pending_executor':
+      return 'pending_executor'
+    case 'executor_started':
+    case 'provider_request_started':
+    case 'provider_first_event':
+    case 'output_streaming':
+      return 'running'
+    case 'waiting_permission':
+      return 'dispatch_blocked'
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+    case 'interrupted':
+      return phase
+  }
+}
+
 export function applyReconnectSnapshot(
   state: DesktopV3CacheState,
   raw: SessionsReconnectResponse,
@@ -751,22 +881,51 @@ export function applyMessageMutationResult(
     return state
   }
 
-  if (raw.message) {
-    upsertCommittedMessage(state, raw.session_id || raw.message.session_id, raw.message)
+  const message = messageFromMutationResponse(raw)
+  const runIntent = runIntentFromMutationResponse(raw)
+  if (message) {
+    upsertCommittedMessage(state, raw.session_id || message.session_id, message)
   }
-  const sessionId = raw.session_id || raw.message?.session_id || raw.run_intent?.session_id || ''
-  applyUsageSummaryFromUnknown(state, sessionId, raw.usage_summary)
-  applyUsageSummaryFromUnknown(state, sessionId, recordValue(raw.mutation)?.usage_summary)
+  const sessionId = raw.session_id || message?.session_id || runIntent?.session_id || ''
+  if (!isAcceptedMessageResponse(raw) && 'usage_summary' in raw) {
+    applyUsageSummaryFromUnknown(state, sessionId, raw.usage_summary)
+    applyUsageSummaryFromUnknown(state, sessionId, recordValue(raw.mutation)?.usage_summary)
+  }
   delete state.pendingUserByClientRequestId[clientRequestId]
   for (const [pendingClientRequestId, pending] of Object.entries(state.pendingUserByClientRequestId)) {
     if (pending.messageId === messageId) {
       delete state.pendingUserByClientRequestId[pendingClientRequestId]
     }
   }
-  if (raw.run_intent) {
-    upsertRunIntent(state, raw.run_intent.session_id || raw.session_id, raw.run_intent)
+  if (runIntent) {
+    upsertRunIntent(state, runIntent.session_id || raw.session_id, runIntent)
   }
   return state
+}
+
+function isAcceptedMessageResponse(raw: SessionMessageMutationResponse): boolean {
+  return 'accepted_event_seq' in raw
+}
+
+function messageFromMutationResponse(raw: SessionMessageMutationResponse): MessageSnapshot | undefined {
+  const message = recordValue(raw.message)
+  if (!message) return undefined
+  return message as unknown as MessageSnapshot
+}
+
+function runIntentFromMutationResponse(raw: SessionMessageMutationResponse): V3SessionRunIntent | undefined {
+  if (!isAcceptedMessageResponse(raw)) {
+    return 'run_intent' in raw ? raw.run_intent ?? undefined : undefined
+  }
+  if (!('run' in raw)) return undefined
+  return {
+    session_id: raw.session_id,
+    run_id: raw.run.run_id,
+    status: runPhaseToRunIntentStatus(raw.run.phase),
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    event_seq: raw.accepted_event_seq,
+  }
 }
 
 export function applySessionSettingsMutationResult(

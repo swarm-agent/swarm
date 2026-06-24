@@ -14,6 +14,7 @@ import type {
   V3RealtimeOutboxRecord,
   V3SessionEvent,
 } from './desktop-v3-cache-types'
+import type { SessionConnectResponse, SessionStartResponse, SessionStreamFrame } from '../session-connection/contract.generated'
 
 export function bootstrapResponseToAction(raw: SyncSnapshotResponse): DesktopV3CacheAction {
   return {
@@ -55,6 +56,30 @@ export function syncStreamResponseToAction(
     events: raw.events.map(normalizeSyncStreamEvent),
     hasMore: raw.has_more,
     replayInstructions: raw.replay_instructions,
+  }
+}
+
+export function sessionConnectionResponseToAction(
+  response: SessionConnectResponse | SessionStartResponse,
+  source: 'connect' | 'start',
+): DesktopV3CacheAction {
+  return { type: 'sessionConnection.applySnapshot', source, response }
+}
+
+export function sessionConnectionFrameToAction(frame: SessionStreamFrame): DesktopV3CacheAction {
+  switch (frame.type) {
+    case 'run.phase':
+      return {
+        type: 'sessionConnection.runPhase',
+        sessionId: frame.session_id,
+        runId: frame.run_id,
+        phase: frame.phase,
+        eventSeq: frame.event_seq,
+      }
+    case 'session.event':
+    case 'session.ready':
+    case 'session.reconnect_required':
+      return { type: 'sessionConnection.applyFrame', frame }
   }
 }
 

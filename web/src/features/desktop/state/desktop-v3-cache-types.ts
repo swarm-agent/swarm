@@ -1,4 +1,11 @@
 import type { DesktopPermissionRecord } from '../types/realtime'
+import type {
+  RunPhase,
+  SessionConnectResponse,
+  SessionMessageAcceptedResponse,
+  SessionStartResponse,
+  SessionStreamFrame,
+} from '../session-connection/contract.generated'
 
 export type SyncSelectorKind = '' | 'global' | 'recent' | 'session_ids' | 'workspace' | 'tui'
 
@@ -377,10 +384,10 @@ export interface SessionMutationResult {
   [key: string]: unknown
 }
 
-export interface SessionMessageMutationResponse {
+export type SessionMessageMutationResponse = SessionMessageAcceptedResponse | {
   ok: true
   session_id: string
-  message: MessageSnapshot | null
+  message: unknown
   run_intent: V3SessionRunIntent | null
   turn_usage?: unknown
   usage_summary?: unknown
@@ -440,7 +447,7 @@ export interface SyncScopeCache {
 export interface RealtimeCache {
   status: 'closed' | 'connecting' | 'open' | 'reconnecting' | 'auth_denied' | 'error' | 'stale'
   surface: string
-  streamPath?: '/v3/realtime/stream'
+  streamPath?: '/v3/realtime/stream' | string
   endpointCursor?: string
   resumeFrame?: RealtimeMessage
   lastHelloCursor?: string
@@ -649,6 +656,9 @@ export type DesktopV3CacheAction =
   | { type: 'snapshot.apply'; source: 'bootstrap'; scopeId: string; snapshot: SyncSnapshotResponse }
   | { type: 'hydrate.apply'; source: 'hydrate'; scopeId: string; requestedSessionIds: string[]; snapshot: SyncSnapshotResponse }
   | { type: 'syncStream.applyBatch'; scopeId: string; endpointCursor: string; events: CacheEvent[]; hasMore: boolean; replayInstructions: SyncReplayInstructions }
+  | { type: 'sessionConnection.applySnapshot'; source: 'connect' | 'start'; response: SessionConnectResponse | SessionStartResponse }
+  | { type: 'sessionConnection.applyFrame'; frame: SessionStreamFrame }
+  | { type: 'sessionConnection.runPhase'; sessionId: string; runId: string; phase: RunPhase; eventSeq: number }
   | { type: 'reconnect.applySnapshot'; snapshot: SessionsReconnectResponse }
   | { type: 'realtime.storeResume'; streamPath: '/v3/realtime/stream'; resume: RealtimeMessage }
   | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string; durabilityCommitted?: boolean }

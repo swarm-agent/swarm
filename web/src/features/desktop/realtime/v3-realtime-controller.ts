@@ -2,10 +2,13 @@ import { ensureDesktopSession } from '../../../app/api'
 import { DesktopV3RealtimeTransport, type DesktopV3RealtimeTransportStatus } from '../session-v3/transport'
 import type { SessionV3RealtimeWorksetSubscriptionRequestWire } from '../session-v3/types'
 import { openDesktopV3RealtimeTransportSocket } from './client'
+import { sessionConnectionClient, type SessionConnectionClient, type SessionStartRequestInput } from '../session-connection/client'
+import type { SessionStartResponse } from '../session-connection/contract.generated'
+import type { SessionConnection } from '../session-connection/runtime'
 import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
 import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, commitDesktopV3CacheSnapshot, subscribeDesktopV3Cache, type DesktopV3CacheMutation } from '../state/desktop-v3-cache-store'
-import { realtimeFrameToActions } from '../state/desktop-v3-cache-wire'
+import { realtimeFrameToActions, sessionConnectionFrameToAction, sessionConnectionResponseToAction } from '../state/desktop-v3-cache-wire'
 import {
   postDesktopV3Reconnect,
   type DesktopV3ReconnectInput,
@@ -25,14 +28,10 @@ import type {
 const DESKTOP_V3_CLIENT_ID = `desktop:${crypto.randomUUID()}`
 const ACTIVE_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
 
-export interface DesktopV3SessionConnectInput {
-  sessionId: string
-  endpointCursor?: string
-}
-
 export interface DesktopV3RealtimeController {
   currentEndpointCursor(): string
-  connectSession(input: DesktopV3SessionConnectInput): Promise<void>
+  connectSession(sessionId: string, resumeToken?: string | null): Promise<void>
+  startSession(request: SessionStartRequestInput): Promise<SessionStartResponse>
   ensureSessionHistory(sessionId: string): Promise<void>
   start(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void>
   stop(reason?: string): void
@@ -48,6 +47,7 @@ interface DesktopV3RealtimeControllerDeps {
   dispatch?: (action: DesktopV3CacheAction) => void
   subscribe?: (listener: (mutation?: DesktopV3CacheMutation) => void) => () => void
   reconnect?: (input: DesktopV3ReconnectInput) => Promise<SessionsReconnectResponse>
+  sessionConnectionClient?: SessionConnectionClient
   ensureSession?: () => Promise<unknown>
   bootstrap?: (input?: { preferredSessionId?: string | null }) => Promise<unknown>
   openSocket?: (input: { endpointCursor: string }) => WebSocket | Promise<WebSocket>
@@ -64,7 +64,9 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly bootstrap: (input?: { preferredSessionId?: string | null }) => Promise<unknown>
   private readonly transport: DesktopV3RealtimeTransport
   private readonly streamCommit: DesktopV3StreamCommitController
+  private readonly sessionConnectionClient: SessionConnectionClient
   private readonly connectingSessionIds = new Set<string>()
+  private readonly sessionConnections = new Map<string, SessionConnection>()
   private firstResumeSent?: Deferred<void>
   private startupCancellation?: Deferred<never>
   private unsubscribeCache?: () => void
@@ -76,6 +78,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.dispatch = deps.dispatch ?? dispatchDesktopV3Cache
     this.subscribe = deps.subscribe ?? subscribeDesktopV3Cache
     this.reconnect = deps.reconnect ?? postDesktopV3Reconnect
+    this.sessionConnectionClient = deps.sessionConnectionClient ?? sessionConnectionClient()
     this.ensureSessionIdentity = deps.ensureSession ?? ensureDesktopSession
     this.bootstrap = deps.bootstrap ?? (async (input) => {
       await bootstrapDesktopV3SidebarMetadataOnly({
@@ -166,6 +169,10 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.unsubscribeCache = undefined
     this.startPromise = undefined
     this.connectingSessionIds.clear()
+    for (const connection of this.sessionConnections.values()) {
+      connection.close(reason)
+    }
+    this.sessionConnections.clear()
     this.firstResumeSent?.resolve()
     this.firstResumeSent = undefined
     this.transport.stop(reason)
@@ -179,28 +186,52 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     return cursor
   }
 
-  connectSession(input: DesktopV3SessionConnectInput): Promise<void> {
-    const sessionId = input.sessionId.trim()
+  async connectSession(sessionIdInput: string, resumeToken?: string | null): Promise<void> {
+    const sessionId = sessionIdInput.trim()
     if (!sessionId) {
-      return Promise.reject(new Error('Desktop V3 session connect requires sessionId'))
+      throw new Error('Desktop V3 session connect requires sessionId')
     }
-    let endpointCursor: string
-    try {
-      endpointCursor = input.endpointCursor?.trim() || this.currentEndpointCursor()
-    } catch (error) {
-      return Promise.reject(error)
-    }
+    if (this.sessionConnections.has(sessionId)) return
+
     this.connectingSessionIds.add(sessionId)
-    const connect = this.transport.subscribeSession({
-      session_id: sessionId,
-      subscription_id: `${DESKTOP_V3_CLIENT_ID}:session:${sessionId}`,
-      endpoint_cursor: endpointCursor,
-    })
-    connect.finally(() => {
+    try {
+      const connection = await this.sessionConnectionClient.connect({ sessionId, resumeToken })
+      await this.attachSessionConnection(connection, 'connect')
+    } finally {
       this.connectingSessionIds.delete(sessionId)
       this.reconcileDesiredSessionConnections()
-    }).catch(() => undefined)
-    return connect
+    }
+  }
+
+  async startSession(request: SessionStartRequestInput): Promise<SessionStartResponse> {
+    const sessionId = request.session_id.trim()
+    if (!sessionId) {
+      throw new Error('Desktop V3 session start requires sessionId')
+    }
+    this.connectingSessionIds.add(sessionId)
+    try {
+      const started = await this.sessionConnectionClient.start({ request })
+      await this.attachSessionConnection(started.connection, 'start')
+      return started.response
+    } finally {
+      this.connectingSessionIds.delete(sessionId)
+      this.reconcileDesiredSessionConnections()
+    }
+  }
+
+  private async attachSessionConnection(
+    connection: SessionConnection,
+    source: 'connect' | 'start',
+  ): Promise<void> {
+    const sessionId = connection.sessionId.trim()
+    if (!sessionId) throw new Error('Desktop V3 session connection response is missing sessionId')
+    this.sessionConnections.get(sessionId)?.close('Desktop V3 session connection replaced')
+    this.sessionConnections.set(sessionId, connection)
+    this.dispatch(sessionConnectionResponseToAction(connection.response, source))
+    connection.subscribe((frame) => {
+      this.dispatch(sessionConnectionFrameToAction(frame))
+    })
+    await connection.ready
   }
 
   private async startUncached(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void> {
@@ -388,7 +419,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
     for (const sessionId of desired) {
       if (registered.has(sessionId)) continue
-      const connect = this.connectSession({ sessionId })
+      const connect = this.connectSession(sessionId)
       connect.catch((error) => {
         if (!this.stopped) {
           console.error('[desktop-v3] desired session connection failed', error)
@@ -399,6 +430,11 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     for (const sessionId of registered.keys()) {
       if (desired.has(sessionId)) continue
       this.transport.unsubscribeSession(sessionId)
+    }
+    for (const [sessionId, connection] of this.sessionConnections) {
+      if (desired.has(sessionId)) continue
+      connection.close('Desktop V3 session no longer selected')
+      this.sessionConnections.delete(sessionId)
     }
   }
 

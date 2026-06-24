@@ -1,6 +1,5 @@
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
-import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type {
   MessageMutationConflictResponse,
   SessionMessageMutationResponse,
@@ -106,7 +105,6 @@ interface DesktopV3ExistingSessionFlowDeps {
   requireControllerReady: typeof requireDesktopV3RealtimeControllerReady
   dispatch: typeof dispatchDesktopV3Cache
   postAppendMessage: typeof postDesktopV3AppendMessage
-  hydrateSession: typeof selectAndHydrateDesktopV3Session
 }
 
 let flowDeps: DesktopV3ExistingSessionFlowDeps = {
@@ -114,7 +112,6 @@ let flowDeps: DesktopV3ExistingSessionFlowDeps = {
   requireControllerReady: requireDesktopV3RealtimeControllerReady,
   dispatch: dispatchDesktopV3Cache,
   postAppendMessage: postDesktopV3AppendMessage,
-  hydrateSession: selectAndHydrateDesktopV3Session,
 }
 
 export function setDesktopV3ExistingSessionFlowDepsForTests(
@@ -145,12 +142,6 @@ export async function continueDesktopV3Conversation(
   }
 
   const controller = await flowDeps.requireControllerReady()
-  let endpointCursor: string | undefined
-  try {
-    endpointCursor = controller.currentEndpointCursor()
-  } catch (error) {
-    console.error('[desktop-v3] existing-session realtime cursor unavailable before append', error)
-  }
 
   flowDeps.dispatch({
     type: 'pendingUser.upsert',
@@ -164,25 +155,7 @@ export async function continueDesktopV3Conversation(
     },
   })
 
-  const hydratePromise = flowDeps.hydrateSession(sessionId)
-  hydratePromise.catch((error) => {
-    console.error('[desktop-v3] existing-session hydrate failed', error)
-  })
-
-  const connectPromise = (async () => {
-    try {
-      await controller.connectSession({ sessionId, endpointCursor })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      console.error('[desktop-v3] existing-session realtime subscribe failed before append', error)
-      flowDeps.dispatch({
-        type: 'realtime.statusChanged',
-        status: 'stale',
-        errorCode: 'session_subscribe_failed',
-        error: message,
-      })
-    }
-  })()
+  await controller.connectSession(sessionId)
 
   let raw: SessionMessageMutationResponse | MessageMutationConflictResponse
   try {
@@ -206,19 +179,17 @@ export async function continueDesktopV3Conversation(
   if (raw.ok === false) {
     throw new Error(raw.error || raw.error_code || 'Desktop V3 existing message failed')
   }
-  if (!raw.run_intent) {
-    throw new Error('Desktop V3 existing message did not return a run intent')
+  const status = acceptedRunPhase(raw)
+  if (status !== 'accepted' && status !== 'pending_executor') {
+    throw new Error(`Desktop V3 existing-conversation run was not accepted: ${status || 'missing phase'}`)
   }
-
-  const status = raw.run_intent.status.trim().toLowerCase()
-  if (status === 'dispatch_blocked') {
-    throw new Error(raw.run_intent.blocked_reason || 'Desktop V3 existing-conversation run was dispatch-blocked')
-  }
-  if (status !== 'pending_executor' && status !== 'running') {
-    throw new Error(`Desktop V3 existing-conversation run was not queued or running: ${status || 'missing status'}`)
-  }
-
-  void connectPromise
 
   return raw
+}
+
+function acceptedRunPhase(raw: SessionMessageMutationResponse | MessageMutationConflictResponse): string {
+  if (raw.ok === false) return ''
+  if ('run' in raw && raw.run) return raw.run.phase.trim().toLowerCase()
+  if ('run_intent' in raw) return raw.run_intent?.status.trim().toLowerCase() ?? ''
+  return ''
 }
