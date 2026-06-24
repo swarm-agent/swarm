@@ -38,7 +38,7 @@ var v3SyncSnapshotAfterSnapshotHookForTest struct {
 	fn func()
 }
 
-func setV3SyncSnapshotAfterSnapshotHookForTest(fn func()) func() {
+func SetV3SyncSnapshotAfterSnapshotHookForTest(fn func()) func() {
 	v3SyncSnapshotAfterSnapshotHookForTest.mu.Lock()
 	previous := v3SyncSnapshotAfterSnapshotHookForTest.fn
 	v3SyncSnapshotAfterSnapshotHookForTest.fn = fn
@@ -48,6 +48,10 @@ func setV3SyncSnapshotAfterSnapshotHookForTest(fn func()) func() {
 		v3SyncSnapshotAfterSnapshotHookForTest.fn = previous
 		v3SyncSnapshotAfterSnapshotHookForTest.mu.Unlock()
 	}
+}
+
+func setV3SyncSnapshotAfterSnapshotHookForTest(fn func()) func() {
+	return SetV3SyncSnapshotAfterSnapshotHookForTest(fn)
 }
 
 func runV3SyncSnapshotAfterSnapshotHook() {
@@ -174,7 +178,7 @@ func (s *SessionStore) BuildV3SyncSnapshotWithContext(ctx context.Context, optio
 	if err := contextError(ctx); err != nil {
 		return V3SyncSnapshotResult{}, err
 	}
-	if !options.Global && len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" && len(options.WorkspacePaths) == 0 {
+	if !options.Global && len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" && len(options.WorkspacePaths) == 0 && !options.IncludeActiveSessions {
 		return V3SyncSnapshotResult{}, errors.New("at least one sync snapshot selector is required")
 	}
 	snapshot := s.store.db.NewSnapshot()

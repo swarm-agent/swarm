@@ -1,20 +1,16 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
-	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
-
-const sessionsV3ReconnectRunIntentListLimit = 100000
 
 type sessionsV3ReconnectRequest struct {
 	Surface  string                            `json:"surface,omitempty"`
@@ -108,104 +104,214 @@ func decodeOptionalSessionsV3ReconnectRequest(r *http.Request, out *sessionsV3Re
 }
 
 func (s *Server) sessionsV3ReconnectResponse(principal identity.Principal, req sessionsV3ReconnectRequest) (map[string]any, error) {
-	if sessionsV3ReconnectHasWorkset(req) {
-		return s.sessionsV3ReconnectWorksetResponse(principal, req)
-	}
-	activeIntents, err := s.sessionsV3ReconnectActiveRunIntents(principal)
+	bootstrapReq := reconnectToSyncBootstrapRequest(req)
+	options, selector, resources, err := sessionsV3SyncBootstrapOptions(principal, bootstrapReq)
 	if err != nil {
 		return nil, err
 	}
-	bySession := map[string][]sessionruntime.SessionRunIntent{}
-	for _, intent := range activeIntents {
-		sessionID := strings.TrimSpace(intent.SessionID)
-		if sessionID == "" {
-			return nil, errors.New("active v3 run intent is missing session_id")
-		}
-		bySession[sessionID] = append(bySession[sessionID], intent)
+	snapshot, err := s.sessionsV3SyncSnapshotResponse(context.Background(), options, selector, resources, bootstrapReq.KnownSessions)
+	if err != nil {
+		return nil, err
 	}
+	return sessionsV3ReconnectMapFromSyncSnapshot(snapshot, req), nil
+}
 
-	sessionsByID := map[string]pebblestore.SessionSnapshot{}
-	projectionsBySession := map[string]sessionruntime.SessionProjection{}
-	runIntentsBySession := map[string][]sessionruntime.SessionRunIntent{}
-	currentRunIntentBySession := map[string]sessionruntime.SessionRunIntent{}
-	diagnosticsBySession := map[string][]sessionsV3ReconnectDiagnostic{}
-	eligible := make([]sessionsV3ReconnectSessionCandidate, 0, len(bySession))
+func (s *Server) sessionsV3ReconnectWorksetResponse(principal identity.Principal, req sessionsV3ReconnectRequest) (map[string]any, error) {
+	bootstrapReq := reconnectToSyncBootstrapRequest(req)
+	options, selector, resources, err := sessionsV3SyncBootstrapOptions(principal, bootstrapReq)
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := s.sessionsV3SyncSnapshotResponse(context.Background(), options, selector, resources, bootstrapReq.KnownSessions)
+	if err != nil {
+		return nil, err
+	}
+	return sessionsV3ReconnectMapFromSyncSnapshot(snapshot, req), nil
+}
 
-	for sessionID := range bySession {
-		hydrated, found, err := s.sessions.HydrateSessionSnapshot(sessionID, 0, 0)
-		if err != nil {
-			return nil, err
+func reconnectToSyncBootstrapRequest(req sessionsV3ReconnectRequest) sessionsV3SyncBootstrapRequest {
+	surface := normalizeV3SyncSurface(req.Surface)
+	if !sessionsV3ReconnectHasWorkset(req) {
+		return sessionsV3SyncBootstrapRequest{
+			Surface:       surface,
+			Selector:      sessionsV3SyncSelector{Kind: "session_ids"},
+			History:       sessionsV3WorksetHistory{Mode: pebblestore.V3SyncSnapshotHistoryModeNone},
+			Resources:     sessionsV3WorksetResources{CurrentRunState: true},
+			IncludeActive: true,
 		}
-		if !found {
-			return nil, fmt.Errorf("active v3 run intent references missing session %q", sessionID)
-		}
-		if !sessionsV3ReconnectSessionVisible(hydrated.Session, principal.AccountScopeID) {
+	}
+	workset := req.Workset
+	selector := reconnectWorksetSyncSelector(workset)
+	return sessionsV3SyncBootstrapRequest{
+		Surface:       surface,
+		SelectorKind:  selector.Kind,
+		Selector:      selector,
+		History:       workset.History,
+		Resources:     workset.Resources,
+		IncludeActive: workset.IncludeActive,
+	}
+}
+
+func reconnectWorksetSyncSelector(req sessionsV3ReconnectWorksetRequest) sessionsV3SyncSelector {
+	selector := req.Selector
+	if len(selector.SessionIDs) == 0 {
+		selector.SessionIDs = req.SessionIDs
+	}
+	if !selector.Global {
+		selector.Global = req.Global
+	}
+	if selector.WorkspacePath == "" && len(selector.WorkspacePaths) == 0 {
+		selector.WorkspacePath = req.Workspace.WorkspacePath
+		selector.WorkspacePaths = req.Workspace.WorkspacePaths
+	}
+	if selector.Recent.Limit == 0 && req.Recent.Limit != 0 {
+		selector.Recent = req.Recent
+	}
+	if selector.Recent.Limit == 0 && strings.TrimSpace(selector.Kind) == "workspace" {
+		selector.Recent.Limit = sessionsV3WorksetMaxResourcePageSize
+	}
+	return sessionsV3SyncSelector{
+		Kind:           selector.Kind,
+		Global:         selector.Global,
+		WorkspacePath:  selector.WorkspacePath,
+		WorkspacePaths: selector.WorkspacePaths,
+		SessionIDs:     selector.SessionIDs,
+		Recent:         selector.Recent,
+	}
+}
+
+func sessionsV3ReconnectMapFromSyncSnapshot(snapshot sessionsV3SyncSnapshotResponseBody, req sessionsV3ReconnectRequest) map[string]any {
+	subscriptions := sessionsV3ReconnectSubscriptionsFromRealtime(snapshot.Realtime)
+	worksets := sessionsV3ReconnectWorksetsFromSnapshot(snapshot, req)
+	realtime := sessionsV3ReconnectRealtimeFromSnapshot(snapshot, subscriptions, worksets)
+	return sessionsV3ReconnectResponseMap(sessionsV3ReconnectResponseInput{
+		Rev:                       snapshot.Rev,
+		ClientID:                  strings.TrimSpace(req.ClientID),
+		Surface:                   normalizeV3SyncSurface(req.Surface),
+		WorksetID:                 sessionsV3ReconnectWorksetID(req, snapshot),
+		SnapshotEndpointCursor:    snapshot.SnapshotEndpointCursor,
+		SessionsByID:              snapshot.SessionsByID,
+		ProjectionsBySession:      snapshot.ProjectionsBySession,
+		MessagesBySession:         nilIfEmptyMap(snapshot.MessagesBySession),
+		EventsBySession:           nilIfEmptyMap(snapshot.EventsBySession),
+		RunIntentsBySession:       nilIfEmptyMap(snapshot.RunIntentsBySession),
+		CurrentRunStateBySession:  nilIfEmptyMap(snapshot.CurrentRunStateBySession),
+		CurrentRunIntentBySession: sessionsV3ReconnectCurrentRunIntentsFromStates(snapshot.CurrentRunStateBySession),
+		ActiveSessionIDs:          snapshot.ActiveSessionIDs,
+		HistoryManifestsBySession: nilIfEmptyMap(snapshot.HistoryManifestsBySession),
+		HistoryChunksByID:         nilIfEmptyMap(snapshot.HistoryChunksByID),
+		Omissions:                 snapshot.Omissions,
+		Pagination:                snapshot.Pagination,
+		Watermarks:                snapshot.Watermarks,
+		Subscriptions:             subscriptions,
+		Worksets:                  worksets,
+		Realtime:                  realtime,
+		SessionOrder:              snapshot.SessionOrder,
+		DiagnosticsBySession:      map[string][]sessionsV3ReconnectDiagnostic{},
+	})
+}
+
+func sessionsV3ReconnectSubscriptionsFromRealtime(realtime *sessionsV3RealtimeBootstrap) []sessionsV3ReconnectSubscription {
+	if realtime == nil {
+		return nil
+	}
+	out := make([]sessionsV3ReconnectSubscription, 0, len(realtime.Resume.Subscriptions))
+	for _, sub := range realtime.Resume.Subscriptions {
+		sessionID := strings.TrimSpace(sub.SessionID)
+		if sessionID == "" {
 			continue
 		}
-		current := bySession[sessionID][0]
-		allIntents, err := s.sessions.ListSessionRunIntents(sessionID, 0, sessionsV3ReconnectRunIntentListLimit)
-		if err != nil {
-			return nil, err
-		}
-		sessionsByID[sessionID] = sessionsV3SyncSessionShell(hydrated.Session)
-		projectionsBySession[sessionID] = hydrated.Projection
-		runIntentsBySession[sessionID] = allIntents
-		currentRunIntentBySession[sessionID] = current
-		eligible = append(eligible, sessionsV3ReconnectSessionCandidate{SessionID: sessionID, Session: hydrated.Session, Current: current})
-	}
-
-	sort.SliceStable(eligible, func(i, j int) bool {
-		if sessionsV3ReconnectRunIntentLess(eligible[j].Current, eligible[i].Current) {
-			return true
-		}
-		if sessionsV3ReconnectRunIntentLess(eligible[i].Current, eligible[j].Current) {
-			return false
-		}
-		if eligible[i].Session.UpdatedAt != eligible[j].Session.UpdatedAt {
-			return eligible[i].Session.UpdatedAt > eligible[j].Session.UpdatedAt
-		}
-		return eligible[i].SessionID < eligible[j].SessionID
-	})
-	sessionOrder := make([]string, 0, len(eligible))
-	for _, candidate := range eligible {
-		sessionOrder = append(sessionOrder, candidate.SessionID)
-	}
-
-	rev, err := s.sessions.CurrentRealtimeOutboxRevision()
-	if err != nil {
-		return nil, err
-	}
-	snapshotEndpointCursor, err := s.sessions.CurrentRealtimeOutboxCursor()
-	if err != nil {
-		return nil, err
-	}
-	signedSnapshotEndpointCursor, err := s.signV3SyncEndpointCursorFromLegacy(v3SyncCursorScopeForRealtime(principal, "desktop"), snapshotEndpointCursor)
-	if err != nil {
-		return nil, err
-	}
-	subscriptions := make([]sessionsV3ReconnectSubscription, 0, len(sessionOrder))
-	for _, sessionID := range sessionOrder {
-		subscriptions = append(subscriptions, sessionsV3ReconnectSubscription{
+		out = append(out, sessionsV3ReconnectSubscription{
 			Protocol:        V3RealtimeProtocol,
 			ProtocolVersion: V3RealtimeProtocolVersion,
 			Kind:            V3RealtimeKindSubscribe,
 			SessionID:       sessionID,
-			SubscriptionID:  "reconnect:" + sessionID,
-			EndpointCursor:  signedSnapshotEndpointCursor,
+			SubscriptionID:  strings.TrimSpace(sub.SubscriptionID),
+			EndpointCursor:  strings.TrimSpace(sub.EndpointCursor),
 		})
 	}
+	return out
+}
 
-	return sessionsV3ReconnectResponseMap(sessionsV3ReconnectResponseInput{
-		Rev:                       rev,
-		SnapshotEndpointCursor:    signedSnapshotEndpointCursor,
-		SessionsByID:              sessionsByID,
-		ProjectionsBySession:      projectionsBySession,
-		RunIntentsBySession:       runIntentsBySession,
-		CurrentRunIntentBySession: currentRunIntentBySession,
-		Subscriptions:             subscriptions,
-		SessionOrder:              sessionOrder,
-		DiagnosticsBySession:      diagnosticsBySession,
-	}), nil
+func sessionsV3ReconnectWorksetsFromSnapshot(snapshot sessionsV3SyncSnapshotResponseBody, req sessionsV3ReconnectRequest) []V3RealtimeWorksetSubscriptionRequest {
+	if snapshot.Realtime == nil || len(snapshot.Realtime.Resume.Worksets) == 0 || !sessionsV3ReconnectHasWorkset(req) {
+		return nil
+	}
+	worksets := append([]V3RealtimeWorksetSubscriptionRequest(nil), snapshot.Realtime.Resume.Worksets...)
+	worksetID := strings.TrimSpace(req.Workset.WorksetID)
+	clientID := strings.TrimSpace(req.ClientID)
+	for i := range worksets {
+		if worksetID != "" {
+			worksets[i].WorksetID = worksetID
+			worksets[i].SubscriptionID = sessionsV3ReconnectWorksetSubscriptionID(clientID, worksetID)
+		}
+		worksets[i].AutoSubscribeSessions = false
+	}
+	return worksets
+}
+
+func sessionsV3ReconnectRealtimeFromSnapshot(snapshot sessionsV3SyncSnapshotResponseBody, subscriptions []sessionsV3ReconnectSubscription, worksets []V3RealtimeWorksetSubscriptionRequest) *sessionsV3RealtimeBootstrap {
+	if strings.TrimSpace(snapshot.SnapshotEndpointCursor) == "" {
+		return nil
+	}
+	return &sessionsV3RealtimeBootstrap{
+		StreamPath: V3RealtimeStreamPath,
+		Resume: V3RealtimeMessage{
+			Protocol:        V3RealtimeProtocol,
+			ProtocolVersion: V3RealtimeProtocolVersion,
+			Kind:            V3RealtimeKindResume,
+			EndpointCursor:  snapshot.SnapshotEndpointCursor,
+			Subscriptions:   reconnectSubscriptionsToV3Realtime(subscriptions),
+			Worksets:        worksets,
+		},
+	}
+}
+
+func sessionsV3ReconnectWorksetID(req sessionsV3ReconnectRequest, snapshot sessionsV3SyncSnapshotResponseBody) string {
+	if !sessionsV3ReconnectHasWorkset(req) {
+		return ""
+	}
+	if worksetID := strings.TrimSpace(req.Workset.WorksetID); worksetID != "" {
+		return worksetID
+	}
+	if snapshot.Realtime != nil && len(snapshot.Realtime.Resume.Worksets) > 0 {
+		return snapshot.Realtime.Resume.Worksets[0].WorksetID
+	}
+	return ""
+}
+
+func sessionsV3ReconnectCurrentRunIntentsFromStates(states map[string]pebblestore.V3SessionRunState) map[string]pebblestore.V3SessionRunIntent {
+	if len(states) == 0 {
+		return nil
+	}
+	out := make(map[string]pebblestore.V3SessionRunIntent, len(states))
+	for sessionID, state := range states {
+		if !state.Active || strings.TrimSpace(state.RunID) == "" {
+			continue
+		}
+		out[sessionID] = pebblestore.V3SessionRunIntent{
+			SessionID:      strings.TrimSpace(state.SessionID),
+			UserID:         strings.TrimSpace(state.UserID),
+			AccountScopeID: strings.TrimSpace(state.AccountScopeID),
+			RunID:          strings.TrimSpace(state.RunID),
+			Status:         strings.TrimSpace(state.Status),
+			BlockedReason:  strings.TrimSpace(state.BlockedReason),
+			CreatedAt:      state.CreatedAt,
+			UpdatedAt:      state.UpdatedAt,
+			EventSeq:       state.EventSeq,
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func nilIfEmptyMap[M ~map[K]V, K comparable, V any](value M) any {
+	if len(value) == 0 {
+		return nil
+	}
+	return value
 }
 
 type sessionsV3ReconnectResponseInput struct {
@@ -220,6 +326,8 @@ type sessionsV3ReconnectResponseInput struct {
 	EventsBySession           any
 	RunIntentsBySession       any
 	CurrentRunIntentBySession any
+	CurrentRunStateBySession  any
+	ActiveSessionIDs          []string
 	HistoryManifestsBySession any
 	HistoryChunksByID         any
 	Omissions                 any
@@ -229,94 +337,7 @@ type sessionsV3ReconnectResponseInput struct {
 	Worksets                  []V3RealtimeWorksetSubscriptionRequest
 	SessionOrder              []string
 	DiagnosticsBySession      map[string][]sessionsV3ReconnectDiagnostic
-}
-
-func (s *Server) sessionsV3ReconnectWorksetResponse(principal identity.Principal, req sessionsV3ReconnectRequest) (map[string]any, error) {
-	surface := normalizeV3SyncSurface(req.Surface)
-	worksetReq, selector := sessionsV3ReconnectWorksetRequestForOptions(req.Workset)
-	options, err := sessionsV3WorksetOptionsFromRequest(principal, worksetReq)
-	if err != nil {
-		return nil, err
-	}
-	options.Principal = principal
-	options.Surface = surface
-	workset, err := s.sessions.BuildSessionWorkset(options.Store)
-	if err != nil {
-		return nil, err
-	}
-	signedSnapshotEndpointCursor, err := s.signV3SyncEndpointCursor(
-		v3SyncCursorScopeForRealtime(principal, surface),
-		workset.Rev,
-	)
-	if err != nil {
-		return nil, err
-	}
-	response, err := s.sessionsV3WorksetResponseForResult(options, workset, signedSnapshotEndpointCursor)
-	if err != nil {
-		return nil, err
-	}
-	var messagesBySession any
-	if options.Store.History.IncludeMessages {
-		messagesBySession = response["messages_by_session"]
-	}
-
-	var eventsBySession any
-	if options.Store.History.IncludeEvents {
-		eventsBySession = response["events_by_session"]
-	}
-
-	var runIntentsBySession any
-	if options.Store.IncludeRunIntents {
-		runIntentsBySession = response["run_intents_by_session"]
-	}
-
-	var historyManifestsBySession any
-	var historyChunksByID any
-	if options.Store.History.IncludeMessages || options.Store.History.IncludeEvents {
-		historyManifestsBySession = response["history_manifests_by_session"]
-		historyChunksByID = response["history_chunks_by_id"]
-	}
-
-	worksetID := strings.TrimSpace(req.Workset.WorksetID)
-	if worksetID == "" {
-		worksetID = "workset:" + v3SyncDeterministicSelectorHash(v3SyncCanonicalSelector(selector))
-	}
-	clientID := strings.TrimSpace(req.ClientID)
-	activeIntents, err := s.sessionsV3ReconnectActiveRunIntents(principal)
-	if err != nil {
-		return nil, err
-	}
-	subscriptionOrder := sessionsV3ReconnectWorksetSubscriptionOrder(selector, workset.SessionOrder, activeIntents)
-	subscriptions := sessionsV3ReconnectSubscriptions(clientID, subscriptionOrder, signedSnapshotEndpointCursor)
-	worksets := []V3RealtimeWorksetSubscriptionRequest{{
-		WorksetID:             worksetID,
-		SubscriptionID:        sessionsV3ReconnectWorksetSubscriptionID(clientID, worksetID),
-		Surface:               surface,
-		Selector:              selector,
-		Resources:             sessionsV3ReconnectRealtimeResourceSet(worksetReq.Resources, worksetReq.History, worksetReq.IncludeActive),
-		AutoSubscribeSessions: req.Workset.AutoSubscribeSessions,
-	}}
-	return sessionsV3ReconnectResponseMap(sessionsV3ReconnectResponseInput{
-		Rev:                       workset.Rev,
-		ClientID:                  clientID,
-		Surface:                   surface,
-		WorksetID:                 worksetID,
-		SnapshotEndpointCursor:    signedSnapshotEndpointCursor,
-		SessionsByID:              response["sessions_by_id"],
-		ProjectionsBySession:      response["projections_by_session"],
-		MessagesBySession:         messagesBySession,
-		EventsBySession:           eventsBySession,
-		RunIntentsBySession:       runIntentsBySession,
-		HistoryManifestsBySession: historyManifestsBySession,
-		HistoryChunksByID:         historyChunksByID,
-		Omissions:                 response["omissions"],
-		Pagination:                response["pagination"],
-		Watermarks:                response["watermarks"],
-		Subscriptions:             subscriptions,
-		Worksets:                  worksets,
-		SessionOrder:              workset.SessionOrder,
-		DiagnosticsBySession:      map[string][]sessionsV3ReconnectDiagnostic{},
-	}), nil
+	Realtime                  *sessionsV3RealtimeBootstrap
 }
 
 func sessionsV3ReconnectResponseMap(input sessionsV3ReconnectResponseInput) map[string]any {
@@ -333,8 +354,13 @@ func sessionsV3ReconnectResponseMap(input sessionsV3ReconnectResponseInput) map[
 	if input.CurrentRunIntentBySession != nil {
 		response["current_run_intent_by_session"] = input.CurrentRunIntentBySession
 	}
+	if input.Realtime != nil {
+		response["realtime"] = input.Realtime
+	}
 	optional := map[string]any{
 		"run_intents_by_session":       input.RunIntentsBySession,
+		"current_run_state_by_session": input.CurrentRunStateBySession,
+		"active_session_ids":           input.ActiveSessionIDs,
 		"client_id":                    input.ClientID,
 		"surface":                      input.Surface,
 		"workset_id":                   input.WorksetID,
@@ -352,106 +378,7 @@ func sessionsV3ReconnectResponseMap(input sessionsV3ReconnectResponseInput) map[
 			response[key] = value
 		}
 	}
-	if len(input.Worksets) > 0 {
-		response["realtime"] = map[string]any{
-			"stream_path": V3RealtimeStreamPath,
-			"resume": V3RealtimeMessage{
-				Protocol:        V3RealtimeProtocol,
-				ProtocolVersion: V3RealtimeProtocolVersion,
-				Kind:            V3RealtimeKindResume,
-				EndpointCursor:  input.SnapshotEndpointCursor,
-				Subscriptions:   reconnectSubscriptionsToV3Realtime(input.Subscriptions),
-				Worksets:        input.Worksets,
-			},
-		}
-	}
 	return response
-}
-
-func sessionsV3ReconnectRealtimeResourceSet(resources sessionsV3WorksetResources, history sessionsV3WorksetHistory, includeActive bool) []string {
-	filtered := make([]string, 0)
-	for _, resource := range sessionsV3SyncResourceSet(resources, history, includeActive) {
-		if v3RealtimeWorksetResourceAllowed(resource) {
-			filtered = append(filtered, resource)
-		}
-	}
-	resourceSet, err := canonicalV3RealtimeWorksetResources(filtered)
-	if err != nil {
-		return []string{"membership", "projections", "sessions", "tombstones"}
-	}
-	return resourceSet
-}
-
-func sessionsV3ReconnectWorksetRequestForOptions(req sessionsV3ReconnectWorksetRequest) (sessionsV3WorksetRequest, V3RealtimeWorksetSelector) {
-	selector := req.Selector
-	if len(selector.SessionIDs) == 0 {
-		selector.SessionIDs = req.SessionIDs
-	}
-	if !selector.Global {
-		selector.Global = req.Global
-	}
-	if selector.WorkspacePath == "" && len(selector.WorkspacePaths) == 0 {
-		selector.WorkspacePath = req.Workspace.WorkspacePath
-		selector.WorkspacePaths = req.Workspace.WorkspacePaths
-	}
-	if selector.Recent.Limit == 0 && req.Recent.Limit != 0 {
-		selector.Recent = req.Recent
-	}
-	if strings.TrimSpace(selector.Kind) == "global" {
-		selector.Global = true
-	}
-	if strings.TrimSpace(selector.Kind) == "" {
-		switch {
-		case selector.Global:
-			selector.Kind = "global"
-		case len(selector.SessionIDs) > 0:
-			selector.Kind = "session_ids"
-		case selector.Recent.Limit > 0:
-			selector.Kind = "recent"
-		case strings.TrimSpace(selector.WorkspacePath) != "" || len(selector.WorkspacePaths) > 0:
-			selector.Kind = "workspace"
-		}
-	}
-	return sessionsV3WorksetRequest{
-		SessionIDs:    selector.SessionIDs,
-		Global:        selector.Global,
-		Workspace:     sessionsV3WorksetWorkspace{WorkspacePath: selector.WorkspacePath, WorkspacePaths: selector.WorkspacePaths},
-		Recent:        selector.Recent,
-		History:       req.History,
-		Resources:     req.Resources,
-		IncludeActive: req.IncludeActive,
-	}, selector
-}
-
-func sessionsV3ReconnectWorksetSubscriptionOrder(selector V3RealtimeWorksetSelector, worksetOrder []string, activeIntents []sessionruntime.SessionRunIntent) []string {
-	if strings.TrimSpace(selector.Kind) == "session_ids" {
-		return worksetOrder
-	}
-	activeSessionIDs := make(map[string]struct{}, len(activeIntents))
-	for _, intent := range activeIntents {
-		sessionID := strings.TrimSpace(intent.SessionID)
-		if sessionID == "" {
-			continue
-		}
-		activeSessionIDs[sessionID] = struct{}{}
-	}
-	out := make([]string, 0, len(worksetOrder))
-	seen := make(map[string]struct{}, len(worksetOrder))
-	for _, sessionID := range worksetOrder {
-		sessionID = strings.TrimSpace(sessionID)
-		if sessionID == "" {
-			continue
-		}
-		if _, active := activeSessionIDs[sessionID]; !active {
-			continue
-		}
-		if _, ok := seen[sessionID]; ok {
-			continue
-		}
-		seen[sessionID] = struct{}{}
-		out = append(out, sessionID)
-	}
-	return out
 }
 
 func sessionsV3ReconnectSubscriptions(clientID string, sessionOrder []string, endpointCursor string) []sessionsV3ReconnectSubscription {
@@ -524,109 +451,4 @@ func sessionsV3ReconnectErrorStatus(err error) int {
 		return http.StatusBadRequest
 	}
 	return http.StatusInternalServerError
-}
-
-func (s *Server) sessionsV3ReconnectActiveRunIntents(principal identity.Principal) ([]sessionruntime.SessionRunIntent, error) {
-	states, err := s.sessions.ListActiveSessionRunStates(principal.AccountScopeID, sessionsV3ReconnectRunIntentListLimit)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]sessionruntime.SessionRunIntent, 0, len(states))
-	for _, state := range states {
-		if !state.Active || strings.TrimSpace(state.RunID) == "" {
-			continue
-		}
-		out = append(out, sessionruntime.SessionRunIntent{
-			SessionID:      strings.TrimSpace(state.SessionID),
-			UserID:         strings.TrimSpace(state.UserID),
-			AccountScopeID: strings.TrimSpace(state.AccountScopeID),
-			RunID:          strings.TrimSpace(state.RunID),
-			Status:         strings.TrimSpace(state.Status),
-			BlockedReason:  strings.TrimSpace(state.BlockedReason),
-			CreatedAt:      state.CreatedAt,
-			UpdatedAt:      state.UpdatedAt,
-			EventSeq:       state.EventSeq,
-		})
-	}
-	return out, nil
-}
-
-func sessionsV3ReconnectSessionVisible(session pebblestore.SessionSnapshot, accountScopeID string) bool {
-	if strings.TrimSpace(session.ID) == "" {
-		return false
-	}
-	if accountScopeID == "" || strings.TrimSpace(session.AccountScopeID) == "" {
-		return true
-	}
-	return strings.TrimSpace(session.AccountScopeID) == accountScopeID
-}
-
-func sessionsV3ReconnectActiveIntents(intents []sessionruntime.SessionRunIntent) []sessionruntime.SessionRunIntent {
-	out := make([]sessionruntime.SessionRunIntent, 0, len(intents))
-	for _, intent := range intents {
-		if sessionV3RunIntentStatusActive(intent.Status) {
-			out = append(out, intent)
-		}
-	}
-	return out
-}
-
-func sessionsV3ReconnectCurrentRunIntent(intents []sessionruntime.SessionRunIntent) sessionruntime.SessionRunIntent {
-	if len(intents) == 0 {
-		return sessionruntime.SessionRunIntent{}
-	}
-	current := intents[0]
-	for _, intent := range intents[1:] {
-		if sessionsV3ReconnectRunIntentLess(current, intent) {
-			current = intent
-		}
-	}
-	return current
-}
-
-func sessionsV3ReconnectRunIntentLess(a, b sessionruntime.SessionRunIntent) bool {
-	aPriority := sessionsV3ReconnectRunIntentPriority(a.Status)
-	bPriority := sessionsV3ReconnectRunIntentPriority(b.Status)
-	if aPriority != bPriority {
-		return aPriority < bPriority
-	}
-	if a.UpdatedAt != b.UpdatedAt {
-		return a.UpdatedAt < b.UpdatedAt
-	}
-	if a.EventSeq != b.EventSeq {
-		return a.EventSeq < b.EventSeq
-	}
-	return strings.TrimSpace(a.RunID) < strings.TrimSpace(b.RunID)
-}
-
-func sessionsV3ReconnectRunIntentPriority(status string) int {
-	switch strings.TrimSpace(status) {
-	case sessionruntime.RunIntentRunning:
-		return 2
-	case sessionruntime.RunIntentPendingExecutor:
-		return 1
-	default:
-		return 0
-	}
-}
-
-func sessionsV3ReconnectMultipleActiveDiagnostic(active []sessionruntime.SessionRunIntent, current sessionruntime.SessionRunIntent) sessionsV3ReconnectDiagnostic {
-	runIDs := make([]string, 0, len(active))
-	statuses := make([]string, 0, len(active))
-	for _, intent := range active {
-		runIDs = append(runIDs, intent.RunID)
-		statuses = append(statuses, intent.Status)
-	}
-	return sessionsV3ReconnectDiagnostic{
-		Code:     "multiple_active_run_intents",
-		Message:  fmt.Sprintf("session has %d active durable v3 run intents; selected %q deterministically", len(active), current.RunID),
-		RunIDs:   runIDs,
-		Statuses: statuses,
-	}
-}
-
-type sessionsV3ReconnectSessionCandidate struct {
-	SessionID string
-	Session   pebblestore.SessionSnapshot
-	Current   sessionruntime.SessionRunIntent
 }

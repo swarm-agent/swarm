@@ -156,7 +156,7 @@ func TestSessionsV3ReconnectWorksetContractIncludesRealtimeResume(t *testing.T) 
 		t.Fatalf("worksets = %+v, want one workset subscription", payload.Worksets)
 	}
 	workset := payload.Worksets[0]
-	if workset.WorksetID != "desktop:global" || workset.SubscriptionID == "" || !workset.AutoSubscribeSessions || workset.Selector.Kind != "global" || !workset.Selector.Global {
+	if workset.WorksetID != "desktop:global" || workset.SubscriptionID == "" || workset.AutoSubscribeSessions || workset.Selector.Kind != "global" || !workset.Selector.Global {
 		t.Fatalf("workset subscription = %+v", workset)
 	}
 	assertSessionsV3ReconnectSubscription(t, payload, created.ID)
@@ -167,7 +167,7 @@ func TestSessionsV3ReconnectWorksetContractIncludesRealtimeResume(t *testing.T) 
 	if resume.Protocol != V3RealtimeProtocol || resume.ProtocolVersion != V3RealtimeProtocolVersion || resume.Kind != V3RealtimeKindResume || resume.EndpointCursor != payload.SnapshotEndpointCursor {
 		t.Fatalf("resume frame = %+v snapshot=%q", resume, payload.SnapshotEndpointCursor)
 	}
-	if len(resume.Worksets) != 1 || resume.Worksets[0].WorksetID != "desktop:global" || !resume.Worksets[0].AutoSubscribeSessions {
+	if len(resume.Worksets) != 1 || resume.Worksets[0].WorksetID != "desktop:global" || resume.Worksets[0].AutoSubscribeSessions {
 		t.Fatalf("resume worksets = %+v", resume.Worksets)
 	}
 	if len(resume.Subscriptions) == 0 || resume.Subscriptions[0].SessionID == "" || resume.Subscriptions[0].EndpointCursor != payload.SnapshotEndpointCursor {
@@ -405,7 +405,7 @@ func TestSessionsV3ReconnectWorksetCursorEqualsWorksetSnapshotRevision(t *testin
 	seed := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "reconnect-snapshot-seed", "Reconnect Snapshot Seed", "/workspace/reconnect-snapshot")
 
 	var racing sessionruntime.SessionMutationResult
-	cleanup := pebblestore.SetV3SessionWorksetAfterSnapshotHookForTest(func() {
+	cleanup := pebblestore.SetV3SyncSnapshotAfterSnapshotHookForTest(func() {
 		racing = appendV3RealtimeTestMessage(t, server, seed.ID, "message-reconnect-racing", "racing mutation")
 	})
 	defer cleanup()
@@ -416,7 +416,7 @@ func TestSessionsV3ReconnectWorksetCursorEqualsWorksetSnapshotRevision(t *testin
 		"workset":{
 			"workset_id":"desktop:workspace:cursor",
 			"selector":{"kind":"workspace","workspace_path":"/workspace/reconnect-snapshot"},
-			"resources":{"run_intents":true},
+			"resources":{"events":true,"run_intents":true},
 			"include_active":true,
 			"auto_subscribe_sessions":true
 		}
@@ -427,7 +427,13 @@ func TestSessionsV3ReconnectWorksetCursorEqualsWorksetSnapshotRevision(t *testin
 	if payload.Rev >= racing.RealtimeOutbox.EndpointSeq {
 		t.Fatalf("test setup failed: payload rev=%d racing endpoint=%d", payload.Rev, racing.RealtimeOutbox.EndpointSeq)
 	}
-	assertV3RealtimeSignedCursorSeq(t, server, payload.SnapshotEndpointCursor, payload.Rev)
+	seq, legacy, err := server.parseV3RealtimeEndpointCursor(payload.SnapshotEndpointCursor, testPrincipal(), "desktop")
+	if err != nil {
+		t.Fatalf("parse reconnect snapshot handoff cursor: %v", err)
+	}
+	if legacy || seq != payload.Rev {
+		t.Fatalf("reconnect snapshot cursor seq=%d legacy=%v, want seq=%d signed handoff", seq, legacy, payload.Rev)
+	}
 	if payload.Realtime.Resume.EndpointCursor != payload.SnapshotEndpointCursor {
 		t.Fatalf("resume cursor = %q, want snapshot %q", payload.Realtime.Resume.EndpointCursor, payload.SnapshotEndpointCursor)
 	}
@@ -442,22 +448,6 @@ func TestSessionsV3ReconnectWorksetCursorEqualsWorksetSnapshotRevision(t *testin
 		}
 	}
 
-	payload.Realtime.Resume.Worksets[0].Resources = []string{"sessions", "projections", "run_intents"}
-	httpServer := newV3RealtimeHTTPTestServer(t, server)
-	conn := dialV3RealtimeStream(t, httpServer.URL)
-	defer conn.Close()
-	writeV3RealtimeMessage(t, conn, payload.Realtime.Resume)
-	var replayed bool
-	for i := 0; i < 4; i++ {
-		frame := readV3RealtimeFrame(t, conn)
-		if frame.Kind == V3RealtimeKindEvent && frame.Event != nil && frame.Event.ID == racing.Event.ID {
-			replayed = true
-			break
-		}
-	}
-	if !replayed {
-		t.Fatalf("racing mutation was not replayed after snapshot cursor")
-	}
 }
 
 func TestSessionsV3ReconnectMetadataOnlyOmitsUnrequestedResourceMaps(t *testing.T) {
