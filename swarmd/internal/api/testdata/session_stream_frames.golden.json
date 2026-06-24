@@ -1,0 +1,35 @@
+[
+  {
+    "type": "session.ready",
+    "connection_id": "conn-456",
+    "session_id": "session-123",
+    "event_seq": 846,
+    "resume_token": "resume-redacted-2"
+  },
+  {
+    "type": "session.event",
+    "session_id": "session-123",
+    "event_seq": 847,
+    "event": {
+      "id": "evt-847",
+      "event_type": "message.created"
+    },
+    "resume_token": "resume-redacted-3"
+  },
+  {
+    "type": "run.phase",
+    "session_id": "session-123",
+    "run_id": "run-789",
+    "phase": "provider_request_started",
+    "event_seq": 848
+  },
+  {
+    "type": "session.reconnect_required",
+    "session_id": "session-123",
+    "reason": "resume_token_expired",
+    "action": {
+      "method": "POST",
+      "path": "/v3/sessions/session-123:connect"
+    }
+  }
+]

@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swarm.dev/contracts/session-connection.v1.schema.json",
+  "title": "Swarm selected-session connection contract v1",
+  "description": "Client-facing contract for selected-session attachment, stream readiness, durable replay, provider run phases, and typed failures.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "connect_request": { "$ref": "#/$defs/SessionConnectRequest" },
+    "connect_response": { "$ref": "#/$defs/SessionConnectResponse" },
+    "stream_frame": { "$ref": "#/$defs/SessionStreamFrame" },
+    "error": { "$ref": "#/$defs/SessionConnectionError" }
+  },
+  "$defs": {
+    "RunPhase": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "pending_executor",
+        "executor_started",
+        "provider_request_started",
+        "provider_first_event",
+        "output_streaming",
+        "waiting_permission",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ]
+    },
+    "SessionErrorAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "path"],
+      "properties": {
+        "method": { "type": "string" },
+        "path": { "type": "string" }
+      }
+    },
+    "SessionConnectionError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable", "action"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" },
+        "action": { "$ref": "#/$defs/SessionErrorAction" }
+      }
+    },
+    "SessionConnectRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client_id", "request_id", "resume_token"],
+      "properties": {
+        "client_id": { "type": "string" },
+        "request_id": { "type": "string" },
+        "resume_token": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    },
+    "SessionCurrentRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "phase"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "phase": { "$ref": "#/$defs/RunPhase" },
+        "reason": { "anyOf": [{ "$ref": "#/$defs/RunPhaseReason" }, { "type": "null" }] }
+      }
+    },
+    "SessionSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_seq", "session", "messages", "current_run", "pending_permissions", "active_plan", "usage"],
+      "properties": {
+        "event_seq": { "type": "integer", "minimum": 0 },
+        "session": { "type": "object", "x-go-type": "json.RawMessage", "x-ts-type": "unknown" },
+        "messages": { "type": "array", "items": { "type": "object", "x-go-type": "json.RawMessage", "x-ts-type": "unknown" } },
+        "current_run": { "anyOf": [{ "$ref": "#/$defs/SessionCurrentRun" }, { "type": "null" }] },
+        "pending_permissions": { "type": "array", "items": { "type": "object", "x-go-type": "json.RawMessage", "x-ts-type": "unknown" } },
+        "active_plan": { "anyOf": [{ "type": "object", "x-go-type": "json.RawMessage", "x-ts-type": "unknown" }, { "type": "null" }] },
+        "usage": { "anyOf": [{ "type": "object", "x-go-type": "json.RawMessage", "x-ts-type": "unknown" }, { "type": "null" }] }
+      }
+    },
+    "SessionConnectionInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connection_id", "transport", "protocol", "stream_url", "resume_token", "ready_timeout_ms"],
+      "properties": {
+        "connection_id": { "type": "string" },
+        "transport": { "type": "string", "const": "websocket" },
+        "protocol": { "type": "string", "const": "swarm.session-stream.v1" },
+        "stream_url": { "type": "string" },
+        "resume_token": { "type": "string" },
+        "ready_timeout_ms": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "SessionConnectResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "contract_version", "session_id", "snapshot", "connection"],
+      "properties": {
+        "ok": { "type": "boolean", "const": true },
+        "contract_version": { "type": "integer", "const": 1 },
+        "session_id": { "type": "string" },
+        "snapshot": { "$ref": "#/$defs/SessionSnapshot" },
+        "connection": { "$ref": "#/$defs/SessionConnectionInfo" }
+      }
+    },
+    "RunPhaseReason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "SessionReadyFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "connection_id", "session_id", "event_seq", "resume_token"],
+      "properties": {
+        "type": { "type": "string", "const": "session.ready" },
+        "connection_id": { "type": "string" },
+        "session_id": { "type": "string" },
+        "event_seq": { "type": "integer", "minimum": 0 },
+        "resume_token": { "type": "string" }
+      }
+    },
+    "SessionEventFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "session_id", "event_seq", "event", "resume_token"],
+      "properties": {
+        "type": { "type": "string", "const": "session.event" },
+        "session_id": { "type": "string" },
+        "event_seq": { "type": "integer", "minimum": 0 },
+        "event": { "type": "object", "x-go-type": "json.RawMessage", "x-ts-type": "unknown" },
+        "resume_token": { "type": "string" }
+      }
+    },
+    "RunPhaseFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "session_id", "run_id", "phase", "event_seq"],
+      "properties": {
+        "type": { "type": "string", "const": "run.phase" },
+        "session_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "phase": { "$ref": "#/$defs/RunPhase" },
+        "event_seq": { "type": "integer", "minimum": 0 },
+        "reason": { "anyOf": [{ "$ref": "#/$defs/RunPhaseReason" }, { "type": "null" }] }
+      }
+    },
+    "SessionReconnectRequiredFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "session_id", "reason", "action"],
+      "properties": {
+        "type": { "type": "string", "const": "session.reconnect_required" },
+        "session_id": { "type": "string" },
+        "reason": { "type": "string", "enum": ["resume_token_expired", "connection_lease_lost", "session_deleted", "authorization_lost", "slow_consumer"] },
+        "action": { "$ref": "#/$defs/SessionErrorAction" }
+      }
+    },
+    "SessionStreamFrame": {
+      "oneOf": [
+        { "$ref": "#/$defs/SessionReadyFrame" },
+        { "$ref": "#/$defs/SessionEventFrame" },
+        { "$ref": "#/$defs/RunPhaseFrame" },
+        { "$ref": "#/$defs/SessionReconnectRequiredFrame" }
+      ]
+    }
+  }
+}
