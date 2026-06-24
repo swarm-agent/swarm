@@ -221,6 +221,92 @@ func TestSessionsV3SyncHydrateRunIntentsRequestedNoHistoryEmitsAuthoritativeEmpt
 	}
 }
 
+func TestSessionsV3SyncIncludeActiveUsesCurrentRunStateWithoutRunIntentHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+		body func(string) string
+	}{
+		{
+			name: "bootstrap",
+			path: V3SyncBootstrapPath,
+			body: func(sessionID string) string {
+				return `{"surface":"desktop","selector":{"kind":"session_ids","session_ids":["` + sessionID + `"]},"history":{"mode":"none"},"include_active":true}`
+			},
+		},
+		{
+			name: "hydrate",
+			path: V3SyncHydratePath,
+			body: func(sessionID string) string {
+				return `{"surface":"desktop","session_ids":["` + sessionID + `"],"history":{"mode":"none"},"include_active":true}`
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+			created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-"+tc.name+"-active-current-state", "Sync "+tc.name+" Active Current State", "/workspace/active-current-state")
+			runID := "run-sync-" + tc.name + "-active-current-state"
+			now := time.Now().UnixMilli()
+			if _, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+				SessionID:       created.ID,
+				UserID:          testPrincipal().UserID,
+				AccountScopeID:  testPrincipal().AccountScopeID,
+				ClientRequestID: "sync-" + tc.name + "-active-current-state-running",
+				IdempotencyKey:  "sync-" + tc.name + "-active-current-state-running",
+				PayloadHash:     "hash-sync-" + tc.name + "-active-current-state-running",
+				RequestHash:     "hash-sync-" + tc.name + "-active-current-state-running",
+				Kind:            sessionruntime.SessionMutationRecordRunIntent,
+				EventType:       "session.run.queued",
+				RunIntent:       &pebblestore.V3SessionRunIntent{RunID: runID, Status: sessionruntime.RunIntentPendingExecutor, CreatedAt: now, UpdatedAt: now},
+				NowUnixMs:       now,
+			}); err != nil {
+				t.Fatalf("mark session active: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, tc.path, bytes.NewBufferString(tc.body(created.ID)))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s status = %d, want %d, body=%s", tc.name, rec.Code, http.StatusOK, rec.Body.String())
+			}
+			var payload struct {
+				SyncScope                map[string]string                           `json:"sync_scope"`
+				RunIntentsBySession      map[string][]pebblestore.V3SessionRunIntent `json:"run_intents_by_session"`
+				CurrentRunStateBySession map[string]pebblestore.V3SessionRunState    `json:"current_run_state_by_session"`
+				ActiveSessionIDs         []string                                    `json:"active_session_ids"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode %s response: %v", tc.name, err)
+			}
+			resourceSet := payload.SyncScope["resource_set"]
+			if !strings.Contains(resourceSet, "current_run_state") {
+				t.Fatalf("include_active did not request current_run_state resource: %+v", payload.SyncScope)
+			}
+			if strings.Contains(resourceSet, "run_intents") {
+				t.Fatalf("include_active implicitly requested historical run_intents resource: %+v", payload.SyncScope)
+			}
+			state, ok := payload.CurrentRunStateBySession[created.ID]
+			if !ok || state.RunID != runID || !state.Active {
+				t.Fatalf("current_run_state_by_session[%s] = %+v, ok=%v", created.ID, state, ok)
+			}
+			foundActiveSessionID := false
+			for _, sessionID := range payload.ActiveSessionIDs {
+				if sessionID == created.ID {
+					foundActiveSessionID = true
+					break
+				}
+			}
+			if !foundActiveSessionID {
+				t.Fatalf("active_session_ids missing %s: %+v", created.ID, payload.ActiveSessionIDs)
+			}
+			if _, ok := payload.RunIntentsBySession[created.ID]; ok {
+				t.Fatalf("include_active emitted historical run intents without explicit resource: %+v", payload.RunIntentsBySession)
+			}
+		})
+	}
+}
+
 func TestSessionsV3SyncBootstrapGlobalSelectorWithoutRecentUsesNativeAccountSnapshot(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	createdA := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-global-a", "Sync Global A", "/workspace/global-a")

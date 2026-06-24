@@ -203,6 +203,68 @@ func TestBuildV3SyncSnapshotRequestedZeroRunIntentsReturnsAuthoritativeEmptyKey(
 	}
 }
 
+func TestBuildV3SyncSnapshotIncludeActiveDoesNotScanRunIntentHistory(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-sync-active-current-state")
+	pending := V3SessionRunIntent{SessionID: "session-sync-active-current-state", UserID: "user-1", AccountScopeID: "account-1", RunID: "run-sync-active-current-state", Status: V3RunIntentPendingExecutor, CreatedAt: 2000, UpdatedAt: 2000}
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-sync-active-current-state",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-intent-sync-active-current-state",
+		PayloadHash:    "hash-run-intent-sync-active-current-state",
+		Kind:           V3SessionMutationAppendMessage,
+		RunIntent:      &pending,
+		NowUnixMs:      2000,
+	}); err != nil {
+		t.Fatalf("create active run intent: %v", err)
+	}
+	if err := store.Delete(KeyV3SessionRunIntent(pending.SessionID, pending.RunID)); err != nil {
+		t.Fatalf("delete historical run-intent record: %v", err)
+	}
+	if err := store.Delete(KeyV3SessionRunIntentStatus(pending.Status, pending.UpdatedAt, pending.AccountScopeID, pending.SessionID, pending.RunID)); err != nil {
+		t.Fatalf("delete historical run-intent status record: %v", err)
+	}
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID:        "account-1",
+		UserID:                "user-1",
+		SessionIDs:            []string{"session-sync-active-current-state"},
+		History:               V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+		IncludeActiveSessions: true,
+	})
+	if err != nil {
+		t.Fatalf("build include-active sync snapshot: %v", err)
+	}
+	if _, ok := snapshot.RunIntentsBySession["session-sync-active-current-state"]; ok {
+		t.Fatalf("include active emitted historical run intents without IncludeRunIntents: %+v", snapshot.RunIntentsBySession)
+	}
+	state, ok := snapshot.CurrentRunStateBySession["session-sync-active-current-state"]
+	if !ok || state.RunID != pending.RunID || !state.Active {
+		t.Fatalf("current run state = %+v, ok=%v", state, ok)
+	}
+	if len(snapshot.ActiveSessionIDs) != 1 || snapshot.ActiveSessionIDs[0] != "session-sync-active-current-state" {
+		t.Fatalf("active_session_ids = %+v", snapshot.ActiveSessionIDs)
+	}
+
+	withHistory, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID:        "account-1",
+		UserID:                "user-1",
+		SessionIDs:            []string{"session-sync-active-current-state"},
+		History:               V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+		IncludeActiveSessions: true,
+		IncludeRunIntents:     true,
+	})
+	if err != nil {
+		t.Fatalf("build include-active run-intent sync snapshot: %v", err)
+	}
+	intents, ok := withHistory.RunIntentsBySession["session-sync-active-current-state"]
+	if !ok || len(intents) != 0 {
+		t.Fatalf("explicit run intents after historical records were removed = %+v, ok=%v", intents, ok)
+	}
+}
+
 func TestBuildV3SyncSnapshotGlobalSelectorWithoutRecentIncludesAccountSessions(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
