@@ -57,7 +57,7 @@ func BenchmarkV3SyncBootstrapRecent50WithActiveIndex(b *testing.B) {
 
 func BenchmarkV3SyncHydrateTail200(b *testing.B) {
 	fixture := newV3SyncCheckpoint0BenchmarkFixture(b)
-	body := []byte(fmt.Sprintf(`{"surface":"desktop","session_ids":[%q],"history":{"mode":"tail","max_messages_per_session":200,"manifest_policy":"manifest"},"resources":{"messages":true,"run_intents":true,"current_run_state":true},"include_active":true}`, fixture.hydrateSession))
+	body := []byte(fmt.Sprintf(`{"surface":"desktop","session_ids":[%q],"history":{"mode":"tail","max_messages_per_session":200,"manifest_policy":"manifest"},"resources":{"messages":true,"run_intents":true,"current_run_state":true,"session_view":true},"include_active":true}`, fixture.hydrateSession))
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -70,9 +70,13 @@ func BenchmarkV3SyncHydrateTail200(b *testing.B) {
 		if payload.SessionsByID[fixture.hydrateSession].ID != fixture.hydrateSession {
 			b.Fatalf("hydrate missing requested session: %+v", payload.SessionsByID)
 		}
+		if view, ok := payload.SessionViewsByID[fixture.hydrateSession]; !ok || strings.TrimSpace(view.AgenticSettings.Mode) == "" {
+			b.Fatalf("hydrate missing session view for requested session: %+v", payload.SessionViewsByID)
+		}
 		b.ReportMetric(float64(bodyBytes), "response_bytes/op")
 		b.ReportMetric(float64(len(messages)), "messages/op")
 		b.ReportMetric(float64(countV3SyncCheckpoint0RunIntents(payload.RunIntentsBySession)), "run_intents/op")
+		b.ReportMetric(float64(len(payload.SessionViewsByID)), "session_views/op")
 	}
 }
 
@@ -199,6 +203,7 @@ type v3SyncCheckpoint0SnapshotPayload struct {
 	RunIntentsBySession      map[string][]pebblestore.V3SessionRunIntent `json:"run_intents_by_session"`
 	CurrentRunStateBySession map[string]pebblestore.V3SessionRunState    `json:"current_run_state_by_session"`
 	ActiveSessionIDs         []string                                    `json:"active_session_ids"`
+	SessionViewsByID         map[string]sessionsV3SessionView            `json:"session_views_by_id"`
 	SessionOrder             []string                                    `json:"session_order"`
 }
 

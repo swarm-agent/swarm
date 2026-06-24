@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { DESKTOP_STARTUP_MESSAGE_LIMIT, DESKTOP_STARTUP_SESSION_LIMIT, DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT, buildDesktopV3SelectedSessionHydrateInput, countArrayMapItems, postDesktopV3SyncBootstrap, postDesktopV3SyncHydrate } from './desktop-v3-sync-api'
+import { DESKTOP_SELECTED_HYDRATE_RESPONSE_BYTE_BUDGET, DESKTOP_STARTUP_MESSAGE_LIMIT, DESKTOP_STARTUP_SESSION_LIMIT, DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT, buildDesktopV3SelectedSessionHydrateInput, countArrayMapItems, postDesktopV3SyncBootstrap, postDesktopV3SyncHydrate } from './desktop-v3-sync-api'
 import { snapshotFixture } from './desktop-v3-cache.backend-fixtures'
 
 test('postDesktopV3SyncBootstrap posts metadata-only bounded startup workset payload to bootstrap endpoint', async () => {
@@ -31,7 +31,7 @@ test('postDesktopV3SyncBootstrap posts metadata-only bounded startup workset pay
   assert.equal('manifest_policy' in body.history, false)
   assert.equal(body.resources.messages, false)
   assert.equal(body.resources.events, false)
-  assert.equal(body.resources.run_intents, true)
+  assert.equal(body.resources.run_intents, false)
   assert.equal(body.resources.session_view, false)
   assert.equal(body.resources.active_plan, false)
   assert.equal(body.resources.plan_revisions, false)
@@ -44,6 +44,8 @@ test('postDesktopV3SyncBootstrap posts metadata-only bounded startup workset pay
 test('buildDesktopV3SelectedSessionHydrateInput requests one selected session tail manifest', () => {
   const input = buildDesktopV3SelectedSessionHydrateInput(' session-a ')
   assert.deepEqual(input.session_ids, ['session-a'])
+  assert.equal(DESKTOP_STARTUP_MESSAGE_LIMIT, 200)
+  assert.equal(DESKTOP_SELECTED_HYDRATE_RESPONSE_BYTE_BUDGET, 512 * 1024)
   assert.deepEqual(
     input.history,
     {

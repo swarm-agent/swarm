@@ -27,6 +27,7 @@ export interface DesktopV3HydrateInput {
 
 export const DESKTOP_STARTUP_SESSION_LIMIT = 50
 export const DESKTOP_STARTUP_MESSAGE_LIMIT = 200
+export const DESKTOP_SELECTED_HYDRATE_RESPONSE_BYTE_BUDGET = 512 * 1024
 
 export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
   surface: 'desktop',
@@ -173,6 +174,7 @@ export async function postDesktopV3SyncHydrate(
   const parseStartedAt = desktopV3Now()
   const parsed = JSON.parse(text) as SyncSnapshotResponse
   const parsedAt = desktopV3Now()
+  const responseBytes = byteLength(text)
   logDesktopV3BootstrapTiming('hydrate_network_json', {
     status: response.status,
     header_ms: roundTiming(headersReceivedAt - requestStartedAt),
@@ -180,7 +182,9 @@ export async function postDesktopV3SyncHydrate(
     fetch_total_ms: roundTiming(bodyReadAt - requestStartedAt),
     json_parse_ms: roundTiming(parsedAt - parseStartedAt),
     total_with_parse_ms: roundTiming(parsedAt - requestStartedAt),
-    response_bytes: byteLength(text),
+    response_bytes: responseBytes,
+    response_byte_budget: DESKTOP_SELECTED_HYDRATE_RESPONSE_BYTE_BUDGET,
+    response_byte_budget_exceeded: responseBytes > DESKTOP_SELECTED_HYDRATE_RESPONSE_BYTE_BUDGET,
     sessions: Object.keys(parsed.sessions_by_id ?? {}).length,
     session_order: parsed.session_order?.length ?? 0,
     messages: countArrayMapItems(parsed.messages_by_session),
