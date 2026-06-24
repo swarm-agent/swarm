@@ -150,6 +150,8 @@ export function DesktopV3NewSessionPane({
   const [timerNow, setTimerNow] = useState(() => Date.now())
   const [mode, setMode] = useState<DesktopSessionMode>(defaultMode)
   const [selectedAgent, setSelectedAgent] = useState(agentNameProp.trim() || agentState.activePrimary || '')
+  const agentManuallySelectedRef = useRef(false)
+  const preferenceManuallyChangedRef = useRef(false)
   const [preference, setPreference] = useState<SessionPreferenceRecord>(() => ({
     ...preferenceFromResolved(draftPreferenceQuery.data),
     provider: preferenceProp?.provider ?? draftPreferenceQuery.data?.preference.provider ?? '',
@@ -172,7 +174,11 @@ export function DesktopV3NewSessionPane({
 
   useEffect(() => {
     const active = agentNameProp.trim() || agentState.activePrimary || ''
-    if (active) setSelectedAgent((current) => current || active)
+    if (!active) return
+    setSelectedAgent((current) => {
+      if (agentManuallySelectedRef.current && current.trim()) return current
+      return current === active ? current : active
+    })
   }, [agentNameProp, agentState.activePrimary])
 
   useEffect(() => {
@@ -183,16 +189,26 @@ export function DesktopV3NewSessionPane({
 
   useEffect(() => {
     const resolved = preferenceFromResolved(draftPreferenceQuery.data)
+    const nextPreference = {
+      ...resolved,
+      provider: preferenceProp?.provider ?? resolved.provider,
+      model: preferenceProp?.model ?? resolved.model,
+      thinking: preferenceProp?.thinking ?? resolved.thinking,
+      serviceTier: preferenceProp?.serviceTier ?? resolved.serviceTier,
+      contextMode: preferenceProp?.contextMode ?? resolved.contextMode,
+    }
     setPreference((current) => {
-      if (current.provider || current.model) return current
-      return {
-        ...resolved,
-        provider: preferenceProp?.provider ?? resolved.provider,
-        model: preferenceProp?.model ?? resolved.model,
-        thinking: preferenceProp?.thinking ?? resolved.thinking,
-        serviceTier: preferenceProp?.serviceTier ?? resolved.serviceTier,
-        contextMode: preferenceProp?.contextMode ?? resolved.contextMode,
+      if (preferenceManuallyChangedRef.current && (current.provider || current.model)) return current
+      if (
+        current.provider === nextPreference.provider
+        && current.model === nextPreference.model
+        && current.thinking === nextPreference.thinking
+        && current.serviceTier === nextPreference.serviceTier
+        && current.contextMode === nextPreference.contextMode
+      ) {
+        return current
       }
+      return nextPreference
     })
   }, [draftPreferenceQuery.data, preferenceProp])
 
@@ -233,19 +249,27 @@ export function DesktopV3NewSessionPane({
   })
 
   function handleModelSelect(key: string) {
+    preferenceManuallyChangedRef.current = true
     const option = modelOptions.find((candidate) => candidate.key === key) ?? null
     setPreference((current) => preferenceFromOption(option, current))
   }
 
   function handleThinkingChange(value: string) {
+    preferenceManuallyChangedRef.current = true
     setPreference((current) => ({ ...current, thinking: value.trim() === 'off' ? '' : value.trim() }))
   }
 
   function handleFastChange(value: 'on' | 'off') {
+    preferenceManuallyChangedRef.current = true
     setPreference((current) => ({
       ...current,
       serviceTier: value === 'on' && fastSupported ? 'fast' : '',
     }))
+  }
+
+  function handleAgentSelect(agentName: string) {
+    agentManuallySelectedRef.current = true
+    setSelectedAgent(agentName)
   }
 
   async function handleThinkingTagsToggle(enabled: boolean) {
@@ -363,7 +387,7 @@ export function DesktopV3NewSessionPane({
         currentAgent={selectedAgentName || agentState.activePrimary || 'Agent'}
         selectedPrimaryAgent={selectedAgentName || agentState.activePrimary || ''}
         agents={agentState.profiles}
-        onAgentSelect={setSelectedAgent}
+        onAgentSelect={handleAgentSelect}
         modelOptions={modelOptions}
         selectedModelKey={selectedModelKey}
         selectedModelAvailable={selectedModelAvailable}

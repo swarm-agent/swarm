@@ -1,4 +1,4 @@
-import { fetchAgentState, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions } from '../desktop/chat/queries/chat-queries'
+import { fetchAgentState, fetchAgentStateSummary, fetchAgentToolContract, fetchDraftModelPreference, fetchModelOptions } from '../desktop/chat/queries/chat-queries'
 import { getUISettings } from '../desktop/settings/swarm/queries/get-ui-settings'
 import { fetchWorkspaceOverview } from '../workspaces/launcher/queries/fetch-workspace-overview'
 
@@ -48,6 +48,14 @@ export function draftModelQueryOptions() {
 export function agentStateQueryOptions() {
   return {
     queryKey: ['agent-state'] as const,
+    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchAgentStateSummary(signal),
+    staleTime: 5 * 60_000,
+  }
+}
+
+export function agentSettingsStateQueryOptions() {
+  return {
+    queryKey: ['agent-state', 'settings'] as const,
     queryFn: ({ signal }: { signal?: AbortSignal }) => fetchAgentState(signal),
     staleTime: 5 * 60_000,
   }

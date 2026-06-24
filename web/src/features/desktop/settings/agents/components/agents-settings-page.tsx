@@ -8,6 +8,7 @@ import { cn } from "../../../../../lib/cn";
 import {
   modelOptionsQueryOptions,
   agentStateQueryOptions,
+  agentSettingsStateQueryOptions,
   agentToolContractQueryOptions,
 } from "../../../../queries/query-options";
 import {
@@ -1081,7 +1082,7 @@ export function AgentsSettingsPage() {
     isLoading,
     isFetching,
     refetch: refetchAgentState,
-  } = useQuery(agentStateQueryOptions());
+  } = useQuery(agentSettingsStateQueryOptions());
   const { data: modelOptions = [] } = useQuery(modelOptionsQueryOptions());
 
   useEffect(() => {
@@ -1277,16 +1278,18 @@ export function AgentsSettingsPage() {
     }
   }, [form.model, form.provider, modelChoices]);
 
-  const agentStateQueryKey = agentStateQueryOptions().queryKey;
+  const agentStateQueryKey = agentSettingsStateQueryOptions().queryKey;
+  const agentStateSummaryQueryKey = agentStateQueryOptions().queryKey;
 
   const applyAgentState = (nextState: AgentStateRecord) => {
     queryClient.setQueryData(agentStateQueryKey, nextState);
+    void queryClient.invalidateQueries({ queryKey: agentStateSummaryQueryKey });
     return nextState;
   };
 
   const refreshAgents = async () => {
     const nextState = await queryClient.fetchQuery({
-      ...agentStateQueryOptions(),
+      ...agentSettingsStateQueryOptions(),
       staleTime: 0,
     });
     return applyAgentState(nextState);

@@ -145,6 +145,13 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("view")), "summary") {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    true,
+			"state": compactAgentStateForDesktop(state),
+		})
+		return
+	}
 	toolInventory, err := s.agentToolInventoryForAccount(principal.AccountScopeID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -156,6 +163,37 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 		"provider_defaults_preview": s.providerDefaultsPreviewForState(state),
 		"tool_inventory":            toolInventory,
 	})
+}
+
+func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
+	profiles := make([]compactAgentProfileForDesktop, 0, len(state.Profiles))
+	for _, profile := range state.Profiles {
+		profiles = append(profiles, compactAgentProfileForDesktop{
+			Name:        profile.Name,
+			Mode:        profile.Mode,
+			Provider:    profile.Provider,
+			Model:       profile.Model,
+			Thinking:    profile.Thinking,
+			RuntimeMode: pebblestore.AgentProfileRuntimeMode(profile),
+			Enabled:     profile.Enabled,
+		})
+	}
+	return map[string]any{
+		"profiles":        profiles,
+		"active_primary":  state.ActivePrimary,
+		"active_subagent": state.ActiveSubagent,
+		"version":         state.Version,
+	}
+}
+
+type compactAgentProfileForDesktop struct {
+	Name        string `json:"name"`
+	Mode        string `json:"mode"`
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	Thinking    string `json:"thinking"`
+	RuntimeMode string `json:"runtime_mode,omitempty"`
+	Enabled     bool   `json:"enabled"`
 }
 
 func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Request) {

@@ -26,7 +26,7 @@ import {
   type FlowTaskStep,
   type FlowWorkspaceEntry,
 } from '../api'
-import { agentStateQueryOptions } from '../../../../queries/query-options'
+import { agentSettingsStateQueryOptions } from '../../../../queries/query-options'
 
 type FlowStatus = 'active' | 'paused' | 'draft' | 'needs_review' | 'failed'
 type FlowMode = 'Scheduled background job' | 'Manual one-shot'
@@ -1596,7 +1596,7 @@ export function FlowsSettingsPage() {
   const routeFlowID = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.flowId : globalFlowMatch ? globalFlowMatch.flowId : '').trim()
   const flowsQuery = useQuery({ queryKey: flowsQueryKey, queryFn: ({ signal }) => fetchFlows(signal) })
   const swarmTargetsQuery = useQuery({ queryKey: flowSwarmTargetsQueryKey, queryFn: fetchFlowSwarmTargets })
-  const agentStateQuery = useQuery(agentStateQueryOptions())
+  const agentStateQuery = useQuery(agentSettingsStateQueryOptions())
   const [selectedFlowRecord, setSelectedFlowRecord] = useState<FlowDetailRecord | null>(null)
   const flows = useMemo(() => (flowsQuery.data ?? []).map(recordToFlow), [flowsQuery.data])
   const [workspaceFilter, setWorkspaceFilter] = useState('all')

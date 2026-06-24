@@ -1298,6 +1298,19 @@ export async function fetchAgentState(
   const response = await requestJson<AgentStateWire>("/v2/agents?limit=200", {
     signal,
   });
+  return mapAgentStateResponse(response);
+}
+
+export async function fetchAgentStateSummary(
+  signal?: AbortSignal,
+): Promise<AgentStateRecord> {
+  const response = await requestJson<AgentStateWire>("/v2/agents?limit=200&view=summary", {
+    signal,
+  });
+  return mapAgentStateResponse(response);
+}
+
+function mapAgentStateResponse(response: AgentStateWire): AgentStateRecord {
   return {
     profiles: Array.isArray(response.state?.profiles)
       ? response.state.profiles.map((profile) => ({
