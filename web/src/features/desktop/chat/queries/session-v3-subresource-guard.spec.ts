@@ -65,7 +65,7 @@ test('Desktop V3 preference APIs use explicit Sessions API v3 helpers, not legac
     const { fetchSessionV3Preference, updateSessionV3Preference } = await import('../../session-v3/api')
 
     await fetchSessionV3Preference('session-raw')
-    await updateSessionV3Preference('session-raw', { model: 'gpt-5.4' })
+    await updateSessionV3Preference('session-raw', { provider: '', model: 'gpt-5.4', thinking: undefined })
 
     assert.deepEqual(calls.map((call) => String(call.input)), [
       '/v3/sessions/session-raw/preference',
@@ -75,6 +75,10 @@ test('Desktop V3 preference APIs use explicit Sessions API v3 helpers, not legac
     assert.deepEqual(JSON.parse(String(calls[1]?.init?.body ?? '{}')), {
       model: 'gpt-5.4',
     })
+    await assert.rejects(
+      () => updateSessionV3Preference('session-raw', { provider: '', model: '', thinking: '' }),
+      /non-empty preference change/,
+    )
   })
 })
 

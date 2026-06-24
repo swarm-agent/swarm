@@ -595,7 +595,8 @@ export function DesktopV3ExistingConversationPane({
   )
   const selectedModelKey = optionKey(preference.provider, preference.model, preference.contextMode)
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
-  const selectedModelAvailable = Boolean(selectedModelOption)
+  const hasResolvedPreference = Boolean(preference.provider.trim() && preference.model.trim() && preference.thinking.trim())
+  const selectedModelAvailable = Boolean(selectedModelOption && hasResolvedPreference)
   const baselineModelKey = optionKey(settingsBaseline.preference.provider, settingsBaseline.preference.model, settingsBaseline.preference.contextMode)
   const baselineModelOption = modelOptions.find((option) => option.key === baselineModelKey) ?? null
   const fastSupported = selectedModelOption ? supportsCodexFastMode(selectedModelOption.provider, selectedModelOption.model) : false
@@ -796,7 +797,7 @@ export function DesktopV3ExistingConversationPane({
     scrollToBottom('smooth')
     try {
       if (!selectedModelAvailable) {
-        throw new Error('Select a model before sending')
+        throw new Error('Select a model and thinking level before sending')
       }
       await persistVisibleSettings()
       const operation = operationRef.current

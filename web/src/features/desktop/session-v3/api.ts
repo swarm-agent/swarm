@@ -107,18 +107,26 @@ export async function updateSessionV3Preference(
 ): Promise<SessionV3PreferenceResponseWire> {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) throw new Error('Desktop V3 preference update requires session_id')
+
+  const body: Record<string, string> = {}
+  const provider = input.provider?.trim()
+  const model = input.model?.trim()
+  const thinking = input.thinking?.trim()
+  if (provider) body.provider = provider
+  if (model) body.model = model
+  if (thinking) body.thinking = thinking
+  if (input.serviceTier !== undefined) body.service_tier = input.serviceTier.trim()
+  if (input.contextMode !== undefined) body.context_mode = input.contextMode.trim()
+  if (Object.keys(body).length === 0) {
+    throw new Error('Desktop V3 preference update requires a non-empty preference change')
+  }
+
   const response = await requestJson<SessionV3PreferenceResponseWire>(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/preference`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        provider: input.provider,
-        model: input.model,
-        thinking: input.thinking,
-        service_tier: input.serviceTier,
-        context_mode: input.contextMode,
-      }),
+      body: JSON.stringify(body),
     },
   )
   return response

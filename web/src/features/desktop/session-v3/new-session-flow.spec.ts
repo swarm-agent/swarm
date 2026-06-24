@@ -132,6 +132,7 @@ test('Path A operation contains stable create and first-message wire payloads', 
   assert.equal(operation.createRequest.swarm_id, 'swarm-self')
   assert.equal(operation.createRequest.workspace_binding_id, 'binding-self')
   assert.equal(operation.createRequest.agent_name, 'swarm')
+  assert.equal(operation.createRequest.preference, undefined)
   assert.equal(operation.createRequest.mode, 'auto')
   assert.equal(operation.firstMessageRequest.client_request_id, `desktop-v3-first-message:${operation.operationId}`)
   assert.equal(operation.firstMessageRequest.message_id, `desktop-v3-message:${operation.operationId}`)
@@ -169,6 +170,33 @@ test('Path A operation rejects missing agent_name before HTTP', () => {
     prompt: 'hello',
     agentName: '  ',
   }), /agent_name/)
+})
+
+test('Path A operation rejects partial preference instead of sending empty provider/model overrides', () => {
+  assert.throws(() => createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    prompt: 'hello',
+    agentName: 'swarm',
+    preference: { provider: '', model: 'gpt-5.4', thinking: 'medium' },
+  }), /provider, model, and thinking/)
+
+  const operation = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    prompt: 'hello',
+    agentName: 'swarm',
+    preference: { provider: ' codex ', model: ' gpt-5.4 ', thinking: ' medium ', serviceTier: ' fast ' },
+  })
+  assert.deepEqual(operation.createRequest.preference, {
+    provider: 'codex',
+    model: 'gpt-5.4',
+    thinking: 'medium',
+    service_tier: 'fast',
+    context_mode: undefined,
+  })
 })
 
 test('Path A create HTTP POST body includes selected agent_name', async () => {

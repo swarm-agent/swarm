@@ -57,6 +57,25 @@ export interface CreateDesktopV3NewSessionOperationInput {
   }
 }
 
+function resolvedNewSessionPreference(
+  preference: DesktopV3NewSessionPreference | undefined,
+): NonNullable<DesktopV3CreateSessionRequest['preference']> | undefined {
+  if (!preference) return undefined
+  const provider = preference.provider?.trim() ?? ''
+  const model = preference.model?.trim() ?? ''
+  const thinking = preference.thinking?.trim() ?? ''
+  if (!provider || !model || !thinking) {
+    throw new Error('New Desktop V3 session preference requires resolved provider, model, and thinking')
+  }
+  return {
+    provider,
+    model,
+    thinking,
+    service_tier: preference.serviceTier?.trim() || undefined,
+    context_mode: preference.contextMode?.trim() || undefined,
+  }
+}
+
 export function createDesktopV3NewSessionOperation(
   input: CreateDesktopV3NewSessionOperationInput,
 ): DesktopV3NewSessionOperation {
@@ -87,6 +106,8 @@ export function createDesktopV3NewSessionOperation(
     throw new Error(`New Desktop V3 session has unsupported target_relationship ${JSON.stringify(targetRelationship)}`)
   }
 
+  const preference = resolvedNewSessionPreference(input.preference)
+
   const operationId = crypto.randomUUID()
   const sessionId = crypto.randomUUID()
   const createClientRequestId = `desktop-v3-create:${operationId}`
@@ -114,15 +135,7 @@ export function createDesktopV3NewSessionOperation(
       mode: normalizeSessionMode(input.mode),
       agent_name: agentName,
       metadata: input.sessionMetadata,
-      preference: input.preference
-        ? {
-            provider: input.preference.provider,
-            model: input.preference.model,
-            thinking: input.preference.thinking,
-            service_tier: input.preference.serviceTier,
-            context_mode: input.preference.contextMode,
-          }
-        : undefined,
+      preference,
       worktree_mode: input.worktree?.mode,
       worktree_use_current_branch: input.worktree?.useCurrentBranch,
       worktree_base_branch: input.worktree?.baseBranch,

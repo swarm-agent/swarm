@@ -61,12 +61,18 @@ function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | '
 }
 
 function preferenceForRequest(preference: SessionPreferenceRecord): DesktopV3NewSessionPreference {
+  const provider = preference.provider.trim()
+  const model = preference.model.trim()
+  const thinking = preference.thinking.trim()
+  if (!provider || !model || !thinking) {
+    throw new Error('New Desktop V3 session requires resolved provider, model, and thinking')
+  }
   return {
-    provider: preference.provider,
-    model: preference.model,
-    thinking: preference.thinking,
-    serviceTier: preference.serviceTier,
-    contextMode: preference.contextMode,
+    provider,
+    model,
+    thinking,
+    serviceTier: preference.serviceTier.trim() || undefined,
+    contextMode: preference.contextMode.trim() || undefined,
   }
 }
 
@@ -231,7 +237,8 @@ export function DesktopV3NewSessionPane({
 
   const selectedModelKey = optionKey(preference.provider, preference.model, preference.contextMode)
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
-  const selectedModelAvailable = Boolean(selectedModelOption)
+  const hasResolvedPreference = Boolean(preference.provider.trim() && preference.model.trim() && preference.thinking.trim())
+  const selectedModelAvailable = Boolean(selectedModelOption && hasResolvedPreference)
   const fastSupported = selectedModelOption ? supportsCodexFastMode(selectedModelOption.provider, selectedModelOption.model) : false
   const selectedContextWindow = selectedModelOption
     ? effectiveContextWindow(selectedModelOption.provider, selectedModelOption.model, selectedModelOption.contextMode, selectedModelOption.contextWindow)
@@ -309,6 +316,9 @@ export function DesktopV3NewSessionPane({
         }
         if (!selectedModelAvailable) {
           throw new Error('Select a model before starting the session')
+        }
+        if (!preference.thinking.trim()) {
+          throw new Error('Select a thinking level before starting the session')
         }
         return createDesktopV3NewSessionOperation({
           workspacePath: workspace.path,
