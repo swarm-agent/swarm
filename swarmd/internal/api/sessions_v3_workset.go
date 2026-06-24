@@ -60,11 +60,13 @@ type sessionsV3WorksetHistory struct {
 }
 
 type sessionsV3WorksetResources struct {
-	Messages      bool `json:"messages,omitempty"`
-	Events        bool `json:"events,omitempty"`
-	RunIntents    bool `json:"run_intents,omitempty"`
-	ActivePlan    bool `json:"active_plan,omitempty"`
-	PlanRevisions bool `json:"plan_revisions,omitempty"`
+	Messages        bool `json:"messages,omitempty"`
+	Events          bool `json:"events,omitempty"`
+	RunIntents      bool `json:"run_intents,omitempty"`
+	CurrentRunState bool `json:"current_run_state,omitempty"`
+	SessionView     bool `json:"session_view,omitempty"`
+	ActivePlan      bool `json:"active_plan,omitempty"`
+	PlanRevisions   bool `json:"plan_revisions,omitempty"`
 }
 
 type sessionsV3ResolvedWorksetOptions struct {
@@ -159,17 +161,18 @@ func sessionsV3WorksetOptionsFromRequest(principal identity.Principal, req sessi
 	}
 	options := sessionsV3ResolvedWorksetOptions{
 		Store: pebblestore.V3SessionWorksetOptions{
-			AccountScopeID:        principal.AccountScopeID,
-			UserID:                principal.UserID,
-			Global:                req.Global && req.Recent.Limit <= 0,
-			SessionIDs:            req.SessionIDs,
-			WorkspacePaths:        workspacePaths,
-			RecentLimit:           req.Recent.Limit,
-			RecentBeforeUpdatedAt: req.Recent.BeforeUpdatedAt,
-			RecentBeforeSessionID: strings.TrimSpace(req.Recent.BeforeSessionID),
-			History:               history,
-			IncludeRunIntents:     req.Resources.RunIntents || req.IncludeActive,
-			IncludeActiveSessions: req.IncludeActive,
+			AccountScopeID:         principal.AccountScopeID,
+			UserID:                 principal.UserID,
+			Global:                 req.Global && req.Recent.Limit <= 0,
+			SessionIDs:             req.SessionIDs,
+			WorkspacePaths:         workspacePaths,
+			RecentLimit:            req.Recent.Limit,
+			RecentBeforeUpdatedAt:  req.Recent.BeforeUpdatedAt,
+			RecentBeforeSessionID:  strings.TrimSpace(req.Recent.BeforeSessionID),
+			History:                history,
+			IncludeRunIntents:      req.Resources.RunIntents,
+			IncludeCurrentRunState: req.Resources.CurrentRunState || req.IncludeActive,
+			IncludeActiveSessions:  req.IncludeActive,
 		},
 	}
 	return options, nil
@@ -319,6 +322,8 @@ func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, snaps
 		"messages_by_session":          workset.MessagesBySession,
 		"events_by_session":            workset.EventsBySession,
 		"run_intents_by_session":       workset.RunIntentsBySession,
+		"current_run_state_by_session": workset.CurrentRunStateBySession,
+		"active_session_ids":           workset.ActiveSessionIDs,
 		"history_manifests_by_session": workset.HistoryManifestsBySession,
 		"history_chunks_by_id":         workset.HistoryChunksByID,
 		"omissions":                    workset.Omissions,

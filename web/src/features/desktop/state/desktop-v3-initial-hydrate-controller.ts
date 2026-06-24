@@ -17,7 +17,7 @@ interface HydrateDesktopV3InitialSessionsInput {
   preBootstrapCachedProjections?: Record<string, V3SessionProjection>
   preferredSessionId?: string | null
   currentSelectedSessionId?: string
-  postHydrate?: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
+  postHydrate?: (input: DesktopV3HydrateInput, signal?: AbortSignal) => Promise<SyncSnapshotResponse>
   dispatch?: (action: DesktopV3CacheAction) => void
   getSnapshot?: () => DesktopV3CacheState
 }
@@ -130,7 +130,7 @@ async function hydrateDesktopV3InitialSessionsUncached(
   input: HydrateDesktopV3InitialSessionsInput & {
     sessionIds: string[]
     preferredSessionId?: string | null
-    postHydrate: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
+    postHydrate: (input: DesktopV3HydrateInput, signal?: AbortSignal) => Promise<SyncSnapshotResponse>
     dispatch: (action: DesktopV3CacheAction) => void
     getSnapshot: () => DesktopV3CacheState
   },
@@ -199,7 +199,7 @@ async function hydrateDesktopV3InitialSessionsUncached(
 
 async function hydrateSelectedSession(input: {
   sessionId: string
-  postHydrate: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
+  postHydrate: (input: DesktopV3HydrateInput, signal?: AbortSignal) => Promise<SyncSnapshotResponse>
   dispatch: (action: DesktopV3CacheAction) => void
   completedSessionIds: string[]
   failedErrors: string[]

@@ -10,7 +10,7 @@ import type { DesktopV3CacheAction, SyncSnapshotResponse } from './desktop-v3-ca
 export interface BootstrapDesktopV3SidebarDeps {
   preferredSessionId?: string | null
   postBootstrap?: (input?: Partial<DesktopV3BootstrapInput>) => Promise<SyncSnapshotResponse>
-  postHydrate?: (input: DesktopV3HydrateInput) => Promise<SyncSnapshotResponse>
+  postHydrate?: (input: DesktopV3HydrateInput, signal?: AbortSignal) => Promise<SyncSnapshotResponse>
   dispatch?: (action: DesktopV3CacheAction) => void
   dispatchBatch?: (actions: DesktopV3CacheAction[]) => void
 }
@@ -87,6 +87,8 @@ export function bootstrapDesktopV3SidebarMetadataOnly(
         session_order: response.session_order?.length ?? 0,
         messages: countArrayMapItems(response.messages_by_session),
         run_intents: countArrayMapItems(response.run_intents_by_session),
+        current_run_states: Object.keys(response.current_run_state_by_session ?? {}).length,
+        active_sessions: response.active_session_ids?.length ?? 0,
         ...transcriptDiagnostics,
       })
       scheduleDesktopV3BootstrapPaintTiming(afterApplyAt)

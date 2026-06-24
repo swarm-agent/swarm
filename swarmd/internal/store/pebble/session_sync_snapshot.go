@@ -78,6 +78,7 @@ type V3SyncSnapshotOptions struct {
 	RecentBeforeSessionID              string
 	History                            V3SyncSnapshotHistoryOptions
 	IncludeRunIntents                  bool
+	IncludeCurrentRunState             bool
 	IncludeActiveSessions              bool
 }
 
@@ -97,6 +98,8 @@ type V3SyncSnapshotResult struct {
 	MessagesBySession         map[string][]MessageSnapshot                 `json:"messages_by_session"`
 	EventsBySession           map[string][]V3SessionEvent                  `json:"events_by_session"`
 	RunIntentsBySession       map[string][]V3SessionRunIntent              `json:"run_intents_by_session"`
+	CurrentRunStateBySession  map[string]V3SessionRunState                 `json:"current_run_state_by_session,omitempty"`
+	ActiveSessionIDs          []string                                     `json:"active_session_ids,omitempty"`
 	HistoryManifestsBySession map[string][]V3SessionHistoryChunkDescriptor `json:"history_manifests_by_session"`
 	HistoryChunksByID         map[string]V3SessionHistoryChunk             `json:"history_chunks_by_id"`
 	Omissions                 []V3SyncSnapshotOmission                     `json:"omissions"`
@@ -215,6 +218,9 @@ func normalizeV3SyncSnapshotOptions(options V3SyncSnapshotOptions) V3SyncSnapsho
 	if options.History.ManifestPolicy == "" {
 		options.History.ManifestPolicy = V3SyncSnapshotManifestPolicyError
 	}
+	if options.IncludeActiveSessions {
+		options.IncludeCurrentRunState = true
+	}
 	return options
 }
 
@@ -300,6 +306,8 @@ func newV3SyncSnapshotResultMaps(sessionCapacity int) V3SyncSnapshotResult {
 		MessagesBySession:         make(map[string][]MessageSnapshot, sessionCapacity),
 		EventsBySession:           make(map[string][]V3SessionEvent, sessionCapacity),
 		RunIntentsBySession:       make(map[string][]V3SessionRunIntent, sessionCapacity),
+		CurrentRunStateBySession:  make(map[string]V3SessionRunState, sessionCapacity),
+		ActiveSessionIDs:          make([]string, 0, sessionCapacity),
 		HistoryManifestsBySession: make(map[string][]V3SessionHistoryChunkDescriptor, sessionCapacity),
 		HistoryChunksByID:         map[string]V3SessionHistoryChunk{},
 		Omissions:                 make([]V3SyncSnapshotOmission, 0),
@@ -335,6 +343,18 @@ func (s *SessionStore) buildV3SyncSessionBundle(reader pebble.Reader, options V3
 			return V3SyncSnapshotResult{}, err
 		}
 	}
+	if options.IncludeCurrentRunState {
+		state, ok, err := getV3SessionRunStateFromReader(reader, session.ID)
+		if err != nil {
+			return V3SyncSnapshotResult{}, err
+		}
+		if ok {
+			bundle.CurrentRunStateBySession[session.ID] = state
+			if state.Active && strings.TrimSpace(state.RunID) != "" {
+				bundle.ActiveSessionIDs = append(bundle.ActiveSessionIDs, session.ID)
+			}
+		}
+	}
 	return bundle, nil
 }
 
@@ -357,6 +377,10 @@ func mergeV3SyncSessionBundle(result *V3SyncSnapshotResult, bundle V3SyncSnapsho
 	for sessionID, intents := range bundle.RunIntentsBySession {
 		result.RunIntentsBySession[sessionID] = intents
 	}
+	for sessionID, state := range bundle.CurrentRunStateBySession {
+		result.CurrentRunStateBySession[sessionID] = state
+	}
+	result.ActiveSessionIDs = append(result.ActiveSessionIDs, bundle.ActiveSessionIDs...)
 	for sessionID, manifests := range bundle.HistoryManifestsBySession {
 		result.HistoryManifestsBySession[sessionID] = manifests
 	}

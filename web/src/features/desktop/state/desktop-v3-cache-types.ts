@@ -28,6 +28,8 @@ export interface SyncResources {
   messages?: boolean
   events?: boolean
   run_intents?: boolean
+  current_run_state?: boolean
+  session_view?: boolean
   active_plan?: boolean
   plan_revisions?: boolean
 }
@@ -102,6 +104,26 @@ export interface V3SessionRunIntent {
   event_seq: number
 }
 
+export interface V3SessionRunState {
+  session_id: string
+  user_id?: string
+  account_scope_id?: string
+  run_id: string
+  active: boolean
+  status: string
+  blocked_reason?: string
+  created_at: number
+  started_at?: number
+  completed_at?: number
+  updated_at: number
+  event_seq?: number
+}
+
+export interface V3RealtimeBootstrap {
+  stream_path: string
+  resume: unknown
+}
+
 export interface V3SessionTombstone {
   session_id: string
   user_id?: string
@@ -140,6 +162,9 @@ export interface SyncSnapshotResponse {
   messages_by_session?: Record<string, MessageSnapshot[]>
   events_by_session?: Record<string, V3SessionEvent[]>
   run_intents_by_session?: Record<string, V3SessionRunIntent[]>
+  current_run_state_by_session?: Record<string, V3SessionRunState>
+  active_session_ids?: string[]
+  realtime?: V3RealtimeBootstrap
   history_manifests_by_session?: Record<string, unknown>
   history_chunks_by_id?: Record<string, unknown>
   omissions?: unknown[]

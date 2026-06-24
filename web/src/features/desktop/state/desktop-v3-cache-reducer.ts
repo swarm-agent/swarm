@@ -336,6 +336,7 @@ export function applySnapshot(
   if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'events')) {
     applyEventsBySessionFromSnapshot(state, snapshot.events_by_session)
   }
+  applyCurrentRunStateFromSyncSnapshot(state, snapshot)
   for (const sessionId of snapshot.session_order ?? []) {
     const record = state.sessionsById[sessionId]
     if (record?.kind === 'full' && hydrateResponseCompletesSession(snapshot, sessionId)) {
@@ -381,6 +382,7 @@ export function applyHydrate(
   assertMapSubset(snapshot.messages_by_session, requested, 'messages_by_session')
   assertMapSubset(snapshot.events_by_session, requested, 'events_by_session')
   assertMapSubset(snapshot.run_intents_by_session, requested, 'run_intents_by_session')
+  assertMapSubset(snapshot.current_run_state_by_session, requested, 'current_run_state_by_session')
   assertObjectKeysSubset('tombstones_by_session', snapshot.tombstones_by_session, requested)
   assertObjectKeysSubset('history_manifests_by_session', snapshot.history_manifests_by_session, requested)
 
@@ -472,6 +474,7 @@ function applyHydrateAuthoritativeResources(
   }
 
   enforceHydratedTranscriptRetention(state)
+  applyCurrentRunStateFromSyncSnapshot(state, snapshot, requested)
 
   if (syncResourceSetContains(resourceSet, 'run_intents')) {
     for (const sessionId of requested) {
@@ -1452,6 +1455,33 @@ function deriveCurrentRunIntent(intents: V3SessionRunIntent[]): V3SessionRunInte
       || right.event_seq - left.event_seq
       || right.run_id.localeCompare(left.run_id),
     )[0]
+}
+
+function applyCurrentRunStateFromSyncSnapshot(
+  state: DesktopV3CacheState,
+  snapshot: SyncSnapshotResponse,
+  authoritativeSessionIds = new Set(Object.keys(snapshot.sessions_by_id ?? {})),
+): void {
+  if (!syncResourceSetContains(snapshot.sync_scope.resource_set, 'current_run_state')) return
+  const states = snapshot.current_run_state_by_session ?? {}
+  for (const sessionId of authoritativeSessionIds) {
+    const runState = states[sessionId]
+    if (runState?.active && runState.run_id?.trim()) {
+      state.currentRunIntentBySession[sessionId] = {
+        session_id: runState.session_id,
+        user_id: runState.user_id,
+        account_scope_id: runState.account_scope_id,
+        run_id: runState.run_id,
+        status: runState.status,
+        blocked_reason: runState.blocked_reason,
+        created_at: runState.created_at,
+        updated_at: runState.updated_at,
+        event_seq: runState.event_seq ?? 0,
+      }
+    } else {
+      delete state.currentRunIntentBySession[sessionId]
+    }
+  }
 }
 
 function mergeSnapshotResources(

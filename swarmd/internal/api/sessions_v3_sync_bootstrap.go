@@ -141,17 +141,18 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 	global := selector.Global || strings.TrimSpace(selector.Kind) == "global"
 	options := sessionsV3ResolvedSyncOptions{
 		Snapshot: pebblestore.V3SyncSnapshotOptions{
-			AccountScopeID:        principal.AccountScopeID,
-			UserID:                principal.UserID,
-			Global:                global && selector.Recent.Limit <= 0,
-			SessionIDs:            selector.SessionIDs,
-			WorkspacePaths:        workspacePaths,
-			RecentLimit:           selector.Recent.Limit,
-			RecentBeforeUpdatedAt: selector.Recent.BeforeUpdatedAt,
-			RecentBeforeSessionID: strings.TrimSpace(selector.Recent.BeforeSessionID),
-			History:               history,
-			IncludeRunIntents:     req.Resources.RunIntents || req.IncludeActive,
-			IncludeActiveSessions: req.IncludeActive,
+			AccountScopeID:         principal.AccountScopeID,
+			UserID:                 principal.UserID,
+			Global:                 global && selector.Recent.Limit <= 0,
+			SessionIDs:             selector.SessionIDs,
+			WorkspacePaths:         workspacePaths,
+			RecentLimit:            selector.Recent.Limit,
+			RecentBeforeUpdatedAt:  selector.Recent.BeforeUpdatedAt,
+			RecentBeforeSessionID:  strings.TrimSpace(selector.Recent.BeforeSessionID),
+			History:                history,
+			IncludeRunIntents:      req.Resources.RunIntents,
+			IncludeCurrentRunState: req.Resources.CurrentRunState || req.IncludeActive,
+			IncludeActiveSessions:  req.IncludeActive,
 		},
 		Principal: principal,
 		Surface:   normalizeV3SyncSurface(req.Surface),
@@ -184,13 +185,14 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 
 	options := sessionsV3ResolvedSyncOptions{
 		Snapshot: pebblestore.V3SyncSnapshotOptions{
-			AccountScopeID:    principal.AccountScopeID,
-			UserID:            principal.UserID,
-			SessionIDs:        ids,
-			History:           history,
-			IncludeRunIntents: req.Resources.RunIntents || req.IncludeActive,
-			// Hydrate is session_ids-targeted. include_active may request active
-			// run-intent resources for requested sessions, but must never widen
+			AccountScopeID:         principal.AccountScopeID,
+			UserID:                 principal.UserID,
+			SessionIDs:             ids,
+			History:                history,
+			IncludeRunIntents:      req.Resources.RunIntents,
+			IncludeCurrentRunState: req.Resources.CurrentRunState || req.IncludeActive,
+			// Hydrate is session_ids-targeted. include_active may request compact
+			// active run state for requested sessions, but must never widen
 			// membership beyond the explicit session_ids selector.
 			IncludeActiveSessions: false,
 		},
@@ -406,6 +408,9 @@ type sessionsV3SyncSnapshotResponseBody struct {
 	MessagesBySession         map[string][]pebblestore.MessageSnapshot                 `json:"messages_by_session"`
 	EventsBySession           map[string][]pebblestore.V3SessionEvent                  `json:"events_by_session"`
 	RunIntentsBySession       map[string][]pebblestore.V3SessionRunIntent              `json:"run_intents_by_session"`
+	CurrentRunStateBySession  map[string]pebblestore.V3SessionRunState                 `json:"current_run_state_by_session,omitempty"`
+	ActiveSessionIDs          []string                                                 `json:"active_session_ids,omitempty"`
+	Realtime                  *sessionsV3RealtimeBootstrap                             `json:"realtime,omitempty"`
 	HistoryManifestsBySession map[string][]pebblestore.V3SessionHistoryChunkDescriptor `json:"history_manifests_by_session"`
 	HistoryChunksByID         map[string]pebblestore.V3SessionHistoryChunk             `json:"history_chunks_by_id"`
 	Omissions                 []pebblestore.V3SyncSnapshotOmission                     `json:"omissions"`
@@ -419,6 +424,11 @@ type sessionsV3SyncSnapshotResponseBody struct {
 	TombstonesBySession       map[string]pebblestore.V3SessionTombstone                `json:"tombstones_by_session"`
 	ReplayInstructions        sessionsV3SyncReplayInstructionsResponse                 `json:"replay_instructions"`
 	logTimings                *sessionsV3SyncBootstrapTimings                          `json:"-"`
+}
+
+type sessionsV3RealtimeBootstrap struct {
+	StreamPath string            `json:"stream_path"`
+	Resume     V3RealtimeMessage `json:"resume"`
 }
 
 type sessionsV3SyncScopeResponse struct {
@@ -447,6 +457,100 @@ type sessionsV3SyncPreferenceCacheKey struct {
 	Thinking    string
 	ServiceTier string
 	ContextMode string
+}
+
+func sessionsV3RealtimeBootstrapForSnapshot(endpointCursor string, surface string, selector sessionsV3SyncSelector, resources []string, activeSessionIDs []string) *sessionsV3RealtimeBootstrap {
+	endpointCursor = strings.TrimSpace(endpointCursor)
+	if endpointCursor == "" {
+		return nil
+	}
+	resourceSet := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		if v3RealtimeWorksetResourceAllowed(resource) {
+			resourceSet = append(resourceSet, resource)
+		}
+	}
+	resourceSet, err := canonicalV3RealtimeWorksetResources(resourceSet)
+	if err != nil {
+		resourceSet = []string{"membership", "projections", "sessions", "tombstones"}
+	}
+	subscriptions := sessionsV3RealtimeBootstrapSubscriptions(endpointCursor, selector, activeSessionIDs)
+	worksetSelector := sessionsV3RealtimeBootstrapWorksetSelector(selector)
+	worksetID := "sync:" + v3SyncDeterministicSelectorHash(v3SyncCanonicalSelector(selector))
+	return &sessionsV3RealtimeBootstrap{
+		StreamPath: V3RealtimeStreamPath,
+		Resume: V3RealtimeMessage{
+			Protocol:        V3RealtimeProtocol,
+			ProtocolVersion: V3RealtimeProtocolVersion,
+			Kind:            V3RealtimeKindResume,
+			EndpointCursor:  endpointCursor,
+			Subscriptions:   subscriptions,
+			Worksets: []V3RealtimeWorksetSubscriptionRequest{{
+				WorksetID:             worksetID,
+				SubscriptionID:        "sync:" + worksetID,
+				Surface:               normalizeV3SyncSurface(surface),
+				Selector:              worksetSelector,
+				Resources:             resourceSet,
+				AutoSubscribeSessions: false,
+			}},
+		},
+	}
+}
+
+func sessionsV3RealtimeBootstrapSubscriptions(endpointCursor string, selector sessionsV3SyncSelector, activeSessionIDs []string) []V3RealtimeSubscriptionRequest {
+	seen := map[string]struct{}{}
+	ids := make([]string, 0, len(activeSessionIDs)+len(selector.SessionIDs))
+	appendID := func(sessionID string) {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" {
+			return
+		}
+		if _, ok := seen[sessionID]; ok {
+			return
+		}
+		seen[sessionID] = struct{}{}
+		ids = append(ids, sessionID)
+	}
+	for _, sessionID := range activeSessionIDs {
+		appendID(sessionID)
+	}
+	for _, sessionID := range selector.SessionIDs {
+		appendID(sessionID)
+	}
+	subscriptions := make([]V3RealtimeSubscriptionRequest, 0, len(ids))
+	for _, sessionID := range ids {
+		subscriptions = append(subscriptions, V3RealtimeSubscriptionRequest{SessionID: sessionID, SubscriptionID: "sync:session:" + sessionID, EndpointCursor: endpointCursor})
+	}
+	return subscriptions
+}
+
+func sessionsV3RealtimeBootstrapWorksetSelector(selector sessionsV3SyncSelector) V3RealtimeWorksetSelector {
+	kind := strings.TrimSpace(selector.Kind)
+	out := V3RealtimeWorksetSelector{
+		Kind:           kind,
+		Global:         selector.Global,
+		WorkspacePath:  selector.WorkspacePath,
+		WorkspacePaths: selector.WorkspacePaths,
+		SessionIDs:     selector.SessionIDs,
+		Recent:         selector.Recent,
+	}
+	switch kind {
+	case "", "tui":
+		if len(out.SessionIDs) > 0 {
+			out.Kind = "session_ids"
+		} else if out.Recent.Limit > 0 {
+			out.Kind = "recent"
+		} else if out.Global {
+			out.Kind = "global"
+		} else {
+			out.Kind = "workspace"
+		}
+	case "workspace":
+		if out.Recent.Limit > 0 {
+			out.Kind = "recent"
+		}
+	}
+	return out
 }
 
 func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options sessionsV3ResolvedSyncOptions, selector any, resources []string, known map[string]sessionsV3KnownState) (sessionsV3SyncSnapshotResponseBody, error) {
@@ -510,6 +614,8 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		MessagesBySession:         snapshot.MessagesBySession,
 		EventsBySession:           snapshot.EventsBySession,
 		RunIntentsBySession:       snapshot.RunIntentsBySession,
+		CurrentRunStateBySession:  snapshot.CurrentRunStateBySession,
+		ActiveSessionIDs:          snapshot.ActiveSessionIDs,
 		HistoryManifestsBySession: snapshot.HistoryManifestsBySession,
 		HistoryChunksByID:         snapshot.HistoryChunksByID,
 		Omissions:                 snapshot.Omissions,
@@ -532,6 +638,7 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 			AfterEndpointCursor:            snapshotEndpointCursor,
 			BootstrapRequiredOnCursorError: true,
 		},
+		Realtime: sessionsV3RealtimeBootstrapForSnapshot(snapshotEndpointCursor, options.Surface, selectorValue, resources, snapshot.ActiveSessionIDs),
 	}
 	if timings != nil {
 		response.logTimings = timings
@@ -672,6 +779,8 @@ func sessionsV3SyncSessionShells(sessions map[string]pebblestore.SessionSnapshot
 }
 
 func sessionsV3SyncSessionShell(session pebblestore.SessionSnapshot) pebblestore.SessionSnapshot {
+	session.Preference = pebblestore.ModelPreference{}
+	session.Lifecycle = nil
 	session.Metadata = sessionsV3SyncShellMetadata(session.Metadata)
 	return session
 }
@@ -805,8 +914,14 @@ func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history ses
 	if resources.Events || history.IncludeEvents {
 		out = append(out, "events")
 	}
-	if resources.RunIntents || includeActive {
+	if resources.RunIntents {
 		out = append(out, "run_intents")
+	}
+	if resources.CurrentRunState || includeActive {
+		out = append(out, "current_run_state")
+	}
+	if resources.SessionView {
+		out = append(out, "session_view")
 	}
 	return out
 }

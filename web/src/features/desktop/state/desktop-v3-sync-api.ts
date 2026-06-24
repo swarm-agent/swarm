@@ -43,7 +43,8 @@ export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
   resources: {
     messages: false,
     events: false,
-    run_intents: true,
+    run_intents: false,
+    current_run_state: true,
     active_plan: false,
     plan_revisions: false,
   },
@@ -54,6 +55,7 @@ export const DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES: SyncResources = {
   messages: true,
   events: false,
   run_intents: true,
+  current_run_state: true,
   active_plan: false,
   plan_revisions: false,
 }
@@ -137,6 +139,8 @@ export async function postDesktopV3SyncBootstrap(
     session_order: parsed.session_order?.length ?? 0,
     messages: countArrayMapItems(parsed.messages_by_session),
     run_intents: countArrayMapItems(parsed.run_intents_by_session),
+    current_run_states: Object.keys(parsed.current_run_state_by_session ?? {}).length,
+    active_sessions: parsed.active_session_ids?.length ?? 0,
     include_active: body.include_active,
     recent_limit: body.selector.recent?.limit,
   })
@@ -145,14 +149,44 @@ export async function postDesktopV3SyncBootstrap(
 
 export async function postDesktopV3SyncHydrate(
   input: DesktopV3HydrateInput,
+  signal?: AbortSignal,
 ): Promise<SyncSnapshotResponse> {
-  return requestJson<SyncSnapshotResponse>('/v3/sync/hydrate', {
+  const requestStartedAt = desktopV3Now()
+  const response = await apiFetch('/v3/sync/hydrate', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(input),
+    signal,
   })
+  const headersReceivedAt = desktopV3Now()
+  const text = await response.text()
+  const bodyReadAt = desktopV3Now()
+
+  if (!response.ok) {
+    throw new Error(errorMessageFromResponseText(response.status, text))
+  }
+
+  const parseStartedAt = desktopV3Now()
+  const parsed = JSON.parse(text) as SyncSnapshotResponse
+  const parsedAt = desktopV3Now()
+  logDesktopV3BootstrapTiming('hydrate_network_json', {
+    status: response.status,
+    header_ms: roundTiming(headersReceivedAt - requestStartedAt),
+    body_ms: roundTiming(bodyReadAt - headersReceivedAt),
+    fetch_total_ms: roundTiming(bodyReadAt - requestStartedAt),
+    json_parse_ms: roundTiming(parsedAt - parseStartedAt),
+    total_with_parse_ms: roundTiming(parsedAt - requestStartedAt),
+    response_bytes: byteLength(text),
+    sessions: Object.keys(parsed.sessions_by_id ?? {}).length,
+    session_order: parsed.session_order?.length ?? 0,
+    messages: countArrayMapItems(parsed.messages_by_session),
+    run_intents: countArrayMapItems(parsed.run_intents_by_session),
+    current_run_states: Object.keys(parsed.current_run_state_by_session ?? {}).length,
+    requested_sessions: input.session_ids.length,
+  })
+  return parsed
 }
 
 export interface DesktopV3ReconnectInput {

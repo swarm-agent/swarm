@@ -69,6 +69,7 @@ type V3SessionWorksetOptions struct {
 	RecentBeforeSessionID              string
 	History                            V3SessionWorksetHistoryOptions
 	IncludeRunIntents                  bool
+	IncludeCurrentRunState             bool
 	IncludeActiveSessions              bool
 }
 
@@ -88,6 +89,8 @@ type V3SessionWorksetResult struct {
 	MessagesBySession         map[string][]MessageSnapshot                 `json:"messages_by_session"`
 	EventsBySession           map[string][]V3SessionEvent                  `json:"events_by_session"`
 	RunIntentsBySession       map[string][]V3SessionRunIntent              `json:"run_intents_by_session"`
+	CurrentRunStateBySession  map[string]V3SessionRunState                 `json:"current_run_state_by_session,omitempty"`
+	ActiveSessionIDs          []string                                     `json:"active_session_ids,omitempty"`
 	HistoryManifestsBySession map[string][]V3SessionHistoryChunkDescriptor `json:"history_manifests_by_session"`
 	HistoryChunksByID         map[string]V3SessionHistoryChunk             `json:"history_chunks_by_id"`
 	Omissions                 []V3SessionWorksetOmission                   `json:"omissions"`
@@ -191,6 +194,9 @@ func normalizeV3SessionWorksetOptions(options V3SessionWorksetOptions) V3Session
 	if options.History.ManifestPolicy == "" {
 		options.History.ManifestPolicy = V3SessionWorksetManifestPolicyError
 	}
+	if options.IncludeActiveSessions {
+		options.IncludeCurrentRunState = true
+	}
 	return options
 }
 
@@ -210,6 +216,8 @@ func (s *SessionStore) buildV3SessionWorksetFromReader(reader pebble.Reader, opt
 		MessagesBySession:         map[string][]MessageSnapshot{},
 		EventsBySession:           map[string][]V3SessionEvent{},
 		RunIntentsBySession:       map[string][]V3SessionRunIntent{},
+		CurrentRunStateBySession:  map[string]V3SessionRunState{},
+		ActiveSessionIDs:          []string{},
 		HistoryManifestsBySession: map[string][]V3SessionHistoryChunkDescriptor{},
 		HistoryChunksByID:         map[string]V3SessionHistoryChunk{},
 		Omissions:                 []V3SessionWorksetOmission{},
@@ -244,6 +252,18 @@ func (s *SessionStore) buildV3SessionWorksetFromReader(reader pebble.Reader, opt
 		if options.IncludeRunIntents {
 			if err := s.addV3SessionWorksetRunIntents(reader, options, session, projection, &result); err != nil {
 				return V3SessionWorksetResult{}, err
+			}
+		}
+		if options.IncludeCurrentRunState {
+			state, ok, err := getV3SessionRunStateFromReader(reader, session.ID)
+			if err != nil {
+				return V3SessionWorksetResult{}, err
+			}
+			if ok {
+				result.CurrentRunStateBySession[session.ID] = state
+				if state.Active && strings.TrimSpace(state.RunID) != "" {
+					result.ActiveSessionIDs = append(result.ActiveSessionIDs, session.ID)
+				}
 			}
 		}
 	}
