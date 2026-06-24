@@ -79,8 +79,6 @@ type V3SyncSnapshotOptions struct {
 	History                            V3SyncSnapshotHistoryOptions
 	IncludeRunIntents                  bool
 	IncludeActiveSessions              bool
-	IncludeActivePlan                  bool
-	IncludePlanRevisions               bool
 }
 
 type V3SyncSnapshotHistoryOptions struct {
@@ -105,10 +103,6 @@ type V3SyncSnapshotResult struct {
 	Pagination                V3SyncSnapshotPagination                     `json:"pagination"`
 	Watermarks                V3SyncSnapshotWatermarks                     `json:"watermarks"`
 	SessionOrder              []string                                     `json:"session_order"`
-	PermissionsBySession      map[string][]PermissionRecord                `json:"permissions_by_session"`
-	UsageBySession            map[string]SessionUsageSummary               `json:"usage_by_session"`
-	PlansBySession            map[string]SessionPlanSnapshot               `json:"plans_by_session"`
-	PlanRevisionsBySession    map[string][]SessionPlanSnapshot             `json:"plan_revisions_by_session"`
 	TombstonesBySession       map[string]V3SessionTombstone                `json:"tombstones_by_session"`
 }
 
@@ -141,7 +135,6 @@ type v3SyncSnapshotTimings struct {
 	totalDur  time.Duration
 	messages  int
 	intents   int
-	plans     int
 	omissions int
 }
 
@@ -156,7 +149,7 @@ func (t *v3SyncSnapshotTimings) log() {
 	if t == nil {
 		return
 	}
-	log.Printf("v3 sync bootstrap snapshot timings selected=%d messages=%d run_intents=%d plans=%d omissions=%d select=%s rev=%s bundles=%s tombstones=%s total=%s", t.selected, t.messages, t.intents, t.plans, t.omissions, t.selectDur, t.revDur, t.bundleDur, t.tombDur, t.totalDur)
+	log.Printf("v3 sync bootstrap snapshot timings selected=%d messages=%d run_intents=%d omissions=%d select=%s rev=%s bundles=%s tombstones=%s total=%s", t.selected, t.messages, t.intents, t.omissions, t.selectDur, t.revDur, t.bundleDur, t.tombDur, t.totalDur)
 }
 
 func (s *SessionStore) BuildV3SyncSnapshot(options V3SyncSnapshotOptions) (result V3SyncSnapshotResult, err error) {
@@ -291,7 +284,6 @@ func (s *SessionStore) buildV3SyncSnapshotFromReader(reader pebble.Reader, optio
 		for _, intents := range result.RunIntentsBySession {
 			timings.intents += len(intents)
 		}
-		timings.plans = len(result.PlansBySession)
 		timings.omissions = len(result.Omissions)
 		timings.totalDur = time.Since(timings.start)
 	}
@@ -312,10 +304,6 @@ func newV3SyncSnapshotResultMaps(sessionCapacity int) V3SyncSnapshotResult {
 		HistoryChunksByID:         map[string]V3SessionHistoryChunk{},
 		Omissions:                 make([]V3SyncSnapshotOmission, 0),
 		SessionOrder:              make([]string, 0, sessionCapacity),
-		PermissionsBySession:      make(map[string][]PermissionRecord, sessionCapacity),
-		UsageBySession:            make(map[string]SessionUsageSummary, sessionCapacity),
-		PlansBySession:            make(map[string]SessionPlanSnapshot, sessionCapacity),
-		PlanRevisionsBySession:    make(map[string][]SessionPlanSnapshot, sessionCapacity),
 		TombstonesBySession:       make(map[string]V3SessionTombstone, sessionCapacity),
 	}
 }
@@ -338,7 +326,6 @@ func (s *SessionStore) buildV3SyncSessionBundle(reader pebble.Reader, options V3
 	bundle.Watermarks.MaxUpdatedAt = session.UpdatedAt
 	bundle.SessionsByID[session.ID] = session
 	bundle.ProjectionsBySession[session.ID] = projection
-	bundle.PermissionsBySession[session.ID] = []PermissionRecord{}
 	bundle.SessionOrder = append(bundle.SessionOrder, session.ID)
 	if err := s.addV3SyncSnapshotHistory(reader, options, session, projection, &bundle); err != nil {
 		return V3SyncSnapshotResult{}, err
@@ -347,19 +334,6 @@ func (s *SessionStore) buildV3SyncSessionBundle(reader pebble.Reader, options V3
 		if err := s.addV3SyncSnapshotRunIntents(reader, options, session, projection, &bundle); err != nil {
 			return V3SyncSnapshotResult{}, err
 		}
-	}
-	permissions, err := listPendingPermissionsFromReader(options.Context, reader, session.ID, 200)
-	if err != nil {
-		return V3SyncSnapshotResult{}, err
-	}
-	bundle.PermissionsBySession[session.ID] = permissions
-	if usage, ok, err := getUsageSummaryFromReader(reader, session.ID); err != nil {
-		return V3SyncSnapshotResult{}, err
-	} else if ok {
-		bundle.UsageBySession[session.ID] = usage
-	}
-	if err := s.addV3SyncSnapshotPlans(reader, options, session.ID, &bundle); err != nil {
-		return V3SyncSnapshotResult{}, err
 	}
 	return bundle, nil
 }
@@ -391,18 +365,6 @@ func mergeV3SyncSessionBundle(result *V3SyncSnapshotResult, bundle V3SyncSnapsho
 	}
 	result.Omissions = append(result.Omissions, bundle.Omissions...)
 	result.SessionOrder = append(result.SessionOrder, bundle.SessionOrder...)
-	for sessionID, permissions := range bundle.PermissionsBySession {
-		result.PermissionsBySession[sessionID] = permissions
-	}
-	for sessionID, usage := range bundle.UsageBySession {
-		result.UsageBySession[sessionID] = usage
-	}
-	for sessionID, plan := range bundle.PlansBySession {
-		result.PlansBySession[sessionID] = plan
-	}
-	for sessionID, revisions := range bundle.PlanRevisionsBySession {
-		result.PlanRevisionsBySession[sessionID] = revisions
-	}
 	for sessionID, tombstone := range bundle.TombstonesBySession {
 		result.TombstonesBySession[sessionID] = tombstone
 	}
@@ -1176,32 +1138,6 @@ func getUsageSummaryFromReader(reader pebble.Reader, sessionID string) (SessionU
 		return SessionUsageSummary{}, ok, err
 	}
 	return summary, true, nil
-}
-
-func (s *SessionStore) addV3SyncSnapshotPlans(reader pebble.Reader, options V3SyncSnapshotOptions, sessionID string, result *V3SyncSnapshotResult) error {
-	if !options.IncludeActivePlan && !options.IncludePlanRevisions {
-		return nil
-	}
-	active, ok, err := getActivePlanFromReader(reader, sessionID)
-	if err != nil || !ok {
-		return err
-	}
-	plan, found, err := getPlanFromReader(reader, sessionID, active.PlanID)
-	if err != nil || !found {
-		return err
-	}
-	plan.Active = true
-	if options.IncludeActivePlan {
-		result.PlansBySession[sessionID] = plan
-	}
-	if options.IncludePlanRevisions {
-		revisions, err := listPlanRevisionsFromReader(reader, sessionID, plan.ID, 100)
-		if err != nil {
-			return err
-		}
-		result.PlanRevisionsBySession[sessionID] = revisions
-	}
-	return nil
 }
 
 func getActivePlanFromReader(reader pebble.Reader, sessionID string) (SessionPlanActive, bool, error) {

@@ -382,12 +382,6 @@ export function applyHydrate(
   assertMapSubset(snapshot.events_by_session, requested, 'events_by_session')
   assertMapSubset(snapshot.run_intents_by_session, requested, 'run_intents_by_session')
   assertObjectKeysSubset('tombstones_by_session', snapshot.tombstones_by_session, requested)
-  assertObjectKeysSubset('plans_by_session', snapshot.plans_by_session, requested)
-  assertObjectKeysSubset('plan_revisions_by_session', snapshot.plan_revisions_by_session, requested)
-  assertObjectKeysSubset('permissions_by_session', snapshot.permissions_by_session, requested)
-  assertObjectKeysSubset('usage_by_session', snapshot.usage_by_session, requested)
-  assertObjectKeysSubset('preferences_by_session', snapshot.preferences_by_session, requested)
-  assertObjectKeysSubset('agent_model_policy_by_session', snapshot.agent_model_policy_by_session, requested)
   assertObjectKeysSubset('history_manifests_by_session', snapshot.history_manifests_by_session, requested)
 
   requireProtocol(snapshot.scope_id, 'snapshot.scope_id')
@@ -962,43 +956,6 @@ function normalizePermissionRecord(value: unknown, fallbackSessionId: string): D
   }
 }
 
-function normalizePermissionRecords(values: unknown[] | undefined, sessionId: string): DesktopPermissionRecord[] {
-  return (values ?? [])
-    .map((value) => normalizePermissionRecord(value, sessionId))
-    .filter((permission): permission is DesktopPermissionRecord => Boolean(permission && permission.status.trim().toLowerCase() === 'pending'))
-    .sort(comparePermissions)
-}
-
-function replacePermissionsBySession(
-  target: DesktopV3CacheState['permissionsBySession'],
-  source: Record<string, unknown[] | undefined> | undefined,
-  sessionIds: Set<string>,
-): void {
-  for (const sessionId of sessionIds) {
-    delete target[sessionId]
-  }
-  if (!source) return
-  for (const sessionId of sessionIds) {
-    const permissions = normalizePermissionRecords(source[sessionId], sessionId)
-    if (permissions.length > 0) {
-      target[sessionId] = permissions
-    }
-  }
-}
-
-function mergePermissionsBySession(
-  target: DesktopV3CacheState['permissionsBySession'],
-  source: Record<string, unknown[] | undefined> | undefined,
-): void {
-  if (!source) return
-  for (const [sessionId, values] of Object.entries(source)) {
-    const permissions = normalizePermissionRecords(values, sessionId)
-    if (permissions.length > 0) {
-      target[sessionId] = permissions
-    }
-  }
-}
-
 function upsertPermissionRecord(state: DesktopV3CacheState, permission: DesktopPermissionRecord): void {
   const sessionId = permission.sessionId || ''
   if (!sessionId) return
@@ -1462,20 +1419,6 @@ function mergeReconnectOptionalResources(
   resources: Set<string>,
   authoritativeSessionIds: Set<string>,
 ): void {
-  if (resources.has('active_plan')) {
-    replaceRecordBySession(state.plansBySession, raw.plans_by_session, authoritativeSessionIds)
-  } else {
-    mergeRecord(state.plansBySession, raw.plans_by_session)
-  }
-  if (resources.has('plan_revisions')) {
-    replaceRecordBySession(state.planRevisionsBySession, raw.plan_revisions_by_session, authoritativeSessionIds)
-  } else {
-    mergeRecord(state.planRevisionsBySession, raw.plan_revisions_by_session)
-  }
-  mergePermissionsBySession(state.permissionsBySession, raw.permissions_by_session)
-  mergeUsageBySession(state, raw.usage_by_session)
-  mergeRecord(state.preferencesBySession, raw.preferences_by_session)
-  mergeRecord(state.agentModelPolicyBySession, raw.agent_model_policy_by_session)
   if (resources.has('messages') || resources.has('events')) {
     replaceRecordBySession(state.historyManifestsBySession, raw.history_manifests_by_session, authoritativeSessionIds)
     mergeRecord(state.historyChunksById, raw.history_chunks_by_id)
@@ -1519,24 +1462,6 @@ function mergeSnapshotResources(
 ): void {
   const resourceSet = snapshot.sync_scope.resource_set
   const authoritativeSessionIds = requested ?? new Set(Object.keys(snapshot.sessions_by_id ?? {}))
-  if (syncResourceSetContains(resourceSet, 'active_plan')) {
-    replaceRecordBySession(state.plansBySession, snapshot.plans_by_session, authoritativeSessionIds)
-  }
-  if (syncResourceSetContains(resourceSet, 'plan_revisions')) {
-    replaceRecordBySession(state.planRevisionsBySession, snapshot.plan_revisions_by_session, authoritativeSessionIds)
-  }
-  if (syncResourceSetContains(resourceSet, 'permissions')) {
-    replacePermissionsBySession(state.permissionsBySession, snapshot.permissions_by_session, authoritativeSessionIds)
-  }
-  if (syncResourceSetContains(resourceSet, 'usage')) {
-    replaceUsageBySession(state, snapshot.usage_by_session, authoritativeSessionIds)
-  }
-  if (syncResourceSetContains(resourceSet, 'preferences')) {
-    replaceRecordBySession(state.preferencesBySession, snapshot.preferences_by_session, authoritativeSessionIds)
-  }
-  if (syncResourceSetContains(resourceSet, 'agent_model_policy')) {
-    replaceRecordBySession(state.agentModelPolicyBySession, snapshot.agent_model_policy_by_session, authoritativeSessionIds)
-  }
   if (syncResourceSetContains(resourceSet, 'messages') || syncResourceSetContains(resourceSet, 'events')) {
     const historySessionIds = filterHydrateHistorySessionIds(state, authoritativeSessionIds)
     replaceRecordBySession(state.historyManifestsBySession, snapshot.history_manifests_by_session, historySessionIds)
@@ -2300,20 +2225,6 @@ function mergeRecord<T>(target: Record<string, T>, source: Record<string, T | un
   for (const [key, value] of Object.entries(source)) {
     target[key] = value as T
   }
-}
-
-function mergeUsageBySession(state: DesktopV3CacheState, source: Record<string, unknown> | undefined): void {
-  if (!source) return
-  for (const [sessionId, value] of Object.entries(source)) {
-    applyUsageSummaryFromUnknown(state, sessionId, value)
-  }
-}
-
-function replaceUsageBySession(state: DesktopV3CacheState, source: Record<string, unknown> | undefined, sessionIds: Set<string>): void {
-  for (const sessionId of sessionIds) {
-    delete state.usageBySession[sessionId]
-  }
-  mergeUsageBySession(state, onlyRequested(source, sessionIds))
 }
 
 function applyUsageSummaryFromEventPayload(

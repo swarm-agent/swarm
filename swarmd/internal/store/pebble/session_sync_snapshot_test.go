@@ -9,7 +9,7 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
-func TestBuildV3SyncSnapshotKeepsExtraResourcesPointInTime(t *testing.T) {
+func TestBuildV3SyncSnapshotOmitsAllSessionResourceMaps(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	permissions := NewPermissionStore(store)
@@ -52,8 +52,6 @@ func TestBuildV3SyncSnapshotKeepsExtraResourcesPointInTime(t *testing.T) {
 		AccountScopeID:        "account-1",
 		SessionIDs:            []string{"session-sync-snapshot"},
 		History:               V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
-		IncludeActivePlan:     true,
-		IncludePlanRevisions:  true,
 		IncludeActiveSessions: true,
 	})
 	if err != nil {
@@ -68,21 +66,14 @@ func TestBuildV3SyncSnapshotKeepsExtraResourcesPointInTime(t *testing.T) {
 	if _, ok := snapshot.TombstonesBySession["session-sync-snapshot"]; ok {
 		t.Fatalf("snapshot included post-snapshot tombstone: %+v", snapshot.TombstonesBySession["session-sync-snapshot"])
 	}
-	usage := snapshot.UsageBySession["session-sync-snapshot"]
-	if usage.Provider != "before" || usage.InputTokens != 1 || usage.OutputTokens != 2 {
-		t.Fatalf("snapshot usage = %+v, want pre-hook usage", usage)
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal sync snapshot: %v", err)
 	}
-	pending := snapshot.PermissionsBySession["session-sync-snapshot"]
-	if len(pending) != 1 || pending[0].ID != "permission-before" {
-		t.Fatalf("snapshot permissions = %+v, want only pre-hook permission", pending)
-	}
-	plan := snapshot.PlansBySession["session-sync-snapshot"]
-	if plan.ID != "plan-sync" || plan.Title != "Plan Before" || !plan.Active || plan.Version != 1 {
-		t.Fatalf("snapshot active plan = %+v, want pre-hook active plan", plan)
-	}
-	revisions := snapshot.PlanRevisionsBySession["session-sync-snapshot"]
-	if len(revisions) != 1 || revisions[0].Version != 1 || revisions[0].Title != "Plan Before" {
-		t.Fatalf("snapshot plan revisions = %+v, want only pre-hook revision", revisions)
+	for _, forbidden := range []string{"permissions_by_session", "usage_by_session", "plans_by_session", "plan_revisions_by_session"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("sync snapshot emitted removed all-session resource %q: %s", forbidden, string(raw))
+		}
 	}
 }
 

@@ -379,38 +379,55 @@ test('bootstrap tombstone clears stale run state without run-intent key', () => 
   assert.equal(state.liveRunsBySession[sessionA.id], undefined)
 })
 
-test('snapshot optional resources are governed by resource set authority', () => {
+test('snapshot ignores removed all-session resource maps even if stale server sends them', () => {
   const state = bootstrappedState()
-  state.plansBySession[sessionA.id] = { id: 'stale-plan' }
-  state.planRevisionsBySession[sessionA.id] = [{ id: 'stale-revision' }]
-  applyBootstrapSnapshot(state, snapshotFixture({
+  state.plansBySession[sessionA.id] = { id: 'scoped-plan' }
+  state.planRevisionsBySession[sessionA.id] = [{ id: 'scoped-revision' }]
+  state.permissionsBySession[sessionA.id] = [{
+    id: 'live-permission',
+    sessionId: sessionA.id,
+    runId: 'run-a',
+    callId: 'call-a',
+    toolName: 'bash',
+    toolArguments: '{}',
+    status: 'pending',
+    decision: '',
+    reason: '',
+    requirement: '',
+    mode: 'auto',
+    createdAt: 10,
+    updatedAt: 10,
+    resolvedAt: 0,
+    permissionRequestedAt: 10,
+  }]
+  state.usageBySession[sessionA.id] = { tokens: 10 }
+  state.preferencesBySession[sessionA.id] = { model: 'scoped-model' }
+  state.agentModelPolicyBySession[sessionA.id] = { policy: 'scoped-policy' }
+
+  applyBootstrapSnapshot(state, {
+    ...snapshotFixture({
+      sync_scope: {
+        surface: 'desktop',
+        stream_kind: 'v3.sync.snapshot',
+        selector_filter_hash: 'selector-hash',
+        resource_set: 'active_plan,plan_revisions,permissions,usage,preferences,agent_model_policy',
+      },
+      scope_id: 'selector-hash:removed-maps',
+    }),
     plans_by_session: {},
     plan_revisions_by_session: { [sessionA.id]: [] },
-    sync_scope: {
-      surface: 'desktop',
-      stream_kind: 'v3.sync.snapshot',
-      selector_filter_hash: 'selector-hash',
-      resource_set: 'active_plan,plan_revisions',
-    },
-    scope_id: 'selector-hash:active_plan,plan_revisions',
-  }))
+    permissions_by_session: { [sessionA.id]: [{ id: 'stale-permission', session_id: sessionA.id, status: 'pending' }] },
+    usage_by_session: { [sessionA.id]: { tokens: 1 } },
+    preferences_by_session: { [sessionA.id]: { model: 'stale-model' } },
+    agent_model_policy_by_session: { [sessionA.id]: { policy: 'stale-policy' } },
+  } as Parameters<typeof applyBootstrapSnapshot>[1])
 
-  assert.equal(state.plansBySession[sessionA.id], undefined)
-  assert.deepEqual(state.planRevisionsBySession[sessionA.id], [])
-
-  state.plansBySession[sessionA.id] = { id: 'restored-stale-plan' }
-  applyBootstrapSnapshot(state, snapshotFixture({
-    plans_by_session: {},
-    sync_scope: {
-      surface: 'desktop',
-      stream_kind: 'v3.sync.snapshot',
-      selector_filter_hash: 'selector-hash',
-      resource_set: 'messages',
-    },
-    scope_id: 'selector-hash:messages',
-  }))
-
-  assert.deepEqual(state.plansBySession[sessionA.id], { id: 'restored-stale-plan' })
+  assert.deepEqual(state.plansBySession[sessionA.id], { id: 'scoped-plan' })
+  assert.deepEqual(state.planRevisionsBySession[sessionA.id], [{ id: 'scoped-revision' }])
+  assert.deepEqual(state.permissionsBySession[sessionA.id]?.map((permission) => permission.id), ['live-permission'])
+  assert.deepEqual(state.usageBySession[sessionA.id], { tokens: 10 })
+  assert.deepEqual(state.preferencesBySession[sessionA.id], { model: 'scoped-model' })
+  assert.deepEqual(state.agentModelPolicyBySession[sessionA.id], { policy: 'scoped-policy' })
 })
 
 test('bootstrap tombstones remove ids from every sidebar order without deleting transcript', () => {
@@ -701,28 +718,30 @@ test('hydrate requested tombstone without run-intent key clears stale run state'
   assert.equal(state.liveRunsBySession[sessionA.id], undefined)
 })
 
-test('hydrate optional plan resources clear stale restored plans only when in scope', () => {
+test('hydrate ignores removed plan maps and preserves scoped plan cache state', () => {
   const state = bootstrappedState()
-  state.plansBySession[sessionB.id] = { id: 'stale-plan-b' }
-  state.planRevisionsBySession[sessionB.id] = [{ id: 'stale-revision-b' }]
+  state.plansBySession[sessionB.id] = { id: 'scoped-plan-b' }
+  state.planRevisionsBySession[sessionB.id] = [{ id: 'scoped-revision-b' }]
 
-  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+  applyHydrateSnapshot(state, {
+    ...hydrateSnapshotFixture({
+      sync_scope: {
+        surface: 'desktop',
+        stream_kind: 'v3.sync.snapshot',
+        selector_filter_hash: 'session-b-hash',
+        resource_set: 'active_plan,plan_revisions',
+      },
+      scope_id: 'session-b-hash:active_plan,plan_revisions',
+    }),
     plans_by_session: {},
     plan_revisions_by_session: { [sessionB.id]: [] },
-    sync_scope: {
-      surface: 'desktop',
-      stream_kind: 'v3.sync.snapshot',
-      selector_filter_hash: 'session-b-hash',
-      resource_set: 'active_plan,plan_revisions',
-    },
-    scope_id: 'session-b-hash:active_plan,plan_revisions',
-  }), [sessionB.id])
+  } as Parameters<typeof applyHydrateSnapshot>[1], [sessionB.id])
 
-  assert.equal(state.plansBySession[sessionB.id], undefined)
-  assert.deepEqual(state.planRevisionsBySession[sessionB.id], [])
+  assert.deepEqual(state.plansBySession[sessionB.id], { id: 'scoped-plan-b' })
+  assert.deepEqual(state.planRevisionsBySession[sessionB.id], [{ id: 'scoped-revision-b' }])
 })
 
-test('stale hydrate merges history but does not replace newer optional resources', () => {
+test('stale hydrate ignores removed resource maps while preserving scoped state and history', () => {
   const state = bootstrappedState()
   state.projectionsBySession[sessionB.id] = {
     ...projectionB,
@@ -752,33 +771,28 @@ test('stale hydrate merges history but does not replace newer optional resources
   state.preferencesBySession[sessionB.id] = { model: 'new' }
   state.agentModelPolicyBySession[sessionB.id] = { policy: 'new' }
 
-  applyHydrateSnapshot(state, hydrateSnapshotFixture({
-    projections_by_session: { [sessionB.id]: projectionB },
+  applyHydrateSnapshot(state, {
+    ...hydrateSnapshotFixture({
+      projections_by_session: { [sessionB.id]: projectionB },
+      sync_scope: {
+        surface: 'desktop',
+        stream_kind: 'v3.sync.snapshot',
+        selector_filter_hash: 'session-b-hash',
+        resource_set: 'messages,active_plan,plan_revisions,permissions,usage,preferences,agent_model_policy',
+      },
+      scope_id: 'session-b-hash:messages,active_plan,plan_revisions,permissions,usage,preferences,agent_model_policy',
+    }),
     plans_by_session: {},
     plan_revisions_by_session: { [sessionB.id]: [] },
     permissions_by_session: { [sessionB.id]: [{
       id: 'old-permission',
       session_id: sessionB.id,
-      run_id: 'run-b',
-      call_id: 'call-old',
-      tool_name: 'bash',
-      tool_arguments: '{}',
       status: 'pending',
-      mode: 'auto',
-      updated_at: 1,
-      permission_requested_at: 1,
     }] },
     usage_by_session: { [sessionB.id]: { tokens: 1 } },
     preferences_by_session: { [sessionB.id]: { model: 'old' } },
     agent_model_policy_by_session: { [sessionB.id]: { policy: 'old' } },
-    sync_scope: {
-      surface: 'desktop',
-      stream_kind: 'v3.sync.snapshot',
-      selector_filter_hash: 'session-b-hash',
-      resource_set: 'messages,active_plan,plan_revisions,permissions,usage,preferences,agent_model_policy',
-    },
-    scope_id: 'session-b-hash:messages,active_plan,plan_revisions,permissions,usage,preferences,agent_model_policy',
-  }), [sessionB.id])
+  } as Parameters<typeof applyHydrateSnapshot>[1], [sessionB.id])
 
   assert.deepEqual(state.plansBySession[sessionB.id], { id: 'new-live-plan' })
   assert.deepEqual(state.planRevisionsBySession[sessionB.id], [{ id: 'new-live-revision' }])
@@ -945,21 +959,6 @@ test('hydrate rejects non-requested payload membership', () => {
   assert.throws(
     () => applyHydrateSnapshot(state, hydrateSnapshotFixture({ sessions_by_id: { [sessionA.id]: sessionA } }), [sessionB.id]),
     /non-requested session session-a/,
-  )
-})
-
-test('hydrate rejects optional resource maps for non-requested sessions', () => {
-  const state = bootstrappedState()
-  const raw = hydrateSnapshotFixture({
-    plans_by_session: {
-      [sessionB.id]: { id: 'plan-b' },
-      [sessionA.id]: { id: 'plan-a' },
-    },
-  })
-
-  assert.throws(
-    () => desktopV3CacheReducer(state, hydrateResponseToAction(raw, [sessionB.id])),
-    /plans_by_session included non-requested session session-a/,
   )
 })
 

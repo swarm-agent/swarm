@@ -292,8 +292,6 @@ function v3WorksetPayload(sessionIds: string[], options: { includeMessages?: boo
     events_by_session: eventsBySession,
     run_intents_by_session: runIntentsBySession,
     current_run_intent_by_session: Object.fromEntries(Object.entries(runIntentsBySession).flatMap(([sessionId, intents]) => intents[0] ? [[sessionId, intents[0]]] : [])),
-    permissions_by_session: Object.fromEntries(sessionIds.map((sessionId) => [sessionId, v3HydratedSessionPayload(sessionId).pending_permissions])),
-    usage_by_session: Object.fromEntries(sessionIds.map((sessionId) => [sessionId, v3HydratedSessionPayload(sessionId).usage_summary])),
     history_manifests_by_session: historyManifestsBySession,
     history_chunks_by_id: {},
     omissions: [],

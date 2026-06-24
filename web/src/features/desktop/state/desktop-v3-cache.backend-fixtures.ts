@@ -112,12 +112,6 @@ export function snapshotFixture(overrides: Partial<SyncSnapshotResponse> = {}): 
       [sessionA.id]: [messageA1, messageA2],
     },
     events_by_session: {},
-    plans_by_session: {},
-    plan_revisions_by_session: {},
-    permissions_by_session: {},
-    usage_by_session: {},
-    preferences_by_session: {},
-    agent_model_policy_by_session: {},
     run_intents_by_session: {
       [sessionA.id]: [runIntentA],
     },

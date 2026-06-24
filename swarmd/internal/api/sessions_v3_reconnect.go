@@ -218,12 +218,6 @@ type sessionsV3ReconnectResponseInput struct {
 	ProjectionsBySession      any
 	MessagesBySession         any
 	EventsBySession           any
-	PlansBySession            any
-	PlanRevisionsBySession    any
-	PermissionsBySession      any
-	UsageBySession            any
-	PreferencesBySession      any
-	AgentModelPolicyBySession any
 	RunIntentsBySession       any
 	CurrentRunIntentBySession any
 	HistoryManifestsBySession any
@@ -276,16 +270,6 @@ func (s *Server) sessionsV3ReconnectWorksetResponse(principal identity.Principal
 		runIntentsBySession = response["run_intents_by_session"]
 	}
 
-	var plansBySession any
-	if options.IncludeActivePlan {
-		plansBySession = response["plans_by_session"]
-	}
-
-	var planRevisionsBySession any
-	if options.IncludePlanRevisions {
-		planRevisionsBySession = response["plan_revisions_by_session"]
-	}
-
 	var historyManifestsBySession any
 	var historyChunksByID any
 	if options.Store.History.IncludeMessages || options.Store.History.IncludeEvents {
@@ -322,12 +306,6 @@ func (s *Server) sessionsV3ReconnectWorksetResponse(principal identity.Principal
 		ProjectionsBySession:      response["projections_by_session"],
 		MessagesBySession:         messagesBySession,
 		EventsBySession:           eventsBySession,
-		PlansBySession:            plansBySession,
-		PlanRevisionsBySession:    planRevisionsBySession,
-		PermissionsBySession:      response["permissions_by_session"],
-		UsageBySession:            response["usage_by_session"],
-		PreferencesBySession:      response["preferences_by_session"],
-		AgentModelPolicyBySession: response["agent_model_policy_by_session"],
 		RunIntentsBySession:       runIntentsBySession,
 		HistoryManifestsBySession: historyManifestsBySession,
 		HistoryChunksByID:         historyChunksByID,
@@ -356,24 +334,18 @@ func sessionsV3ReconnectResponseMap(input sessionsV3ReconnectResponseInput) map[
 		response["current_run_intent_by_session"] = input.CurrentRunIntentBySession
 	}
 	optional := map[string]any{
-		"run_intents_by_session":        input.RunIntentsBySession,
-		"client_id":                     input.ClientID,
-		"surface":                       input.Surface,
-		"workset_id":                    input.WorksetID,
-		"messages_by_session":           input.MessagesBySession,
-		"events_by_session":             input.EventsBySession,
-		"plans_by_session":              input.PlansBySession,
-		"plan_revisions_by_session":     input.PlanRevisionsBySession,
-		"permissions_by_session":        input.PermissionsBySession,
-		"usage_by_session":              input.UsageBySession,
-		"preferences_by_session":        input.PreferencesBySession,
-		"agent_model_policy_by_session": input.AgentModelPolicyBySession,
-		"history_manifests_by_session":  input.HistoryManifestsBySession,
-		"history_chunks_by_id":          input.HistoryChunksByID,
-		"omissions":                     input.Omissions,
-		"pagination":                    input.Pagination,
-		"watermarks":                    input.Watermarks,
-		"worksets":                      input.Worksets,
+		"run_intents_by_session":       input.RunIntentsBySession,
+		"client_id":                    input.ClientID,
+		"surface":                      input.Surface,
+		"workset_id":                   input.WorksetID,
+		"messages_by_session":          input.MessagesBySession,
+		"events_by_session":            input.EventsBySession,
+		"history_manifests_by_session": input.HistoryManifestsBySession,
+		"history_chunks_by_id":         input.HistoryChunksByID,
+		"omissions":                    input.Omissions,
+		"pagination":                   input.Pagination,
+		"watermarks":                   input.Watermarks,
+		"worksets":                     input.Worksets,
 	}
 	for key, value := range optional {
 		if !sessionsV3ReconnectEmptyValue(value) {

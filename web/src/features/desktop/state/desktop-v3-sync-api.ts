@@ -44,7 +44,7 @@ export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
     messages: false,
     events: false,
     run_intents: true,
-    active_plan: true,
+    active_plan: false,
     plan_revisions: false,
   },
   include_active: true,
@@ -54,7 +54,7 @@ export const DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES: SyncResources = {
   messages: true,
   events: false,
   run_intents: true,
-  active_plan: true,
+  active_plan: false,
   plan_revisions: false,
 }
 

@@ -476,14 +476,14 @@ func TestSessionsV3ReconnectMetadataOnlyOmitsUnrequestedResourceMaps(t *testing.
 			"auto_subscribe_sessions":true
 		}
 	}`)
-	for _, key := range []string{"messages_by_session", "events_by_session", "run_intents_by_session", "plans_by_session", "plan_revisions_by_session"} {
+	for _, key := range []string{"messages_by_session", "events_by_session", "run_intents_by_session", "permissions_by_session", "usage_by_session", "plans_by_session", "plan_revisions_by_session", "preferences_by_session", "agent_model_policy_by_session"} {
 		if _, ok := raw[key]; ok {
 			t.Fatalf("metadata-only reconnect included %s: %+v", key, raw[key])
 		}
 	}
 }
 
-func TestSessionsV3ReconnectRequestedEmptyResourcesRemainAuthoritative(t *testing.T) {
+func TestSessionsV3ReconnectRequestedRunIntentsRemainAuthoritativeWithoutRemovedMaps(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "reconnect-empty-authoritative", "Reconnect Empty Authoritative", "/workspace/reconnect-empty")
 
@@ -509,12 +509,10 @@ func TestSessionsV3ReconnectRequestedEmptyResourcesRemainAuthoritative(t *testin
 	if entries, ok := runIntents[created.ID].([]any); !ok || len(entries) != 0 {
 		t.Fatalf("run_intents_by_session[%s] = %+v, want authoritative empty array (all=%+v)", created.ID, runIntents[created.ID], runIntents)
 	}
-	plans, ok := raw["plans_by_session"].(map[string]any)
-	if !ok {
-		t.Fatalf("plans_by_session missing or wrong type: %+v", raw["plans_by_session"])
-	}
-	if _, exists := plans[created.ID]; exists {
-		t.Fatalf("plans_by_session should be present but empty when no active plan exists: %+v", plans)
+	for _, key := range []string{"plans_by_session", "plan_revisions_by_session", "permissions_by_session", "usage_by_session", "preferences_by_session", "agent_model_policy_by_session"} {
+		if _, ok := raw[key]; ok {
+			t.Fatalf("reconnect emitted removed all-session resource %s: %+v", key, raw[key])
+		}
 	}
 	if _, ok := raw["messages_by_session"]; ok {
 		t.Fatalf("messages_by_session should remain omitted when unrequested")

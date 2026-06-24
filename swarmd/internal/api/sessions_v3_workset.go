@@ -68,11 +68,9 @@ type sessionsV3WorksetResources struct {
 }
 
 type sessionsV3ResolvedWorksetOptions struct {
-	Store                pebblestore.V3SessionWorksetOptions
-	Principal            identity.Principal
-	Surface              string
-	IncludeActivePlan    bool
-	IncludePlanRevisions bool
+	Store     pebblestore.V3SessionWorksetOptions
+	Principal identity.Principal
+	Surface   string
 }
 
 func (s *Server) handleSessionsV3Workset(w http.ResponseWriter, r *http.Request) {
@@ -173,8 +171,6 @@ func sessionsV3WorksetOptionsFromRequest(principal identity.Principal, req sessi
 			IncludeRunIntents:     req.Resources.RunIntents || req.IncludeActive,
 			IncludeActiveSessions: req.IncludeActive,
 		},
-		IncludeActivePlan:    req.Resources.ActivePlan,
-		IncludePlanRevisions: req.Resources.PlanRevisions,
 	}
 	return options, nil
 }
@@ -251,21 +247,8 @@ func (s *Server) writeSessionsV3Workset(w http.ResponseWriter, options sessionsV
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) sessionsV3WorksetResponseForResult(options sessionsV3ResolvedWorksetOptions, workset pebblestore.V3SessionWorksetResult, snapshotEndpointCursor string) (map[string]any, error) {
-	permissionsBySession, err := s.sessionsV3WorksetPendingPermissions(workset)
-	if err != nil {
-		return nil, err
-	}
-	usageBySession, err := s.sessionsV3WorksetUsageSummaries(workset)
-	if err != nil {
-		return nil, err
-	}
-	preferencesBySession, agentModelPolicyBySession := s.sessionsV3WorksetPreferencesAndPolicies(workset)
-	plansBySession, planRevisionsBySession, err := s.sessionsV3WorksetPlans(options, workset)
-	if err != nil {
-		return nil, err
-	}
-	return sessionsV3WorksetResponse(workset, permissionsBySession, usageBySession, preferencesBySession, agentModelPolicyBySession, plansBySession, planRevisionsBySession, snapshotEndpointCursor), nil
+func (s *Server) sessionsV3WorksetResponseForResult(_ sessionsV3ResolvedWorksetOptions, workset pebblestore.V3SessionWorksetResult, snapshotEndpointCursor string) (map[string]any, error) {
+	return sessionsV3WorksetResponse(workset, snapshotEndpointCursor), nil
 }
 
 func canonicalSessionsV3WorksetWorkspacePaths(workspace sessionsV3WorksetWorkspace) ([]string, error) {
@@ -326,139 +309,21 @@ func appendCanonicalSessionsV3WorksetPath(paths []string, seen map[string]struct
 	return append(paths, cleaned), nil
 }
 
-func (s *Server) sessionsV3WorksetPendingPermissions(workset pebblestore.V3SessionWorksetResult) (map[string]any, error) {
-	permissionsBySession := map[string]any{}
-	if s == nil || s.perm == nil {
-		return permissionsBySession, nil
-	}
-	for sessionID := range workset.SessionsByID {
-		permissions, err := s.perm.ListPending(sessionID, 200)
-		if err != nil {
-			return nil, err
-		}
-		permissionsBySession[sessionID] = permissions
-	}
-	return permissionsBySession, nil
-}
-
-func (s *Server) sessionsV3WorksetUsageSummaries(workset pebblestore.V3SessionWorksetResult) (map[string]any, error) {
-	usageBySession := map[string]any{}
-	if s == nil || s.sessions == nil {
-		return usageBySession, nil
-	}
-	for sessionID := range workset.SessionsByID {
-		summary, ok, err := s.sessions.GetUsageSummary(sessionID)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			usageBySession[sessionID] = summary
-		}
-	}
-	return usageBySession, nil
-}
-
-func (s *Server) sessionsV3WorksetPreferencesAndPolicies(workset pebblestore.V3SessionWorksetResult) (map[string]any, map[string]any) {
-	preferencesBySession := map[string]any{}
-	agentModelPolicyBySession := map[string]any{}
-	for sessionID, session := range workset.SessionsByID {
-		session.Preference = normalizeSessionsV3ModelPreference(session.Preference)
-		preference := session.Preference
-		contextWindow := 0
-		maxOutputTokens := 0
-		if s != nil && s.model != nil {
-			if resolved, err := s.model.ResolvePreference(session.Preference); err == nil {
-				preference = normalizeSessionsV3ModelPreference(resolved.Preference)
-				contextWindow = resolved.ContextWindow
-				maxOutputTokens = resolved.MaxOutputTokens
-			}
-		}
-		agentModelPolicy := s.sessionsV3AgentModelPolicy(session, preference, contextWindow, maxOutputTokens)
-		if agentModelPolicy.Locked {
-			preference = agentModelPolicy.Preference
-			contextWindow = agentModelPolicy.ContextWindow
-			maxOutputTokens = agentModelPolicy.MaxOutputTokens
-		}
-		preferencesBySession[sessionID] = map[string]any{
-			"preference":        preference,
-			"context_window":    contextWindow,
-			"max_output_tokens": maxOutputTokens,
-		}
-		agentModelPolicyBySession[sessionID] = agentModelPolicy
-	}
-	return preferencesBySession, agentModelPolicyBySession
-}
-
-func (s *Server) sessionsV3WorksetPlans(options sessionsV3ResolvedWorksetOptions, workset pebblestore.V3SessionWorksetResult) (map[string]any, map[string]any, error) {
-	plansBySession := map[string]any{}
-	planRevisionsBySession := map[string]any{}
-	if !options.IncludeActivePlan && !options.IncludePlanRevisions {
-		return plansBySession, planRevisionsBySession, nil
-	}
-	if s == nil || s.sessions == nil {
-		return plansBySession, planRevisionsBySession, nil
-	}
-	for sessionID := range workset.SessionsByID {
-		plan, ok, err := s.sessions.GetActivePlan(sessionID)
-		if err != nil {
-			return nil, nil, err
-		}
-		if !ok {
-			continue
-		}
-		if options.IncludeActivePlan {
-			plansBySession[sessionID] = plan
-		}
-		if options.IncludePlanRevisions {
-			revisions, err := s.sessions.ListPlanRevisions(sessionID, plan.ID, 100)
-			if err != nil {
-				return nil, nil, err
-			}
-			planRevisionsBySession[sessionID] = revisions
-		}
-	}
-	return plansBySession, planRevisionsBySession, nil
-}
-
-func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, permissionsBySession map[string]any, usageBySession map[string]any, preferencesBySession map[string]any, agentModelPolicyBySession map[string]any, plansBySession map[string]any, planRevisionsBySession map[string]any, snapshotEndpointCursor string) map[string]any {
-	if permissionsBySession == nil {
-		permissionsBySession = map[string]any{}
-	}
-	if usageBySession == nil {
-		usageBySession = map[string]any{}
-	}
-	if preferencesBySession == nil {
-		preferencesBySession = map[string]any{}
-	}
-	if agentModelPolicyBySession == nil {
-		agentModelPolicyBySession = map[string]any{}
-	}
-	if plansBySession == nil {
-		plansBySession = map[string]any{}
-	}
-	if planRevisionsBySession == nil {
-		planRevisionsBySession = map[string]any{}
-	}
+func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, snapshotEndpointCursor string) map[string]any {
 	return map[string]any{
-		"ok":                            true,
-		"rev":                           workset.Rev,
-		"snapshot_endpoint_cursor":      snapshotEndpointCursor,
-		"sessions_by_id":                workset.SessionsByID,
-		"projections_by_session":        workset.ProjectionsBySession,
-		"messages_by_session":           workset.MessagesBySession,
-		"events_by_session":             workset.EventsBySession,
-		"plans_by_session":              plansBySession,
-		"plan_revisions_by_session":     planRevisionsBySession,
-		"permissions_by_session":        permissionsBySession,
-		"usage_by_session":              usageBySession,
-		"preferences_by_session":        preferencesBySession,
-		"agent_model_policy_by_session": agentModelPolicyBySession,
-		"run_intents_by_session":        workset.RunIntentsBySession,
-		"history_manifests_by_session":  workset.HistoryManifestsBySession,
-		"history_chunks_by_id":          workset.HistoryChunksByID,
-		"omissions":                     workset.Omissions,
-		"pagination":                    workset.Pagination,
-		"watermarks":                    workset.Watermarks,
-		"session_order":                 workset.SessionOrder,
+		"ok":                           true,
+		"rev":                          workset.Rev,
+		"snapshot_endpoint_cursor":     snapshotEndpointCursor,
+		"sessions_by_id":               workset.SessionsByID,
+		"projections_by_session":       workset.ProjectionsBySession,
+		"messages_by_session":          workset.MessagesBySession,
+		"events_by_session":            workset.EventsBySession,
+		"run_intents_by_session":       workset.RunIntentsBySession,
+		"history_manifests_by_session": workset.HistoryManifestsBySession,
+		"history_chunks_by_id":         workset.HistoryChunksByID,
+		"omissions":                    workset.Omissions,
+		"pagination":                   workset.Pagination,
+		"watermarks":                   workset.Watermarks,
+		"session_order":                workset.SessionOrder,
 	}
 }

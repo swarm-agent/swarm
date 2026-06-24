@@ -234,12 +234,6 @@ export interface SessionV3StateSnapshotResponseWire {
   run_intents_by_session?: Record<string, SessionV3RunIntentWire[]>
   current_run_intent_by_session?: Record<string, SessionV3RunIntentWire>
   session_order?: string[]
-  plans_by_session?: Record<string, unknown>
-  plan_revisions_by_session?: Record<string, unknown[]>
-  permissions_by_session?: Record<string, unknown[]>
-  usage_by_session?: Record<string, unknown>
-  preferences_by_session?: Record<string, unknown>
-  agent_model_policy_by_session?: Record<string, unknown>
   history_manifests_by_session?: Record<string, unknown>
   history_chunks_by_id?: Record<string, unknown>
   omissions?: Record<string, unknown>

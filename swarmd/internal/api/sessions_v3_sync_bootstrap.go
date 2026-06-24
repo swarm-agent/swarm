@@ -152,8 +152,6 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 			History:               history,
 			IncludeRunIntents:     req.Resources.RunIntents || req.IncludeActive,
 			IncludeActiveSessions: req.IncludeActive,
-			IncludeActivePlan:     req.Resources.ActivePlan,
-			IncludePlanRevisions:  req.Resources.PlanRevisions,
 		},
 		Principal: principal,
 		Surface:   normalizeV3SyncSurface(req.Surface),
@@ -195,8 +193,6 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 			// run-intent resources for requested sessions, but must never widen
 			// membership beyond the explicit session_ids selector.
 			IncludeActiveSessions: false,
-			IncludeActivePlan:     req.Resources.ActivePlan,
-			IncludePlanRevisions:  req.Resources.PlanRevisions,
 		},
 		Principal: principal,
 		Surface:   normalizeV3SyncSurface(req.Surface),
@@ -409,12 +405,6 @@ type sessionsV3SyncSnapshotResponseBody struct {
 	ProjectionsBySession      map[string]pebblestore.V3SessionProjection               `json:"projections_by_session"`
 	MessagesBySession         map[string][]pebblestore.MessageSnapshot                 `json:"messages_by_session"`
 	EventsBySession           map[string][]pebblestore.V3SessionEvent                  `json:"events_by_session"`
-	PlansBySession            map[string]pebblestore.SessionPlanSnapshot               `json:"plans_by_session"`
-	PlanRevisionsBySession    map[string][]pebblestore.SessionPlanSnapshot             `json:"plan_revisions_by_session"`
-	PermissionsBySession      map[string][]pebblestore.PermissionRecord                `json:"permissions_by_session"`
-	UsageBySession            map[string]pebblestore.SessionUsageSummary               `json:"usage_by_session"`
-	PreferencesBySession      map[string]sessionsV3SyncPreferenceResponse              `json:"preferences_by_session"`
-	AgentModelPolicyBySession map[string]sessionsV3AgentModelPolicy                    `json:"agent_model_policy_by_session"`
 	RunIntentsBySession       map[string][]pebblestore.V3SessionRunIntent              `json:"run_intents_by_session"`
 	HistoryManifestsBySession map[string][]pebblestore.V3SessionHistoryChunkDescriptor `json:"history_manifests_by_session"`
 	HistoryChunksByID         map[string]pebblestore.V3SessionHistoryChunk             `json:"history_chunks_by_id"`
@@ -443,12 +433,6 @@ type sessionsV3SyncReplayInstructionsResponse struct {
 	Transport                      string `json:"transport"`
 	AfterEndpointCursor            string `json:"after_endpoint_cursor"`
 	BootstrapRequiredOnCursorError bool   `json:"bootstrap_required_on_cursor_error"`
-}
-
-type sessionsV3SyncPreferenceResponse struct {
-	Preference      pebblestore.ModelPreference `json:"preference"`
-	ContextWindow   int                         `json:"context_window"`
-	MaxOutputTokens int                         `json:"max_output_tokens"`
 }
 
 type sessionsV3SyncResolvedPreference struct {
@@ -503,31 +487,6 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 	}
 
 	phaseStart = time.Now()
-	preferencesBySession := make(map[string]sessionsV3SyncPreferenceResponse, len(snapshot.SessionsByID))
-	agentModelPolicyBySession := make(map[string]sessionsV3AgentModelPolicy, len(snapshot.SessionsByID))
-	resolvedPreferenceCache := make(map[sessionsV3SyncPreferenceCacheKey]sessionsV3SyncResolvedPreference, len(snapshot.SessionsByID))
-	resolvePreference := func(preference pebblestore.ModelPreference) sessionsV3SyncResolvedPreference {
-		return s.resolveSessionsV3SyncPreference(preference, resolvedPreferenceCache)
-	}
-	for sessionID, session := range snapshot.SessionsByID {
-		resolved := resolvePreference(session.Preference)
-		preference := resolved.Preference
-		contextWindow := resolved.ContextWindow
-		maxOutputTokens := resolved.MaxOutputTokens
-		agentModelPolicy := s.sessionsV3AgentModelPolicyWithResolver(session, preference, contextWindow, maxOutputTokens, resolvePreference)
-		if agentModelPolicy.Locked {
-			preference = agentModelPolicy.Preference
-			contextWindow = agentModelPolicy.ContextWindow
-			maxOutputTokens = agentModelPolicy.MaxOutputTokens
-		}
-		preferencesBySession[sessionID] = sessionsV3SyncPreferenceResponse{
-			Preference:      preference,
-			ContextWindow:   contextWindow,
-			MaxOutputTokens: maxOutputTokens,
-		}
-		agentModelPolicyBySession[sessionID] = agentModelPolicy
-	}
-
 	tombstones := make(map[string]pebblestore.V3SessionTombstone, len(snapshot.TombstonesBySession))
 	selectorValue, _ := selector.(sessionsV3SyncSelector)
 	for sessionID, tombstone := range snapshot.TombstonesBySession {
@@ -549,12 +508,6 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		ProjectionsBySession:      snapshot.ProjectionsBySession,
 		MessagesBySession:         snapshot.MessagesBySession,
 		EventsBySession:           snapshot.EventsBySession,
-		PlansBySession:            snapshot.PlansBySession,
-		PlanRevisionsBySession:    snapshot.PlanRevisionsBySession,
-		PermissionsBySession:      snapshot.PermissionsBySession,
-		UsageBySession:            snapshot.UsageBySession,
-		PreferencesBySession:      preferencesBySession,
-		AgentModelPolicyBySession: agentModelPolicyBySession,
 		RunIntentsBySession:       snapshot.RunIntentsBySession,
 		HistoryManifestsBySession: snapshot.HistoryManifestsBySession,
 		HistoryChunksByID:         snapshot.HistoryChunksByID,
@@ -763,7 +716,7 @@ func normalizeV3SyncSurface(surface string) string {
 }
 
 func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history sessionsV3WorksetHistory, includeActive bool) []string {
-	out := []string{"sessions", "projections", "membership", "tombstones", "permissions", "usage", "preferences", "agent_model_policy"}
+	out := []string{"sessions", "projections", "membership", "tombstones"}
 	historyMode := strings.TrimSpace(strings.ToLower(history.Mode))
 	if resources.Messages || historyMode == pebblestore.V3SyncSnapshotHistoryModeTail || historyMode == pebblestore.V3SyncSnapshotHistoryModeFull {
 		out = append(out, "messages")
@@ -773,12 +726,6 @@ func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history ses
 	}
 	if resources.RunIntents || includeActive {
 		out = append(out, "run_intents")
-	}
-	if resources.ActivePlan {
-		out = append(out, "active_plan")
-	}
-	if resources.PlanRevisions {
-		out = append(out, "plan_revisions")
 	}
 	return out
 }

@@ -32,7 +32,7 @@ test('postDesktopV3SyncBootstrap posts metadata-only bounded startup workset pay
   assert.equal(body.resources.messages, false)
   assert.equal(body.resources.events, false)
   assert.equal(body.resources.run_intents, true)
-  assert.equal(body.resources.active_plan, true)
+  assert.equal(body.resources.active_plan, false)
   assert.equal(body.resources.plan_revisions, false)
   assert.equal(body.include_active, true)
   assert.deepEqual(DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.history, { mode: 'none' })
@@ -92,7 +92,7 @@ test('postDesktopV3SyncHydrate posts exact selected-session bounded tail payload
       messages: true,
       events: false,
       run_intents: true,
-      active_plan: true,
+      active_plan: false,
       plan_revisions: false,
     },
     include_active: true,

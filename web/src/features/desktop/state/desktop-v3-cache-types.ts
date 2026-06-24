@@ -139,12 +139,6 @@ export interface SyncSnapshotResponse {
   projections_by_session: Record<string, V3SessionProjection>
   messages_by_session?: Record<string, MessageSnapshot[]>
   events_by_session?: Record<string, V3SessionEvent[]>
-  plans_by_session?: Record<string, unknown>
-  plan_revisions_by_session?: Record<string, unknown[]>
-  permissions_by_session?: Record<string, unknown[]>
-  usage_by_session?: Record<string, unknown>
-  preferences_by_session?: Record<string, unknown>
-  agent_model_policy_by_session?: Record<string, unknown>
   run_intents_by_session?: Record<string, V3SessionRunIntent[]>
   history_manifests_by_session?: Record<string, unknown>
   history_chunks_by_id?: Record<string, unknown>
@@ -223,12 +217,6 @@ export interface SessionsReconnectResponse {
   workset_id?: string
   messages_by_session?: Record<string, MessageSnapshot[]>
   events_by_session?: Record<string, V3SessionEvent[]>
-  plans_by_session?: Record<string, unknown>
-  plan_revisions_by_session?: Record<string, unknown[]>
-  permissions_by_session?: Record<string, unknown[]>
-  usage_by_session?: Record<string, unknown>
-  preferences_by_session?: Record<string, unknown>
-  agent_model_policy_by_session?: Record<string, unknown>
   history_manifests_by_session?: Record<string, unknown>
   history_chunks_by_id?: Record<string, unknown>
   omissions?: unknown[]

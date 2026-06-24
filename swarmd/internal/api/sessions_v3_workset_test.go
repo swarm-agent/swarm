@@ -72,7 +72,7 @@ func TestSessionsV3WorksetEndpointSupportsPaginationAndManifests(t *testing.T) {
 	}
 }
 
-func TestSessionsV3WorksetEndpointOmitsPlansByDefault(t *testing.T) {
+func TestSessionsV3WorksetEndpointOmitsRemovedAllSessionMapsByDefault(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "workset-plan-default", "Workset Plan Default")
 	if _, _, err := server.sessions.SavePlan(created.ID, "plan-workset-default", "Workset Plan", "# Plan", "draft", "draft", true); err != nil {
@@ -87,26 +87,21 @@ func TestSessionsV3WorksetEndpointOmitsPlansByDefault(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("workset status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	var payload struct {
-		PlansBySession         map[string]pebblestore.SessionPlanSnapshot   `json:"plans_by_session"`
-		PlanRevisionsBySession map[string][]pebblestore.SessionPlanSnapshot `json:"plan_revisions_by_session"`
-	}
+	var payload map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode workset response: %v", err)
 	}
-	if len(payload.PlansBySession) != 0 {
-		t.Fatalf("routine workset should not include plans_by_session: %+v", payload.PlansBySession)
-	}
-	if len(payload.PlanRevisionsBySession) != 0 {
-		t.Fatalf("routine workset should not include plan_revisions_by_session: %+v", payload.PlanRevisionsBySession)
+	for _, forbidden := range []string{"permissions_by_session", "usage_by_session", "plans_by_session", "plan_revisions_by_session", "preferences_by_session", "agent_model_policy_by_session"} {
+		if _, ok := payload[forbidden]; ok {
+			t.Fatalf("routine workset emitted removed all-session resource %s: %+v", forbidden, payload[forbidden])
+		}
 	}
 }
 
-func TestSessionsV3WorksetEndpointReturnsActivePlansAndRevisionsWhenRequested(t *testing.T) {
+func TestSessionsV3WorksetEndpointOmitsPlansAndRevisionsWhenRequested(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "workset-plan", "Workset Plan")
-	plan, _, err := server.sessions.SavePlan(created.ID, "plan-workset", "Workset Plan", "# Plan", "draft", "draft", true)
-	if err != nil {
+	if _, _, err := server.sessions.SavePlan(created.ID, "plan-workset", "Workset Plan", "# Plan", "draft", "draft", true); err != nil {
 		t.Fatalf("save plan: %v", err)
 	}
 
@@ -118,22 +113,18 @@ func TestSessionsV3WorksetEndpointReturnsActivePlansAndRevisionsWhenRequested(t 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("workset status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	var payload struct {
-		PlansBySession         map[string]pebblestore.SessionPlanSnapshot   `json:"plans_by_session"`
-		PlanRevisionsBySession map[string][]pebblestore.SessionPlanSnapshot `json:"plan_revisions_by_session"`
-	}
+	var payload map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode workset response: %v", err)
 	}
-	if payload.PlansBySession[created.ID].ID != plan.ID || payload.PlansBySession[created.ID].Plan != "# Plan" {
-		t.Fatalf("plans_by_session = %+v", payload.PlansBySession)
-	}
-	if len(payload.PlanRevisionsBySession[created.ID]) == 0 || payload.PlanRevisionsBySession[created.ID][0].ID != plan.ID {
-		t.Fatalf("plan_revisions_by_session = %+v", payload.PlanRevisionsBySession)
+	for _, forbidden := range []string{"plans_by_session", "plan_revisions_by_session"} {
+		if _, ok := payload[forbidden]; ok {
+			t.Fatalf("workset emitted removed plan resource %s when requested: %+v", forbidden, payload[forbidden])
+		}
 	}
 }
 
-func TestSessionsV3WorksetEndpointReturnsPersistedUsage(t *testing.T) {
+func TestSessionsV3WorksetEndpointOmitsPersistedUsage(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "workset-usage", "Workset Usage")
 	now := time.Now().UnixMilli()
@@ -176,18 +167,12 @@ func TestSessionsV3WorksetEndpointReturnsPersistedUsage(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("workset status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	var payload struct {
-		UsageBySession map[string]pebblestore.SessionUsageSummary `json:"usage_by_session"`
-	}
+	var payload map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode workset response: %v", err)
 	}
-	usage, ok := payload.UsageBySession[created.ID]
-	if !ok {
-		t.Fatalf("usage_by_session missing session %q: %+v", created.ID, payload.UsageBySession)
-	}
-	if usage.ContextWindow != 1000 || usage.TotalTokens != 250 || usage.RemainingTokens != 750 {
-		t.Fatalf("usage summary = %+v", usage)
+	if _, ok := payload["usage_by_session"]; ok {
+		t.Fatalf("workset emitted removed usage_by_session map: %+v", payload["usage_by_session"])
 	}
 }
 
