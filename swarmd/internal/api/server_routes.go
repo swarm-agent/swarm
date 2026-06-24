@@ -229,6 +229,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(V3SyncStreamPath, s.handleSessionsV3SyncStream)
 	mux.HandleFunc("/v3/sessions:reconnect", s.handleSessionsV3Reconnect)
 	mux.HandleFunc("/v3/sessions:discover", s.handleSessionsV3Discovery)
+	mux.HandleFunc("/v3/sessions:start", s.handleSessionsV3Start)
 	mux.HandleFunc(V3SyncLegacySessionsWorksetPath, s.handleSessionsV3Workset)
 	mux.HandleFunc(V3SyncLegacyTUIWorksetPath, s.handleSessionsV3TUIWorkset)
 	mux.HandleFunc("/v3/tui/sessions", s.handleSessionsV3TUI)

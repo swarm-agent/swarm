@@ -8,6 +8,9 @@
   "properties": {
     "connect_request": { "$ref": "#/$defs/SessionConnectRequest" },
     "connect_response": { "$ref": "#/$defs/SessionConnectResponse" },
+    "start_request": { "$ref": "#/$defs/SessionStartRequest" },
+    "start_response": { "$ref": "#/$defs/SessionStartResponse" },
+    "message_accepted_response": { "$ref": "#/$defs/SessionMessageAcceptedResponse" },
     "stream_frame": { "$ref": "#/$defs/SessionStreamFrame" },
     "error": { "$ref": "#/$defs/SessionConnectionError" }
   },
@@ -105,6 +108,88 @@
         "session_id": { "type": "string" },
         "snapshot": { "$ref": "#/$defs/SessionSnapshot" },
         "connection": { "$ref": "#/$defs/SessionConnectionInfo" }
+      }
+    },
+    "SessionStartMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message_id", "run_id", "role", "content"],
+      "properties": {
+        "client_request_id": { "type": "string" },
+        "idempotency_key": { "type": "string" },
+        "message_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "role": { "type": "string" },
+        "content": { "type": "string" },
+        "metadata": { "type": "object", "x-go-type": "json.RawMessage", "x-ts-type": "unknown" },
+        "dispatch_authority": { "type": "object", "x-go-type": "json.RawMessage", "x-ts-type": "unknown" },
+        "authority": { "type": "object", "x-go-type": "json.RawMessage", "x-ts-type": "unknown" }
+      }
+    },
+    "SessionStartRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client_id", "request_id", "session_id", "workspace_path", "first_message"],
+      "properties": {
+        "client_id": { "type": "string" },
+        "request_id": { "type": "string" },
+        "session_id": { "type": "string" },
+        "client_request_id": { "type": "string" },
+        "idempotency_key": { "type": "string" },
+        "title": { "type": "string" },
+        "workspace_path": { "type": "string" },
+        "workspace_name": { "type": "string" },
+        "workspace_binding_id": { "type": "string" },
+        "swarm_id": { "type": "string" },
+        "target_kind": { "type": "string" },
+        "target_relationship": { "type": "string" },
+        "host_workspace_path": { "type": "string" },
+        "runtime_workspace_path": { "type": "string" },
+        "mode": { "type": "string" },
+        "agent_name": { "type": "string" },
+        "preference": { "type": "object", "x-go-type": "json.RawMessage", "x-ts-type": "unknown" },
+        "worktree_mode": { "type": "string" },
+        "worktree_use_current_branch": { "type": "boolean" },
+        "worktree_base_branch": { "type": "string" },
+        "worktree_branch_name": { "type": "string" },
+        "metadata": { "type": "object", "x-go-type": "json.RawMessage", "x-ts-type": "unknown" },
+        "first_message": { "$ref": "#/$defs/SessionStartMessage" }
+      }
+    },
+    "SessionAcceptedRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "phase"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "phase": { "$ref": "#/$defs/RunPhase" }
+      }
+    },
+    "SessionMessageAcceptedResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "session_id", "message", "run", "accepted_event_seq"],
+      "properties": {
+        "ok": { "type": "boolean", "const": true },
+        "session_id": { "type": "string" },
+        "message": { "type": "object", "x-go-type": "json.RawMessage", "x-ts-type": "unknown" },
+        "run": { "$ref": "#/$defs/SessionAcceptedRun" },
+        "accepted_event_seq": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "SessionStartResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "contract_version", "session_id", "snapshot", "connection", "message", "run", "accepted_event_seq"],
+      "properties": {
+        "ok": { "type": "boolean", "const": true },
+        "contract_version": { "type": "integer", "const": 1 },
+        "session_id": { "type": "string" },
+        "snapshot": { "$ref": "#/$defs/SessionSnapshot" },
+        "connection": { "$ref": "#/$defs/SessionConnectionInfo" },
+        "message": { "type": "object", "x-go-type": "json.RawMessage", "x-ts-type": "unknown" },
+        "run": { "$ref": "#/$defs/SessionAcceptedRun" },
+        "accepted_event_seq": { "type": "integer", "minimum": 0 }
       }
     },
     "RunPhaseReason": {

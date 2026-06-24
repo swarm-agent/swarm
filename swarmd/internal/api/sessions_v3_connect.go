@@ -9,7 +9,6 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/sessionconnection"
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const sessionConnectionStreamPrefix = "/v3/session-connections/"
@@ -38,38 +37,16 @@ func (s *Server) handleSessionV3Connect(w http.ResponseWriter, r *http.Request, 
 		writeSessionConnectionError(w, http.StatusBadRequest, "invalid_request", err.Error(), false, sessionID)
 		return
 	}
-	svc, err := s.sessionConnectionService()
-	if err != nil {
-		writeSessionConnectionError(w, http.StatusInternalServerError, "service_unavailable", err.Error(), true, sessionID)
-		return
-	}
 	resumeToken := ""
 	if req.ResumeToken != nil {
 		resumeToken = strings.TrimSpace(*req.ResumeToken)
 	}
-	pending := func(sessionID string, limit int) ([]pebblestore.PermissionRecord, error) {
-		if s.perm == nil {
-			return nil, nil
-		}
-		return s.perm.ListPending(sessionID, limit)
-	}
-	result, err := svc.Connect(sessionconnection.ConnectInput{
-		Principal:   principal,
-		SessionID:   sessionID,
-		ClientID:    req.ClientId,
-		RequestID:   req.RequestId,
-		ResumeToken: resumeToken,
-		Store:       s.sessions,
-		Pending:     pending,
-		StreamPath: func(connectionID, token string) string {
-			return sessionConnectionStreamPath(connectionID, token)
-		},
-	})
+	resp, err := s.connectSessionsV3Snapshot(principal, sessionID, req.ClientId, req.RequestId, resumeToken)
 	if err != nil {
 		writeSessionConnectionConnectError(w, sessionID, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionConnectResponseFromResult(result))
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func sessionConnectionStreamPath(connectionID, token string) string {

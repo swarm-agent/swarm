@@ -81,6 +81,68 @@ type SessionConnectResponse struct {
 	Connection      SessionConnectionInfo `json:"connection"`
 }
 
+type SessionStartMessage struct {
+	ClientRequestId   string          `json:"client_request_id,omitempty"`
+	IdempotencyKey    string          `json:"idempotency_key,omitempty"`
+	MessageId         string          `json:"message_id"`
+	RunId             string          `json:"run_id"`
+	Role              string          `json:"role"`
+	Content           string          `json:"content"`
+	Metadata          json.RawMessage `json:"metadata,omitempty"`
+	DispatchAuthority json.RawMessage `json:"dispatch_authority,omitempty"`
+	Authority         json.RawMessage `json:"authority,omitempty"`
+}
+
+type SessionStartRequest struct {
+	ClientId                 string              `json:"client_id"`
+	RequestId                string              `json:"request_id"`
+	SessionId                string              `json:"session_id"`
+	ClientRequestId          string              `json:"client_request_id,omitempty"`
+	IdempotencyKey           string              `json:"idempotency_key,omitempty"`
+	Title                    string              `json:"title,omitempty"`
+	WorkspacePath            string              `json:"workspace_path"`
+	WorkspaceName            string              `json:"workspace_name,omitempty"`
+	WorkspaceBindingId       string              `json:"workspace_binding_id,omitempty"`
+	SwarmId                  string              `json:"swarm_id,omitempty"`
+	TargetKind               string              `json:"target_kind,omitempty"`
+	TargetRelationship       string              `json:"target_relationship,omitempty"`
+	HostWorkspacePath        string              `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath     string              `json:"runtime_workspace_path,omitempty"`
+	Mode                     string              `json:"mode,omitempty"`
+	AgentName                string              `json:"agent_name,omitempty"`
+	Preference               json.RawMessage     `json:"preference,omitempty"`
+	WorktreeMode             string              `json:"worktree_mode,omitempty"`
+	WorktreeUseCurrentBranch bool                `json:"worktree_use_current_branch,omitempty"`
+	WorktreeBaseBranch       string              `json:"worktree_base_branch,omitempty"`
+	WorktreeBranchName       string              `json:"worktree_branch_name,omitempty"`
+	Metadata                 json.RawMessage     `json:"metadata,omitempty"`
+	FirstMessage             SessionStartMessage `json:"first_message"`
+}
+
+type SessionAcceptedRun struct {
+	RunId string   `json:"run_id"`
+	Phase RunPhase `json:"phase"`
+}
+
+type SessionMessageAcceptedResponse struct {
+	Ok               bool               `json:"ok"`
+	SessionId        string             `json:"session_id"`
+	Message          json.RawMessage    `json:"message"`
+	Run              SessionAcceptedRun `json:"run"`
+	AcceptedEventSeq uint64             `json:"accepted_event_seq"`
+}
+
+type SessionStartResponse struct {
+	Ok               bool                  `json:"ok"`
+	ContractVersion  uint64                `json:"contract_version"`
+	SessionId        string                `json:"session_id"`
+	Snapshot         SessionSnapshot       `json:"snapshot"`
+	Connection       SessionConnectionInfo `json:"connection"`
+	Message          json.RawMessage       `json:"message"`
+	Run              SessionAcceptedRun    `json:"run"`
+	AcceptedEventSeq uint64                `json:"accepted_event_seq"`
+}
+
 type SessionReadyFrame struct {
 	Type         string `json:"type"`
 	ConnectionId string `json:"connection_id"`

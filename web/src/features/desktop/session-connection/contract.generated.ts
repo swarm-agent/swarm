@@ -63,6 +63,68 @@ export interface SessionConnectResponse {
   connection: SessionConnectionInfo
 }
 
+export interface SessionStartMessage {
+  client_request_id?: string
+  idempotency_key?: string
+  message_id: string
+  run_id: string
+  role: string
+  content: string
+  metadata?: unknown
+  dispatch_authority?: unknown
+  authority?: unknown
+}
+
+export interface SessionStartRequest {
+  client_id: string
+  request_id: string
+  session_id: string
+  client_request_id?: string
+  idempotency_key?: string
+  title?: string
+  workspace_path: string
+  workspace_name?: string
+  workspace_binding_id?: string
+  swarm_id?: string
+  target_kind?: string
+  target_relationship?: string
+  host_workspace_path?: string
+  runtime_workspace_path?: string
+  mode?: string
+  agent_name?: string
+  preference?: unknown
+  worktree_mode?: string
+  worktree_use_current_branch?: boolean
+  worktree_base_branch?: string
+  worktree_branch_name?: string
+  metadata?: unknown
+  first_message: SessionStartMessage
+}
+
+export interface SessionAcceptedRun {
+  run_id: string
+  phase: RunPhase
+}
+
+export interface SessionMessageAcceptedResponse {
+  ok: true
+  session_id: string
+  message: unknown
+  run: SessionAcceptedRun
+  accepted_event_seq: number
+}
+
+export interface SessionStartResponse {
+  ok: true
+  contract_version: 1
+  session_id: string
+  snapshot: SessionSnapshot
+  connection: SessionConnectionInfo
+  message: unknown
+  run: SessionAcceptedRun
+  accepted_event_seq: number
+}
+
 export interface SessionReadyFrame {
   type: "session.ready"
   connection_id: string
