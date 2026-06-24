@@ -319,3 +319,75 @@ func TestRepairV3SessionRunStateDoesNotOverwriteCanonicalInactive(t *testing.T) 
 		t.Fatalf("canonical inactive must win over stale legacy scan ok=%v err=%v intent=%+v", ok, err, active)
 	}
 }
+
+func TestV3RunStateIndexMigrationRunsOnceAndReadsDoNotRepair(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-migrate-run-state")
+
+	legacyRunning := V3SessionRunIntent{
+		SessionID:      "session-migrate-run-state",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		RunID:          "run-legacy-running",
+		Status:         V3RunIntentRunning,
+		CreatedAt:      2000,
+		UpdatedAt:      3000,
+		EventSeq:       2,
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntent(legacyRunning.SessionID, legacyRunning.RunID), legacyRunning); err != nil {
+		t.Fatalf("seed legacy running intent: %v", err)
+	}
+	if err := store.PutJSON(KeyV3SessionRunIntentStatus(legacyRunning.Status, legacyRunning.UpdatedAt, legacyRunning.AccountScopeID, legacyRunning.SessionID, legacyRunning.RunID), legacyRunning); err != nil {
+		t.Fatalf("seed running status index: %v", err)
+	}
+
+	if state, ok, err := sessions.GetV3SessionRunState("session-migrate-run-state"); err != nil || ok {
+		t.Fatalf("normal run-state read must not lazily repair legacy intent ok=%v err=%v state=%+v", ok, err, state)
+	}
+	activeBefore, err := sessions.ListV3ActiveSessionRunStates("account-1", 10)
+	if err != nil {
+		t.Fatalf("list active states before migration: %v", err)
+	}
+	if len(activeBefore) != 0 {
+		t.Fatalf("active states before migration = %+v", activeBefore)
+	}
+
+	if err := sessions.EnsureV3RunStateIndex(); err != nil {
+		t.Fatalf("ensure run-state index: %v", err)
+	}
+	if _, ok, err := store.GetBytes(v3RunStateIndexMigrationKey); err != nil || !ok {
+		t.Fatalf("migration marker ok=%v err=%v", ok, err)
+	}
+	state, ok, err := sessions.GetV3SessionRunState("session-migrate-run-state")
+	if err != nil || !ok || state.RunID != "run-legacy-running" || !state.Active {
+		t.Fatalf("migrated run state ok=%v err=%v state=%+v", ok, err, state)
+	}
+
+	corruptPending := V3SessionRunIntent{
+		SessionID:      "session-corrupt-legacy-index",
+		AccountScopeID: "account-1",
+		RunID:          "run-corrupt",
+		Status:         V3RunIntentPendingExecutor,
+		UpdatedAt:      4000,
+	}
+	corruptKey := KeyV3SessionRunIntentStatus(corruptPending.Status, corruptPending.UpdatedAt, corruptPending.AccountScopeID, corruptPending.SessionID, corruptPending.RunID)
+	if err := store.PutBytes(corruptKey, []byte("{not-json")); err != nil {
+		t.Fatalf("seed corrupt legacy status index: %v", err)
+	}
+
+	if err := sessions.EnsureV3RunStateIndex(); err != nil {
+		t.Fatalf("ensure run-state index after marker must not rescan corrupt legacy index: %v", err)
+	}
+	state, ok, err = sessions.GetV3SessionRunState("session-migrate-run-state")
+	if err != nil || !ok || state.RunID != "run-legacy-running" {
+		t.Fatalf("run-state read after corrupt legacy index ok=%v err=%v state=%+v", ok, err, state)
+	}
+	activeAfter, err := sessions.ListV3ActiveSessionRunStates("account-1", 10)
+	if err != nil {
+		t.Fatalf("active-state index read after corrupt legacy index: %v", err)
+	}
+	if len(activeAfter) != 1 || activeAfter[0].SessionID != "session-migrate-run-state" || activeAfter[0].RunID != "run-legacy-running" {
+		t.Fatalf("active states after migration = %+v", activeAfter)
+	}
+}

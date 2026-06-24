@@ -211,6 +211,13 @@ func (s *Service) ListActiveSessionRunStates(accountScopeID string, limit int) (
 	return s.store.ListV3ActiveSessionRunStates(accountScopeID, limit)
 }
 
+func (s *Service) EnsureSessionRunStateIndex() error {
+	if s == nil || s.store == nil {
+		return errors.New("session store is not configured")
+	}
+	return s.store.EnsureV3RunStateIndex()
+}
+
 func (s *Service) RepairSessionRunStatesFromLegacyRunIntents(accountScopeID string, limit int) (SessionRunStateRepairResult, error) {
 	if s == nil || s.store == nil {
 		return SessionRunStateRepairResult{}, errors.New("session store is not configured")
