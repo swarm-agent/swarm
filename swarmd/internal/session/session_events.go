@@ -30,6 +30,7 @@ const (
 	SessionMutationUpdateMode       = pebblestore.V3SessionMutationUpdateMode
 	SessionMutationUpdatePreference = pebblestore.V3SessionMutationUpdatePreference
 	SessionMutationUpdateMetadata   = pebblestore.V3SessionMutationUpdateMetadata
+	SessionMutationUpdateSettings   = pebblestore.V3SessionMutationUpdateSettings
 	SessionMutationUpdateTitle      = pebblestore.V3SessionMutationUpdateTitle
 
 	RunIntentPendingExecutor = pebblestore.V3RunIntentPendingExecutor

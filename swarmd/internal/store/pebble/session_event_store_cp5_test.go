@@ -391,3 +391,49 @@ func TestV3RunStateIndexMigrationRunsOnceAndReadsDoNotRepair(t *testing.T) {
 		t.Fatalf("active states after migration = %+v", activeAfter)
 	}
 }
+
+func TestApplyV3SessionMutationExpectedLastEventSeqConflicts(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-settings-conflict")
+
+	expected := uint64(0)
+	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:            "session-settings-conflict",
+		UserID:               "user-1",
+		AccountScopeID:       "account-1",
+		IdempotencyKey:       "settings-conflict",
+		PayloadHash:          "hash-settings-conflict",
+		Kind:                 V3SessionMutationUpdateSettings,
+		Session:              &SessionSnapshot{ID: "session-settings-conflict", Mode: "plan"},
+		ExpectedLastEventSeq: &expected,
+	})
+	if err == nil {
+		t.Fatal("expected projection conflict")
+	}
+	conflict, ok := err.(*V3ProjectionConflictError)
+	if !ok {
+		t.Fatalf("err = %T %v, want V3ProjectionConflictError", err, err)
+	}
+	if conflict.SessionID != "session-settings-conflict" || conflict.Expected != 0 || conflict.Actual != 1 {
+		t.Fatalf("conflict = %+v", conflict)
+	}
+
+	expected = 1
+	result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:            "session-settings-conflict",
+		UserID:               "user-1",
+		AccountScopeID:       "account-1",
+		IdempotencyKey:       "settings-ok",
+		PayloadHash:          "hash-settings-ok",
+		Kind:                 V3SessionMutationUpdateSettings,
+		Session:              &SessionSnapshot{ID: "session-settings-conflict", Mode: "plan"},
+		ExpectedLastEventSeq: &expected,
+	})
+	if err != nil {
+		t.Fatalf("settings update: %v", err)
+	}
+	if result.Event.EventType != "session.settings.updated" || result.Projection.LastEventSeq != 2 {
+		t.Fatalf("settings mutation result = %+v", result)
+	}
+}

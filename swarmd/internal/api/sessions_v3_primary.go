@@ -98,6 +98,14 @@ type sessionsV3PreferenceRequest struct {
 	ContextMode *string `json:"context_mode,omitempty"`
 }
 
+type sessionsV3SettingsPatchRequest struct {
+	ClientRequestID string                       `json:"client_request_id"`
+	IfProjectionSeq *uint64                      `json:"if_projection_seq,omitempty"`
+	Mode            *string                      `json:"mode,omitempty"`
+	AgentName       *string                      `json:"agent_name,omitempty"`
+	Preference      *sessionsV3PreferenceRequest `json:"preference,omitempty"`
+}
+
 type sessionsV3MetadataRequest struct {
 	Metadata map[string]any `json:"metadata"`
 }
@@ -224,6 +232,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryRunStop(w, r, principal, sessionID)
 	case "compact":
 		s.handleSessionV3PrimaryCompact(w, r, principal, sessionID)
+	case "settings":
+		s.handleSessionV3PrimarySettings(w, r, principal, sessionID)
 	case "mode":
 		s.handleSessionV3PrimaryMode(w, r, principal, sessionID)
 	case "agent":
@@ -717,6 +727,132 @@ func (s *Server) handleSessionV3PrimaryAgent(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	writeJSON(w, http.StatusOK, sessionV3AgentMutationResponse(sessionID, next, s.sessionsV3AgentModelPolicy(next, preference, contextWindow, maxOutputTokens), result))
+}
+
+func (s *Server) handleSessionV3PrimarySettings(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodPatch {
+		methodNotAllowed(w)
+		return
+	}
+	var req sessionsV3SettingsPatchRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	clientRequestID := strings.TrimSpace(firstNonEmpty(req.ClientRequestID, r.Header.Get("Idempotency-Key")))
+	if clientRequestID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("client_request_id is required"))
+		return
+	}
+	if req.Mode == nil && req.AgentName == nil && req.Preference == nil {
+		writeError(w, http.StatusBadRequest, errors.New("at least one setting field is required"))
+		return
+	}
+	current, found, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	next := current
+	payload := map[string]any{"session_id": sessionID}
+	if req.Mode != nil {
+		mode := strings.ToLower(strings.TrimSpace(*req.Mode))
+		if !sessionruntime.IsValidMode(mode) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid mode %q", *req.Mode))
+			return
+		}
+		mode = sessionruntime.NormalizeMode(mode)
+		next.Mode = mode
+		payload["mode"] = mode
+	}
+	if req.AgentName != nil {
+		resolvedAgent, err := s.resolveSessionsV3PrimaryCreateAgent(principal, *req.AgentName)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		next.Metadata = sessionsV3AgentSwitchMetadata(next.Metadata, resolvedAgent)
+		payload["agent_name"] = resolvedAgent.Name
+		payload["resolved_agent_name"] = resolvedAgent.ResolvedName
+		payload["agent_mode"] = resolvedAgent.Mode
+		payload["runtime_mode"] = resolvedAgent.RuntimeMode
+		payload["metadata"] = next.Metadata
+	}
+	if req.Preference != nil {
+		next.Preference = normalizeSessionsV3ModelPreference(next.Preference)
+		agentModelPolicy := s.sessionsV3AgentModelPolicy(next, next.Preference, 0, 0)
+		if agentModelPolicy.Locked {
+			writeError(w, http.StatusBadRequest, errors.New(agentModelPolicy.Reason))
+			return
+		}
+		if s.model == nil {
+			writeError(w, http.StatusInternalServerError, errors.New("model service is not configured"))
+			return
+		}
+		pref := mergeSessionsV3PreferenceUpdate(next.Preference, *req.Preference)
+		resolved, err := s.model.ResolvePreference(pref)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		next.Preference = normalizeSessionsV3ModelPreference(resolved.Preference)
+		payload["preference"] = next.Preference
+	}
+	next.UpdatedAt = time.Now().UnixMilli()
+	payload["updated_at"] = next.UpdatedAt
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateSettings, payload)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	eventPayload, err := json.Marshal(payload)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:            sessionID,
+		UserID:               principal.UserID,
+		AccountScopeID:       principal.AccountScopeID,
+		ClientRequestID:      clientRequestID,
+		IdempotencyKey:       clientRequestID,
+		PayloadHash:          payloadHash,
+		RequestHash:          payloadHash,
+		Kind:                 sessionruntime.SessionMutationUpdateSettings,
+		EventPayload:         eventPayload,
+		Session:              &next,
+		ExpectedLastEventSeq: req.IfProjectionSeq,
+		NowUnixMs:            next.UpdatedAt,
+	})
+	if err != nil {
+		var conflict *pebblestore.V3ProjectionConflictError
+		if errors.As(err, &conflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "code": fmt.Sprint(http.StatusConflict), "conflict": conflict})
+			return
+		}
+		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "code": fmt.Sprint(http.StatusConflict), "conflict": result.Conflict, "result": result})
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	view, err := s.buildSessionsV3SessionView(principal, next, result.Projection, nil, false)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":              true,
+		"session_id":      sessionID,
+		"session_view":    view,
+		"mutation":        sessionV3MutationResultResponse(result),
+		"realtime_outbox": result.RealtimeOutbox,
+	})
 }
 
 func (s *Server) handleSessionV3PrimaryUsage(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {

@@ -22,6 +22,7 @@ const (
 	V3SessionMutationUpdateMode       = "session.mode.update"
 	V3SessionMutationUpdatePreference = "session.preference.update"
 	V3SessionMutationUpdateMetadata   = "session.metadata.update"
+	V3SessionMutationUpdateSettings   = "session.settings.update"
 	V3SessionMutationUpdateTitle      = "session.title.update"
 	V3SessionMutationDeleteSession    = "session.delete"
 
@@ -47,25 +48,26 @@ var (
 )
 
 type V3SessionMutationInput struct {
-	SessionID       string                    `json:"session_id"`
-	UserID          string                    `json:"user_id,omitempty"`
-	AccountScopeID  string                    `json:"account_scope_id,omitempty"`
-	ClientRequestID string                    `json:"client_request_id,omitempty"`
-	IdempotencyKey  string                    `json:"idempotency_key,omitempty"`
-	PayloadHash     string                    `json:"payload_hash,omitempty"`
-	RequestHash     string                    `json:"request_hash,omitempty"`
-	Kind            string                    `json:"kind"`
-	EventID         string                    `json:"event_id,omitempty"`
-	EventType       string                    `json:"event_type,omitempty"`
-	EventPayload    json.RawMessage           `json:"event_payload,omitempty"`
-	CausationID     string                    `json:"causation_id,omitempty"`
-	CorrelationID   string                    `json:"correlation_id,omitempty"`
-	Session         *SessionSnapshot          `json:"session,omitempty"`
-	Message         *MessageSnapshot          `json:"message,omitempty"`
-	Lifecycle       *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
-	RunIntent       *V3SessionRunIntent       `json:"run_intent,omitempty"`
-	TurnUsage       *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
-	NowUnixMs       int64                     `json:"now_unix_ms,omitempty"`
+	SessionID            string                    `json:"session_id"`
+	UserID               string                    `json:"user_id,omitempty"`
+	AccountScopeID       string                    `json:"account_scope_id,omitempty"`
+	ClientRequestID      string                    `json:"client_request_id,omitempty"`
+	IdempotencyKey       string                    `json:"idempotency_key,omitempty"`
+	PayloadHash          string                    `json:"payload_hash,omitempty"`
+	RequestHash          string                    `json:"request_hash,omitempty"`
+	Kind                 string                    `json:"kind"`
+	EventID              string                    `json:"event_id,omitempty"`
+	EventType            string                    `json:"event_type,omitempty"`
+	EventPayload         json.RawMessage           `json:"event_payload,omitempty"`
+	CausationID          string                    `json:"causation_id,omitempty"`
+	CorrelationID        string                    `json:"correlation_id,omitempty"`
+	Session              *SessionSnapshot          `json:"session,omitempty"`
+	Message              *MessageSnapshot          `json:"message,omitempty"`
+	Lifecycle            *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	RunIntent            *V3SessionRunIntent       `json:"run_intent,omitempty"`
+	TurnUsage            *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
+	ExpectedLastEventSeq *uint64                   `json:"expected_last_event_seq,omitempty"`
+	NowUnixMs            int64                     `json:"now_unix_ms,omitempty"`
 }
 
 type V3SessionMutationResult struct {
@@ -122,6 +124,19 @@ type V3SessionMutationConflict struct {
 type V3SessionMutationError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+type V3ProjectionConflictError struct {
+	SessionID string `json:"session_id"`
+	Expected  uint64 `json:"expected"`
+	Actual    uint64 `json:"actual"`
+}
+
+func (e *V3ProjectionConflictError) Error() string {
+	if e == nil {
+		return "v3 session projection conflict"
+	}
+	return fmt.Sprintf("v3 session projection conflict for %q: expected last event seq %d, actual %d", e.SessionID, e.Expected, e.Actual)
 }
 
 type V3SessionIdempotencyRecord struct {
@@ -440,6 +455,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	currentSeq, err := s.readV3SessionSequence(input.SessionID)
 	if err != nil {
 		return V3SessionMutationResult{}, err
+	}
+	if input.ExpectedLastEventSeq != nil && currentSeq != *input.ExpectedLastEventSeq {
+		return V3SessionMutationResult{}, &V3ProjectionConflictError{
+			SessionID: input.SessionID,
+			Expected:  *input.ExpectedLastEventSeq,
+			Actual:    currentSeq,
+		}
 	}
 	currentOutboxSeq, err := s.readV3RealtimeOutboxSequence()
 	if err != nil {
@@ -2142,6 +2164,8 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.preference.updated"
 	case V3SessionMutationUpdateMetadata:
 		return "session.metadata.updated"
+	case V3SessionMutationUpdateSettings:
+		return "session.settings.updated"
 	case V3SessionMutationUpdateTitle:
 		return "session.title.updated"
 	default:
