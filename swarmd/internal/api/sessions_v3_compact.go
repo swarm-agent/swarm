@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -27,60 +25,102 @@ type sessionV3ManualCompactTerminal struct {
 	Error     string
 }
 
-type sessionV3ManualCompactExecution struct {
-	done     chan struct{}
-	once     sync.Once
-	mu       sync.Mutex
-	terminal sessionV3ManualCompactTerminal
+type sessionV3ManualCompactResponseInput struct {
+	SessionID          string
+	RunID              string
+	Status             string
+	Summary            string
+	CompactIndex       int
+	CheckpointMessage  *pebblestore.MessageSnapshot
+	CheckpointMutation *sessionruntime.SessionMutationResult
+	TerminalMutation   *sessionruntime.SessionMutationResult
+	TitleMutation      *sessionruntime.SessionMutationResult
+	UsageMutation      *sessionruntime.SessionMutationResult
+	ToolMutation       *sessionruntime.SessionMutationResult
+	AssistantMutation  *sessionruntime.SessionMutationResult
 }
 
-func newSessionV3ManualCompactExecution() *sessionV3ManualCompactExecution {
-	return &sessionV3ManualCompactExecution{done: make(chan struct{})}
-}
-
-func (e *sessionV3ManualCompactExecution) complete(terminal sessionV3ManualCompactTerminal) {
-	if e == nil {
-		return
-	}
-	e.once.Do(func() {
-		e.mu.Lock()
-		e.terminal = terminal
-		e.mu.Unlock()
-		close(e.done)
-	})
-}
-
-func (e *sessionV3ManualCompactExecution) terminalResult() sessionV3ManualCompactTerminal {
-	if e == nil {
-		return sessionV3ManualCompactTerminal{}
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.terminal
-}
-
-func sessionV3CompactMutationResponse(sessionID string, runIntent pebblestore.V3SessionRunIntent, mutation *sessionruntime.SessionMutationResult) map[string]any {
-	var mutationPayload any
-	var realtimeOutbox any
-	if mutation != nil {
-		mutationPayload = sessionV3MutationResultResponse(*mutation)
-		realtimeOutbox = mutation.RealtimeOutbox
-	}
-	status := strings.TrimSpace(runIntent.Status)
+func sessionV3CompactDirectResponse(input sessionV3ManualCompactResponseInput) map[string]any {
+	status := strings.TrimSpace(input.Status)
 	if status == "" {
 		status = sessionruntime.RunIntentCompleted
 	}
-	return map[string]any{
-		"ok":              true,
-		"session_id":      sessionID,
-		"run_id":          runIntent.RunID,
-		"status":          status,
-		"run_intent":      runIntent,
-		"compaction":      map[string]any{"run_id": runIntent.RunID, "status": status, "owner_transport": sessionV3ManualCompactOwnerTransport},
-		"terminal":        sessionV3CompactTerminalResponse(mutation, status),
-		"mutation":        mutationPayload,
-		"realtime_outbox": realtimeOutbox,
+	var checkpointMutation any
+	var checkpointOutbox any
+	var checkpointMessage any
+	var runIntent any
+	var terminal any
+	var titleMutation any
+	var usageMutation any
+	var toolMutation any
+	var assistantMutation any
+	checkpoint := map[string]any{"message_id": "", "event_seq": uint64(0), "primary_seq": uint64(0), "endpoint_seq": uint64(0), "endpoint_cursor": ""}
+	if input.CheckpointMessage != nil {
+		checkpointMessage = input.CheckpointMessage
+		checkpoint["message_id"] = input.CheckpointMessage.ID
 	}
+	if input.CheckpointMutation != nil {
+		checkpointMutation = sessionV3MutationResultResponse(*input.CheckpointMutation)
+		checkpointOutbox = input.CheckpointMutation.RealtimeOutbox
+		checkpoint["event_seq"] = input.CheckpointMutation.Event.Seq
+		checkpoint["primary_seq"] = input.CheckpointMutation.PrimarySeq
+		if input.CheckpointMutation.Message != nil {
+			checkpoint["message_id"] = input.CheckpointMutation.Message.ID
+		}
+		if input.CheckpointMutation.RealtimeOutbox != nil {
+			checkpoint["endpoint_seq"] = input.CheckpointMutation.RealtimeOutbox.EndpointSeq
+			checkpoint["endpoint_cursor"] = input.CheckpointMutation.RealtimeOutbox.EndpointCursor
+		}
+	}
+	if input.TerminalMutation != nil {
+		terminal = sessionV3CompactTerminalResponse(input.TerminalMutation, status)
+		if input.TerminalMutation.RunIntent != nil {
+			runIntent = input.TerminalMutation.RunIntent
+		}
+	}
+	if terminal == nil {
+		terminal = map[string]any{"event_type": "session.lifecycle.updated", "phase": sessionV3CompactPhaseForStatus(status)}
+	}
+	if input.TitleMutation != nil {
+		titleMutation = sessionV3MutationResultResponse(*input.TitleMutation)
+	}
+	if input.UsageMutation != nil {
+		usageMutation = sessionV3MutationResultResponse(*input.UsageMutation)
+	}
+	if input.ToolMutation != nil {
+		toolMutation = sessionV3MutationResultResponse(*input.ToolMutation)
+	}
+	if input.AssistantMutation != nil {
+		assistantMutation = sessionV3MutationResultResponse(*input.AssistantMutation)
+	}
+	return map[string]any{
+		"ok":                  true,
+		"session_id":          input.SessionID,
+		"run_id":              input.RunID,
+		"status":              status,
+		"run_intent":          runIntent,
+		"compaction":          map[string]any{"run_id": input.RunID, "status": status, "owner_transport": sessionV3ManualCompactOwnerTransport, "summary": input.Summary, "compact_index": input.CompactIndex},
+		"compact_checkpoint":  checkpoint,
+		"checkpoint_message":  checkpointMessage,
+		"checkpoint_mutation": checkpointMutation,
+		"terminal":            terminal,
+		"terminal_mutation":   mutationResponsePtr(input.TerminalMutation),
+		"title_mutation":      titleMutation,
+		"usage_mutation":      usageMutation,
+		"tool_mutation":       toolMutation,
+		"assistant_mutation":  assistantMutation,
+		// Compatibility aliases for existing clients/tests. These now point at the
+		// committed checkpoint append, not a transient lifecycle observation.
+		"mutation":        checkpointMutation,
+		"realtime_outbox": checkpointOutbox,
+	}
+}
+
+func mutationResponsePtr(result *sessionruntime.SessionMutationResult) any {
+	if result == nil {
+		return nil
+	}
+	return sessionV3MutationResultResponse(*result)
 }
 
 func sessionV3CompactTerminalResponse(mutation *sessionruntime.SessionMutationResult, status string) map[string]any {
@@ -116,15 +156,15 @@ func sessionV3CompactTerminalErrorResponse(sessionID, runID string, terminal ses
 		status = sessionruntime.RunIntentFailed
 	}
 	return map[string]any{
-		"ok":              false,
-		"session_id":      sessionID,
-		"run_id":          runID,
-		"status":          status,
-		"error":           message,
-		"compaction":      map[string]any{"run_id": runID, "status": status, "owner_transport": sessionV3ManualCompactOwnerTransport},
-		"terminal":        sessionV3CompactTerminalResponse(&terminal.Result, status),
-		"mutation":        sessionV3MutationResultResponse(terminal.Result),
-		"realtime_outbox": terminal.Result.RealtimeOutbox,
+		"ok":                false,
+		"session_id":        sessionID,
+		"run_id":            runID,
+		"status":            status,
+		"error":             message,
+		"compaction":        map[string]any{"run_id": runID, "status": status, "owner_transport": sessionV3ManualCompactOwnerTransport},
+		"terminal":          sessionV3CompactTerminalResponse(&terminal.Result, status),
+		"terminal_mutation": sessionV3MutationResultResponse(terminal.Result),
+		"realtime_outbox":   terminal.Result.RealtimeOutbox,
 	}
 }
 
@@ -174,36 +214,48 @@ func (s *Server) handleSessionV3PrimaryCompact(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusConflict, runruntime.ErrSessionAlreadyActive)
 			return
 		}
-		if terminal, terminalOK, err := s.sessionV3ManualCompactTerminalFromStore(principal, sessionID, runID); err != nil {
-			writeError(w, http.StatusBadRequest, err)
+		if replay, replayOK, replayErr := s.sessionV3ManualCompactCheckpointFromStore(principal, sessionID, runID); replayErr != nil {
+			writeError(w, http.StatusBadRequest, replayErr)
 			return
-		} else if terminalOK {
-			s.writeSessionV3ManualCompactTerminal(w, principal, sessionID, runID, terminal)
-			return
-		}
-		execution, found := s.getSessionV3ManualCompactExecution(sessionID, runID)
-		if !found {
-			writeError(w, http.StatusConflict, errors.New("manual compact is already active and no owned execution is available to await"))
+		} else if replayOK {
+			writeJSON(w, http.StatusAccepted, replay)
 			return
 		}
-		s.awaitSessionV3ManualCompactExecution(w, r.Context(), principal, sessionID, runID, execution)
+		writeError(w, http.StatusConflict, errors.New("manual compact is already active"))
+		return
+	} else if replay, replayOK, replayErr := s.sessionV3ManualCompactCheckpointFromStore(principal, sessionID, runID); replayErr != nil {
+		writeError(w, http.StatusBadRequest, replayErr)
+		return
+	} else if replayOK {
+		writeJSON(w, http.StatusAccepted, replay)
 		return
 	}
 
+	compactRunner, ok := s.runner.(interface {
+		RunManualCompaction(context.Context, string, runruntime.ManualCompactionInput) (runruntime.ManualCompactionResult, error)
+	})
+	if !ok {
+		writeError(w, http.StatusInternalServerError, errors.New("run service does not support direct manual compaction"))
+		return
+	}
+
+	startingLifecycle := s.newSessionV3ManualCompactLifecycle(principal, sessionID, runID, true, "starting", "")
 	accepted, err := s.recordSessionV3ManualCompactRunEvent(sessionV3ManualCompactRunEventInput{
 		Principal:       principal,
 		SessionID:       sessionID,
 		RunID:           runID,
 		ClientRequestID: clientRequestID + ":accepted",
-		EventType:       "session.run_intent.recorded",
+		EventType:       "session.lifecycle.updated",
 		Status:          sessionruntime.RunIntentPendingExecutor,
 		Payload: map[string]any{
-			"type":            "session.run_intent.recorded",
+			"type":            "session.lifecycle.updated",
 			"session_id":      sessionID,
 			"run_id":          runID,
 			"status":          sessionruntime.RunIntentPendingExecutor,
 			"owner_transport": sessionV3ManualCompactOwnerTransport,
+			"lifecycle":       startingLifecycle,
 		},
+		Lifecycle: startingLifecycle,
 	})
 	if err != nil {
 		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
@@ -213,58 +265,127 @@ func (s *Server) handleSessionV3PrimaryCompact(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-
 	if terminal, terminalOK := sessionV3ManualCompactTerminalFromMutation(accepted); terminalOK {
 		s.writeSessionV3ManualCompactTerminal(w, principal, sessionID, runID, terminal)
 		return
 	}
 
-	execution := s.ensureSessionV3ManualCompactExecution(sessionID, runID)
-	if !accepted.Replayed {
-		if _, err := s.recordSessionV3ManualCompactRunEvent(sessionV3ManualCompactRunEventInput{
-			Principal:       principal,
-			SessionID:       sessionID,
-			RunID:           runID,
-			ClientRequestID: clientRequestID + ":running",
-			EventType:       "session.run_intent.recorded",
-			Status:          sessionruntime.RunIntentRunning,
-			Payload: map[string]any{
-				"type":            "session.run_intent.recorded",
-				"session_id":      sessionID,
-				"run_id":          runID,
-				"status":          sessionruntime.RunIntentRunning,
-				"owner_transport": sessionV3ManualCompactOwnerTransport,
-			},
-		}); err != nil {
-			s.forgetSessionV3ManualCompactExecution(sessionID, runID, execution)
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		s.startSessionV3ManualCompactExecution(sessionID, runID, req, principal, execution)
-	} else if terminal, terminalOK, err := s.sessionV3ManualCompactTerminalFromStore(principal, sessionID, runID); err != nil {
-		s.forgetSessionV3ManualCompactExecution(sessionID, runID, execution)
+	runningLifecycle := s.newSessionV3ManualCompactLifecycle(principal, sessionID, runID, true, "running", "")
+	if _, err := s.recordSessionV3ManualCompactRunEvent(sessionV3ManualCompactRunEventInput{
+		Principal:       principal,
+		SessionID:       sessionID,
+		RunID:           runID,
+		ClientRequestID: clientRequestID + ":running",
+		EventType:       "session.lifecycle.updated",
+		Status:          sessionruntime.RunIntentRunning,
+		Payload: map[string]any{
+			"type":            "session.lifecycle.updated",
+			"session_id":      sessionID,
+			"run_id":          runID,
+			"status":          sessionruntime.RunIntentRunning,
+			"owner_transport": sessionV3ManualCompactOwnerTransport,
+			"lifecycle":       runningLifecycle,
+		},
+		Lifecycle: runningLifecycle,
+	}); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
-	} else if terminalOK {
-		execution.complete(terminal)
 	}
 
-	s.awaitSessionV3ManualCompactExecution(w, r.Context(), principal, sessionID, runID, execution)
-}
-
-func (s *Server) awaitSessionV3ManualCompactExecution(w http.ResponseWriter, ctx context.Context, principal identity.Principal, sessionID, runID string, execution *sessionV3ManualCompactExecution) {
-	if execution == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("manual compact execution is not available"))
+	s.beginActiveRun()
+	result, compactErr := compactRunner.RunManualCompaction(r.Context(), sessionID, runruntime.ManualCompactionInput{
+		RunID:                runID,
+		Note:                 req.Note,
+		Origin:               "manual",
+		Principal:            principal,
+		OwnerTransport:       sessionV3ManualCompactOwnerTransport,
+		ApplySessionMutation: s.applySessionV3PrimaryMutation,
+		IncludeAssistantAck:  true,
+	})
+	s.endActiveRun()
+	if compactErr != nil {
+		terminal, publishErr := s.publishSessionV3ManualCompactFailure(principal, sessionID, runID, compactErr)
+		if publishErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("manual compact failed and failure mutation failed: %w", publishErr))
+			return
+		}
+		s.writeSessionV3ManualCompactTerminal(w, principal, sessionID, runID, terminal)
 		return
 	}
-	select {
-	case <-execution.done:
-		s.writeSessionV3ManualCompactTerminal(w, principal, sessionID, runID, execution.terminalResult())
-	case <-ctx.Done():
-		writeError(w, http.StatusRequestTimeout, ctx.Err())
-	case <-s.runCtx.Done():
-		writeError(w, http.StatusServiceUnavailable, errors.New("daemon is shutting down"))
+	if result.CheckpointMutation.Message == nil || result.CheckpointMutation.RealtimeOutbox == nil || result.CheckpointMutation.RealtimeOutbox.EndpointSeq == 0 || strings.TrimSpace(result.CheckpointMessage.ID) == "" {
+		terminal, publishErr := s.publishSessionV3ManualCompactFailure(principal, sessionID, runID, errors.New("manual compact did not return a committed checkpoint mutation"))
+		if publishErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("manual compact checkpoint result invalid and failure mutation failed: %w", publishErr))
+			return
+		}
+		s.writeSessionV3ManualCompactTerminal(w, principal, sessionID, runID, terminal)
+		return
 	}
+
+	checkpointMutation := result.CheckpointMutation
+	if signed, ok := s.sessionV3MutationWithHydrateCursor(principal, sessionID, checkpointMutation); ok {
+		checkpointMutation = signed
+	}
+	completedLifecycle := s.newSessionV3ManualCompactLifecycle(principal, sessionID, runID, false, "completed", "")
+	terminalMutation, err := s.recordSessionV3ManualCompactRunEvent(sessionV3ManualCompactRunEventInput{
+		Principal:       principal,
+		SessionID:       sessionID,
+		RunID:           runID,
+		ClientRequestID: clientRequestID + ":completed",
+		EventType:       "session.lifecycle.updated",
+		Status:          sessionruntime.RunIntentCompleted,
+		Payload: map[string]any{
+			"type":                  "session.lifecycle.updated",
+			"session_id":            sessionID,
+			"run_id":                runID,
+			"status":                sessionruntime.RunIntentCompleted,
+			"owner_transport":       sessionV3ManualCompactOwnerTransport,
+			"compact_checkpoint_id": result.CheckpointMessage.ID,
+			"compact_index":         result.CompactIndex,
+			"lifecycle":             completedLifecycle,
+		},
+		Lifecycle: completedLifecycle,
+	})
+	if err != nil {
+		terminal, publishErr := s.publishSessionV3ManualCompactFailure(principal, sessionID, runID, fmt.Errorf("manual compact completion mutation failed: %w", err))
+		if publishErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("manual compact completion mutation failed and failure mutation failed: %w", publishErr))
+			return
+		}
+		s.writeSessionV3ManualCompactTerminal(w, principal, sessionID, runID, terminal)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, sessionV3CompactDirectResponse(sessionV3ManualCompactResponseInput{
+		SessionID:          sessionID,
+		RunID:              runID,
+		Status:             sessionruntime.RunIntentCompleted,
+		Summary:            result.Summary,
+		CompactIndex:       result.CompactIndex,
+		CheckpointMessage:  &result.CheckpointMessage,
+		CheckpointMutation: &checkpointMutation,
+		TerminalMutation:   &terminalMutation,
+		TitleMutation:      result.TitleMutation,
+		UsageMutation:      result.UsageMutation,
+		ToolMutation:       result.ToolMutation,
+		AssistantMutation:  result.AssistantMutation,
+	}))
+}
+
+func (s *Server) newSessionV3ManualCompactLifecycle(principal identity.Principal, sessionID, runID string, active bool, phase, errText string) *pebblestore.SessionLifecycleSnapshot {
+	now := time.Now().UnixMilli()
+	lifecycle := &pebblestore.SessionLifecycleSnapshot{SessionID: strings.TrimSpace(sessionID), UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, RunID: strings.TrimSpace(runID), Active: active, Phase: strings.TrimSpace(phase), UpdatedAt: now, Error: strings.TrimSpace(errText), OwnerTransport: sessionV3ManualCompactOwnerTransport}
+	if active {
+		lifecycle.StartedAt = now
+	} else {
+		lifecycle.EndedAt = now
+	}
+	if current, ok, err := s.sessions.GetLifecycle(sessionID); err == nil && ok && strings.EqualFold(strings.TrimSpace(current.RunID), strings.TrimSpace(runID)) {
+		lifecycle.UserID = firstNonEmptyString(lifecycle.UserID, current.UserID)
+		lifecycle.AccountScopeID = firstNonEmptyString(lifecycle.AccountScopeID, current.AccountScopeID)
+		lifecycle.StartedAt = current.StartedAt
+		lifecycle.Generation = current.Generation
+	}
+	return lifecycle
 }
 
 func (s *Server) writeSessionV3ManualCompactTerminal(w http.ResponseWriter, principal identity.Principal, sessionID, runID string, terminal sessionV3ManualCompactTerminal) {
@@ -276,59 +397,21 @@ func (s *Server) writeSessionV3ManualCompactTerminal(w http.ResponseWriter, prin
 		terminal = signed
 	}
 	if status == sessionruntime.RunIntentCompleted {
-		intent := pebblestore.V3SessionRunIntent{SessionID: sessionID, RunID: runID, Status: status}
-		if terminal.Result.RunIntent != nil {
-			intent = *terminal.Result.RunIntent
+		if replay, ok, err := s.sessionV3ManualCompactCheckpointFromStore(principal, sessionID, runID); err == nil && ok {
+			writeJSON(w, http.StatusAccepted, replay)
+			return
 		}
-		writeJSON(w, http.StatusAccepted, sessionV3CompactMutationResponse(sessionID, intent, &terminal.Result))
-		return
 	}
 	writeJSON(w, http.StatusInternalServerError, sessionV3CompactTerminalErrorResponse(sessionID, runID, terminal))
 }
 
-func (s *Server) ensureSessionV3ManualCompactExecution(sessionID, runID string) *sessionV3ManualCompactExecution {
-	key := sessionV3ManualCompactExecutionKey(sessionID, runID)
-	s.manualCompactMu.Lock()
-	defer s.manualCompactMu.Unlock()
-	if s.manualCompactRuns == nil {
-		s.manualCompactRuns = make(map[string]*sessionV3ManualCompactExecution)
+func (s *Server) sessionV3MutationWithHydrateCursor(principal identity.Principal, sessionID string, result sessionruntime.SessionMutationResult) (sessionruntime.SessionMutationResult, bool) {
+	if s == nil || result.RealtimeOutbox == nil {
+		return result, false
 	}
-	if existing := s.manualCompactRuns[key]; existing != nil {
-		return existing
-	}
-	execution := newSessionV3ManualCompactExecution()
-	s.manualCompactRuns[key] = execution
-	return execution
-}
-
-func (s *Server) getSessionV3ManualCompactExecution(sessionID, runID string) (*sessionV3ManualCompactExecution, bool) {
-	key := sessionV3ManualCompactExecutionKey(sessionID, runID)
-	s.manualCompactMu.Lock()
-	defer s.manualCompactMu.Unlock()
-	execution := s.manualCompactRuns[key]
-	return execution, execution != nil
-}
-
-func (s *Server) forgetSessionV3ManualCompactExecution(sessionID, runID string, execution *sessionV3ManualCompactExecution) {
-	key := sessionV3ManualCompactExecutionKey(sessionID, runID)
-	s.manualCompactMu.Lock()
-	defer s.manualCompactMu.Unlock()
-	if s.manualCompactRuns[key] == execution {
-		delete(s.manualCompactRuns, key)
-	}
-}
-
-func sessionV3ManualCompactExecutionKey(sessionID, runID string) string {
-	return strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID)
-}
-
-func (s *Server) sessionV3ManualCompactTerminalWithHydrateCursor(principal identity.Principal, sessionID string, terminal sessionV3ManualCompactTerminal) (sessionV3ManualCompactTerminal, bool) {
-	if s == nil || terminal.Result.RealtimeOutbox == nil {
-		return terminal, false
-	}
-	outbox := *terminal.Result.RealtimeOutbox
+	outbox := *result.RealtimeOutbox
 	if outbox.EndpointSeq == 0 {
-		return terminal, false
+		return result, false
 	}
 	selector := sessionsV3SyncSelector{Kind: "session_ids", SessionIDs: canonicalV3SyncSessionIDs([]string{sessionID})}
 	resources := sessionsV3SyncResourceSet(
@@ -338,11 +421,70 @@ func (s *Server) sessionV3ManualCompactTerminalWithHydrateCursor(principal ident
 	)
 	signed, err := s.signV3SyncEndpointCursor(v3SyncCursorScopeForSnapshot(principal, "desktop", "v3.sync.snapshot", selector, resources), outbox.EndpointSeq)
 	if err != nil || strings.TrimSpace(signed) == "" {
-		return terminal, false
+		return result, false
 	}
 	outbox.EndpointCursor = signed
-	terminal.Result.RealtimeOutbox = &outbox
+	result.RealtimeOutbox = &outbox
+	return result, true
+}
+
+func (s *Server) sessionV3ManualCompactTerminalWithHydrateCursor(principal identity.Principal, sessionID string, terminal sessionV3ManualCompactTerminal) (sessionV3ManualCompactTerminal, bool) {
+	result, ok := s.sessionV3MutationWithHydrateCursor(principal, sessionID, terminal.Result)
+	if !ok {
+		return terminal, false
+	}
+	terminal.Result = result
 	return terminal, true
+}
+
+func (s *Server) sessionV3ManualCompactCheckpointFromStore(principal identity.Principal, sessionID, runID string) (map[string]any, bool, error) {
+	intent, ok, err := s.sessions.GetSessionRunIntent(sessionID, runID)
+	if err != nil || !ok || !sessionV3ManualCompactTerminalStatus(intent.Status) {
+		return nil, false, err
+	}
+	if intent.Status != sessionruntime.RunIntentCompleted {
+		terminal, terminalOK, terminalErr := s.sessionV3ManualCompactTerminalFromStore(principal, sessionID, runID)
+		if terminalErr != nil || !terminalOK {
+			return nil, terminalOK, terminalErr
+		}
+		return sessionV3CompactTerminalErrorResponse(sessionID, runID, terminal), true, nil
+	}
+	messages, err := s.sessions.ListSessionMessageTail(sessionID, 200)
+	if err != nil {
+		return nil, false, err
+	}
+	var checkpointMessage *pebblestore.MessageSnapshot
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "system") && strings.HasPrefix(strings.TrimSpace(msg.Content), "[context-compact]") {
+			msgCopy := msg
+			checkpointMessage = &msgCopy
+			break
+		}
+	}
+	if checkpointMessage == nil || checkpointMessage.GlobalSeq == 0 {
+		return nil, false, nil
+	}
+	records, err := s.sessions.ListRealtimeOutboxForSessionAfterSeq(sessionID, checkpointMessage.GlobalSeq-1, 1)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(records) == 0 || records[0].Event.Seq != checkpointMessage.GlobalSeq {
+		return nil, false, nil
+	}
+	checkpointMutation := sessionruntime.SessionMutationResult{SessionID: sessionID, PrimarySeq: records[0].Event.Seq, FirstSeq: records[0].Event.Seq, LastSeq: records[0].Event.Seq, EventIDs: []string{records[0].Event.ID}, Event: records[0].Event, Message: checkpointMessage, Projection: records[0].Projection, RealtimeOutbox: &records[0]}
+	if signed, signedOK := s.sessionV3MutationWithHydrateCursor(principal, sessionID, checkpointMutation); signedOK {
+		checkpointMutation = signed
+	}
+	terminal, terminalOK, err := s.sessionV3ManualCompactTerminalFromStore(principal, sessionID, runID)
+	if err != nil {
+		return nil, false, err
+	}
+	var terminalMutation *sessionruntime.SessionMutationResult
+	if terminalOK {
+		terminalMutation = &terminal.Result
+	}
+	return sessionV3CompactDirectResponse(sessionV3ManualCompactResponseInput{SessionID: sessionID, RunID: runID, Status: intent.Status, CheckpointMessage: checkpointMessage, CheckpointMutation: &checkpointMutation, TerminalMutation: terminalMutation}), true, nil
 }
 
 func (s *Server) sessionV3ManualCompactTerminalFromStore(principal identity.Principal, sessionID, runID string) (sessionV3ManualCompactTerminal, bool, error) {
@@ -407,7 +549,11 @@ func sessionV3ManualCompactTerminalFromMutation(result sessionruntime.SessionMut
 	}
 	terminal := sessionV3ManualCompactTerminal{Result: result, Status: status, Phase: phase, EventType: result.Event.EventType}
 	if status != sessionruntime.RunIntentCompleted {
-		terminal.Error = firstNonEmptyString(strings.TrimSpace(result.RunIntent.BlockedReason), strings.TrimSpace(result.Lifecycle.Error), strings.TrimSpace(result.Lifecycle.StopReason), "manual compact "+status)
+		blockedReason := ""
+		if result.RunIntent != nil {
+			blockedReason = strings.TrimSpace(result.RunIntent.BlockedReason)
+		}
+		terminal.Error = firstNonEmptyString(blockedReason, strings.TrimSpace(result.Lifecycle.Error), strings.TrimSpace(result.Lifecycle.StopReason), "manual compact "+status)
 	}
 	return terminal, true
 }
@@ -472,272 +618,6 @@ type sessionV3ManualCompactRunEventInput struct {
 	Lifecycle       *pebblestore.SessionLifecycleSnapshot
 }
 
-func (s *Server) startSessionV3ManualCompactExecution(sessionID, runID string, req sessionsV3CompactRequest, principal identity.Principal, execution *sessionV3ManualCompactExecution) {
-	if s == nil || s.runner == nil {
-		return
-	}
-	s.beginActiveRun()
-	go func() {
-		defer s.endActiveRun()
-		defer s.forgetSessionV3ManualCompactExecution(sessionID, runID, execution)
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				err := fmt.Errorf("manual compact panicked: %v", recovered)
-				log.Printf("manual compact panic session_id=%s run_id=%s panic=%v", sessionID, runID, recovered)
-				terminal, _ := s.publishSessionV3ManualCompactFailure(principal, sessionID, runID, err)
-				if execution != nil {
-					execution.complete(terminal)
-				}
-			}
-		}()
-
-		runCtx, runCancel := context.WithCancel(s.runCtx)
-		defer runCancel()
-		if principal.Valid() {
-			runCtx = identity.ContextWithPrincipal(runCtx, principal)
-		}
-		bridge := newSessionV3ManualCompactEventBridge(s, principal, sessionID, runID, runCancel, execution)
-		result, err := s.runner.RunTurnStreaming(runCtx, sessionID, runruntime.RunRequest{
-			Prompt:       strings.TrimSpace(req.Note),
-			AgentName:    strings.TrimSpace(req.AgentName),
-			Instructions: strings.TrimSpace(req.Instructions),
-			Compact:      true,
-		}, runruntime.RunStartMeta{
-			RunID:                runID,
-			OwnerTransport:       sessionV3ManualCompactOwnerTransport,
-			Principal:            principal,
-			ApplySessionMutation: s.applySessionV3PrimaryMutation,
-		}, bridge.Handle)
-		if bridgeErr := bridge.Err(); bridgeErr != nil && err == nil {
-			err = bridgeErr
-		}
-		if err != nil {
-			if bridge.TerminalSeen() {
-				return
-			}
-			terminal, _ := s.publishSessionV3ManualCompactFailure(principal, sessionID, runID, err)
-			if execution != nil {
-				execution.complete(terminal)
-			}
-			return
-		}
-		for _, event := range result.Events {
-			if s.hub != nil {
-				s.hub.Publish(event)
-			}
-		}
-	}()
-}
-
-type sessionV3ManualCompactEventBridge struct {
-	server    *Server
-	principal identity.Principal
-	sessionID string
-	runID     string
-	cancel    context.CancelFunc
-	execution *sessionV3ManualCompactExecution
-
-	mu           sync.Mutex
-	nextSeq      int
-	firstErr     error
-	terminalSeen bool
-}
-
-func newSessionV3ManualCompactEventBridge(server *Server, principal identity.Principal, sessionID, runID string, cancel context.CancelFunc, execution *sessionV3ManualCompactExecution) *sessionV3ManualCompactEventBridge {
-	return &sessionV3ManualCompactEventBridge{server: server, principal: principal, sessionID: strings.TrimSpace(sessionID), runID: strings.TrimSpace(runID), cancel: cancel, execution: execution}
-}
-
-func (b *sessionV3ManualCompactEventBridge) Err() error {
-	if b == nil {
-		return nil
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.firstErr
-}
-
-func (b *sessionV3ManualCompactEventBridge) TerminalSeen() bool {
-	if b == nil {
-		return false
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.terminalSeen
-}
-
-func (b *sessionV3ManualCompactEventBridge) Handle(event runruntime.StreamEvent) {
-	if b == nil || b.server == nil {
-		return
-	}
-	if err := b.publish(event); err != nil {
-		b.mu.Lock()
-		if b.firstErr == nil {
-			b.firstErr = err
-		}
-		b.mu.Unlock()
-		if b.cancel != nil {
-			b.cancel()
-		}
-	}
-}
-
-func (b *sessionV3ManualCompactEventBridge) publish(event runruntime.StreamEvent) error {
-	eventType, status, blockedReason, payload, lifecycle := b.v3EventForRuntimeEvent(event)
-	if eventType == "" {
-		return nil
-	}
-	b.mu.Lock()
-	b.nextSeq++
-	clientRequestID := fmt.Sprintf("manual-compact:%s:%06d:%s", b.runID, b.nextSeq, eventType)
-	b.mu.Unlock()
-	result, err := b.server.recordSessionV3ManualCompactRunEvent(sessionV3ManualCompactRunEventInput{
-		Principal:       b.principal,
-		SessionID:       b.sessionID,
-		RunID:           b.runID,
-		ClientRequestID: clientRequestID,
-		EventType:       eventType,
-		Status:          status,
-		BlockedReason:   blockedReason,
-		Payload:         payload,
-		Lifecycle:       lifecycle,
-	})
-	if err != nil {
-		return err
-	}
-	if terminal, ok := sessionV3ManualCompactTerminalFromMutation(result); ok {
-		b.mu.Lock()
-		b.terminalSeen = true
-		b.mu.Unlock()
-		if b.execution != nil {
-			b.execution.complete(terminal)
-		}
-	}
-	return nil
-}
-
-func (b *sessionV3ManualCompactEventBridge) v3EventForRuntimeEvent(event runruntime.StreamEvent) (eventType, status, blockedReason string, payload map[string]any, lifecycle *pebblestore.SessionLifecycleSnapshot) {
-	sessionID := firstNonEmptyString(strings.TrimSpace(event.SessionID), b.sessionID)
-	runID := firstNonEmptyString(strings.TrimSpace(event.RunID), b.runID)
-	payload = map[string]any{
-		"session_id":      sessionID,
-		"run_id":          runID,
-		"owner_transport": sessionV3ManualCompactOwnerTransport,
-	}
-	if event.Step != 0 {
-		payload["step"] = event.Step
-	}
-	if event.Agent != "" {
-		payload["agent"] = event.Agent
-	}
-	switch strings.TrimSpace(event.Type) {
-	case runruntime.StreamEventSessionLifecycle:
-		if event.Lifecycle == nil {
-			return "", "", "", nil, nil
-		}
-		copy := *event.Lifecycle
-		lifecycle = &copy
-		payload["type"] = "session.lifecycle.updated"
-		payload["lifecycle"] = lifecycle
-		switch strings.ToLower(strings.TrimSpace(lifecycle.Phase)) {
-		case "active", "running":
-			status = sessionruntime.RunIntentRunning
-		case "completed":
-			status = sessionruntime.RunIntentCompleted
-		case "cancelled":
-			status = sessionruntime.RunIntentCancelled
-		case "interrupted":
-			status = sessionruntime.RunIntentInterrupted
-		case "errored", "failed":
-			status = sessionruntime.RunIntentFailed
-		default:
-			status = sessionruntime.RunIntentRunning
-		}
-		if status != sessionruntime.RunIntentRunning {
-			blockedReason = firstNonEmptyString(strings.TrimSpace(lifecycle.Error), strings.TrimSpace(lifecycle.StopReason))
-		}
-		return "session.lifecycle.updated", status, blockedReason, payload, lifecycle
-	case runruntime.StreamEventTurnStarted:
-		payload["type"] = "session.assistant.started"
-		status = sessionruntime.RunIntentRunning
-		return "session.assistant.started", status, "", payload, nil
-	case runruntime.StreamEventStepStarted:
-		payload["type"] = "session.step.started"
-		status = sessionruntime.RunIntentRunning
-		return "session.step.started", status, "", payload, nil
-	case runruntime.StreamEventSessionStatus:
-		payload["type"] = "session.status"
-		payload["status"] = strings.TrimSpace(event.Status)
-		payload["summary"] = strings.TrimSpace(event.Summary)
-		status = sessionruntime.RunIntentRunning
-		return "session.status", status, "", payload, nil
-	case runruntime.StreamEventToolStarted:
-		payload["type"] = "session.tool.started"
-		payload["tool_name"] = strings.TrimSpace(event.ToolName)
-		payload["call_id"] = strings.TrimSpace(event.CallID)
-		payload["arguments"] = event.Arguments
-		payload["output"] = event.Output
-		payload["raw_output"] = event.RawOutput
-		payload["summary"] = event.Summary
-		status = sessionruntime.RunIntentRunning
-		return "session.tool.started", status, "", payload, nil
-	case runruntime.StreamEventToolDelta:
-		payload["type"] = "session.tool.delta"
-		payload["tool_name"] = strings.TrimSpace(event.ToolName)
-		payload["call_id"] = strings.TrimSpace(event.CallID)
-		payload["output"] = event.Output
-		payload["raw_output"] = event.RawOutput
-		payload["summary"] = event.Summary
-		status = sessionruntime.RunIntentRunning
-		return "session.tool.delta", status, "", payload, nil
-	case runruntime.StreamEventToolCompleted:
-		payload["type"] = "session.tool.completed"
-		payload["tool_name"] = strings.TrimSpace(event.ToolName)
-		payload["call_id"] = strings.TrimSpace(event.CallID)
-		payload["arguments"] = event.Arguments
-		payload["output"] = event.Output
-		payload["raw_output"] = event.RawOutput
-		payload["duration_ms"] = event.DurationMS
-		payload["summary"] = event.Summary
-		if strings.TrimSpace(event.Error) != "" {
-			payload["error"] = strings.TrimSpace(event.Error)
-			blockedReason = strings.TrimSpace(event.Error)
-			eventType = "session.tool.failed"
-		} else {
-			eventType = "session.tool.completed"
-		}
-		status = sessionruntime.RunIntentRunning
-		return eventType, status, blockedReason, payload, nil
-	case runruntime.StreamEventUsageUpdated:
-		payload["type"] = "run.usage.updated"
-		if event.TurnUsage != nil {
-			payload["turn_usage"] = event.TurnUsage
-		}
-		if event.UsageSummary != nil {
-			payload["usage_summary"] = event.UsageSummary
-		}
-		status = sessionruntime.RunIntentRunning
-		return "run.usage.updated", status, "", payload, nil
-	case runruntime.StreamEventSessionTitle:
-		payload["type"] = "session.title.updated"
-		payload["title"] = strings.TrimSpace(event.Title)
-		payload["title_stage"] = strings.TrimSpace(event.TitleStage)
-		status = sessionruntime.RunIntentRunning
-		return "session.title.updated", status, "", payload, nil
-	case runruntime.StreamEventSessionWarning:
-		payload["type"] = "session.warning"
-		payload["warning"] = strings.TrimSpace(event.Warning)
-		status = sessionruntime.RunIntentRunning
-		return "session.warning", status, "", payload, nil
-	case runruntime.StreamEventTurnCompleted, runruntime.StreamEventTurnError:
-		// The preceding terminal lifecycle event is the authoritative Sessions V3
-		// terminal event. Recording another terminal run-intent event here would
-		// race or duplicate the same state transition.
-		return "", "", "", nil, nil
-	default:
-		return "", "", "", nil, nil
-	}
-}
-
 func (s *Server) recordSessionV3ManualCompactRunEvent(input sessionV3ManualCompactRunEventInput) (sessionruntime.SessionMutationResult, error) {
 	if s == nil {
 		return sessionruntime.SessionMutationResult{}, errors.New("server is not configured")
@@ -767,15 +647,7 @@ func (s *Server) recordSessionV3ManualCompactRunEvent(input sessionV3ManualCompa
 		input.Payload["status"] = input.Status
 	}
 	now := time.Now().UnixMilli()
-	intent := pebblestore.V3SessionRunIntent{
-		SessionID:      input.SessionID,
-		UserID:         input.Principal.UserID,
-		AccountScopeID: input.Principal.AccountScopeID,
-		RunID:          input.RunID,
-		Status:         input.Status,
-		BlockedReason:  input.BlockedReason,
-		UpdatedAt:      now,
-	}
+	intent := pebblestore.V3SessionRunIntent{SessionID: input.SessionID, UserID: input.Principal.UserID, AccountScopeID: input.Principal.AccountScopeID, RunID: input.RunID, Status: input.Status, BlockedReason: input.BlockedReason, UpdatedAt: now}
 	if existing, ok, err := s.sessions.GetSessionRunIntent(input.SessionID, input.RunID); err == nil && ok && existing.CreatedAt != 0 {
 		intent.CreatedAt = existing.CreatedAt
 	}
@@ -788,24 +660,9 @@ func (s *Server) recordSessionV3ManualCompactRunEvent(input sessionV3ManualCompa
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	kind := sessionruntime.SessionMutationRecordRunIntent
-	mutation := sessionruntime.SessionMutationInput{
-		SessionID:       input.SessionID,
-		UserID:          input.Principal.UserID,
-		AccountScopeID:  input.Principal.AccountScopeID,
-		ClientRequestID: input.ClientRequestID,
-		IdempotencyKey:  input.ClientRequestID,
-		PayloadHash:     payloadHash,
-		RequestHash:     payloadHash,
-		Kind:            kind,
-		EventType:       input.EventType,
-		EventPayload:    raw,
-		RunIntent:       &intent,
-		NowUnixMs:       now,
-	}
+	mutation := sessionruntime.SessionMutationInput{SessionID: input.SessionID, UserID: input.Principal.UserID, AccountScopeID: input.Principal.AccountScopeID, ClientRequestID: input.ClientRequestID, IdempotencyKey: input.ClientRequestID, PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: input.EventType, EventPayload: raw, RunIntent: &intent, NowUnixMs: now}
 	if input.Lifecycle != nil {
-		kind = sessionruntime.SessionMutationUpsertLifecycle
-		mutation.Kind = kind
+		mutation.Kind = sessionruntime.SessionMutationUpsertLifecycle
 		mutation.Lifecycle = input.Lifecycle
 	}
 	return s.applySessionV3PrimaryMutation(mutation)
@@ -816,22 +673,7 @@ func (s *Server) publishSessionV3ManualCompactFailure(principal identity.Princip
 	if runErr != nil && strings.TrimSpace(runErr.Error()) != "" {
 		message = strings.TrimSpace(runErr.Error())
 	}
-	lifecycle := &pebblestore.SessionLifecycleSnapshot{
-		SessionID:      strings.TrimSpace(sessionID),
-		RunID:          strings.TrimSpace(runID),
-		Active:         false,
-		Phase:          "errored",
-		EndedAt:        time.Now().UnixMilli(),
-		UpdatedAt:      time.Now().UnixMilli(),
-		Error:          message,
-		OwnerTransport: sessionV3ManualCompactOwnerTransport,
-	}
-	if current, ok, err := s.sessions.GetLifecycle(sessionID); err == nil && ok {
-		lifecycle.UserID = current.UserID
-		lifecycle.AccountScopeID = current.AccountScopeID
-		lifecycle.StartedAt = current.StartedAt
-		lifecycle.Generation = current.Generation
-	}
+	lifecycle := s.newSessionV3ManualCompactLifecycle(principal, sessionID, runID, false, "errored", message)
 	result, err := s.recordSessionV3ManualCompactRunEvent(sessionV3ManualCompactRunEventInput{
 		Principal:       principal,
 		SessionID:       sessionID,
@@ -859,81 +701,4 @@ func (s *Server) publishSessionV3ManualCompactFailure(principal identity.Princip
 		terminal = sessionV3ManualCompactTerminal{Result: result, Status: sessionruntime.RunIntentFailed, Phase: "errored", EventType: "session.lifecycle.updated", Error: message}
 	}
 	return terminal, nil
-}
-
-func sessionsV3CompactStreamEvents(events []runruntime.StreamEvent) []map[string]any {
-	out := make([]map[string]any, 0, len(events))
-	for _, event := range events {
-		out = append(out, sessionsV3CompactStreamEvent(event))
-	}
-	return out
-}
-
-func sessionsV3CompactStreamEvent(event runruntime.StreamEvent) map[string]any {
-	item := map[string]any{
-		"type":       event.Type,
-		"session_id": event.SessionID,
-		"run_id":     event.RunID,
-	}
-	if event.Agent != "" {
-		item["agent"] = event.Agent
-	}
-	if event.Status != "" {
-		item["status"] = event.Status
-	}
-	if event.Step != 0 {
-		item["step"] = event.Step
-	}
-	if event.Delta != "" {
-		item["delta"] = event.Delta
-	}
-	if event.Summary != "" {
-		item["summary"] = event.Summary
-	}
-	if event.ToolName != "" {
-		item["tool_name"] = event.ToolName
-	}
-	if event.CallID != "" {
-		item["call_id"] = event.CallID
-	}
-	if event.Arguments != "" {
-		item["arguments"] = event.Arguments
-	}
-	if event.Output != "" {
-		item["output"] = event.Output
-	}
-	if event.RawOutput != "" {
-		item["raw_output"] = event.RawOutput
-	}
-	if event.Error != "" {
-		item["error"] = event.Error
-	}
-	if event.DurationMS != 0 {
-		item["duration_ms"] = event.DurationMS
-	}
-	if event.Message != nil {
-		item["message"] = event.Message
-	}
-	if event.TurnUsage != nil {
-		item["turn_usage"] = event.TurnUsage
-	}
-	if event.UsageSummary != nil {
-		item["usage_summary"] = event.UsageSummary
-	}
-	if event.Title != "" {
-		item["title"] = event.Title
-	}
-	if event.TitleStage != "" {
-		item["title_stage"] = event.TitleStage
-	}
-	if event.Warning != "" {
-		item["warning"] = event.Warning
-	}
-	if event.Branch != "" {
-		item["branch"] = event.Branch
-	}
-	if event.Lifecycle != nil {
-		item["lifecycle"] = event.Lifecycle
-	}
-	return item
 }

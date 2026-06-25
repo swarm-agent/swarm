@@ -140,9 +140,6 @@ type Server struct {
 	swarmMirror               *pebblestore.SwarmMirrorStore
 	mirrorSyncStarted         atomic.Bool
 	remoteCandidateProbePorts []int
-
-	manualCompactMu   sync.Mutex
-	manualCompactRuns map[string]*sessionV3ManualCompactExecution
 }
 
 type runService interface {
