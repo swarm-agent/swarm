@@ -25,7 +25,7 @@ import type {
   MessageMutationConflictResponse,
 } from './desktop-v3-cache-types'
 import type { DesktopPermissionRecord } from '../types/realtime'
-import { normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
+import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 
 export const DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS = 5
 
