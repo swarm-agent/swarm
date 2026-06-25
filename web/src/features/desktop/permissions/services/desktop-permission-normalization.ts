@@ -1,4 +1,5 @@
 import type { DesktopPermissionRecord } from '../../types/realtime'
+import type { DesktopPermissionSummary, DesktopPermissionSummaryWire } from '../../state/desktop-v3-cache-types'
 
 export interface DesktopPermissionWire {
   id?: unknown
@@ -58,6 +59,12 @@ function pickRawString(record: Record<string, unknown>, snake: string, camel: st
 
 function pickNumber(record: Record<string, unknown>, snake: string, camel: string): number {
   return finiteNumber(record[snake]) || finiteNumber(record[camel])
+}
+
+function pickNonNegativeInteger(record: Record<string, unknown>, snake: string, camel: string): number {
+  const value = finiteNumber(record[snake]) || finiteNumber(record[camel])
+  if (value <= 0) return 0
+  return Math.floor(value)
 }
 
 function normalizeSavedRule(value: unknown): DesktopPermissionRecord['savedRule'] | undefined {
@@ -135,4 +142,35 @@ export function normalizeDesktopPendingPermissions(
       (left.permissionRequestedAt || left.createdAt || left.updatedAt || 0)
       - (right.permissionRequestedAt || right.createdAt || right.updatedAt || 0)
     ) || left.id.localeCompare(right.id))
+}
+
+export function normalizeDesktopPermissionSummary(
+  value: unknown,
+  expectedSessionId: string,
+): DesktopPermissionSummary | null {
+  const source = recordValue(value)
+  const scopedSessionId = safeString(expectedSessionId)
+  if (!source || !scopedSessionId) return null
+  const explicitSessionId = pickString(source, 'session_id', 'sessionId')
+  if (explicitSessionId && explicitSessionId !== scopedSessionId) return null
+  const pendingApprovalCount = pickNonNegativeInteger(source, 'pending_approval_count', 'pendingApprovalCount')
+  return {
+    pendingApprovalCount,
+    oldestPendingAt: pendingApprovalCount > 0 ? pickNonNegativeInteger(source, 'oldest_pending_at', 'oldestPendingAt') : 0,
+    newestPendingAt: pendingApprovalCount > 0 ? pickNonNegativeInteger(source, 'newest_pending_at', 'newestPendingAt') : 0,
+    updatedAt: pickNonNegativeInteger(source, 'updated_at', 'updatedAt'),
+  }
+}
+
+export function normalizeDesktopPermissionSummaries(
+  values: Record<string, DesktopPermissionSummaryWire> | undefined,
+): Record<string, DesktopPermissionSummary> {
+  const out: Record<string, DesktopPermissionSummary> = {}
+  if (!values) return out
+  for (const [sessionId, value] of Object.entries(values)) {
+    const normalizedSessionId = safeString(sessionId)
+    const summary = normalizeDesktopPermissionSummary(value, normalizedSessionId)
+    if (normalizedSessionId && summary) out[normalizedSessionId] = summary
+  }
+  return out
 }

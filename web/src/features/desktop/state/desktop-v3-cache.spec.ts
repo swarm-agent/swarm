@@ -849,7 +849,7 @@ test('stored events dedupe by immutable session sequence even with different ids
 })
 
 
-test('permission realtime events upsert pending records and terminal updates remove them from selectors', () => {
+test('permission realtime events update detail records while summary events own sidebar counts', () => {
   const state = bootstrappedState()
   applyCacheEvent(state, {
     source: 'realtime',
@@ -897,8 +897,24 @@ test('permission realtime events upsert pending records and terminal updates rem
   })
 
   let row = selectDesktopSidebarRows(state).find((entry) => entry.sessionId === sessionA.id)
-  assert.equal(row?.pendingPermissionCount, 1)
+  assert.equal(row?.pendingPermissionCount, 0)
   assert.equal(row?.pendingPermissions[0].id, 'perm-a')
+
+  applyCacheEvent(state, {
+    source: 'realtime',
+    sessionId: sessionA.id,
+    eventType: 'permission.summary.updated',
+    payload: {
+      session_id: sessionA.id,
+      pending_approval_count: 1,
+      oldest_pending_at: 30,
+      newest_pending_at: 30,
+      updated_at: 30,
+    },
+  })
+
+  row = selectDesktopSidebarRows(state).find((entry) => entry.sessionId === sessionA.id)
+  assert.equal(row?.pendingPermissionCount, 1)
 
   applyCacheEvent(state, {
     source: 'realtime',
@@ -950,8 +966,24 @@ test('permission realtime events upsert pending records and terminal updates rem
   })
 
   row = selectDesktopSidebarRows(state).find((entry) => entry.sessionId === sessionA.id)
+  assert.equal(row?.pendingPermissionCount, 1)
+  assert.equal(state.permissionsBySession[sessionA.id], undefined)
+
+  applyCacheEvent(state, {
+    source: 'realtime',
+    sessionId: sessionA.id,
+    eventType: 'permission.summary.updated',
+    payload: {
+      session_id: sessionA.id,
+      pending_approval_count: 0,
+      oldest_pending_at: 0,
+      newest_pending_at: 0,
+      updated_at: 31,
+    },
+  })
+
+  row = selectDesktopSidebarRows(state).find((entry) => entry.sessionId === sessionA.id)
   assert.equal(row?.pendingPermissionCount, 0)
-  assert.equal(state.permissionsBySession[sessionA.id][0].status, 'approved')
 })
 
 test('hydrate rejects non-requested payload membership', () => {
@@ -960,6 +992,44 @@ test('hydrate rejects non-requested payload membership', () => {
     () => applyHydrateSnapshot(state, hydrateSnapshotFixture({ sessions_by_id: { [sessionA.id]: sessionA } }), [sessionB.id]),
     /non-requested session session-a/,
   )
+})
+
+test('bootstrap permission summaries are authoritative sidebar badges without full records', () => {
+  const state = bootstrappedState()
+  state.permissionSummaryBySessionId[sessionB.id] = {
+    pendingApprovalCount: 2,
+    oldestPendingAt: 20,
+    newestPendingAt: 21,
+    updatedAt: 21,
+  }
+
+  applyBootstrapSnapshot(state, snapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA },
+    projections_by_session: { [sessionA.id]: projectionA },
+    session_order: [sessionA.id],
+    permission_summaries_by_session: {
+      [sessionA.id]: {
+        session_id: sessionA.id,
+        pending_approval_count: 1,
+        oldest_pending_at: 30,
+        newest_pending_at: 30,
+        updated_at: 30,
+      },
+    },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'selector-hash',
+      resource_set: 'current_run_state,permission_summaries',
+    },
+    scope_id: 'selector-hash:current_run_state,permission_summaries',
+  }))
+
+  const rowA = selectDesktopSidebarRows(state, 'selector-hash:current_run_state,permission_summaries')
+    .find((entry) => entry.sessionId === sessionA.id)
+  assert.equal(rowA?.pendingPermissionCount, 1)
+  assert.equal(rowA?.pendingPermissions.length, 0)
+  assert.equal(state.permissionSummaryBySessionId[sessionB.id], undefined)
 })
 
 test('hydrate rejects projections for non-requested sessions', () => {

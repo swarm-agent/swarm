@@ -1,6 +1,6 @@
 import type { DesktopPermissionRecord } from '../types/realtime'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
-import type { DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
+import type { DesktopPermissionSummary, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 
 export interface DesktopV3SidebarRow {
   sessionId: string
@@ -10,6 +10,7 @@ export interface DesktopV3SidebarRow {
   runIntents: Record<string, V3SessionRunIntent>
   currentRunIntent?: V3SessionRunIntent
   pendingPermissions: DesktopPermissionRecord[]
+  permissionSummary?: DesktopPermissionSummary
   pendingPermissionCount: number
 }
 
@@ -57,7 +58,8 @@ export function selectDesktopSidebarRows(state: DesktopV3CacheState, scopeId = s
       runIntents: cloneRunIntentRecord(state.runIntentsBySession[sessionId]),
       currentRunIntent: cloneRunIntent(state.currentRunIntentBySession[sessionId]),
       pendingPermissions: clonePendingPermissions(state.permissionsBySession[sessionId]),
-      pendingPermissionCount: countPendingPermissions(state.permissionsBySession[sessionId]),
+      permissionSummary: clonePermissionSummary(state.permissionSummaryBySessionId[sessionId]),
+      pendingPermissionCount: state.permissionSummaryBySessionId[sessionId]?.pendingApprovalCount ?? 0,
     })
   }
   return rows
@@ -217,12 +219,8 @@ function clonePendingPermissions(permissions: DesktopPermissionRecord[] | undefi
     .map((permission) => ({ ...permission, savedRule: permission.savedRule ? { ...permission.savedRule } : undefined }))
 }
 
-function countPendingPermissions(permissions: DesktopPermissionRecord[] | undefined): number {
-  let count = 0
-  for (const permission of permissions ?? []) {
-    if (safeString(permission.status).toLowerCase() === 'pending') count += 1
-  }
-  return count
+function clonePermissionSummary(summary: DesktopPermissionSummary | undefined): DesktopPermissionSummary | undefined {
+  return summary ? { ...summary } : undefined
 }
 
 function cloneLiveRun(run: LiveRunOverlay): LiveRunOverlay {

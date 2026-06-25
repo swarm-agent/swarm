@@ -26,6 +26,7 @@ test('postDesktopV3SyncBootstrap posts metadata-only bounded startup workset pay
   assert.equal(calls[0].init.method, 'POST')
   const body = JSON.parse(String(calls[0].init.body))
   assert.equal(body.selector.recent.limit, DESKTOP_STARTUP_SESSION_LIMIT)
+  assert.equal(body.selector.attention.pending_permissions, true)
   assert.equal(body.history.mode, 'none')
   assert.equal('max_messages_per_session' in body.history, false)
   assert.equal('manifest_policy' in body.history, false)
@@ -33,11 +34,13 @@ test('postDesktopV3SyncBootstrap posts metadata-only bounded startup workset pay
   assert.equal(body.resources.events, false)
   assert.equal(body.resources.run_intents, false)
   assert.equal(body.resources.session_view, false)
+  assert.equal(body.resources.permission_summaries, true)
   assert.equal(body.resources.active_plan, false)
   assert.equal(body.resources.plan_revisions, false)
   assert.equal(body.include_active, true)
   assert.deepEqual(DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.history, { mode: 'none' })
   assert.equal(DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.resources.messages, false)
+  assert.equal(DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.resources.permission_summaries, true)
 })
 
 
@@ -99,6 +102,7 @@ test('postDesktopV3SyncHydrate posts exact selected-session bounded tail payload
       session_view: true,
       active_plan: false,
       plan_revisions: false,
+      permission_summaries: false,
     },
     include_active: true,
   })

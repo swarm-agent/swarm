@@ -1,5 +1,6 @@
 import type {
   CacheEvent,
+  DesktopPermissionSummary,
   DesktopV3CacheAction,
   DesktopV3CacheState,
   LiveRunOverlay,
@@ -25,7 +26,7 @@ import type {
   MessageMutationConflictResponse,
 } from './desktop-v3-cache-types'
 import type { DesktopPermissionRecord } from '../types/realtime'
-import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPendingPermissions, safeString } from '../permissions/services/desktop-permission-normalization'
+import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPendingPermissions, normalizeDesktopPermissionSummary, normalizeDesktopPermissionSummaries, safeString } from '../permissions/services/desktop-permission-normalization'
 import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 
 export const DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS = 5
@@ -69,6 +70,7 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     plansBySession: {},
     planRevisionsBySession: {},
     permissionsBySession: {},
+    permissionSummaryBySessionId: {},
     usageBySession: {},
     preferencesBySession: {},
     agentModelPolicyBySession: {},
@@ -342,6 +344,7 @@ export function applySnapshot(
     replaceRunIntentsBySession(state, snapshot.run_intents_by_session, authoritativeRunIntentSessionIds)
   }
   mergeSnapshotResources(state, snapshot, snapshot.scope_id)
+  applyPermissionSummariesFromSyncSnapshot(state, snapshot)
   if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'messages')) {
     applyMessagesBySessionFromSnapshot(state, snapshot.messages_by_session)
   }
@@ -395,6 +398,7 @@ export function applyHydrate(
   assertMapSubset(snapshot.events_by_session, requested, 'events_by_session')
   assertMapSubset(snapshot.run_intents_by_session, requested, 'run_intents_by_session')
   assertMapSubset(snapshot.current_run_state_by_session, requested, 'current_run_state_by_session')
+  assertMapSubset(snapshot.permission_summaries_by_session, requested, 'permission_summaries_by_session')
   assertMapSubset(snapshot.session_views_by_id, requested, 'session_views_by_id')
   assertObjectKeysSubset('tombstones_by_session', snapshot.tombstones_by_session, requested)
   assertObjectKeysSubset('history_manifests_by_session', snapshot.history_manifests_by_session, requested)
@@ -488,6 +492,7 @@ function applyHydrateAuthoritativeResources(
 
   enforceHydratedTranscriptRetention(state)
   applyCurrentRunStateFromSyncSnapshot(state, snapshot, requested)
+  applyPermissionSummariesFromSyncSnapshot(state, snapshot, requested)
   applySessionViewsFromSyncSnapshot(state, snapshot, requested)
 
   if (syncResourceSetContains(resourceSet, 'run_intents')) {
@@ -580,6 +585,7 @@ export function applyReconnectSnapshot(
     ...(raw.session_order ?? []),
     ...Object.keys(raw.current_run_intent_by_session ?? {}),
     ...Object.keys(raw.current_run_state_by_session ?? {}),
+    ...Object.keys(raw.permission_summaries_by_session ?? {}),
     ...Object.keys(raw.run_intents_by_session ?? {}),
   ])
 
@@ -597,6 +603,12 @@ export function applyReconnectSnapshot(
   }
 
   mergeReconnectOptionalResources(state, raw, resources, authoritativeSessionIds)
+  if (resources.has('permission_summaries')) {
+    applyPermissionSummaries(state, raw.permission_summaries_by_session, new Set([
+      ...authoritativeSessionIds,
+      ...Object.keys(state.permissionSummaryBySessionId ?? {}),
+    ]))
+  }
   if (resources.has('messages')) {
     applyMessagesBySessionFromSnapshot(state, raw.messages_by_session)
   } else {
@@ -927,6 +939,7 @@ export function applyCacheEvent(
 
   applyUsageSummaryFromEventPayload(state, sessionId, payload)
 
+  applyPermissionSummaryEvent(state, event)
   applyPermissionEvent(state, event)
 
   if (payload.tombstone || eventType === 'session.deleted') {
@@ -949,6 +962,15 @@ export function applyCacheEvent(
   return state
 }
 
+function applyPermissionSummaryEvent(state: DesktopV3CacheState, event: CacheEvent): void {
+  if (event.eventType !== 'permission.summary.updated') return
+  const summary = normalizeDesktopPermissionSummary(
+    event.payload.permission_summary ?? event.payload.summary ?? event.payload,
+    event.sessionId,
+  )
+  if (summary) applyPermissionSummary(state, event.sessionId, summary)
+}
+
 function applyPermissionEvent(state: DesktopV3CacheState, event: CacheEvent): void {
   if (event.eventType !== 'permission.requested' && event.eventType !== 'permission.updated' && !event.payload.permission) return
   const permission = normalizeDesktopPermission(event.payload.permission, event.sessionId)
@@ -958,6 +980,22 @@ function applyPermissionEvent(state: DesktopV3CacheState, event: CacheEvent): vo
   }
   const identity = desktopPermissionIdentity(event.payload.permission, event.sessionId)
   if (identity) removePermissionRecord(state, identity.sessionId, identity.id)
+}
+
+function applyPermissionSummary(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  summary: DesktopPermissionSummary | undefined,
+): void {
+  const normalizedSessionId = safeString(sessionId)
+  if (!normalizedSessionId) return
+  if (!summary || summary.pendingApprovalCount <= 0) {
+    delete state.permissionSummaryBySessionId[normalizedSessionId]
+    return
+  }
+  const existing = state.permissionSummaryBySessionId[normalizedSessionId]
+  if (existing && summary.updatedAt > 0 && existing.updatedAt > summary.updatedAt) return
+  state.permissionSummaryBySessionId[normalizedSessionId] = { ...summary }
 }
 
 function upsertPermissionRecord(state: DesktopV3CacheState, permission: DesktopPermissionRecord): void {
@@ -1575,6 +1613,30 @@ function applyCurrentRunStateFrame(
     }
   } else {
     delete state.currentRunIntentBySession[sessionId]
+  }
+}
+
+function applyPermissionSummariesFromSyncSnapshot(
+  state: DesktopV3CacheState,
+  snapshot: SyncSnapshotResponse,
+  authoritativeSessionIds = new Set([
+    ...Object.keys(snapshot.sessions_by_id ?? {}),
+    ...Object.keys(snapshot.tombstones_by_session ?? {}),
+    ...Object.keys(state.permissionSummaryBySessionId ?? {}),
+  ]),
+): void {
+  if (!syncResourceSetContains(snapshot.sync_scope.resource_set, 'permission_summaries')) return
+  applyPermissionSummaries(state, snapshot.permission_summaries_by_session, authoritativeSessionIds)
+}
+
+function applyPermissionSummaries(
+  state: DesktopV3CacheState,
+  summariesBySession: SyncSnapshotResponse['permission_summaries_by_session'],
+  authoritativeSessionIds: Set<string>,
+): void {
+  const summaries = normalizeDesktopPermissionSummaries(summariesBySession)
+  for (const sessionId of authoritativeSessionIds) {
+    applyPermissionSummary(state, sessionId, summaries[sessionId])
   }
 }
 

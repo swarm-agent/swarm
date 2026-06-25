@@ -502,7 +502,7 @@ export function buildDesktopV3InitialRealtimeResume(
     subscription_id: `${clientId}:workset:${sidebarScopeId}`,
     surface: 'desktop',
     selector: cloneDesktopV3SyncSelector(sidebarScope.selector),
-    resources: ['membership', 'projections', 'current_run_state', 'sessions', 'tombstones'],
+    resources: ['membership', 'projections', 'current_run_state', 'permission_summaries', 'sessions', 'tombstones'],
     auto_subscribe_sessions: false,
   }]
   const resume: RealtimeMessage = {
@@ -533,6 +533,7 @@ export function cloneDesktopV3SyncSelector(selector: SyncSelector): SyncSelector
   if (selector.workspace_paths) clone.workspace_paths = [...selector.workspace_paths]
   if (selector.session_ids) clone.session_ids = [...selector.session_ids]
   if (selector.recent) clone.recent = { ...selector.recent }
+  if (selector.attention) clone.attention = { ...selector.attention }
   return clone
 }
 
@@ -576,6 +577,7 @@ export function buildDesktopV3ReconnectInput(
         events: false,
         run_intents: false,
         current_run_state: true,
+        permission_summaries: true,
         active_plan: false,
         plan_revisions: false,
       },

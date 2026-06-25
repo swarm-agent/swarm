@@ -37,6 +37,9 @@ export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
     recent: {
       limit: DESKTOP_STARTUP_SESSION_LIMIT,
     },
+    attention: {
+      pending_permissions: true,
+    },
   },
   history: {
     mode: 'none',
@@ -49,6 +52,7 @@ export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
     session_view: false,
     active_plan: false,
     plan_revisions: false,
+    permission_summaries: true,
   },
   include_active: true,
 }
@@ -61,6 +65,7 @@ export const DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES: SyncResources = {
   session_view: true,
   active_plan: false,
   plan_revisions: false,
+  permission_summaries: false,
 }
 
 export function buildDesktopV3SelectedSessionHydrateInput(sessionId: string): DesktopV3HydrateInput {
@@ -96,6 +101,7 @@ export function buildDesktopV3BootstrapInput(
     workspace_paths: sourceSelector.workspace_paths ? [...sourceSelector.workspace_paths] : undefined,
     session_ids: sessionIds.length > 0 ? sessionIds : undefined,
     recent: sourceSelector.recent ? { ...sourceSelector.recent } : undefined,
+    attention: sourceSelector.attention ? { ...sourceSelector.attention } : undefined,
   }
 
   return {

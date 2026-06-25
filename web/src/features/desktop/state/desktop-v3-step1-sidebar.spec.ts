@@ -41,34 +41,23 @@ test('Desktop V3 sidebar render uses bootstrap session_order across workspaces',
   assert.deepEqual(nodes.map((node) => node.session.id), [sessionB.id, sessionA.id])
 })
 
-test('Desktop V3 sidebar record reflects pending permissions as blocked', () => {
+test('Desktop V3 sidebar record reflects server permission summary as blocked', () => {
   const state = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
   state.sessionOrderByScope['scope-a'] = [sessionA.id]
   state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
-  state.permissionsBySession[sessionA.id] = [{
-    id: 'perm-a',
-    sessionId: sessionA.id,
-    runId: 'run-a',
-    callId: 'call-a',
-    toolName: 'bash',
-    toolArguments: '{}',
-    status: 'pending',
-    decision: '',
-    reason: '',
-    requirement: 'approval',
-    mode: 'auto',
-    createdAt: 1,
+  state.permissionSummaryBySessionId[sessionA.id] = {
+    pendingApprovalCount: 1,
+    oldestPendingAt: 1,
+    newestPendingAt: 1,
     updatedAt: 1,
-    resolvedAt: 0,
-    permissionRequestedAt: 1,
-  }]
+  }
 
   const record = selectDesktopSidebarRows(state).map(desktopSessionRecordFromV3SidebarRow)[0]
 
   assert.equal(record.permissionsHydrated, true)
   assert.equal(record.pendingPermissionCount, 1)
-  assert.equal(record.pendingPermissions[0].id, 'perm-a')
+  assert.equal(record.pendingPermissions.length, 0)
   assert.equal(record.live.status, 'blocked')
 })
 

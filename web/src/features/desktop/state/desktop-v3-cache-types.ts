@@ -14,6 +14,9 @@ export interface SyncSelector {
     before_updated_at?: number
     before_session_id?: string
   }
+  attention?: {
+    pending_permissions?: boolean
+  }
 }
 
 export interface SyncHistory {
@@ -32,6 +35,7 @@ export interface SyncResources {
   session_view?: boolean
   active_plan?: boolean
   plan_revisions?: boolean
+  permission_summaries?: boolean
 }
 
 export interface KnownSessionState {
@@ -174,6 +178,26 @@ export interface SyncReplayInstructions {
   bootstrap_required_on_cursor_error: true | boolean
 }
 
+export interface DesktopPermissionSummary {
+  pendingApprovalCount: number
+  oldestPendingAt: number
+  newestPendingAt: number
+  updatedAt: number
+}
+
+export interface DesktopPermissionSummaryWire {
+  session_id?: unknown
+  sessionId?: unknown
+  pending_approval_count?: unknown
+  pendingApprovalCount?: unknown
+  oldest_pending_at?: unknown
+  oldestPendingAt?: unknown
+  newest_pending_at?: unknown
+  newestPendingAt?: unknown
+  updated_at?: unknown
+  updatedAt?: unknown
+}
+
 export interface SyncSnapshotResponse {
   ok: true
   rev: number
@@ -184,6 +208,7 @@ export interface SyncSnapshotResponse {
   events_by_session?: Record<string, V3SessionEvent[]>
   run_intents_by_session?: Record<string, V3SessionRunIntent[]>
   current_run_state_by_session?: Record<string, V3SessionRunState>
+  permission_summaries_by_session?: Record<string, DesktopPermissionSummaryWire>
   active_session_ids?: string[]
   session_views_by_id?: Record<string, DesktopV3SessionView>
   realtime?: V3RealtimeBootstrap
@@ -257,6 +282,7 @@ export interface SessionsReconnectResponse {
   run_intents_by_session?: Record<string, V3SessionRunIntent[]>
   current_run_intent_by_session?: Record<string, V3SessionRunIntent>
   current_run_state_by_session?: Record<string, V3SessionRunState>
+  permission_summaries_by_session?: Record<string, DesktopPermissionSummaryWire>
   active_session_ids?: string[]
   subscriptions: ReconnectSubscription[]
   session_order: string[]
@@ -344,6 +370,8 @@ export interface SessionEventPayload {
   usage_summary?: unknown
   tombstone?: V3SessionTombstone
   permission?: unknown
+  permission_summary?: unknown
+  summary?: unknown
   message_id?: string
   role?: string
   run_id?: string
@@ -620,6 +648,7 @@ export interface DesktopV3CacheState {
   plansBySession: Record<string, unknown>
   planRevisionsBySession: Record<string, unknown[]>
   permissionsBySession: Record<string, DesktopPermissionRecord[]>
+  permissionSummaryBySessionId: Record<string, DesktopPermissionSummary>
   usageBySession: Record<string, unknown>
   preferencesBySession: Record<string, unknown>
   agentModelPolicyBySession: Record<string, unknown>
