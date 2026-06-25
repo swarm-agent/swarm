@@ -330,6 +330,7 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	}
 	if permissionSvc, ok := permSvc.(*permission.Service); ok {
 		permissionSvc.SetHostedSync(NewManagedHostPermissionControlClient(server))
+		permissionSvc.SetSummaryRealtimePublisher(server.publishPermissionSummaryV3Realtime)
 	}
 	if sessionSvc != nil {
 		server.v3SessionExecutor = newSessionV3Executor(server)

@@ -614,6 +614,9 @@ func (s *Server) v3RealtimeMatchRecordWorkset(principal identity.Principal, reco
 		if !v3RealtimeSessionMatchesWorksetSelector(principal, session, workset.Selector) {
 			continue
 		}
+		if !v3RealtimeWorksetIncludesRecordResource(workset, record) {
+			continue
+		}
 		if workset.AutoSubscribeSessions {
 			return workset, true
 		}
@@ -807,6 +810,28 @@ func orderedV3RealtimeWorksets(worksets map[string]v3RealtimeWorksetSubscription
 	return out
 }
 
+func v3RealtimeWorksetIncludesRecordResource(workset v3RealtimeWorksetSubscription, record sessionruntime.RealtimeOutboxRecord) bool {
+	switch strings.TrimSpace(record.Event.EventType) {
+	case "permission.summary.updated":
+		return v3RealtimeWorksetIncludesResource(workset, "permission_summaries")
+	default:
+		return true
+	}
+}
+
+func v3RealtimeWorksetIncludesResource(workset v3RealtimeWorksetSubscription, resource string) bool {
+	resource = strings.TrimSpace(resource)
+	if resource == "" {
+		return false
+	}
+	for _, candidate := range workset.Resources {
+		if strings.TrimSpace(candidate) == resource {
+			return true
+		}
+	}
+	return false
+}
+
 func v3RealtimeAutoSubscriptionID(workset v3RealtimeWorksetSubscription, sessionID string) string {
 	base := strings.TrimSpace(workset.SubscriptionID)
 	if base == "" {
@@ -851,6 +876,11 @@ func (s *Server) sendV3RealtimeWorksetSessionFrame(conn *transportws.Conn, kind 
 		PrevRev:               record.EndpointSeq - 1,
 		EventType:             record.Event.EventType,
 		Projection:            &record.Projection,
+	}
+	if v3RealtimeWorksetIncludesResource(workset, "permission_summaries") {
+		if summary, ok := v3RealtimePermissionSummaryFromRecord(record); ok {
+			message.PermissionSummary = &summary
+		}
 	}
 	if kind == V3RealtimeKindWorksetSessionUpdated || kind == V3RealtimeKindWorksetSessionDiscovered {
 		if session, ok := s.v3RealtimeSessionSnapshotForRecord(record); ok {
@@ -951,6 +981,37 @@ func (s *Server) v3RealtimePrimeSubscriptionAtEndpointCursor(conn *transportws.C
 		lastSeq = record.Event.Seq
 	}
 	return lastSeq, true
+}
+
+func v3RealtimePermissionSummaryFromRecord(record sessionruntime.RealtimeOutboxRecord) (sessionsV3PermissionSummary, bool) {
+	if strings.TrimSpace(record.Event.EventType) != "permission.summary.updated" || len(record.Event.Payload) == 0 {
+		return sessionsV3PermissionSummary{}, false
+	}
+	var payload struct {
+		PermissionSummary *sessionsV3PermissionSummary `json:"permission_summary,omitempty"`
+		Summary           *sessionsV3PermissionSummary `json:"summary,omitempty"`
+		SessionID         string                       `json:"session_id,omitempty"`
+	}
+	if err := json.Unmarshal(record.Event.Payload, &payload); err != nil {
+		return sessionsV3PermissionSummary{}, false
+	}
+	summary := payload.PermissionSummary
+	if summary == nil {
+		summary = payload.Summary
+	}
+	if summary == nil {
+		return sessionsV3PermissionSummary{}, false
+	}
+	out := *summary
+	if strings.TrimSpace(out.SessionID) == "" {
+		out.SessionID = firstNonEmpty(strings.TrimSpace(payload.SessionID), strings.TrimSpace(record.SessionID))
+	}
+	if out.PendingApprovalCount <= 0 {
+		out.PendingApprovalCount = 0
+		out.OldestPendingAt = 0
+		out.NewestPendingAt = 0
+	}
+	return out, strings.TrimSpace(out.SessionID) != ""
 }
 
 func v3RealtimeRecordVisibleToPrincipal(principal identity.Principal, record sessionruntime.RealtimeOutboxRecord) bool {

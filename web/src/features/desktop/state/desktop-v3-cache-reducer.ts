@@ -1280,6 +1280,8 @@ export function applyWorksetSessionUpdated(
 
   if (frame.projection) state.projectionsBySession[sessionId] = frame.projection
   applyCurrentRunStateFrame(state, sessionId, frame.current_run_state)
+  const summary = normalizeDesktopPermissionSummary(frame.permission_summary, sessionId)
+  if (summary) applyPermissionSummary(state, sessionId, summary)
   state.realtime.endpointCursor = frame.endpoint_cursor ?? state.realtime.endpointCursor
 }
 

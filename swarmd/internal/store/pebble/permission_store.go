@@ -67,6 +67,13 @@ type PermissionSummary struct {
 	UpdatedAt       int64  `json:"updated_at"`
 }
 
+type PendingPermissionSessionStats struct {
+	SessionID       string
+	PendingCount    int
+	OldestPendingAt int64
+	NewestPendingAt int64
+}
+
 type RunWaitState struct {
 	SessionID            string   `json:"session_id"`
 	RunID                string   `json:"run_id"`
@@ -97,7 +104,6 @@ func (s *PermissionStore) GetPermission(sessionID, permissionID string) (Permiss
 
 func (s *PermissionStore) PutPermission(record PermissionRecord, previous *PermissionRecord) error {
 	record = sanitizePermissionRecord(record)
-	recordKey := KeyPermission(record.SessionID, record.ID)
 	serialized, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("marshal permission record: %w", err)
@@ -105,7 +111,50 @@ func (s *PermissionStore) PutPermission(record PermissionRecord, previous *Permi
 
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if err := putPermissionRecordInBatch(batch, record, previous, serialized); err != nil {
+		return err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return fmt.Errorf("commit permission batch: %w", err)
+	}
+	return nil
+}
 
+func (s *PermissionStore) PutPermissionWithSummary(record PermissionRecord, previous *PermissionRecord, summary PermissionSummary) error {
+	record = sanitizePermissionRecord(record)
+	summary = sanitizePermissionSummary(summary)
+	recordPayload, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal permission record: %w", err)
+	}
+	summaryPayload, err := json.Marshal(summary)
+	if err != nil {
+		return fmt.Errorf("marshal permission summary: %w", err)
+	}
+
+	var previousSummary PermissionSummary
+	previousSummaryOK, err := s.store.GetJSON(KeyPermissionSummary(summary.PrincipalID, summary.SessionID), &previousSummary)
+	if err != nil {
+		return err
+	}
+	previousSummary = sanitizePermissionSummary(previousSummary)
+
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := putPermissionRecordInBatch(batch, record, previous, recordPayload); err != nil {
+		return err
+	}
+	if err := putPermissionSummaryInBatch(batch, summary, summaryPayload, previousSummary, previousSummaryOK); err != nil {
+		return err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return fmt.Errorf("commit permission and summary batch: %w", err)
+	}
+	return nil
+}
+
+func putPermissionRecordInBatch(batch *pebble.Batch, record PermissionRecord, previous *PermissionRecord, serialized []byte) error {
+	recordKey := KeyPermission(record.SessionID, record.ID)
 	if err := batch.Set([]byte(recordKey), serialized, nil); err != nil {
 		return fmt.Errorf("set permission record: %w", err)
 	}
@@ -148,10 +197,6 @@ func (s *PermissionStore) PutPermission(record PermissionRecord, previous *Permi
 		if err := batch.Set([]byte(runPermKey), []byte(recordKey), nil); err != nil {
 			return fmt.Errorf("set run permission index: %w", err)
 		}
-	}
-
-	if err := batch.Commit(pebble.Sync); err != nil {
-		return fmt.Errorf("commit permission batch: %w", err)
 	}
 	return nil
 }
@@ -284,6 +329,16 @@ func (s *PermissionStore) PutSummary(summary PermissionSummary) error {
 	previous = sanitizePermissionSummary(previous)
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if err := putPermissionSummaryInBatch(batch, summary, payload, previous, previousOK); err != nil {
+		return err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return fmt.Errorf("commit permission summary batch: %w", err)
+	}
+	return nil
+}
+
+func putPermissionSummaryInBatch(batch *pebble.Batch, summary PermissionSummary, payload []byte, previous PermissionSummary, previousOK bool) error {
 	if err := batch.Set([]byte(KeyPermissionSummary(summary.PrincipalID, summary.SessionID)), payload, nil); err != nil {
 		return fmt.Errorf("set permission summary: %w", err)
 	}
@@ -305,9 +360,6 @@ func (s *PermissionStore) PutSummary(summary PermissionSummary) error {
 		if err := batch.Delete([]byte(pendingKey), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 			return fmt.Errorf("delete permission summary pending index: %w", err)
 		}
-	}
-	if err := batch.Commit(pebble.Sync); err != nil {
-		return fmt.Errorf("commit permission summary batch: %w", err)
 	}
 	return nil
 }
@@ -351,6 +403,81 @@ func (s *PermissionStore) ListPendingSummaries(accountScopeID, principalID strin
 		return out[i].OldestPendingAt < out[j].OldestPendingAt
 	})
 	return out, nil
+}
+
+func (s *PermissionStore) ListPendingPermissionSessionStats(limit int) ([]PendingPermissionSessionStats, error) {
+	if limit <= 0 {
+		limit = 1000000
+	}
+	bySession := map[string]*PendingPermissionSessionStats{}
+	err := s.store.IteratePrefix(PermissionPendingPrefix(""), limit, func(_ string, value []byte) error {
+		record, ok, err := decodePendingPermissionIndexValue(s.store.db, value)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		sessionID := strings.TrimSpace(record.SessionID)
+		if sessionID == "" {
+			return nil
+		}
+		stats := bySession[sessionID]
+		if stats == nil {
+			stats = &PendingPermissionSessionStats{SessionID: sessionID}
+			bySession[sessionID] = stats
+		}
+		stats.PendingCount++
+		createdAt := record.CreatedAt
+		if createdAt <= 0 {
+			createdAt = record.PermissionRequested
+		}
+		if createdAt > 0 && (stats.OldestPendingAt == 0 || createdAt < stats.OldestPendingAt) {
+			stats.OldestPendingAt = createdAt
+		}
+		if createdAt > stats.NewestPendingAt {
+			stats.NewestPendingAt = createdAt
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PendingPermissionSessionStats, 0, len(bySession))
+	for _, stats := range bySession {
+		out = append(out, *stats)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].OldestPendingAt == out[j].OldestPendingAt {
+			return out[i].SessionID < out[j].SessionID
+		}
+		return out[i].OldestPendingAt < out[j].OldestPendingAt
+	})
+	return out, nil
+}
+
+func (s *PermissionStore) ClearSummaryPendingIndex(accountScopeID, principalID string) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("permission store is not configured")
+	}
+	stale := make([]string, 0)
+	if err := s.store.IteratePrefix(PermissionSummaryPendingPrefix(accountScopeID, principalID), 1000000, func(key string, _ []byte) error {
+		stale = append(stale, key)
+		return nil
+	}); err != nil {
+		return err
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	for _, key := range stale {
+		if err := batch.Delete([]byte(key), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return fmt.Errorf("delete stale permission summary pending index: %w", err)
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return fmt.Errorf("commit permission summary pending clear: %w", err)
+	}
+	return nil
 }
 
 func (s *PermissionStore) RepairSummaryPendingIndex(accountScopeID, principalID string) error {

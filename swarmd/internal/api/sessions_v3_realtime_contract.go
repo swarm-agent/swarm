@@ -81,6 +81,7 @@ type V3RealtimeMessage struct {
 	Projection                 *sessionruntime.SessionProjection      `json:"projection,omitempty"`
 	Session                    *pebblestore.SessionSnapshot           `json:"session,omitempty"`
 	CurrentRunState            *pebblestore.V3SessionRunState         `json:"current_run_state,omitempty"`
+	PermissionSummary          *sessionsV3PermissionSummary           `json:"permission_summary,omitempty"`
 	ErrorCode                  string                                 `json:"error_code,omitempty"`
 	Error                      string                                 `json:"error,omitempty"`
 	Reason                     string                                 `json:"reason,omitempty"`

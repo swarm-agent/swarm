@@ -108,3 +108,96 @@ func TestSessionsV3SyncBootstrapPermissionSummariesIncludePendingOutsideRecentLi
 		t.Fatalf("sync scope resource_set missing permission_summaries: %q", got)
 	}
 }
+
+func TestPermissionSummaryUpdatedPublishesDurableV3RealtimeSummary(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "permission-summary-realtime.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
+	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), eventLog, nil)
+	permSvc.SetSessionResolver(sessionSvc)
+	_ = NewServer(nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, permSvc, nil, eventLog, stream.NewHub(eventLog))
+
+	principal := testPrincipal()
+	session, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		Title:          "Permission summary realtime",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace-summary-realtime",
+		Preference:     &pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"},
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	before, err := sessionSvc.CurrentRealtimeOutboxRevision()
+	if err != nil {
+		t.Fatalf("current realtime outbox revision: %v", err)
+	}
+
+	record, err := permSvc.CreatePending(permission.CreateInput{
+		SessionID:     session.ID,
+		RunID:         "run-summary-realtime",
+		CallID:        "call-summary-realtime",
+		ToolName:      "bash",
+		ToolArguments: "{\"cmd\":\"should-not-appear\"}",
+		Requirement:   "bash",
+		Mode:          sessionruntime.ModeAuto,
+	})
+	if err != nil {
+		t.Fatalf("create pending permission: %v", err)
+	}
+
+	rows, err := sessionSvc.ListRealtimeOutboxAfter(before, 10)
+	if err != nil {
+		t.Fatalf("list realtime outbox after create: %v", err)
+	}
+	created := findPermissionSummaryRealtimeEvent(t, rows, session.ID)
+	if created.PendingApprovalCount != 1 || created.SessionID != session.ID {
+		t.Fatalf("created summary event = %+v", created)
+	}
+
+	beforeResolve, err := sessionSvc.CurrentRealtimeOutboxRevision()
+	if err != nil {
+		t.Fatalf("current realtime outbox revision before resolve: %v", err)
+	}
+	if _, err := permSvc.Resolve(session.ID, record.ID, permission.DecisionDeny, "done"); err != nil {
+		t.Fatalf("resolve permission: %v", err)
+	}
+	rows, err = sessionSvc.ListRealtimeOutboxAfter(beforeResolve, 10)
+	if err != nil {
+		t.Fatalf("list realtime outbox after resolve: %v", err)
+	}
+	resolved := findPermissionSummaryRealtimeEvent(t, rows, session.ID)
+	if resolved.PendingApprovalCount != 0 || resolved.OldestPendingAt != 0 || resolved.NewestPendingAt != 0 {
+		t.Fatalf("resolved summary event = %+v", resolved)
+	}
+}
+
+func findPermissionSummaryRealtimeEvent(t *testing.T, rows []sessionruntime.RealtimeOutboxRecord, sessionID string) sessionsV3PermissionSummary {
+	t.Helper()
+	for _, row := range rows {
+		if row.SessionID != sessionID || row.Event.EventType != "permission.summary.updated" {
+			continue
+		}
+		if bytes.Contains(row.Event.Payload, []byte("tool_arguments")) || bytes.Contains(row.Event.Payload, []byte("should-not-appear")) {
+			t.Fatalf("summary event leaked permission detail payload: %s", string(row.Event.Payload))
+		}
+		var payload struct {
+			PermissionSummary sessionsV3PermissionSummary `json:"permission_summary"`
+		}
+		if err := json.Unmarshal(row.Event.Payload, &payload); err != nil {
+			t.Fatalf("decode summary payload: %v", err)
+		}
+		return payload.PermissionSummary
+	}
+	t.Fatalf("missing permission.summary.updated event in rows: %+v", rows)
+	return sessionsV3PermissionSummary{}
+}

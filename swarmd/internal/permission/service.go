@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,6 +38,7 @@ type Service struct {
 	store                   *pebblestore.PermissionStore
 	events                  *pebblestore.EventLog
 	publish                 func(pebblestore.EventEnvelope)
+	summaryRealtimePublish  func(sessionID string, summary pebblestore.PermissionSummary) error
 	sessions                sessionLookup
 	hosted                  HostedPermissionSync
 	notifications           *notification.Service
@@ -147,6 +149,13 @@ func (s *Service) SetSessionResolver(resolver sessionLookup) {
 	s.sessions = resolver
 }
 
+func (s *Service) SetSummaryRealtimePublisher(publish func(sessionID string, summary pebblestore.PermissionSummary) error) {
+	if s == nil {
+		return
+	}
+	s.summaryRealtimePublish = publish
+}
+
 func (s *Service) SetHostedSync(sync HostedPermissionSync) {
 	if s == nil {
 		return
@@ -252,7 +261,40 @@ func (s *Service) ListPendingSummaries(accountScopeID, principalID string, limit
 }
 
 func (s *Service) RepairSummaryPendingIndex(accountScopeID, principalID string) error {
-	return s.store.RepairSummaryPendingIndex(strings.TrimSpace(accountScopeID), strings.TrimSpace(principalID))
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	principalID = strings.TrimSpace(principalID)
+	if s == nil || s.store == nil {
+		return errors.New("permission service is not configured")
+	}
+	stats, err := s.store.ListPendingPermissionSessionStats(1000000)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.store.ClearSummaryPendingIndex(accountScopeID, principalID); err != nil {
+		return err
+	}
+	now := time.Now().UnixMilli()
+	for _, stat := range stats {
+		summary, err := s.summaryForSessionStatsLocked(stat.SessionID, stat.PendingCount, stat.OldestPendingAt, stat.NewestPendingAt, now)
+		if err != nil {
+			return err
+		}
+		if accountScopeID != "" && strings.TrimSpace(summary.AccountScopeID) != accountScopeID {
+			continue
+		}
+		if principalID != "" && strings.TrimSpace(summary.PrincipalID) != principalID {
+			continue
+		}
+		if summary.PendingCount <= 0 || strings.TrimSpace(summary.SessionID) == "" {
+			continue
+		}
+		if err := s.store.PutSummary(summary); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) PendingCount(sessionID string) (int, error) {
@@ -440,14 +482,14 @@ func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord
 		}
 	}
 
-	if err := s.store.PutPermission(record, previous); err != nil {
+	summary, err := s.summaryForMutationLocked(sessionID, previous, record, now)
+	if err != nil {
+		return pebblestore.PermissionRecord{}, err
+	}
+	if err := s.store.PutPermissionWithSummary(record, previous, summary); err != nil {
 		return pebblestore.PermissionRecord{}, err
 	}
 	if err := s.attachRunWaitLocked(record, now); err != nil {
-		return pebblestore.PermissionRecord{}, err
-	}
-	summary, err := s.refreshSummaryLocked(sessionID, now)
-	if err != nil {
 		return pebblestore.PermissionRecord{}, err
 	}
 
@@ -455,7 +497,7 @@ func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord
 	_, _ = s.emitLocked("session:"+sessionID, "permission.requested", sessionID, map[string]any{
 		"permission": record,
 	})
-	_, _ = s.emitLocked("user:"+s.principalID, "permission.summary.updated", sessionID, summary)
+	s.publishPermissionSummaryUpdatedLocked(sessionID, summary)
 	return record, nil
 }
 
@@ -662,7 +704,11 @@ func (s *Service) CancelRunPending(sessionID, runID, reason string) ([]pebblesto
 		updated.Output = permissionResolutionSummary(updated.ToolName, updated.Status, updated.Reason)
 		updated.Error = permissionResolutionError(updated.Status)
 		updated.DurationMS = permissionDurationMS(updated)
-		if err := s.store.PutPermission(updated, &record); err != nil {
+		summary, err := s.summaryForMutationLocked(sessionID, &record, updated, now)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.store.PutPermissionWithSummary(updated, &record, summary); err != nil {
 			return nil, err
 		}
 		s.detachRunWaitLocked(updated, now)
@@ -680,7 +726,7 @@ func (s *Service) CancelRunPending(sessionID, runID, reason string) ([]pebblesto
 		if err != nil {
 			return nil, err
 		}
-		_, _ = s.emitLocked("user:"+s.principalID, "permission.summary.updated", sessionID, summary)
+		s.publishPermissionSummaryUpdatedLocked(sessionID, summary)
 	}
 
 	return cancelled, nil
@@ -721,21 +767,21 @@ func (s *Service) resolveLocked(sessionID, permissionID, action, reason, approve
 	reasonKind, reasonChars := classifyPermissionReason(updated.Reason)
 	permissionDebugf("resolve.apply session=%s permission=%s run=%s call=%s tool=%s status=%s decision=%s reason_kind=%s reason_chars=%d approved_args_chars=%d approved_args_preview=%q", updated.SessionID, updated.ID, updated.RunID, updated.CallID, updated.ToolName, updated.Status, updated.Decision, reasonKind, reasonChars, len(strings.TrimSpace(updated.ApprovedArguments)), permissionDebugPreview(updated.ApprovedArguments, 180))
 
-	if err := s.store.PutPermission(updated, &record); err != nil {
-		return pebblestore.PermissionRecord{}, false, err
-	}
-	s.detachRunWaitLocked(updated, now)
-	summary, err := s.refreshSummaryLocked(sessionID, now)
+	summary, err := s.summaryForMutationLocked(sessionID, &record, updated, now)
 	if err != nil {
 		return pebblestore.PermissionRecord{}, false, err
 	}
+	if err := s.store.PutPermissionWithSummary(updated, &record, summary); err != nil {
+		return pebblestore.PermissionRecord{}, false, err
+	}
+	s.detachRunWaitLocked(updated, now)
 
 	s.notifyWaitersLocked(updated)
 	s.syncNotification(updated, s.localSwarmID(), s.originSwarmIDForSession(sessionID), "permission.updated")
 	_, _ = s.emitLocked("session:"+sessionID, "permission.updated", sessionID, map[string]any{
 		"permission": updated,
 	})
-	_, _ = s.emitLocked("user:"+s.principalID, "permission.summary.updated", sessionID, summary)
+	s.publishPermissionSummaryUpdatedLocked(sessionID, summary)
 	return updated, true, nil
 }
 
@@ -803,6 +849,52 @@ func (s *Service) refreshSummaryLocked(sessionID string, now int64) (pebblestore
 	if err != nil {
 		return pebblestore.PermissionSummary{}, err
 	}
+	summary, err := s.summaryForSessionStatsLocked(sessionID, count, oldest, newest, now)
+	if err != nil {
+		return pebblestore.PermissionSummary{}, err
+	}
+	if err := s.store.PutSummary(summary); err != nil {
+		return pebblestore.PermissionSummary{}, err
+	}
+	return summary, nil
+}
+
+func (s *Service) summaryForMutationLocked(sessionID string, previous *pebblestore.PermissionRecord, next pebblestore.PermissionRecord, now int64) (pebblestore.PermissionSummary, error) {
+	pending, err := s.store.ListPendingPermissions(sessionID, 1000000)
+	if err != nil {
+		return pebblestore.PermissionSummary{}, err
+	}
+	count := 0
+	oldest := int64(0)
+	newest := int64(0)
+	add := func(record pebblestore.PermissionRecord) {
+		if !strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending) {
+			return
+		}
+		createdAt := firstNonZero(record.CreatedAt, record.PermissionRequested)
+		count++
+		if createdAt > 0 && (oldest == 0 || createdAt < oldest) {
+			oldest = createdAt
+		}
+		if createdAt > newest {
+			newest = createdAt
+		}
+	}
+	previousID := ""
+	if previous != nil {
+		previousID = strings.TrimSpace(previous.ID)
+	}
+	for _, record := range pending {
+		if previousID != "" && strings.TrimSpace(record.ID) == previousID {
+			continue
+		}
+		add(record)
+	}
+	add(next)
+	return s.summaryForSessionStatsLocked(sessionID, count, oldest, newest, now)
+}
+
+func (s *Service) summaryForSessionStatsLocked(sessionID string, count int, oldest, newest, now int64) (pebblestore.PermissionSummary, error) {
 	accountScopeID := ""
 	principalID := strings.TrimSpace(s.principalID)
 	if s.sessions != nil {
@@ -815,19 +907,54 @@ func (s *Service) refreshSummaryLocked(sessionID string, now int64) (pebblestore
 			}
 		}
 	}
-	summary := pebblestore.PermissionSummary{
+	return pebblestore.PermissionSummary{
 		AccountScopeID:  accountScopeID,
 		PrincipalID:     principalID,
-		SessionID:       sessionID,
+		SessionID:       strings.TrimSpace(sessionID),
 		PendingCount:    count,
 		OldestPendingAt: oldest,
 		NewestPendingAt: newest,
 		UpdatedAt:       now,
+	}, nil
+}
+
+func (s *Service) publishPermissionSummaryUpdatedLocked(sessionID string, summary pebblestore.PermissionSummary) {
+	payload := permissionSummaryUpdatePayload(summary)
+	streamPrincipalID := strings.TrimSpace(summary.PrincipalID)
+	if streamPrincipalID == "" {
+		streamPrincipalID = strings.TrimSpace(s.principalID)
 	}
-	if err := s.store.PutSummary(summary); err != nil {
-		return pebblestore.PermissionSummary{}, err
+	_, _ = s.emitLocked("user:"+streamPrincipalID, "permission.summary.updated", sessionID, payload)
+	if s.summaryRealtimePublish == nil {
+		return
 	}
-	return summary, nil
+	if err := s.summaryRealtimePublish(sessionID, summary); err != nil {
+		log.Printf("warning: permission summary realtime publish failed session=%q: %v", sessionID, err)
+	}
+}
+
+type permissionSummaryUpdatedPayload struct {
+	SessionID            string `json:"session_id"`
+	PendingApprovalCount int    `json:"pending_approval_count"`
+	OldestPendingAt      int64  `json:"oldest_pending_at"`
+	NewestPendingAt      int64  `json:"newest_pending_at"`
+	UpdatedAt            int64  `json:"updated_at"`
+}
+
+func permissionSummaryUpdatePayload(summary pebblestore.PermissionSummary) permissionSummaryUpdatedPayload {
+	payload := permissionSummaryUpdatedPayload{
+		SessionID:            strings.TrimSpace(summary.SessionID),
+		PendingApprovalCount: summary.PendingCount,
+		OldestPendingAt:      summary.OldestPendingAt,
+		NewestPendingAt:      summary.NewestPendingAt,
+		UpdatedAt:            summary.UpdatedAt,
+	}
+	if payload.PendingApprovalCount <= 0 {
+		payload.PendingApprovalCount = 0
+		payload.OldestPendingAt = 0
+		payload.NewestPendingAt = 0
+	}
+	return payload
 }
 
 func (s *Service) emitLocked(streamID, eventType, entityID string, payload any) (*pebblestore.EventEnvelope, error) {
@@ -928,7 +1055,11 @@ func (s *Service) MarkToolStarted(sessionID, runID, callID string, step int, sta
 	record.ExecutionStatus = pebblestore.PermissionExecRunning
 	record.UpdatedAt = startedAt
 	record.Error = ""
-	if err := s.store.PutPermission(record, &previous); err != nil {
+	summary, err := s.summaryForMutationLocked(sessionID, &previous, record, startedAt)
+	if err != nil {
+		return pebblestore.PermissionRecord{}, false, err
+	}
+	if err := s.store.PutPermissionWithSummary(record, &previous, summary); err != nil {
 		return pebblestore.PermissionRecord{}, false, err
 	}
 	s.syncNotification(record, s.localSwarmID(), s.originSwarmIDForSession(sessionID), "permission.updated")
@@ -991,7 +1122,11 @@ func (s *Service) MarkToolCompleted(sessionID, runID, callID string, step int, r
 	if record.Status == "" {
 		record.Status = pebblestore.PermissionStatusNotRequired
 	}
-	if err := s.store.PutPermission(record, &previous); err != nil {
+	summary, err := s.summaryForMutationLocked(sessionID, &previous, record, completedAt)
+	if err != nil {
+		return pebblestore.PermissionRecord{}, false, err
+	}
+	if err := s.store.PutPermissionWithSummary(record, &previous, summary); err != nil {
 		return pebblestore.PermissionRecord{}, false, err
 	}
 	s.syncNotification(record, s.localSwarmID(), s.originSwarmIDForSession(sessionID), "permission.updated")
@@ -1521,10 +1656,14 @@ func (s *Service) storeMirroredPermissionLocked(record pebblestore.PermissionRec
 	if ok {
 		previousPtr = &previous
 	}
-	if err := s.store.PutPermission(record, previousPtr); err != nil {
+	now := firstNonZero(record.UpdatedAt, record.ResolvedAt, record.CompletedAt, record.PermissionRequested, record.CreatedAt, time.Now().UnixMilli())
+	summary, err := s.summaryForMutationLocked(record.SessionID, previousPtr, record, now)
+	if err != nil {
 		return err
 	}
-	now := firstNonZero(record.UpdatedAt, record.ResolvedAt, record.CompletedAt, record.PermissionRequested, record.CreatedAt, time.Now().UnixMilli())
+	if err := s.store.PutPermissionWithSummary(record, previousPtr, summary); err != nil {
+		return err
+	}
 	if strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending) {
 		if err := s.attachRunWaitLocked(record, now); err != nil {
 			return err
@@ -1534,6 +1673,7 @@ func (s *Service) storeMirroredPermissionLocked(record pebblestore.PermissionRec
 		s.notifyWaitersLocked(record)
 	}
 	s.syncNotification(record, s.hostSwarmIDForSession(record.SessionID), s.originSwarmIDForSession(record.SessionID), permissionNotificationEventType(record))
+	s.publishPermissionSummaryUpdatedLocked(record.SessionID, summary)
 	return nil
 }
 

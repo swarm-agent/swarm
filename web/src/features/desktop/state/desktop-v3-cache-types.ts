@@ -345,6 +345,7 @@ export interface RealtimeMessage {
   event?: V3SessionEvent
   session?: SessionSnapshot
   current_run_state?: V3SessionRunState
+  permission_summary?: DesktopPermissionSummaryWire
   workset_subscription_id?: string
   auto_subscribed?: boolean
   projection?: V3SessionProjection
