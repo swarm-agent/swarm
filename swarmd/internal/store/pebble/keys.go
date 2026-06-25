@@ -1012,6 +1012,22 @@ func KeyPermissionSummary(principalID, sessionID string) string {
 	return fmt.Sprintf("perm_summary/%s/%s", keyPart(principalID), keyPart(sessionID))
 }
 
+func KeyPermissionSummaryPending(accountScopeID, principalID, sessionID string) string {
+	return fmt.Sprintf("permission-summary-pending/%s/%s/%s", keyPart(accountScopeID), keyPart(principalID), keyPart(sessionID))
+}
+
+func PermissionSummaryPendingPrefix(accountScopeID, principalID string) string {
+	accountPart := keyPart(accountScopeID)
+	principalPart := keyPart(principalID)
+	if accountPart == "" {
+		return "permission-summary-pending/"
+	}
+	if principalPart == "" {
+		return fmt.Sprintf("permission-summary-pending/%s/", accountPart)
+	}
+	return fmt.Sprintf("permission-summary-pending/%s/%s/", accountPart, principalPart)
+}
+
 func KeyPermissionPolicy() string {
 	return "perm_policy/current"
 }

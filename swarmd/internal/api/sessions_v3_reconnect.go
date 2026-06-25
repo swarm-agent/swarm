@@ -167,6 +167,7 @@ func reconnectWorksetSyncSelector(req sessionsV3ReconnectWorksetRequest) session
 	if selector.Recent.Limit == 0 && req.Recent.Limit != 0 {
 		selector.Recent = req.Recent
 	}
+	selector.Attention.PendingPermissions = selector.Attention.PendingPermissions || req.Selector.Attention.PendingPermissions
 	if selector.Recent.Limit == 0 && strings.TrimSpace(selector.Kind) == "workspace" {
 		selector.Recent.Limit = sessionsV3WorksetMaxResourcePageSize
 	}
@@ -177,6 +178,7 @@ func reconnectWorksetSyncSelector(req sessionsV3ReconnectWorksetRequest) session
 		WorkspacePaths: selector.WorkspacePaths,
 		SessionIDs:     selector.SessionIDs,
 		Recent:         selector.Recent,
+		Attention:      selector.Attention,
 	}
 }
 

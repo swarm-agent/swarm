@@ -721,7 +721,7 @@ func canonicalV3RealtimeWorksetSelector(selector V3RealtimeWorksetSelector) (V3R
 
 func v3RealtimeWorksetResourceAllowed(resource string) bool {
 	switch strings.TrimSpace(resource) {
-	case "sessions", "projections", "events", "messages", "run_intents", "current_run_state", "active_plan", "plan_revisions", "membership", "tombstones":
+	case "sessions", "projections", "events", "messages", "run_intents", "current_run_state", "permission_summaries", "active_plan", "plan_revisions", "membership", "tombstones":
 		return true
 	default:
 		return false

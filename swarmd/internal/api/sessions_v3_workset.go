@@ -60,13 +60,14 @@ type sessionsV3WorksetHistory struct {
 }
 
 type sessionsV3WorksetResources struct {
-	Messages        bool `json:"messages,omitempty"`
-	Events          bool `json:"events,omitempty"`
-	RunIntents      bool `json:"run_intents,omitempty"`
-	CurrentRunState bool `json:"current_run_state,omitempty"`
-	SessionView     bool `json:"session_view,omitempty"`
-	ActivePlan      bool `json:"active_plan,omitempty"`
-	PlanRevisions   bool `json:"plan_revisions,omitempty"`
+	Messages            bool `json:"messages,omitempty"`
+	Events              bool `json:"events,omitempty"`
+	RunIntents          bool `json:"run_intents,omitempty"`
+	CurrentRunState     bool `json:"current_run_state,omitempty"`
+	SessionView         bool `json:"session_view,omitempty"`
+	PermissionSummaries bool `json:"permission_summaries,omitempty"`
+	ActivePlan          bool `json:"active_plan,omitempty"`
+	PlanRevisions       bool `json:"plan_revisions,omitempty"`
 }
 
 type sessionsV3ResolvedWorksetOptions struct {

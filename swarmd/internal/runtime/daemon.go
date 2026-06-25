@@ -382,6 +382,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	if err := permissionSvc.ReconcilePendingRuns("daemon restarted"); err != nil {
 		log.Printf("warning: reconcile pending permissions: %v", err)
 	}
+	if err := permissionSvc.RepairSummaryPendingIndex("", ""); err != nil {
+		log.Printf("warning: repair permission summary pending index: %v", err)
+	}
 	flowStore := pebblestore.NewFlowStore(store)
 	toolRuntime.SetManageFlowServices(flowStore, workspaceSvc)
 	if err := reconcileFlowRunsFromLifecycles(flowStore, sessionSvc); err != nil {

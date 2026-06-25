@@ -236,6 +236,7 @@ type remoteDeployService interface {
 type permissionService interface {
 	ListPermissions(sessionID string, limit int) ([]pebblestore.PermissionRecord, error)
 	ListPending(sessionID string, limit int) ([]pebblestore.PermissionRecord, error)
+	ListPendingSummaries(accountScopeID, principalID string, limit int) ([]pebblestore.PermissionSummary, error)
 	PendingCount(sessionID string) (int, error)
 	CreatePending(input permission.CreateInput) (pebblestore.PermissionRecord, error)
 	Resolve(sessionID, permissionID, action, reason string) (pebblestore.PermissionRecord, error)

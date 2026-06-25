@@ -23,6 +23,7 @@ type sessionsV3SyncBootstrapRequest struct {
 	Selector      sessionsV3SyncSelector          `json:"selector,omitempty"`
 	SessionIDs    []string                        `json:"session_ids,omitempty"`
 	Global        bool                            `json:"global,omitempty"`
+	Attention     sessionsV3WorksetAttention      `json:"attention,omitempty"`
 	Workspace     sessionsV3WorksetWorkspace      `json:"workspace,omitempty"`
 	Recent        sessionsV3WorksetRecent         `json:"recent,omitempty"`
 	History       sessionsV3WorksetHistory        `json:"history,omitempty"`
@@ -45,13 +46,18 @@ type sessionsV3SyncHydrateRequest struct {
 const sessionsV3SyncHydrateMaxSessionViews = 8
 
 type sessionsV3SyncSelector struct {
-	Kind           string                  `json:"kind,omitempty"`
-	Global         bool                    `json:"global,omitempty"`
-	WorkspacePath  string                  `json:"workspace_path,omitempty"`
-	WorkspacePaths []string                `json:"workspace_paths,omitempty"`
-	CWDPath        string                  `json:"cwd_path,omitempty"`
-	SessionIDs     []string                `json:"session_ids,omitempty"`
-	Recent         sessionsV3WorksetRecent `json:"recent,omitempty"`
+	Kind           string                     `json:"kind,omitempty"`
+	Global         bool                       `json:"global,omitempty"`
+	WorkspacePath  string                     `json:"workspace_path,omitempty"`
+	WorkspacePaths []string                   `json:"workspace_paths,omitempty"`
+	CWDPath        string                     `json:"cwd_path,omitempty"`
+	SessionIDs     []string                   `json:"session_ids,omitempty"`
+	Recent         sessionsV3WorksetRecent    `json:"recent,omitempty"`
+	Attention      sessionsV3WorksetAttention `json:"attention,omitempty"`
+}
+
+type sessionsV3WorksetAttention struct {
+	PendingPermissions bool `json:"pending_permissions,omitempty"`
 }
 
 type sessionsV3KnownState struct {
@@ -61,9 +67,10 @@ type sessionsV3KnownState struct {
 }
 
 type sessionsV3ResolvedSyncOptions struct {
-	Snapshot  pebblestore.V3SyncSnapshotOptions
-	Principal identity.Principal
-	Surface   string
+	Snapshot                          pebblestore.V3SyncSnapshotOptions
+	Principal                         identity.Principal
+	Surface                           string
+	IncludePermissionSummaryAttention bool
 }
 
 func (s *Server) handleSessionsV3SyncBootstrap(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +145,9 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 	if req.Resources.SessionView {
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("sync bootstrap does not support resources.session_view; use /v3/sync/hydrate")
 	}
+	if selector.Attention.PendingPermissions {
+		req.Resources.PermissionSummaries = true
+	}
 	history, err := sessionsV3SyncHistoryOptionsFromRequest(req.History, req.Resources)
 	if err != nil {
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, err
@@ -159,8 +169,9 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 			IncludeCurrentRunState: req.Resources.CurrentRunState || req.IncludeActive,
 			IncludeActiveSessions:  req.IncludeActive,
 		},
-		Principal: principal,
-		Surface:   normalizeV3SyncSurface(req.Surface),
+		Principal:                         principal,
+		Surface:                           normalizeV3SyncSurface(req.Surface),
+		IncludePermissionSummaryAttention: req.Resources.PermissionSummaries,
 	}
 
 	if strings.TrimSpace(selector.CWDPath) != "" || strings.TrimSpace(selector.Kind) == "tui" {
@@ -206,8 +217,9 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 			// membership beyond the explicit session_ids selector.
 			IncludeActiveSessions: false,
 		},
-		Principal: principal,
-		Surface:   normalizeV3SyncSurface(req.Surface),
+		Principal:                         principal,
+		Surface:                           normalizeV3SyncSurface(req.Surface),
+		IncludePermissionSummaryAttention: false,
 	}
 
 	resources := sessionsV3SyncResourceSet(req.Resources, req.History, req.IncludeActive)
@@ -236,7 +248,7 @@ func canonicalV3SyncSessionIDs(sessionIDs []string) []string {
 }
 
 func canonicalSessionsV3SyncBootstrapSelector(req sessionsV3SyncBootstrapRequest) (sessionsV3SyncSelector, []string, error) {
-	selector := normalizeSessionsV3SyncSelector(req.SelectorKind, req.Selector, req.SessionIDs, req.Global, req.Workspace, req.Recent)
+	selector := normalizeSessionsV3SyncSelector(req.SelectorKind, req.Selector, req.SessionIDs, req.Global, req.Workspace, req.Recent, req.Attention)
 	if err := validateSessionsV3SyncBootstrapSelectorConflicts(req, selector); err != nil {
 		return sessionsV3SyncSelector{}, nil, err
 	}
@@ -377,7 +389,7 @@ func sameV3SyncRecent(a, b sessionsV3WorksetRecent) bool {
 	return true
 }
 
-func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelector, sessionIDs []string, global bool, workspace sessionsV3WorksetWorkspace, recent sessionsV3WorksetRecent) sessionsV3SyncSelector {
+func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelector, sessionIDs []string, global bool, workspace sessionsV3WorksetWorkspace, recent sessionsV3WorksetRecent, attention sessionsV3WorksetAttention) sessionsV3SyncSelector {
 	selector.Kind = strings.TrimSpace(selector.Kind)
 	if selector.Kind == "" {
 		selector.Kind = strings.TrimSpace(kind)
@@ -392,6 +404,7 @@ func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelecto
 	if selector.Recent.Limit == 0 && recent.Limit != 0 {
 		selector.Recent = recent
 	}
+	selector.Attention.PendingPermissions = selector.Attention.PendingPermissions || attention.PendingPermissions
 	selector.Global = selector.Global || global
 	if selector.Kind == "global" {
 		selector.Global = true
@@ -414,31 +427,32 @@ func normalizeSessionsV3SyncSelector(kind string, selector sessionsV3SyncSelecto
 }
 
 type sessionsV3SyncSnapshotResponseBody struct {
-	OK                        bool                                                     `json:"ok"`
-	Rev                       uint64                                                   `json:"rev"`
-	SnapshotEndpointCursor    string                                                   `json:"snapshot_endpoint_cursor"`
-	SessionsByID              map[string]pebblestore.SessionSnapshot                   `json:"sessions_by_id"`
-	ProjectionsBySession      map[string]pebblestore.V3SessionProjection               `json:"projections_by_session"`
-	MessagesBySession         map[string][]pebblestore.MessageSnapshot                 `json:"messages_by_session"`
-	EventsBySession           map[string][]pebblestore.V3SessionEvent                  `json:"events_by_session"`
-	RunIntentsBySession       map[string][]pebblestore.V3SessionRunIntent              `json:"run_intents_by_session"`
-	CurrentRunStateBySession  map[string]pebblestore.V3SessionRunState                 `json:"current_run_state_by_session,omitempty"`
-	ActiveSessionIDs          []string                                                 `json:"active_session_ids,omitempty"`
-	SessionViewsByID          map[string]sessionsV3SessionView                         `json:"session_views_by_id,omitempty"`
-	Realtime                  *sessionsV3RealtimeBootstrap                             `json:"realtime,omitempty"`
-	HistoryManifestsBySession map[string][]pebblestore.V3SessionHistoryChunkDescriptor `json:"history_manifests_by_session"`
-	HistoryChunksByID         map[string]pebblestore.V3SessionHistoryChunk             `json:"history_chunks_by_id"`
-	Omissions                 []pebblestore.V3SyncSnapshotOmission                     `json:"omissions"`
-	Pagination                pebblestore.V3SyncSnapshotPagination                     `json:"pagination"`
-	Watermarks                pebblestore.V3SyncSnapshotWatermarks                     `json:"watermarks"`
-	SessionOrder              []string                                                 `json:"session_order"`
-	SyncScope                 sessionsV3SyncScopeResponse                              `json:"sync_scope"`
-	ScopeID                   string                                                   `json:"scope_id"`
-	Selector                  any                                                      `json:"selector"`
-	KnownSessions             map[string]sessionsV3KnownState                          `json:"known_sessions"`
-	TombstonesBySession       map[string]pebblestore.V3SessionTombstone                `json:"tombstones_by_session"`
-	ReplayInstructions        sessionsV3SyncReplayInstructionsResponse                 `json:"replay_instructions"`
-	logTimings                *sessionsV3SyncBootstrapTimings                          `json:"-"`
+	OK                           bool                                                     `json:"ok"`
+	Rev                          uint64                                                   `json:"rev"`
+	SnapshotEndpointCursor       string                                                   `json:"snapshot_endpoint_cursor"`
+	SessionsByID                 map[string]pebblestore.SessionSnapshot                   `json:"sessions_by_id"`
+	ProjectionsBySession         map[string]pebblestore.V3SessionProjection               `json:"projections_by_session"`
+	MessagesBySession            map[string][]pebblestore.MessageSnapshot                 `json:"messages_by_session"`
+	EventsBySession              map[string][]pebblestore.V3SessionEvent                  `json:"events_by_session"`
+	RunIntentsBySession          map[string][]pebblestore.V3SessionRunIntent              `json:"run_intents_by_session"`
+	CurrentRunStateBySession     map[string]pebblestore.V3SessionRunState                 `json:"current_run_state_by_session,omitempty"`
+	PermissionSummariesBySession map[string]sessionsV3PermissionSummary                   `json:"permission_summaries_by_session,omitempty"`
+	ActiveSessionIDs             []string                                                 `json:"active_session_ids,omitempty"`
+	SessionViewsByID             map[string]sessionsV3SessionView                         `json:"session_views_by_id,omitempty"`
+	Realtime                     *sessionsV3RealtimeBootstrap                             `json:"realtime,omitempty"`
+	HistoryManifestsBySession    map[string][]pebblestore.V3SessionHistoryChunkDescriptor `json:"history_manifests_by_session"`
+	HistoryChunksByID            map[string]pebblestore.V3SessionHistoryChunk             `json:"history_chunks_by_id"`
+	Omissions                    []pebblestore.V3SyncSnapshotOmission                     `json:"omissions"`
+	Pagination                   pebblestore.V3SyncSnapshotPagination                     `json:"pagination"`
+	Watermarks                   pebblestore.V3SyncSnapshotWatermarks                     `json:"watermarks"`
+	SessionOrder                 []string                                                 `json:"session_order"`
+	SyncScope                    sessionsV3SyncScopeResponse                              `json:"sync_scope"`
+	ScopeID                      string                                                   `json:"scope_id"`
+	Selector                     any                                                      `json:"selector"`
+	KnownSessions                map[string]sessionsV3KnownState                          `json:"known_sessions"`
+	TombstonesBySession          map[string]pebblestore.V3SessionTombstone                `json:"tombstones_by_session"`
+	ReplayInstructions           sessionsV3SyncReplayInstructionsResponse                 `json:"replay_instructions"`
+	logTimings                   *sessionsV3SyncBootstrapTimings                          `json:"-"`
 }
 
 type sessionsV3RealtimeBootstrap struct {
@@ -479,6 +493,14 @@ type sessionsV3SessionView struct {
 	UsageSummary       *pebblestore.SessionUsageSummary `json:"usage_summary,omitempty"`
 	CurrentRunState    *pebblestore.V3SessionRunState   `json:"current_run_state,omitempty"`
 	ActivePlan         *pebblestore.SessionPlanSnapshot `json:"active_plan,omitempty"`
+}
+
+type sessionsV3PermissionSummary struct {
+	SessionID            string `json:"session_id"`
+	PendingApprovalCount int    `json:"pending_approval_count"`
+	OldestPendingAt      int64  `json:"oldest_pending_at"`
+	NewestPendingAt      int64  `json:"newest_pending_at"`
+	UpdatedAt            int64  `json:"updated_at"`
 }
 
 type sessionsV3SyncResolvedPreference struct {
@@ -569,6 +591,7 @@ func sessionsV3RealtimeBootstrapWorksetSelector(selector sessionsV3SyncSelector)
 		WorkspacePaths: selector.WorkspacePaths,
 		SessionIDs:     selector.SessionIDs,
 		Recent:         selector.Recent,
+		Attention:      selector.Attention,
 	}
 	switch kind {
 	case "", "tui":
@@ -599,6 +622,20 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 	}
 	if timings != nil {
 		timings.scopeDur = time.Since(phaseStart)
+	}
+
+	var permissionSummaries map[string]sessionsV3PermissionSummary
+	if sessionsV3SyncResourcesInclude(resources, "permission_summaries") {
+		var err error
+		permissionSummaries, err = s.sessionsV3PermissionSummaries(options.Principal)
+		if err != nil {
+			return sessionsV3SyncSnapshotResponseBody{}, err
+		}
+		if options.IncludePermissionSummaryAttention {
+			for sessionID := range permissionSummaries {
+				options.Snapshot.SessionIDs = append(options.Snapshot.SessionIDs, sessionID)
+			}
+		}
 	}
 
 	phaseStart = time.Now()
@@ -642,23 +679,24 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 	}
 
 	response := sessionsV3SyncSnapshotResponseBody{
-		OK:                        true,
-		Rev:                       snapshot.Rev,
-		SnapshotEndpointCursor:    snapshotEndpointCursor,
-		SessionsByID:              sessionsV3SyncSessionShells(snapshot.SessionsByID),
-		ProjectionsBySession:      snapshot.ProjectionsBySession,
-		MessagesBySession:         snapshot.MessagesBySession,
-		EventsBySession:           snapshot.EventsBySession,
-		RunIntentsBySession:       snapshot.RunIntentsBySession,
-		CurrentRunStateBySession:  snapshot.CurrentRunStateBySession,
-		ActiveSessionIDs:          snapshot.ActiveSessionIDs,
-		SessionViewsByID:          nil,
-		HistoryManifestsBySession: snapshot.HistoryManifestsBySession,
-		HistoryChunksByID:         snapshot.HistoryChunksByID,
-		Omissions:                 snapshot.Omissions,
-		Pagination:                snapshot.Pagination,
-		Watermarks:                snapshot.Watermarks,
-		SessionOrder:              snapshot.SessionOrder,
+		OK:                           true,
+		Rev:                          snapshot.Rev,
+		SnapshotEndpointCursor:       snapshotEndpointCursor,
+		SessionsByID:                 sessionsV3SyncSessionShells(snapshot.SessionsByID),
+		ProjectionsBySession:         snapshot.ProjectionsBySession,
+		MessagesBySession:            snapshot.MessagesBySession,
+		EventsBySession:              snapshot.EventsBySession,
+		RunIntentsBySession:          snapshot.RunIntentsBySession,
+		CurrentRunStateBySession:     snapshot.CurrentRunStateBySession,
+		PermissionSummariesBySession: nil,
+		ActiveSessionIDs:             snapshot.ActiveSessionIDs,
+		SessionViewsByID:             nil,
+		HistoryManifestsBySession:    snapshot.HistoryManifestsBySession,
+		HistoryChunksByID:            snapshot.HistoryChunksByID,
+		Omissions:                    snapshot.Omissions,
+		Pagination:                   snapshot.Pagination,
+		Watermarks:                   snapshot.Watermarks,
+		SessionOrder:                 snapshot.SessionOrder,
 		SyncScope: sessionsV3SyncScopeResponse{
 			Surface:            scope.Surface,
 			StreamKind:         scope.StreamKind,
@@ -676,6 +714,9 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 			BootstrapRequiredOnCursorError: true,
 		},
 		Realtime: sessionsV3RealtimeBootstrapForSnapshot(snapshotEndpointCursor, options.Surface, selectorValue, resources, snapshot.ActiveSessionIDs),
+	}
+	if permissionSummaries != nil {
+		response.PermissionSummariesBySession = sessionsV3PermissionSummariesVisibleInSnapshot(permissionSummaries, snapshot.SessionsByID)
 	}
 	if options.Snapshot.IncludeSessionView {
 		if len(snapshot.SessionOrder) > sessionsV3SyncHydrateMaxSessionViews {
@@ -952,6 +993,59 @@ func normalizeV3SyncSurface(surface string) string {
 	return surface
 }
 
+func sessionsV3PermissionSummariesVisibleInSnapshot(summaries map[string]sessionsV3PermissionSummary, sessions map[string]pebblestore.SessionSnapshot) map[string]sessionsV3PermissionSummary {
+	if len(summaries) == 0 || len(sessions) == 0 {
+		return nil
+	}
+	out := make(map[string]sessionsV3PermissionSummary, len(summaries))
+	for sessionID, summary := range summaries {
+		if _, ok := sessions[sessionID]; ok {
+			out[sessionID] = summary
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sessionsV3SyncResourcesInclude(resources []string, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, resource := range resources {
+		if strings.TrimSpace(resource) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) sessionsV3PermissionSummaries(principal identity.Principal) (map[string]sessionsV3PermissionSummary, error) {
+	out := map[string]sessionsV3PermissionSummary{}
+	if s == nil || s.perm == nil {
+		return out, nil
+	}
+	summaries, err := s.perm.ListPendingSummaries(principal.AccountScopeID, principal.UserID, 100000)
+	if err != nil {
+		return nil, err
+	}
+	for _, summary := range summaries {
+		if strings.TrimSpace(summary.SessionID) == "" || summary.PendingCount <= 0 {
+			continue
+		}
+		out[summary.SessionID] = sessionsV3PermissionSummary{
+			SessionID:            summary.SessionID,
+			PendingApprovalCount: summary.PendingCount,
+			OldestPendingAt:      summary.OldestPendingAt,
+			NewestPendingAt:      summary.NewestPendingAt,
+			UpdatedAt:            summary.UpdatedAt,
+		}
+	}
+	return out, nil
+}
+
 func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history sessionsV3WorksetHistory, includeActive bool) []string {
 	out := []string{"sessions", "projections", "membership", "tombstones"}
 	historyMode := strings.TrimSpace(strings.ToLower(history.Mode))
@@ -969,6 +1063,9 @@ func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history ses
 	}
 	if resources.SessionView {
 		out = append(out, "session_view")
+	}
+	if resources.PermissionSummaries {
+		out = append(out, "permission_summaries")
 	}
 	return out
 }

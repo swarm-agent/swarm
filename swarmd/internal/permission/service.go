@@ -239,6 +239,22 @@ func (s *Service) Summary(sessionID string) (pebblestore.PermissionSummary, erro
 	return s.refreshSummaryLocked(sessionID, now)
 }
 
+func (s *Service) ListPendingSummaries(accountScopeID, principalID string, limit int) ([]pebblestore.PermissionSummary, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	principalID = strings.TrimSpace(principalID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
+	if principalID == "" {
+		return nil, errors.New("principal id is required")
+	}
+	return s.store.ListPendingSummaries(accountScopeID, principalID, limit)
+}
+
+func (s *Service) RepairSummaryPendingIndex(accountScopeID, principalID string) error {
+	return s.store.RepairSummaryPendingIndex(strings.TrimSpace(accountScopeID), strings.TrimSpace(principalID))
+}
+
 func (s *Service) PendingCount(sessionID string) (int, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -787,8 +803,21 @@ func (s *Service) refreshSummaryLocked(sessionID string, now int64) (pebblestore
 	if err != nil {
 		return pebblestore.PermissionSummary{}, err
 	}
+	accountScopeID := ""
+	principalID := strings.TrimSpace(s.principalID)
+	if s.sessions != nil {
+		if session, ok, err := s.sessions.GetSession(sessionID); err != nil {
+			return pebblestore.PermissionSummary{}, err
+		} else if ok {
+			accountScopeID = strings.TrimSpace(session.AccountScopeID)
+			if sessionUserID := strings.TrimSpace(session.UserID); sessionUserID != "" {
+				principalID = sessionUserID
+			}
+		}
+	}
 	summary := pebblestore.PermissionSummary{
-		PrincipalID:     s.principalID,
+		AccountScopeID:  accountScopeID,
+		PrincipalID:     principalID,
 		SessionID:       sessionID,
 		PendingCount:    count,
 		OldestPendingAt: oldest,

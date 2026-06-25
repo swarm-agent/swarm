@@ -48,12 +48,13 @@ type V3RealtimeWorksetSubscriptionRequest struct {
 }
 
 type V3RealtimeWorksetSelector struct {
-	Kind           string                  `json:"kind,omitempty"`
-	Global         bool                    `json:"global,omitempty"`
-	WorkspacePath  string                  `json:"workspace_path,omitempty"`
-	WorkspacePaths []string                `json:"workspace_paths,omitempty"`
-	SessionIDs     []string                `json:"session_ids,omitempty"`
-	Recent         sessionsV3WorksetRecent `json:"recent,omitempty"`
+	Kind           string                     `json:"kind,omitempty"`
+	Global         bool                       `json:"global,omitempty"`
+	WorkspacePath  string                     `json:"workspace_path,omitempty"`
+	WorkspacePaths []string                   `json:"workspace_paths,omitempty"`
+	SessionIDs     []string                   `json:"session_ids,omitempty"`
+	Recent         sessionsV3WorksetRecent    `json:"recent,omitempty"`
+	Attention      sessionsV3WorksetAttention `json:"attention,omitempty"`
 }
 
 type V3RealtimeMessage struct {
