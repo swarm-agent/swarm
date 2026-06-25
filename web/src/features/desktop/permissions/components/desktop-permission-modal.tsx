@@ -14,6 +14,7 @@ import type { ModelOptionRecord } from '../../chat/types/chat'
 import { modelOptionsQueryOptions } from '../../../queries/query-options'
 import { useQuery } from '@tanstack/react-query'
 import type { DesktopPermissionRecord } from '../../types/realtime'
+import { safeString } from '../services/desktop-permission-normalization'
 import {
   FlowSettingsModal,
   agentContractSummary,
@@ -3016,8 +3017,8 @@ function bashPersistentPrefixFromRulePreview(preview: string): string {
 async function permissionPersistentRulePreview(permission: DesktopPermissionRecord, sessionMode: string): Promise<string> {
   const params = new URLSearchParams()
   params.set('mode', (permission.mode || sessionMode).trim())
-  params.set('tool', permission.toolName.trim())
-  params.set('arguments', permission.toolArguments.trim())
+  params.set('tool', safeString(permission.toolName))
+  params.set('arguments', safeString(permission.toolArguments))
   const response = await requestJson<PermissionExplainResponse>(`/v1/permissions/explain?${params.toString()}`)
   const preview = response.explain?.rule_preview?.trim() || ''
   if (preview && permissionDisplayToolName(permission.toolName) === 'bash') {

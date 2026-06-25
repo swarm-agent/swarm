@@ -8,6 +8,7 @@ import type {
 import { dedupeAndTrimMessages, mergeMessageIntoCache } from '../chat/services/message-cache'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
+import { safeString } from '../permissions/services/desktop-permission-normalization'
 import { appendLiveAssistantSegment } from './live-assistant-segments'
 import { applyCanonicalReasoningEventToLiveHistory, completeLiveReasoningHistory } from './live-reasoning-history'
 import { mergeSessionRecords } from './session-records'
@@ -1298,7 +1299,7 @@ function replaceSessionPermissionsPayload(state: DesktopState, payload: Record<s
   const permissions = Array.isArray(payload.permissions)
     ? payload.permissions
         .map((item) => isRecord(item) ? durablePermission(item) : null)
-        .filter((permission): permission is DesktopPermissionRecord => Boolean(permission && permission.sessionId === sessionId && permission.status.trim().toLowerCase() === 'pending'))
+        .filter((permission): permission is DesktopPermissionRecord => Boolean(permission && permission.sessionId === sessionId && safeString(permission.status).toLowerCase() === 'pending'))
     : []
   const permissionsById = Object.fromEntries(Object.entries(state.permissionsById).filter(([, permission]) => permission.sessionId !== sessionId))
   for (const permission of permissions) {
@@ -1335,14 +1336,14 @@ function replaceSessionPermissionsPayload(state: DesktopState, payload: Record<s
 
 function applyReducerPermission(state: DesktopState, permission: DesktopPermissionRecord, sessionId: string): DesktopState {
   const permissionsById = { ...state.permissionsById }
-  if (permission.status.trim().toLowerCase() === 'pending') {
+  if (safeString(permission.status).toLowerCase() === 'pending') {
     permissionsById[permission.id] = permission
   } else {
     delete permissionsById[permission.id]
   }
   const existing = state.sessionsById[sessionId] ?? ensureReducerSession(state, sessionId)
   const pendingPermissions = existing.pendingPermissions.filter((item) => item.id !== permission.id)
-  if (permission.status.trim().toLowerCase() === 'pending') {
+  if (safeString(permission.status).toLowerCase() === 'pending') {
     pendingPermissions.unshift(permission)
   }
   const pendingPermissionCount = countApprovalRequiredPermissions(pendingPermissions, existing.mode)
@@ -1359,7 +1360,7 @@ function applyReducerPermission(state: DesktopState, permission: DesktopPermissi
   } else if (!session.lifecycle && session.live.status === 'blocked') {
     session.live.status = session.runIntent ? 'running' : 'idle'
   }
-  session.live.lastEventType = permission.status.trim().toLowerCase() === 'pending' ? 'permission.requested' : 'permission.updated'
+  session.live.lastEventType = safeString(permission.status).toLowerCase() === 'pending' ? 'permission.requested' : 'permission.updated'
   session.live.lastEventAt = Date.now()
   return {
     ...state,

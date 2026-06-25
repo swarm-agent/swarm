@@ -1,4 +1,5 @@
 import type { DesktopPermissionRecord } from '../../types/realtime'
+import { safeString } from './desktop-permission-normalization'
 
 export interface AskUserOption {
   value: string
@@ -416,8 +417,8 @@ function parseAskUserQuestions(args: Record<string, unknown>): AskUserQuestion[]
   return questions
 }
 
-export function normalizePermissionToolName(raw: string): string {
-  let name = raw.trim().toLowerCase()
+export function normalizePermissionToolName(raw: unknown): string {
+  let name = safeString(raw).toLowerCase()
   const dot = name.lastIndexOf('.')
   if (dot >= 0 && dot + 1 < name.length) {
     name = name.slice(dot + 1)
@@ -441,11 +442,11 @@ export function normalizePermissionToolName(raw: string): string {
   }
 }
 
-export function normalizePermissionSessionMode(raw: string): 'plan' | 'auto' | 'yolo' {
-  switch (raw.trim().toLowerCase()) {
+export function normalizePermissionSessionMode(raw: unknown): 'plan' | 'auto' | 'yolo' {
+  switch (safeString(raw).toLowerCase()) {
     case 'auto':
     case 'yolo':
-      return raw.trim().toLowerCase() as 'auto' | 'yolo'
+      return safeString(raw).toLowerCase() as 'auto' | 'yolo'
     default:
       return 'plan'
   }
@@ -455,7 +456,7 @@ export function permissionRequiresApproval(
   permission: Pick<DesktopPermissionRecord, 'toolName' | 'mode' | 'requirement'>,
   fallbackMode = 'plan',
 ): boolean {
-  if (permission.requirement.trim().toLowerCase() === 'workspace_scope') {
+  if (safeString(permission.requirement).toLowerCase() === 'workspace_scope') {
     return true
   }
   const toolName = normalizePermissionToolName(permission.toolName)
@@ -471,7 +472,7 @@ export function permissionRequiresApproval(
     case 'skill_use':
       return false
     case 'plan_manage':
-      return permission.requirement.trim().toLowerCase() === 'plan_update'
+      return safeString(permission.requirement).toLowerCase() === 'plan_update'
     case 'task':
       return true
     case 'ask_user':
@@ -498,7 +499,7 @@ export function countApprovalRequiredPermissions(
 }
 
 export function permissionKind(permission: DesktopPermissionRecord): DesktopPermissionKind {
-  const requirement = permission.requirement.trim().toLowerCase()
+  const requirement = safeString(permission.requirement).toLowerCase()
   if (requirement === 'workspace_scope') {
     return 'workspace-scope'
   }
@@ -509,7 +510,7 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
     case 'exit_plan_mode':
       return 'exit-plan'
     case 'plan_manage':
-      if (permission.requirement.trim().toLowerCase() === 'plan_update') {
+      if (safeString(permission.requirement).toLowerCase() === 'plan_update') {
         return 'plan-update'
       }
       return 'generic'
@@ -522,12 +523,12 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
     case 'ask_user':
       return 'ask-user'
     case 'task':
-      if (permission.requirement.trim().toLowerCase() === 'task_launch') {
+      if (safeString(permission.requirement).toLowerCase() === 'task_launch') {
         return 'task-launch'
       }
       return 'generic'
     case 'manage_agent':
-      if (permission.requirement.trim().toLowerCase() === 'agent_change') {
+      if (safeString(permission.requirement).toLowerCase() === 'agent_change') {
         return 'agent-change'
       }
       return 'generic'
@@ -536,7 +537,7 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
   }
 }
 
-export function permissionDisplayToolName(raw: string): string {
+export function permissionDisplayToolName(raw: unknown): string {
   const normalized = normalizePermissionToolName(raw)
   if (!normalized) {
     return 'tool'
@@ -559,14 +560,15 @@ export function permissionDisplayToolName(raw: string): string {
   }
 }
 
-export function permissionRequirementLabel(raw: string): string {
-  switch (raw.trim().toLowerCase()) {
+export function permissionRequirementLabel(raw: unknown): string {
+  const value = safeString(raw)
+  switch (value.toLowerCase()) {
     case '':
       return 'permission'
     case 'workspace_scope':
       return 'workspace access'
     default:
-      return raw.trim()
+      return value
   }
 }
 
@@ -1930,8 +1932,9 @@ export function buildGenericPermissionMarkdown(permission: DesktopPermissionReco
   const sections: string[] = []
   const bashPrefix = bashSavedRulePrefix(permission.savedRule)
 
-  if (permission.reason.trim()) {
-    sections.push(permission.reason.trim())
+  const reason = safeString(permission.reason)
+  if (reason) {
+    sections.push(reason)
   }
 
   if (bashPrefix) {
@@ -1942,7 +1945,7 @@ export function buildGenericPermissionMarkdown(permission: DesktopPermissionReco
     ].join('\n'))
   }
 
-  if (permission.toolArguments.trim()) {
+  if (safeString(permission.toolArguments)) {
     sections.push(buildPermissionArgumentsMarkdown(permission))
   }
 

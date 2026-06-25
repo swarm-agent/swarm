@@ -11,10 +11,9 @@ import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-worksp
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
-import type { DesktopPermissionRecord, DesktopSessionRecord } from '../types/realtime'
+import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
-import { countApprovalRequiredPermissions, permissionRequiresApproval } from '../permissions/services/permission-payload'
 import { buildWorkspaceRouteSlugMap, resolveWorkspaceBySlug, workspaceRouteSlugBase } from '../../workspaces/launcher/services/workspace-route'
 import type { WorkspaceEntry } from '../../workspaces/launcher/types/workspace'
 import { WorkspaceTodoModal } from '../../workspaces/todos/components/workspace-todo-modal'
@@ -40,8 +39,6 @@ import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/ap
 import { approveRemoteSwarmPairing, type RemoteSwarmPendingPairing } from '../onboarding/api'
 import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from '../swarm/components/managed-host-link-request-modal'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
-import { DesktopPermissionModal } from '../permissions/components/desktop-permission-modal'
-import { resolveSessionPermission } from '../chat/queries/chat-queries'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { buildDesktopChatRouteOptions, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
@@ -994,13 +991,8 @@ function sidebarFlowRow(record: FlowSummaryRecord): SidebarFlowRow {
   }
 }
 
-function comparePendingPermissions(left: DesktopPermissionRecord, right: DesktopPermissionRecord): number {
-  return (left.permissionRequestedAt || left.createdAt || left.updatedAt || 0) - (right.permissionRequestedAt || right.createdAt || right.updatedAt || 0)
-    || left.id.localeCompare(right.id)
-}
-
 function sessionPendingPermissionCount(session: DesktopSessionRecord): number {
-  return countApprovalRequiredPermissions(session.pendingPermissions, session.mode)
+  return session.pendingPermissionCount
 }
 
 function sessionHasPendingPermission(session: DesktopSessionRecord): boolean {
@@ -2289,27 +2281,6 @@ export function DesktopAppPage() {
     () => new Map(desktopStateSessions.map((session) => [session.id, session] as const)),
     [desktopStateSessions],
   )
-  const selectedPermission = useMemo(() => {
-    const pending = desktopStateSessions.flatMap((session) => session.pendingPermissions
-      .filter((permission) => permissionRequiresApproval(permission, session.mode))
-      .map((permission) => ({ permission, session })))
-    pending.sort((left, right) => {
-      const leftSelected = left.session.id === routeSessionId ? 0 : 1
-      const rightSelected = right.session.id === routeSessionId ? 0 : 1
-      return leftSelected - rightSelected || comparePendingPermissions(left.permission, right.permission)
-    })
-    return pending[0] ?? null
-  }, [desktopStateSessions, routeSessionId])
-  const handleResolvePermission = useCallback(async (
-    action: 'approve' | 'deny' | 'approve_always' | 'always_allow' | 'always_deny',
-    reason: string,
-    approvedArguments?: Record<string, unknown>,
-  ) => {
-    const permission = selectedPermission?.permission
-    if (!permission) return
-    await resolveSessionPermission(permission.sessionId, permission.id, action, reason, approvedArguments, { sessionApi: 'v3' })
-  }, [selectedPermission])
-
   const workspaceSlugByPath = useMemo(() => {
     const routeWorkspaces: Array<Pick<WorkspaceEntry, 'path' | 'workspaceName'>> = mergedSidebarWorkspaceEntries.map((workspace) => ({
       path: workspace.path,
@@ -3589,15 +3560,6 @@ export function DesktopAppPage() {
         tab={quickSettingsTab}
         onClose={() => setQuickSettingsTab(null)}
         onOpenFullSettings={handleOpenSettingsTab}
-      />
-
-      <DesktopPermissionModal
-        open={Boolean(selectedPermission)}
-        permission={selectedPermission?.permission ?? null}
-        pendingCount={desktopStateSessions.reduce((count, session) => count + sessionPendingPermissionCount(session), 0)}
-        sessionMode={selectedPermission?.session.mode ?? 'auto'}
-        onOpenChange={() => undefined}
-        onResolve={handleResolvePermission}
       />
 
       {todoModal ? (

@@ -1,4 +1,5 @@
 import type { DesktopPermissionRecord } from '../types/realtime'
+import { safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 
 export interface DesktopV3SidebarRow {
@@ -212,14 +213,14 @@ function cloneRunIntentRecord(runIntents: Record<string, V3SessionRunIntent> | u
 
 function clonePendingPermissions(permissions: DesktopPermissionRecord[] | undefined): DesktopPermissionRecord[] {
   return (permissions ?? [])
-    .filter((permission) => permission.status.trim().toLowerCase() === 'pending')
+    .filter((permission) => safeString(permission.status).toLowerCase() === 'pending')
     .map((permission) => ({ ...permission, savedRule: permission.savedRule ? { ...permission.savedRule } : undefined }))
 }
 
 function countPendingPermissions(permissions: DesktopPermissionRecord[] | undefined): number {
   let count = 0
   for (const permission of permissions ?? []) {
-    if (permission.status.trim().toLowerCase() === 'pending') count += 1
+    if (safeString(permission.status).toLowerCase() === 'pending') count += 1
   }
   return count
 }

@@ -8,7 +8,7 @@ import { buildStructuredToolMessage, parseStructuredToolMessage } from '../servi
 import type { RenderedSessionMessages } from '../../state/desktop-v3-cache-selectors'
 import type { LiveRunOverlay, MessageSnapshot, PendingUserMessage } from '../../state/desktop-v3-cache-types'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
-import type { DesktopSessionRecord } from '../../types/realtime'
+import type { DesktopPermissionRecord, DesktopSessionRecord } from '../../types/realtime'
 import type { StructuredToolMessage, ToolMessageState, AgentProfileRecord, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
 import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
 import { agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
@@ -36,7 +36,9 @@ import {
   type DesktopV3ExistingMessageOperation,
 } from '../../session-v3/existing-session-flow'
 import { compactDesktopV3Session } from '../../session-v3/compact-session-flow'
-import { sendSessionMessage } from '../queries/chat-queries'
+import { resolveSessionPermission, sendSessionMessage } from '../queries/chat-queries'
+import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
+import { permissionRequiresApproval } from '../../permissions/services/permission-payload'
 
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
@@ -187,6 +189,11 @@ function firstNonEmpty(...values: string[]): string {
     if (normalized) return normalized
   }
   return ''
+}
+
+function comparePendingPermissions(left: DesktopPermissionRecord, right: DesktopPermissionRecord): number {
+  return (left.permissionRequestedAt || left.createdAt || left.updatedAt || 0) - (right.permissionRequestedAt || right.createdAt || right.updatedAt || 0)
+    || left.id.localeCompare(right.id)
 }
 
 type DesktopV3InputSettingsSnapshot = {
@@ -553,6 +560,13 @@ export function DesktopV3ExistingConversationPane({
     return record?.kind === 'full' ? record.session : null
   })
   const storedOperation = operationRef.current
+  const sessionMode = session?.mode || cacheSession?.mode || 'auto'
+  const pendingPermissions = useDesktopV3CacheSelector((state) => (
+    [...(state.permissionsBySession[normalizedSessionId] ?? [])]
+      .filter((permission) => permissionRequiresApproval(permission, sessionMode))
+      .sort(comparePendingPermissions)
+  ))
+  const selectedPermission = pendingPermissions[0] ?? null
   const currentRun = renderedMessages.liveRuns.find((run) => run.status === 'running' || run.status === 'pending_executor') ?? null
   const pendingStartAt = !renderedMessages.currentRunIntent
     ? renderedMessages.pendingUser.find((message) => message.status === 'pending')?.createdAt ?? storedOperation?.createdAt ?? null
@@ -882,6 +896,22 @@ export function DesktopV3ExistingConversationPane({
     }
   }
 
+  async function handleResolvePermission(
+    action: 'approve' | 'deny' | 'approve_always' | 'always_allow' | 'always_deny',
+    reason: string,
+    approvedArguments?: Record<string, unknown>,
+  ) {
+    const permission = selectedPermission
+    if (!permission) return
+    const resolved = await resolveSessionPermission(permission.sessionId, permission.id, action, reason, approvedArguments, { sessionApi: 'v3' })
+    dispatchDesktopV3Cache({
+      type: 'permission.resolveResult',
+      sessionId: permission.sessionId,
+      permissionId: permission.id,
+      permission: resolved,
+    })
+  }
+
   async function handleRestartWithSettings() {
     if (!normalizedSessionId || !currentRun?.runId || restartingWithSettings || !settingsChangeSummary) return
     setRestartingWithSettings(true)
@@ -960,6 +990,16 @@ export function DesktopV3ExistingConversationPane({
           </button>
         ) : null}
       </div>
+
+      <DesktopPermissionModal
+        key={`permission:${normalizedSessionId}`}
+        open={Boolean(selectedPermission)}
+        permission={selectedPermission}
+        pendingCount={pendingPermissions.length}
+        sessionMode={sessionMode}
+        onOpenChange={() => undefined}
+        onResolve={handleResolvePermission}
+      />
 
       <DesktopV3AgenticComposer
         draft={draft}

@@ -139,7 +139,7 @@ export interface DesktopV3AgenticSettings {
 
 export interface DesktopV3SessionView {
   agentic_settings: DesktopV3AgenticSettings
-  pending_permissions?: DesktopPermissionRecord[]
+  pending_permissions?: unknown[]
   usage_summary?: unknown
   current_run_state?: V3SessionRunState
   active_plan?: unknown
@@ -652,6 +652,7 @@ export type DesktopV3CacheAction =
   | { type: 'reconnect.applySnapshot'; snapshot: SessionsReconnectResponse }
   | { type: 'realtime.storeResume'; streamPath: '/v3/realtime/stream'; resume: RealtimeMessage }
   | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string; durabilityCommitted?: boolean }
+  | { type: 'permission.resolveResult'; sessionId: string; permissionId: string; permission: DesktopPermissionRecord | null }
   | { type: 'liveRun.mergeRepairEvents'; sessionId: string; runId: string; events: CacheEvent[] }
   | { type: 'realtime.worksetSessionDiscovered'; frame: RealtimeMessage }
   | { type: 'realtime.worksetSessionUpdated'; frame: RealtimeMessage }

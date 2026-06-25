@@ -40,6 +40,7 @@ import {
   supportsCodex1MMode,
 } from "../services/model-options";
 import { parseStructuredToolMessage } from "../services/tool-message";
+import { normalizeDesktopPermission } from "../../permissions/services/desktop-permission-normalization";
 
 interface SessionWire {
   id?: string;
@@ -712,8 +713,8 @@ export function mapDesktopSessionUsageSummary(summary: unknown): DesktopSessionU
   return mapSessionUsageSummary(summary as SessionUsageSummaryWire | null | undefined);
 }
 
-export function mapDesktopSessionPermission(permission: unknown): DesktopPermissionRecord {
-  return mapResolvedPermission(permission as ResolvePermissionResponseWire["permission"]);
+export function mapDesktopSessionPermission(permission: unknown, expectedSessionId = ''): DesktopPermissionRecord | null {
+  return normalizeDesktopPermission(permission, expectedSessionId);
 }
 
 function mapSessionProjectionToSession(session: SessionWire, projection: SessionProjectionWire | null | undefined): SessionWire {
@@ -971,58 +972,12 @@ function mapSession(session: SessionWire): DesktopSessionRecord {
 function mapResolvedPermission(
   permission: ResolvePermissionResponseWire["permission"],
   savedRule?: ResolvePermissionResponseWire["saved_rule"],
-): DesktopPermissionRecord {
-  return {
-    id: String(permission?.id ?? "").trim(),
-    sessionId: String(permission?.session_id ?? "").trim(),
-    runId: String(permission?.run_id ?? "").trim(),
-    callId: String(permission?.call_id ?? "").trim(),
-    toolName: String(permission?.tool_name ?? "").trim(),
-    toolArguments: String(permission?.tool_arguments ?? "").trim(),
-    approvedArguments:
-      String(
-        (permission as { approved_arguments?: unknown } | undefined)
-          ?.approved_arguments ?? "",
-      ).trim() || undefined,
-    savedRule: savedRule
-      ? {
-          id: String(savedRule.id ?? "").trim(),
-          kind: String(savedRule.kind ?? "").trim(),
-          decision: String(savedRule.decision ?? "").trim(),
-          tool:
-            typeof savedRule.tool === "string"
-              ? savedRule.tool.trim()
-              : undefined,
-          pattern:
-            typeof savedRule.pattern === "string"
-              ? savedRule.pattern.trim()
-              : undefined,
-          createdAt:
-            typeof savedRule.created_at === "number"
-              ? savedRule.created_at
-              : undefined,
-          updatedAt:
-            typeof savedRule.updated_at === "number"
-              ? savedRule.updated_at
-              : undefined,
-        }
-      : undefined,
-    status: String(permission?.status ?? "").trim(),
-    decision: String(permission?.decision ?? "").trim(),
-    reason: String(permission?.reason ?? "").trim(),
-    requirement: String(permission?.requirement ?? "").trim(),
-    mode: String(permission?.mode ?? "").trim(),
-    createdAt:
-      typeof permission?.created_at === "number" ? permission.created_at : 0,
-    updatedAt:
-      typeof permission?.updated_at === "number" ? permission.updated_at : 0,
-    resolvedAt:
-      typeof permission?.resolved_at === "number" ? permission.resolved_at : 0,
-    permissionRequestedAt:
-      typeof permission?.permission_requested_at === "number"
-        ? permission.permission_requested_at
-        : 0,
-  };
+  expectedSessionId = '',
+): DesktopPermissionRecord | null {
+  return normalizeDesktopPermission(
+    savedRule ? { ...(permission ?? {}), saved_rule: savedRule } : permission,
+    expectedSessionId,
+  );
 }
 
 export async function fetchSessionMessages(
@@ -1819,7 +1774,7 @@ export async function resolveSessionPermission(
   reason: string,
   approvedArguments?: Record<string, unknown>,
   options: SessionDataRequestOptions = {},
-): Promise<DesktopPermissionRecord> {
+): Promise<DesktopPermissionRecord | null> {
   const sessionApi = resolveSessionApiForSession(sessionId, options);
   if (sessionApi !== "v3") {
     throw new Error("Desktop permission resolution requires explicit Sessions API v3 context");
@@ -1838,7 +1793,7 @@ export async function resolveSessionPermission(
       }),
     },
   );
-  return mapResolvedPermission(response.permission, response.saved_rule);
+  return mapResolvedPermission(response.permission, response.saved_rule, sessionId);
 }
 
 export async function resolveAllSessionPermissions(
@@ -1872,7 +1827,9 @@ export async function resolveAllSessionPermissions(
     },
   );
   return Array.isArray(response.resolved)
-    ? response.resolved.map((permission) => mapResolvedPermission(permission))
+    ? response.resolved
+      .map((permission) => mapResolvedPermission(permission, undefined, sessionId))
+      .filter((permission): permission is DesktopPermissionRecord => Boolean(permission))
     : [];
 }
 
