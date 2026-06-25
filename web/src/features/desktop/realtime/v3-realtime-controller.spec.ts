@@ -466,11 +466,11 @@ test('Desktop V3 workspace and session route switching keeps exactly one retaine
   assert.equal(sockets.length, 1)
 
   const controller = await requireDesktopV3RealtimeControllerReady()
-  await controller.ensureSessionHistory(sessionA.id)
+  await controller.ensureSessionConnected(sessionA.id)
   assert.equal(sockets.length, 1)
 
   await requireDesktopV3RealtimeControllerReady()
-  await controller.ensureSessionHistory(sessionB.id)
+  await controller.ensureSessionConnected(sessionB.id)
   assert.equal(sockets.length, 1)
   assert.deepEqual(
     hydrateRequests.map((request) => (request as { session_ids: string[] }).session_ids),
@@ -3003,6 +3003,10 @@ test('Desktop V3 open transport rejects pending connect on auth denied and stop'
   await flushAsyncWork()
   socket.emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'auth.denied', session_id: 'session-denied', subscription_id: 'sub-denied', reason: 'subscription denied' })
   await assert.rejects(denied, /subscription denied/i)
+  assert.equal(socket.readyState, FakeWebSocket.OPEN)
+  assert.equal(transport.diagnostics().status, 'open')
+  assert.equal(transport.diagnostics().desired, true)
+  assert.equal(transport.diagnostics().sessions.some((session) => session.session_id === 'session-denied'), false)
 
   const socket2 = new FakeWebSocket()
   const transport2 = new DesktopV3RealtimeTransport({
@@ -3180,7 +3184,7 @@ test('Desktop V3 recovery resume contains active selected and pending sessions w
     sockets[0].open()
     await ready
 
-    const pendingConnect = controller.ensureSessionHistory('pending-connect')
+    const pendingConnect = controller.ensureSessionConnected('pending-connect')
     pendingConnect.catch(() => undefined)
     await flushAsyncWork()
 

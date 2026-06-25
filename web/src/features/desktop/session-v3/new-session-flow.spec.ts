@@ -267,7 +267,9 @@ test('startNewDesktopV3Session creates, appends first message, selects, and appl
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionHistory: async () => undefined,
+      ensureSessionConnected: async (sessionId: string) => {
+        calls.push(`connect:${sessionId}`)
+      },
       start: async () => undefined,
       stop: () => undefined,
     }),
@@ -301,10 +303,11 @@ test('startNewDesktopV3Session creates, appends first message, selects, and appl
     assert.equal(result.messageResponse.run_intent?.event_seq, 2)
     assert.equal(navigated, operation.sessionId)
     assert.deepEqual(calls, [
-      'dispatch:pendingUser.upsert',
       `create:${operation.sessionId}`,
       'dispatch:mutation.sessionCreateResult',
       'dispatch:session.select',
+      `connect:${operation.sessionId}`,
+      'dispatch:pendingUser.upsert',
       `message:${operation.sessionId}:${operation.firstMessageRequest.message_id}`,
       'dispatch:mutation.messageResult',
       `navigate:${operation.sessionId}`,
@@ -332,7 +335,9 @@ test('startNewDesktopV3Session skips selection when delayed start resolves after
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionHistory: async () => undefined,
+      ensureSessionConnected: async (sessionId: string) => {
+        calls.push(`connect:${sessionId}`)
+      },
       start: async () => undefined,
       stop: () => undefined,
     }),
@@ -364,9 +369,10 @@ test('startNewDesktopV3Session skips selection when delayed start resolves after
 
     assert.equal(result.sessionId, operation.sessionId)
     assert.deepEqual(calls, [
-      'dispatch:pendingUser.upsert',
       `create:${operation.sessionId}`,
       'dispatch:mutation.sessionCreateResult',
+      `connect:${operation.sessionId}`,
+      'dispatch:pendingUser.upsert',
       `message:${operation.sessionId}:${operation.firstMessageRequest.message_id}`,
       'dispatch:mutation.messageResult',
     ])
@@ -392,7 +398,7 @@ test('startNewDesktopV3Session marks pending message failed when create fails', 
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionHistory: async () => undefined,
+      ensureSessionConnected: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,
     }),
@@ -412,10 +418,7 @@ test('startNewDesktopV3Session marks pending message failed when create fails', 
       },
     }), /network ambiguous/)
     assert.equal(navigated, false)
-    assert.deepEqual(actions.map((action) => action.type), [
-      'pendingUser.upsert',
-      'mutation.messageResult',
-    ])
+    assert.deepEqual(actions.map((action) => action.type), [])
   } finally {
     restore()
   }
@@ -434,7 +437,7 @@ test('startNewDesktopV3Session rejects create response with mismatched session i
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionHistory: async () => undefined,
+      ensureSessionConnected: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,
     }),

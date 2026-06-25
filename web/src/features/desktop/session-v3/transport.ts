@@ -547,7 +547,7 @@ export class DesktopV3RealtimeTransport {
     }
     if (kind === 'auth.denied') {
       const reason = frame.reason || frame.error || 'V3 realtime auth denied'
-      this.rejectDeniedSessionSubscription(frame, reason)
+      if (this.rejectDeniedSessionSubscription(frame, reason)) return
       this.markStale(reason)
     }
   }
@@ -600,7 +600,16 @@ export class DesktopV3RealtimeTransport {
   }
 
   private syncOpenSocketResume(reason: string): void {
-    if (this.socket?.readyState === WebSocket.OPEN) return
+    const socket = this.socket
+    if (socket?.readyState === WebSocket.OPEN) {
+      try {
+        this.sendResume(socket)
+      } catch (error) {
+        this.emitStatus('error', errorMessage(error, reason))
+        this.forceReopen(reason)
+      }
+      return
+    }
     if (this.desired) {
       void this.connect().catch((error) => this.emitStatus('error', errorMessage(error, reason)))
     }
@@ -666,22 +675,28 @@ export class DesktopV3RealtimeTransport {
     }
   }
 
-  private rejectDeniedSessionSubscription(frame: SessionV3RealtimeFrameWire, reason: string): void {
+  private rejectDeniedSessionSubscription(frame: SessionV3RealtimeFrameWire, reason: string): boolean {
     const sessionId = frameSessionId(frame)
     const subscriptionId = normalizeString(frame.subscription_id)
     if (sessionId) {
+      this.sessions.delete(sessionId)
+      this.readySessionSubscriptions.delete(sessionId)
       const pending = this.pendingSessionSubscriptions.get(sessionId)
       if (pending && (!subscriptionId || pending.subscriptionId === subscriptionId)) {
         this.rejectPendingSessionSubscription(sessionId, new Error(reason))
       }
-      return
+      return true
     }
-    if (!subscriptionId) return
+    if (!subscriptionId) return false
     for (const [pendingSessionId, pending] of this.pendingSessionSubscriptions) {
       if (pending.subscriptionId === subscriptionId) {
+        this.sessions.delete(pendingSessionId)
+        this.readySessionSubscriptions.delete(pendingSessionId)
         this.rejectPendingSessionSubscription(pendingSessionId, new Error(reason))
+        return true
       }
     }
+    return false
   }
 
   private clearPendingSessionSubscriptionTimeout(pending: PendingSessionSubscription): void {

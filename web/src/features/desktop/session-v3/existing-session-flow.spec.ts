@@ -129,8 +129,8 @@ test('continueDesktopV3Conversation appends message through canonical mutation a
   const restore = setDesktopV3ExistingSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionHistory: async () => {
-        throw new Error('existing session append must not start selected-session hydrate')
+      ensureSessionConnected: async (sessionId: string) => {
+        calls.push(`connect:${sessionId}`)
       },
       start: async () => undefined,
       stop: () => undefined,
@@ -149,6 +149,7 @@ test('continueDesktopV3Conversation appends message through canonical mutation a
     const response = await continueDesktopV3Conversation(operation)
     assert.equal(response.session_id, 'session-1')
     assert.deepEqual(calls, [
+      'connect:session-1',
       'dispatch:pendingUser.upsert',
       `message:session-1:${operation.request.message_id}`,
       'dispatch:mutation.messageResult',
@@ -200,7 +201,7 @@ test('continueDesktopV3Conversation requires queued or running run intent', asyn
   const restore = setDesktopV3ExistingSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      ensureSessionHistory: async () => undefined,
+      ensureSessionConnected: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,
     }),

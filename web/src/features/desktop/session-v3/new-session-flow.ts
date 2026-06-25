@@ -276,7 +276,30 @@ export async function startNewDesktopV3Session(input: {
     throw new Error('New Desktop V3 session requires a bootstrapped sidebar scope')
   }
 
-  await flowDeps.requireControllerReady()
+  const controller = await flowDeps.requireControllerReady()
+
+  const rawCreate: SessionCreateMutationResponse | SessionMutationErrorResponse = await flowDeps.postCreateSession(operation.createRequest)
+
+  flowDeps.dispatch(sessionCreateResponseToAction(
+    rawCreate,
+    sidebarScopeId,
+  ))
+
+  if (rawCreate.ok === false) {
+    const message = rawCreate.error || rawCreate.error_code || 'Desktop V3 session create failed'
+    throw new Error(message)
+  }
+
+  if (rawCreate.session_id !== operation.sessionId) {
+    throw new Error('Desktop V3 create returned a different session_id')
+  }
+
+  if (input.shouldSelectSession?.() ?? true) {
+    flowDeps.dispatch(selectSession(operation.sessionId))
+  }
+
+  await controller.ensureSessionConnected(operation.sessionId)
+
   flowDeps.dispatch({
     type: 'pendingUser.upsert',
     input: {
@@ -288,42 +311,6 @@ export async function startNewDesktopV3Session(input: {
       createdAt: operation.createdAt,
     },
   })
-
-  let rawCreate: SessionCreateMutationResponse | SessionMutationErrorResponse
-  try {
-    rawCreate = await flowDeps.postCreateSession(operation.createRequest)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    flowDeps.dispatch(messageMutationResponseToAction(
-      { ok: false, error: message },
-      operation.firstMessageRequest.client_request_id,
-      operation.firstMessageRequest.message_id,
-    ))
-    throw error
-  }
-
-  flowDeps.dispatch(sessionCreateResponseToAction(
-    rawCreate,
-    sidebarScopeId,
-  ))
-
-  if (rawCreate.ok === false) {
-    const message = rawCreate.error || rawCreate.error_code || 'Desktop V3 session create failed'
-    flowDeps.dispatch(messageMutationResponseToAction(
-      { ok: false, error: message },
-      operation.firstMessageRequest.client_request_id,
-      operation.firstMessageRequest.message_id,
-    ))
-    throw new Error(message)
-  }
-
-  if (rawCreate.session_id !== operation.sessionId) {
-    throw new Error('Desktop V3 create returned a different session_id')
-  }
-
-  if (input.shouldSelectSession?.() ?? true) {
-    flowDeps.dispatch(selectSession(operation.sessionId))
-  }
 
   let rawMessage: SessionMessageMutationResponse | MessageMutationConflictResponse
   try {

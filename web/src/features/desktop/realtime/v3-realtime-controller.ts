@@ -26,7 +26,7 @@ const DESKTOP_V3_CLIENT_ID = `desktop:${crypto.randomUUID()}`
 const ACTIVE_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
 
 export interface DesktopV3RealtimeController {
-  ensureSessionHistory(sessionId: string): Promise<void>
+  ensureSessionConnected(sessionId: string): Promise<void>
   start(preferredSessionId?: string | null, bootstrapReady?: Promise<unknown>): Promise<void>
   stop(reason?: string): void
 }
@@ -144,7 +144,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     return this.startPromise
   }
 
-  ensureSessionHistory(sessionId: string): Promise<void> {
+  ensureSessionConnected(sessionId: string): Promise<void> {
     const normalized = sessionId.trim()
     if (!normalized) return Promise.resolve()
     return this.subscribeSessionRealtime(normalized)
@@ -177,9 +177,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     if (!sessionId) {
       throw new Error('Desktop V3 realtime session subscription requires sessionId')
     }
-    const diagnostics = this.transport.diagnostics()
-    if (diagnostics.sessions.some((session) => session.session_id === sessionId)) return
-
     this.subscribingSessionIds.add(sessionId)
     try {
       await this.transport.subscribeSession({
@@ -189,7 +186,9 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       })
     } finally {
       this.subscribingSessionIds.delete(sessionId)
-      this.reconcileDesiredSessionConnections()
+      setTimeout(() => {
+        if (!this.stopped) this.reconcileDesiredSessionConnections()
+      }, 0)
     }
   }
 
@@ -377,7 +376,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     const registered = new Map(diagnostics.sessions.map((session) => [session.session_id, session]))
 
     for (const sessionId of desired) {
-      if (registered.has(sessionId)) continue
+      if (registered.has(sessionId) || this.subscribingSessionIds.has(sessionId)) continue
       const subscribe = this.subscribeSessionRealtime(sessionId)
       subscribe.catch((error) => {
         if (!this.stopped) {

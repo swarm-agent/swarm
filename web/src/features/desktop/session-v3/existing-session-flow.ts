@@ -141,7 +141,8 @@ export async function continueDesktopV3Conversation(
     throw new Error(`Desktop V3 session ${sessionId} is deleted`)
   }
 
-  await flowDeps.requireControllerReady()
+  const controller = await flowDeps.requireControllerReady()
+  await controller.ensureSessionConnected(sessionId)
 
   flowDeps.dispatch({
     type: 'pendingUser.upsert',

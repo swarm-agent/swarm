@@ -9,7 +9,7 @@ test('DesktopAppPage leaves Desktop V3 runtime ownership to the root provider wh
   assert.doesNotMatch(source, /retainDesktopV3RealtimeController\(/)
   assert.doesNotMatch(source, /bootstrapDesktopV3Sidebar\(/)
   assert.doesNotMatch(source, /requireDesktopV3RealtimeControllerReady/)
-  assert.doesNotMatch(source, /ensureSessionHistory/)
+  assert.doesNotMatch(source, /ensureSessionConnected/)
   assert.doesNotMatch(source, /route-session fallback hydrate failed/)
   assert.match(source, /const sessionId = routeSessionId\.trim\(\)/)
   assert.match(source, /dispatchDesktopV3Cache\(selectSession\(sessionId\)\)/)

@@ -20,7 +20,7 @@ test('DesktopV3RuntimeProvider synchronously retains one realtime lease with del
   assert.match(source, /retainDesktopV3RealtimeController\(\{\s*ownerKey: DESKTOP_V3_RUNTIME_PROVIDER_OWNER_KEY,\s*preferredSessionId: normalizedPreferredSessionId,\s*bootstrap: bootstrapReady,/s)
   assert.match(source, /await runtime\.bootstrapReady[\s\S]*?void runtime\.realtimeLease\.ready\.catch/)
   assert.doesNotMatch(source, /await runtime\.realtimeLease\.ready/)
-  assert.doesNotMatch(source, /desktopInitialHydrate\.update|hydrateDesktopV3InitialSessions|ensureSessionHistory|requireDesktopV3RealtimeControllerReady/)
+  assert.doesNotMatch(source, /desktopInitialHydrate\.update|hydrateDesktopV3InitialSessions|ensureSessionConnected|requireDesktopV3RealtimeControllerReady/)
 })
 
 test('warm restore does not force startup network hydrate', async () => {
