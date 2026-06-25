@@ -17,7 +17,7 @@ import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thi
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
-import { buildDesktopV3RunStatusModel } from './desktop-v3-run-status'
+import { buildDesktopV3RunStatusModel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
 import {
   sessionV3AgentSettingsMutationResponse,
   sessionV3ModeSettingsMutationResponse,
@@ -512,6 +512,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   routeOptions?: DesktopChatRoute[]
   onOpenChats?: () => void
   onNewSession?: () => void
+  onCompactingChange?: (sessionId: string, startedAt: number | null) => void
 }
 
 export function completeDesktopV3ExistingMessage(input: {
@@ -537,6 +538,7 @@ export function DesktopV3ExistingConversationPane({
   routeOptions = [],
   onOpenChats,
   onNewSession,
+  onCompactingChange,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim()
   const navigate = useNavigate()
@@ -571,7 +573,7 @@ export function DesktopV3ExistingConversationPane({
   const pendingStartAt = !renderedMessages.currentRunIntent
     ? renderedMessages.pendingUser.find((message) => message.status === 'pending')?.createdAt ?? storedOperation?.createdAt ?? null
     : null
-  const runStatusModel = buildDesktopV3RunStatusModel({
+  const canonicalRunStatusModel = buildDesktopV3RunStatusModel({
     currentRunIntent: renderedMessages.currentRunIntent,
     latestRunIntent: renderedMessages.latestRunIntent,
     liveRuns: renderedMessages.liveRuns,
@@ -589,7 +591,7 @@ export function DesktopV3ExistingConversationPane({
   const [draft, setDraft] = useState(storedOperation?.request.content ?? '')
   const [sendError, setSendError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
-  const [compacting, setCompacting] = useState(false)
+  const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
   const [restartingWithSettings, setRestartingWithSettings] = useState(false)
   const [mode, setMode] = useState<DesktopSessionMode>(settingsBaseline.mode)
@@ -633,6 +635,7 @@ export function DesktopV3ExistingConversationPane({
     () => resolveDesktopChatRouteFromSession(session ?? null, routeOptions, routeOptions[0] ?? null),
     [routeOptions, session],
   )
+  const compacting = compactStartedAt !== null
   const canSend = Boolean(normalizedSessionId && !sending && !compacting && selectedAgent.trim() && selectedModelAvailable && (hasStoredOperation || draft.trim()))
   const visibleSettingsSnapshot = useMemo<DesktopV3InputSettingsSnapshot>(() => ({
     sessionId: normalizedSessionId,
@@ -663,6 +666,9 @@ export function DesktopV3ExistingConversationPane({
     if (run.reasoning?.state === 'running') return true
     return Object.values(run.reasoningByKey ?? {}).some((reasoning) => reasoning.state === 'running')
   })
+  const runStatusModel: DesktopV3RunStatusModel | null = compactStartedAt !== null
+    ? { kind: 'active', label: 'Compacting', startedAt: compactStartedAt, active: true }
+    : canonicalRunStatusModel
   const statusTimerActive = Boolean(runStatusModel?.active) || hasRunningReasoning || compacting
   const [timerNow, setTimerNow] = useState(() => Date.now())
 
@@ -849,7 +855,9 @@ export function DesktopV3ExistingConversationPane({
   async function handleCompact(note: string) {
     if (!normalizedSessionId || compacting || sending || currentRun) return
 
-    setCompacting(true)
+    const startedAt = Date.now()
+    setCompactStartedAt(startedAt)
+    onCompactingChange?.(normalizedSessionId, startedAt)
     setSendError(null)
     scrollToBottom('smooth')
     try {
@@ -864,7 +872,8 @@ export function DesktopV3ExistingConversationPane({
         setSendError(error instanceof Error ? error.message : String(error))
       }
     } finally {
-      if (mountedRef.current) setCompacting(false)
+      if (mountedRef.current) setCompactStartedAt(null)
+      onCompactingChange?.(normalizedSessionId, null)
     }
   }
 

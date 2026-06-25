@@ -415,7 +415,7 @@ func (s *Server) sessionV3MutationWithHydrateCursor(principal identity.Principal
 	}
 	selector := sessionsV3SyncSelector{Kind: "session_ids", SessionIDs: canonicalV3SyncSessionIDs([]string{sessionID})}
 	resources := sessionsV3SyncResourceSet(
-		sessionsV3WorksetResources{Messages: true, RunIntents: true, ActivePlan: true},
+		sessionsV3WorksetResources{Messages: true, RunIntents: true, CurrentRunState: true, SessionView: true},
 		sessionsV3WorksetHistory{Mode: pebblestore.V3SyncSnapshotHistoryModeTail, MaxMessagesPerSession: 200, ManifestPolicy: "manifest"},
 		true,
 	)

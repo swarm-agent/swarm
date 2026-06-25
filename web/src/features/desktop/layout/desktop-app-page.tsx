@@ -179,6 +179,11 @@ interface LocalContainerUpdateConfirmState {
   pendingDismiss: boolean
 }
 
+interface DesktopV3CompactingSessionState {
+  sessionId: string
+  startedAt: number
+}
+
 interface GitPanelState {
   workspacePath: string
   workspaceName: string
@@ -1578,20 +1583,25 @@ interface SessionRowProps {
   childKind?: SidebarSessionNode['kind']
   agentSummary: SessionAgentSummary
   agentsExpanded: boolean
+  compactingStartedAt?: number | null
   onSelect: (sessionId: string) => void
   onPrefetch: (sessionId: string) => void
   onToggleAgents: (sessionId: string) => void
 }
 
-function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', agentSummary, agentsExpanded, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
+function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', agentSummary, agentsExpanded, compactingStartedAt = null, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
   const session = initialSession
-  const activeSession = sessionIsActive(session)
+  const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
+  const activeSession = compactingActive || sessionIsActive(session)
   const originLabel = sessionOriginLabel(session, routeOptions, fallbackSwarmName)
   const backgroundInfo = sessionBackgroundInfo(session, originLabel)
   const bottomLeftLabel = backgroundInfo?.targetLabel || originLabel
-  const bottomRightLabel = activeSession
-    ? sessionActivityLabel(session)
-    : sessionStatusDetail(session, now) || sessionMeta(session) || ''
+  const bottomRightLabel = compactingActive
+    ? 'Compacting'
+    : activeSession
+      ? sessionActivityLabel(session)
+      : sessionStatusDetail(session, now) || sessionMeta(session) || ''
+  const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
   const commitSummary = sessionCommitSummary(session)
   const committedFileSummary = sessionCommittedFileSummary(session)
   const committedDeltaSummary = sessionCommittedDeltaSummary(session)
@@ -1648,7 +1658,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         <span
           className={cn(
             'h-2 w-2 shrink-0 rounded-full',
-            sessionStatusTone(session) === 'running'
+            compactingActive || sessionStatusTone(session) === 'running'
               ? 'bg-emerald-500'
               : sessionStatusTone(session) === 'blocked'
                 ? 'bg-amber-400'
@@ -1674,7 +1684,11 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
             </span>
           ) : null}
         </div>
-        <span className="shrink-0 text-[var(--app-text-subtle)]">{bottomRightLabel}</span>
+        <span className="inline-flex shrink-0 items-center gap-1.5 text-[var(--app-text-subtle)]">
+          {compactingActive ? <LoaderCircle size={10} className="animate-spin text-[var(--app-primary)]" aria-hidden="true" /> : null}
+          <span>{bottomRightLabel}</span>
+          {compactingTimer ? <span className="tabular-nums text-[var(--app-text)]">{compactingTimer}</span> : null}
+        </span>
       </div>
       {session.worktreeEnabled || commitMetaLabel || hasAgentChildren ? (
         <div className="flex items-center justify-between gap-3 text-[10px] leading-4 text-[var(--app-text-subtle)] min-w-0 w-full">
@@ -1779,6 +1793,7 @@ export function DesktopAppPage() {
   const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
+  const [compactingSession, setCompactingSession] = useState<DesktopV3CompactingSessionState | null>(null)
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
@@ -2777,6 +2792,17 @@ export function DesktopAppPage() {
     setSwarmMenu((current) => ({ open: !current.open }))
   }, [])
 
+  const handleCompactingSessionChange = useCallback((sessionId: string, startedAt: number | null) => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId) return
+    setCompactingSession((current) => {
+      if (startedAt === null) {
+        return current?.sessionId === normalizedSessionId ? null : current
+      }
+      return { sessionId: normalizedSessionId, startedAt }
+    })
+  }, [])
+
   const sidebarContent = (
     <>
       {sidebarCollapsed ? (
@@ -3398,6 +3424,7 @@ export function DesktopAppPage() {
                               childKind={node.kind}
                               agentSummary={summarizeSubagentDescendants(node)}
                               agentsExpanded={Boolean(expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, routeSessionId || undefined)}
+                              compactingStartedAt={compactingSession?.sessionId === node.session.id ? compactingSession.startedAt : null}
                               onSelect={handleSelectSession}
                               onPrefetch={handlePrefetchSession}
                               onToggleAgents={handleToggleAgentSessions}
@@ -3510,6 +3537,7 @@ export function DesktopAppPage() {
               topologyRoutes: [],
             }) : []}
             onOpenChats={() => setMobileSidebarOpen(true)}
+            onCompactingChange={handleCompactingSessionChange}
             onNewSession={() => {
               const routeSession = sessionById.get(routeSessionId)
               if (routeSession?.workspacePath) handleStartNewSessionInWorkspace(routeSession.workspacePath, routeSession.workspaceName)
