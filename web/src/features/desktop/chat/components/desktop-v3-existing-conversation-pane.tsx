@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowDown, CheckCircle2, LoaderCircle, XCircle } from 'lucide-react'
+import { ArrowDown, CheckCircle2, Loader2, LoaderCircle, XCircle } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
 import { buildStructuredToolMessage, parseStructuredToolMessage } from '../services/tool-message'
@@ -637,6 +637,7 @@ export function DesktopV3ExistingConversationPane({
     : ''
   const showRestartSettingsAction = Boolean(currentRun && visibleSettingsChanged)
   const renderItems = useMemo(() => buildDesktopV3ConversationRenderItems(renderedMessages), [renderedMessages])
+  const showConversationLoading = initialHydrateStatus === 'loading' && !messagesLoaded && !hasMessages && !hasStoredOperation
   const {
     scrollContainerRef,
     contentRef,
@@ -923,8 +924,8 @@ export function DesktopV3ExistingConversationPane({
       <div className="relative min-h-0 flex-1">
         <div ref={scrollContainerRef} className="h-full min-h-0 overflow-y-auto py-6 [scrollbar-gutter:stable]">
           <div ref={contentRef} className="mx-auto flex min-h-full w-full max-w-[70rem] flex-col gap-5 px-8 sm:px-12">
-          {!messagesLoaded && initialHydrateStatus !== 'error' ? (
-            <DesktopV3ChatInlineState title="Loading conversation…" description="Hydrating cached message tails." />
+          {showConversationLoading ? (
+            <DesktopV3ConversationLoadingSpinner />
           ) : null}
           {initialHydrateStatus === 'error' && !messagesLoaded && !hasMessages ? (
             <DesktopV3ChatInlineState title="Conversation unavailable" description="Initial message hydrate failed. You can still send from this session while cached state recovers." tone="error" />
@@ -1143,6 +1144,14 @@ function DesktopV3LiveToolCall({ tool }: { tool: LiveRunOverlay['toolCallsByCall
   })
   if (parsed && tool.timelineSeq) parsed.timelineSeq = tool.timelineSeq
   return <DesktopV3ToolMessage content="" toolMessage={parsed} />
+}
+
+function DesktopV3ConversationLoadingSpinner() {
+  return (
+    <div className="flex min-h-full items-center justify-center py-16" role="status" aria-label="Loading conversation">
+      <Loader2 size={28} strokeWidth={2.2} className="animate-spin text-[var(--app-primary)]" />
+    </div>
+  )
 }
 
 function DesktopV3ChatInlineState({ title, description, tone = 'muted' }: { title: string; description: string; tone?: 'muted' | 'error' }) {
