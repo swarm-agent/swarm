@@ -38,7 +38,6 @@ import (
 	runruntime "swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
-	"swarm/packages/swarmd/internal/sessionconnection"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -87,7 +86,6 @@ type Server struct {
 	v3RealtimeRetentionBoundary func() (uint64, error)
 	v3SyncCursors               *v3SyncCursorKeyring
 	v3SessionExecutor           *sessionV3Executor
-	sessionConnections          *sessionconnection.Service
 	sessions                    *sessionruntime.Service
 	workspace                   *workspace.Service
 	discovery                   *discovery.Service
@@ -360,7 +358,6 @@ func (s *Server) SetDataDir(path string) {
 		return
 	}
 	s.dataDir = strings.TrimSpace(path)
-	s.sessionConnections = nil
 }
 
 func (s *Server) SetIdentityService(identitySvc *identity.Service) {

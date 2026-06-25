@@ -1,11 +1,4 @@
 import type { DesktopPermissionRecord } from '../types/realtime'
-import type {
-  RunPhase,
-  SessionConnectResponse,
-  SessionMessageAcceptedResponse,
-  SessionStartResponse,
-  SessionStreamFrame,
-} from '../session-connection/contract.generated'
 
 export type SyncSelectorKind = '' | 'global' | 'recent' | 'session_ids' | 'workspace' | 'tui'
 
@@ -384,7 +377,7 @@ export interface SessionMutationResult {
   [key: string]: unknown
 }
 
-export type SessionMessageMutationResponse = SessionMessageAcceptedResponse | {
+export interface SessionMessageMutationResponse {
   ok: true
   session_id: string
   message: unknown
@@ -656,9 +649,6 @@ export type DesktopV3CacheAction =
   | { type: 'snapshot.apply'; source: 'bootstrap'; scopeId: string; snapshot: SyncSnapshotResponse }
   | { type: 'hydrate.apply'; source: 'hydrate'; scopeId: string; requestedSessionIds: string[]; snapshot: SyncSnapshotResponse }
   | { type: 'syncStream.applyBatch'; scopeId: string; endpointCursor: string; events: CacheEvent[]; hasMore: boolean; replayInstructions: SyncReplayInstructions }
-  | { type: 'sessionConnection.applySnapshot'; source: 'connect' | 'start'; response: SessionConnectResponse | SessionStartResponse }
-  | { type: 'sessionConnection.applyFrame'; frame: SessionStreamFrame }
-  | { type: 'sessionConnection.runPhase'; sessionId: string; runId: string; phase: RunPhase; eventSeq: number }
   | { type: 'reconnect.applySnapshot'; snapshot: SessionsReconnectResponse }
   | { type: 'realtime.storeResume'; streamPath: '/v3/realtime/stream'; resume: RealtimeMessage }
   | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string; durabilityCommitted?: boolean }

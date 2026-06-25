@@ -141,7 +141,7 @@ export async function continueDesktopV3Conversation(
     throw new Error(`Desktop V3 session ${sessionId} is deleted`)
   }
 
-  const controller = await flowDeps.requireControllerReady()
+  await flowDeps.requireControllerReady()
 
   flowDeps.dispatch({
     type: 'pendingUser.upsert',
@@ -154,8 +154,6 @@ export async function continueDesktopV3Conversation(
       createdAt: operation.createdAt,
     },
   })
-
-  await controller.connectSession(sessionId)
 
   let raw: SessionMessageMutationResponse | MessageMutationConflictResponse
   try {
@@ -189,7 +187,6 @@ export async function continueDesktopV3Conversation(
 
 function acceptedRunPhase(raw: SessionMessageMutationResponse | MessageMutationConflictResponse): string {
   if (raw.ok === false) return ''
-  if ('run' in raw && raw.run) return raw.run.phase.trim().toLowerCase()
-  if ('run_intent' in raw) return raw.run_intent?.status.trim().toLowerCase() ?? ''
+  return raw.run_intent?.status.trim().toLowerCase() ?? ''
   return ''
 }

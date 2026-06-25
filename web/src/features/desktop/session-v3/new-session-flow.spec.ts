@@ -13,8 +13,9 @@ import { createEmptyDesktopV3CacheState } from '../state/desktop-v3-cache-reduce
 import type {
   DesktopV3CacheAction,
   DesktopV3CacheState,
+  SessionCreateMutationResponse,
+  SessionMessageMutationResponse,
 } from '../state/desktop-v3-cache-types'
-import type { SessionStartResponse } from '../session-connection/contract.generated'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 
 const route: DesktopChatRoute = {
@@ -32,48 +33,36 @@ const route: DesktopChatRoute = {
   workspaceName: 'workspace',
 }
 
-function makeStartResponse(operation: DesktopV3NewSessionOperation): SessionStartResponse {
+function makeCreateResponse(operation: DesktopV3NewSessionOperation): SessionCreateMutationResponse {
   return {
     ok: true,
-    contract_version: 1,
     session_id: operation.sessionId,
-    snapshot: {
-      event_seq: 2,
-      session: {
-        id: operation.sessionId,
-        workspace_path: operation.createRequest.workspace_path,
-        workspace_name: operation.createRequest.workspace_name ?? 'workspace',
-        title: operation.createRequest.title ?? '',
-        mode: operation.createRequest.mode ?? 'auto',
-        created_at: 1,
-        updated_at: 2,
-        message_count: 1,
-        last_message_at: 2,
-      },
-      messages: [{
-        id: operation.firstMessageRequest.message_id,
-        session_id: operation.sessionId,
-        global_seq: 1,
-        role: 'user',
-        content: operation.firstMessageRequest.content,
-        created_at: 2,
-      }],
-      current_run: {
-        run_id: operation.firstMessageRequest.run_id,
-        phase: 'pending_executor',
-      },
-      pending_permissions: [],
-      active_plan: null,
-      usage: null,
+    session: {
+      id: operation.sessionId,
+      workspace_path: operation.createRequest.workspace_path,
+      workspace_name: operation.createRequest.workspace_name ?? 'workspace',
+      title: operation.createRequest.title ?? '',
+      mode: operation.createRequest.mode ?? 'auto',
+      created_at: 1,
+      updated_at: 2,
+      message_count: 0,
+      last_message_at: 0,
     },
-    connection: {
-      connection_id: `conn:${operation.sessionId}`,
-      transport: 'websocket',
-      protocol: 'swarm.session-stream.v1',
-      stream_url: `/v3/sessions/${operation.sessionId}/stream`,
-      resume_token: `resume:${operation.sessionId}`,
-      ready_timeout_ms: 1000,
+    projection: {
+      session_id: operation.sessionId,
+      last_event_seq: 1,
+      projection_high_watermark_seq: 1,
+      updated_at: 2,
     },
+    mutation: {},
+    realtime_outbox: null,
+  }
+}
+
+function makeMessageResponse(operation: DesktopV3NewSessionOperation): SessionMessageMutationResponse {
+  return {
+    ok: true,
+    session_id: operation.sessionId,
     message: {
       id: operation.firstMessageRequest.message_id,
       session_id: operation.sessionId,
@@ -82,11 +71,16 @@ function makeStartResponse(operation: DesktopV3NewSessionOperation): SessionStar
       content: operation.firstMessageRequest.content,
       created_at: 2,
     },
-    run: {
+    run_intent: {
+      session_id: operation.sessionId,
       run_id: operation.firstMessageRequest.run_id,
-      phase: 'pending_executor',
+      status: 'pending_executor',
+      created_at: 2,
+      updated_at: 2,
+      event_seq: 2,
     },
-    accepted_event_seq: 2,
+    mutation: {},
+    realtime_outbox: null,
   }
 }
 
@@ -257,7 +251,7 @@ test('Path A retries valid retained operation unchanged', () => withSessionStora
   assert.deepEqual(loaded?.firstMessageRequest, JSON.parse(JSON.stringify(operation.firstMessageRequest)))
 }))
 
-test('startNewDesktopV3Session performs atomic start, selects, and applies accepted message before navigation', async () => {
+test('startNewDesktopV3Session creates, appends first message, selects, and applies result before navigation', async () => {
   const operation = createDesktopV3NewSessionOperation({
     workspacePath: '/workspace',
     workspaceName: 'workspace',
@@ -273,17 +267,6 @@ test('startNewDesktopV3Session performs atomic start, selects, and applies accep
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      currentEndpointCursor: () => {
-        throw new Error('new-session start must not read endpoint cursor')
-      },
-      connectSession: async () => {
-        throw new Error('new-session start must not call connectSession separately')
-      },
-      startSession: async (request) => {
-        capturedRequest = request
-        calls.push(`start:${request.session_id}:${request.request_id}:${request.first_message.message_id}`)
-        return makeStartResponse(operation)
-      },
       ensureSessionHistory: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,
@@ -291,6 +274,15 @@ test('startNewDesktopV3Session performs atomic start, selects, and applies accep
     dispatch: (action) => {
       actions.push(action)
       calls.push(`dispatch:${action.type}`)
+    },
+    postCreateSession: async (request) => {
+      capturedRequest = request
+      calls.push(`create:${request.session_id}`)
+      return makeCreateResponse(operation)
+    },
+    postAppendMessage: async (sessionId, request) => {
+      calls.push(`message:${sessionId}:${request.message_id}`)
+      return makeMessageResponse(operation)
     },
   })
 
@@ -305,21 +297,19 @@ test('startNewDesktopV3Session performs atomic start, selects, and applies accep
     })
 
     assert.equal(result.sessionId, operation.sessionId)
-    assert.equal(result.startResponse.session_id, operation.sessionId)
-    assert.equal(result.messageResponse.accepted_event_seq, 2)
+    assert.equal(result.createResponse.session_id, operation.sessionId)
+    assert.equal(result.messageResponse.run_intent?.event_seq, 2)
     assert.equal(navigated, operation.sessionId)
     assert.deepEqual(calls, [
       'dispatch:pendingUser.upsert',
-      `start:${operation.sessionId}:${operation.operationId}:${operation.firstMessageRequest.message_id}`,
+      `create:${operation.sessionId}`,
+      'dispatch:mutation.sessionCreateResult',
       'dispatch:session.select',
+      `message:${operation.sessionId}:${operation.firstMessageRequest.message_id}`,
       'dispatch:mutation.messageResult',
       `navigate:${operation.sessionId}`,
     ])
-    assert.deepEqual(capturedRequest, {
-      ...operation.createRequest,
-      request_id: operation.operationId,
-      first_message: operation.firstMessageRequest,
-    })
+    assert.deepEqual(capturedRequest, operation.createRequest)
     assert.equal(actions.find((action) => action.type === 'session.select')?.sessionId, operation.sessionId)
   } finally {
     restore()
@@ -342,12 +332,6 @@ test('startNewDesktopV3Session skips selection when delayed start resolves after
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      currentEndpointCursor: () => '',
-      connectSession: async () => undefined,
-      startSession: async (request) => {
-        calls.push(`start:${request.session_id}`)
-        return makeStartResponse(operation)
-      },
       ensureSessionHistory: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,
@@ -356,6 +340,14 @@ test('startNewDesktopV3Session skips selection when delayed start resolves after
       actions.push(action)
       calls.push(`dispatch:${action.type}`)
       if (action.type === 'session.select') state.selectedSessionId = action.sessionId
+    },
+    postCreateSession: async (request) => {
+      calls.push(`create:${request.session_id}`)
+      return makeCreateResponse(operation)
+    },
+    postAppendMessage: async (sessionId, request) => {
+      calls.push(`message:${sessionId}:${request.message_id}`)
+      return makeMessageResponse(operation)
     },
   })
 
@@ -373,7 +365,9 @@ test('startNewDesktopV3Session skips selection when delayed start resolves after
     assert.equal(result.sessionId, operation.sessionId)
     assert.deepEqual(calls, [
       'dispatch:pendingUser.upsert',
-      `start:${operation.sessionId}`,
+      `create:${operation.sessionId}`,
+      'dispatch:mutation.sessionCreateResult',
+      `message:${operation.sessionId}:${operation.firstMessageRequest.message_id}`,
       'dispatch:mutation.messageResult',
     ])
     assert.equal(actions.some((action) => action.type === 'session.select'), false)
@@ -384,7 +378,7 @@ test('startNewDesktopV3Session skips selection when delayed start resolves after
   }
 })
 
-test('startNewDesktopV3Session marks pending message failed when atomic start fails', async () => {
+test('startNewDesktopV3Session marks pending message failed when create fails', async () => {
   const operation = createDesktopV3NewSessionOperation({
     workspacePath: '/workspace',
     workspaceName: 'workspace',
@@ -398,16 +392,15 @@ test('startNewDesktopV3Session marks pending message failed when atomic start fa
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      currentEndpointCursor: () => '',
-      connectSession: async () => undefined,
-      startSession: async () => {
-        throw new Error('network ambiguous')
-      },
       ensureSessionHistory: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,
     }),
     dispatch: (action) => actions.push(action),
+    postCreateSession: async () => {
+      throw new Error('network ambiguous')
+    },
+    postAppendMessage: async () => makeMessageResponse(operation),
   })
 
   try {
@@ -428,7 +421,7 @@ test('startNewDesktopV3Session marks pending message failed when atomic start fa
   }
 })
 
-test('startNewDesktopV3Session rejects atomic start response with mismatched session identity', async () => {
+test('startNewDesktopV3Session rejects create response with mismatched session identity', async () => {
   const operation = createDesktopV3NewSessionOperation({
     workspacePath: '/workspace',
     workspaceName: 'workspace',
@@ -441,17 +434,16 @@ test('startNewDesktopV3Session rejects atomic start response with mismatched ses
   const restore = setDesktopV3NewSessionFlowDepsForTests({
     getSnapshot: () => state,
     requireControllerReady: async () => ({
-      currentEndpointCursor: () => '',
-      connectSession: async () => undefined,
-      startSession: async () => ({
-        ...makeStartResponse(operation),
-        session_id: 'different-session',
-      }),
       ensureSessionHistory: async () => undefined,
       start: async () => undefined,
       stop: () => undefined,
     }),
     dispatch: () => undefined,
+    postCreateSession: async () => ({
+      ...makeCreateResponse(operation),
+      session_id: 'different-session',
+    }),
+    postAppendMessage: async () => makeMessageResponse(operation),
   })
 
   try {

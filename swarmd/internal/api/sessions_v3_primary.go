@@ -189,10 +189,6 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
-	if sessionID, ok := parseSessionV3ConnectPath(r.URL.Path); ok {
-		s.handleSessionV3Connect(w, r, principal, sessionID)
-		return
-	}
 	sessionID, subpath, ok := parseSessionsV3PrimaryPath(r.URL.Path)
 	if !ok {
 		writeError(w, http.StatusBadRequest, errors.New("invalid sessions v3 path"))
@@ -230,8 +226,6 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryMessages(w, r, principal, sessionID)
 	case "events":
 		s.handleSessionV3PrimaryEvents(w, r, principal, sessionID)
-	case "stream":
-		s.handleSessionV3PrimaryStream(w, r, principal, sessionID)
 	case "run/stop":
 		s.handleSessionV3PrimaryRunStop(w, r, principal, sessionID)
 	case "compact":
@@ -499,7 +493,7 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 	result, enqueueJob, err := s.acceptSessionsV3Message(principal, sessionID, req)
 	if err != nil {
 		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
-			writeJSON(w, http.StatusConflict, SessionConnectionError{Code: "idempotency_conflict", Message: err.Error(), Retryable: false, Action: SessionErrorAction{Method: http.MethodPost, Path: "/v3/sessions/" + sessionID + "/messages"}})
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error_code": "idempotency_conflict", "error": err.Error()})
 			return
 		}
 		if strings.Contains(err.Error(), "not found") {
@@ -509,15 +503,65 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	accepted, err := sessionV3MessageAcceptedResponse(sessionID, result)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, accepted)
+	writeJSON(w, http.StatusOK, sessionV3MessageMutationResponse(sessionID, result))
 	if enqueueJob != nil {
 		s.v3SessionExecutor.EnqueueRun(*enqueueJob)
 	}
+}
+
+func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID string, req sessionsV3MessageRequest) (sessionruntime.SessionMutationResult, *sessionV3ExecutorJob, error) {
+	session, found, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, nil, err
+	}
+	if !found {
+		return sessionruntime.SessionMutationResult{}, nil, errors.New("session not found")
+	}
+	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
+		return sessionruntime.SessionMutationResult{}, nil, err
+	}
+	message := pebblestore.MessageSnapshot{ID: strings.TrimSpace(req.MessageID), Role: strings.TrimSpace(req.Role), Content: req.Content, Metadata: cloneSessionsV3Metadata(req.Metadata)}
+	if message.Role == "" {
+		return sessionruntime.SessionMutationResult{}, nil, errors.New("message role is required")
+	}
+	if message.Content == "" {
+		return sessionruntime.SessionMutationResult{}, nil, errors.New("message content is required")
+	}
+	now := time.Now().UnixMilli()
+	runStatus, blockedReason := s.sessionsV3PrimaryRunIntentStatus(principal, session, req)
+	runIntent := &pebblestore.V3SessionRunIntent{RunID: strings.TrimSpace(req.RunID), Status: runStatus, BlockedReason: blockedReason}
+	clientRequestID := strings.TrimSpace(firstNonEmpty(req.ClientRequestID, req.IdempotencyKey))
+	if clientRequestID == "" {
+		return sessionruntime.SessionMutationResult{}, nil, errors.New("client_request_id is required")
+	}
+	if runIntent.RunID == "" {
+		runIntent.RunID = stableSessionsV3PrimaryRunID(sessionID, clientRequestID)
+	}
+	payloadHash, err := sessionsV3MessagePayloadHash(sessionID, req, message, runIntent.Status, runIntent.BlockedReason)
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, nil, err
+	}
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		Message:         &message,
+		RunIntent:       runIntent,
+		NowUnixMs:       now,
+	})
+	if err != nil {
+		return result, nil, err
+	}
+	var enqueueJob *sessionV3ExecutorJob
+	if !result.Replayed && result.RunIntent != nil && result.RunIntent.Status == sessionruntime.RunIntentPendingExecutor && s.v3SessionExecutor != nil {
+		enqueueJob = &sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: result.RunIntent.RunID}
+	}
+	return result, enqueueJob, nil
 }
 
 func (s *Server) handleSessionV3PrimaryEvents(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
@@ -1695,19 +1739,6 @@ func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession) map[string]a
 		response["active_plan"] = hydrated.ActivePlan
 	}
 	return response
-}
-
-func parseSessionV3ConnectPath(path string) (string, bool) {
-	if !strings.HasPrefix(path, sessionsV3PrimaryPrefix) || !strings.HasSuffix(path, ":connect") {
-		return "", false
-	}
-	rest := strings.TrimPrefix(path, sessionsV3PrimaryPrefix)
-	rest = strings.TrimSuffix(rest, ":connect")
-	if rest == "" || strings.Contains(rest, "/") || strings.Contains(rest, "//") {
-		return "", false
-	}
-	sessionID := strings.TrimSpace(rest)
-	return sessionID, sessionID != ""
 }
 
 func parseSessionsV3PrimaryPath(path string) (string, string, bool) {

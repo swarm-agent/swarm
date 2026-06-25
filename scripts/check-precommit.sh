@@ -62,7 +62,6 @@ fi
 "${SCRIPT_DIR}/check-secrets.sh"
 "${SCRIPT_DIR}/check-hidden-text.sh"
 bash "${SCRIPT_DIR}/check-policy-guardrails.sh"
-bash "${SCRIPT_DIR}/check-session-connection-contract-generated.sh"
 bash "${SCRIPT_DIR}/check-vulns.sh"
 
 echo "[precommit] checking gofmt"

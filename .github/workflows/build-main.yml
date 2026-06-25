@@ -49,9 +49,6 @@ jobs:
           corepack enable
           corepack pnpm --version
 
-      - name: Check generated session connection contract
-        run: ./scripts/check-session-connection-contract-generated.sh
-
       - name: Resolve build version
         id: version
         shell: bash
