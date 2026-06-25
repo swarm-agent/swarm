@@ -92,14 +92,15 @@ export function buildDesktopV3BootstrapInput(
 ): DesktopV3BootstrapInput {
   const sourceSelector = input.selector ?? DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.selector
   const preferred = preferredSessionId?.trim()
+  const selectorKind = sourceSelector.kind?.trim().toLowerCase()
   const sessionIds = [...(sourceSelector.session_ids ?? [])]
-  if (preferred && !sessionIds.includes(preferred)) {
+  if (selectorKind === 'session_ids' && preferred && !sessionIds.includes(preferred)) {
     sessionIds.unshift(preferred)
   }
   const selector: SyncSelector = {
     ...sourceSelector,
     workspace_paths: sourceSelector.workspace_paths ? [...sourceSelector.workspace_paths] : undefined,
-    session_ids: sessionIds.length > 0 ? sessionIds : undefined,
+    session_ids: selectorKind === 'session_ids' && sessionIds.length > 0 ? sessionIds : undefined,
     recent: sourceSelector.recent ? { ...sourceSelector.recent } : undefined,
     attention: sourceSelector.attention ? { ...sourceSelector.attention } : undefined,
   }

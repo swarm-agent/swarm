@@ -859,7 +859,7 @@ test('Desktop V3 reconnect input preserves bounded sidebar selector instead of w
     streamKind: 'v3.sync.snapshot',
     selectorFilterHash: 'global-hash',
     resourceSet: 'run_intents',
-    selector: { kind: 'recent', global: true, recent: { limit: 50 }, session_ids: ['session-a'] },
+    selector: { kind: 'recent', global: true, recent: { limit: 50 } },
     endpointCursor: 'cursor-bootstrap',
     replayPath: '/v3/sync/stream',
     replayTransport: 'http_post',
@@ -868,7 +868,7 @@ test('Desktop V3 reconnect input preserves bounded sidebar selector instead of w
 
   const input = buildDesktopV3ReconnectInput(state, 'client-a')
   assert.equal(input.workset.workset_id, 'global-scope')
-  assert.deepEqual(input.workset.selector, { kind: 'recent', global: true, recent: { limit: 50 }, session_ids: ['session-a'] })
+  assert.deepEqual(input.workset.selector, { kind: 'recent', global: true, recent: { limit: 50 } })
   assert.notDeepEqual(input.workset.selector, { kind: 'global', global: true })
   assert.deepEqual(input.workset.history, { mode: 'none' })
   assert.equal(input.workset.resources.messages, false)

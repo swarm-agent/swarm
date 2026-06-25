@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { DESKTOP_SELECTED_HYDRATE_RESPONSE_BYTE_BUDGET, DESKTOP_STARTUP_MESSAGE_LIMIT, DESKTOP_STARTUP_SESSION_LIMIT, DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT, buildDesktopV3SelectedSessionHydrateInput, countArrayMapItems, postDesktopV3SyncBootstrap, postDesktopV3SyncHydrate } from './desktop-v3-sync-api'
+import { DESKTOP_SELECTED_HYDRATE_RESPONSE_BYTE_BUDGET, DESKTOP_STARTUP_MESSAGE_LIMIT, DESKTOP_STARTUP_SESSION_LIMIT, DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT, buildDesktopV3BootstrapInput, buildDesktopV3SelectedSessionHydrateInput, countArrayMapItems, postDesktopV3SyncBootstrap, postDesktopV3SyncHydrate } from './desktop-v3-sync-api'
 import { snapshotFixture } from './desktop-v3-cache.backend-fixtures'
 
 test('postDesktopV3SyncBootstrap posts metadata-only bounded startup workset payload to bootstrap endpoint', async () => {
@@ -41,6 +41,25 @@ test('postDesktopV3SyncBootstrap posts metadata-only bounded startup workset pay
   assert.deepEqual(DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.history, { mode: 'none' })
   assert.equal(DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.resources.messages, false)
   assert.equal(DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT.resources.permission_summaries, true)
+})
+
+
+test('buildDesktopV3BootstrapInput does not mix preferred session into recent selector', () => {
+  const input = buildDesktopV3BootstrapInput({}, ' session-a ')
+  assert.equal(input.selector.kind, 'recent')
+  assert.equal(input.selector.global, true)
+  assert.deepEqual(input.selector.recent, { limit: DESKTOP_STARTUP_SESSION_LIMIT })
+  assert.deepEqual(input.selector.session_ids, undefined)
+})
+
+
+test('buildDesktopV3BootstrapInput only prepends preferred session for session_ids selector', () => {
+  const input = buildDesktopV3BootstrapInput({
+    selector: { kind: 'session_ids', session_ids: ['session-b'] },
+  }, ' session-a ')
+
+  assert.equal(input.selector.kind, 'session_ids')
+  assert.deepEqual(input.selector.session_ids, ['session-a', 'session-b'])
 })
 
 
