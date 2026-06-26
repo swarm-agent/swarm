@@ -4341,6 +4341,7 @@ func TestSessionsV3ExecutorCompletesAfterPreToolDeltaAndThreeToolCalls(t *testin
 		t.Fatalf("list events: %v", err)
 	}
 	var deltaText []string
+	var deltaIndexes []int
 	for _, event := range events {
 		if event.EventType == "session.run.failed" {
 			t.Fatalf("unexpected run failure event after final assistant text: %+v", event)
@@ -4356,9 +4357,13 @@ func TestSessionsV3ExecutorCompletesAfterPreToolDeltaAndThreeToolCalls(t *testin
 			t.Fatalf("decode delta payload: %v", err)
 		}
 		deltaText = append(deltaText, payload.Delta)
+		deltaIndexes = append(deltaIndexes, payload.DeltaIndex)
 	}
 	if len(deltaText) != 2 || strings.TrimSpace(deltaText[0]) != "First message" || strings.TrimSpace(deltaText[1]) != "I've finished testing" {
 		t.Fatalf("assistant deltas = %+v, want pre-tool and final streaming deltas", deltaText)
+	}
+	if len(deltaIndexes) != 2 || deltaIndexes[0] != 1 || deltaIndexes[1] != 2 {
+		t.Fatalf("assistant delta indexes = %+v, want monotonic across provider steps", deltaIndexes)
 	}
 }
 

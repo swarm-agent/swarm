@@ -76,6 +76,9 @@ func TestV3DurableProgressSinkCoalescesTenThousandDeltasByStream(t *testing.T) {
 		progress.OffsetStart = uint64(i)
 		progress.OffsetEnd = uint64(i + 1)
 		progress.Text = "x"
+		if i%10 == 9 {
+			progress.Text = "\n"
+		}
 		if err := sink.TryAppendAssistant(progress); err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
@@ -93,6 +96,11 @@ func TestV3DurableProgressSinkCoalescesTenThousandDeltasByStream(t *testing.T) {
 	}
 	if snap.PendingBytes+snap.InFlightBytes != 10000 {
 		t.Fatalf("bytes snapshot = %+v, want 10000", snap)
+	}
+	select {
+	case <-writer.release:
+		t.Fatalf("writer release channel should not be closed before snapshot")
+	default:
 	}
 	for stream := 0; stream < 100; stream++ {
 		for i := 0; i < 100; i++ {

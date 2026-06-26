@@ -193,6 +193,12 @@ func (s *sessionV3DurableProgressSink) TryRecordPhase(phase RunPhase, eventType 
 	}
 	s.phaseRecordedByEventType[eventType] = true
 	s.sealAllCurrentLocked()
+	if err := s.callbackErrLocked(); err != nil {
+		return err
+	}
+	if err := s.reserveSealedEpochsLocked(1); err != nil {
+		return err
+	}
 	s.addControlEpochLocked(sessionV3DurableProgressItem{Kind: sessionV3DurableProgressItemPhase, Phase: phase, EventType: eventType})
 	s.signalLocked()
 	return nil
@@ -209,7 +215,9 @@ func (s *sessionV3DurableProgressSink) TryAppendAssistant(progress sessionV3Assi
 	}
 	progress.StreamID = strings.TrimSpace(progress.StreamID)
 	if progress.StreamID == "" {
-		return errors.New("v3 assistant progress stream_id is required")
+		err := errors.New("v3 assistant progress stream_id is required")
+		s.failLocked(err)
+		return err
 	}
 	prior := s.acceptedAssistantEnd[progress.StreamID]
 	if prior.LiveSeqEnd != 0 || prior.OffsetEnd != 0 {
@@ -269,6 +277,12 @@ func (s *sessionV3DurableProgressSink) TryStartReasoning(step int, reasoningKey 
 		return err
 	}
 	s.sealAllCurrentLocked()
+	if err := s.callbackErrLocked(); err != nil {
+		return err
+	}
+	if err := s.reserveSealedEpochsLocked(1); err != nil {
+		return err
+	}
 	s.addControlEpochLocked(sessionV3DurableProgressItem{Kind: sessionV3DurableProgressItemReasoningStarted, EventType: "session.reasoning.started", Step: step, ReasoningKey: reasoningKey})
 	s.signalLocked()
 	return nil
@@ -330,6 +344,12 @@ func (s *sessionV3DurableProgressSink) TryCompleteReasoning(step int, reasoningK
 		return err
 	}
 	s.sealAllCurrentLocked()
+	if err := s.callbackErrLocked(); err != nil {
+		return err
+	}
+	if err := s.reserveSealedEpochsLocked(1); err != nil {
+		return err
+	}
 	s.addControlEpochLocked(sessionV3DurableProgressItem{Kind: sessionV3DurableProgressItemReasoningComplete, EventType: "session.reasoning.completed", Step: step, ReasoningKey: reasoningKey, Summary: strings.TrimSpace(summary)})
 	s.signalLocked()
 	return nil
@@ -349,6 +369,11 @@ func (s *sessionV3DurableProgressSink) FlushBarrier(ctx context.Context) error {
 		return err
 	}
 	s.sealAllCurrentLocked()
+	if s.firstErr != nil {
+		err := s.firstErr
+		s.mu.Unlock()
+		return err
+	}
 	target := s.nextEpochID
 	if target == 0 || (s.pendingBytes == 0 && s.inFlightBytes == 0 && len(s.sealedEpochs) == 0) || s.committedEpochID >= target {
 		s.mu.Unlock()
@@ -394,6 +419,12 @@ func (s *sessionV3DurableProgressSink) closeAndBarrier(ctx context.Context) erro
 		return err
 	}
 	s.sealAllCurrentLocked()
+	if s.firstErr != nil {
+		err := s.firstErr
+		s.signalLocked()
+		s.mu.Unlock()
+		return err
+	}
 	target := s.nextEpochID
 	if target == 0 || (s.pendingBytes == 0 && s.inFlightBytes == 0 && len(s.sealedEpochs) == 0) || s.committedEpochID >= target {
 		s.signalLocked()
@@ -452,7 +483,15 @@ func (s *sessionV3DurableProgressSink) reserveBytesLocked(additionalBytes int) e
 }
 
 func (s *sessionV3DurableProgressSink) reserveControlLocked(additional int) error {
-	if s.controlItems+additional > sessionV3DurableProgressMaxControlItems || len(s.sealedEpochs) >= sessionV3DurableProgressMaxSealedEpochs {
+	if s.controlItems+additional > sessionV3DurableProgressMaxControlItems {
+		s.failLocked(ErrSessionV3DurableProgressBacklog)
+		return ErrSessionV3DurableProgressBacklog
+	}
+	return nil
+}
+
+func (s *sessionV3DurableProgressSink) reserveSealedEpochsLocked(additional int) error {
+	if len(s.sealedEpochs)+additional > sessionV3DurableProgressMaxSealedEpochs {
 		s.failLocked(ErrSessionV3DurableProgressBacklog)
 		return ErrSessionV3DurableProgressBacklog
 	}
@@ -503,6 +542,21 @@ func (s *sessionV3DurableProgressSink) sealMatchingCurrentLocked(shouldSeal func
 		delete(s.currentReasoningByKey, key)
 	}
 	if len(items) == 0 {
+		return
+	}
+	if err := s.reserveSealedEpochsLocked(1); err != nil {
+		for _, item := range items {
+			switch item.Kind {
+			case sessionV3DurableProgressItemAssistant:
+				if item.Assistant != nil {
+					s.currentAssistantByStream[item.Assistant.StreamID] = item.Assistant
+				}
+			case sessionV3DurableProgressItemReasoningDelta:
+				if item.Reasoning != nil {
+					s.currentReasoningByKey[item.Reasoning.ReasoningKey] = item.Reasoning
+				}
+			}
+		}
 		return
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Order < items[j].Order })

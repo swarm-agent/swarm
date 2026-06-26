@@ -144,7 +144,11 @@ func TestV3CommittedAssistantMetadataMatchesFinalStream(t *testing.T) {
 		t.Fatalf("list messages: %v", err)
 	}
 	metadata := messages[1].Metadata
-	if metadata["stream_id"] != "assistant:"+messages[1].Metadata["run_id"].(string)+":step:1" || metadata["stream_step"] != float64(1) && metadata["stream_step"] != 1 || metadata["stream_offset_end"] != float64(len([]byte("héllo 🌍"))) && metadata["stream_offset_end"] != len([]byte("héllo 🌍")) {
+	runID, _ := metadata["run_id"].(string)
+	if runID == "" {
+		t.Fatalf("assistant metadata missing run_id: %+v", metadata)
+	}
+	if metadata["stream_id"] != sessionV3AssistantLiveStreamID(runID, 1) || metadata["stream_step"] != float64(1) && metadata["stream_step"] != 1 || metadata["stream_offset_end"] != float64(len([]byte("héllo 🌍"))) && metadata["stream_offset_end"] != len([]byte("héllo 🌍")) {
 		t.Fatalf("assistant metadata = %+v", metadata)
 	}
 }
@@ -235,6 +239,13 @@ func TestV3ProviderResponseWithoutDeltasUsesOneSyntheticRange(t *testing.T) {
 	}
 	if len(deltas) != 1 || deltas[0].LiveSeqStart != 1 || deltas[0].LiveSeqEnd != 1 || deltas[0].OffsetStart != 0 || deltas[0].OffsetEnd != uint64(len([]byte(text))) || deltas[0].Delta != text {
 		t.Fatalf("synthetic deltas = %+v", deltas)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) < 2 || messages[1].Content != text {
+		t.Fatalf("canonical synthetic assistant messages = %+v", messages)
 	}
 }
 

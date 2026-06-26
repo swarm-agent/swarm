@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,13 @@ type sessionV3AssistantLiveTracker struct {
 	Offset    uint64
 }
 
+func sessionV3AssistantLiveStreamID(runID string, step int) string {
+	if step <= 0 {
+		step = 1
+	}
+	return fmt.Sprintf("assistant:%s:step:%d", strings.TrimSpace(runID), step)
+}
+
 func newSessionV3AssistantLiveTracker(sessionID, runID string, step int) *sessionV3AssistantLiveTracker {
 	if step <= 0 {
 		step = 1
@@ -29,7 +37,7 @@ func newSessionV3AssistantLiveTracker(sessionID, runID string, step int) *sessio
 		RunID:     strings.TrimSpace(runID),
 		Step:      step,
 		StepID:    stepID,
-		StreamID:  "assistant:" + strings.TrimSpace(runID) + ":step:" + strings.TrimPrefix(stepID, "step-"),
+		StreamID:  sessionV3AssistantLiveStreamID(runID, step),
 		NextSeq:   1,
 	}
 }
