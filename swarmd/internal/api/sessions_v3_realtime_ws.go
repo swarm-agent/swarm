@@ -215,6 +215,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 						return
 					}
 					subs = advanced.Subscriptions
+					s.syncV3LiveSubscriptionSessions(liveSub, principal, subs, livePatchAccepted)
 					if advanced.EndpointSeq > lastEndpointSeq {
 						lastEndpointSeq = advanced.EndpointSeq
 					}

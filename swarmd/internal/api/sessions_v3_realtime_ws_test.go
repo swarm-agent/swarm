@@ -1793,6 +1793,32 @@ func TestV3RealtimeCapabilityResumeReceivesLivePatchAfterReplayComplete(t *testi
 	}
 }
 
+func TestV3RealtimeCapabilitySubscribeReceivesLivePatchAfterReplayComplete(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.v3LivePatchEnabled = true
+	created := createV3RealtimeTestSessionResult(t, server, "session-live-subscribe", "create-live-subscribe")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+
+	hello := readV3RealtimeFrameIncludingHello(t, conn)
+	assertV3RealtimeFrame(t, hello, V3RealtimeKindHello, "", 0)
+	if !containsV3RealtimeCapability(hello.Capabilities, V3RealtimeCapabilityLivePatchV1) {
+		t.Fatalf("hello capabilities = %+v, want live_patch_v1", hello.Capabilities)
+	}
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), Capabilities: []string{V3RealtimeCapabilityLivePatchV1}})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), SessionID: created.SessionID, SubscriptionID: "sub-live-subscribe"})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
+	done := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, done, V3RealtimeKindReplayDone, created.SessionID, created.Event.Seq)
+
+	server.v3LiveHub.publish(testPrincipal().AccountScopeID, v3RealtimeLivePatchForTest(created.SessionID, "run-1", "stream-1", 1, "x"))
+	live := readV3RealtimeLiveFrame(t, conn)
+	if live.Kind != V3RealtimeKindLivePatch || live.Live.Text != "x" || live.Live.SessionID != created.SessionID {
+		t.Fatalf("live frame = %+v", live)
+	}
+}
+
 func TestV3RealtimeLiveAndDurableUseOneSocketWriter(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	server.v3LivePatchEnabled = true
