@@ -2061,7 +2061,60 @@ test('live run selector returns stable sequence/update/run id ordering', () => {
   assert.deepEqual(selectLiveRuns(state, sessionA.id).map((run) => run.runId), ['run-a', 'run-b', 'run-c'])
 })
 
-test('realtime workset discovered creates sidebar stub before event arrives and removed preserves transcript', () => {
+test('realtime workset discovered applies child session shell and running state before event arrives', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap.scopeId = 'global-scope'
+  const childSession: SessionSnapshot = {
+    ...sessionB,
+    id: 'child-session',
+    title: 'Map backend files',
+    metadata: {
+      parent_session_id: sessionA.id,
+      lineage_kind: 'delegated_subagent',
+      lineage_label: '@explorer',
+      requested_subagent: 'purpose-review',
+      subagent: 'explorer',
+      assignment_label: 'Map backend files',
+    },
+  }
+
+  applyRealtimeFrame(state, {
+    frame: realtimeFrameFixture({
+      kind: 'workset.session.discovered',
+      workset_id: 'workset-1',
+      workset_subscription_id: 'workset-sub-1',
+      session_id: childSession.id,
+      subscription_id: 'workset-sub-1:session:child-session',
+      auto_subscribed: true,
+      endpoint_cursor: 'cursor-discovered',
+      event: undefined,
+      session: childSession,
+      projection: { ...projectionB, session_id: childSession.id, last_event_seq: 1, projection_high_watermark_seq: 1 },
+      current_run_state: {
+        session_id: childSession.id,
+        run_id: 'child-run-active',
+        active: true,
+        status: 'running',
+        created_at: 30,
+        updated_at: 31,
+        event_seq: 1,
+      },
+    }),
+  })
+
+  assert.deepEqual(state.sessionOrderByScope['workset-1'], [childSession.id])
+  assert.deepEqual(state.sessionOrderByScope['global-scope'], [childSession.id])
+  assert.equal(state.sessionsById[childSession.id]?.kind, 'full')
+  assert.deepEqual(state.sessionsById[childSession.id]?.kind === 'full' ? state.sessionsById[childSession.id].session.metadata : undefined, childSession.metadata)
+  assert.equal(state.currentRunIntentBySession[childSession.id]?.run_id, 'child-run-active')
+  assert.equal(state.subscriptionsById['workset-sub-1:session:child-session']?.autoSubscribed, true)
+  const sidebarRow = selectDesktopSidebarRows(state).find((row) => row.sessionId === childSession.id)
+  assert.equal(sidebarRow?.currentRunIntent?.run_id, 'child-run-active')
+  assert.equal(sidebarRow?.record.kind, 'full')
+  assert.equal(state.realtime.endpointCursor, undefined)
+})
+
+test('realtime workset removed preserves transcript after child discovery', () => {
   const state = createEmptyDesktopV3CacheState()
   applyRealtimeFrame(state, {
     frame: realtimeFrameFixture({

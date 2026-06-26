@@ -1217,7 +1217,9 @@ export function applyWorksetSessionDiscovered(
   const sessionId = stringField(frame.session_id)
   if (!discoveredWorksetId || !sessionId) return
 
-  if (!state.sessionsById[sessionId]) {
+  if (frame.session) {
+    upsertSessions(state, { [sessionId]: frame.session })
+  } else if (!state.sessionsById[sessionId]) {
     state.sessionsById[sessionId] = {
       kind: 'stub',
       id: sessionId,
@@ -1256,6 +1258,11 @@ export function applyWorksetSessionDiscovered(
       status: 'active',
     }
   }
+
+  if (frame.projection) state.projectionsBySession[sessionId] = frame.projection
+  applyCurrentRunStateFrame(state, sessionId, frame.current_run_state)
+  const summary = normalizeDesktopPermissionSummary(frame.permission_summary, sessionId)
+  if (summary) applyPermissionSummary(state, sessionId, summary)
 
   // Intentionally do not update state.realtime.endpointCursor here.
   // The matching durable event for this same endpoint record must be applied first.

@@ -561,6 +561,104 @@ test('Desktop V3 direct route session missing from reconnect is explicitly subsc
   controller.stop()
 })
 
+test('Desktop V3 workset updated subscribes active child session for direct stream', async () => {
+  let state = readyControllerState()
+  const sockets: FakeWebSocket[] = []
+  const childSession = {
+    ...sessionB,
+    id: 'child-session-active',
+    title: 'Map backend files',
+    metadata: {
+      parent_session_id: sessionA.id,
+      lineage_kind: 'delegated_subagent',
+      lineage_label: '@explorer',
+      requested_subagent: 'purpose-review',
+      subagent: 'explorer',
+      assignment_label: 'Map backend files',
+    },
+  }
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: {},
+      projections_by_session: {},
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [],
+      workset_id: 'global-scope',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect',
+          subscriptions: [],
+          worksets: [{
+            workset_id: 'global-scope',
+            subscription_id: 'workset-sub',
+            selector: { kind: 'recent', global: true, recent: { limit: 50 } },
+            resources: ['membership', 'projections', 'current_run_state', 'sessions'],
+            auto_subscribe_sessions: false,
+          }],
+        },
+      },
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start(null)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    sockets[0].sent = []
+
+    sockets[0].emit({
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'workset.session.updated',
+      workset_id: 'global-scope',
+      workset_subscription_id: 'workset-sub',
+      session_id: childSession.id,
+      endpoint_cursor: 'cursor-child-update',
+      rev: 2,
+      prevRev: 1,
+      event_type: 'session.run.running',
+      session: childSession,
+      projection: { ...projectionB, session_id: childSession.id, last_event_seq: 2, projection_high_watermark_seq: 2 },
+      current_run_state: {
+        session_id: childSession.id,
+        run_id: 'child-run-active',
+        active: true,
+        status: 'running',
+        created_at: 30,
+        updated_at: 31,
+        event_seq: 2,
+      },
+    })
+
+    await waitFor(() => sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'subscribe.session' && (frame as RealtimeMessage).session_id === childSession.id))
+    assert.equal(state.sessionsById[childSession.id]?.kind, 'full')
+    assert.equal(state.currentRunIntentBySession[childSession.id]?.run_id, 'child-run-active')
+    const subscribe = sockets[0].sent.find((frame) => (frame as RealtimeMessage).kind === 'subscribe.session') as RealtimeMessage
+    assert.equal(subscribe.endpoint_cursor, 'cursor-child-update')
+  } finally {
+    controller.stop()
+  }
+})
+
+
 test('Desktop V3 auto-discovered session updates metadata without transcript hydrate', async () => {
   let state = readyControllerState()
   const sockets: FakeWebSocket[] = []

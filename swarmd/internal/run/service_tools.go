@@ -69,6 +69,7 @@ type taskLaunchOutcome struct {
 	ReasoningSummary   string
 	CurrentPreviewKind string
 	CurrentPreviewText string
+	Phase              string
 	ReportChars        int
 	ReportExcerpt      string
 	ReportRef          *taskReportRef
@@ -197,6 +198,58 @@ func publicTaskPreview(kind, text string) (string, string) {
 	}
 }
 
+func buildTaskStreamLaunchPayload(launch taskLaunchOutcome, status, phase string, terminal bool) map[string]any {
+	phase = strings.TrimSpace(phase)
+	if phase == "" {
+		phase = strings.TrimSpace(launch.Phase)
+	}
+	if phase == "" {
+		phase = status
+	}
+	elapsedMS, currentToolMS := taskLaunchProgressDurations(launch, terminal)
+	previewKind, previewText := publicTaskPreview(launch.CurrentPreviewKind, launch.CurrentPreviewText)
+	row := map[string]any{
+		"launch_index":               launch.LaunchIndex,
+		"status":                     strings.TrimSpace(status),
+		"requested_subagent":         strings.TrimSpace(launch.RequestedSubagent),
+		"subagent":                   strings.TrimSpace(launch.ResolvedSubagent),
+		"agent_type":                 strings.TrimSpace(launch.ResolvedSubagent),
+		"meta_prompt":                strings.TrimSpace(launch.MetaPrompt),
+		"assignment_label":           strings.TrimSpace(launch.AssignmentLabel),
+		"subagent_provider":          strings.TrimSpace(launch.SubagentProvider),
+		"subagent_model":             strings.TrimSpace(launch.SubagentModel),
+		"child_session_id":           strings.TrimSpace(launch.ChildSessionID),
+		"child_mode":                 strings.TrimSpace(launch.ChildMode),
+		"workspace_path":             strings.TrimSpace(launch.WorkspacePath),
+		"workspace_name":             strings.TrimSpace(launch.WorkspaceName),
+		"worktree_enabled":           launch.WorktreeEnabled,
+		"worktree_root_path":         strings.TrimSpace(launch.WorktreeRootPath),
+		"worktree_branch":            strings.TrimSpace(launch.WorktreeBranch),
+		"phase":                      phase,
+		"launch_started_at_ms":       launch.LaunchStartedAtMS,
+		"current_tool":               strings.TrimSpace(launch.CurrentTool),
+		"current_tool_started_at_ms": launch.CurrentToolStarted,
+		"current_tool_ms":            currentToolMS,
+		"current_preview_kind":       previewKind,
+		"current_preview_text":       previewText,
+		"reasoning_summary":          strings.TrimSpace(launch.ReasoningSummary),
+		"elapsed_ms":                 elapsedMS,
+		"tool_started":               launch.ToolStarted,
+		"tool_completed":             launch.ToolCompleted,
+		"tool_failed":                launch.ToolFailed,
+		"tool_order":                 append([]string(nil), launch.ToolOrder...),
+		"summary":                    strings.TrimSpace(launch.Summary),
+		"error":                      strings.TrimSpace(launch.Error),
+		"report_chars":               launch.ReportChars,
+		"report_truncated":           launch.ReportTruncated,
+	}
+	if launch.ReportRef != nil {
+		row["report_ref"] = launch.ReportRef
+		row["report_persisted"] = true
+	}
+	return row
+}
+
 func buildTaskStreamPayload(parentSessionID, action, description string, launchCount int, launch taskLaunchOutcome, phase, summary string) map[string]any {
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
@@ -207,9 +260,6 @@ func buildTaskStreamPayload(parentSessionID, action, description string, launchC
 	}
 	status := taskStreamStatusForPhase(phase)
 	terminal := status == "ok" || status == "error"
-	elapsedMS, currentToolMS := taskLaunchProgressDurations(launch, terminal)
-	previewKind, previewText := publicTaskPreview(launch.CurrentPreviewKind, launch.CurrentPreviewText)
-	reasoningSummary := strings.TrimSpace(launch.ReasoningSummary)
 	return map[string]any{
 		"tool":              "task",
 		"action":            action,
@@ -225,48 +275,24 @@ func buildTaskStreamPayload(parentSessionID, action, description string, launchC
 		"path_id":           "tool.task.stream.v1",
 		"summary":           summary,
 		"details_truncated": false,
-		"launches": []map[string]any{{
-			"launch_index":               launch.LaunchIndex,
-			"status":                     status,
-			"requested_subagent":         strings.TrimSpace(launch.RequestedSubagent),
-			"subagent":                   strings.TrimSpace(launch.ResolvedSubagent),
-			"agent_type":                 strings.TrimSpace(launch.ResolvedSubagent),
-			"meta_prompt":                strings.TrimSpace(launch.MetaPrompt),
-			"assignment_label":           strings.TrimSpace(launch.AssignmentLabel),
-			"subagent_provider":          strings.TrimSpace(launch.SubagentProvider),
-			"subagent_model":             strings.TrimSpace(launch.SubagentModel),
-			"child_session_id":           strings.TrimSpace(launch.ChildSessionID),
-			"child_mode":                 strings.TrimSpace(launch.ChildMode),
-			"workspace_path":             strings.TrimSpace(launch.WorkspacePath),
-			"workspace_name":             strings.TrimSpace(launch.WorkspaceName),
-			"worktree_enabled":           launch.WorktreeEnabled,
-			"worktree_root_path":         strings.TrimSpace(launch.WorktreeRootPath),
-			"worktree_branch":            strings.TrimSpace(launch.WorktreeBranch),
-			"phase":                      strings.TrimSpace(phase),
-			"launch_started_at_ms":       launch.LaunchStartedAtMS,
-			"current_tool":               strings.TrimSpace(launch.CurrentTool),
-			"current_tool_started_at_ms": launch.CurrentToolStarted,
-			"current_tool_ms":            currentToolMS,
-			"current_preview_kind":       previewKind,
-			"current_preview_text":       previewText,
-			"reasoning_summary":          reasoningSummary,
-			"elapsed_ms":                 elapsedMS,
-			"tool_started":               launch.ToolStarted,
-			"tool_completed":             launch.ToolCompleted,
-			"tool_failed":                launch.ToolFailed,
-			"tool_order":                 append([]string(nil), launch.ToolOrder...),
-		}},
+		"launches": []map[string]any{
+			buildTaskStreamLaunchPayload(launch, status, phase, terminal),
+		},
 	}
 }
 
 func emitTaskStreamDelta(parentSessionID string, emit StreamHandler, step int, toolName, callID, action, description string, launchCount int, launch taskLaunchOutcome, phase, summary string) {
+	payload := buildTaskStreamPayload(parentSessionID, action, description, launchCount, launch, phase, summary)
+	emitTaskStreamPayload(emit, step, toolName, callID, payload)
+}
+
+func emitTaskStreamPayload(emit StreamHandler, step int, toolName, callID string, payload map[string]any) {
 	if emit == nil {
 		return
 	}
 	if strings.TrimSpace(toolName) == "" {
 		toolName = "task"
 	}
-	payload := buildTaskStreamPayload(parentSessionID, action, description, launchCount, launch, phase, summary)
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return
@@ -2239,15 +2265,48 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			s.publishEventEnvelope(*env)
 		}
 	}
-	emitTaskDelta := func(phase, summary string, launch taskLaunchOutcome) {
-		emitTaskStreamDelta(parentSession.ID, emit, step, taskToolName, taskCallID, action, description, len(prepared), launch, phase, summary)
+	taskProgressMu := sync.Mutex{}
+	taskProgress := make([]taskLaunchOutcome, len(prepared))
+	taskProgressInitialized := make([]bool, len(prepared))
+	emitTaskProgress := func(phase, summary string, launch taskLaunchOutcome) {
+		phase = strings.TrimSpace(phase)
+		status := taskStreamStatusForPhase(phase)
+		terminal := status == "ok" || status == "error"
+		launch.Phase = phase
+		idx := launch.LaunchIndex - 1
+		launches := make([]map[string]any, 0, len(prepared))
+		taskProgressMu.Lock()
+		if idx >= 0 && idx < len(taskProgress) {
+			taskProgress[idx] = launch
+			taskProgressInitialized[idx] = true
+		}
+		for i := range taskProgress {
+			if !taskProgressInitialized[i] {
+				continue
+			}
+			row := taskProgress[i]
+			rowStatus := taskStreamStatusForPhase(row.Phase)
+			rowTerminal := rowStatus == "ok" || rowStatus == "error"
+			launches = append(launches, buildTaskStreamLaunchPayload(row, rowStatus, row.Phase, rowTerminal))
+		}
+		taskProgressMu.Unlock()
+		if len(launches) == 0 {
+			launches = append(launches, buildTaskStreamLaunchPayload(launch, status, phase, terminal))
+		}
+		summary = strings.TrimSpace(summary)
+		if summary == "" {
+			summary = fmt.Sprintf("%d subagent launch(es) active", len(launches))
+		}
+		payload := buildTaskStreamPayload(parentSession.ID, action, description, len(prepared), launch, phase, summary)
+		payload["launches"] = launches
+		emitTaskStreamPayload(emit, step, taskToolName, taskCallID, payload)
 	}
 
 	spawned := make([]taskLaunchOutcome, 0, len(prepared))
 	for i := range prepared {
 		launch := buildTaskLaunchOutcome(prepared[i])
 		spawned = append(spawned, launch)
-		emitTaskDelta("spawned", fmt.Sprintf("spawned launch %d %s subagent in %s", launch.LaunchIndex, launch.ResolvedSubagent, launch.ChildMode), launch)
+		emitTaskProgress("spawned", fmt.Sprintf("spawned launch %d %s subagent in %s", launch.LaunchIndex, launch.ResolvedSubagent, launch.ChildMode), launch)
 	}
 	lineageUpdate("spawned", spawned, nil)
 
@@ -2283,7 +2342,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			eventType := strings.ToLower(strings.TrimSpace(event.Type))
 			switch eventType {
 			case StreamEventStepStarted:
-				emitTaskDelta("running", "", outcome)
+				emitTaskProgress("running", "", outcome)
 			case StreamEventToolStarted:
 				nowMS := time.Now().UnixMilli()
 				toolName := emptyToolName(strings.TrimSpace(event.ToolName))
@@ -2299,11 +2358,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				if outcome.LaunchStartedAtMS <= 0 {
 					outcome.LaunchStartedAtMS = nowMS
 				}
-				emitTaskDelta("tool.started", fmt.Sprintf("launch %d running %s", outcome.LaunchIndex, outcome.CurrentTool), outcome)
+				emitTaskProgress("tool.started", fmt.Sprintf("launch %d running %s", outcome.LaunchIndex, outcome.CurrentTool), outcome)
 			case StreamEventToolDelta:
 				outcome.CurrentPreviewKind = "tool"
 				outcome.CurrentPreviewText = appendTaskPreviewText(outcome.CurrentPreviewText, event.Output, taskStreamPreviewMaxChars, true)
-				emitTaskDelta("tool.delta", "", outcome)
+				emitTaskProgress("tool.delta", "", outcome)
 			case StreamEventToolCompleted:
 				nowMS := time.Now().UnixMilli()
 				outcome.ToolCompleted++
@@ -2325,7 +2384,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				if strings.TrimSpace(event.Error) != "" {
 					summary = fmt.Sprintf("launch %d failed %s: %s", outcome.LaunchIndex, completedTool, strings.TrimSpace(event.Error))
 				}
-				emitTaskDelta("tool.completed", summary, outcome)
+				emitTaskProgress("tool.completed", summary, outcome)
 				if strings.TrimSpace(event.Error) == "" {
 					outcome.CurrentTool = ""
 					outcome.CurrentToolStarted = 0
@@ -2336,11 +2395,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			case StreamEventReasoningDelta:
 				outcome.CurrentPreviewKind = "reasoning"
 				outcome.CurrentPreviewText = setTaskPreviewText(event.Delta, taskStreamPreviewMaxChars, false)
-				emitTaskDelta("reasoning.delta", "", outcome)
+				emitTaskProgress("reasoning.delta", "", outcome)
 			case StreamEventAssistantDelta, StreamEventAssistantCommentary:
 				outcome.CurrentPreviewKind = "assistant"
 				outcome.CurrentPreviewText = appendTaskPreviewText(outcome.CurrentPreviewText, event.Delta, taskStreamPreviewMaxChars, false)
-				emitTaskDelta("assistant.delta", "", outcome)
+				emitTaskProgress("assistant.delta", "", outcome)
 			case StreamEventMessageStored, StreamEventMessageUpdated:
 				if event.Message != nil && strings.EqualFold(strings.TrimSpace(event.Message.Role), "reasoning") {
 					outcome.ReasoningSummary = strings.TrimSpace(event.Message.Content)
@@ -2367,7 +2426,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			if outcome.Error != "" {
 				outcome.Summary += ": " + outcome.Error
 			}
-			emitTaskDelta("failed", outcome.Summary, outcome)
+			emitTaskProgress("failed", outcome.Summary, outcome)
 			return outcome, runErr
 		}
 
@@ -2397,7 +2456,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if outcome.Summary == "" {
 			outcome.Summary = fmt.Sprintf("launch %d subagent %s completed", outcome.LaunchIndex, outcome.ResolvedSubagent)
 		}
-		emitTaskDelta("completed", outcome.Summary, outcome)
+		emitTaskProgress("completed", outcome.Summary, outcome)
 		return outcome, nil
 	})
 
@@ -2470,46 +2529,15 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 		}
 		summaryParts = append(summaryParts, fmt.Sprintf("[%d] %s", launch.LaunchIndex, launchSummary))
-		launchPreviewKind, launchPreviewText := publicTaskPreview(launch.CurrentPreviewKind, launch.CurrentPreviewText)
 		launchPhase := "completed"
 		if status == "error" {
 			launchPhase = "failed"
 		}
-		launchPayload := map[string]any{
-			"launch_index":               launch.LaunchIndex,
-			"status":                     status,
-			"requested_subagent":         strings.TrimSpace(launch.RequestedSubagent),
-			"subagent":                   strings.TrimSpace(launch.ResolvedSubagent),
-			"agent_type":                 strings.TrimSpace(launch.ResolvedSubagent),
-			"meta_prompt":                strings.TrimSpace(launch.MetaPrompt),
-			"assignment_label":           strings.TrimSpace(launch.AssignmentLabel),
-			"subagent_provider":          strings.TrimSpace(launch.SubagentProvider),
-			"subagent_model":             strings.TrimSpace(launch.SubagentModel),
-			"session_id":                 strings.TrimSpace(launch.ChildSessionID),
-			"mode":                       strings.TrimSpace(launch.ChildMode),
-			"workspace_path":             strings.TrimSpace(launch.WorkspacePath),
-			"workspace_name":             strings.TrimSpace(launch.WorkspaceName),
-			"worktree_enabled":           launch.WorktreeEnabled,
-			"worktree_root_path":         strings.TrimSpace(launch.WorktreeRootPath),
-			"worktree_branch":            strings.TrimSpace(launch.WorktreeBranch),
-			"phase":                      launchPhase,
-			"launch_started_at_ms":       launch.LaunchStartedAtMS,
-			"current_tool":               strings.TrimSpace(launch.CurrentTool),
-			"current_tool_started_at_ms": launch.CurrentToolStarted,
-			"current_tool_ms":            launch.CurrentToolMS,
-			"current_preview_kind":       launchPreviewKind,
-			"current_preview_text":       launchPreviewText,
-			"reasoning_summary":          strings.TrimSpace(launch.ReasoningSummary),
-			"elapsed_ms":                 launch.ElapsedMS,
-			"error":                      strings.TrimSpace(launch.Error),
-			"summary":                    strings.TrimSpace(launch.Summary),
-			"report_chars":               launch.ReportChars,
-			"report_truncated":           reportTruncated,
-			"tool_started":               launch.ToolStarted,
-			"tool_completed":             launch.ToolCompleted,
-			"tool_failed":                launch.ToolFailed,
-			"tool_order":                 append([]string(nil), launch.ToolOrder...),
-		}
+		launch.Phase = launchPhase
+		launch.ReportTruncated = reportTruncated
+		launchPayload := buildTaskStreamLaunchPayload(launch, status, launchPhase, true)
+		launchPayload["session_id"] = strings.TrimSpace(launch.ChildSessionID)
+		launchPayload["mode"] = strings.TrimSpace(launch.ChildMode)
 		if reportExcerpt != "" {
 			excerptChars := len([]rune(reportExcerpt))
 			if inlineReportChars+excerptChars > taskReportAggregateMaxChars {

@@ -1,6 +1,9 @@
 package run
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestBuildTaskStreamPayloadDesktopSubagentSchema(t *testing.T) {
 	payload := buildTaskStreamPayload("parent-session", "spawn", "map repo", 3, taskLaunchOutcome{
@@ -129,5 +132,110 @@ func TestBuildTaskStreamPayloadDoesNotExposeAssistantOrReasoningPreviewText(t *t
 				t.Fatalf("current_preview_text = %#v, want empty redacted preview", got)
 			}
 		})
+	}
+}
+
+func TestEmitTaskStreamPayloadAggregatesIndependentLaunchProgress(t *testing.T) {
+	var outputs []string
+	emit := func(event StreamEvent) {
+		if event.Type != StreamEventToolDelta {
+			t.Fatalf("event type = %q, want %q", event.Type, StreamEventToolDelta)
+		}
+		outputs = append(outputs, event.Output)
+	}
+	launches := []taskLaunchOutcome{
+		{
+			LaunchIndex:       1,
+			RequestedSubagent: "explorer",
+			ResolvedSubagent:  "explorer",
+			AssignmentLabel:   "Map backend files",
+			ChildSessionID:    "child-1",
+			Phase:             "completed",
+			ToolStarted:       2,
+			ToolCompleted:     2,
+			ReportRef: &taskReportRef{
+				SessionID: "child-1",
+				MessageID: "msg-child-1",
+				GlobalSeq: 12,
+				Role:      "assistant",
+				Source:    "child_session_transcript",
+			},
+			Summary: "backend mapped",
+		},
+		{
+			LaunchIndex:        2,
+			RequestedSubagent:  "parallel",
+			ResolvedSubagent:   "parallel",
+			AssignmentLabel:    "Map frontend files",
+			ChildSessionID:     "child-2",
+			Phase:              "assistant.delta",
+			CurrentPreviewKind: "assistant",
+			CurrentPreviewText: "private child assistant text",
+			ToolStarted:        1,
+		},
+	}
+	rows := make([]map[string]any, 0, len(launches))
+	for _, launch := range launches {
+		status := taskStreamStatusForPhase(launch.Phase)
+		row := buildTaskStreamLaunchPayload(launch, status, launch.Phase, status == "ok" || status == "error")
+		if launch.ReportRef != nil {
+			row["report_ref"] = map[string]any{
+				"session_id": launch.ReportRef.SessionID,
+				"message_id": launch.ReportRef.MessageID,
+				"global_seq": launch.ReportRef.GlobalSeq,
+				"role":       launch.ReportRef.Role,
+				"source":     launch.ReportRef.Source,
+			}
+			row["report_persisted"] = true
+		}
+		rows = append(rows, row)
+	}
+	payload := buildTaskStreamPayload("parent", "spawn", "map repo", len(launches), launches[1], "assistant.delta", "2 subagent launch(es) active")
+	payload["launches"] = rows
+	emitTaskStreamPayload(emit, 3, "task", "call-task", payload)
+
+	if len(outputs) != 1 {
+		t.Fatalf("outputs = %d, want 1", len(outputs))
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(outputs[0]), &decoded); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	decodedRows, ok := decoded["launches"].([]any)
+	if !ok || len(decodedRows) != 2 {
+		t.Fatalf("launches = %#v, want two rows", decoded["launches"])
+	}
+	first, ok := decodedRows[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first launch row = %#v", decodedRows[0])
+	}
+	second, ok := decodedRows[1].(map[string]any)
+	if !ok {
+		t.Fatalf("second launch row = %#v", decodedRows[1])
+	}
+	if got := first["child_session_id"]; got != "child-1" {
+		t.Fatalf("first child_session_id = %#v, want child-1", got)
+	}
+	if got := first["status"]; got != "ok" {
+		t.Fatalf("first status = %#v, want ok", got)
+	}
+	if got := first["report_persisted"]; got != true {
+		t.Fatalf("first report_persisted = %#v, want true", got)
+	}
+	reportRef, ok := first["report_ref"].(map[string]any)
+	if !ok {
+		t.Fatalf("first report_ref = %#v, want object", first["report_ref"])
+	}
+	if got := reportRef["source"]; got != "child_session_transcript" {
+		t.Fatalf("report_ref.source = %#v, want child_session_transcript", got)
+	}
+	if got := second["child_session_id"]; got != "child-2" {
+		t.Fatalf("second child_session_id = %#v, want child-2", got)
+	}
+	if got := second["current_preview_kind"]; got != "assistant" {
+		t.Fatalf("second current_preview_kind = %#v, want assistant", got)
+	}
+	if got := second["current_preview_text"]; got != "" {
+		t.Fatalf("assistant preview leaked into parent progress: %#v", got)
 	}
 }
