@@ -2504,13 +2504,13 @@ export function applyDesktopV3LivePatchBatch(
 
   for (const patch of patches) {
     const run = ensureMutableRun(patch.session_id, patch.run_id)
-    applyLivePatchToRun(run, patch)
+    applyLivePatchToRun(nextState, run, patch)
   }
 
   return nextState
 }
 
-function applyLivePatchToRun(run: LiveRunOverlay, patch: SessionV3RealtimeLivePatchWire): void {
+function applyLivePatchToRun(state: DesktopV3CacheState, run: LiveRunOverlay, patch: SessionV3RealtimeLivePatchWire): void {
   run.status = run.status === 'pending_executor' ? 'running' : run.status
   const updatedAt = patch.recorded_at
   const existingDraft = run.assistantDraft
@@ -2551,7 +2551,7 @@ function applyLivePatchToRun(run: LiveRunOverlay, patch: SessionV3RealtimeLivePa
   run.assistantDraft = {
     content: patch.text,
     updatedAt,
-    timelineSeq: patch.live_seq_start,
+    timelineSeq: resolveLiveAssistantTimelineSeq(state, run, patch.session_id),
     streamId: patch.stream_id,
     streamStep: patch.step,
     stepId: patch.step_id,
@@ -2560,6 +2560,24 @@ function applyLivePatchToRun(run: LiveRunOverlay, patch: SessionV3RealtimeLivePa
     durableOffsetEnd: 0,
     livePaused: false,
   }
+}
+
+function resolveLiveAssistantTimelineSeq(state: DesktopV3CacheState, run: LiveRunOverlay, sessionId: string): number {
+  let latestCommittedSeq = 0
+  for (const message of state.messagesBySession[sessionId]?.items ?? []) {
+    latestCommittedSeq = Math.max(latestCommittedSeq, finiteNumberValue(message.global_seq) ?? 0)
+  }
+  const runIntentSeq = state.runIntentsBySession[sessionId]?.[run.runId]?.event_seq ?? 0
+  const currentRunIntentSeq = state.currentRunIntentBySession[sessionId]?.event_seq ?? 0
+  const projection = state.projectionsBySession[sessionId]
+  return Math.max(
+    latestCommittedSeq,
+    runIntentSeq,
+    currentRunIntentSeq,
+    projection?.last_event_seq ?? 0,
+    projection?.projection_high_watermark_seq ?? 0,
+    run.lastEventSeqSeen ?? 0,
+  ) + 1
 }
 
 function upsertLiveAssistantSegment(

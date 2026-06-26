@@ -1351,6 +1351,30 @@ test('Desktop V3 assistant segment preserves leading and trailing whitespace', (
   if (liveAssistant?.type === 'live-assistant') assert.equal(liveAssistant.content, exact)
 })
 
+test('Desktop V3 live assistant does not sort by per-stream live sequence', () => {
+  let state = bootstrappedState()
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({
+    text: 'streaming reply',
+    live_seq_start: 1,
+    live_seq_end: 1,
+    offset_start: 0,
+    offset_end: byteLength('streaming reply'),
+  })])
+
+  const draft = state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft
+  assert.notEqual(draft?.timelineSeq, 1)
+  const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+  const userIndex = rendered.findIndex((item) => item.type === 'message' && item.message.id === messageA1.id)
+  const committedAssistantIndex = rendered.findIndex((item) => item.type === 'message' && item.message.id === messageA2.id)
+  const liveIndex = rendered.findIndex((item) => item.type === 'live-assistant')
+  assert.ok(userIndex >= 0)
+  assert.ok(committedAssistantIndex >= 0)
+  assert.ok(liveIndex >= 0)
+  assert.notEqual(liveIndex, 0)
+  assert.ok(liveIndex > userIndex)
+  assert.ok(liveIndex > committedAssistantIndex)
+})
+
 test('Desktop V3 high-frequency deltas are not retained', () => {
   const state = bootstrappedState()
   for (let i = 0; i < 10_000; i += 1) {
