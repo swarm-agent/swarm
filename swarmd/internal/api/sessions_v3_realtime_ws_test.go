@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	transportws "swarm/packages/swarmd/internal/transport/ws"
 )
 
 func TestV3RealtimePublishesCommittedOutboxEventAndReplaysAfterReconnect(t *testing.T) {
@@ -1748,4 +1750,207 @@ func sourceBetweenForTest(t *testing.T, source, start, end string) string {
 		t.Fatalf("source missing end marker %q after %q", end, start)
 	}
 	return source[startIndex : startIndex+endIndex]
+}
+
+func TestV3RealtimeLegacyResumeReceivesNoLivePatch(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.v3LivePatchEnabled = true
+	created := createV3RealtimeTestSessionResult(t, server, "session-live-legacy", "create-live-legacy")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: created.SessionID, SubscriptionID: "sub-live-legacy"}}})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.SessionID, created.Event.Seq)
+
+	server.v3LiveHub.publish(testPrincipal().AccountScopeID, v3RealtimeLivePatchForTest(created.SessionID, "run-1", "stream-1", 1, "x"))
+	assertNoV3RealtimeFrame(t, conn, 100*time.Millisecond)
+}
+
+func TestV3RealtimeCapabilityResumeReceivesLivePatchAfterReplayComplete(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.v3LivePatchEnabled = true
+	created := createV3RealtimeTestSessionResult(t, server, "session-live-capability", "create-live-capability")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+
+	hello := readV3RealtimeFrameIncludingHello(t, conn)
+	assertV3RealtimeFrame(t, hello, V3RealtimeKindHello, "", 0)
+	if !containsV3RealtimeCapability(hello.Capabilities, V3RealtimeCapabilityLivePatchV1) {
+		t.Fatalf("hello capabilities = %+v, want live_patch_v1", hello.Capabilities)
+	}
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), Capabilities: []string{V3RealtimeCapabilityLivePatchV1}, Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: created.SessionID, SubscriptionID: "sub-live-capability"}}})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
+	done := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, done, V3RealtimeKindReplayDone, created.SessionID, created.Event.Seq)
+
+	server.v3LiveHub.publish(testPrincipal().AccountScopeID, v3RealtimeLivePatchForTest(created.SessionID, "run-1", "stream-1", 1, "x"))
+	live := readV3RealtimeLiveFrame(t, conn)
+	if live.Kind != V3RealtimeKindLivePatch || live.Live.Text != "x" || live.Live.SessionID != created.SessionID {
+		t.Fatalf("live frame = %+v", live)
+	}
+}
+
+func TestV3RealtimeLiveAndDurableUseOneSocketWriter(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.v3LivePatchEnabled = true
+	created := createV3RealtimeTestSessionResult(t, server, "session-live-single-writer", "create-live-single-writer")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), Capabilities: []string{V3RealtimeCapabilityLivePatchV1}, Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: created.SessionID, SubscriptionID: "sub-live-single-writer"}}})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.SessionID, created.Event.Seq)
+
+	var active, maxActive, completed atomic.Int64
+	previous := v3RealtimeWriteObserver
+	v3RealtimeWriteObserver = func(delta int) {
+		if delta > 0 {
+			current := active.Add(1)
+			for {
+				old := maxActive.Load()
+				if current <= old || maxActive.CompareAndSwap(old, current) {
+					break
+				}
+			}
+		} else {
+			active.Add(-1)
+			completed.Add(1)
+		}
+	}
+	t.Cleanup(func() { v3RealtimeWriteObserver = previous })
+
+	server.v3LiveHub.publish(testPrincipal().AccountScopeID, v3RealtimeLivePatchForTest(created.SessionID, "run-1", "stream-1", 1, "x"))
+	appendV3RealtimeTestMessage(t, server, created.SessionID, "message-live-single-writer", "durable")
+	_ = readV3RealtimeAnyFrame(t, conn)
+	_ = readV3RealtimeAnyFrame(t, conn)
+	if completed.Load() < 2 {
+		t.Fatalf("completed writes = %d, want at least 2", completed.Load())
+	}
+	if maxActive.Load() != 1 {
+		t.Fatalf("max active writes = %d, want 1", maxActive.Load())
+	}
+}
+
+func TestV3RealtimeLivePatchServerGateDefaultsOff(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-live-gate-off", "create-live-gate-off")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	hello := readV3RealtimeFrameIncludingHello(t, conn)
+	assertV3RealtimeFrame(t, hello, V3RealtimeKindHello, "", 0)
+	if len(hello.Capabilities) != 0 {
+		t.Fatalf("hello capabilities = %+v, want empty when gate defaults off", hello.Capabilities)
+	}
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), Capabilities: []string{V3RealtimeCapabilityLivePatchV1}, Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: created.SessionID, SubscriptionID: "sub-live-gate-off"}}})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.SessionID, created.Event.Seq)
+	server.v3LiveHub.publish(testPrincipal().AccountScopeID, v3RealtimeLivePatchForTest(created.SessionID, "run-1", "stream-1", 1, "x"))
+	assertNoV3RealtimeFrame(t, conn, 100*time.Millisecond)
+}
+
+func TestV3RealtimeWriteDeadlineReleasesStalledSocket(t *testing.T) {
+	previous := v3RealtimeWriteTimeout
+	v3RealtimeWriteTimeout = 25 * time.Millisecond
+	t.Cleanup(func() { v3RealtimeWriteTimeout = previous })
+
+	accepted := make(chan *transportws.Conn, 1)
+	releaseHandler := make(chan struct{})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := transportws.Accept(w, r)
+		if err != nil {
+			return
+		}
+		accepted <- conn
+		<-releaseHandler
+		_ = conn.Close()
+	}))
+	t.Cleanup(func() {
+		close(releaseHandler)
+		httpServer.Close()
+	})
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+	client, _, err := gorillaws.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial stopped-reader websocket: %v", err)
+	}
+	defer client.Close()
+
+	var conn *transportws.Conn
+	select {
+	case conn = <-accepted:
+	case <-time.After(time.Second):
+		t.Fatalf("server did not accept stopped-reader websocket")
+	}
+
+	writeErr := make(chan error, 1)
+	go func() {
+		raw := []byte(strings.Repeat("x", 256<<10))
+		server := &Server{}
+		for i := 0; i < 1024; i++ {
+			if err := server.writeV3RealtimePayload(conn, raw); err != nil {
+				writeErr <- err
+				return
+			}
+		}
+		writeErr <- nil
+	}()
+
+	select {
+	case err := <-writeErr:
+		if err == nil {
+			t.Fatalf("stopped-reader websocket accepted all writes without deadline error")
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("stalled socket write did not exit through deadline")
+	}
+}
+
+func readV3RealtimeLiveFrame(t *testing.T, conn *gorillaws.Conn) V3RealtimeLiveMessage {
+	t.Helper()
+	for {
+		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatalf("set live read deadline: %v", err)
+		}
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read live frame: %v", err)
+		}
+		var base struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(raw, &base); err != nil {
+			t.Fatalf("decode live base %s: %v", string(raw), err)
+		}
+		if base.Kind == V3RealtimeKindHello {
+			continue
+		}
+		if base.Kind != V3RealtimeKindLivePatch {
+			t.Fatalf("frame kind = %q, want live.patch raw=%s", base.Kind, string(raw))
+		}
+		var frame V3RealtimeLiveMessage
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatalf("decode live frame %s: %v", string(raw), err)
+		}
+		if err := ValidateV3RealtimeLiveMessage(frame); err != nil {
+			t.Fatalf("invalid live frame %s: %v", string(raw), err)
+		}
+		return frame
+	}
+}
+
+func readV3RealtimeAnyFrame(t *testing.T, conn *gorillaws.Conn) string {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set any read deadline: %v", err)
+	}
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read any frame: %v", err)
+	}
+	return string(raw)
 }

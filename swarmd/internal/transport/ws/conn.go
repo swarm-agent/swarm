@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -103,6 +104,10 @@ func (c *Conn) ReadText() ([]byte, error) {
 
 func (c *Conn) WriteText(payload []byte) error {
 	return c.writeFrame(opcodeText, payload)
+}
+
+func (c *Conn) SetWriteDeadline(deadline time.Time) error {
+	return c.conn.SetWriteDeadline(deadline)
 }
 
 func (c *Conn) WriteClose() error {

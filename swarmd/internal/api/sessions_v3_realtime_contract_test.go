@@ -253,3 +253,70 @@ func cloneV3RealtimeMessage(t *testing.T, msg V3RealtimeMessage) V3RealtimeMessa
 	}
 	return cloned
 }
+
+func TestV3RealtimeLivePatchContractRoundTrip(t *testing.T) {
+	patch := V3RealtimeLivePatch{
+		SessionID:    "session-a",
+		RunID:        "run-a",
+		StreamID:     "assistant:run-a:step:1",
+		StreamKind:   "assistant_text",
+		Operation:    "append",
+		Step:         1,
+		StepID:       "step-1",
+		LiveSeqStart: 1,
+		LiveSeqEnd:   1,
+		OffsetStart:  0,
+		OffsetEnd:    5,
+		Text:         "hello",
+		RecordedAt:   12345,
+	}
+	message := NewV3RealtimeLiveMessage(patch)
+	raw, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("marshal live message: %v", err)
+	}
+	var decoded V3RealtimeLiveMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal live message: %v", err)
+	}
+	if err := ValidateV3RealtimeLiveMessage(decoded); err != nil {
+		t.Fatalf("validate live message: %v json=%s", err, string(raw))
+	}
+	if decoded.Kind != V3RealtimeKindLivePatch || decoded.SessionID != patch.SessionID || decoded.Live != patch {
+		t.Fatalf("decoded live message = %+v, want patch %+v", decoded, patch)
+	}
+	var keys map[string]any
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		t.Fatalf("unmarshal live keys: %v", err)
+	}
+	for _, forbidden := range []string{"endpoint_cursor", "rev", "prevRev", "event", "projection", "realtime_outbox"} {
+		if _, ok := keys[forbidden]; ok {
+			t.Fatalf("live message leaked durable key %q in %s", forbidden, string(raw))
+		}
+	}
+}
+
+func TestV3RealtimeLivePatchContractRejectsInvalidOffsets(t *testing.T) {
+	patch := V3RealtimeLivePatch{
+		SessionID:    "session-a",
+		RunID:        "run-a",
+		StreamID:     "assistant:run-a:step:1",
+		StreamKind:   "assistant_text",
+		Operation:    "append",
+		Step:         1,
+		StepID:       "step-1",
+		LiveSeqStart: 1,
+		LiveSeqEnd:   1,
+		OffsetStart:  0,
+		OffsetEnd:    1,
+		Text:         "é",
+		RecordedAt:   12345,
+	}
+	if err := ValidateV3RealtimeLiveMessage(NewV3RealtimeLiveMessage(patch)); err == nil {
+		t.Fatalf("invalid UTF-8 byte offset passed validation")
+	}
+	patch.OffsetEnd = 2
+	if err := ValidateV3RealtimeLiveMessage(NewV3RealtimeLiveMessage(patch)); err != nil {
+		t.Fatalf("valid UTF-8 byte offset rejected: %v", err)
+	}
+}

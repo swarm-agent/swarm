@@ -72,6 +72,8 @@ type peerAuthContextKey string
 
 const peerAuthAuthorizedContextKey peerAuthContextKey = "peer-auth-authorized"
 
+const v3LivePatchDefaultEnabled = false
+
 type peerAuthContextValue struct {
 	SwarmID string
 }
@@ -83,6 +85,8 @@ type Server struct {
 	runner                      runService
 	runStreams                  *runStreamManager
 	v3RealtimeOutbox            *v3RealtimeOutboxHub
+	v3LiveHub                   *v3LiveHub
+	v3LivePatchEnabled          bool
 	v3RealtimeRetentionBoundary func() (uint64, error)
 	v3SyncCursors               *v3SyncCursorKeyring
 	v3SessionExecutor           *sessionV3Executor
@@ -304,6 +308,8 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		runner:               runSvc,
 		runStreams:           newRunStreamManager(),
 		v3RealtimeOutbox:     newV3RealtimeOutboxHub(),
+		v3LiveHub:            newV3LiveHub(),
+		v3LivePatchEnabled:   v3LivePatchDefaultEnabled,
 		sessions:             sessionSvc,
 		workspace:            workspaceSvc,
 		discovery:            discoverySvc,

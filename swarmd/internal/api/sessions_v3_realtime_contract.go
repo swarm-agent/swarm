@@ -30,6 +30,8 @@ const (
 	V3RealtimeKindWorksetSessionRemoved    = "workset.session.removed"
 	V3RealtimeKindAuthDenied               = "auth.denied"
 	V3RealtimeKindSlowConsumer             = "slow_consumer.reconnect_required"
+	V3RealtimeKindLivePatch                = "live.patch"
+	V3RealtimeCapabilityLivePatchV1        = "live_patch_v1"
 )
 
 type V3RealtimeSubscriptionRequest struct {
@@ -89,10 +91,45 @@ type V3RealtimeMessage struct {
 	OldestAvailableEndpointSeq uint64                                 `json:"oldest_available_endpoint_seq,omitempty"`
 	LatestEndpointSeq          uint64                                 `json:"latest_endpoint_seq,omitempty"`
 	MissingEndpointSeq         uint64                                 `json:"missing_endpoint_seq,omitempty"`
+	Capabilities               []string                               `json:"capabilities,omitempty"`
+}
+
+type V3RealtimeLivePatch struct {
+	SessionID    string `json:"session_id"`
+	RunID        string `json:"run_id"`
+	StreamID     string `json:"stream_id"`
+	StreamKind   string `json:"stream_kind"`
+	Operation    string `json:"operation"`
+	Step         int    `json:"step"`
+	StepID       string `json:"step_id"`
+	LiveSeqStart uint64 `json:"live_seq_start"`
+	LiveSeqEnd   uint64 `json:"live_seq_end"`
+	OffsetStart  uint64 `json:"offset_start"`
+	OffsetEnd    uint64 `json:"offset_end"`
+	Text         string `json:"text"`
+	RecordedAt   int64  `json:"recorded_at"`
+}
+
+type V3RealtimeLiveMessage struct {
+	Protocol        string              `json:"protocol"`
+	ProtocolVersion int                 `json:"protocol_version"`
+	Kind            string              `json:"kind"`
+	SessionID       string              `json:"session_id"`
+	Live            V3RealtimeLivePatch `json:"live"`
 }
 
 func NewV3RealtimeMessage(kind string) V3RealtimeMessage {
 	return V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: kind}
+}
+
+func NewV3RealtimeLiveMessage(patch V3RealtimeLivePatch) V3RealtimeLiveMessage {
+	return V3RealtimeLiveMessage{
+		Protocol:        V3RealtimeProtocol,
+		ProtocolVersion: V3RealtimeProtocolVersion,
+		Kind:            V3RealtimeKindLivePatch,
+		SessionID:       patch.SessionID,
+		Live:            patch,
+	}
 }
 
 func ValidateV3RealtimeMessage(message V3RealtimeMessage) error {
@@ -169,6 +206,62 @@ func ValidateV3RealtimeSchemaMessage(message V3RealtimeMessage) error {
 	default:
 		return fmt.Errorf("unsupported v3 realtime kind %q", kind)
 	}
+}
+
+func ValidateV3RealtimeLiveMessage(message V3RealtimeLiveMessage) error {
+	if message.Protocol != V3RealtimeProtocol {
+		return fmt.Errorf("v3 realtime live protocol must be %q", V3RealtimeProtocol)
+	}
+	if message.ProtocolVersion != V3RealtimeProtocolVersion {
+		return fmt.Errorf("v3 realtime live protocol_version must be %d", V3RealtimeProtocolVersion)
+	}
+	if strings.TrimSpace(message.Kind) != V3RealtimeKindLivePatch {
+		return fmt.Errorf("v3 realtime live kind must be %q", V3RealtimeKindLivePatch)
+	}
+	if strings.TrimSpace(message.SessionID) == "" {
+		return errors.New("v3 realtime live requires session_id")
+	}
+	live := message.Live
+	if strings.TrimSpace(message.SessionID) != strings.TrimSpace(live.SessionID) {
+		return errors.New("v3 realtime live session_id must match live.session_id")
+	}
+	if strings.TrimSpace(live.RunID) == "" {
+		return errors.New("v3 realtime live requires run_id")
+	}
+	if strings.TrimSpace(live.StreamID) == "" {
+		return errors.New("v3 realtime live requires stream_id")
+	}
+	if strings.TrimSpace(live.StepID) == "" {
+		return errors.New("v3 realtime live requires step_id")
+	}
+	if live.Text == "" {
+		return errors.New("v3 realtime live requires text")
+	}
+	if strings.TrimSpace(live.StreamKind) != "assistant_text" {
+		return errors.New("v3 realtime live stream_kind must be assistant_text")
+	}
+	if strings.TrimSpace(live.Operation) != "append" {
+		return errors.New("v3 realtime live operation must be append")
+	}
+	if live.Step <= 0 {
+		return errors.New("v3 realtime live step must be positive")
+	}
+	if live.LiveSeqStart == 0 {
+		return errors.New("v3 realtime live live_seq_start must be positive")
+	}
+	if live.LiveSeqEnd < live.LiveSeqStart {
+		return errors.New("v3 realtime live live_seq_end must be >= live_seq_start")
+	}
+	if live.OffsetEnd < live.OffsetStart {
+		return errors.New("v3 realtime live offset_end must be >= offset_start")
+	}
+	if live.OffsetEnd-live.OffsetStart != uint64(len([]byte(live.Text))) {
+		return errors.New("v3 realtime live offsets must match UTF-8 text byte length")
+	}
+	if live.RecordedAt <= 0 {
+		return errors.New("v3 realtime live recorded_at must be positive")
+	}
+	return nil
 }
 
 func ValidateV3RealtimeInboundClientMessage(message V3RealtimeMessage) error {

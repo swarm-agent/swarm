@@ -18,6 +18,9 @@ import (
 const v3RealtimeReplayLimit = 500
 
 var v3RealtimeKeepaliveInterval = 15 * time.Second
+var v3RealtimeWriteTimeout = 5 * time.Second
+
+var v3RealtimeWriteObserver func(activeDelta int)
 
 var v3RealtimeListRealtimeOutboxAfter = func(s *Server, afterEndpointSeq uint64, limit int) ([]sessionruntime.RealtimeOutboxRecord, error) {
 	return s.sessions.ListRealtimeOutboxAfter(afterEndpointSeq, limit)
@@ -57,6 +60,9 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 	if s.v3RealtimeOutbox == nil {
 		s.v3RealtimeOutbox = newV3RealtimeOutboxHub()
 	}
+	if s.v3LiveHub == nil {
+		s.v3LiveHub = newV3LiveHub()
+	}
 	conn, err := transportws.Accept(w, r)
 	if err != nil {
 		if errors.Is(err, transportws.ErrUpgradeRequired) {
@@ -74,6 +80,13 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer s.v3RealtimeOutbox.unsubscribe(sub)
+
+	liveSub := s.v3LiveHub.subscribe()
+	if liveSub == nil {
+		_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSlowConsumer, ErrorCode: "subscribe_failed", Error: "unable to subscribe to v3 realtime live hub"})
+		return
+	}
+	defer s.v3LiveHub.unsubscribe(liveSub)
 
 	surface := r.URL.Query().Get("surface")
 	scope := v3SyncCursorScopeForRealtime(principal, surface)
@@ -95,6 +108,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 	}
 	subs := map[string]v3RealtimeSubscription{}
 	worksets := map[string]v3RealtimeWorksetSubscription{}
+	livePatchAccepted := false
 	lastEndpointSeq := endpointCursor
 	lastKeepaliveSeq := endpointCursor
 
@@ -107,7 +121,11 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "cursor_sign_failed", err.Error(), 0, endpointCursor))
 		return
 	}
-	if err := s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindHello, EndpointCursor: helloCursor}); err != nil {
+	hello := V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindHello, EndpointCursor: helloCursor}
+	if s.v3LivePatchEnabled {
+		hello.Capabilities = []string{V3RealtimeCapabilityLivePatchV1}
+	}
+	if err := s.sendV3RealtimeMessage(conn, hello); err != nil {
 		return
 	}
 
@@ -207,7 +225,10 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 						delete(subs, sessionID)
 					}
 				}
+				s.syncV3LiveSubscriptionSessions(liveSub, principal, subs, livePatchAccepted)
 			case V3RealtimeKindResume:
+				livePatchAccepted = s.v3LivePatchEnabled && containsV3RealtimeCapability(message.Capabilities, V3RealtimeCapabilityLivePatchV1)
+				s.syncV3LiveSubscriptionSessions(liveSub, principal, nil, false)
 				resumeSeq, _, err := s.parseV3RealtimeEndpointCursor(message.EndpointCursor, principal, surface)
 				if err != nil {
 					_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", v3RealtimeCursorErrorCode(err), err.Error(), lastEndpointSeq, 0))
@@ -270,6 +291,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 				}
 				subs = advanced.Subscriptions
 				worksets = requestedWorksets
+				s.syncV3LiveSubscriptionSessions(liveSub, principal, subs, livePatchAccepted)
 				lastEndpointSeq = advanced.EndpointSeq
 				lastKeepaliveSeq = advanced.EndpointSeq
 			}
@@ -279,7 +301,18 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			subs = advanced.Subscriptions
+			s.syncV3LiveSubscriptionSessions(liveSub, principal, subs, livePatchAccepted)
 			lastEndpointSeq = advanced.EndpointSeq
+		case <-liveSub.notify:
+			patches := liveSub.drain(v3LiveWriterMaxFramesPerTurn, v3LiveWriterMaxBytesPerTurn)
+			for _, patch := range patches {
+				if err := s.sendV3RealtimeLivePatch(conn, patch); err != nil {
+					return
+				}
+			}
+		case slow := <-liveSub.slow:
+			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSlowConsumer, ErrorCode: "slow_consumer", Reason: slow.Reason})
+			return
 		case slow := <-sub.slow:
 			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSlowConsumer, NextSeq: slow.EndpointSeq, ErrorCode: "slow_consumer", Reason: slow.Reason})
 			return
@@ -289,6 +322,7 @@ func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			subs = advanced.Subscriptions
+			s.syncV3LiveSubscriptionSessions(liveSub, principal, subs, livePatchAccepted)
 			lastEndpointSeq = advanced.EndpointSeq
 			keepaliveCursor, err := s.signV3SyncEndpointCursor(scope, lastEndpointSeq)
 			if err != nil {
@@ -308,6 +342,22 @@ type v3RealtimeAdvanceResult struct {
 	LastSentEndpointSeq uint64
 	Subscriptions       map[string]v3RealtimeSubscription
 	DeliveredEvents     int
+}
+
+func (s *Server) syncV3LiveSubscriptionSessions(liveSub *v3LiveSubscriber, principal identity.Principal, subs map[string]v3RealtimeSubscription, livePatchAccepted bool) {
+	if s == nil || s.v3LiveHub == nil || liveSub == nil {
+		return
+	}
+	if !livePatchAccepted || !principal.Valid() {
+		s.v3LiveHub.replaceSessions(liveSub, "", nil)
+		return
+	}
+	sessionIDs := make([]string, 0, len(subs))
+	for sessionID := range subs {
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	sort.Strings(sessionIDs)
+	s.v3LiveHub.replaceSessions(liveSub, principal.AccountScopeID, sessionIDs)
 }
 
 func (s *Server) v3RealtimeValidateResumeWorksets(conn *transportws.Conn, principal identity.Principal, requested []V3RealtimeWorksetSubscriptionRequest) (map[string]v3RealtimeWorksetSubscription, bool) {
@@ -1064,6 +1114,29 @@ func (s *Server) sendV3RealtimeMessage(conn *transportws.Conn, message V3Realtim
 	if err != nil {
 		return err
 	}
+	return s.writeV3RealtimePayload(conn, raw)
+}
+
+func (s *Server) sendV3RealtimeLivePatch(conn *transportws.Conn, patch V3RealtimeLivePatch) error {
+	message := NewV3RealtimeLiveMessage(patch)
+	if err := ValidateV3RealtimeLiveMessage(message); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+	return s.writeV3RealtimePayload(conn, raw)
+}
+
+func (s *Server) writeV3RealtimePayload(conn *transportws.Conn, raw []byte) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(v3RealtimeWriteTimeout)); err != nil {
+		return err
+	}
+	if observer := v3RealtimeWriteObserver; observer != nil {
+		observer(+1)
+		defer observer(-1)
+	}
 	return conn.WriteText(raw)
 }
 
@@ -1081,4 +1154,17 @@ func v3RealtimeCursorErrorCode(err error) string {
 		return cursorErr.Code
 	}
 	return "endpoint_cursor_malformed"
+}
+
+func containsV3RealtimeCapability(capabilities []string, capability string) bool {
+	capability = strings.TrimSpace(capability)
+	if capability == "" {
+		return false
+	}
+	for _, candidate := range capabilities {
+		if strings.TrimSpace(candidate) == capability {
+			return true
+		}
+	}
+	return false
 }
