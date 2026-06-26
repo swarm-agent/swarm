@@ -62,13 +62,14 @@ type sessionV3Executor struct {
 	server *Server
 	ctx    context.Context
 
-	startDelay                  time.Duration
-	modelDelay                  time.Duration
-	runningStaleAfter           time.Duration
-	deltaFlushMaxBytes          int
-	deltaFlushMaxDelay          time.Duration
-	reasoningDeltaFlushMaxBytes int
-	reasoningDeltaFlushMaxDelay time.Duration
+	startDelay                   time.Duration
+	modelDelay                   time.Duration
+	runningStaleAfter            time.Duration
+	deltaFlushMaxBytes           int
+	deltaFlushMaxDelay           time.Duration
+	reasoningDeltaFlushMaxBytes  int
+	reasoningDeltaFlushMaxDelay  time.Duration
+	durableProgressWriterForTest sessionV3DurableProgressWriter
 
 	mu              sync.Mutex
 	inFlightRuns    map[string]bool
@@ -477,22 +478,35 @@ func (e *sessionV3Executor) recordRunPhase(job sessionV3ExecutorJob, phase RunPh
 	})
 }
 
-func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, deltaIndex int, delta string) (sessionruntime.SessionMutationResult, error) {
+func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, progress sessionV3AssistantProgress, deltaIndex int) (sessionruntime.SessionMutationResult, error) {
 	if e.isRunCanceled(job) {
 		return sessionruntime.SessionMutationResult{}, context.Canceled
 	}
 	now := time.Now().UnixMilli()
+	if progress.RecordedAt == 0 {
+		progress.RecordedAt = now
+	}
 	metadata := map[string]any{
-		"run_id":      job.RunID,
-		"delta_index": deltaIndex,
-		"delta":       delta,
+		"run_id":         job.RunID,
+		"stream_id":      progress.StreamID,
+		"operation":      "append",
+		"step":           progress.Step,
+		"step_id":        progress.StepID,
+		"delta_index":    deltaIndex,
+		"offset_start":   progress.OffsetStart,
+		"offset_end":     progress.OffsetEnd,
+		"delta":          progress.Text,
+		"recorded_at":    progress.RecordedAt,
+		"live_seq_start": progress.LiveSeqStart,
+		"live_seq_end":   progress.LiveSeqEnd,
 	}
 	raw, err := json.Marshal(metadata)
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
 	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentRunning, UpdatedAt: now}
-	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", "session.assistant.delta", fmt.Sprintf("%d:%s", deltaIndex, delta))
+	hashMaterial := fmt.Sprintf("%d:%s:%d:%d:%s", deltaIndex, progress.StreamID, progress.OffsetStart, progress.OffsetEnd, progress.Text)
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", "session.assistant.delta", hashMaterial)
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
@@ -596,187 +610,6 @@ func sessionV3MergeReasoningSnapshotOrChunk(previous, incoming string) string {
 	return incoming
 }
 
-type sessionV3AssistantDeltaCoalescer struct {
-	exec            *sessionV3Executor
-	job             sessionV3ExecutorJob
-	buf             strings.Builder
-	bufferStartedAt time.Time
-	nextDeltaIndex  int
-	flushCount      int
-}
-
-func newSessionV3AssistantDeltaCoalescer(exec *sessionV3Executor, job sessionV3ExecutorJob) *sessionV3AssistantDeltaCoalescer {
-	return &sessionV3AssistantDeltaCoalescer{exec: exec, job: job}
-}
-
-func (c *sessionV3AssistantDeltaCoalescer) Add(delta string) error {
-	if c == nil || delta == "" {
-		return nil
-	}
-	if c.bufferStartedAt.IsZero() {
-		c.bufferStartedAt = time.Now()
-	}
-	c.buf.WriteString(delta)
-	if c.shouldFlush(delta) {
-		return c.Flush()
-	}
-	return nil
-}
-
-func (c *sessionV3AssistantDeltaCoalescer) Flush() error {
-	if c == nil || c.buf.Len() == 0 {
-		return nil
-	}
-	if c.exec == nil {
-		return errors.New("v3 assistant delta coalescer missing executor")
-	}
-	delta := c.buf.String()
-	c.buf.Reset()
-	c.bufferStartedAt = time.Time{}
-	c.nextDeltaIndex++
-	if _, err := c.exec.recordRunProgress(c.job, c.nextDeltaIndex, delta); err != nil {
-		return err
-	}
-	c.flushCount++
-	return nil
-}
-
-func (c *sessionV3AssistantDeltaCoalescer) FlushCount() int {
-	if c == nil {
-		return 0
-	}
-	return c.flushCount
-}
-
-func (c *sessionV3AssistantDeltaCoalescer) shouldFlush(delta string) bool {
-	if c == nil {
-		return false
-	}
-	if c.exec == nil {
-		return true
-	}
-	maxBytes := c.exec.deltaFlushMaxBytes
-	if maxBytes <= 0 {
-		maxBytes = sessionV3AssistantDeltaFlushMaxBytes
-	}
-	if c.buf.Len() >= maxBytes {
-		return true
-	}
-	if strings.Contains(delta, "\n") {
-		return true
-	}
-	maxDelay := c.exec.deltaFlushMaxDelay
-	if maxDelay > 0 && !c.bufferStartedAt.IsZero() && time.Since(c.bufferStartedAt) >= maxDelay {
-		return true
-	}
-	return false
-}
-
-type sessionV3ReasoningDeltaCoalescer struct {
-	exec                *sessionV3Executor
-	job                 sessionV3ExecutorJob
-	step                int
-	reasoningKey        string
-	latestSnapshot      string
-	lastFlushedSnapshot string
-	bufferStartedAt     time.Time
-	nextDeltaIndex      int
-	flushCount          int
-}
-
-func newSessionV3ReasoningDeltaCoalescer(exec *sessionV3Executor, job sessionV3ExecutorJob, step int, reasoningKey string) *sessionV3ReasoningDeltaCoalescer {
-	return &sessionV3ReasoningDeltaCoalescer{exec: exec, job: job, step: step, reasoningKey: reasoningKey}
-}
-
-func (c *sessionV3ReasoningDeltaCoalescer) Add(snapshot string) error {
-	if c == nil {
-		return nil
-	}
-	snapshot = strings.TrimSpace(snapshot)
-	if snapshot == "" {
-		return nil
-	}
-	if c.bufferStartedAt.IsZero() {
-		c.bufferStartedAt = time.Now()
-	}
-	c.latestSnapshot = snapshot
-	if c.shouldFlush(snapshot) {
-		return c.Flush()
-	}
-	return nil
-}
-
-func (c *sessionV3ReasoningDeltaCoalescer) Flush() error {
-	if c == nil || strings.TrimSpace(c.latestSnapshot) == "" {
-		return nil
-	}
-	if c.exec == nil {
-		return errors.New("v3 reasoning delta coalescer missing executor")
-	}
-	snapshot := strings.TrimSpace(c.latestSnapshot)
-	if snapshot == strings.TrimSpace(c.lastFlushedSnapshot) {
-		c.latestSnapshot = ""
-		c.bufferStartedAt = time.Time{}
-		return nil
-	}
-	c.latestSnapshot = ""
-	c.lastFlushedSnapshot = snapshot
-	c.bufferStartedAt = time.Time{}
-	c.nextDeltaIndex++
-	if _, err := c.exec.recordReasoningEvent(c.job, "session.reasoning.delta", c.step, c.nextDeltaIndex, c.reasoningKey, snapshot, ""); err != nil {
-		return err
-	}
-	c.flushCount++
-	return nil
-}
-
-func (c *sessionV3ReasoningDeltaCoalescer) FlushCount() int {
-	if c == nil {
-		return 0
-	}
-	return c.flushCount
-}
-
-func (c *sessionV3ReasoningDeltaCoalescer) shouldFlush(snapshot string) bool {
-	if c == nil {
-		return false
-	}
-	if c.exec == nil {
-		return true
-	}
-	changed := c.incrementalSnapshotChange(snapshot)
-	maxBytes := c.exec.reasoningDeltaFlushMaxBytes
-	if maxBytes <= 0 {
-		maxBytes = sessionV3ReasoningDeltaFlushMaxBytes
-	}
-	if len(changed) >= maxBytes {
-		return true
-	}
-	if strings.Contains(changed, "\n") {
-		return true
-	}
-	maxDelay := c.exec.reasoningDeltaFlushMaxDelay
-	if maxDelay > 0 && !c.bufferStartedAt.IsZero() && time.Since(c.bufferStartedAt) >= maxDelay {
-		return true
-	}
-	return false
-}
-
-func (c *sessionV3ReasoningDeltaCoalescer) incrementalSnapshotChange(snapshot string) string {
-	if c == nil {
-		return strings.TrimSpace(snapshot)
-	}
-	snapshot = strings.TrimSpace(snapshot)
-	previous := strings.TrimSpace(c.lastFlushedSnapshot)
-	if snapshot == "" || previous == "" {
-		return snapshot
-	}
-	if strings.HasPrefix(snapshot, previous) {
-		return strings.TrimSpace(strings.TrimPrefix(snapshot, previous))
-	}
-	return snapshot
-}
-
 type sessionV3ResolvedRuntime struct {
 	Session       pebblestore.SessionSnapshot
 	AgentProfile  pebblestore.AgentProfile
@@ -799,6 +632,9 @@ type sessionV3AssistantResponse struct {
 	StopReason          string
 	Usage               provideriface.TokenUsage
 	ProviderOutputItems []any
+	StreamID            string
+	StreamStep          int
+	StreamOffsetEnd     uint64
 }
 
 func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
@@ -833,6 +669,11 @@ func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
 	if len(r.ProviderOutputItems) > 0 {
 		metadata["provider_output_format"] = "responses_api"
 		metadata["provider_output_items"] = cloneSessionsV3ProviderItems(r.ProviderOutputItems)
+	}
+	if streamID := strings.TrimSpace(r.StreamID); streamID != "" {
+		metadata["stream_id"] = streamID
+		metadata["stream_step"] = r.StreamStep
+		metadata["stream_offset_end"] = r.StreamOffsetEnd
 	}
 	return metadata
 }
@@ -889,8 +730,8 @@ func (e *sessionV3Executor) recordPreToolAssistantSegment(job sessionV3ExecutorJ
 	if e.isRunCanceled(job) {
 		return sessionruntime.SessionMutationResult{}, context.Canceled
 	}
-	content := strings.TrimSpace(response.Content)
-	if content == "" {
+	content := response.Content
+	if strings.TrimSpace(content) == "" {
 		return sessionruntime.SessionMutationResult{}, nil
 	}
 	now := time.Now().UnixMilli()
@@ -1148,7 +989,18 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		return sessionV3AssistantResponse{}, err
 	}
 	ctx = identity.ContextWithPrincipal(ctx, job.Principal)
-	response, streamed, flushCount, err := e.runProviderToolLoop(ctx, job, resolved, runner, baseReq)
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+	var sink *sessionV3DurableProgressSink
+	if e.durableProgressWriterForTest != nil {
+		sink = newSessionV3DurableProgressSinkWithWriter(e, job, cancelStream, e.durableProgressWriterForTest)
+	} else {
+		sink = newSessionV3DurableProgressSink(e, job, cancelStream)
+	}
+	loopResult, err := e.runProviderToolLoop(streamCtx, job, resolved, runner, baseReq, sink)
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer flushCancel()
+	closeErr := sink.CloseAndFlush(flushCtx)
 	if err != nil {
 		e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.error", "backend.provider", "provider-error", map[string]any{
 			"provider": providerID,
@@ -1157,35 +1009,23 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		})
 		return sessionV3AssistantResponse{}, err
 	}
+	if closeErr != nil {
+		e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.error", "backend.provider", "provider-error", map[string]any{
+			"provider": providerID,
+			"model":    modelName,
+			"error":    closeErr.Error(),
+		})
+		return sessionV3AssistantResponse{}, closeErr
+	}
+	response := loopResult.Response
 	e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.response", "backend.provider", "provider-response", map[string]any{
 		"provider": providerID,
 		"model":    modelName,
-		"result":   sessionV3ProviderResponseDiagnostic(response, streamed, flushCount),
+		"result":   sessionV3ProviderResponseDiagnostic(response, loopResult.FinalContent, loopResult.DurableFlushCount),
 	})
-	content := strings.TrimSpace(response.Text)
-	if content == "" {
-		content = strings.TrimSpace(streamed)
-	}
-	if content == "" {
-		for _, message := range response.AssistantMessages {
-			if message.Phase != "" && message.Phase != provideriface.AssistantPhaseFinalAnswer {
-				continue
-			}
-			if text := strings.TrimSpace(message.Text); text != "" {
-				if content != "" {
-					content += "\n\n"
-				}
-				content += text
-			}
-		}
-	}
-	if content == "" {
+	content := loopResult.FinalContent
+	if strings.TrimSpace(content) == "" {
 		return sessionV3AssistantResponse{}, errors.New("provider returned empty assistant response")
-	}
-	if flushCount == 0 {
-		if _, err := e.recordRunProgress(job, 1, content); err != nil {
-			return sessionV3AssistantResponse{}, err
-		}
 	}
 	model := strings.TrimSpace(response.Model)
 	if model == "" {
@@ -1207,6 +1047,12 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		StopReason:          strings.TrimSpace(response.StopReason),
 		Usage:               response.Usage,
 		ProviderOutputItems: sessionV3ProviderNativeOutputItems(providerRunnerID, response.Raw),
+		StreamID:            loopResult.FinalStreamID,
+		StreamStep:          loopResult.FinalStep,
+		StreamOffsetEnd:     loopResult.FinalOffsetEnd,
+	}
+	if err := validateSessionV3AssistantStreamCompletion(content, assistant.StreamOffsetEnd); err != nil {
+		return sessionV3AssistantResponse{}, err
 	}
 	e.recordSessionV3Diagnostic(job, "session.diagnostic.backend.final", "backend.executor", "assistant-final", map[string]any{
 		"content":            content,
@@ -1247,16 +1093,24 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequest(job sessionV3ExecutorJo
 	return baseReq, nil
 }
 
-func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, runner provideriface.Runner, baseReq provideriface.Request) (provideriface.Response, string, int, error) {
+type sessionV3ProviderLoopResult struct {
+	Response          provideriface.Response
+	FinalContent      string
+	DurableFlushCount int
+	FinalStreamID     string
+	FinalStep         int
+	FinalOffsetEnd    uint64
+}
+
+func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, runner provideriface.Runner, baseReq provideriface.Request, sink *sessionV3DurableProgressSink) (sessionV3ProviderLoopResult, error) {
 	if runner == nil {
-		return provideriface.Response{}, "", 0, errors.New("provider runner is not configured")
+		return sessionV3ProviderLoopResult{}, errors.New("provider runner is not configured")
+	}
+	if sink == nil {
+		return sessionV3ProviderLoopResult{}, errors.New("v3 durable progress sink is not configured")
 	}
 	input := append([]map[string]any(nil), baseReq.Input...)
-	var finalStreamed strings.Builder
-	var totalFlushCount int
 	identicalCalls := sessionV3ProviderIdenticalToolCallTracker{}
-	providerFirstEventRecorded := false
-	outputStreamingRecorded := false
 	for step := 1; ; step++ {
 		toolsEnabled := len(baseReq.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none")
 		var toolInvoker provideriface.ToolInvoker
@@ -1264,138 +1118,31 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			var invokerErr error
 			toolInvoker, invokerErr = e.newSessionV3ProviderToolInvoker(resolved, job, step)
 			if invokerErr != nil {
-				return provideriface.Response{}, "", totalFlushCount, invokerErr
+				return sessionV3ProviderLoopResult{}, invokerErr
 			}
 		}
 		req := baseReq
 		req.Input = append([]map[string]any(nil), input...)
 		req.ToolInvoker = toolInvoker
-		var streamed strings.Builder
-		coalescer := newSessionV3AssistantDeltaCoalescer(e, job)
-		coalescer.nextDeltaIndex = totalFlushCount
-		var progressErr error
-		streamIndex := 0
-		activeReasoningKey := ""
-		reasoningByKey := make(map[string]string, 4)
-		reasoningOrder := make([]string, 0, 4)
-		reasoningCoalescers := make(map[string]*sessionV3ReasoningDeltaCoalescer, 4)
-		rememberReasoningKey := func(key string) string {
-			key = sessionV3NormalizeReasoningKey(key)
-			if _, ok := reasoningByKey[key]; !ok {
-				reasoningOrder = append(reasoningOrder, key)
-			}
-			return key
+		streamState := newSessionV3ProviderStreamState(e, job, sink, step)
+		response, providerErr := runner.CreateResponseStreaming(ctx, req, streamState.Handle)
+		finishErr := streamState.FinishStep()
+		stepText := sessionV3ProviderStepAssistantText(response, streamState.StreamedText())
+		var ensureErr error
+		if providerErr == nil && finishErr == nil && streamState.OffsetEnd() == 0 && strings.TrimSpace(stepText) != "" {
+			ensureErr = streamState.EnsureResponseText(stepText)
 		}
-		rebuildReasoningSummary := func() string {
-			parts := make([]string, 0, len(reasoningOrder))
-			for _, key := range reasoningOrder {
-				if content := strings.TrimSpace(reasoningByKey[key]); content != "" {
-					parts = append(parts, content)
-				}
-			}
-			return strings.TrimSpace(strings.Join(parts, "\n\n"))
-		}
-		reasoningCoalescerForKey := func(key string) *sessionV3ReasoningDeltaCoalescer {
-			key = sessionV3NormalizeReasoningKey(key)
-			if coalescer := reasoningCoalescers[key]; coalescer != nil {
-				return coalescer
-			}
-			coalescer := newSessionV3ReasoningDeltaCoalescer(e, job, step, key)
-			reasoningCoalescers[key] = coalescer
-			return coalescer
-		}
-		completeActiveReasoning := func() {
-			if activeReasoningKey == "" || progressErr != nil {
-				return
-			}
-			if coalescer := reasoningCoalescers[activeReasoningKey]; coalescer != nil {
-				if flushErr := coalescer.Flush(); flushErr != nil {
-					progressErr = flushErr
-					return
-				}
-			}
-			summary := strings.TrimSpace(reasoningByKey[activeReasoningKey])
-			_, progressErr = e.recordReasoningEvent(job, "session.reasoning.completed", step, 0, activeReasoningKey, "", summary)
-		}
-		recordProviderFirstEvent := func() {
-			if providerFirstEventRecorded || progressErr != nil {
-				return
-			}
-			_, progressErr = e.recordRunPhase(job, RunPhaseProviderFirstEvent, "session.provider.first_event")
-			if progressErr == nil {
-				providerFirstEventRecorded = true
-			}
-		}
-		recordOutputStreaming := func() {
-			if outputStreamingRecorded || progressErr != nil {
-				return
-			}
-			_, progressErr = e.recordRunPhase(job, RunPhaseOutputStreaming, "session.output.streaming")
-			if progressErr == nil {
-				outputStreamingRecorded = true
-			}
-		}
-		response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
-			streamIndex++
-			e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.stream", "backend.provider", fmt.Sprintf("step-%d-stream-%06d", step, streamIndex), sessionV3ProviderStreamEventDiagnostic(event, step, streamIndex))
-			recordProviderFirstEvent()
-			switch event.Type {
-			case provideriface.StreamEventOutputTextDelta:
-				streamed.WriteString(event.Delta)
-				if strings.TrimSpace(event.Delta) != "" {
-					recordOutputStreaming()
-				}
-				if progressErr == nil {
-					progressErr = coalescer.Add(event.Delta)
-				}
-			case provideriface.StreamEventReasoningSummaryDelta:
-				reasoningKey := rememberReasoningKey(event.ReasoningKey)
-				if activeReasoningKey != reasoningKey {
-					completeActiveReasoning()
-					activeReasoningKey = reasoningKey
-					if progressErr == nil {
-						_, progressErr = e.recordReasoningEvent(job, "session.reasoning.started", step, 0, reasoningKey, "", "")
-					}
-				}
-				previous := strings.TrimSpace(reasoningByKey[reasoningKey])
-				next := sessionV3MergeReasoningSnapshotOrChunk(previous, event.Delta)
-				if next == "" || next == previous {
-					return
-				}
-				reasoningByKey[reasoningKey] = next
-				if progressErr == nil {
-					// Send merged reasoning snapshots, but coalesce durable writes. Desktop
-					// replaces live thinking text from session.reasoning.delta, so flushed
-					// records must carry the latest snapshot rather than appended chunks.
-					progressErr = reasoningCoalescerForKey(reasoningKey).Add(next)
-				}
-			}
-		})
-		completeActiveReasoning()
-		_ = rebuildReasoningSummary()
-		if err == nil && progressErr == nil && streamIndex == 0 {
-			recordProviderFirstEvent()
-		}
-		if err == nil && progressErr == nil && strings.TrimSpace(firstNonEmpty(streamed.String(), response.Text)) != "" {
-			recordOutputStreaming()
-		}
-		if flushErr := coalescer.Flush(); flushErr != nil && progressErr == nil {
-			progressErr = flushErr
-		}
+		barrierErr := sink.FlushBarrier(ctx)
+		stepErr := firstNonNilErr(finishErr, ensureErr, sink.Err(), providerErr, barrierErr)
 		e.recordSessionV3Diagnostic(job, "session.diagnostic.backend.flush", "backend.coalescer", fmt.Sprintf("step-%d-flush-summary", step), map[string]any{
-			"step":               step,
-			"streamed":           streamed.String(),
-			"step_flush_count":   coalescer.FlushCount(),
-			"total_flush_before": totalFlushCount,
-			"progress_error":     sessionV3DiagnosticErrorString(progressErr),
+			"step":             step,
+			"streamed":         streamState.StreamedText(),
+			"step_flush_count": sink.AssistantFlushCount(),
+			"progress_error":   sessionV3DiagnosticErrorString(stepErr),
 		})
-		if err != nil {
-			return provideriface.Response{}, "", totalFlushCount, err
+		if stepErr != nil {
+			return sessionV3ProviderLoopResult{}, stepErr
 		}
-		if progressErr != nil {
-			return provideriface.Response{}, "", totalFlushCount, progressErr
-		}
-		totalFlushCount += coalescer.FlushCount()
 		usageProviderID := strings.TrimSpace(runner.ID())
 		if usageProviderID == "" {
 			usageProviderID = strings.TrimSpace(resolved.Preference.Provider)
@@ -1405,7 +1152,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			usageModel = strings.TrimSpace(baseReq.Model)
 		}
 		if _, recorded, usageErr := e.recordProviderUsage(job, resolved, usageProviderID, usageModel, step, response.Usage, time.Now().UnixMilli()); usageErr != nil {
-			return provideriface.Response{}, "", totalFlushCount, usageErr
+			return sessionV3ProviderLoopResult{}, usageErr
 		} else if recorded {
 			e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.usage", "backend.provider", fmt.Sprintf("step-%d-usage-recorded", step), map[string]any{
 				"step":     step,
@@ -1415,52 +1162,50 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			})
 		}
 		if len(response.FunctionCalls) == 0 && !response.RestartTurn {
-			finalStreamed.WriteString(streamed.String())
-			if strings.TrimSpace(response.StopReason) == "" && strings.TrimSpace(firstNonEmpty(response.Text, streamed.String())) != "" {
+			if strings.TrimSpace(response.StopReason) == "" && strings.TrimSpace(stepText) != "" {
 				response.StopReason = "stop"
 			}
-			return response, finalStreamed.String(), totalFlushCount, nil
+			return sessionV3ProviderLoopResult{Response: response, FinalContent: stepText, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd()}, nil
 		}
 		classification := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{
 			ProviderID:       runner.ID(),
 			StopReason:       response.StopReason,
-			HasFinalContent:  strings.TrimSpace(firstNonEmpty(response.Text, streamed.String())) != "",
+			HasFinalContent:  strings.TrimSpace(stepText) != "",
 			HasFunctionCalls: len(response.FunctionCalls) > 0,
 			RestartTurn:      response.RestartTurn,
 		})
 		if classification.Status != sessionruntime.RunIntentRunning {
-			return provideriface.Response{}, "", totalFlushCount, errors.New(classification.Reason)
+			return sessionV3ProviderLoopResult{}, errors.New(classification.Reason)
 		}
 		if len(response.FunctionCalls) == 0 {
 			if response.RestartTurn {
 				input = e.sessionV3ProviderContinuationInput(job)
 				if len(input) == 0 {
-					return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider restart requested but continuation input is empty")
+					return sessionV3ProviderLoopResult{}, errors.New("v3 provider restart requested but continuation input is empty")
 				}
 				refreshed, err := e.resolveSessionV3Runtime(job)
 				if err != nil {
-					return provideriface.Response{}, "", totalFlushCount, err
+					return sessionV3ProviderLoopResult{}, err
 				}
 				resolved = refreshed
 				baseReq, err = e.sessionV3ProviderBaseRequest(job, resolved, input)
 				if err != nil {
-					return provideriface.Response{}, "", totalFlushCount, err
+					return sessionV3ProviderLoopResult{}, err
 				}
 				continue
 			}
-			return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider requested a tool-loop restart without tool calls")
+			return sessionV3ProviderLoopResult{}, errors.New("v3 provider requested a tool-loop restart without tool calls")
 		}
 		if !toolsEnabled {
-			return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider returned tool calls; tool-loop execution is not supported without resolved tools")
+			return sessionV3ProviderLoopResult{}, errors.New("v3 provider returned tool calls; tool-loop execution is not supported without resolved tools")
 		}
 		if toolInvoker == nil {
-			return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider tool invoker is not configured")
+			return sessionV3ProviderLoopResult{}, errors.New("v3 provider tool invoker is not configured")
 		}
-		preToolContent := strings.TrimSpace(streamed.String())
-		if preToolContent != "" {
+		if strings.TrimSpace(stepText) != "" {
 			agentName := strings.TrimSpace(resolved.AgentProfile.Name)
 			segment := sessionV3AssistantResponse{
-				Content:            preToolContent,
+				Content:            stepText,
 				AgentName:          agentName,
 				ResolvedAgentName:  agentName,
 				ExecutorKind:       "v3_provider",
@@ -1469,29 +1214,27 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				ProviderResponseID: strings.TrimSpace(response.ID),
 				StopReason:         strings.TrimSpace(response.StopReason),
 				Usage:              response.Usage,
+				StreamID:           streamState.StreamID(),
+				StreamStep:         streamState.Step(),
+				StreamOffsetEnd:    streamState.OffsetEnd(),
 			}
 			if segment.ProviderID == "" {
 				segment.ProviderID = strings.TrimSpace(resolved.Preference.Provider)
 			}
 			if _, err := e.recordPreToolAssistantSegment(job, segment, step); err != nil {
-				return provideriface.Response{}, "", totalFlushCount, err
+				return sessionV3ProviderLoopResult{}, err
 			}
-			input = append(input, sessionsV3ProviderAssistantInputItem(preToolContent))
+			input = append(input, sessionsV3ProviderAssistantInputItem(stepText))
 		}
 		toolResults := make([]provideriface.ToolExecutionResult, 0, len(response.FunctionCalls))
 		restartAfterTools := false
 		for _, call := range response.FunctionCalls {
 			if identicalCount, key := identicalCalls.Observe(call); identicalCount >= sessionV3ProviderIdenticalToolCallLimit {
-				return provideriface.Response{}, "", totalFlushCount, fmt.Errorf("v3 provider repeated identical tool call %d times: %s", sessionV3ProviderIdenticalToolCallLimit, key)
+				return sessionV3ProviderLoopResult{}, fmt.Errorf("v3 provider repeated identical tool call %d times: %s", sessionV3ProviderIdenticalToolCallLimit, key)
 			}
-			result, err := toolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{
-				CallID:    strings.TrimSpace(call.CallID),
-				Name:      strings.TrimSpace(call.Name),
-				Arguments: strings.TrimSpace(call.Arguments),
-				Metadata:  cloneSessionsV3Metadata(call.Metadata),
-			})
+			result, err := toolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{CallID: strings.TrimSpace(call.CallID), Name: strings.TrimSpace(call.Name), Arguments: strings.TrimSpace(call.Arguments), Metadata: cloneSessionsV3Metadata(call.Metadata)})
 			if err != nil {
-				return provideriface.Response{}, "", totalFlushCount, err
+				return sessionV3ProviderLoopResult{}, err
 			}
 			if result.RestartTurn {
 				restartAfterTools = true
@@ -1500,17 +1243,17 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		}
 		input = append(input, sessionsV3ProviderToolResultInputItems(response.FunctionCalls, toolResults)...)
 		if len(input) == 0 {
-			return provideriface.Response{}, "", totalFlushCount, errors.New("v3 provider continuation input is empty after tool execution")
+			return sessionV3ProviderLoopResult{}, errors.New("v3 provider continuation input is empty after tool execution")
 		}
 		if restartAfterTools {
 			refreshed, err := e.resolveSessionV3Runtime(job)
 			if err != nil {
-				return provideriface.Response{}, "", totalFlushCount, err
+				return sessionV3ProviderLoopResult{}, err
 			}
 			resolved = refreshed
 			baseReq, err = e.sessionV3ProviderBaseRequest(job, resolved, input)
 			if err != nil {
-				return provideriface.Response{}, "", totalFlushCount, err
+				return sessionV3ProviderLoopResult{}, err
 			}
 		}
 	}

@@ -16,11 +16,10 @@ var (
 
 // SanitizeText redacts common credential/token material from arbitrary text.
 func SanitizeText(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
+	if strings.TrimSpace(raw) == "" {
 		return ""
 	}
-	redacted := redactJSONSecretPattern.ReplaceAllString(trimmed, `$1[redacted]$3`)
+	redacted := redactJSONSecretPattern.ReplaceAllString(raw, `$1[redacted]$3`)
 	redacted = redactQuerySecretPattern.ReplaceAllString(redacted, `$1=[redacted]`)
 	redacted = redactBearerPattern.ReplaceAllString(redacted, `$1[redacted]`)
 	redacted = redactJWTPattern.ReplaceAllString(redacted, `[redacted.jwt]`)

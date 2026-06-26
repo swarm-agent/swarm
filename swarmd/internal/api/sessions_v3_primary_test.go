@@ -3393,8 +3393,8 @@ func TestSessionsV3ExecutorFlushesProviderDeltaAtSizeBoundary(t *testing.T) {
 		}
 		got = append(got, payload.Delta)
 	}
-	if strings.Join(got, "|") != "abcd|ef" {
-		t.Fatalf("coalesced deltas = %#v, want [abcd ef]", got)
+	if strings.Join(got, "|") != "abcdef" {
+		t.Fatalf("coalesced deltas = %#v, want one sink aggregate", got)
 	}
 }
 
