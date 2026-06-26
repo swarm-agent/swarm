@@ -1,6 +1,7 @@
-import type { DesktopV3CacheAction, DesktopV3CacheState } from '../state/desktop-v3-cache-types'
+import type { DesktopV3CacheAction, DesktopV3CacheState, MessageSnapshot, RealtimeMessage } from '../state/desktop-v3-cache-types'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
-import { applyDesktopV3LivePatchBatch } from '../state/desktop-v3-cache-reducer'
+import { applyDesktopV3LivePatchBatch, resolveDesktopV3CacheEventRunId } from '../state/desktop-v3-cache-reducer'
+import { normalizeRealtimeEventFrame } from '../state/desktop-v3-cache-wire'
 
 const PER_STREAM_PENDING_BYTE_LIMIT = 64 * 1024
 const TOTAL_PENDING_BYTE_LIMIT = 256 * 1024
@@ -30,6 +31,14 @@ export interface DesktopV3LivePatchDebugSnapshot {
   pendingAllocatedBytes: number
   pausedKeys: number
   scheduled: boolean
+}
+
+export interface DurableAssistantStreamEffect {
+  key: string
+  sessionId: string
+  runId: string
+  streamId: string
+  kind: 'checkpoint' | 'committed-message'
 }
 
 interface PendingLiveAppend {
@@ -86,6 +95,7 @@ export class DesktopV3LivePatchCoordinator {
   private generation = 0
   private pending = new Map<string, PendingLiveAppend>()
   private pausedStreams = new Set<string>()
+  private committedStreamTombstones = new Set<string>()
   private pendingBytes = 0
   private scheduleToken = 0
   private frameId: number | null = null
@@ -98,7 +108,7 @@ export class DesktopV3LivePatchCoordinator {
     if (generation !== this.generation) return
 
     const key = livePatchKey(patch)
-    if (this.pausedStreams.has(key)) return
+    if (this.committedStreamTombstones.has(key) || this.pausedStreams.has(key)) return
 
     const existingPending = this.pending.get(key)
     if (existingPending) {
@@ -136,6 +146,17 @@ export class DesktopV3LivePatchCoordinator {
     this.scheduleFlush()
   }
 
+  beforeDurableFrame(frame: RealtimeMessage): void {
+    const effect = durableAssistantStreamEffect(frame)
+    if (!effect) return
+    if (this.pending.has(effect.key)) this.flushStreams([effect.key])
+    if (effect.kind === 'committed-message') this.tombstoneCommittedStream(effect.key)
+  }
+
+  afterDurableFrame(_frame: RealtimeMessage): void {
+    // Committed-stream tombstones intentionally remain until generation reset.
+  }
+
   flushNow(): void {
     this.cancelScheduledCallback()
     this.flushEntries(Array.from(this.pending.keys()))
@@ -151,6 +172,7 @@ export class DesktopV3LivePatchCoordinator {
     this.cancelScheduledCallback()
     this.pending.clear()
     this.pausedStreams.clear()
+    this.committedStreamTombstones.clear()
     this.pendingBytes = 0
     this.generation = generation
   }
@@ -159,6 +181,7 @@ export class DesktopV3LivePatchCoordinator {
     this.cancelScheduledCallback()
     this.pending.clear()
     this.pausedStreams.clear()
+    this.committedStreamTombstones.clear()
     this.pendingBytes = 0
   }
 
@@ -193,6 +216,17 @@ export class DesktopV3LivePatchCoordinator {
     if (pending.bytes > PER_STREAM_PENDING_BYTE_LIMIT || this.pendingBytes > TOTAL_PENDING_BYTE_LIMIT) {
       this.pauseStream(`${pending.sessionId}\u0000${pending.runId}\u0000${pending.streamId}`)
     }
+  }
+
+  private tombstoneCommittedStream(key: string): void {
+    const pending = this.pending.get(key)
+    if (pending) {
+      this.pendingBytes = Math.max(0, this.pendingBytes - pending.bytes)
+      this.pending.delete(key)
+    }
+    this.committedStreamTombstones.add(key)
+    this.cancelScheduledCallback()
+    if (this.pending.size > 0) this.scheduleFlush()
   }
 
   private pauseStream(key: string): void {
@@ -325,4 +359,55 @@ export function createDefaultDesktopV3LivePatchCoordinatorDeps(input: {
     clearTimer: (id) => window.clearTimeout(id),
     isDocumentHidden: () => typeof document !== 'undefined' && document.hidden,
   }
+}
+
+
+export function durableAssistantStreamEffect(frame: RealtimeMessage): DurableAssistantStreamEffect | null {
+  if (frame.kind !== 'event') return null
+  const event = normalizeRealtimeEventFrame(frame)
+  const payload = event.payload ?? {}
+  if (event.eventType === 'session.assistant.delta' || event.eventType === 'session.message.delta') {
+    const streamId = stringValue(payload.stream_id)
+    const runId = resolveDesktopV3CacheEventRunId(event)
+    const sessionId = event.sessionId
+    if (!sessionId || !runId || !streamId) return null
+    return {
+      key: livePatchKey({ session_id: sessionId, run_id: runId, stream_id: streamId }),
+      sessionId,
+      runId,
+      streamId,
+      kind: 'checkpoint',
+    }
+  }
+
+  const message = messageFromPayload(payload)
+  if (message?.role !== 'assistant') return null
+  const streamId = stringFromMetadata(message.metadata, 'stream_id')
+  const runId = resolveDesktopV3CacheEventRunId(event)
+    || stringFromMetadata(message.metadata, 'run_id')
+    || stringFromMetadata(message.metadata, 'runId')
+  const sessionId = event.sessionId || message.session_id
+  if (!sessionId || !runId || !streamId) return null
+  return {
+    key: livePatchKey({ session_id: sessionId, run_id: runId, stream_id: streamId }),
+    sessionId,
+    runId,
+    streamId,
+    kind: 'committed-message',
+  }
+}
+
+function messageFromPayload(payload: Record<string, unknown>): MessageSnapshot | null {
+  const nested = payload.message
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) return nested as MessageSnapshot
+  return null
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function stringFromMetadata(metadata: Record<string, unknown> | undefined, key: string): string {
+  const value = metadata?.[key]
+  return typeof value === 'string' ? value.trim() : ''
 }

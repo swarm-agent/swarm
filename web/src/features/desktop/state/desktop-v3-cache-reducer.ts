@@ -34,6 +34,8 @@ export const DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS = 5
 
 const ACTIVE_RUN_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
 const TERMINAL_RUN_INTENT_STATUSES = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'expired'])
+const utf8Encoder = new TextEncoder()
+
 
 export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3CacheState {
   return {
@@ -897,17 +899,20 @@ export function applyCacheEvent(
   }
 
   if (event.sessionEvent) {
+    const retainEvent = shouldRetainRealtimeEvent(eventType)
     const existingEvents = state.eventsBySession[sessionId] ?? []
-    const duplicateIndex = existingEvents.findIndex((entry) =>
+    const duplicateIndex = existingEvents.findIndex((entry) => (
       entry.id === event.sessionEvent?.id
-      || entry.seq === event.sessionEvent?.seq,
-    )
-    if (duplicateIndex >= 0) {
-      // Durable session events are immutable. Do not apply the same delta twice.
+      || entry.seq === event.sessionEvent?.seq
+    ))
+    if (duplicateIndex >= 0 && retainEvent) {
+      // Durable retained session events are immutable. Do not apply the same event twice.
       return state
     }
-    state.eventsBySession[sessionId] = [...existingEvents, event.sessionEvent]
-      .sort((left, right) => left.seq - right.seq)
+    if (retainEvent) {
+      state.eventsBySession[sessionId] = [...existingEvents, event.sessionEvent]
+        .sort((left, right) => left.seq - right.seq)
+    }
   }
 
   if (payload.session && incomingProjectionIsFresh) {
@@ -963,6 +968,18 @@ export function applyCacheEvent(
   commitCompletedReasoningEvent(state, event)
 
   return state
+}
+
+export function shouldRetainRealtimeEvent(eventType: string): boolean {
+  switch (eventType) {
+    case 'session.assistant.delta':
+    case 'session.message.delta':
+    case 'session.reasoning.delta':
+    case 'session.tool.delta':
+      return false
+    default:
+      return true
+  }
 }
 
 function applyPermissionSummaryEvent(state: DesktopV3CacheState, event: CacheEvent): void {
@@ -1904,8 +1921,7 @@ function finalizeLiveRunForCommittedMessage(
   const run = runs?.[runId]
   if (!run) return
 
-  delete run.assistantDraft
-  delete run.assistantSegments
+  clearCommittedAssistantStream(run, message)
 
   const status = explicitRunStatus?.trim()
     || state.runIntentsBySession[sessionId]?.[runId]?.status
@@ -1930,8 +1946,7 @@ function reconcileLiveRunWithCommittedMessage(
 
   switch (message.role) {
     case 'assistant':
-      delete run.assistantDraft
-      delete run.assistantSegments
+      clearCommittedAssistantStream(run, message)
       break
     case 'tool':
       reconcileCommittedToolMessage(run, message)
@@ -1947,6 +1962,22 @@ function reconcileLiveRunWithCommittedMessage(
     || state.runIntentsBySession[sessionId]?.[runId]?.status
     || run.status
   cleanupTerminalLiveRunIfCanonicalized(state, sessionId, runId, status)
+}
+
+function clearCommittedAssistantStream(run: LiveRunOverlay, message: MessageSnapshot): void {
+  const streamId = stringFromMetadata(message.metadata, 'stream_id')
+    || stringFromMetadata(message.metadata, 'streamId')
+  if (!streamId) {
+    delete run.assistantDraft
+    delete run.assistantSegments
+    return
+  }
+  if (run.assistantDraft?.streamId === streamId) delete run.assistantDraft
+  if (run.assistantSegments) {
+    const remaining = run.assistantSegments.filter((segment) => segment.streamId !== streamId)
+    if (remaining.length > 0) run.assistantSegments = remaining
+    else delete run.assistantSegments
+  }
 }
 
 function hasUncanonicalizedLiveState(run: LiveRunOverlay): boolean {
@@ -2163,6 +2194,22 @@ function applyLiveRunOverlayFromEvent(
       }
 
       liveRun.status = liveRun.status === 'pending_executor' ? 'running' : liveRun.status
+      const streamId = stringValue(payload.stream_id)
+      const offsetStart = finiteNumberValue(payload.offset_start)
+      const offsetEnd = finiteNumberValue(payload.offset_end)
+      if (streamId && offsetStart !== undefined && offsetEnd !== undefined) {
+        applyStreamAwareDurableAssistantDelta(liveRun, {
+          streamId,
+          delta,
+          offsetStart,
+          offsetEnd,
+          updatedAt,
+          eventSeq,
+          step: finiteNumberValue(payload.step),
+          stepId: stringValue(payload.step_id) || undefined,
+        })
+        return
+      }
       liveRun.assistantDraft = {
         content: `${liveRun.assistantDraft?.content ?? ''}${delta}`,
         updatedAt,
@@ -2253,6 +2300,167 @@ function applyLiveRunOverlayFromEvent(
   }
 }
 
+type LiveAssistantDraft = NonNullable<LiveRunOverlay['assistantDraft']>
+type LiveAssistantSegment = NonNullable<LiveRunOverlay['assistantSegments']>[number]
+type LiveAssistantStreamNode = LiveAssistantDraft | LiveAssistantSegment
+
+function applyStreamAwareDurableAssistantDelta(
+  liveRun: LiveRunOverlay,
+  input: {
+    streamId: string
+    delta: string
+    offsetStart: number
+    offsetEnd: number
+    updatedAt: number
+    eventSeq: number
+    step?: number
+    stepId?: string
+  },
+): void {
+  const durableByteLength = utf8Encoder.encode(input.delta).byteLength
+  if (input.offsetEnd < input.offsetStart || input.offsetEnd - input.offsetStart !== durableByteLength) {
+    markAssistantStreamPaused(liveRun, input.streamId)
+    return
+  }
+
+  const existing = findAssistantStreamNode(liveRun, input.streamId)
+  if (!existing) {
+    if (input.offsetStart !== 0) return
+    if (liveRun.assistantDraft?.content) {
+      liveRun.assistantSegments = upsertLiveAssistantSegment(liveRun, liveRun.assistantDraft)
+    }
+    liveRun.assistantDraft = {
+      content: input.delta,
+      updatedAt: input.updatedAt,
+      timelineSeq: input.eventSeq,
+      streamId: input.streamId,
+      streamStep: input.step,
+      stepId: input.stepId,
+      liveSeqEnd: 0,
+      offsetEnd: input.offsetEnd,
+      durableOffsetEnd: input.offsetEnd,
+      livePaused: false,
+    }
+    return
+  }
+
+  const node = existing.node
+  const visibleOffsetEnd = node.offsetEnd ?? utf8Encoder.encode(node.content).byteLength
+  const overlapStart = Math.max(input.offsetStart, 0)
+  const overlapEnd = Math.min(input.offsetEnd, visibleOffsetEnd)
+  if (overlapEnd > overlapStart && !utf8RangeEquals(node.content, 0, input.delta, input.offsetStart, overlapStart, overlapEnd)) {
+    markAssistantStreamPaused(liveRun, input.streamId)
+    return
+  }
+
+  if (input.offsetEnd <= visibleOffsetEnd) {
+    if (input.offsetStart === 0 && input.offsetEnd === visibleOffsetEnd && durableByteLength === visibleOffsetEnd && input.delta !== node.content) {
+      markAssistantStreamPaused(liveRun, input.streamId)
+      return
+    }
+    updateAssistantStreamNode(liveRun, existing, {
+      durableOffsetEnd: Math.max(node.durableOffsetEnd ?? 0, input.offsetEnd),
+      updatedAt: input.updatedAt,
+      timelineSeq: node.timelineSeq || input.eventSeq,
+      streamStep: input.step ?? node.streamStep,
+      stepId: input.stepId || node.stepId,
+    })
+    return
+  }
+
+  if (input.offsetStart > visibleOffsetEnd) {
+    markAssistantStreamPaused(liveRun, input.streamId)
+    return
+  }
+
+  let suffix = input.delta
+  if (input.offsetStart < visibleOffsetEnd) {
+    try {
+      suffix = utf8SuffixAfterBytes(input.delta, visibleOffsetEnd - input.offsetStart)
+    } catch {
+      markAssistantStreamPaused(liveRun, input.streamId)
+      return
+    }
+  }
+
+  updateAssistantStreamNode(liveRun, existing, {
+    content: `${node.content}${suffix}`,
+    updatedAt: input.updatedAt,
+    timelineSeq: node.timelineSeq || input.eventSeq,
+    streamStep: input.step ?? node.streamStep,
+    stepId: input.stepId || node.stepId,
+    offsetEnd: input.offsetEnd,
+    durableOffsetEnd: Math.max(node.durableOffsetEnd ?? 0, input.offsetEnd),
+  })
+}
+
+function findAssistantStreamNode(
+  liveRun: LiveRunOverlay,
+  streamId: string,
+): { kind: 'draft'; node: LiveAssistantDraft } | { kind: 'segment'; index: number; node: LiveAssistantSegment } | null {
+  if (liveRun.assistantDraft?.streamId === streamId) return { kind: 'draft', node: liveRun.assistantDraft }
+  const index = liveRun.assistantSegments?.findIndex((segment) => segment.streamId === streamId) ?? -1
+  if (index >= 0 && liveRun.assistantSegments) return { kind: 'segment', index, node: liveRun.assistantSegments[index] }
+  return null
+}
+
+function updateAssistantStreamNode(
+  liveRun: LiveRunOverlay,
+  ref: { kind: 'draft'; node: LiveAssistantDraft } | { kind: 'segment'; index: number; node: LiveAssistantSegment },
+  patch: Partial<LiveAssistantStreamNode>,
+): void {
+  if (ref.kind === 'draft') {
+    liveRun.assistantDraft = { ...ref.node, ...patch }
+    return
+  }
+  if (!liveRun.assistantSegments) return
+  liveRun.assistantSegments[ref.index] = { ...ref.node, ...patch }
+}
+
+function markAssistantStreamPaused(liveRun: LiveRunOverlay, streamId: string): void {
+  const ref = findAssistantStreamNode(liveRun, streamId)
+  if (!ref) return
+  updateAssistantStreamNode(liveRun, ref, { livePaused: true })
+}
+
+export function utf8SuffixAfterBytes(text: string, skipBytes: number): string {
+  const encoded = utf8Encoder.encode(text)
+  const prefix = new TextDecoder('utf-8', { fatal: true }).decode(encoded.slice(0, skipBytes))
+  if (utf8Encoder.encode(prefix).byteLength !== skipBytes) {
+    throw new Error('UTF-8 byte offset splits a code point')
+  }
+  const decoder = new TextDecoder('utf-8', { fatal: true })
+  return decoder.decode(encoded.slice(skipBytes))
+}
+
+export function utf8RangeEquals(
+  visibleText: string,
+  visibleRangeStart: number,
+  durableText: string,
+  durableRangeStart: number,
+  overlapStart: number,
+  overlapEnd: number,
+): boolean {
+  const visibleBytes = utf8Encoder.encode(visibleText)
+  const durableBytes = utf8Encoder.encode(durableText)
+  const visibleStart = overlapStart - visibleRangeStart
+  const durableStart = overlapStart - durableRangeStart
+  const length = overlapEnd - overlapStart
+  if (visibleStart < 0 || durableStart < 0 || length < 0) return false
+  if (visibleStart + length > visibleBytes.byteLength || durableStart + length > durableBytes.byteLength) return false
+  if (!isUtf8Boundary(visibleBytes, visibleStart) || !isUtf8Boundary(visibleBytes, visibleStart + length)) return false
+  if (!isUtf8Boundary(durableBytes, durableStart) || !isUtf8Boundary(durableBytes, durableStart + length)) return false
+  for (let i = 0; i < length; i += 1) {
+    if (visibleBytes[visibleStart + i] !== durableBytes[durableStart + i]) return false
+  }
+  return true
+}
+
+function isUtf8Boundary(bytes: Uint8Array, offset: number): boolean {
+  if (offset < 0 || offset > bytes.byteLength) return false
+  return offset === bytes.byteLength || (bytes[offset] & 0b1100_0000) !== 0b1000_0000
+}
+
 export function applyDesktopV3LivePatchBatch(
   state: DesktopV3CacheState,
   patches: SessionV3RealtimeLivePatchWire[],
@@ -2307,6 +2515,7 @@ function applyLivePatchToRun(run: LiveRunOverlay, patch: SessionV3RealtimeLivePa
   const updatedAt = patch.recorded_at
   const existingDraft = run.assistantDraft
   if (existingDraft?.streamId === patch.stream_id) {
+    if (existingDraft.livePaused) return
     run.assistantDraft = {
       ...existingDraft,
       content: `${existingDraft.content}${patch.text}`,
@@ -2322,6 +2531,7 @@ function applyLivePatchToRun(run: LiveRunOverlay, patch: SessionV3RealtimeLivePa
   const segmentIndex = run.assistantSegments?.findIndex((segment) => segment.streamId === patch.stream_id) ?? -1
   if (segmentIndex >= 0 && run.assistantSegments) {
     const current = run.assistantSegments[segmentIndex]
+    if (current.livePaused) return
     run.assistantSegments[segmentIndex] = {
       ...current,
       content: `${current.content}${patch.text}`,
@@ -2484,8 +2694,8 @@ function appendLiveAssistantOverlaySegment(
   liveRun: LiveRunOverlay,
   draft: NonNullable<LiveRunOverlay['assistantDraft']>,
 ): NonNullable<LiveRunOverlay['assistantSegments']> {
-  const content = draft.content.trim()
-  if (!content) return liveRun.assistantSegments ?? []
+  const content = draft.content
+  if (!content.trim()) return liveRun.assistantSegments ?? []
   const timelineSeq = draft.timelineSeq ?? liveRun.lastEventSeqSeen ?? 0
   const createdAt = draft.updatedAt || Date.now()
   return [
@@ -2743,6 +2953,10 @@ function stringField(value: unknown): string | undefined {
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+function finiteNumberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function numberValue(value: unknown): number {

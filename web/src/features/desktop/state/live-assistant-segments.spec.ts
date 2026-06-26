@@ -8,7 +8,7 @@ test('appends flushed assistant draft as a stable timeline segment', () => {
 
   assert.equal(segments.length, 1)
   assert.equal(segments[0]?.id, 'live-assistant:1234:9:0')
-  assert.equal(segments[0]?.content, 'First streamed answer.\n\nSecond sentence.')
+  assert.equal(segments[0]?.content, ' First streamed answer.\n\nSecond sentence. ')
   assert.equal(segments[0]?.createdAt, 1234)
   assert.equal(segments[0]?.seq, 9)
 })

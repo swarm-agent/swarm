@@ -3,9 +3,10 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
 import { DesktopV3LivePatchCoordinator } from './v3-live-patch-coordinator'
-import { createEmptyDesktopV3CacheState } from '../state/desktop-v3-cache-reducer'
-import type { DesktopV3CacheAction, DesktopV3CacheState } from '../state/desktop-v3-cache-types'
+import { applyCacheEvent, createEmptyDesktopV3CacheState } from '../state/desktop-v3-cache-reducer'
+import type { DesktopV3CacheAction, DesktopV3CacheState, MessageSnapshot, RealtimeMessage } from '../state/desktop-v3-cache-types'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
+import { normalizeRealtimeEventFrame } from '../state/desktop-v3-cache-wire'
 
 const encoder = new TextEncoder()
 
@@ -125,6 +126,107 @@ test('Desktop V3 live gap pauses only one stream', () => {
   assert.equal(coordinator.debugSnapshotForTests().pausedKeys, 1)
 })
 
+
+test('Desktop V3 terminal commit prevents scheduled live resurrection', () => {
+  let state = createEmptyDesktopV3CacheState()
+  const frameCallbacks: FrameRequestCallback[] = []
+  let cancelCalls = 0
+  const coordinator = new DesktopV3LivePatchCoordinator({
+    getSnapshot: () => state,
+    commitSnapshot: (_previous, next) => {
+      state = next
+    },
+    requestFrame: (callback) => {
+      frameCallbacks.push(callback)
+      return frameCallbacks.length
+    },
+    cancelFrame: () => { cancelCalls += 1 },
+    setTimer: () => 0,
+    clearTimer: () => undefined,
+    isDocumentHidden: () => false,
+  })
+
+  coordinator.accept(livePatch({ text: 'pending', offset_start: 0, offset_end: 7 }), 1)
+  assert.equal(frameCallbacks.length, 1)
+  const committed = committedAssistantFrame({ content: 'pending', streamId: 'assistant:run-a:step:1' })
+  coordinator.beforeDurableFrame(committed)
+  applyCacheEvent(state, normalizeRealtimeEventFrame(committed))
+  frameCallbacks[0](1)
+
+  assert.equal(state.liveRunsBySession['session-a']?.['run-a']?.assistantDraft, undefined)
+  assert.equal(coordinator.debugSnapshotForTests().pendingKeys, 0)
+  assert.equal(cancelCalls, 1)
+})
+
+test('Desktop V3 reconnect gap falls back to durable progress', () => {
+  let state = createEmptyDesktopV3CacheState()
+  state.liveRunsBySession['session-a'] = {
+    'run-a': {
+      sessionId: 'session-a',
+      runId: 'run-a',
+      status: 'running',
+      toolCallsByCallId: {},
+      assistantDraft: {
+        content: 'x'.repeat(60),
+        updatedAt: 1,
+        streamId: 'assistant:run-a:step:1',
+        liveSeqEnd: 0,
+        offsetEnd: 60,
+        durableOffsetEnd: 60,
+      },
+    },
+  }
+  const frameCallbacks: FrameRequestCallback[] = []
+  const coordinator = new DesktopV3LivePatchCoordinator({
+    getSnapshot: () => state,
+    commitSnapshot: (_previous, next) => {
+      state = next
+    },
+    requestFrame: (callback) => {
+      frameCallbacks.push(callback)
+      return frameCallbacks.length
+    },
+    cancelFrame: () => undefined,
+    setTimer: () => 0,
+    clearTimer: () => undefined,
+    isDocumentHidden: () => false,
+  })
+
+  coordinator.resetGeneration(2)
+  coordinator.accept(livePatch({ live_seq_start: 1, live_seq_end: 1, offset_start: 100, offset_end: 101, text: 'y' }), 2)
+  assert.equal(frameCallbacks.length, 0)
+  assert.equal(coordinator.debugSnapshotForTests().pausedKeys, 1)
+  assert.equal(state.liveRunsBySession['session-a']['run-a'].assistantDraft?.content, 'x'.repeat(60))
+
+  const durable = durableDeltaFrame({
+    delta: 'z'.repeat(40),
+    offsetStart: 60,
+    offsetEnd: 100,
+    streamId: 'assistant:run-a:step:1',
+  })
+  coordinator.beforeDurableFrame(durable)
+  applyCacheEvent(state, normalizeRealtimeEventFrame(durable))
+  assert.equal(state.liveRunsBySession['session-a']['run-a'].assistantDraft?.content, `${'x'.repeat(60)}${'z'.repeat(40)}`)
+
+  coordinator.accept(livePatch({ live_seq_start: 2, live_seq_end: 2, offset_start: 100, offset_end: 101, text: 'y' }), 2)
+  assert.equal(frameCallbacks.length, 0)
+
+  coordinator.accept(livePatch({
+    run_id: 'run-a',
+    stream_id: 'assistant:run-a:step:2',
+    step: 2,
+    step_id: 'step-2',
+    live_seq_start: 1,
+    live_seq_end: 1,
+    offset_start: 0,
+    offset_end: 3,
+    text: 'new',
+  }), 2)
+  frameCallbacks[0](1)
+  assert.equal(state.liveRunsBySession['session-a']['run-a'].assistantDraft?.streamId, 'assistant:run-a:step:2')
+  assert.equal(state.liveRunsBySession['session-a']['run-a'].assistantDraft?.content, 'new')
+})
+
 test('Desktop V3 sustained stream commits once per paint window', () => {
   let state = createEmptyDesktopV3CacheState()
   const frameCallbacks: FrameRequestCallback[] = []
@@ -177,6 +279,54 @@ test('Desktop V3 live accumulators do not rebuild text per patch', async () => {
   assert.doesNotMatch(backend, /pending\.Text\s*=\s*pending\.Text\s*\+/)
   assert.doesNotMatch(backend, /patch\.Text\[[^\]]+\]/)
 })
+
+
+function durableDeltaFrame(input: { delta: string; offsetStart: number; offsetEnd: number; streamId: string }): RealtimeMessage {
+  return {
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    session_id: 'session-a',
+    event_type: 'session.assistant.delta',
+    endpoint_cursor: 'cursor-durable',
+    event: {
+      id: 'evt-durable-delta',
+      session_id: 'session-a',
+      seq: 10,
+      event_type: 'session.assistant.delta',
+      payload: { run_id: 'run-a', stream_id: input.streamId, delta: input.delta, offset_start: input.offsetStart, offset_end: input.offsetEnd },
+      ts_unix_ms: 10,
+    },
+  }
+}
+
+function committedAssistantFrame(input: { content: string; streamId: string }): RealtimeMessage {
+  const message: MessageSnapshot = {
+    id: 'msg-committed',
+    session_id: 'session-a',
+    global_seq: 10,
+    role: 'assistant',
+    content: input.content,
+    metadata: { run_id: 'run-a', stream_id: input.streamId },
+    created_at: 10,
+  }
+  return {
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'event',
+    session_id: 'session-a',
+    event_type: 'session.assistant.completed',
+    endpoint_cursor: 'cursor-committed',
+    event: {
+      id: 'evt-committed',
+      session_id: 'session-a',
+      seq: 11,
+      event_type: 'session.assistant.completed',
+      payload: { run_id: 'run-a', message },
+      ts_unix_ms: 11,
+    },
+  }
+}
 
 function livePatch(overrides: Partial<SessionV3RealtimeLivePatchWire> = {}): SessionV3RealtimeLivePatchWire {
   const text = overrides.text ?? 'x'

@@ -49,6 +49,8 @@ import { buildDesktopV3ConversationRenderItems, isDesktopV3ManualCompactionAckMe
 import type { CacheEvent, DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, SessionSnapshot, V3SessionEvent, V3SessionProjection } from './desktop-v3-cache-types'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 
+const encoder = new TextEncoder()
+
 function bootstrappedState(): DesktopV3CacheState {
   return applyBootstrapSnapshot(createEmptyDesktopV3CacheState(), snapshotFixture())
 }
@@ -1209,6 +1211,192 @@ test('realtime assistant and message deltas append assistant draft without commi
   assert.equal(state.messagesBySession[sessionA.id].items.length, beforeCommittedCount)
 })
 
+
+test('Desktop V3 durable checkpoint overlapping pending live text renders once', () => {
+  let state = bootstrappedState()
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({ text: 'hello world', offset_start: 0, offset_end: 11 })])
+
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-durable-overlap',
+    session_id: sessionA.id,
+    seq: 20,
+    event_type: 'session.assistant.delta',
+    payload: { run_id: 'run-live', stream_id: 'assistant:run-live:step:1', delta: 'hello world', offset_start: 0, offset_end: 11 },
+    ts_unix_ms: 20,
+  }))
+
+  assert.equal(state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft?.content, 'hello world')
+  assert.equal(state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft?.durableOffsetEnd, 11)
+})
+
+test('Desktop V3 durable checkpoint appends only unseen UTF-8 suffix', () => {
+  let state = bootstrappedState()
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({ text: 'hé', offset_start: 0, offset_end: byteLength('hé') })])
+  const durable = 'héllo 🌍'
+
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-durable-utf8-suffix',
+    session_id: sessionA.id,
+    seq: 21,
+    event_type: 'session.assistant.delta',
+    payload: { run_id: 'run-live', stream_id: 'assistant:run-live:step:1', delta: durable, offset_start: 0, offset_end: byteLength(durable) },
+    ts_unix_ms: 21,
+  }))
+
+  const draft = state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft
+  assert.equal(draft?.content, durable)
+  assert.equal(draft?.content.includes('�'), false)
+  assert.equal(draft?.offsetEnd, byteLength(durable))
+  assert.equal(draft?.durableOffsetEnd, byteLength(durable))
+})
+
+test('Desktop V3 invalid UTF-8 overlap pauses repair', () => {
+  let state = bootstrappedState()
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({ text: 'hé', offset_start: 0, offset_end: byteLength('hé') })])
+
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-durable-split-codepoint',
+    session_id: sessionA.id,
+    seq: 22,
+    event_type: 'session.assistant.delta',
+    payload: { run_id: 'run-live', stream_id: 'assistant:run-live:step:1', delta: 'é!', offset_start: 2, offset_end: 2 + byteLength('é!') },
+    ts_unix_ms: 22,
+  }))
+
+  const draft = state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft
+  assert.equal(draft?.content, 'hé')
+  assert.equal(draft?.livePaused, true)
+})
+
+test('Desktop V3 same offsets with different bytes pauses repair', () => {
+  let state = bootstrappedState()
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({ text: 'hello', offset_start: 0, offset_end: 5 })])
+
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-durable-mismatch',
+    session_id: sessionA.id,
+    seq: 23,
+    event_type: 'session.assistant.delta',
+    payload: { run_id: 'run-live', stream_id: 'assistant:run-live:step:1', delta: 'hullo', offset_start: 0, offset_end: 5 },
+    ts_unix_ms: 23,
+  }))
+
+  const draft = state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft
+  assert.equal(draft?.content, 'hello')
+  assert.equal(draft?.livePaused, true)
+})
+
+test('Desktop V3 pre-tool committed message clears only matching stream', () => {
+  const state = bootstrappedState()
+  state.liveRunsBySession[sessionA.id] = {
+    'run-live': {
+      sessionId: sessionA.id,
+      runId: 'run-live',
+      status: 'running',
+      toolCallsByCallId: {},
+      assistantSegments: [{
+        id: 'live-assistant:run-live:assistant:run-live:step:1',
+        content: 'step one exact',
+        createdAt: 10,
+        updatedAt: 11,
+        timelineSeq: 1,
+        streamId: 'assistant:run-live:step:1',
+        streamStep: 1,
+        stepId: 'step-1',
+        liveSeqEnd: 1,
+        offsetEnd: byteLength('step one exact'),
+        durableOffsetEnd: byteLength('step one exact'),
+      }],
+      assistantDraft: {
+        content: '  step two exact  ',
+        updatedAt: 12,
+        timelineSeq: 2,
+        streamId: 'assistant:run-live:step:2',
+        streamStep: 2,
+        stepId: 'step-2',
+        liveSeqEnd: 1,
+        offsetEnd: byteLength('  step two exact  '),
+        durableOffsetEnd: 0,
+      },
+    },
+  }
+
+  upsertCommittedMessage(state, sessionA.id, {
+    id: 'msg-step-1',
+    session_id: sessionA.id,
+    global_seq: 30,
+    role: 'assistant',
+    content: 'step one exact',
+    metadata: { run_id: 'run-live', stream_id: 'assistant:run-live:step:1' },
+    created_at: 30,
+  }, 'run-live', 'running')
+
+  const run = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(run.assistantSegments, undefined)
+  assert.equal(run.assistantDraft?.streamId, 'assistant:run-live:step:2')
+  assert.equal(run.assistantDraft?.content, '  step two exact  ')
+})
+
+test('Desktop V3 assistant segment preserves leading and trailing whitespace', () => {
+  let state = bootstrappedState()
+  const exact = '  héllo 🌍  '
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({ text: exact, offset_start: 0, offset_end: byteLength(exact) })])
+  applyRealtimeFrame(state, { frame: deltaFrame('session.tool.started', { call_id: 'call-whitespace' }, 40, 'cursor-tool-whitespace') })
+
+  const run = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(run.assistantSegments?.[0]?.content, exact)
+  const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+  const liveAssistant = rendered.find((item) => item.type === 'live-assistant')
+  assert.equal(liveAssistant?.type, 'live-assistant')
+  if (liveAssistant?.type === 'live-assistant') assert.equal(liveAssistant.content, exact)
+})
+
+test('Desktop V3 high-frequency deltas are not retained', () => {
+  const state = bootstrappedState()
+  for (let i = 0; i < 10_000; i += 1) {
+    applyCacheEvent(state, cacheEvent({
+      id: `evt-assistant-delta-${i}`,
+      session_id: sessionA.id,
+      seq: 10_000 + i,
+      event_type: 'session.assistant.delta',
+      payload: { run_id: 'run-high-assistant', delta: 'a' },
+      ts_unix_ms: 10_000 + i,
+    }))
+    applyCacheEvent(state, cacheEvent({
+      id: `evt-reasoning-delta-${i}`,
+      session_id: sessionA.id,
+      seq: 20_000 + i,
+      event_type: 'session.reasoning.delta',
+      payload: { run_id: 'run-high-reasoning', reasoning_key: 'summary-1', text_delta: 'r' },
+      ts_unix_ms: 20_000 + i,
+    }))
+    applyCacheEvent(state, cacheEvent({
+      id: `evt-tool-delta-${i}`,
+      session_id: sessionA.id,
+      seq: 30_000 + i,
+      event_type: 'session.tool.delta',
+      payload: { run_id: 'run-high-tool', call_id: 'call-1', output_delta: 't' },
+      ts_unix_ms: 30_000 + i,
+    }))
+  }
+  applyCacheEvent(state, cacheEvent({
+    id: 'evt-tool-start-retained',
+    session_id: sessionA.id,
+    seq: 40_001,
+    event_type: 'session.tool.started',
+    payload: { run_id: 'run-high-tool', call_id: 'call-1' },
+    ts_unix_ms: 40_001,
+  }))
+
+  const retained = state.eventsBySession[sessionA.id] ?? []
+  assert.equal(retained.filter((event) => ['session.assistant.delta', 'session.message.delta', 'session.reasoning.delta', 'session.tool.delta'].includes(event.event_type)).length, 0)
+  assert.equal(retained.some((event) => event.id === 'evt-tool-start-retained'), true)
+  const runs = state.liveRunsBySession[sessionA.id]
+  assert.equal(runs['run-high-assistant'].assistantDraft?.content.length, 10_000)
+  assert.equal(runs['run-high-reasoning'].reasoning?.text.length, 10_000)
+  assert.equal(runs['run-high-tool'].toolCallsByCallId['call-1']?.outputText?.length, 10_000)
+})
+
 test('realtime reasoning deltas replace coalesced snapshots instead of appending each snapshot', () => {
   const state = bootstrappedState()
 
@@ -1499,6 +1687,32 @@ test('repair merge keeps restored overlay and ignores replayed old output events
   assert.equal(liveRun.assistantDraft?.content, 'persisted-repair')
   assert.equal(liveRun.lastEventSeqSeen, 8)
 })
+
+
+function byteLength(value: string): number {
+  return encoder.encode(value).byteLength
+}
+
+function livePatch(overrides: Partial<SessionV3RealtimeLivePatchWire> = {}): SessionV3RealtimeLivePatchWire {
+  const text = overrides.text ?? 'x'
+  const offsetStart = overrides.offset_start ?? 0
+  return {
+    session_id: sessionA.id,
+    run_id: 'run-live',
+    stream_id: 'assistant:run-live:step:1',
+    stream_kind: 'assistant_text',
+    operation: 'append',
+    step: 1,
+    step_id: 'step-1',
+    live_seq_start: 1,
+    live_seq_end: 1,
+    offset_start: offsetStart,
+    offset_end: overrides.offset_end ?? offsetStart + byteLength(text),
+    text,
+    recorded_at: 1,
+    ...overrides,
+  }
+}
 
 function cacheEvent(event: V3SessionEvent): CacheEvent {
   return {

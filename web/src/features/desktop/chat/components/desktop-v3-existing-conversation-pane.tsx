@@ -459,8 +459,9 @@ export function isDesktopV3ManualCompactionAckMessage(message: MessageSnapshot):
 export function buildDesktopV3LiveRunRenderItems(run: LiveRunOverlay, options: { assistantMessages?: Set<string>; reasoningMessages?: Set<string> } = {}): DesktopV3RenderItem[] {
   const items: DesktopV3RenderItem[] = []
   for (const segment of run.assistantSegments ?? []) {
-    const content = segment.content.trim()
-    if (!content || options.assistantMessages?.has(normalizeReplayContent(content))) continue
+    const content = segment.content
+    if (!content.trim()) continue
+    if (options.assistantMessages?.has(normalizeReplayContent(content))) continue
     items.push({ type: 'live-assistant', id: segment.id, content, timelineSeq: segment.timelineSeq })
   }
   const reasoningRecords = Object.values(run.reasoningByKey ?? (run.reasoning ? { active: run.reasoning } : {}))

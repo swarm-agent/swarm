@@ -2351,9 +2351,9 @@ test('repair and live events racing through one queue remain ordered', async () 
   assert.equal(liveRun?.assistantDraft?.content, 'abcde')
   assert.equal(liveRun?.lastEventSeqSeen, 5)
   assert.equal(state.realtime.endpointCursor, 'cursor-live-5')
-  assert.deepEqual(
-    state.eventsBySession[sessionA.id].map((event) => `${event.seq}:${event.id}`),
-    ['4:evt-repair-4', '5:evt-live-5'],
+  assert.equal(
+    state.eventsBySession[sessionA.id]?.some((event) => event.event_type === 'session.assistant.delta') ?? false,
+    false,
   )
 })
 
