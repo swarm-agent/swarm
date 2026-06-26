@@ -69,6 +69,8 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- For internet retrieval, run websearch first (metadata-first, fast) and only call webfetch for selected URLs when deeper content is required.",
 		"- Batch independent websearch queries in one call and keep the first pass lightweight before deep fetches.",
 		"- Sequence tool calls only when later calls depend on earlier outputs.",
+		"- For source edits, use the provided edit tool for exact targeted replacements and write for intentional full-file creates/replacements; do not create temporary patch scripts such as patch_*.py to mutate source files.",
+		"- Use shell/Python mutation scripts only when explicitly requested or when edit/write cannot express the transformation; explain why before creating or running such a script.",
 		"- For multiple independent manage_todos operations, prefer a single atomic `batch` action with an `operations` array when they should succeed or fail together.",
 		"- Use reorder only when relative list order matters; otherwise prefer independent create/update/delete/focus calls so parallel execution remains available.",
 		"- For read, it is safe to request up to 2000 lines per call; read as many lines/chunks as needed to gain full context.",
