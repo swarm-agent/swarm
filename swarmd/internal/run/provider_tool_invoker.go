@@ -151,6 +151,9 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	if s == nil {
 		return tool.Result{}, errors.New("run service is not configured")
 	}
+	if config.providerManagedV3 && config.applySessionMutation == nil {
+		return tool.Result{}, errors.New("v3 provider-managed tool execution requires applySessionV3PrimaryMutation")
+	}
 
 	name := strings.TrimSpace(call.Name)
 	callID := strings.TrimSpace(call.CallID)

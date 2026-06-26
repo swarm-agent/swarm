@@ -2019,6 +2019,7 @@ type taskExecutionRequest struct {
 	PromptOverride       string
 	ParentSession        *pebblestore.SessionSnapshot
 	ParentMessages       []pebblestore.MessageSnapshot
+	ParentActivePlan     *pebblestore.SessionPlanSnapshot
 	PermissionSessionID  string
 	TargetedSubagentName string
 	Principal            identity.Principal
@@ -2101,8 +2102,18 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 	parentMessages := append([]pebblestore.MessageSnapshot(nil), req.ParentMessages...)
+	parentActivePlan := req.ParentActivePlan
 	if len(parentMessages) == 0 {
-		parentMessages, err = s.loadDelegationTranscriptMessages(parentSession.ID)
+		delegationContext, contextErr := s.loadTaskDelegationContext(parentSession.ID)
+		if contextErr != nil {
+			return "", contextErr
+		}
+		parentMessages = delegationContext.ParentMessages
+		if parentActivePlan == nil {
+			parentActivePlan = delegationContext.ActivePlan
+		}
+	} else if parentActivePlan == nil {
+		parentActivePlan, err = s.activePlanForDelegation(parentSession.ID)
 		if err != nil {
 			return "", err
 		}
@@ -2253,6 +2264,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			Prompt:               perLaunchPrompt,
 			ParentSession:        parentSession,
 			ParentMessages:       parentMessages,
+			ParentActivePlan:     parentActivePlan,
 			PermissionSessionID:  req.PermissionSessionID,
 			TargetedSubagentName: req.TargetedSubagentName,
 		})
@@ -2620,6 +2632,7 @@ type taskDelegationPromptConfig struct {
 	Prompt               string
 	ParentSession        pebblestore.SessionSnapshot
 	ParentMessages       []pebblestore.MessageSnapshot
+	ParentActivePlan     *pebblestore.SessionPlanSnapshot
 	PermissionSessionID  string
 	TargetedSubagentName string
 }
@@ -2644,6 +2657,11 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 	if parentBlock := buildTaskParentSessionContext(config.ParentSession, config.PermissionSessionID); parentBlock != "" {
 		b.WriteString("\nParent session context:\n")
 		b.WriteString(parentBlock)
+		b.WriteString("\n")
+	}
+	if activePlanBlock := buildTaskActivePlanContext(config.ParentActivePlan); activePlanBlock != "" {
+		b.WriteString("\nActive session plan:\n")
+		b.WriteString(activePlanBlock)
 		b.WriteString("\n")
 	}
 	if transcriptBlock := buildTaskParentTranscriptContext(config.ParentMessages); transcriptBlock != "" {
@@ -2737,16 +2755,48 @@ func buildTaskParentSessionContext(session pebblestore.SessionSnapshot, permissi
 	return strings.TrimSpace(b.String())
 }
 
+type taskDelegationContext struct {
+	ParentMessages []pebblestore.MessageSnapshot
+	ActivePlan     *pebblestore.SessionPlanSnapshot
+}
+
+func (s *Service) loadTaskDelegationContext(sessionID string) (taskDelegationContext, error) {
+	messages, err := s.loadDelegationTranscriptMessages(sessionID)
+	if err != nil {
+		return taskDelegationContext{}, err
+	}
+	activePlan, err := s.activePlanForDelegation(sessionID)
+	if err != nil {
+		return taskDelegationContext{}, err
+	}
+	return taskDelegationContext{ParentMessages: messages, ActivePlan: activePlan}, nil
+}
+
+func (s *Service) activePlanForDelegation(sessionID string) (*pebblestore.SessionPlanSnapshot, error) {
+	return s.activePlanForCompaction(sessionID)
+}
+
 func (s *Service) loadDelegationTranscriptMessages(sessionID string) ([]pebblestore.MessageSnapshot, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" || s == nil || s.sessions == nil {
 		return nil, nil
 	}
-	messages, err := s.sessions.ListMessages(sessionID, 0, taskDelegationTranscriptMsgLimit)
+	limit := taskDelegationTranscriptMsgLimit
+	if session, ok, err := s.sessions.GetSession(sessionID); err != nil {
+		return nil, fmt.Errorf("load parent session for delegation transcript: %w", err)
+	} else if ok && session.MessageCount+memoryCompactionHistorySlack > limit {
+		limit = session.MessageCount + memoryCompactionHistorySlack
+	}
+	messages, err := s.listRunMessages(sessionID, 0, limit, true)
 	if err != nil {
 		return nil, fmt.Errorf("list parent transcript messages: %w", err)
 	}
+	messages = compactMessagesForProviderContext(messages, taskDelegationTranscriptMsgLimit)
 	return append([]pebblestore.MessageSnapshot(nil), messages...), nil
+}
+
+func buildTaskActivePlanContext(activePlan *pebblestore.SessionPlanSnapshot) string {
+	return compactedActivePlanText(activePlan)
 }
 
 func buildTaskParentTranscriptContext(messages []pebblestore.MessageSnapshot) string {

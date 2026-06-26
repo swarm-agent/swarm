@@ -684,7 +684,7 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 		fmt.Sprintf("spawned launch %d %s subagent in %s", outcome.LaunchIndex, outcome.ResolvedSubagent, outcome.ChildMode),
 	)
 
-	parentMessages, err := s.loadDelegationTranscriptMessages(parentSession.ID)
+	delegationContext, err := s.loadTaskDelegationContext(parentSession.ID)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -692,7 +692,8 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 		Description:          description,
 		Prompt:               prompt,
 		ParentSession:        parentSession,
-		ParentMessages:       parentMessages,
+		ParentMessages:       delegationContext.ParentMessages,
+		ParentActivePlan:     delegationContext.ActivePlan,
 		PermissionSessionID:  firstNonEmptyString(strings.TrimSpace(options.PermissionSessionID), strings.TrimSpace(parentSession.ID)),
 		TargetedSubagentName: targetName,
 	})

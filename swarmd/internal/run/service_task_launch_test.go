@@ -459,11 +459,16 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 		t.Fatalf("create account-scoped parent session: %v", err)
 	}
 
+	var captured []sessionruntime.SessionMutationInput
+	apply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		captured = append(captured, input)
+		return svc.sessions.ApplySessionMutation(input)
+	}
 	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModePlan, taskLaunchPrepared{
 		LaunchIndex:       7,
 		RequestedSubagent: "purpose-review",
 		MetaPrompt:        "Map backend files",
-	}, "repo map", "", nil)
+	}, "repo map", "", apply)
 	if err != nil {
 		t.Fatalf("prepare delegated launch: %v", err)
 	}
@@ -477,6 +482,15 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 	}
 	if strings.Contains(childID, "/") || strings.Contains(childID, ":") {
 		t.Fatalf("child session id %q is not a raw canonical session id", childID)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("captured create mutations = %d, want 1", len(captured))
+	}
+	if got := captured[0].Kind; got != sessionruntime.SessionMutationCreateSession {
+		t.Fatalf("captured mutation kind = %q, want create session", got)
+	}
+	if captured[0].Session == nil || captured[0].Session.ID != childID {
+		t.Fatalf("captured mutation session = %#v, want child %q", captured[0].Session, childID)
 	}
 	child, ok, err := svc.sessions.GetSession(childID)
 	if err != nil {
@@ -566,6 +580,109 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 	}
 	if got := strings.TrimSpace(metadataStringForTest(createdPayload.Session.Metadata, "lineage_kind")); got != "delegated_subagent" {
 		t.Fatalf("V3 session.created lineage_kind = %q, want delegated_subagent", got)
+	}
+	outbox, err := svc.sessions.ListRealtimeOutboxForSessionAfterEndpoint(childID, 0, 10)
+	if err != nil {
+		t.Fatalf("list child realtime outbox: %v", err)
+	}
+	if len(outbox) != 1 || outbox[0].Event.EventType != "session.created" || outbox[0].SessionID != childID || outbox[0].EndpointSeq == 0 {
+		t.Fatalf("child realtime outbox = %#v, want durable session.created outbox row", outbox)
+	}
+}
+
+func TestProviderManagedV3ToolRequiresPrimaryMutationCallback(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	_, err := svc.executeProviderManagedToolCall(context.Background(), providerToolInvokerConfig{
+		sessionID:         parentSessionID,
+		providerManagedV3: true,
+	}, tool.Call{Name: "task", CallID: "call-no-v3-mutation", Arguments: "{}"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "requires applySessionV3PrimaryMutation") {
+		t.Fatalf("expected missing V3 mutation callback error, got %v", err)
+	}
+}
+
+func TestTaskDelegationContextUsesLatestCompactAndActivePlan(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	if _, _, err := svc.sessions.SavePlan(parentSessionID, "plan-delegation", "Delegation Plan", "# Active plan\n- Keep this current plan", "approved", "approved", true); err != nil {
+		t.Fatalf("save active plan: %v", err)
+	}
+	messages := []struct {
+		role    string
+		content string
+	}{
+		{"user", "old pre-compact request"},
+		{"system", contextCompactionMarkerPrefix + " index=1 origin=manual\nold compact checkpoint"},
+		{"assistant", "old post-first compact answer"},
+		{"system", contextCompactionMarkerPrefix + " index=2 origin=manual\nlatest compact checkpoint"},
+		{"user", "tail after latest compact"},
+	}
+	for _, message := range messages {
+		if _, _, _, err := svc.sessions.AppendMessage(parentSessionID, message.role, message.content, nil); err != nil {
+			t.Fatalf("append %s message: %v", message.role, err)
+		}
+	}
+
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent session ok=%v err=%v", ok, err)
+	}
+	context, err := svc.loadTaskDelegationContext(parentSessionID)
+	if err != nil {
+		t.Fatalf("load delegation context: %v", err)
+	}
+	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
+		Description:      "delegated check",
+		Prompt:           "Do the work",
+		ParentSession:    parent,
+		ParentMessages:   context.ParentMessages,
+		ParentActivePlan: context.ActivePlan,
+	})
+
+	for _, want := range []string{"latest compact checkpoint", "tail after latest compact", "Active session plan:", "# Active plan", "Keep this current plan"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("delegated prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{"old pre-compact request", "old compact checkpoint", "old post-first compact answer"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("delegated prompt included stale context %q:\n%s", forbidden, prompt)
+		}
+	}
+}
+
+func TestTaskDelegationContextIncludesActivePlanWithoutCompact(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	if _, _, err := svc.sessions.SavePlan(parentSessionID, "plan-no-compact", "No Compact Plan", "# Still active\n- Include me", "approved", "approved", true); err != nil {
+		t.Fatalf("save active plan: %v", err)
+	}
+	if _, _, _, err := svc.sessions.AppendMessage(parentSessionID, "user", "visible recent parent message", nil); err != nil {
+		t.Fatalf("append parent message: %v", err)
+	}
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent session ok=%v err=%v", ok, err)
+	}
+	context, err := svc.loadTaskDelegationContext(parentSessionID)
+	if err != nil {
+		t.Fatalf("load delegation context: %v", err)
+	}
+	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
+		Description:      "delegated check",
+		Prompt:           "Do the work",
+		ParentSession:    parent,
+		ParentMessages:   context.ParentMessages,
+		ParentActivePlan: context.ActivePlan,
+	})
+	for _, want := range []string{"visible recent parent message", "Active session plan:", "# Still active", "Include me"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("delegated prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 
