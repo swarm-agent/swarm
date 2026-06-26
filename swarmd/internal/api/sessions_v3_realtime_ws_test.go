@@ -1860,22 +1860,25 @@ func TestV3RealtimeLiveAndDurableUseOneSocketWriter(t *testing.T) {
 	}
 }
 
-func TestV3RealtimeLivePatchServerGateDefaultsOff(t *testing.T) {
+func TestV3RealtimeLivePatchServerGateDefaultsOn(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createV3RealtimeTestSessionResult(t, server, "session-live-gate-off", "create-live-gate-off")
+	created := createV3RealtimeTestSessionResult(t, server, "session-live-gate-on", "create-live-gate-on")
 	httpServer := newV3RealtimeHTTPTestServer(t, server)
 	conn := dialV3RealtimeStream(t, httpServer.URL)
 	defer conn.Close()
 	hello := readV3RealtimeFrameIncludingHello(t, conn)
 	assertV3RealtimeFrame(t, hello, V3RealtimeKindHello, "", 0)
-	if len(hello.Capabilities) != 0 {
-		t.Fatalf("hello capabilities = %+v, want empty when gate defaults off", hello.Capabilities)
+	if !containsV3RealtimeCapability(hello.Capabilities, V3RealtimeCapabilityLivePatchV1) {
+		t.Fatalf("hello capabilities = %+v, want live_patch_v1 when gate defaults on", hello.Capabilities)
 	}
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), Capabilities: []string{V3RealtimeCapabilityLivePatchV1}, Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: created.SessionID, SubscriptionID: "sub-live-gate-off"}}})
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), Capabilities: []string{V3RealtimeCapabilityLivePatchV1}, Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: created.SessionID, SubscriptionID: "sub-live-gate-on"}}})
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.SessionID, 0)
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.SessionID, created.Event.Seq)
 	server.v3LiveHub.publish(testPrincipal().AccountScopeID, v3RealtimeLivePatchForTest(created.SessionID, "run-1", "stream-1", 1, "x"))
-	assertNoV3RealtimeFrame(t, conn, 100*time.Millisecond)
+	live := readV3RealtimeLiveFrame(t, conn)
+	if live.Kind != V3RealtimeKindLivePatch || live.Live.Text != "x" || live.Live.SessionID != created.SessionID {
+		t.Fatalf("live frame = %+v", live)
+	}
 }
 
 func TestV3RealtimeWriteDeadlineReleasesStalledSocket(t *testing.T) {

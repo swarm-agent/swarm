@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1297,6 +1298,335 @@ func TestSessionsV3PrimaryPostReturnsBeforeModelCompletion(t *testing.T) {
 	if len(listed) != 2 || listed[0].Role != "user" || listed[1].Role != "assistant" {
 		t.Fatalf("GET /messages after completion = %+v", listed)
 	}
+}
+
+func TestV3PrimaryAssistantTenThousandDeltasEndToEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stress timing is calibrated for unix CI")
+	}
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.v3LivePatchEnabled = true
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "primary-10k-create", "primary 10k", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+
+	liveSub := server.v3LiveHub.subscribe()
+	defer server.v3LiveHub.unsubscribe(liveSub)
+	server.v3LiveHub.replaceSessions(liveSub, testPrincipal().AccountScopeID, []string{created.ID})
+
+	const deltaCount = 10000
+	expected := sessionsV3PrimaryStressExpectedText(deltaCount)
+	allDeltasEmitted := make(chan struct{})
+	runner := installSessionsV3TestProvider(server, expected)
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		for i := 0; i < deltaCount; i++ {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: sessionsV3PrimaryStressChunk(i)})
+		}
+		close(allDeltasEmitted)
+		return provideriface.Response{Text: expected, StopReason: "stop"}, nil
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	writer := newSessionsV3BlockingDurableProgressWriter(sessionV3ExecutorDurableProgressWriter{exec: exec})
+	exec.durableProgressWriterForTest = writer
+	server.v3SessionExecutor = exec
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "primary-10k-message", "stream ten thousand")
+	select {
+	case <-writer.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("durable writer was not entered")
+	}
+	select {
+	case <-allDeltasEmitted:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("provider callbacks did not finish while durable writer was blocked")
+	}
+
+	patches := liveSub.drain(16, 64<<10)
+	if len(patches) != 1 {
+		t.Fatalf("live patches before release = %d, want one coalesced patch", len(patches))
+	}
+	patch := patches[0]
+	if patch.Text != expected || patch.LiveSeqStart != 1 || patch.LiveSeqEnd != deltaCount || patch.OffsetStart != 0 || patch.OffsetEnd != uint64(len([]byte(expected))) {
+		t.Fatalf("live patch before release = seq %d-%d offsets %d-%d text bytes %d", patch.LiveSeqStart, patch.LiveSeqEnd, patch.OffsetStart, patch.OffsetEnd, len([]byte(patch.Text)))
+	}
+
+	close(writer.release)
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	var assistantMessages []pebblestore.MessageSnapshot
+	for _, message := range messages {
+		if message.Role == "assistant" {
+			assistantMessages = append(assistantMessages, message)
+		}
+	}
+	if len(assistantMessages) != 1 || assistantMessages[0].Content != expected {
+		t.Fatalf("assistant messages = %+v", assistantMessages)
+	}
+	metadataOffset, ok := sessionV3NumericMetadataUint64ForTest(assistantMessages[0].Metadata, "stream_offset_end")
+	if !ok || metadataOffset != uint64(len([]byte(expected))) {
+		t.Fatalf("assistant stream_offset_end metadata = %+v, want %d", assistantMessages[0].Metadata, len([]byte(expected)))
+	}
+	writer.mu.Lock()
+	assistantCalls := append([]sessionV3AssistantProgress(nil), writer.assistantCalls...)
+	writer.mu.Unlock()
+	if len(assistantCalls) == 0 {
+		t.Fatalf("durable writer recorded no assistant checkpoints")
+	}
+	var offset uint64
+	for index, call := range assistantCalls {
+		if call.OffsetStart != offset || call.OffsetEnd <= call.OffsetStart {
+			t.Fatalf("assistant checkpoint %d offsets %d-%d after %d", index, call.OffsetStart, call.OffsetEnd, offset)
+		}
+		offset = call.OffsetEnd
+	}
+	if offset != uint64(len([]byte(expected))) {
+		t.Fatalf("durable checkpoint final offset = %d, want %d", offset, len([]byte(expected)))
+	}
+}
+
+func TestV3PrimaryAssistantSlowBrowserDoesNotSlowProvider(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.v3LivePatchEnabled = true
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "primary-slow-browser-create", "primary slow browser", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+
+	slowSub := server.v3LiveHub.subscribe()
+	defer server.v3LiveHub.unsubscribe(slowSub)
+	fastSub := server.v3LiveHub.subscribe()
+	defer server.v3LiveHub.unsubscribe(fastSub)
+	server.v3LiveHub.replaceSessions(slowSub, testPrincipal().AccountScopeID, []string{created.ID})
+	server.v3LiveHub.replaceSessions(fastSub, testPrincipal().AccountScopeID, []string{created.ID})
+
+	const deltaCount = 70000
+	expected := strings.Repeat("x", deltaCount)
+	allDeltasEmitted := make(chan struct{})
+	fastDone := make(chan string, 1)
+	stopFast := make(chan struct{})
+	go func() {
+		var builder strings.Builder
+		for {
+			for _, patch := range fastSub.drain(16, 64<<10) {
+				builder.WriteString(patch.Text)
+			}
+			if builder.Len() >= len(expected) {
+				fastDone <- builder.String()
+				return
+			}
+			select {
+			case <-fastSub.notify:
+			case <-stopFast:
+				fastDone <- builder.String()
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}()
+	defer close(stopFast)
+
+	runner := installSessionsV3TestProvider(server, expected)
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		for i := 0; i < deltaCount; i++ {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "x"})
+		}
+		close(allDeltasEmitted)
+		return provideriface.Response{Text: expected, StopReason: "stop"}, nil
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	writer := newSessionsV3BlockingDurableProgressWriter(sessionV3ExecutorDurableProgressWriter{exec: exec})
+	exec.durableProgressWriterForTest = writer
+	server.v3SessionExecutor = exec
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "primary-slow-browser-message", "stream past slow browser")
+	select {
+	case <-writer.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("durable writer was not entered")
+	}
+	select {
+	case <-allDeltasEmitted:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("provider callbacks did not finish before slow-browser handling")
+	}
+	select {
+	case slow := <-slowSub.slow:
+		if strings.TrimSpace(slow.Reason) == "" {
+			t.Fatalf("slow subscriber reason is empty")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("slow subscriber did not overflow locally")
+	}
+	select {
+	case got := <-fastDone:
+		if got != expected {
+			t.Fatalf("fast subscriber text len=%d want=%d", len(got), len(expected))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("fast subscriber did not continue while slow subscriber overflowed")
+	}
+
+	close(writer.release)
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 2 || messages[1].Role != "assistant" || messages[1].Content != expected {
+		t.Fatalf("canonical messages = %+v", messages)
+	}
+}
+
+func TestV3PrimaryAssistantLiveWebSocketContinuesWhileDurableBlocked(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.v3LivePatchEnabled = true
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "primary-live-ws-create", "primary live websocket", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	hello := readV3RealtimeFrameIncludingHello(t, conn)
+	if !containsV3RealtimeCapability(hello.Capabilities, V3RealtimeCapabilityLivePatchV1) {
+		t.Fatalf("hello capabilities = %+v, want live_patch_v1", hello.Capabilities)
+	}
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, 1), Capabilities: []string{V3RealtimeCapabilityLivePatchV1}, Subscriptions: []V3RealtimeSubscriptionRequest{{SessionID: created.ID, SubscriptionID: "sub-primary-live-ws"}}})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.ID, 0)
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.ID, 1)
+
+	const deltaCount = 10000
+	expected := sessionsV3PrimaryStressExpectedText(deltaCount)
+	allDeltasEmitted := make(chan struct{})
+	runner := installSessionsV3TestProvider(server, expected)
+	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		for i := 0; i < deltaCount; i++ {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: sessionsV3PrimaryStressChunk(i)})
+		}
+		close(allDeltasEmitted)
+		return provideriface.Response{Text: expected, StopReason: "stop"}, nil
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	writer := newSessionsV3BlockingDurableProgressWriter(sessionV3ExecutorDurableProgressWriter{exec: exec})
+	exec.durableProgressWriterForTest = writer
+	server.v3SessionExecutor = exec
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "primary-live-ws-message", "stream over websocket")
+	select {
+	case <-writer.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("durable writer was not entered")
+	}
+	select {
+	case <-allDeltasEmitted:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("provider callbacks did not finish while durable writer was blocked")
+	}
+	var liveText strings.Builder
+	var liveSeqEnd uint64
+	var liveOffsetEnd uint64
+	for liveText.Len() < len([]byte(expected)) {
+		live := readV3RealtimeLiveFrameSkippingDurableForTest(t, conn)
+		if live.Live.LiveSeqStart != liveSeqEnd+1 || live.Live.OffsetStart != liveOffsetEnd {
+			t.Fatalf("websocket live gap: got seq %d-%d offset %d-%d after seq=%d offset=%d", live.Live.LiveSeqStart, live.Live.LiveSeqEnd, live.Live.OffsetStart, live.Live.OffsetEnd, liveSeqEnd, liveOffsetEnd)
+		}
+		liveText.WriteString(live.Live.Text)
+		liveSeqEnd = live.Live.LiveSeqEnd
+		liveOffsetEnd = live.Live.OffsetEnd
+	}
+	if liveText.String() != expected || liveSeqEnd != deltaCount || liveOffsetEnd != uint64(len([]byte(expected))) {
+		t.Fatalf("websocket live stream seq=%d offset=%d text bytes=%d", liveSeqEnd, liveOffsetEnd, liveText.Len())
+	}
+	close(writer.release)
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 2 || messages[1].Role != "assistant" || messages[1].Content != expected {
+		t.Fatalf("canonical messages = %+v", messages)
+	}
+}
+
+func sessionsV3PrimaryStressChunk(i int) string {
+	if i%1000 == 0 {
+		return "🌍"
+	}
+	return "x"
+}
+
+func sessionsV3PrimaryStressExpectedText(deltaCount int) string {
+	var builder strings.Builder
+	for i := 0; i < deltaCount; i++ {
+		builder.WriteString(sessionsV3PrimaryStressChunk(i))
+	}
+	return builder.String()
+}
+
+func sessionV3NumericMetadataUint64ForTest(metadata map[string]any, key string) (uint64, bool) {
+	value, ok := metadata[key]
+	if !ok {
+		return 0, false
+	}
+	switch typed := value.(type) {
+	case uint64:
+		return typed, true
+	case int:
+		if typed < 0 {
+			return 0, false
+		}
+		return uint64(typed), true
+	case int64:
+		if typed < 0 {
+			return 0, false
+		}
+		return uint64(typed), true
+	case float64:
+		if typed < 0 || typed != float64(uint64(typed)) {
+			return 0, false
+		}
+		return uint64(typed), true
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil || parsed < 0 {
+			return 0, false
+		}
+		return uint64(parsed), true
+	default:
+		return 0, false
+	}
+}
+
+func readV3RealtimeLiveFrameSkippingDurableForTest(t *testing.T, conn *gorillaws.Conn) V3RealtimeLiveMessage {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+			t.Fatalf("set read deadline: %v", err)
+		}
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			continue
+		}
+		var base struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(raw, &base); err != nil {
+			t.Fatalf("decode realtime frame %s: %v", string(raw), err)
+		}
+		if base.Kind != V3RealtimeKindLivePatch {
+			continue
+		}
+		var frame V3RealtimeLiveMessage
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatalf("decode live frame %s: %v", string(raw), err)
+		}
+		if err := ValidateV3RealtimeLiveMessage(frame); err != nil {
+			t.Fatalf("invalid live frame %s: %v", string(raw), err)
+		}
+		return frame
+	}
+	t.Fatalf("timed out waiting for live.patch frame")
+	return V3RealtimeLiveMessage{}
 }
 
 func TestSessionsV3ExecutorEnabledByNormalServerStartup(t *testing.T) {

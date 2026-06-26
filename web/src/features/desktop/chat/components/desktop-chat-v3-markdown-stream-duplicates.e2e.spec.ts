@@ -17,17 +17,11 @@ const OPAQUE_SNAPSHOT_CURSOR = 'v3c1.playwright_snapshot_payload.playwright_snap
 const OPAQUE_RECONNECT_CURSOR = 'v3c1.playwright_reconnect_payload.playwright_reconnect_signature'
 
 const MARKDOWN_CHUNKS = [
-  '# Lorem ipsum streamed markdown\n\n',
-  'Lorem ipsum dolor sit amet, **consectetur adipiscing elit**.\n\n',
-  '## Details\n\n',
-  '- Curabitur non nulla sit amet nisl tempus convallis quis ac lectus.\n',
-  '- Vestibulum ac diam sit amet quam vehicula elementum sed sit amet dui.\n',
-  `- ${SENTINEL} appears exactly once while streaming.\n\n`,
-  '```ts\n',
-  'export const lorem = "ipsum"\n',
-  '```\n\n',
-  '> Donec sollicitudin molestie malesuada.\n\n',
-  'Final lorem ipsum sentence after markdown blocks.',
+  '**bo',
+  'ld** and `co',
+  'de`\n\n- it',
+  'em ',
+  `${SENTINEL}`,
 ]
 const MARKDOWN_CONTENT = MARKDOWN_CHUNKS.join('')
 
@@ -273,6 +267,20 @@ async function installBrowserStreamControls(page: Page): Promise<void> {
     }
     window.WebSocket = MockWebSocket;
     window.__socketUrls = () => (window.__mockSockets || []).map((socket) => socket.url);
+    window.__emitV3LivePatchEverywhere = (seq, patch) => {
+      for (const socket of window.__mockSockets || []) {
+        if (socket.readyState !== MockWebSocket.OPEN) continue;
+        if (socket.url.includes('/v3/realtime/stream')) {
+          socket.__emit({
+            protocol: 'v3.realtime',
+            protocol_version: 1,
+            kind: 'live.patch',
+            session_id: patch.session_id,
+            live: patch,
+          });
+        }
+      }
+    };
     window.__emitV3EventEverywhere = (seq, eventType, payload) => {
       const body = { session_id: sessionId, ...payload };
       for (const socket of window.__mockSockets || []) {
@@ -349,10 +357,28 @@ test('desktop V3 markdown stream renders each delta once and finalizes to the sa
     const websocketUrls = await page.evaluate(() => (window as any).__socketUrls?.() || []) as string[]
     assert.ok(websocketUrls.some((url) => url.includes(`/v3/realtime/stream?endpoint_cursor=${encodeURIComponent(OPAQUE_RECONNECT_CURSOR)}`)), `Desktop V3 realtime stream did not use opaque reconnect cursor: ${websocketUrls.join(',')}`)
 
+    let offset = 0
     for (let index = 0; index < MARKDOWN_CHUNKS.length; index += 1) {
-      await page.evaluate(({ seq, runId, delta }) => {
-        ;(window as any).__emitV3EventEverywhere(seq, 'session.assistant.delta', { run_id: runId, delta })
-      }, { seq: 2 + index, runId: RUN_ID, delta: MARKDOWN_CHUNKS[index] })
+      const delta = MARKDOWN_CHUNKS[index]
+      const byteLength = new TextEncoder().encode(delta).byteLength
+      await page.evaluate(({ seq, runId, delta, offsetStart, offsetEnd }) => {
+        ;(window as any).__emitV3LivePatchEverywhere(seq, {
+          session_id: SESSION_ID,
+          run_id: runId,
+          stream_id: `assistant:${runId}:step:1`,
+          stream_kind: 'assistant_text',
+          operation: 'append',
+          step: 1,
+          step_id: 'step-1',
+          live_seq_start: seq - 1,
+          live_seq_end: seq - 1,
+          offset_start: offsetStart,
+          offset_end: offsetEnd,
+          text: delta,
+          recorded_at: Date.now(),
+        })
+      }, { seq: 2 + index, runId: RUN_ID, delta, offsetStart: offset, offsetEnd: offset + byteLength })
+      offset += byteLength
     }
 
     const liveText = await page.waitForFunction((sentinel) => {
@@ -361,6 +387,8 @@ test('desktop V3 markdown stream renders each delta once and finalizes to the sa
     }, SENTINEL).then((handle) => handle.jsonValue() as Promise<string>)
 
     assert.equal(countOccurrences(liveText, SENTINEL), 1, `streaming markdown duplicated a delta before finalization\n${liveText}`)
+    assert.ok(liveText.includes('bold'), `live markdown did not render awkward bold split: ${liveText}`)
+    assert.ok(liveText.includes('code'), `live markdown did not render awkward code split: ${liveText}`)
     assert.equal((await page.evaluate(() => (window as any).__socketUrls?.() || []) as string[]).some((url) => url.includes(`/v3/sessions/${SESSION_ID}/stream`)), false, 'V3 desktop opened a second per-session stream in addition to global /ws')
 
     backend.setMessages([
@@ -386,6 +414,8 @@ test('desktop V3 markdown stream renders each delta once and finalizes to the sa
     }, SENTINEL).then((handle) => handle.jsonValue() as Promise<string>)
 
     assert.equal(countOccurrences(finalText, SENTINEL), 1, `final markdown message should contain one canonical copy\n${finalText}`)
+    assert.ok(finalText.includes('bold'), `final markdown did not match live bold content: ${finalText}`)
+    assert.ok(finalText.includes('code'), `final markdown did not match live code content: ${finalText}`)
   } finally {
     await browser.close().catch(() => undefined)
     await stopVite(app.vite)

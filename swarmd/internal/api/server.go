@@ -72,7 +72,7 @@ type peerAuthContextKey string
 
 const peerAuthAuthorizedContextKey peerAuthContextKey = "peer-auth-authorized"
 
-const v3LivePatchDefaultEnabled = false
+const v3LivePatchDefaultEnabled = true
 
 type peerAuthContextValue struct {
 	SwarmID string

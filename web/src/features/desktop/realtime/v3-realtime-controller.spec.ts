@@ -3899,6 +3899,163 @@ function livePatchFrame(overrides: Partial<SessionV3RealtimeLivePatchWire & Real
 }
 
 
+
+test('Desktop V3 high-rate live stream renders exact text without chunked store commits', async () => {
+  let state = createEmptyDesktopV3CacheState()
+  state.sessionsById[sessionA.id] = { ...sessionA }
+  state.messagesBySession[sessionA.id] = buildMessageListCache([messageA1])
+  state.runIntentsBySession[sessionA.id] = [{ ...runIntentA }]
+  state.selectedSessionId = sessionA.id
+  state.realtime.endpointCursor = 'C0'
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
+  state.syncScopesById['global-scope'] = {
+    scopeId: 'global-scope',
+    surface: 'desktop',
+    streamKind: 'v3.sync.snapshot',
+    selectorFilterHash: 'global-hash',
+    resourceSet: 'run_intents',
+    selector: { kind: 'recent', global: true, recent: { limit: 50 } },
+    endpointCursor: 'C0',
+    replayPath: '/v3/sync/stream',
+    replayTransport: 'http_post',
+    needsBootstrap: false,
+  }
+  const socket = new FakeWebSocket()
+  const commits: DesktopV3CacheAction[][] = []
+  const frameCallbacks: FrameRequestCallback[] = []
+  let durableFrames = 0
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame
+  const originalCancelAnimationFrame = globalThis.cancelAnimationFrame
+  Object.defineProperty(globalThis, 'requestAnimationFrame', {
+    value: (callback: FrameRequestCallback) => {
+      frameCallbacks.push(callback)
+      return frameCallbacks.length
+    },
+    configurable: true,
+  })
+  Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+    value: () => undefined,
+    configurable: true,
+  })
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    commitSnapshot: (_previous, next, actions) => {
+      commits.push(actions)
+      state = next
+    },
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'C0',
+      sessions: [sessionA],
+      messages_by_session: { [sessionA.id]: [messageA1] },
+      run_intents_by_session: { [sessionA.id]: [runIntentA] },
+    }),
+    ensureSession: async () => undefined,
+    bootstrap: async () => undefined,
+    openSocket: () => socket as unknown as WebSocket,
+    streamCommit: new DesktopV3StreamCommitController({
+      getSnapshot: () => state,
+      dispatch: (action) => {
+        durableFrames += 1
+        state = desktopV3CacheReducer(state, action)
+      },
+    }),
+  })
+
+  try {
+    const ready = controller.start(sessionA.id)
+    ready.catch(() => undefined)
+    socket.open()
+    await ready
+    const resume = socket.sent[0] as SessionV3RealtimeResumeWire
+    assert.deepEqual(resume.capabilities, ['live_patch_v1'])
+
+    for (let i = 0; i < 10_000; i += 1) {
+      socket.emit(livePatchFrame({ live_seq_start: i + 1, live_seq_end: i + 1, offset_start: i, offset_end: i + 1, text: 'x' }))
+    }
+    assert.equal(durableFrames, 0)
+    assert.equal(commits.length, 0)
+    assert.equal(frameCallbacks.length, 1)
+    frameCallbacks[0](1)
+    assert.equal(commits.length, 1)
+    assert.equal(state.liveRunsBySession[sessionA.id]?.['run-a']?.assistantDraft?.content, 'x'.repeat(10_000))
+
+    for (let windowIndex = 0; windowIndex < 120; windowIndex += 1) {
+      const base = 10_000 + windowIndex * 10
+      for (let delta = 0; delta < 10; delta += 1) {
+        socket.emit(livePatchFrame({ live_seq_start: base + delta + 1, live_seq_end: base + delta + 1, offset_start: base + delta, offset_end: base + delta + 1, text: 'x' }))
+      }
+      assert.equal(commits.length, windowIndex + 1)
+      frameCallbacks[windowIndex + 1](windowIndex + 2)
+      assert.equal(commits.length, windowIndex + 2)
+    }
+
+    socket.emit({
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'event',
+      session_id: sessionA.id,
+      endpoint_cursor: 'C1',
+      event: {
+        id: 'evt-durable-overlap',
+        session_id: sessionA.id,
+        seq: 10,
+        event_type: 'session.assistant.delta',
+        payload: JSON.stringify({ run_id: 'run-a', stream_id: 'assistant:run-a:step:1', delta: 'x'.repeat(11_200), offset_start: 0, offset_end: 11_200 }),
+      },
+    })
+    await flushAsyncWork()
+    socket.emit({
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'event',
+      session_id: sessionA.id,
+      endpoint_cursor: 'C2',
+      event: {
+        id: 'evt-final',
+        session_id: sessionA.id,
+        seq: 11,
+        event_type: 'session.assistant.completed',
+        payload: JSON.stringify({ run_id: 'run-a', message: { id: 'msg-final', session_id: sessionA.id, role: 'assistant', content: 'x'.repeat(11_200), created_at: 11, metadata: { run_id: 'run-a', stream_id: 'assistant:run-a:step:1' } } }),
+      },
+    })
+    await flushAsyncWork()
+    const rendered = selectRenderedSessionMessages(state, sessionA.id)
+    assert.equal(rendered.committed.at(-1)?.content, 'x'.repeat(11_200))
+    assert.equal(state.liveRunsBySession[sessionA.id]?.['run-a']?.assistantDraft, undefined)
+    assert.equal(state.realtime.endpointCursor, 'C2')
+  } finally {
+    controller.stop()
+    Object.defineProperty(globalThis, 'requestAnimationFrame', { value: originalRequestAnimationFrame, configurable: true })
+    Object.defineProperty(globalThis, 'cancelAnimationFrame', { value: originalCancelAnimationFrame, configurable: true })
+  }
+})
+
+test('Desktop V3 live patch branch source guard rejects durable work', async () => {
+  const source = await readSource('web/src/features/desktop/session-v3/transport.ts')
+  const branch = sourceBetweenMarkers(source, "if (frameKind(frame) === 'live.patch')", '\n\n    this.enqueueDurableMessage')
+  for (const forbidden of ['messageQueue.push', 'durableMessageQueue.push', 'await onFrame', 'advanceEndpointCursor']) {
+    assert.equal(branch.includes(forbidden), false, `live.patch branch contains forbidden ${forbidden}`)
+  }
+  const coordinator = await readSource('web/src/features/desktop/realtime/v3-live-patch-coordinator.ts')
+  assert.equal(coordinator.includes('structuredClone'), false)
+  const controller = await readSource('web/src/features/desktop/realtime/v3-realtime-controller.ts')
+  const client = await readSource('web/src/features/desktop/realtime/client.ts')
+  assert.equal((controller.match(/\/v3\/sessions\/\$\{[^}]+\}\/stream/g) ?? []).length, 0)
+  assert.equal((client.match(/SESSION_V3_REALTIME_STREAM_PATH/g) ?? []).length, 2)
+  assert.match(client, /new WebSocket\(buildDesktopV3RealtimeTransportSocketURL\(input\)\)/)
+})
+
+function sourceBetweenMarkers(source: string, start: string, end: string): string {
+  const startIndex = source.indexOf(start)
+  assert.notEqual(startIndex, -1, `missing source marker ${start}`)
+  const endIndex = source.indexOf(end, startIndex)
+  assert.notEqual(endIndex, -1, `missing source marker ${end}`)
+  return source.slice(startIndex, endIndex)
+}
+
 test('Desktop V3 live patch capability is requested only when enabled', async () => {
   const disabledSocket = new FakeWebSocket()
   const disabledResumes: SessionV3RealtimeResumeWire[] = []
@@ -3929,11 +4086,11 @@ test('Desktop V3 live patch capability is requested only when enabled', async ()
   enabled.stop()
 })
 
-test('Desktop V3 production live patch defaults remain false', async () => {
+test('Desktop V3 production live patch defaults are enabled', async () => {
   const source = await readSource('web/src/features/desktop/realtime/v3-realtime-controller.ts')
   const backend = await readSource('../swarmd/internal/api/server.go')
-  assert.match(source, /export const DESKTOP_V3_LIVE_PATCH_ENABLED = false/)
-  assert.match(backend, /const v3LivePatchDefaultEnabled = false/)
+  assert.match(source, /export const DESKTOP_V3_LIVE_PATCH_ENABLED = true/)
+  assert.match(backend, /const v3LivePatchDefaultEnabled = true/)
 })
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {

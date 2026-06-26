@@ -25,7 +25,7 @@ import type {
 
 const DESKTOP_V3_CLIENT_ID = `desktop:${crypto.randomUUID()}`
 const ACTIVE_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
-export const DESKTOP_V3_LIVE_PATCH_ENABLED = false
+export const DESKTOP_V3_LIVE_PATCH_ENABLED = true
 
 export interface DesktopV3RealtimeController {
   ensureSessionConnected(sessionId: string): Promise<void>
