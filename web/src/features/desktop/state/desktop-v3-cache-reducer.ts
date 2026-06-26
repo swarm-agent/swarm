@@ -2286,6 +2286,8 @@ function applyLiveRunOverlayFromEvent(
         tool.outputText = rawOutput || completedOutput
       } else if (isTerminal && outputText) {
         tool.outputText = outputText
+      } else if (isDelta && outputText && isTaskStreamSnapshotOutput(tool.toolName, outputText)) {
+        tool.outputText = outputText
       } else if (outputDelta || (isDelta && outputText)) {
         tool.outputText = `${tool.outputText ?? ''}${outputDelta || outputText}`
       } else if (isStarted && outputText) {
@@ -2982,6 +2984,13 @@ function stringValue(value: unknown): string {
 
 function finiteNumberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function isTaskStreamSnapshotOutput(toolName: string | undefined, output: string): boolean {
+  if ((toolName ?? '').trim().toLowerCase() !== 'task') return false
+  const parsed = parseJsonRecord(output)
+  if (!parsed) return false
+  return stringValue(parsed.path_id) === 'tool.task.stream.v1' && stringValue(parsed.tool) === 'task'
 }
 
 function numberValue(value: unknown): number {

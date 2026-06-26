@@ -9,6 +9,7 @@ import {
   DesktopV3StreamCommitController,
   buildDesktopV3ReconnectInput,
   mapTransportStatus,
+  taskChildRealtimeSessionIds,
   requireDesktopV3RealtimeControllerReady,
   resetDesktopV3RealtimeControllerForTests,
   retainDesktopV3RealtimeController,
@@ -653,6 +654,100 @@ test('Desktop V3 workset updated subscribes active child session for direct stre
     assert.equal(state.currentRunIntentBySession[childSession.id]?.run_id, 'child-run-active')
     const subscribe = sockets[0].sent.find((frame) => (frame as RealtimeMessage).kind === 'subscribe.session') as RealtimeMessage
     assert.equal(subscribe.endpoint_cursor, 'cursor-child-update')
+  } finally {
+    controller.stop()
+  }
+})
+
+
+test('Desktop V3 subscribes child sessions from parent task stream payload', async () => {
+  let state = readyControllerState()
+  state.selectedSessionId = sessionA.id
+  const sockets: FakeWebSocket[] = []
+  const childSessionId = 'child-session-from-task-stream'
+  const taskOutput = JSON.stringify({
+    path_id: 'tool.task.stream.v1',
+    tool: 'task',
+    status: 'running',
+    launches: [
+      {
+        launch_index: 1,
+        status: 'running',
+        child_session_id: childSessionId,
+        subagent: 'explorer',
+        current_tool: 'search',
+      },
+    ],
+  })
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => reconnectFixture({
+      snapshot_endpoint_cursor: 'cursor-reconnect',
+      sessions_by_id: {},
+      projections_by_session: {},
+      run_intents_by_session: {},
+      current_run_intent_by_session: {},
+      session_order: [],
+      workset_id: 'global-scope',
+      realtime: {
+        stream_path: '/v3/realtime/stream',
+        resume: {
+          protocol: 'v3.realtime',
+          protocol_version: 1,
+          kind: 'resume',
+          endpoint_cursor: 'cursor-reconnect',
+          subscriptions: [],
+          worksets: [],
+        },
+      },
+    }),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start(null)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    sockets[0].sent = []
+
+    sockets[0].emit({
+      protocol: 'v3.realtime',
+      protocol_version: 1,
+      kind: 'event',
+      session_id: sessionA.id,
+      event_type: 'session.tool.delta',
+      event: {
+        id: 'evt-parent-task-delta',
+        session_id: sessionA.id,
+        seq: 2,
+        event_type: 'session.tool.delta',
+        payload: {
+          run_id: 'parent-run',
+          call_id: 'call-task',
+          tool_name: 'task',
+          output: taskOutput,
+          recorded_at: 123,
+        },
+        ts_unix_ms: 124,
+      },
+      projection: { ...projectionA, session_id: sessionA.id, last_event_seq: 2, projection_high_watermark_seq: 2 },
+      endpoint_cursor: 'cursor-parent-task-delta',
+    })
+
+    await waitFor(() => sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'subscribe.session' && (frame as RealtimeMessage).session_id === childSessionId))
+    assert.deepEqual([...taskChildRealtimeSessionIds(state)], [childSessionId])
+    const subscribe = sockets[0].sent.find((frame) => (frame as RealtimeMessage).kind === 'subscribe.session' && (frame as RealtimeMessage).session_id === childSessionId) as RealtimeMessage
+    assert.equal(subscribe.endpoint_cursor, 'cursor-parent-task-delta')
   } finally {
     controller.stop()
   }

@@ -57,3 +57,14 @@ Expected local backend:
 - dev lane: `http://127.0.0.1:7782`
 
 The Vite dev server proxies `/v1`, `/healthz`, `/readyz`, and `/ws` to the lane backend selected through `SWARM_BACKEND_URL`. The launcher also verifies the target page contains Vite's `/@vite/client` marker before it reports desktop dev mode as ready, so an unrelated HTTP listener on the same port cannot masquerade as the dev frontend.
+
+## Repeatable Desktop subagent task E2E
+
+Use this when validating that Desktop can ask the UI to launch two saved subagents, approve the permission modal, and capture V3 realtime/task logs from a real served Desktop URL:
+
+```bash
+cd web
+node ./scripts/run-desktop-subagent-task-e2e.mjs https://example.invalid/swarm-go
+```
+
+The script writes `summary.json`, `browser-events.json`, `network.json`, `browser-console.json`, `dom-snapshot.txt`, and a screenshot into a temp evidence directory printed in the test output. It fails unless Playwright observes `session.tool.started`, `session.tool.delta`, and two child session IDs in the task stream.

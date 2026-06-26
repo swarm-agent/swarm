@@ -279,7 +279,9 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       endpoint_cursor: endpointCursor,
     }))
 
-    const selectedSessionId = preferredSessionId === null ? undefined : preferredSessionId?.trim()
+    const selectedSessionId = preferredSessionId === null
+      ? undefined
+      : preferredSessionId?.trim() || this.getSnapshot().selectedSessionId?.trim()
     const subscriptions = new Map<string, RealtimeSubscriptionRequest>()
     for (const subscription of resume.subscriptions ?? []) {
       const sessionId = subscription.session_id?.trim()
@@ -304,6 +306,9 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     const state = this.getSnapshot()
     addRecoverySubscription(selectedSessionId)
     for (const sessionId of activeRealtimeSessionIds(state)) {
+      addRecoverySubscription(sessionId)
+    }
+    for (const sessionId of taskChildRealtimeSessionIds(state)) {
       addRecoverySubscription(sessionId)
     }
     for (const pending of Object.values(state.pendingUserByClientRequestId)) {
@@ -334,10 +339,10 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       this.livePatchCoordinator.beforeDurableFrame(frame)
       await commitDesktopV3StreamFrame(this.streamCommit, frame)
       this.livePatchCoordinator.afterDurableFrame(frame)
-      if (frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.updated' || frame.kind === 'workset.session.removed') {
-        // The transport records auto-discovered subscriptions immediately after
-        // onFrame resolves; reconcile on the next macrotask so hidden sessions
-        // can be unsubscribed without waiting for transcript hydration.
+      if (frame.kind === 'event' || frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.updated' || frame.kind === 'workset.session.removed') {
+        // Reconcile after durable state commits. Workset frames update transport
+        // discovery state, and task tool event frames can expose delegated child
+        // V3 session IDs that must become direct session subscriptions.
         setTimeout(() => {
           if (!this.stopped) this.reconcileDesiredSessionConnections()
         }, 0)
@@ -374,6 +379,10 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     addDesired(state.selectedSessionId)
 
     for (const sessionId of activeRealtimeSessionIds(state)) {
+      addDesired(sessionId)
+    }
+
+    for (const sessionId of taskChildRealtimeSessionIds(state)) {
       addDesired(sessionId)
     }
 
@@ -487,6 +496,7 @@ export function buildDesktopV3InitialRealtimeResume(
     ? undefined
     : preferredSessionId?.trim() || state.selectedSessionId?.trim()
   const activeSessionIDs = activeRealtimeSessionIds(state)
+  const taskChildSessionIDs = taskChildRealtimeSessionIds(state)
 
   const sessionOrder = state.sessionOrderByScope[sidebarScopeId] ?? []
   const orderedSessionIDs: string[] = []
@@ -504,6 +514,9 @@ export function buildDesktopV3InitialRealtimeResume(
     if (activeSessionIDs.has(normalized)) append(normalized)
   }
   for (const sessionId of [...activeSessionIDs].filter((sessionId) => !seen.has(sessionId)).sort()) {
+    append(sessionId)
+  }
+  for (const sessionId of [...taskChildSessionIDs].filter((sessionId) => !seen.has(sessionId)).sort()) {
     append(sessionId)
   }
 
@@ -541,6 +554,134 @@ export function activeRealtimeSessionIds(state: DesktopV3CacheState): Set<string
     if (normalized) activeSessionIDs.add(normalized)
   }
   return activeSessionIDs
+}
+
+export function taskChildRealtimeSessionIds(state: DesktopV3CacheState): Set<string> {
+  const childSessionIDs = new Set<string>()
+
+  for (const runs of Object.values(state.liveRunsBySession)) {
+    for (const run of Object.values(runs)) {
+      const parentRunActive = ACTIVE_INTENT_STATUSES.has(run.status.trim().toLowerCase())
+      for (const tool of Object.values(run.toolCallsByCallId)) {
+        const payload = parseTaskPayloadFromToolText(tool.outputText)
+        if (payload) collectTaskPayloadChildSessionIds(payload, childSessionIDs, parentRunActive)
+      }
+    }
+  }
+
+  for (const record of Object.values(state.sessionsById)) {
+    if (record.kind !== 'full') continue
+    const taskLaunches = realtimeRecordValue(record.session.metadata?.task_launches)
+    if (!taskLaunches) continue
+    for (const launch of Object.values(taskLaunches)) {
+      const payload = realtimeRecordValue(launch)
+      if (payload) collectTaskPayloadChildSessionIds(payload, childSessionIDs, false)
+    }
+  }
+
+  for (const list of Object.values(state.messagesBySession)) {
+    for (const message of list.items) {
+      const payload = parseTaskPayloadFromToolText(message.content)
+      if (payload) collectTaskPayloadChildSessionIds(payload, childSessionIDs, false)
+    }
+  }
+
+  return childSessionIDs
+}
+
+function parseTaskPayloadFromToolText(text: string | undefined): Record<string, unknown> | undefined {
+  const direct = parseRealtimeJsonRecord(text)
+  if (!direct) return undefined
+  if (isTaskPayloadRecord(direct)) return direct
+
+  const wrappedTool = firstRealtimeString(direct.tool, direct.tool_name)
+  if (wrappedTool.trim().toLowerCase() !== 'task') return undefined
+  for (const key of ['output', 'completed_output']) {
+    const nested = parseRealtimeJsonRecord(realtimeStringValue(direct[key]))
+    if (nested && isTaskPayloadRecord(nested)) return nested
+  }
+  return undefined
+}
+
+function isTaskPayloadRecord(value: Record<string, unknown>): boolean {
+  const tool = realtimeStringValue(value.tool).trim().toLowerCase()
+  const pathID = realtimeStringValue(value.path_id)
+  if (tool !== 'task') return false
+  return pathID === 'tool.task.stream.v1' || pathID === 'tool.task.v1'
+}
+
+function collectTaskPayloadChildSessionIds(payload: Record<string, unknown>, childSessionIDs: Set<string>, includeTerminal: boolean): void {
+  if (!includeTerminal && !taskPayloadHasActiveLaunch(payload)) return
+  addRealtimeSessionID(childSessionIDs, payload.child_session_id)
+  addRealtimeSessionID(childSessionIDs, payload.session_id)
+  for (const launch of realtimeRecordArray(payload.launches)) {
+    addRealtimeSessionID(childSessionIDs, launch.child_session_id)
+    addRealtimeSessionID(childSessionIDs, launch.session_id)
+  }
+}
+
+function taskPayloadHasActiveLaunch(payload: Record<string, unknown>): boolean {
+  const topLevelStatus = realtimeStringValue(payload.status)
+  if (topLevelStatus && isTerminalTaskStatus(topLevelStatus)) return false
+  const launches = realtimeRecordArray(payload.launches)
+  if (launches.length > 0) {
+    return launches.some((launch) => !isTerminalTaskStatus(realtimeStringValue(launch.status)))
+  }
+  return !topLevelStatus || !isTerminalTaskStatus(topLevelStatus)
+}
+
+function isTerminalTaskStatus(status: string): boolean {
+  switch (status.trim().toLowerCase()) {
+    case 'ok':
+    case 'done':
+    case 'success':
+    case 'completed':
+    case 'complete':
+    case 'error':
+    case 'failed':
+    case 'cancelled':
+    case 'canceled':
+      return true
+    default:
+      return false
+  }
+}
+
+function addRealtimeSessionID(sessionIDs: Set<string>, value: unknown): void {
+  const sessionID = realtimeStringValue(value).trim()
+  if (sessionID) sessionIDs.add(sessionID)
+}
+
+function firstRealtimeString(...values: unknown[]): string {
+  for (const value of values) {
+    const text = realtimeStringValue(value).trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function realtimeStringValue(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function realtimeRecordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+function realtimeRecordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.map((item) => realtimeRecordValue(item)).filter((item): item is Record<string, unknown> => Boolean(item))
+    : []
+}
+
+function parseRealtimeJsonRecord(value: string | undefined): Record<string, unknown> | undefined {
+  const trimmed = value?.trim() ?? ''
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return undefined
+  try {
+    return realtimeRecordValue(JSON.parse(trimmed) as unknown)
+  } catch {
+    return undefined
+  }
 }
 
 export function cloneDesktopV3SyncSelector(selector: SyncSelector): SyncSelector {

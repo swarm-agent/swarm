@@ -1520,6 +1520,55 @@ test('realtime session.tool.delta appends output and terminal event replaces fin
   assert.equal(tool.durationMs, 42)
 })
 
+test('realtime task tool delta replaces full task stream snapshots instead of appending', () => {
+  const state = bootstrappedState()
+  const firstSnapshot = JSON.stringify({
+    path_id: 'tool.task.stream.v1',
+    tool: 'task',
+    status: 'running',
+    launches: [
+      { child_session_id: 'child-1', status: 'running', subagent: 'explorer' },
+    ],
+  })
+  const secondSnapshot = JSON.stringify({
+    path_id: 'tool.task.stream.v1',
+    tool: 'task',
+    status: 'running',
+    launches: [
+      { child_session_id: 'child-1', status: 'running', subagent: 'explorer', current_tool: 'search' },
+      { child_session_id: 'child-2', status: 'running', subagent: 'parallel' },
+    ],
+  })
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.started', {
+      call_id: 'call-task',
+      step_id: 'step-task',
+      tool_instance_id: 'tool-instance-task',
+      tool_name: 'task',
+      arguments: '{"action":"spawn"}',
+    }, 5, 'cursor-task-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.delta', {
+      call_id: 'call-task',
+      tool_name: 'task',
+      output: firstSnapshot,
+    }, 6, 'cursor-task-delta-1'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.delta', {
+      call_id: 'call-task',
+      tool_name: 'task',
+      output: secondSnapshot,
+    }, 7, 'cursor-task-delta-2'),
+  })
+
+  const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-task']
+  assert.equal(tool.outputText, secondSnapshot)
+  assert.notEqual(tool.outputText, `${firstSnapshot}${secondSnapshot}`)
+})
+
 test('restored assistant delta with old seq is ignored', () => {
   const state = bootstrappedState()
   state.liveRunsBySession[sessionA.id] = {
