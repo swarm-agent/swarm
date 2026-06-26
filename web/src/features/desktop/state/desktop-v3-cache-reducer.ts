@@ -26,6 +26,7 @@ import type {
   MessageMutationConflictResponse,
 } from './desktop-v3-cache-types'
 import type { DesktopPermissionRecord } from '../types/realtime'
+import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPendingPermissions, normalizeDesktopPermissionSummary, normalizeDesktopPermissionSummaries, safeString } from '../permissions/services/desktop-permission-normalization'
 import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 
@@ -126,6 +127,8 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
         state.realtime.endpointCursor = action.endpointCursor
       }
       return state
+    case 'realtime.applyLivePatchBatch':
+      return applyDesktopV3LivePatchBatch(state, action.patches)
     case 'permission.resolveResult':
       if (action.permission) {
         upsertPermissionRecord(state, action.permission)
@@ -2248,6 +2251,135 @@ function applyLiveRunOverlayFromEvent(
     default:
       return
   }
+}
+
+export function applyDesktopV3LivePatchBatch(
+  state: DesktopV3CacheState,
+  patches: SessionV3RealtimeLivePatchWire[],
+): DesktopV3CacheState {
+  if (patches.length === 0) return state
+  let nextState = state
+  let liveRunsBySession = state.liveRunsBySession
+  const clonedSessions = new Set<string>()
+  const clonedRuns = new Set<string>()
+
+  const ensureMutableRun = (sessionId: string, runId: string): LiveRunOverlay => {
+    if (nextState === state) nextState = { ...state }
+    if (liveRunsBySession === state.liveRunsBySession) {
+      liveRunsBySession = { ...state.liveRunsBySession }
+      nextState.liveRunsBySession = liveRunsBySession
+    }
+    if (!clonedSessions.has(sessionId)) {
+      liveRunsBySession[sessionId] = { ...(liveRunsBySession[sessionId] ?? {}) }
+      clonedSessions.add(sessionId)
+    }
+    const sessionRuns = liveRunsBySession[sessionId]
+    const cloneKey = `${sessionId}\u0000${runId}`
+    if (!clonedRuns.has(cloneKey)) {
+      const existing = sessionRuns[runId]
+      sessionRuns[runId] = existing
+        ? {
+          ...existing,
+          assistantDraft: existing.assistantDraft ? { ...existing.assistantDraft } : undefined,
+          assistantSegments: existing.assistantSegments ? existing.assistantSegments.map((segment) => ({ ...segment })) : undefined,
+        }
+        : {
+          sessionId,
+          runId,
+          status: 'running',
+          toolCallsByCallId: {},
+        }
+      clonedRuns.add(cloneKey)
+    }
+    return sessionRuns[runId]
+  }
+
+  for (const patch of patches) {
+    const run = ensureMutableRun(patch.session_id, patch.run_id)
+    applyLivePatchToRun(run, patch)
+  }
+
+  return nextState
+}
+
+function applyLivePatchToRun(run: LiveRunOverlay, patch: SessionV3RealtimeLivePatchWire): void {
+  run.status = run.status === 'pending_executor' ? 'running' : run.status
+  const updatedAt = patch.recorded_at
+  const existingDraft = run.assistantDraft
+  if (existingDraft?.streamId === patch.stream_id) {
+    run.assistantDraft = {
+      ...existingDraft,
+      content: `${existingDraft.content}${patch.text}`,
+      updatedAt,
+      streamStep: patch.step,
+      stepId: patch.step_id,
+      liveSeqEnd: patch.live_seq_end,
+      offsetEnd: patch.offset_end,
+    }
+    return
+  }
+
+  const segmentIndex = run.assistantSegments?.findIndex((segment) => segment.streamId === patch.stream_id) ?? -1
+  if (segmentIndex >= 0 && run.assistantSegments) {
+    const current = run.assistantSegments[segmentIndex]
+    run.assistantSegments[segmentIndex] = {
+      ...current,
+      content: `${current.content}${patch.text}`,
+      updatedAt,
+      streamStep: patch.step,
+      stepId: patch.step_id,
+      liveSeqEnd: patch.live_seq_end,
+      offsetEnd: patch.offset_end,
+    }
+    return
+  }
+
+  if (existingDraft?.content) {
+    run.assistantSegments = upsertLiveAssistantSegment(run, existingDraft)
+  }
+
+  run.assistantDraft = {
+    content: patch.text,
+    updatedAt,
+    timelineSeq: patch.live_seq_start,
+    streamId: patch.stream_id,
+    streamStep: patch.step,
+    stepId: patch.step_id,
+    liveSeqEnd: patch.live_seq_end,
+    offsetEnd: patch.offset_end,
+    durableOffsetEnd: 0,
+    livePaused: false,
+  }
+}
+
+function upsertLiveAssistantSegment(
+  run: LiveRunOverlay,
+  draft: NonNullable<LiveRunOverlay['assistantDraft']>,
+): NonNullable<LiveRunOverlay['assistantSegments']> {
+  const streamId = draft.streamId
+  const existing = run.assistantSegments ?? []
+  if (!streamId) {
+    return appendLiveAssistantOverlaySegment(run, draft)
+  }
+  const segment = {
+    id: `live-assistant:${run.runId}:${streamId}`,
+    content: draft.content,
+    createdAt: draft.updatedAt || Date.now(),
+    updatedAt: draft.updatedAt,
+    timelineSeq: draft.timelineSeq,
+    streamId,
+    streamStep: draft.streamStep,
+    stepId: draft.stepId,
+    liveSeqEnd: draft.liveSeqEnd,
+    offsetEnd: draft.offsetEnd,
+    durableOffsetEnd: draft.durableOffsetEnd,
+    livePaused: draft.livePaused,
+  }
+  const index = existing.findIndex((item) => item.streamId === streamId)
+  if (index < 0) return [...existing, segment]
+  const next = existing.slice()
+  next[index] = segment
+  return next
 }
 
 function ensureLiveRunOverlay(

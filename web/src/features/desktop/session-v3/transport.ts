@@ -2,7 +2,9 @@ import {
   SESSION_V3_REALTIME_PROTOCOL,
   SESSION_V3_REALTIME_PROTOCOL_VERSION,
   SESSION_V3_REALTIME_RESUME_KIND,
+  SESSION_V3_REALTIME_LIVE_PATCH_CAPABILITY,
   type SessionV3RealtimeFrameWire,
+  type SessionV3RealtimeLivePatchWire,
   type SessionV3RealtimeResumeWire,
   type SessionV3RealtimeSubscribeWire,
   type SessionV3RealtimeSubscriptionRequestWire,
@@ -16,6 +18,8 @@ const REOPEN_BASE_DELAY_MS = 1_500
 const REOPEN_MAX_DELAY_MS = 15_000
 const REOPEN_JITTER_RATIO = 0.2
 const LIVENESS_TIMEOUT_MS = 45_000
+const DURABLE_QUEUE_MAX_FRAMES = 512
+const DURABLE_QUEUE_MAX_BYTES = 2 * 1024 * 1024
 export const SESSION_CONNECT_ACK_TIMEOUT_MS = 30_000
 
 export type DesktopV3RealtimeTransportSocketState = 'none' | 'connecting' | 'open' | 'closing' | 'closed'
@@ -36,6 +40,10 @@ export interface DesktopV3RealtimeTransportFrameEvent extends DesktopV3RealtimeT
   kind: string
   sessionId: string
   endpointCursor: string
+}
+
+export interface DesktopV3RealtimeLivePatchEvent extends DesktopV3RealtimeTransportMeta {
+  patch: SessionV3RealtimeLivePatchWire
 }
 
 export interface DesktopV3RealtimeTransportCursorEvent extends DesktopV3RealtimeTransportMeta {
@@ -62,6 +70,7 @@ export interface DesktopV3RealtimeTransportOptions {
   openSocket?: DesktopV3RealtimeTransportOpenSocket
   onStatus?: (event: DesktopV3RealtimeTransportStatusEvent) => void
   onFrame?: (event: DesktopV3RealtimeTransportFrameEvent) => Promise<void> | void
+  onLivePatch?: (event: DesktopV3RealtimeLivePatchEvent) => void
   onCursor?: (event: DesktopV3RealtimeTransportCursorEvent) => void
   onResumeSent?: (resume: SessionV3RealtimeResumeWire, meta: DesktopV3RealtimeTransportMeta) => void
   onRehydrateRequested?: (reason: string, frame: SessionV3RealtimeFrameWire | null, meta: DesktopV3RealtimeTransportMeta) => Promise<DesktopV3RealtimeTransportRehydrateResult | void> | DesktopV3RealtimeTransportRehydrateResult | void
@@ -69,6 +78,7 @@ export interface DesktopV3RealtimeTransportOptions {
   reopenBaseDelayMs?: number
   reopenMaxDelayMs?: number
   livenessTimeoutMs?: number
+  livePatchEnabled?: boolean
 }
 
 export interface DesktopV3RealtimeTransportSessionRegistryEntry extends SessionV3RealtimeSubscriptionRequestWire {
@@ -90,6 +100,8 @@ export interface DesktopV3RealtimeTransportDiagnostics {
   reopenAttempt: number
   reopenTimerActive: boolean
   rehydrateInFlight: boolean
+  durableQueueFrames: number
+  durableQueueBytes: number
   lastActivityAt: number
   sessionSubscriptionCount: number
   worksetSubscriptionCount: number
@@ -118,11 +130,15 @@ export function buildDesktopV3RealtimeResume(input: {
   endpointCursor: string
   subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]
   worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]
+  capabilities?: string[]
 }): SessionV3RealtimeResumeWire {
   const endpointCursor = normalizeString(input.endpointCursor)
   if (!endpointCursor) {
     throw new Error('Desktop V3 realtime resume requires endpoint_cursor.')
   }
+  const capabilities = Array.isArray(input.capabilities)
+    ? input.capabilities.map((capability) => normalizeString(capability)).filter(Boolean)
+    : []
   return {
     protocol: SESSION_V3_REALTIME_PROTOCOL,
     protocol_version: SESSION_V3_REALTIME_PROTOCOL_VERSION,
@@ -130,6 +146,7 @@ export function buildDesktopV3RealtimeResume(input: {
     endpoint_cursor: endpointCursor,
     subscriptions: normalizeSessionSubscriptions(input.subscriptions ?? [], endpointCursor),
     worksets: normalizeWorksetSubscriptions(input.worksets ?? []),
+    ...(capabilities.length > 0 ? { capabilities } : {}),
   }
 }
 
@@ -168,8 +185,14 @@ export class DesktopV3RealtimeTransport {
   private reopenTimer: number | null = null
   private livenessTimer: number | null = null
   private rehydrateInFlight: Promise<void> | null = null
-  private messageQueue: Array<{ socket: WebSocket; raw: unknown; generation: number }> = []
-  private drainingMessages = false
+  private durableMessageQueue: Array<{
+    socket: WebSocket
+    frame: SessionV3RealtimeFrameWire
+    bytes: number
+    generation: number
+  }> = []
+  private durableMessageQueueBytes = 0
+  private drainingDurableMessages = false
   private endpointCursor = ''
   private desired = false
   private generation = 0
@@ -357,7 +380,7 @@ export class DesktopV3RealtimeTransport {
     if (durableCursor) {
       this.endpointCursor = durableCursor
     }
-    this.messageQueue = []
+    this.clearDurableMessageQueueForGeneration(this.generation)
     if (!this.desired) {
       this.desired = true
     }
@@ -379,6 +402,8 @@ export class DesktopV3RealtimeTransport {
       reopenAttempt: this.reopenAttempt,
       reopenTimerActive: this.reopenTimer !== null,
       rehydrateInFlight: this.rehydrateInFlight !== null,
+      durableQueueFrames: this.durableMessageQueue.length,
+      durableQueueBytes: this.durableMessageQueueBytes,
       lastActivityAt: this.lastActivityAt,
       sessionSubscriptionCount: this.sessions.size,
       worksetSubscriptionCount: this.worksets.size,
@@ -447,7 +472,7 @@ export class DesktopV3RealtimeTransport {
     socket.addEventListener('message', (event) => {
       if (generation !== this.generation || this.socket !== socket) return
       this.noteActivity(generation)
-      this.enqueueSocketMessage(socket, event.data, generation)
+      this.acceptSocketMessage(socket, event.data, generation)
     })
 
     socket.addEventListener('error', () => {
@@ -470,42 +495,70 @@ export class DesktopV3RealtimeTransport {
     })
   }
 
-  private enqueueSocketMessage(socket: WebSocket, raw: unknown, generation: number): void {
-    this.messageQueue.push({ socket, raw, generation })
-    if (!this.drainingMessages) {
-      void this.drainSocketMessages()
+  private acceptSocketMessage(socket: WebSocket, raw: unknown, generation: number): void {
+    const bytes = realtimeFrameByteLength(raw)
+    const frame = parseRealtimeFrame(raw)
+    if (!frame || generation !== this.generation || this.socket !== socket) return
+
+    if (frameKind(frame) === 'live.patch') {
+      try {
+        const patch = requireSessionV3RealtimeLivePatch(frame)
+        if (this.options.livePatchEnabled === true) {
+          this.options.onLivePatch?.({ patch, ...this.meta() })
+        }
+      } catch (error) {
+        this.emitStatus('error', errorMessage(error, 'V3 realtime live patch validation failed'))
+        void this.requestRehydrate('V3 realtime live patch validation failed', frame)
+      }
+      return
+    }
+
+    this.enqueueDurableMessage(socket, frame, bytes, generation)
+  }
+
+  private enqueueDurableMessage(socket: WebSocket, frame: SessionV3RealtimeFrameWire, bytes: number, generation: number): void {
+    this.durableMessageQueue.push({ socket, frame, bytes, generation })
+    this.durableMessageQueueBytes += bytes
+    if (this.durableMessageQueue.length > DURABLE_QUEUE_MAX_FRAMES || this.durableMessageQueueBytes > DURABLE_QUEUE_MAX_BYTES) {
+      this.clearDurableMessageQueueForGeneration(generation)
+      this.emitStatus('error', 'V3 realtime durable queue overflow')
+      this.forceReopen('V3 realtime durable queue overflow')
+      return
+    }
+    if (!this.drainingDurableMessages) {
+      void this.drainDurableMessages()
     }
   }
 
-  private async drainSocketMessages(): Promise<void> {
-    if (this.drainingMessages) return
-    this.drainingMessages = true
+  private async drainDurableMessages(): Promise<void> {
+    if (this.drainingDurableMessages) return
+    this.drainingDurableMessages = true
     try {
-      while (this.messageQueue.length > 0) {
-        const next = this.messageQueue.shift()
+      while (this.durableMessageQueue.length > 0) {
+        const next = this.durableMessageQueue.shift()
         if (!next) continue
+        this.durableMessageQueueBytes = Math.max(0, this.durableMessageQueueBytes - next.bytes)
         if (next.generation !== this.generation || this.socket !== next.socket) continue
         try {
-          await this.handleMessage(next.raw, next.generation)
+          await this.handleDurableMessage(next.frame, next.generation)
         } catch (error) {
           if (next.generation !== this.generation || this.socket !== next.socket) continue
-          this.messageQueue = this.messageQueue.filter((queued) => queued.generation !== next.generation)
+          this.clearDurableMessageQueueForGeneration(next.generation)
           this.emitStatus('error', errorMessage(error, 'V3 realtime frame handling failed'))
           this.forceReopen('frame handling failed')
           break
         }
       }
     } finally {
-      this.drainingMessages = false
-      if (this.messageQueue.length > 0) {
-        void this.drainSocketMessages()
+      this.drainingDurableMessages = false
+      if (this.durableMessageQueue.length > 0) {
+        void this.drainDurableMessages()
       }
     }
   }
 
-  private async handleMessage(raw: unknown, generation: number): Promise<void> {
-    const frame = parseRealtimeFrame(raw)
-    if (!frame || generation !== this.generation) return
+  private async handleDurableMessage(frame: SessionV3RealtimeFrameWire, generation: number): Promise<void> {
+    if (generation !== this.generation) return
 
     const kind = frameKind(frame)
     const sessionId = frameSessionId(frame)
@@ -596,6 +649,7 @@ export class DesktopV3RealtimeTransport {
       endpointCursor,
       subscriptions: Array.from(this.sessions.values()),
       worksets: Array.from(this.worksets.values()),
+      capabilities: this.options.livePatchEnabled === true ? [SESSION_V3_REALTIME_LIVE_PATCH_CAPABILITY] : undefined,
     })
   }
 
@@ -837,6 +891,7 @@ export class DesktopV3RealtimeTransport {
     this.socket = null
     this.connecting = null
     this.generation += 1
+    this.clearAllDurableMessages()
     this.readySessionSubscriptions.clear()
     if (socket && socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) {
       socket.close()
@@ -869,6 +924,32 @@ export class DesktopV3RealtimeTransport {
     if (this.livenessTimer !== null) {
       window.clearTimeout(this.livenessTimer)
       this.livenessTimer = null
+    }
+  }
+
+  private clearDurableMessageQueueForGeneration(generation: number): void {
+    let bytes = 0
+    const retained: typeof this.durableMessageQueue = []
+    for (const queued of this.durableMessageQueue) {
+      if (queued.generation === generation) {
+        bytes += queued.bytes
+      } else {
+        retained.push(queued)
+      }
+    }
+    this.durableMessageQueue = retained
+    this.durableMessageQueueBytes = Math.max(0, this.durableMessageQueueBytes - bytes)
+  }
+
+  private clearAllDurableMessages(): void {
+    this.durableMessageQueue = []
+    this.durableMessageQueueBytes = 0
+  }
+
+  debugSnapshotForTests(): { durableQueueFrames: number; durableQueueBytes: number } {
+    return {
+      durableQueueFrames: this.durableMessageQueue.length,
+      durableQueueBytes: this.durableMessageQueueBytes,
     }
   }
 
@@ -935,6 +1016,66 @@ function normalizeWorksetSubscription(workset: SessionV3RealtimeWorksetSubscript
     resources: Array.isArray(workset.resources) ? workset.resources.map((resource) => normalizeString(resource)).filter(Boolean) : undefined,
     auto_subscribe_sessions: Boolean(workset.auto_subscribe_sessions),
   }
+}
+
+export function requireSessionV3RealtimeLivePatch(
+  frame: SessionV3RealtimeFrameWire,
+): SessionV3RealtimeLivePatchWire {
+  const patch = frame.live
+  if (!patch || typeof patch !== 'object') {
+    throw new Error('live.patch frame is missing live payload')
+  }
+  const sessionId = normalizeString(patch.session_id)
+  const runId = normalizeString(patch.run_id)
+  const streamId = normalizeString(patch.stream_id)
+  const stepId = normalizeString(patch.step_id)
+  if (!sessionId || !runId || !streamId || !stepId) {
+    throw new Error('live.patch requires nonempty session, run, stream, and step identities')
+  }
+  if (frameSessionId(frame) !== sessionId) {
+    throw new Error('live.patch top-level session_id must match payload session_id')
+  }
+  if (patch.stream_kind !== 'assistant_text' || patch.operation !== 'append') {
+    throw new Error('live.patch uses unsupported stream kind or operation')
+  }
+  if (!isPositiveInteger(patch.step)) {
+    throw new Error('live.patch step must be positive')
+  }
+  if (!isPositiveInteger(patch.live_seq_start) || !isPositiveInteger(patch.live_seq_end) || patch.live_seq_end < patch.live_seq_start) {
+    throw new Error('live.patch sequence range is invalid')
+  }
+  if (!Number.isSafeInteger(patch.offset_start) || !Number.isSafeInteger(patch.offset_end) || patch.offset_start < 0 || patch.offset_end <= patch.offset_start) {
+    throw new Error('live.patch offset range is invalid')
+  }
+  if (typeof patch.text !== 'string') {
+    throw new Error('live.patch text must be a string')
+  }
+  if (utf8ByteLength(patch.text) !== patch.offset_end - patch.offset_start) {
+    throw new Error('live.patch text byte length must match offset range')
+  }
+  if (typeof patch.recorded_at !== 'number' || !Number.isFinite(patch.recorded_at)) {
+    throw new Error('live.patch recorded_at must be numeric')
+  }
+  return {
+    ...patch,
+    session_id: sessionId,
+    run_id: runId,
+    stream_id: streamId,
+    step_id: stepId,
+  }
+}
+
+function realtimeFrameByteLength(raw: unknown): number {
+  if (typeof raw === 'string') return utf8ByteLength(raw)
+  return utf8ByteLength(JSON.stringify(raw))
+}
+
+function utf8ByteLength(text: string): number {
+  return new TextEncoder().encode(text).byteLength
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && typeof value === 'number' && value > 0
 }
 
 function parseRealtimeFrame(raw: unknown): SessionV3RealtimeFrameWire | null {

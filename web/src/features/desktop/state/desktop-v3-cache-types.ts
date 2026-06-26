@@ -1,4 +1,5 @@
 import type { DesktopPermissionRecord } from '../types/realtime'
+import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 
 export type SyncSelectorKind = '' | 'global' | 'recent' | 'session_ids' | 'workspace' | 'tui'
 
@@ -328,6 +329,7 @@ export type RealtimeKind =
   | 'workset.session.removed'
   | 'auth.denied'
   | 'slow_consumer.reconnect_required'
+  | 'live.patch'
 
 export interface RealtimeMessage {
   protocol?: 'v3.realtime' | string
@@ -339,6 +341,8 @@ export interface RealtimeMessage {
   endpoint_cursor?: string
   subscriptions?: RealtimeSubscriptionRequest[]
   worksets?: RealtimeWorksetSubscriptionRequest[]
+  capabilities?: string[]
+  live?: SessionV3RealtimeLivePatchWire
   rev?: number
   prevRev?: number
   event_type?: string
@@ -542,6 +546,13 @@ export interface LiveRunOverlay {
     content: string
     updatedAt: number
     timelineSeq?: number
+    streamId?: string
+    streamStep?: number
+    stepId?: string
+    liveSeqEnd?: number
+    offsetEnd?: number
+    durableOffsetEnd?: number
+    livePaused?: boolean
   }
   assistantSegments?: Array<{
     id: string
@@ -549,6 +560,13 @@ export interface LiveRunOverlay {
     createdAt: number
     updatedAt: number
     timelineSeq?: number
+    streamId?: string
+    streamStep?: number
+    stepId?: string
+    liveSeqEnd?: number
+    offsetEnd?: number
+    durableOffsetEnd?: number
+    livePaused?: boolean
   }>
   toolCallsByCallId: Record<
     string,
@@ -682,6 +700,7 @@ export type DesktopV3CacheAction =
   | { type: 'reconnect.applySnapshot'; snapshot: SessionsReconnectResponse }
   | { type: 'realtime.storeResume'; streamPath: '/v3/realtime/stream'; resume: RealtimeMessage }
   | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string; durabilityCommitted?: boolean }
+  | { type: 'realtime.applyLivePatchBatch'; patches: SessionV3RealtimeLivePatchWire[] }
   | { type: 'permission.resolveResult'; sessionId: string; permissionId: string; permission: DesktopPermissionRecord | null }
   | { type: 'liveRun.mergeRepairEvents'; sessionId: string; runId: string; events: CacheEvent[] }
   | { type: 'realtime.worksetSessionDiscovered'; frame: RealtimeMessage }

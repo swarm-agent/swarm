@@ -20,6 +20,7 @@ import {
   applySyncStreamBatch,
   buildMessageListCache,
   DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS,
+  applyDesktopV3LivePatchBatch,
   createEmptyDesktopV3CacheState,
   desktopV3CacheReducer,
   upsertCommittedMessage,
@@ -46,6 +47,7 @@ import {
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopV3HydratedTranscriptDiagnostics, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
 import { buildDesktopV3ConversationRenderItems, isDesktopV3ManualCompactionAckMessage } from '../chat/components/desktop-v3-existing-conversation-pane'
 import type { CacheEvent, DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, SessionSnapshot, V3SessionEvent, V3SessionProjection } from './desktop-v3-cache-types'
+import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 
 function bootstrappedState(): DesktopV3CacheState {
   return applyBootstrapSnapshot(createEmptyDesktopV3CacheState(), snapshotFixture())
@@ -2327,3 +2329,69 @@ test('workset.session.updated applies compact sidebar shell and current run stat
   assert.equal(state.subscriptionsById['workset-sub-1'], undefined)
   assert.equal(state.realtime.endpointCursor, 'cursor-workset-update-9')
 })
+
+test('Desktop V3 live patch path copies only affected references', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.sessionsById = { [sessionA.id]: sessionA, [sessionB.id]: sessionB }
+  state.messagesBySession = {
+    [sessionA.id]: buildMessageListCache([messageA1]),
+    [sessionB.id]: buildMessageListCache([messageB1]),
+  }
+  state.permissionsBySession = { [sessionA.id]: [], [sessionB.id]: [] }
+  state.plansBySession = { [sessionA.id]: { id: 'plan-a' }, [sessionB.id]: { id: 'plan-b' } }
+  state.liveRunsBySession = {
+    [sessionA.id]: {
+      [runIntentA.run_id]: { sessionId: sessionA.id, runId: runIntentA.run_id, status: 'running', toolCallsByCallId: {} },
+      'run-untouched': { sessionId: sessionA.id, runId: 'run-untouched', status: 'running', toolCallsByCallId: {}, assistantDraft: { content: 'same', updatedAt: 1 } },
+    },
+    [sessionB.id]: {
+      [runIntentA.run_id]: { sessionId: sessionB.id, runId: runIntentA.run_id, status: 'running', toolCallsByCallId: {} },
+    },
+  }
+
+  const messagesBySession = state.messagesBySession
+  const sessionsById = state.sessionsById
+  const permissionsBySession = state.permissionsBySession
+  const plansBySession = state.plansBySession
+  const liveRunsBySession = state.liveRunsBySession
+  const sessionARuns = state.liveRunsBySession[sessionA.id]
+  const sessionBRuns = state.liveRunsBySession[sessionB.id]
+  const untouchedRun = sessionARuns['run-untouched']
+  const affectedRun = sessionARuns[runIntentA.run_id]
+
+  const next = applyDesktopV3LivePatchBatch(state, [livePatchFixture({ text: 'x' })])
+
+  assert.notEqual(next, state)
+  assert.equal(next.messagesBySession, messagesBySession)
+  assert.equal(next.sessionsById, sessionsById)
+  assert.equal(next.permissionsBySession, permissionsBySession)
+  assert.equal(next.plansBySession, plansBySession)
+  assert.notEqual(next.liveRunsBySession, liveRunsBySession)
+  assert.notEqual(next.liveRunsBySession[sessionA.id], sessionARuns)
+  assert.equal(next.liveRunsBySession[sessionB.id], sessionBRuns)
+  assert.equal(next.liveRunsBySession[sessionA.id]['run-untouched'], untouchedRun)
+  assert.notEqual(next.liveRunsBySession[sessionA.id][runIntentA.run_id], affectedRun)
+  assert.equal(next.liveRunsBySession[sessionA.id][runIntentA.run_id].assistantDraft?.content, 'x')
+})
+
+function livePatchFixture(overrides: Partial<SessionV3RealtimeLivePatchWire> = {}): SessionV3RealtimeLivePatchWire {
+  const text = overrides.text ?? 'x'
+  const offsetStart = overrides.offset_start ?? 0
+  const offsetEnd = overrides.offset_end ?? offsetStart + new TextEncoder().encode(text).byteLength
+  return {
+    session_id: sessionA.id,
+    run_id: runIntentA.run_id,
+    stream_id: `assistant:${runIntentA.run_id}:step:1`,
+    stream_kind: 'assistant_text',
+    operation: 'append',
+    step: 1,
+    step_id: 'step-1',
+    live_seq_start: 1,
+    live_seq_end: 1,
+    offset_start: offsetStart,
+    offset_end: offsetEnd,
+    text,
+    recorded_at: 1,
+    ...overrides,
+  }
+}

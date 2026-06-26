@@ -1,6 +1,7 @@
 import { ensureDesktopSession } from '../../../app/api'
 import { DesktopV3RealtimeTransport, type DesktopV3RealtimeTransportStatus } from '../session-v3/transport'
 import type { SessionV3RealtimeWorksetSubscriptionRequestWire } from '../session-v3/types'
+import { DesktopV3LivePatchCoordinator, createDefaultDesktopV3LivePatchCoordinatorDeps } from './v3-live-patch-coordinator'
 import { openDesktopV3RealtimeTransportSocket } from './client'
 import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
 import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
@@ -24,6 +25,7 @@ import type {
 
 const DESKTOP_V3_CLIENT_ID = `desktop:${crypto.randomUUID()}`
 const ACTIVE_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
+export const DESKTOP_V3_LIVE_PATCH_ENABLED = false
 
 export interface DesktopV3RealtimeController {
   ensureSessionConnected(sessionId: string): Promise<void>
@@ -57,6 +59,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly bootstrap: (input?: { preferredSessionId?: string | null }) => Promise<unknown>
   private readonly transport: DesktopV3RealtimeTransport
   private readonly streamCommit: DesktopV3StreamCommitController
+  private readonly livePatchCoordinator: DesktopV3LivePatchCoordinator
   private readonly subscribingSessionIds = new Set<string>()
   private firstResumeSent?: Deferred<void>
   private startupCancellation?: Deferred<never>
@@ -82,9 +85,16 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
         ?? (deps.dispatch ? undefined : commitDesktopV3CacheSnapshot),
     })
 
+    this.livePatchCoordinator = new DesktopV3LivePatchCoordinator(createDefaultDesktopV3LivePatchCoordinatorDeps({
+      getSnapshot: this.getSnapshot,
+      commitSnapshot: deps.commitSnapshot ?? commitDesktopV3CacheSnapshot,
+    }))
+
     this.transport = new DesktopV3RealtimeTransport({
       getEndpointCursor: () => this.getSnapshot().realtime.endpointCursor,
       openSocket: deps.openSocket ?? (({ endpointCursor }) => openDesktopV3RealtimeTransportSocket({ endpointCursor })),
+      livePatchEnabled: DESKTOP_V3_LIVE_PATCH_ENABLED,
+      onLivePatch: ({ patch, generation }) => this.livePatchCoordinator.accept(patch, generation),
       onFrame: ({ frame }) => this.handleFrame(frame as RealtimeMessage),
       onStatus: ({ status, reason }) => {
         this.dispatch({
@@ -107,6 +117,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
         const durableResumeCursor = cursorWasRejected
           ? undefined
           : this.getSnapshot().realtime.endpointCursor?.trim()
+        this.livePatchCoordinator.resetGeneration(0)
         this.dispatch({ type: 'reconnect.applySnapshot', snapshot: reconnect })
         const resume = this.buildResume(
           reconnect,
@@ -161,6 +172,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.subscribingSessionIds.clear()
     this.firstResumeSent?.resolve()
     this.firstResumeSent = undefined
+    this.livePatchCoordinator.dispose()
     this.transport.stop(reason)
   }
 
@@ -329,6 +341,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
         }, 0)
       }
     } catch (error) {
+      this.livePatchCoordinator.resetGeneration(0)
       this.handleDurableStreamCommitFailure(error)
       throw error
     }

@@ -1,7 +1,8 @@
 import { useStoreWithEqualityFn } from 'zustand/traditional'
 import { createStore } from 'zustand/vanilla'
-import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
+import { applyDesktopV3LivePatchBatch, createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
 import type { DesktopV3CacheAction, DesktopV3CacheState } from './desktop-v3-cache-types'
+import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 
 export interface DesktopV3CacheMutation {
   action: DesktopV3CacheAction
@@ -37,6 +38,18 @@ export function dispatchDesktopV3CacheBatch(actions: DesktopV3CacheAction[]): vo
     nextState = desktopV3CacheReducer(nextState, action)
   }
   commitDesktopV3CacheSnapshot(previousState, nextState, actions)
+}
+
+export function commitDesktopV3LivePatchBatch(
+  patches: SessionV3RealtimeLivePatchWire[],
+): void {
+  const previous = getDesktopV3CacheSnapshot()
+  const action: DesktopV3CacheAction = {
+    type: 'realtime.applyLivePatchBatch',
+    patches,
+  }
+  const next = applyDesktopV3LivePatchBatch(previous, patches)
+  commitDesktopV3CacheSnapshot(previous, next, [action])
 }
 
 export function commitDesktopV3CacheSnapshot(

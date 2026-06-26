@@ -16,7 +16,7 @@ import {
 } from './v3-realtime-controller'
 import { buildMessageListCache, createEmptyDesktopV3CacheState, desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { hydrateSnapshotFixture, messageA1, messageA2, messageB1, projectionA, projectionB, reconnectFixture, runIntentA, sessionA, sessionB } from '../state/desktop-v3-cache.backend-fixtures'
-import type { SessionV3RealtimeResumeWire } from '../session-v3/types'
+import type { SessionV3RealtimeLivePatchWire, SessionV3RealtimeResumeWire } from '../session-v3/types'
 import type { DesktopV3CacheAction, DesktopV3CacheState, RealtimeMessage, V3SessionEvent } from '../state/desktop-v3-cache-types'
 
 if (typeof window === 'undefined') {
@@ -3757,6 +3757,184 @@ function createDeferredValue<T>(): { promise: Promise<T>; resolve: (value: T) =>
   })
   return { promise, resolve, reject }
 }
+
+
+test('Desktop V3 live patch bypasses an unresolved durable frame', async () => {
+  const socket = new FakeWebSocket()
+  const livePatches: SessionV3RealtimeLivePatchWire[] = []
+  let releaseDurable!: () => void
+  const durableBlocked = new Promise<void>((resolve) => {
+    releaseDurable = resolve
+  })
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'C0',
+    openSocket: () => socket as unknown as WebSocket,
+    livePatchEnabled: true,
+    onLivePatch: ({ patch }) => livePatches.push(patch),
+    onFrame: async () => durableBlocked,
+    livenessTimeoutMs: 60_000,
+  })
+
+  await transport.start()
+  socket.open()
+  socket.emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'event', session_id: 'session-a', endpoint_cursor: 'C1', event: { id: 'evt-1', session_id: 'session-a', seq: 1, event_type: 'session.created', payload: {} } })
+  for (let i = 0; i < 100; i += 1) {
+    socket.emit(livePatchFrame({ live_seq_start: i + 1, live_seq_end: i + 1, offset_start: i, offset_end: i + 1, text: 'x' }))
+  }
+
+  assert.equal(livePatches.length, 100)
+  releaseDurable()
+  await flushAsyncWork()
+  transport.stop()
+})
+
+test('Desktop V3 live patch never enters the durable queue', async () => {
+  const socket = new FakeWebSocket()
+  let frameCount = 0
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'C0',
+    openSocket: () => socket as unknown as WebSocket,
+    livePatchEnabled: true,
+    onFrame: () => {
+      frameCount += 1
+    },
+    livenessTimeoutMs: 60_000,
+  })
+
+  await transport.start()
+  socket.open()
+  for (let i = 0; i < 10_000; i += 1) {
+    socket.emit(livePatchFrame({ live_seq_start: i + 1, live_seq_end: i + 1, offset_start: i, offset_end: i + 1, text: 'x' }))
+  }
+
+  assert.equal(frameCount, 0)
+  assert.deepEqual(transport.debugSnapshotForTests(), { durableQueueFrames: 0, durableQueueBytes: 0 })
+  transport.stop()
+})
+
+test('Desktop V3 live patch does not advance endpoint cursor', async () => {
+  const socket = new FakeWebSocket()
+  const cursors: string[] = []
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'C0',
+    openSocket: () => socket as unknown as WebSocket,
+    livePatchEnabled: true,
+    onCursor: ({ endpointCursor }) => cursors.push(endpointCursor),
+    livenessTimeoutMs: 60_000,
+  })
+
+  await transport.start()
+  socket.open()
+  socket.emit(livePatchFrame({ endpoint_cursor: 'LIVE-CURSOR' }))
+  await flushAsyncWork()
+  assert.deepEqual(cursors, [])
+
+  socket.emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'event', session_id: 'session-a', endpoint_cursor: 'C1', event: { id: 'evt-1', session_id: 'session-a', seq: 1, event_type: 'session.created', payload: {} } })
+  await flushAsyncWork()
+  assert.deepEqual(cursors, ['C1'])
+  transport.stop()
+})
+
+test('Desktop V3 rejects malformed live frames before either queue', async () => {
+  const socket = new FakeWebSocket()
+  const statuses: string[] = []
+  let liveCount = 0
+  let rehydrateCount = 0
+  const transport = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'C0',
+    openSocket: () => socket as unknown as WebSocket,
+    livePatchEnabled: true,
+    onLivePatch: () => {
+      liveCount += 1
+    },
+    onStatus: ({ status }) => statuses.push(status),
+    onRehydrateRequested: () => {
+      rehydrateCount += 1
+      return { endpointCursor: 'C0' }
+    },
+    livenessTimeoutMs: 60_000,
+  })
+
+  await transport.start()
+  socket.open()
+  socket.emit(livePatchFrame({ top_level_session_id: 'other-session' }))
+  socket.emit(livePatchFrame({ live_seq_start: 4, live_seq_end: 3 }))
+  socket.emit(livePatchFrame({ text: 'é', offset_start: 0, offset_end: 1 }))
+  await flushAsyncWork()
+
+  assert.equal(liveCount, 0)
+  assert.equal(transport.debugSnapshotForTests().durableQueueFrames, 0)
+  assert.equal(rehydrateCount >= 1, true)
+  assert.equal(statuses.includes('rehydrating') || statuses.includes('error'), true)
+  transport.stop()
+})
+
+function livePatchFrame(overrides: Partial<SessionV3RealtimeLivePatchWire & RealtimeMessage> & { top_level_session_id?: string } = {}): RealtimeMessage {
+  const text = overrides.text ?? 'x'
+  const offsetStart = overrides.offset_start ?? 0
+  const offsetEnd = overrides.offset_end ?? offsetStart + new TextEncoder().encode(text).byteLength
+  const live: SessionV3RealtimeLivePatchWire = {
+    session_id: overrides.session_id ?? 'session-a',
+    run_id: overrides.run_id ?? 'run-a',
+    stream_id: overrides.stream_id ?? 'assistant:run-a:step:1',
+    stream_kind: overrides.stream_kind ?? 'assistant_text',
+    operation: overrides.operation ?? 'append',
+    step: overrides.step ?? 1,
+    step_id: overrides.step_id ?? 'step-1',
+    live_seq_start: overrides.live_seq_start ?? 1,
+    live_seq_end: overrides.live_seq_end ?? 1,
+    offset_start: offsetStart,
+    offset_end: offsetEnd,
+    text,
+    recorded_at: overrides.recorded_at ?? 1,
+  }
+  return {
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'live.patch',
+    session_id: overrides.top_level_session_id ?? ('session_id' in overrides ? String(overrides.session_id) : live.session_id),
+    endpoint_cursor: typeof overrides.endpoint_cursor === 'string' ? overrides.endpoint_cursor : undefined,
+    live,
+  }
+}
+
+
+test('Desktop V3 live patch capability is requested only when enabled', async () => {
+  const disabledSocket = new FakeWebSocket()
+  const disabledResumes: SessionV3RealtimeResumeWire[] = []
+  const disabled = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'C0',
+    openSocket: () => disabledSocket as unknown as WebSocket,
+    livePatchEnabled: false,
+    onResumeSent: (resume) => disabledResumes.push(resume),
+    livenessTimeoutMs: 60_000,
+  })
+  await disabled.start()
+  disabledSocket.open()
+  assert.equal('capabilities' in disabledResumes[0], false)
+  disabled.stop()
+
+  const enabledSocket = new FakeWebSocket()
+  const enabledResumes: SessionV3RealtimeResumeWire[] = []
+  const enabled = new DesktopV3RealtimeTransport({
+    getEndpointCursor: () => 'C0',
+    openSocket: () => enabledSocket as unknown as WebSocket,
+    livePatchEnabled: true,
+    onResumeSent: (resume) => enabledResumes.push(resume),
+    livenessTimeoutMs: 60_000,
+  })
+  await enabled.start()
+  enabledSocket.open()
+  assert.deepEqual(enabledResumes[0].capabilities, ['live_patch_v1'])
+  enabled.stop()
+})
+
+test('Desktop V3 production live patch defaults remain false', async () => {
+  const source = await readSource('web/src/features/desktop/realtime/v3-realtime-controller.ts')
+  const backend = await readSource('../swarmd/internal/api/server.go')
+  assert.match(source, /export const DESKTOP_V3_LIVE_PATCH_ENABLED = false/)
+  assert.match(backend, /const v3LivePatchDefaultEnabled = false/)
+})
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
   const started = Date.now()

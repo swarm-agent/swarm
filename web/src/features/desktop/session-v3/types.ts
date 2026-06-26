@@ -18,6 +18,7 @@ export const SESSION_V3_REALTIME_PROTOCOL = 'v3.realtime' as const
 export const SESSION_V3_REALTIME_PROTOCOL_VERSION = 1 as const
 export const SESSION_V3_REALTIME_RESUME_KIND = 'resume' as const
 export const SESSION_V3_REALTIME_STREAM_PATH = '/v3/realtime/stream' as const
+export const SESSION_V3_REALTIME_LIVE_PATCH_CAPABILITY = 'live_patch_v1' as const
 
 export type SessionV3Surface = typeof SESSION_V3_SURFACE
 export type SessionV3RealtimeProtocol = typeof SESSION_V3_REALTIME_PROTOCOL
@@ -307,6 +308,22 @@ export interface SessionV3RealtimeUnsubscribeWire {
   subscription_id: string
 }
 
+export interface SessionV3RealtimeLivePatchWire {
+  session_id: string
+  run_id: string
+  stream_id: string
+  stream_kind: 'assistant_text'
+  operation: 'append'
+  step: number
+  step_id: string
+  live_seq_start: number
+  live_seq_end: number
+  offset_start: number
+  offset_end: number
+  text: string
+  recorded_at: number
+}
+
 export interface SessionV3RealtimeResumeWire {
   protocol: SessionV3RealtimeProtocol
   protocol_version: SessionV3RealtimeProtocolVersion
@@ -314,6 +331,7 @@ export interface SessionV3RealtimeResumeWire {
   endpoint_cursor: string
   subscriptions?: SessionV3RealtimeSubscriptionRequestWire[]
   worksets?: SessionV3RealtimeWorksetSubscriptionRequestWire[]
+  capabilities?: string[]
 }
 
 export interface SessionV3SnapshotResult {
@@ -363,6 +381,8 @@ export interface SessionV3RealtimeFrameWire {
   error_code?: string
   error?: string
   reason?: string
+  live?: SessionV3RealtimeLivePatchWire
+  capabilities?: string[]
 }
 
 export interface SessionV3RealtimeOutboxWire {
