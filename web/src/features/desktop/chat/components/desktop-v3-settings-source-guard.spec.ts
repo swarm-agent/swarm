@@ -14,6 +14,8 @@ test('Desktop V3 existing composer derives agent model locks from existing agent
   assert.match(source, /localSettingsDirtyRef\.current\.agent = true/)
   assert.match(source, /settingsActionLabel=\{showRestartSettingsAction \? 'Restart loop with new settings\?' : ''\}/)
   assert.match(source, /await stopSessionV3Run[\s\S]*await persistVisibleSettings\(\)[\s\S]*sendSessionMessage\([\s\S]*'system'/)
+  assert.match(source, /if \(selectedAgentModelLock\.locked\) return[\s\S]*updateDraftModelPreference\(\{[\s\S]*thinking: thinkingForDraftDefault\(nextPreference\.thinking\)[\s\S]*queryClient\.setQueryData\(draftModelQueryKey\(\), updated\)/)
+  assert.match(source, /await updateSessionV3Preference\(normalizedSessionId, preference\)[\s\S]*await persistDraftModelDefault\(preference\)/)
   assert.doesNotMatch(source, /const initialAgent =/)
   assert.doesNotMatch(source, /setSelectedAgent\(initialAgent\)/)
   assert.doesNotMatch(source, /resolveDesktopV3AgentModelLock\(agentState\.profiles, selectedAgent \|\| agentState\.activePrimary/)

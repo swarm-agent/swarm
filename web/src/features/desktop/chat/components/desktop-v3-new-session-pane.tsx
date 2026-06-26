@@ -2,12 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
-import { draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { draftModelQueryKey, draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
 import type { AgentStateRecord, ModelOptionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
+import { updateDraftModelPreference } from '../queries/chat-queries'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
 import { buildDesktopV3RunStatusModel } from './desktop-v3-run-status'
@@ -58,6 +59,11 @@ function preferenceFromOption(option: ModelOptionRecord | null, current: Session
 
 function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | 'off' {
   return preference.serviceTier.trim().toLowerCase() === 'fast' ? 'on' : 'off'
+}
+
+function thinkingForDraftDefault(thinking: string): string {
+  const normalized = thinking.trim()
+  return normalized || 'off'
 }
 
 function preferenceForRequest(preference: SessionPreferenceRecord): DesktopV3NewSessionPreference {
@@ -257,23 +263,48 @@ export function DesktopV3NewSessionPane({
     pendingStartAt: operationRef.current?.createdAt ?? (starting ? Date.now() : null),
   })
 
+  async function persistDraftModelDefault(nextPreference: SessionPreferenceRecord) {
+    if (!nextPreference.provider.trim() || !nextPreference.model.trim()) return
+    const agentProfile = agentState.profiles.find((profile) => profile.name === selectedAgentName)
+      ?? agentState.profiles.find((profile) => profile.name.trim().toLowerCase() === selectedAgentName.toLowerCase())
+      ?? null
+    if (agentProfile && (agentProfile.provider.trim() || agentProfile.model.trim())) return
+    try {
+      const updated = await updateDraftModelPreference({
+        ...nextPreference,
+        thinking: thinkingForDraftDefault(nextPreference.thinking),
+      })
+      queryClient.setQueryData(draftModelQueryKey(), updated)
+    } catch (error) {
+      if (mountedRef.current) {
+        setStartError(error instanceof Error ? error.message : 'Failed to update default model preference')
+      }
+    }
+  }
+
   function handleModelSelect(key: string) {
     preferenceManuallyChangedRef.current = true
     const option = modelOptions.find((candidate) => candidate.key === key) ?? null
-    setPreference((current) => preferenceFromOption(option, current))
+    const next = preferenceFromOption(option, preference)
+    setPreference(next)
+    void persistDraftModelDefault(next)
   }
 
   function handleThinkingChange(value: string) {
     preferenceManuallyChangedRef.current = true
-    setPreference((current) => ({ ...current, thinking: value.trim() === 'off' ? '' : value.trim() }))
+    const next = { ...preference, thinking: value.trim() === 'off' ? '' : value.trim() }
+    setPreference(next)
+    void persistDraftModelDefault(next)
   }
 
   function handleFastChange(value: 'on' | 'off') {
     preferenceManuallyChangedRef.current = true
-    setPreference((current) => ({
-      ...current,
+    const next = {
+      ...preference,
       serviceTier: value === 'on' && fastSupported ? 'fast' : '',
-    }))
+    }
+    setPreference(next)
+    void persistDraftModelDefault(next)
   }
 
   function handleAgentSelect(agentName: string) {

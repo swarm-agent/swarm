@@ -13,5 +13,8 @@ test('Desktop V3 new session input initializes from defaults without overwriting
   assert.match(source, /if \(agentManuallySelectedRef\.current\) return current/)
   assert.match(source, /if \(preferenceManuallyChangedRef\.current\) return current/)
   assert.match(source, /function handleModeChange\(nextMode: DesktopSessionMode\)[\s\S]*modeManuallySelectedRef\.current = true[\s\S]*setMode\(nextMode\)/)
+  assert.match(source, /updateDraftModelPreference\(\{[\s\S]*thinking: thinkingForDraftDefault\(nextPreference\.thinking\)[\s\S]*queryClient\.setQueryData\(draftModelQueryKey\(\), updated\)/)
+  assert.match(source, /agentProfile && \(agentProfile\.provider\.trim\(\) \|\| agentProfile\.model\.trim\(\)\)\) return/)
+  assert.match(source, /void persistDraftModelDefault\(next\)/)
   assert.match(source, /onModeChange=\{handleModeChange\}/)
 })

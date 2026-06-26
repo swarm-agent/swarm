@@ -11,7 +11,7 @@ import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../../state/d
 import type { DesktopPermissionRecord, DesktopSessionRecord } from '../../types/realtime'
 import type { StructuredToolMessage, ToolMessageState, AgentProfileRecord, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
 import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
-import { agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { agentStateQueryOptions, draftModelQueryKey, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
@@ -36,7 +36,7 @@ import {
   type DesktopV3ExistingMessageOperation,
 } from '../../session-v3/existing-session-flow'
 import { compactDesktopV3Session } from '../../session-v3/compact-session-flow'
-import { resolveSessionPermission, sendSessionMessage } from '../queries/chat-queries'
+import { resolveSessionPermission, sendSessionMessage, updateDraftModelPreference } from '../queries/chat-queries'
 import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
 import { permissionRequiresApproval } from '../../permissions/services/permission-payload'
 
@@ -173,6 +173,11 @@ function preferenceFromAgentModelLock(lock: AgentModelLockState, current: Sessio
 
 function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | 'off' {
   return preference.serviceTier.trim().toLowerCase() === 'fast' ? 'on' : 'off'
+}
+
+function thinkingForDraftDefault(thinking: string): string {
+  const normalized = thinking.trim()
+  return normalized || 'off'
 }
 
 function preferencesEqual(left: SessionPreferenceRecord, right: SessionPreferenceRecord): boolean {
@@ -793,6 +798,16 @@ export function DesktopV3ExistingConversationPane({
     })
   }
 
+  async function persistDraftModelDefault(nextPreference: SessionPreferenceRecord) {
+    if (selectedAgentModelLock.locked) return
+    if (!nextPreference.provider.trim() || !nextPreference.model.trim()) return
+    const updated = await updateDraftModelPreference({
+      ...nextPreference,
+      thinking: thinkingForDraftDefault(nextPreference.thinking),
+    })
+    queryClient.setQueryData(draftModelQueryKey(), updated)
+  }
+
   async function persistVisibleSettings() {
     if (!normalizedSessionId) return
     if (settingsBaseline.mode !== mode) {
@@ -817,6 +832,7 @@ export function DesktopV3ExistingConversationPane({
         type: 'mutation.sessionSettingsResult',
         raw: sessionV3PreferenceSettingsMutationResponse(preferenceResponse, normalizedSessionId),
       })
+      await persistDraftModelDefault(preference)
     }
   }
 
