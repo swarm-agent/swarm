@@ -300,7 +300,6 @@ func (s *Server) handleSessionV3PrimaryCompact(w http.ResponseWriter, r *http.Re
 		Principal:            principal,
 		OwnerTransport:       sessionV3ManualCompactOwnerTransport,
 		ApplySessionMutation: s.applySessionV3PrimaryMutation,
-		IncludeAssistantAck:  true,
 	})
 	s.endActiveRun()
 	if compactErr != nil {

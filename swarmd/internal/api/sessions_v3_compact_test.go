@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,6 +33,9 @@ func TestSessionsV3CompactUsesDirectCompactionCheckpointCursor(t *testing.T) {
 	if runner.streamingCalls.Load() != 0 {
 		t.Fatalf("RunTurnStreaming calls = %d, want 0", runner.streamingCalls.Load())
 	}
+	if runner.includeAssistantAck.Load() {
+		t.Fatal("compact endpoint requested duplicate assistant acknowledgement")
+	}
 	if resp.RunIntent == nil || resp.RunIntent.RunID != "run-compact" || resp.RunIntent.Status != sessionruntime.RunIntentCompleted {
 		t.Fatalf("compact response run_intent = %+v", resp.RunIntent)
 	}
@@ -55,6 +59,9 @@ func TestSessionsV3CompactUsesDirectCompactionCheckpointCursor(t *testing.T) {
 	if resp.CompactCheckpoint["endpoint_cursor"] == "" || resp.CompactCheckpoint["endpoint_seq"] == float64(0) {
 		t.Fatalf("checkpoint cursor fields missing: %+v", resp.CompactCheckpoint)
 	}
+	if resp.AssistantMutation != nil {
+		t.Fatalf("compact response should not include duplicate assistant ack mutation: %+v", resp.AssistantMutation)
+	}
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
 	if err != nil {
 		t.Fatalf("list v3 messages: %v", err)
@@ -63,6 +70,9 @@ func TestSessionsV3CompactUsesDirectCompactionCheckpointCursor(t *testing.T) {
 	for _, msg := range messages {
 		if msg.ID == checkpointID && msg.Role == "system" && msg.Content != "" {
 			foundCheckpoint = true
+		}
+		if msg.Role == "assistant" && strings.HasPrefix(strings.TrimSpace(msg.Content), "Manual context compact complete (Compact #") {
+			t.Fatalf("manual compact appended duplicate assistant ack: %+v", msg)
 		}
 	}
 	if !foundCheckpoint {
@@ -160,6 +170,7 @@ type sessionsV3CompactTestResponse struct {
 	Terminal          map[string]any                      `json:"terminal"`
 	Mutation          map[string]any                      `json:"mutation"`
 	RealtimeOutbox    *pebblestore.V3RealtimeOutboxRecord `json:"realtime_outbox"`
+	AssistantMutation map[string]any                      `json:"assistant_mutation"`
 }
 
 func (r sessionsV3CompactTestResponse) EventPayloadMessageID(t *testing.T) string {
@@ -214,16 +225,18 @@ func postSessionsV3CompactForTest(t *testing.T, server *Server, sessionID, clien
 }
 
 type directCompactRunService struct {
-	summary        string
-	err            error
-	started        chan struct{}
-	release        chan struct{}
-	compactCalls   atomic.Int32
-	streamingCalls atomic.Int32
+	summary             string
+	err                 error
+	started             chan struct{}
+	release             chan struct{}
+	compactCalls        atomic.Int32
+	streamingCalls      atomic.Int32
+	includeAssistantAck atomic.Bool
 }
 
 func (r *directCompactRunService) RunManualCompaction(_ context.Context, sessionID string, input runruntime.ManualCompactionInput) (runruntime.ManualCompactionResult, error) {
 	r.compactCalls.Add(1)
+	r.includeAssistantAck.Store(input.IncludeAssistantAck)
 	if r.started != nil {
 		close(r.started)
 	}

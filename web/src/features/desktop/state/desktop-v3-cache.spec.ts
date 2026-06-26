@@ -44,7 +44,7 @@ import {
   tombstoneB,
 } from './desktop-v3-cache.backend-fixtures'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopV3HydratedTranscriptDiagnostics, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
-import { buildDesktopV3ConversationRenderItems } from '../chat/components/desktop-v3-existing-conversation-pane'
+import { buildDesktopV3ConversationRenderItems, isDesktopV3ManualCompactionAckMessage } from '../chat/components/desktop-v3-existing-conversation-pane'
 import type { CacheEvent, DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, SessionSnapshot, V3SessionEvent, V3SessionProjection } from './desktop-v3-cache-types'
 
 function bootstrappedState(): DesktopV3CacheState {
@@ -1683,6 +1683,34 @@ function applyCommittedReasoningEvent(state: DesktopV3CacheState, seq = 8): void
     }, `cursor-reasoning-complete-${seq}`),
   })
 }
+
+test('manual context compact renders checkpoint and suppresses duplicate assistant ack', () => {
+  const state = bootstrappedState()
+  const checkpoint: MessageSnapshot = {
+    id: 'msg-compact-checkpoint',
+    session_id: sessionA.id,
+    global_seq: 3,
+    role: 'system',
+    content: '[context-compact] index=2 origin=manual\n\nThis checkpoint supersedes earlier transcript context for future model turns.\n\nCompacted recap:\nsummary',
+    created_at: 30,
+  }
+  const ack: MessageSnapshot = {
+    id: 'msg-compact-ack',
+    session_id: sessionA.id,
+    global_seq: 4,
+    role: 'assistant',
+    content: 'Manual context compact complete (Compact #2).\n\nCompacted recap:\nsummary',
+    metadata: { source: 'manual_context_compaction_ack' },
+    created_at: 31,
+  }
+  state.messagesBySession[sessionA.id].items.push(checkpoint, ack)
+
+  assert.equal(isDesktopV3ManualCompactionAckMessage(ack), true)
+  const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+  assert.equal(rendered.some((item) => item.type === 'message' && item.message.id === checkpoint.id), true)
+  assert.equal(rendered.some((item) => item.type === 'message' && item.message.id === ack.id), false)
+})
+
 
 test('committed tool message removes matching live tool and renders once', () => {
   const state = bootstrappedState()

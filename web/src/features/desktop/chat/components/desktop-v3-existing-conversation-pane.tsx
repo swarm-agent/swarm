@@ -442,6 +442,15 @@ function canonicalContentSet(messages: MessageSnapshot[], role: string): Set<str
   return contents
 }
 
+export function isDesktopV3ManualCompactionAckMessage(message: MessageSnapshot): boolean {
+  if ((message.role || '').trim().toLowerCase() !== 'assistant') return false
+  const metadataSource = typeof message.metadata?.source === 'string'
+    ? message.metadata.source.trim().toLowerCase()
+    : ''
+  if (metadataSource === 'manual_context_compaction_ack') return true
+  return message.content.trim().startsWith('Manual context compact complete (Compact #')
+}
+
 export function buildDesktopV3LiveRunRenderItems(run: LiveRunOverlay, options: { assistantMessages?: Set<string>; reasoningMessages?: Set<string> } = {}): DesktopV3RenderItem[] {
   const items: DesktopV3RenderItem[] = []
   for (const segment of run.assistantSegments ?? []) {
@@ -478,10 +487,11 @@ export function buildDesktopV3LiveRunRenderItems(run: LiveRunOverlay, options: {
 }
 
 export function buildDesktopV3ConversationRenderItems(renderedMessages: RenderedSessionMessages): DesktopV3RenderItem[] {
-  const assistantMessages = canonicalContentSet(renderedMessages.committed, 'assistant')
-  const reasoningMessages = canonicalContentSet(renderedMessages.committed, 'reasoning')
+  const committedMessages = renderedMessages.committed.filter((message) => !isDesktopV3ManualCompactionAckMessage(message))
+  const assistantMessages = canonicalContentSet(committedMessages, 'assistant')
+  const reasoningMessages = canonicalContentSet(committedMessages, 'reasoning')
   const items: DesktopV3RenderItem[] = [
-    ...renderedMessages.committed.map((message) => ({ type: 'message' as const, message, timelineSeq: message.global_seq })),
+    ...committedMessages.map((message) => ({ type: 'message' as const, message, timelineSeq: message.global_seq })),
     ...renderedMessages.pendingUser.map((message) => ({ type: 'pending-user' as const, message, timelineSeq: message.createdAt })),
   ]
   for (const run of renderedMessages.liveRuns) {
