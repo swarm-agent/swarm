@@ -850,10 +850,20 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		action = "upsert_checkpoint"
 	case "update-checkpoint", "update_checkpoint", "patch-checkpoint", "patch_checkpoint":
 		action = "update_checkpoint"
-	case "complete-checkpoint", "complete_checkpoint", "finish-checkpoint", "finish_checkpoint":
+	case "start-checkpoint", "start_checkpoint":
+		action = "start_checkpoint"
+	case "continue-checkpoint", "continue_checkpoint", "advance-checkpoint", "advance_checkpoint", "next-checkpoint", "next_checkpoint":
+		action = "continue_checkpoint"
+	case "complete-checkpoint", "complete_checkpoint", "finish-checkpoint", "finish_checkpoint", "mark-completed", "mark_completed":
 		action = "complete_checkpoint"
 	case "checkpoint-outcome", "checkpoint_outcome", "mark-checkpoint-outcome", "mark_checkpoint_outcome", "mark-checkpoint", "mark_checkpoint":
 		action = "checkpoint_outcome"
+	case "mark-needs-review", "mark_needs_review":
+		action = "mark_needs_review"
+	case "mark-blocked", "mark_blocked":
+		action = "mark_blocked"
+	case "mark-failed", "mark_failed":
+		action = "mark_failed"
 	case "remove-checkpoint", "remove_checkpoint", "delete-checkpoint", "delete_checkpoint":
 		action = "remove_checkpoint"
 	case "reorder-checkpoints", "reorder_checkpoints":
@@ -863,7 +873,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	case "update-section", "update_section":
 		action = "update_section"
 	}
-	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "update_execution_policy" && action != "update_execution_state" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "complete_checkpoint" && action != "checkpoint_outcome" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
+	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "update_execution_policy" && action != "update_execution_state" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "start_checkpoint" && action != "continue_checkpoint" && action != "complete_checkpoint" && action != "checkpoint_outcome" && action != "mark_needs_review" && action != "mark_blocked" && action != "mark_failed" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
 		return planManagePermissionPayload{}, false, nil
 	}
 	planBody := strings.TrimSpace(mapString(args, "plan"))
@@ -927,7 +937,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	}
 	if documentPatch != nil && strings.Contains(action, "checkpoint") {
 		checkpoint = true
-	} else if documentPatch == nil && (action == "update_info" || action == "update_execution_policy" || action == "update_execution_state" || action == "upsert_checkpoint" || action == "update_checkpoint" || action == "complete_checkpoint" || action == "checkpoint_outcome" || action == "remove_checkpoint" || action == "reorder_checkpoints" || action == "set_active_checkpoint") {
+	} else if documentPatch == nil && (action == "update_info" || action == "update_execution_policy" || action == "update_execution_state" || action == "upsert_checkpoint" || action == "update_checkpoint" || action == "start_checkpoint" || action == "continue_checkpoint" || action == "complete_checkpoint" || action == "checkpoint_outcome" || action == "mark_needs_review" || action == "mark_blocked" || action == "mark_failed" || action == "remove_checkpoint" || action == "reorder_checkpoints" || action == "set_active_checkpoint") {
 		return planManagePermissionPayload{}, false, nil
 	}
 	previewPlan := planBody

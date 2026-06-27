@@ -286,10 +286,24 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 		}
 		applyCheckpointCompletionFields(&doc.Checkpoints[idx], op, false)
 		return nil
+	case "start_checkpoint", "continue_checkpoint", "advance_checkpoint", "next_checkpoint":
+		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
+		_, err := ApplyPlanCheckpointStart(doc, PlanCheckpointStartOptions{
+			CheckpointID:    id,
+			AttemptID:       op.AttemptID,
+			RunID:           op.RunID,
+			SessionID:       op.RunSessionID,
+			ParentSessionID: op.ParentSessionID,
+			StartedAt:       op.StartedAt,
+		})
+		return err
 	case "complete_checkpoint", "finish_checkpoint":
 		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
 		if id == "" {
-			return errors.New("complete_checkpoint plan document patch requires checkpoint_id")
+			id = strings.TrimSpace(doc.ActiveCheckpointID)
+		}
+		if id == "" {
+			return errors.New("complete_checkpoint plan document patch requires checkpoint_id or active_checkpoint_id")
 		}
 		_, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{
 			CheckpointID:    id,
@@ -306,14 +320,28 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 			CompletedAt:     op.CompletedAt,
 		})
 		return err
-	case "checkpoint_outcome", "mark_checkpoint_outcome", "mark_checkpoint", "finish_checkpoint_with_outcome":
+	case "checkpoint_outcome", "mark_checkpoint_outcome", "mark_checkpoint", "finish_checkpoint_with_outcome", "mark_needs_review", "mark_completed", "mark_blocked", "mark_failed":
 		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
 		if id == "" {
-			return errors.New("checkpoint_outcome plan document patch requires checkpoint_id")
+			id = strings.TrimSpace(doc.ActiveCheckpointID)
+		}
+		if id == "" {
+			return errors.New("checkpoint_outcome plan document patch requires checkpoint_id or active_checkpoint_id")
+		}
+		outcome := op.Status
+		switch operation {
+		case "mark_needs_review":
+			outcome = PlanCheckpointStatusNeedsReview
+		case "mark_completed":
+			outcome = PlanCheckpointStatusCompleted
+		case "mark_blocked":
+			outcome = PlanCheckpointStatusBlocked
+		case "mark_failed":
+			outcome = PlanCheckpointStatusFailed
 		}
 		_, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{
 			CheckpointID:    id,
-			Outcome:         op.Status,
+			Outcome:         outcome,
 			AttemptID:       op.AttemptID,
 			RunID:           op.RunID,
 			SessionID:       op.RunSessionID,

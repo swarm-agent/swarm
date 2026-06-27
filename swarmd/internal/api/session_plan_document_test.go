@@ -156,3 +156,69 @@ func TestSessionPlansAPIDocumentPatchCreatesOneRevision(t *testing.T) {
 		t.Fatalf("history revisions = %d, want 2", len(historyPayload.Revisions))
 	}
 }
+
+func TestSessionPlansAPICheckpointExecutionPatch(t *testing.T) {
+	server, _, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-primary-v2", "/host/swarm-go")
+	createRec := postSessionsV2Primary(t, server, `{"swarm_id":"host-swarm-id","workspace_binding_id":"binding-primary-v2","title":"primary v2","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create session status = %d, body=%s", createRec.Code, createRec.Body.String())
+	}
+	var createPayload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	createBody := []byte(`{
+		"id":"plan-exec-api",
+		"title":"Execution API Plan",
+		"plan":"# Execution API Plan",
+		"status":"approved",
+		"approval_state":"approved",
+		"document":{
+			"execution_policy":{"mode":"automatic","shape":"checkpointed"},
+			"checkpoints":[{"id":"cp-1","title":"Model","status":"pending"},{"id":"cp-2","title":"API","status":"pending"}],
+			"active_checkpoint_id":"cp-1"
+		}
+	}`)
+	postReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+createPayload.Session.ID+"/plans", bytes.NewReader(createBody))
+	postReq.Header.Set("Content-Type", "application/json")
+	postRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(postRec, withTestPrincipal(postReq))
+	if postRec.Code != http.StatusOK {
+		t.Fatalf("post plan status = %d, body=%s", postRec.Code, postRec.Body.String())
+	}
+
+	patchBody := []byte(`{
+		"id":"plan-exec-api",
+		"update_summary":"start and complete checkpoint through API",
+		"update_scope":"cp-1",
+		"update_kind":"checkpoint_execution",
+		"document_patch":{"operations":[
+			{"operation":"start_checkpoint","checkpoint_id":"cp-1","attempt_id":"attempt-api","run_id":"run-api","run_session_id":"child-api","parent_session_id":"parent-api","started_at":1234},
+			{"operation":"complete_checkpoint","checkpoint_id":"cp-1","report":"api complete","completed_at":2345}
+		]}
+	}`)
+	patchReq := httptest.NewRequest(http.MethodPost, "/v2/sessions/"+createPayload.Session.ID+"/plans", bytes.NewReader(patchBody))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(patchRec, withTestPrincipal(patchReq))
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch plan status = %d, body=%s", patchRec.Code, patchRec.Body.String())
+	}
+	var patchPayload struct {
+		Plan pebblestore.SessionPlanSnapshot `json:"plan"`
+	}
+	if err := json.Unmarshal(patchRec.Body.Bytes(), &patchPayload); err != nil {
+		t.Fatalf("decode patch response: %v", err)
+	}
+	doc := patchPayload.Plan.Document
+	if doc == nil || doc.ActiveCheckpointID != "cp-2" || doc.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || doc.Checkpoints[0].AttemptID != "attempt-api" {
+		t.Fatalf("patched document = %#v", doc)
+	}
+	if doc.ExecutionState == nil || doc.ExecutionState.LastCheckpointID != "cp-1" || doc.ExecutionState.CurrentRunID != "run-api" || doc.ExecutionState.ParentSessionID != "parent-api" {
+		t.Fatalf("execution state = %#v", doc.ExecutionState)
+	}
+}

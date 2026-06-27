@@ -1566,10 +1566,20 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		action = "upsert_checkpoint"
 	case "update-checkpoint", "update_checkpoint", "patch-checkpoint", "patch_checkpoint":
 		action = "update_checkpoint"
-	case "complete-checkpoint", "complete_checkpoint", "finish-checkpoint", "finish_checkpoint":
+	case "start-checkpoint", "start_checkpoint":
+		action = "start_checkpoint"
+	case "continue-checkpoint", "continue_checkpoint", "advance-checkpoint", "advance_checkpoint", "next-checkpoint", "next_checkpoint":
+		action = "continue_checkpoint"
+	case "complete-checkpoint", "complete_checkpoint", "finish-checkpoint", "finish_checkpoint", "mark-completed", "mark_completed":
 		action = "complete_checkpoint"
 	case "checkpoint-outcome", "checkpoint_outcome", "mark-checkpoint-outcome", "mark_checkpoint_outcome", "mark-checkpoint", "mark_checkpoint":
 		action = "checkpoint_outcome"
+	case "mark-needs-review", "mark_needs_review":
+		action = "mark_needs_review"
+	case "mark-blocked", "mark_blocked":
+		action = "mark_blocked"
+	case "mark-failed", "mark_failed":
+		action = "mark_failed"
 	case "remove-checkpoint", "remove_checkpoint", "delete-checkpoint", "delete_checkpoint":
 		action = "remove_checkpoint"
 	case "reorder-checkpoints", "reorder_checkpoints":
@@ -1810,7 +1820,7 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 			"details_truncated": false,
 		}
 		return marshalPlanManagePayload(payload)
-	case "patch", "update_section", "update_info", "update_execution_policy", "update_execution_state", "upsert_checkpoint", "update_checkpoint", "complete_checkpoint", "checkpoint_outcome", "remove_checkpoint", "reorder_checkpoints", "set_active_checkpoint":
+	case "patch", "update_section", "update_info", "update_execution_policy", "update_execution_state", "upsert_checkpoint", "update_checkpoint", "start_checkpoint", "continue_checkpoint", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed", "remove_checkpoint", "reorder_checkpoints", "set_active_checkpoint":
 		planID := strings.TrimSpace(mapString(args, "plan_id"))
 		if planID == "" {
 			planID = strings.TrimSpace(mapString(args, "id"))
@@ -1859,6 +1869,7 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 			"summary":           fmt.Sprintf("patched plan %s", plan.ID),
 			"details_truncated": false,
 		}
+		addPlanExecutionPayloadFields(payload, action, plan.Document)
 		return marshalPlanManagePayload(payload)
 	case "new":
 		title := strings.TrimSpace(mapString(args, "title"))
@@ -2034,6 +2045,32 @@ func planManagePlanRevisionSummary(plan pebblestore.SessionPlanSnapshot) map[str
 		item["diff_lines"] = append([]string(nil), plan.DiffLines...)
 	}
 	return item
+}
+
+func addPlanExecutionPayloadFields(payload map[string]any, action string, doc *pebblestore.SessionPlanDocument) {
+	if payload == nil || doc == nil {
+		return
+	}
+	summary := sessionruntime.SummarizePlanExecution(doc)
+	payload["execution_summary"] = summary
+	switch action {
+	case "start_checkpoint", "continue_checkpoint":
+		payload["checkpoint_id"] = summary.NextCheckpointID
+		payload["next_action"] = "run_checkpoint_with_fresh_context"
+	case "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed":
+		payload["next_checkpoint_id"] = summary.NextCheckpointID
+		if summary.PlanComplete {
+			payload["next_action"] = "plan_complete"
+		} else if summary.ReviewRequired {
+			payload["next_action"] = "await_review"
+		} else if summary.Blocked || summary.Failed {
+			payload["next_action"] = "stopped"
+		} else if summary.AutoAdvanceAllowed && summary.NextCheckpointID != "" {
+			payload["next_action"] = "auto_advance_available"
+		} else if summary.NextCheckpointID != "" {
+			payload["next_action"] = "continue_checkpoint"
+		}
+	}
 }
 
 func marshalPlanManagePayload(payload map[string]any) (string, error) {

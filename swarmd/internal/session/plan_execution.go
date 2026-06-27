@@ -48,6 +48,27 @@ type PlanExecutionSummary struct {
 	StopReason           string `json:"stop_reason,omitempty"`
 }
 
+type PlanCheckpointStartOptions struct {
+	PlanID          string
+	CheckpointID    string
+	AttemptID       string
+	RunID           string
+	SessionID       string
+	ParentSessionID string
+	StartedAt       int64
+}
+
+type PlanCheckpointStartDecision struct {
+	CheckpointID       string `json:"checkpoint_id"`
+	AttemptID          string `json:"attempt_id,omitempty"`
+	Status             string `json:"status"`
+	NextCheckpointID   string `json:"next_checkpoint_id,omitempty"`
+	ReviewRequired     bool   `json:"review_required"`
+	AutoAdvanceAllowed bool   `json:"auto_advance_allowed"`
+	PlanComplete       bool   `json:"plan_complete"`
+	StopReason         string `json:"stop_reason,omitempty"`
+}
+
 type PlanCheckpointOutcomeOptions struct {
 	PlanID          string
 	CheckpointID    string
@@ -502,6 +523,89 @@ func SelectNextPlanCheckpoint(doc *pebblestore.SessionPlanDocument) (pebblestore
 	return doc.Checkpoints[idx], summary, true
 }
 
+func ApplyPlanCheckpointStart(doc *pebblestore.SessionPlanDocument, options PlanCheckpointStartOptions) (PlanCheckpointStartDecision, error) {
+	if doc == nil {
+		return PlanCheckpointStartDecision{}, errors.New("plan document is required")
+	}
+	normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
+	normalizePlanExecutionState(doc.ExecutionState)
+	checkpointID := strings.TrimSpace(options.CheckpointID)
+	if checkpointID == "" {
+		checkpointID = strings.TrimSpace(doc.ActiveCheckpointID)
+	}
+	if checkpointID == "" {
+		_, summary, ok := SelectNextPlanCheckpoint(doc)
+		if !ok {
+			return PlanCheckpointStartDecision{NextCheckpointID: summary.NextCheckpointID, ReviewRequired: summary.ReviewRequired, AutoAdvanceAllowed: summary.AutoAdvanceAllowed, PlanComplete: summary.PlanComplete, StopReason: summary.StopReason}, errors.New("no runnable checkpoint is available")
+		}
+		checkpointID = summary.NextCheckpointID
+	}
+	idx := findPlanCheckpointIndex(doc.Checkpoints, checkpointID)
+	if idx < 0 {
+		return PlanCheckpointStartDecision{}, fmt.Errorf("plan document checkpoint %q was not found", checkpointID)
+	}
+	checkpoint := &doc.Checkpoints[idx]
+	status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
+	summary := SummarizePlanExecution(doc)
+	if planCheckpointReviewPending(doc.ExecutionPolicy, *checkpoint) || status == PlanCheckpointStatusNeedsReview {
+		return PlanCheckpointStartDecision{CheckpointID: checkpointID, Status: status, NextCheckpointID: checkpointID, ReviewRequired: true, StopReason: PlanCheckpointStatusNeedsReview}, fmt.Errorf("checkpoint %q is waiting for review", checkpointID)
+	}
+	switch status {
+	case PlanCheckpointStatusBlocked, PlanCheckpointStatusFailed:
+		return PlanCheckpointStartDecision{CheckpointID: checkpointID, Status: status, NextCheckpointID: checkpointID, StopReason: status}, fmt.Errorf("checkpoint %q is %s", checkpointID, status)
+	case PlanCheckpointStatusCompleted:
+		if summary.NextCheckpointID != checkpointID {
+			return PlanCheckpointStartDecision{CheckpointID: checkpointID, Status: status, NextCheckpointID: summary.NextCheckpointID, AutoAdvanceAllowed: summary.AutoAdvanceAllowed, PlanComplete: summary.PlanComplete, StopReason: summary.StopReason}, fmt.Errorf("checkpoint %q is already completed", checkpointID)
+		}
+	case PlanCheckpointStatusPending, PlanCheckpointStatusInProgress:
+		// Runnable.
+	default:
+		return PlanCheckpointStartDecision{}, fmt.Errorf("checkpoint %q status %q is not runnable", checkpointID, status)
+	}
+
+	attemptID := strings.TrimSpace(options.AttemptID)
+	if attemptID == "" {
+		attemptID = fmt.Sprintf("%s:attempt-%d", checkpointID, len(checkpoint.Attempts)+1)
+	}
+	startedAt := options.StartedAt
+	if startedAt > 0 && checkpoint.StartedAt == 0 {
+		checkpoint.StartedAt = startedAt
+	}
+	checkpoint.Status = PlanCheckpointStatusInProgress
+	checkpoint.AttemptID = attemptID
+	checkpoint.RunID = strings.TrimSpace(options.RunID)
+	checkpoint.SessionID = strings.TrimSpace(options.SessionID)
+	upsertPlanCheckpointAttempt(checkpoint, pebblestore.SessionPlanCheckpointAttempt{
+		ID:              attemptID,
+		CheckpointID:    checkpointID,
+		Status:          PlanCheckpointStatusInProgress,
+		RunID:           strings.TrimSpace(options.RunID),
+		SessionID:       strings.TrimSpace(options.SessionID),
+		ParentSessionID: strings.TrimSpace(options.ParentSessionID),
+		StartedAt:       firstPositiveInt64(startedAt, checkpoint.StartedAt),
+	})
+	doc.ActiveCheckpointID = checkpointID
+	if doc.ExecutionState == nil {
+		doc.ExecutionState = &pebblestore.SessionPlanExecutionState{}
+	}
+	doc.ExecutionState.Status = PlanExecutionStateInProgress
+	doc.ExecutionState.ActiveAttemptID = attemptID
+	if strings.TrimSpace(options.ParentSessionID) != "" {
+		doc.ExecutionState.ParentSessionID = strings.TrimSpace(options.ParentSessionID)
+	}
+	if strings.TrimSpace(options.SessionID) != "" {
+		doc.ExecutionState.CurrentSessionID = strings.TrimSpace(options.SessionID)
+	}
+	if strings.TrimSpace(options.RunID) != "" {
+		doc.ExecutionState.CurrentRunID = strings.TrimSpace(options.RunID)
+	}
+	if startedAt > 0 {
+		doc.ExecutionState.StartedAt = firstPositiveInt64(doc.ExecutionState.StartedAt, startedAt)
+		doc.ExecutionState.UpdatedAt = startedAt
+	}
+	return PlanCheckpointStartDecision{CheckpointID: checkpointID, AttemptID: attemptID, Status: PlanCheckpointStatusInProgress, NextCheckpointID: checkpointID, AutoAdvanceAllowed: doc.ExecutionPolicy.Mode == PlanExecutionPolicyModeAutomatic}, nil
+}
+
 func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options PlanCheckpointOutcomeOptions) (PlanCheckpointOutcomeDecision, error) {
 	if doc == nil {
 		return PlanCheckpointOutcomeDecision{}, errors.New("plan document is required")
@@ -565,7 +669,19 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 		}
 	}
 	attemptID := strings.TrimSpace(options.AttemptID)
-	if attemptID == "" && (strings.TrimSpace(options.RunID) != "" || strings.TrimSpace(options.SessionID) != "" || strings.TrimSpace(options.ParentSessionID) != "") {
+	if attemptID == "" {
+		attemptID = strings.TrimSpace(checkpoint.AttemptID)
+	}
+	if attemptID == "" && doc.ExecutionState != nil {
+		attemptID = strings.TrimSpace(doc.ExecutionState.ActiveAttemptID)
+	}
+	runID := strings.TrimSpace(firstNonBlank(options.RunID, checkpoint.RunID))
+	runSessionID := strings.TrimSpace(firstNonBlank(options.SessionID, checkpoint.SessionID))
+	parentSessionID := strings.TrimSpace(options.ParentSessionID)
+	if parentSessionID == "" && doc.ExecutionState != nil {
+		parentSessionID = strings.TrimSpace(doc.ExecutionState.ParentSessionID)
+	}
+	if attemptID == "" && (runID != "" || runSessionID != "" || parentSessionID != "") {
 		attemptID = fmt.Sprintf("%s:attempt-%d", checkpointID, len(checkpoint.Attempts)+1)
 	}
 	if attemptID != "" {
@@ -574,9 +690,9 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 			CheckpointID:    checkpointID,
 			Status:          outcome,
 			Outcome:         outcome,
-			RunID:           strings.TrimSpace(options.RunID),
-			SessionID:       strings.TrimSpace(options.SessionID),
-			ParentSessionID: strings.TrimSpace(options.ParentSessionID),
+			RunID:           runID,
+			SessionID:       runSessionID,
+			ParentSessionID: parentSessionID,
 			StartedAt:       firstPositiveInt64(options.StartedAt, checkpoint.StartedAt),
 			CompletedAt:     options.CompletedAt,
 			Report:          checkpoint.Report,
@@ -585,8 +701,8 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 			Validation:      cloneStringSlice(checkpoint.Validation),
 		})
 		checkpoint.AttemptID = attemptID
-		checkpoint.RunID = strings.TrimSpace(options.RunID)
-		checkpoint.SessionID = strings.TrimSpace(options.SessionID)
+		checkpoint.RunID = runID
+		checkpoint.SessionID = runSessionID
 	}
 
 	if doc.ExecutionState == nil {
@@ -596,14 +712,14 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 	doc.ExecutionState.LastAttemptID = attemptID
 	doc.ExecutionState.LastOutcome = outcome
 	doc.ExecutionState.UpdatedAt = options.CompletedAt
-	if strings.TrimSpace(options.ParentSessionID) != "" {
-		doc.ExecutionState.ParentSessionID = strings.TrimSpace(options.ParentSessionID)
+	if parentSessionID != "" {
+		doc.ExecutionState.ParentSessionID = parentSessionID
 	}
-	if strings.TrimSpace(options.SessionID) != "" {
-		doc.ExecutionState.CurrentSessionID = strings.TrimSpace(options.SessionID)
+	if runSessionID != "" {
+		doc.ExecutionState.CurrentSessionID = runSessionID
 	}
-	if strings.TrimSpace(options.RunID) != "" {
-		doc.ExecutionState.CurrentRunID = strings.TrimSpace(options.RunID)
+	if runID != "" {
+		doc.ExecutionState.CurrentRunID = runID
 	}
 
 	decision := PlanCheckpointOutcomeDecision{CheckpointID: checkpointID, Outcome: outcome, Status: outcome}
