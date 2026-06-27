@@ -65,6 +65,8 @@ function toneBadgeClass(tone: Tone): string {
   }
 }
 
+const waitingReviewBadgeClass = 'rounded-md border border-[var(--app-border)] bg-[linear-gradient(135deg,var(--app-warning-bg),var(--app-primary-soft))] px-2 py-0.5 text-[9px] font-semibold uppercase leading-4 tracking-[0.06em] text-[var(--app-text)] shadow-[0_0_18px_color-mix(in_oklab,var(--app-warning-text)_12%,transparent)]'
+
 function actionBusyKey(action: DesktopPlanExecutionAction, checkpointId?: string): string {
   return `${action}:${checkpointId ?? ''}`
 }
@@ -83,8 +85,9 @@ function statusLabel(view: DesktopPlanExecutionView, checkpoint?: DesktopSession
 }
 
 function StatusBadge({ label, tone }: { label: string; tone: Tone }) {
+  const isWaitingReview = label.trim().toLowerCase() === 'waiting review'
   return (
-    <span className={cn('inline-flex max-w-[112px] shrink-0 items-center rounded-md border px-1.5 py-px text-[9px] font-semibold uppercase leading-4 tracking-[0.06em]', toneBadgeClass(tone))}>
+    <span className={cn('inline-flex max-w-[132px] shrink-0 items-center', isWaitingReview ? waitingReviewBadgeClass : cn('rounded-md border px-1.5 py-px text-[9px] font-semibold uppercase leading-4 tracking-[0.06em]', toneBadgeClass(tone)))}>
       <span className="truncate">{label}</span>
     </span>
   )
