@@ -1558,12 +1558,18 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		}
 	case "update-info", "update_info", "patch-info", "patch_info":
 		action = "update_info"
+	case "update-execution-policy", "update_execution_policy", "set-execution-policy", "set_execution_policy", "execution-policy", "execution_policy":
+		action = "update_execution_policy"
+	case "update-execution-state", "update_execution_state", "set-execution-state", "set_execution_state", "execution-state", "execution_state":
+		action = "update_execution_state"
 	case "upsert-checkpoint", "upsert_checkpoint", "replace-checkpoint", "replace_checkpoint":
 		action = "upsert_checkpoint"
 	case "update-checkpoint", "update_checkpoint", "patch-checkpoint", "patch_checkpoint":
 		action = "update_checkpoint"
 	case "complete-checkpoint", "complete_checkpoint", "finish-checkpoint", "finish_checkpoint":
 		action = "complete_checkpoint"
+	case "checkpoint-outcome", "checkpoint_outcome", "mark-checkpoint-outcome", "mark_checkpoint_outcome", "mark-checkpoint", "mark_checkpoint":
+		action = "checkpoint_outcome"
 	case "remove-checkpoint", "remove_checkpoint", "delete-checkpoint", "delete_checkpoint":
 		action = "remove_checkpoint"
 	case "reorder-checkpoints", "reorder_checkpoints":
@@ -1804,7 +1810,7 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 			"details_truncated": false,
 		}
 		return marshalPlanManagePayload(payload)
-	case "patch", "update_section", "update_info", "upsert_checkpoint", "update_checkpoint", "complete_checkpoint", "remove_checkpoint", "reorder_checkpoints", "set_active_checkpoint":
+	case "patch", "update_section", "update_info", "update_execution_policy", "update_execution_state", "upsert_checkpoint", "update_checkpoint", "complete_checkpoint", "checkpoint_outcome", "remove_checkpoint", "reorder_checkpoints", "set_active_checkpoint":
 		planID := strings.TrimSpace(mapString(args, "plan_id"))
 		if planID == "" {
 			planID = strings.TrimSpace(mapString(args, "id"))

@@ -86,7 +86,13 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 		CheckpointID:       strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_id"), mapString(args, "id"))),
 		CheckpointOrder:    mapStringSlice(args, "checkpoint_order"),
 		ActiveCheckpointID: strings.TrimSpace(firstNonEmptyString(mapString(args, "active_checkpoint_id"), mapString(args, "active_checkpoint"))),
-		Status:             strings.TrimSpace(mapString(args, "status")),
+		Status:             strings.TrimSpace(firstNonEmptyString(mapString(args, "status"), mapString(args, "outcome"))),
+		AttemptID:          strings.TrimSpace(mapString(args, "attempt_id")),
+		RunID:              strings.TrimSpace(mapString(args, "run_id")),
+		RunSessionID:       strings.TrimSpace(firstNonEmptyString(mapString(args, "run_session_id"), mapString(args, "session_id"))),
+		ParentSessionID:    strings.TrimSpace(mapString(args, "parent_session_id")),
+		StartedAt:          int64(mapInt(args, "started_at")),
+		CompletedAt:        int64(mapInt(args, "completed_at")),
 		Notes:              rawStringArg(args, "notes"),
 		Report:             rawStringArg(args, "report"),
 		Result:             rawStringArg(args, "result"),
@@ -114,6 +120,20 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 		}
 		patch.Info = &info
 		patch.InfoFields = fields
+	}
+	if value, ok := args["execution_policy"]; ok && value != nil {
+		var policy pebblestore.SessionPlanExecutionPolicy
+		if err := unmarshalPlanToolArg(value, &policy, "plan_manage execution_policy"); err != nil {
+			return nil, err
+		}
+		patch.ExecutionPolicy = &policy
+	}
+	if value, ok := args["execution_state"]; ok && value != nil {
+		var state pebblestore.SessionPlanExecutionState
+		if err := unmarshalPlanToolArg(value, &state, "plan_manage execution_state"); err != nil {
+			return nil, err
+		}
+		patch.ExecutionState = &state
 	}
 	if value, ok := args["checkpoint"]; ok && value != nil {
 		if _, isBool := value.(bool); isBool {
@@ -143,8 +163,17 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 	return &patch, nil
 }
 
+func planDocumentActionUsesStatusForDocument(action string) bool {
+	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_") {
+	case "upsert_checkpoint", "replace_checkpoint", "set_checkpoint", "update_checkpoint", "patch_checkpoint", "complete_checkpoint", "finish_checkpoint", "checkpoint_outcome", "mark_checkpoint_outcome", "mark_checkpoint", "finish_checkpoint_with_outcome":
+		return true
+	default:
+		return false
+	}
+}
+
 func planDocumentPatchArgsPresent(args map[string]any) bool {
-	keys := []string{"document_patch", "document_operation", "info", "checkpoint", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "notes", "report", "result", "changed_files", "validation", "operations"}
+	keys := []string{"document_patch", "document_operation", "info", "execution_policy", "execution_state", "checkpoint", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "notes", "report", "result", "changed_files", "validation", "operations"}
 	for _, key := range keys {
 		value, ok := args[key]
 		if !ok {
@@ -157,11 +186,13 @@ func planDocumentPatchArgsPresent(args map[string]any) bool {
 		}
 		return true
 	}
-	operation := strings.ToLower(strings.TrimSpace(firstNonEmptyString(mapString(args, "operation"), mapString(args, "op"))))
+	operation := strings.ToLower(strings.TrimSpace(firstNonEmptyString(mapString(args, "document_operation"), mapString(args, "operation"), mapString(args, "op"))))
 	switch strings.ReplaceAll(operation, "-", "_") {
-	case "update_info", "patch_info", "replace_info", "set_info", "upsert_checkpoint", "replace_checkpoint", "set_checkpoint", "update_checkpoint", "patch_checkpoint", "complete_checkpoint", "finish_checkpoint", "remove_checkpoint", "delete_checkpoint", "reorder_checkpoints", "reorder_checkpoint", "set_active_checkpoint", "activate_checkpoint":
+	case "update_info", "patch_info", "replace_info", "set_info", "update_execution_policy", "set_execution_policy", "execution_policy", "update_execution_state", "set_execution_state", "execution_state", "upsert_checkpoint", "replace_checkpoint", "set_checkpoint", "update_checkpoint", "patch_checkpoint", "complete_checkpoint", "finish_checkpoint", "checkpoint_outcome", "mark_checkpoint_outcome", "mark_checkpoint", "finish_checkpoint_with_outcome", "remove_checkpoint", "delete_checkpoint", "reorder_checkpoints", "reorder_checkpoint", "set_active_checkpoint", "activate_checkpoint":
 		return true
-	default:
-		return false
 	}
+	if planDocumentActionUsesStatusForDocument(mapString(args, "action")) {
+		return true
+	}
+	return false
 }

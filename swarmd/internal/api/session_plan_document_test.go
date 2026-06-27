@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -135,7 +136,7 @@ func TestSessionPlansAPIDocumentPatchCreatesOneRevision(t *testing.T) {
 	if patchPayload.Plan.Version != 2 || patchPayload.Plan.ParentRevision != 1 {
 		t.Fatalf("revision linkage = version %d parent %d", patchPayload.Plan.Version, patchPayload.Plan.ParentRevision)
 	}
-	if patchPayload.Plan.Document == nil || patchPayload.Plan.Document.ActiveCheckpointID != "cp-2" || patchPayload.Plan.Document.Checkpoints[0].Status != "done" || patchPayload.Plan.Document.Checkpoints[0].Report != "model done" {
+	if patchPayload.Plan.Document == nil || patchPayload.Plan.Document.ActiveCheckpointID != "cp-2" || patchPayload.Plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || patchPayload.Plan.Document.Checkpoints[0].Report != "model done" {
 		t.Fatalf("patched document = %#v", patchPayload.Plan.Document)
 	}
 

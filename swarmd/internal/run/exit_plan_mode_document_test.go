@@ -40,7 +40,7 @@ func TestExecuteExitPlanModePersistsStructuredDocument(t *testing.T) {
 			},
 			Checkpoints: []pebblestore.SessionPlanCheckpoint{
 				{ID: "cp-2", Title: "Second", Status: "pending", Objective: "preserve requested order"},
-				{ID: "cp-1", Title: "First", Status: "done", Objective: "preserve stable id"},
+				{ID: "cp-1", Title: "First", Status: sessionruntime.PlanCheckpointStatusCompleted, Objective: "preserve stable id"},
 			},
 			ActiveCheckpointID: "cp-2",
 		},
@@ -123,7 +123,7 @@ func TestExitPlanModePermissionPayloadIncludesStructuredDocument(t *testing.T) {
 		"title":   "Exit Structured Plan",
 		"document": pebblestore.SessionPlanDocument{
 			Info:               pebblestore.SessionPlanInfo{Goal: "approval sees structured goal"},
-			Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Initial", Status: "done"}, {ID: "cp-2", Title: "Next", Status: "pending"}},
+			Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Initial", Status: sessionruntime.PlanCheckpointStatusCompleted}, {ID: "cp-2", Title: "Next", Status: "pending"}},
 			ActiveCheckpointID: "cp-2",
 		},
 	}
@@ -182,7 +182,7 @@ func assertExitPlanDocument(t *testing.T, document *pebblestore.SessionPlanDocum
 	if document.Checkpoints[0].ID != "cp-2" || document.Checkpoints[0].Order != 1 || document.Checkpoints[0].Status != "pending" || document.Checkpoints[0].Objective != "preserve requested order" {
 		t.Fatalf("checkpoint[0] = %#v", document.Checkpoints[0])
 	}
-	if document.Checkpoints[1].ID != "cp-1" || document.Checkpoints[1].Order != 2 || document.Checkpoints[1].Status != "done" || document.Checkpoints[1].Objective != "preserve stable id" {
+	if document.Checkpoints[1].ID != "cp-1" || document.Checkpoints[1].Order != 2 || document.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusCompleted || document.Checkpoints[1].Objective != "preserve stable id" {
 		t.Fatalf("checkpoint[1] = %#v", document.Checkpoints[1])
 	}
 }

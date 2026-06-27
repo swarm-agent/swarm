@@ -138,16 +138,41 @@ type SessionPlanSnapshot struct {
 }
 
 type SessionPlanDocument struct {
-	ID                 string                  `json:"id"`
-	Title              string                  `json:"title"`
-	Status             string                  `json:"status,omitempty"`
-	SchemaVersion      string                  `json:"schema_version,omitempty"`
-	RevisionID         string                  `json:"revision_id,omitempty"`
-	Info               SessionPlanInfo         `json:"info,omitempty"`
-	Checkpoints        []SessionPlanCheckpoint `json:"checkpoints,omitempty"`
-	ActiveCheckpointID string                  `json:"active_checkpoint_id,omitempty"`
-	RenderedText       string                  `json:"rendered_text,omitempty"`
-	DisplayText        string                  `json:"display_text,omitempty"`
+	ID                 string                     `json:"id"`
+	Title              string                     `json:"title"`
+	Status             string                     `json:"status,omitempty"`
+	SchemaVersion      string                     `json:"schema_version,omitempty"`
+	RevisionID         string                     `json:"revision_id,omitempty"`
+	Info               SessionPlanInfo            `json:"info,omitempty"`
+	ExecutionPolicy    SessionPlanExecutionPolicy `json:"execution_policy,omitempty"`
+	ExecutionState     *SessionPlanExecutionState `json:"execution_state,omitempty"`
+	Checkpoints        []SessionPlanCheckpoint    `json:"checkpoints,omitempty"`
+	ActiveCheckpointID string                     `json:"active_checkpoint_id,omitempty"`
+	RenderedText       string                     `json:"rendered_text,omitempty"`
+	DisplayText        string                     `json:"display_text,omitempty"`
+}
+
+// SessionPlanExecutionPolicy is plan-level policy. It is intentionally stored
+// with the plan document so checkpoint execution can be resumed without reading
+// chat history.
+type SessionPlanExecutionPolicy struct {
+	Mode  string `json:"mode,omitempty"`
+	Shape string `json:"shape,omitempty"`
+}
+
+// SessionPlanExecutionState stores the active execution linkage for the plan.
+type SessionPlanExecutionState struct {
+	Status           string `json:"status,omitempty"`
+	ActiveAttemptID  string `json:"active_attempt_id,omitempty"`
+	ParentSessionID  string `json:"parent_session_id,omitempty"`
+	CurrentSessionID string `json:"current_session_id,omitempty"`
+	CurrentRunID     string `json:"current_run_id,omitempty"`
+	LastCheckpointID string `json:"last_checkpoint_id,omitempty"`
+	LastAttemptID    string `json:"last_attempt_id,omitempty"`
+	LastOutcome      string `json:"last_outcome,omitempty"`
+	StartedAt        int64  `json:"started_at,omitempty"`
+	UpdatedAt        int64  `json:"updated_at,omitempty"`
+	CompletedAt      int64  `json:"completed_at,omitempty"`
 }
 
 type SessionPlanInfo struct {
@@ -164,18 +189,50 @@ type SessionPlanInfo struct {
 }
 
 type SessionPlanCheckpoint struct {
-	ID                 string   `json:"id"`
-	Title              string   `json:"title,omitempty"`
-	Status             string   `json:"status,omitempty"`
-	Objective          string   `json:"objective,omitempty"`
-	Tasks              []string `json:"tasks,omitempty"`
-	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
-	Notes              string   `json:"notes,omitempty"`
-	Report             string   `json:"report,omitempty"`
-	Result             string   `json:"result,omitempty"`
-	ChangedFiles       []string `json:"changed_files,omitempty"`
-	Validation         []string `json:"validation,omitempty"`
-	Order              int      `json:"order,omitempty"`
+	ID                 string                         `json:"id"`
+	Title              string                         `json:"title,omitempty"`
+	Status             string                         `json:"status,omitempty"`
+	Objective          string                         `json:"objective,omitempty"`
+	Tasks              []string                       `json:"tasks,omitempty"`
+	AcceptanceCriteria []string                       `json:"acceptance_criteria,omitempty"`
+	Notes              string                         `json:"notes,omitempty"`
+	Report             string                         `json:"report,omitempty"`
+	Result             string                         `json:"result,omitempty"`
+	ChangedFiles       []string                       `json:"changed_files,omitempty"`
+	Validation         []string                       `json:"validation,omitempty"`
+	AttemptID          string                         `json:"attempt_id,omitempty"`
+	RunID              string                         `json:"run_id,omitempty"`
+	SessionID          string                         `json:"session_id,omitempty"`
+	StartedAt          int64                          `json:"started_at,omitempty"`
+	CompletedAt        int64                          `json:"completed_at,omitempty"`
+	Review             *SessionPlanCheckpointReview   `json:"review,omitempty"`
+	Attempts           []SessionPlanCheckpointAttempt `json:"attempts,omitempty"`
+	Order              int                            `json:"order,omitempty"`
+}
+
+type SessionPlanCheckpointAttempt struct {
+	ID              string   `json:"id"`
+	CheckpointID    string   `json:"checkpoint_id,omitempty"`
+	Status          string   `json:"status,omitempty"`
+	Outcome         string   `json:"outcome,omitempty"`
+	RunID           string   `json:"run_id,omitempty"`
+	SessionID       string   `json:"session_id,omitempty"`
+	ParentSessionID string   `json:"parent_session_id,omitempty"`
+	StartedAt       int64    `json:"started_at,omitempty"`
+	CompletedAt     int64    `json:"completed_at,omitempty"`
+	Report          string   `json:"report,omitempty"`
+	Result          string   `json:"result,omitempty"`
+	ChangedFiles    []string `json:"changed_files,omitempty"`
+	Validation      []string `json:"validation,omitempty"`
+}
+
+type SessionPlanCheckpointReview struct {
+	Status       string `json:"status,omitempty"`
+	ReviewerID   string `json:"reviewer_id,omitempty"`
+	ReviewerType string `json:"reviewer_type,omitempty"`
+	Result       string `json:"result,omitempty"`
+	Notes        string `json:"notes,omitempty"`
+	ReviewedAt   int64  `json:"reviewed_at,omitempty"`
 }
 
 type SessionPlanActive struct {

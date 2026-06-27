@@ -842,12 +842,18 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		}
 	case "update-info", "update_info":
 		action = "update_info"
+	case "update-execution-policy", "update_execution_policy", "set-execution-policy", "set_execution_policy", "execution-policy", "execution_policy":
+		action = "update_execution_policy"
+	case "update-execution-state", "update_execution_state", "set-execution-state", "set_execution_state", "execution-state", "execution_state":
+		action = "update_execution_state"
 	case "upsert-checkpoint", "upsert_checkpoint", "replace-checkpoint", "replace_checkpoint", "set-checkpoint", "set_checkpoint":
 		action = "upsert_checkpoint"
 	case "update-checkpoint", "update_checkpoint", "patch-checkpoint", "patch_checkpoint":
 		action = "update_checkpoint"
 	case "complete-checkpoint", "complete_checkpoint", "finish-checkpoint", "finish_checkpoint":
 		action = "complete_checkpoint"
+	case "checkpoint-outcome", "checkpoint_outcome", "mark-checkpoint-outcome", "mark_checkpoint_outcome", "mark-checkpoint", "mark_checkpoint":
+		action = "checkpoint_outcome"
 	case "remove-checkpoint", "remove_checkpoint", "delete-checkpoint", "delete_checkpoint":
 		action = "remove_checkpoint"
 	case "reorder-checkpoints", "reorder_checkpoints":
@@ -857,7 +863,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	case "update-section", "update_section":
 		action = "update_section"
 	}
-	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "complete_checkpoint" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
+	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "update_execution_policy" && action != "update_execution_state" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "complete_checkpoint" && action != "checkpoint_outcome" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
 		return planManagePermissionPayload{}, false, nil
 	}
 	planBody := strings.TrimSpace(mapString(args, "plan"))
@@ -921,7 +927,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	}
 	if documentPatch != nil && strings.Contains(action, "checkpoint") {
 		checkpoint = true
-	} else if documentPatch == nil && (action == "update_info" || action == "upsert_checkpoint" || action == "update_checkpoint" || action == "complete_checkpoint" || action == "remove_checkpoint" || action == "reorder_checkpoints" || action == "set_active_checkpoint") {
+	} else if documentPatch == nil && (action == "update_info" || action == "update_execution_policy" || action == "update_execution_state" || action == "upsert_checkpoint" || action == "update_checkpoint" || action == "complete_checkpoint" || action == "checkpoint_outcome" || action == "remove_checkpoint" || action == "reorder_checkpoints" || action == "set_active_checkpoint") {
 		return planManagePermissionPayload{}, false, nil
 	}
 	previewPlan := planBody
@@ -992,7 +998,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	} else {
 		for key, value := range args {
 			switch key {
-			case "document", "document_patch", "document_operation", "operations", "info", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "notes", "report", "result", "changed_files", "validation", "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
+			case "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "notes", "report", "result", "changed_files", "validation", "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
 				payload.ApprovedArguments[key] = value
 			case "checkpoint":
 				if _, isBool := value.(bool); !isBool {

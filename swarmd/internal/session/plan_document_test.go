@@ -241,7 +241,7 @@ func TestApplyPlanDocumentPatchBatchCreatesOneRevision(t *testing.T) {
 	if updated.Document == nil || updated.Document.Info.Goal != "modular one-plan system" || updated.Document.Info.Scope != "initial scope" || updated.Document.ActiveCheckpointID != "cp-2" {
 		t.Fatalf("updated document = %#v", updated.Document)
 	}
-	if updated.Document.Checkpoints[0].ID != "cp-2" || updated.Document.Checkpoints[0].Order != 1 || updated.Document.Checkpoints[1].Status != "done" || updated.Document.Checkpoints[1].Report != "model complete" {
+	if updated.Document.Checkpoints[0].ID != "cp-2" || updated.Document.Checkpoints[0].Order != 1 || updated.Document.Checkpoints[1].Status != PlanCheckpointStatusCompleted || updated.Document.Checkpoints[1].Report != "model complete" {
 		t.Fatalf("checkpoint patch/order failed: %#v", updated.Document.Checkpoints)
 	}
 	revisions, err := svc.ListPlanRevisions(sessionID, first.ID, 10)
