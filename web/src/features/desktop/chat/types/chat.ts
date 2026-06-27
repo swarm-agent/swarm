@@ -290,6 +290,50 @@ export interface DesktopSessionPlanInfo {
   validationStrategy: string;
 }
 
+export interface DesktopSessionPlanExecutionPolicy {
+  mode: string;
+  shape: string;
+}
+
+export interface DesktopSessionPlanExecutionState {
+  status: string;
+  activeAttemptId: string;
+  parentSessionId: string;
+  currentSessionId: string;
+  currentRunId: string;
+  lastCheckpointId: string;
+  lastAttemptId: string;
+  lastOutcome: string;
+  startedAt: number;
+  updatedAt: number;
+  completedAt: number;
+}
+
+export interface DesktopSessionPlanCheckpointReview {
+  status: string;
+  reviewerId: string;
+  reviewerType: string;
+  result: string;
+  notes: string;
+  reviewedAt: number;
+}
+
+export interface DesktopSessionPlanCheckpointAttempt {
+  id: string;
+  checkpointId: string;
+  status: string;
+  outcome: string;
+  runId: string;
+  sessionId: string;
+  parentSessionId: string;
+  startedAt: number;
+  completedAt: number;
+  report: string;
+  result: string;
+  changedFiles: string[];
+  validation: string[];
+}
+
 export interface DesktopSessionPlanCheckpoint {
   id: string;
   title: string;
@@ -302,6 +346,13 @@ export interface DesktopSessionPlanCheckpoint {
   result: string;
   changedFiles: string[];
   validation: string[];
+  attemptId: string;
+  runId: string;
+  sessionId: string;
+  startedAt: number;
+  completedAt: number;
+  review: DesktopSessionPlanCheckpointReview | null;
+  attempts: DesktopSessionPlanCheckpointAttempt[];
   order: number;
 }
 
@@ -312,6 +363,8 @@ export interface DesktopSessionPlanDocument {
   schemaVersion: string;
   revisionId: string;
   info: DesktopSessionPlanInfo;
+  executionPolicy: DesktopSessionPlanExecutionPolicy | null;
+  executionState: DesktopSessionPlanExecutionState | null;
   checkpoints: DesktopSessionPlanCheckpoint[];
   activeCheckpointId: string;
   renderedText: string;

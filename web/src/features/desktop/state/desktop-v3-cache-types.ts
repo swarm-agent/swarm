@@ -148,7 +148,8 @@ export interface DesktopV3SessionView {
   pending_permissions?: unknown[]
   usage_summary?: unknown
   current_run_state?: V3SessionRunState
-  active_plan?: unknown
+  has_active_plan?: boolean
+  active_plan?: unknown | null
 }
 
 export interface V3SessionTombstone {

@@ -554,6 +554,9 @@ func TestSessionsV3SyncHydrateReturnsSessionView(t *testing.T) {
 	if _, err := server.perm.CreatePending(permission.CreateInput{SessionID: created.ID, RunID: "run-sync-hydrate-view", CallID: "call-sync-hydrate-view", ToolName: "bash", ToolArguments: "{}", Requirement: "approval", Mode: "auto"}); err != nil {
 		t.Fatalf("create pending permission: %v", err)
 	}
+	if _, _, err := server.sessions.SavePlan(created.ID, "sync-view-plan", "Sync View Plan", "# Sync View Plan", "approved", "approved", true); err != nil {
+		t.Fatalf("save active plan: %v", err)
+	}
 	now := time.Now().UnixMilli()
 	for _, intentStatus := range []string{sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning} {
 		if _, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
@@ -589,6 +592,7 @@ func TestSessionsV3SyncHydrateReturnsSessionView(t *testing.T) {
 			"run_intents":       true,
 			"current_run_state": true,
 			"session_view":      true,
+			"active_plan":       true,
 		},
 	})
 	if err != nil {
@@ -625,6 +629,9 @@ func TestSessionsV3SyncHydrateReturnsSessionView(t *testing.T) {
 	}
 	if view.CurrentRunState == nil || !view.CurrentRunState.Active || view.CurrentRunState.RunID != "run-sync-hydrate-view" {
 		t.Fatalf("session view current run state = %+v", view.CurrentRunState)
+	}
+	if view.HasActivePlan == nil || !*view.HasActivePlan || view.ActivePlan == nil || view.ActivePlan.ID != "sync-view-plan" {
+		t.Fatalf("session view active plan = has:%v plan:%+v", view.HasActivePlan, view.ActivePlan)
 	}
 }
 

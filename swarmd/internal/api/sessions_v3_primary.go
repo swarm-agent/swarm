@@ -127,6 +127,27 @@ type sessionsV3PlanUpsertRequest struct {
 	Activate      *bool                             `json:"activate"`
 }
 
+type sessionsV3PlanExecutionRequest struct {
+	Action                string `json:"action"`
+	PlanID                string `json:"plan_id,omitempty"`
+	ID                    string `json:"id,omitempty"`
+	CheckpointID          string `json:"checkpoint_id,omitempty"`
+	ActiveCheckpointID    string `json:"active_checkpoint_id,omitempty"`
+	ActiveCheckpoint      string `json:"active_checkpoint,omitempty"`
+	ExecutionGranularity  string `json:"execution_granularity,omitempty"`
+	Granularity           string `json:"granularity,omitempty"`
+	ExecutionShape        string `json:"execution_shape,omitempty"`
+	Shape                 string `json:"shape,omitempty"`
+	ContinuationPolicy    string `json:"continuation_policy,omitempty"`
+	Continuation          string `json:"continuation,omitempty"`
+	Mode                  string `json:"mode,omitempty"`
+	ContinueAutomatically *bool  `json:"continue_automatically,omitempty"`
+	Result                string `json:"result,omitempty"`
+	Notes                 string `json:"notes,omitempty"`
+	Report                string `json:"report,omitempty"`
+	ReviewedAt            int64  `json:"reviewed_at,omitempty"`
+}
+
 type sessionsV3HydratedSession struct {
 	Session                pebblestore.SessionSnapshot       `json:"session"`
 	Projection             sessionruntime.SessionProjection  `json:"projection"`
@@ -228,6 +249,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryEvents(w, r, principal, sessionID)
 	case "run/stop":
 		s.handleSessionV3PrimaryRunStop(w, r, principal, sessionID)
+	case "run/stream":
+		s.handleRunStreamControl(w, r, sessionID, principal)
 	case "compact":
 		s.handleSessionV3PrimaryCompact(w, r, principal, sessionID)
 	case "settings":
@@ -244,6 +267,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryMetadata(w, r, principal, sessionID)
 	case "plans":
 		s.handleSessionV3PrimaryPlans(w, r, principal, sessionID)
+	case "plans/execution":
+		s.handleSessionV3PrimaryPlanExecution(w, r, principal, sessionID)
 	case "plans/active":
 		s.handleSessionV3PrimaryActivePlan(w, r, principal, sessionID)
 	case "permissions":
@@ -1118,6 +1143,249 @@ func (s *Server) handleSessionV3PrimaryPlans(w http.ResponseWriter, r *http.Requ
 		s.hub.Publish(*event)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": plan})
+}
+
+func (s *Server) handleSessionV3PrimaryPlanExecution(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	} else if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	var req sessionsV3PlanExecutionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	action := normalizeSessionsV3PlanExecutionAction(req.Action)
+	if action == "" {
+		writeError(w, http.StatusBadRequest, errors.New("plan execution action is required"))
+		return
+	}
+	planID := strings.TrimSpace(firstNonEmpty(req.PlanID, req.ID))
+	var existing pebblestore.SessionPlanSnapshot
+	var ok bool
+	var err error
+	if planID == "" || strings.EqualFold(planID, "active") {
+		existing, ok, err = s.sessions.GetActivePlan(sessionID)
+	} else {
+		existing, ok, err = s.sessions.GetPlan(sessionID, planID)
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !ok || existing.Document == nil {
+		writeError(w, http.StatusBadRequest, errors.New("plan execution action requires an active structured plan"))
+		return
+	}
+	planID = strings.TrimSpace(existing.ID)
+	doc, err := cloneSessionsV3PlanDocumentForExecutionAction(existing.Document)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(doc.ID) == "" {
+		doc.ID = planID
+	}
+	if strings.TrimSpace(doc.Title) == "" {
+		doc.Title = strings.TrimSpace(existing.Title)
+	}
+
+	checkpointID := strings.TrimSpace(firstNonEmpty(req.CheckpointID, req.ActiveCheckpointID, req.ActiveCheckpoint))
+	status := strings.TrimSpace(existing.Status)
+	approvalState := strings.TrimSpace(existing.ApprovalState)
+	updateSummary := "Updated plan execution state"
+	updateKind := "plan_execution_control"
+	responseCheckpointID := ""
+	responseAttemptID := ""
+	now := time.Now().UnixMilli()
+
+	switch action {
+	case "approve_and_start":
+		granularity := strings.TrimSpace(firstNonEmpty(req.ExecutionGranularity, req.Granularity, req.ExecutionShape, req.Shape))
+		continuation := strings.TrimSpace(firstNonEmpty(req.ContinuationPolicy, req.Continuation, req.Mode))
+		if req.ContinueAutomatically != nil {
+			if *req.ContinueAutomatically {
+				continuation = sessionruntime.PlanAcceptanceContinuationAutomatic
+			} else {
+				continuation = sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint
+			}
+		}
+		if _, err := sessionruntime.ApplyPlanAcceptanceExecutionPolicy(doc, sessionruntime.PlanAcceptanceExecutionOptions{ExecutionGranularity: granularity, ContinuationPolicy: continuation}); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		status = "approved"
+		approvalState = "approved"
+		updateSummary = "Approved plan and prepared fresh-context checkpoint start"
+		updateKind = "approve_and_start"
+	case "accept_checkpoint", "accept_and_continue":
+		if _, err := sessionruntime.ApplyPlanCheckpointReviewAcceptance(doc, sessionruntime.PlanCheckpointReviewAcceptanceOptions{CheckpointID: checkpointID, Result: req.Result, Notes: firstNonEmpty(req.Notes, req.Report), ReviewedAt: firstPositiveInt64(req.ReviewedAt, now)}); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if action == "accept_checkpoint" {
+			checkpointID = ""
+			updateSummary = "Accepted checkpoint review"
+			updateKind = "accept_checkpoint"
+		} else {
+			updateSummary = "Accepted checkpoint review and prepared next fresh-context checkpoint start"
+			updateKind = "accept_and_continue"
+		}
+	case "set_automatic_mode":
+		continuation := strings.TrimSpace(firstNonEmpty(req.ContinuationPolicy, req.Continuation, req.Mode))
+		if req.ContinueAutomatically != nil {
+			if *req.ContinueAutomatically {
+				continuation = sessionruntime.PlanAcceptanceContinuationAutomatic
+			} else {
+				continuation = sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint
+			}
+		}
+		if continuation == "" {
+			writeError(w, http.StatusBadRequest, errors.New("set_automatic_mode requires continue_automatically or continuation_policy"))
+			return
+		}
+		doc.ExecutionPolicy.Mode = continuation
+		if err := sessionruntime.ValidatePlanDocument(doc); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		checkpointID = ""
+		updateSummary = "Updated plan automatic continuation policy"
+		updateKind = "set_automatic_mode"
+	case "restart_checkpoint":
+		if _, err := sessionruntime.ApplyPlanCheckpointReset(doc, sessionruntime.PlanCheckpointResetOptions{CheckpointID: checkpointID}); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		updateSummary = "Restarted checkpoint from zero and prepared fresh-context checkpoint start"
+		updateKind = "restart_checkpoint"
+	case "rewind_to_checkpoint":
+		if _, err := sessionruntime.ApplyPlanCheckpointReset(doc, sessionruntime.PlanCheckpointResetOptions{CheckpointID: checkpointID, Rewind: true}); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		updateSummary = "Rewound plan execution to checkpoint and prepared fresh-context checkpoint start"
+		updateKind = "rewind_to_checkpoint"
+	case "start_checkpoint", "continue_checkpoint":
+		decision, err := sessionruntime.ApplyPlanCheckpointStart(doc, sessionruntime.PlanCheckpointStartOptions{CheckpointID: checkpointID, PlanID: planID, ParentSessionID: sessionID, StartedAt: now})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		responseCheckpointID = decision.CheckpointID
+		responseAttemptID = decision.AttemptID
+		updateSummary = "Prepared fresh-context checkpoint start"
+		updateKind = action
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Errorf("plan execution action %q is not supported", req.Action))
+		return
+	}
+
+	saved, event, err := s.sessions.SavePlanWithMetadata(sessionID, planID, existing.Title, existing.Plan, status, approvalState, true, sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: checkpointID, UpdateKind: updateKind, Checkpoint: true, Document: doc})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
+	payload := sessionsV3PlanExecutionPayload(action, updateSummary, planID, responseCheckpointID, responseAttemptID, saved)
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func normalizeSessionsV3PlanExecutionAction(action string) string {
+	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_") {
+	case "approve_and_start", "approve_start", "start_plan":
+		return "approve_and_start"
+	case "accept_checkpoint", "accept_checkpoint_review", "approve_checkpoint":
+		return "accept_checkpoint"
+	case "accept_and_continue", "accept_continue", "approve_and_continue", "approve_continue":
+		return "accept_and_continue"
+	case "set_automatic_mode", "set_automatic", "update_automatic_mode", "update_execution_policy":
+		return "set_automatic_mode"
+	case "restart_checkpoint", "retry_checkpoint", "restart_checkpoint_from_zero":
+		return "restart_checkpoint"
+	case "rewind_to_checkpoint", "rewind_checkpoint":
+		return "rewind_to_checkpoint"
+	case "start", "start_checkpoint":
+		return "start_checkpoint"
+	case "continue", "continue_checkpoint", "advance_checkpoint", "next_checkpoint":
+		return "continue_checkpoint"
+	default:
+		return ""
+	}
+}
+
+func cloneSessionsV3PlanDocumentForExecutionAction(doc *pebblestore.SessionPlanDocument) (*pebblestore.SessionPlanDocument, error) {
+	if doc == nil {
+		return nil, errors.New("plan document is required")
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+	var clone pebblestore.SessionPlanDocument
+	if err := json.Unmarshal(raw, &clone); err != nil {
+		return nil, err
+	}
+	return &clone, nil
+}
+
+func sessionsV3PlanExecutionPayload(action, summary, planID, checkpointID, attemptID string, plan pebblestore.SessionPlanSnapshot) map[string]any {
+	executionSummary := sessionruntime.SummarizePlanExecution(plan.Document)
+	payload := map[string]any{
+		"ok":                true,
+		"session_id":        strings.TrimSpace(plan.SessionID),
+		"plan_id":           strings.TrimSpace(plan.ID),
+		"action":            action,
+		"status":            "ok",
+		"plan":              plan,
+		"execution_summary": executionSummary,
+		"summary":           summary,
+	}
+	if executionSummary.PlanComplete {
+		payload["next_action"] = "plan_complete"
+	} else if executionSummary.ReviewRequired {
+		payload["next_action"] = "await_review"
+	} else if executionSummary.Blocked || executionSummary.Failed {
+		payload["next_action"] = "stopped"
+	} else if action == "accept_checkpoint" || action == "set_automatic_mode" {
+		payload["next_action"] = "await_start"
+	} else {
+		if strings.TrimSpace(checkpointID) == "" {
+			checkpointID = executionSummary.NextCheckpointID
+		}
+		if strings.TrimSpace(checkpointID) != "" {
+			payload["checkpoint_id"] = strings.TrimSpace(checkpointID)
+			payload["next_action"] = "run_checkpoint_with_fresh_context"
+			payload["run_request"] = sessionsV3PlanCheckpointRunRequestPayload(planID, checkpointID, attemptID)
+		}
+	}
+	return payload
+}
+
+func sessionsV3PlanCheckpointRunRequestPayload(planID, checkpointID, attemptID string) map[string]any {
+	ctx := map[string]any{"plan_id": strings.TrimSpace(planID), "checkpoint_id": strings.TrimSpace(checkpointID)}
+	if strings.TrimSpace(attemptID) != "" {
+		ctx["attempt_id"] = strings.TrimSpace(attemptID)
+	}
+	return map[string]any{"plan_checkpoint_context": ctx}
+}
+
+func firstPositiveInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func (s *Server) handleSessionV3PrimaryPlanByID(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, tail string) {

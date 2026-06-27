@@ -37,8 +37,10 @@ interface DesktopPlanModalProps {
   saving: boolean
   error: string | null
   onOpenChange: (open: boolean) => void
+  executing?: boolean
   onCopy: (text: string) => Promise<boolean>
   onSave: (planText: string, document?: Record<string, unknown>) => Promise<void>
+  onApproveStart?: (input: { executionGranularity: 'checkpointed' | 'run_through'; continueAutomatically: boolean }) => Promise<void>
 }
 
 function useEscapeToClose(open: boolean, onClose: () => void) {
@@ -371,10 +373,12 @@ export function DesktopPlanModal({
   revisions,
   historyLoading: _historyLoading,
   saving,
+  executing = false,
   error,
   onOpenChange,
   onCopy,
   onSave,
+  onApproveStart,
 }: DesktopPlanModalProps) {
   const [draft, setDraft] = useState('')
   const [documentDraft, setDocumentDraft] = useState('')
@@ -382,6 +386,8 @@ export function DesktopPlanModal({
   const [editing, setEditing] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const [selectedRevisionKey, setSelectedRevisionKey] = useState('current')
+  const [executionGranularity, setExecutionGranularity] = useState<'checkpointed' | 'run_through'>('checkpointed')
+  const [continueAutomatically, setContinueAutomatically] = useState(false)
   const [revisionSelectWidth, setRevisionSelectWidth] = useState<number | undefined>(undefined)
   const revisionSelectSizerRef = useRef<HTMLSpanElement | null>(null)
 
@@ -395,6 +401,8 @@ export function DesktopPlanModal({
     setEditing(false)
     setCopyState('idle')
     setSelectedRevisionKey('current')
+    setExecutionGranularity(plan?.document?.executionPolicy?.shape === 'single_run' ? 'run_through' : 'checkpointed')
+    setContinueAutomatically(plan?.document?.executionPolicy?.mode === 'automatic')
   }, [open, plan?.id, plan?.updatedAt, plan?.plan, plan?.document])
 
   useEscapeToClose(open, () => onOpenChange(false))
@@ -480,6 +488,11 @@ export function DesktopPlanModal({
     setEditing(false)
   }
 
+  const handleApproveStart = async () => {
+    if (!onApproveStart || editing || viewingRevision) return
+    await onApproveStart({ executionGranularity, continueAutomatically })
+  }
+
   return (
     <Dialog role="dialog" aria-modal="true" aria-label={title} className="z-[80] p-3 sm:p-6">
       <DialogBackdrop onClick={() => onOpenChange(false)} />
@@ -515,9 +528,15 @@ export function DesktopPlanModal({
               ))}
             </Select>
             {viewingRevision ? (
-              <Button type="button" variant="primary" size="sm" onClick={() => void handleRestoreRevision()} disabled={saving || editing}>
+              <Button type="button" variant="primary" size="sm" onClick={() => void handleRestoreRevision()} disabled={saving || editing || executing}>
                 <RotateCcw className={cn('size-4', saving ? 'animate-pulse' : '')} />
                 {saving ? 'Activating…' : 'Activate revision'}
+              </Button>
+            ) : null}
+            {!editing && !viewingRevision && plan?.document ? (
+              <Button type="button" variant="primary" size="sm" onClick={() => void handleApproveStart()} disabled={!onApproveStart || saving || executing}>
+                <PlayCircle className={cn('size-4', executing ? 'animate-pulse' : '')} />
+                {executing ? 'Starting…' : 'Approve & Start'}
               </Button>
             ) : null}
             <Button type="button" variant="outline" size="sm" onClick={() => void handleCopy()}>
@@ -598,6 +617,33 @@ export function DesktopPlanModal({
             </section>
           ) : (
             <div className="grid gap-4">
+              {!viewingRevision && selectedDocument ? (
+                <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+                  <SectionEyebrow>Execution on approval</SectionEyebrow>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <label className="grid gap-1.5 text-sm text-[var(--app-text)]">
+                      <span className="font-medium">Run granularity</span>
+                      <Select
+                        value={executionGranularity}
+                        onChange={(event) => setExecutionGranularity(event.target.value === 'run_through' ? 'run_through' : 'checkpointed')}
+                        disabled={executing}
+                      >
+                        <option value="checkpointed">Checkpoint by checkpoint</option>
+                        <option value="run_through">Run straight through</option>
+                      </Select>
+                    </label>
+                    <label className="flex items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
+                      <input
+                        type="checkbox"
+                        checked={continueAutomatically || executionGranularity === 'run_through'}
+                        onChange={(event) => setContinueAutomatically(event.target.checked)}
+                        disabled={executing || executionGranularity === 'run_through'}
+                      />
+                      Continue automatically between checkpoints
+                    </label>
+                  </div>
+                </section>
+              ) : null}
               {selectedDocument ? (
                 <PlanModalDocumentView document={selectedDocument} emptyText="No structured plan data is available for this plan." />
               ) : (

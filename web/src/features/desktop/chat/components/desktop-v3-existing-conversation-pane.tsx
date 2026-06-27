@@ -5,7 +5,7 @@ import { ArrowDown, CheckCircle2, Loader2, LoaderCircle, XCircle } from 'lucide-
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
 import { buildStructuredToolMessage, parseStructuredToolMessage } from '../services/tool-message'
-import type { RenderedSessionMessages } from '../../state/desktop-v3-cache-selectors'
+import { selectDesktopPlanExecutionView, type RenderedSessionMessages } from '../../state/desktop-v3-cache-selectors'
 import type { LiveRunOverlay, MessageSnapshot, PendingUserMessage } from '../../state/desktop-v3-cache-types'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import type { DesktopPermissionRecord, DesktopSessionRecord } from '../../types/realtime'
@@ -37,9 +37,11 @@ import {
   type DesktopV3ExistingMessageOperation,
 } from '../../session-v3/existing-session-flow'
 import { compactDesktopV3Session } from '../../session-v3/compact-session-flow'
+import { executeDesktopPlanActionAndStartRun, type DesktopPlanExecutionAction } from '../../session-v3/plan-execution-api'
 import { resolveSessionPermission, sendSessionMessage, updateDraftModelPreference } from '../queries/chat-queries'
 import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
 import { permissionRequiresApproval } from '../../permissions/services/permission-payload'
+import { DesktopPlanExecutionSidebar } from './desktop-plan-execution-sidebar'
 
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
@@ -531,6 +533,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   onNewSession?: () => void
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
   onCompactingChange?: (sessionId: string, startedAt: number | null) => void
+  onOpenPlan?: () => void
 }
 
 export function completeDesktopV3ExistingMessage(input: {
@@ -558,6 +561,7 @@ export function DesktopV3ExistingConversationPane({
   onNewSession,
   onSlashCommand,
   onCompactingChange,
+  onOpenPlan,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim()
   const navigate = useNavigate()
@@ -575,6 +579,7 @@ export function DesktopV3ExistingConversationPane({
   const thinkingTagsEnabled = normalizeThinkingTagsEnabled(uiSettingsQuery.data)
   const rawCachedPreference = useDesktopV3CacheSelector((state) => state.preferencesBySession[normalizedSessionId])
   const rawCachedUsage = useDesktopV3CacheSelector((state) => state.usageBySession[normalizedSessionId])
+  const planExecutionView = useDesktopV3CacheSelector((state) => selectDesktopPlanExecutionView(state, normalizedSessionId))
   const cachedPreference = useMemo(() => normalizePreference(rawCachedPreference), [rawCachedPreference])
   const cacheSession = useDesktopV3CacheSelector((state) => {
     const record = state.sessionsById[normalizedSessionId]
@@ -613,6 +618,7 @@ export function DesktopV3ExistingConversationPane({
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
   const [restartingWithSettings, setRestartingWithSettings] = useState(false)
+  const [planExecutionBusyAction, setPlanExecutionBusyAction] = useState<string | null>(null)
   const [mode, setMode] = useState<DesktopSessionMode>(settingsBaseline.mode)
   const [selectedAgent, setSelectedAgent] = useState(settingsBaseline.agent)
   const [preference, setPreference] = useState<SessionPreferenceRecord>(settingsBaseline.preference)
@@ -923,6 +929,28 @@ export function DesktopV3ExistingConversationPane({
     }
   }
 
+  async function handlePlanExecutionAction(input: { action: DesktopPlanExecutionAction; checkpointId?: string; continueAutomatically?: boolean }) {
+    if (!normalizedSessionId || planExecutionBusyAction || currentRun) return
+    const busyKey = `${input.action}:${input.checkpointId ?? ''}`
+    setPlanExecutionBusyAction(busyKey)
+    setSendError(null)
+    if (input.action !== 'accept_checkpoint' && input.action !== 'set_automatic_mode') scrollToBottom('smooth')
+    try {
+      await persistVisibleSettings()
+      await executeDesktopPlanActionAndStartRun(normalizedSessionId, {
+        action: input.action,
+        checkpointId: input.checkpointId,
+        continueAutomatically: input.continueAutomatically,
+      })
+    } catch (error) {
+      if (mountedRef.current) {
+        setSendError(error instanceof Error ? error.message : String(error))
+      }
+    } finally {
+      if (mountedRef.current) setPlanExecutionBusyAction(null)
+    }
+  }
+
   async function handleStop() {
     if (!normalizedSessionId || !currentRun?.runId) return
     try {
@@ -980,7 +1008,7 @@ export function DesktopV3ExistingConversationPane({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]" data-testid="desktop-v3-existing-conversation-pane">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-bg)]" data-testid="desktop-v3-existing-conversation-pane">
       <DesktopV3ChatHeader
         title={session?.title || cacheSession?.title || 'Conversation'}
         workspaceName={session?.workspaceName || cacheSession?.workspace_name || 'Workspace'}
@@ -990,44 +1018,103 @@ export function DesktopV3ExistingConversationPane({
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
       />
-      <div className="relative min-h-0 flex-1">
-        <div ref={scrollContainerRef} className="h-full min-h-0 overflow-y-auto py-6 [scrollbar-gutter:stable]">
-          <div ref={contentRef} className="mx-auto flex min-h-full w-full max-w-[70rem] flex-col gap-5 px-8 sm:px-12">
-          {showConversationLoading ? (
-            <DesktopV3ConversationLoadingSpinner />
-          ) : null}
-          {initialHydrateStatus === 'error' && !messagesLoaded && !hasMessages ? (
-            <DesktopV3ChatInlineState title="Conversation unavailable" description="Initial message hydrate failed. You can still send from this session while cached state recovers." tone="error" />
-          ) : null}
-          {compacting ? (
-            <DesktopV3CompactPendingState />
-          ) : null}
-          {messagesLoaded && !hasMessages ? (
-            <DesktopV3ChatInlineState title="Empty conversation" description="Send a message to continue this session." />
-          ) : null}
-            {renderItems.map((item, index) => (
-              <DesktopV3RenderItemView
-                key={item.type === 'message' ? item.message.id : item.type === 'pending-user' ? item.message.clientRequestId : item.id}
-                item={item}
-                thinkingTagsEnabled={thinkingTagsEnabled}
-                timerNow={timerNow}
-                index={index}
-              />
-            ))}
-            <div aria-hidden="true" />
+      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+          <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+            <div ref={scrollContainerRef} className="h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable]">
+              <div ref={contentRef} className="mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 px-8 sm:px-12">
+                {showConversationLoading ? (
+                  <DesktopV3ConversationLoadingSpinner />
+                ) : null}
+                {initialHydrateStatus === 'error' && !messagesLoaded && !hasMessages ? (
+                  <DesktopV3ChatInlineState title="Conversation unavailable" description="Initial message hydrate failed. You can still send from this session while cached state recovers." tone="error" />
+                ) : null}
+                {compacting ? (
+                  <DesktopV3CompactPendingState />
+                ) : null}
+                {messagesLoaded && !hasMessages ? (
+                  <DesktopV3ChatInlineState title="Empty conversation" description="Send a message to continue this session." />
+                ) : null}
+                {renderItems.map((item, index) => (
+                  <DesktopV3RenderItemView
+                    key={item.type === 'message' ? item.message.id : item.type === 'pending-user' ? item.message.clientRequestId : item.id}
+                    item={item}
+                    thinkingTagsEnabled={thinkingTagsEnabled}
+                    timerNow={timerNow}
+                    index={index}
+                  />
+                ))}
+                <div aria-hidden="true" />
+              </div>
+            </div>
+            {!isAtBottom && hasUnseenLatest ? (
+              <button
+                type="button"
+                aria-label="Jump to latest message"
+                title="Jump to latest message"
+                onClick={() => scrollToBottom('smooth')}
+                className="absolute bottom-5 right-5 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] shadow-lg transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+              >
+                <ArrowDown size={18} aria-hidden="true" />
+              </button>
+            ) : null}
           </div>
+
+          <DesktopV3AgenticComposer
+            draft={draft}
+            onDraftChange={setDraft}
+            placeholder="Message Swarm…"
+            inputLabel="Continue Desktop V3 conversation"
+            disabled={sending || compacting || restartingWithSettings}
+            busy={sending || compacting || restartingWithSettings}
+            canSubmit={canSend}
+            canStop={Boolean(currentRun)}
+            error={sendError}
+            onSubmit={handleSubmit}
+            onStop={handleStop}
+            onCompact={handleCompact}
+            mode={mode}
+            onModeChange={handleModeChange}
+            currentAgent={selectedAgent || 'Agent'}
+            selectedPrimaryAgent={selectedAgent || ''}
+            agents={agentState.profiles}
+            onAgentSelect={handleAgentSelect}
+            modelOptions={modelOptions}
+            selectedModelKey={selectedModelKey}
+            selectedModelAvailable={selectedModelAvailable}
+            onModelSelect={handleModelSelect}
+            modelPickerDisabled={selectedAgentModelLock.locked}
+            modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
+            modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
+            onOpenAgentSettings={handleOpenAgentSettings}
+            thinking={preference.thinking}
+            onThinkingChange={handleThinkingChange}
+            thinkingTagsEnabled={thinkingTagsEnabled}
+            onThinkingTagsToggle={(enabled) => { void handleThinkingTagsToggle(enabled) }}
+            thinkingTagsBusy={thinkingTagsSaving}
+            fast={fastToggleFromPreference(preference)}
+            onFastChange={handleFastChange}
+            route={route}
+            routeOptions={routeOptions}
+            routeTitle="Changing the route starts a new session in this workspace."
+            contextLabel={contextLabel}
+            contextTooltip={contextTooltip}
+            compactDisabled={compacting || sending || Boolean(currentRun)}
+            settingsActionLabel={showRestartSettingsAction ? 'Restart loop with new settings?' : ''}
+            settingsActionBusy={restartingWithSettings}
+            onSettingsAction={showRestartSettingsAction ? handleRestartWithSettings : undefined}
+            onSlashCommand={onSlashCommand}
+          />
         </div>
-        {!isAtBottom && hasUnseenLatest ? (
-          <button
-            type="button"
-            aria-label="Jump to latest message"
-            title="Jump to latest message"
-            onClick={() => scrollToBottom('smooth')}
-            className="absolute bottom-5 right-5 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] shadow-lg transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
-          >
-            <ArrowDown size={18} aria-hidden="true" />
-          </button>
-        ) : null}
+
+        <DesktopPlanExecutionSidebar
+          view={planExecutionView}
+          busyAction={planExecutionBusyAction}
+          canStop={Boolean(currentRun)}
+          onAction={handlePlanExecutionAction}
+          onStop={handleStop}
+          onEditPlan={onOpenPlan}
+        />
       </div>
 
       <DesktopPermissionModal
@@ -1038,52 +1125,6 @@ export function DesktopV3ExistingConversationPane({
         sessionMode={sessionMode}
         onOpenChange={() => undefined}
         onResolve={handleResolvePermission}
-      />
-
-      <DesktopV3AgenticComposer
-        draft={draft}
-        onDraftChange={setDraft}
-        placeholder="Message Swarm…"
-        inputLabel="Continue Desktop V3 conversation"
-        disabled={sending || compacting || restartingWithSettings}
-        busy={sending || compacting || restartingWithSettings}
-        canSubmit={canSend}
-        canStop={Boolean(currentRun)}
-        error={sendError}
-        onSubmit={handleSubmit}
-        onStop={handleStop}
-        onCompact={handleCompact}
-        mode={mode}
-        onModeChange={handleModeChange}
-        currentAgent={selectedAgent || 'Agent'}
-        selectedPrimaryAgent={selectedAgent || ''}
-        agents={agentState.profiles}
-        onAgentSelect={handleAgentSelect}
-        modelOptions={modelOptions}
-        selectedModelKey={selectedModelKey}
-        selectedModelAvailable={selectedModelAvailable}
-        onModelSelect={handleModelSelect}
-        modelPickerDisabled={selectedAgentModelLock.locked}
-        modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
-        modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
-        onOpenAgentSettings={handleOpenAgentSettings}
-        thinking={preference.thinking}
-        onThinkingChange={handleThinkingChange}
-        thinkingTagsEnabled={thinkingTagsEnabled}
-        onThinkingTagsToggle={(enabled) => { void handleThinkingTagsToggle(enabled) }}
-        thinkingTagsBusy={thinkingTagsSaving}
-        fast={fastToggleFromPreference(preference)}
-        onFastChange={handleFastChange}
-        route={route}
-        routeOptions={routeOptions}
-        routeTitle="Changing the route starts a new session in this workspace."
-        contextLabel={contextLabel}
-        contextTooltip={contextTooltip}
-        compactDisabled={compacting || sending || Boolean(currentRun)}
-        settingsActionLabel={showRestartSettingsAction ? 'Restart loop with new settings?' : ''}
-        settingsActionBusy={restartingWithSettings}
-        onSettingsAction={showRestartSettingsAction ? handleRestartWithSettings : undefined}
-        onSlashCommand={onSlashCommand}
       />
     </div>
   )

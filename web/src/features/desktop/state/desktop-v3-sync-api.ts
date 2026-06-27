@@ -63,7 +63,7 @@ export const DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES: SyncResources = {
   run_intents: true,
   current_run_state: true,
   session_view: true,
-  active_plan: false,
+  active_plan: true,
   plan_revisions: false,
   permission_summaries: false,
 }

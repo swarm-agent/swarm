@@ -3685,8 +3685,8 @@ func TestSessionsV3ExecutorReasoningSnapshotNewlineFlushUsesIncrementalChange(t 
 		}
 		got = append(got, payload.Delta)
 	}
-	if len(got) != 2 || got[0] != firstSnapshot || got[1] != finalSnapshot {
-		t.Fatalf("reasoning snapshot deltas = %#v, want [%q %q]", got, firstSnapshot, finalSnapshot)
+	if len(got) != 1 || got[0] != finalSnapshot {
+		t.Fatalf("reasoning snapshot deltas = %#v, want [%q]", got, finalSnapshot)
 	}
 }
 

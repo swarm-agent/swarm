@@ -28,6 +28,7 @@ import type {
 import type { DesktopPermissionRecord } from '../types/realtime'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPendingPermissions, normalizeDesktopPermissionSummary, normalizeDesktopPermissionSummaries, safeString } from '../permissions/services/desktop-permission-normalization'
+import { normalizeDesktopSessionPlan } from '../chat/services/session-plan-record'
 import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
 
 export const DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS = 5
@@ -361,6 +362,7 @@ export function applySnapshot(
     applyEventsBySessionFromSnapshot(state, snapshot.events_by_session)
   }
   applyCurrentRunStateFromSyncSnapshot(state, snapshot)
+  applySessionViewsFromSyncSnapshot(state, snapshot, new Set(Object.keys(snapshot.sessions_by_id ?? {})))
   for (const sessionId of snapshot.session_order ?? []) {
     const record = state.sessionsById[sessionId]
     if (record?.kind === 'full' && hydrateResponseCompletesSession(snapshot, sessionId)) {
@@ -1711,7 +1713,11 @@ function applySessionViewsFromSyncSnapshot(
     state.sessionViewsById[sessionId] = view
     state.permissionsBySession[sessionId] = normalizeDesktopPendingPermissions(view.pending_permissions, sessionId)
     if (view.usage_summary !== undefined) state.usageBySession[sessionId] = view.usage_summary
-    if (view.active_plan !== undefined) state.plansBySession[sessionId] = view.active_plan
+    if (view.active_plan !== undefined) {
+      state.plansBySession[sessionId] = view.active_plan === null ? null : normalizeDesktopSessionPlan(view.active_plan)
+    } else if (view.has_active_plan === false) {
+      state.plansBySession[sessionId] = null
+    }
 
     const settings = view.agentic_settings
     const authoritativePreference = settings?.effective_preference ?? settings?.stored_preference
@@ -2677,6 +2683,8 @@ function applyLiveReasoningOverlay(
   const summarySnapshot = stringValue(payload.summary)
   const summaryDelta = stringValue(payload.summary_delta)
   const nextState: LiveRunReasoningOverlay['state'] = isError ? 'error' : isCompleted ? 'completed' : 'running'
+  const nextSummary = summarySnapshot || (summaryDelta ? `${current.summary}${summaryDelta}` : current.summary)
+  const nextText = textSnapshot || (textDelta ? `${current.text}${textDelta}` : current.text)
   const next: LiveRunReasoningOverlay = {
     ...current,
     key,
@@ -2685,8 +2693,8 @@ function applyLiveReasoningOverlay(
     stepId: stringValue(payload.step_id) || current.stepId,
     step: numberValue(payload.step) || current.step,
     state: nextState,
-    summary: summarySnapshot || (summaryDelta ? `${current.summary}${summaryDelta}` : current.summary),
-    text: textSnapshot || (textDelta ? `${current.text}${textDelta}` : current.text),
+    summary: nextSummary,
+    text: nextText,
     startedAt: current.startedAt ?? updatedAt,
     completedAt: isCompleted || isError ? updatedAt : current.completedAt ?? null,
     updatedAt,
@@ -2699,10 +2707,33 @@ function applyLiveReasoningOverlay(
     next.state = existing.state === 'completed' || existing.state === 'error' ? existing.state : 'running'
     next.completedAt = existing.completedAt
   }
+  if (existing && liveReasoningOverlayEqual(existing, next)) {
+    byKey[key] = existing
+    liveRun.reasoningByKey = byKey
+    liveRun.reasoning = existing
+    liveRun.status = liveRun.status === 'pending_executor' ? 'running' : liveRun.status
+    return
+  }
   byKey[key] = next
   liveRun.reasoningByKey = byKey
   liveRun.reasoning = next
   liveRun.status = liveRun.status === 'pending_executor' ? 'running' : liveRun.status
+}
+
+function liveReasoningOverlayEqual(left: LiveRunReasoningOverlay, right: LiveRunReasoningOverlay): boolean {
+  return left.key === right.key
+    && left.reasoningId === right.reasoningId
+    && left.reasoningKey === right.reasoningKey
+    && left.stepId === right.stepId
+    && left.step === right.step
+    && left.state === right.state
+    && left.summary === right.summary
+    && left.text === right.text
+    && left.startedAt === right.startedAt
+    && left.completedAt === right.completedAt
+    && left.updatedAt === right.updatedAt
+    && left.timelineSeq === right.timelineSeq
+    && left.updatedSeq === right.updatedSeq
 }
 
 function completeLiveReasoningOverlay(liveRun: LiveRunOverlay, updatedAt: number, eventSeq: number): void {

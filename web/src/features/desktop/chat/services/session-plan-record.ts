@@ -80,6 +80,13 @@ function normalizeDesktopSessionPlanDocument(value: unknown): DesktopSessionPlan
         result: stringValue(checkpoint, 'result'),
         changedFiles: stringArrayValue(checkpoint, 'changedFiles', 'changed_files'),
         validation: stringArrayValue(checkpoint, 'validation'),
+        attemptId: stringValue(checkpoint, 'attemptId', 'attempt_id'),
+        runId: stringValue(checkpoint, 'runId', 'run_id'),
+        sessionId: stringValue(checkpoint, 'sessionId', 'session_id'),
+        startedAt: numberValue(checkpoint.startedAt ?? checkpoint.started_at),
+        completedAt: numberValue(checkpoint.completedAt ?? checkpoint.completed_at),
+        review: normalizeDesktopSessionPlanCheckpointReview(checkpoint.review),
+        attempts: normalizeDesktopSessionPlanCheckpointAttempts(checkpoint.attempts),
         order: numberValue(checkpoint.order) || index + 1,
       }
     })
@@ -106,6 +113,8 @@ function normalizeDesktopSessionPlanDocument(value: unknown): DesktopSessionPlan
     schemaVersion: stringValue(record, 'schemaVersion', 'schema_version'),
     revisionId: stringValue(record, 'revisionId', 'revision_id'),
     info,
+    executionPolicy: normalizeDesktopSessionPlanExecutionPolicy(record.executionPolicy ?? record.execution_policy),
+    executionState: normalizeDesktopSessionPlanExecutionState(record.executionState ?? record.execution_state),
     checkpoints,
     activeCheckpointId: stringValue(record, 'activeCheckpointId', 'active_checkpoint_id'),
     renderedText: rawStringValue(record, 'renderedText', 'rendered_text'),
@@ -142,6 +151,71 @@ function rawStringValue(record: Record<string, unknown>, ...keys: string[]): str
     }
   }
   return ''
+}
+
+function normalizeDesktopSessionPlanExecutionPolicy(value: unknown): DesktopSessionPlanDocument['executionPolicy'] {
+  const record = objectValue(value)
+  if (!record) return null
+  const policy = {
+    mode: stringValue(record, 'mode'),
+    shape: stringValue(record, 'shape'),
+  }
+  return policy.mode || policy.shape ? policy : null
+}
+
+function normalizeDesktopSessionPlanExecutionState(value: unknown): DesktopSessionPlanDocument['executionState'] {
+  const record = objectValue(value)
+  if (!record) return null
+  const state = {
+    status: stringValue(record, 'status'),
+    activeAttemptId: stringValue(record, 'activeAttemptId', 'active_attempt_id'),
+    parentSessionId: stringValue(record, 'parentSessionId', 'parent_session_id'),
+    currentSessionId: stringValue(record, 'currentSessionId', 'current_session_id'),
+    currentRunId: stringValue(record, 'currentRunId', 'current_run_id'),
+    lastCheckpointId: stringValue(record, 'lastCheckpointId', 'last_checkpoint_id'),
+    lastAttemptId: stringValue(record, 'lastAttemptId', 'last_attempt_id'),
+    lastOutcome: stringValue(record, 'lastOutcome', 'last_outcome'),
+    startedAt: numberValue(record.startedAt ?? record.started_at),
+    updatedAt: numberValue(record.updatedAt ?? record.updated_at),
+    completedAt: numberValue(record.completedAt ?? record.completed_at),
+  }
+  return state.status || state.activeAttemptId || state.currentRunId || state.lastCheckpointId ? state : null
+}
+
+function normalizeDesktopSessionPlanCheckpointReview(value: unknown): DesktopSessionPlanCheckpoint['review'] {
+  const record = objectValue(value)
+  if (!record) return null
+  const review = {
+    status: stringValue(record, 'status'),
+    reviewerId: stringValue(record, 'reviewerId', 'reviewer_id'),
+    reviewerType: stringValue(record, 'reviewerType', 'reviewer_type'),
+    result: stringValue(record, 'result'),
+    notes: stringValue(record, 'notes'),
+    reviewedAt: numberValue(record.reviewedAt ?? record.reviewed_at),
+  }
+  return review.status || review.reviewerId || review.result || review.notes || review.reviewedAt > 0 ? review : null
+}
+
+function normalizeDesktopSessionPlanCheckpointAttempts(value: unknown): DesktopSessionPlanCheckpoint['attempts'] {
+  if (!Array.isArray(value)) return []
+  return value.map((entry) => {
+    const record = objectValue(entry) ?? {}
+    return {
+      id: stringValue(record, 'id'),
+      checkpointId: stringValue(record, 'checkpointId', 'checkpoint_id'),
+      status: stringValue(record, 'status'),
+      outcome: stringValue(record, 'outcome'),
+      runId: stringValue(record, 'runId', 'run_id'),
+      sessionId: stringValue(record, 'sessionId', 'session_id'),
+      parentSessionId: stringValue(record, 'parentSessionId', 'parent_session_id'),
+      startedAt: numberValue(record.startedAt ?? record.started_at),
+      completedAt: numberValue(record.completedAt ?? record.completed_at),
+      report: stringValue(record, 'report'),
+      result: stringValue(record, 'result'),
+      changedFiles: stringArrayValue(record, 'changedFiles', 'changed_files'),
+      validation: stringArrayValue(record, 'validation'),
+    }
+  })
 }
 
 function stringArrayValue(record: Record<string, unknown>, ...keys: string[]): string[] {

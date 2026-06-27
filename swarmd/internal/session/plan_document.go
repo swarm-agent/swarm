@@ -354,6 +354,26 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 			CompletedAt:     op.CompletedAt,
 		})
 		return err
+	case "accept_checkpoint_review", "accept_continue", "accept_and_continue", "approve_checkpoint", "approve_and_continue":
+		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
+		if id == "" {
+			id = strings.TrimSpace(doc.ActiveCheckpointID)
+		}
+		_, err := ApplyPlanCheckpointReviewAcceptance(doc, PlanCheckpointReviewAcceptanceOptions{
+			CheckpointID: id,
+			Result:       op.Result,
+			Notes:        firstNonBlank(op.Notes, op.Report),
+			ReviewedAt:   op.CompletedAt,
+		})
+		return err
+	case "restart_checkpoint", "retry_checkpoint", "restart_checkpoint_from_zero", "reset_checkpoint":
+		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
+		_, err := ApplyPlanCheckpointReset(doc, PlanCheckpointResetOptions{CheckpointID: id})
+		return err
+	case "rewind_to_checkpoint", "rewind_checkpoint":
+		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
+		_, err := ApplyPlanCheckpointReset(doc, PlanCheckpointResetOptions{CheckpointID: id, Rewind: true})
+		return err
 	case "remove_checkpoint", "delete_checkpoint":
 		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
 		if id == "" {

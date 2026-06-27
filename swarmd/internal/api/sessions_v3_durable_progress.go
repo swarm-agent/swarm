@@ -323,7 +323,7 @@ func (s *sessionV3DurableProgressSink) TryReplaceReasoning(step int, reasoningKe
 	s.pendingBytes += newBytes - agg.Bytes
 	agg.Snapshot = snapshot
 	agg.Bytes = newBytes
-	if agg.Bytes >= s.reasoningFlushMaxBytesLocked() || strings.Contains(snapshot, "\n") {
+	if agg.Bytes >= s.reasoningFlushMaxBytesLocked() {
 		agg.FlushRequested = true
 	}
 	s.signalLocked()

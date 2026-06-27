@@ -557,7 +557,7 @@ export function DesktopV3AgenticComposer({
 
   return (
     <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-v3-agentic-composer">
-      <div className="mx-auto grid w-full max-w-[70rem] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 focus-within:pb-[calc(1rem+var(--app-safe-area-bottom))] sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5">
+      <div className="mx-auto grid w-full min-w-0 max-w-[70rem] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 focus-within:pb-[calc(1rem+var(--app-safe-area-bottom))] sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5">
         {error ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]" role="alert">{error}</div> : null}
         {dictationError ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning-text)]">{dictationError}</div> : null}
         {modelLockNotice ? (
@@ -573,8 +573,8 @@ export function DesktopV3AgenticComposer({
         ) : slashPalette.active ? (
           <DesktopSlashCommandPanel palette={slashPalette as DesktopSlashPaletteState} selectedIndex={slashSelectionIndex} onHover={setSlashSelectionIndex} onSelect={handleSlashSelect} />
         ) : null}
-        <div className="relative rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
-          <div className="flex items-end gap-3 px-4 py-3 lg:py-2.5">
+        <div className="relative min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
+          <div className="flex min-w-0 items-end gap-3 px-4 py-3 lg:py-2.5">
             <div className="min-w-0 flex-1">
               <Textarea
                 value={dictationComposer}
@@ -617,7 +617,7 @@ export function DesktopV3AgenticComposer({
               Use ↑/↓ to choose a subagent, Tab or Enter to insert, then continue typing your task.
             </div>
           ) : null}
-          <div className="border-t border-[var(--app-border)] px-4 py-2 text-[11px]">
+          <div className="min-w-0 overflow-hidden border-t border-[var(--app-border)] px-4 py-2 text-[11px]">
             <div className="hidden min-w-0 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {showModePicker ? <ModePicker mode={mode} onSelect={onModeChange} /> : executionLabel ? (

@@ -492,6 +492,7 @@ type sessionsV3SessionView struct {
 	PendingPermissions []pebblestore.PermissionRecord   `json:"pending_permissions"`
 	UsageSummary       *pebblestore.SessionUsageSummary `json:"usage_summary,omitempty"`
 	CurrentRunState    *pebblestore.V3SessionRunState   `json:"current_run_state,omitempty"`
+	HasActivePlan      *bool                            `json:"has_active_plan,omitempty"`
 	ActivePlan         *pebblestore.SessionPlanSnapshot `json:"active_plan,omitempty"`
 }
 

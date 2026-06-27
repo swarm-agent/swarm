@@ -63,7 +63,7 @@ test('buildDesktopV3BootstrapInput only prepends preferred session for session_i
 })
 
 
-test('buildDesktopV3SelectedSessionHydrateInput requests one selected session tail manifest', () => {
+test('buildDesktopV3SelectedSessionHydrateInput requests one selected session tail manifest and durable active plan state', () => {
   const input = buildDesktopV3SelectedSessionHydrateInput(' session-a ')
   assert.deepEqual(input.session_ids, ['session-a'])
   assert.equal(DESKTOP_STARTUP_MESSAGE_LIMIT, 200)
@@ -76,6 +76,8 @@ test('buildDesktopV3SelectedSessionHydrateInput requests one selected session ta
       manifest_policy: 'manifest',
     },
   )
+  assert.equal(input.resources.session_view, true)
+  assert.equal(input.resources.active_plan, true)
 })
 
 
@@ -119,7 +121,7 @@ test('postDesktopV3SyncHydrate posts exact selected-session bounded tail payload
       run_intents: true,
       current_run_state: true,
       session_view: true,
-      active_plan: false,
+      active_plan: true,
       plan_revisions: false,
       permission_summaries: false,
     },

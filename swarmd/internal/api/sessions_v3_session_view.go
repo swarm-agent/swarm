@@ -80,11 +80,15 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 		maxOutputTokens = agentModelPolicy.MaxOutputTokens
 	}
 
+	var hasActivePlan *bool
 	var activePlan *pebblestore.SessionPlanSnapshot
 	if includeActivePlan {
+		hasActive := false
+		hasActivePlan = &hasActive
 		if plan, ok, err := s.sessions.GetActivePlan(session.ID); err != nil {
 			return sessionsV3SessionView{}, err
 		} else if ok {
+			hasActive = true
 			activePlan = &plan
 		}
 	}
@@ -104,6 +108,7 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 		PendingPermissions: pendingPermissions,
 		UsageSummary:       usageSummary,
 		CurrentRunState:    currentRunState,
+		HasActivePlan:      hasActivePlan,
 		ActivePlan:         activePlan,
 	}, nil
 }

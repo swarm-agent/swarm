@@ -74,7 +74,7 @@ test('compactDesktopV3Session hydrates through V3 sync using terminal compact cu
         run_intents: true,
         current_run_state: true,
         session_view: true,
-        active_plan: false,
+        active_plan: true,
         plan_revisions: false,
         permission_summaries: false,
       },

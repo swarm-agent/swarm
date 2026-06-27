@@ -44,7 +44,7 @@ import {
   syncStreamFixture,
   tombstoneB,
 } from './desktop-v3-cache.backend-fixtures'
-import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopV3HydratedTranscriptDiagnostics, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
+import { isDesktopV3SessionTailReady, selectDesktopPlanExecutionView, selectDesktopSidebarRows, selectDesktopV3HydratedTranscriptDiagnostics, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
 import { buildDesktopV3ConversationRenderItems, isDesktopV3ManualCompactionAckMessage } from '../chat/components/desktop-v3-existing-conversation-pane'
 import type { CacheEvent, DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, SessionSnapshot, V3SessionEvent, V3SessionProjection } from './desktop-v3-cache-types'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
@@ -141,6 +141,109 @@ function hydrateCp8Session(state: DesktopV3CacheState, session: SessionSnapshot,
     scope_id: `session-cp8-${index}-hash:messages,events`,
   }), [session.id])
 }
+
+
+test('session_view active plan is normalized with execution data for Desktop selectors', () => {
+  const state = createEmptyDesktopV3CacheState()
+  applyBootstrapSnapshot(state, snapshotFixture({
+    messages_by_session: {},
+    run_intents_by_session: {},
+    session_views_by_id: {
+      [sessionA.id]: {
+        agentic_settings: { mode: 'auto', agent_name: 'swarm', resolved_agent_name: 'swarm' },
+        has_active_plan: true,
+        active_plan: {
+          id: 'plan-exec',
+          title: 'Execution plan',
+          plan: '# Plan',
+          document: {
+            id: 'plan-exec',
+            title: 'Execution plan',
+            status: 'approved',
+            execution_policy: { mode: 'review_each_checkpoint', shape: 'checkpointed' },
+            execution_state: {
+              status: 'waiting_review',
+              active_attempt_id: 'cp-1:attempt-1',
+              current_session_id: 'session-fresh',
+              current_run_id: 'run-fresh',
+              last_checkpoint_id: 'cp-1',
+              last_outcome: 'needs_review',
+            },
+            active_checkpoint_id: 'cp-1',
+            checkpoints: [{
+              id: 'cp-1',
+              title: 'Expose plan execution data',
+              status: 'needs_review',
+              attempt_id: 'cp-1:attempt-1',
+              run_id: 'run-fresh',
+              session_id: 'session-fresh',
+              review: { status: 'pending' },
+              attempts: [{ id: 'cp-1:attempt-1', checkpoint_id: 'cp-1', status: 'needs_review', run_id: 'run-fresh' }],
+            }],
+          },
+          status: 'approved',
+          approval_state: 'approved',
+          updated_at: 9,
+        },
+      },
+    },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'selector-hash',
+      resource_set: 'session_view',
+    },
+    scope_id: 'selector-hash:session_view',
+  }))
+
+  const view = selectDesktopPlanExecutionView(state, sessionA.id)
+  assert.equal(view?.plan.id, 'plan-exec')
+  assert.equal(view?.policyMode, 'review_each_checkpoint')
+  assert.equal(view?.policyShape, 'checkpointed')
+  assert.equal(view?.status, 'waiting_review')
+  assert.equal(view?.activeCheckpointId, 'cp-1')
+  assert.equal(view?.activeCheckpoint?.attemptId, 'cp-1:attempt-1')
+  assert.equal(view?.currentRunId, 'run-fresh')
+  assert.equal(view?.currentSessionId, 'session-fresh')
+  assert.equal(view?.freshContext, true)
+  assert.equal(view?.reviewRequired, true)
+  assert.equal(view?.attemptCount, 1)
+})
+
+
+test('session_view has_active_plan false clears stale Desktop active plan state', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.plansBySession[sessionA.id] = {
+    id: 'stale-plan',
+    title: 'Stale plan',
+    plan: '# Stale',
+    status: 'approved',
+    approvalState: 'approved',
+    updatedAt: 1,
+    document: null,
+  }
+
+  applyBootstrapSnapshot(state, snapshotFixture({
+    messages_by_session: {},
+    run_intents_by_session: {},
+    session_views_by_id: {
+      [sessionA.id]: {
+        agentic_settings: { mode: 'auto', agent_name: 'swarm', resolved_agent_name: 'swarm' },
+        has_active_plan: false,
+      },
+    },
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'selector-hash',
+      resource_set: 'session_view,active_plan',
+    },
+    scope_id: 'selector-hash:session_view,active_plan',
+  }))
+
+  assert.equal(selectDesktopPlanExecutionView(state, sessionA.id), null)
+  assert.equal(state.plansBySession[sessionA.id], null)
+})
 
 
 test('bootstrap stores scoped cursor, scope metadata, orders, message source metadata, run intents, and only present message keys', () => {

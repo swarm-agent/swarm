@@ -1586,6 +1586,14 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 		action = "reorder_checkpoints"
 	case "set-active-checkpoint", "set_active_checkpoint", "activate-checkpoint", "activate_checkpoint":
 		action = "set_active_checkpoint"
+	case "approve-and-start", "approve_and_start", "approve-start", "approve_start", "start-plan", "start_plan":
+		action = "approve_and_start"
+	case "accept-and-continue", "accept_and_continue", "accept-continue", "accept_continue", "approve-and-continue", "approve_and_continue":
+		action = "accept_and_continue"
+	case "restart-checkpoint", "restart_checkpoint", "retry-checkpoint", "retry_checkpoint", "restart-checkpoint-from-zero", "restart_checkpoint_from_zero":
+		action = "restart_checkpoint"
+	case "rewind-to-checkpoint", "rewind_to_checkpoint", "rewind-checkpoint", "rewind_checkpoint":
+		action = "rewind_to_checkpoint"
 	case "update-section", "update_section":
 		action = "update_section"
 	}
@@ -1594,6 +1602,8 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 	}
 
 	switch action {
+	case "approve_and_start", "accept_and_continue", "restart_checkpoint", "rewind_to_checkpoint":
+		return s.executePlanExecutionControlAction(sessionID, action, args)
 	case "list":
 		limit := mapInt(args, "limit")
 		if limit <= 0 {
@@ -2047,6 +2057,150 @@ func planManagePlanRevisionSummary(plan pebblestore.SessionPlanSnapshot) map[str
 	return item
 }
 
+func (s *Service) executePlanExecutionControlAction(sessionID, action string, args map[string]any) (string, error) {
+	planID := strings.TrimSpace(firstNonEmptyString(mapString(args, "plan_id"), mapString(args, "id")))
+	var existing pebblestore.SessionPlanSnapshot
+	var ok bool
+	var err error
+	if planID == "" || strings.EqualFold(planID, "active") {
+		existing, ok, err = s.sessions.GetActivePlan(sessionID)
+	} else {
+		existing, ok, err = s.sessions.GetPlan(sessionID, planID)
+	}
+	if err != nil {
+		return "", err
+	}
+	if !ok || existing.Document == nil {
+		return "", errors.New("plan execution action requires an active structured plan")
+	}
+	planID = strings.TrimSpace(existing.ID)
+	doc, err := clonePlanDocumentForExecutionAction(existing.Document)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(doc.ID) == "" {
+		doc.ID = planID
+	}
+	if strings.TrimSpace(doc.Title) == "" {
+		doc.Title = strings.TrimSpace(existing.Title)
+	}
+
+	checkpointID := strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_id"), mapString(args, "active_checkpoint_id"), mapString(args, "active_checkpoint")))
+	updateSummary := "Updated plan execution state"
+	updateKind := "plan_execution_control"
+	status := strings.TrimSpace(existing.Status)
+	approvalState := strings.TrimSpace(existing.ApprovalState)
+	switch action {
+	case "approve_and_start":
+		granularity := strings.TrimSpace(firstNonEmptyString(mapString(args, "execution_granularity"), mapString(args, "granularity"), mapString(args, "execution_shape"), mapString(args, "shape")))
+		continuation := strings.TrimSpace(firstNonEmptyString(mapString(args, "continuation_policy"), mapString(args, "continuation"), mapString(args, "mode")))
+		if _, ok := args["continue_automatically"]; ok {
+			if mapBool(args, "continue_automatically") {
+				continuation = sessionruntime.PlanAcceptanceContinuationAutomatic
+			} else {
+				continuation = sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint
+			}
+		}
+		if _, err := sessionruntime.ApplyPlanAcceptanceExecutionPolicy(doc, sessionruntime.PlanAcceptanceExecutionOptions{ExecutionGranularity: granularity, ContinuationPolicy: continuation}); err != nil {
+			return "", err
+		}
+		status = "approved"
+		approvalState = "approved"
+		updateSummary = "Approved plan and prepared fresh-context checkpoint start"
+		updateKind = "approve_and_start"
+	case "accept_and_continue":
+		_, err := sessionruntime.ApplyPlanCheckpointReviewAcceptance(doc, sessionruntime.PlanCheckpointReviewAcceptanceOptions{
+			CheckpointID: checkpointID,
+			Result:       rawStringArg(args, "result"),
+			Notes:        firstNonEmptyString(rawStringArg(args, "notes"), rawStringArg(args, "report")),
+			ReviewedAt:   int64(mapInt(args, "reviewed_at")),
+		})
+		if err != nil {
+			return "", err
+		}
+		updateSummary = "Accepted checkpoint review and prepared next fresh-context checkpoint start"
+		updateKind = "accept_and_continue"
+	case "restart_checkpoint":
+		_, err := sessionruntime.ApplyPlanCheckpointReset(doc, sessionruntime.PlanCheckpointResetOptions{CheckpointID: checkpointID})
+		if err != nil {
+			return "", err
+		}
+		updateSummary = "Restarted checkpoint from zero and prepared fresh-context checkpoint start"
+		updateKind = "restart_checkpoint"
+	case "rewind_to_checkpoint":
+		_, err := sessionruntime.ApplyPlanCheckpointReset(doc, sessionruntime.PlanCheckpointResetOptions{CheckpointID: checkpointID, Rewind: true})
+		if err != nil {
+			return "", err
+		}
+		updateSummary = "Rewound plan execution to checkpoint and prepared fresh-context checkpoint start"
+		updateKind = "rewind_to_checkpoint"
+	default:
+		return "", fmt.Errorf("plan execution action %q is not supported", action)
+	}
+
+	saved, _, err := s.sessions.SavePlanWithMetadata(sessionID, planID, existing.Title, existing.Plan, status, approvalState, true, sessionruntime.PlanSaveMetadata{
+		UpdateSummary: updateSummary,
+		UpdateScope:   checkpointID,
+		UpdateKind:    updateKind,
+		Checkpoint:    true,
+		Document:      doc,
+	})
+	if err != nil {
+		return "", err
+	}
+	summary := sessionruntime.SummarizePlanExecution(saved.Document)
+	payload := map[string]any{
+		"tool":              "plan_manage",
+		"action":            action,
+		"status":            "ok",
+		"plan":              saved,
+		"execution_summary": summary,
+		"path_id":           "tool.plan-manage.v3",
+		"summary":           updateSummary,
+		"details_truncated": false,
+	}
+	if summary.PlanComplete {
+		payload["next_action"] = "plan_complete"
+	} else if summary.ReviewRequired {
+		payload["next_action"] = "await_review"
+	} else if summary.Blocked || summary.Failed {
+		payload["next_action"] = "stopped"
+	} else if summary.NextCheckpointID != "" {
+		payload["checkpoint_id"] = summary.NextCheckpointID
+		payload["next_action"] = "run_checkpoint_with_fresh_context"
+		payload["run_request"] = planCheckpointRunRequestPayload(planID, summary.NextCheckpointID, "")
+	}
+	return marshalPlanManagePayload(payload)
+}
+
+func clonePlanDocumentForExecutionAction(doc *pebblestore.SessionPlanDocument) (*pebblestore.SessionPlanDocument, error) {
+	if doc == nil {
+		return nil, errors.New("plan document is required")
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+	var clone pebblestore.SessionPlanDocument
+	if err := json.Unmarshal(raw, &clone); err != nil {
+		return nil, err
+	}
+	return &clone, nil
+}
+
+func planCheckpointRunRequestPayload(planID, checkpointID, attemptID string) map[string]any {
+	ctx := map[string]any{
+		"plan_id":       strings.TrimSpace(planID),
+		"checkpoint_id": strings.TrimSpace(checkpointID),
+	}
+	if trimmed := strings.TrimSpace(attemptID); trimmed != "" {
+		ctx["attempt_id"] = trimmed
+	}
+	return map[string]any{
+		"plan_checkpoint_context": ctx,
+	}
+}
+
 func addPlanExecutionPayloadFields(payload map[string]any, action string, doc *pebblestore.SessionPlanDocument) {
 	if payload == nil || doc == nil {
 		return
@@ -2066,7 +2220,9 @@ func addPlanExecutionPayloadFields(payload map[string]any, action string, doc *p
 		} else if summary.Blocked || summary.Failed {
 			payload["next_action"] = "stopped"
 		} else if summary.AutoAdvanceAllowed && summary.NextCheckpointID != "" {
-			payload["next_action"] = "auto_advance_available"
+			payload["next_action"] = "run_checkpoint_with_fresh_context"
+			payload["auto_advance"] = true
+			payload["run_request"] = planCheckpointRunRequestPayload(doc.ID, summary.NextCheckpointID, "")
 		} else if summary.NextCheckpointID != "" {
 			payload["next_action"] = "continue_checkpoint"
 		}

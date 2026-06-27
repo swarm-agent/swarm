@@ -870,10 +870,18 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		action = "reorder_checkpoints"
 	case "set-active-checkpoint", "set_active_checkpoint", "activate-checkpoint", "activate_checkpoint":
 		action = "set_active_checkpoint"
+	case "approve-and-start", "approve_and_start", "approve-start", "approve_start", "start-plan", "start_plan":
+		action = "approve_and_start"
+	case "accept-and-continue", "accept_and_continue", "accept-continue", "accept_continue", "approve-and-continue", "approve_and_continue":
+		action = "accept_and_continue"
+	case "restart-checkpoint", "restart_checkpoint", "retry-checkpoint", "retry_checkpoint", "restart-checkpoint-from-zero", "restart_checkpoint_from_zero":
+		action = "restart_checkpoint"
+	case "rewind-to-checkpoint", "rewind_to_checkpoint", "rewind-checkpoint", "rewind_checkpoint":
+		action = "rewind_to_checkpoint"
 	case "update-section", "update_section":
 		action = "update_section"
 	}
-	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "update_execution_policy" && action != "update_execution_state" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "start_checkpoint" && action != "continue_checkpoint" && action != "complete_checkpoint" && action != "checkpoint_outcome" && action != "mark_needs_review" && action != "mark_blocked" && action != "mark_failed" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
+	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "update_execution_policy" && action != "update_execution_state" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "start_checkpoint" && action != "continue_checkpoint" && action != "complete_checkpoint" && action != "checkpoint_outcome" && action != "mark_needs_review" && action != "mark_blocked" && action != "mark_failed" && action != "accept_and_continue" && action != "restart_checkpoint" && action != "rewind_to_checkpoint" && action != "approve_and_start" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
 		return planManagePermissionPayload{}, false, nil
 	}
 	planBody := strings.TrimSpace(mapString(args, "plan"))
@@ -963,6 +971,39 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		if err != nil {
 			return planManagePermissionPayload{}, false, err
 		}
+	} else if action == "approve_and_start" || action == "accept_and_continue" || action == "restart_checkpoint" || action == "rewind_to_checkpoint" {
+		previewDocument, err = clonePlanDocumentForExecutionAction(existing.Document)
+		if err != nil {
+			return planManagePermissionPayload{}, false, err
+		}
+		checkpointID := strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_id"), mapString(args, "active_checkpoint_id"), mapString(args, "active_checkpoint")))
+		switch action {
+		case "approve_and_start":
+			granularity := strings.TrimSpace(firstNonEmptyString(mapString(args, "execution_granularity"), mapString(args, "granularity"), mapString(args, "execution_shape"), mapString(args, "shape")))
+			continuation := strings.TrimSpace(firstNonEmptyString(mapString(args, "continuation_policy"), mapString(args, "continuation"), mapString(args, "mode")))
+			if _, ok := args["continue_automatically"]; ok {
+				if mapBool(args, "continue_automatically") {
+					continuation = sessionruntime.PlanAcceptanceContinuationAutomatic
+				} else {
+					continuation = sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint
+				}
+			}
+			if _, err := sessionruntime.ApplyPlanAcceptanceExecutionPolicy(previewDocument, sessionruntime.PlanAcceptanceExecutionOptions{ExecutionGranularity: granularity, ContinuationPolicy: continuation}); err != nil {
+				return planManagePermissionPayload{}, false, err
+			}
+			status = "approved"
+			approvalState = "approved"
+		case "accept_and_continue":
+			_, err = sessionruntime.ApplyPlanCheckpointReviewAcceptance(previewDocument, sessionruntime.PlanCheckpointReviewAcceptanceOptions{CheckpointID: checkpointID, Result: rawStringArg(args, "result"), Notes: firstNonEmptyString(rawStringArg(args, "notes"), rawStringArg(args, "report")), ReviewedAt: int64(mapInt(args, "reviewed_at"))})
+		case "restart_checkpoint":
+			_, err = sessionruntime.ApplyPlanCheckpointReset(previewDocument, sessionruntime.PlanCheckpointResetOptions{CheckpointID: checkpointID})
+		case "rewind_to_checkpoint":
+			_, err = sessionruntime.ApplyPlanCheckpointReset(previewDocument, sessionruntime.PlanCheckpointResetOptions{CheckpointID: checkpointID, Rewind: true})
+		}
+		if err != nil {
+			return planManagePermissionPayload{}, false, err
+		}
+		checkpoint = true
 	} else if previewDocument == nil {
 		previewDocument = existing.Document
 	}
@@ -1008,7 +1049,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	} else {
 		for key, value := range args {
 			switch key {
-			case "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "notes", "report", "result", "changed_files", "validation", "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
+			case "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically", "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
 				payload.ApprovedArguments[key] = value
 			case "checkpoint":
 				if _, isBool := value.(bool); !isBool {

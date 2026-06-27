@@ -1,3 +1,4 @@
+import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanRecord } from '../chat/types/chat'
 import type { DesktopPermissionRecord } from '../types/realtime'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
@@ -21,6 +22,23 @@ export interface RenderedSessionMessages {
   runIntents: V3SessionRunIntent[]
   currentRunIntent?: V3SessionRunIntent
   latestRunIntent?: V3SessionRunIntent
+}
+
+export interface DesktopPlanExecutionView {
+  plan: DesktopSessionPlanRecord
+  activeCheckpoint?: DesktopSessionPlanCheckpoint
+  activeCheckpointId: string
+  status: string
+  policyMode: string
+  policyShape: string
+  currentRunId: string
+  currentSessionId: string
+  freshContext: boolean
+  reviewRequired: boolean
+  blocked: boolean
+  failed: boolean
+  completed: boolean
+  attemptCount: number
 }
 
 export interface DesktopV3HydratedTranscriptDiagnostics {
@@ -143,6 +161,38 @@ export function selectRenderedSessionMessages(state: DesktopV3CacheState, sessio
     runIntents,
     currentRunIntent: state.currentRunIntentBySession[sessionId],
     latestRunIntent: runIntents[runIntents.length - 1],
+  }
+}
+
+export function selectDesktopPlanExecutionView(state: DesktopV3CacheState, sessionId: string): DesktopPlanExecutionView | null {
+  const candidate = state.plansBySession[sessionId] as DesktopSessionPlanRecord | null | undefined
+  const plan = candidate?.document ? candidate : null
+  const document = plan?.document
+  if (!plan || !document) return null
+
+  const activeCheckpointId = document.activeCheckpointId || document.executionState?.lastCheckpointId || ''
+  const activeCheckpoint = activeCheckpointId
+    ? document.checkpoints.find((checkpoint) => checkpoint.id === activeCheckpointId)
+    : undefined
+  const status = document.executionState?.status || document.status || plan.status || ''
+  const normalizedStatus = status.toLowerCase()
+  const checkpointStatus = (activeCheckpoint?.status || document.executionState?.lastOutcome || '').toLowerCase()
+
+  return {
+    plan,
+    activeCheckpoint,
+    activeCheckpointId,
+    status,
+    policyMode: document.executionPolicy?.mode || '',
+    policyShape: document.executionPolicy?.shape || '',
+    currentRunId: document.executionState?.currentRunId || activeCheckpoint?.runId || '',
+    currentSessionId: document.executionState?.currentSessionId || activeCheckpoint?.sessionId || '',
+    freshContext: Boolean(document.executionState?.activeAttemptId || activeCheckpoint?.attemptId || document.executionState?.currentRunId || activeCheckpoint?.runId),
+    reviewRequired: normalizedStatus === 'waiting_review' || checkpointStatus === 'needs_review' || activeCheckpoint?.review?.status === 'pending',
+    blocked: normalizedStatus === 'blocked' || checkpointStatus === 'blocked',
+    failed: normalizedStatus === 'failed' || checkpointStatus === 'failed',
+    completed: normalizedStatus === 'completed' || document.checkpoints.length > 0 && document.checkpoints.every((checkpoint) => checkpoint.status.toLowerCase() === 'completed'),
+    attemptCount: document.checkpoints.reduce((total, checkpoint) => total + checkpoint.attempts.length, 0),
   }
 }
 

@@ -61,6 +61,7 @@ import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { fetchAndApplyDesktopV3PlanSnapshot, saveDesktopV3SessionPlan } from '../state/desktop-v3-session-api'
+import { executeDesktopPlanActionAndStartRun } from '../session-v3/plan-execution-api'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
@@ -1782,6 +1783,7 @@ export function DesktopAppPage() {
   const [planModal, setPlanModal] = useState<PlanModalState | null>(null)
   const [planModalLoading, setPlanModalLoading] = useState(false)
   const [planModalSaving, setPlanModalSaving] = useState(false)
+  const [planModalExecuting, setPlanModalExecuting] = useState(false)
   const [planModalError, setPlanModalError] = useState<string | null>(null)
   const [quickSettingsTab, setQuickSettingsTab] = useState<QuickSettingsTabID | null>(null)
   const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
@@ -2529,6 +2531,27 @@ export function DesktopAppPage() {
       setPlanModalSaving(false)
     }
   }, [planModal?.sessionId, planModalPlan?.approvalState, planModalPlan?.id, planModalPlan?.status, planModalPlan?.title])
+
+  const handleApproveStartPlanModal = useCallback(async (input: { executionGranularity: 'checkpointed' | 'run_through'; continueAutomatically: boolean }) => {
+    const sessionId = planModal?.sessionId.trim() ?? ''
+    if (!sessionId || !planModalPlan?.id) return
+    setPlanModalExecuting(true)
+    setPlanModalError(null)
+    try {
+      await executeDesktopPlanActionAndStartRun(sessionId, {
+        action: 'approve_and_start',
+        planId: planModalPlan.id,
+        executionGranularity: input.executionGranularity,
+        continueAutomatically: input.executionGranularity === 'run_through' ? true : input.continueAutomatically,
+      })
+      setPlanModal(null)
+    } catch (error) {
+      setPlanModalError(error instanceof Error ? error.message : String(error))
+      throw error
+    } finally {
+      setPlanModalExecuting(false)
+    }
+  }, [planModal?.sessionId, planModalPlan?.id])
 
   const handleOpenSettingsTab = useCallback((tab: SettingsTabID) => {
     setQuickSettingsTab(null)
@@ -3650,6 +3673,7 @@ export function DesktopAppPage() {
               if (routeSession?.workspacePath) handleStartNewSessionInWorkspace(routeSession.workspacePath, routeSession.workspaceName)
             }}
             onSlashCommand={handleSlashCommand}
+            onOpenPlan={() => openPlanModalForSession(routeSessionId)}
           />
         ) : isFlowRoute ? (
           <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[var(--app-bg)] px-3 pb-[calc(var(--app-safe-area-bottom)_+_1.25rem)] pt-[calc(var(--app-safe-area-top)_+_1rem)] sm:px-6 sm:py-8">
@@ -3705,12 +3729,14 @@ export function DesktopAppPage() {
         revisions={planModalRevisions}
         historyLoading={planModalLoading}
         saving={planModalSaving}
+        executing={planModalExecuting}
         error={planModalError}
         onOpenChange={(open) => {
           if (!open) setPlanModal(null)
         }}
         onCopy={handleCopyPlanText}
         onSave={handleSavePlanModal}
+        onApproveStart={handleApproveStartPlanModal}
       />
 
       {todoModal ? (

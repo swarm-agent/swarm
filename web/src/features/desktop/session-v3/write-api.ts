@@ -43,6 +43,11 @@ export interface DesktopV3AppendMessageRequest {
   role: 'user'
   content: string
   metadata?: Record<string, unknown>
+  plan_checkpoint_context?: {
+    plan_id: string
+    checkpoint_id: string
+    attempt_id?: string
+  }
 }
 
 export async function postDesktopV3CreateSession(

@@ -96,6 +96,20 @@ type PlanCheckpointOutcomeDecision struct {
 	StopReason         string `json:"stop_reason,omitempty"`
 }
 
+type PlanCheckpointReviewAcceptanceOptions struct {
+	CheckpointID string
+	ReviewerID   string
+	ReviewerType string
+	Result       string
+	Notes        string
+	ReviewedAt   int64
+}
+
+type PlanCheckpointResetOptions struct {
+	CheckpointID string
+	Rewind       bool
+}
+
 func normalizePlanExecutionPolicy(policy *pebblestore.SessionPlanExecutionPolicy, checkpointCount int) {
 	if policy == nil {
 		return
@@ -407,8 +421,9 @@ func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionS
 		ActiveCheckpointID: strings.TrimSpace(doc.ActiveCheckpointID),
 		AutoAdvanceAllowed: policy.Mode == PlanExecutionPolicyModeAutomatic,
 	}
-	if policy.Shape == PlanExecutionShapeSingleRun || len(doc.Checkpoints) == 0 {
-		summary.PlanComplete = len(doc.Checkpoints) == 0
+	if len(doc.Checkpoints) == 0 {
+		summary.PlanComplete = true
+		summary.AutoAdvanceAllowed = false
 		return summary
 	}
 
@@ -418,7 +433,7 @@ func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionS
 		if idx >= 0 {
 			checkpoint := doc.Checkpoints[idx]
 			status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
-			if planCheckpointReviewPending(policy, checkpoint) {
+			if planCheckpointReviewPending(policy, checkpoint, idx < len(doc.Checkpoints)-1) {
 				summary.NextCheckpointID = strings.TrimSpace(checkpoint.ID)
 				summary.NextCheckpointStatus = status
 				summary.ReviewRequired = true
@@ -458,7 +473,7 @@ func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionS
 	for i := startIndex; i < len(doc.Checkpoints); i++ {
 		checkpoint := doc.Checkpoints[i]
 		status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
-		if planCheckpointReviewPending(policy, checkpoint) {
+		if planCheckpointReviewPending(policy, checkpoint, i < len(doc.Checkpoints)-1) {
 			summary.NextCheckpointID = strings.TrimSpace(checkpoint.ID)
 			summary.NextCheckpointStatus = status
 			summary.ReviewRequired = true
@@ -496,7 +511,7 @@ func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionS
 	return summary
 }
 
-func planCheckpointReviewPending(policy pebblestore.SessionPlanExecutionPolicy, checkpoint pebblestore.SessionPlanCheckpoint) bool {
+func planCheckpointReviewPending(policy pebblestore.SessionPlanExecutionPolicy, checkpoint pebblestore.SessionPlanCheckpoint, hasLaterCheckpoint bool) bool {
 	if normalizePlanCheckpointStatusForSave(checkpoint.Status) != PlanCheckpointStatusCompleted {
 		return false
 	}
@@ -508,7 +523,7 @@ func planCheckpointReviewPending(policy pebblestore.SessionPlanExecutionPolicy, 
 			return false
 		}
 	}
-	return policy.Mode == PlanExecutionPolicyModeReviewEachCheckpoint
+	return hasLaterCheckpoint && policy.Mode == PlanExecutionPolicyModeReviewEachCheckpoint
 }
 
 func SelectNextPlanCheckpoint(doc *pebblestore.SessionPlanDocument) (pebblestore.SessionPlanCheckpoint, PlanExecutionSummary, bool) {
@@ -547,7 +562,7 @@ func ApplyPlanCheckpointStart(doc *pebblestore.SessionPlanDocument, options Plan
 	checkpoint := &doc.Checkpoints[idx]
 	status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
 	summary := SummarizePlanExecution(doc)
-	if planCheckpointReviewPending(doc.ExecutionPolicy, *checkpoint) || status == PlanCheckpointStatusNeedsReview {
+	if planCheckpointReviewPending(doc.ExecutionPolicy, *checkpoint, idx < len(doc.Checkpoints)-1) || status == PlanCheckpointStatusNeedsReview {
 		return PlanCheckpointStartDecision{CheckpointID: checkpointID, Status: status, NextCheckpointID: checkpointID, ReviewRequired: true, StopReason: PlanCheckpointStatusNeedsReview}, fmt.Errorf("checkpoint %q is waiting for review", checkpointID)
 	}
 	switch status {
@@ -660,7 +675,7 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 		}
 		checkpoint.Review.Status = PlanCheckpointReviewStatusPending
 	}
-	if outcome == PlanCheckpointStatusCompleted && doc.ExecutionPolicy.Mode == PlanExecutionPolicyModeReviewEachCheckpoint {
+	if outcome == PlanCheckpointStatusCompleted && doc.ExecutionPolicy.Mode == PlanExecutionPolicyModeReviewEachCheckpoint && idx < len(doc.Checkpoints)-1 {
 		if checkpoint.Review == nil {
 			checkpoint.Review = &pebblestore.SessionPlanCheckpointReview{}
 		}
@@ -726,7 +741,7 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 	summary := SummarizePlanExecution(doc)
 	switch outcome {
 	case PlanCheckpointStatusCompleted:
-		if policy := doc.ExecutionPolicy; policy.Mode == PlanExecutionPolicyModeReviewEachCheckpoint {
+		if policy := doc.ExecutionPolicy; policy.Mode == PlanExecutionPolicyModeReviewEachCheckpoint && idx < len(doc.Checkpoints)-1 {
 			doc.ActiveCheckpointID = checkpointID
 			decision.ReviewRequired = true
 			decision.StopReason = PlanCheckpointStatusNeedsReview
@@ -762,6 +777,119 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 		doc.ExecutionState.Status = PlanExecutionStateFailed
 	}
 	return decision, nil
+}
+
+func ApplyPlanCheckpointReviewAcceptance(doc *pebblestore.SessionPlanDocument, options PlanCheckpointReviewAcceptanceOptions) (PlanExecutionSummary, error) {
+	if doc == nil {
+		return PlanExecutionSummary{}, errors.New("plan document is required")
+	}
+	normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
+	normalizePlanExecutionState(doc.ExecutionState)
+	checkpointID := strings.TrimSpace(options.CheckpointID)
+	if checkpointID == "" {
+		checkpointID = strings.TrimSpace(doc.ActiveCheckpointID)
+	}
+	if checkpointID == "" {
+		return PlanExecutionSummary{}, errors.New("checkpoint_id is required")
+	}
+	idx := findPlanCheckpointIndex(doc.Checkpoints, checkpointID)
+	if idx < 0 {
+		return PlanExecutionSummary{}, fmt.Errorf("plan document checkpoint %q was not found", checkpointID)
+	}
+	checkpoint := &doc.Checkpoints[idx]
+	status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
+	if status != PlanCheckpointStatusCompleted && status != PlanCheckpointStatusNeedsReview {
+		return PlanExecutionSummary{}, fmt.Errorf("checkpoint %q status %q is not waiting for review", checkpointID, status)
+	}
+	if checkpoint.Review == nil {
+		checkpoint.Review = &pebblestore.SessionPlanCheckpointReview{}
+	}
+	checkpoint.Review.Status = PlanCheckpointReviewStatusApproved
+	checkpoint.Review.ReviewerID = strings.TrimSpace(options.ReviewerID)
+	checkpoint.Review.ReviewerType = strings.TrimSpace(options.ReviewerType)
+	checkpoint.Review.Result = strings.TrimSpace(options.Result)
+	checkpoint.Review.Notes = strings.TrimSpace(options.Notes)
+	if options.ReviewedAt > 0 {
+		checkpoint.Review.ReviewedAt = options.ReviewedAt
+	}
+	if status == PlanCheckpointStatusNeedsReview {
+		checkpoint.Status = PlanCheckpointStatusCompleted
+	}
+	if doc.ExecutionState == nil {
+		doc.ExecutionState = &pebblestore.SessionPlanExecutionState{}
+	}
+	doc.ExecutionState.LastCheckpointID = checkpointID
+	doc.ExecutionState.LastOutcome = PlanCheckpointStatusCompleted
+	if options.ReviewedAt > 0 {
+		doc.ExecutionState.UpdatedAt = options.ReviewedAt
+	}
+	summary := SummarizePlanExecution(doc)
+	if summary.PlanComplete {
+		doc.ActiveCheckpointID = ""
+		doc.ExecutionState.Status = PlanExecutionStateCompleted
+		if options.ReviewedAt > 0 {
+			doc.ExecutionState.CompletedAt = options.ReviewedAt
+		}
+		return SummarizePlanExecution(doc), nil
+	}
+	if summary.NextCheckpointID != "" {
+		doc.ActiveCheckpointID = summary.NextCheckpointID
+		doc.ExecutionState.Status = PlanExecutionStateIdle
+		doc.ExecutionState.ActiveAttemptID = ""
+		doc.ExecutionState.CurrentRunID = ""
+		doc.ExecutionState.CurrentSessionID = ""
+	}
+	return SummarizePlanExecution(doc), nil
+}
+
+func ApplyPlanCheckpointReset(doc *pebblestore.SessionPlanDocument, options PlanCheckpointResetOptions) (PlanExecutionSummary, error) {
+	if doc == nil {
+		return PlanExecutionSummary{}, errors.New("plan document is required")
+	}
+	normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
+	checkpointID := strings.TrimSpace(options.CheckpointID)
+	if checkpointID == "" {
+		checkpointID = strings.TrimSpace(doc.ActiveCheckpointID)
+	}
+	if checkpointID == "" {
+		_, summary, ok := SelectNextPlanCheckpoint(doc)
+		if !ok {
+			return summary, errors.New("no checkpoint is available to reset")
+		}
+		checkpointID = summary.NextCheckpointID
+	}
+	idx := findPlanCheckpointIndex(doc.Checkpoints, checkpointID)
+	if idx < 0 {
+		return PlanExecutionSummary{}, fmt.Errorf("plan document checkpoint %q was not found", checkpointID)
+	}
+	end := idx + 1
+	if options.Rewind {
+		end = len(doc.Checkpoints)
+	}
+	for i := idx; i < end; i++ {
+		resetPlanCheckpointRuntimeForFreshStart(&doc.Checkpoints[i])
+	}
+	doc.ActiveCheckpointID = checkpointID
+	doc.ExecutionState = &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateIdle}
+	return SummarizePlanExecution(doc), nil
+}
+
+func resetPlanCheckpointRuntimeForFreshStart(checkpoint *pebblestore.SessionPlanCheckpoint) {
+	if checkpoint == nil {
+		return
+	}
+	checkpoint.Status = PlanCheckpointStatusPending
+	checkpoint.Report = ""
+	checkpoint.Result = ""
+	checkpoint.ChangedFiles = nil
+	checkpoint.Validation = nil
+	checkpoint.AttemptID = ""
+	checkpoint.RunID = ""
+	checkpoint.SessionID = ""
+	checkpoint.StartedAt = 0
+	checkpoint.CompletedAt = 0
+	checkpoint.Review = nil
+	checkpoint.Attempts = nil
 }
 
 func upsertPlanCheckpointAttempt(checkpoint *pebblestore.SessionPlanCheckpoint, attempt pebblestore.SessionPlanCheckpointAttempt) {

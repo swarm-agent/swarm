@@ -26,6 +26,50 @@ export interface StructuredPlanInfo {
   validationStrategy: string
 }
 
+export interface StructuredPlanExecutionPolicy {
+  mode: string
+  shape: string
+}
+
+export interface StructuredPlanExecutionState {
+  status: string
+  activeAttemptId: string
+  parentSessionId: string
+  currentSessionId: string
+  currentRunId: string
+  lastCheckpointId: string
+  lastAttemptId: string
+  lastOutcome: string
+  startedAt: number
+  updatedAt: number
+  completedAt: number
+}
+
+export interface StructuredPlanCheckpointReview {
+  status: string
+  reviewerId: string
+  reviewerType: string
+  result: string
+  notes: string
+  reviewedAt: number
+}
+
+export interface StructuredPlanCheckpointAttempt {
+  id: string
+  checkpointId: string
+  status: string
+  outcome: string
+  runId: string
+  sessionId: string
+  parentSessionId: string
+  startedAt: number
+  completedAt: number
+  report: string
+  result: string
+  changedFiles: string[]
+  validation: string[]
+}
+
 export interface StructuredPlanCheckpoint {
   id: string
   title: string
@@ -38,6 +82,13 @@ export interface StructuredPlanCheckpoint {
   result: string
   changedFiles: string[]
   validation: string[]
+  attemptId: string
+  runId: string
+  sessionId: string
+  startedAt: number
+  completedAt: number
+  review: StructuredPlanCheckpointReview | null
+  attempts: StructuredPlanCheckpointAttempt[]
   order: number
 }
 
@@ -48,6 +99,8 @@ export interface StructuredPlanDocument {
   schemaVersion: string
   revisionId: string
   info: StructuredPlanInfo
+  executionPolicy: StructuredPlanExecutionPolicy | null
+  executionState: StructuredPlanExecutionState | null
   checkpoints: StructuredPlanCheckpoint[]
   activeCheckpointId: string
   renderedText: string
@@ -107,6 +160,71 @@ function numberValue(record: Record<string, unknown>, ...keys: string[]): number
   return 0
 }
 
+function normalizeStructuredPlanExecutionPolicy(value: unknown): StructuredPlanDocument['executionPolicy'] {
+  const record = objectValue(value)
+  if (!record) return null
+  const policy = {
+    mode: stringValue(record, 'mode'),
+    shape: stringValue(record, 'shape'),
+  }
+  return policy.mode || policy.shape ? policy : null
+}
+
+function normalizeStructuredPlanExecutionState(value: unknown): StructuredPlanDocument['executionState'] {
+  const record = objectValue(value)
+  if (!record) return null
+  const state = {
+    status: stringValue(record, 'status'),
+    activeAttemptId: stringValue(record, 'activeAttemptId', 'active_attempt_id'),
+    parentSessionId: stringValue(record, 'parentSessionId', 'parent_session_id'),
+    currentSessionId: stringValue(record, 'currentSessionId', 'current_session_id'),
+    currentRunId: stringValue(record, 'currentRunId', 'current_run_id'),
+    lastCheckpointId: stringValue(record, 'lastCheckpointId', 'last_checkpoint_id'),
+    lastAttemptId: stringValue(record, 'lastAttemptId', 'last_attempt_id'),
+    lastOutcome: stringValue(record, 'lastOutcome', 'last_outcome'),
+    startedAt: numberValue(record, 'startedAt', 'started_at'),
+    updatedAt: numberValue(record, 'updatedAt', 'updated_at'),
+    completedAt: numberValue(record, 'completedAt', 'completed_at'),
+  }
+  return state.status || state.activeAttemptId || state.currentRunId || state.lastCheckpointId ? state : null
+}
+
+function normalizeStructuredPlanCheckpointReview(value: unknown): StructuredPlanCheckpoint['review'] {
+  const record = objectValue(value)
+  if (!record) return null
+  const review = {
+    status: stringValue(record, 'status'),
+    reviewerId: stringValue(record, 'reviewerId', 'reviewer_id'),
+    reviewerType: stringValue(record, 'reviewerType', 'reviewer_type'),
+    result: stringValue(record, 'result'),
+    notes: stringValue(record, 'notes'),
+    reviewedAt: numberValue(record, 'reviewedAt', 'reviewed_at'),
+  }
+  return review.status || review.reviewerId || review.result || review.notes || review.reviewedAt > 0 ? review : null
+}
+
+function normalizeStructuredPlanCheckpointAttempts(value: unknown): StructuredPlanCheckpoint['attempts'] {
+  if (!Array.isArray(value)) return []
+  return value.map((entry) => {
+    const record = objectValue(entry) ?? {}
+    return {
+      id: stringValue(record, 'id'),
+      checkpointId: stringValue(record, 'checkpointId', 'checkpoint_id'),
+      status: stringValue(record, 'status'),
+      outcome: stringValue(record, 'outcome'),
+      runId: stringValue(record, 'runId', 'run_id'),
+      sessionId: stringValue(record, 'sessionId', 'session_id'),
+      parentSessionId: stringValue(record, 'parentSessionId', 'parent_session_id'),
+      startedAt: numberValue(record, 'startedAt', 'started_at'),
+      completedAt: numberValue(record, 'completedAt', 'completed_at'),
+      report: stringValue(record, 'report'),
+      result: stringValue(record, 'result'),
+      changedFiles: stringArrayValue(record, 'changedFiles', 'changed_files'),
+      validation: stringArrayValue(record, 'validation'),
+    }
+  })
+}
+
 export function normalizeStructuredPlanDocument(value: unknown): StructuredPlanDocument | null {
   const record = objectValue(value)
   if (!record) {
@@ -132,6 +250,13 @@ export function normalizeStructuredPlanDocument(value: unknown): StructuredPlanD
         result: stringValue(checkpoint, 'result'),
         changedFiles: stringArrayValue(checkpoint, 'changedFiles', 'changed_files'),
         validation: stringArrayValue(checkpoint, 'validation'),
+        attemptId: stringValue(checkpoint, 'attemptId', 'attempt_id'),
+        runId: stringValue(checkpoint, 'runId', 'run_id'),
+        sessionId: stringValue(checkpoint, 'sessionId', 'session_id'),
+        startedAt: numberValue(checkpoint, 'startedAt', 'started_at'),
+        completedAt: numberValue(checkpoint, 'completedAt', 'completed_at'),
+        review: normalizeStructuredPlanCheckpointReview(checkpoint.review),
+        attempts: normalizeStructuredPlanCheckpointAttempts(checkpoint.attempts),
         order: numberValue(checkpoint, 'order') || index + 1,
       }
     })
@@ -156,6 +281,8 @@ export function normalizeStructuredPlanDocument(value: unknown): StructuredPlanD
       successCriteria: stringArrayValue(infoRecord, 'successCriteria', 'success_criteria'),
       validationStrategy: stringValue(infoRecord, 'validationStrategy', 'validation_strategy', 'validation'),
     },
+    executionPolicy: normalizeStructuredPlanExecutionPolicy(record.executionPolicy ?? record.execution_policy),
+    executionState: normalizeStructuredPlanExecutionState(record.executionState ?? record.execution_state),
     checkpoints,
     activeCheckpointId: stringValue(record, 'activeCheckpointId', 'active_checkpoint_id'),
     renderedText: rawStringValue(record, 'renderedText', 'rendered_text'),
@@ -196,6 +323,34 @@ export function structuredPlanCheckpointToWire(checkpoint: StructuredPlanCheckpo
     result: checkpoint.result,
     changed_files: checkpoint.changedFiles,
     validation: checkpoint.validation,
+    attempt_id: checkpoint.attemptId,
+    run_id: checkpoint.runId,
+    session_id: checkpoint.sessionId,
+    started_at: checkpoint.startedAt,
+    completed_at: checkpoint.completedAt,
+    review: checkpoint.review ? {
+      status: checkpoint.review.status,
+      reviewer_id: checkpoint.review.reviewerId,
+      reviewer_type: checkpoint.review.reviewerType,
+      result: checkpoint.review.result,
+      notes: checkpoint.review.notes,
+      reviewed_at: checkpoint.review.reviewedAt,
+    } : undefined,
+    attempts: checkpoint.attempts.map((attempt) => ({
+      id: attempt.id,
+      checkpoint_id: attempt.checkpointId,
+      status: attempt.status,
+      outcome: attempt.outcome,
+      run_id: attempt.runId,
+      session_id: attempt.sessionId,
+      parent_session_id: attempt.parentSessionId,
+      started_at: attempt.startedAt,
+      completed_at: attempt.completedAt,
+      report: attempt.report,
+      result: attempt.result,
+      changed_files: attempt.changedFiles,
+      validation: attempt.validation,
+    })),
     order: checkpoint.order,
   }
 }
@@ -208,6 +363,23 @@ export function structuredPlanDocumentToWire(document: StructuredPlanDocument): 
     schema_version: document.schemaVersion,
     revision_id: document.revisionId,
     info: structuredPlanInfoToWire(document.info),
+    execution_policy: document.executionPolicy ? {
+      mode: document.executionPolicy.mode,
+      shape: document.executionPolicy.shape,
+    } : undefined,
+    execution_state: document.executionState ? {
+      status: document.executionState.status,
+      active_attempt_id: document.executionState.activeAttemptId,
+      parent_session_id: document.executionState.parentSessionId,
+      current_session_id: document.executionState.currentSessionId,
+      current_run_id: document.executionState.currentRunId,
+      last_checkpoint_id: document.executionState.lastCheckpointId,
+      last_attempt_id: document.executionState.lastAttemptId,
+      last_outcome: document.executionState.lastOutcome,
+      started_at: document.executionState.startedAt,
+      updated_at: document.executionState.updatedAt,
+      completed_at: document.executionState.completedAt,
+    } : undefined,
     checkpoints: document.checkpoints.map((checkpoint) => structuredPlanCheckpointToWire(checkpoint)),
     active_checkpoint_id: document.activeCheckpointId,
     rendered_text: document.renderedText,
