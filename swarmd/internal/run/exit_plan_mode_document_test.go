@@ -26,9 +26,10 @@ func TestExecuteExitPlanModePersistsStructuredDocument(t *testing.T) {
 	}
 
 	args := map[string]any{
-		"plan_id": "plan-exit",
-		"title":   "Exit Structured Plan",
-		"plan":    "# Display only",
+		"plan_id":                "plan-exit",
+		"title":                  "Exit Structured Plan",
+		"plan":                   "# Display only",
+		"continue_automatically": true,
 		"document": pebblestore.SessionPlanDocument{
 			Info: pebblestore.SessionPlanInfo{
 				Goal:               "ship structured exit plan",
@@ -60,9 +61,17 @@ func TestExecuteExitPlanModePersistsStructuredDocument(t *testing.T) {
 		Title          string                           `json:"title"`
 		Plan           string                           `json:"plan"`
 		ModeChanged    bool                             `json:"mode_changed"`
+		NextAction     string                           `json:"next_action"`
+		CheckpointID   string                           `json:"checkpoint_id"`
 		Version        int                              `json:"version"`
 		ParentRevision int                              `json:"parent_revision"`
 		Document       *pebblestore.SessionPlanDocument `json:"document"`
+		RunRequest     struct {
+			PlanCheckpointContext struct {
+				PlanID       string `json:"plan_id"`
+				CheckpointID string `json:"checkpoint_id"`
+			} `json:"plan_checkpoint_context"`
+		} `json:"run_request"`
 	}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("decode payload: %v raw=%s", err, raw)
@@ -72,6 +81,9 @@ func TestExecuteExitPlanModePersistsStructuredDocument(t *testing.T) {
 	}
 	if payload.PlanID != "plan-exit" || payload.Title != "Exit Structured Plan" || payload.Plan != "# Display only" {
 		t.Fatalf("exit payload identity/body = %#v", payload)
+	}
+	if payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "cp-2" || payload.RunRequest.PlanCheckpointContext.PlanID != "plan-exit" || payload.RunRequest.PlanCheckpointContext.CheckpointID != "cp-2" || payload.Document.ExecutionPolicy.Mode != sessionruntime.PlanExecutionPolicyModeAutomatic || payload.Document.ExecutionPolicy.Shape != sessionruntime.PlanExecutionShapeCheckpointed {
+		t.Fatalf("exit payload run request = next %q checkpoint %q request %#v raw=%s", payload.NextAction, payload.CheckpointID, payload.RunRequest.PlanCheckpointContext, raw)
 	}
 	if payload.Version != initial.Version+1 || payload.ParentRevision != initial.Version {
 		t.Fatalf("payload revision = version %d parent %d, want %d/%d", payload.Version, payload.ParentRevision, initial.Version+1, initial.Version)
@@ -173,6 +185,9 @@ func assertExitPlanDocument(t *testing.T, document *pebblestore.SessionPlanDocum
 	if document.Info.Goal != "ship structured exit plan" || document.Info.Context == "" || len(document.Info.Decisions) != 1 || document.Info.RelevantFiles[0] != "swarmd/internal/run/service_tools.go" || document.Info.SuccessCriteria[0] != "structured info fields persist" {
 		t.Fatalf("document info = %#v", document.Info)
 	}
+	if document.ExecutionPolicy.Mode != sessionruntime.PlanExecutionPolicyModeAutomatic || document.ExecutionPolicy.Shape != sessionruntime.PlanExecutionShapeCheckpointed || document.ExecutionState != nil {
+		t.Fatalf("document execution policy/state = %#v/%#v", document.ExecutionPolicy, document.ExecutionState)
+	}
 	if document.ActiveCheckpointID != "cp-2" {
 		t.Fatalf("active checkpoint = %q", document.ActiveCheckpointID)
 	}
@@ -182,7 +197,7 @@ func assertExitPlanDocument(t *testing.T, document *pebblestore.SessionPlanDocum
 	if document.Checkpoints[0].ID != "cp-2" || document.Checkpoints[0].Order != 1 || document.Checkpoints[0].Status != "pending" || document.Checkpoints[0].Objective != "preserve requested order" {
 		t.Fatalf("checkpoint[0] = %#v", document.Checkpoints[0])
 	}
-	if document.Checkpoints[1].ID != "cp-1" || document.Checkpoints[1].Order != 2 || document.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusCompleted || document.Checkpoints[1].Objective != "preserve stable id" {
+	if document.Checkpoints[1].ID != "cp-1" || document.Checkpoints[1].Order != 2 || document.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusPending || document.Checkpoints[1].Objective != "preserve stable id" {
 		t.Fatalf("checkpoint[1] = %#v", document.Checkpoints[1])
 	}
 }

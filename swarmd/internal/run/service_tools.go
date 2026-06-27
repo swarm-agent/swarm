@@ -1411,6 +1411,18 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		documentClone := *document
 		documentClone.ID = strings.TrimSpace(firstNonEmptyString(planID, documentClone.ID))
 		documentClone.Title = strings.TrimSpace(firstNonEmptyString(title, documentClone.Title))
+		granularity := strings.TrimSpace(firstNonEmptyString(mapString(args, "execution_granularity"), mapString(args, "granularity"), mapString(args, "execution_shape"), mapString(args, "shape")))
+		continuation := strings.TrimSpace(firstNonEmptyString(mapString(args, "continuation_policy"), mapString(args, "continuation"), mapString(args, "mode")))
+		if _, ok := args["continue_automatically"]; ok {
+			if mapBool(args, "continue_automatically") {
+				continuation = sessionruntime.PlanAcceptanceContinuationAutomatic
+			} else {
+				continuation = sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint
+			}
+		}
+		if _, err := sessionruntime.ApplyPlanAcceptanceExecutionPolicy(&documentClone, sessionruntime.PlanAcceptanceExecutionOptions{ExecutionGranularity: granularity, ContinuationPolicy: continuation}); err != nil {
+			return "", err
+		}
 		documentClone.Status = status
 		documentForSave = &documentClone
 	}
@@ -1448,6 +1460,7 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		"version":                 savedPlan.Version,
 		"parent_revision":         savedPlan.ParentRevision,
 	}
+	addPlanRunRequestPayloadFields(payload, planID, savedPlan.Document)
 	encoded, marshalErr := json.Marshal(payload)
 	if marshalErr != nil {
 		return "", marshalErr
@@ -2227,6 +2240,32 @@ func addPlanExecutionPayloadFields(payload map[string]any, action string, doc *p
 			payload["next_action"] = "continue_checkpoint"
 		}
 	}
+}
+
+func addPlanRunRequestPayloadFields(payload map[string]any, planID string, doc *pebblestore.SessionPlanDocument) {
+	if payload == nil || doc == nil {
+		return
+	}
+	summary := sessionruntime.SummarizePlanExecution(doc)
+	payload["execution_summary"] = summary
+	if summary.PlanComplete {
+		payload["next_action"] = "plan_complete"
+		return
+	}
+	if summary.ReviewRequired {
+		payload["next_action"] = "await_review"
+		return
+	}
+	if summary.Blocked || summary.Failed {
+		payload["next_action"] = "stopped"
+		return
+	}
+	if strings.TrimSpace(summary.NextCheckpointID) == "" {
+		return
+	}
+	payload["checkpoint_id"] = strings.TrimSpace(summary.NextCheckpointID)
+	payload["next_action"] = "run_checkpoint_with_fresh_context"
+	payload["run_request"] = planCheckpointRunRequestPayload(planID, summary.NextCheckpointID, "")
 }
 
 func marshalPlanManagePayload(payload map[string]any) (string, error) {

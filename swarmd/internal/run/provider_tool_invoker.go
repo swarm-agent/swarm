@@ -144,6 +144,9 @@ func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) 
 	if strings.EqualFold(strings.TrimSpace(call.Name), "exit_plan_mode") && mapBool(payload, "mode_changed") {
 		return true
 	}
+	if strings.EqualFold(strings.TrimSpace(call.Name), "plan_manage") && strings.EqualFold(strings.TrimSpace(mapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+		return true
+	}
 	return false
 }
 

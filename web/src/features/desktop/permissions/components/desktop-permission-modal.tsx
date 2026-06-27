@@ -1062,14 +1062,20 @@ function ExitPlanModal({
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
+  const [executionGranularity, setExecutionGranularity] = useState<'checkpointed' | 'run_through'>('checkpointed')
+  const [continueAutomatically, setContinueAutomatically] = useState(false)
 
   useEffect(() => {
     if (open) {
       setNote('')
       setLoading(false)
       setCopyState('idle')
+      const initialPayload = permission ? parseExitPlanPermission(permission) : null
+      const initialDocument = normalizeStructuredPlanDocument(initialPayload?.document)
+      setExecutionGranularity(initialDocument?.executionPolicy?.shape === 'single_run' ? 'run_through' : 'checkpointed')
+      setContinueAutomatically(initialDocument?.executionPolicy?.mode === 'automatic')
     }
-  }, [open, permission?.id])
+  }, [open, permission])
 
   if (!permission) {
     return null
@@ -1077,6 +1083,7 @@ function ExitPlanModal({
 
   const payload = parseExitPlanPermission(permission)
   const structuredDocument = normalizeStructuredPlanDocument(payload.document)
+  const hasStructuredPlan = Boolean(structuredDocument)
 
   const handleCopy = async () => {
     try {
@@ -1093,8 +1100,17 @@ function ExitPlanModal({
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
     try {
-      const approvedArguments = action === 'approve' && structuredDocument
-        ? { plan_id: payload.planId || structuredDocument.id, title: payload.title || structuredDocument.title, plan: payload.body, document: payload.document }
+      const approvedArguments = action === 'approve'
+        ? {
+            ...payload.approvedArguments,
+            plan_id: payload.planId || structuredDocument?.id || payload.approvedArguments.plan_id,
+            title: payload.title || structuredDocument?.title || payload.approvedArguments.title,
+            plan: payload.body,
+            document: payload.document ?? payload.approvedArguments.document,
+            execution_granularity: executionGranularity,
+            continue_automatically: executionGranularity === 'run_through' ? true : continueAutomatically,
+            continuation_policy: executionGranularity === 'run_through' || continueAutomatically ? 'automatic' : 'review_each_checkpoint',
+          }
         : undefined
       await onResolve(action, note.trim(), approvedArguments)
     } finally {
@@ -1139,13 +1155,43 @@ function ExitPlanModal({
       onDenyShortcut={() => void resolve('deny')}
       shortcutsDisabled={loading}
     >
-      {structuredDocument ? (
-        <ExitPlanDocumentView document={structuredDocument} />
-      ) : (
-        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-5">
-          <ChatMarkdown content={payload.body} className="text-base leading-7" />
-        </section>
-      )}
+      <div className="grid gap-4">
+        {hasStructuredPlan ? (
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Execution after approval</div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <label className="grid gap-1.5 text-sm text-[var(--app-text)]">
+                <span className="font-medium">Run granularity</span>
+                <select
+                  value={executionGranularity}
+                  onChange={(event) => setExecutionGranularity(event.target.value === 'run_through' ? 'run_through' : 'checkpointed')}
+                  disabled={loading}
+                  className="min-h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)] outline-none transition focus-visible:border-[var(--app-border-active)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+                >
+                  <option value="checkpointed">Checkpoint by checkpoint</option>
+                  <option value="run_through">Run straight through</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
+                <input
+                  type="checkbox"
+                  checked={continueAutomatically || executionGranularity === 'run_through'}
+                  onChange={(event) => setContinueAutomatically(event.target.checked)}
+                  disabled={loading || executionGranularity === 'run_through'}
+                />
+                Continue automatically between checkpoints
+              </label>
+            </div>
+          </section>
+        ) : null}
+        {structuredDocument ? (
+          <ExitPlanDocumentView document={structuredDocument} />
+        ) : (
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-5">
+            <ChatMarkdown content={payload.body} className="text-base leading-7" />
+          </section>
+        )}
+      </div>
     </ModalShell>
   )
 }

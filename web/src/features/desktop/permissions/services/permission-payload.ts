@@ -27,6 +27,7 @@ export interface ExitPlanPayload {
   body: string
   planId: string
   document: unknown
+  approvedArguments: Record<string, unknown>
 }
 
 export interface PlanUpdatePayload {
@@ -582,6 +583,7 @@ export function parseExitPlanPermission(permission: DesktopPermissionRecord): Ex
         : 'Review and approve this plan to switch the session from plan mode to auto mode. Once approved, execution continues; this is not a handoff to another agent.',
     planId: payload ? mapStringArg(payload, 'plan_id') || mapStringArg(payload, 'planID') : '',
     document: payload?.document ?? null,
+    approvedArguments: payload ? mapObjectArg(payload, 'approved_arguments') : {},
   }
 }
 

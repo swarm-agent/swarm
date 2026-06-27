@@ -4824,23 +4824,23 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 			return provideriface.Response{RestartTurn: true}, nil
 		case 2:
 			if !strings.Contains(req.Instructions, "Current session mode: auto.") {
-				return provideriface.Response{}, fmt.Errorf("continuation instructions did not refresh to auto mode:\n%s", req.Instructions)
+				return provideriface.Response{}, fmt.Errorf("checkpoint continuation instructions did not refresh to auto mode:\n%s", req.Instructions)
 			}
-			if len(req.Input) != 3 || !sessionsV3ProviderInputHasTopLevelType(req.Input, "function_call") || !sessionsV3ProviderInputHasTopLevelType(req.Input, "function_call_output") {
-				return provideriface.Response{}, fmt.Errorf("exit_plan_mode continuation input = %+v, want user plus structured tool call/output", req.Input)
+			if len(req.Input) != 1 || !sessionsV3ProviderInputContainsContentText(req.Input, "[checkpoint-run] Deterministic checkpoint execution context.") || !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: cp-1.") {
+				return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint input = %+v, want fresh checkpoint context", req.Input)
 			}
 			if req.ToolInvoker == nil {
 				return provideriface.Response{}, fmt.Errorf("missing refreshed provider-managed tool invoker")
 			}
-			writeArgs := mustSessionsV3TestJSON(t, map[string]any{"path": "after-exit.txt", "content": "auto write allowed"})
-			writeResult, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-write-after-exit", Name: "write", Arguments: writeArgs})
+			completeArgs := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "checkpoint complete", "result": "done"})
+			completeResult, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-checkpoint", Name: "plan_manage", Arguments: completeArgs})
 			if err != nil {
 				return provideriface.Response{}, err
 			}
-			if writeResult.Error != "" {
-				return provideriface.Response{}, fmt.Errorf("write after exit_plan_mode was not authorized with refreshed auto mode: %+v", writeResult)
+			if completeResult.Error != "" {
+				return provideriface.Response{}, fmt.Errorf("complete checkpoint after exit_plan_mode failed: %+v", completeResult)
 			}
-			return provideriface.Response{Text: "continued in auto"}, nil
+			return provideriface.Response{Text: "checkpoint completed in auto"}, nil
 		default:
 			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
 		}
@@ -4859,6 +4859,11 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	server.v3SessionExecutor = exec
 
 	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-exit-plan-restart-create", "provider exit plan restart", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	updated, _, err := sessionSvc.SetMode(created.ID, sessionruntime.ModePlan)
+	if err != nil {
+		t.Fatalf("set session plan mode: %v", err)
+	}
+	created = updated
 	if created.Mode != sessionruntime.ModePlan {
 		t.Fatalf("created session mode = %q, want plan", created.Mode)
 	}
@@ -4876,11 +4881,14 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 4 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "tool" || messages[3].Role != "assistant" || messages[3].Content != "continued in auto" {
+	if len(messages) != 4 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "tool" || messages[3].Role != "assistant" || messages[3].Content != "checkpoint completed in auto" {
 		t.Fatalf("messages after exit plan restart = %+v", messages)
 	}
-	if !strings.Contains(messages[2].Content, "auto write allowed") {
-		t.Fatalf("post-exit write tool message = %+v", messages[2])
+	if !strings.Contains(messages[1].Content, "run_checkpoint_with_fresh_context") {
+		t.Fatalf("exit-plan tool message did not request checkpoint run = %+v", messages[1])
+	}
+	if !strings.Contains(messages[2].Content, "complete_checkpoint") {
+		t.Fatalf("checkpoint completion tool message = %+v", messages[2])
 	}
 	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 40)
 	if err != nil {
@@ -4896,7 +4904,14 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 		t.Fatalf("missing canonical session.mode.updated event after exit_plan_mode: %+v", events)
 	}
 	if runner.callCount != 2 {
-		t.Fatalf("provider call count = %d, want exit plan plus refreshed continuation", runner.callCount)
+		t.Fatalf("provider call count = %d, want exit plan plus checkpoint continuation", runner.callCount)
+	}
+	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
+	if err != nil || !ok || activePlan.Document == nil {
+		t.Fatalf("get active plan after checkpoint run: ok=%t err=%v plan=%#v", ok, err, activePlan)
+	}
+	if activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateCompleted {
+		t.Fatalf("active plan after checkpoint run = %#v", activePlan.Document)
 	}
 }
 

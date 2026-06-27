@@ -372,6 +372,11 @@ function testExitPlanParsesStructuredDocument(): void {
       plan_id: 'plan_exit',
       plan: '# fallback',
       document,
+      approved_arguments: {
+        plan_id: 'plan_exit',
+        document,
+        continue_automatically: false,
+      },
     }),
   })
   const payload = parseExitPlanPermission(permission)
@@ -379,6 +384,8 @@ function testExitPlanParsesStructuredDocument(): void {
   assert(payload.body === '# fallback', 'expected fallback body')
   assert(Boolean(payload.document), 'expected exit document passthrough')
   assert((payload.document as { id?: string }).id === 'plan_exit', 'expected exit document id')
+  assert(payload.approvedArguments.plan_id === 'plan_exit', 'expected approved arguments to preserve plan id')
+  assert(payload.approvedArguments.continue_automatically === false, 'expected approved arguments to preserve execution controls')
 }
 
 function testPlanUpdateDiffPreviewPreservesAllDiffRows(): void {

@@ -1179,15 +1179,18 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		}
 		if len(response.FunctionCalls) == 0 {
 			if response.RestartTurn {
-				input = e.sessionV3ProviderContinuationInput(job)
-				if len(input) == 0 {
-					return sessionV3ProviderLoopResult{}, errors.New("v3 provider restart requested but continuation input is empty")
-				}
 				refreshed, err := e.resolveSessionV3Runtime(job)
 				if err != nil {
 					return sessionV3ProviderLoopResult{}, err
 				}
 				resolved = refreshed
+				input, err = e.sessionV3ProviderRestartInput(ctx, job, resolved, "")
+				if err != nil {
+					return sessionV3ProviderLoopResult{}, err
+				}
+				if len(input) == 0 {
+					return sessionV3ProviderLoopResult{}, errors.New("v3 provider restart requested but continuation input is empty")
+				}
 				baseReq, err = e.sessionV3ProviderBaseRequest(job, resolved, input)
 				if err != nil {
 					return sessionV3ProviderLoopResult{}, err
@@ -1251,6 +1254,13 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				return sessionV3ProviderLoopResult{}, err
 			}
 			resolved = refreshed
+			input, err = e.sessionV3ProviderRestartInput(ctx, job, resolved, strings.TrimSpace(firstNonEmpty(toolResults[len(toolResults)-1].Output, sessionsV3LatestFunctionCallOutput(input), toolResults[len(toolResults)-1].TextForModel)))
+			if err != nil {
+				return sessionV3ProviderLoopResult{}, err
+			}
+			if len(input) == 0 {
+				return sessionV3ProviderLoopResult{}, errors.New("v3 provider restart requested but continuation input is empty after tool execution")
+			}
 			baseReq, err = e.sessionV3ProviderBaseRequest(job, resolved, input)
 			if err != nil {
 				return sessionV3ProviderLoopResult{}, err
@@ -1486,6 +1496,118 @@ func (e *sessionV3Executor) sessionV3ProviderContinuationInput(job sessionV3Exec
 		return nil
 	}
 	return sessionsV3ProviderInput(messages)
+}
+
+func sessionsV3DecodeToolPayload(raw string) map[string]any {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil
+	}
+	return payload
+}
+
+func (e *sessionV3Executor) sessionV3LatestCheckpointRunToolPayload(job sessionV3ExecutorJob) map[string]any {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return nil
+	}
+	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, 64)
+	if err != nil || len(messages) == 0 {
+		return nil
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		if strings.TrimSpace(message.Role) != "tool" {
+			continue
+		}
+		payload := sessionsV3DecodeToolPayload(message.Content)
+		if record, ok := sessionsV3DecodeProviderToolResultRecord(message.Content); ok {
+			payload = sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(record.CompletedOutput, record.Output)))
+		}
+		if payload == nil || !strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+			continue
+		}
+		return payload
+	}
+	return nil
+}
+
+func sessionsV3MapString(payload map[string]any, key string) string {
+	if payload == nil {
+		return ""
+	}
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if typed, ok := value.(string); ok {
+		return typed
+	}
+	return fmt.Sprint(value)
+}
+
+func (e *sessionV3Executor) sessionV3ProviderRestartInput(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, toolOutput string) ([]map[string]any, error) {
+	if input, ok, err := e.sessionV3ProviderCheckpointRestartInput(ctx, job, resolved, toolOutput); err != nil || ok {
+		return input, err
+	}
+	input := e.sessionV3ProviderContinuationInput(job)
+	if len(input) == 0 {
+		return nil, errors.New("v3 provider restart requested but continuation input is empty")
+	}
+	return input, nil
+}
+
+func (e *sessionV3Executor) sessionV3ProviderCheckpointRestartInput(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, toolOutput string) ([]map[string]any, bool, error) {
+	payload := sessionsV3DecodeToolPayload(strings.TrimSpace(toolOutput))
+	if payload == nil || !strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+		payload = e.sessionV3LatestCheckpointRunToolPayload(job)
+	}
+	if payload == nil || !strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+		return nil, false, nil
+	}
+	checkpointID := strings.TrimSpace(sessionsV3MapString(payload, "checkpoint_id"))
+	if checkpointID == "" {
+		checkpointID = strings.TrimSpace(sessionsV3MapString(payload, "next_checkpoint_id"))
+	}
+	planID := strings.TrimSpace(sessionsV3MapString(payload, "plan_id"))
+	if checkpointID == "" || planID == "" {
+		if runRequest, ok := payload["run_request"].(map[string]any); ok {
+			if checkpointContext, ok := runRequest["plan_checkpoint_context"].(map[string]any); ok {
+				if planID == "" {
+					planID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "plan_id"))
+				}
+				if checkpointID == "" {
+					checkpointID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "checkpoint_id"))
+				}
+			}
+		}
+	}
+	if checkpointID == "" {
+		return nil, true, errors.New("checkpoint restart requested without checkpoint_id")
+	}
+	if planID == "" {
+		planID = "active"
+	}
+	if e == nil || e.server == nil || e.server.runner == nil {
+		return nil, true, errors.New("v3 checkpoint restart requires run service")
+	}
+	builder, ok := e.server.runner.(interface {
+		BuildPlanCheckpointRunInput(string, string, runruntime.RunRequest, runruntime.RunStartMeta) ([]map[string]any, bool, error)
+	})
+	if !ok || builder == nil {
+		return nil, true, errors.New("v3 checkpoint restart requires checkpoint input builder")
+	}
+	checkpointInput, ok, err := builder.BuildPlanCheckpointRunInput(job.SessionID, job.RunID, runruntime.RunRequest{PlanCheckpointContext: &runruntime.RunPlanCheckpointContext{PlanID: planID, CheckpointID: checkpointID, ParentSessionID: job.SessionID}}, runruntime.RunStartMeta{RunID: job.RunID, Principal: job.Principal, ApplySessionMutation: e.server.applySessionV3PrimaryMutation})
+	if err != nil {
+		return nil, true, err
+	}
+	if !ok || len(checkpointInput) == 0 {
+		return nil, true, errors.New("checkpoint restart requested but checkpoint input is empty")
+	}
+	return checkpointInput, true, nil
 }
 
 func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3ExecutorJob) ([]pebblestore.MessageSnapshot, error) {
@@ -2114,6 +2236,17 @@ func sessionsV3ProviderToolRecordInputItems(record sessionV3ProviderToolResultRe
 		callInput,
 		{"type": "function_call_output", "call_id": callID, "output": output},
 	}
+}
+
+func sessionsV3LatestFunctionCallOutput(input []map[string]any) string {
+	for i := len(input) - 1; i >= 0; i-- {
+		item := input[i]
+		if !strings.EqualFold(strings.TrimSpace(sessionsV3MapString(item, "type")), "function_call_output") {
+			continue
+		}
+		return strings.TrimSpace(sessionsV3MapString(item, "output"))
+	}
+	return ""
 }
 
 func sessionsV3ProviderToolResultInputItems(calls []provideriface.FunctionCall, results []provideriface.ToolExecutionResult) []map[string]any {

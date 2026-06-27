@@ -639,6 +639,10 @@ func (s *Service) RunTurnStreamingWithOptions(ctx context.Context, sessionID str
 	return s.runTurn(ctx, sessionID, options, onEvent)
 }
 
+func (s *Service) BuildPlanCheckpointRunInput(sessionID, runID string, request RunRequest, meta RunStartMeta) ([]map[string]any, bool, error) {
+	return s.buildPlanCheckpointRunInput(sessionID, runID, NewRunOptions(request, meta))
+}
+
 func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebblestore.SessionSnapshot, options RunOptions, targetName string, emit StreamHandler) (RunResult, error) {
 	targetName = strings.TrimSpace(targetName)
 	if targetName == "" {
