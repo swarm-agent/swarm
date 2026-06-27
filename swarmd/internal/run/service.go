@@ -114,25 +114,26 @@ type worktreeService interface {
 }
 
 type RunOptions struct {
-	Prompt               string
-	AgentName            string
-	Instructions         string
-	Compact              bool
-	CompactOrigin        string
-	AllowSubagent        bool
-	DisabledTools        map[string]bool
-	PermissionSessionID  string
-	RunID                string
-	TargetKind           string
-	TargetName           string
-	Background           bool
-	OwnerTransport       string
-	ToolScope            *RunToolScope
-	CompiledPolicy       *permission.Policy
-	ExecutionContext     *RunExecutionContext
-	IntegrationFlow      bool
-	Principal            identity.Principal
-	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	Prompt                string
+	AgentName             string
+	Instructions          string
+	Compact               bool
+	CompactOrigin         string
+	AllowSubagent         bool
+	DisabledTools         map[string]bool
+	PermissionSessionID   string
+	RunID                 string
+	TargetKind            string
+	TargetName            string
+	Background            bool
+	OwnerTransport        string
+	ToolScope             *RunToolScope
+	CompiledPolicy        *permission.Policy
+	ExecutionContext      *RunExecutionContext
+	PlanCheckpointContext *RunPlanCheckpointContext
+	IntegrationFlow       bool
+	Principal             identity.Principal
+	ApplySessionMutation  func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 }
 
 type RunResult struct {
@@ -938,11 +939,15 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		compactOrigin = contextCompactionOriginManual
 	}
 	prompt := strings.TrimSpace(options.Prompt)
-	if prompt == "" && !manualCompact {
+	checkpointRunRequested := options.PlanCheckpointContext != nil
+	if prompt == "" && !manualCompact && !checkpointRunRequested {
 		return RunResult{}, errors.New("prompt is required")
 	}
 	if prompt == "" && manualCompact {
 		prompt = "manual context compact request"
+	}
+	if prompt == "" && checkpointRunRequested {
+		prompt = "checkpoint run request"
 	}
 
 	sessionSnapshot, ok, err := s.sessions.GetSession(sessionID)
@@ -1192,14 +1197,23 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return result, nil
 	}
 
-	historyLimit := sessionContextHistoryFetchLimit(sessionSnapshot, defaultHistoryLimit)
-	messages, err := s.listRunMessages(sessionID, 0, historyLimit, options.ApplySessionMutation != nil)
+	var messages []pebblestore.MessageSnapshot
+	checkpointRunInput, checkpointRunContext, err := s.buildPlanCheckpointRunInput(sessionID, runID, options)
 	if err != nil {
 		return RunResult{}, err
 	}
-	messages = compactMessagesForProviderContext(messages, defaultHistoryLimit)
-
-	input := buildInput(messages)
+	var input []map[string]any
+	if checkpointRunContext {
+		input = checkpointRunInput
+	} else {
+		historyLimit := sessionContextHistoryFetchLimit(sessionSnapshot, defaultHistoryLimit)
+		messages, err = s.listRunMessages(sessionID, 0, historyLimit, options.ApplySessionMutation != nil)
+		if err != nil {
+			return RunResult{}, err
+		}
+		messages = compactMessagesForProviderContext(messages, defaultHistoryLimit)
+		input = buildInput(messages)
+	}
 	rawToolDefinitions := convertToolDefinitions(s.ListAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
 	rawCustomToolDefinitions := convertToolDefinitions(s.customAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
 	toolDefinitions := filterToolDefinitions(rawToolDefinitions, effectiveDisabledTools)
@@ -1812,13 +1826,17 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 
 		if response.RestartTurn {
-			messages, err = s.sessions.ListMessages(sessionID, 0, defaultHistoryLimit)
-			if err != nil {
-				return RunResult{}, err
-			}
-			messages = trimMessagesToLatestCompactionCheckpoint(messages)
-			if responseText == "" && stepReasoningSummary == "" {
+			if checkpointRunContext {
+				input = append([]map[string]any(nil), checkpointRunInput...)
+			} else {
+				messages, err = s.sessions.ListMessages(sessionID, 0, defaultHistoryLimit)
+				if err != nil {
+					return RunResult{}, err
+				}
+				messages = trimMessagesToLatestCompactionCheckpoint(messages)
 				input = buildInput(messages)
+			}
+			if responseText == "" && stepReasoningSummary == "" {
 				emptyStepRetries = 0
 				continue
 			}
@@ -1828,7 +1846,6 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			if stepReasoningSummary != "" {
 				reasoningSummary = stepReasoningSummary
 			}
-			input = buildInput(messages)
 			emptyStepRetries = 0
 			continue
 		}

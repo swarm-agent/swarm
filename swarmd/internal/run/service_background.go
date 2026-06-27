@@ -40,17 +40,25 @@ type RunExecutionContext struct {
 	WorktreeBaseBranch string `json:"worktree_base_branch,omitempty"`
 }
 
+type RunPlanCheckpointContext struct {
+	PlanID          string `json:"plan_id,omitempty"`
+	CheckpointID    string `json:"checkpoint_id,omitempty"`
+	AttemptID       string `json:"attempt_id,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+}
+
 type RunRequest struct {
-	Prompt           string               `json:"prompt,omitempty"`
-	AgentName        string               `json:"agent_name,omitempty"`
-	Instructions     string               `json:"instructions,omitempty"`
-	Compact          bool                 `json:"compact,omitempty"`
-	CompactOrigin    string               `json:"compact_origin,omitempty"`
-	TargetKind       string               `json:"target_kind,omitempty"`
-	TargetName       string               `json:"target_name,omitempty"`
-	Background       bool                 `json:"background,omitempty"`
-	ToolScope        *RunToolScope        `json:"tool_scope,omitempty"`
-	ExecutionContext *RunExecutionContext `json:"execution_context,omitempty"`
+	Prompt                string                    `json:"prompt,omitempty"`
+	AgentName             string                    `json:"agent_name,omitempty"`
+	Instructions          string                    `json:"instructions,omitempty"`
+	Compact               bool                      `json:"compact,omitempty"`
+	CompactOrigin         string                    `json:"compact_origin,omitempty"`
+	TargetKind            string                    `json:"target_kind,omitempty"`
+	TargetName            string                    `json:"target_name,omitempty"`
+	Background            bool                      `json:"background,omitempty"`
+	ToolScope             *RunToolScope             `json:"tool_scope,omitempty"`
+	ExecutionContext      *RunExecutionContext      `json:"execution_context,omitempty"`
+	PlanCheckpointContext *RunPlanCheckpointContext `json:"plan_checkpoint_context,omitempty"`
 }
 
 type RunStartMeta struct {
@@ -71,6 +79,10 @@ func (r RunRequest) Normalized() RunRequest {
 	r.Instructions = strings.TrimSpace(r.Instructions)
 	r.TargetKind = strings.TrimSpace(r.TargetKind)
 	r.TargetName = strings.TrimSpace(r.TargetName)
+	if r.PlanCheckpointContext != nil {
+		ctx := normalizeRunPlanCheckpointContext(*r.PlanCheckpointContext)
+		r.PlanCheckpointContext = &ctx
+	}
 	if r.ToolScope != nil {
 		scope := normalizeRunToolScope(*r.ToolScope)
 		if isRunToolScopeZero(scope) {
@@ -93,25 +105,26 @@ func (r RunRequest) Normalized() RunRequest {
 func NewRunOptions(request RunRequest, meta RunStartMeta) RunOptions {
 	request = request.Normalized()
 	return RunOptions{
-		Prompt:               request.Prompt,
-		AgentName:            request.AgentName,
-		Instructions:         request.Instructions,
-		Compact:              request.Compact,
-		CompactOrigin:        request.CompactOrigin,
-		AllowSubagent:        meta.AllowSubagent,
-		DisabledTools:        cloneDisabledTools(meta.DisabledTools),
-		PermissionSessionID:  strings.TrimSpace(meta.PermissionSessionID),
-		RunID:                strings.TrimSpace(meta.RunID),
-		TargetKind:           request.TargetKind,
-		TargetName:           request.TargetName,
-		Background:           request.Background,
-		OwnerTransport:       strings.TrimSpace(meta.OwnerTransport),
-		ToolScope:            request.ToolScope,
-		CompiledPolicy:       meta.CompiledPolicy,
-		ExecutionContext:     request.ExecutionContext,
-		IntegrationFlow:      meta.IntegrationFlow,
-		Principal:            meta.Principal,
-		ApplySessionMutation: meta.ApplySessionMutation,
+		Prompt:                request.Prompt,
+		AgentName:             request.AgentName,
+		Instructions:          request.Instructions,
+		Compact:               request.Compact,
+		CompactOrigin:         request.CompactOrigin,
+		AllowSubagent:         meta.AllowSubagent,
+		DisabledTools:         cloneDisabledTools(meta.DisabledTools),
+		PermissionSessionID:   strings.TrimSpace(meta.PermissionSessionID),
+		RunID:                 strings.TrimSpace(meta.RunID),
+		TargetKind:            request.TargetKind,
+		TargetName:            request.TargetName,
+		Background:            request.Background,
+		OwnerTransport:        strings.TrimSpace(meta.OwnerTransport),
+		ToolScope:             request.ToolScope,
+		CompiledPolicy:        meta.CompiledPolicy,
+		ExecutionContext:      request.ExecutionContext,
+		PlanCheckpointContext: request.PlanCheckpointContext,
+		IntegrationFlow:       meta.IntegrationFlow,
+		Principal:             meta.Principal,
+		ApplySessionMutation:  meta.ApplySessionMutation,
 	}
 }
 
@@ -226,6 +239,14 @@ func isRunToolScopeZero(scope RunToolScope) bool {
 
 func isRunExecutionContextZero(ctx RunExecutionContext) bool {
 	return strings.TrimSpace(ctx.WorkspacePath) == "" && strings.TrimSpace(ctx.CWD) == "" && strings.TrimSpace(ctx.WorktreeMode) == "" && strings.TrimSpace(ctx.WorktreeRootPath) == "" && strings.TrimSpace(ctx.WorktreeBranch) == "" && strings.TrimSpace(ctx.WorktreeBaseBranch) == ""
+}
+
+func normalizeRunPlanCheckpointContext(ctx RunPlanCheckpointContext) RunPlanCheckpointContext {
+	ctx.PlanID = strings.TrimSpace(ctx.PlanID)
+	ctx.CheckpointID = strings.TrimSpace(ctx.CheckpointID)
+	ctx.AttemptID = strings.TrimSpace(ctx.AttemptID)
+	ctx.ParentSessionID = strings.TrimSpace(ctx.ParentSessionID)
+	return ctx
 }
 
 func (s *Service) resolveRunTarget(options RunOptions) (targetKind, targetName, agentName string, err error) {

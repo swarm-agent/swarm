@@ -679,7 +679,7 @@ func decodeRunStreamInbound(raw []byte) (runStreamInboundMessage, error) {
 }
 
 func (s *Server) handleRunStreamStart(conn *transportws.Conn, sessionID string, inbound runStreamInboundMessage, principal identity.Principal) {
-	if inbound.RunRequest.Prompt == "" && !inbound.RunRequest.Compact {
+	if inbound.RunRequest.Prompt == "" && !inbound.RunRequest.Compact && inbound.RunRequest.PlanCheckpointContext == nil {
 		log.Printf("run stream start rejected session_id=%s err=%s", sessionID, "prompt is required")
 		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: "prompt is required"})
 		return
