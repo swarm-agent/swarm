@@ -211,6 +211,92 @@ test('session_view active plan is normalized with execution data for Desktop sel
 })
 
 
+test('plan document alone does not expose Desktop plan execution view without authoritative active-plan metadata', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.plansBySession[sessionA.id] = {
+    id: 'stale-plan',
+    title: 'Stale plan',
+    plan: '# Stale',
+    status: 'approved',
+    approvalState: 'approved',
+    updatedAt: 1,
+    document: {
+      id: 'stale-plan',
+      title: 'Stale plan',
+      status: 'approved',
+      schemaVersion: '',
+      revisionId: '',
+      info: { goal: 'Stale inferred goal', scope: '', context: '', decisions: [], constraints: [], assumptions: [], openQuestions: [], relevantFiles: [], successCriteria: [], validationStrategy: '' },
+      executionPolicy: null,
+      executionState: null,
+      checkpoints: [],
+      activeCheckpointId: '',
+      renderedText: '',
+      displayText: '',
+    },
+  }
+
+  assert.equal(selectDesktopPlanExecutionView(state, sessionA.id), null)
+})
+
+
+test('planSnapshot.apply true exposes Desktop plan execution view for live plan transitions', () => {
+  const state = createEmptyDesktopV3CacheState()
+  desktopV3CacheReducer(state, {
+    type: 'planSnapshot.apply',
+    sessionId: sessionA.id,
+    hasActivePlan: true,
+    activePlan: {
+      id: 'live-plan',
+      title: 'Live plan',
+      plan: '# Live',
+      status: 'approved',
+      approvalState: 'approved',
+      updatedAt: 1,
+      document: {
+        id: 'live-plan',
+        title: 'Live plan',
+        status: 'approved',
+        schemaVersion: '',
+        revisionId: '',
+        info: { goal: 'Live transition', scope: '', context: '', decisions: [], constraints: [], assumptions: [], openQuestions: [], relevantFiles: [], successCriteria: [], validationStrategy: '' },
+        executionPolicy: null,
+        executionState: null,
+        checkpoints: [{
+          id: 'cp-1',
+          title: 'Run it',
+          status: 'pending',
+          objective: '',
+          tasks: [],
+          acceptanceCriteria: [],
+          notes: '',
+          report: '',
+          result: '',
+          changedFiles: [],
+          validation: [],
+          attemptId: '',
+          runId: '',
+          sessionId: '',
+          startedAt: 0,
+          completedAt: 0,
+          review: null,
+          attempts: [],
+          order: 1,
+        }],
+        activeCheckpointId: 'cp-1',
+        renderedText: '',
+        displayText: '',
+      },
+    },
+    planRevisions: [],
+  })
+
+  const view = selectDesktopPlanExecutionView(state, sessionA.id)
+  assert.equal(view?.plan.id, 'live-plan')
+  assert.equal(view?.activeCheckpointId, 'cp-1')
+})
+
+
 test('session_view has_active_plan false clears stale Desktop active plan state', () => {
   const state = createEmptyDesktopV3CacheState()
   state.plansBySession[sessionA.id] = {

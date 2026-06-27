@@ -117,6 +117,7 @@ function applyDesktopPlanExecutionResult(sessionId: string, plan: DesktopSession
   dispatchDesktopV3Cache({
     type: 'planSnapshot.apply',
     sessionId,
+    hasActivePlan: true,
     activePlan: plan,
     planRevisions: [],
   })

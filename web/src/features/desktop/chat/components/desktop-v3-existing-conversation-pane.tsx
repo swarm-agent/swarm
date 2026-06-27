@@ -680,6 +680,7 @@ export function DesktopV3ExistingConversationPane({
   const showRestartSettingsAction = Boolean(currentRun && visibleSettingsChanged)
   const renderItems = useMemo(() => buildDesktopV3ConversationRenderItems(renderedMessages), [renderedMessages])
   const showConversationLoading = initialHydrateStatus === 'loading' && !messagesLoaded && !hasMessages && !hasStoredOperation
+  const showPlanExecutionSidebar = Boolean(planExecutionView?.plan.document)
   const {
     scrollContainerRef,
     contentRef,
@@ -1018,7 +1019,10 @@ export function DesktopV3ExistingConversationPane({
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
       />
-      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className={cn(
+        'grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden',
+        showPlanExecutionSidebar ? 'xl:grid-cols-[minmax(0,1fr)_360px]' : '',
+      )}>
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
             <div ref={scrollContainerRef} className="h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable]">

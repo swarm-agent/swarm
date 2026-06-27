@@ -34,6 +34,7 @@ function applyDesktopV3PlanSnapshot(sessionId: string, snapshot: DesktopV3PlanSn
   dispatchDesktopV3Cache({
     type: 'planSnapshot.apply',
     sessionId,
+    hasActivePlan: snapshot.hasActivePlan,
     activePlan: snapshot.activePlan,
     planRevisions: snapshot.planRevisions,
   })
@@ -48,7 +49,8 @@ export async function fetchAndApplyDesktopV3PlanSnapshot(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/plans/active`,
     { signal: options.signal },
   )
-  const activePlan = active.active_plan ? normalizeDesktopSessionPlan(active.active_plan) : null
+  const hasActivePlan = active.has_active === true
+  const activePlan = hasActivePlan && active.active_plan ? normalizeDesktopSessionPlan(active.active_plan) : null
   let planRevisions: DesktopSessionPlanRevisionRecord[] = []
   if (options.includeHistory !== false && activePlan?.id) {
     const history = await requestJson<PlanHistoryResponseWire>(
@@ -58,7 +60,7 @@ export async function fetchAndApplyDesktopV3PlanSnapshot(
     planRevisions = normalizeDesktopSessionPlanRevisions(history.revisions)
   }
   const snapshot: DesktopV3PlanSnapshot = {
-    hasActivePlan: Boolean(active.has_active || activePlan?.id || activePlan?.plan || activePlan?.title),
+    hasActivePlan,
     activePlan,
     planRevisions,
   }

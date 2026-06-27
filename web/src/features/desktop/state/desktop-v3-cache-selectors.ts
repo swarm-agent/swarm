@@ -165,6 +165,7 @@ export function selectRenderedSessionMessages(state: DesktopV3CacheState, sessio
 }
 
 export function selectDesktopPlanExecutionView(state: DesktopV3CacheState, sessionId: string): DesktopPlanExecutionView | null {
+  if (state.hasActivePlanBySession[sessionId] !== true) return null
   const candidate = state.plansBySession[sessionId] as DesktopSessionPlanRecord | null | undefined
   const plan = candidate?.document ? candidate : null
   const document = plan?.document

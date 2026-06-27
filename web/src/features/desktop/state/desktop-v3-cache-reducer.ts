@@ -72,6 +72,7 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     subscriptionsById: {},
     worksetsById: {},
     plansBySession: {},
+    hasActivePlanBySession: {},
     planRevisionsBySession: {},
     permissionsBySession: {},
     permissionSummaryBySessionId: {},
@@ -140,6 +141,7 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       }
       return state
     case 'planSnapshot.apply':
+      state.hasActivePlanBySession[action.sessionId] = action.hasActivePlan
       state.plansBySession[action.sessionId] = action.activePlan
       state.planRevisionsBySession[action.sessionId] = action.planRevisions
       return state
@@ -1213,6 +1215,9 @@ export function applyTombstone(
   delete state.liveRunsBySession[sessionId]
   delete state.currentRunIntentBySession[sessionId]
   delete state.runIntentsBySession[sessionId]
+  delete state.plansBySession[sessionId]
+  delete state.hasActivePlanBySession[sessionId]
+  delete state.planRevisionsBySession[sessionId]
 }
 
 export function applyWorksetSessionDiscovered(
@@ -1707,15 +1712,20 @@ function applySessionViewsFromSyncSnapshot(
       delete state.permissionsBySession[sessionId]
       delete state.usageBySession[sessionId]
       delete state.plansBySession[sessionId]
+      delete state.hasActivePlanBySession[sessionId]
       continue
     }
 
     state.sessionViewsById[sessionId] = view
     state.permissionsBySession[sessionId] = normalizeDesktopPendingPermissions(view.pending_permissions, sessionId)
     if (view.usage_summary !== undefined) state.usageBySession[sessionId] = view.usage_summary
+    if (view.has_active_plan !== undefined) {
+      state.hasActivePlanBySession[sessionId] = view.has_active_plan
+    }
     if (view.active_plan !== undefined) {
       state.plansBySession[sessionId] = view.active_plan === null ? null : normalizeDesktopSessionPlan(view.active_plan)
-    } else if (view.has_active_plan === false) {
+    }
+    if (view.has_active_plan === false) {
       state.plansBySession[sessionId] = null
     }
 

@@ -667,6 +667,7 @@ export interface DesktopV3CacheState {
   subscriptionsById: Record<string, SubscriptionCache>
   worksetsById: Record<string, WorksetCache>
   plansBySession: Record<string, unknown>
+  hasActivePlanBySession: Record<string, boolean>
   planRevisionsBySession: Record<string, unknown[]>
   permissionsBySession: Record<string, DesktopPermissionRecord[]>
   permissionSummaryBySessionId: Record<string, DesktopPermissionSummary>
@@ -704,7 +705,7 @@ export type DesktopV3CacheAction =
   | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string; durabilityCommitted?: boolean }
   | { type: 'realtime.applyLivePatchBatch'; patches: SessionV3RealtimeLivePatchWire[] }
   | { type: 'permission.resolveResult'; sessionId: string; permissionId: string; permission: DesktopPermissionRecord | null }
-  | { type: 'planSnapshot.apply'; sessionId: string; activePlan: DesktopSessionPlanRecord | null; planRevisions: DesktopSessionPlanRevisionRecord[] }
+  | { type: 'planSnapshot.apply'; sessionId: string; hasActivePlan: boolean; activePlan: DesktopSessionPlanRecord | null; planRevisions: DesktopSessionPlanRevisionRecord[] }
   | { type: 'liveRun.mergeRepairEvents'; sessionId: string; runId: string; events: CacheEvent[] }
   | { type: 'realtime.worksetSessionDiscovered'; frame: RealtimeMessage }
   | { type: 'realtime.worksetSessionUpdated'; frame: RealtimeMessage }
