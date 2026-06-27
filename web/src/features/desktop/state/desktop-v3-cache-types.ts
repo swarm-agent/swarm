@@ -1,4 +1,5 @@
 import type { DesktopPermissionRecord } from '../types/realtime'
+import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 
 export type SyncSelectorKind = '' | 'global' | 'recent' | 'session_ids' | 'workspace' | 'tui'
@@ -702,6 +703,7 @@ export type DesktopV3CacheAction =
   | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string; durabilityCommitted?: boolean }
   | { type: 'realtime.applyLivePatchBatch'; patches: SessionV3RealtimeLivePatchWire[] }
   | { type: 'permission.resolveResult'; sessionId: string; permissionId: string; permission: DesktopPermissionRecord | null }
+  | { type: 'planSnapshot.apply'; sessionId: string; activePlan: DesktopSessionPlanRecord | null; planRevisions: DesktopSessionPlanRevisionRecord[] }
   | { type: 'liveRun.mergeRepairEvents'; sessionId: string; runId: string; events: CacheEvent[] }
   | { type: 'realtime.worksetSessionDiscovered'; frame: RealtimeMessage }
   | { type: 'realtime.worksetSessionUpdated'; frame: RealtimeMessage }

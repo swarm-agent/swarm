@@ -12,6 +12,7 @@ import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import type { DesktopSessionRecord } from '../types/realtime'
+import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
 import { buildWorkspaceRouteSlugMap, resolveWorkspaceBySlug, workspaceRouteSlugBase } from '../../workspaces/launcher/services/workspace-route'
@@ -40,7 +41,9 @@ import { approveRemoteSwarmPairing, type RemoteSwarmPendingPairing } from '../on
 import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from '../swarm/components/managed-host-link-request-modal'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
+import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
+import type { DesktopSlashCommand } from '../chat/services/slash-commands'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type DesktopUpdateJob, type LocalContainerUpdatePlan } from '../update/api'
@@ -57,6 +60,7 @@ import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectRenderedSe
 import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
+import { fetchAndApplyDesktopV3PlanSnapshot, saveDesktopV3SessionPlan } from '../state/desktop-v3-session-api'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
@@ -182,6 +186,10 @@ interface LocalContainerUpdateConfirmState {
 interface DesktopV3CompactingSessionState {
   sessionId: string
   startedAt: number
+}
+
+interface PlanModalState {
+  sessionId: string
 }
 
 interface GitPanelState {
@@ -1771,6 +1779,10 @@ export function DesktopAppPage() {
   const [pairingReplicationTarget, setPairingReplicationTarget] = useState<SwarmTarget | null>(null)
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
   const [gitPanel, setGitPanel] = useState<GitPanelState | null>(null)
+  const [planModal, setPlanModal] = useState<PlanModalState | null>(null)
+  const [planModalLoading, setPlanModalLoading] = useState(false)
+  const [planModalSaving, setPlanModalSaving] = useState(false)
+  const [planModalError, setPlanModalError] = useState<string | null>(null)
   const [quickSettingsTab, setQuickSettingsTab] = useState<QuickSettingsTabID | null>(null)
   const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
@@ -2462,6 +2474,8 @@ export function DesktopAppPage() {
 
 
   const chatWorkspacePath = selectedWorkspace?.path || ''
+  const planModalPlan = useDesktopV3CacheSelector((state) => planModal?.sessionId ? (state.plansBySession[planModal.sessionId] ?? null) : null) as DesktopSessionPlanRecord | null
+  const planModalRevisions = useDesktopV3CacheSelector((state) => planModal?.sessionId ? (state.planRevisionsBySession[planModal.sessionId] ?? []) : []) as DesktopSessionPlanRevisionRecord[]
 
   const handleStartNewSessionInWorkspace = useCallback((wsPath: string, wsName: string) => {
     dispatchDesktopV3Cache(selectSession(undefined))
@@ -2474,6 +2488,48 @@ export function DesktopAppPage() {
     })
   }, [navigate, workspaceSlugByPath])
 
+  const openPlanModalForSession = useCallback((sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId) return
+    setPlanModal({ sessionId: normalizedSessionId })
+    setPlanModalLoading(true)
+    setPlanModalError(null)
+    void fetchAndApplyDesktopV3PlanSnapshot(normalizedSessionId)
+      .catch((error) => setPlanModalError(error instanceof Error ? error.message : String(error)))
+      .finally(() => setPlanModalLoading(false))
+  }, [])
+
+  const handleCopyPlanText = useCallback(async (text: string): Promise<boolean> => {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
+  const handleSavePlanModal = useCallback(async (planText: string, document?: Record<string, unknown>) => {
+    const sessionId = planModal?.sessionId.trim() ?? ''
+    if (!sessionId) return
+    setPlanModalSaving(true)
+    setPlanModalError(null)
+    try {
+      await saveDesktopV3SessionPlan(sessionId, {
+        id: planModalPlan?.id,
+        title: planModalPlan?.title || 'Current Plan',
+        plan: planText,
+        document,
+        status: planModalPlan?.status || undefined,
+        approvalState: planModalPlan?.approvalState || undefined,
+      })
+    } catch (error) {
+      setPlanModalError(error instanceof Error ? error.message : String(error))
+      throw error
+    } finally {
+      setPlanModalSaving(false)
+    }
+  }, [planModal?.sessionId, planModalPlan?.approvalState, planModalPlan?.id, planModalPlan?.status, planModalPlan?.title])
+
   const handleOpenSettingsTab = useCallback((tab: SettingsTabID) => {
     setQuickSettingsTab(null)
     setMobileSidebarOpen(false)
@@ -2483,6 +2539,57 @@ export function DesktopAppPage() {
     }
     void navigate({ to: '/settings', search: { tab } })
   }, [navigate, routeWorkspaceSlug])
+
+  const handleSlashCommand = useCallback((command: DesktopSlashCommand) => {
+    const action = command.action
+    switch (action.kind) {
+      case 'open-settings':
+        handleOpenSettingsTab(action.tab)
+        return
+      case 'open-quick-settings':
+        setQuickSettingsTab(action.tab)
+        setMobileSidebarOpen(false)
+        return
+      case 'open-permissions':
+        setQuickSettingsTab('permissions')
+        setMobileSidebarOpen(false)
+        return
+      case 'open-workspace-launcher':
+        setSwarmMenu({ open: false })
+        setFlowMenuOpen(false)
+        setWorkspaceMenuOpen(true)
+        setMobileSidebarOpen(true)
+        return
+      case 'open-commit-modal': {
+        const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || ''
+        const workspaceName = selectedWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
+        if (workspacePath) openGitPanel(workspacePath, workspaceName)
+        return
+      }
+      case 'open-plan-modal':
+        if (routeSessionId) openPlanModalForSession(routeSessionId)
+        else setDesktopToast({ message: 'Open an existing session to view its plan.', tone: 'info' })
+        return
+      case 'new-session': {
+        const session = routeSessionId ? sessionById.get(routeSessionId) : null
+        const workspacePath = session?.workspacePath || selectedWorkspace?.path || selectedWorkspacePath || ''
+        const workspaceName = session?.workspaceName || selectedWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
+        if (workspacePath) handleStartNewSessionInWorkspace(workspacePath, workspaceName)
+        return
+      }
+      case 'show-help':
+        setDesktopToast({ message: 'Slash commands: use ↑/↓ to choose, Enter to run, Tab to insert.', tone: 'info' })
+        return
+      case 'open-model-picker':
+      case 'toggle-fast':
+      case 'compact-session':
+        return
+      default: {
+        const _exhaustive: never = action
+        return _exhaustive
+      }
+    }
+  }, [handleOpenSettingsTab, handleStartNewSessionInWorkspace, openGitPanel, openPlanModalForSession, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById])
 
   const handleOpenFlowsSettings = useCallback(() => {
     setFlowMenuOpen(false)
@@ -3542,6 +3649,7 @@ export function DesktopAppPage() {
               const routeSession = sessionById.get(routeSessionId)
               if (routeSession?.workspacePath) handleStartNewSessionInWorkspace(routeSession.workspacePath, routeSession.workspaceName)
             }}
+            onSlashCommand={handleSlashCommand}
           />
         ) : isFlowRoute ? (
           <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-[var(--app-bg)] px-3 pb-[calc(var(--app-safe-area-bottom)_+_1.25rem)] pt-[calc(var(--app-safe-area-top)_+_1rem)] sm:px-6 sm:py-8">
@@ -3571,6 +3679,7 @@ export function DesktopAppPage() {
             })}
             pendingWorktreeBranch={pendingWorktreeBranchByWorkspace[routeWorkspace.path]}
             onOpenChats={() => setMobileSidebarOpen(true)}
+            onSlashCommand={handleSlashCommand}
           />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">
@@ -3588,6 +3697,20 @@ export function DesktopAppPage() {
         tab={quickSettingsTab}
         onClose={() => setQuickSettingsTab(null)}
         onOpenFullSettings={handleOpenSettingsTab}
+      />
+
+      <DesktopPlanModal
+        open={Boolean(planModal)}
+        plan={planModalPlan}
+        revisions={planModalRevisions}
+        historyLoading={planModalLoading}
+        saving={planModalSaving}
+        error={planModalError}
+        onOpenChange={(open) => {
+          if (!open) setPlanModal(null)
+        }}
+        onCopy={handleCopyPlanText}
+        onSave={handleSavePlanModal}
       />
 
       {todoModal ? (

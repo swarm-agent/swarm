@@ -673,6 +673,14 @@ test('Desktop V3 plan modal uses dedicated plan endpoints instead of workset hyd
     assertNoV1OrV2SessionDataCalls(calls)
   })
 
+  await withFetchStub(async () => {
+    const { normalizeDesktopSessionPlanRevisions } = await import('../services/session-plan-record')
+
+    assert.deepEqual(normalizeDesktopSessionPlanRevisions(undefined), [])
+    assert.deepEqual(normalizeDesktopSessionPlanRevisions({ revisions: [] }), [])
+    assert.deepEqual(normalizeDesktopSessionPlanRevisions([undefined, null, 'bad']).map((revision) => revision.id), ['', '', ''])
+  })
+
   await withFetchStub(async (calls) => {
     const saved = await saveDesktopV3SessionPlan('session-plan', { id: 'plan-1', title: 'Current Plan', plan: '# Updated' })
 
@@ -685,6 +693,25 @@ test('Desktop V3 plan modal uses dedicated plan endpoints instead of workset hyd
     assert.equal(calls[0]?.init?.method, 'POST')
     assertNoV1OrV2SessionDataCalls(calls)
   })
+})
+
+
+test('Desktop V3 slash command handlers are wired from app page into composers', async () => {
+  const [appPage, existingPane, newPane, composer] = await Promise.all([
+    readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../components/desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../components/desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../components/desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8'),
+  ])
+
+  assert.match(composer, /onSlashCommand\?: \(command: DesktopSlashCommand, draft: string\)/)
+  assert.match(existingPane, /onSlashCommand\?: \(command: DesktopSlashCommand, draft: string\)/)
+  assert.match(existingPane, /onSlashCommand=\{onSlashCommand\}/)
+  assert.match(newPane, /onSlashCommand\?: \(command: DesktopSlashCommand, draft: string\)/)
+  assert.match(newPane, /onSlashCommand=\{onSlashCommand\}/)
+  assert.match(appPage, /const handleSlashCommand = useCallback\(\(command: DesktopSlashCommand\)/)
+  assert.match(appPage, /<DesktopV3ExistingConversationPane[\s\S]*?onSlashCommand=\{handleSlashCommand\}/)
+  assert.match(appPage, /<DesktopV3NewSessionPane[\s\S]*?onSlashCommand=\{handleSlashCommand\}/)
 })
 
 

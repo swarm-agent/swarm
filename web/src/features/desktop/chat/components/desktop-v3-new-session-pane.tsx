@@ -12,6 +12,7 @@ import { updateDraftModelPreference } from '../queries/chat-queries'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
 import { buildDesktopV3RunStatusModel } from './desktop-v3-run-status'
+import type { DesktopSlashCommand } from '../services/slash-commands'
 import {
   clearDesktopV3NewSessionOperation,
   createDesktopV3NewSessionOperation,
@@ -90,6 +91,7 @@ export interface DesktopV3NewSessionPaneProps {
   agentName?: string
   preference?: DesktopV3NewSessionPreference
   onOpenChats?: () => void
+  onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
 }
 
 export function completeDesktopV3NewSessionStarted(input: {
@@ -113,6 +115,7 @@ export function DesktopV3NewSessionPane({
   agentName: agentNameProp = '',
   preference: preferenceProp,
   onOpenChats,
+  onSlashCommand,
 }: DesktopV3NewSessionPaneProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -453,6 +456,7 @@ export function DesktopV3NewSessionPane({
         routeTitle="Route this chat through the host or a linked child swarm."
         contextLabel={contextLabel}
         compactDisabled
+        onSlashCommand={onSlashCommand}
       />
     </div>
   )

@@ -18,6 +18,7 @@ import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } fr
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
 import { buildDesktopV3RunStatusModel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
+import type { DesktopSlashCommand } from '../services/slash-commands'
 import {
   sessionV3AgentSettingsMutationResponse,
   sessionV3ModeSettingsMutationResponse,
@@ -528,6 +529,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   routeOptions?: DesktopChatRoute[]
   onOpenChats?: () => void
   onNewSession?: () => void
+  onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
   onCompactingChange?: (sessionId: string, startedAt: number | null) => void
 }
 
@@ -554,6 +556,7 @@ export function DesktopV3ExistingConversationPane({
   routeOptions = [],
   onOpenChats,
   onNewSession,
+  onSlashCommand,
   onCompactingChange,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim()
@@ -1080,6 +1083,7 @@ export function DesktopV3ExistingConversationPane({
         settingsActionLabel={showRestartSettingsAction ? 'Restart loop with new settings?' : ''}
         settingsActionBusy={restartingWithSettings}
         onSettingsAction={showRestartSettingsAction ? handleRestartWithSettings : undefined}
+        onSlashCommand={onSlashCommand}
       />
     </div>
   )

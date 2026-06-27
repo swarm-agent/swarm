@@ -20,35 +20,38 @@ export interface DesktopSessionPlanWire {
   checkpoint?: boolean
 }
 
-export function normalizeDesktopSessionPlan(plan: DesktopSessionPlanWire): DesktopSessionPlanRecord {
+export function normalizeDesktopSessionPlan(plan: unknown): DesktopSessionPlanRecord {
+  const planRecord = objectValue(plan) ?? {}
   return {
-    id: String(plan.id ?? '').trim(),
-    title: String(plan.title ?? '').trim(),
-    plan: String(plan.plan ?? ''),
-    document: normalizeDesktopSessionPlanDocument(plan.document),
-    status: String(plan.status ?? '').trim(),
-    approvalState: String(plan.approval_state ?? '').trim(),
-    updatedAt: numberValue(plan.updated_at),
+    id: String(planRecord.id ?? '').trim(),
+    title: String(planRecord.title ?? '').trim(),
+    plan: String(planRecord.plan ?? ''),
+    document: normalizeDesktopSessionPlanDocument(planRecord.document),
+    status: String(planRecord.status ?? '').trim(),
+    approvalState: String(planRecord.approval_state ?? '').trim(),
+    updatedAt: numberValue(planRecord.updated_at),
   }
 }
 
-export function normalizeDesktopSessionPlanRevisions(revisions: DesktopSessionPlanWire[] | undefined): DesktopSessionPlanRevisionRecord[] {
-  return (revisions ?? []).map((revision, index) => {
-    const plan = normalizeDesktopSessionPlan(revision)
-    const version = numberValue(revision.version)
+export function normalizeDesktopSessionPlanRevisions(revisions: unknown): DesktopSessionPlanRevisionRecord[] {
+  const revisionList = Array.isArray(revisions) ? revisions : []
+  return revisionList.map((revision, index) => {
+    const revisionRecord = objectValue(revision) ?? {}
+    const plan = normalizeDesktopSessionPlan(revisionRecord)
+    const version = numberValue(revisionRecord.version)
     return {
       ...plan,
       key: `${plan.id || 'plan'}:${version}:${index}`,
-      createdAt: numberValue(revision.created_at),
-      priorTitle: String(revision.prior_title ?? ''),
-      priorPlan: String(revision.prior_plan ?? ''),
-      diffLines: Array.isArray(revision.diff_lines) ? revision.diff_lines.map((line) => String(line)) : [],
-      updateSummary: String(revision.update_summary ?? '').trim(),
-      updateScope: String(revision.update_scope ?? '').trim(),
-      updateKind: String(revision.update_kind ?? '').trim(),
+      createdAt: numberValue(revisionRecord.created_at),
+      priorTitle: String(revisionRecord.prior_title ?? ''),
+      priorPlan: String(revisionRecord.prior_plan ?? ''),
+      diffLines: Array.isArray(revisionRecord.diff_lines) ? revisionRecord.diff_lines.map((line) => String(line)) : [],
+      updateSummary: String(revisionRecord.update_summary ?? '').trim(),
+      updateScope: String(revisionRecord.update_scope ?? '').trim(),
+      updateKind: String(revisionRecord.update_kind ?? '').trim(),
       version,
-      parentRevision: numberValue(revision.parent_revision),
-      checkpoint: Boolean(revision.checkpoint),
+      parentRevision: numberValue(revisionRecord.parent_revision),
+      checkpoint: Boolean(revisionRecord.checkpoint),
     }
   })
 }

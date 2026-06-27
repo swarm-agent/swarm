@@ -249,6 +249,7 @@ export function DesktopV3AgenticComposer({
     [selectableAgents, subagents],
   )
   const slashPalette = useMemo(() => buildDesktopSlashPaletteState(draft), [draft])
+  const slashCommands = useMemo(() => slashPalette.matches.filter((command) => command.state === 'ready'), [slashPalette.matches])
   const mentionPaletteIsActive = useMemo(() => mentionPaletteActive(draft, mentionSubagents), [draft, mentionSubagents])
   const mentionPaletteMatches = useMemo(() => chatMentionCandidates(mentionPaletteQuery(draft), mentionSubagents), [draft, mentionSubagents])
   const selectedModel = useMemo(() => modelOptions.find((option) => option.key === selectedModelKey) ?? null, [modelOptions, selectedModelKey])
@@ -403,6 +404,10 @@ export function DesktopV3AgenticComposer({
   }, [composerDisabled, showDictationButton, stopDictation])
 
   useEffect(() => {
+    setSlashSelectionIndex((current) => Math.min(Math.max(0, current), Math.max(0, slashCommands.length - 1)))
+  }, [slashCommands.length])
+
+  useEffect(() => {
     if (!mobileSettingsOpen) return
     function handleClickOutside(event: MouseEvent) {
       const target = event.target as Node
@@ -494,10 +499,10 @@ export function DesktopV3AgenticComposer({
         return
       }
     }
-    if (slashPalette.active && slashPalette.matches.length > 0) {
+    if (slashPalette.active && slashCommands.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
-        setSlashSelectionIndex((current) => Math.min(slashPalette.matches.length - 1, current + 1))
+        setSlashSelectionIndex((current) => Math.min(slashCommands.length - 1, current + 1))
         return
       }
       if (event.key === 'ArrowUp') {
@@ -507,13 +512,13 @@ export function DesktopV3AgenticComposer({
       }
       if (event.key === 'Tab') {
         event.preventDefault()
-        const command = slashPalette.matches[slashSelectionIndex] ?? slashPalette.matches[0]
+        const command = slashCommands[slashSelectionIndex] ?? slashCommands[0]
         if (command) onDraftChange(command.command + ' ')
         return
       }
       if (event.key === 'Enter' && !event.shiftKey && !slashPalette.hasArguments) {
         event.preventDefault()
-        const command = slashPalette.matches[slashSelectionIndex] ?? slashPalette.matches[0]
+        const command = slashCommands[slashSelectionIndex] ?? slashCommands[0]
         if (command) handleSlashSelect(command)
         return
       }
@@ -522,7 +527,7 @@ export function DesktopV3AgenticComposer({
       event.preventDefault()
       if (canSubmit || canStop) handleSubmitClick()
     }
-  }, [canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, slashPalette, slashSelectionIndex])
+  }, [canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, slashCommands, slashPalette.active, slashPalette.hasArguments, slashSelectionIndex])
 
   const handleDragOver = useCallback((event: ReactDragEvent<HTMLTextAreaElement>) => {
     const hasTodo = Array.from(event.dataTransfer.types).includes(TODO_DRAG_MIME) || Array.from(event.dataTransfer.types).includes('text/plain')

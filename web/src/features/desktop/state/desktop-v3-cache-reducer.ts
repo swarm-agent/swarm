@@ -138,6 +138,10 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
         removePermissionRecord(state, action.sessionId, action.permissionId)
       }
       return state
+    case 'planSnapshot.apply':
+      state.plansBySession[action.sessionId] = action.activePlan
+      state.planRevisionsBySession[action.sessionId] = action.planRevisions
+      return state
     case 'liveRun.mergeRepairEvents':
       mergeLiveRunRepairEvents(state, action.sessionId, action.runId, action.events)
       return state
