@@ -696,6 +696,28 @@ test('Desktop V3 plan modal uses dedicated plan endpoints instead of workset hyd
 })
 
 
+test('Desktop V3 exit_plan_mode approval refreshes the active plan snapshot without history before sidebar render', async () => {
+  const [existingPane, planExecutionApi] = await Promise.all([
+    readFile(new URL('../components/desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../../session-v3/plan-execution-api.ts', import.meta.url), 'utf8'),
+  ])
+
+  assert.match(existingPane, /fetchAndApplyDesktopV3PlanSnapshot/)
+  assert.match(existingPane, /toolName === 'exit_plan_mode'[\s\S]*fetchAndApplyDesktopV3PlanSnapshot\(permission\.sessionId, \{ includeHistory: false \}\)/)
+  assert.match(planExecutionApi, /if \(plan\) applyDesktopPlanExecutionResult\(normalizedSessionId, plan\)/)
+
+  const { fetchAndApplyDesktopV3PlanSnapshot } = await import('../../state/desktop-v3-session-api')
+  await withFetchStub(async (calls) => {
+    const planSnapshot = await fetchAndApplyDesktopV3PlanSnapshot('session-plan', { includeHistory: false })
+
+    assert.equal(planSnapshot.hasActivePlan, true)
+    assert.equal(planSnapshot.activePlan?.id, 'plan-1')
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-plan/plans/active'])
+    assertNoV1OrV2SessionDataCalls(calls)
+  })
+})
+
+
 test('Desktop V3 slash command handlers are wired from app page into composers', async () => {
   const [appPage, existingPane, newPane, composer] = await Promise.all([
     readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8'),

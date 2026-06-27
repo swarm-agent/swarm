@@ -38,6 +38,7 @@ import {
 } from '../../session-v3/existing-session-flow'
 import { compactDesktopV3Session } from '../../session-v3/compact-session-flow'
 import { executeDesktopPlanActionAndStartRun, type DesktopPlanExecutionAction } from '../../session-v3/plan-execution-api'
+import { fetchAndApplyDesktopV3PlanSnapshot } from '../../state/desktop-v3-session-api'
 import { resolveSessionPermission, sendSessionMessage, updateDraftModelPreference } from '../queries/chat-queries'
 import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
 import { permissionRequiresApproval } from '../../permissions/services/permission-payload'
@@ -978,6 +979,17 @@ export function DesktopV3ExistingConversationPane({
       permissionId: permission.id,
       permission: resolved,
     })
+    const approved = action === 'approve' || action === 'approve_always' || action === 'always_allow'
+    const toolName = permission.toolName.trim().toLowerCase().replace(/-/g, '_')
+    if (approved && toolName === 'exit_plan_mode') {
+      try {
+        await fetchAndApplyDesktopV3PlanSnapshot(permission.sessionId, { includeHistory: false })
+      } catch (error) {
+        if (mountedRef.current) {
+          setSendError(error instanceof Error ? `Plan activated, but sidebar refresh failed: ${error.message}` : 'Plan activated, but sidebar refresh failed')
+        }
+      }
+    }
   }
 
   async function handleRestartWithSettings() {

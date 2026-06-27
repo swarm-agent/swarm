@@ -1062,7 +1062,7 @@ function ExitPlanModal({
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
-  const [executionGranularity, setExecutionGranularity] = useState<'checkpointed' | 'run_through'>('checkpointed')
+  const [executionGranularity, setExecutionGranularity] = useState<'checkpointed' | 'run_through'>('run_through')
   const [continueAutomatically, setContinueAutomatically] = useState(false)
 
   useEffect(() => {
@@ -1070,10 +1070,8 @@ function ExitPlanModal({
       setNote('')
       setLoading(false)
       setCopyState('idle')
-      const initialPayload = permission ? parseExitPlanPermission(permission) : null
-      const initialDocument = normalizeStructuredPlanDocument(initialPayload?.document)
-      setExecutionGranularity(initialDocument?.executionPolicy?.shape === 'single_run' ? 'run_through' : 'checkpointed')
-      setContinueAutomatically(initialDocument?.executionPolicy?.mode === 'automatic')
+      setExecutionGranularity('run_through')
+      setContinueAutomatically(false)
     }
   }, [open, permission])
 
@@ -1159,28 +1157,42 @@ function ExitPlanModal({
         {hasStructuredPlan ? (
           <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
             <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Execution after approval</div>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid gap-3">
               <label className="grid gap-1.5 text-sm text-[var(--app-text)]">
-                <span className="font-medium">Run granularity</span>
+                <span className="font-medium">Execution style</span>
                 <select
                   value={executionGranularity}
-                  onChange={(event) => setExecutionGranularity(event.target.value === 'run_through' ? 'run_through' : 'checkpointed')}
+                  onChange={(event) => setExecutionGranularity(event.target.value === 'checkpointed' ? 'checkpointed' : 'run_through')}
                   disabled={loading}
                   className="min-h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)] outline-none transition focus-visible:border-[var(--app-border-active)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
                 >
-                  <option value="checkpointed">Checkpoint by checkpoint</option>
-                  <option value="run_through">Run straight through</option>
+                  <option value="run_through">Execute as one run</option>
+                  <option value="checkpointed">Execute checkpoint by checkpoint</option>
                 </select>
+                <span className="text-xs text-[var(--app-text-muted)]">
+                  {executionGranularity === 'run_through'
+                    ? 'Runs the approved plan as a single fresh-context execution. Best for most tasks.'
+                    : 'Runs each checkpoint separately with fresh context.'}
+                </span>
               </label>
-              <label className="flex items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
-                <input
-                  type="checkbox"
-                  checked={continueAutomatically || executionGranularity === 'run_through'}
-                  onChange={(event) => setContinueAutomatically(event.target.checked)}
-                  disabled={loading || executionGranularity === 'run_through'}
-                />
-                Continue automatically between checkpoints
-              </label>
+              {executionGranularity === 'checkpointed' ? (
+                <label className="grid gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
+                  <span className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={continueAutomatically}
+                      onChange={(event) => setContinueAutomatically(event.target.checked)}
+                      disabled={loading}
+                    />
+                    Continue automatically after each completed checkpoint
+                  </span>
+                  <span className="pl-6 text-xs text-[var(--app-text-muted)]">
+                    {continueAutomatically
+                      ? 'Swarm starts the next checkpoint automatically after successful completion, and still stops for review requests, blockers, failures, or final completion.'
+                      : 'If unchecked, Swarm pauses for your review before starting the next checkpoint.'}
+                  </span>
+                </label>
+              ) : null}
             </div>
           </section>
         ) : null}
