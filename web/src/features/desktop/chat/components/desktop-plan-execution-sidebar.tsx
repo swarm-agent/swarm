@@ -1,7 +1,5 @@
 import {
-  PlayCircle,
   RefreshCcw,
-  ShieldCheck,
   SquarePen,
 } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
@@ -86,7 +84,7 @@ function statusLabel(view: DesktopPlanExecutionView, checkpoint?: DesktopSession
 
 function StatusBadge({ label, tone }: { label: string; tone: Tone }) {
   return (
-    <span className={cn('inline-flex min-w-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em]', toneBadgeClass(tone))}>
+    <span className={cn('inline-flex max-w-[112px] shrink-0 items-center rounded-md border px-1.5 py-px text-[9px] font-semibold uppercase leading-4 tracking-[0.06em]', toneBadgeClass(tone))}>
       <span className="truncate">{label}</span>
     </span>
   )
@@ -94,53 +92,53 @@ function StatusBadge({ label, tone }: { label: string; tone: Tone }) {
 
 function ActiveCheckpointCard({ view, checkpoints, completedCount, totalCount, activeIndex, onOpenPlan }: { view: DesktopPlanExecutionView; checkpoints: DesktopSessionPlanCheckpoint[]; completedCount: number; totalCount: number; activeIndex: number; onOpenPlan?: () => void }) {
   const checkpoint = view.activeCheckpoint
-  const fallbackIndex = activeIndex >= 0 ? activeIndex : 0
-  const checkpointId = checkpoint ? displayCheckpointId(checkpoint.id, fallbackIndex) : 'None'
+  const activePosition = activeIndex >= 0 ? activeIndex : -1
+  const checkpointFallbackIndex = activeIndex >= 0 ? activeIndex : 0
+  const checkpointId = checkpoint ? displayCheckpointId(checkpoint.id, checkpointFallbackIndex) : 'None'
   const title = checkpoint?.title || 'No active checkpoint'
-  const description = checkpoint?.objective || checkpoint?.tasks?.[0] || checkpoint?.acceptanceCriteria?.[0] || 'No checkpoint description is available.'
-  const nextCheckpoint = checkpoints.find((candidate, index) => index > fallbackIndex && candidate.status.toLowerCase() !== 'completed')
+  const activeTitle = checkpoint ? `${checkpointId} ${title}` : title
+  const nextCheckpoint = checkpoints.find((candidate, index) => index > activePosition && candidate.status.toLowerCase() !== 'completed')
   const nextIndex = nextCheckpoint ? checkpoints.findIndex((candidate) => candidate === nextCheckpoint) : -1
   const progressValue = totalCount > 0 ? Math.max(0, Math.min(100, (completedCount / totalCount) * 100)) : 0
   const tone = statusTone(view.reviewRequired ? 'needs_review' : checkpoint?.status || view.status, Boolean(checkpoint))
 
   return (
-    <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
+    <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.16)]">
       <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Active checkpoint</div>
-          <div className="mt-1 flex min-w-0 items-center gap-2">
-            <span className="shrink-0 font-mono text-xs font-semibold text-[var(--app-primary)]">{checkpointId}</span>
-            <h3 className="truncate text-sm font-semibold leading-snug text-[var(--app-text)]">{title}</h3>
-          </div>
-        </div>
+        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Active checkpoint</div>
         <StatusBadge label={statusLabel(view, checkpoint)} tone={tone} />
       </div>
+      <h3
+        className="mt-1 min-w-0 break-words text-sm font-semibold leading-snug text-[var(--app-text)] [overflow-wrap:anywhere]"
+        title={activeTitle}
+      >
+        <span className="font-mono text-xs font-semibold text-[var(--app-primary)]">{checkpointId}</span>{' '}
+        {title}
+      </h3>
 
-      <p className="mt-2 line-clamp-2 text-xs leading-5 text-[var(--app-text-muted)]">{description}</p>
-
-      <div className="mt-3">
-        <div className="mb-1 flex items-center justify-between text-[11px] text-[var(--app-text-muted)]">
+      <div className="mt-3.5">
+        <div className="mb-1.5 flex items-center justify-between text-[11px] text-[var(--app-text-muted)]">
           <span>Progress</span>
-          <span className="font-medium text-[var(--app-text)]">{completedCount} / {totalCount}</span>
+          <span className="font-medium text-[var(--app-text-muted)]">{completedCount} / {totalCount}</span>
         </div>
         <div className="h-1.5 overflow-hidden rounded-full bg-[var(--app-surface-subtle)]">
-          <div className="h-full rounded-full bg-[var(--app-primary)]" style={{ width: `${progressValue}%` }} />
+          <div className="h-full rounded-full bg-[var(--app-primary)] opacity-80" style={{ width: `${progressValue}%` }} />
         </div>
       </div>
 
-      <div className="mt-3 min-w-0 overflow-hidden border-t border-[var(--app-border)] pt-2 text-xs">
-        <span className="text-[var(--app-text-subtle)]">Next up</span>{' '}
+      <div className="mt-3.5 min-w-0 border-t border-[var(--app-border)] px-2 pt-2.5 text-xs">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--app-text-subtle)]">Next up</div>
         {nextCheckpoint ? (
-          <span className="block min-w-0 truncate text-[var(--app-text-muted)]">
+          <div className="mt-0.5 break-words text-[var(--app-text-muted)]" title={`${displayCheckpointId(nextCheckpoint.id, nextIndex)} ${nextCheckpoint.title || 'Untitled checkpoint'}`}>
             <span className="font-mono font-semibold text-[var(--app-text)]">{displayCheckpointId(nextCheckpoint.id, nextIndex)}</span>
             {' '}{nextCheckpoint.title || 'Untitled checkpoint'}
-          </span>
+          </div>
         ) : (
-          <span className="text-[var(--app-text-muted)]">No remaining checkpoint</span>
+          <div className="mt-0.5 text-[var(--app-text-muted)]">No remaining checkpoint</div>
         )}
       </div>
 
-      <Button type="button" size="sm" variant="outline" onClick={onOpenPlan} disabled={!onOpenPlan} className="mt-3 w-full">
+      <Button type="button" size="sm" variant="outline" onClick={onOpenPlan} disabled={!onOpenPlan} className="mt-3 w-full rounded-lg">
         Open full plan
       </Button>
     </section>
@@ -156,11 +154,11 @@ function PlanModeSwitch({ checked, busy, disabled, onToggle }: { checked: boolea
       disabled={disabled || busy}
       onClick={onToggle}
       className={cn(
-        'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60',
-        checked ? 'border-[var(--app-primary-border)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]',
+        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60',
+        checked ? 'border-[var(--app-primary-border)] bg-[var(--app-primary)] shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-primary)_18%,transparent)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]',
       )}
     >
-      <span className={cn('inline-block size-4 rounded-full bg-[var(--app-surface)] transition', checked ? 'translate-x-5' : 'translate-x-1')} />
+      <span className={cn('inline-block size-3.5 rounded-full bg-[var(--app-surface)] shadow-sm transition', checked ? 'translate-x-[18px]' : 'translate-x-1')} />
     </button>
   )
 }
@@ -179,7 +177,7 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
   const canToggleAutomatic = Boolean(onAction && view.policyShape !== 'single_run' && !view.completed && !canStop)
 
   return (
-    <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
+    <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.14)]">
       <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Actions / Plan Mode</div>
       <div className="mt-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -199,30 +197,30 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
           type="button"
           size="sm"
           variant="primary"
+          className={cn('rounded-lg', acceptContinueBusy ? 'animate-pulse' : '')}
           onClick={() => void onAction?.({ action: 'accept_and_continue', checkpointId })}
           disabled={!canAccept || acceptContinueBusy}
         >
-          <ShieldCheck className={cn('size-4', acceptContinueBusy ? 'animate-pulse' : '')} />
           Accept &amp; move to next
         </Button>
         <Button
           type="button"
           size="sm"
           variant="outline"
+          className={cn('rounded-lg', acceptBusy ? 'animate-pulse' : '')}
           onClick={() => void onAction?.({ action: 'accept_checkpoint', checkpointId })}
           disabled={!canAccept || acceptBusy}
         >
-          <ShieldCheck className={cn('size-4', acceptBusy ? 'animate-pulse' : '')} />
           Accept this checkpoint
         </Button>
         <Button
           type="button"
           size="sm"
-          variant="outline"
+          variant="ghost"
+          className={cn('rounded-lg border border-[var(--app-border)] text-[var(--app-text-muted)]', continueBusy ? 'animate-pulse' : '')}
           onClick={() => void onAction?.({ action: 'continue_checkpoint', checkpointId })}
           disabled={!canContinue || continueBusy}
         >
-          <PlayCircle className={cn('size-4', continueBusy ? 'animate-pulse' : '')} />
           Continue checkpoint
         </Button>
       </div>
