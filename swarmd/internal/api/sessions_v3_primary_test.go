@@ -4826,7 +4826,7 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 			if !strings.Contains(req.Instructions, "Current session mode: auto.") {
 				return provideriface.Response{}, fmt.Errorf("checkpoint continuation instructions did not refresh to auto mode:\n%s", req.Instructions)
 			}
-			if len(req.Input) != 1 || !sessionsV3ProviderInputContainsContentText(req.Input, "[checkpoint-run] Deterministic checkpoint execution context.") || !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: cp-1.") {
+			if !sessionsV3ProviderInputContainsContentText(req.Input, "[checkpoint-run] Deterministic checkpoint execution context.") || !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: cp-1.") {
 				return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint input = %+v, want fresh checkpoint context", req.Input)
 			}
 			if req.ToolInvoker == nil {
@@ -4913,6 +4913,7 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateCompleted {
 		t.Fatalf("active plan after checkpoint run = %#v", activePlan.Document)
 	}
+	assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, sessionruntime.PlanExecutionStateCompleted)
 }
 
 func TestSessionsV3ExecutorFinalizesReviewCheckpointAfterProviderManagedPlanComplete(t *testing.T) {
@@ -4972,13 +4973,22 @@ func TestSessionsV3ExecutorFinalizesReviewCheckpointAfterProviderManagedPlanComp
 	if activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateWaitingReview || activePlan.Document.Checkpoints[0].Review == nil || activePlan.Document.Checkpoints[0].Review.Status != sessionruntime.PlanCheckpointReviewStatusPending {
 		t.Fatalf("review plan state = %#v", activePlan.Document)
 	}
-	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
-	if err != nil {
-		t.Fatalf("list events: %v", err)
+	assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, sessionruntime.PlanExecutionStateWaitingReview)
+	assertSessionsV3NoMessageAppendedActivePlanPayload(t, sessionSvc, created.ID)
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want tool turn plus finalization", runner.callCount)
 	}
-	seenLifecycleSidebarPlan := false
-	for _, event := range events {
-		if event.EventType != "session.message.appended" {
+}
+
+func assertSessionsV3PlanSavedOutboxState(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, wantExecutionStatus string) {
+	t.Helper()
+	rows, err := sessionSvc.ListRealtimeOutboxForSessionAfterSeq(sessionID, 0, 100)
+	if err != nil {
+		t.Fatalf("list realtime outbox for %s: %v", sessionID, err)
+	}
+	for i := len(rows) - 1; i >= 0; i-- {
+		row := rows[i]
+		if row.Event.EventType != "session.plan.saved" {
 			continue
 		}
 		var payload struct {
@@ -4991,19 +5001,82 @@ func TestSessionsV3ExecutorFinalizesReviewCheckpointAfterProviderManagedPlanComp
 				} `json:"document"`
 			} `json:"active_plan"`
 		}
-		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			t.Fatalf("decode session.message.appended payload: %v", err)
+		if err := json.Unmarshal(row.Event.Payload, &payload); err != nil {
+			t.Fatalf("decode session.plan.saved outbox payload: %v", err)
 		}
-		if payload.HasActivePlan && payload.ActivePlan != nil && payload.ActivePlan.Document != nil && payload.ActivePlan.Document.ExecutionState != nil && payload.ActivePlan.Document.ExecutionState.Status == sessionruntime.PlanExecutionStateWaitingReview {
-			seenLifecycleSidebarPlan = true
-			break
+		if !payload.HasActivePlan || payload.ActivePlan == nil || payload.ActivePlan.Document == nil || payload.ActivePlan.Document.ExecutionState == nil {
+			t.Fatalf("session.plan.saved outbox missing active_plan document state: %+v", row)
+		}
+		if payload.ActivePlan.Document.ExecutionState.Status != wantExecutionStatus {
+			t.Fatalf("session.plan.saved execution status = %q, want %q", payload.ActivePlan.Document.ExecutionState.Status, wantExecutionStatus)
+		}
+		return
+	}
+	t.Fatalf("missing session.plan.saved realtime outbox row for %s: %+v", sessionID, rows)
+}
+
+func assertSessionsV3NoMessageAppendedActivePlanPayload(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string) {
+	t.Helper()
+	rows, err := sessionSvc.ListRealtimeOutboxForSessionAfterSeq(sessionID, 0, 100)
+	if err != nil {
+		t.Fatalf("list realtime outbox for %s: %v", sessionID, err)
+	}
+	for _, row := range rows {
+		if row.Event.EventType != "session.message.appended" {
+			continue
+		}
+		var payload struct {
+			HasActivePlan bool             `json:"has_active_plan"`
+			ActivePlan    *json.RawMessage `json:"active_plan"`
+		}
+		if err := json.Unmarshal(row.Event.Payload, &payload); err != nil {
+			t.Fatalf("decode session.message.appended outbox payload: %v", err)
+		}
+		if payload.HasActivePlan || payload.ActivePlan != nil {
+			t.Fatalf("session.message.appended outbox carried active_plan side payload: %+v", row)
 		}
 	}
-	if !seenLifecycleSidebarPlan {
-		t.Fatalf("missing lifecycle message realtime payload with waiting_review active_plan for sidebar: %+v", events)
+}
+
+func TestSessionsV3ProviderManagedPlanManageTerminalOutcomesUsePlanSavedOutbox(t *testing.T) {
+	cases := []struct {
+		name       string
+		action     string
+		wantStatus string
+	}{
+		{name: "complete", action: "complete_checkpoint", wantStatus: sessionruntime.PlanExecutionStateCompleted},
+		{name: "review", action: "mark_needs_review", wantStatus: sessionruntime.PlanExecutionStateWaitingReview},
+		{name: "blocked", action: "mark_blocked", wantStatus: sessionruntime.PlanExecutionStateBlocked},
+		{name: "failed", action: "mark_failed", wantStatus: sessionruntime.PlanExecutionStateFailed},
 	}
-	if runner.callCount != 2 {
-		t.Fatalf("provider call count = %d, want tool turn plus finalization", runner.callCount)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+			runner := &sessionsV3RecordingProviderRunner{}
+			runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+				if req.ToolInvoker == nil {
+					return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+				}
+				args := mustSessionsV3TestJSON(t, map[string]any{"action": tc.action, "checkpoint_id": "cp-1", "report": tc.action + " report", "result": "done"})
+				result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-" + tc.name, Name: "plan_manage", Arguments: args})
+				if err != nil {
+					return provideriface.Response{}, err
+				}
+				if result.Error != "" {
+					return provideriface.Response{}, fmt.Errorf("plan_manage %s failed: %+v", tc.action, result)
+				}
+				return provideriface.Response{Text: tc.action + " done"}, nil
+			}
+			setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+			created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-plan-saved-"+tc.name, "provider plan saved "+tc.name, t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+			saveSessionsV3ActivePlanForFinalizationTest(t, sessionSvc, created.ID, sessionruntime.PlanExecutionPolicyModeAutomatic, []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Only", Status: sessionruntime.PlanCheckpointStatusInProgress}})
+
+			postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-plan-saved-message-"+tc.name, "run "+tc.action)
+			waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+
+			assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, tc.wantStatus)
+			assertSessionsV3NoMessageAppendedActivePlanPayload(t, sessionSvc, created.ID)
+		})
 	}
 }
 

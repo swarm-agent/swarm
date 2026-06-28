@@ -1426,11 +1426,14 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		documentClone.Status = status
 		documentForSave = &documentClone
 	}
-	savedPlan, _, saveErr := s.sessions.SavePlanWithMetadata(sessionID, planID, title, plan, status, approvalState, true, sessionruntime.PlanSaveMetadata{UpdateSummary: "exit plan mode submission", UpdateScope: "plan", UpdateKind: "exit_plan_mode", Document: documentForSave})
+	savedPlan, event, saveErr := s.sessions.SavePlanWithMetadata(sessionID, planID, title, plan, status, approvalState, true, sessionruntime.PlanSaveMetadata{UpdateSummary: "exit plan mode submission", UpdateScope: "plan", UpdateKind: "exit_plan_mode", Document: documentForSave})
 	if saveErr != nil {
 		return "", fmt.Errorf("exit_plan_mode failed to save plan: %w", saveErr)
 	}
 	planID = strings.TrimSpace(savedPlan.ID)
+	if err := s.persistPlanSavedV3Mutation(savedPlan, event, applySessionMutation); err != nil {
+		return "", fmt.Errorf("exit_plan_mode failed to publish plan saved: %w", err)
+	}
 
 	if applySessionMutation != nil {
 		if err := s.applyExitPlanModeV3ModeMutation(sessionID, sessionruntime.ModeAuto, applySessionMutation); err != nil {
@@ -1833,8 +1836,11 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 		if _, hasActivate := args["activate"]; hasActivate {
 			activate = mapBool(args, "activate")
 		}
-		plan, _, err := s.sessions.SavePlanWithMetadata(sessionID, planID, title, planBody, status, approvalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint, Document: document})
+		plan, event, err := s.sessions.SavePlanWithMetadata(sessionID, planID, title, planBody, status, approvalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint, Document: document})
 		if err != nil {
+			return "", err
+		}
+		if err := s.persistPlanSavedV3Mutation(plan, event, applySessionMutation); err != nil {
 			return "", err
 		}
 		payload := map[string]any{
@@ -1883,8 +1889,11 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 			value := mapBool(args, "activate")
 			activate = &value
 		}
-		plan, _, err := s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: title, Status: status, ApprovalState: approvalState, Activate: activate, Patch: patch, Document: document, DocumentPatch: documentPatch, Metadata: sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint}})
+		plan, event, err := s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: title, Status: status, ApprovalState: approvalState, Activate: activate, Patch: patch, Document: document, DocumentPatch: documentPatch, Metadata: sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint}})
 		if err != nil {
+			return "", err
+		}
+		if err := s.persistPlanSavedV3Mutation(plan, event, applySessionMutation); err != nil {
 			return "", err
 		}
 		payload := map[string]any{
@@ -1897,9 +1906,6 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 			"details_truncated": false,
 		}
 		addPlanExecutionPayloadFields(payload, action, plan.Document)
-		if err := s.appendPlanExecutionLifecycleSystemMessage(sessionID, action, plan, payload, applySessionMutation); err != nil {
-			return "", err
-		}
 		return marshalPlanManagePayload(payload)
 	case "new":
 		title := strings.TrimSpace(mapString(args, "title"))
@@ -2158,7 +2164,7 @@ func (s *Service) executePlanExecutionControlAction(sessionID, action string, ar
 		return "", fmt.Errorf("plan execution action %q is not supported", action)
 	}
 
-	saved, _, err := s.sessions.SavePlanWithMetadata(sessionID, planID, existing.Title, existing.Plan, status, approvalState, true, sessionruntime.PlanSaveMetadata{
+	saved, event, err := s.sessions.SavePlanWithMetadata(sessionID, planID, existing.Title, existing.Plan, status, approvalState, true, sessionruntime.PlanSaveMetadata{
 		UpdateSummary: updateSummary,
 		UpdateScope:   checkpointID,
 		UpdateKind:    updateKind,
@@ -2166,6 +2172,9 @@ func (s *Service) executePlanExecutionControlAction(sessionID, action string, ar
 		Document:      doc,
 	})
 	if err != nil {
+		return "", err
+	}
+	if err := s.persistPlanSavedV3Mutation(saved, event, applySessionMutation); err != nil {
 		return "", err
 	}
 	summary := sessionruntime.SummarizePlanExecution(saved.Document)
@@ -2189,9 +2198,6 @@ func (s *Service) executePlanExecutionControlAction(sessionID, action string, ar
 		payload["checkpoint_id"] = summary.NextCheckpointID
 		payload["next_action"] = "run_checkpoint_with_fresh_context"
 		payload["run_request"] = planCheckpointRunRequestPayload(planID, summary.NextCheckpointID, "")
-	}
-	if err := s.appendPlanExecutionLifecycleSystemMessage(sessionID, action, saved, payload, applySessionMutation); err != nil {
-		return "", err
 	}
 	return marshalPlanManagePayload(payload)
 }

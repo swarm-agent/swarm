@@ -1,7 +1,6 @@
 package run
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -14,6 +13,9 @@ func (s *Service) appendPlanExecutionLifecycleSystemMessage(sessionID, action st
 	if !ok {
 		return nil
 	}
+	// Plan state is delivered by the canonical session.plan.saved realtime
+	// outbox row. This system message is only transcript/history context; do
+	// not piggyback active_plan on its session.message.appended payload.
 	appendInput := runAppendMessageInput{
 		SessionID:            sessionID,
 		Role:                 "system",
@@ -22,7 +24,6 @@ func (s *Service) appendPlanExecutionLifecycleSystemMessage(sessionID, action st
 		RunID:                planLifecycleMessageRunID(plan),
 		Step:                 int(plan.Version),
 		LogicalKey:           planLifecycleMessageLogicalKey(action, plan, payload),
-		ActivePlan:           &plan,
 		ApplySessionMutation: applySessionMutation,
 	}
 	if applySessionMutation != nil {
@@ -31,7 +32,7 @@ func (s *Service) appendPlanExecutionLifecycleSystemMessage(sessionID, action st
 			return fmt.Errorf("append plan execution lifecycle system message: %w", err)
 		}
 		if mutation == nil || mutation.Message == nil || mutation.RealtimeOutbox == nil || mutation.RealtimeOutbox.EndpointSeq == 0 {
-			return errors.New("plan execution lifecycle message mutation did not return committed realtime outbox")
+			return fmt.Errorf("plan execution lifecycle message mutation did not return committed realtime outbox")
 		}
 		return nil
 	}

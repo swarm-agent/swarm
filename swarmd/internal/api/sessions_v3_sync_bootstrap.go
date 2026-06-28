@@ -222,11 +222,44 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 		IncludePermissionSummaryAttention: false,
 	}
 
+	return options, selector, sessionsV3SyncHydrateResourceSet(req), nil
+}
+
+func sessionsV3SyncHydrateResourceSet(req sessionsV3SyncHydrateRequest) []string {
 	resources := sessionsV3SyncResourceSet(req.Resources, req.History, req.IncludeActive)
 	if req.Resources.SessionView && req.Resources.ActivePlan {
 		resources = append(resources, "active_plan")
 	}
-	return options, selector, resources, nil
+	return resources
+}
+
+func sessionsV3SelectedSessionHydrateRequest(sessionID string) sessionsV3SyncHydrateRequest {
+	return sessionsV3SyncHydrateRequest{
+		Surface:    "desktop",
+		SessionIDs: []string{strings.TrimSpace(sessionID)},
+		History: sessionsV3WorksetHistory{
+			Mode:                  pebblestore.V3SyncSnapshotHistoryModeTail,
+			MaxMessagesPerSession: sessionsV3WorksetMaxResourcePageSize,
+			ManifestPolicy:        "manifest",
+		},
+		Resources: sessionsV3WorksetResources{
+			Messages:        true,
+			RunIntents:      true,
+			CurrentRunState: true,
+			SessionView:     true,
+			ActivePlan:      true,
+		},
+		IncludeActive: true,
+	}
+}
+
+func sessionsV3SelectedSessionHydrateCursorScope(principal identity.Principal, sessionID string) (v3SyncCursorScope, error) {
+	req := sessionsV3SelectedSessionHydrateRequest(sessionID)
+	options, selector, resources, err := sessionsV3SyncHydrateOptions(principal, req)
+	if err != nil {
+		return v3SyncCursorScope{}, err
+	}
+	return v3SyncCursorScopeForSnapshot(options.Principal, options.Surface, "v3.sync.snapshot", selector, resources), nil
 }
 
 func canonicalV3SyncSessionIDs(sessionIDs []string) []string {

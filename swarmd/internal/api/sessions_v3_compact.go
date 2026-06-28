@@ -412,13 +412,11 @@ func (s *Server) sessionV3MutationWithHydrateCursor(principal identity.Principal
 	if outbox.EndpointSeq == 0 {
 		return result, false
 	}
-	selector := sessionsV3SyncSelector{Kind: "session_ids", SessionIDs: canonicalV3SyncSessionIDs([]string{sessionID})}
-	resources := sessionsV3SyncResourceSet(
-		sessionsV3WorksetResources{Messages: true, RunIntents: true, CurrentRunState: true, SessionView: true},
-		sessionsV3WorksetHistory{Mode: pebblestore.V3SyncSnapshotHistoryModeTail, MaxMessagesPerSession: 200, ManifestPolicy: "manifest"},
-		true,
-	)
-	signed, err := s.signV3SyncEndpointCursor(v3SyncCursorScopeForSnapshot(principal, "desktop", "v3.sync.snapshot", selector, resources), outbox.EndpointSeq)
+	scope, err := sessionsV3SelectedSessionHydrateCursorScope(principal, sessionID)
+	if err != nil {
+		return result, false
+	}
+	signed, err := s.signV3SyncEndpointCursor(scope, outbox.EndpointSeq)
 	if err != nil || strings.TrimSpace(signed) == "" {
 		return result, false
 	}

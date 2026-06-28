@@ -42,13 +42,14 @@ func TestSessionsV3CompactUsesDirectCompactionCheckpointCursor(t *testing.T) {
 	if resp.RealtimeOutbox == nil || resp.RealtimeOutbox.EndpointCursor == "" || resp.RealtimeOutbox.Event.EventType != "session.message.appended" {
 		t.Fatalf("compact response missing checkpoint outbox: %+v", resp.RealtimeOutbox)
 	}
-	selector := sessionsV3SyncSelector{Kind: "session_ids", SessionIDs: canonicalV3SyncSessionIDs([]string{created.ID})}
-	resources := sessionsV3SyncResourceSet(
-		sessionsV3WorksetResources{Messages: true, RunIntents: true, CurrentRunState: true, SessionView: true},
-		sessionsV3WorksetHistory{Mode: pebblestore.V3SyncSnapshotHistoryModeTail, MaxMessagesPerSession: 200, ManifestPolicy: "manifest"},
-		true,
-	)
-	endpointSeq, legacyCursor, err := server.parseV3SyncEndpointCursor(resp.RealtimeOutbox.EndpointCursor, v3SyncCursorScopeForSnapshot(testPrincipal(), "desktop", "v3.sync.snapshot", selector, resources))
+	scope, scopeErr := sessionsV3SelectedSessionHydrateCursorScope(testPrincipal(), created.ID)
+	if scopeErr != nil {
+		t.Fatalf("selected-session hydrate cursor scope: %v", scopeErr)
+	}
+	if !strings.Contains(scope.ResourceSet, "active_plan") {
+		t.Fatalf("selected-session hydrate cursor scope missing active_plan: %+v", scope)
+	}
+	endpointSeq, legacyCursor, err := server.parseV3SyncEndpointCursor(resp.RealtimeOutbox.EndpointCursor, scope)
 	if err != nil || legacyCursor || endpointSeq != resp.RealtimeOutbox.EndpointSeq {
 		t.Fatalf("compact response cursor does not match selected-session hydrate scope: seq=%d legacy=%v err=%v outbox=%+v", endpointSeq, legacyCursor, err, resp.RealtimeOutbox)
 	}

@@ -24,6 +24,7 @@ const (
 	V3SessionMutationUpdateMetadata   = "session.metadata.update"
 	V3SessionMutationUpdateSettings   = "session.settings.update"
 	V3SessionMutationUpdateTitle      = "session.title.update"
+	V3SessionMutationSavePlan         = "plan.save"
 	V3SessionMutationDeleteSession    = "session.delete"
 
 	V3SessionMutationResponseVersion = "v3.session_mutation.result.v1"
@@ -2168,6 +2169,8 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.settings.updated"
 	case V3SessionMutationUpdateTitle:
 		return "session.title.updated"
+	case V3SessionMutationSavePlan:
+		return "session.plan.saved"
 	default:
 		return input.Kind
 	}

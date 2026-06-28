@@ -1,4 +1,4 @@
-package api
+package run
 
 import (
 	"crypto/sha256"
@@ -11,16 +11,19 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func (s *Server) publishCommittedPlanSaved(plan pebblestore.SessionPlanSnapshot, event *pebblestore.EventEnvelope) error {
+func (s *Service) persistPlanSavedV3Mutation(plan pebblestore.SessionPlanSnapshot, event *pebblestore.EventEnvelope, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
+	if applySessionMutation == nil {
+		return nil
+	}
 	if strings.TrimSpace(plan.SessionID) == "" {
 		return fmt.Errorf("plan %q is missing session id", plan.ID)
 	}
 	if event == nil || event.EventType != "session.plan.saved" {
 		return fmt.Errorf("plan %q did not return a committed session.plan.saved event", plan.ID)
 	}
-	clientRequestID := sessionsV3PlanSavedClientRequestID(*event, plan)
-	payloadHash := sessionsV3PlanSavedPayloadHash(*event, plan)
-	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	clientRequestID := planSavedV3ClientRequestID(*event, plan)
+	payloadHash := planSavedV3PayloadHash(*event, plan)
+	result, err := applySessionMutation(sessionruntime.SessionMutationInput{
 		SessionID:       strings.TrimSpace(plan.SessionID),
 		UserID:          strings.TrimSpace(plan.UserID),
 		AccountScopeID:  strings.TrimSpace(plan.AccountScopeID),
@@ -42,14 +45,14 @@ func (s *Server) publishCommittedPlanSaved(plan pebblestore.SessionPlanSnapshot,
 	return nil
 }
 
-func sessionsV3PlanSavedClientRequestID(event pebblestore.EventEnvelope, plan pebblestore.SessionPlanSnapshot) string {
+func planSavedV3ClientRequestID(event pebblestore.EventEnvelope, plan pebblestore.SessionPlanSnapshot) string {
 	if event.GlobalSeq > 0 {
 		return fmt.Sprintf("plan-saved:%s:%d", strings.TrimSpace(plan.SessionID), event.GlobalSeq)
 	}
 	return fmt.Sprintf("plan-saved:%s:%s:v%d", strings.TrimSpace(plan.SessionID), strings.TrimSpace(plan.ID), plan.Version)
 }
 
-func sessionsV3PlanSavedPayloadHash(event pebblestore.EventEnvelope, plan pebblestore.SessionPlanSnapshot) string {
+func planSavedV3PayloadHash(event pebblestore.EventEnvelope, plan pebblestore.SessionPlanSnapshot) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(plan.SessionID) + "\x00" + strings.TrimSpace(plan.ID) + "\x00" + fmt.Sprintf("%d", plan.Version) + "\x00" + string(event.Payload)))
 	return hex.EncodeToString(sum[:])
 }

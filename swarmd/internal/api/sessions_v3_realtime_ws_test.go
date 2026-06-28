@@ -68,6 +68,51 @@ func TestV3RealtimePublishesCommittedOutboxEventAndReplaysAfterReconnect(t *test
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, replayConn), V3RealtimeKindReplayDone, created.ID, appendResult.Event.Seq)
 }
 
+func TestV3RealtimePlanSavedOutboxRowReachesWebsocket(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	createdResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-plan", "create-realtime-plan")
+	created := *createdResult.Session
+	plan, event, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-realtime", "Realtime Plan", "# Realtime", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Info:           pebblestore.SessionPlanInfo{Goal: "realtime"},
+		Checkpoints:    []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Checkpoint", Status: sessionruntime.PlanCheckpointStatusInProgress}},
+		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateInProgress, LastCheckpointID: "cp-1"},
+	}})
+	if err != nil {
+		t.Fatalf("save plan: %v", err)
+	}
+	if err := server.publishCommittedPlanSaved(plan, event); err != nil {
+		t.Fatalf("publish plan saved: %v", err)
+	}
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.ID, SubscriptionID: "sub-plan", EndpointCursor: signedV3RealtimeCursorForTest(t, server, createdResult.RealtimeOutbox.EndpointSeq)})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.ID, 0)
+	planFrame := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, planFrame, V3RealtimeKindEvent, created.ID, 2)
+	if planFrame.Event.EventType != "session.plan.saved" {
+		t.Fatalf("plan realtime event = %+v", planFrame)
+	}
+	var payload struct {
+		HasActivePlan bool `json:"has_active_plan"`
+		ActivePlan    *struct {
+			Document *struct {
+				ExecutionState *struct {
+					Status string `json:"status"`
+				} `json:"execution_state"`
+			} `json:"document"`
+		} `json:"active_plan"`
+	}
+	if err := json.Unmarshal(planFrame.Event.Payload, &payload); err != nil {
+		t.Fatalf("decode plan realtime payload: %v", err)
+	}
+	if !payload.HasActivePlan || payload.ActivePlan == nil || payload.ActivePlan.Document == nil || payload.ActivePlan.Document.ExecutionState == nil || payload.ActivePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateInProgress {
+		t.Fatalf("plan realtime payload missing active plan sidebar state: %+v", planFrame.Event)
+	}
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.ID, 2)
+}
+
 func TestV3RealtimeReplaysCommittedOutboxRowAfterPublishCrashWindow(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	createdResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-crash", "create-realtime-crash")

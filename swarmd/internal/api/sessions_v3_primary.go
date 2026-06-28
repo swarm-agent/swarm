@@ -1139,8 +1139,9 @@ func (s *Server) handleSessionV3PrimaryPlans(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if event != nil && s.hub != nil {
-		s.hub.Publish(*event)
+	if publishErr := s.publishCommittedPlanSaved(plan, event); publishErr != nil {
+		writeError(w, http.StatusBadRequest, publishErr)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": plan})
 }
@@ -1293,14 +1294,11 @@ func (s *Server) handleSessionV3PrimaryPlanExecution(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if event != nil && s.hub != nil {
-		s.hub.Publish(*event)
-	}
-	payload := sessionsV3PlanExecutionPayload(action, updateSummary, planID, responseCheckpointID, responseAttemptID, saved)
-	if err := s.appendSessionsV3PlanExecutionLifecycleSystemMessage(principal, sessionID, action, saved, payload); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if publishErr := s.publishCommittedPlanSaved(saved, event); publishErr != nil {
+		writeError(w, http.StatusBadRequest, publishErr)
 		return
 	}
+	payload := sessionsV3PlanExecutionPayload(action, updateSummary, planID, responseCheckpointID, responseAttemptID, saved)
 	writeJSON(w, http.StatusOK, payload)
 }
 
