@@ -37,12 +37,17 @@ import {
   type DesktopV3ExistingMessageOperation,
 } from '../../session-v3/existing-session-flow'
 import { compactDesktopV3Session } from '../../session-v3/compact-session-flow'
-import { executeDesktopPlanActionAndStartRun, type DesktopPlanExecutionAction } from '../../session-v3/plan-execution-api'
+import {
+  acceptDesktopPlanCheckpoint,
+  continueDesktopPlanCheckpoint,
+  restartDesktopPlanCheckpoint,
+  resumeDesktopPlanAutomatic,
+} from '../../session-v3/plan-execution-api'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../../state/desktop-v3-session-api'
 import { resolveSessionPermission, sendSessionMessage, updateDraftModelPreference } from '../queries/chat-queries'
 import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
 import { permissionRequiresApproval } from '../../permissions/services/permission-payload'
-import { DesktopPlanExecutionSidebar } from './desktop-plan-execution-sidebar'
+import { DesktopPlanExecutionSidebar, type DesktopPlanExecutionSidebarActionInput } from './desktop-plan-execution-sidebar'
 
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
@@ -1017,19 +1022,31 @@ export function DesktopV3ExistingConversationPane({
     }
   }
 
-  async function handlePlanExecutionAction(input: { action: DesktopPlanExecutionAction; checkpointId?: string; continueAutomatically?: boolean }) {
+  async function handlePlanExecutionAction(input: DesktopPlanExecutionSidebarActionInput) {
     if (!normalizedSessionId || planExecutionBusyAction || currentRun) return
     const busyKey = `${input.action}:${input.checkpointId ?? ''}`
     setPlanExecutionBusyAction(busyKey)
     setSendError(null)
-    if (input.action !== 'accept_checkpoint' && input.action !== 'set_automatic_mode') scrollToBottom('smooth')
+    if (input.action !== 'accept_checkpoint' && input.action !== 'resume_automatic') scrollToBottom('smooth')
     try {
       await persistVisibleSettings()
-      await executeDesktopPlanActionAndStartRun(normalizedSessionId, {
-        action: input.action,
-        checkpointId: input.checkpointId,
-        continueAutomatically: input.continueAutomatically,
-      })
+      switch (input.action) {
+        case 'accept_checkpoint':
+          if (!input.checkpointId) throw new Error('Accept checkpoint requires checkpoint_id')
+          await acceptDesktopPlanCheckpoint(normalizedSessionId, input.checkpointId)
+          break
+        case 'continue_checkpoint':
+          if (!input.checkpointId) throw new Error('Start checkpoint run requires checkpoint_id')
+          await continueDesktopPlanCheckpoint(normalizedSessionId, input.checkpointId)
+          break
+        case 'restart_checkpoint':
+          if (!input.checkpointId) throw new Error('Restart checkpoint requires checkpoint_id')
+          await restartDesktopPlanCheckpoint(normalizedSessionId, input.checkpointId)
+          break
+        case 'resume_automatic':
+          await resumeDesktopPlanAutomatic(normalizedSessionId)
+          break
+      }
     } catch (error) {
       if (mountedRef.current) {
         setSendError(error instanceof Error ? error.message : String(error))
@@ -1104,7 +1121,7 @@ export function DesktopV3ExistingConversationPane({
 
   const planExecutionActionRef = useRef(handlePlanExecutionAction)
   planExecutionActionRef.current = handlePlanExecutionAction
-  const stablePlanExecutionAction = useCallback((input: { action: DesktopPlanExecutionAction; checkpointId?: string; continueAutomatically?: boolean }) => (
+  const stablePlanExecutionAction = useCallback((input: DesktopPlanExecutionSidebarActionInput) => (
     planExecutionActionRef.current(input)
   ), [])
 

@@ -63,7 +63,7 @@ import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { fetchAndApplyDesktopV3PlanSnapshot, saveDesktopV3SessionPlan } from '../state/desktop-v3-session-api'
-import { executeDesktopPlanActionAndStartRun } from '../session-v3/plan-execution-api'
+import { startDesktopPlanAutomatic, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
@@ -2845,12 +2845,14 @@ export function DesktopAppPage() {
     setPlanModalExecuting(true)
     setPlanModalError(null)
     try {
-      await executeDesktopPlanActionAndStartRun(sessionId, {
-        action: 'approve_and_start',
-        planId: planModalPlan.id,
-        executionGranularity: input.executionGranularity,
-        continueAutomatically: input.executionGranularity === 'run_through' ? true : input.continueAutomatically,
-      })
+      if (input.executionGranularity === 'run_through') {
+        await startDesktopPlanAutomatic(sessionId, planModalPlan.id, { executionGranularity: input.executionGranularity })
+      } else {
+        await startDesktopPlanCheckpointed(sessionId, planModalPlan.id, {
+          executionGranularity: input.executionGranularity,
+          continuationPolicy: input.continueAutomatically ? 'automatic' : 'review_each_checkpoint',
+        })
+      }
       setPlanModal(null)
     } catch (error) {
       setPlanModalError(error instanceof Error ? error.message : String(error))

@@ -2,8 +2,6 @@ package run
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1253,6 +1251,35 @@ func decodeAskUserFeedback(feedback string) (string, map[string]string) {
 }
 
 func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentProfile pebblestore.AgentProfile, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+	input, args, userMessage, err := s.prepareExitPlanModeLifecycleInput(sessionID, arguments, feedback)
+	if err != nil {
+		return "", err
+	}
+	if !pebblestore.AgentExitPlanModeEnabled(agentProfile) {
+		return marshalExitPlanModeRejectionPayload(input, userMessage, "disabled_for_agent", "exit_plan_mode rejected: disabled for agent", nil)
+	}
+	if sessionruntime.NormalizeMode(sessionMode) != sessionruntime.ModePlan {
+		return marshalExitPlanModeRejectionPayload(input, userMessage, "not_in_plan_mode", "exit_plan_mode rejected: session not in plan mode; use plan_manage save to update the active plan instead", []string{"Do not call exit_plan_mode from auto. To update the active plan instead, use plan_manage save."})
+	}
+
+	lifecycleResult, lifecycleErr := sessionruntime.NewPlanLifecycleService(s.sessions).SubmitPlanForApproval(input)
+	if lifecycleErr != nil {
+		return "", fmt.Errorf("exit_plan_mode failed to submit plan: %w", lifecycleErr)
+	}
+	if err := s.persistPlanLifecycleResult(lifecycleResult, applySessionMutation); err != nil {
+		return "", fmt.Errorf("exit_plan_mode failed to publish lifecycle result: %w", err)
+	}
+	return marshalExitPlanModeApprovedPayload(lifecycleResult, userMessage, strings.TrimSpace(firstNonEmptyString(input.PlanID, mapString(args, "plan_id"), mapString(args, "planID"), mapString(args, "id"))))
+}
+
+func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (string, error) {
+	return s.executePlanManageToolWithMutation(sessionID, arguments, feedback, nil)
+}
+
+func (s *Service) prepareExitPlanModeLifecycleInput(sessionID, arguments, feedback string) (sessionruntime.PlanLifecyclePlanInput, map[string]any, string, error) {
+	if s.sessions == nil {
+		return sessionruntime.PlanLifecyclePlanInput{}, nil, "", errors.New("session service is not configured")
+	}
 	arguments = strings.TrimSpace(arguments)
 	if arguments == "" {
 		arguments = "{}"
@@ -1269,17 +1296,17 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 			if rawApprovedArgs, ok := payload["approved_arguments"]; ok {
 				raw, err := json.Marshal(rawApprovedArgs)
 				if err != nil {
-					return "", err
+					return sessionruntime.PlanLifecyclePlanInput{}, nil, "", err
 				}
 				var approvedArgs map[string]any
 				if err := json.Unmarshal(raw, &approvedArgs); err != nil {
-					return "", fmt.Errorf("approved exit_plan_mode arguments invalid: %w", err)
+					return sessionruntime.PlanLifecyclePlanInput{}, nil, "", fmt.Errorf("approved exit_plan_mode arguments invalid: %w", err)
 				}
 				payload = approvedArgs
 			}
 			raw, err := json.Marshal(payload)
 			if err != nil {
-				return "", err
+				return sessionruntime.PlanLifecyclePlanInput{}, nil, "", err
 			}
 			arguments = string(raw)
 		}
@@ -1287,21 +1314,15 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 
 	var args map[string]any
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return "", fmt.Errorf("exit_plan_mode arguments invalid: %w", err)
+		return sessionruntime.PlanLifecyclePlanInput{}, nil, "", fmt.Errorf("exit_plan_mode arguments invalid: %w", err)
 	}
 	document, err := planDocumentFromArgsForTool(args, "exit_plan_mode")
 	if err != nil {
-		return "", err
+		return sessionruntime.PlanLifecyclePlanInput{}, nil, "", err
 	}
+	planID := strings.TrimSpace(firstNonEmptyString(mapString(args, "plan_id"), mapString(args, "planID"), mapString(args, "id")))
 	title := strings.TrimSpace(mapString(args, "title"))
 	plan := strings.TrimSpace(mapString(args, "plan"))
-	planID := strings.TrimSpace(mapString(args, "plan_id"))
-	if planID == "" {
-		planID = strings.TrimSpace(mapString(args, "planID"))
-	}
-	if planID == "" {
-		planID = strings.TrimSpace(mapString(args, "id"))
-	}
 	if document != nil {
 		if planID == "" {
 			planID = strings.TrimSpace(document.ID)
@@ -1313,14 +1334,10 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 			plan = strings.TrimSpace(firstNonEmptyString(document.DisplayText, document.RenderedText))
 		}
 	}
-
-	if s.sessions == nil {
-		return "", errors.New("session service is not configured")
-	}
 	if planID == "" {
 		active, ok, err := s.sessions.GetActivePlan(sessionID)
 		if err != nil {
-			return "", fmt.Errorf("exit_plan_mode failed to inspect active plan: %w", err)
+			return sessionruntime.PlanLifecyclePlanInput{}, nil, "", fmt.Errorf("exit_plan_mode failed to inspect active plan: %w", err)
 		}
 		if ok {
 			planID = strings.TrimSpace(active.ID)
@@ -1335,7 +1352,7 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 			}
 		}
 	} else if existing, ok, err := s.sessions.GetPlan(sessionID, planID); err != nil {
-		return "", fmt.Errorf("exit_plan_mode failed to inspect plan: %w", err)
+		return sessionruntime.PlanLifecyclePlanInput{}, nil, "", fmt.Errorf("exit_plan_mode failed to inspect plan: %w", err)
 	} else if ok {
 		if title == "" {
 			title = strings.TrimSpace(existing.Title)
@@ -1350,101 +1367,58 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 	if planID == "" {
 		planID = fmt.Sprintf("plan_%d", time.Now().UnixMilli())
 	}
-	if title == "" {
-		return "", errors.New("exit_plan_mode requires title or document.title")
+	continuation := strings.TrimSpace(firstNonEmptyString(mapString(args, "continuation_policy"), mapString(args, "continuation"), mapString(args, "mode")))
+	continueAutomatically := (*bool)(nil)
+	if _, ok := args["continue_automatically"]; ok {
+		value := mapBool(args, "continue_automatically")
+		continueAutomatically = &value
+		if value {
+			continuation = sessionruntime.PlanAcceptanceContinuationAutomatic
+		} else {
+			continuation = sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint
+		}
 	}
-	if plan == "" && document == nil {
-		return "", errors.New("exit_plan_mode requires plan or document")
+	input := sessionruntime.PlanLifecyclePlanInput{
+		SessionID:             sessionID,
+		PlanID:                planID,
+		Title:                 title,
+		Plan:                  plan,
+		Document:              document,
+		AgentCanSubmit:        true,
+		ExecutionGranularity:  strings.TrimSpace(firstNonEmptyString(mapString(args, "execution_granularity"), mapString(args, "granularity"), mapString(args, "execution_shape"), mapString(args, "shape"))),
+		ContinuationPolicy:    continuation,
+		ContinueAutomatically: continueAutomatically,
 	}
-	if plan == "" && document != nil {
-		plan = strings.TrimSpace(firstNonEmptyString(document.DisplayText, document.RenderedText))
-	}
-	if plan == "" {
-		plan = "# " + title
-	}
+	return input, args, userMessage, nil
+}
 
-	if !pebblestore.AgentExitPlanModeEnabled(agentProfile) {
-		payload := map[string]any{
-			"tool":              "exit_plan_mode",
-			"status":            "rejected",
-			"title":             title,
-			"plan_id":           planID,
-			"plan":              plan,
-			"document":          document,
-			"approval_state":    "disabled_for_agent",
-			"path_id":           "tool.exit-plan-mode.v3",
-			"summary":           "exit_plan_mode rejected: disabled for agent",
-			"user_message":      userMessage,
-			"details_truncated": false,
-		}
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return "", err
-		}
-		return string(raw), nil
+func marshalExitPlanModeRejectionPayload(input sessionruntime.PlanLifecyclePlanInput, userMessage, approvalState, summary string, requestedModifications []string) (string, error) {
+	payload := map[string]any{
+		"tool":              "exit_plan_mode",
+		"status":            "rejected",
+		"title":             input.Title,
+		"plan_id":           input.PlanID,
+		"plan":              input.Plan,
+		"document":          input.Document,
+		"approval_state":    approvalState,
+		"path_id":           "tool.exit-plan-mode.v3",
+		"summary":           summary,
+		"user_message":      userMessage,
+		"details_truncated": false,
 	}
-	if sessionruntime.NormalizeMode(sessionMode) != sessionruntime.ModePlan {
-		payload := map[string]any{
-			"tool":                    "exit_plan_mode",
-			"status":                  "rejected",
-			"plan_id":                 planID,
-			"title":                   title,
-			"plan":                    plan,
-			"document":                document,
-			"approval_state":          "not_in_plan_mode",
-			"requested_modifications": []string{"Do not call exit_plan_mode from auto. To update the active plan instead, use plan_manage save."},
-			"path_id":                 "tool.exit-plan-mode.v3",
-			"summary":                 "exit_plan_mode rejected: session not in plan mode; use plan_manage save to update the active plan instead",
-			"user_message":            userMessage,
-			"details_truncated":       false,
-		}
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return "", err
-		}
-		return string(raw), nil
+	if requestedModifications != nil {
+		payload["requested_modifications"] = requestedModifications
 	}
-	status := "approved"
-	approvalState := "approved"
-	var documentForSave *pebblestore.SessionPlanDocument
-	if document != nil {
-		documentClone := *document
-		documentClone.ID = strings.TrimSpace(firstNonEmptyString(planID, documentClone.ID))
-		documentClone.Title = strings.TrimSpace(firstNonEmptyString(title, documentClone.Title))
-		granularity := strings.TrimSpace(firstNonEmptyString(mapString(args, "execution_granularity"), mapString(args, "granularity"), mapString(args, "execution_shape"), mapString(args, "shape")))
-		continuation := strings.TrimSpace(firstNonEmptyString(mapString(args, "continuation_policy"), mapString(args, "continuation"), mapString(args, "mode")))
-		if _, ok := args["continue_automatically"]; ok {
-			if mapBool(args, "continue_automatically") {
-				continuation = sessionruntime.PlanAcceptanceContinuationAutomatic
-			} else {
-				continuation = sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint
-			}
-		}
-		if _, err := sessionruntime.ApplyPlanAcceptanceExecutionPolicy(&documentClone, sessionruntime.PlanAcceptanceExecutionOptions{ExecutionGranularity: granularity, ContinuationPolicy: continuation}); err != nil {
-			return "", err
-		}
-		documentClone.Status = status
-		documentForSave = &documentClone
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
 	}
-	savedPlan, event, saveErr := s.sessions.SavePlanWithMetadata(sessionID, planID, title, plan, status, approvalState, true, sessionruntime.PlanSaveMetadata{UpdateSummary: "exit plan mode submission", UpdateScope: "plan", UpdateKind: "exit_plan_mode", Document: documentForSave})
-	if saveErr != nil {
-		return "", fmt.Errorf("exit_plan_mode failed to save plan: %w", saveErr)
-	}
-	planID = strings.TrimSpace(savedPlan.ID)
-	if err := s.persistPlanSavedV3Mutation(savedPlan, event, applySessionMutation); err != nil {
-		return "", fmt.Errorf("exit_plan_mode failed to publish plan saved: %w", err)
-	}
+	return string(raw), nil
+}
 
-	if applySessionMutation != nil {
-		if err := s.applyExitPlanModeV3ModeMutation(sessionID, sessionruntime.ModeAuto, applySessionMutation); err != nil {
-			return "", fmt.Errorf("exit_plan_mode failed to set mode: %w", err)
-		}
-	} else if _, setModeEnv, err := s.sessions.SetMode(sessionID, sessionruntime.ModeAuto); err != nil {
-		return "", fmt.Errorf("exit_plan_mode failed to set mode: %w", err)
-	} else if setModeEnv != nil {
-		s.publishEventEnvelope(*setModeEnv)
-	}
-
+func marshalExitPlanModeApprovedPayload(result sessionruntime.PlanLifecycleResult, userMessage, fallbackPlanID string) (string, error) {
+	savedPlan := result.Plan
+	planID := strings.TrimSpace(firstNonEmptyString(savedPlan.ID, fallbackPlanID))
 	payload := map[string]any{
 		"tool":                    "exit_plan_mode",
 		"status":                  "approved",
@@ -1454,75 +1428,38 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		"document":                savedPlan.Document,
 		"approval_state":          "approved",
 		"requested_modifications": []string{},
-		"mode_changed":            true,
+		"mode_changed":            result.ModeEvent != nil,
 		"target_mode":             sessionruntime.ModeAuto,
 		"user_message":            userMessage,
 		"path_id":                 "tool.exit-plan-mode.v3",
-		"summary":                 "structured plan saved, approved; mode switched to auto",
+		"summary":                 result.Message,
 		"details_truncated":       false,
 		"version":                 savedPlan.Version,
 		"parent_revision":         savedPlan.ParentRevision,
 	}
+	if strings.TrimSpace(payload["summary"].(string)) == "" {
+		payload["summary"] = "structured plan saved, approved; mode switched to auto"
+	}
 	addPlanRunRequestPayloadFields(payload, planID, savedPlan.Document)
-	encoded, marshalErr := json.Marshal(payload)
-	if marshalErr != nil {
-		return "", marshalErr
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
 	}
 	return string(encoded), nil
 }
 
-func (s *Service) applyExitPlanModeV3ModeMutation(sessionID, mode string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
-	if applySessionMutation == nil {
-		return errors.New("v3 mode mutation callback is not configured")
+func (s *Service) persistPlanLifecycleResult(result sessionruntime.PlanLifecycleResult, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
+	if err := s.persistPlanSavedV3Mutation(result.Plan, result.PlanEvent, applySessionMutation); err != nil {
+		return fmt.Errorf("publish plan saved: %w", err)
 	}
-	if s == nil || s.sessions == nil {
-		return errors.New("session service is not configured")
+	if applySessionMutation != nil {
+		if err := s.persistModeUpdatedV3Mutation(result, applySessionMutation); err != nil {
+			return fmt.Errorf("publish mode updated: %w", err)
+		}
+	} else if result.ModeEvent != nil {
+		s.publishEventEnvelope(*result.ModeEvent)
 	}
-	session, ok, err := s.sessions.GetSession(sessionID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("session %q not found", strings.TrimSpace(sessionID))
-	}
-	mode = sessionruntime.NormalizeMode(mode)
-	if sessionruntime.NormalizeMode(session.Mode) == mode {
-		return nil
-	}
-	now := time.Now().UnixMilli()
-	next := session
-	next.Mode = mode
-	next.UpdatedAt = now
-	eventPayload, err := json.Marshal(map[string]any{"session_id": sessionID, "mode": mode, "updated_at": now})
-	if err != nil {
-		return err
-	}
-	payloadHash := exitPlanModeV3ModePayloadHash(sessionID, mode, now)
-	clientRequestID := fmt.Sprintf("exit_plan_mode:mode:%s:%s:%d", strings.TrimSpace(sessionID), mode, now)
-	_, err = applySessionMutation(sessionruntime.SessionMutationInput{
-		SessionID:       sessionID,
-		UserID:          session.UserID,
-		AccountScopeID:  session.AccountScopeID,
-		ClientRequestID: clientRequestID,
-		IdempotencyKey:  clientRequestID,
-		PayloadHash:     payloadHash,
-		RequestHash:     payloadHash,
-		Kind:            sessionruntime.SessionMutationUpdateMode,
-		EventType:       "session.mode.updated",
-		EventPayload:    eventPayload,
-		Session:         &next,
-		NowUnixMs:       now,
-	})
-	return err
-}
-
-func exitPlanModeV3ModePayloadHash(sessionID, mode string, now int64) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00exit_plan_mode\x00" + strings.TrimSpace(mode) + "\x00" + fmt.Sprint(now)))
-	return hex.EncodeToString(sum[:])
-}
-
-func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (string, error) {
-	return s.executePlanManageToolWithMutation(sessionID, arguments, feedback, nil)
+	return nil
 }
 
 func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
@@ -1621,7 +1558,7 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 
 	switch action {
 	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint":
-		return s.executePlanExecutionControlAction(sessionID, action, args, applySessionMutation)
+		return s.executePlanLifecycleControlAction(sessionID, action, args, applySessionMutation)
 	case "list":
 		limit := mapInt(args, "limit")
 		if limit <= 0 {
@@ -2081,126 +2018,77 @@ func planManagePlanRevisionSummary(plan pebblestore.SessionPlanSnapshot) map[str
 	return item
 }
 
-func (s *Service) executePlanExecutionControlAction(sessionID, action string, args map[string]any, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+func (s *Service) executePlanLifecycleControlAction(sessionID, action string, args map[string]any, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
 	planID := strings.TrimSpace(firstNonEmptyString(mapString(args, "plan_id"), mapString(args, "id")))
-	var existing pebblestore.SessionPlanSnapshot
-	var ok bool
-	var err error
-	if planID == "" || strings.EqualFold(planID, "active") {
-		existing, ok, err = s.sessions.GetActivePlan(sessionID)
-	} else {
-		existing, ok, err = s.sessions.GetPlan(sessionID, planID)
-	}
-	if err != nil {
-		return "", err
-	}
-	if !ok || existing.Document == nil {
-		return "", errors.New("plan execution action requires an active structured plan")
-	}
-	planID = strings.TrimSpace(existing.ID)
-	doc, err := clonePlanDocumentForExecutionAction(existing.Document)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(doc.ID) == "" {
-		doc.ID = planID
-	}
-	if strings.TrimSpace(doc.Title) == "" {
-		doc.Title = strings.TrimSpace(existing.Title)
-	}
-
 	checkpointID := strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_id"), mapString(args, "active_checkpoint_id"), mapString(args, "active_checkpoint")))
-	updateSummary := "Updated plan execution state"
-	updateKind := "plan_execution_control"
-	status := strings.TrimSpace(existing.Status)
-	approvalState := strings.TrimSpace(existing.ApprovalState)
+	continueAutomatically := (*bool)(nil)
+	if _, ok := args["continue_automatically"]; ok {
+		value := mapBool(args, "continue_automatically")
+		continueAutomatically = &value
+	}
+	input := sessionruntime.PlanLifecycleExecutionInput{
+		SessionID:             sessionID,
+		PlanID:                planID,
+		CheckpointID:          checkpointID,
+		ExecutionGranularity:  strings.TrimSpace(firstNonEmptyString(mapString(args, "execution_granularity"), mapString(args, "granularity"), mapString(args, "execution_shape"), mapString(args, "shape"))),
+		ContinuationPolicy:    strings.TrimSpace(firstNonEmptyString(mapString(args, "continuation_policy"), mapString(args, "continuation"), mapString(args, "mode"))),
+		ContinueAutomatically: continueAutomatically,
+	}
+	lifecycle := sessionruntime.NewPlanLifecycleService(s.sessions)
+	var result sessionruntime.PlanLifecycleResult
+	var err error
 	switch action {
 	case "approve_and_start":
-		granularity := strings.TrimSpace(firstNonEmptyString(mapString(args, "execution_granularity"), mapString(args, "granularity"), mapString(args, "execution_shape"), mapString(args, "shape")))
-		continuation := strings.TrimSpace(firstNonEmptyString(mapString(args, "continuation_policy"), mapString(args, "continuation"), mapString(args, "mode")))
-		if _, ok := args["continue_automatically"]; ok {
-			if mapBool(args, "continue_automatically") {
-				continuation = sessionruntime.PlanAcceptanceContinuationAutomatic
-			} else {
-				continuation = sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint
-			}
+		if session, ok, getErr := s.sessions.GetSession(sessionID); getErr != nil {
+			return "", getErr
+		} else if ok && sessionruntime.NormalizeMode(session.Mode) == sessionruntime.ModePlan {
+			input.PlanID = planID
+			result, err = lifecycle.SubmitPlanForApproval(sessionruntime.PlanLifecyclePlanInput{
+				SessionID:             input.SessionID,
+				PlanID:                input.PlanID,
+				AgentCanSubmit:        true,
+				ExecutionGranularity:  input.ExecutionGranularity,
+				ContinuationPolicy:    input.ContinuationPolicy,
+				ContinueAutomatically: input.ContinueAutomatically,
+			})
+		} else {
+			result, err = lifecycle.StartPlanCheckpointed(input)
 		}
-		if _, err := sessionruntime.ApplyPlanAcceptanceExecutionPolicy(doc, sessionruntime.PlanAcceptanceExecutionOptions{ExecutionGranularity: granularity, ContinuationPolicy: continuation}); err != nil {
-			return "", err
-		}
-		status = "approved"
-		approvalState = "approved"
-		updateSummary = "Approved plan and prepared fresh-context checkpoint start"
-		updateKind = "approve_and_start"
 	case "restart_checkpoint":
-		_, err := sessionruntime.ApplyPlanCheckpointReset(doc, sessionruntime.PlanCheckpointResetOptions{CheckpointID: checkpointID})
-		if err != nil {
-			return "", err
-		}
-		updateSummary = "Restarted checkpoint from zero and prepared fresh-context checkpoint start"
-		updateKind = "restart_checkpoint"
+		result, err = lifecycle.RestartCheckpointFromZero(input)
 	case "rewind_to_checkpoint":
-		_, err := sessionruntime.ApplyPlanCheckpointReset(doc, sessionruntime.PlanCheckpointResetOptions{CheckpointID: checkpointID, Rewind: true})
-		if err != nil {
-			return "", err
-		}
-		updateSummary = "Rewound plan execution to checkpoint and prepared fresh-context checkpoint start"
-		updateKind = "rewind_to_checkpoint"
+		result, err = lifecycle.RewindToCheckpoint(input)
 	default:
 		return "", fmt.Errorf("plan execution action %q is not supported", action)
 	}
-
-	saved, event, err := s.sessions.SavePlanWithMetadata(sessionID, planID, existing.Title, existing.Plan, status, approvalState, true, sessionruntime.PlanSaveMetadata{
-		UpdateSummary: updateSummary,
-		UpdateScope:   checkpointID,
-		UpdateKind:    updateKind,
-		Checkpoint:    true,
-		Document:      doc,
-	})
 	if err != nil {
 		return "", err
 	}
-	if err := s.persistPlanSavedV3Mutation(saved, event, applySessionMutation); err != nil {
+	if err := s.persistPlanSavedV3Mutation(result.Plan, result.PlanEvent, applySessionMutation); err != nil {
 		return "", err
 	}
-	summary := sessionruntime.SummarizePlanExecution(saved.Document)
 	payload := map[string]any{
 		"tool":              "plan_manage",
 		"action":            action,
 		"status":            "ok",
-		"plan":              saved,
-		"execution_summary": summary,
+		"plan":              result.Plan,
+		"execution_summary": result.Summary,
 		"path_id":           "tool.plan-manage.v3",
-		"summary":           updateSummary,
+		"summary":           result.Message,
 		"details_truncated": false,
 	}
-	if summary.PlanComplete {
+	if result.Summary.PlanComplete {
 		payload["next_action"] = "plan_complete"
-	} else if summary.ReviewRequired {
+	} else if result.Summary.ReviewRequired {
 		payload["next_action"] = "await_review"
-	} else if summary.Blocked || summary.Failed {
+	} else if result.Summary.Blocked || result.Summary.Failed {
 		payload["next_action"] = "stopped"
-	} else if summary.NextCheckpointID != "" {
-		payload["checkpoint_id"] = summary.NextCheckpointID
+	} else if result.Summary.NextCheckpointID != "" {
+		payload["checkpoint_id"] = result.Summary.NextCheckpointID
 		payload["next_action"] = "run_checkpoint_with_fresh_context"
-		payload["run_request"] = planCheckpointRunRequestPayload(planID, summary.NextCheckpointID, "")
+		payload["run_request"] = planCheckpointRunRequestPayload(result.Plan.ID, result.Summary.NextCheckpointID, result.AttemptID)
 	}
 	return marshalPlanManagePayload(payload)
-}
-
-func clonePlanDocumentForExecutionAction(doc *pebblestore.SessionPlanDocument) (*pebblestore.SessionPlanDocument, error) {
-	if doc == nil {
-		return nil, errors.New("plan document is required")
-	}
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		return nil, err
-	}
-	var clone pebblestore.SessionPlanDocument
-	if err := json.Unmarshal(raw, &clone); err != nil {
-		return nil, err
-	}
-	return &clone, nil
 }
 
 func planCheckpointRunRequestPayload(planID, checkpointID, attemptID string) map[string]any {

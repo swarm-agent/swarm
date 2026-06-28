@@ -7,12 +7,15 @@ import { cn } from '../../../../lib/cn'
 import { Button } from '../../../../components/ui/button'
 import type { DesktopSessionPlanCheckpoint } from '../types/chat'
 import type { DesktopPlanExecutionView } from '../../state/desktop-v3-cache-selectors'
-import type { DesktopPlanExecutionAction } from '../../session-v3/plan-execution-api'
+type DesktopPlanExecutionSidebarAction =
+  | 'accept_checkpoint'
+  | 'continue_checkpoint'
+  | 'restart_checkpoint'
+  | 'resume_automatic'
 
-interface DesktopPlanExecutionSidebarActionInput {
-  action: DesktopPlanExecutionAction
+export interface DesktopPlanExecutionSidebarActionInput {
+  action: DesktopPlanExecutionSidebarAction
   checkpointId?: string
-  continueAutomatically?: boolean
 }
 
 interface DesktopPlanExecutionSidebarProps {
@@ -68,7 +71,7 @@ function toneBadgeClass(tone: Tone): string {
 
 const waitingReviewBadgeClass = 'rounded-md border border-[var(--app-border)] bg-[linear-gradient(135deg,var(--app-warning-bg),var(--app-primary-soft))] px-2 py-0.5 text-[9px] font-semibold uppercase leading-4 tracking-[0.06em] text-[var(--app-text)] shadow-[0_0_18px_color-mix(in_oklab,var(--app-warning-text)_12%,transparent)]'
 
-function actionBusyKey(action: DesktopPlanExecutionAction, checkpointId?: string): string {
+function actionBusyKey(action: DesktopPlanExecutionSidebarAction, checkpointId?: string): string {
   return `${action}:${checkpointId ?? ''}`
 }
 

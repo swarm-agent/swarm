@@ -90,6 +90,7 @@ type Server struct {
 	v3RealtimeRetentionBoundary func() (uint64, error)
 	v3SyncCursors               *v3SyncCursorKeyring
 	v3SessionExecutor           *sessionV3Executor
+	planLifecycle               *sessionruntime.PlanLifecycleService
 	sessions                    *sessionruntime.Service
 	workspace                   *workspace.Service
 	discovery                   *discovery.Service
@@ -337,6 +338,7 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	}
 	if sessionSvc != nil {
 		server.v3SessionExecutor = newSessionV3Executor(server)
+		server.planLifecycle = sessionruntime.NewPlanLifecycleService(sessionSvc)
 	}
 	return server
 }

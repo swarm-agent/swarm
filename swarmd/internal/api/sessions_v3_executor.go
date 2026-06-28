@@ -47,9 +47,13 @@ const (
 var sessionV3TitleWordPattern = regexp.MustCompile(`\b[\p{L}\p{N}][\p{L}\p{N}'-]*\b`)
 
 type sessionV3ExecutorJob struct {
-	Principal identity.Principal
-	SessionID string
-	RunID     string
+	Principal       identity.Principal
+	SessionID       string
+	RunID           string
+	PlanID          string
+	CheckpointID    string
+	AttemptID       string
+	ParentSessionID string
 }
 
 type sessionV3ExecutorRunState struct {
@@ -105,6 +109,10 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	}
 	job.SessionID = strings.TrimSpace(job.SessionID)
 	job.RunID = strings.TrimSpace(job.RunID)
+	job.PlanID = strings.TrimSpace(job.PlanID)
+	job.CheckpointID = strings.TrimSpace(job.CheckpointID)
+	job.AttemptID = strings.TrimSpace(job.AttemptID)
+	job.ParentSessionID = strings.TrimSpace(job.ParentSessionID)
 	if job.SessionID == "" || job.RunID == "" {
 		return false
 	}
@@ -973,6 +981,15 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		return sessionV3AssistantResponse{}, err
 	}
 	input := sessionsV3ProviderInput(messages)
+	if strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "" {
+		checkpointInput, ok, checkpointErr := e.sessionV3ProviderCheckpointRestartInput(ctx, job, resolved, "")
+		if checkpointErr != nil {
+			return sessionV3AssistantResponse{}, checkpointErr
+		}
+		if ok {
+			input = checkpointInput
+		}
+	}
 	if len(input) == 0 {
 		return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")
 	}
@@ -1662,7 +1679,8 @@ func (e *sessionV3Executor) sessionV3LatestPlanManageToolPayload(job sessionV3Ex
 		}
 		payload := sessionsV3DecodeToolPayload(message.Content)
 		if record, ok := sessionsV3DecodeProviderToolResultRecord(message.Content); ok {
-			if !strings.EqualFold(strings.TrimSpace(record.ToolName), "plan_manage") {
+			toolName := strings.TrimSpace(record.ToolName)
+			if !strings.EqualFold(toolName, "plan_manage") && !strings.EqualFold(toolName, "exit_plan_mode") {
 				continue
 			}
 			payload = sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(record.CompletedOutput, record.Output)))
@@ -1706,13 +1724,21 @@ func (e *sessionV3Executor) sessionV3ProviderCheckpointRestartInput(ctx context.
 		payload = e.sessionV3LatestCheckpointRunToolPayload(job)
 	}
 	if payload == nil || !strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
-		return nil, false, nil
+		if strings.TrimSpace(job.CheckpointID) == "" && strings.TrimSpace(job.PlanID) == "" {
+			return nil, false, nil
+		}
 	}
-	checkpointID := strings.TrimSpace(sessionsV3MapString(payload, "checkpoint_id"))
+	checkpointID := strings.TrimSpace(job.CheckpointID)
+	if checkpointID == "" {
+		checkpointID = strings.TrimSpace(sessionsV3MapString(payload, "checkpoint_id"))
+	}
 	if checkpointID == "" {
 		checkpointID = strings.TrimSpace(sessionsV3MapString(payload, "next_checkpoint_id"))
 	}
-	planID := strings.TrimSpace(sessionsV3MapString(payload, "plan_id"))
+	planID := strings.TrimSpace(job.PlanID)
+	if planID == "" {
+		planID = strings.TrimSpace(sessionsV3MapString(payload, "plan_id"))
+	}
 	if checkpointID == "" || planID == "" {
 		if runRequest, ok := payload["run_request"].(map[string]any); ok {
 			if checkpointContext, ok := runRequest["plan_checkpoint_context"].(map[string]any); ok {
@@ -1740,7 +1766,11 @@ func (e *sessionV3Executor) sessionV3ProviderCheckpointRestartInput(ctx context.
 	if !ok || builder == nil {
 		return nil, true, errors.New("v3 checkpoint restart requires checkpoint input builder")
 	}
-	checkpointInput, ok, err := builder.BuildPlanCheckpointRunInput(job.SessionID, job.RunID, runruntime.RunRequest{PlanCheckpointContext: &runruntime.RunPlanCheckpointContext{PlanID: planID, CheckpointID: checkpointID, ParentSessionID: job.SessionID}}, runruntime.RunStartMeta{RunID: job.RunID, Principal: job.Principal, ApplySessionMutation: e.server.applySessionV3PrimaryMutation})
+	parentSessionID := strings.TrimSpace(job.ParentSessionID)
+	if parentSessionID == "" {
+		parentSessionID = job.SessionID
+	}
+	checkpointInput, ok, err := builder.BuildPlanCheckpointRunInput(job.SessionID, job.RunID, runruntime.RunRequest{PlanCheckpointContext: &runruntime.RunPlanCheckpointContext{PlanID: planID, CheckpointID: checkpointID, AttemptID: job.AttemptID, ParentSessionID: parentSessionID}}, runruntime.RunStartMeta{RunID: job.RunID, Principal: job.Principal, ApplySessionMutation: e.server.applySessionV3PrimaryMutation})
 	if err != nil {
 		return nil, true, err
 	}

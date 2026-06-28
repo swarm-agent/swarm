@@ -52,13 +52,11 @@ func TestSessionsV3PrimaryHandlersDoNotUseRuntimeDispatchOrRoutes(t *testing.T) 
 			t.Fatalf("sessions_v3_primary.go contains forbidden runtime/route/legacy write symbol %q", forbidden)
 		}
 	}
-	planExecutionSource := sourceBetweenForTest(t, string(body), "func (s *Server) handleSessionV3PrimaryPlanExecution", "func normalizeSessionsV3PlanExecutionAction")
-	preflightSource := sourceBetweenForTest(t, string(body), "func (s *Server) preflightSessionsV3PlanFreshRun", "func sessionsV3PlanExecutionPayload")
+	preflightSource := sourceBetweenForTest(t, string(body), "func (s *Server) preflightSessionsV3PlanFreshRun", "func (s *Server) handleSessionV3PrimaryPlanByID")
 	for _, scoped := range []struct {
 		name   string
 		source string
 	}{
-		{name: "plan execution", source: planExecutionSource},
 		{name: "plan fresh-run preflight", source: preflightSource},
 	} {
 		for _, forbidden := range []string{"routed", "routeStore", "sessionRoutes", "SessionRoute", "proxy", "managedHost", "managed", "legacy", "repair", "container", "RuntimeSession", "dispatchRuntime"} {
@@ -2950,9 +2948,10 @@ func TestSessionsV3PrimaryStreamDisambiguatesReusedProviderToolCallIDs(t *testin
 	}
 }
 
-func TestSessionsV3PrimaryPlanExecutionPreflightIsPrimaryOnlyAndAtomic(t *testing.T) {
+func TestSessionsV3PrimaryPlanModeStartCheckpointPreflightIsPrimaryOnlyAndAtomic(t *testing.T) {
 	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createSessionsV3PrimaryTestSession(t, server, "plan-exec-primary-preflight-create", "plan exec primary preflight")
+	server.v3SessionExecutor = newSessionV3Executor(server)
+	created := createSessionsV3PrimaryTestSession(t, server, "plan-mode-primary-preflight-create", "plan mode primary preflight")
 
 	stored, ok, err := sessionSvc.GetSession(created.ID)
 	if err != nil || !ok {
@@ -2993,19 +2992,30 @@ func TestSessionsV3PrimaryPlanExecutionPreflightIsPrimaryOnlyAndAtomic(t *testin
 		t.Fatalf("save initial plan: %v", err)
 	}
 
+	legacyReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/plans/execution", bytes.NewBufferString(`{"action":"start_checkpoint","checkpoint_id":"cp-1"}`))
+	legacyReq.Header.Set("Content-Type", "application/json")
+	legacyRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(legacyRec, withTestPrincipal(legacyReq))
+	if legacyRec.Code != http.StatusBadRequest {
+		t.Fatalf("legacy plan execution status=%d want=%d body=%s", legacyRec.Code, http.StatusBadRequest, legacyRec.Body.String())
+	}
+	if !strings.Contains(legacyRec.Body.String(), "unknown sessions v3 path") {
+		t.Fatalf("legacy plan execution body = %s, want unknown path", legacyRec.Body.String())
+	}
+
 	server.runStreams = nil
-	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/plans/execution", bytes.NewBufferString(`{"action":"start_checkpoint","checkpoint_id":"cp-1"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/plan-mode/checkpoints/cp-1/start", bytes.NewBufferString(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("plan execution status=%d want=%d body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+		t.Fatalf("plan-mode checkpoint start status=%d want=%d body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "run stream manager not configured") {
-		t.Fatalf("plan execution body = %s, want primary run stream manager error", rec.Body.String())
+		t.Fatalf("plan-mode checkpoint start body = %s, want primary run stream manager error", rec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), "route") || strings.Contains(rec.Body.String(), "managed") {
-		t.Fatalf("plan execution preflight returned non-primary routing error: %s", rec.Body.String())
+		t.Fatalf("plan-mode checkpoint start preflight returned non-primary routing error: %s", rec.Body.String())
 	}
 
 	planAfterFailure, ok, err := sessionSvc.GetPlan(created.ID, initialDoc.ID)
@@ -3018,15 +3028,12 @@ func TestSessionsV3PrimaryPlanExecutionPreflightIsPrimaryOnlyAndAtomic(t *testin
 	}
 
 	server.runStreams = newRunStreamManager()
-	req = httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/plans/execution", bytes.NewBufferString(`{"action":"start_checkpoint","checkpoint_id":"cp-1"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/plan-mode/checkpoints/cp-1/start", bytes.NewBufferString(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("plan execution with primary runner status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "route") || strings.Contains(rec.Body.String(), "managed") {
-		t.Fatalf("plan execution with primary runner returned routing content: %s", rec.Body.String())
+		t.Fatalf("plan-mode checkpoint start with primary runner status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
 	planAfterSuccess, ok, err := sessionSvc.GetPlan(created.ID, initialDoc.ID)
