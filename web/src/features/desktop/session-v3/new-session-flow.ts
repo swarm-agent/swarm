@@ -22,13 +22,16 @@ import {
   type DesktopV3CreateSessionRequest,
 } from './write-api'
 
-export interface DesktopV3NewSessionOperation {
+export interface DesktopV3CreateOnlySessionOperation {
   version: 1
   operationId: string
   sessionId: string
   createRequest: DesktopV3CreateSessionRequest
-  firstMessageRequest: DesktopV3AppendMessageRequest
   createdAt: number
+}
+
+export interface DesktopV3NewSessionOperation extends DesktopV3CreateOnlySessionOperation {
+  firstMessageRequest: DesktopV3AppendMessageRequest
 }
 
 export interface DesktopV3NewSessionPreference {
@@ -77,13 +80,11 @@ function resolvedNewSessionPreference(
   }
 }
 
-export function createDesktopV3NewSessionOperation(
-  input: CreateDesktopV3NewSessionOperationInput,
-): DesktopV3NewSessionOperation {
-  const prompt = input.prompt.trim()
+export function createDesktopV3CreateOnlySessionOperation(
+  input: Omit<CreateDesktopV3NewSessionOperationInput, 'prompt' | 'messageMetadata'>,
+): DesktopV3CreateOnlySessionOperation {
   const workspacePath = input.workspacePath.trim()
   const agentName = input.agentName.trim()
-  if (!prompt) throw new Error('New Desktop V3 session requires a first prompt')
   if (!workspacePath) throw new Error('New Desktop V3 session requires workspacePath')
   if (!agentName) throw new Error('New Desktop V3 session requires agent_name')
 
@@ -112,9 +113,6 @@ export function createDesktopV3NewSessionOperation(
   const operationId = crypto.randomUUID()
   const sessionId = crypto.randomUUID()
   const createClientRequestId = `desktop-v3-start:${operationId}:create`
-  const firstMessageClientRequestId = `desktop-v3-first-message:${operationId}`
-  const firstMessageId = `desktop-v3-message:${operationId}`
-  const firstRunId = `desktop-v3-run:${operationId}`
 
   return {
     version: 1,
@@ -142,6 +140,22 @@ export function createDesktopV3NewSessionOperation(
       worktree_base_branch: input.worktree?.baseBranch,
       worktree_branch_name: input.worktree?.branchName,
     },
+  }
+}
+
+export function createDesktopV3NewSessionOperation(
+  input: CreateDesktopV3NewSessionOperationInput,
+): DesktopV3NewSessionOperation {
+  const prompt = input.prompt.trim()
+  if (!prompt) throw new Error('New Desktop V3 session requires a first prompt')
+
+  const operation = createDesktopV3CreateOnlySessionOperation(input)
+  const firstMessageClientRequestId = `desktop-v3-first-message:${operation.operationId}`
+  const firstMessageId = `desktop-v3-message:${operation.operationId}`
+  const firstRunId = `desktop-v3-run:${operation.operationId}`
+
+  return {
+    ...operation,
     firstMessageRequest: {
       client_request_id: firstMessageClientRequestId,
       message_id: firstMessageId,
@@ -234,6 +248,11 @@ export interface StartNewDesktopV3SessionResult {
   messageResponse: SessionMessageMutationResponse
 }
 
+export interface StartDesktopV3CreateOnlySessionResult {
+  sessionId: string
+  createResponse: SessionCreateMutationResponse
+}
+
 interface DesktopV3NewSessionFlowDeps {
   getSnapshot: typeof getDesktopV3CacheSnapshot
   requireControllerReady: typeof requireDesktopV3RealtimeControllerReady
@@ -260,11 +279,11 @@ export function setDesktopV3NewSessionFlowDepsForTests(
   }
 }
 
-export async function startNewDesktopV3Session(input: {
-  operation: DesktopV3NewSessionOperation
+export async function startDesktopV3CreateOnlySession(input: {
+  operation: DesktopV3CreateOnlySessionOperation
   shouldSelectSession?: () => boolean
   onSessionStarted?: (sessionId: string) => void
-}): Promise<StartNewDesktopV3SessionResult> {
+}): Promise<StartDesktopV3CreateOnlySessionResult> {
   const operation = input.operation
   if (operation.createRequest.session_id !== operation.sessionId) {
     throw new Error('Desktop V3 new-session operation has inconsistent session identity')
@@ -299,6 +318,25 @@ export async function startNewDesktopV3Session(input: {
   }
 
   await controller.ensureSessionConnected(operation.sessionId)
+
+  input.onSessionStarted?.(operation.sessionId)
+
+  return {
+    sessionId: operation.sessionId,
+    createResponse: rawCreate,
+  }
+}
+
+export async function startNewDesktopV3Session(input: {
+  operation: DesktopV3NewSessionOperation
+  shouldSelectSession?: () => boolean
+  onSessionStarted?: (sessionId: string) => void
+}): Promise<StartNewDesktopV3SessionResult> {
+  const operation = input.operation
+  const createOnlyResult = await startDesktopV3CreateOnlySession({
+    operation,
+    shouldSelectSession: input.shouldSelectSession,
+  })
 
   flowDeps.dispatch({
     type: 'pendingUser.upsert',
@@ -344,7 +382,7 @@ export async function startNewDesktopV3Session(input: {
 
   return {
     sessionId: operation.sessionId,
-    createResponse: rawCreate,
+    createResponse: createOnlyResult.createResponse,
     messageResponse: rawMessage,
   }
 }

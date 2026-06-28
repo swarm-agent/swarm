@@ -2,10 +2,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  createDesktopV3CreateOnlySessionOperation,
   createDesktopV3NewSessionOperation,
   loadDesktopV3NewSessionOperation,
   persistDesktopV3NewSessionOperation,
   setDesktopV3NewSessionFlowDepsForTests,
+  startDesktopV3CreateOnlySession,
   startNewDesktopV3Session,
   type DesktopV3NewSessionOperation,
 } from './new-session-flow'
@@ -314,6 +316,71 @@ test('startNewDesktopV3Session creates, appends first message, selects, and appl
     ])
     assert.deepEqual(capturedRequest, operation.createRequest)
     assert.equal(actions.find((action) => action.type === 'session.select')?.sessionId, operation.sessionId)
+  } finally {
+    restore()
+  }
+})
+
+test('startDesktopV3CreateOnlySession creates, selects, connects, and navigates without appending a message', async () => {
+  const operation = createDesktopV3CreateOnlySessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    title: 'Worktree title',
+    agentName: 'swarm',
+    worktree: { mode: 'on', branchName: 'agent/worktree-title' },
+  })
+  const state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap.scopeId = 'scope-global'
+  const calls: string[] = []
+  const actions: DesktopV3CacheAction[] = []
+  const restore = setDesktopV3NewSessionFlowDepsForTests({
+    getSnapshot: () => state,
+    requireControllerReady: async () => ({
+      ensureSessionConnected: async (sessionId: string) => {
+        calls.push(`connect:${sessionId}`)
+      },
+      start: async () => undefined,
+      stop: () => undefined,
+    }),
+    dispatch: (action) => {
+      actions.push(action)
+      calls.push(`dispatch:${action.type}`)
+    },
+    postCreateSession: async (request) => {
+      calls.push(`create:${request.session_id}`)
+      return makeCreateResponse(operation)
+    },
+    postAppendMessage: async () => {
+      throw new Error('create-only start must not append a first message')
+    },
+  })
+
+  try {
+    let navigated = ''
+    const result = await startDesktopV3CreateOnlySession({
+      operation,
+      onSessionStarted: (sessionId) => {
+        calls.push(`navigate:${sessionId}`)
+        navigated = sessionId
+      },
+    })
+
+    assert.equal(result.sessionId, operation.sessionId)
+    assert.equal(result.createResponse.session_id, operation.sessionId)
+    assert.equal(navigated, operation.sessionId)
+    assert.deepEqual(calls, [
+      `create:${operation.sessionId}`,
+      'dispatch:mutation.sessionCreateResult',
+      'dispatch:session.select',
+      `connect:${operation.sessionId}`,
+      `navigate:${operation.sessionId}`,
+    ])
+    assert.equal(operation.createRequest.title, 'Worktree title')
+    assert.equal(operation.createRequest.worktree_mode, 'on')
+    assert.equal(operation.createRequest.worktree_branch_name, 'agent/worktree-title')
+    assert.equal(actions.some((action) => action.type === 'pendingUser.upsert'), false)
+    assert.equal(actions.some((action) => action.type === 'mutation.messageResult'), false)
   } finally {
     restore()
   }

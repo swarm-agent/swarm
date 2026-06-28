@@ -3,6 +3,7 @@ import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode }
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
 import { Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
+import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -10,7 +11,7 @@ import { cn } from '../../../lib/cn'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
-import { uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
+import { agentStateQueryOptions, draftModelQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
@@ -41,8 +42,9 @@ import { approveRemoteSwarmPairing, type RemoteSwarmPendingPairing } from '../on
 import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from '../swarm/components/managed-host-link-request-modal'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
+import { createDesktopV3CreateOnlySessionOperation, startDesktopV3CreateOnlySession } from '../session-v3/new-session-flow'
 import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
-import { buildDesktopChatRouteOptions, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
+import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import type { DesktopSlashCommand } from '../chat/services/slash-commands'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
@@ -196,6 +198,15 @@ interface PlanModalState {
 interface GitPanelState {
   workspacePath: string
   workspaceName: string
+}
+
+interface WorktreeSessionModalState {
+  workspacePath: string
+  workspaceName: string
+  workspaceSlug: string
+  routeOptions: DesktopChatRoute[]
+  branchPrefix: string
+  settingsLoading: boolean
 }
 
 type SidebarFlowStatus = 'active' | 'paused' | 'draft' | 'needs_review' | 'failed'
@@ -537,6 +548,124 @@ export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): 
     pendingPermissionCount,
     usage: null,
   }
+}
+
+interface WorktreeSettingsWire {
+  workspace_path?: string
+  enabled?: boolean
+  use_current_branch?: boolean
+  base_branch?: string
+  branch_name?: string
+  updated_at?: number
+}
+
+interface WorktreeSettingsResponseWire {
+  ok?: boolean
+  worktrees?: WorktreeSettingsWire
+}
+
+function normalizeWorktreeBranchPrefix(value: string | undefined): string {
+  const trimmed = (value ?? '').trim().replace(/^\/+|\/+$/g, '')
+  if (!trimmed) return ''
+  if (trimmed.toLowerCase().endsWith('/<id>')) {
+    return trimmed.slice(0, -'/<id>'.length).replace(/^\/+|\/+$/g, '')
+  }
+  return trimmed
+}
+
+async function fetchWorktreeBranchPrefix(workspacePath: string): Promise<string> {
+  const params = new URLSearchParams()
+  const normalizedWorkspacePath = workspacePath.trim()
+  if (normalizedWorkspacePath) params.set('workspace_path', normalizedWorkspacePath)
+  const response = await requestJson<WorktreeSettingsResponseWire>(`/v1/worktrees?${params.toString()}`)
+  const branchPrefix = normalizeWorktreeBranchPrefix(response.worktrees?.branch_name)
+  if (!branchPrefix) {
+    throw new Error('Worktree settings did not return a branch prefix')
+  }
+  return branchPrefix
+}
+
+function normalizeWorktreeBranchSuffix(value: string): string {
+  return value.trim().replace(/^\/+|\/+$/g, '')
+}
+
+function composeWorktreeBranchName(prefix: string, suffix: string): string {
+  const normalizedPrefix = normalizeWorktreeBranchPrefix(prefix)
+  const normalizedSuffix = normalizeWorktreeBranchSuffix(suffix)
+  return normalizedSuffix ? `${normalizedPrefix}/${normalizedSuffix}` : normalizedPrefix
+}
+
+function WorktreeSessionModal({ state, title, branch, busy, error, onTitleChange, onBranchChange, onSubmit, onClose }: {
+  state: WorktreeSessionModalState | null
+  title: string
+  branch: string
+  busy: boolean
+  error: string | null
+  onTitleChange: (value: string) => void
+  onBranchChange: (value: string) => void
+  onSubmit: () => void
+  onClose: () => void
+}) {
+  if (!state) return null
+  return (
+    <Dialog>
+      <DialogBackdrop onClick={busy ? undefined : onClose} />
+      <DialogPanel className="w-[min(520px,100%)] gap-4 font-mono">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-[var(--app-text)]">Worktree Session</div>
+            <div className="mt-1 truncate text-xs text-[var(--app-text-subtle)]">{state.workspaceName || state.workspacePath}</div>
+          </div>
+          <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={onClose} disabled={busy} title="Close" aria-label="Close worktree session modal">
+            <X size={14} />
+          </button>
+        </div>
+        <form
+          className="grid gap-4"
+          onSubmit={(event) => {
+            event.preventDefault()
+            onSubmit()
+          }}
+        >
+          <label className="grid gap-1.5 text-xs text-[var(--app-text-muted)]">
+            <span>Title:</span>
+            <input
+              name="title"
+              className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-border-strong)]"
+              value={title}
+              onChange={(event) => onTitleChange(event.target.value)}
+              disabled={busy}
+              autoFocus
+            />
+          </label>
+          <label className="grid gap-1.5 text-xs text-[var(--app-text-muted)]">
+            <span>Branch suffix:</span>
+            <div className="flex h-10 overflow-hidden border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-sm focus-within:border-[var(--app-border-strong)]">
+              <span className="flex shrink-0 items-center border-r border-[var(--app-border)] bg-[var(--app-bg)] px-3 font-mono text-[var(--app-text-muted)]">
+                {state.settingsLoading ? 'Loading…' : `${state.branchPrefix}/`}
+              </span>
+              <input
+                name="branch"
+                className="min-w-0 flex-1 bg-transparent px-3 text-[var(--app-text)] outline-none"
+                value={branch}
+                onChange={(event) => onBranchChange(event.target.value)}
+                disabled={busy || state.settingsLoading || !state.branchPrefix.trim()}
+                autoComplete="off"
+              />
+            </div>
+            <span className="text-[11px] text-[var(--app-text-subtle)]">Prefix comes from Worktree settings. Change it in Settings → Worktrees.</span>
+          </label>
+          {error ? <div className="border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning)]">{error}</div> : null}
+          <div className="flex justify-end gap-3">
+            <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+            <Button type="submit" disabled={busy || state.settingsLoading || !state.branchPrefix.trim() || !title.trim() || !normalizeWorktreeBranchSuffix(branch)}>
+              {busy ? 'Creating…' : 'Create session'}
+            </Button>
+          </div>
+        </form>
+      </DialogPanel>
+    </Dialog>
+  )
 }
 
 function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onClose }: { state: GitPanelState | null; snapshot: GitSnapshot | null; loading: boolean; error: string | null; onRefresh: () => void; onClose: () => void }) {
@@ -1802,7 +1931,11 @@ export function DesktopAppPage() {
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [updateProgress, setUpdateProgress] = useState<DesktopUpdateProgressState>({ open: false, job: null, startedAt: null })
   const [desktopToast, setDesktopToast] = useState<DesktopToastState | null>(() => loadPendingDesktopToast())
-  const [pendingWorktreeBranchByWorkspace, setPendingWorktreeBranchByWorkspace] = useState<Record<string, string>>({})
+  const [worktreeSessionModal, setWorktreeSessionModal] = useState<WorktreeSessionModalState | null>(null)
+  const [worktreeSessionTitle, setWorktreeSessionTitle] = useState('')
+  const [worktreeSessionBranch, setWorktreeSessionBranch] = useState('')
+  const [worktreeSessionCreating, setWorktreeSessionCreating] = useState(false)
+  const [worktreeSessionError, setWorktreeSessionError] = useState<string | null>(null)
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
   const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
@@ -1912,6 +2045,8 @@ export function DesktopAppPage() {
     queryFn: () => getUISettings(),
     staleTime: 30_000,
   })
+  const agentStateQuery = useQuery(agentStateQueryOptions())
+  const draftPreferenceQuery = useQuery(draftModelQueryOptions())
   useEffect(() => {
     if (uiSettingsQuery.data) {
       setUISettings(uiSettingsQuery.data)
@@ -2489,6 +2624,118 @@ export function DesktopAppPage() {
       params: { workspaceSlug },
     })
   }, [navigate, workspaceSlugByPath])
+
+  const openWorktreeSessionModal = useCallback((input: {
+    workspace: WorkspaceEntry
+    workspaceSlug: string
+    routeOptions: DesktopChatRoute[]
+  }) => {
+    const workspacePath = input.workspace.path
+    setWorktreeSessionModal({
+      workspacePath,
+      workspaceName: input.workspace.workspaceName,
+      workspaceSlug: input.workspaceSlug,
+      routeOptions: input.routeOptions,
+      branchPrefix: '',
+      settingsLoading: true,
+    })
+    setWorktreeSessionTitle('')
+    setWorktreeSessionBranch('')
+    setWorktreeSessionError(null)
+    void fetchWorktreeBranchPrefix(workspacePath)
+      .then((branchPrefix) => {
+        setWorktreeSessionModal((current) => current?.workspacePath === workspacePath
+          ? { ...current, branchPrefix, settingsLoading: false }
+          : current)
+      })
+      .catch((error) => {
+        setWorktreeSessionModal((current) => current?.workspacePath === workspacePath
+          ? { ...current, settingsLoading: false }
+          : current)
+        setWorktreeSessionError(error instanceof Error ? error.message : 'Failed to load worktree settings')
+      })
+  }, [])
+
+  const closeWorktreeSessionModal = useCallback(() => {
+    if (worktreeSessionCreating) return
+    setWorktreeSessionModal(null)
+    setWorktreeSessionError(null)
+  }, [worktreeSessionCreating])
+
+  const handleCreateWorktreeSession = useCallback(async () => {
+    if (!worktreeSessionModal || worktreeSessionCreating) return
+    const title = worktreeSessionTitle.trim()
+    const branchSuffix = normalizeWorktreeBranchSuffix(worktreeSessionBranch)
+    const branchPrefix = normalizeWorktreeBranchPrefix(worktreeSessionModal.branchPrefix)
+    const branch = composeWorktreeBranchName(branchPrefix, branchSuffix)
+    if (worktreeSessionModal.settingsLoading) {
+      setWorktreeSessionError('Worktree settings are still loading.')
+      return
+    }
+    if (!branchPrefix) {
+      setWorktreeSessionError('Worktree settings did not return a branch prefix.')
+      return
+    }
+    if (!title) {
+      setWorktreeSessionError('Title is required.')
+      return
+    }
+    if (!branchSuffix) {
+      setWorktreeSessionError('Branch suffix is required.')
+      return
+    }
+    const selectedRoute = worktreeSessionModal.routeOptions.find((route) => getDesktopSessionCreateTarget(route).endpoint === '/v3/sessions') ?? null
+    if (!selectedRoute) {
+      setWorktreeSessionError('No writable self/host Desktop V3 route is available for this workspace.')
+      return
+    }
+    const activeAgent = agentStateQuery.data?.activePrimary?.trim() || 'swarm'
+    const preference = draftPreferenceQuery.data?.preference
+    if (!preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
+      setWorktreeSessionError('Select a default provider, model, and thinking level before creating a worktree session.')
+      return
+    }
+    setWorktreeSessionCreating(true)
+    setWorktreeSessionError(null)
+    try {
+      const operation = createDesktopV3CreateOnlySessionOperation({
+        workspacePath: worktreeSessionModal.workspacePath,
+        workspaceName: worktreeSessionModal.workspaceName,
+        route: selectedRoute,
+        title,
+        mode: 'auto',
+        agentName: activeAgent,
+        preference: {
+          provider: preference.provider,
+          model: preference.model,
+          thinking: preference.thinking,
+          serviceTier: preference.serviceTier,
+          contextMode: preference.contextMode,
+        },
+        sessionMetadata: {
+          source: 'desktop-v3',
+          workspace_path: worktreeSessionModal.workspacePath,
+        },
+        worktree: { mode: 'on', branchName: branch },
+      })
+      await startDesktopV3CreateOnlySession({
+        operation,
+        onSessionStarted: (sessionId) => {
+          void navigate({
+            to: '/$workspaceSlug/$sessionId',
+            params: { workspaceSlug: worktreeSessionModal.workspaceSlug, sessionId },
+          })
+        },
+      })
+      setWorktreeSessionModal(null)
+      setMobileSidebarOpen(false)
+      setDesktopToast({ message: `Created worktree session on ${branch}`, tone: 'success' })
+    } catch (error) {
+      setWorktreeSessionError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setWorktreeSessionCreating(false)
+    }
+  }, [agentStateQuery.data?.activePrimary, draftPreferenceQuery.data?.preference, navigate, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionModal, worktreeSessionTitle])
 
   const openPlanModalForSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
@@ -3475,15 +3722,11 @@ export function DesktopAppPage() {
                   topologyRoutes: workspace.topologyRoutes,
                 })
                 const handleStartWorktreeBrancher = () => {
-                  const currentBranch = workspaceGitSnapshot?.branch?.trim() || workspace.gitBranch?.trim() || ''
-                  const suggestedBranch = currentBranch && currentBranch !== 'git' ? `agent/${currentBranch}` : 'agent/'
-                  const branchName = window.prompt('Feature branch for the new worktree session', suggestedBranch)?.trim() ?? ''
-                  if (!branchName) {
-                    return
-                  }
-                  setPendingWorktreeBranchByWorkspace((current) => ({ ...current, [workspace.path]: branchName }))
-                  handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)
-                  setDesktopToast({ message: `Worktree branch ready for next session: ${branchName}`, tone: 'info' })
+                  openWorktreeSessionModal({
+                    workspace,
+                    workspaceSlug,
+                    routeOptions: workspaceRouteOptions,
+                  })
                 }
                 return (
                   <Fragment key={workspace.path}>
@@ -3701,7 +3944,6 @@ export function DesktopAppPage() {
               workspaceName: routeWorkspace.workspaceName,
               topologyRoutes: routeWorkspace.topologyRoutes,
             })}
-            pendingWorktreeBranch={pendingWorktreeBranchByWorkspace[routeWorkspace.path]}
             onOpenChats={() => setMobileSidebarOpen(true)}
             onSlashCommand={handleSlashCommand}
           />
@@ -3987,6 +4229,17 @@ export function DesktopAppPage() {
         </div>
       ) : null}
 
+      <WorktreeSessionModal
+        state={worktreeSessionModal}
+        title={worktreeSessionTitle}
+        branch={worktreeSessionBranch}
+        busy={worktreeSessionCreating}
+        error={worktreeSessionError}
+        onTitleChange={setWorktreeSessionTitle}
+        onBranchChange={setWorktreeSessionBranch}
+        onSubmit={() => { void handleCreateWorktreeSession() }}
+        onClose={closeWorktreeSessionModal}
+      />
       <GitDetailsOverlay
         state={gitPanel}
         snapshot={gitPanel ? (gitSnapshotByPath.get(gitPanel.workspacePath) ?? (gitPanel.workspacePath === selectedGitWorkspacePath ? gitSnapshot : null)) : null}
