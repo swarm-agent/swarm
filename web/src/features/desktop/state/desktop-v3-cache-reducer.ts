@@ -954,6 +954,7 @@ export function applyCacheEvent(
   }
 
   applyUsageSummaryFromEventPayload(state, sessionId, payload)
+  applyPlanSnapshotFromEventPayload(state, sessionId, payload)
 
   applyPermissionSummaryEvent(state, event)
   applyPermissionEvent(state, event)
@@ -987,6 +988,18 @@ export function shouldRetainRealtimeEvent(eventType: string): boolean {
       return false
     default:
       return true
+  }
+}
+
+function applyPlanSnapshotFromEventPayload(state: DesktopV3CacheState, sessionId: string, payload: SessionEventPayload): void {
+  if (payload.has_active_plan !== undefined) {
+    state.hasActivePlanBySession[sessionId] = payload.has_active_plan
+  }
+  if (payload.active_plan !== undefined) {
+    state.plansBySession[sessionId] = payload.active_plan === null ? null : normalizeDesktopSessionPlan(payload.active_plan)
+  }
+  if (payload.has_active_plan === false) {
+    state.plansBySession[sessionId] = null
   }
 }
 

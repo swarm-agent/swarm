@@ -4915,6 +4915,188 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	}
 }
 
+func TestSessionsV3ExecutorFinalizesReviewCheckpointAfterProviderManagedPlanComplete(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		switch runner.callCount {
+		case 1:
+			if req.ToolInvoker == nil {
+				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+			}
+			args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "cp-1 complete", "result": "done"})
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-review-checkpoint", Name: "plan_manage", Arguments: args})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("terminal review checkpoint did not request finalization restart: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+		case 2:
+			if req.ToolInvoker != nil || req.ToolChoice != "none" || len(req.Tools) != 0 {
+				return provideriface.Response{}, fmt.Errorf("finalization request tools enabled: tool_choice=%q tools=%d invoker=%v", req.ToolChoice, len(req.Tools), req.ToolInvoker != nil)
+			}
+			if !sessionsV3ProviderInputContainsContentText(req.Input, "waiting for checkpoint review") || !sessionsV3ProviderInputContainsContentText(req.Input, "Do not call tools") {
+				return provideriface.Response{}, fmt.Errorf("finalization input missing review instruction: %+v", req.Input)
+			}
+			return provideriface.Response{Text: "Checkpoint cp-1 is complete and ready for your review. Let me know if you need changes."}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-review-finalize-create", "provider review finalize", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	saveSessionsV3ActivePlanForFinalizationTest(t, sessionSvc, created.ID, sessionruntime.PlanExecutionPolicyModeReviewEachCheckpoint, []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "Review", Status: sessionruntime.PlanCheckpointStatusInProgress},
+		{ID: "cp-2", Title: "Next", Status: sessionruntime.PlanCheckpointStatusPending},
+	})
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-review-finalize-message", "complete review checkpoint")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 4 || messages[1].Role != "system" || messages[2].Role != "tool" || messages[3].Role != "assistant" {
+		t.Fatalf("messages after review finalization = %+v", messages)
+	}
+	if messages[3].Content != "Checkpoint cp-1 is complete and ready for your review. Let me know if you need changes." {
+		t.Fatalf("assistant final = %q", messages[3].Content)
+	}
+	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
+	if err != nil || !ok || activePlan.Document == nil {
+		t.Fatalf("get active plan: ok=%t err=%v plan=%#v", ok, err, activePlan)
+	}
+	if activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateWaitingReview || activePlan.Document.Checkpoints[0].Review == nil || activePlan.Document.Checkpoints[0].Review.Status != sessionruntime.PlanCheckpointReviewStatusPending {
+		t.Fatalf("review plan state = %#v", activePlan.Document)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	seenLifecycleSidebarPlan := false
+	for _, event := range events {
+		if event.EventType != "session.message.appended" {
+			continue
+		}
+		var payload struct {
+			HasActivePlan bool `json:"has_active_plan"`
+			ActivePlan    *struct {
+				Document *struct {
+					ExecutionState *struct {
+						Status string `json:"status"`
+					} `json:"execution_state"`
+				} `json:"document"`
+			} `json:"active_plan"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode session.message.appended payload: %v", err)
+		}
+		if payload.HasActivePlan && payload.ActivePlan != nil && payload.ActivePlan.Document != nil && payload.ActivePlan.Document.ExecutionState != nil && payload.ActivePlan.Document.ExecutionState.Status == sessionruntime.PlanExecutionStateWaitingReview {
+			seenLifecycleSidebarPlan = true
+			break
+		}
+	}
+	if !seenLifecycleSidebarPlan {
+		t.Fatalf("missing lifecycle message realtime payload with waiting_review active_plan for sidebar: %+v", events)
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want tool turn plus finalization", runner.callCount)
+	}
+}
+
+func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		switch runner.callCount {
+		case 1:
+			if req.ToolInvoker == nil {
+				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+			}
+			args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "last checkpoint complete", "result": "done"})
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-final-checkpoint", Name: "plan_manage", Arguments: args})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("terminal plan completion did not request finalization restart: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+		case 2:
+			if req.ToolInvoker != nil || req.ToolChoice != "none" || len(req.Tools) != 0 {
+				return provideriface.Response{}, fmt.Errorf("finalization request tools enabled: tool_choice=%q tools=%d invoker=%v", req.ToolChoice, len(req.Tools), req.ToolInvoker != nil)
+			}
+			if !sessionsV3ProviderInputContainsContentText(req.Input, "plan is complete") || !sessionsV3ProviderInputContainsContentText(req.Input, "Do not call tools") {
+				return provideriface.Response{}, fmt.Errorf("finalization input missing plan completion instruction: %+v", req.Input)
+			}
+			return provideriface.Response{Text: "The final checkpoint is complete. Let me know if you need changes."}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-auto-finalize-create", "provider auto finalize", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	saveSessionsV3ActivePlanForFinalizationTest(t, sessionSvc, created.ID, sessionruntime.PlanExecutionPolicyModeAutomatic, []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "Final", Status: sessionruntime.PlanCheckpointStatusInProgress},
+	})
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-auto-finalize-message", "complete final checkpoint")
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 4 || messages[1].Role != "system" || messages[2].Role != "tool" || messages[3].Role != "assistant" {
+		t.Fatalf("messages after automatic finalization = %+v", messages)
+	}
+	if messages[3].Content != "The final checkpoint is complete. Let me know if you need changes." {
+		t.Fatalf("assistant final = %q", messages[3].Content)
+	}
+	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
+	if err != nil || !ok || activePlan.Document == nil {
+		t.Fatalf("get active plan: ok=%t err=%v plan=%#v", ok, err, activePlan)
+	}
+	if activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateCompleted || activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted {
+		t.Fatalf("completed plan state = %#v", activePlan.Document)
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want tool turn plus finalization", runner.callCount)
+	}
+}
+
+func setupSessionsV3ProviderManagedPlanTest(t *testing.T, server *Server, sessionSvc *sessionruntime.Service, runner *sessionsV3RecordingProviderRunner) {
+	t.Helper()
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	server.runner = runSvc
+	server.SetBypassPermissions(true)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"plan_manage": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+		t.Fatalf("upsert plan-managed swarm agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+}
+
+func saveSessionsV3ActivePlanForFinalizationTest(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string, mode string, checkpoints []pebblestore.SessionPlanCheckpoint) {
+	t.Helper()
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-finalize", "Plan: finalize", "## Plan: finalize", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: mode, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateInProgress, ActiveAttemptID: "cp-1:attempt-1", ParentSessionID: sessionID, CurrentSessionID: sessionID, CurrentRunID: "run-finalize"},
+		Checkpoints:        checkpoints,
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save active plan: %v", err)
+	}
+}
+
 func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()

@@ -1871,6 +1871,8 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 		"status":          record.Status,
 		"approval_state":  record.ApprovalState,
 		"activate":        activate,
+		"has_active_plan": activate,
+		"active_plan":     record,
 		"updated_at":      now,
 		"updated":         found,
 		"version":         record.Version,

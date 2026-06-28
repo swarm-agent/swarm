@@ -64,3 +64,28 @@ func TestModeCapabilityInstructionsUseSessionModeWhenPlanModeEnabled(t *testing.
 		t.Fatalf("plan-enabled instructions should not advertise static execution mode\n--- instructions ---\n%s", instructions)
 	}
 }
+
+func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+
+	for _, want := range []string{
+		"For multi-step implementation work, keep agent execution progress in `plan_manage` on the active plan/checkpoint",
+		"Preserve manage_todos as the user-owned workspace todo surface",
+		"Do not use manage_todos for agent execution checklists or checkpoint progress",
+		"plan_manage checkpoint checklist example",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master harness prompt missing %q\n--- prompt ---\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{
+		"owner_kind=agent",
+		`"owner_kind":"agent"`,
+		"manage_todos (agent checklist",
+		"execution checklist in `manage_todos",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("master harness prompt still advertises manage_todos agent tracking via %q\n--- prompt ---\n%s", forbidden, prompt)
+		}
+	}
+}

@@ -685,7 +685,7 @@ func (s *Service) executeControlPlaneToolWithMutation(ctx context.Context, sessi
 		result.Output = output
 		return true, result, err
 	case "plan_manage":
-		output, err := s.executePlanManageTool(sessionID, call.Arguments, approvedArguments)
+		output, err := s.executePlanManageToolWithMutation(sessionID, call.Arguments, approvedArguments, applySessionMutation)
 		result.Output = output
 		return true, result, err
 	case "task":
@@ -1519,6 +1519,10 @@ func exitPlanModeV3ModePayloadHash(sessionID, mode string, now int64) string {
 }
 
 func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (string, error) {
+	return s.executePlanManageToolWithMutation(sessionID, arguments, feedback, nil)
+}
+
+func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
 	if s.sessions == nil {
 		return "", errors.New("session service is not configured")
 	}
@@ -1616,7 +1620,7 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 
 	switch action {
 	case "approve_and_start", "accept_and_continue", "restart_checkpoint", "rewind_to_checkpoint":
-		return s.executePlanExecutionControlAction(sessionID, action, args)
+		return s.executePlanExecutionControlAction(sessionID, action, args, applySessionMutation)
 	case "list":
 		limit := mapInt(args, "limit")
 		if limit <= 0 {
@@ -1893,6 +1897,9 @@ func (s *Service) executePlanManageTool(sessionID, arguments, feedback string) (
 			"details_truncated": false,
 		}
 		addPlanExecutionPayloadFields(payload, action, plan.Document)
+		if err := s.appendPlanExecutionLifecycleSystemMessage(sessionID, action, plan, payload, applySessionMutation); err != nil {
+			return "", err
+		}
 		return marshalPlanManagePayload(payload)
 	case "new":
 		title := strings.TrimSpace(mapString(args, "title"))
@@ -2070,7 +2077,7 @@ func planManagePlanRevisionSummary(plan pebblestore.SessionPlanSnapshot) map[str
 	return item
 }
 
-func (s *Service) executePlanExecutionControlAction(sessionID, action string, args map[string]any) (string, error) {
+func (s *Service) executePlanExecutionControlAction(sessionID, action string, args map[string]any, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
 	planID := strings.TrimSpace(firstNonEmptyString(mapString(args, "plan_id"), mapString(args, "id")))
 	var existing pebblestore.SessionPlanSnapshot
 	var ok bool
@@ -2182,6 +2189,9 @@ func (s *Service) executePlanExecutionControlAction(sessionID, action string, ar
 		payload["checkpoint_id"] = summary.NextCheckpointID
 		payload["next_action"] = "run_checkpoint_with_fresh_context"
 		payload["run_request"] = planCheckpointRunRequestPayload(planID, summary.NextCheckpointID, "")
+	}
+	if err := s.appendPlanExecutionLifecycleSystemMessage(sessionID, action, saved, payload, applySessionMutation); err != nil {
+		return "", err
 	}
 	return marshalPlanManagePayload(payload)
 }

@@ -289,6 +289,8 @@ type runAppendMessageInput struct {
 	Step                 int
 	LogicalKey           string
 	Principal            identity.Principal
+	EventPayload         json.RawMessage
+	ActivePlan           *pebblestore.SessionPlanSnapshot
 	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 }
 
@@ -347,6 +349,13 @@ func (s *Service) appendRunMessage(input runAppendMessageInput) (pebblestore.Mes
 	if err != nil {
 		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, err
 	}
+	eventPayload := append(json.RawMessage(nil), input.EventPayload...)
+	if len(eventPayload) == 0 && input.ActivePlan != nil {
+		eventPayload, err = runMessageV3ActivePlanEventPayload(sessionID, message, *input.ActivePlan)
+		if err != nil {
+			return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, err
+		}
+	}
 	clientRequestID := runMessageV3ClientRequestID(sessionID, runID, logicalKey)
 	mutation, err := input.ApplySessionMutation(sessionruntime.SessionMutationInput{
 		SessionID:       sessionID,
@@ -358,6 +367,7 @@ func (s *Service) appendRunMessage(input runAppendMessageInput) (pebblestore.Mes
 		RequestHash:     payloadHash,
 		Kind:            sessionruntime.SessionMutationAppendMessage,
 		EventType:       "session.message.appended",
+		EventPayload:    eventPayload,
 		Message:         &message,
 		NowUnixMs:       now,
 	})
@@ -375,6 +385,31 @@ func (s *Service) appendRunMessage(input runAppendMessageInput) (pebblestore.Mes
 		session = updated
 	}
 	return message, session, nil, nil
+}
+
+func runMessageV3ActivePlanEventPayload(sessionID string, message pebblestore.MessageSnapshot, plan pebblestore.SessionPlanSnapshot) (json.RawMessage, error) {
+	message = sanitizeRunMessageSnapshotForEvent(message)
+	payload := map[string]any{
+		"session_id":      strings.TrimSpace(sessionID),
+		"kind":            sessionruntime.SessionMutationAppendMessage,
+		"message":         message,
+		"message_id":      strings.TrimSpace(message.ID),
+		"role":            strings.TrimSpace(message.Role),
+		"has_active_plan": true,
+		"active_plan":     plan,
+	}
+	return json.Marshal(payload)
+}
+
+func sanitizeRunMessageSnapshotForEvent(message pebblestore.MessageSnapshot) pebblestore.MessageSnapshot {
+	message.ID = strings.TrimSpace(message.ID)
+	message.SessionID = strings.TrimSpace(message.SessionID)
+	message.UserID = strings.TrimSpace(message.UserID)
+	message.AccountScopeID = strings.TrimSpace(message.AccountScopeID)
+	message.Role = strings.TrimSpace(message.Role)
+	message.Content = strings.TrimSpace(message.Content)
+	message.Metadata = cloneGenericMap(message.Metadata)
+	return message
 }
 
 func isRunMessageRoleAllowed(role string) bool {

@@ -60,6 +60,17 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextAndStartsCheckpoint(t *te
 	if !strings.Contains(text, "complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed") {
 		t.Fatalf("prompt missing terminal outcome instruction: %s", text)
 	}
+	for _, want := range []string{
+		"Use plan_manage as the only agent progress and checkpoint lifecycle surface",
+		"Do not use manage_todos for agent self-tracking",
+		"complete_checkpoint may continue to the next checkpoint only if backend execution policy allows it",
+		"mark_needs_review always pauses for review and never advances to the next checkpoint",
+		"backend durable plan state decides continuation",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prompt missing %q instruction: %s", want, text)
+		}
+	}
 	if strings.Contains(text, "old chat that must not appear") {
 		t.Fatalf("prompt leaked prior conversation: %s", text)
 	}

@@ -1049,13 +1049,13 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage_todos",
-			Description: "Manage workspace todo items and summaries. Supports list/create/update/delete/reorder/in_progress actions and atomic batch mutations for a regular todo list with priorities, tags, groups, in-progress state, and ordering.",
+			Description: "Manage user-owned workspace todo items and summaries. Supports list/create/update/delete/reorder/in_progress actions and atomic batch mutations for regular user todo lists with priorities, tags, groups, in-progress state, and ordering. Do not use this for agent self-tracking, execution checklists, or checkpoint lifecycle state; use plan_manage for agent progress.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"action":         map[string]any{"type": "string", "description": "Action: list|summary|create|update|delete|delete_done|delete_all|reorder|in_progress|batch"},
 					"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
-					"owner_kind":     map[string]any{"type": "string", "description": "Optional owner kind filter/scope: user|agent"},
+					"owner_kind":     map[string]any{"type": "string", "description": "Optional owner kind filter/scope: user|agent. Agents should use user for user todo requests; agent self-tracking belongs in plan_manage, not manage_todos."},
 					"id":             map[string]any{"type": "string", "description": "Todo id for update/delete/in_progress"},
 					"text":           map[string]any{"type": "string", "description": "Todo text"},
 					"done":           map[string]any{"type": "boolean", "description": "Completed state"},
@@ -1063,8 +1063,8 @@ func (r *Runtime) Definitions() []Definition {
 					"group":          map[string]any{"type": "string", "description": "Optional grouping label"},
 					"tags":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional tags"},
 					"in_progress":    map[string]any{"type": "boolean", "description": "In-progress state"},
-					"session_id":     map[string]any{"type": "string", "description": "Optional conversation/session id for agent checklist grouping"},
-					"parent_id":      map[string]any{"type": "string", "description": "Optional parent task id for nested agent checklist steps"},
+					"session_id":     map[string]any{"type": "string", "description": "Optional conversation/session id for existing todo records; do not use for new agent self-tracking, which belongs in plan_manage."},
+					"parent_id":      map[string]any{"type": "string", "description": "Optional parent todo id for existing todo records; do not use for new agent self-tracking, which belongs in plan_manage."},
 					"ordered_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Ordered todo ids for reorder"},
 					"operations": map[string]any{
 						"type":        "array",
@@ -1113,11 +1113,11 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "plan_manage",
-			Description: "Manage the canonical structured session plan and its revisions (list/get/get-active/save/patch/update_section/update_info/checkpoint execution operations/set-active/new/history). document is the authoritative SessionPlanDocument; markdown plan text is display/export only. save is a full-document replacement and updates the active plan when plan_id is omitted. patch/update_section/document_patch perform targeted partial edits and create normal same-plan revisions. approve_and_start applies user-owned execution choices and returns the fresh-context run request; accept_and_continue approves checkpoint review; restart_checkpoint and rewind_to_checkpoint reset execution state; start_checkpoint/continue_checkpoint mark the next checkpoint in_progress; complete_checkpoint/checkpoint_outcome/mark_needs_review/mark_blocked update deterministic execution state. update_info merges only provided modular info sections and update_checkpoint merges only provided checkpoint fields. upsert_checkpoint intentionally replaces the target checkpoint object. new is refused when an active plan exists unless override=true.",
+			Description: "Manage the canonical structured session plan, agent execution progress, and plan revisions (list/get/get-active/save/patch/update_section/update_info/checkpoint execution operations/set-active/new/history). document is the authoritative SessionPlanDocument; markdown plan text is display/export only. save is a full-document replacement and updates the active plan when plan_id is omitted. patch/update_section/document_patch perform targeted partial edits and create normal same-plan revisions. Use update_checkpoint and checkpoint fields/tasks/notes/report as the canonical agent checklist/progress surface; do not use manage_todos for agent self-tracking. approve_and_start applies user-owned execution choices and returns the fresh-context run request; accept_and_continue approves checkpoint review; restart_checkpoint and rewind_to_checkpoint reset execution state; start_checkpoint/continue_checkpoint mark the next checkpoint in_progress; complete_checkpoint/checkpoint_outcome/mark_needs_review/mark_blocked/mark_failed update deterministic execution state. update_info merges only provided modular info sections and update_checkpoint merges only provided checkpoint fields. upsert_checkpoint intentionally replaces the target checkpoint object. new is refused when an active plan exists unless override=true.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":                 map[string]any{"type": "string", "description": "Action: list|get|get-active|save|patch|update_section|update_info|upsert_checkpoint|update_checkpoint|approve_and_start|accept_and_continue|restart_checkpoint|rewind_to_checkpoint|start_checkpoint|continue_checkpoint|complete_checkpoint|checkpoint_outcome|mark_needs_review|mark_blocked|remove_checkpoint|reorder_checkpoints|set_active_checkpoint|set-active|new|history. save is a full structured-document replacement; patch/update_section/document_patch are targeted partial edits. Aliases such as active/current/use/create/update/edit/write_active are also accepted; update/edit without plan/document perform patch."},
+					"action":                 map[string]any{"type": "string", "description": "Action: list|get|get-active|save|patch|update_section|update_info|upsert_checkpoint|update_checkpoint|approve_and_start|accept_and_continue|restart_checkpoint|rewind_to_checkpoint|start_checkpoint|continue_checkpoint|complete_checkpoint|checkpoint_outcome|mark_needs_review|mark_blocked|mark_failed|remove_checkpoint|reorder_checkpoints|set_active_checkpoint|set-active|new|history. Use update_checkpoint for agent progress/checklist updates on the active checkpoint. save is a full structured-document replacement; patch/update_section/document_patch are targeted partial edits. Aliases such as active/current/use/create/update/edit/write_active are also accepted; update/edit without plan/document perform patch."},
 					"execution_granularity":  map[string]any{"type": "string", "description": "For approve_and_start: checkpointed/checkpoint_by_checkpoint preserves checkpoints; run_through/single_run collapses to one execution checkpoint."},
 					"continuation_policy":    map[string]any{"type": "string", "description": "For approve_and_start: review_each_checkpoint/pause or automatic/continue_automatically."},
 					"continue_automatically": map[string]any{"type": "boolean", "description": "For approve_and_start checkpointed execution: true auto-continues completed checkpoints; false pauses for review."},
@@ -1140,7 +1140,7 @@ func (r *Runtime) Definitions() []Definition {
 					"update_scope":           map[string]any{"type": "string", "description": "Specific plan section, phase, or checkpoint affected by this update."},
 					"scope":                  map[string]any{"type": "string", "description": "Alias for update_scope."},
 					"update_kind":            map[string]any{"type": "string", "description": "Optional update category such as checkpoint, scope_update, or full_rewrite."},
-					"checkpoint":             map[string]any{"anyOf": []any{map[string]any{"type": "boolean"}, map[string]any{"type": "object"}}, "description": "Structured checkpoint object for checkpoint document operations, or boolean marker for checkpoint-style plan update metadata. With action=update_checkpoint/patch_checkpoint, only provided checkpoint object fields are merged and omitted fields are preserved. With upsert_checkpoint/replace_checkpoint/set_checkpoint, the checkpoint object intentionally replaces the target checkpoint."},
+					"checkpoint":             map[string]any{"anyOf": []any{map[string]any{"type": "boolean"}, map[string]any{"type": "object"}}, "description": "Structured checkpoint object for checkpoint document operations, or boolean marker for checkpoint-style plan update metadata. With action=update_checkpoint/patch_checkpoint, only provided checkpoint object fields are merged and omitted fields are preserved; use fields such as status, tasks, notes, report, changed_files, and validation for agent progress/checklist tracking. With upsert_checkpoint/replace_checkpoint/set_checkpoint, the checkpoint object intentionally replaces the target checkpoint."},
 					"document":               map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument with info and checkpoints. Prefer a structured object over markdown plan text; a JSON-encoded object string is also accepted for compatibility."},
 					"document_patch":         map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Atomic structured document patch for modular info/checkpoint edits. update_info and update_checkpoint merge only provided fields and preserve omitted fields; replace/set operations intentionally replace. A JSON-encoded object string is also accepted for compatibility."},
 					"document_operation":     map[string]any{"type": "string", "description": "Structured document operation alias, such as update_info, update_checkpoint, upsert_checkpoint, start_checkpoint, continue_checkpoint, complete_checkpoint, checkpoint_outcome, accept_checkpoint_review, restart_checkpoint, rewind_to_checkpoint, reorder_checkpoints, or set_active_checkpoint."},
@@ -4990,11 +4990,14 @@ func asStringSlice(value any) []string {
 func normalizeManageTodoOwnerKind(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return "", nil
+		return pebblestore.WorkspaceTodoOwnerKindUser, nil
 	}
 	normalized, ok := pebblestore.ParseWorkspaceTodoOwnerKind(trimmed)
 	if !ok {
-		return "", fmt.Errorf("owner_kind must be user or agent")
+		return "", fmt.Errorf("owner_kind must be user")
+	}
+	if normalized == pebblestore.WorkspaceTodoOwnerKindAgent {
+		return "", errors.New("manage_todos is user-owned only; use plan_manage for agent self-tracking, execution checklists, and checkpoint progress")
 	}
 	return normalized, nil
 }
@@ -5589,23 +5592,22 @@ func (r *Runtime) executeManageWorktree(scope WorkspaceScope, args map[string]an
 }
 
 func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) (string, error) {
-	if r == nil || r.todos == nil {
-		return executeStubTool("manage_todos", args)
-	}
 	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
 	if action == "" {
 		action = "list"
+	}
+	ownerKind, err := normalizeManageTodoOwnerKind(asString(args["owner_kind"]))
+	if err != nil {
+		return "", err
+	}
+	if r == nil || r.todos == nil {
+		return executeStubTool("manage_todos", args)
 	}
 	requestedWorkspacePath := strings.TrimSpace(asString(args["workspace_path"]))
 	if requestedWorkspacePath == "" {
 		requestedWorkspacePath = "."
 	}
 	workspacePath, err := resolveWorkspacePath(scope, requestedWorkspacePath)
-	if err != nil {
-		return "", err
-	}
-
-	ownerKind, err := normalizeManageTodoOwnerKind(asString(args["owner_kind"]))
 	if err != nil {
 		return "", err
 	}

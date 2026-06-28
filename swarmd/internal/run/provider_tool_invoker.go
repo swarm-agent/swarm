@@ -147,7 +147,19 @@ func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) 
 	if strings.EqualFold(strings.TrimSpace(call.Name), "plan_manage") && strings.EqualFold(strings.TrimSpace(mapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
 		return true
 	}
+	if strings.EqualFold(strings.TrimSpace(call.Name), "plan_manage") && providerManagedTerminalPlanNextAction(mapString(payload, "next_action")) {
+		return true
+	}
 	return false
+}
+
+func providerManagedTerminalPlanNextAction(nextAction string) bool {
+	switch strings.ToLower(strings.TrimSpace(nextAction)) {
+	case "await_review", "plan_complete", "stopped":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) executeProviderManagedToolCall(ctx context.Context, config providerToolInvokerConfig, call tool.Call, metadata map[string]any) (tool.Result, error) {

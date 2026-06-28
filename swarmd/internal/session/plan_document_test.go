@@ -316,6 +316,37 @@ func TestApplyPlanDocumentPatchInfoJSONPresenceAllowsClearingList(t *testing.T) 
 	}
 }
 
+func TestApplyPlanDocumentPatchUpdateCheckpointTasksPreservesMetadata(t *testing.T) {
+	var patch PlanDocumentPatch
+	if err := json.Unmarshal([]byte(`{"operation":"update_checkpoint","checkpoint_id":"cp-1","checkpoint":{"tasks":["[x] Inspect plan_manage support","[ ] Add guardrails"],"notes":"started guardrails"}}`), &patch); err != nil {
+		t.Fatalf("unmarshal patch: %v", err)
+	}
+	doc, err := ApplyPlanDocumentPatch("plan-one", "One Plan", &pebblestore.SessionPlanDocument{
+		ID: "plan-one",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID:                 "cp-1",
+			Title:              "Guardrails",
+			Status:             PlanCheckpointStatusInProgress,
+			Tasks:              []string{"Inspect plan_manage support", "Add guardrails"},
+			AcceptanceCriteria: []string{"progress stays in plan_manage"},
+		}},
+		ActiveCheckpointID: "cp-1",
+	}, patch)
+	if err != nil {
+		t.Fatalf("apply patch: %v", err)
+	}
+	checkpoint := doc.Checkpoints[0]
+	if checkpoint.Status != PlanCheckpointStatusInProgress || checkpoint.Title != "Guardrails" || checkpoint.Notes != "started guardrails" {
+		t.Fatalf("checkpoint metadata not preserved/updated: %#v", checkpoint)
+	}
+	if len(checkpoint.Tasks) != 2 || checkpoint.Tasks[0] != "[x] Inspect plan_manage support" || checkpoint.Tasks[1] != "[ ] Add guardrails" {
+		t.Fatalf("checkpoint task checklist not updated: %#v", checkpoint.Tasks)
+	}
+	if len(checkpoint.AcceptanceCriteria) != 1 || checkpoint.AcceptanceCriteria[0] != "progress stays in plan_manage" {
+		t.Fatalf("acceptance criteria not preserved: %#v", checkpoint.AcceptanceCriteria)
+	}
+}
+
 func TestApplyPlanDocumentPatchIsAtomicOnInvalidBatch(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()

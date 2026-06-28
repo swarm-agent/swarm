@@ -211,6 +211,98 @@ test('session_view active plan is normalized with execution data for Desktop sel
 })
 
 
+test('Desktop plan execution view derives terminal status from durable plan state, not local todo inference', () => {
+  const state = createEmptyDesktopV3CacheState()
+  desktopV3CacheReducer(state, {
+    type: 'planSnapshot.apply',
+    sessionId: sessionA.id,
+    hasActivePlan: true,
+    activePlan: {
+      id: 'durable-plan',
+      title: 'Durable plan',
+      plan: '# Durable',
+      status: 'approved',
+      approvalState: 'approved',
+      updatedAt: 42,
+      document: {
+        id: 'durable-plan',
+        title: 'Durable plan',
+        status: 'approved',
+        schemaVersion: '',
+        revisionId: '',
+        info: { goal: 'Durable state', scope: '', context: '', decisions: [], constraints: [], assumptions: [], openQuestions: [], relevantFiles: [], successCriteria: [], validationStrategy: '' },
+        executionPolicy: { mode: 'review_each_checkpoint', shape: 'checkpointed' },
+        executionState: {
+          status: 'waiting_review',
+          activeAttemptId: 'cp-1:attempt-1',
+          parentSessionId: sessionA.id,
+          currentSessionId: 'session-fresh',
+          currentRunId: 'run-fresh',
+          lastCheckpointId: 'cp-1',
+          lastAttemptId: 'cp-1:attempt-1',
+          lastOutcome: 'completed',
+          startedAt: 1,
+          updatedAt: 2,
+          completedAt: 2,
+        },
+        checkpoints: [{
+          id: 'cp-1',
+          title: 'Needs user review',
+          status: 'completed',
+          objective: '',
+          tasks: [],
+          acceptanceCriteria: [],
+          notes: '',
+          report: 'done',
+          result: '',
+          changedFiles: [],
+          validation: [],
+          attemptId: 'cp-1:attempt-1',
+          runId: 'run-fresh',
+          sessionId: 'session-fresh',
+          startedAt: 1,
+          completedAt: 2,
+          review: { status: 'pending', reviewerId: '', reviewerType: '', result: '', notes: '', reviewedAt: 0 },
+          attempts: [{ id: 'cp-1:attempt-1', checkpointId: 'cp-1', status: 'completed', outcome: 'completed', runId: 'run-fresh', sessionId: 'session-fresh', parentSessionId: sessionA.id, startedAt: 1, completedAt: 2, report: 'done', result: '', changedFiles: [], validation: [] }],
+          order: 1,
+        }, {
+          id: 'cp-2',
+          title: 'Later checkpoint',
+          status: 'pending',
+          objective: '',
+          tasks: [],
+          acceptanceCriteria: [],
+          notes: '',
+          report: '',
+          result: '',
+          changedFiles: [],
+          validation: [],
+          attemptId: '',
+          runId: '',
+          sessionId: '',
+          startedAt: 0,
+          completedAt: 0,
+          review: null,
+          attempts: [],
+          order: 2,
+        }],
+        activeCheckpointId: 'cp-1',
+        renderedText: '',
+        displayText: '',
+      },
+    },
+    planRevisions: [],
+  })
+
+  const view = selectDesktopPlanExecutionView(state, sessionA.id)
+  assert.equal(view?.status, 'waiting_review')
+  assert.equal(view?.reviewRequired, true)
+  assert.equal(view?.activeCheckpointId, 'cp-1')
+  assert.equal(view?.activeCheckpoint?.status, 'completed')
+  assert.equal(view?.completed, false)
+})
+
+
 test('plan document alone does not expose Desktop plan execution view without authoritative active-plan metadata', () => {
   const state = createEmptyDesktopV3CacheState()
   state.plansBySession[sessionA.id] = {
@@ -294,6 +386,45 @@ test('planSnapshot.apply true exposes Desktop plan execution view for live plan 
   const view = selectDesktopPlanExecutionView(state, sessionA.id)
   assert.equal(view?.plan.id, 'live-plan')
   assert.equal(view?.activeCheckpointId, 'cp-1')
+})
+
+
+test('session.plan.saved realtime event hydrates Desktop plan execution view from durable payload', () => {
+  const state = createEmptyDesktopV3CacheState()
+  applyRealtimeFrame(state, { frame: eventFrame('session.plan.saved', {
+    id: 'evt-plan-saved',
+    session_id: sessionA.id,
+    seq: 10,
+    event_type: 'session.plan.saved',
+    payload: {
+      session_id: sessionA.id,
+      has_active_plan: true,
+      active_plan: {
+        id: 'event-plan',
+        title: 'Event plan',
+        plan: '# Event',
+        status: 'approved',
+        approval_state: 'approved',
+        updated_at: 10,
+        document: {
+          id: 'event-plan',
+          title: 'Event plan',
+          status: 'approved',
+          execution_policy: { mode: 'automatic', shape: 'checkpointed' },
+          execution_state: { status: 'in_progress', active_attempt_id: 'attempt-1', current_run_id: 'run-1' },
+          checkpoints: [{ id: 'cp-1', title: 'Start', status: 'in_progress', attempt_id: 'attempt-1', run_id: 'run-1' }],
+          active_checkpoint_id: 'cp-1',
+        },
+      },
+    },
+    ts_unix_ms: 10,
+  }, 'cursor-plan') })
+
+  const view = selectDesktopPlanExecutionView(state, sessionA.id)
+  assert.equal(view?.plan.id, 'event-plan')
+  assert.equal(view?.policyMode, 'automatic')
+  assert.equal(view?.activeCheckpointId, 'cp-1')
+  assert.equal(view?.activeCheckpoint?.status, 'in_progress')
 })
 
 

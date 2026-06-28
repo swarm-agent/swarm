@@ -261,6 +261,7 @@ function formatSettingsChangeSummary(input: {
 }
 
 type DesktopV3RenderItem =
+  | { type: 'plan-break'; message: MessageSnapshot; headline: string; details: string[]; timelineSeq?: number }
   | { type: 'message'; message: MessageSnapshot; timelineSeq?: number }
   | { type: 'pending-user'; message: PendingUserMessage; timelineSeq?: number }
   | { type: 'live-assistant'; id: string; content: string; timelineSeq?: number }
@@ -460,6 +461,23 @@ export function isDesktopV3ManualCompactionAckMessage(message: MessageSnapshot):
   return message.content.trim().startsWith('Manual context compact complete (Compact #')
 }
 
+export function isDesktopV3PlanExecutionBreakMessage(message: MessageSnapshot): boolean {
+  if ((message.role || '').trim().toLowerCase() !== 'system') return false
+  const metadataSource = typeof message.metadata?.source === 'string'
+    ? message.metadata.source.trim().toLowerCase()
+    : ''
+  const metadataKind = typeof message.metadata?.kind === 'string'
+    ? message.metadata.kind.trim().toLowerCase()
+    : ''
+  return metadataSource === 'plan_execution_lifecycle' || metadataKind === 'plan_execution_break'
+}
+
+function buildDesktopV3PlanExecutionBreakItem(message: MessageSnapshot): Extract<DesktopV3RenderItem, { type: 'plan-break' }> {
+  const lines = message.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const headline = lines[0] || 'Plan execution updated'
+  return { type: 'plan-break', message, headline, details: lines.slice(1), timelineSeq: message.global_seq }
+}
+
 export function buildDesktopV3LiveRunRenderItems(run: LiveRunOverlay, options: { assistantMessages?: Set<string>; reasoningMessages?: Set<string> } = {}): DesktopV3RenderItem[] {
   const items: DesktopV3RenderItem[] = []
   for (const segment of run.assistantSegments ?? []) {
@@ -501,7 +519,11 @@ export function buildDesktopV3ConversationRenderItems(renderedMessages: Rendered
   const assistantMessages = canonicalContentSet(committedMessages, 'assistant')
   const reasoningMessages = canonicalContentSet(committedMessages, 'reasoning')
   const items: DesktopV3RenderItem[] = [
-    ...committedMessages.map((message) => ({ type: 'message' as const, message, timelineSeq: message.global_seq })),
+    ...committedMessages.map((message) => (
+      isDesktopV3PlanExecutionBreakMessage(message)
+        ? buildDesktopV3PlanExecutionBreakItem(message)
+        : { type: 'message' as const, message, timelineSeq: message.global_seq }
+    )),
     ...renderedMessages.pendingUser.map((message) => ({ type: 'pending-user' as const, message, timelineSeq: message.createdAt })),
   ]
   for (const run of renderedMessages.liveRuns) {
@@ -1053,7 +1075,7 @@ export function DesktopV3ExistingConversationPane({
                 ) : null}
                 {renderItems.map((item, index) => (
                   <DesktopV3RenderItemView
-                    key={item.type === 'message' ? item.message.id : item.type === 'pending-user' ? item.message.clientRequestId : item.id}
+                    key={item.type === 'message' || item.type === 'plan-break' ? item.message.id : item.type === 'pending-user' ? item.message.clientRequestId : item.id}
                     item={item}
                     thinkingTagsEnabled={thinkingTagsEnabled}
                     timerNow={timerNow}
@@ -1148,6 +1170,8 @@ export function DesktopV3ExistingConversationPane({
 
 function DesktopV3RenderItemView({ item, thinkingTagsEnabled, timerNow }: { item: DesktopV3RenderItem; thinkingTagsEnabled: boolean; timerNow: number; index: number }) {
   switch (item.type) {
+    case 'plan-break':
+      return <DesktopV3PlanExecutionBreak item={item} />
     case 'message':
       return <DesktopV3CommittedMessage message={item.message} thinkingTagsEnabled={thinkingTagsEnabled} timerNow={timerNow} />
     case 'pending-user':
@@ -1163,6 +1187,21 @@ function DesktopV3RenderItemView({ item, thinkingTagsEnabled, timerNow }: { item
     default:
       return null
   }
+}
+
+function DesktopV3PlanExecutionBreak({ item }: { item: Extract<DesktopV3RenderItem, { type: 'plan-break' }> }) {
+  return (
+    <div className="flex justify-center py-1" data-testid="desktop-v3-plan-execution-break">
+      <div className="max-w-[min(100%,42rem)] rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-center shadow-sm">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-primary)]">{item.headline}</div>
+        {item.details.length > 0 ? (
+          <div className="mt-1.5 grid gap-0.5 text-xs leading-5 text-[var(--app-text-muted)]">
+            {item.details.map((detail, index) => <div key={`${item.message.id}:detail:${index}`}>{detail}</div>)}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
 }
 
 function DesktopV3CommittedMessage({ message, thinkingTagsEnabled, timerNow }: { message: MessageSnapshot; thinkingTagsEnabled: boolean; timerNow: number }) {

@@ -148,28 +148,9 @@ function ActiveCheckpointCard({ view, checkpoints, completedCount, totalCount, a
   )
 }
 
-function PlanModeSwitch({ checked, busy, disabled, onToggle }: { checked: boolean; busy: boolean; disabled: boolean; onToggle: () => void }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      disabled={disabled || busy}
-      onClick={onToggle}
-      className={cn(
-        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60',
-        checked ? 'border-[var(--app-primary-border)] bg-[var(--app-primary)] shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-primary)_18%,transparent)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]',
-      )}
-    >
-      <span className={cn('inline-block size-3.5 rounded-full bg-[var(--app-surface)] shadow-sm transition', checked ? 'translate-x-[18px]' : 'translate-x-1')} />
-    </button>
-  )
-}
-
 function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: DesktopPlanExecutionSidebarProps & { view: DesktopPlanExecutionView }) {
   const checkpointId = view.activeCheckpointId || view.activeCheckpoint?.id || ''
   const automatic = view.policyMode === 'automatic'
-  const autoBusy = busyAction === actionBusyKey('set_automatic_mode', checkpointId)
   const acceptBusy = busyAction === actionBusyKey('accept_checkpoint', checkpointId)
   const acceptContinueBusy = busyAction === actionBusyKey('accept_and_continue', checkpointId)
   const continueBusy = busyAction === actionBusyKey('continue_checkpoint', checkpointId)
@@ -177,22 +158,27 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
   const canAccept = Boolean(onAction && checkpointId && view.reviewRequired && !view.blocked && !view.failed && !view.completed && !canStop)
   const canContinue = Boolean(onAction && checkpointId && !view.reviewRequired && !view.blocked && !view.failed && !view.completed && !canStop && checkpointIsRunnable(view.activeCheckpoint))
   const canRestart = Boolean(onAction && checkpointId && !view.completed && !canStop)
-  const canToggleAutomatic = Boolean(onAction && view.policyShape !== 'single_run' && !view.completed && !canStop)
+
+  if (automatic && !view.reviewRequired && !view.blocked && !view.failed && !view.completed) {
+    return (
+      <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.14)]">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Actions / Plan Mode</div>
+        <div className="mt-3 rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-3 py-2.5">
+          <div className="text-sm font-semibold text-[var(--app-text)]">Automatic mode on</div>
+          <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
+            Execution will continue until the plan completes or stops for review, a blocker, or a failure.
+          </p>
+        </div>
+      </section>
+    )
+  }
 
   return (
     <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.14)]">
       <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Actions / Plan Mode</div>
-      <div className="mt-3 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-sm font-medium text-[var(--app-text)]">Automatic mode</div>
-          <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-[var(--app-text-muted)]">Advance automatically when the plan policy allows it.</p>
-        </div>
-        <PlanModeSwitch
-          checked={automatic}
-          busy={autoBusy}
-          disabled={!canToggleAutomatic}
-          onToggle={() => void onAction?.({ action: 'set_automatic_mode', checkpointId, continueAutomatically: !automatic })}
-        />
+      <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
+        <div className="text-sm font-medium text-[var(--app-text)]">Manual review mode</div>
+        <p className="mt-0.5 text-xs leading-5 text-[var(--app-text-muted)]">Use the available controls when execution is paused for review or ready for the next checkpoint.</p>
       </div>
 
       <div className="mt-3 grid gap-2">

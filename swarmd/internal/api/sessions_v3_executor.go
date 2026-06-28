@@ -1111,6 +1111,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	}
 	input := append([]map[string]any(nil), baseReq.Input...)
 	identicalCalls := sessionV3ProviderIdenticalToolCallTracker{}
+	finalizingPlanTerminal := false
 	for step := 1; ; step++ {
 		toolsEnabled := len(baseReq.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none")
 		var toolInvoker provideriface.ToolInvoker
@@ -1167,6 +1168,12 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			}
 			return sessionV3ProviderLoopResult{Response: response, FinalContent: stepText, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd()}, nil
 		}
+		if finalizingPlanTerminal && len(response.FunctionCalls) > 0 {
+			return sessionV3ProviderLoopResult{}, errors.New("v3 provider returned tool calls after terminal plan finalization started")
+		}
+		if finalizingPlanTerminal && response.RestartTurn {
+			return sessionV3ProviderLoopResult{}, errors.New("v3 provider requested restart after terminal plan finalization")
+		}
 		classification := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{
 			ProviderID:       runner.ID(),
 			StopReason:       response.StopReason,
@@ -1184,6 +1191,23 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 					return sessionV3ProviderLoopResult{}, err
 				}
 				resolved = refreshed
+				if terminal, ok := e.sessionV3LatestTerminalPlanToolPayload(job); ok {
+					input = e.sessionV3ProviderContinuationInput(job)
+					if len(input) == 0 {
+						return sessionV3ProviderLoopResult{}, errors.New("terminal plan finalization requested but continuation input is empty")
+					}
+					input = append(input, sessionsV3ProviderTerminalPlanFinalizationInput(terminal))
+					baseReq, err = e.sessionV3ProviderBaseRequest(job, resolved, input)
+					if err != nil {
+						return sessionV3ProviderLoopResult{}, err
+					}
+					baseReq.Tools = nil
+					baseReq.ToolChoice = "none"
+					baseReq.ToolInvoker = nil
+					baseReq.ParallelToolCalls = false
+					finalizingPlanTerminal = true
+					continue
+				}
 				input, err = e.sessionV3ProviderRestartInput(ctx, job, resolved, "")
 				if err != nil {
 					return sessionV3ProviderLoopResult{}, err
@@ -1248,6 +1272,15 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if len(input) == 0 {
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider continuation input is empty after tool execution")
 		}
+		if terminal, ok := sessionsV3ProviderTerminalPlanToolResult(toolResults); ok {
+			input = append(input, sessionsV3ProviderTerminalPlanFinalizationInput(terminal))
+			baseReq.Tools = nil
+			baseReq.ToolChoice = "none"
+			baseReq.ToolInvoker = nil
+			baseReq.ParallelToolCalls = false
+			finalizingPlanTerminal = true
+			continue
+		}
 		if restartAfterTools {
 			refreshed, err := e.resolveSessionV3Runtime(job)
 			if err != nil {
@@ -1267,6 +1300,97 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			}
 		}
 	}
+}
+
+type sessionV3ProviderTerminalPlanResult struct {
+	Action           string
+	NextAction       string
+	CheckpointID     string
+	NextCheckpointID string
+	PlanID           string
+	PlanTitle        string
+	Summary          string
+}
+
+func sessionsV3ProviderTerminalPlanToolResult(results []provideriface.ToolExecutionResult) (sessionV3ProviderTerminalPlanResult, bool) {
+	for i := len(results) - 1; i >= 0; i-- {
+		result := results[i]
+		if !strings.EqualFold(strings.TrimSpace(result.Name), "plan_manage") {
+			continue
+		}
+		payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel, result.Error)))
+		if terminal, ok := sessionsV3ProviderTerminalPlanPayload(payload); ok {
+			return terminal, true
+		}
+	}
+	return sessionV3ProviderTerminalPlanResult{}, false
+}
+
+func sessionsV3ProviderTerminalPlanPayload(payload map[string]any) (sessionV3ProviderTerminalPlanResult, bool) {
+	if payload == nil {
+		return sessionV3ProviderTerminalPlanResult{}, false
+	}
+	nextAction := strings.TrimSpace(sessionsV3MapString(payload, "next_action"))
+	if !sessionsV3ProviderTerminalPlanNextAction(nextAction) {
+		return sessionV3ProviderTerminalPlanResult{}, false
+	}
+	terminal := sessionV3ProviderTerminalPlanResult{
+		Action:           strings.TrimSpace(sessionsV3MapString(payload, "action")),
+		NextAction:       nextAction,
+		CheckpointID:     strings.TrimSpace(sessionsV3MapString(payload, "checkpoint_id")),
+		NextCheckpointID: strings.TrimSpace(sessionsV3MapString(payload, "next_checkpoint_id")),
+		Summary:          strings.TrimSpace(sessionsV3MapString(payload, "summary")),
+	}
+	if plan, ok := payload["plan"].(map[string]any); ok {
+		terminal.PlanID = strings.TrimSpace(sessionsV3MapString(plan, "id"))
+		terminal.PlanTitle = strings.TrimSpace(sessionsV3MapString(plan, "title"))
+	}
+	if terminal.CheckpointID == "" {
+		terminal.CheckpointID = terminal.NextCheckpointID
+	}
+	return terminal, true
+}
+
+func sessionsV3ProviderTerminalPlanNextAction(nextAction string) bool {
+	switch strings.ToLower(strings.TrimSpace(nextAction)) {
+	case "await_review", "plan_complete", "stopped":
+		return true
+	default:
+		return false
+	}
+}
+
+func sessionsV3ProviderTerminalPlanFinalizationInput(terminal sessionV3ProviderTerminalPlanResult) map[string]any {
+	lines := []string{
+		"[plan-execution] The plan/checkpoint lifecycle reached a terminal state for this turn.",
+		"Do not call tools. Do not start another checkpoint. Provide the user-facing final response now.",
+	}
+	switch strings.ToLower(strings.TrimSpace(terminal.NextAction)) {
+	case "await_review":
+		lines = append(lines, "State: checkpoint completed and waiting for checkpoint review.")
+	case "plan_complete":
+		lines = append(lines, "State: final checkpoint completed and the plan is complete.")
+	case "stopped":
+		lines = append(lines, "State: plan execution stopped.")
+	}
+	if terminal.PlanTitle != "" || terminal.PlanID != "" {
+		plan := strings.TrimSpace(terminal.PlanTitle)
+		if terminal.PlanID != "" {
+			if plan != "" {
+				plan += " "
+			}
+			plan += "(" + terminal.PlanID + ")"
+		}
+		lines = append(lines, "Plan: "+plan)
+	}
+	if terminal.CheckpointID != "" {
+		lines = append(lines, "Checkpoint: "+terminal.CheckpointID)
+	}
+	if terminal.Summary != "" {
+		lines = append(lines, "Tool summary: "+terminal.Summary)
+	}
+	lines = append(lines, "Keep the response concise; summarize what completed and ask whether the user needs changes or wants to continue.")
+	return map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": strings.Join(lines, "\n")}}}
 }
 
 type sessionV3ProviderIdenticalToolCallTracker struct {
@@ -1511,6 +1635,19 @@ func sessionsV3DecodeToolPayload(raw string) map[string]any {
 }
 
 func (e *sessionV3Executor) sessionV3LatestCheckpointRunToolPayload(job sessionV3ExecutorJob) map[string]any {
+	payload := e.sessionV3LatestPlanManageToolPayload(job)
+	if payload == nil || !strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+		return nil
+	}
+	return payload
+}
+
+func (e *sessionV3Executor) sessionV3LatestTerminalPlanToolPayload(job sessionV3ExecutorJob) (sessionV3ProviderTerminalPlanResult, bool) {
+	payload := e.sessionV3LatestPlanManageToolPayload(job)
+	return sessionsV3ProviderTerminalPlanPayload(payload)
+}
+
+func (e *sessionV3Executor) sessionV3LatestPlanManageToolPayload(job sessionV3ExecutorJob) map[string]any {
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return nil
 	}
@@ -1525,9 +1662,12 @@ func (e *sessionV3Executor) sessionV3LatestCheckpointRunToolPayload(job sessionV
 		}
 		payload := sessionsV3DecodeToolPayload(message.Content)
 		if record, ok := sessionsV3DecodeProviderToolResultRecord(message.Content); ok {
+			if !strings.EqualFold(strings.TrimSpace(record.ToolName), "plan_manage") {
+				continue
+			}
 			payload = sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(record.CompletedOutput, record.Output)))
 		}
-		if payload == nil || !strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+		if payload == nil {
 			continue
 		}
 		return payload

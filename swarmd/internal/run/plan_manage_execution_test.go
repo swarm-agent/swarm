@@ -2,6 +2,7 @@ package run
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -82,6 +83,40 @@ func TestExecutePlanManageUpdateExecutionPolicy(t *testing.T) {
 	}
 	if payload.Plan.Document == nil || payload.Plan.Document.ExecutionPolicy.Mode != sessionruntime.PlanExecutionPolicyModeAutomatic || payload.Plan.Document.ExecutionPolicy.Shape != sessionruntime.PlanExecutionShapeCheckpointed {
 		t.Fatalf("execution policy = %#v", payload.Plan.Document)
+	}
+}
+
+func TestExecutePlanManageEmitsPlanLifecycleSystemMessage(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-lifecycle", "Lifecycle Plan", "# Lifecycle", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Model", Status: sessionruntime.PlanCheckpointStatusPending}},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save lifecycle plan: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"start_checkpoint","attempt_id":"attempt-1","run_id":"run-1","run_session_id":"child-session","parent_session_id":"parent-session","started_at":1234}`, "")
+	if err != nil {
+		t.Fatalf("start checkpoint: %v output=%s", err, raw)
+	}
+	messages, err := sessionSvc.ListMessages(sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("message count = %d, want 1: %#v", len(messages), messages)
+	}
+	message := messages[0]
+	if message.Role != "system" || message.Metadata["source"] != PlanExecutionLifecycleMessageSource || message.Metadata["kind"] != "plan_execution_break" {
+		t.Fatalf("message role/metadata = role %q metadata %#v", message.Role, message.Metadata)
+	}
+	if !strings.Contains(message.Content, "Checkpoint started") || !strings.Contains(message.Content, "Checkpoint: cp-1 Model") || !strings.Contains(message.Content, "Fresh context") {
+		t.Fatalf("message content = %q", message.Content)
 	}
 }
 
@@ -347,15 +382,16 @@ func TestExecutePlanManageNeedsReviewAndBlockedStopAdvancement(t *testing.T) {
 		t.Fatalf("mark needs review: %v output=%s", err, raw)
 	}
 	var reviewPayload struct {
-		NextAction string `json:"next_action"`
-		Plan       struct {
+		NextAction       string `json:"next_action"`
+		NextCheckpointID string `json:"next_checkpoint_id"`
+		Plan             struct {
 			Document *pebblestore.SessionPlanDocument `json:"document"`
 		} `json:"plan"`
 	}
 	if err := json.Unmarshal([]byte(raw), &reviewPayload); err != nil {
 		t.Fatalf("decode review payload: %v", err)
 	}
-	if reviewPayload.NextAction != "await_review" || reviewPayload.Plan.Document.ActiveCheckpointID != "cp-1" || reviewPayload.Plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusNeedsReview {
+	if reviewPayload.NextAction != "await_review" || reviewPayload.NextCheckpointID != "cp-1" || reviewPayload.Plan.Document.ActiveCheckpointID != "cp-1" || reviewPayload.Plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusNeedsReview || reviewPayload.Plan.Document.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusPending {
 		t.Fatalf("review payload=%s document=%#v", raw, reviewPayload.Plan.Document)
 	}
 

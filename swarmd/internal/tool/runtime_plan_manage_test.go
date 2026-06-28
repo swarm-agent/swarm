@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -36,6 +37,50 @@ func TestPlanManageDefinitionIncludesExplicitNewOverride(t *testing.T) {
 		if _, ok := params[name].(map[string]any); !ok {
 			t.Fatalf("%s property missing or wrong type: %T", name, params[name])
 		}
+	}
+}
+
+func TestToolDefinitionsRouteAgentProgressToPlanManageNotManageTodos(t *testing.T) {
+	planDefinition := mustFindDefinition(t, "plan_manage")
+	if !containsAll(planDefinition.Description, "agent execution progress", "canonical agent checklist/progress surface", "do not use manage_todos") {
+		t.Fatalf("plan_manage description %q does not advertise canonical agent progress tracking", planDefinition.Description)
+	}
+	planParams, ok := planDefinition.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("plan_manage properties type = %T", planDefinition.Parameters["properties"])
+	}
+	planActionDescription, _ := planParams["action"].(map[string]any)["description"].(string)
+	if !containsAll(planActionDescription, "update_checkpoint", "agent progress/checklist", "mark_failed") {
+		t.Fatalf("plan_manage action description %q does not point progress updates at update_checkpoint", planActionDescription)
+	}
+	checkpointDescription, _ := planParams["checkpoint"].(map[string]any)["description"].(string)
+	if !containsAll(checkpointDescription, "tasks", "notes", "agent progress/checklist") {
+		t.Fatalf("plan_manage checkpoint description %q does not advertise checkpoint progress fields", checkpointDescription)
+	}
+
+	todoDefinition := mustFindDefinition(t, "manage_todos")
+	if !containsAll(todoDefinition.Description, "user-owned", "Do not use this for agent self-tracking", "use plan_manage for agent progress") {
+		t.Fatalf("manage_todos description %q does not restrict agent progress tracking", todoDefinition.Description)
+	}
+	todoParams, ok := todoDefinition.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("manage_todos properties type = %T", todoDefinition.Parameters["properties"])
+	}
+	ownerDescription, _ := todoParams["owner_kind"].(map[string]any)["description"].(string)
+	if !containsAll(ownerDescription, "user", "agent self-tracking belongs in plan_manage") {
+		t.Fatalf("manage_todos owner_kind description %q does not steer agents away", ownerDescription)
+	}
+}
+
+func TestManageTodosRejectsAgentOwnerKindForSelfTracking(t *testing.T) {
+	rt := NewRuntime(1)
+	_, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), WorkspaceScope{PrimaryPath: "."}, Call{
+		CallID:    "call-manage-todos-agent",
+		Name:      "manage_todos",
+		Arguments: `{"action":"create","owner_kind":"agent","text":"agent checklist"}`,
+	})
+	if err == nil || !strings.Contains(err.Error(), "manage_todos is user-owned only") || !strings.Contains(err.Error(), "use plan_manage") {
+		t.Fatalf("manage_todos owner_kind=agent error = %v, want plan_manage guardrail", err)
 	}
 }
 

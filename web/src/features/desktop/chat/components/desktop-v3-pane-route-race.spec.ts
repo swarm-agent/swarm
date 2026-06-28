@@ -2,7 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  buildDesktopV3ConversationRenderItems,
   buildDesktopV3LiveRunRenderItems,
+  isDesktopV3PlanExecutionBreakMessage,
   completeDesktopV3ExistingMessage,
   resolveDesktopV3AgentModelLock,
   resolveDesktopV3StopRunRequest,
@@ -157,6 +159,27 @@ test('Desktop V3 stop rejects unsupported routes instead of calling another stop
     /Desktop stop only supports the primary self V3 target/,
   )
 })
+
+test('Desktop V3 plan lifecycle messages render as conversation breaks', () => {
+  const message = {
+    id: 'plan-break-1',
+    session_id: 'session-a',
+    global_seq: 7,
+    role: 'system',
+    content: 'Checkpoint started\nPlan: Demo plan (plan-1)\nCheckpoint: cp-1 Build UI\nFresh context: previous checkpoint context cleared for this run.',
+    metadata: { source: 'plan_execution_lifecycle', kind: 'plan_execution_break' },
+    created_at: 7,
+  }
+
+  assert.equal(isDesktopV3PlanExecutionBreakMessage(message), true)
+  const items = buildDesktopV3ConversationRenderItems({ committed: [message], pendingUser: [], liveRuns: [], runIntents: [] })
+  assert.equal(items[0]?.type, 'plan-break')
+  if (items[0]?.type === 'plan-break') {
+    assert.equal(items[0].headline, 'Checkpoint started')
+    assert.equal(items[0].details.includes('Checkpoint: cp-1 Build UI'), true)
+  }
+})
+
 
 test('Desktop V3 live run render items preserve backend event order', () => {
   const items = buildDesktopV3LiveRunRenderItems({

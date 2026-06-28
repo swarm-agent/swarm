@@ -1297,6 +1297,10 @@ func (s *Server) handleSessionV3PrimaryPlanExecution(w http.ResponseWriter, r *h
 		s.hub.Publish(*event)
 	}
 	payload := sessionsV3PlanExecutionPayload(action, updateSummary, planID, responseCheckpointID, responseAttemptID, saved)
+	if err := s.appendSessionsV3PlanExecutionLifecycleSystemMessage(principal, sessionID, action, saved, payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, payload)
 }
 

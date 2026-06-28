@@ -379,6 +379,8 @@ export interface SessionEventPayload {
   permission?: unknown
   permission_summary?: unknown
   summary?: unknown
+  has_active_plan?: boolean
+  active_plan?: unknown | null
   message_id?: string
   role?: string
   run_id?: string
