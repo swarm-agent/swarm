@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
-import { buildSidebarSessionTree, desktopSessionRecordFromV3SidebarRow } from '../layout/desktop-app-page'
+import { buildSidebarSessionTree, desktopSessionRecordFromV3SidebarRow, desktopSidebarWorkspacePathForSession } from '../layout/desktop-app-page'
 import { selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
 import { selectSession } from './desktop-v3-cache-wire'
 import { hydrateResponseToAction } from './desktop-v3-cache-wire'
@@ -77,6 +77,36 @@ test('Desktop V3 sidebar render includes bootstrapped session outside launcher w
 
   assert.deepEqual(renderedNodes.map((node) => node.session.id), [sessionA.id])
   assert.equal(launcherWorkspacePaths.includes(renderedNodes[0].session.workspacePath), false)
+})
+
+test('Desktop V3 worktree sidebar uses source workspace metadata instead of runtime path', () => {
+  const record = desktopSessionRecordFromV3SidebarRow({
+    sessionId: 'worktree-session',
+    record: {
+      kind: 'full',
+      session: {
+        ...sessionA,
+        id: 'worktree-session',
+        workspace_path: '/worktrees/swarm-go/agent/feature',
+        workspace_name: 'swarm-go',
+        worktree_enabled: true,
+        worktree_root_path: '/worktrees/swarm-go/agent/feature',
+        metadata: {
+          swarm_v3_source_workspace_path: '/workspaces/swarm-go',
+          local_workspace_binding_id: 'binding-source',
+        },
+      },
+      needsHydrate: false,
+    },
+    projection: undefined,
+    runIntents: {},
+    currentRunIntent: undefined,
+    pendingPermissions: [],
+    pendingPermissionCount: 0,
+  })
+  const workspacePathByBinding = new Map([['binding-source', '/workspaces/swarm-go']])
+
+  assert.equal(desktopSidebarWorkspacePathForSession(record, workspacePathByBinding), '/workspaces/swarm-go')
 })
 
 test('metadata-only bootstrap after hydrate preserves messages', () => {
