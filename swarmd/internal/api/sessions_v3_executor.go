@@ -939,7 +939,7 @@ func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
-	return e.providerAssistantResponse(ctx, job, resolved)
+	return e.providerAssistantResponse(ctx, job, resolved, "", false)
 }
 
 func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, cause error) (sessionV3AssistantResponse, error) {
@@ -950,11 +950,14 @@ func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx contex
 	if err != nil {
 		return sessionV3AssistantResponse{}, fmt.Errorf("v3 context overflow compact failed: %w", err)
 	}
-	content := strings.TrimSpace(result.AssistantMessage.Content)
-	if content == "" {
-		content = "Context overflow compact complete. Continue from the compacted checkpoint."
+	if strings.TrimSpace(result.AssistantMessage.Content) == "" {
+		return sessionV3AssistantResponse{}, errors.New("v3 context overflow compact returned empty checkpoint acknowledgement")
 	}
-	return sessionV3AssistantResponse{Content: content, AgentName: result.Agent, ResolvedAgentName: result.Agent, ExecutorKind: "v3_provider", ProviderID: "compact", Model: result.Model, StopReason: "stop"}, nil
+	resolved, err := e.resolveSessionV3Runtime(job)
+	if err != nil {
+		return sessionV3AssistantResponse{}, fmt.Errorf("v3 context overflow compact continuation runtime resolve failed: %w", err)
+	}
+	return e.providerAssistantResponse(ctx, job, resolved, "overflow-continuation", true)
 }
 
 func sessionV3IsContextOverflowDiagnostic(detail string) bool {
@@ -962,7 +965,7 @@ func sessionV3IsContextOverflowDiagnostic(detail string) bool {
 	return strings.Contains(normalized, "context_length_exceeded") || strings.Contains(normalized, "context window") || strings.Contains(normalized, "context length") || strings.Contains(normalized, "maximum context")
 }
 
-func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime) (sessionV3AssistantResponse, error) {
+func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, requestPhaseSuffix string, forceCommittedContext bool) (sessionV3AssistantResponse, error) {
 	if e == nil || e.server == nil || e.server.providers == nil {
 		return sessionV3AssistantResponse{}, errors.New("provider registry is not configured")
 	}
@@ -981,7 +984,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		return sessionV3AssistantResponse{}, err
 	}
 	input := sessionsV3ProviderInput(messages)
-	if strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "" {
+	if !forceCommittedContext && (strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "") {
 		checkpointInput, ok, checkpointErr := e.sessionV3ProviderCheckpointRestartInput(ctx, job, resolved, "")
 		if checkpointErr != nil {
 			return sessionV3AssistantResponse{}, checkpointErr
@@ -1002,7 +1005,11 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		"model":    modelName,
 		"request":  sessionV3ProviderRequestDiagnostic(baseReq),
 	})
-	if _, err := e.recordRunPhase(job, RunPhaseProviderRequestStarted, "session.provider.request_started"); err != nil {
+	requestEventType := "session.provider.request_started"
+	if suffix := strings.TrimSpace(requestPhaseSuffix); suffix != "" {
+		requestEventType += "." + suffix
+	}
+	if _, err := e.recordRunPhase(job, RunPhaseProviderRequestStarted, requestEventType); err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
 	ctx = identity.ContextWithPrincipal(ctx, job.Principal)

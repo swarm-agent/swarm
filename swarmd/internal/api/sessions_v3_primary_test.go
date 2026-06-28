@@ -4404,6 +4404,86 @@ func TestSessionsV3ProviderToolLoopRecordsCodexUsagePerProviderStep(t *testing.T
 	}
 }
 
+func TestSessionsV3ExecutorContinuesAfterOverflowCompaction(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	const userContent = "continue original task after overflow"
+	const compactSummary = "overflow compact summary preserving the original task: continue original task after overflow"
+	const continuationAnswer = "real continuation answer after compact"
+	var runner *sessionsV3RecordingProviderRunner
+	runner = &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		runner.mu.Lock()
+		callCount := runner.callCount
+		runner.mu.Unlock()
+		switch strings.TrimSpace(req.Model) {
+		case "memory-model":
+			if !sessionsV3ProviderInputContainsContentText(req.Input, userContent) {
+				t.Fatalf("memory compact request did not include original user content: %+v", req.Input)
+			}
+			if !strings.Contains(req.Instructions, "memory compact agent") {
+				t.Fatalf("compact did not use memory agent instructions: %q", req.Instructions)
+			}
+			return provideriface.Response{Text: compactSummary, Model: "memory-model", StopReason: "stop"}, nil
+		case "test-model":
+			if callCount == 1 {
+				return provideriface.Response{}, errors.New("provider context overflow: context_length_exceeded")
+			}
+			if !sessionsV3ProviderInputContainsContentText(req.Input, compactSummary) {
+				t.Fatalf("continuation request missing compact summary: %+v", req.Input)
+			}
+			if !sessionsV3ProviderInputContainsContentText(req.Input, userContent) {
+				t.Fatalf("continuation request missing original prompt: %+v", req.Input)
+			}
+			return provideriface.Response{Text: continuationAnswer, Model: "test-model", StopReason: "stop"}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected model %q", req.Model)
+		}
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	server.runner = runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "memory", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "memory-model", Thinking: "medium", Enabled: pebblestore.BoolPtr(true), Prompt: "Memory compact prompt", ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}}); err != nil {
+		t.Fatalf("upsert memory agent: %v", err)
+	}
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "overflow-compact-create", "overflow compact", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "overflow-compact-message", userContent)
+	waitForSessionsV3SpecificRunIntentStatus(t, sessionSvc, created.ID, stableSessionsV3PrimaryRunID(created.ID, "overflow-compact-message"), sessionruntime.RunIntentCompleted)
+
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	var sawOverflowCheckpoint bool
+	var assistantContent string
+	for _, msg := range messages {
+		if msg.Role == "system" && strings.Contains(msg.Content, "[context-compact]") {
+			if !strings.Contains(msg.Content, "origin=overflow") || !strings.Contains(msg.Content, compactSummary) {
+				t.Fatalf("overflow compact checkpoint invalid: %s", msg.Content)
+			}
+			sawOverflowCheckpoint = true
+		}
+		if msg.Role == "assistant" {
+			assistantContent = msg.Content
+		}
+	}
+	if !sawOverflowCheckpoint {
+		t.Fatalf("overflow compact checkpoint missing from messages: %+v", messages)
+	}
+	if assistantContent != continuationAnswer {
+		t.Fatalf("assistant content = %q, want continuation answer %q", assistantContent, continuationAnswer)
+	}
+	if strings.Contains(assistantContent, "Context overflow compact complete") {
+		t.Fatalf("compact acknowledgement leaked as final response: %q", assistantContent)
+	}
+	if runner.callCount != 3 {
+		t.Fatalf("provider call count = %d, want overflow attempt, compact, continuation", runner.callCount)
+	}
+}
+
 func TestSessionsV3CompactEndpointRunsManualCompactAndResetsUsage(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	const userContent = "v3 compact must hydrate this primary transcript"
