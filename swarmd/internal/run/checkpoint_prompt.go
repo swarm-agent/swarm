@@ -159,7 +159,7 @@ func renderCheckpointRunPrompt(payload checkpointRunPromptPayload) (string, erro
 		"At the end of the checkpoint, call plan_manage exactly once with one terminal outcome action: complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed.",
 		"The terminal outcome tool call must include checkpoint_id, attempt_id when present, run_id, run_session_id, parent_session_id, report, changed_files, validation, and result/next-action evidence.",
 		"If all acceptance criteria are met, use complete_checkpoint. complete_checkpoint may continue to the next checkpoint only if backend execution policy allows it; the model must not start the next checkpoint manually.",
-		"If user/audit review is needed, use mark_needs_review. mark_needs_review always pauses for review and never advances to the next checkpoint until the backend receives accept_and_continue.",
+		"If user/audit review is needed, use mark_needs_review. mark_needs_review always pauses for review and never advances to the next checkpoint until review is accepted by the backend.",
 		"If external input is required, use mark_blocked. If the checkpoint cannot be completed because of an error, use mark_failed. Both stop execution instead of advancing.",
 		"After any terminal plan_manage call, do not emit a text-only completion or begin another checkpoint; backend durable plan state decides continuation.",
 		"Checkpoint payload:",

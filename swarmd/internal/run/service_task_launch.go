@@ -872,8 +872,6 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		action = "set_active_checkpoint"
 	case "approve-and-start", "approve_and_start", "approve-start", "approve_start", "start-plan", "start_plan":
 		action = "approve_and_start"
-	case "accept-and-continue", "accept_and_continue", "accept-continue", "accept_continue", "approve-and-continue", "approve_and_continue":
-		action = "accept_and_continue"
 	case "restart-checkpoint", "restart_checkpoint", "retry-checkpoint", "retry_checkpoint", "restart-checkpoint-from-zero", "restart_checkpoint_from_zero":
 		action = "restart_checkpoint"
 	case "rewind-to-checkpoint", "rewind_to_checkpoint", "rewind-checkpoint", "rewind_checkpoint":
@@ -881,7 +879,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	case "update-section", "update_section":
 		action = "update_section"
 	}
-	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "update_execution_policy" && action != "update_execution_state" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "start_checkpoint" && action != "continue_checkpoint" && action != "complete_checkpoint" && action != "checkpoint_outcome" && action != "mark_needs_review" && action != "mark_blocked" && action != "mark_failed" && action != "accept_and_continue" && action != "restart_checkpoint" && action != "rewind_to_checkpoint" && action != "approve_and_start" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
+	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "update_execution_policy" && action != "update_execution_state" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "start_checkpoint" && action != "continue_checkpoint" && action != "complete_checkpoint" && action != "checkpoint_outcome" && action != "mark_needs_review" && action != "mark_blocked" && action != "mark_failed" && action != "restart_checkpoint" && action != "rewind_to_checkpoint" && action != "approve_and_start" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
 		return planManagePermissionPayload{}, false, nil
 	}
 	planBody := strings.TrimSpace(mapString(args, "plan"))
@@ -971,7 +969,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		if err != nil {
 			return planManagePermissionPayload{}, false, err
 		}
-	} else if action == "approve_and_start" || action == "accept_and_continue" || action == "restart_checkpoint" || action == "rewind_to_checkpoint" {
+	} else if action == "approve_and_start" || action == "restart_checkpoint" || action == "rewind_to_checkpoint" {
 		previewDocument, err = clonePlanDocumentForExecutionAction(existing.Document)
 		if err != nil {
 			return planManagePermissionPayload{}, false, err
@@ -993,8 +991,6 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 			}
 			status = "approved"
 			approvalState = "approved"
-		case "accept_and_continue":
-			_, err = sessionruntime.ApplyPlanCheckpointReviewAcceptance(previewDocument, sessionruntime.PlanCheckpointReviewAcceptanceOptions{CheckpointID: checkpointID, Result: rawStringArg(args, "result"), Notes: firstNonEmptyString(rawStringArg(args, "notes"), rawStringArg(args, "report")), ReviewedAt: int64(mapInt(args, "reviewed_at"))})
 		case "restart_checkpoint":
 			_, err = sessionruntime.ApplyPlanCheckpointReset(previewDocument, sessionruntime.PlanCheckpointResetOptions{CheckpointID: checkpointID})
 		case "rewind_to_checkpoint":

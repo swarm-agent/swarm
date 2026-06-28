@@ -304,25 +304,7 @@ func TestExecutePlanManageAcceptRestartAndRewind(t *testing.T) {
 		t.Fatalf("save control plan: %v", err)
 	}
 
-	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"accept_and_continue","checkpoint_id":"cp-1","notes":"approved"}`, "")
-	if err != nil {
-		t.Fatalf("accept and continue: %v output=%s", err, raw)
-	}
-	var acceptPayload struct {
-		NextAction   string `json:"next_action"`
-		CheckpointID string `json:"checkpoint_id"`
-		Plan         struct {
-			Document *pebblestore.SessionPlanDocument `json:"document"`
-		} `json:"plan"`
-	}
-	if err := json.Unmarshal([]byte(raw), &acceptPayload); err != nil {
-		t.Fatalf("decode accept payload: %v", err)
-	}
-	if acceptPayload.NextAction != "stopped" || acceptPayload.Plan.Document.Checkpoints[0].Review.Status != sessionruntime.PlanCheckpointReviewStatusApproved || acceptPayload.Plan.Document.ActiveCheckpointID != "cp-2" {
-		t.Fatalf("accept payload raw=%s doc=%#v", raw, acceptPayload.Plan.Document)
-	}
-
-	raw, err = runSvc.executePlanManageTool(sessionID, `{"action":"restart_checkpoint","checkpoint_id":"cp-2"}`, "")
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"restart_checkpoint","checkpoint_id":"cp-2"}`, "")
 	if err != nil {
 		t.Fatalf("restart checkpoint: %v output=%s", err, raw)
 	}

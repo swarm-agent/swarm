@@ -1608,8 +1608,6 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 		action = "set_active_checkpoint"
 	case "approve-and-start", "approve_and_start", "approve-start", "approve_start", "start-plan", "start_plan":
 		action = "approve_and_start"
-	case "accept-and-continue", "accept_and_continue", "accept-continue", "accept_continue", "approve-and-continue", "approve_and_continue":
-		action = "accept_and_continue"
 	case "restart-checkpoint", "restart_checkpoint", "retry-checkpoint", "retry_checkpoint", "restart-checkpoint-from-zero", "restart_checkpoint_from_zero":
 		action = "restart_checkpoint"
 	case "rewind-to-checkpoint", "rewind_to_checkpoint", "rewind-checkpoint", "rewind_checkpoint":
@@ -1622,7 +1620,7 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 	}
 
 	switch action {
-	case "approve_and_start", "accept_and_continue", "restart_checkpoint", "rewind_to_checkpoint":
+	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint":
 		return s.executePlanExecutionControlAction(sessionID, action, args, applySessionMutation)
 	case "list":
 		limit := mapInt(args, "limit")
@@ -2134,18 +2132,6 @@ func (s *Service) executePlanExecutionControlAction(sessionID, action string, ar
 		approvalState = "approved"
 		updateSummary = "Approved plan and prepared fresh-context checkpoint start"
 		updateKind = "approve_and_start"
-	case "accept_and_continue":
-		_, err := sessionruntime.ApplyPlanCheckpointReviewAcceptance(doc, sessionruntime.PlanCheckpointReviewAcceptanceOptions{
-			CheckpointID: checkpointID,
-			Result:       rawStringArg(args, "result"),
-			Notes:        firstNonEmptyString(rawStringArg(args, "notes"), rawStringArg(args, "report")),
-			ReviewedAt:   int64(mapInt(args, "reviewed_at")),
-		})
-		if err != nil {
-			return "", err
-		}
-		updateSummary = "Accepted checkpoint review and prepared next fresh-context checkpoint start"
-		updateKind = "accept_and_continue"
 	case "restart_checkpoint":
 		_, err := sessionruntime.ApplyPlanCheckpointReset(doc, sessionruntime.PlanCheckpointResetOptions{CheckpointID: checkpointID})
 		if err != nil {

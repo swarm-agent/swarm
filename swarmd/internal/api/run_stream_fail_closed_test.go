@@ -102,6 +102,78 @@ func TestSessionRequiresCanonicalStoredRouteForWorkspaceBindingMetadata(t *testi
 	}
 }
 
+func TestV3PrimaryRunStreamUsesPrimaryReadinessNotRouteRecords(t *testing.T) {
+	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "v3-run-primary-readiness-create", "v3 run primary readiness")
+	stored, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get created v3 primary session: ok=%t err=%v", ok, err)
+	}
+	stored.Metadata["owner_transport"] = "routed_session_peer"
+	stored.Metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath] = "/host/workspace"
+	stored.Metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath] = "/runtime/workspace"
+	stored.Metadata[sessionruntime.HostedSessionMetadataChildSwarmID] = "missing-child"
+	stored.Metadata["swarm_routed_workspace_binding_id"] = "binding-missing-route"
+	if err := sessionSvc.Store().UpdateSession(stored); err != nil {
+		t.Fatalf("store routed-looking v3 primary session metadata: %v", err)
+	}
+	if _, ok, err := routeStore.Get(created.ID); err != nil || ok {
+		t.Fatalf("legacy route lookup ok=%t err=%v, want absent route", ok, err)
+	}
+	if _, ok, err := server.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, created.ID); err != nil || ok {
+		t.Fatalf("topology route lookup ok=%t err=%v, want absent route", ok, err)
+	}
+
+	runner := &primaryV2RunRequestRecordingRunner{emitLifecycle: true}
+	server.runner = runner
+	savedRunStreams := server.runStreams
+	server.runStreams = nil
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stream", bytes.NewBufferString(`{"type":"run.start","prompt":"hello v3","background":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("missing run stream manager status = %d, want %d, body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "run stream manager not configured") {
+		t.Fatalf("body = %s, want primary run stream readiness error", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "route") || strings.Contains(rec.Body.String(), "managed") {
+		t.Fatalf("missing run stream manager returned route/managed error: %s", rec.Body.String())
+	}
+	if calls, _, _, _ := runner.snapshot(); calls != 0 {
+		t.Fatalf("runner calls after failed primary readiness = %d, want 0", calls)
+	}
+
+	server.runStreams = savedRunStreams
+	if server.runStreams == nil {
+		server.runStreams = newRunStreamManager()
+	}
+	req = httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/run/stream", bytes.NewBufferString(`{"type":"run.start","prompt":"hello v3","background":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("primary run start status = %d, want %d, body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "route") || strings.Contains(rec.Body.String(), "managed") {
+		t.Fatalf("primary run start returned route/managed content: %s", rec.Body.String())
+	}
+	calls, gotSessionID, gotRequest, gotMeta := runner.snapshot()
+	if calls != 1 || gotSessionID != created.ID || !gotRequest.Background || gotMeta.RunID == "" {
+		t.Fatalf("runner snapshot calls=%d session=%q request=%+v meta=%+v", calls, gotSessionID, gotRequest, gotMeta)
+	}
+	if gotMeta.OwnerTransport != "background_api" || gotMeta.Principal.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("run start meta = %+v", gotMeta)
+	}
+	if _, ok, err := routeStore.Get(created.ID); err != nil || ok {
+		t.Fatalf("legacy route lookup after v3 run start ok=%t err=%v, want absent route", ok, err)
+	}
+	if _, ok, err := server.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, created.ID); err != nil || ok {
+		t.Fatalf("topology route lookup after v3 run start ok=%t err=%v, want absent route", ok, err)
+	}
+}
+
 func TestRoutedRunStreamControlMissingStoredRouteDoesNotUseLocalRunner(t *testing.T) {
 	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
 	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{

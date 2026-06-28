@@ -47,9 +47,53 @@ func TestSessionsV3PrimaryHandlersDoNotUseRuntimeDispatchOrRoutes(t *testing.T) 
 			t.Fatalf("sessions_v3_primary.go missing required V3 primary storage symbol %q", required)
 		}
 	}
-	for _, forbidden := range []string{"proxyRoutedSessionRequest", "dispatchRuntime", "RuntimeSession", "routedSessionTarget", "SessionRoute", "CreateSessionWithOptions", "AppendMessage("} {
+	for _, forbidden := range []string{"proxyRoutedSessionRequest", "dispatchRuntime", "RuntimeSession", "routedSessionTarget", "isManagedHostMirroredSession", "managedHostTargetForSessionRequest", "SessionRoute", "sessionRoutes", "routeStore", "proxyRequestToSwarmTarget", "handleManagedHost", "CreateSessionWithOptions", "AppendMessage("} {
 		if strings.Contains(string(body), forbidden) {
 			t.Fatalf("sessions_v3_primary.go contains forbidden runtime/route/legacy write symbol %q", forbidden)
+		}
+	}
+	planExecutionSource := sourceBetweenForTest(t, string(body), "func (s *Server) handleSessionV3PrimaryPlanExecution", "func normalizeSessionsV3PlanExecutionAction")
+	preflightSource := sourceBetweenForTest(t, string(body), "func (s *Server) preflightSessionsV3PlanFreshRun", "func sessionsV3PlanExecutionPayload")
+	for _, scoped := range []struct {
+		name   string
+		source string
+	}{
+		{name: "plan execution", source: planExecutionSource},
+		{name: "plan fresh-run preflight", source: preflightSource},
+	} {
+		for _, forbidden := range []string{"routed", "routeStore", "sessionRoutes", "SessionRoute", "proxy", "managedHost", "managed", "legacy", "repair", "container", "RuntimeSession", "dispatchRuntime"} {
+			if strings.Contains(scoped.source, forbidden) {
+				t.Fatalf("%s source contains forbidden routed/proxy/legacy symbol %q", scoped.name, forbidden)
+			}
+		}
+	}
+}
+
+func TestSessionsV3PrimaryRunStreamControlIsPrimaryOnly(t *testing.T) {
+	primaryBody, err := os.ReadFile("sessions_v3_primary.go")
+	if err != nil {
+		t.Fatalf("read sessions_v3_primary.go: %v", err)
+	}
+	if !strings.Contains(string(primaryBody), "handleSessionV3PrimaryRunStreamControl") {
+		t.Fatalf("sessions_v3_primary.go does not dispatch V3 run stream to primary-only handler")
+	}
+	if strings.Contains(string(primaryBody), "handleRunStreamControl(w, r, sessionID, principal)") {
+		t.Fatalf("sessions_v3_primary.go dispatches V3 run stream through shared routed handler")
+	}
+
+	runStreamBody, err := os.ReadFile("run_stream_ws.go")
+	if err != nil {
+		t.Fatalf("read run_stream_ws.go: %v", err)
+	}
+	handler := sourceBetweenForTest(t, string(runStreamBody), "func (s *Server) handleSessionV3PrimaryRunStreamControl", "func (s *Server) handleRunStreamControl")
+	for _, required := range []string{"s.runner == nil", "s.runStreams == nil", "s.isShuttingDown()", "startRunStreamExecution"} {
+		if !strings.Contains(handler, required) {
+			t.Fatalf("V3 primary run stream handler missing primary readiness/run symbol %q", required)
+		}
+	}
+	for _, forbidden := range []string{"isManagedHostMirroredSession", "handleManagedHostSessionRunStreamControl", "routedSessionTargetOrFailClosed", "proxyRequestToSwarmTarget", "SessionRoute", "managedHost"} {
+		if strings.Contains(handler, forbidden) {
+			t.Fatalf("V3 primary run stream handler contains forbidden route/proxy/managed symbol %q", forbidden)
 		}
 	}
 }
@@ -2903,6 +2947,101 @@ func TestSessionsV3PrimaryStreamDisambiguatesReusedProviderToolCallIDs(t *testin
 	}
 	if fmt.Sprint(persistedToolInstanceIDs) != "[step-1:call-reused step-2:call-reused]" {
 		t.Fatalf("persisted tool instance IDs = %v, want per-step IDs", persistedToolInstanceIDs)
+	}
+}
+
+func TestSessionsV3PrimaryPlanExecutionPreflightIsPrimaryOnlyAndAtomic(t *testing.T) {
+	server, sessionSvc, _, routeStore, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "plan-exec-primary-preflight-create", "plan exec primary preflight")
+
+	stored, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get created session: ok=%v err=%v", ok, err)
+	}
+	stored.Metadata = map[string]any{
+		"owner_transport": "routed_session_peer",
+		sessionruntime.HostedSessionMetadataHostWorkspacePath:    "/host/workspace",
+		sessionruntime.HostedSessionMetadataRuntimeWorkspacePath: "/runtime/workspace",
+		sessionruntime.HostedSessionMetadataChildSwarmID:         "missing-child",
+		"swarm_routed_workspace_binding_id":                      "binding-missing-route",
+	}
+	if err := sessionSvc.Store().UpdateSession(stored); err != nil {
+		t.Fatalf("store routed-looking v3 primary session metadata: %v", err)
+	}
+	if _, ok, err := routeStore.Get(created.ID); err != nil || ok {
+		t.Fatalf("legacy route store lookup ok=%t err=%v, want absent route", ok, err)
+	}
+	if _, ok, err := server.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, created.ID); err != nil || ok {
+		t.Fatalf("topology route lookup ok=%t err=%v, want absent route", ok, err)
+	}
+
+	initialDoc := &pebblestore.SessionPlanDocument{
+		ID:    "plan-primary-preflight",
+		Title: "Plan primary preflight",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode:  sessionruntime.PlanExecutionPolicyModeAutomatic,
+			Shape: sessionruntime.PlanExecutionShapeCheckpointed,
+		},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID:     "cp-1",
+			Title:  "Checkpoint 1",
+			Status: sessionruntime.PlanCheckpointStatusPending,
+			Order:  1,
+		}},
+	}
+	if _, _, err := sessionSvc.SavePlanWithMetadata(created.ID, initialDoc.ID, initialDoc.Title, "# Plan", "draft", "draft", true, sessionruntime.PlanSaveMetadata{Document: initialDoc}); err != nil {
+		t.Fatalf("save initial plan: %v", err)
+	}
+
+	server.runStreams = nil
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/plans/execution", bytes.NewBufferString(`{"action":"start_checkpoint","checkpoint_id":"cp-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("plan execution status=%d want=%d body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "run stream manager not configured") {
+		t.Fatalf("plan execution body = %s, want primary run stream manager error", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "route") || strings.Contains(rec.Body.String(), "managed") {
+		t.Fatalf("plan execution preflight returned non-primary routing error: %s", rec.Body.String())
+	}
+
+	planAfterFailure, ok, err := sessionSvc.GetPlan(created.ID, initialDoc.ID)
+	if err != nil || !ok || planAfterFailure.Document == nil {
+		t.Fatalf("get plan after failed preflight: ok=%v err=%v plan=%+v", ok, err, planAfterFailure)
+	}
+	checkpoint := planAfterFailure.Document.Checkpoints[0]
+	if checkpoint.Status != sessionruntime.PlanCheckpointStatusPending || checkpoint.AttemptID != "" || len(checkpoint.Attempts) != 0 {
+		t.Fatalf("failed preflight saved partial checkpoint advancement: %+v", checkpoint)
+	}
+
+	server.runStreams = newRunStreamManager()
+	req = httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/plans/execution", bytes.NewBufferString(`{"action":"start_checkpoint","checkpoint_id":"cp-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("plan execution with primary runner status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "route") || strings.Contains(rec.Body.String(), "managed") {
+		t.Fatalf("plan execution with primary runner returned routing content: %s", rec.Body.String())
+	}
+
+	planAfterSuccess, ok, err := sessionSvc.GetPlan(created.ID, initialDoc.ID)
+	if err != nil || !ok || planAfterSuccess.Document == nil {
+		t.Fatalf("get plan after successful preflight: ok=%v err=%v plan=%+v", ok, err, planAfterSuccess)
+	}
+	checkpoint = planAfterSuccess.Document.Checkpoints[0]
+	if checkpoint.Status != sessionruntime.PlanCheckpointStatusInProgress || checkpoint.AttemptID == "" || len(checkpoint.Attempts) != 1 {
+		t.Fatalf("successful primary preflight did not save checkpoint start: %+v", checkpoint)
+	}
+	if _, ok, err := routeStore.Get(created.ID); err != nil || ok {
+		t.Fatalf("legacy route store lookup after primary start ok=%t err=%v, want absent route", ok, err)
+	}
+	if _, ok, err := server.topology.GetSessionRouteForAccount(testPrincipal().AccountScopeID, created.ID); err != nil || ok {
+		t.Fatalf("topology route lookup after primary start ok=%t err=%v, want absent route", ok, err)
 	}
 }
 

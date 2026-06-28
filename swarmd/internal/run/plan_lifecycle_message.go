@@ -87,7 +87,7 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 
 func isPlanExecutionLifecycleMessageAction(action string) bool {
 	switch strings.TrimSpace(action) {
-	case "approve_and_start", "start_checkpoint", "continue_checkpoint", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed", "accept_checkpoint", "accept_and_continue", "restart_checkpoint", "rewind_to_checkpoint":
+	case "approve_and_start", "start_checkpoint", "continue_checkpoint", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed", "accept_checkpoint", "restart_checkpoint", "rewind_to_checkpoint":
 		return true
 	default:
 		return false
@@ -104,7 +104,7 @@ func planLifecycleHeadline(action string, summary sessionruntime.PlanExecutionSu
 		return "Checkpoint restarted"
 	case "rewind_to_checkpoint":
 		return "Plan rewound to checkpoint"
-	case "accept_checkpoint", "accept_and_continue":
+	case "accept_checkpoint":
 		return "Checkpoint review accepted"
 	case "mark_needs_review":
 		return "Checkpoint paused for review"
@@ -129,7 +129,7 @@ func planLifecycleCheckpointID(action string, doc *pebblestore.SessionPlanDocume
 	if doc == nil {
 		return ""
 	}
-	if action == "start_checkpoint" || action == "continue_checkpoint" || action == "approve_and_start" || action == "restart_checkpoint" || action == "rewind_to_checkpoint" || action == "accept_and_continue" {
+	if action == "start_checkpoint" || action == "continue_checkpoint" || action == "approve_and_start" || action == "restart_checkpoint" || action == "rewind_to_checkpoint" {
 		if checkpointID := stringFromPlanPayload(payload, "checkpoint_id"); checkpointID != "" {
 			return checkpointID
 		}

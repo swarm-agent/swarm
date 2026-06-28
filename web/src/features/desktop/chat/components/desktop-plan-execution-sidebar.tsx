@@ -76,6 +76,10 @@ function checkpointIsRunnable(checkpoint?: DesktopSessionPlanCheckpoint): boolea
   return status === '' || status === 'pending' || status === 'idle' || status === 'ready'
 }
 
+function checkpointIsIncomplete(checkpoint: DesktopSessionPlanCheckpoint): boolean {
+  return checkpoint.status.trim().toLowerCase() !== 'completed'
+}
+
 function statusLabel(view: DesktopPlanExecutionView, checkpoint?: DesktopSessionPlanCheckpoint): string {
   if (view.reviewRequired) return 'Waiting review'
   if (view.completed) return 'Completed'
@@ -100,7 +104,7 @@ function ActiveCheckpointCard({ view, checkpoints, completedCount, totalCount, a
   const checkpointId = checkpoint ? displayCheckpointId(checkpoint.id, checkpointFallbackIndex) : 'None'
   const title = checkpoint?.title || 'No active checkpoint'
   const activeTitle = checkpoint ? `${checkpointId} ${title}` : title
-  const nextCheckpoint = checkpoints.find((candidate, index) => index > activePosition && candidate.status.toLowerCase() !== 'completed')
+  const nextCheckpoint = checkpoints.find((candidate, index) => index > activePosition && checkpointIsIncomplete(candidate))
   const nextIndex = nextCheckpoint ? checkpoints.findIndex((candidate) => candidate === nextCheckpoint) : -1
   const progressValue = totalCount > 0 ? Math.max(0, Math.min(100, (completedCount / totalCount) * 100)) : 0
   const tone = statusTone(view.reviewRequired ? 'needs_review' : checkpoint?.status || view.status, Boolean(checkpoint))
@@ -152,12 +156,21 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
   const checkpointId = view.activeCheckpointId || view.activeCheckpoint?.id || ''
   const automatic = view.policyMode === 'automatic'
   const acceptBusy = busyAction === actionBusyKey('accept_checkpoint', checkpointId)
-  const acceptContinueBusy = busyAction === actionBusyKey('accept_and_continue', checkpointId)
   const continueBusy = busyAction === actionBusyKey('continue_checkpoint', checkpointId)
   const restartBusy = busyAction === actionBusyKey('restart_checkpoint', checkpointId)
+  const checkpoints = view.plan.document?.checkpoints ?? []
+  const activeIndex = view.activeCheckpoint
+    ? checkpoints.findIndex((checkpoint) => checkpoint.id === view.activeCheckpoint?.id)
+    : -1
+  const hasNextCheckpoint = checkpoints.some((checkpoint, index) => index > activeIndex && checkpointIsIncomplete(checkpoint))
   const canAccept = Boolean(onAction && checkpointId && view.reviewRequired && !view.blocked && !view.failed && !view.completed && !canStop)
   const canContinue = Boolean(onAction && checkpointId && !view.reviewRequired && !view.blocked && !view.failed && !view.completed && !canStop && checkpointIsRunnable(view.activeCheckpoint))
   const canRestart = Boolean(onAction && checkpointId && !view.completed && !canStop)
+  const acceptReviewBusy = acceptBusy
+  const acceptReviewLabel = hasNextCheckpoint ? 'Accept & start next checkpoint' : 'Accept & finish plan'
+  const acceptReviewHelp = hasNextCheckpoint
+    ? 'Manual accept-and-continue is disabled; start the next checkpoint from the plan execution flow after review is accepted.'
+    : 'Approves the final checkpoint and marks the plan complete. You can keep chatting or ask the agent to add follow-up checkpoints.'
 
   if (automatic && !view.reviewRequired && !view.blocked && !view.failed && !view.completed) {
     return (
@@ -178,30 +191,29 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
       <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Actions / Plan Mode</div>
       <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
         <div className="text-sm font-medium text-[var(--app-text)]">Manual review mode</div>
-        <p className="mt-0.5 text-xs leading-5 text-[var(--app-text-muted)]">Use the available controls when execution is paused for review or ready for the next checkpoint.</p>
+        <p className="mt-0.5 text-xs leading-5 text-[var(--app-text-muted)]">
+          Review actions approve completed work. Start actions launch a fresh checkpoint run.
+        </p>
       </div>
 
       <div className="mt-3 grid gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="primary"
-          className={cn('rounded-lg', acceptContinueBusy ? 'animate-pulse' : '')}
-          onClick={() => void onAction?.({ action: 'accept_and_continue', checkpointId })}
-          disabled={!canAccept || acceptContinueBusy}
-        >
-          Accept &amp; move to next
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className={cn('rounded-lg', acceptBusy ? 'animate-pulse' : '')}
-          onClick={() => void onAction?.({ action: 'accept_checkpoint', checkpointId })}
-          disabled={!canAccept || acceptBusy}
-        >
-          Accept this checkpoint
-        </Button>
+        <div className="grid gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            variant="primary"
+            className={cn('rounded-lg', acceptReviewBusy ? 'animate-pulse' : '')}
+            onClick={hasNextCheckpoint ? undefined : () => void onAction?.({ action: 'accept_checkpoint', checkpointId })}
+            disabled={!canAccept || hasNextCheckpoint || acceptReviewBusy}
+          >
+            {acceptReviewLabel}
+          </Button>
+          {view.reviewRequired ? (
+            <p className="px-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
+              {acceptReviewHelp}
+            </p>
+          ) : null}
+        </div>
         <Button
           type="button"
           size="sm"
@@ -210,7 +222,7 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
           onClick={() => void onAction?.({ action: 'continue_checkpoint', checkpointId })}
           disabled={!canContinue || continueBusy}
         >
-          Continue checkpoint
+          Start checkpoint run
         </Button>
       </div>
 

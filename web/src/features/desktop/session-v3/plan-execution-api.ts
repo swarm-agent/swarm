@@ -8,7 +8,6 @@ export type DesktopPlanExecutionAction =
   | 'start_checkpoint'
   | 'continue_checkpoint'
   | 'accept_checkpoint'
-  | 'accept_and_continue'
   | 'restart_checkpoint'
   | 'rewind_to_checkpoint'
   | 'set_automatic_mode'
@@ -109,8 +108,24 @@ export async function executeDesktopPlanActionAndStartRun(
   input: DesktopPlanExecutionControlInput,
 ): Promise<DesktopPlanExecutionResponse> {
   const response = await executeDesktopPlanAction(sessionId, input)
-  await startDesktopPlanCheckpointRun(sessionId, response)
+  if (desktopPlanActionCanStartFreshRun(input.action)) {
+    await startDesktopPlanCheckpointRun(sessionId, response)
+  }
   return response
+}
+
+function desktopPlanActionCanStartFreshRun(action: DesktopPlanExecutionAction): boolean {
+  switch (action) {
+    case 'approve_and_start':
+    case 'start_checkpoint':
+    case 'continue_checkpoint':
+    case 'restart_checkpoint':
+    case 'rewind_to_checkpoint':
+      return true
+    case 'accept_checkpoint':
+    case 'set_automatic_mode':
+      return false
+  }
 }
 
 function applyDesktopPlanExecutionResult(sessionId: string, plan: DesktopSessionPlanRecord): void {

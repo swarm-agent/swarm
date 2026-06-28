@@ -806,24 +806,17 @@ func (s *Server) handleRunStreamStop(conn *transportws.Conn, sessionID string, i
 	s.sendRunStreamControl(conn, runStreamControlMessage{Type: "run.stop.accepted", OK: true, SessionID: sessionID, RunID: inbound.RunID})
 }
 
-func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
-	if s.isManagedHostMirroredSession(sessionID) {
-		s.handleManagedHostSessionRunStreamControl(w, r, sessionID)
-		return
-	}
-	remoteTarget, _, err := s.routedSessionTargetOrFailClosed(principal, sessionID)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	if remoteTarget != nil {
-		if err := s.proxyRequestToSwarmTarget(w, r, *remoteTarget); err != nil {
-			writeError(w, http.StatusBadGateway, err)
-		}
-		return
-	}
+func (s *Server) handleSessionV3PrimaryRunStreamControl(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
 	if s.runner == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
+		return
+	}
+	if s.runStreams == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("run stream manager not configured"))
+		return
+	}
+	if s.isShuttingDown() {
+		writeError(w, http.StatusServiceUnavailable, errors.New("daemon is shutting down"))
 		return
 	}
 	var inbound runStreamInboundMessage
@@ -847,6 +840,10 @@ func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, 
 		state, err := s.runStreams.newRun(sessionID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if state == nil {
+			writeError(w, http.StatusInternalServerError, errors.New("unable to allocate run stream"))
 			return
 		}
 		started := s.startRunStreamExecution(state.runID, sessionID, inbound, principal)
@@ -890,6 +887,25 @@ func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, 
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported run stream control type %q", inbound.Type))
 	}
+}
+
+func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
+	if s.isManagedHostMirroredSession(sessionID) {
+		s.handleManagedHostSessionRunStreamControl(w, r, sessionID)
+		return
+	}
+	remoteTarget, _, err := s.routedSessionTargetOrFailClosed(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	if remoteTarget != nil {
+		if err := s.proxyRequestToSwarmTarget(w, r, *remoteTarget); err != nil {
+			writeError(w, http.StatusBadGateway, err)
+		}
+		return
+	}
+	s.handleSessionV3PrimaryRunStreamControl(w, r, sessionID, principal)
 }
 
 func (s *Server) isManagedHostMirroredSession(sessionID string) bool {

@@ -28,6 +28,7 @@ function view(overrides: Partial<DesktopPlanExecutionView> = {}): DesktopPlanExe
     attempts: [],
     order: 1,
   }
+  const checkpoints = [checkpoint]
   return {
     plan: {
       id: 'plan-1',
@@ -45,7 +46,7 @@ function view(overrides: Partial<DesktopPlanExecutionView> = {}): DesktopPlanExe
         info: { goal: '', scope: '', context: '', decisions: [], constraints: [], assumptions: [], openQuestions: [], relevantFiles: [], successCriteria: [], validationStrategy: '' },
         executionPolicy: { mode: 'automatic', shape: 'single_run' },
         executionState: { status: 'in_progress', activeAttemptId: 'attempt-1', parentSessionId: 'session-1', currentSessionId: 'session-1', currentRunId: 'run-1', lastCheckpointId: '', lastAttemptId: '', lastOutcome: '', startedAt: 1, updatedAt: 1, completedAt: 0 },
-        checkpoints: [checkpoint],
+        checkpoints,
         activeCheckpointId: 'cp-1',
         renderedText: '',
         displayText: '',
@@ -79,10 +80,34 @@ test('automatic mode sidebar actions card is informational with no manual contro
   assert.doesNotMatch(markup, /role="switch"/)
 })
 
-test('manual review mode still exposes review controls', () => {
+test('manual review mode keeps the start-next review button visible but disabled when more checkpoints remain', () => {
+  const base = view({ policyMode: 'review_each_checkpoint', reviewRequired: true, status: 'waiting_review' })
+  base.plan.document.checkpoints.push({
+    ...base.plan.document.checkpoints[0],
+    id: 'cp-2',
+    title: 'Follow-up',
+    status: 'pending',
+    attemptId: '',
+    runId: '',
+    sessionId: '',
+    startedAt: 0,
+  })
+  const markup = renderToStaticMarkup(<DesktopPlanExecutionSidebar view={base} onAction={() => undefined} onEditPlan={() => undefined} />)
+
+  assert.match(markup, /Manual review mode/)
+  assert.match(markup, /Accept &amp; start next checkpoint/)
+  assert.match(markup, /Manual accept-and-continue is disabled/)
+  assert.match(markup, /disabled="">Accept &amp; start next checkpoint/)
+  assert.doesNotMatch(markup, /Accept this checkpoint/)
+  assert.doesNotMatch(markup, /Accept &amp; move to next/)
+})
+
+test('manual review mode exposes a finish-plan review action on the final checkpoint', () => {
   const markup = renderToStaticMarkup(<DesktopPlanExecutionSidebar view={view({ policyMode: 'review_each_checkpoint', reviewRequired: true, status: 'waiting_review' })} onAction={() => undefined} onEditPlan={() => undefined} />)
 
   assert.match(markup, /Manual review mode/)
-  assert.match(markup, /Accept this checkpoint/)
-  assert.match(markup, /Accept &amp; move to next/)
+  assert.match(markup, /Accept &amp; finish plan/)
+  assert.match(markup, /marks the plan complete/)
+  assert.doesNotMatch(markup, /Accept this checkpoint/)
+  assert.doesNotMatch(markup, /Accept &amp; move to next/)
 })

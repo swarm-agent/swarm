@@ -354,7 +354,7 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 			CompletedAt:     op.CompletedAt,
 		})
 		return err
-	case "accept_checkpoint_review", "accept_continue", "accept_and_continue", "approve_checkpoint", "approve_and_continue":
+	case "accept_checkpoint_review", "approve_checkpoint":
 		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
 		if id == "" {
 			id = strings.TrimSpace(doc.ActiveCheckpointID)

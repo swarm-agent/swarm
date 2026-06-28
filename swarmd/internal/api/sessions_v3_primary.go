@@ -250,7 +250,7 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 	case "run/stop":
 		s.handleSessionV3PrimaryRunStop(w, r, principal, sessionID)
 	case "run/stream":
-		s.handleRunStreamControl(w, r, sessionID, principal)
+		s.handleSessionV3PrimaryRunStreamControl(w, r, sessionID, principal)
 	case "compact":
 		s.handleSessionV3PrimaryCompact(w, r, principal, sessionID)
 	case "settings":
@@ -1226,19 +1226,14 @@ func (s *Server) handleSessionV3PrimaryPlanExecution(w http.ResponseWriter, r *h
 		approvalState = "approved"
 		updateSummary = "Approved plan and prepared fresh-context checkpoint start"
 		updateKind = "approve_and_start"
-	case "accept_checkpoint", "accept_and_continue":
+	case "accept_checkpoint":
 		if _, err := sessionruntime.ApplyPlanCheckpointReviewAcceptance(doc, sessionruntime.PlanCheckpointReviewAcceptanceOptions{CheckpointID: checkpointID, Result: req.Result, Notes: firstNonEmpty(req.Notes, req.Report), ReviewedAt: firstPositiveInt64(req.ReviewedAt, now)}); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if action == "accept_checkpoint" {
-			checkpointID = ""
-			updateSummary = "Accepted checkpoint review"
-			updateKind = "accept_checkpoint"
-		} else {
-			updateSummary = "Accepted checkpoint review and prepared next fresh-context checkpoint start"
-			updateKind = "accept_and_continue"
-		}
+		checkpointID = ""
+		updateSummary = "Accepted checkpoint review"
+		updateKind = "accept_checkpoint"
 	case "set_automatic_mode":
 		continuation := strings.TrimSpace(firstNonEmpty(req.ContinuationPolicy, req.Continuation, req.Mode))
 		if req.ContinueAutomatically != nil {
@@ -1289,6 +1284,13 @@ func (s *Server) handleSessionV3PrimaryPlanExecution(w http.ResponseWriter, r *h
 		return
 	}
 
+	if sessionsV3PlanExecutionStartsFreshRun(action, responseCheckpointID, doc) {
+		if preflightStatus, preflightErr := s.preflightSessionsV3PlanFreshRun(r, principal, sessionID); preflightErr != nil {
+			writeError(w, preflightStatus, preflightErr)
+			return
+		}
+	}
+
 	saved, event, err := s.sessions.SavePlanWithMetadata(sessionID, planID, existing.Title, existing.Plan, status, approvalState, true, sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: checkpointID, UpdateKind: updateKind, Checkpoint: true, Document: doc})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -1308,8 +1310,6 @@ func normalizeSessionsV3PlanExecutionAction(action string) string {
 		return "approve_and_start"
 	case "accept_checkpoint", "accept_checkpoint_review", "approve_checkpoint":
 		return "accept_checkpoint"
-	case "accept_and_continue", "accept_continue", "approve_and_continue", "approve_continue":
-		return "accept_and_continue"
 	case "set_automatic_mode", "set_automatic", "update_automatic_mode", "update_execution_policy":
 		return "set_automatic_mode"
 	case "restart_checkpoint", "retry_checkpoint", "restart_checkpoint_from_zero":
@@ -1338,6 +1338,32 @@ func cloneSessionsV3PlanDocumentForExecutionAction(doc *pebblestore.SessionPlanD
 		return nil, err
 	}
 	return &clone, nil
+}
+
+func sessionsV3PlanExecutionStartsFreshRun(action, checkpointID string, doc *pebblestore.SessionPlanDocument) bool {
+	switch action {
+	case "approve_and_start", "start_checkpoint", "continue_checkpoint", "restart_checkpoint", "rewind_to_checkpoint":
+	default:
+		return false
+	}
+	summary := sessionruntime.SummarizePlanExecution(doc)
+	if summary.PlanComplete || summary.ReviewRequired || summary.Blocked || summary.Failed {
+		return false
+	}
+	return strings.TrimSpace(checkpointID) != "" || strings.TrimSpace(summary.NextCheckpointID) != ""
+}
+
+func (s *Server) preflightSessionsV3PlanFreshRun(_ *http.Request, _ identity.Principal, _ string) (int, error) {
+	if s.runner == nil {
+		return http.StatusInternalServerError, errors.New("run service not configured")
+	}
+	if s.runStreams == nil {
+		return http.StatusInternalServerError, errors.New("run stream manager not configured")
+	}
+	if s.isShuttingDown() {
+		return http.StatusServiceUnavailable, errors.New("daemon is shutting down")
+	}
+	return http.StatusOK, nil
 }
 
 func sessionsV3PlanExecutionPayload(action, summary, planID, checkpointID, attemptID string, plan pebblestore.SessionPlanSnapshot) map[string]any {
