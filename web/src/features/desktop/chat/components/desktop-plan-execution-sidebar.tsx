@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import {
   RefreshCcw,
   SquarePen,
@@ -246,7 +247,7 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
   )
 }
 
-export function DesktopPlanExecutionSidebar({ view, busyAction, canStop = false, onAction, onStop: _onStop, onEditPlan }: DesktopPlanExecutionSidebarProps) {
+export const DesktopPlanExecutionSidebar = memo(function DesktopPlanExecutionSidebar({ view, busyAction, canStop = false, onAction, onStop: _onStop, onEditPlan }: DesktopPlanExecutionSidebarProps) {
   const document = view?.plan.document ?? null
   if (!view || !document) return null
 
@@ -282,4 +283,4 @@ export function DesktopPlanExecutionSidebar({ view, busyAction, canStop = false,
       </div>
     </aside>
   )
-}
+})

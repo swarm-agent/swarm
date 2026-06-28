@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowDown, CheckCircle2, Loader2, LoaderCircle, XCircle } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
 import { buildStructuredToolMessage, parseStructuredToolMessage } from '../services/tool-message'
-import { selectDesktopPlanExecutionView, type RenderedSessionMessages } from '../../state/desktop-v3-cache-selectors'
-import type { LiveRunOverlay, MessageSnapshot, PendingUserMessage } from '../../state/desktop-v3-cache-types'
+import { selectDesktopPlanExecutionView, type DesktopPlanExecutionView, type RenderedSessionMessages } from '../../state/desktop-v3-cache-selectors'
+import type { DesktopV3CacheState, LiveRunOverlay, MessageSnapshot, PendingUserMessage } from '../../state/desktop-v3-cache-types'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import type { DesktopPermissionRecord, DesktopSessionRecord } from '../../types/realtime'
 import type { StructuredToolMessage, ToolMessageState, AgentProfileRecord, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
@@ -237,6 +237,65 @@ function settingsSnapshotEqual(left: DesktopV3InputSettingsSnapshot, right: Desk
     && left.mode === right.mode
     && left.agent === right.agent
     && preferencesEqual(left.preference, right.preference)
+}
+
+function planExecutionViewsEqual(left: DesktopPlanExecutionView | null, right: DesktopPlanExecutionView | null): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.plan === right.plan
+    && left.activeCheckpoint === right.activeCheckpoint
+    && left.activeCheckpointId === right.activeCheckpointId
+    && left.status === right.status
+    && left.policyMode === right.policyMode
+    && left.policyShape === right.policyShape
+    && left.currentRunId === right.currentRunId
+    && left.currentSessionId === right.currentSessionId
+    && left.freshContext === right.freshContext
+    && left.reviewRequired === right.reviewRequired
+    && left.blocked === right.blocked
+    && left.failed === right.failed
+    && left.completed === right.completed
+    && left.attemptCount === right.attemptCount
+}
+
+function pendingPermissionsEqual(left: DesktopPermissionRecord[], right: DesktopPermissionRecord[]): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index]
+    const b = right[index]
+    if (!a || !b) return false
+    if (a.id !== b.id
+      || a.sessionId !== b.sessionId
+      || a.runId !== b.runId
+      || a.callId !== b.callId
+      || a.toolName !== b.toolName
+      || a.toolArguments !== b.toolArguments
+      || a.approvedArguments !== b.approvedArguments
+      || !permissionSavedRuleEqual(a.savedRule, b.savedRule)
+      || a.status !== b.status
+      || a.decision !== b.decision
+      || a.reason !== b.reason
+      || a.requirement !== b.requirement
+      || a.mode !== b.mode
+      || a.createdAt !== b.createdAt
+      || a.updatedAt !== b.updatedAt
+      || a.resolvedAt !== b.resolvedAt
+      || a.permissionRequestedAt !== b.permissionRequestedAt) return false
+  }
+  return true
+}
+
+function permissionSavedRuleEqual(left: DesktopPermissionRecord['savedRule'], right: DesktopPermissionRecord['savedRule']): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.id === right.id
+    && left.kind === right.kind
+    && left.decision === right.decision
+    && left.tool === right.tool
+    && left.pattern === right.pattern
+    && left.createdAt === right.createdAt
+    && left.updatedAt === right.updatedAt
 }
 
 function formatSettingsChangeSummary(input: {
@@ -600,9 +659,13 @@ export function DesktopV3ExistingConversationPane({
   const agentState = agentStateQuery.data ?? EMPTY_AGENT_STATE
   const modelOptions = modelOptionsQuery.data ?? []
   const thinkingTagsEnabled = normalizeThinkingTagsEnabled(uiSettingsQuery.data)
+  const selectPlanExecutionViewForSession = useCallback(
+    (state: DesktopV3CacheState) => selectDesktopPlanExecutionView(state, normalizedSessionId),
+    [normalizedSessionId],
+  )
   const rawCachedPreference = useDesktopV3CacheSelector((state) => state.preferencesBySession[normalizedSessionId])
   const rawCachedUsage = useDesktopV3CacheSelector((state) => state.usageBySession[normalizedSessionId])
-  const planExecutionView = useDesktopV3CacheSelector((state) => selectDesktopPlanExecutionView(state, normalizedSessionId))
+  const planExecutionView = useDesktopV3CacheSelector(selectPlanExecutionViewForSession, planExecutionViewsEqual)
   const cachedPreference = useMemo(() => normalizePreference(rawCachedPreference), [rawCachedPreference])
   const cacheSession = useDesktopV3CacheSelector((state) => {
     const record = state.sessionsById[normalizedSessionId]
@@ -610,11 +673,12 @@ export function DesktopV3ExistingConversationPane({
   })
   const storedOperation = operationRef.current
   const sessionMode = session?.mode || cacheSession?.mode || 'auto'
-  const pendingPermissions = useDesktopV3CacheSelector((state) => (
+  const selectPendingPermissionsForSession = useCallback((state: DesktopV3CacheState) => (
     [...(state.permissionsBySession[normalizedSessionId] ?? [])]
       .filter((permission) => permissionRequiresApproval(permission, sessionMode))
       .sort(comparePendingPermissions)
-  ))
+  ), [normalizedSessionId, sessionMode])
+  const pendingPermissions = useDesktopV3CacheSelector(selectPendingPermissionsForSession, pendingPermissionsEqual)
   const selectedPermission = pendingPermissions[0] ?? null
   const currentRun = renderedMessages.liveRuns.find((run) => run.status === 'running' || run.status === 'pending_executor') ?? null
   const pendingStartAt = !renderedMessages.currentRunIntent
@@ -1038,6 +1102,21 @@ export function DesktopV3ExistingConversationPane({
     }
   }
 
+  const planExecutionActionRef = useRef(handlePlanExecutionAction)
+  planExecutionActionRef.current = handlePlanExecutionAction
+  const stablePlanExecutionAction = useCallback((input: { action: DesktopPlanExecutionAction; checkpointId?: string; continueAutomatically?: boolean }) => (
+    planExecutionActionRef.current(input)
+  ), [])
+
+  const stopRef = useRef(handleStop)
+  stopRef.current = handleStop
+  const stableStop = useCallback(() => stopRef.current(), [])
+
+  const openPlanRef = useRef(onOpenPlan)
+  openPlanRef.current = onOpenPlan
+  const hasOpenPlan = Boolean(onOpenPlan)
+  const stableOpenPlan = useMemo(() => hasOpenPlan ? () => openPlanRef.current?.() : undefined, [hasOpenPlan])
+
   if (!normalizedSessionId) {
     return <DesktopV3ChatStateCard title="Select a session" description="Choose a session from the sidebar to view its conversation." />
   }
@@ -1149,9 +1228,9 @@ export function DesktopV3ExistingConversationPane({
           view={planExecutionView}
           busyAction={planExecutionBusyAction}
           canStop={Boolean(currentRun)}
-          onAction={handlePlanExecutionAction}
-          onStop={handleStop}
-          onEditPlan={onOpenPlan}
+          onAction={stablePlanExecutionAction}
+          onStop={stableStop}
+          onEditPlan={stableOpenPlan}
         />
       </div>
 
@@ -1168,7 +1247,7 @@ export function DesktopV3ExistingConversationPane({
   )
 }
 
-function DesktopV3RenderItemView({ item, thinkingTagsEnabled, timerNow }: { item: DesktopV3RenderItem; thinkingTagsEnabled: boolean; timerNow: number; index: number }) {
+const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({ item, thinkingTagsEnabled, timerNow }: { item: DesktopV3RenderItem; thinkingTagsEnabled: boolean; timerNow: number; index: number }) {
   switch (item.type) {
     case 'plan-break':
       return <DesktopV3PlanExecutionBreak item={item} />
@@ -1187,7 +1266,7 @@ function DesktopV3RenderItemView({ item, thinkingTagsEnabled, timerNow }: { item
     default:
       return null
   }
-}
+})
 
 function DesktopV3PlanExecutionBreak({ item }: { item: Extract<DesktopV3RenderItem, { type: 'plan-break' }> }) {
   return (
