@@ -92,12 +92,42 @@ function statusLabel(view: DesktopPlanExecutionView, checkpoint?: DesktopSession
   return humanize(checkpoint?.status || view.status || 'Ready')
 }
 
+function isSingleRunView(view: DesktopPlanExecutionView): boolean {
+  return (view.policyShape || view.plan.document?.executionPolicy?.shape || '').trim().toLowerCase() === 'single_run'
+}
+
 function StatusBadge({ label, tone }: { label: string; tone: Tone }) {
   const isWaitingReview = label.trim().toLowerCase() === 'waiting review'
   return (
     <span className={cn('inline-flex max-w-[132px] shrink-0 items-center', isWaitingReview ? waitingReviewBadgeClass : cn('rounded-md border px-1.5 py-px text-[9px] font-semibold uppercase leading-4 tracking-[0.06em]', toneBadgeClass(tone)))}>
       <span className="truncate">{label}</span>
     </span>
+  )
+}
+
+function PlanRunCard({ view, onOpenPlan }: { view: DesktopPlanExecutionView; onOpenPlan?: () => void }) {
+  const title = view.plan.document?.title?.trim() || view.plan.title?.trim() || 'Approved plan'
+  const tone = statusTone(view.status, !view.completed && !view.blocked && !view.failed)
+
+  return (
+    <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.16)]">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Plan execution</div>
+        <StatusBadge label={statusLabel(view)} tone={tone} />
+      </div>
+      <h3
+        className="mt-1 min-w-0 break-words text-sm font-semibold leading-snug text-[var(--app-text)] [overflow-wrap:anywhere]"
+        title={title}
+      >
+        {title}
+      </h3>
+      <p className="mt-2 text-xs leading-5 text-[var(--app-text-muted)]">
+        Running the approved plan normally as one fresh-context execution.
+      </p>
+      <Button type="button" size="sm" variant="outline" onClick={onOpenPlan} disabled={!onOpenPlan} className="mt-3 w-full rounded-lg">
+        Open full plan
+      </Button>
+    </section>
   )
 }
 
@@ -177,13 +207,16 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
     : 'Approves the final checkpoint and marks the plan complete. You can keep chatting or ask the agent to add follow-up checkpoints.'
 
   if (automatic && !view.reviewRequired && !view.blocked && !view.failed && !view.completed) {
+    const singleRun = isSingleRunView(view)
     return (
       <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.14)]">
         <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Actions / Plan Mode</div>
         <div className="mt-3 rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-3 py-2.5">
-          <div className="text-sm font-semibold text-[var(--app-text)]">Automatic mode on</div>
+          <div className="text-sm font-semibold text-[var(--app-text)]">{singleRun ? 'Continue normally' : 'Automatic mode on'}</div>
           <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
-            Execution will continue until the plan completes or stops for review, a blocker, or a failure.
+            {singleRun
+              ? 'Execution will continue as one plan run until it completes or stops for review, a blocker, or a failure.'
+              : 'Execution will continue until the plan completes or stops for review, a blocker, or a failure.'}
           </p>
         </div>
       </section>
@@ -260,6 +293,7 @@ export const DesktopPlanExecutionSidebar = memo(function DesktopPlanExecutionSid
   const activeIndex = view.activeCheckpoint
     ? checkpoints.findIndex((checkpoint) => checkpoint.id === view.activeCheckpoint?.id)
     : -1
+  const singleRun = isSingleRunView(view)
 
   return (
     <aside
@@ -268,14 +302,18 @@ export const DesktopPlanExecutionSidebar = memo(function DesktopPlanExecutionSid
       data-testid="desktop-plan-execution-sidebar"
     >
       <div className="grid min-w-0 max-w-full gap-3 overflow-hidden [&_*]:min-w-0">
-        <ActiveCheckpointCard
-          view={view}
-          checkpoints={checkpoints}
-          completedCount={completedCount}
-          totalCount={totalCount}
-          activeIndex={activeIndex}
-          onOpenPlan={onEditPlan}
-        />
+        {singleRun ? (
+          <PlanRunCard view={view} onOpenPlan={onEditPlan} />
+        ) : (
+          <ActiveCheckpointCard
+            view={view}
+            checkpoints={checkpoints}
+            completedCount={completedCount}
+            totalCount={totalCount}
+            activeIndex={activeIndex}
+            onOpenPlan={onEditPlan}
+          />
+        )}
         <ActionsCard
           view={view}
           busyAction={busyAction}

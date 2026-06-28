@@ -44,7 +44,7 @@ function view(overrides: Partial<DesktopPlanExecutionView> = {}): DesktopPlanExe
         schemaVersion: '',
         revisionId: '',
         info: { goal: '', scope: '', context: '', decisions: [], constraints: [], assumptions: [], openQuestions: [], relevantFiles: [], successCriteria: [], validationStrategy: '' },
-        executionPolicy: { mode: 'automatic', shape: 'single_run' },
+        executionPolicy: { mode: 'automatic', shape: 'checkpointed' },
         executionState: { status: 'in_progress', activeAttemptId: 'attempt-1', parentSessionId: 'session-1', currentSessionId: 'session-1', currentRunId: 'run-1', lastCheckpointId: '', lastAttemptId: '', lastOutcome: '', startedAt: 1, updatedAt: 1, completedAt: 0 },
         checkpoints,
         activeCheckpointId: 'cp-1',
@@ -56,7 +56,7 @@ function view(overrides: Partial<DesktopPlanExecutionView> = {}): DesktopPlanExe
     activeCheckpointId: 'cp-1',
     status: 'in_progress',
     policyMode: 'automatic',
-    policyShape: 'single_run',
+    policyShape: 'checkpointed',
     currentRunId: 'run-1',
     currentSessionId: 'session-1',
     freshContext: true,
@@ -69,7 +69,33 @@ function view(overrides: Partial<DesktopPlanExecutionView> = {}): DesktopPlanExe
   }
 }
 
-test('automatic mode sidebar actions card is informational with no manual controls', () => {
+test('normal run-through sidebar shows the plan title instead of the synthetic checkpoint', () => {
+  const base = view({ policyShape: 'single_run' })
+  base.plan.title = 'Plan: ship sidebar fix'
+  base.plan.document.title = 'Plan: ship sidebar fix'
+  base.plan.document.executionPolicy = { mode: 'automatic', shape: 'single_run' }
+  base.plan.document.activeCheckpointId = 'plan-run'
+  base.activeCheckpointId = 'plan-run'
+  base.activeCheckpoint = {
+    ...base.activeCheckpoint!,
+    id: 'plan-run',
+    title: 'Run approved plan',
+  }
+  base.plan.document.checkpoints = [base.activeCheckpoint]
+
+  const markup = renderToStaticMarkup(<DesktopPlanExecutionSidebar view={base} onAction={() => undefined} onEditPlan={() => undefined} />)
+
+  assert.match(markup, /Plan execution/)
+  assert.match(markup, /Plan: ship sidebar fix/)
+  assert.match(markup, /Continue normally/)
+  assert.match(markup, /Running the approved plan normally/)
+  assert.doesNotMatch(markup, /Active checkpoint/)
+  assert.doesNotMatch(markup, /plan-run/)
+  assert.doesNotMatch(markup, /Run approved plan/)
+  assert.doesNotMatch(markup, /No remaining checkpoint/)
+})
+
+test('automatic checkpointed mode sidebar actions card is informational with no manual controls', () => {
   const markup = renderToStaticMarkup(<DesktopPlanExecutionSidebar view={view()} onAction={() => undefined} onEditPlan={() => undefined} />)
 
   assert.match(markup, /Automatic mode on/)

@@ -1051,6 +1051,60 @@ function ExitPlanDocumentView({ document }: { document: StructuredPlanDocument }
   )
 }
 
+type ExitPlanExecutionChoice = 'run_through' | 'checkpointed_manual' | 'checkpointed_automatic'
+
+const exitPlanExecutionChoices: Array<{
+  id: ExitPlanExecutionChoice
+  title: string
+  description: string
+  detail: string
+}> = [
+  {
+    id: 'run_through',
+    title: 'Continue normally',
+    description: 'Run the approved plan as one fresh-context execution.',
+    detail: 'Best for most tasks. The sidebar follows the plan instead of individual checkpoints.',
+  },
+  {
+    id: 'checkpointed_manual',
+    title: 'Continue checkpoint by checkpoint',
+    description: 'Run one checkpoint at a time and pause for your review between checkpoints.',
+    detail: 'Uses the existing manual checkpoint execution behavior.',
+  },
+  {
+    id: 'checkpointed_automatic',
+    title: 'Automatic mode',
+    description: 'Run checkpoints automatically until completion or until review, blocker, or failure stops execution.',
+    detail: 'Uses the existing automatic checkpoint execution behavior.',
+  },
+]
+
+export function exitPlanExecutionArguments(choice: ExitPlanExecutionChoice): {
+  execution_granularity: 'checkpointed' | 'run_through'
+  continue_automatically: boolean
+  continuation_policy: 'automatic' | 'review_each_checkpoint'
+} {
+  if (choice === 'checkpointed_manual') {
+    return {
+      execution_granularity: 'checkpointed',
+      continue_automatically: false,
+      continuation_policy: 'review_each_checkpoint',
+    }
+  }
+  if (choice === 'checkpointed_automatic') {
+    return {
+      execution_granularity: 'checkpointed',
+      continue_automatically: true,
+      continuation_policy: 'automatic',
+    }
+  }
+  return {
+    execution_granularity: 'run_through',
+    continue_automatically: true,
+    continuation_policy: 'automatic',
+  }
+}
+
 function ExitPlanModal({
   permission,
   open,
@@ -1062,16 +1116,14 @@ function ExitPlanModal({
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
-  const [executionGranularity, setExecutionGranularity] = useState<'checkpointed' | 'run_through'>('run_through')
-  const [continueAutomatically, setContinueAutomatically] = useState(false)
+  const [executionChoice, setExecutionChoice] = useState<ExitPlanExecutionChoice>('run_through')
 
   useEffect(() => {
     if (open) {
       setNote('')
       setLoading(false)
       setCopyState('idle')
-      setExecutionGranularity('run_through')
-      setContinueAutomatically(false)
+      setExecutionChoice('run_through')
     }
   }, [open, permission?.id])
 
@@ -1105,9 +1157,7 @@ function ExitPlanModal({
             title: payload.title || structuredDocument?.title || payload.approvedArguments.title,
             plan: payload.body,
             document: payload.document ?? payload.approvedArguments.document,
-            execution_granularity: executionGranularity,
-            continue_automatically: executionGranularity === 'run_through' ? true : continueAutomatically,
-            continuation_policy: executionGranularity === 'run_through' || continueAutomatically ? 'automatic' : 'review_each_checkpoint',
+            ...exitPlanExecutionArguments(executionChoice),
           }
         : undefined
       await onResolve(action, note.trim(), approvedArguments)
@@ -1157,42 +1207,42 @@ function ExitPlanModal({
         {hasStructuredPlan ? (
           <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
             <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Execution after approval</div>
-            <div className="mt-3 grid gap-3">
-              <label className="grid gap-1.5 text-sm text-[var(--app-text)]">
-                <span className="font-medium">Execution style</span>
-                <select
-                  value={executionGranularity}
-                  onChange={(event) => setExecutionGranularity(event.target.value === 'checkpointed' ? 'checkpointed' : 'run_through')}
-                  disabled={loading}
-                  className="min-h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)] outline-none transition focus-visible:border-[var(--app-border-active)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
-                >
-                  <option value="run_through">Execute as one run</option>
-                  <option value="checkpointed">Execute checkpoint by checkpoint</option>
-                </select>
-                <span className="text-xs text-[var(--app-text-muted)]">
-                  {executionGranularity === 'run_through'
-                    ? 'Runs the approved plan as a single fresh-context execution. Best for most tasks.'
-                    : 'Runs each checkpoint separately with fresh context.'}
-                </span>
-              </label>
-              {executionGranularity === 'checkpointed' ? (
-                <label className="grid gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
-                  <span className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={continueAutomatically}
-                      onChange={(event) => setContinueAutomatically(event.target.checked)}
-                      disabled={loading}
-                    />
-                    Continue automatically after each completed checkpoint
-                  </span>
-                  <span className="pl-6 text-xs text-[var(--app-text-muted)]">
-                    {continueAutomatically
-                      ? 'Swarm starts the next checkpoint automatically after successful completion, and still stops for review requests, blockers, failures, or final completion.'
-                      : 'If unchecked, Swarm pauses for your review before starting the next checkpoint.'}
-                  </span>
-                </label>
-              ) : null}
+            <div className="mt-3 grid gap-3 md:grid-cols-3" role="radiogroup" aria-label="Execution after approval">
+              {exitPlanExecutionChoices.map((choice) => {
+                const selected = executionChoice === choice.id
+                return (
+                  <button
+                    key={choice.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    disabled={loading}
+                    onClick={() => setExecutionChoice(choice.id)}
+                    className={cn(
+                      'grid min-h-[132px] gap-2 rounded-2xl border px-4 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]',
+                      selected
+                        ? 'border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] shadow-[0_12px_28px_rgba(0,0,0,0.12)]'
+                        : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-active)]',
+                      loading ? 'cursor-not-allowed opacity-70' : 'cursor-pointer',
+                    )}
+                  >
+                    <span className="flex items-start justify-between gap-3">
+                      <span className="text-sm font-semibold text-[var(--app-text)]">{choice.title}</span>
+                      <span
+                        className={cn(
+                          'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-full border',
+                          selected ? 'border-[var(--app-primary)] bg-[var(--app-primary)] text-[var(--app-primary-contrast)]' : 'border-[var(--app-border-strong)]',
+                        )}
+                        aria-hidden="true"
+                      >
+                        {selected ? <Check className="size-3" /> : null}
+                      </span>
+                    </span>
+                    <span className="text-xs leading-5 text-[var(--app-text)]">{choice.description}</span>
+                    <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">{choice.detail}</span>
+                  </button>
+                )
+              })}
             </div>
           </section>
         ) : null}
