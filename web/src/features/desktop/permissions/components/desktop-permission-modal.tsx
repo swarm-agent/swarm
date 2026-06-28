@@ -1073,7 +1073,7 @@ function ExitPlanModal({
       setExecutionGranularity('run_through')
       setContinueAutomatically(false)
     }
-  }, [open, permission])
+  }, [open, permission?.id])
 
   if (!permission) {
     return null
