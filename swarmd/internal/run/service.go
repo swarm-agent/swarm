@@ -2212,6 +2212,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				s.maybeRefreshSessionGitState(sessionID, sessionSnapshot)
 			}
 			emit(StreamEvent{Type: StreamEventMessageStored, Step: step, Message: &storedToolMessage})
+			if err := s.appendPlanLifecycleMessageForToolResult(sessionID, call, result, options.ApplySessionMutation); err != nil {
+				return RunResult{}, err
+			}
 		}
 		nextInput = append(nextInput, nextInputFunctionCalls...)
 		nextInput = append(nextInput, nextInputFunctionOutputs...)

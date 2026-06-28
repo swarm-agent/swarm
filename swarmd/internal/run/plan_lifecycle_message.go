@@ -38,12 +38,13 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	nextCheckpointTitle := planLifecycleCheckpointTitle(doc, nextCheckpointID)
 	freshContext := nextAction == "run_checkpoint_with_fresh_context" || action == "start_checkpoint" || action == "continue_checkpoint" || action == "restart_checkpoint" || action == "rewind_to_checkpoint" || action == "approve_and_start"
 
-	lines := []string{planLifecycleHeadline(action, summary, nextAction)}
+	checkpointLabel := planLifecycleCheckpointLabel(checkpointID, checkpointTitle)
+	lines := []string{planLifecycleHeadline(action, summary, nextAction, checkpointLabel)}
 	if planLabel := planLifecyclePlanLabel(input.Plan, doc); planLabel != "" {
 		lines = append(lines, "Plan: "+planLabel)
 	}
 	if checkpointID != "" {
-		lines = append(lines, "Checkpoint: "+planLifecycleCheckpointLabel(checkpointID, checkpointTitle))
+		lines = append(lines, "Checkpoint: "+checkpointLabel)
 	}
 	policy := planLifecyclePolicyLabel(doc.ExecutionPolicy)
 	if policy != "" {
@@ -87,25 +88,15 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 
 func isPlanExecutionLifecycleMessageAction(action string) bool {
 	switch strings.TrimSpace(action) {
-	case "approve_and_start", "start_checkpoint", "continue_checkpoint", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed", "accept_checkpoint", "restart_checkpoint", "rewind_to_checkpoint":
+	case "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed":
 		return true
 	default:
 		return false
 	}
 }
 
-func planLifecycleHeadline(action string, summary sessionruntime.PlanExecutionSummary, nextAction string) string {
+func planLifecycleHeadline(action string, summary sessionruntime.PlanExecutionSummary, nextAction, checkpointLabel string) string {
 	switch action {
-	case "approve_and_start":
-		return "Plan accepted"
-	case "start_checkpoint", "continue_checkpoint":
-		return "Checkpoint started"
-	case "restart_checkpoint":
-		return "Checkpoint restarted"
-	case "rewind_to_checkpoint":
-		return "Plan rewound to checkpoint"
-	case "accept_checkpoint":
-		return "Checkpoint review accepted"
 	case "mark_needs_review":
 		return "Checkpoint paused for review"
 	case "mark_blocked":

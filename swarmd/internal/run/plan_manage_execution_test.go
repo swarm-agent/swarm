@@ -1,12 +1,16 @@
 package run
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/identity"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 func TestExecutePlanManageCheckpointOutcomeUpdatesExecutionMetadata(t *testing.T) {
@@ -86,7 +90,7 @@ func TestExecutePlanManageUpdateExecutionPolicy(t *testing.T) {
 	}
 }
 
-func TestExecutePlanManageEmitsPlanLifecycleSystemMessage(t *testing.T) {
+func TestExecutePlanManageStartCheckpointDoesNotEmitPlanLifecycleSystemMessage(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
 
@@ -108,15 +112,143 @@ func TestExecutePlanManageEmitsPlanLifecycleSystemMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 1 {
-		t.Fatalf("message count = %d, want 1: %#v", len(messages), messages)
+	if len(messages) != 0 {
+		t.Fatalf("start checkpoint should not emit lifecycle message, messages = %#v", messages)
 	}
-	message := messages[0]
-	if message.Role != "system" || message.Metadata["source"] != PlanExecutionLifecycleMessageSource || message.Metadata["kind"] != "plan_execution_break" {
-		t.Fatalf("message role/metadata = role %q metadata %#v", message.Role, message.Metadata)
+}
+
+func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-lifecycle-actions", "Lifecycle Actions", "# Lifecycle", "draft", "pending", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Model", Status: sessionruntime.PlanCheckpointStatusPending},
+			{ID: "cp-2", Title: "API", Status: sessionruntime.PlanCheckpointStatusPending},
+		},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save lifecycle actions plan: %v", err)
 	}
-	if !strings.Contains(message.Content, "Checkpoint started") || !strings.Contains(message.Content, "Checkpoint: cp-1 Model") || !strings.Contains(message.Content, "Fresh context") {
-		t.Fatalf("message content = %q", message.Content)
+
+	var appliedMutations []sessionruntime.SessionMutationInput
+	applyMutation := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		appliedMutations = append(appliedMutations, input)
+		return sessionSvc.ApplySessionMutation(input)
+	}
+
+	assertLifecycleMessage := func(index int, action, nextAction string, expectedMutationOffset int, contains ...string) {
+		t.Helper()
+		messages, err := sessionSvc.ListSessionMessages(sessionID, 0, 20)
+		if err != nil {
+			t.Fatalf("list messages: %v", err)
+		}
+		if len(messages) != index+1 {
+			t.Fatalf("message count = %d, want %d: %#v", len(messages), index+1, messages)
+		}
+		message := messages[index]
+		if message.Role != "system" || message.Metadata["source"] != PlanExecutionLifecycleMessageSource || message.Metadata["kind"] != "plan_execution_break" {
+			t.Fatalf("message[%d] role/metadata = role %q metadata %#v", index, message.Role, message.Metadata)
+		}
+		if message.Metadata["action"] != action || message.Metadata["next_action"] != nextAction {
+			t.Fatalf("message[%d] action metadata = %#v", index, message.Metadata)
+		}
+		for _, want := range contains {
+			if !strings.Contains(message.Content, want) {
+				t.Fatalf("message[%d] content missing %q: %q", index, want, message.Content)
+			}
+		}
+		messageMutationIndex := -1
+		seenMessages := 0
+		for i := range appliedMutations {
+			mutation := appliedMutations[i]
+			if mutation.Kind != sessionruntime.SessionMutationAppendMessage || mutation.EventType != "session.message.appended" || mutation.Message == nil {
+				continue
+			}
+			if mutation.Message.Metadata["source"] != PlanExecutionLifecycleMessageSource {
+				continue
+			}
+			if seenMessages == index {
+				messageMutationIndex = i
+				break
+			}
+			seenMessages++
+		}
+		if messageMutationIndex < 0 {
+			t.Fatalf("applied mutations missing lifecycle message[%d]: %#v", index, appliedMutations)
+		}
+		if messageMutationIndex != expectedMutationOffset {
+			t.Fatalf("message[%d] mutation index = %d, want %d: %#v", index, messageMutationIndex, expectedMutationOffset, appliedMutations)
+		}
+		messageMutation := appliedMutations[messageMutationIndex]
+		if messageMutation.Message.Metadata["action"] != action {
+			t.Fatalf("message[%d] mutation metadata = %#v", index, messageMutation.Message.Metadata)
+		}
+	}
+
+	raw, err := runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"approve_and_start","execution_granularity":"checkpointed","continue_automatically":true}`, "", applyMutation)
+	if err != nil {
+		t.Fatalf("approve and start: %v output=%s", err, raw)
+	}
+	if len(appliedMutations) != 1 {
+		t.Fatalf("approve and start should only add plan saved mutation, count = %d: %#v", len(appliedMutations), appliedMutations)
+	}
+
+	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"start_checkpoint","attempt_id":"attempt-1","run_id":"run-1","run_session_id":"child-session","parent_session_id":"parent-session","started_at":1234}`, "", applyMutation)
+	if err != nil {
+		t.Fatalf("start checkpoint: %v output=%s", err, raw)
+	}
+	if len(appliedMutations) != 2 {
+		t.Fatalf("start checkpoint should only add plan saved mutation, count = %d: %#v", len(appliedMutations), appliedMutations)
+	}
+
+	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"done"}`, "", applyMutation)
+	if err != nil {
+		t.Fatalf("complete checkpoint: %v output=%s", err, raw)
+	}
+	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
+		t.Fatalf("append complete lifecycle: %v", err)
+	}
+	assertLifecycleMessage(0, "complete_checkpoint", "run_checkpoint_with_fresh_context", 3, "Checkpoint complete · continuing automatically", "Checkpoint: cp-1 Model", "Next: cp-2 API", "Fresh context")
+
+	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"start_checkpoint","attempt_id":"attempt-2","run_id":"run-2","run_session_id":"child-session-2","parent_session_id":"parent-session","started_at":2345}`, "", applyMutation)
+	if err != nil {
+		t.Fatalf("start second checkpoint: %v output=%s", err, raw)
+	}
+	if len(appliedMutations) != 5 {
+		t.Fatalf("start second checkpoint should only add plan saved mutation, count = %d: %#v", len(appliedMutations), appliedMutations)
+	}
+
+	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"done"}`, "", applyMutation)
+	if err != nil {
+		t.Fatalf("complete final checkpoint: %v output=%s", err, raw)
+	}
+	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
+		t.Fatalf("append final lifecycle: %v", err)
+	}
+	assertLifecycleMessage(1, "complete_checkpoint", "plan_complete", 6, "Plan complete", "Checkpoint: cp-2 API", "Next: plan complete.")
+
+	outbox, err := sessionSvc.ListRealtimeOutboxForSessionAfterSeq(sessionID, 0, 20)
+	if err != nil {
+		t.Fatalf("list realtime outbox: %v", err)
+	}
+	if len(outbox) != 7 {
+		t.Fatalf("realtime outbox count = %d, want 7: %#v", len(outbox), outbox)
+	}
+	wantEvents := []string{
+		"session.plan.saved",
+		"session.plan.saved",
+		"session.plan.saved", "session.message.appended",
+		"session.plan.saved",
+		"session.plan.saved", "session.message.appended",
+	}
+	for i, want := range wantEvents {
+		if outbox[i].Event.EventType != want {
+			t.Fatalf("realtime outbox[%d] = %q, want %q", i, outbox[i].Event.EventType, want)
+		}
 	}
 }
 
@@ -403,5 +535,105 @@ func TestExecutePlanManageNeedsReviewAndBlockedStopAdvancement(t *testing.T) {
 	}
 	if blockedPayload.NextAction != "stopped" || blockedPayload.Plan.Document.ActiveCheckpointID != "cp-a" || blockedPayload.Plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusBlocked {
 		t.Fatalf("blocked payload=%s document=%#v", raw, blockedPayload.Plan.Document)
+	}
+}
+
+func TestProviderManagedPlanManageLifecycleMessageFollowsToolCompletion(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-provider-lifecycle", "Provider Lifecycle", "# Lifecycle", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "First", Status: sessionruntime.PlanCheckpointStatusInProgress},
+			{ID: "cp-2", Title: "Second", Status: sessionruntime.PlanCheckpointStatusPending},
+		},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save provider lifecycle plan: %v", err)
+	}
+
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-test", AccountScopeID: "account-test"}
+	var appliedMutations []sessionruntime.SessionMutationInput
+	applyMutation := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		if input.UserID == "" {
+			input.UserID = principal.UserID
+		}
+		if input.AccountScopeID == "" {
+			input.AccountScopeID = principal.AccountScopeID
+		}
+		appliedMutations = append(appliedMutations, input)
+		return sessionSvc.ApplySessionMutation(input)
+	}
+	var events []StreamEvent
+	invoker := runSvc.NewProviderManagedToolInvoker(ProviderManagedToolInvokerConfig{
+		SessionID:            sessionID,
+		PermissionSessionID:  sessionID,
+		RunID:                "run-provider-lifecycle",
+		Step:                 1,
+		SessionMode:          sessionruntime.ModeAuto,
+		Principal:            principal,
+		Emit:                 func(event StreamEvent) { events = append(events, event) },
+		ApplySessionMutation: applyMutation,
+		ProviderManagedV3:    true,
+	})
+	if invoker == nil {
+		t.Fatal("provider managed invoker is nil")
+	}
+
+	result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-plan", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"done"}`})
+	if err != nil {
+		t.Fatalf("execute provider managed plan_manage: %v", err)
+	}
+	if !result.RestartTurn {
+		t.Fatalf("provider managed plan_manage should request restart, result = %#v", result)
+	}
+
+	wantMutations := []struct {
+		kind      string
+		eventType string
+	}{
+		{sessionruntime.SessionMutationSavePlan, "session.plan.saved"},
+		{sessionruntime.SessionMutationAppendMessage, "session.tool.completed"},
+		{sessionruntime.SessionMutationAppendMessage, "session.message.appended"},
+	}
+	if len(appliedMutations) != len(wantMutations) {
+		t.Fatalf("mutation count = %d, want %d: %#v", len(appliedMutations), len(wantMutations), appliedMutations)
+	}
+	for i, want := range wantMutations {
+		if appliedMutations[i].Kind != want.kind || appliedMutations[i].EventType != want.eventType {
+			t.Fatalf("mutation[%d] kind/event = %q/%q, want %q/%q", i, appliedMutations[i].Kind, appliedMutations[i].EventType, want.kind, want.eventType)
+		}
+	}
+
+	if len(events) < 2 || events[0].Type != StreamEventToolStarted || events[1].Type != StreamEventToolCompleted {
+		t.Fatalf("stream events did not emit tool start/completion first: %#v", events)
+	}
+
+	outbox, err := sessionSvc.ListRealtimeOutboxForSessionAfterSeq(sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list outbox: %v", err)
+	}
+	wantOutbox := []string{"session.plan.saved", "session.tool.completed", "session.message.appended"}
+	if len(outbox) != len(wantOutbox) {
+		t.Fatalf("outbox count = %d, want %d: %#v", len(outbox), len(wantOutbox), outbox)
+	}
+	for i, want := range wantOutbox {
+		if outbox[i].Event.EventType != want {
+			t.Fatalf("outbox[%d] = %q, want %q", i, outbox[i].Event.EventType, want)
+		}
+	}
+
+	messages, err := sessionSvc.ListSessionMessages(sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 2 || messages[0].Role != "tool" || messages[1].Role != "system" {
+		t.Fatalf("message ordering = %#v", messages)
+	}
+	if messages[1].Metadata["source"] != PlanExecutionLifecycleMessageSource {
+		t.Fatalf("system lifecycle metadata = %#v", messages[1].Metadata)
 	}
 }

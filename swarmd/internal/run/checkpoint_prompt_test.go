@@ -17,9 +17,14 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextAndStartsCheckpoint(t *testing.T) {
+func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMessage(t *testing.T) {
 	svc, sessionID, cleanup := newCheckpointRunPromptTestService(t)
 	defer cleanup()
+	var appliedMutations []sessionruntime.SessionMutationInput
+	applyMutation := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		appliedMutations = append(appliedMutations, input)
+		return svc.sessions.ApplySessionMutation(input)
+	}
 	if _, _, err := svc.sessions.SavePlanWithMetadata(sessionID, "plan-cp", "Plan CP", "# ignored display", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
 		ID:    "plan-cp",
 		Title: "Plan CP",
@@ -43,7 +48,7 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextAndStartsCheckpoint(t *te
 		t.Fatalf("append old chat: %v", err)
 	}
 
-	input, ok, err := svc.buildPlanCheckpointRunInput(sessionID, "run-cp", RunOptions{PlanCheckpointContext: &RunPlanCheckpointContext{PlanID: "plan-cp", CheckpointID: "cp-2", ParentSessionID: "parent-session"}})
+	input, ok, err := svc.buildPlanCheckpointRunInput(sessionID, "run-cp", RunOptions{PlanCheckpointContext: &RunPlanCheckpointContext{PlanID: "plan-cp", CheckpointID: "cp-2", ParentSessionID: "parent-session"}, ApplySessionMutation: applyMutation})
 	if err != nil {
 		t.Fatalf("build checkpoint input: %v", err)
 	}
@@ -61,8 +66,10 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextAndStartsCheckpoint(t *te
 		t.Fatalf("prompt missing terminal outcome instruction: %s", text)
 	}
 	for _, want := range []string{
-		"Use plan_manage as the only agent progress and checkpoint lifecycle surface",
+		"Use plan_manage as the only checkpoint lifecycle surface",
 		"Do not use manage_todos for agent self-tracking",
+		"Do not call plan_manage update_checkpoint",
+		"Always include the current checkpoint_id from the payload",
 		"complete_checkpoint may continue to the next checkpoint only if backend execution policy allows it",
 		"mark_needs_review always pauses for review and never advances to the next checkpoint",
 		"backend durable plan state decides continuation",
@@ -89,6 +96,26 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextAndStartsCheckpoint(t *te
 	}
 	if got := plan.Document.Checkpoints[1].SessionID; got != sessionID {
 		t.Fatalf("checkpoint session id = %q, want %q", got, sessionID)
+	}
+	if len(appliedMutations) != 1 {
+		t.Fatalf("applied mutation count = %d, want 1: %#v", len(appliedMutations), appliedMutations)
+	}
+	if appliedMutations[0].Kind != sessionruntime.SessionMutationSavePlan || appliedMutations[0].EventType != "session.plan.saved" {
+		t.Fatalf("first mutation = kind %q event %q", appliedMutations[0].Kind, appliedMutations[0].EventType)
+	}
+	messages, err := svc.sessions.ListMessages(sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "old chat that must not appear" {
+		t.Fatalf("start checkpoint should not append lifecycle message, messages = %#v", messages)
+	}
+	outbox, err := svc.sessions.ListRealtimeOutboxForSessionAfterSeq(sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list realtime outbox: %v", err)
+	}
+	if len(outbox) != 1 || outbox[0].Event.EventType != "session.plan.saved" {
+		t.Fatalf("realtime outbox = %#v", outbox)
 	}
 }
 

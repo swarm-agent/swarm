@@ -82,7 +82,7 @@ func (s *Service) buildPlanCheckpointRunInput(sessionID, runID string, options R
 		parentSessionID = sessionID
 	}
 	startedAt := time.Now().UnixMilli()
-	patched, _, patchErr := s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{
+	patched, event, patchErr := s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{
 		PlanID: planID,
 		DocumentPatch: &sessionruntime.PlanDocumentPatch{
 			Operation:       "start_checkpoint",
@@ -103,7 +103,11 @@ func (s *Service) buildPlanCheckpointRunInput(sessionID, runID string, options R
 	if patchErr != nil {
 		return nil, true, patchErr
 	}
+	if err := s.persistPlanSavedV3Mutation(patched, event, options.ApplySessionMutation); err != nil {
+		return nil, true, fmt.Errorf("publish checkpoint start plan saved: %w", err)
+	}
 	if patched.Document != nil {
+		plan = patched
 		doc = patched.Document
 		idx = findPlanRunCheckpointIndex(doc.Checkpoints, checkpointID)
 		if idx < 0 {
@@ -154,10 +158,10 @@ func renderCheckpointRunPrompt(payload checkpointRunPromptPayload) (string, erro
 		"[checkpoint-run] Deterministic checkpoint execution context.",
 		"Conversation history has been intentionally cleared for this run. Use only this payload plus the system/developer instructions and tool results from this run.",
 		"Execute exactly one checkpoint: " + checkpointID + ". Do not begin later checkpoints in this run.",
-		"Use plan_manage as the only agent progress and checkpoint lifecycle surface for this run. Do not use manage_todos for agent self-tracking, checkpoint progress, or terminal outcomes; manage_todos is reserved for user-owned workspace todos.",
-		"During the checkpoint, use plan_manage update_checkpoint or structured document patches for meaningful progress updates, checklist/task state, notes, report drafts, changed files, or validation evidence.",
-		"At the end of the checkpoint, call plan_manage exactly once with one terminal outcome action: complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed.",
-		"The terminal outcome tool call must include checkpoint_id, attempt_id when present, run_id, run_session_id, parent_session_id, report, changed_files, validation, and result/next-action evidence.",
+		"Use plan_manage as the only checkpoint lifecycle surface for this run. Do not use manage_todos for agent self-tracking, checkpoint progress, or terminal outcomes; manage_todos is reserved for user-owned workspace todos.",
+		"Do not call plan_manage update_checkpoint or structured document patches merely to record checkpoint progress or summarize completed work. The checkpoint payload already contains the task context.",
+		"Complete this checkpoint with exactly one terminal plan_manage outcome action: complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed. Always include the current checkpoint_id from the payload in that terminal call.",
+		"The terminal outcome tool call must include checkpoint_id, attempt_id when present, run_id, run_session_id, parent_session_id, report, changed_files, validation, and result/next-action evidence; put final notes and evidence in that terminal call instead of a separate update_checkpoint call.",
 		"If all acceptance criteria are met, use complete_checkpoint. complete_checkpoint may continue to the next checkpoint only if backend execution policy allows it; the model must not start the next checkpoint manually.",
 		"If user/audit review is needed, use mark_needs_review. mark_needs_review always pauses for review and never advances to the next checkpoint until review is accepted by the backend.",
 		"If external input is required, use mark_blocked. If the checkpoint cannot be completed because of an error, use mark_failed. Both stop execution instead of advancing.",

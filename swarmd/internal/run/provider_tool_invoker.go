@@ -355,8 +355,38 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	if err := s.storeProviderManagedToolResult(config, call, metadata, result); err != nil {
 		return tool.Result{}, err
 	}
+	if err := s.appendPlanLifecycleMessageForToolResult(config.sessionID, call, result, config.applySessionMutation); err != nil {
+		return tool.Result{}, err
+	}
 
 	return result, nil
+}
+
+func (s *Service) appendPlanLifecycleMessageForToolResult(sessionID string, call tool.Call, result tool.Result, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
+	if !strings.EqualFold(strings.TrimSpace(call.Name), "plan_manage") {
+		return nil
+	}
+	payload := decodeToolPayload(strings.TrimSpace(result.Output))
+	if payload == nil {
+		return nil
+	}
+	action := strings.TrimSpace(mapString(payload, "action"))
+	if !isPlanExecutionLifecycleMessageAction(action) {
+		return nil
+	}
+	planPayload, ok := payload["plan"].(map[string]any)
+	if !ok || planPayload == nil {
+		return nil
+	}
+	planRaw, err := json.Marshal(planPayload)
+	if err != nil {
+		return fmt.Errorf("marshal plan lifecycle payload: %w", err)
+	}
+	var plan pebblestore.SessionPlanSnapshot
+	if err := json.Unmarshal(planRaw, &plan); err != nil {
+		return fmt.Errorf("decode plan lifecycle payload: %w", err)
+	}
+	return s.appendPlanExecutionLifecycleSystemMessage(sessionID, action, plan, payload, applySessionMutation)
 }
 
 func (s *Service) storeProviderManagedToolResult(config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result) error {
