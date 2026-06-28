@@ -1,7 +1,6 @@
 package run
 
 import (
-	"fmt"
 	"strings"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -39,29 +38,35 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	freshContext := nextAction == "run_checkpoint_with_fresh_context" || action == "start_checkpoint" || action == "continue_checkpoint" || action == "restart_checkpoint" || action == "rewind_to_checkpoint" || action == "approve_and_start"
 
 	checkpointLabel := planLifecycleCheckpointLabel(checkpointID, checkpointTitle)
-	lines := []string{planLifecycleHeadline(action, summary, nextAction, checkpointLabel)}
+	modeLabel := planLifecycleModeLabel(doc.ExecutionPolicy)
+	lines := []string{planLifecycleHeadline(action, summary, nextAction, modeLabel)}
+	bodyLines := make([]string, 0, 4)
 	if planLabel := planLifecyclePlanLabel(input.Plan, doc); planLabel != "" {
-		lines = append(lines, "Plan: "+planLabel)
+		bodyLines = append(bodyLines, "Plan: "+planLabel)
 	}
 	if checkpointID != "" {
-		lines = append(lines, "Checkpoint: "+checkpointLabel)
-	}
-	policy := planLifecyclePolicyLabel(doc.ExecutionPolicy)
-	if policy != "" {
-		lines = append(lines, "Policy: "+policy)
-	}
-	if freshContext {
-		lines = append(lines, "Fresh context: previous checkpoint context cleared for this run.")
+		checkpointLineLabel := "Checkpoint"
+		if planLifecycleActionCompleted(action) {
+			checkpointLineLabel = "Completed"
+		}
+		bodyLines = append(bodyLines, checkpointLineLabel+": "+checkpointLabel)
 	}
 	if nextCheckpointID != "" && nextCheckpointID != checkpointID && nextAction != "await_review" && nextAction != "stopped" && nextAction != "plan_complete" {
-		lines = append(lines, "Next: "+planLifecycleCheckpointLabel(nextCheckpointID, nextCheckpointTitle))
+		bodyLines = append(bodyLines, "Next: "+planLifecycleCheckpointLabel(nextCheckpointID, nextCheckpointTitle))
 	}
 	if nextAction == "await_review" {
-		lines = append(lines, "Next: waiting for checkpoint review.")
+		bodyLines = append(bodyLines, "Next: waiting for checkpoint review.")
 	} else if nextAction == "stopped" {
-		lines = append(lines, "Next: execution stopped until the blocker or failure is resolved.")
+		bodyLines = append(bodyLines, "Next: execution stopped until the blocker or failure is resolved.")
 	} else if nextAction == "plan_complete" {
-		lines = append(lines, "Next: plan complete.")
+		bodyLines = append(bodyLines, "Next: plan complete.")
+	}
+	if len(bodyLines) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, bodyLines...)
+	}
+	if freshContext {
+		lines = append(lines, "", "Context: Starting the next checkpoint with fresh context.")
 	}
 
 	metadata := map[string]any{
@@ -95,25 +100,26 @@ func isPlanExecutionLifecycleMessageAction(action string) bool {
 	}
 }
 
-func planLifecycleHeadline(action string, summary sessionruntime.PlanExecutionSummary, nextAction, checkpointLabel string) string {
+func planLifecycleHeadline(action string, summary sessionruntime.PlanExecutionSummary, nextAction, modeLabel string) string {
+	base := "Plan execution updated"
 	switch action {
 	case "mark_needs_review":
-		return "Checkpoint paused for review"
+		base = "Checkpoint paused for review"
 	case "mark_blocked":
-		return "Checkpoint blocked"
+		base = "Checkpoint blocked"
 	case "mark_failed":
-		return "Checkpoint failed"
+		base = "Checkpoint failed"
 	case "complete_checkpoint", "checkpoint_outcome":
 		if summary.PlanComplete || nextAction == "plan_complete" {
-			return "Plan complete"
+			base = "Plan complete"
+		} else {
+			base = "Checkpoint complete"
 		}
-		if nextAction == "run_checkpoint_with_fresh_context" {
-			return "Checkpoint complete · continuing automatically"
-		}
-		return "Checkpoint complete"
-	default:
-		return "Plan execution updated"
 	}
+	if modeLabel == "" {
+		return base
+	}
+	return base + " — " + modeLabel
 }
 
 func planLifecycleCheckpointID(action string, doc *pebblestore.SessionPlanDocument, summary sessionruntime.PlanExecutionSummary, payload map[string]any) string {
@@ -155,39 +161,67 @@ func planLifecycleCheckpointTitle(doc *pebblestore.SessionPlanDocument, checkpoi
 }
 
 func planLifecyclePlanLabel(plan pebblestore.SessionPlanSnapshot, doc *pebblestore.SessionPlanDocument) string {
-	title := strings.TrimSpace(firstNonEmptyString(plan.Title, doc.Title))
-	id := strings.TrimSpace(firstNonEmptyString(plan.ID, doc.ID))
-	if title == "" {
-		return id
+	return planLifecycleTrimPlanPrefix(firstNonEmptyString(plan.Title, doc.Title))
+}
+
+func planLifecycleTrimPlanPrefix(title string) string {
+	title = strings.TrimSpace(title)
+	for strings.HasPrefix(strings.ToLower(title), "plan:") {
+		title = strings.TrimSpace(title[len("plan:"):])
 	}
-	if id == "" {
-		return title
+	return title
+}
+
+func planLifecycleActionCompleted(action string) bool {
+	switch strings.TrimSpace(action) {
+	case "complete_checkpoint", "checkpoint_outcome":
+		return true
+	default:
+		return false
 	}
-	return fmt.Sprintf("%s (%s)", title, id)
 }
 
 func planLifecycleCheckpointLabel(id, title string) string {
-	id = strings.TrimSpace(id)
+	checkpoint := planLifecycleCheckpointDisplayID(id)
 	title = strings.TrimSpace(title)
-	if id == "" {
+	if checkpoint == "" {
 		return title
 	}
 	if title == "" {
-		return id
+		return checkpoint
 	}
-	return fmt.Sprintf("%s %s", id, title)
+	return checkpoint + " — " + title
 }
 
-func planLifecyclePolicyLabel(policy pebblestore.SessionPlanExecutionPolicy) string {
-	mode := strings.TrimSpace(policy.Mode)
-	shape := strings.TrimSpace(policy.Shape)
-	if mode == "" {
-		return shape
+func planLifecycleCheckpointDisplayID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
 	}
-	if shape == "" {
-		return mode
+	lower := strings.ToLower(id)
+	if strings.HasPrefix(lower, "checkpoint ") {
+		return id
 	}
-	return mode + " / " + shape
+	for _, prefix := range []string{"cp-", "checkpoint-"} {
+		if strings.HasPrefix(lower, prefix) {
+			suffix := strings.TrimSpace(id[len(prefix):])
+			if suffix != "" {
+				return "Checkpoint " + suffix
+			}
+		}
+	}
+	return "Checkpoint " + id
+}
+
+func planLifecycleModeLabel(policy pebblestore.SessionPlanExecutionPolicy) string {
+	switch strings.TrimSpace(policy.Mode) {
+	case sessionruntime.PlanExecutionPolicyModeAutomatic:
+		return "Automatic mode"
+	case sessionruntime.PlanExecutionPolicyModeReviewEachCheckpoint:
+		return "Manual review mode"
+	default:
+		return ""
+	}
 }
 
 func inferPlanExecutionNextAction(summary sessionruntime.PlanExecutionSummary) string {

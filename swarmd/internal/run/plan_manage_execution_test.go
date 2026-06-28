@@ -122,7 +122,7 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	defer cleanup()
 
 	sessionID := createPlanManageTestSession(t, sessionSvc)
-	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-lifecycle-actions", "Lifecycle Actions", "# Lifecycle", "draft", "pending", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-lifecycle-actions", "Plan: Lifecycle Actions", "# Lifecycle", "draft", "pending", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
 			{ID: "cp-1", Title: "Model", Status: sessionruntime.PlanCheckpointStatusPending},
@@ -159,6 +159,11 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 		for _, want := range contains {
 			if !strings.Contains(message.Content, want) {
 				t.Fatalf("message[%d] content missing %q: %q", index, want, message.Content)
+			}
+		}
+		for _, forbidden := range []string{"Plan: Plan:", "plan-lifecycle-actions", "Policy: automatic / checkpointed"} {
+			if strings.Contains(message.Content, forbidden) {
+				t.Fatalf("message[%d] content includes internal/duplicated text %q: %q", index, forbidden, message.Content)
 			}
 		}
 		messageMutationIndex := -1
@@ -212,7 +217,7 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
 		t.Fatalf("append complete lifecycle: %v", err)
 	}
-	assertLifecycleMessage(0, "complete_checkpoint", "run_checkpoint_with_fresh_context", 3, "Checkpoint complete · continuing automatically", "Checkpoint: cp-1 Model", "Next: cp-2 API", "Fresh context")
+	assertLifecycleMessage(0, "complete_checkpoint", "run_checkpoint_with_fresh_context", 3, "Checkpoint complete — Automatic mode", "Plan: Lifecycle Actions", "Completed: Checkpoint 1 — Model", "Next: Checkpoint 2 — API", "Context: Starting the next checkpoint with fresh context.")
 
 	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"start_checkpoint","attempt_id":"attempt-2","run_id":"run-2","run_session_id":"child-session-2","parent_session_id":"parent-session","started_at":2345}`, "", applyMutation)
 	if err != nil {
@@ -229,7 +234,7 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
 		t.Fatalf("append final lifecycle: %v", err)
 	}
-	assertLifecycleMessage(1, "complete_checkpoint", "plan_complete", 6, "Plan complete", "Checkpoint: cp-2 API", "Next: plan complete.")
+	assertLifecycleMessage(1, "complete_checkpoint", "plan_complete", 6, "Plan complete — Automatic mode", "Completed: Checkpoint 2 — API", "Next: plan complete.")
 
 	outbox, err := sessionSvc.ListRealtimeOutboxForSessionAfterSeq(sessionID, 0, 20)
 	if err != nil {
