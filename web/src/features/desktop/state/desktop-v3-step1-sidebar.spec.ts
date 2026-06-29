@@ -176,7 +176,7 @@ test('Desktop V3 sidebar derives plan row state, checkpoint progress, and explic
   assert.equal(reviewRow?.sidebarGroup, 'needs_review')
   assert.equal(reviewRow?.planExecution?.statusLabel, 'REVIEW')
   assert.equal(reviewRow?.planExecution?.checkpointProgress.label, '2/2')
-  assert.equal(reviewRow?.branchLabel, 'No branch')
+  assert.equal(reviewRow?.branchLabel, '')
   assert.equal(runningRow?.sidebarGroup, 'in_progress')
   assert.equal(runningRow?.planExecution?.statusLabel, 'RUNNING')
   assert.equal(runningRow?.branchLabel, 'agent/blocked')

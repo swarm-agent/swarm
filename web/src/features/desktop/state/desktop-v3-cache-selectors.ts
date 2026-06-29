@@ -235,8 +235,8 @@ function hasActiveRunIntent(runIntent: V3SessionRunIntent | undefined): boolean 
 }
 
 function desktopSidebarBranchLabel(record: SessionCacheRecord): string {
-  if (record.kind !== 'full') return 'No branch'
-  return record.session.worktree_branch?.trim() || metadataString(record.session.metadata, 'git_branch') || metadataString(record.session.metadata, 'branch') || 'No branch'
+  if (record.kind !== 'full') return ''
+  return record.session.worktree_branch?.trim() || metadataString(record.session.metadata, 'git_branch') || metadataString(record.session.metadata, 'branch') || ''
 }
 
 function metadataString(metadata: Record<string, unknown> | undefined, key: string): string {

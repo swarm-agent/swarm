@@ -1414,7 +1414,7 @@ function sessionRepoLabel(session: DesktopSessionRecord): string {
 }
 
 function sessionBranchLabel(session: DesktopSessionRecord): string {
-  return metadataText(session, 'swarm_v3_branch_label') || session.worktreeBranch?.trim() || session.gitBranch?.trim() || 'No branch'
+  return metadataText(session, 'swarm_v3_branch_label') || session.worktreeBranch?.trim() || session.gitBranch?.trim() || ''
 }
 
 function sessionRowMetadataLabel(session: DesktopSessionRecord): string {
