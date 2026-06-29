@@ -144,7 +144,7 @@ test('acceptAndContinueDesktopPlanCheckpoint accepts review then starts the next
     },
     {
       url: '/v3/sessions/session-1/plan-mode/checkpoints/cp-2/continue',
-      body: { plan_id: 'plan-1' },
+      body: { plan_id: 'plan-1', suppress_lifecycle_message: true },
     },
   ])
 })

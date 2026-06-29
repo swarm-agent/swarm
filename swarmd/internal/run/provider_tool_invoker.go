@@ -371,7 +371,7 @@ func (s *Service) appendPlanLifecycleMessageForToolResult(sessionID string, call
 		return nil
 	}
 	action := strings.TrimSpace(mapString(payload, "action"))
-	if !isPlanExecutionLifecycleMessageAction(action) {
+	if !isPlanExecutionOutcomeMessageAction(action) {
 		return nil
 	}
 	planPayload, ok := payload["plan"].(map[string]any)

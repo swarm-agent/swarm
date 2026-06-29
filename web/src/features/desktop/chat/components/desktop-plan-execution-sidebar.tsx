@@ -9,7 +9,6 @@ import type { DesktopSessionPlanCheckpoint } from '../types/chat'
 import type { DesktopPlanExecutionView } from '../../state/desktop-v3-cache-selectors'
 type DesktopPlanExecutionSidebarAction =
   | 'accept_checkpoint'
-  | 'continue_checkpoint'
   | 'restart_checkpoint'
   | 'resume_automatic'
 
@@ -73,11 +72,6 @@ const waitingReviewBadgeClass = 'rounded-md border border-[var(--app-border)] bg
 
 function actionBusyKey(action: DesktopPlanExecutionSidebarAction, checkpointId?: string): string {
   return `${action}:${checkpointId ?? ''}`
-}
-
-function checkpointIsRunnable(checkpoint?: DesktopSessionPlanCheckpoint): boolean {
-  const status = checkpoint?.status.trim().toLowerCase() ?? ''
-  return status === '' || status === 'pending' || status === 'idle' || status === 'ready'
 }
 
 function checkpointIsIncomplete(checkpoint: DesktopSessionPlanCheckpoint): boolean {
@@ -190,7 +184,6 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
   const checkpointId = view.activeCheckpointId || view.activeCheckpoint?.id || ''
   const automatic = view.policyMode === 'automatic'
   const acceptBusy = busyAction === actionBusyKey('accept_checkpoint', checkpointId)
-  const continueBusy = busyAction === actionBusyKey('continue_checkpoint', checkpointId)
   const restartBusy = busyAction === actionBusyKey('restart_checkpoint', checkpointId)
   const checkpoints = view.plan.document?.checkpoints ?? []
   const activeIndex = view.activeCheckpoint
@@ -198,7 +191,6 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
     : -1
   const hasNextCheckpoint = checkpoints.some((checkpoint, index) => index > activeIndex && checkpointIsIncomplete(checkpoint))
   const canAccept = Boolean(onAction && checkpointId && view.reviewRequired && !view.blocked && !view.failed && !view.completed && !canStop)
-  const canContinue = Boolean(onAction && checkpointId && !view.reviewRequired && !view.blocked && !view.failed && !view.completed && !canStop && checkpointIsRunnable(view.activeCheckpoint))
   const canRestart = Boolean(onAction && checkpointId && !view.completed && !canStop)
   const acceptReviewBusy = acceptBusy
   const acceptReviewLabel = hasNextCheckpoint ? 'Accept & start next checkpoint' : 'Accept & finish plan'
@@ -229,7 +221,7 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
       <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
         <div className="text-sm font-medium text-[var(--app-text)]">Manual review mode</div>
         <p className="mt-0.5 text-xs leading-5 text-[var(--app-text-muted)]">
-          Review actions approve completed work. Start actions launch a fresh checkpoint run.
+          Review actions approve completed work. Restart reruns the active checkpoint if needed.
         </p>
       </div>
 
@@ -251,16 +243,6 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
             </p>
           ) : null}
         </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className={cn('rounded-lg border border-[var(--app-border)] text-[var(--app-text-muted)]', continueBusy ? 'animate-pulse' : '')}
-          onClick={() => void onAction?.({ action: 'continue_checkpoint', checkpointId })}
-          disabled={!canContinue || continueBusy}
-        >
-          Start checkpoint run
-        </Button>
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2 border-t border-[var(--app-border)] pt-3">

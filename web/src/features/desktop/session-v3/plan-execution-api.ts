@@ -56,6 +56,7 @@ export interface DesktopPlanCurrentRunInput {
 
 export interface DesktopPlanCheckpointInput {
   planId?: string
+  suppressLifecycleMessage?: boolean
 }
 
 export interface DesktopPlanCheckpointAcceptInput {
@@ -130,12 +131,14 @@ export async function resumeDesktopPlanCheckpointed(sessionId: string, input: De
 export async function startDesktopPlanCheckpoint(sessionId: string, checkpointId: string, input: DesktopPlanCheckpointInput = {}): Promise<DesktopPlanLifecycleResponse> {
   return postDesktopPlanLifecycle(sessionId, `checkpoints/${encodePathSegment(checkpointId)}/start`, {
     plan_id: trimmed(input.planId),
+    suppress_lifecycle_message: input.suppressLifecycleMessage || undefined,
   })
 }
 
 export async function continueDesktopPlanCheckpoint(sessionId: string, checkpointId: string, input: DesktopPlanCheckpointInput = {}): Promise<DesktopPlanLifecycleResponse> {
   return postDesktopPlanLifecycle(sessionId, `checkpoints/${encodePathSegment(checkpointId)}/continue`, {
     plan_id: trimmed(input.planId),
+    suppress_lifecycle_message: input.suppressLifecycleMessage || undefined,
   })
 }
 
@@ -154,6 +157,7 @@ export async function acceptAndContinueDesktopPlanCheckpoint(sessionId: string, 
   if (!nextCheckpointId) return acceptResponse
   return continueDesktopPlanCheckpoint(sessionId, nextCheckpointId, {
     planId: trimmed(input.planId) ?? trimmed(acceptResponse.plan_id),
+    suppressLifecycleMessage: true,
   })
 }
 

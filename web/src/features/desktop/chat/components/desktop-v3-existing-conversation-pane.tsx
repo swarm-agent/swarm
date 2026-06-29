@@ -39,7 +39,6 @@ import {
 import { compactDesktopV3Session } from '../../session-v3/compact-session-flow'
 import {
   acceptAndContinueDesktopPlanCheckpoint,
-  continueDesktopPlanCheckpoint,
   restartDesktopPlanCheckpoint,
   resumeDesktopPlanAutomatic,
 } from '../../session-v3/plan-execution-api'
@@ -1027,17 +1026,13 @@ export function DesktopV3ExistingConversationPane({
     const busyKey = `${input.action}:${input.checkpointId ?? ''}`
     setPlanExecutionBusyAction(busyKey)
     setSendError(null)
-    if (input.action !== 'accept_checkpoint' && input.action !== 'resume_automatic') scrollToBottom('smooth')
+    if (input.action !== 'resume_automatic') scrollToBottom('smooth')
     try {
       await persistVisibleSettings()
       switch (input.action) {
         case 'accept_checkpoint':
           if (!input.checkpointId) throw new Error('Accept checkpoint requires checkpoint_id')
           await acceptAndContinueDesktopPlanCheckpoint(normalizedSessionId, input.checkpointId)
-          break
-        case 'continue_checkpoint':
-          if (!input.checkpointId) throw new Error('Start checkpoint run requires checkpoint_id')
-          await continueDesktopPlanCheckpoint(normalizedSessionId, input.checkpointId)
           break
         case 'restart_checkpoint':
           if (!input.checkpointId) throw new Error('Restart checkpoint requires checkpoint_id')

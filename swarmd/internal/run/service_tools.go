@@ -2203,10 +2203,12 @@ func addPlanExecutionPayloadFields(payload map[string]any, action string, doc *p
 	summary := sessionruntime.SummarizePlanExecution(doc)
 	payload["execution_summary"] = summary
 	switch action {
-	case "start_checkpoint", "continue_checkpoint":
-		payload["checkpoint_id"] = summary.NextCheckpointID
+	case "start_checkpoint", "continue_checkpoint", "restart_checkpoint", "rewind_to_checkpoint":
+		if summary.NextCheckpointID != "" {
+			payload["checkpoint_id"] = summary.NextCheckpointID
+		}
 		payload["next_action"] = "run_checkpoint_with_fresh_context"
-	case "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed":
+	case "accept_checkpoint", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed":
 		payload["next_checkpoint_id"] = summary.NextCheckpointID
 		if summary.PlanComplete {
 			payload["next_action"] = "plan_complete"

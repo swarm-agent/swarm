@@ -411,11 +411,6 @@ function TaskAgentListRow({
               {secondaryLabel}
             </div>
           ) : null}
-          {row.childSessionId ? (
-            <div className="mt-0.5 font-mono text-[9px] text-[var(--app-text-subtle)]" title={`child session ${row.childSessionId}`}>
-              child {row.childSessionId.slice(0, 8)}
-            </div>
-          ) : null}
         </div>
         <div className="col-start-2 col-span-2 row-start-2 min-w-0 break-words font-mono text-[11px] text-[var(--app-text-muted)] [overflow-wrap:anywhere] sm:col-start-4 sm:col-span-1 sm:row-start-1" title={toolLabel}>
           {toolLabel}
@@ -500,8 +495,7 @@ function TaskSwarmCompactRow({
   const agent = row.agent || 'subagent';
   const agentLabel = agent.startsWith('@') ? agent : `@${agent}`;
   const toolLabel = row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind);
-  const sessionLabel = row.childSessionId ? `child ${row.childSessionId.slice(0, 8)}` : '';
-  const title = [row.assignmentLabel && row.assignmentLabel !== row.agent ? row.assignmentLabel : '', sessionLabel].filter(Boolean).join(' · ');
+  const title = row.assignmentLabel && row.assignmentLabel !== row.agent ? row.assignmentLabel : '';
 
   return (
     <div className={cn(

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -198,6 +199,20 @@ func TestSessionsV3PlanModeDedicatedLifecycleEndpointsSuccess(t *testing.T) {
 		plan := sessionsV3PlanModeGetPlan(t, sessionSvc, created.ID, "plan-accept")
 		if plan.Document.Checkpoints[0].Review == nil || plan.Document.Checkpoints[0].Review.Status != sessionruntime.PlanCheckpointReviewStatusApproved || plan.Document.ActiveCheckpointID != "cp-2" {
 			t.Fatalf("document after accept = %#v", plan.Document)
+		}
+		messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+		if err != nil {
+			t.Fatalf("list messages: %v", err)
+		}
+		if len(messages) != 1 {
+			t.Fatalf("message count = %d, want 1: %#v", len(messages), messages)
+		}
+		message := messages[0]
+		if message.Role != "system" || message.Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || message.Metadata["kind"] != "plan_execution_break" || message.Metadata["action"] != "accept_checkpoint" {
+			t.Fatalf("message role/metadata = role %q metadata %#v", message.Role, message.Metadata)
+		}
+		if !strings.Contains(message.Content, "Checkpoint review accepted — Manual review mode") || !strings.Contains(message.Content, "Next: Checkpoint 2") {
+			t.Fatalf("message content missing manual review mode/next checkpoint: %q", message.Content)
 		}
 	})
 }

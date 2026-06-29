@@ -75,6 +75,7 @@ function testTaskSwarmUsesCompactPreview(): void {
       launch_count: 12,
       launches: Array.from({ length: 12 }, (_, index) => ({
         launch_index: index + 1,
+        child_session_id: `child-session-${index + 1}`,
         status: index % 3 === 0 ? "running" : "done",
         resolved_agent_name: index % 2 === 0 ? "explorer" : "parallel",
         assignment_label: `${longAssignment} ${index + 1}`,
@@ -92,6 +93,7 @@ function testTaskSwarmUsesCompactPreview(): void {
   assert(markup.includes("RUN"), "expected compact row status");
   assert(!markup.includes("Subagent stream"), "swarm mode should not render normal task table header");
   assert(!markup.includes("Current"), "swarm mode should not render detailed current column header");
+  assert(!markup.includes("child child-session"), "swarm mode should not render child session ids");
   assert(!markup.includes(`task ${longAssignment}`), "swarm mode should suppress long task header summary");
 }
 
@@ -139,6 +141,7 @@ function testTaskTerminalTimerUsesFinalElapsed(): void {
       status: "ok",
       launches: [{
         launch_index: 1,
+        child_session_id: "child-visible-regression",
         status: "ok",
         resolved_agent_name: "explorer",
         assignment_label: "Backend timer mapper",
@@ -151,6 +154,7 @@ function testTaskTerminalTimerUsesFinalElapsed(): void {
   assert(message!.taskRows[0]?.terminal === true, "ok row must be terminal");
   const markup = renderToolMarkup(message!);
   assert(markup.includes("3.4s"), "expected final elapsed duration");
+  assert(!markup.includes("child child-visible"), "task rows should not render child session ids");
 }
 
 function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {

@@ -49,7 +49,8 @@ type sessionsV3PlanModeRunCurrentRequest struct {
 }
 
 type sessionsV3PlanModeCheckpointStartRequest struct {
-	PlanID string `json:"plan_id,omitempty"`
+	PlanID                   string `json:"plan_id,omitempty"`
+	SuppressLifecycleMessage bool   `json:"suppress_lifecycle_message,omitempty"`
 }
 
 type sessionsV3PlanModeCheckpointAcceptRequest struct {
@@ -207,7 +208,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartPlanAutomatic(w http.Respons
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	runStart, status, err := s.startSessionsV3PlanModeRun(principal, sessionID, result)
+	runStart, status, err := s.startSessionsV3PlanModeRun(principal, sessionID, "start_plan_automatic", result, false)
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -236,7 +237,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartPlanCheckpointed(w http.Resp
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	runStart, status, err := s.startSessionsV3PlanModeRun(principal, sessionID, result)
+	runStart, status, err := s.startSessionsV3PlanModeRun(principal, sessionID, "start_plan_checkpointed", result, false)
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -304,7 +305,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartCheckpointWithMethod(w http.
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	runStart, status, err := s.startSessionsV3PlanModeRun(principal, sessionID, result)
+	runStart, status, err := s.startSessionsV3PlanModeRun(principal, sessionID, transition, result, req.SuppressLifecycleMessage)
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -356,7 +357,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeResetCheckpointWithMethod(w http.
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	runStart, status, err := s.startSessionsV3PlanModeRun(principal, sessionID, result)
+	runStart, status, err := s.startSessionsV3PlanModeRun(principal, sessionID, transition, result, false)
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -411,7 +412,7 @@ func sessionsV3PlanModeRunID(sessionID, planID, checkpointID string) string {
 	return "desktop-v3-run:" + hex.EncodeToString(sum[:16])
 }
 
-func (s *Server) startSessionsV3PlanModeRun(principal identity.Principal, sessionID string, result sessionruntime.PlanLifecycleResult) (*sessionsV3PlanModeRunStart, int, error) {
+func (s *Server) startSessionsV3PlanModeRun(principal identity.Principal, sessionID, transition string, result sessionruntime.PlanLifecycleResult, suppressLifecycleMessage bool) (*sessionsV3PlanModeRunStart, int, error) {
 	if status, err := s.preflightSessionsV3PlanModeFreshRun(sessionID); err != nil {
 		return nil, status, err
 	}
@@ -446,6 +447,11 @@ func (s *Server) startSessionsV3PlanModeRun(principal identity.Principal, sessio
 	}
 	if result.PlanEvent != nil {
 		if err := s.publishCommittedPlanSaved(result.Plan, result.PlanEvent); err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+	}
+	if !suppressLifecycleMessage {
+		if err := s.publishPlanLifecycleSystemMessage(principal, sessionID, transition, result); err != nil {
 			return nil, http.StatusBadRequest, err
 		}
 	}
@@ -488,6 +494,10 @@ func sessionsV3PlanModeRunIntentPayloadHash(sessionID, runID, checkpointID, atte
 func (s *Server) finishSessionsV3PlanModeLifecycle(w http.ResponseWriter, principal identity.Principal, sessionID, transition string, result sessionruntime.PlanLifecycleResult, runStart *sessionsV3PlanModeRunStart) {
 	if runStart == nil {
 		if err := s.publishPlanLifecycleResult(result); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.publishPlanLifecycleSystemMessage(principal, sessionID, transition, result); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}

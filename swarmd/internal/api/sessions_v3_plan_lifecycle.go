@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -114,4 +117,104 @@ func (s *Server) publishPlanLifecycleResult(result sessionruntime.PlanLifecycleR
 		}
 	}
 	return nil
+}
+
+func (s *Server) publishPlanLifecycleSystemMessage(principal identity.Principal, sessionID, transition string, result sessionruntime.PlanLifecycleResult) error {
+	message, ok := runruntime.BuildPlanExecutionLifecycleSystemMessage(runruntime.PlanExecutionLifecycleMessageInput{
+		Action:  transition,
+		Plan:    result.Plan,
+		Payload: sessionsV3PlanLifecycleMessagePayload(result),
+	})
+	if !ok {
+		return nil
+	}
+	if !principal.Valid() {
+		principal = identity.Principal{Type: identity.PrincipalTypeUser, UserID: result.Session.UserID, AccountScopeID: result.Session.AccountScopeID}
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		sessionID = strings.TrimSpace(result.Plan.SessionID)
+	}
+	clientRequestID := sessionsV3PlanLifecycleMessageClientRequestID(sessionID, transition, result.Plan, message.Metadata)
+	payloadHash := sessionsV3PlanLifecycleMessagePayloadHash(sessionID, transition, message.Content, message.Metadata)
+	now := time.Now().UnixMilli()
+	mutation, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       strings.TrimSpace(sessionID),
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       "session.message.appended",
+		Message: &pebblestore.MessageSnapshot{
+			Role:      "system",
+			Content:   message.Content,
+			Metadata:  message.Metadata,
+			CreatedAt: now,
+		},
+		NowUnixMs: now,
+	})
+	if err != nil {
+		return err
+	}
+	if mutation.RealtimeOutbox == nil || mutation.RealtimeOutbox.EndpointSeq == 0 {
+		return errors.New("plan execution lifecycle message mutation did not return committed realtime outbox")
+	}
+	return nil
+}
+
+func sessionsV3PlanLifecycleMessagePayload(result sessionruntime.PlanLifecycleResult) map[string]any {
+	payload := map[string]any{"action": strings.TrimSpace(result.Action)}
+	if result.CheckpointID != "" {
+		payload["checkpoint_id"] = strings.TrimSpace(result.CheckpointID)
+	} else if result.Plan.Document != nil {
+		if checkpointID := strings.TrimSpace(result.Plan.Document.ActiveCheckpointID); checkpointID != "" {
+			payload["checkpoint_id"] = checkpointID
+		}
+	}
+	if result.Summary.NextCheckpointID != "" {
+		payload["next_checkpoint_id"] = strings.TrimSpace(result.Summary.NextCheckpointID)
+	}
+	if result.Summary.PlanComplete {
+		payload["next_action"] = "plan_complete"
+	} else if result.Summary.ReviewRequired {
+		payload["next_action"] = "await_review"
+	} else if result.Summary.Blocked || result.Summary.Failed {
+		payload["next_action"] = "stopped"
+	} else if result.Summary.NextCheckpointID != "" {
+		switch strings.TrimSpace(result.Action) {
+		case "start_checkpoint", "continue_checkpoint", "restart_checkpoint", "rewind_to_checkpoint":
+			payload["next_action"] = "run_checkpoint_with_fresh_context"
+		case "accept_checkpoint":
+			payload["next_action"] = "continue_checkpoint"
+		default:
+			if result.Summary.AutoAdvanceAllowed {
+				payload["next_action"] = "run_checkpoint_with_fresh_context"
+			} else {
+				payload["next_action"] = "continue_checkpoint"
+			}
+		}
+	}
+	return payload
+}
+
+func sessionsV3PlanLifecycleMessageClientRequestID(sessionID, transition string, plan pebblestore.SessionPlanSnapshot, metadata map[string]any) string {
+	checkpointID := ""
+	if metadata != nil {
+		checkpointID = strings.TrimSpace(fmt.Sprint(metadata["checkpoint_id"]))
+	}
+	return strings.Join([]string{
+		"plan-lifecycle-message",
+		strings.TrimSpace(sessionID),
+		strings.TrimSpace(transition),
+		fmt.Sprintf("v%d", plan.Version),
+		checkpointID,
+	}, ":")
+}
+
+func sessionsV3PlanLifecycleMessagePayloadHash(sessionID, transition, content string, metadata map[string]any) string {
+	rawMetadata, _ := json.Marshal(metadata)
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(transition) + "\x00" + content + "\x00" + string(rawMetadata)))
+	return hex.EncodeToString(sum[:])
 }

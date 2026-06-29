@@ -97,6 +97,15 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 
 func isPlanExecutionLifecycleMessageAction(action string) bool {
 	switch strings.TrimSpace(action) {
+	case "accept_checkpoint", "start_checkpoint", "continue_checkpoint", "restart_checkpoint", "rewind_to_checkpoint":
+		return true
+	default:
+		return isPlanExecutionOutcomeMessageAction(action)
+	}
+}
+
+func isPlanExecutionOutcomeMessageAction(action string) bool {
+	switch strings.TrimSpace(action) {
 	case "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed":
 		return true
 	default:
@@ -113,6 +122,18 @@ func planLifecycleHeadline(action string, summary sessionruntime.PlanExecutionSu
 		base = "Checkpoint blocked"
 	case "mark_failed":
 		base = "Checkpoint failed"
+	case "accept_checkpoint":
+		if summary.PlanComplete || nextAction == "plan_complete" {
+			base = "Plan complete"
+		} else {
+			base = "Checkpoint review accepted"
+		}
+	case "start_checkpoint", "continue_checkpoint":
+		base = "Checkpoint started"
+	case "restart_checkpoint":
+		base = "Checkpoint restarted"
+	case "rewind_to_checkpoint":
+		base = "Checkpoint rewound"
 	case "complete_checkpoint", "checkpoint_outcome":
 		if nextAction == "await_review" && allPlanLifecycleCheckpointsCompletedFromSummary(summary) {
 			base = "All checkpoints complete; review required"
