@@ -653,6 +653,86 @@ function testTaskRowsParseCanonicalStreamContractFields(): void {
   assert(row?.terminal === false, 'running task stream row should not be terminal')
 }
 
+function testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_native_stream',
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.stream.v1',
+      status: 'running',
+      launches: [{
+        launch_index: 1,
+        child_session_id: 'legacy-child',
+        subagent: 'legacy',
+        status: 'running',
+        current_preview_kind: 'assistant',
+        current_preview_text: 'legacy transcript text must not drive rows',
+      }],
+    }),
+    taskStream: {
+      launchOrder: ['child-native-1', 'child-native-2'],
+      launchesByKey: {
+        'child-native-1': {
+          launch_index: 1,
+          child_session_id: 'child-native-1',
+          status: 'running',
+          phase: 'tool.started',
+          subagent: 'explorer',
+          assignment_label: 'Explore frontend',
+          subagent_provider: 'provider-a',
+          subagent_model: 'model-a',
+          current_tool: 'search',
+          launch_started_at_ms: 123000,
+          current_tool_started_at_ms: 124000,
+        },
+        'child-native-2': {
+          launch_index: 2,
+          child_session_id: 'child-native-2',
+          status: 'failed',
+          phase: 'failed',
+          subagent: 'parallel',
+          error: 'subagent failed',
+          elapsed_ms: 2400,
+        },
+      },
+    },
+  })
+
+  assert(Boolean(message), 'expected structured native task stream message')
+  assert(message?.taskRows.length === 2, `expected native task stream rows, got ${message?.taskRows.length}`)
+  assert(message?.taskRows[0]?.launchKey === 'child-native-1', `expected launch key from native state, got ${message?.taskRows[0]?.launchKey}`)
+  assert(message?.taskRows[0]?.childSessionId === 'child-native-1', `expected native child session, got ${message?.taskRows[0]?.childSessionId}`)
+  assert(message?.taskRows[0]?.phase === 'tool.started', `expected phase, got ${message?.taskRows[0]?.phase}`)
+  assert(message?.taskRows[0]?.previewText === '', `native lifecycle state should not render transcript preview text, got ${message?.taskRows[0]?.previewText}`)
+  assert(message?.taskRows[1]?.previewText === 'subagent failed', `expected failure text, got ${message?.taskRows[1]?.previewText}`)
+}
+
+function testTaskRowsParseSingleV2PatchAsHistoricalCompatibility(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_v2_patch',
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.stream.v2',
+      launch_key: 'child-v2',
+      launch: {
+        launch_index: 1,
+        child_session_id: 'child-v2',
+        status: 'running',
+        phase: 'tool.completed',
+        subagent: 'explorer',
+        current_tool: 'read',
+      },
+    }),
+  })
+
+  assert(Boolean(message), 'expected v2 patch task message')
+  assert(message?.taskRows.length === 1, `expected one v2 patch row, got ${message?.taskRows.length}`)
+  assert(message?.taskRows[0]?.launchKey === 'child-v2', `expected v2 launch key, got ${message?.taskRows[0]?.launchKey}`)
+  assert(message?.taskRows[0]?.phase === 'tool.completed', `expected v2 phase, got ${message?.taskRows[0]?.phase}`)
+}
+
 function testTaskRowsAcceptFinalPayloadSessionIdAlias(): void {
   const message = buildStructuredToolMessage({
     tool: 'task',
@@ -816,6 +896,8 @@ function main(): void {
   testSearchToolPreservesContentMatchText();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
   testTaskRowsParseCanonicalStreamContractFields();
+  testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload();
+  testTaskRowsParseSingleV2PatchAsHistoricalCompatibility();
   testTaskRowsAcceptFinalPayloadSessionIdAlias();
   testRunningTaskRowDoesNotUseStreamDurationAsDisplayTime();
   testTerminalTaskRowUsesFinalElapsedAsDisplayTime();

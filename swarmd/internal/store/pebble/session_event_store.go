@@ -26,6 +26,7 @@ const (
 	V3SessionMutationUpdateTitle      = "session.title.update"
 	V3SessionMutationSavePlan         = "plan.save"
 	V3SessionMutationDeleteSession    = "session.delete"
+	V3SessionMutationArchiveSession   = "session.archive"
 
 	V3SessionMutationResponseVersion = "v3.session_mutation.result.v1"
 	V3SessionMutationStatusCompleted = "completed"

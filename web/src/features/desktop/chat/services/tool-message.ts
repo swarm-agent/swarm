@@ -29,6 +29,10 @@ interface StructuredToolMessageInput {
   argumentsText?: string;
   outputText?: string;
   completedOutputText?: string;
+  taskStream?: {
+    launchesByKey: Record<string, Record<string, unknown>>;
+    launchOrder: string[];
+  };
   error?: string;
   durationMs?: number;
   state?: StructuredToolMessage["state"];
@@ -740,8 +744,10 @@ function buildTaskToolRow(
 ): StructuredToolMessage["taskRows"][number] | null {
   if (!payload) return null;
   const status = jsonStr(payload, "status") || "pending";
+  const phase = jsonStr(payload, "phase");
   const normalizedStatus = status.trim().toLowerCase();
-  const terminal = ["done", "ok", "success", "completed", "complete", "error", "failed"].includes(normalizedStatus);
+  const terminal = ["done", "ok", "success", "completed", "complete", "error", "failed", "cancelled", "canceled"].includes(normalizedStatus);
+  const launchKey = jsonStr(payload, "launch_key");
   const launchIndex = Math.max(0, jsonNum(payload, "launch_index") || fallbackLaunchIndex);
   const childSessionId = firstNonEmpty(
     jsonStr(payload, "session_id"),
@@ -758,6 +764,7 @@ function buildTaskToolRow(
   const assignmentLabel = jsonStr(payload, "assignment_label");
   const modelLabel = [jsonStr(payload, "subagent_provider"), jsonStr(payload, "subagent_model")].filter(Boolean).join(" / ");
   const rawPreviewKind = jsonStr(payload, "current_preview_kind");
+  const error = jsonStr(payload, "error");
   let tool = jsonStr(payload, "current_tool");
   if (!tool && rawPreviewKind.trim().toLowerCase() !== "reasoning") {
     const toolOrder = jsonStrArray(payload, "tool_order");
@@ -766,15 +773,17 @@ function buildTaskToolRow(
   const currentToolMs = jsonNum(payload, "current_tool_ms");
   const elapsedMs = jsonNum(payload, "elapsed_ms");
   const time = terminal ? formatDurationCompact(elapsedMs || currentToolMs) : "";
-  const previewText = taskPreviewText(payload);
-  const normalized = normalizeTaskToolDisplay(tool, rawPreviewKind, previewText);
+  const previewText = error || taskPreviewText(payload);
+  const normalized = normalizeTaskToolDisplay(tool, error ? "error" : rawPreviewKind, previewText);
   const launchStartedAtMs = jsonNum(payload, "launch_started_at_ms");
   const currentToolStartedAtMs = jsonNum(payload, "current_tool_started_at_ms");
   if (!agent && normalized.tool === "-" && !time && !status && !normalized.previewText) return null;
   return {
+    launchKey: launchKey || undefined,
     launchIndex,
     childSessionId,
     status,
+    phase,
     agent,
     assignmentLabel,
     modelLabel,
@@ -792,7 +801,16 @@ function buildTaskToolRow(
 
 function buildTaskToolRows(
   payload: Record<string, unknown> | null,
+  taskStream?: StructuredToolMessageInput["taskStream"],
 ): StructuredToolMessage["taskRows"] {
+  if (taskStream) {
+    return taskStream.launchOrder
+      .map((launchKey, index) => {
+        const launch = taskStream.launchesByKey[launchKey] ?? null;
+        return buildTaskToolRow(launch ? { ...launch, launch_key: jsonStr(launch, "launch_key") || launchKey } : null, index + 1);
+      })
+      .filter((row): row is StructuredToolMessage["taskRows"][number] => Boolean(row));
+  }
   if (!payload) return [];
 
   const launches = jsonObjectSlice(payload, "launches");
@@ -800,6 +818,14 @@ function buildTaskToolRows(
     return launches
       .map((launch, index) => buildTaskToolRow(launch, index + 1))
       .filter((row): row is StructuredToolMessage["taskRows"][number] => Boolean(row));
+  }
+
+  if (payload.path_id === "tool.task.stream.v2") {
+    const launch = payload.launch && typeof payload.launch === "object" && !Array.isArray(payload.launch)
+      ? payload.launch as Record<string, unknown>
+      : null;
+    const row = buildTaskToolRow(launch ? { ...launch, launch_key: jsonStr(launch, "launch_key") || jsonStr(payload, "launch_key") } : payload, 1);
+    return row ? [row] : [];
   }
 
   const row = buildTaskToolRow(payload, 1);
@@ -1643,7 +1669,7 @@ export function buildStructuredToolMessage(
       );
   const taskRows =
     toolName.toLowerCase() === "task"
-      ? buildTaskToolRows(outputJson ?? argumentsJson)
+      ? buildTaskToolRows(outputJson ?? argumentsJson, input.taskStream)
       : [];
   const error = String(input.error ?? "").trim();
 

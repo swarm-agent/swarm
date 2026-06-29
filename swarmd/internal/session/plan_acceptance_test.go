@@ -115,7 +115,7 @@ func TestApplyPlanAcceptanceExecutionPolicyOverridesAIRuntimeState(t *testing.T)
 	}
 }
 
-func TestFinalCheckpointCompletionDoesNotForceReviewPause(t *testing.T) {
+func TestFinalCheckpointCompletionWaitsForPlanReview(t *testing.T) {
 	doc, err := NormalizePlanDocumentForSave("plan-final", "Final Plan", &pebblestore.SessionPlanDocument{
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeReviewEachCheckpoint, Shape: PlanExecutionShapeCheckpointed},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
@@ -136,17 +136,51 @@ func TestFinalCheckpointCompletionDoesNotForceReviewPause(t *testing.T) {
 	if err != nil {
 		t.Fatalf("complete final checkpoint: %v", err)
 	}
-	if !decision.PlanComplete || decision.ReviewRequired || decision.StopReason != "" {
-		t.Fatalf("decision = %#v, want final plan complete without review pause", decision)
+	if decision.PlanComplete || !decision.ReviewRequired || decision.StopReason != PlanCheckpointStatusNeedsReview {
+		t.Fatalf("decision = %#v, want final plan review pause", decision)
 	}
-	if doc.ActiveCheckpointID != "" || doc.ExecutionState == nil || doc.ExecutionState.Status != PlanExecutionStateCompleted || doc.ExecutionState.CompletedAt != 1234 {
+	if doc.ActiveCheckpointID != "cp-2" || doc.ExecutionState == nil || doc.ExecutionState.Status != PlanExecutionStateWaitingReview || doc.ExecutionState.CompletedAt != 0 {
 		t.Fatalf("final execution state = active %q state %#v", doc.ActiveCheckpointID, doc.ExecutionState)
 	}
-	if doc.Checkpoints[1].Review != nil {
-		t.Fatalf("final checkpoint should not receive synthetic review metadata: %#v", doc.Checkpoints[1].Review)
+	if doc.Checkpoints[1].Status != PlanCheckpointStatusCompleted || doc.Checkpoints[1].Review == nil || doc.Checkpoints[1].Review.Status != PlanCheckpointReviewStatusPending {
+		t.Fatalf("final checkpoint review metadata = %#v checkpoint=%#v", doc.Checkpoints[1].Review, doc.Checkpoints[1])
 	}
 	summary := SummarizePlanExecution(doc)
-	if !summary.PlanComplete || summary.ReviewRequired || summary.NextCheckpointID != "" || summary.AutoAdvanceAllowed {
-		t.Fatalf("summary = %#v, want completed plan", summary)
+	if summary.PlanComplete || !summary.ReviewRequired || summary.NextCheckpointID != "cp-2" || summary.AutoAdvanceAllowed {
+		t.Fatalf("summary = %#v, want waiting review", summary)
+	}
+
+	summary, err = ApplyPlanCheckpointReviewAcceptance(doc, PlanCheckpointReviewAcceptanceOptions{CheckpointID: "cp-2", ReviewedAt: 2345})
+	if err != nil {
+		t.Fatalf("accept final review: %v", err)
+	}
+	if !summary.PlanComplete || summary.ReviewRequired || summary.NextCheckpointID != "" {
+		t.Fatalf("accepted summary = %#v, want completed plan", summary)
+	}
+	if doc.ActiveCheckpointID != "" || doc.ExecutionState.Status != PlanExecutionStateCompleted || doc.ExecutionState.CompletedAt != 2345 {
+		t.Fatalf("accepted execution state = active %q state %#v", doc.ActiveCheckpointID, doc.ExecutionState)
+	}
+}
+
+func TestSingleRunFinalCompletionWaitsForPlanReview(t *testing.T) {
+	doc, err := NormalizePlanDocumentForSave("plan-single", "Single Plan", &pebblestore.SessionPlanDocument{
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeSingleRun},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "plan-run", Status: PlanCheckpointStatusInProgress}},
+		ActiveCheckpointID: "plan-run",
+	}, nil)
+	if err != nil {
+		t.Fatalf("normalize single doc: %v", err)
+	}
+
+	decision, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{CheckpointID: "plan-run", Outcome: PlanCheckpointStatusCompleted})
+	if err != nil {
+		t.Fatalf("complete single run: %v", err)
+	}
+	if decision.PlanComplete || !decision.ReviewRequired || doc.ExecutionState == nil || doc.ExecutionState.Status != PlanExecutionStateWaitingReview {
+		t.Fatalf("single run decision=%#v state=%#v", decision, doc.ExecutionState)
+	}
+	summary := SummarizePlanExecution(doc)
+	if summary.PlanComplete || !summary.ReviewRequired || summary.NextCheckpointID != "plan-run" {
+		t.Fatalf("single run summary = %#v, want await review", summary)
 	}
 }

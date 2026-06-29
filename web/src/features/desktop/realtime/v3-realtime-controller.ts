@@ -563,6 +563,7 @@ export function taskChildRealtimeSessionIds(state: DesktopV3CacheState): Set<str
     for (const run of Object.values(runs)) {
       const parentRunActive = ACTIVE_INTENT_STATUSES.has(run.status.trim().toLowerCase())
       for (const tool of Object.values(run.toolCallsByCallId)) {
+        if (tool.taskStream) collectTaskStreamChildSessionIds(tool.taskStream, childSessionIDs, parentRunActive)
         const payload = parseTaskPayloadFromToolText(tool.outputText)
         if (payload) collectTaskPayloadChildSessionIds(payload, childSessionIDs, parentRunActive)
       }
@@ -615,6 +616,20 @@ function collectTaskPayloadChildSessionIds(payload: Record<string, unknown>, chi
   addRealtimeSessionID(childSessionIDs, payload.child_session_id)
   addRealtimeSessionID(childSessionIDs, payload.session_id)
   for (const launch of realtimeRecordArray(payload.launches)) {
+    addRealtimeSessionID(childSessionIDs, launch.child_session_id)
+    addRealtimeSessionID(childSessionIDs, launch.session_id)
+  }
+}
+
+function collectTaskStreamChildSessionIds(
+  taskStream: NonNullable<DesktopV3CacheState['liveRunsBySession'][string][string]['toolCallsByCallId'][string]['taskStream']>,
+  childSessionIDs: Set<string>,
+  includeTerminal: boolean,
+): void {
+  for (const launchKey of taskStream.launchOrder) {
+    const launch = taskStream.launchesByKey[launchKey]
+    if (!launch) continue
+    if (!includeTerminal && isTerminalTaskStatus(realtimeStringValue(launch.status))) continue
     addRealtimeSessionID(childSessionIDs, launch.child_session_id)
     addRealtimeSessionID(childSessionIDs, launch.session_id)
   }

@@ -481,6 +481,50 @@ func TestApplyV3SessionMutationUsageSummaryUsesLatestProviderTotal(t *testing.T)
 	}
 }
 
+func TestArchiveSessionCreatesTombstoneEventAndRealtimeOutbox(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-archive")
+
+	if err := sessions.ArchiveSession("session-archive"); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	if _, ok, err := sessions.GetSession("session-archive"); err != nil || ok {
+		t.Fatalf("archived session visible ok=%v err=%v", ok, err)
+	}
+
+	events, err := sessions.ListV3SessionEvents("session-archive", 0, 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 2 || events[1].EventType != "session.archived" {
+		t.Fatalf("events = %+v, want create then archive", events)
+	}
+	var payload v3SessionEventReplayPayload
+	if err := json.Unmarshal(events[1].Payload, &payload); err != nil {
+		t.Fatalf("decode archive payload: %v", err)
+	}
+	if payload.Kind != V3SessionMutationArchiveSession || payload.Tombstone == nil || payload.Tombstone.Kind != "archived" || !payload.Tombstone.Archived || payload.Tombstone.Deleted {
+		t.Fatalf("archive payload = %+v tombstone=%+v", payload, payload.Tombstone)
+	}
+
+	tombstones, err := sessions.ListV3SessionTombstonesForAccount("account-1", 10)
+	if err != nil {
+		t.Fatalf("list tombstones: %v", err)
+	}
+	if len(tombstones) != 1 || tombstones[0].SessionID != "session-archive" || tombstones[0].Kind != "archived" || !tombstones[0].Archived || tombstones[0].Deleted {
+		t.Fatalf("archive tombstones = %+v", tombstones)
+	}
+
+	outbox, err := sessions.ListV3RealtimeOutboxForSessionAfterSeq("session-archive", 1, 10)
+	if err != nil {
+		t.Fatalf("list archive outbox: %v", err)
+	}
+	if len(outbox) != 1 || outbox[0].Event.EventType != "session.archived" || outbox[0].Membership == nil || outbox[0].Membership.TombstoneKind != "archived" {
+		t.Fatalf("archive outbox = %+v", outbox)
+	}
+}
+
 func TestApplyV3SessionMutationRealtimeOutboxIsAtomicAndOrdered(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

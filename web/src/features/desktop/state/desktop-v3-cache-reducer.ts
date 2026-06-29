@@ -2315,7 +2315,9 @@ function applyLiveRunOverlayFromEvent(
         tool.argumentsText = argumentsText
       }
 
-      if (rawOutput || completedOutput) {
+      if (isDelta && outputText && applyTaskStreamPatch(tool, outputText, updatedAt)) {
+        // Task stream v2 is native keyed state; do not mirror patch JSON into outputText.
+      } else if (rawOutput || completedOutput) {
         tool.outputText = rawOutput || completedOutput
       } else if (isTerminal && outputText) {
         tool.outputText = outputText
@@ -3049,6 +3051,60 @@ function isTaskStreamSnapshotOutput(toolName: string | undefined, output: string
   const parsed = parseJsonRecord(output)
   if (!parsed) return false
   return stringValue(parsed.path_id) === 'tool.task.stream.v1' && stringValue(parsed.tool) === 'task'
+}
+
+function applyTaskStreamPatch(
+  tool: LiveRunOverlay['toolCallsByCallId'][string],
+  output: string,
+  updatedAt: number,
+): boolean {
+  if ((tool.toolName ?? '').trim().toLowerCase() !== 'task') return false
+  const parsed = parseJsonRecord(output)
+  if (!parsed) return false
+  if (stringValue(parsed.path_id) !== 'tool.task.stream.v2' || stringValue(parsed.tool) !== 'task') return false
+  const launchPatch = recordValue(parsed.launch)
+  if (!launchPatch) return false
+  const launchKey = stringValue(parsed.launch_key)
+    || stringValue(launchPatch.launch_key)
+    || stringValue(parsed.child_session_id)
+    || stringValue(launchPatch.child_session_id)
+    || (numberValue(parsed.launch_index) > 0 ? `launch:${numberValue(parsed.launch_index)}` : '')
+    || (numberValue(launchPatch.launch_index) > 0 ? `launch:${numberValue(launchPatch.launch_index)}` : '')
+  if (!launchKey) return false
+
+  const stream = tool.taskStream ?? {
+    pathId: 'tool.task.stream.v2',
+    streamVersion: 2,
+    updatedAt,
+    launchesByKey: {},
+    launchOrder: [],
+  }
+  const existing = stream.launchesByKey[launchKey] ?? {}
+  stream.pathId = 'tool.task.stream.v2'
+  stream.streamVersion = 2
+  stream.status = stringValue(parsed.status) || stream.status
+  stream.phase = stringValue(parsed.phase) || stream.phase
+  stream.action = stringValue(parsed.action) || stream.action
+  stream.description = stringValue(parsed.description) || stream.description
+  stream.goal = stringValue(parsed.goal) || stream.goal
+  stream.parentSessionId = stringValue(parsed.parent_session_id) || stream.parentSessionId
+  stream.taskCallId = stringValue(parsed.task_call_id) || stream.taskCallId
+  stream.launchCount = numberValue(parsed.launch_count) || stream.launchCount
+  stream.updatedAt = updatedAt
+  stream.launchesByKey[launchKey] = { ...existing, ...launchPatch, launch_key: launchKey }
+  if (!stream.launchOrder.includes(launchKey)) {
+    stream.launchOrder = [...stream.launchOrder, launchKey]
+  }
+  stream.launchOrder = [...stream.launchOrder].sort((left, right) => {
+    const leftIndex = numberValue(stream.launchesByKey[left]?.launch_index)
+    const rightIndex = numberValue(stream.launchesByKey[right]?.launch_index)
+    if (leftIndex && rightIndex && leftIndex !== rightIndex) return leftIndex - rightIndex
+    if (leftIndex && !rightIndex) return -1
+    if (!leftIndex && rightIndex) return 1
+    return left.localeCompare(right)
+  })
+  tool.taskStream = stream
+  return true
 }
 
 function numberValue(value: unknown): number {

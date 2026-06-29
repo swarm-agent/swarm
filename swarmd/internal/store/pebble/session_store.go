@@ -381,12 +381,24 @@ func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
 }
 
 func (s *SessionStore) DeleteSession(sessionID string) error {
+	return s.tombstoneSession(sessionID, "deleted")
+}
+
+func (s *SessionStore) ArchiveSession(sessionID string) error {
+	return s.tombstoneSession(sessionID, "archived")
+}
+
+func (s *SessionStore) tombstoneSession(sessionID, kind string) error {
 	if s == nil || s.store == nil {
 		return errors.New("session store is not configured")
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return errors.New("session id is required")
+	}
+	kind = strings.TrimSpace(strings.ToLower(kind))
+	if kind != "deleted" && kind != "archived" {
+		return fmt.Errorf("unsupported session tombstone kind %q", kind)
 	}
 	var existing SessionSnapshot
 	if loaded, ok, err := s.GetSession(sessionID); err != nil {
@@ -413,31 +425,38 @@ func (s *SessionStore) DeleteSession(sessionID string) error {
 			UserID:         existing.UserID,
 			AccountScopeID: existing.AccountScopeID,
 			WorkspacePath:  existing.WorkspacePath,
-			Kind:           "deleted",
-			Deleted:        true,
+			Kind:           kind,
+			Deleted:        kind == "deleted",
+			Archived:       kind == "archived",
 			EndpointSeq:    endpointSeq,
 			EventSeq:       seq,
 			UpdatedAt:      now,
 			Session:        existing,
 		}
-		payload, err := json.Marshal(v3SessionEventReplayPayload{SessionID: sessionID, Seq: seq, Kind: V3SessionMutationDeleteSession, Session: &existing, Tombstone: &tombstone})
-		if err != nil {
-			return fmt.Errorf("marshal v3 session delete payload %q: %w", sessionID, err)
+		mutationKind := V3SessionMutationDeleteSession
+		eventType := "session.deleted"
+		if kind == "archived" {
+			mutationKind = V3SessionMutationArchiveSession
+			eventType = "session.archived"
 		}
-		event := V3SessionEvent{ID: fmt.Sprintf("v3evt_%s_%020d", sessionID, seq), SessionID: sessionID, Seq: seq, EventType: "session.deleted", Payload: payload, TsUnixMs: now}
+		payload, err := json.Marshal(v3SessionEventReplayPayload{SessionID: sessionID, Seq: seq, Kind: mutationKind, Session: &existing, Tombstone: &tombstone})
+		if err != nil {
+			return fmt.Errorf("marshal v3 session %s payload %q: %w", kind, sessionID, err)
+		}
+		event := V3SessionEvent{ID: fmt.Sprintf("v3evt_%s_%020d", sessionID, seq), SessionID: sessionID, Seq: seq, EventType: eventType, Payload: payload, TsUnixMs: now}
 		projection := V3SessionProjection{SessionID: sessionID, LastEventSeq: seq, ProjectionHighWatermarkSeq: seq, UpdatedAt: now}
 		eventPayload, err := json.Marshal(event)
 		if err != nil {
-			return fmt.Errorf("marshal v3 session delete event %q: %w", sessionID, err)
+			return fmt.Errorf("marshal v3 session %s event %q: %w", kind, sessionID, err)
 		}
 		projectionPayload, err := json.Marshal(projection)
 		if err != nil {
-			return fmt.Errorf("marshal v3 session delete projection %q: %w", sessionID, err)
+			return fmt.Errorf("marshal v3 session %s projection %q: %w", kind, sessionID, err)
 		}
 		realtimeOutbox := V3RealtimeOutboxRecord{EndpointSeq: endpointSeq, EndpointCursor: V3RealtimeOutboxCursor(endpointSeq), SessionID: sessionID, UserID: existing.UserID, AccountScopeID: existing.AccountScopeID, Membership: newV3RealtimeOutboxMembershipFromTombstone(tombstone, now), Event: event, Projection: projection, CreatedAt: now}
 		realtimeOutboxPayload, err := json.Marshal(realtimeOutbox)
 		if err != nil {
-			return fmt.Errorf("marshal v3 session delete outbox %q: %w", sessionID, err)
+			return fmt.Errorf("marshal v3 session %s outbox %q: %w", kind, sessionID, err)
 		}
 		if err := batch.Set([]byte(KeyV3SessionSequence(sessionID)), uint64ToBytes(seq), nil); err != nil {
 			return err

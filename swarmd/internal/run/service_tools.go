@@ -114,7 +114,7 @@ func taskStreamStatusForPhase(phase string) string {
 		return "pending"
 	case "completed":
 		return "ok"
-	case "failed":
+	case "failed", "cancelled", "canceled":
 		return "error"
 	default:
 		return "running"
@@ -279,8 +279,100 @@ func buildTaskStreamPayload(parentSessionID, action, description string, launchC
 	}
 }
 
+const taskStreamPathIDV2 = "tool.task.stream.v2"
+
+func taskLaunchStreamKey(launch taskLaunchOutcome) string {
+	if childSessionID := strings.TrimSpace(launch.ChildSessionID); childSessionID != "" {
+		return childSessionID
+	}
+	if launch.LaunchIndex > 0 {
+		return fmt.Sprintf("launch:%d", launch.LaunchIndex)
+	}
+	return "launch"
+}
+
+func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase string, terminal bool) map[string]any {
+	phase = strings.TrimSpace(phase)
+	if phase == "" {
+		phase = strings.TrimSpace(launch.Phase)
+	}
+	if phase == "" {
+		phase = status
+	}
+	elapsedMS, currentToolMS := taskLaunchProgressDurations(launch, terminal)
+	patch := map[string]any{
+		"launch_index":               launch.LaunchIndex,
+		"launch_key":                 taskLaunchStreamKey(launch),
+		"status":                     strings.TrimSpace(status),
+		"phase":                      phase,
+		"requested_subagent":         strings.TrimSpace(launch.RequestedSubagent),
+		"subagent":                   strings.TrimSpace(launch.ResolvedSubagent),
+		"agent_type":                 strings.TrimSpace(launch.ResolvedSubagent),
+		"assignment_label":           strings.TrimSpace(launch.AssignmentLabel),
+		"subagent_provider":          strings.TrimSpace(launch.SubagentProvider),
+		"subagent_model":             strings.TrimSpace(launch.SubagentModel),
+		"child_session_id":           strings.TrimSpace(launch.ChildSessionID),
+		"child_mode":                 strings.TrimSpace(launch.ChildMode),
+		"launch_started_at_ms":       launch.LaunchStartedAtMS,
+		"current_tool":               strings.TrimSpace(launch.CurrentTool),
+		"current_tool_started_at_ms": launch.CurrentToolStarted,
+		"current_tool_ms":            currentToolMS,
+		"elapsed_ms":                 elapsedMS,
+		"tool_started":               launch.ToolStarted,
+		"tool_completed":             launch.ToolCompleted,
+		"tool_failed":                launch.ToolFailed,
+		"summary":                    strings.TrimSpace(launch.Summary),
+		"error":                      strings.TrimSpace(launch.Error),
+		"report_chars":               launch.ReportChars,
+		"report_truncated":           launch.ReportTruncated,
+		"terminal":                   terminal,
+	}
+	if launch.ReportRef != nil {
+		patch["report_ref"] = launch.ReportRef
+		patch["report_persisted"] = true
+	}
+	return patch
+}
+
+func buildTaskStreamPatchPayload(parentSessionID, taskCallID, action, description string, launchCount int, launch taskLaunchOutcome, phase, summary string) map[string]any {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		summary = fmt.Sprintf("subagent %s running", launch.ResolvedSubagent)
+	}
+	if launchCount <= 0 {
+		launchCount = 1
+	}
+	status := taskStreamStatusForPhase(phase)
+	if strings.TrimSpace(launch.Error) != "" {
+		status = "error"
+	}
+	terminal := status == "ok" || status == "error"
+	patch := buildTaskStreamLaunchPatchPayload(launch, status, phase, terminal)
+	launchKey := taskLaunchStreamKey(launch)
+	return map[string]any{
+		"tool":              "task",
+		"action":            action,
+		"status":            status,
+		"phase":             strings.TrimSpace(phase),
+		"launch_count":      launchCount,
+		"description":       description,
+		"goal":              description,
+		"parent_session_id": strings.TrimSpace(parentSessionID),
+		"task_call_id":      strings.TrimSpace(taskCallID),
+		"path_id":           taskStreamPathIDV2,
+		"stream_version":    2,
+		"event":             "launch.patch",
+		"launch_index":      launch.LaunchIndex,
+		"launch_key":        launchKey,
+		"child_session_id":  strings.TrimSpace(launch.ChildSessionID),
+		"summary":           summary,
+		"details_truncated": false,
+		"launch":            patch,
+	}
+}
+
 func emitTaskStreamDelta(parentSessionID string, emit StreamHandler, step int, toolName, callID, action, description string, launchCount int, launch taskLaunchOutcome, phase, summary string) {
-	payload := buildTaskStreamPayload(parentSessionID, action, description, launchCount, launch, phase, summary)
+	payload := buildTaskStreamPatchPayload(parentSessionID, callID, action, description, launchCount, launch, phase, summary)
 	emitTaskStreamPayload(emit, step, toolName, callID, payload)
 }
 
@@ -2393,41 +2485,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			s.publishEventEnvelope(*env)
 		}
 	}
-	taskProgressMu := sync.Mutex{}
-	taskProgress := make([]taskLaunchOutcome, len(prepared))
-	taskProgressInitialized := make([]bool, len(prepared))
 	emitTaskProgress := func(phase, summary string, launch taskLaunchOutcome) {
 		phase = strings.TrimSpace(phase)
-		status := taskStreamStatusForPhase(phase)
-		terminal := status == "ok" || status == "error"
 		launch.Phase = phase
-		idx := launch.LaunchIndex - 1
-		launches := make([]map[string]any, 0, len(prepared))
-		taskProgressMu.Lock()
-		if idx >= 0 && idx < len(taskProgress) {
-			taskProgress[idx] = launch
-			taskProgressInitialized[idx] = true
-		}
-		for i := range taskProgress {
-			if !taskProgressInitialized[i] {
-				continue
-			}
-			row := taskProgress[i]
-			rowStatus := taskStreamStatusForPhase(row.Phase)
-			rowTerminal := rowStatus == "ok" || rowStatus == "error"
-			launches = append(launches, buildTaskStreamLaunchPayload(row, rowStatus, row.Phase, rowTerminal))
-		}
-		taskProgressMu.Unlock()
-		if len(launches) == 0 {
-			launches = append(launches, buildTaskStreamLaunchPayload(launch, status, phase, terminal))
-		}
-		summary = strings.TrimSpace(summary)
-		if summary == "" {
-			summary = fmt.Sprintf("%d subagent launch(es) active", len(launches))
-		}
-		payload := buildTaskStreamPayload(parentSession.ID, action, description, len(prepared), launch, phase, summary)
-		payload["launches"] = launches
-		emitTaskStreamPayload(emit, step, taskToolName, taskCallID, payload)
+		emitTaskStreamDelta(parentSession.ID, emit, step, taskToolName, taskCallID, action, description, len(prepared), launch, phase, summary)
 	}
 
 	spawned := make([]taskLaunchOutcome, 0, len(prepared))
@@ -2470,7 +2531,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			eventType := strings.ToLower(strings.TrimSpace(event.Type))
 			switch eventType {
 			case StreamEventStepStarted:
-				emitTaskProgress("running", "", outcome)
+				if strings.TrimSpace(outcome.Phase) == "" || strings.EqualFold(strings.TrimSpace(outcome.Phase), "spawned") {
+					emitTaskProgress("running", "", outcome)
+					outcome.Phase = "running"
+				}
 			case StreamEventToolStarted:
 				nowMS := time.Now().UnixMilli()
 				toolName := emptyToolName(strings.TrimSpace(event.ToolName))
@@ -2478,8 +2542,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				outcome.CurrentTool = toolName
 				outcome.CurrentToolStarted = nowMS
 				outcome.CurrentToolMS = 0
-				outcome.CurrentPreviewKind = "tool"
-				outcome.CurrentPreviewText = ""
 				if toolName != "" {
 					outcome.ToolOrder = append(outcome.ToolOrder, toolName)
 				}
@@ -2488,9 +2550,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				}
 				emitTaskProgress("tool.started", fmt.Sprintf("launch %d running %s", outcome.LaunchIndex, outcome.CurrentTool), outcome)
 			case StreamEventToolDelta:
-				outcome.CurrentPreviewKind = "tool"
-				outcome.CurrentPreviewText = appendTaskPreviewText(outcome.CurrentPreviewText, event.Output, taskStreamPreviewMaxChars, true)
-				emitTaskProgress("tool.delta", "", outcome)
+				// Child tool output text remains canonical in the child session transcript.
+				// The parent task stream only emits lifecycle/tool-state patches.
 			case StreamEventToolCompleted:
 				nowMS := time.Now().UnixMilli()
 				outcome.ToolCompleted++
@@ -2505,14 +2566,16 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 					outcome.LaunchStartedAtMS = nowMS
 				}
 				outcome.ElapsedMS = maxInt64(0, nowMS-outcome.LaunchStartedAtMS)
+				toolPhase := "tool.completed"
 				if strings.TrimSpace(event.Error) != "" {
 					outcome.ToolFailed++
+					toolPhase = "tool.failed"
 				}
 				summary := fmt.Sprintf("launch %d completed %s", outcome.LaunchIndex, completedTool)
 				if strings.TrimSpace(event.Error) != "" {
 					summary = fmt.Sprintf("launch %d failed %s: %s", outcome.LaunchIndex, completedTool, strings.TrimSpace(event.Error))
 				}
-				emitTaskProgress("tool.completed", summary, outcome)
+				emitTaskProgress(toolPhase, summary, outcome)
 				if strings.TrimSpace(event.Error) == "" {
 					outcome.CurrentTool = ""
 					outcome.CurrentToolStarted = 0
@@ -2520,14 +2583,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 					outcome.CurrentPreviewKind = ""
 					outcome.CurrentPreviewText = ""
 				}
-			case StreamEventReasoningDelta:
-				outcome.CurrentPreviewKind = "reasoning"
-				outcome.CurrentPreviewText = setTaskPreviewText(event.Delta, taskStreamPreviewMaxChars, false)
-				emitTaskProgress("reasoning.delta", "", outcome)
-			case StreamEventAssistantDelta, StreamEventAssistantCommentary:
-				outcome.CurrentPreviewKind = "assistant"
-				outcome.CurrentPreviewText = appendTaskPreviewText(outcome.CurrentPreviewText, event.Delta, taskStreamPreviewMaxChars, false)
-				emitTaskProgress("assistant.delta", "", outcome)
+			case StreamEventReasoningDelta, StreamEventAssistantDelta, StreamEventAssistantCommentary:
+				// Child model/reasoning deltas are intentionally not mirrored into the
+				// parent task stream; child sessions remain the canonical transcript.
 			case StreamEventMessageStored, StreamEventMessageUpdated:
 				if event.Message != nil && strings.EqualFold(strings.TrimSpace(event.Message.Role), "reasoning") {
 					outcome.ReasoningSummary = strings.TrimSpace(event.Message.Content)

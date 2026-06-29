@@ -352,6 +352,79 @@ func TestSessionsV3PrimaryDeleteRouteRejectsOtherPrincipal(t *testing.T) {
 	}
 }
 
+func TestSessionsV3PrimaryArchiveRouteStreamsWorkspaceTombstone(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := "/workspace/stream-archive-tombstone"
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-archive-tombstone", "Sync Stream Archive Tombstone", workspace)
+	bootstrapBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"` + workspace + `","recent":{"limit":20}},"history":{"mode":"none"}}`
+	bootstrapReq := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(bootstrapBody))
+	bootstrapReq.Header.Set("Content-Type", "application/json")
+	bootstrapRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bootstrapRec, withTestPrincipal(bootstrapReq))
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", bootstrapRec.Code, bootstrapRec.Body.String())
+	}
+	var bootstrap struct {
+		SnapshotEndpointCursor string `json:"snapshot_endpoint_cursor"`
+	}
+	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &bootstrap); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+
+	archiveReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/archive", nil)
+	archiveRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(archiveRec, withTestPrincipal(archiveReq))
+	if archiveRec.Code != http.StatusOK || !strings.Contains(archiveRec.Body.String(), `"ok":true`) || !strings.Contains(archiveRec.Body.String(), `"archived":true`) {
+		t.Fatalf("archive response status=%d body=%s", archiveRec.Code, archiveRec.Body.String())
+	}
+	if strings.Contains(archiveRec.Body.String(), `"deleted":true`) {
+		t.Fatalf("archive response used delete tombstone body=%s", archiveRec.Body.String())
+	}
+	if _, ok, err := server.sessions.GetSession(created.ID); err != nil || ok {
+		t.Fatalf("archived session still visible ok=%v err=%v", ok, err)
+	}
+	if sessions, err := server.sessions.ListSessionsForAccount(testPrincipal().AccountScopeID, 10); err != nil || len(sessions) != 0 {
+		t.Fatalf("archived session still listed sessions=%+v err=%v", sessions, err)
+	}
+	tombstones, err := server.sessions.ListSessionTombstonesForAccount(testPrincipal().AccountScopeID, 10)
+	if err != nil {
+		t.Fatalf("list tombstones: %v", err)
+	}
+	var archived bool
+	for _, tombstone := range tombstones {
+		if tombstone.SessionID == created.ID {
+			archived = tombstone.Kind == "archived" && tombstone.Archived && !tombstone.Deleted
+		}
+	}
+	if !archived {
+		t.Fatalf("archive tombstone missing or not archived: %+v", tombstones)
+	}
+
+	streamBody := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"` + workspace + `","recent":{"limit":20}},"endpoint_cursor":"` + bootstrap.SnapshotEndpointCursor + `"}`
+	streamReq := httptest.NewRequest(http.MethodPost, V3SyncStreamPath, bytes.NewBufferString(streamBody))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(streamRec, withTestPrincipal(streamReq))
+	if streamRec.Code != http.StatusOK {
+		t.Fatalf("stream status=%d body=%s", streamRec.Code, streamRec.Body.String())
+	}
+	var stream struct {
+		Events []struct {
+			SessionID string `json:"session_id"`
+			EventType string `json:"event_type"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(streamRec.Body.Bytes(), &stream); err != nil {
+		t.Fatalf("decode stream: %v", err)
+	}
+	for _, event := range stream.Events {
+		if event.SessionID == created.ID && event.EventType == "session.archived" {
+			return
+		}
+	}
+	t.Fatalf("workspace stream missed archive tombstone event for %s: %+v body=%s", created.ID, stream.Events, streamRec.Body.String())
+}
+
 func TestSessionsV3SyncStreamWorkspaceUsesDurableMembershipForRunIntentRecord(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	principal := testPrincipal()

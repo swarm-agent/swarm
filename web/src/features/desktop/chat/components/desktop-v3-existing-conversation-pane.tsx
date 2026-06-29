@@ -1413,6 +1413,7 @@ function DesktopV3LiveToolCall({ tool }: { tool: LiveRunOverlay['toolCallsByCall
     error,
     durationMs: tool.durationMs,
     state,
+    taskStream: tool.taskStream,
   })
   if (parsed && tool.timelineSeq) parsed.timelineSeq = tool.timelineSeq
   return <DesktopV3ToolMessage content="" toolMessage={parsed} />

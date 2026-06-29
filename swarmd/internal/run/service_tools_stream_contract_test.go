@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-func TestBuildTaskStreamPayloadDesktopSubagentSchema(t *testing.T) {
-	payload := buildTaskStreamPayload("parent-session", "spawn", "map repo", 3, taskLaunchOutcome{
+func TestBuildTaskStreamPatchPayloadDesktopSubagentSchema(t *testing.T) {
+	payload := buildTaskStreamPatchPayload("parent-session", "call-task", "spawn", "map repo", 3, taskLaunchOutcome{
 		LaunchIndex:        2,
 		RequestedSubagent:  "explorer",
 		ResolvedSubagent:   "explorer-v2",
@@ -41,10 +41,13 @@ func TestBuildTaskStreamPayloadDesktopSubagentSchema(t *testing.T) {
 		"description":       "map repo",
 		"goal":              "map repo",
 		"parent_session_id": "parent-session",
-		"assignment_label":  "Backend map",
-		"subagent_provider": "test-provider",
-		"subagent_model":    "test-model",
-		"path_id":           "tool.task.stream.v1",
+		"task_call_id":      "call-task",
+		"path_id":           "tool.task.stream.v2",
+		"stream_version":    2,
+		"event":             "launch.patch",
+		"launch_index":      2,
+		"launch_key":        "child-session-2",
+		"child_session_id":  "child-session-2",
 		"details_truncated": false,
 	}
 	for key, want := range wantTop {
@@ -55,64 +58,60 @@ func TestBuildTaskStreamPayloadDesktopSubagentSchema(t *testing.T) {
 	if got := payload["summary"]; got != "subagent explorer-v2 running" {
 		t.Fatalf("summary = %#v, want default running summary", got)
 	}
-
-	launches, ok := payload["launches"].([]map[string]any)
-	if !ok || len(launches) != 1 {
-		t.Fatalf("launches = %#v, want one launch map", payload["launches"])
+	if _, ok := payload["launches"]; ok {
+		t.Fatalf("payload includes aggregate launches snapshot: %#v", payload["launches"])
 	}
-	launch := launches[0]
+
+	launch, ok := payload["launch"].(map[string]any)
+	if !ok {
+		t.Fatalf("launch = %#v, want launch patch map", payload["launch"])
+	}
 	wantLaunch := map[string]any{
 		"launch_index":               2,
+		"launch_key":                 "child-session-2",
 		"status":                     "running",
+		"phase":                      "tool.delta",
 		"requested_subagent":         "explorer",
 		"subagent":                   "explorer-v2",
 		"agent_type":                 "explorer-v2",
-		"meta_prompt":                "map backend files",
 		"assignment_label":           "Backend map",
 		"subagent_provider":          "test-provider",
 		"subagent_model":             "test-model",
 		"child_session_id":           "child-session-2",
 		"child_mode":                 "auto",
-		"workspace_path":             "/workspace/project",
-		"workspace_name":             "project",
-		"worktree_enabled":           true,
-		"worktree_root_path":         "/workspace/project",
-		"worktree_branch":            "agent/child-session-2",
-		"phase":                      "tool.delta",
 		"launch_started_at_ms":       int64(123000),
 		"current_tool":               "search",
 		"current_tool_started_at_ms": int64(124000),
 		"current_tool_ms":            int64(0),
-		"current_preview_kind":       "tool",
-		"current_preview_text":       "matched service_tools.go",
 		"elapsed_ms":                 int64(0),
 		"tool_started":               1,
 		"tool_completed":             0,
 		"tool_failed":                0,
+		"terminal":                   false,
 	}
 	for key, want := range wantLaunch {
 		if got := launch[key]; got != want {
 			t.Fatalf("launch[%q] = %#v, want %#v", key, got, want)
 		}
 	}
-	toolOrder, ok := launch["tool_order"].([]string)
-	if !ok || len(toolOrder) != 1 || toolOrder[0] != "search" {
-		t.Fatalf("tool_order = %#v, want [search]", launch["tool_order"])
+	for _, forbidden := range []string{"meta_prompt", "workspace_path", "workspace_name", "worktree_enabled", "worktree_root_path", "worktree_branch", "tool_order", "current_preview_kind", "current_preview_text"} {
+		if _, ok := launch[forbidden]; ok {
+			t.Fatalf("launch patch includes forbidden field %q: %#v", forbidden, launch[forbidden])
+		}
 	}
 }
 
-func TestBuildTaskStreamPayloadDoesNotExposeAssistantOrReasoningPreviewText(t *testing.T) {
+func TestBuildTaskStreamPatchPayloadDoesNotExposeAssistantOrReasoningPreviewText(t *testing.T) {
 	tests := []struct {
 		name string
 		kind string
-		want string
 	}{
-		{name: "assistant", kind: "assistant", want: "assistant"},
-		{name: "reasoning", kind: "reasoning", want: "reasoning"},
+		{name: "assistant", kind: "assistant"},
+		{name: "reasoning", kind: "reasoning"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			payload := buildTaskStreamPayload("parent", "spawn", "inspect", 1, taskLaunchOutcome{
+			payload := buildTaskStreamPatchPayload("parent", "call-task", "spawn", "inspect", 1, taskLaunchOutcome{
 				LaunchIndex:        1,
 				ResolvedSubagent:   "explorer",
 				ChildSessionID:     "child-session-1",
@@ -120,22 +119,21 @@ func TestBuildTaskStreamPayloadDoesNotExposeAssistantOrReasoningPreviewText(t *t
 				CurrentPreviewText: "private model text",
 			}, tc.kind+".delta", "")
 
-			launches, ok := payload["launches"].([]map[string]any)
-			if !ok || len(launches) != 1 {
-				t.Fatalf("launches = %#v, want one launch map", payload["launches"])
+			launch, ok := payload["launch"].(map[string]any)
+			if !ok {
+				t.Fatalf("launch = %#v, want launch patch map", payload["launch"])
 			}
-			launch := launches[0]
-			if got := launch["current_preview_kind"]; got != tc.want {
-				t.Fatalf("current_preview_kind = %#v, want %#v", got, tc.want)
+			if _, ok := launch["current_preview_kind"]; ok {
+				t.Fatalf("current_preview_kind leaked into parent patch: %#v", launch["current_preview_kind"])
 			}
-			if got := launch["current_preview_text"]; got != "" {
-				t.Fatalf("current_preview_text = %#v, want empty redacted preview", got)
+			if _, ok := launch["current_preview_text"]; ok {
+				t.Fatalf("current_preview_text leaked into parent patch: %#v", launch["current_preview_text"])
 			}
 		})
 	}
 }
 
-func TestEmitTaskStreamPayloadAggregatesIndependentLaunchProgress(t *testing.T) {
+func TestEmitTaskStreamDeltaEmitsSingleLaunchPatchNotAggregate(t *testing.T) {
 	var outputs []string
 	emit := func(event StreamEvent) {
 		if event.Type != StreamEventToolDelta {
@@ -143,99 +141,78 @@ func TestEmitTaskStreamPayloadAggregatesIndependentLaunchProgress(t *testing.T) 
 		}
 		outputs = append(outputs, event.Output)
 	}
-	launches := []taskLaunchOutcome{
-		{
-			LaunchIndex:       1,
-			RequestedSubagent: "explorer",
-			ResolvedSubagent:  "explorer",
-			AssignmentLabel:   "Map backend files",
-			ChildSessionID:    "child-1",
-			Phase:             "completed",
-			ToolStarted:       2,
-			ToolCompleted:     2,
-			ReportRef: &taskReportRef{
-				SessionID: "child-1",
-				MessageID: "msg-child-1",
-				GlobalSeq: 12,
-				Role:      "assistant",
-				Source:    "child_session_transcript",
-			},
-			Summary: "backend mapped",
+	first := taskLaunchOutcome{
+		LaunchIndex:      1,
+		ResolvedSubagent: "explorer",
+		ChildSessionID:   "child-1",
+		Phase:            "completed",
+		ToolStarted:      2,
+		ToolCompleted:    2,
+		ReportRef: &taskReportRef{
+			SessionID: "child-1",
+			MessageID: "msg-child-1",
+			GlobalSeq: 12,
+			Role:      "assistant",
+			Source:    "child_session_transcript",
 		},
-		{
-			LaunchIndex:        2,
-			RequestedSubagent:  "parallel",
-			ResolvedSubagent:   "parallel",
-			AssignmentLabel:    "Map frontend files",
-			ChildSessionID:     "child-2",
-			Phase:              "assistant.delta",
-			CurrentPreviewKind: "assistant",
-			CurrentPreviewText: "private child assistant text",
-			ToolStarted:        1,
-		},
+		Summary: "backend mapped",
 	}
-	rows := make([]map[string]any, 0, len(launches))
-	for _, launch := range launches {
-		status := taskStreamStatusForPhase(launch.Phase)
-		row := buildTaskStreamLaunchPayload(launch, status, launch.Phase, status == "ok" || status == "error")
-		if launch.ReportRef != nil {
-			row["report_ref"] = map[string]any{
-				"session_id": launch.ReportRef.SessionID,
-				"message_id": launch.ReportRef.MessageID,
-				"global_seq": launch.ReportRef.GlobalSeq,
-				"role":       launch.ReportRef.Role,
-				"source":     launch.ReportRef.Source,
-			}
-			row["report_persisted"] = true
-		}
-		rows = append(rows, row)
+	second := taskLaunchOutcome{
+		LaunchIndex:        2,
+		ResolvedSubagent:   "parallel",
+		ChildSessionID:     "child-2",
+		Phase:              "assistant.delta",
+		CurrentPreviewKind: "assistant",
+		CurrentPreviewText: "private child assistant text",
+		ToolStarted:        1,
 	}
-	payload := buildTaskStreamPayload("parent", "spawn", "map repo", len(launches), launches[1], "assistant.delta", "2 subagent launch(es) active")
-	payload["launches"] = rows
-	emitTaskStreamPayload(emit, 3, "task", "call-task", payload)
 
-	if len(outputs) != 1 {
-		t.Fatalf("outputs = %d, want 1", len(outputs))
+	emitTaskStreamDelta("parent", emit, 3, "task", "call-task", "spawn", "map repo", 2, first, "completed", "backend mapped")
+	emitTaskStreamDelta("parent", emit, 3, "task", "call-task", "spawn", "map repo", 2, second, "assistant.delta", "")
+
+	if len(outputs) != 2 {
+		t.Fatalf("outputs = %d, want 2", len(outputs))
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(outputs[0]), &decoded); err != nil {
-		t.Fatalf("decode payload: %v", err)
+	var decoded []map[string]any
+	for _, output := range outputs {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(output), &payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		if got := payload["path_id"]; got != "tool.task.stream.v2" {
+			t.Fatalf("path_id = %#v, want tool.task.stream.v2", got)
+		}
+		if _, ok := payload["launches"]; ok {
+			t.Fatalf("payload includes aggregate launches snapshot: %#v", payload["launches"])
+		}
+		if _, ok := payload["launch"].(map[string]any); !ok {
+			t.Fatalf("launch = %#v, want launch patch object", payload["launch"])
+		}
+		decoded = append(decoded, payload)
 	}
-	decodedRows, ok := decoded["launches"].([]any)
-	if !ok || len(decodedRows) != 2 {
-		t.Fatalf("launches = %#v, want two rows", decoded["launches"])
-	}
-	first, ok := decodedRows[0].(map[string]any)
-	if !ok {
-		t.Fatalf("first launch row = %#v", decodedRows[0])
-	}
-	second, ok := decodedRows[1].(map[string]any)
-	if !ok {
-		t.Fatalf("second launch row = %#v", decodedRows[1])
-	}
-	if got := first["child_session_id"]; got != "child-1" {
+
+	firstPatch := decoded[0]["launch"].(map[string]any)
+	if got := firstPatch["child_session_id"]; got != "child-1" {
 		t.Fatalf("first child_session_id = %#v, want child-1", got)
 	}
-	if got := first["status"]; got != "ok" {
+	if got := firstPatch["status"]; got != "ok" {
 		t.Fatalf("first status = %#v, want ok", got)
 	}
-	if got := first["report_persisted"]; got != true {
+	if got := firstPatch["report_persisted"]; got != true {
 		t.Fatalf("first report_persisted = %#v, want true", got)
 	}
-	reportRef, ok := first["report_ref"].(map[string]any)
+	reportRef, ok := firstPatch["report_ref"].(map[string]any)
 	if !ok {
-		t.Fatalf("first report_ref = %#v, want object", first["report_ref"])
+		t.Fatalf("first report_ref = %#v, want object", firstPatch["report_ref"])
 	}
 	if got := reportRef["source"]; got != "child_session_transcript" {
 		t.Fatalf("report_ref.source = %#v, want child_session_transcript", got)
 	}
-	if got := second["child_session_id"]; got != "child-2" {
+	secondPatch := decoded[1]["launch"].(map[string]any)
+	if got := secondPatch["child_session_id"]; got != "child-2" {
 		t.Fatalf("second child_session_id = %#v, want child-2", got)
 	}
-	if got := second["current_preview_kind"]; got != "assistant" {
-		t.Fatalf("second current_preview_kind = %#v, want assistant", got)
-	}
-	if got := second["current_preview_text"]; got != "" {
-		t.Fatalf("assistant preview leaked into parent progress: %#v", got)
+	if _, ok := secondPatch["current_preview_text"]; ok {
+		t.Fatalf("assistant preview leaked into parent progress: %#v", secondPatch["current_preview_text"])
 	}
 }

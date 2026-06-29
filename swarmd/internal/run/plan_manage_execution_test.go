@@ -234,7 +234,7 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
 		t.Fatalf("append final lifecycle: %v", err)
 	}
-	assertLifecycleMessage(1, "complete_checkpoint", "plan_complete", 6, "Plan complete — Automatic mode", "Completed: Checkpoint 2 — API", "Next: plan complete.")
+	assertLifecycleMessage(1, "complete_checkpoint", "await_review", 6, "All checkpoints complete; review required — Automatic mode", "Completed: Checkpoint 2 — API", "Next: all checkpoints are complete; waiting for user review.")
 
 	outbox, err := sessionSvc.ListRealtimeOutboxForSessionAfterSeq(sessionID, 0, 20)
 	if err != nil {
@@ -382,6 +382,50 @@ func TestExecutePlanManageApproveAndStartAppliesExecutionPolicy(t *testing.T) {
 		if checkpoint.Status != sessionruntime.PlanCheckpointStatusPending || checkpoint.AttemptID != "" || len(checkpoint.Attempts) != 0 {
 			t.Fatalf("checkpoint runtime was not reset: %#v", checkpoint)
 		}
+	}
+}
+
+func TestExecutePlanManageFinalCheckpointAwaitsReview(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-final-review", "Final Review", "# Final", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Model", Status: sessionruntime.PlanCheckpointStatusCompleted},
+			{ID: "cp-2", Title: "API", Status: sessionruntime.PlanCheckpointStatusInProgress},
+		},
+		ActiveCheckpointID: "cp-2",
+	}})
+	if err != nil {
+		t.Fatalf("save final review plan: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"done"}`, "")
+	if err != nil {
+		t.Fatalf("complete final checkpoint: %v output=%s", err, raw)
+	}
+	var payload struct {
+		NextAction       string                              `json:"next_action"`
+		NextCheckpointID string                              `json:"next_checkpoint_id"`
+		ExecutionSummary sessionruntime.PlanExecutionSummary `json:"execution_summary"`
+		Plan             struct {
+			Document *pebblestore.SessionPlanDocument `json:"document"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode final payload: %v", err)
+	}
+	doc := payload.Plan.Document
+	if payload.NextAction != "await_review" || payload.NextCheckpointID != "cp-2" || payload.ExecutionSummary.PlanComplete || !payload.ExecutionSummary.ReviewRequired {
+		t.Fatalf("final payload raw=%s summary=%#v", raw, payload.ExecutionSummary)
+	}
+	if doc == nil || doc.ExecutionState == nil || doc.ExecutionState.Status != sessionruntime.PlanExecutionStateWaitingReview || doc.ActiveCheckpointID != "cp-2" {
+		t.Fatalf("final doc = %#v", doc)
+	}
+	if doc.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || doc.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusCompleted {
+		t.Fatalf("checkpoint statuses = %#v", doc.Checkpoints)
 	}
 }
 

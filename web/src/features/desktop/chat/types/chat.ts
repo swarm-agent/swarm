@@ -28,9 +28,11 @@ export interface EditDiffPreview {
 export type ToolMessageState = "done" | "running" | "error";
 
 export interface TaskToolRow {
+  launchKey?: string;
   launchIndex: number;
   childSessionId: string;
   status: string;
+  phase: string;
   agent: string;
   assignmentLabel: string;
   modelLabel: string;

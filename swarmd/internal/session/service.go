@@ -451,6 +451,19 @@ func (s *Service) DeleteSession(sessionID string) error {
 }
 
 func (s *Service) DeleteSessionWithEvent(sessionID string) (*pebblestore.EventEnvelope, error) {
+	return s.tombstoneSessionWithEvent(sessionID, "deleted")
+}
+
+func (s *Service) ArchiveSession(sessionID string) error {
+	_, err := s.ArchiveSessionWithEvent(sessionID)
+	return err
+}
+
+func (s *Service) ArchiveSessionWithEvent(sessionID string) (*pebblestore.EventEnvelope, error) {
+	return s.tombstoneSessionWithEvent(sessionID, "archived")
+}
+
+func (s *Service) tombstoneSessionWithEvent(sessionID, kind string) (*pebblestore.EventEnvelope, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("session service is not configured")
 	}
@@ -458,13 +471,22 @@ func (s *Service) DeleteSessionWithEvent(sessionID string) (*pebblestore.EventEn
 	if sessionID == "" {
 		return nil, errors.New("session id is required")
 	}
+	kind = strings.TrimSpace(strings.ToLower(kind))
+	if kind != "deleted" && kind != "archived" {
+		return nil, fmt.Errorf("unsupported session tombstone kind %q", kind)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	session, found, err := s.store.GetSession(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.store.DeleteSession(sessionID); err != nil {
+	if kind == "archived" {
+		err = s.store.ArchiveSession(sessionID)
+	} else {
+		err = s.store.DeleteSession(sessionID)
+	}
+	if err != nil {
 		return nil, err
 	}
 	if !found || s.events == nil {
@@ -474,7 +496,11 @@ func (s *Service) DeleteSessionWithEvent(sessionID string) (*pebblestore.EventEn
 	if err != nil {
 		return nil, err
 	}
-	env, err := s.events.AppendWithSource("session:"+sessionID, "session.deleted", sessionID, payload, "v3", "", "")
+	eventType := "session.deleted"
+	if kind == "archived" {
+		eventType = "session.archived"
+	}
+	env, err := s.events.AppendWithSource("session:"+sessionID, eventType, sessionID, payload, "v3", "", "")
 	if err != nil {
 		return nil, err
 	}

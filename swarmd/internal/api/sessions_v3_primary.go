@@ -222,6 +222,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated))
+	case "archive":
+		s.handleSessionV3PrimaryArchive(w, r, principal, sessionID)
 	case "messages":
 		s.handleSessionV3PrimaryMessages(w, r, principal, sessionID)
 	case "events":
@@ -417,6 +419,18 @@ func (s *Server) handleSessionsV3PrimaryList(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleSessionV3PrimaryDelete(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	s.handleSessionV3PrimaryTombstone(w, r, principal, sessionID, "deleted")
+}
+
+func (s *Server) handleSessionV3PrimaryArchive(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	s.handleSessionV3PrimaryTombstone(w, r, principal, sessionID, "archived")
+}
+
+func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, kind string) {
 	session, found, err := s.requireSessionV3Access(principal, sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -426,13 +440,23 @@ func (s *Server) handleSessionV3PrimaryDelete(w http.ResponseWriter, r *http.Req
 		writeSessionNotFound(w)
 		return
 	}
-	event, err := s.sessions.DeleteSessionWithEvent(session.ID)
+	kind = strings.TrimSpace(strings.ToLower(kind))
+	eventType := "session.deleted"
+	if kind == "archived" {
+		eventType = "session.archived"
+	}
+	var event *pebblestore.EventEnvelope
+	if kind == "archived" {
+		event, err = s.sessions.ArchiveSessionWithEvent(session.ID)
+	} else {
+		event, err = s.sessions.DeleteSessionWithEvent(session.ID)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	if head, headErr := s.sessions.CurrentRealtimeOutboxRevision(); headErr == nil && head > 0 {
-		if record, ok, recordErr := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(session.ID, head); recordErr == nil && ok && record.Event.EventType == "session.deleted" {
+		if record, ok, recordErr := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(session.ID, head); recordErr == nil && ok && record.Event.EventType == eventType {
 			if publishErr := s.publishCommittedV3RealtimeOutbox(record); publishErr != nil {
 				// Durable commit succeeded; realtime wake is an accelerator only.
 				_ = publishErr
@@ -445,12 +469,17 @@ func (s *Server) handleSessionV3PrimaryDelete(w http.ResponseWriter, r *http.Req
 	response := map[string]any{
 		"ok":         true,
 		"session_id": session.ID,
-		"deleted":    true,
 		"tombstone": map[string]any{
 			"session_id":     session.ID,
-			"deleted":        true,
 			"workspace_path": session.WorkspacePath,
 		},
+	}
+	if kind == "archived" {
+		response["archived"] = true
+		response["tombstone"].(map[string]any)["archived"] = true
+	} else {
+		response["deleted"] = true
+		response["tombstone"].(map[string]any)["deleted"] = true
 	}
 	writeJSON(w, http.StatusOK, response)
 }

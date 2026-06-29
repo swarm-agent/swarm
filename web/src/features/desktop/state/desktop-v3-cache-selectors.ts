@@ -280,7 +280,16 @@ function cloneLiveRun(run: LiveRunOverlay): LiveRunOverlay {
     assistantDraft: run.assistantDraft ? { ...run.assistantDraft } : undefined,
     assistantSegments: run.assistantSegments?.map((segment) => ({ ...segment })),
     toolCallsByCallId: Object.fromEntries(
-      Object.entries(run.toolCallsByCallId).map(([callId, tool]) => [callId, { ...tool }]),
+      Object.entries(run.toolCallsByCallId).map(([callId, tool]) => [callId, {
+        ...tool,
+        taskStream: tool.taskStream ? {
+          ...tool.taskStream,
+          launchesByKey: Object.fromEntries(
+            Object.entries(tool.taskStream.launchesByKey).map(([launchKey, launch]) => [launchKey, { ...launch }]),
+          ),
+          launchOrder: [...tool.taskStream.launchOrder],
+        } : undefined,
+      }]),
     ),
     reasoning: run.reasoning ? { ...run.reasoning } : undefined,
     reasoningByKey: run.reasoningByKey ? Object.fromEntries(

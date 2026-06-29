@@ -142,8 +142,30 @@ function PreviewLinesView({
   );
 }
 
-function taskStatusLabel(row: TaskToolRow): string {
+function normalizeTaskStatus(row: TaskToolRow): string {
   const status = row.status.trim().toLowerCase();
+  if (status) return status;
+  const phase = row.phase.trim().toLowerCase();
+  switch (phase) {
+    case "spawned":
+      return "pending";
+    case "tool.started":
+    case "tool.completed":
+      return "running";
+    case "tool.failed":
+      return "failed";
+    case "completed":
+    case "cancelled":
+    case "canceled":
+    case "failed":
+      return phase;
+    default:
+      return "pending";
+  }
+}
+
+function taskStatusLabel(row: TaskToolRow): string {
+  const status = normalizeTaskStatus(row);
   switch (status) {
     case "done":
     case "ok":
@@ -154,6 +176,9 @@ function taskStatusLabel(row: TaskToolRow): string {
     case "error":
     case "failed":
       return "ERR";
+    case "cancelled":
+    case "canceled":
+      return "STOP";
     case "running":
     case "active":
     case "in_progress":
@@ -167,7 +192,7 @@ function taskStatusLabel(row: TaskToolRow): string {
 }
 
 function taskStatusKind(row: TaskToolRow): "success" | "error" | "running" | "pending" | "other" {
-  const status = row.status.trim().toLowerCase();
+  const status = normalizeTaskStatus(row);
   switch (status) {
     case "done":
     case "ok":
@@ -178,6 +203,9 @@ function taskStatusKind(row: TaskToolRow): "success" | "error" | "running" | "pe
     case "error":
     case "failed":
       return "error";
+    case "cancelled":
+    case "canceled":
+      return "other";
     case "running":
     case "active":
     case "in_progress":
@@ -255,7 +283,7 @@ function taskElapsedLabel(row: TaskToolRow, nowMs: number): string {
 }
 
 function taskRowKey(row: TaskToolRow, index: number): string {
-  return row.childSessionId.trim() || `launch-index:${row.launchIndex || index + 1}`;
+  return row.launchKey?.trim() || row.childSessionId.trim() || `launch-index:${row.launchIndex || index + 1}`;
 }
 
 const TASK_ELAPSED_TICK_MS = 100;
@@ -302,9 +330,11 @@ function useTaskElapsedNow(enabled: boolean): number {
 }
 
 function taskRowsEqual(left: TaskToolRow, right: TaskToolRow, options: { comparePreview?: boolean } = {}): boolean {
-  if (left.launchIndex !== right.launchIndex
+  if (left.launchKey !== right.launchKey
+    || left.launchIndex !== right.launchIndex
     || left.childSessionId !== right.childSessionId
     || left.status !== right.status
+    || left.phase !== right.phase
     || left.agent !== right.agent
     || left.assignmentLabel !== right.assignmentLabel
     || left.modelLabel !== right.modelLabel
@@ -352,7 +382,8 @@ function TaskAgentListRow({
   const agentLabel = row.agent && row.assignmentLabel ? `@${row.agent}` : row.agent;
   const secondaryLabel = [agentLabel, row.modelLabel].filter(Boolean).join(' · ');
   const toolLabel = row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind);
-  const previewText = row.previewText.trim();
+  const errorText = row.status.trim().toLowerCase() === 'failed' || row.status.trim().toLowerCase() === 'error' ? row.previewText.trim() : '';
+  const previewText = errorText ? '' : row.previewText.trim();
   const rowNumber = row.launchIndex || index + 1;
 
   return (
@@ -380,6 +411,11 @@ function TaskAgentListRow({
               {secondaryLabel}
             </div>
           ) : null}
+          {row.childSessionId ? (
+            <div className="mt-0.5 font-mono text-[9px] text-[var(--app-text-subtle)]" title={`child session ${row.childSessionId}`}>
+              child {row.childSessionId.slice(0, 8)}
+            </div>
+          ) : null}
         </div>
         <div className="col-start-2 col-span-2 row-start-2 min-w-0 break-words font-mono text-[11px] text-[var(--app-text-muted)] [overflow-wrap:anywhere] sm:col-start-4 sm:col-span-1 sm:row-start-1" title={toolLabel}>
           {toolLabel}
@@ -388,15 +424,15 @@ function TaskAgentListRow({
           <TaskElapsedTime row={row} />
         </div>
       </div>
-      {previewText && !dense ? (
+      {(previewText || errorText) && !dense ? (
         <div className="grid min-w-0 grid-cols-[3.25rem_minmax(0,1fr)] gap-x-2 px-3 pb-2 sm:grid-cols-[2.5rem_3.75rem_minmax(0,1fr)] sm:gap-x-3">
           <div />
           <div className="hidden sm:block" />
-          <div className="col-start-2 min-w-0 break-words border-l border-[var(--app-border)] pl-2 text-[11px] leading-4 text-[var(--app-text-subtle)] [overflow-wrap:anywhere] sm:col-start-3">
+          <div className={cn("col-start-2 min-w-0 break-words border-l pl-2 text-[11px] leading-4 [overflow-wrap:anywhere] sm:col-start-3", errorText ? "border-[var(--app-danger)] text-[var(--app-danger)]" : "border-[var(--app-border)] text-[var(--app-text-subtle)]")}>
             <span className="mr-1 font-mono uppercase tracking-[0.08em] text-[9px]">
-              {taskPreviewLabel(row)}:
+              {errorText ? 'error' : taskPreviewLabel(row)}:
             </span>
-            {previewText}
+            {errorText || previewText}
           </div>
         </div>
       ) : null}
@@ -464,7 +500,8 @@ function TaskSwarmCompactRow({
   const agent = row.agent || 'subagent';
   const agentLabel = agent.startsWith('@') ? agent : `@${agent}`;
   const toolLabel = row.tool && row.tool !== '-' ? row.tool : taskStatusText(kind);
-  const title = row.assignmentLabel && row.assignmentLabel !== row.agent ? row.assignmentLabel : '';
+  const sessionLabel = row.childSessionId ? `child ${row.childSessionId.slice(0, 8)}` : '';
+  const title = [row.assignmentLabel && row.assignmentLabel !== row.agent ? row.assignmentLabel : '', sessionLabel].filter(Boolean).join(' · ');
 
   return (
     <div className={cn(

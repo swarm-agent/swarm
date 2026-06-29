@@ -666,18 +666,23 @@ test('Desktop V3 subscribes child sessions from parent task stream payload', asy
   const sockets: FakeWebSocket[] = []
   const childSessionId = 'child-session-from-task-stream'
   const taskOutput = JSON.stringify({
-    path_id: 'tool.task.stream.v1',
+    path_id: 'tool.task.stream.v2',
+    stream_version: 2,
     tool: 'task',
     status: 'running',
-    launches: [
-      {
-        launch_index: 1,
-        status: 'running',
-        child_session_id: childSessionId,
-        subagent: 'explorer',
-        current_tool: 'search',
-      },
-    ],
+    launch_count: 1,
+    task_call_id: 'call-task',
+    launch_key: childSessionId,
+    launch_index: 1,
+    child_session_id: childSessionId,
+    launch: {
+      launch_key: childSessionId,
+      launch_index: 1,
+      status: 'running',
+      child_session_id: childSessionId,
+      subagent: 'explorer',
+      current_tool: 'search',
+    },
   })
   const controller = new DesktopV3RealtimeControllerRuntime({
     getSnapshot: () => state,

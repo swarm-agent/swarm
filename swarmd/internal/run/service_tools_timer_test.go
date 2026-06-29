@@ -18,8 +18,8 @@ func TestTaskLaunchProgressDurationsRunningUsesStoredValuesOnly(t *testing.T) {
 	}
 }
 
-func TestBuildTaskStreamPayloadRunningKeepsTimerAnchorsWithoutRecomputedDurations(t *testing.T) {
-	payload := buildTaskStreamPayload("parent", "spawn", "inspect timers", 1, taskLaunchOutcome{
+func TestBuildTaskStreamPatchPayloadRunningKeepsTimerAnchorsWithoutRecomputedDurations(t *testing.T) {
+	payload := buildTaskStreamPatchPayload("parent", "call-task", "spawn", "inspect timers", 1, taskLaunchOutcome{
 		LaunchIndex:        1,
 		ResolvedSubagent:   "explorer",
 		LaunchStartedAtMS:  123000,
@@ -27,11 +27,10 @@ func TestBuildTaskStreamPayloadRunningKeepsTimerAnchorsWithoutRecomputedDuration
 		CurrentToolStarted: 124000,
 	}, "tool.delta", "")
 
-	launches, ok := payload["launches"].([]map[string]any)
-	if !ok || len(launches) != 1 {
-		t.Fatalf("launches = %#v, want one launch map", payload["launches"])
+	launch, ok := payload["launch"].(map[string]any)
+	if !ok {
+		t.Fatalf("launch = %#v, want launch patch map", payload["launch"])
 	}
-	launch := launches[0]
 	if got := launch["launch_started_at_ms"]; got != int64(123000) {
 		t.Fatalf("launch_started_at_ms = %#v, want 123000", got)
 	}
@@ -46,18 +45,18 @@ func TestBuildTaskStreamPayloadRunningKeepsTimerAnchorsWithoutRecomputedDuration
 	}
 }
 
-func TestBuildTaskStreamPayloadTerminalIncludesFinalElapsed(t *testing.T) {
-	payload := buildTaskStreamPayload("parent", "spawn", "inspect timers", 1, taskLaunchOutcome{
+func TestBuildTaskStreamPatchPayloadTerminalIncludesFinalElapsed(t *testing.T) {
+	payload := buildTaskStreamPatchPayload("parent", "call-task", "spawn", "inspect timers", 1, taskLaunchOutcome{
 		LaunchIndex:      1,
 		ResolvedSubagent: "explorer",
 		ElapsedMS:        3400,
 	}, "completed", "done")
 
-	launches, ok := payload["launches"].([]map[string]any)
-	if !ok || len(launches) != 1 {
-		t.Fatalf("launches = %#v, want one launch map", payload["launches"])
+	launch, ok := payload["launch"].(map[string]any)
+	if !ok {
+		t.Fatalf("launch = %#v, want launch patch map", payload["launch"])
 	}
-	if got := launches[0]["elapsed_ms"]; got != int64(3400) {
+	if got := launch["elapsed_ms"]; got != int64(3400) {
 		t.Fatalf("elapsed_ms = %#v, want 3400", got)
 	}
 }

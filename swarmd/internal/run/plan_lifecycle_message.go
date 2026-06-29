@@ -55,7 +55,11 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 		bodyLines = append(bodyLines, "Next: "+planLifecycleCheckpointLabel(nextCheckpointID, nextCheckpointTitle))
 	}
 	if nextAction == "await_review" {
-		bodyLines = append(bodyLines, "Next: waiting for checkpoint review.")
+		if allPlanLifecycleCheckpointsCompleted(doc) {
+			bodyLines = append(bodyLines, "Next: all checkpoints are complete; waiting for user review.")
+		} else {
+			bodyLines = append(bodyLines, "Next: waiting for checkpoint review.")
+		}
 	} else if nextAction == "stopped" {
 		bodyLines = append(bodyLines, "Next: execution stopped until the blocker or failure is resolved.")
 	} else if nextAction == "plan_complete" {
@@ -110,7 +114,9 @@ func planLifecycleHeadline(action string, summary sessionruntime.PlanExecutionSu
 	case "mark_failed":
 		base = "Checkpoint failed"
 	case "complete_checkpoint", "checkpoint_outcome":
-		if summary.PlanComplete || nextAction == "plan_complete" {
+		if nextAction == "await_review" && allPlanLifecycleCheckpointsCompletedFromSummary(summary) {
+			base = "All checkpoints complete; review required"
+		} else if summary.PlanComplete || nextAction == "plan_complete" {
 			base = "Plan complete"
 		} else {
 			base = "Checkpoint complete"
@@ -179,6 +185,22 @@ func planLifecycleActionCompleted(action string) bool {
 	default:
 		return false
 	}
+}
+
+func allPlanLifecycleCheckpointsCompletedFromSummary(summary sessionruntime.PlanExecutionSummary) bool {
+	return summary.ReviewRequired && summary.NextCheckpointID != "" && !summary.PlanComplete && summary.NextCheckpointStatus == sessionruntime.PlanCheckpointStatusCompleted
+}
+
+func allPlanLifecycleCheckpointsCompleted(doc *pebblestore.SessionPlanDocument) bool {
+	if doc == nil || len(doc.Checkpoints) == 0 {
+		return false
+	}
+	for _, checkpoint := range doc.Checkpoints {
+		if strings.TrimSpace(checkpoint.Status) != sessionruntime.PlanCheckpointStatusCompleted {
+			return false
+		}
+	}
+	return true
 }
 
 func planLifecycleCheckpointLabel(id, title string) string {

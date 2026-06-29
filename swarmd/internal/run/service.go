@@ -798,11 +798,13 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 			}
 			outcome.ElapsedMS = maxInt64(0, nowMS-outcome.LaunchStartedAtMS)
 			summary := fmt.Sprintf("launch %d completed %s", outcome.LaunchIndex, completedTool)
+			toolPhase := "tool.completed"
 			if strings.TrimSpace(event.Error) != "" {
 				outcome.ToolFailed++
+				toolPhase = "tool.failed"
 				summary = fmt.Sprintf("launch %d failed %s: %s", outcome.LaunchIndex, completedTool, strings.TrimSpace(event.Error))
 			}
-			emitTaskStreamDelta(parentSession.ID, emit, taskStep, taskToolName, taskCallID, taskAction, description, 1, outcome, "tool.completed", summary)
+			emitTaskStreamDelta(parentSession.ID, emit, taskStep, taskToolName, taskCallID, taskAction, description, 1, outcome, toolPhase, summary)
 			if strings.TrimSpace(event.Error) == "" {
 				outcome.CurrentTool = ""
 				outcome.CurrentToolStarted = 0

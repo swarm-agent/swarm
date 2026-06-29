@@ -534,6 +534,22 @@ export interface PendingUserMessage {
   error?: string
 }
 
+export interface LiveTaskToolStreamState {
+  pathId: string
+  streamVersion: number
+  status?: string
+  phase?: string
+  action?: string
+  description?: string
+  goal?: string
+  parentSessionId?: string
+  taskCallId?: string
+  launchCount?: number
+  updatedAt: number
+  launchesByKey: Record<string, Record<string, unknown>>
+  launchOrder: string[]
+}
+
 export interface LiveRunOverlay {
   sessionId: string
   runId: string
@@ -581,6 +597,7 @@ export interface LiveRunOverlay {
       toolName?: string
       argumentsText?: string
       outputText?: string
+      taskStream?: LiveTaskToolStreamState
       errorText?: string
       durationMs?: number
       status?: string

@@ -1889,6 +1889,87 @@ test('realtime task tool delta replaces full task stream snapshots instead of ap
   assert.notEqual(tool.outputText, `${firstSnapshot}${secondSnapshot}`)
 })
 
+test('realtime task stream v2 deltas merge launch patches into keyed state without appending output JSON', () => {
+  const state = bootstrappedState()
+  const firstPatch = JSON.stringify({
+    path_id: 'tool.task.stream.v2',
+    stream_version: 2,
+    tool: 'task',
+    status: 'running',
+    launch_count: 2,
+    task_call_id: 'call-task',
+    launch_key: 'child-1',
+    launch_index: 1,
+    launch: {
+      launch_key: 'child-1',
+      launch_index: 1,
+      child_session_id: 'child-1',
+      status: 'running',
+      subagent: 'explorer',
+    },
+  })
+  const secondPatch = JSON.stringify({
+    path_id: 'tool.task.stream.v2',
+    stream_version: 2,
+    tool: 'task',
+    status: 'running',
+    launch_count: 2,
+    task_call_id: 'call-task',
+    launch_key: 'child-1',
+    launch_index: 1,
+    launch: {
+      launch_key: 'child-1',
+      launch_index: 1,
+      child_session_id: 'child-1',
+      status: 'running',
+      subagent: 'explorer',
+      current_tool: 'search',
+    },
+  })
+  const thirdPatch = JSON.stringify({
+    path_id: 'tool.task.stream.v2',
+    stream_version: 2,
+    tool: 'task',
+    status: 'running',
+    launch_count: 2,
+    task_call_id: 'call-task',
+    launch_key: 'child-2',
+    launch_index: 2,
+    launch: {
+      launch_key: 'child-2',
+      launch_index: 2,
+      child_session_id: 'child-2',
+      status: 'running',
+      subagent: 'parallel',
+    },
+  })
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.started', {
+      call_id: 'call-task',
+      step_id: 'step-task',
+      tool_instance_id: 'tool-instance-task',
+      tool_name: 'task',
+      arguments: '{"action":"spawn"}',
+    }, 5, 'cursor-task-start'),
+  })
+  for (const [index, output] of [firstPatch, secondPatch, thirdPatch].entries()) {
+    applyRealtimeFrame(state, {
+      frame: deltaFrame('session.tool.delta', {
+        call_id: 'call-task',
+        tool_name: 'task',
+        output,
+      }, 6 + index, `cursor-task-v2-delta-${index}`),
+    })
+  }
+
+  const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-task']
+  assert.equal(tool.outputText, undefined)
+  assert.deepEqual(tool.taskStream?.launchOrder, ['child-1', 'child-2'])
+  assert.equal(tool.taskStream?.launchesByKey['child-1']?.current_tool, 'search')
+  assert.equal(tool.taskStream?.launchesByKey['child-2']?.subagent, 'parallel')
+})
+
 test('restored assistant delta with old seq is ignored', () => {
   const state = bootstrappedState()
   state.liveRunsBySession[sessionA.id] = {

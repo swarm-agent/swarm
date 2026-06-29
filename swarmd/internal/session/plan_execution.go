@@ -506,9 +506,62 @@ func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionS
 			return summary
 		}
 	}
+	if planFinalReviewPending(doc) {
+		checkpointID := finalPlanReviewCheckpointID(doc)
+		if checkpointID != "" {
+			summary.NextCheckpointID = checkpointID
+			if idx := findPlanCheckpointIndex(doc.Checkpoints, checkpointID); idx >= 0 {
+				summary.NextCheckpointStatus = normalizePlanCheckpointStatusForSave(doc.Checkpoints[idx].Status)
+			}
+		}
+		summary.ReviewRequired = true
+		summary.AutoAdvanceAllowed = false
+		summary.StopReason = PlanCheckpointStatusNeedsReview
+		return summary
+	}
 	summary.PlanComplete = true
 	summary.AutoAdvanceAllowed = false
 	return summary
+}
+
+func planFinalReviewPending(doc *pebblestore.SessionPlanDocument) bool {
+	if doc == nil || doc.ExecutionState == nil {
+		return false
+	}
+	if normalizePlanExecutionStateStatus(doc.ExecutionState.Status) != PlanExecutionStateWaitingReview {
+		return false
+	}
+	return allPlanCheckpointsCompleted(doc.Checkpoints)
+}
+
+func allPlanCheckpointsCompleted(checkpoints []pebblestore.SessionPlanCheckpoint) bool {
+	if len(checkpoints) == 0 {
+		return false
+	}
+	for _, checkpoint := range checkpoints {
+		if normalizePlanCheckpointStatusForSave(checkpoint.Status) != PlanCheckpointStatusCompleted {
+			return false
+		}
+	}
+	return true
+}
+
+func finalPlanReviewCheckpointID(doc *pebblestore.SessionPlanDocument) string {
+	if doc == nil {
+		return ""
+	}
+	if active := strings.TrimSpace(doc.ActiveCheckpointID); active != "" {
+		return active
+	}
+	if doc.ExecutionState != nil {
+		if last := strings.TrimSpace(doc.ExecutionState.LastCheckpointID); last != "" {
+			return last
+		}
+	}
+	if len(doc.Checkpoints) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(doc.Checkpoints[len(doc.Checkpoints)-1].ID)
 }
 
 func planCheckpointReviewPending(policy pebblestore.SessionPlanExecutionPolicy, checkpoint pebblestore.SessionPlanCheckpoint, hasLaterCheckpoint bool) bool {
@@ -757,10 +810,16 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 			decision.NextCheckpointID = summary.NextCheckpointID
 			decision.AutoAdvanceAllowed = summary.AutoAdvanceAllowed
 		} else if summary.PlanComplete {
-			doc.ActiveCheckpointID = ""
-			decision.PlanComplete = true
-			doc.ExecutionState.Status = PlanExecutionStateCompleted
-			doc.ExecutionState.CompletedAt = options.CompletedAt
+			doc.ActiveCheckpointID = checkpointID
+			decision.ReviewRequired = true
+			decision.StopReason = PlanCheckpointStatusNeedsReview
+			doc.ExecutionState.Status = PlanExecutionStateWaitingReview
+			if checkpoint.Review == nil {
+				checkpoint.Review = &pebblestore.SessionPlanCheckpointReview{}
+			}
+			if normalizePlanCheckpointReviewStatus(checkpoint.Review.Status) != PlanCheckpointReviewStatusApproved {
+				checkpoint.Review.Status = PlanCheckpointReviewStatusPending
+			}
 		}
 	case PlanCheckpointStatusNeedsReview:
 		doc.ActiveCheckpointID = checkpointID
@@ -822,6 +881,17 @@ func ApplyPlanCheckpointReviewAcceptance(doc *pebblestore.SessionPlanDocument, o
 	doc.ExecutionState.LastOutcome = PlanCheckpointStatusCompleted
 	if options.ReviewedAt > 0 {
 		doc.ExecutionState.UpdatedAt = options.ReviewedAt
+	}
+	if allPlanCheckpointsCompleted(doc.Checkpoints) {
+		doc.ActiveCheckpointID = ""
+		doc.ExecutionState.Status = PlanExecutionStateCompleted
+		doc.ExecutionState.ActiveAttemptID = ""
+		doc.ExecutionState.CurrentRunID = ""
+		doc.ExecutionState.CurrentSessionID = ""
+		if options.ReviewedAt > 0 {
+			doc.ExecutionState.CompletedAt = options.ReviewedAt
+		}
+		return SummarizePlanExecution(doc), nil
 	}
 	summary := SummarizePlanExecution(doc)
 	if summary.PlanComplete {

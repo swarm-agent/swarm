@@ -39,7 +39,8 @@ const (
 //     external dependency/input is required; mark_failed means execution failed.
 //   - needs_review, blocked, and failed always stop. Auto-continue only applies
 //     to completed non-final checkpoints under the automatic continuation
-//     policy. Final completion marks plan execution completed.
+//     policy. Final completion leaves all checkpoints completed and pauses plan
+//     execution in waiting_review until user acceptance marks the plan complete.
 //   - Accept & Continue approves a waiting-review checkpoint and re-enters
 //     Start/Continue for the next checkpoint with fresh context.
 //   - Retry/Restart from zero clears the selected checkpoint attempt/run/review
