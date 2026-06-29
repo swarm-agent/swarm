@@ -506,7 +506,7 @@ export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): 
         message_count: 0,
         last_message_at: record.discoveredAt ?? 0,
       }
-  const runIntent = desktopRunIntentFromV3(row.currentRunIntent ?? Object.values(row.runIntents)[0])
+  const runIntent = desktopRunIntentFromV3(row.currentRunIntent)
   const runIntentActive = runIntent ? ['pending_executor', 'running', 'dispatch_blocked'].includes(runIntent.status) : false
   const runIntentBlocked = runIntent?.status === 'dispatch_blocked'
   const pendingPermissionCount = row.pendingPermissionCount
