@@ -7,7 +7,7 @@ Canonical locations:
 - `swarmd/internal/fff/`
 
 Contents:
-- `include/fff.h` — upstream generated C header from `dmtrKovalenko/fff.nvim`
+- `include/fff.h` — upstream generated C header from `dmtrKovalenko/fff`
 - `lib/linux-amd64-gnu/libfff_c.so` — vendored Linux x86_64 glibc C library release asset
 - `fff.go` — Go cgo wrapper used by Swarm and by `cmd/fffprobe`
 
@@ -16,10 +16,11 @@ Contents:
 - Vendored runtime target in this repo: Linux amd64 glibc (`c-lib-x86_64-unknown-linux-gnu.so` upstream asset)
 - Wrapper exposes:
   - create/destroy/wait for scan
-  - file search
+  - file search and glob-only file search
   - grep
   - multi-grep
   - scan progress / rescan / restart index
+  - base path, scan state, watcher readiness wait
   - git refresh
   - query tracking / historical query lookup
   - health check
@@ -34,7 +35,7 @@ Use the checked-in helper:
 ```
 
 What it does:
-1. Resolves the requested or latest GitHub release tag from `dmtrKovalenko/fff.nvim`
+1. Resolves the requested tag or latest chronological GitHub release tag from `dmtrKovalenko/fff`
 2. Downloads the raw upstream header from `crates/fff-c/include/fff.h`
 3. Downloads the release asset `c-lib-x86_64-unknown-linux-gnu.so`
 4. Verifies the upstream `.sha256`

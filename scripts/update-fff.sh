@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="dmtrKovalenko/fff.nvim"
+REPO="dmtrKovalenko/fff"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ROOT_DIR="$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)"
 ASSET_NAME="c-lib-x86_64-unknown-linux-gnu.so"
@@ -27,7 +27,7 @@ resolve_tag() {
   fi
 
   local api tag
-  api="https://api.github.com/repos/${REPO}/releases/latest"
+  api="https://api.github.com/repos/${REPO}/releases?per_page=20"
   tag="$({ curl -fsSL "$api" | sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1; } || true)"
   if [ -z "$tag" ]; then
     echo "failed to resolve latest FFF release tag from ${api}" >&2
