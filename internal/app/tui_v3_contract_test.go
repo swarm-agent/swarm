@@ -129,20 +129,19 @@ func TestTUIOpenSessionHydratesFromV3BeforeOpeningChat(t *testing.T) {
 		t.Fatalf("hydrated summary = %+v, ok=%v", summary, ok)
 	}
 	subs := app.tuiSessionStore.DesiredSubscriptions(app.tuiRealtimeClientID)
-	if len(subs) != 1 || subs[0].SessionID != "session-1" || subs[0].EndpointCursor != "cursor-hydrated" || subs[0].LastSeq != 7 || subs[0].SubscriptionID != "tui:test:session:session-1" {
+	if len(subs) != 1 || subs[0].SessionID != "session-1" || subs[0].EndpointCursor != "" || subs[0].LastSeq != 7 || subs[0].SubscriptionID != "tui:test:session:session-1" {
 		t.Fatalf("realtime direct session subscriptions = %+v", subs)
+	}
+	if got := app.tuiSessionStore.EndpointCursor(); got != "" {
+		t.Fatalf("direct TUI hydration set endpoint cursor = %q, want empty until TUI workset bootstrap", got)
 	}
 	fakeController := newTestTUIRealtimeController(fake, app.tuiRealtimeFrames, app.tuiRealtimeStatuses)
 	app.tuiRealtime = fakeController
-	if err := app.reconcileTUIRealtime(); err != nil {
-		t.Fatalf("reconcileTUIRealtime() error = %v", err)
+	if err := app.reconcileTUIRealtime(); err == nil || !strings.Contains(err.Error(), "endpoint cursor") {
+		t.Fatalf("reconcileTUIRealtime() error = %v, want missing endpoint cursor", err)
 	}
-	call := waitTUIRealtimeCall(t, fake)
-	if call.EndpointCursor != "cursor-hydrated" || len(call.Subscriptions) != 1 || call.Subscriptions[0].SessionID != "session-1" || call.Subscriptions[0].LastSeq != 7 {
-		t.Fatalf("direct realtime subscription call = %#v", call)
-	}
-	if len(call.Worksets) != 1 || call.Worksets[0].Selector.WorkspacePath != testWorkspacePath {
-		t.Fatalf("workset realtime subscription call = %#v", call)
+	if len(fake.calls) != 0 {
+		t.Fatalf("direct hydration started realtime without TUI workset cursor: %#v", fake.calls)
 	}
 	if app.tuiRealtime != nil {
 		app.tuiRealtime.Stop()
@@ -157,6 +156,21 @@ func TestTUIChatPageSendUsesNativeV3MessageMutationAndRealtimeStore(t *testing.T
 	messageRequests := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/tui/sessions:workset":
+			var req client.SessionV3TUIWorksetRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode TUI workset request: %v", err)
+			}
+			if len(req.SessionIDs) != 1 || req.SessionIDs[0] != "session-1" {
+				t.Fatalf("TUI workset request session_ids = %#v, want session-1", req.SessionIDs)
+			}
+			_ = json.NewEncoder(w).Encode(client.SessionV3Workset{
+				OK:                     true,
+				SnapshotEndpointCursor: "cursor-workset",
+				SessionsByID:           map[string]client.SessionSummary{"session-1": {ID: "session-1", WorkspacePath: testWorkspacePath, Title: "Native V3", SessionAPI: "v3"}},
+				ProjectionsBySession:   map[string]client.SessionV3Projection{"session-1": {SessionID: "session-1", LastEventSeq: 1}},
+				SessionOrder:           []string{"session-1"},
+			})
 		case r.Method == http.MethodPost && r.URL.Path == "/v3/sessions/session-1/messages":
 			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -189,12 +203,28 @@ func TestTUIChatPageSendUsesNativeV3MessageMutationAndRealtimeStore(t *testing.T
 	}))
 	defer server.Close()
 
+	fakeRealtime := newTUIRealtimeFakeStreamer()
+	fakeRealtime.handler = func(index int, ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
+		if options.OnResumeSent != nil {
+			options.OnResumeSent()
+		}
+		<-ctx.Done()
+		return nil
+	}
+	frames := make(chan client.V3RealtimeFrame, 8)
+	statuses := make(chan tuiRealtimeStatus, 8)
 	app := &App{
 		api:                 testAPIWithToken(server.URL),
+		startupCWD:          testWorkspacePath,
+		workspacePath:       testWorkspacePath,
 		tuiSessionStore:     newTUISessionStore(),
+		tuiRealtime:         newTestTUIRealtimeController(fakeRealtime, frames, statuses),
 		tuiRealtimeClientID: "tui:test",
+		tuiRealtimeFrames:   frames,
+		tuiRealtimeStatuses: statuses,
 		homeModel:           model.HomeModel{RecentSessions: []model.SessionSummary{{ID: "session-1", Title: "Native V3", WorkspacePath: testWorkspacePath, SessionAPI: "v3"}}},
 	}
+	defer app.tuiRealtime.Stop()
 	app.chat = ui.NewChatPage(ui.ChatPageOptions{
 		SessionID:      "session-1",
 		SessionTitle:   "Native V3",
@@ -214,6 +244,11 @@ func TestTUIChatPageSendUsesNativeV3MessageMutationAndRealtimeStore(t *testing.T
 	case req := <-messageRequests:
 		if req["content"] != "hello v3" || req["role"] != "user" {
 			t.Fatalf("v3 message request = %#v", req)
+		}
+		for _, key := range []string{"client_request_id", "message_id", "run_id"} {
+			if value, ok := req[key].(string); !ok || strings.TrimSpace(value) == "" {
+				t.Fatalf("v3 message request missing explicit %s: %#v", key, req)
+			}
 		}
 		if metadata, ok := req["metadata"].(map[string]any); ok {
 			for _, key := range []string{"agent_name", "target_kind", "target_name"} {

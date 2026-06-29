@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/google/uuid"
 
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/ui"
@@ -59,7 +60,7 @@ func (a *App) drainTUIRealtimeQueues() {
 	}
 }
 
-func (a *App) canUseCachedTUIWorkset(state tuiRealtimeWorksetState) bool {
+func (a *App) canUseCachedTUIWorkset(state tuiRealtimeWorksetState, sessionIDs []string) bool {
 	if a == nil || a.tuiSessionStore == nil {
 		return false
 	}
@@ -69,15 +70,70 @@ func (a *App) canUseCachedTUIWorkset(state tuiRealtimeWorksetState) bool {
 	if a.tuiSessionStore.EndpointCursor() == "" {
 		return false
 	}
-	return !a.tuiSessionStore.StaleState().Stale
+	if a.tuiSessionStore.StaleState().Stale {
+		return false
+	}
+	if len(trimTUIRealtimeStrings(sessionIDs)) == 0 {
+		return true
+	}
+	workset := a.tuiSessionStore.WorksetSnapshot()
+	for _, id := range trimTUIRealtimeStrings(sessionIDs) {
+		if _, ok := workset.SessionsByID[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *App) ensureTUIRealtimeWorksetReady(ctx context.Context, opts tuiSessionWorksetLoadOptions) error {
+	if a == nil || a.api == nil {
+		return errors.New("api client is not configured")
+	}
+	state, err := tuiRealtimeWorksetStateFromOptions(opts)
+	if err != nil {
+		return err
+	}
+	if a.tuiSessionStore == nil {
+		a.tuiSessionStore = newTUISessionStore()
+	}
+	if a.canUseCachedTUIWorkset(state, opts.SessionIDs) {
+		return nil
+	}
+	previousScope := strings.TrimSpace(a.tuiRealtimeWorkset.ScopeKey)
+	workset, state, err := a.bootstrapTUIRealtimeWorkset(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if previousScope != "" && previousScope == strings.TrimSpace(state.ScopeKey) && !a.tuiSessionStore.StaleState().ScopeChanged {
+		a.tuiSessionStore.MergeWorkset(workset)
+	} else {
+		a.tuiSessionStore.ResetFromWorkset(workset)
+	}
+	a.tuiRealtimeWorkset = cloneTUIRealtimeWorksetState(state)
+	a.applyTUISessionStoreToHome()
+	return nil
 }
 
 func (a *App) reconcileTUIRealtime() error {
+	return a.reconcileTUIRealtimeWithContext(nil, false)
+}
+
+func (a *App) waitForTUIRealtimeReady(ctx context.Context) error {
+	return a.reconcileTUIRealtimeWithContext(ctx, true)
+}
+
+func (a *App) reconcileTUIRealtimeWithContext(ctx context.Context, wait bool) error {
 	if a == nil || a.api == nil || a.tuiSessionStore == nil {
+		if wait {
+			return errors.New("tui realtime requires session store before sending")
+		}
 		return nil
 	}
 	state := a.tuiRealtimeWorkset
 	if strings.TrimSpace(state.ScopeKey) == "" {
+		if wait {
+			return errors.New("tui realtime requires a workset subscription before sending")
+		}
 		return nil
 	}
 	cursor := a.tuiSessionStore.EndpointCursor()
@@ -95,15 +151,30 @@ func (a *App) reconcileTUIRealtime() error {
 	}
 	a.tuiRealtime.SetWake(a.requestStreamReadyInterrupt)
 	workset := a.tuiRealtimeWorksetSubscription(state)
-	return a.tuiRealtime.Reconcile(a.tuiSessionStore.DesiredSubscriptions(a.tuiRealtimeClientID), []client.V3RealtimeWorksetSubscription{workset}, cursor)
+	subscriptions := a.tuiSessionStore.DesiredSubscriptions(a.tuiRealtimeClientID)
+	worksets := []client.V3RealtimeWorksetSubscription{workset}
+	if wait {
+		return a.tuiRealtime.ReconcileAndWait(ctx, subscriptions, worksets, cursor)
+	}
+	return a.tuiRealtime.Reconcile(subscriptions, worksets, cursor)
 }
 
 func (a *App) sendTUIV3ChatMessage(ctx context.Context, sessionID string, req ui.ChatSendRequest) (client.SessionV3MessageResult, error) {
 	if a == nil || a.api == nil {
 		return client.SessionV3MessageResult{}, errors.New("api client is not configured")
 	}
-	result, err := a.api.SendSessionV3Message(ctx, sessionID, client.SessionV3MessageOptions{Role: "user", Content: req.Prompt, Metadata: tuiV3ChatSendMetadata(req)})
+	if err := a.ensureTUIRealtimeWorksetReady(ctx, a.tuiSessionWorksetOptionsForRealtime(sessionID)); err != nil {
+		return client.SessionV3MessageResult{}, err
+	}
+	if err := a.waitForTUIRealtimeReady(ctx); err != nil {
+		return client.SessionV3MessageResult{}, err
+	}
+	op := newTUIV3MessageOperation(sessionID)
+	result, err := a.api.SendSessionV3Message(ctx, sessionID, client.SessionV3MessageOptions{ClientRequestID: op.ClientRequestID, MessageID: op.MessageID, RunID: op.RunID, Role: "user", Content: req.Prompt, Metadata: tuiV3ChatSendMetadata(req)})
 	if err != nil {
+		return client.SessionV3MessageResult{}, err
+	}
+	if err := validateTUIV3MessageAccepted(result); err != nil {
 		return client.SessionV3MessageResult{}, err
 	}
 	if a.tuiSessionStore == nil {
@@ -120,6 +191,55 @@ func (a *App) sendTUIV3ChatMessage(ctx context.Context, sessionID string, req ui
 		return client.SessionV3MessageResult{}, err
 	}
 	return result, nil
+}
+
+func (a *App) tuiSessionWorksetOptionsForRealtime(sessionID string) tuiSessionWorksetLoadOptions {
+	if a == nil {
+		return tuiSessionWorksetLoadOptions{}
+	}
+	if state := cloneTUIRealtimeWorksetState(a.tuiRealtimeWorkset); strings.TrimSpace(state.ScopeKey) != "" {
+		return tuiSessionWorksetLoadOptions{Limit: homeRecentSessionLimit, SessionIDs: []string{strings.TrimSpace(sessionID)}, WorkspacePaths: state.WorkspacePaths, CWDPath: state.CWDPath}
+	}
+	if workspacePath := normalizePath(strings.TrimSpace(a.activeWorkspacePath())); workspacePath != "" {
+		return tuiSessionWorksetLoadOptions{Limit: homeRecentSessionLimit, SessionIDs: []string{strings.TrimSpace(sessionID)}, WorkspacePaths: []string{workspacePath}}
+	}
+	if contextPath := normalizePath(strings.TrimSpace(a.activeContextPath())); contextPath != "" {
+		return tuiSessionWorksetLoadOptions{Limit: homeRecentSessionLimit, SessionIDs: []string{strings.TrimSpace(sessionID)}, CWDPath: contextPath}
+	}
+	if startupCWD := normalizePath(strings.TrimSpace(a.startupCWD)); startupCWD != "" {
+		return tuiSessionWorksetLoadOptions{Limit: homeRecentSessionLimit, SessionIDs: []string{strings.TrimSpace(sessionID)}, CWDPath: startupCWD}
+	}
+	return tuiSessionWorksetLoadOptions{Limit: homeRecentSessionLimit, SessionIDs: []string{strings.TrimSpace(sessionID)}}
+}
+
+type tuiV3MessageOperation struct {
+	OperationID     string
+	ClientRequestID string
+	MessageID       string
+	RunID           string
+}
+
+func newTUIV3MessageOperation(sessionID string) tuiV3MessageOperation {
+	sessionID = strings.TrimSpace(sessionID)
+	operationID := strings.ReplaceAll(uuid.NewString(), "-", "")
+	return tuiV3MessageOperation{
+		OperationID:     operationID,
+		ClientRequestID: fmt.Sprintf("tui-v3-existing-message:%s:%s", sessionID, operationID),
+		MessageID:       "tui-v3-message:" + operationID,
+		RunID:           "tui-v3-run:" + operationID,
+	}
+}
+
+func validateTUIV3MessageAccepted(result client.SessionV3MessageResult) error {
+	status := strings.ToLower(strings.TrimSpace(result.RunIntent.Status))
+	switch status {
+	case "accepted", "pending_executor":
+		return nil
+	case "":
+		return errors.New("tui v3 chat run was not accepted: missing phase")
+	default:
+		return fmt.Errorf("tui v3 chat run was not accepted: %s", status)
+	}
 }
 
 func tuiV3ChatSendMetadata(req ui.ChatSendRequest) map[string]any {
@@ -370,6 +490,7 @@ func (a *App) bootstrapTUIRealtimeWorkset(ctx context.Context, opts tuiSessionWo
 		opts.Limit = homeRecentSessionLimit
 	}
 	workset, err := a.api.GetSessionV3TUIWorkset(ctx, client.SessionV3TUIWorksetRequest{
+		SessionIDs: trimTUIRealtimeStrings(opts.SessionIDs),
 		Scope: client.SessionV3TUIWorksetScope{
 			WorkspacePaths: append([]string(nil), state.WorkspacePaths...),
 			CWDPath:        state.CWDPath,

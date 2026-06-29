@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
@@ -523,6 +524,112 @@ func TestStreamSessionV3WebSocketDeliversCursorErrorWithoutClosing(t *testing.T)
 	}
 }
 
+func TestSendSessionV3MessageIncludesExplicitOperationIDs(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v3/sessions/session-v3/messages" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode message request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":         true,
+			"session":    map[string]any{"id": "session-v3", "workspace_path": "/workspace", "workspace_name": "workspace", "title": "V3", "mode": "auto"},
+			"projection": map[string]any{"session_id": "session-v3", "last_event_seq": 3, "projection_high_watermark_seq": 3},
+			"message":    map[string]any{"id": "msg-explicit", "session_id": "session-v3", "global_seq": 3, "role": "user", "content": "hi"},
+			"run_intent": map[string]any{"session_id": "session-v3", "run_id": "run-explicit", "status": "pending_executor", "event_seq": 3},
+		})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	_, err := api.SendSessionV3Message(context.Background(), "session-v3", SessionV3MessageOptions{
+		ClientRequestID: "client-request-explicit",
+		MessageID:       "message-explicit",
+		RunID:           "run-explicit",
+		Content:         "hi",
+	})
+	if err != nil {
+		t.Fatalf("SendSessionV3Message() error = %v", err)
+	}
+	if body["client_request_id"] != "client-request-explicit" || body["message_id"] != "message-explicit" || body["run_id"] != "run-explicit" {
+		t.Fatalf("explicit operation IDs not serialized: %#v", body)
+	}
+}
+
+func TestStreamV3RealtimeOnResumeSentFiresAfterResumeWrite(t *testing.T) {
+	resumeRead := make(chan struct{})
+	resumeCallback := make(chan struct{})
+	releaseServer := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v3/realtime/stream" {
+			t.Fatalf("websocket path = %s %s, want GET /v3/realtime/stream", r.Method, r.URL.Path)
+		}
+		conn, rw, err := hijackLifecycleTestWebsocket(w, r)
+		if err != nil {
+			t.Fatalf("hijack websocket: %v", err)
+		}
+		defer conn.Close()
+		_, payload, err := readClientLifecycleTestFrame(rw)
+		if err != nil {
+			t.Fatalf("read resume frame: %v", err)
+		}
+		var resume map[string]any
+		if err := json.Unmarshal(payload, &resume); err != nil {
+			t.Fatalf("decode resume: %v", err)
+		}
+		if resume["kind"] != "resume" || resume["endpoint_cursor"] != "cursor-workset" {
+			t.Fatalf("resume frame = %#v", resume)
+		}
+		close(resumeRead)
+		<-releaseServer
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- api.StreamV3Realtime(ctx, V3RealtimeResumeOptions{
+			EndpointCursor: "cursor-workset",
+			Surface:        "tui",
+			Worksets: []V3RealtimeWorksetSubscription{{
+				WorksetID:             "tui:workspace:/repo",
+				SubscriptionID:        "tui:test:workset:workspace:/repo",
+				Surface:               "tui",
+				Selector:              V3RealtimeWorksetSelector{Kind: "workspace", WorkspacePath: "/repo"},
+				AutoSubscribeSessions: true,
+			}},
+			OnResumeSent: func() { close(resumeCallback) },
+		}, func(frame V3RealtimeFrame) {})
+	}()
+
+	select {
+	case <-resumeCallback:
+	case <-time.After(time.Second):
+		t.Fatal("OnResumeSent did not fire after writing the resume frame")
+	}
+	select {
+	case <-resumeRead:
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive resume frame before OnResumeSent fired")
+	}
+	cancel()
+	close(releaseServer)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("StreamV3Realtime() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("StreamV3Realtime did not return after cancel")
+	}
+}
+
 func TestStreamSessionsV3RealtimeResumeFrameIncludesWorksetSelector(t *testing.T) {
 	var gotPath, gotQuery string
 	var resume map[string]any
@@ -594,5 +701,33 @@ func TestStreamSessionsV3RealtimeResumeFrameIncludesWorksetSelector(t *testing.T
 	}
 	if cursor := resume["endpoint_cursor"].(string); cursor == "" {
 		t.Fatalf("resume endpoint cursor is empty: %#v", resume)
+	}
+}
+
+func TestNormalizeV3RealtimeResumeOptionsPreservesOnResumeSent(t *testing.T) {
+	called := false
+	callback := func() { called = true }
+	normalized, cursor, err := normalizeV3RealtimeResumeOptions(V3RealtimeResumeOptions{
+		EndpointCursor: " cursor-1 ",
+		Surface:        " tui ",
+		Subscriptions: []V3RealtimeSubscription{{
+			SessionID:      " session-1 ",
+			EndpointCursor: " cursor-1 ",
+			SubscriptionID: " sub-1 ",
+		}},
+		OnResumeSent: callback,
+	})
+	if err != nil {
+		t.Fatalf("normalizeV3RealtimeResumeOptions() error = %v", err)
+	}
+	if cursor != "cursor-1" || normalized.EndpointCursor != "cursor-1" || normalized.Surface != "tui" {
+		t.Fatalf("normalized cursor/surface = %q/%q/%q", cursor, normalized.EndpointCursor, normalized.Surface)
+	}
+	if normalized.OnResumeSent == nil {
+		t.Fatalf("OnResumeSent was not preserved")
+	}
+	normalized.OnResumeSent()
+	if !called {
+		t.Fatalf("normalized OnResumeSent callback did not invoke original callback")
 	}
 }

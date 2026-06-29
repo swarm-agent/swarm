@@ -156,11 +156,6 @@ func (s *tuiSessionStore) MergeMessageResult(result client.SessionV3MessageResul
 			s.workset.SessionsByID[sessionID] = session
 		}
 	}
-	if result.RealtimeOutbox != nil {
-		if cursor := strings.TrimSpace(result.RealtimeOutbox.EndpointCursor); cursor != "" {
-			s.workset.SnapshotEndpointCursor = cursor
-		}
-	}
 	if summary, ok := s.workset.SessionsByID[sessionID]; ok {
 		if strings.TrimSpace(summary.SessionAPI) == "" {
 			summary.SessionAPI = "v3"
@@ -185,12 +180,13 @@ func (s *tuiSessionStore) ApplyRealtimeFrame(frame client.V3RealtimeFrame) tuiSe
 	defer s.mu.Unlock()
 	kind := strings.ToLower(strings.TrimSpace(frame.Kind))
 	sessionID := firstNonEmpty(strings.TrimSpace(frame.SessionID), frameSessionID(frame))
-	if cursor := strings.TrimSpace(frame.EndpointCursor); cursor != "" {
+	if tuiRealtimeFrameIsTerminal(frame) {
+		return s.markStaleLocked(sessionID, tuiRealtimeFrameTerminalReason(frame))
+	}
+	if cursor := strings.TrimSpace(frame.EndpointCursor); cursor != "" && tuiRealtimeFrameCanAdvanceEndpointCursor(kind) {
 		s.workset.SnapshotEndpointCursor = cursor
 	}
 	switch kind {
-	case tuiRealtimeKindCursorError, tuiRealtimeKindAuthDenied, tuiRealtimeKindSlowConsumer, tuiRealtimeKindSessionGap:
-		return s.markStaleLocked(sessionID, tuiRealtimeFrameTerminalReason(frame))
 	case "workset.session.discovered", "workset.session.updated":
 		return s.applyWorksetSessionFrameLocked(frame)
 	case "workset.session.removed":
@@ -214,6 +210,25 @@ func (s *tuiSessionStore) ApplyRealtimeFrame(frame client.V3RealtimeFrame) tuiSe
 		return s.applyEventFrameLocked(frame, sessionID)
 	default:
 		return tuiSessionStoreApplyResult{}
+	}
+}
+
+func tuiRealtimeFrameCanAdvanceEndpointCursor(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case tuiRealtimeKindEvent,
+		"endpoint.watermark",
+		"workset.session.discovered",
+		"workset.session.updated",
+		"workset.session.removed",
+		"projection.high_watermark",
+		"replay.started",
+		"replay.complete",
+		"hello",
+		"keepalive",
+		"":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -346,6 +361,15 @@ func (s *tuiSessionStore) EndpointCursor() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return strings.TrimSpace(s.workset.SnapshotEndpointCursor)
+}
+
+func (s *tuiSessionStore) WorksetSnapshot() client.SessionV3Workset {
+	if s == nil {
+		return client.SessionV3Workset{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneSessionV3Workset(s.workset)
 }
 
 func (s *tuiSessionStore) NeedsHydration(sessionID string) bool {
@@ -693,9 +717,6 @@ func (s *tuiSessionStore) mergeHydratedLocked(hydrated client.SessionV3Hydrated)
 		s.workset.PlansBySession[sessionID] = []client.SessionPlan{*hydrated.ActivePlan}
 	}
 	s.workset.PlanRevisionsBySession[sessionID] = cloneSessionPlans(hydrated.PlanRevisions)
-	if cursor := strings.TrimSpace(hydrated.SnapshotEndpointCursor); cursor != "" {
-		s.workset.SnapshotEndpointCursor = cursor
-	}
 	s.hydratedSessions[sessionID] = true
 }
 

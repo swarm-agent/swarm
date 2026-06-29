@@ -4444,6 +4444,7 @@ func (a *App) loadTUISessionWorksetForPath(ctx context.Context, limit int, path 
 
 type tuiSessionWorksetLoadOptions struct {
 	Limit           int
+	SessionIDs      []string
 	WorkspacePaths  []string
 	CWDPath         string
 	BeforeUpdatedAt *int64
@@ -4463,6 +4464,7 @@ func (a *App) loadTUISessionWorkset(ctx context.Context, opts tuiSessionWorksetL
 		return client.SessionV3Workset{}, err
 	}
 	return a.api.GetSessionV3TUIWorkset(ctx, client.SessionV3TUIWorksetRequest{
+		SessionIDs: trimTUIRealtimeStrings(opts.SessionIDs),
 		Scope: client.SessionV3TUIWorksetScope{
 			WorkspacePaths: append([]string(nil), state.WorkspacePaths...),
 			CWDPath:        state.CWDPath,
@@ -7770,19 +7772,13 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		cwdSessionScope = contextPath
 	}
 	sessionWorksetOptions := tuiSessionWorksetLoadOptions{Limit: homeRecentSessionLimit, WorkspacePaths: sessionScopePaths, CWDPath: cwdSessionScope}
-	realtimeWorksetState, sessionsErr := tuiRealtimeWorksetStateFromOptions(sessionWorksetOptions)
-	var sessionWorkset client.SessionV3Workset
+	_, sessionsErr := tuiRealtimeWorksetStateFromOptions(sessionWorksetOptions)
 	var sessionSummaries []model.SessionSummary
 	loadedSessionWorkset := false
 	if sessionsErr == nil {
-		if a.canUseCachedTUIWorkset(realtimeWorksetState) {
+		if sessionsErr = a.ensureTUIRealtimeWorksetReady(ctx, sessionWorksetOptions); sessionsErr == nil {
 			sessionSummaries = a.tuiSessionStore.HomeSessions()
-		} else {
-			sessionWorkset, realtimeWorksetState, sessionsErr = a.bootstrapTUIRealtimeWorkset(ctx, sessionWorksetOptions)
-			if sessionsErr == nil {
-				sessionSummaries = modelSessionSummariesFromTUIWorkset(sessionWorkset)
-				loadedSessionWorkset = true
-			}
+			loadedSessionWorkset = true
 		}
 	}
 
@@ -7888,14 +7884,12 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		}
 		next.BackgroundSessions = backgroundSessionSummariesForSessions(next.RecentSessions, next.BackgroundSessions)
 		if loadedSessionWorkset {
-			a.applyTUISessionWorksetSnapshot(sessionWorkset, realtimeWorksetState)
-		}
-		if loadedSessionWorkset {
+			worksetSnapshot := a.tuiSessionStore.WorksetSnapshot()
 			a.sessionWorksetPagination = tuiSessionWorksetPagination{
-				NextBeforeUpdatedAt: sessionWorkset.Pagination.NextBeforeUpdatedAt,
-				NextBeforeSessionID: strings.TrimSpace(sessionWorkset.Pagination.NextBeforeSessionID),
-				HasMore:             sessionWorkset.Pagination.HasMore,
-				LoadedAt:            sessionWorkset.Watermarks.LoadedAt,
+				NextBeforeUpdatedAt: worksetSnapshot.Pagination.NextBeforeUpdatedAt,
+				NextBeforeSessionID: strings.TrimSpace(worksetSnapshot.Pagination.NextBeforeSessionID),
+				HasMore:             worksetSnapshot.Pagination.HasMore,
+				LoadedAt:            worksetSnapshot.Watermarks.LoadedAt,
 			}
 		}
 	} else {

@@ -121,6 +121,86 @@ func TestTUISessionStoreEndpointWatermarkAdvancesCursorWithoutMutatingLastSeq(t 
 	}
 }
 
+func TestTUISessionStoreMessageResultDoesNotReplaceTUIEndpointCursor(t *testing.T) {
+	store := newTUISessionStore()
+	store.ResetFromWorkset(client.SessionV3Workset{
+		SnapshotEndpointCursor: "v3c1.tui-signed",
+		SessionsByID:           map[string]client.SessionSummary{"a": {ID: "a", SessionAPI: "v3"}},
+		ProjectionsBySession:   map[string]client.SessionV3Projection{"a": {SessionID: "a", LastEventSeq: 12}},
+		SessionOrder:           []string{"a"},
+	})
+
+	result := store.MergeMessageResult(client.SessionV3MessageResult{
+		Session:    client.SessionSummary{ID: "a", SessionAPI: "v3"},
+		Projection: client.SessionV3Projection{SessionID: "a", LastEventSeq: 13},
+		Message:    client.SessionMessage{ID: "m1", SessionID: "a", Content: "hello"},
+		RealtimeOutbox: &client.SessionV3RealtimeOutboxRow{
+			EndpointCursor: "cursor-123",
+			SessionID:      "a",
+		},
+	})
+	if !result.Changed {
+		t.Fatalf("message result did not change store: %#v", result)
+	}
+	if got := store.EndpointCursor(); got != "v3c1.tui-signed" {
+		t.Fatalf("endpoint cursor = %q, want original TUI workset cursor", got)
+	}
+	subs := store.DesiredSubscriptions("tui:client")
+	if len(subs) != 1 || subs[0].SessionID != "a" || subs[0].EndpointCursor != "v3c1.tui-signed" || subs[0].LastSeq != 13 {
+		t.Fatalf("subscriptions after message result = %#v", subs)
+	}
+}
+
+func TestTUISessionStoreHydrationDoesNotReplaceTUIEndpointCursor(t *testing.T) {
+	store := newTUISessionStore()
+	store.ResetFromWorkset(client.SessionV3Workset{
+		SnapshotEndpointCursor: "v3c1.tui-signed",
+		SessionsByID:           map[string]client.SessionSummary{"a": {ID: "a", SessionAPI: "v3"}},
+		ProjectionsBySession:   map[string]client.SessionV3Projection{"a": {SessionID: "a", LastEventSeq: 12}},
+		SessionOrder:           []string{"a"},
+	})
+
+	store.MergeHydrated(client.SessionV3Hydrated{
+		Session:                client.SessionSummary{ID: "a", Title: "Hydrated", SessionAPI: "v3"},
+		Projection:             client.SessionV3Projection{SessionID: "a", LastEventSeq: 13},
+		SnapshotEndpointCursor: "desktop-like-cursor",
+		Messages:               []client.SessionMessage{{ID: "m1", SessionID: "a", Content: "hi"}},
+	})
+	if got := store.EndpointCursor(); got != "v3c1.tui-signed" {
+		t.Fatalf("endpoint cursor = %q, want original TUI workset cursor", got)
+	}
+	snapshot, ok := store.ChatSnapshot("a")
+	if !ok || !snapshot.Hydrated || snapshot.EndpointCursor != "v3c1.tui-signed" || len(snapshot.Messages) != 1 {
+		t.Fatalf("hydrated snapshot = %#v ok=%v", snapshot, ok)
+	}
+	subs := store.DesiredSubscriptions("tui:client")
+	if len(subs) != 1 || subs[0].SessionID != "a" || subs[0].EndpointCursor != "v3c1.tui-signed" || subs[0].LastSeq != 13 {
+		t.Fatalf("subscriptions after hydration = %#v", subs)
+	}
+}
+
+func TestTUISessionStoreTerminalRealtimeFrameDoesNotPoisonEndpointCursor(t *testing.T) {
+	store := newTUISessionStore()
+	store.ResetFromWorkset(client.SessionV3Workset{
+		SnapshotEndpointCursor: "v3c1.tui-signed",
+		SessionsByID:           map[string]client.SessionSummary{"a": {ID: "a", SessionAPI: "v3"}},
+		ProjectionsBySession:   map[string]client.SessionV3Projection{"a": {SessionID: "a", LastEventSeq: 12}},
+		SessionOrder:           []string{"a"},
+	})
+
+	result := store.ApplyRealtimeFrame(client.V3RealtimeFrame{Kind: tuiRealtimeKindCursorError, SessionID: "a", EndpointCursor: "cursor-error", Error: "forced cursor gap"})
+	if !result.NeedsRehydrate || result.Reason != "forced cursor gap" {
+		t.Fatalf("terminal frame result = %#v", result)
+	}
+	if got := store.EndpointCursor(); got != "v3c1.tui-signed" {
+		t.Fatalf("endpoint cursor = %q, want original TUI workset cursor", got)
+	}
+	subs := store.DesiredSubscriptions("tui:client")
+	if len(subs) != 1 || subs[0].EndpointCursor != "v3c1.tui-signed" || subs[0].LastSeq != 12 {
+		t.Fatalf("subscriptions after terminal frame = %#v", subs)
+	}
+}
+
 func TestTUISessionStoreRealtimeOrderingAndTerminalFrames(t *testing.T) {
 	store := newTUISessionStore()
 	store.ResetFromWorkset(client.SessionV3Workset{
@@ -149,9 +229,10 @@ func TestTUISessionStoreRealtimeOrderingAndTerminalFrames(t *testing.T) {
 func TestTUISessionStorePermissionAndHydrationState(t *testing.T) {
 	store := newTUISessionStore()
 	store.ResetFromWorkset(client.SessionV3Workset{
-		SessionsByID:         map[string]client.SessionSummary{"a": {ID: "a", SessionAPI: "v3"}},
-		ProjectionsBySession: map[string]client.SessionV3Projection{"a": {SessionID: "a", LastEventSeq: 1}},
-		SessionOrder:         []string{"a"},
+		SnapshotEndpointCursor: "v3c1.tui-signed",
+		SessionsByID:           map[string]client.SessionSummary{"a": {ID: "a", SessionAPI: "v3"}},
+		ProjectionsBySession:   map[string]client.SessionV3Projection{"a": {SessionID: "a", LastEventSeq: 1}},
+		SessionOrder:           []string{"a"},
 	})
 	if !store.NeedsHydration("a") {
 		t.Fatalf("new workset session should need hydration")
@@ -167,7 +248,7 @@ func TestTUISessionStorePermissionAndHydrationState(t *testing.T) {
 		t.Fatalf("hydrated session still needs hydration")
 	}
 	snapshot, ok := store.ChatSnapshot("a")
-	if !ok || !snapshot.Hydrated || len(snapshot.Messages) != 1 || len(snapshot.PendingPerms) != 1 || snapshot.EndpointCursor != "endpoint-hydrated" {
+	if !ok || !snapshot.Hydrated || len(snapshot.Messages) != 1 || len(snapshot.PendingPerms) != 1 || snapshot.EndpointCursor != "v3c1.tui-signed" {
 		t.Fatalf("hydrated snapshot = %#v ok=%v", snapshot, ok)
 	}
 	result := store.ApplyRealtimeFrame(realtimeEventFrame("a", 3, "permission.updated", map[string]any{"permission": map[string]any{"id": "p1", "session_id": "a", "status": "approved"}}))

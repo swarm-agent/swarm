@@ -64,6 +64,60 @@ func TestTUIRealtimeWorksetSubscriptionUsesWorkspacePathsForMultipleRoots(t *tes
 	}
 }
 
+func TestEnsureTUIRealtimeWorksetReadyBootstrapsWhenCursorMissing(t *testing.T) {
+	var worksetRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v3/tui/sessions:workset" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		worksetRequests++
+		_ = json.NewEncoder(w).Encode(client.SessionV3Workset{
+			OK:                     true,
+			SnapshotEndpointCursor: "cursor-workset",
+			SessionsByID:           map[string]client.SessionSummary{"session-a": {ID: "session-a", WorkspacePath: "/repo", Title: "From Workset", SessionAPI: "v3"}},
+			ProjectionsBySession:   map[string]client.SessionV3Projection{"session-a": {SessionID: "session-a", LastEventSeq: 3}},
+			SessionOrder:           []string{"session-a"},
+		})
+	}))
+	defer server.Close()
+
+	app := &App{
+		api:                 testAPIWithToken(server.URL),
+		tuiSessionStore:     newTUISessionStore(),
+		tuiRealtimeWorkset:  tuiRealtimeWorksetState{ScopeKey: "workspace:/repo", WorkspacePaths: []string{"/repo"}},
+		tuiRealtimeClientID: "tui:test",
+		homeModel:           model.EmptyHome(),
+	}
+	app.tuiSessionStore.MergeHydrated(client.SessionV3Hydrated{
+		Session:                client.SessionSummary{ID: "session-a", WorkspacePath: "/repo", Title: "Hydrated", SessionAPI: "v3"},
+		Projection:             client.SessionV3Projection{SessionID: "session-a", LastEventSeq: 2},
+		SnapshotEndpointCursor: "hydrated-cursor-must-not-be-used",
+	})
+	if got := app.tuiSessionStore.EndpointCursor(); got != "" {
+		t.Fatalf("setup endpoint cursor = %q, want empty", got)
+	}
+
+	if err := app.ensureTUIRealtimeWorksetReady(context.Background(), tuiSessionWorksetLoadOptions{Limit: 25, WorkspacePaths: []string{"/repo"}}); err != nil {
+		t.Fatalf("ensureTUIRealtimeWorksetReady() error = %v", err)
+	}
+	if worksetRequests != 1 {
+		t.Fatalf("workset requests = %d, want 1", worksetRequests)
+	}
+	if got := app.tuiSessionStore.EndpointCursor(); got != "cursor-workset" {
+		t.Fatalf("endpoint cursor = %q, want TUI workset cursor", got)
+	}
+	if app.tuiRealtimeWorkset.ScopeKey != "workspace:/repo" {
+		t.Fatalf("realtime workset state = %#v", app.tuiRealtimeWorkset)
+	}
+
+	if err := app.ensureTUIRealtimeWorksetReady(context.Background(), tuiSessionWorksetLoadOptions{Limit: 25, WorkspacePaths: []string{"/repo"}}); err != nil {
+		t.Fatalf("second ensureTUIRealtimeWorksetReady() error = %v", err)
+	}
+	if worksetRequests != 1 {
+		t.Fatalf("cached workset issued requests = %d, want 1", worksetRequests)
+	}
+}
+
 func TestTUIHomeWorksetBootstrapThenRealtimeUpdatesWithoutPolling(t *testing.T) {
 	var worksetRequests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +200,9 @@ func TestTUIRealtimeEndToEndHitsWorksetAndRealtimeAPIsAndRehydratesOnCursorError
 			var req client.SessionV3TUIWorksetRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode workset request: %v", err)
+			}
+			if len(req.SessionIDs) != 0 {
+				t.Fatalf("initial workset bootstrap session_ids = %#v, want none", req.SessionIDs)
 			}
 			if req.Scope.WorkspacePaths[0] != "/repo" || req.History.Mode != "tail" || !req.History.IncludeEvents {
 				t.Fatalf("workset request = %#v", req)
@@ -259,6 +316,9 @@ func TestTUIRealtimeEndToEndHitsWorksetAndRealtimeAPIsAndRehydratesOnCursorError
 	case <-rehydrateReady:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("cursor.error did not trigger second /v3/tui/sessions:workset request")
+	}
+	if got := app.tuiSessionStore.EndpointCursor(); got != "cursor-bootstrap" {
+		t.Fatalf("endpoint cursor after cursor.error rehydrate = %q, want original TUI workset cursor", got)
 	}
 	if worksetRequests != 1 || sessionHydrateRequests != 1 || realtimeRequests != 1 {
 		t.Fatalf("api calls: workset=%d sessionHydrate=%d realtime=%d resume=%#v", worksetRequests, sessionHydrateRequests, realtimeRequests, resume)

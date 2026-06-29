@@ -28,6 +28,11 @@ const (
 	defaultTUIRealtimeRetryMax    = 2 * time.Second
 )
 
+var (
+	errTUIRealtimeGenerationReplaced = errors.New("tui realtime generation was replaced before resume")
+	errTUIRealtimeStoppedBeforeReady = errors.New("tui realtime stopped before resume")
+)
+
 type tuiRealtimeStreamClient interface {
 	StreamV3Realtime(ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error
 }
@@ -68,6 +73,11 @@ type tuiRealtimeActiveGeneration struct {
 	subscriptions  []client.V3RealtimeSubscription
 	worksets       []client.V3RealtimeWorksetSubscription
 	endpointCursor string
+
+	readyOnce sync.Once
+	ready     chan struct{}
+	readyMu   sync.Mutex
+	readyErr  error
 }
 
 func newTUIRealtimeController(streamer tuiRealtimeStreamClient, frames chan<- client.V3RealtimeFrame, statuses chan<- tuiRealtimeStatus) *tuiRealtimeController {
@@ -95,33 +105,96 @@ func (c *tuiRealtimeController) Start(subscriptions []client.V3RealtimeSubscript
 }
 
 func (c *tuiRealtimeController) Reconcile(subscriptions []client.V3RealtimeSubscription, worksets []client.V3RealtimeWorksetSubscription, endpointCursor string) error {
+	_, err := c.reconcile(subscriptions, worksets, endpointCursor, false)
+	return err
+}
+
+func (c *tuiRealtimeController) ReconcileAndWait(ctx context.Context, subscriptions []client.V3RealtimeSubscription, worksets []client.V3RealtimeWorksetSubscription, endpointCursor string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	active, waitForCurrent, err := c.reconcileForWait(subscriptions, worksets, endpointCursor)
+	if err != nil {
+		return err
+	}
+	return c.waitForResumeSent(ctx, active, waitForCurrent)
+}
+
+func (c *tuiRealtimeController) reconcileForWait(subscriptions []client.V3RealtimeSubscription, worksets []client.V3RealtimeWorksetSubscription, endpointCursor string) (*tuiRealtimeActiveGeneration, uint64, error) {
 	if c == nil {
-		return nil
+		return nil, 0, errors.New("tui realtime controller is not configured")
 	}
 	normalizedSubs, normalizedWorksets, cursor, err := normalizeTUIRealtimeResume(subscriptions, worksets, endpointCursor)
 	if err != nil {
 		c.sendStatus(tuiRealtimeStatus{Kind: tuiRealtimeStatusFailed, Err: err, Reason: err.Error()})
-		return err
+		return nil, 0, err
 	}
 	if len(normalizedSubs) == 0 && len(normalizedWorksets) == 0 {
+		err := errors.New("tui realtime connection requires at least one session or workset subscription")
 		c.Stop()
-		return nil
+		c.sendStatus(tuiRealtimeStatus{Kind: tuiRealtimeStatusFailed, Err: err, Reason: err.Error()})
+		return nil, 0, err
 	}
 	if c.streamer == nil {
 		err := errors.New("tui realtime stream client is not configured")
 		c.sendStatus(tuiRealtimeStatus{Kind: tuiRealtimeStatusFailed, Err: err, Reason: err.Error(), Subscriptions: cloneTUIRealtimeSubscriptions(normalizedSubs), Worksets: cloneTUIRealtimeWorksets(normalizedWorksets), EndpointCursor: cursor})
-		return err
+		return nil, 0, err
 	}
 
-	var oldCancel context.CancelFunc
 	c.mu.Lock()
 	if c.active != nil && c.active.endpointCursor == cursor && equalTUIRealtimeSubscriptions(c.active.subscriptions, normalizedSubs) && equalTUIRealtimeWorksets(c.active.worksets, normalizedWorksets) {
+		active := c.active
+		waitForCurrent := c.generation
 		c.mu.Unlock()
-		return nil
+		return active, waitForCurrent, nil
 	}
-	if c.active != nil {
-		oldCancel = c.active.cancel
+	c.mu.Unlock()
+
+	active, err := c.reconcileNormalized(normalizedSubs, normalizedWorksets, cursor)
+	if err != nil {
+		return nil, 0, err
 	}
+	return active, active.generation, nil
+}
+
+func (c *tuiRealtimeController) reconcile(subscriptions []client.V3RealtimeSubscription, worksets []client.V3RealtimeWorksetSubscription, endpointCursor string, requireConnection bool) (*tuiRealtimeActiveGeneration, error) {
+	if c == nil {
+		if requireConnection {
+			return nil, errors.New("tui realtime controller is not configured")
+		}
+		return nil, nil
+	}
+	normalizedSubs, normalizedWorksets, cursor, err := normalizeTUIRealtimeResume(subscriptions, worksets, endpointCursor)
+	if err != nil {
+		c.sendStatus(tuiRealtimeStatus{Kind: tuiRealtimeStatusFailed, Err: err, Reason: err.Error()})
+		return nil, err
+	}
+	if len(normalizedSubs) == 0 && len(normalizedWorksets) == 0 {
+		c.Stop()
+		if requireConnection {
+			err := errors.New("tui realtime connection requires at least one session or workset subscription")
+			c.sendStatus(tuiRealtimeStatus{Kind: tuiRealtimeStatusFailed, Err: err, Reason: err.Error()})
+			return nil, err
+		}
+		return nil, nil
+	}
+	if c.streamer == nil {
+		err := errors.New("tui realtime stream client is not configured")
+		c.sendStatus(tuiRealtimeStatus{Kind: tuiRealtimeStatusFailed, Err: err, Reason: err.Error(), Subscriptions: cloneTUIRealtimeSubscriptions(normalizedSubs), Worksets: cloneTUIRealtimeWorksets(normalizedWorksets), EndpointCursor: cursor})
+		return nil, err
+	}
+	return c.reconcileNormalized(normalizedSubs, normalizedWorksets, cursor)
+}
+
+func (c *tuiRealtimeController) reconcileNormalized(normalizedSubs []client.V3RealtimeSubscription, normalizedWorksets []client.V3RealtimeWorksetSubscription, cursor string) (*tuiRealtimeActiveGeneration, error) {
+	var oldActive *tuiRealtimeActiveGeneration
+	c.mu.Lock()
+	if c.active != nil && c.active.endpointCursor == cursor && equalTUIRealtimeSubscriptions(c.active.subscriptions, normalizedSubs) && equalTUIRealtimeWorksets(c.active.worksets, normalizedWorksets) {
+		active := c.active
+		c.mu.Unlock()
+		return active, nil
+	}
+	oldActive = c.active
 	c.generation++
 	generation := c.generation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -131,31 +204,34 @@ func (c *tuiRealtimeController) Reconcile(subscriptions []client.V3RealtimeSubsc
 		subscriptions:  cloneTUIRealtimeSubscriptions(normalizedSubs),
 		worksets:       cloneTUIRealtimeWorksets(normalizedWorksets),
 		endpointCursor: cursor,
+		ready:          make(chan struct{}),
 	}
 	c.active = active
 	c.mu.Unlock()
 
-	if oldCancel != nil {
-		oldCancel()
+	if oldActive != nil {
+		oldActive.markReady(errTUIRealtimeGenerationReplaced)
+		oldActive.cancel()
 	}
 	go c.runGeneration(ctx, active)
-	return nil
+	return active, nil
 }
 
 func (c *tuiRealtimeController) Stop() {
 	if c == nil {
 		return
 	}
-	var cancel context.CancelFunc
+	var active *tuiRealtimeActiveGeneration
 	c.mu.Lock()
 	if c.active != nil {
-		cancel = c.active.cancel
+		active = c.active
 		c.active = nil
 		c.generation++
 	}
 	c.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	if active != nil {
+		active.markReady(errTUIRealtimeStoppedBeforeReady)
+		active.cancel()
 	}
 }
 
@@ -182,7 +258,9 @@ func (c *tuiRealtimeController) runGeneration(ctx context.Context, active *tuiRe
 			EndpointCursor: endpointCursor,
 		})
 
-		err := c.streamer.StreamV3Realtime(ctx, client.V3RealtimeResumeOptions{EndpointCursor: endpointCursor, Surface: "tui", Subscriptions: cloneTUIRealtimeSubscriptions(subscriptions), Worksets: cloneTUIRealtimeWorksets(worksets)}, func(frame client.V3RealtimeFrame) {
+		err := c.streamer.StreamV3Realtime(ctx, client.V3RealtimeResumeOptions{EndpointCursor: endpointCursor, Surface: "tui", Subscriptions: cloneTUIRealtimeSubscriptions(subscriptions), Worksets: cloneTUIRealtimeWorksets(worksets), OnResumeSent: func() {
+			active.markReady(nil)
+		}}, func(frame client.V3RealtimeFrame) {
 			if ctx.Err() != nil {
 				return
 			}
@@ -213,6 +291,7 @@ func (c *tuiRealtimeController) runGeneration(ctx context.Context, active *tuiRe
 			return
 		}
 		if err == nil {
+			active.markReady(errTUIRealtimeStoppedBeforeReady)
 			c.sendStatusIfActive(active.generation, tuiRealtimeStatus{
 				Kind:           tuiRealtimeStatusStopped,
 				Generation:     active.generation,
@@ -224,6 +303,7 @@ func (c *tuiRealtimeController) runGeneration(ctx context.Context, active *tuiRe
 			c.finishGeneration(active.generation)
 			return
 		}
+		active.markReady(err)
 		if !tuiRealtimeErrorIsTransient(err) || attempt >= c.retryBudget {
 			c.sendStatusIfActive(active.generation, tuiRealtimeStatus{
 				Kind:           tuiRealtimeStatusFailed,
@@ -255,6 +335,61 @@ func (c *tuiRealtimeController) runGeneration(ctx context.Context, active *tuiRe
 	}
 }
 
+func (active *tuiRealtimeActiveGeneration) markReady(err error) {
+	if active == nil {
+		return
+	}
+	active.readyOnce.Do(func() {
+		active.readyMu.Lock()
+		active.readyErr = err
+		active.readyMu.Unlock()
+		if active.ready != nil {
+			close(active.ready)
+		}
+	})
+}
+
+func (active *tuiRealtimeActiveGeneration) readyResult() error {
+	if active == nil {
+		return errors.New("tui realtime generation is not active")
+	}
+	active.readyMu.Lock()
+	defer active.readyMu.Unlock()
+	return active.readyErr
+}
+
+func (c *tuiRealtimeController) waitForResumeSent(ctx context.Context, active *tuiRealtimeActiveGeneration, waitForCurrent uint64) error {
+	if active == nil {
+		return errors.New("tui realtime connection requires an active generation")
+	}
+	ready := active.ready
+	if ready == nil {
+		return errors.New("tui realtime generation readiness is not initialized")
+	}
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ready:
+			return active.readyResult()
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			c.mu.Lock()
+			changed := c.generation != waitForCurrent
+			c.mu.Unlock()
+			if changed {
+				select {
+				case <-ready:
+					return active.readyResult()
+				default:
+					return errTUIRealtimeGenerationReplaced
+				}
+			}
+		}
+	}
+}
+
 func (c *tuiRealtimeController) isActiveGeneration(generation uint64) bool {
 	if c == nil {
 		return false
@@ -268,15 +403,16 @@ func (c *tuiRealtimeController) cancelActiveGeneration(generation uint64) {
 	if c == nil {
 		return
 	}
-	var cancel context.CancelFunc
+	var active *tuiRealtimeActiveGeneration
 	c.mu.Lock()
 	if c.active != nil && c.active.generation == generation {
-		cancel = c.active.cancel
+		active = c.active
 		c.active = nil
 	}
 	c.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	if active != nil {
+		active.markReady(errTUIRealtimeStoppedBeforeReady)
+		active.cancel()
 	}
 }
 
@@ -284,11 +420,16 @@ func (c *tuiRealtimeController) finishGeneration(generation uint64) {
 	if c == nil {
 		return
 	}
+	var active *tuiRealtimeActiveGeneration
 	c.mu.Lock()
 	if c.active != nil && c.active.generation == generation {
+		active = c.active
 		c.active = nil
 	}
 	c.mu.Unlock()
+	if active != nil {
+		active.markReady(errTUIRealtimeStoppedBeforeReady)
+	}
 }
 
 func (c *tuiRealtimeController) sleepWhileActive(ctx context.Context, generation uint64, delay time.Duration) bool {

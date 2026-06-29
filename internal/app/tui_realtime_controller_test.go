@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -51,6 +52,9 @@ func (f *tuiRealtimeFakeStreamer) StreamV3Realtime(ctx context.Context, options 
 	if handler != nil {
 		return handler(index, ctx, options, onFrame)
 	}
+	if options.OnResumeSent != nil {
+		options.OnResumeSent()
+	}
 	<-ctx.Done()
 	return nil
 }
@@ -59,6 +63,91 @@ func (f *tuiRealtimeFakeStreamer) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.calls)
+}
+
+func TestTUIRealtimeControllerReconcileAndWaitBlocksUntilResumeSent(t *testing.T) {
+	resumeSent := make(chan func(), 1)
+	fake := newTUIRealtimeFakeStreamer()
+	fake.handler = func(index int, ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
+		resumeSent <- options.OnResumeSent
+		<-ctx.Done()
+		return nil
+	}
+	controller := newTestTUIRealtimeController(fake, make(chan client.V3RealtimeFrame, 4), make(chan tuiRealtimeStatus, 16))
+	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, nil, "cursor-1"); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	waitTUIRealtimeCall(t, fake)
+	var markReady func()
+	select {
+	case markReady = <-resumeSent:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for resume callback")
+	}
+	if markReady == nil {
+		t.Fatalf("resume callback was nil")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- controller.ReconcileAndWait(context.Background(), []client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, nil, "cursor-1")
+	}()
+	assertNoTUIRealtimeReadyResult(t, done, 25*time.Millisecond)
+	markReady()
+	if err := waitTUIRealtimeReadyResult(t, done); err != nil {
+		t.Fatalf("ReconcileAndWait() error = %v", err)
+	}
+	controller.Stop()
+}
+
+func TestTUIRealtimeControllerReconcileAndWaitReturnsStreamErrorBeforeResume(t *testing.T) {
+	wantErr := errors.New("connect v3 realtime stream: dial failed")
+	fake := newTUIRealtimeFakeStreamer()
+	fake.handler = func(index int, ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
+		return wantErr
+	}
+	controller := newTestTUIRealtimeController(fake, make(chan client.V3RealtimeFrame, 4), make(chan tuiRealtimeStatus, 16))
+	controller.retryBudget = 0
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := controller.ReconcileAndWait(ctx, []client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, nil, "cursor-1"); !errors.Is(err, wantErr) {
+		t.Fatalf("ReconcileAndWait() error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestTUIRealtimeControllerReconcileAndWaitUnblocksWhenGenerationReplaced(t *testing.T) {
+	fake := newTUIRealtimeFakeStreamer()
+	fake.handler = func(index int, ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
+		<-ctx.Done()
+		return nil
+	}
+	controller := newTestTUIRealtimeController(fake, make(chan client.V3RealtimeFrame, 4), make(chan tuiRealtimeStatus, 16))
+	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, nil, "cursor-1"); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	waitTUIRealtimeCall(t, fake)
+	done := make(chan error, 1)
+	go func() {
+		done <- controller.ReconcileAndWait(context.Background(), []client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, nil, "cursor-1")
+	}()
+	assertNoTUIRealtimeReadyResult(t, done, 25*time.Millisecond)
+	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "b", EndpointCursor: "cursor-2"}}, nil, "cursor-2"); err != nil {
+		t.Fatalf("replacement Reconcile() error = %v", err)
+	}
+	if err := waitTUIRealtimeReadyResult(t, done); !errors.Is(err, errTUIRealtimeGenerationReplaced) {
+		t.Fatalf("ReconcileAndWait() error = %v, want generation replaced", err)
+	}
+	waitTUIRealtimeCall(t, fake)
+	controller.Stop()
+}
+
+func TestTUIRealtimeControllerReconcileAndWaitRejectsEmptySubscriptions(t *testing.T) {
+	fake := newTUIRealtimeFakeStreamer()
+	controller := newTestTUIRealtimeController(fake, make(chan client.V3RealtimeFrame, 4), make(chan tuiRealtimeStatus, 16))
+	if err := controller.ReconcileAndWait(context.Background(), nil, nil, "cursor-1"); err == nil || !strings.Contains(err.Error(), "at least one") {
+		t.Fatalf("ReconcileAndWait() error = %v, want explicit empty subscription error", err)
+	}
+	assertNoTUIRealtimeCall(t, fake, 25*time.Millisecond)
 }
 
 func TestTUIRealtimeControllerReconcileStartsOneStreamForUnchangedState(t *testing.T) {
@@ -324,6 +413,26 @@ func assertNoTUIRealtimeCall(t *testing.T, fake *tuiRealtimeFakeStreamer, wait t
 	select {
 	case call := <-fake.started:
 		t.Fatalf("unexpected realtime stream call: %#v", call)
+	case <-time.After(wait):
+	}
+}
+
+func waitTUIRealtimeReadyResult(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for realtime readiness result")
+		return nil
+	}
+}
+
+func assertNoTUIRealtimeReadyResult(t *testing.T, done <-chan error, wait time.Duration) {
+	t.Helper()
+	select {
+	case err := <-done:
+		t.Fatalf("unexpected realtime readiness result: %v", err)
 	case <-time.After(wait):
 	}
 }

@@ -62,6 +62,7 @@ type V3RealtimeResumeOptions struct {
 	Surface        string
 	Subscriptions  []V3RealtimeSubscription
 	Worksets       []V3RealtimeWorksetSubscription
+	OnResumeSent   func()
 }
 
 type V3RealtimeFrame struct {
@@ -166,6 +167,9 @@ func (c *API) StreamV3Realtime(ctx context.Context, options V3RealtimeResumeOpti
 	if err := conn.WriteText(raw); err != nil {
 		return fmt.Errorf("send v3 realtime resume: %w", err)
 	}
+	if normalized.OnResumeSent != nil {
+		normalized.OnResumeSent()
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -247,6 +251,7 @@ func normalizeV3RealtimeResumeOptions(options V3RealtimeResumeOptions) (V3Realti
 		Surface:        strings.TrimSpace(options.Surface),
 		Subscriptions:  make([]V3RealtimeSubscription, 0, len(options.Subscriptions)),
 		Worksets:       make([]V3RealtimeWorksetSubscription, 0, len(options.Worksets)),
+		OnResumeSent:   options.OnResumeSent,
 	}
 	seenSessions := make(map[string]struct{}, len(options.Subscriptions))
 	for _, sub := range options.Subscriptions {
