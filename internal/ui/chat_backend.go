@@ -12,34 +12,19 @@ type ChatMessageRecord struct {
 	CreatedAt int64
 }
 
-type ChatRunToolScope struct {
-	Preset        string
-	AllowTools    []string
-	DenyTools     []string
-	BashPrefixes  []string
-	InheritPolicy bool
+type ChatSendRequest struct {
+	Prompt       string
+	AgentName    string
+	Instructions string
+	Compact      bool
+	TargetKind   string
+	TargetName   string
 }
 
-type ChatRunExecutionContext struct {
-	WorkspacePath      string
-	CWD                string
-	WorktreeMode       string
-	WorktreeRootPath   string
-	WorktreeBranch     string
-	WorktreeBaseBranch string
-}
-
-type ChatRunRequest struct {
-	Prompt           string
-	AgentName        string
-	Instructions     string
-	Compact          bool
-	TargetKind       string
-	TargetName       string
-	Background       bool
-	ToolScope        *ChatRunToolScope
-	ExecutionContext *ChatRunExecutionContext
-}
+// ChatSendFunc commits a native V3 send/compact mutation. ChatPage rendering is
+// driven by V3 projection/realtime updates after the mutation, not by this call
+// returning a legacy run response.
+type ChatSendFunc func(ctx context.Context, sessionID string, req ChatSendRequest) error
 
 type ChatSessionLifecycle struct {
 	SessionID      string
@@ -127,23 +112,6 @@ type ChatUsageSummary struct {
 	LastConnectedViaWS *bool
 }
 
-type ChatRunResponse struct {
-	Model                string
-	Thinking             string
-	ReasoningSummary     string
-	TurnUsage            *ChatTurnUsage
-	UsageSummary         *ChatUsageSummary
-	UserMessage          ChatMessageRecord
-	ToolMessages         []ChatMessageRecord
-	AssistantMessage     ChatMessageRecord
-	Commentary           []ChatMessageRecord
-	TargetKind           string
-	TargetName           string
-	NoAssistant          bool
-	PrimaryRunStatus     string
-	PrimaryBlockedReason string
-}
-
 type ChatRunStreamEvent struct {
 	Type         string
 	SessionID    string
@@ -169,7 +137,6 @@ type ChatRunStreamEvent struct {
 	TitleStage   string
 	Warning      string
 	Lifecycle    *ChatSessionLifecycle
-	Result       ChatRunResponse
 }
 
 type ChatBackend interface {
@@ -192,6 +159,4 @@ type ChatBackend interface {
 	ResetPermissionPolicy(ctx context.Context) (ChatPermissionPolicy, error)
 	ExplainPermission(ctx context.Context, mode, toolName, arguments string) (ChatPermissionExplain, error)
 	StopRun(ctx context.Context, sessionID, runID string) error
-	RunTurn(ctx context.Context, sessionID string, req ChatRunRequest) (ChatRunResponse, error)
-	RunTurnStream(ctx context.Context, sessionID string, req ChatRunRequest, onEvent func(ChatRunStreamEvent)) (ChatRunResponse, error)
 }

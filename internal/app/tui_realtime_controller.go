@@ -29,7 +29,7 @@ const (
 )
 
 type tuiRealtimeStreamClient interface {
-	StreamSessionsV3Realtime(ctx context.Context, subscriptions []client.V3RealtimeSubscription, onFrame func(client.V3RealtimeFrame)) error
+	StreamV3Realtime(ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error
 }
 
 type tuiRealtimeStatusKind string
@@ -39,7 +39,9 @@ type tuiRealtimeStatus struct {
 	Generation     uint64
 	Attempt        int
 	Subscriptions  []client.V3RealtimeSubscription
+	Worksets       []client.V3RealtimeWorksetSubscription
 	EndpointCursor string
+	SessionID      string
 	Frame          client.V3RealtimeFrame
 	Err            error
 	Reason         string
@@ -51,6 +53,7 @@ type tuiRealtimeController struct {
 	streamer tuiRealtimeStreamClient
 	frames   chan<- client.V3RealtimeFrame
 	statuses chan<- tuiRealtimeStatus
+	wake     func()
 
 	generation  uint64
 	active      *tuiRealtimeActiveGeneration
@@ -63,6 +66,7 @@ type tuiRealtimeActiveGeneration struct {
 	generation     uint64
 	cancel         context.CancelFunc
 	subscriptions  []client.V3RealtimeSubscription
+	worksets       []client.V3RealtimeWorksetSubscription
 	endpointCursor string
 }
 
@@ -77,32 +81,41 @@ func newTUIRealtimeController(streamer tuiRealtimeStreamClient, frames chan<- cl
 	}
 }
 
-func (c *tuiRealtimeController) Start(subscriptions []client.V3RealtimeSubscription, endpointCursor string) error {
-	return c.Reconcile(subscriptions, endpointCursor)
+func (c *tuiRealtimeController) SetWake(wake func()) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.wake = wake
+	c.mu.Unlock()
 }
 
-func (c *tuiRealtimeController) Reconcile(subscriptions []client.V3RealtimeSubscription, endpointCursor string) error {
+func (c *tuiRealtimeController) Start(subscriptions []client.V3RealtimeSubscription, endpointCursor string) error {
+	return c.Reconcile(subscriptions, nil, endpointCursor)
+}
+
+func (c *tuiRealtimeController) Reconcile(subscriptions []client.V3RealtimeSubscription, worksets []client.V3RealtimeWorksetSubscription, endpointCursor string) error {
 	if c == nil {
 		return nil
 	}
-	normalized, cursor, err := normalizeTUIRealtimeSubscriptions(subscriptions, endpointCursor)
+	normalizedSubs, normalizedWorksets, cursor, err := normalizeTUIRealtimeResume(subscriptions, worksets, endpointCursor)
 	if err != nil {
 		c.sendStatus(tuiRealtimeStatus{Kind: tuiRealtimeStatusFailed, Err: err, Reason: err.Error()})
 		return err
 	}
-	if len(normalized) == 0 {
+	if len(normalizedSubs) == 0 && len(normalizedWorksets) == 0 {
 		c.Stop()
 		return nil
 	}
 	if c.streamer == nil {
 		err := errors.New("tui realtime stream client is not configured")
-		c.sendStatus(tuiRealtimeStatus{Kind: tuiRealtimeStatusFailed, Err: err, Reason: err.Error(), Subscriptions: cloneTUIRealtimeSubscriptions(normalized), EndpointCursor: cursor})
+		c.sendStatus(tuiRealtimeStatus{Kind: tuiRealtimeStatusFailed, Err: err, Reason: err.Error(), Subscriptions: cloneTUIRealtimeSubscriptions(normalizedSubs), Worksets: cloneTUIRealtimeWorksets(normalizedWorksets), EndpointCursor: cursor})
 		return err
 	}
 
 	var oldCancel context.CancelFunc
 	c.mu.Lock()
-	if c.active != nil && c.active.endpointCursor == cursor && equalTUIRealtimeSubscriptions(c.active.subscriptions, normalized) {
+	if c.active != nil && c.active.endpointCursor == cursor && equalTUIRealtimeSubscriptions(c.active.subscriptions, normalizedSubs) && equalTUIRealtimeWorksets(c.active.worksets, normalizedWorksets) {
 		c.mu.Unlock()
 		return nil
 	}
@@ -115,7 +128,8 @@ func (c *tuiRealtimeController) Reconcile(subscriptions []client.V3RealtimeSubsc
 	active := &tuiRealtimeActiveGeneration{
 		generation:     generation,
 		cancel:         cancel,
-		subscriptions:  cloneTUIRealtimeSubscriptions(normalized),
+		subscriptions:  cloneTUIRealtimeSubscriptions(normalizedSubs),
+		worksets:       cloneTUIRealtimeWorksets(normalizedWorksets),
 		endpointCursor: cursor,
 	}
 	c.active = active
@@ -150,6 +164,7 @@ func (c *tuiRealtimeController) runGeneration(ctx context.Context, active *tuiRe
 		return
 	}
 	subscriptions := cloneTUIRealtimeSubscriptions(active.subscriptions)
+	worksets := cloneTUIRealtimeWorksets(active.worksets)
 	endpointCursor := active.endpointCursor
 	attempt := 0
 	var terminal atomic.Bool
@@ -163,16 +178,19 @@ func (c *tuiRealtimeController) runGeneration(ctx context.Context, active *tuiRe
 			Generation:     active.generation,
 			Attempt:        attempt,
 			Subscriptions:  cloneTUIRealtimeSubscriptions(subscriptions),
+			Worksets:       cloneTUIRealtimeWorksets(worksets),
 			EndpointCursor: endpointCursor,
 		})
 
-		err := c.streamer.StreamSessionsV3Realtime(ctx, cloneTUIRealtimeSubscriptions(subscriptions), func(frame client.V3RealtimeFrame) {
+		err := c.streamer.StreamV3Realtime(ctx, client.V3RealtimeResumeOptions{EndpointCursor: endpointCursor, Surface: "tui", Subscriptions: cloneTUIRealtimeSubscriptions(subscriptions), Worksets: cloneTUIRealtimeWorksets(worksets)}, func(frame client.V3RealtimeFrame) {
 			if ctx.Err() != nil {
 				return
 			}
-			if !c.sendFrameIfActive(active.generation, frame) {
+			if !c.sendFrameIfActive(ctx, active.generation, frame) {
 				return
 			}
+			advanceTUIRealtimeResumeState(&endpointCursor, subscriptions, frame)
+			c.advanceActiveStateIfActive(active.generation, endpointCursor, subscriptions)
 			if tuiRealtimeFrameIsTerminal(frame) {
 				terminal.Store(true)
 				c.sendStatusIfActive(active.generation, tuiRealtimeStatus{
@@ -180,7 +198,9 @@ func (c *tuiRealtimeController) runGeneration(ctx context.Context, active *tuiRe
 					Generation:     active.generation,
 					Attempt:        attempt,
 					Subscriptions:  cloneTUIRealtimeSubscriptions(subscriptions),
+					Worksets:       cloneTUIRealtimeWorksets(worksets),
 					EndpointCursor: endpointCursor,
+					SessionID:      firstNonEmpty(strings.TrimSpace(frame.SessionID), frameSessionID(frame)),
 					Frame:          frame,
 					Err:            frame.Err(),
 					Reason:         tuiRealtimeFrameTerminalReason(frame),
@@ -198,6 +218,7 @@ func (c *tuiRealtimeController) runGeneration(ctx context.Context, active *tuiRe
 				Generation:     active.generation,
 				Attempt:        attempt,
 				Subscriptions:  cloneTUIRealtimeSubscriptions(subscriptions),
+				Worksets:       cloneTUIRealtimeWorksets(worksets),
 				EndpointCursor: endpointCursor,
 			})
 			c.finishGeneration(active.generation)
@@ -209,6 +230,7 @@ func (c *tuiRealtimeController) runGeneration(ctx context.Context, active *tuiRe
 				Generation:     active.generation,
 				Attempt:        attempt,
 				Subscriptions:  cloneTUIRealtimeSubscriptions(subscriptions),
+				Worksets:       cloneTUIRealtimeWorksets(worksets),
 				EndpointCursor: endpointCursor,
 				Err:            err,
 				Reason:         err.Error(),
@@ -222,6 +244,7 @@ func (c *tuiRealtimeController) runGeneration(ctx context.Context, active *tuiRe
 			Generation:     active.generation,
 			Attempt:        attempt,
 			Subscriptions:  cloneTUIRealtimeSubscriptions(subscriptions),
+			Worksets:       cloneTUIRealtimeWorksets(worksets),
 			EndpointCursor: endpointCursor,
 			Err:            err,
 			Reason:         err.Error(),
@@ -308,20 +331,55 @@ func (c *tuiRealtimeController) retryDelay(attempt int) time.Duration {
 	return delay
 }
 
-func (c *tuiRealtimeController) sendFrameIfActive(generation uint64, frame client.V3RealtimeFrame) bool {
+func (c *tuiRealtimeController) advanceActiveStateIfActive(generation uint64, endpointCursor string, subscriptions []client.V3RealtimeSubscription) {
 	if c == nil {
-		return false
+		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.active == nil || c.active.generation != generation {
+		return
+	}
+	if cursor := strings.TrimSpace(endpointCursor); cursor != "" {
+		c.active.endpointCursor = cursor
+	}
+	c.active.subscriptions = cloneTUIRealtimeSubscriptions(subscriptions)
+}
+
+func (c *tuiRealtimeController) sendFrameIfActive(ctx context.Context, generation uint64, frame client.V3RealtimeFrame) bool {
+	if c == nil {
 		return false
 	}
-	if c.frames != nil {
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	var wake func()
+	var frames chan<- client.V3RealtimeFrame
+	c.mu.Lock()
+	if c.active == nil || c.active.generation != generation {
+		c.mu.Unlock()
+		return false
+	}
+	frames = c.frames
+	wake = c.wake
+	c.mu.Unlock()
+	if frames == nil {
+		return true
+	}
+	if ctx == nil {
+		frames <- frame
+	} else {
 		select {
-		case c.frames <- frame:
-		default:
+		case frames <- frame:
+		case <-ctx.Done():
+			return false
 		}
+	}
+	if !c.isActiveGeneration(generation) {
+		return false
+	}
+	if wake != nil {
+		wake()
 	}
 	return true
 }
@@ -330,35 +388,53 @@ func (c *tuiRealtimeController) sendStatusIfActive(generation uint64, status tui
 	if c == nil {
 		return
 	}
+	var wake func()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.active == nil || c.active.generation != generation {
+		c.mu.Unlock()
 		return
 	}
-	c.sendStatusLocked(status)
+	if c.sendStatusLocked(status) {
+		wake = c.wake
+	}
+	c.mu.Unlock()
+	if wake != nil {
+		wake()
+	}
 }
 
 func (c *tuiRealtimeController) sendStatus(status tuiRealtimeStatus) {
 	if c == nil {
 		return
 	}
-	c.sendStatusLocked(status)
+	var wake func()
+	c.mu.Lock()
+	if c.sendStatusLocked(status) {
+		wake = c.wake
+	}
+	c.mu.Unlock()
+	if wake != nil {
+		wake()
+	}
 }
 
-func (c *tuiRealtimeController) sendStatusLocked(status tuiRealtimeStatus) {
+func (c *tuiRealtimeController) sendStatusLocked(status tuiRealtimeStatus) bool {
 	if c == nil || c.statuses == nil {
-		return
+		return false
 	}
 	status.Subscriptions = cloneTUIRealtimeSubscriptions(status.Subscriptions)
+	status.Worksets = cloneTUIRealtimeWorksets(status.Worksets)
 	select {
 	case c.statuses <- status:
+		return true
 	default:
+		return false
 	}
 }
 
-func normalizeTUIRealtimeSubscriptions(subscriptions []client.V3RealtimeSubscription, endpointCursor string) ([]client.V3RealtimeSubscription, string, error) {
+func normalizeTUIRealtimeResume(subscriptions []client.V3RealtimeSubscription, worksets []client.V3RealtimeWorksetSubscription, endpointCursor string) ([]client.V3RealtimeSubscription, []client.V3RealtimeWorksetSubscription, string, error) {
 	cursor := strings.TrimSpace(endpointCursor)
-	out := make([]client.V3RealtimeSubscription, 0, len(subscriptions))
+	outSubs := make([]client.V3RealtimeSubscription, 0, len(subscriptions))
 	seen := make(map[string]struct{}, len(subscriptions))
 	for _, sub := range subscriptions {
 		sessionID := strings.TrimSpace(sub.SessionID)
@@ -366,7 +442,7 @@ func normalizeTUIRealtimeSubscriptions(subscriptions []client.V3RealtimeSubscrip
 			continue
 		}
 		if _, ok := seen[sessionID]; ok {
-			return nil, "", fmt.Errorf("duplicate tui realtime session subscription %q", sessionID)
+			return nil, nil, "", fmt.Errorf("duplicate tui realtime session subscription %q", sessionID)
 		}
 		seen[sessionID] = struct{}{}
 		sub.SessionID = sessionID
@@ -375,15 +451,86 @@ func normalizeTUIRealtimeSubscriptions(subscriptions []client.V3RealtimeSubscrip
 			cursor = sub.EndpointCursor
 		}
 		sub.SubscriptionID = strings.TrimSpace(sub.SubscriptionID)
-		out = append(out, sub)
+		outSubs = append(outSubs, sub)
 	}
-	for i := range out {
+	for i := range outSubs {
 		if cursor != "" {
-			out[i].EndpointCursor = cursor
+			outSubs[i].EndpointCursor = cursor
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].SessionID < out[j].SessionID })
-	return out, cursor, nil
+	sort.Slice(outSubs, func(i, j int) bool { return outSubs[i].SessionID < outSubs[j].SessionID })
+
+	outWorksets := make([]client.V3RealtimeWorksetSubscription, 0, len(worksets))
+	seenWorksets := make(map[string]struct{}, len(worksets))
+	for _, workset := range worksets {
+		worksetID := strings.TrimSpace(workset.WorksetID)
+		if worksetID == "" {
+			continue
+		}
+		if _, ok := seenWorksets[worksetID]; ok {
+			return nil, nil, "", fmt.Errorf("duplicate tui realtime workset subscription %q", worksetID)
+		}
+		seenWorksets[worksetID] = struct{}{}
+		workset.WorksetID = worksetID
+		workset.SubscriptionID = strings.TrimSpace(workset.SubscriptionID)
+		if workset.SubscriptionID == "" {
+			return nil, nil, "", fmt.Errorf("tui realtime workset %q requires subscription_id", worksetID)
+		}
+		workset.Surface = strings.TrimSpace(workset.Surface)
+		workset.Selector.Kind = strings.TrimSpace(workset.Selector.Kind)
+		workset.Selector.WorkspacePath = strings.TrimSpace(workset.Selector.WorkspacePath)
+		workset.Selector.WorkspacePaths = trimTUIRealtimeStrings(workset.Selector.WorkspacePaths)
+		workset.Selector.SessionIDs = trimTUIRealtimeStrings(workset.Selector.SessionIDs)
+		workset.Selector.Recent.BeforeSessionID = strings.TrimSpace(workset.Selector.Recent.BeforeSessionID)
+		workset.Resources = trimTUIRealtimeStrings(workset.Resources)
+		outWorksets = append(outWorksets, workset)
+	}
+	sort.Slice(outWorksets, func(i, j int) bool { return outWorksets[i].WorksetID < outWorksets[j].WorksetID })
+	if cursor == "" && (len(outSubs) > 0 || len(outWorksets) > 0) {
+		return nil, nil, "", errors.New("tui realtime endpoint cursor is required")
+	}
+	return outSubs, outWorksets, cursor, nil
+}
+
+func advanceTUIRealtimeResumeState(endpointCursor *string, subscriptions []client.V3RealtimeSubscription, frame client.V3RealtimeFrame) {
+	if endpointCursor != nil {
+		if cursor := strings.TrimSpace(frame.EndpointCursor); cursor != "" {
+			*endpointCursor = cursor
+			for i := range subscriptions {
+				subscriptions[i].EndpointCursor = cursor
+			}
+		}
+	}
+	sessionID := strings.TrimSpace(frame.SessionID)
+	if sessionID == "" {
+		return
+	}
+	lastSeq := frame.LastSeq
+	if frame.Event != nil && frame.Event.Seq > lastSeq {
+		lastSeq = frame.Event.Seq
+	}
+	if lastSeq == 0 {
+		return
+	}
+	for i := range subscriptions {
+		if subscriptions[i].SessionID == sessionID && subscriptions[i].LastSeq < lastSeq {
+			subscriptions[i].LastSeq = lastSeq
+		}
+	}
+}
+
+func trimTUIRealtimeStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func cloneTUIRealtimeSubscriptions(in []client.V3RealtimeSubscription) []client.V3RealtimeSubscription {
@@ -395,7 +542,55 @@ func cloneTUIRealtimeSubscriptions(in []client.V3RealtimeSubscription) []client.
 	return out
 }
 
+func cloneTUIRealtimeWorksets(in []client.V3RealtimeWorksetSubscription) []client.V3RealtimeWorksetSubscription {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]client.V3RealtimeWorksetSubscription, len(in))
+	for i := range in {
+		out[i] = in[i]
+		out[i].Selector.WorkspacePaths = append([]string(nil), in[i].Selector.WorkspacePaths...)
+		out[i].Selector.SessionIDs = append([]string(nil), in[i].Selector.SessionIDs...)
+		out[i].Resources = append([]string(nil), in[i].Resources...)
+	}
+	return out
+}
+
 func equalTUIRealtimeSubscriptions(a, b []client.V3RealtimeSubscription) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalTUIRealtimeWorksets(a, b []client.V3RealtimeWorksetSubscription) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].WorksetID != b[i].WorksetID ||
+			a[i].SubscriptionID != b[i].SubscriptionID ||
+			a[i].Surface != b[i].Surface ||
+			a[i].AutoSubscribeSessions != b[i].AutoSubscribeSessions ||
+			a[i].Selector.Kind != b[i].Selector.Kind ||
+			a[i].Selector.Global != b[i].Selector.Global ||
+			a[i].Selector.WorkspacePath != b[i].Selector.WorkspacePath ||
+			a[i].Selector.Recent != b[i].Selector.Recent ||
+			!equalStringSlices(a[i].Selector.WorkspacePaths, b[i].Selector.WorkspacePaths) ||
+			!equalStringSlices(a[i].Selector.SessionIDs, b[i].Selector.SessionIDs) ||
+			!equalStringSlices(a[i].Resources, b[i].Resources) {
+			return false
+		}
+	}
+	return true
+}
+
+func equalStringSlices(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}

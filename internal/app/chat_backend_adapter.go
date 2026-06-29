@@ -2,39 +2,11 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/ui"
 )
-
-func convertChatRunToolScope(scope *ui.ChatRunToolScope) *client.RunToolScope {
-	if scope == nil {
-		return nil
-	}
-	return &client.RunToolScope{
-		Preset:        scope.Preset,
-		AllowTools:    append([]string(nil), scope.AllowTools...),
-		DenyTools:     append([]string(nil), scope.DenyTools...),
-		BashPrefixes:  append([]string(nil), scope.BashPrefixes...),
-		InheritPolicy: scope.InheritPolicy,
-	}
-}
-
-func convertChatRunExecutionContext(ctx *ui.ChatRunExecutionContext) *client.RunExecutionContext {
-	if ctx == nil {
-		return nil
-	}
-	return &client.RunExecutionContext{
-		WorkspacePath:      ctx.WorkspacePath,
-		CWD:                ctx.CWD,
-		WorktreeMode:       ctx.WorktreeMode,
-		WorktreeRootPath:   ctx.WorktreeRootPath,
-		WorktreeBranch:     ctx.WorktreeBranch,
-		WorktreeBaseBranch: ctx.WorktreeBaseBranch,
-	}
-}
 
 type apiChatBackend struct {
 	api           *client.API
@@ -249,274 +221,6 @@ func (b *apiChatBackend) StopRun(ctx context.Context, sessionID, runID string) e
 	return b.api.StopSessionV3Run(ctx, sessionID, runID, b.targetSwarmID, "")
 }
 
-func (b *apiChatBackend) RunTurn(ctx context.Context, sessionID string, req ui.ChatRunRequest) (ui.ChatRunResponse, error) {
-	return b.RunTurnStream(ctx, sessionID, req, nil)
-}
-
-func (b *apiChatBackend) RunTurnStream(ctx context.Context, sessionID string, req ui.ChatRunRequest, onEvent func(ui.ChatRunStreamEvent)) (ui.ChatRunResponse, error) {
-	if strings.EqualFold(strings.TrimSpace(b.sessionAPI), "v3") {
-		if req.Compact {
-			result, err := b.api.CompactSessionV3(ctx, sessionID, client.SessionV3CompactOptions{Note: req.Prompt, AgentName: req.AgentName, Instructions: req.Instructions})
-			if err != nil {
-				return ui.ChatRunResponse{}, err
-			}
-			runID := strings.TrimSpace(result.RunID)
-			if runID == "" {
-				runID = strings.TrimSpace(result.RunIntent.RunID)
-			}
-			intent := result.RunIntent
-			if strings.TrimSpace(intent.RunID) == "" {
-				intent.RunID = runID
-			}
-			if strings.TrimSpace(intent.Status) == "" {
-				intent.Status = "pending_executor"
-			}
-			if onEvent != nil {
-				onEvent(ui.ChatRunStreamEvent{Type: "session.lifecycle.updated", SessionID: sessionID, RunID: runID, Lifecycle: primaryRunIntentLifecycle(sessionID, intent)})
-			}
-			endpointCursor := ""
-			if result.RealtimeOutbox != nil {
-				endpointCursor = strings.TrimSpace(result.RealtimeOutbox.EndpointCursor)
-			}
-			streamResp, streamErr := b.consumeSessionV3Run(ctx, sessionID, intent, endpointCursor, onEvent)
-			if streamErr != nil {
-				return ui.ChatRunResponse{}, streamErr
-			}
-			return streamResp, nil
-		}
-		result, err := b.api.SendSessionV3Message(ctx, sessionID, client.SessionV3MessageOptions{Role: "user", Content: req.Prompt})
-		if err != nil {
-			return ui.ChatRunResponse{}, err
-		}
-		if onEvent != nil {
-			onEvent(ui.ChatRunStreamEvent{Type: "message.stored", SessionID: sessionID, RunID: result.RunIntent.RunID, Message: ptrChatMessageRecord(convertClientMessage(result.Message))})
-			onEvent(ui.ChatRunStreamEvent{Type: "session.lifecycle.updated", SessionID: sessionID, RunID: result.RunIntent.RunID, Lifecycle: primaryRunIntentLifecycle(sessionID, result.RunIntent)})
-		}
-		if !strings.EqualFold(strings.TrimSpace(result.RunIntent.Status), "pending_executor") {
-			return ui.ChatRunResponse{
-				UserMessage:          convertClientMessage(result.Message),
-				NoAssistant:          true,
-				PrimaryRunStatus:     strings.TrimSpace(result.RunIntent.Status),
-				PrimaryBlockedReason: strings.TrimSpace(result.RunIntent.BlockedReason),
-			}, nil
-		}
-		endpointCursor := ""
-		if result.RealtimeOutbox != nil {
-			endpointCursor = strings.TrimSpace(result.RealtimeOutbox.EndpointCursor)
-		}
-		streamResp, streamErr := b.consumeSessionV3Run(ctx, sessionID, result.RunIntent, endpointCursor, onEvent)
-		if streamErr != nil {
-			return ui.ChatRunResponse{}, streamErr
-		}
-		streamResp.UserMessage = convertClientMessage(result.Message)
-		if strings.TrimSpace(streamResp.PrimaryRunStatus) == "" {
-			streamResp.PrimaryRunStatus = strings.TrimSpace(result.RunIntent.Status)
-		}
-		return streamResp, nil
-	}
-
-	return ui.ChatRunResponse{}, errTUIRetiredSessionAPI("run turn for non-v3 TUI session")
-}
-
-func (b *apiChatBackend) consumeSessionV3Run(ctx context.Context, sessionID string, intent client.SessionV3RunIntent, endpointCursor string, onEvent func(ui.ChatRunStreamEvent)) (ui.ChatRunResponse, error) {
-	var response ui.ChatRunResponse
-	runID := strings.TrimSpace(intent.RunID)
-	response.PrimaryRunStatus = strings.TrimSpace(intent.Status)
-	response.PrimaryBlockedReason = strings.TrimSpace(intent.BlockedReason)
-	lastSeq := intent.EventSeq
-	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	refetched := false
-	currentLastSeq := lastSeq
-	shouldRefetch := false
-	var refetchFrame client.V3RealtimeFrame
-	err := b.api.StreamSessionsV3Realtime(streamCtx, []client.V3RealtimeSubscription{{SessionID: sessionID, EndpointCursor: endpointCursor, LastSeq: lastSeq, SubscriptionID: "active-turn"}}, func(frame client.V3RealtimeFrame) {
-		frameKind := strings.ToLower(strings.TrimSpace(frame.Kind))
-		if frameKind == "cursor.error" || frameKind == "slow_consumer.reconnect_required" {
-			shouldRefetch = true
-			refetchFrame = frame
-			cancel()
-			return
-		}
-		if frame.Event != nil && frame.Event.Seq > currentLastSeq {
-			currentLastSeq = frame.Event.Seq
-		}
-		if frame.Event == nil || strings.ToLower(strings.TrimSpace(frame.Kind)) != "event" {
-			return
-		}
-		if isV3DiagnosticEvent(frame.Event.EventType) {
-			return
-		}
-		event := v3StreamEventToChatEvent(*frame.Event)
-		if strings.TrimSpace(event.SessionID) != strings.TrimSpace(sessionID) {
-			return
-		}
-		if strings.TrimSpace(event.RunID) == "" {
-			event.RunID = runID
-		}
-		if onEvent != nil {
-			onEvent(event)
-		}
-		if event.Message != nil && strings.EqualFold(strings.TrimSpace(event.Message.Role), "assistant") {
-			response.AssistantMessage = *event.Message
-		}
-		if runIntent, ok := v3RunIntentFromEvent(*frame.Event); ok && v3RunIntentMatchesRun(runIntent, runID) {
-			response.PrimaryRunStatus = strings.TrimSpace(runIntent.Status)
-			response.PrimaryBlockedReason = strings.TrimSpace(runIntent.BlockedReason)
-			if v3RunIntentStatusTerminal(runIntent.Status) {
-				if event.Lifecycle == nil && onEvent != nil {
-					onEvent(ui.ChatRunStreamEvent{Type: "session.lifecycle.updated", SessionID: sessionID, RunID: runIntent.RunID, Lifecycle: primaryRunIntentLifecycle(sessionID, runIntent)})
-				}
-				cancel()
-			}
-		}
-	})
-	if shouldRefetch {
-		refetched = true
-		hydrated, refetchErr := b.refetchSessionV3RunAfterRealtimeGap(ctx, sessionID, runID, currentLastSeq, refetchFrame, onEvent)
-		if refetchErr != nil {
-			return ui.ChatRunResponse{}, refetchErr
-		}
-		response = mergeSessionV3HydratedRunResponse(response, hydrated, runID)
-		if strings.TrimSpace(response.PrimaryRunStatus) == "" {
-			response.PrimaryRunStatus = strings.TrimSpace(intent.Status)
-		}
-	} else if err != nil {
-		if v3RunIntentStatusTerminal(response.PrimaryRunStatus) {
-			return response, nil
-		}
-		return ui.ChatRunResponse{}, err
-	}
-	if !refetched && strings.TrimSpace(response.AssistantMessage.Content) == "" && v3RunIntentStatusTerminal(response.PrimaryRunStatus) {
-		response.NoAssistant = true
-	}
-	return response, nil
-}
-
-func (b *apiChatBackend) refetchSessionV3RunAfterRealtimeGap(ctx context.Context, sessionID, runID string, afterSeq uint64, frame client.V3RealtimeFrame, onEvent func(ui.ChatRunStreamEvent)) (client.SessionV3Hydrated, error) {
-	hydrated, err := b.api.GetSessionV3WithLimits(ctx, sessionID, 500, 200)
-	if err != nil {
-		return client.SessionV3Hydrated{}, err
-	}
-	if onEvent != nil {
-		warning := strings.TrimSpace(frame.Error)
-		if warning == "" {
-			warning = strings.TrimSpace(frame.Reason)
-		}
-		if warning == "" {
-			warning = "v3 realtime cursor gap; refetched session state"
-		}
-		onEvent(ui.ChatRunStreamEvent{Type: "session.refetched", SessionID: sessionID, RunID: runID, Warning: warning})
-		for _, event := range hydrated.Events {
-			if event.Seq <= afterSeq {
-				continue
-			}
-			if isV3DiagnosticEvent(event.EventType) {
-				continue
-			}
-			chatEvent := v3StreamEventToChatEvent(event)
-			if strings.TrimSpace(chatEvent.SessionID) == "" {
-				chatEvent.SessionID = sessionID
-			}
-			if strings.TrimSpace(chatEvent.RunID) == "" {
-				chatEvent.RunID = runID
-			}
-			onEvent(chatEvent)
-		}
-	}
-	return hydrated, nil
-}
-
-func mergeSessionV3HydratedRunResponse(response ui.ChatRunResponse, hydrated client.SessionV3Hydrated, runID string) ui.ChatRunResponse {
-	for i := len(hydrated.Messages) - 1; i >= 0; i-- {
-		message := hydrated.Messages[i]
-		if !strings.EqualFold(strings.TrimSpace(message.Role), "assistant") {
-			continue
-		}
-		messageRunID := stringValue(message.Metadata, "run_id")
-		if runID != "" && messageRunID != "" && messageRunID != runID {
-			continue
-		}
-		response.AssistantMessage = convertClientMessage(message)
-		response.NoAssistant = false
-		break
-	}
-	if intent, ok := latestV3RunIntentFromEvents(hydrated.Events, runID); ok {
-		response.PrimaryRunStatus = strings.TrimSpace(intent.Status)
-		response.PrimaryBlockedReason = strings.TrimSpace(intent.BlockedReason)
-	}
-	if hydrated.ActiveRunIntent != nil && v3RunIntentMatchesRun(*hydrated.ActiveRunIntent, runID) {
-		response.PrimaryRunStatus = strings.TrimSpace(hydrated.ActiveRunIntent.Status)
-		response.PrimaryBlockedReason = strings.TrimSpace(hydrated.ActiveRunIntent.BlockedReason)
-	}
-	if hydrated.UsageSummary != nil {
-		response.UsageSummary = convertClientUsageSummary(hydrated.UsageSummary)
-	}
-	if strings.TrimSpace(response.AssistantMessage.Content) == "" && v3RunIntentStatusTerminal(response.PrimaryRunStatus) {
-		response.NoAssistant = true
-	}
-	return response
-}
-
-func latestV3RunIntentFromEvents(events []client.SessionV3Event, runID string) (client.SessionV3RunIntent, bool) {
-	var latest client.SessionV3RunIntent
-	ok := false
-	for _, event := range events {
-		intent, found := v3RunIntentFromEvent(event)
-		if !found || !v3RunIntentMatchesRun(intent, runID) {
-			continue
-		}
-		latest = intent
-		ok = true
-	}
-	return latest, ok
-}
-
-func v3RunIntentFromEvent(event client.SessionV3Event) (client.SessionV3RunIntent, bool) {
-	var payload map[string]any
-	if len(event.Payload) > 0 {
-		_ = json.Unmarshal(event.Payload, &payload)
-	}
-	intentPayload, _ := payload["run_intent"].(map[string]any)
-	if len(intentPayload) == 0 && !v3EventMayCarryRunIntentStatus(event.EventType) {
-		return client.SessionV3RunIntent{}, false
-	}
-	intent := client.SessionV3RunIntent{
-		SessionID:     firstNonEmptyV3String(stringValue(intentPayload, "session_id"), stringValue(payload, "session_id"), strings.TrimSpace(event.SessionID)),
-		RunID:         firstNonEmptyV3String(stringValue(intentPayload, "run_id"), stringValue(payload, "run_id")),
-		Status:        firstNonEmptyV3String(stringValue(intentPayload, "status"), stringValue(payload, "status")),
-		BlockedReason: firstNonEmptyV3String(stringValue(intentPayload, "blocked_reason"), stringValue(payload, "blocked_reason"), stringValue(payload, "error")),
-		CreatedAt:     firstNonZeroInt64(int64Number(intentPayload, "created_at"), int64Number(payload, "created_at")),
-		UpdatedAt:     firstNonZeroInt64(int64Number(intentPayload, "updated_at"), int64Number(payload, "updated_at"), event.TsUnixMS),
-		EventSeq:      firstNonZeroUint64(uint64Number(intentPayload, "event_seq"), uint64Number(payload, "event_seq"), event.Seq),
-	}
-	if strings.TrimSpace(intent.RunID) == "" || strings.TrimSpace(intent.Status) == "" {
-		return client.SessionV3RunIntent{}, false
-	}
-	return intent, true
-}
-
-func v3EventMayCarryRunIntentStatus(eventType string) bool {
-	switch strings.ToLower(strings.TrimSpace(eventType)) {
-	case "session.run_intent.recorded",
-		"session.run.failed",
-		"session.run.cancelled",
-		"session.run.expired",
-		"session.run.interrupted",
-		"session.assistant.started",
-		"session.assistant.completed",
-		"session.assistant.failed":
-		return true
-	default:
-		return false
-	}
-}
-
-func v3RunIntentMatchesRun(intent client.SessionV3RunIntent, runID string) bool {
-	runID = strings.TrimSpace(runID)
-	return runID == "" || strings.TrimSpace(intent.RunID) == runID
-}
-
 func v3RunIntentStatusTerminal(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "completed", "failed", "cancelled", "expired", "interrupted", "dispatch_blocked":
@@ -526,292 +230,8 @@ func v3RunIntentStatusTerminal(status string) bool {
 	}
 }
 
-func isV3DiagnosticEvent(eventType string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(eventType)), "session.diagnostic.")
-}
-
-func v3StreamEventToChatEvent(event client.SessionV3Event) ui.ChatRunStreamEvent {
-	var payload map[string]any
-	if len(event.Payload) > 0 {
-		_ = json.Unmarshal(event.Payload, &payload)
-	}
-	out := ui.ChatRunStreamEvent{Type: strings.TrimSpace(event.EventType), SessionID: strings.TrimSpace(event.SessionID)}
-	if out.SessionID == "" {
-		out.SessionID = stringValue(payload, "session_id")
-	}
-	out.RunID = stringValue(payload, "run_id")
-	out.Status = stringValue(payload, "status")
-	out.Error = stringValue(payload, "error")
-	switch strings.TrimSpace(event.EventType) {
-	case "session.message.appended":
-		out.Type = "message.stored"
-		out.Message = messageFromV3Payload(payload, out.SessionID)
-	case "session.lifecycle.updated":
-		out.Type = "session.lifecycle.updated"
-		out.Lifecycle = lifecycleFromV3Payload(payload, out.SessionID, out.RunID, event.TsUnixMS)
-	case "session.assistant.started":
-		out.Type = "session.lifecycle.updated"
-		out.Lifecycle = &ui.ChatSessionLifecycle{SessionID: out.SessionID, RunID: out.RunID, Active: true, Phase: "running", StartedAt: event.TsUnixMS, UpdatedAt: event.TsUnixMS}
-	case "session.assistant.delta":
-		out.Type = "assistant.delta"
-		out.Delta = rawStringValue(payload, "delta")
-	case "session.assistant.completed":
-		if message := messageFromV3Payload(payload, out.SessionID); message != nil {
-			out.Type = "message.stored"
-			out.Message = message
-		} else {
-			out.Type = "turn.completed"
-			out.Summary = rawStringValue(payload, "summary")
-		}
-	case "session.message.updated":
-		out.Type = "message.updated"
-		out.Message = messageFromV3Payload(payload, out.SessionID)
-	case "run.usage.updated", "usage.updated", "session.usage.updated":
-		out.Type = "usage.updated"
-		out.TurnUsage = turnUsageFromV3Payload(payload)
-		out.UsageSummary = usageSummaryFromV3Payload(payload)
-	case "permission.requested", "permission.updated":
-		out.Type = strings.TrimSpace(event.EventType)
-		out.Permission = permissionFromV3Payload(payload)
-		if out.ToolName == "" && out.Permission != nil {
-			out.ToolName = out.Permission.ToolName
-		}
-		if out.CallID == "" && out.Permission != nil {
-			out.CallID = out.Permission.CallID
-		}
-	case "session.mode.updated":
-		out.Type = "session.mode.updated"
-		out.SessionMode = stringValue(payload, "mode")
-	case "session.reasoning.started":
-		out.Type = "reasoning.started"
-		out.Summary = ""
-	case "session.reasoning.delta":
-		out.Type = "reasoning.delta"
-		out.Delta = rawStringValue(payload, "delta")
-		if out.Delta == "" {
-			out.Delta = rawStringValue(payload, "output")
-		}
-		out.Summary = rawStringValue(payload, "summary")
-	case "session.reasoning.completed":
-		out.Type = "reasoning.completed"
-		out.Summary = firstNonEmptyV3String(rawStringValue(payload, "summary"), rawStringValue(payload, "completed_output"), rawStringValue(payload, "raw_output"), rawStringValue(payload, "output"))
-	case "session.tool.started":
-		out.Type = "tool.started"
-		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
-		out.CallID = stringValue(payload, "call_id")
-		out.Arguments = rawStringValue(payload, "arguments")
-		out.Output = rawStringValue(payload, "output")
-		out.RawOutput = rawStringValue(payload, "raw_output")
-		out.Step = int(int64Number(payload, "step"))
-		out.DurationMS = int64Number(payload, "duration_ms")
-		if out.Summary == "" {
-			out.Summary = out.ToolName
-		}
-	case "session.tool.delta":
-		out.Type = "tool.delta"
-		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
-		out.CallID = stringValue(payload, "call_id")
-		out.Output = rawStringValue(payload, "output")
-		out.RawOutput = rawStringValue(payload, "raw_output")
-		out.Step = int(int64Number(payload, "step"))
-		out.DurationMS = int64Number(payload, "duration_ms")
-	case "session.tool.completed", "session.tool.failed":
-		out.Type = "tool.completed"
-		out.ToolName = firstNonEmptyV3String(stringValue(payload, "tool_name"), "tool")
-		out.CallID = stringValue(payload, "call_id")
-		out.Arguments = rawStringValue(payload, "arguments")
-		out.Output = rawStringValue(payload, "output")
-		out.RawOutput = firstNonEmptyV3String(rawStringValue(payload, "raw_output"), rawStringValue(payload, "completed_output"))
-		out.Step = int(int64Number(payload, "step"))
-		out.DurationMS = int64Number(payload, "duration_ms")
-	case "session.run.failed", "session.run.cancelled", "session.run.expired", "session.run.interrupted", "session.assistant.failed":
-		out.Type = "turn.error"
-		if out.Error == "" {
-			out.Error = "Run failed"
-		}
-	case "session.status":
-		out.Type = "session.status"
-		out.Status = stringValue(payload, "status")
-		out.Summary = rawStringValue(payload, "summary")
-	case "session.step.started":
-		out.Type = "step.started"
-		out.Step = int(int64Number(payload, "step"))
-	case "session.title.updated":
-		out.Type = "session.title.updated"
-		out.Title = stringValue(payload, "title")
-	}
-	if out.Status == "" {
-		out.Status = stringValue(payload, "status")
-	}
-	if out.RunID == "" && out.Message != nil {
-		out.RunID = stringValue(out.Message.Metadata, "run_id")
-	}
-	return out
-}
-
-func messageFromV3Payload(payload map[string]any, fallbackSessionID string) *ui.ChatMessageRecord {
-	messagePayload, _ := payload["message"].(map[string]any)
-	if len(messagePayload) == 0 {
-		return nil
-	}
-	metadata, _ := messagePayload["metadata"].(map[string]any)
-	message := ui.ChatMessageRecord{
-		ID:        stringValue(messagePayload, "id"),
-		SessionID: firstNonEmptyV3String(stringValue(messagePayload, "session_id"), fallbackSessionID),
-		Role:      stringValue(messagePayload, "role"),
-		Content:   rawStringValue(messagePayload, "content"),
-		GlobalSeq: uint64Number(messagePayload, "global_seq"),
-		CreatedAt: int64Number(messagePayload, "created_at"),
-		Metadata:  metadata,
-	}
-	return &message
-}
-
-func permissionFromV3Payload(payload map[string]any) *ui.ChatPermissionRecord {
-	permissionPayload, _ := payload["permission"].(map[string]any)
-	if len(permissionPayload) == 0 {
-		return nil
-	}
-	raw, err := json.Marshal(permissionPayload)
-	if err != nil {
-		return nil
-	}
-	var record client.PermissionRecord
-	if err := json.Unmarshal(raw, &record); err != nil {
-		return nil
-	}
-	converted := convertClientPermission(record)
-	return &converted
-}
-
-func turnUsageFromV3Payload(payload map[string]any) *ui.ChatTurnUsage {
-	usagePayload, _ := payload["turn_usage"].(map[string]any)
-	if len(usagePayload) == 0 {
-		usagePayload, _ = payload["usage"].(map[string]any)
-	}
-	if len(usagePayload) == 0 {
-		return nil
-	}
-	raw, err := json.Marshal(usagePayload)
-	if err != nil {
-		return nil
-	}
-	var usage client.SessionTurnUsage
-	if err := json.Unmarshal(raw, &usage); err != nil {
-		return nil
-	}
-	return convertClientTurnUsage(&usage)
-}
-
-func usageSummaryFromV3Payload(payload map[string]any) *ui.ChatUsageSummary {
-	summaryPayload, _ := payload["usage_summary"].(map[string]any)
-	if len(summaryPayload) == 0 {
-		return nil
-	}
-	raw, err := json.Marshal(summaryPayload)
-	if err != nil {
-		return nil
-	}
-	var summary client.SessionUsageSummary
-	if err := json.Unmarshal(raw, &summary); err != nil {
-		return nil
-	}
-	return convertClientUsageSummary(&summary)
-}
-
-func stringValue(payload map[string]any, key string) string {
-	return strings.TrimSpace(rawStringValue(payload, key))
-}
-
-func rawStringValue(payload map[string]any, key string) string {
-	if value, ok := payload[key].(string); ok {
-		return value
-	}
-	return ""
-}
-
-func firstNonEmptyV3String(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
-func uint64Number(payload map[string]any, key string) uint64 {
-	switch value := payload[key].(type) {
-	case float64:
-		if value > 0 {
-			return uint64(value)
-		}
-	case int:
-		if value > 0 {
-			return uint64(value)
-		}
-	case int64:
-		if value > 0 {
-			return uint64(value)
-		}
-	case uint64:
-		return value
-	}
-	return 0
-}
-
-func int64Number(payload map[string]any, key string) int64 {
-	switch value := payload[key].(type) {
-	case float64:
-		return int64(value)
-	case int64:
-		return value
-	case int:
-		return int64(value)
-	case uint64:
-		return int64(value)
-	}
-	return 0
-}
-
-func firstNonZeroUint64(values ...uint64) uint64 {
-	for _, value := range values {
-		if value != 0 {
-			return value
-		}
-	}
-	return 0
-}
-
-func ptrChatMessageRecord(record ui.ChatMessageRecord) *ui.ChatMessageRecord {
-	return &record
-}
-
-func lifecycleFromV3Payload(payload map[string]any, fallbackSessionID, fallbackRunID string, fallbackTs int64) *ui.ChatSessionLifecycle {
-	lifecyclePayload, _ := payload["lifecycle"].(map[string]any)
-	if len(lifecyclePayload) == 0 {
-		lifecyclePayload = payload
-	}
-	sessionID := firstNonEmptyV3String(stringValue(lifecyclePayload, "session_id"), fallbackSessionID)
-	runID := firstNonEmptyV3String(stringValue(lifecyclePayload, "run_id"), fallbackRunID)
-	phase := stringValue(lifecyclePayload, "phase")
-	active, _ := lifecyclePayload["active"].(bool)
-	return &ui.ChatSessionLifecycle{
-		SessionID:      sessionID,
-		RunID:          runID,
-		Active:         active,
-		Phase:          phase,
-		StartedAt:      firstNonZeroInt64(int64Number(lifecyclePayload, "started_at"), fallbackTs),
-		EndedAt:        int64Number(lifecyclePayload, "ended_at"),
-		UpdatedAt:      firstNonZeroInt64(int64Number(lifecyclePayload, "updated_at"), fallbackTs),
-		Generation:     uint64Number(lifecyclePayload, "generation"),
-		StopReason:     stringValue(lifecyclePayload, "stop_reason"),
-		Error:          stringValue(lifecyclePayload, "error"),
-		OwnerTransport: stringValue(lifecyclePayload, "owner_transport"),
-	}
-}
-
 func activeRunIntentLifecycle(sessionID string, intent *client.SessionV3RunIntent) *ui.ChatSessionLifecycle {
-	if intent == nil || strings.TrimSpace(intent.RunID) == "" || v3RunIntentStatusTerminal(intent.Status) {
+	if intent == nil || strings.TrimSpace(intent.RunID) == "" {
 		return nil
 	}
 	return primaryRunIntentLifecycle(sessionID, *intent)
@@ -824,14 +244,24 @@ func primaryRunIntentLifecycle(sessionID string, intent client.SessionV3RunInten
 	if phase == "" {
 		phase = "pending_executor"
 	}
+	stopReason := strings.TrimSpace(intent.BlockedReason)
+	errorText := ""
 	switch phase {
 	case "pending_executor":
 		phase = "starting"
 		active = true
 	case "running":
 		active = true
-	case "completed", "failed", "cancelled", "expired", "interrupted", "dispatch_blocked":
+	case "completed", "cancelled", "interrupted":
 		active = false
+	case "failed", "expired":
+		phase = "errored"
+		active = false
+		errorText = stopReason
+	case "dispatch_blocked":
+		phase = "blocked"
+		active = false
+		errorText = stopReason
 	}
 	return &ui.ChatSessionLifecycle{
 		SessionID:  strings.TrimSpace(sessionID),
@@ -841,7 +271,8 @@ func primaryRunIntentLifecycle(sessionID string, intent client.SessionV3RunInten
 		StartedAt:  intent.CreatedAt,
 		EndedAt:    intent.UpdatedAt,
 		UpdatedAt:  intent.UpdatedAt,
-		StopReason: strings.TrimSpace(intent.BlockedReason),
+		StopReason: stopReason,
+		Error:      errorText,
 	}
 }
 
@@ -992,21 +423,7 @@ func convertClientRunStreamEvent(event client.SessionRunStreamEvent) ui.ChatRunS
 		out.Permission = &perm
 	}
 	if event.Result.SessionID != "" {
-		toolMessages := make([]ui.ChatMessageRecord, 0, len(event.Result.ToolMessages))
-		for _, message := range event.Result.ToolMessages {
-			toolMessages = append(toolMessages, convertClientMessage(message))
-		}
-		out.Result = ui.ChatRunResponse{
-			Model:            event.Result.Model,
-			Thinking:         event.Result.Thinking,
-			ReasoningSummary: event.Result.ReasoningSummary,
-			UsageSummary:     convertClientUsageSummary(event.Result.UsageSummary),
-			UserMessage:      convertClientMessage(event.Result.UserMessage),
-			ToolMessages:     toolMessages,
-			AssistantMessage: convertClientMessage(event.Result.AssistantMessage),
-			TargetKind:       event.Result.TargetKind,
-			TargetName:       event.Result.TargetName,
-		}
+		out.UsageSummary = convertClientUsageSummary(event.Result.UsageSummary)
 	}
 	return out
 }

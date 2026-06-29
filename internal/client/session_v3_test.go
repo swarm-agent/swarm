@@ -314,7 +314,7 @@ func TestStreamSessionsV3RealtimeMultiplexesSubscriptionsAndIsolatesGaps(t *test
 			t.Fatalf("hijack websocket: %v", err)
 		}
 		defer conn.Close()
-		for i := 0; i < 2; i++ {
+		for i := 0; i < 1; i++ {
 			_, payload, err := readClientLifecycleTestFrame(rw)
 			if err != nil {
 				t.Fatalf("read subscribe %d: %v", i, err)
@@ -351,11 +351,20 @@ func TestStreamSessionsV3RealtimeMultiplexesSubscriptionsAndIsolatesGaps(t *test
 	if gotPath != "/v3/realtime/stream" {
 		t.Fatalf("got path = %q", gotPath)
 	}
-	if len(subscribes) != 2 || subscribes[0]["kind"] != "subscribe.session" || subscribes[0]["session_id"] != "session-a" || subscribes[0]["endpoint_cursor"] != "cursor-10" || subscribes[1]["session_id"] != "session-b" || subscribes[1]["endpoint_cursor"] != "cursor-10" {
+	if len(subscribes) != 1 || subscribes[0]["kind"] != "resume" || subscribes[0]["endpoint_cursor"] != "cursor-10" {
 		t.Fatalf("subscribes = %#v", subscribes)
 	}
+	rawSubs, ok := subscribes[0]["subscriptions"].([]any)
+	if !ok || len(rawSubs) != 2 {
+		t.Fatalf("resume subscriptions = %#v", subscribes[0]["subscriptions"])
+	}
+	firstSub, _ := rawSubs[0].(map[string]any)
+	secondSub, _ := rawSubs[1].(map[string]any)
+	if firstSub["session_id"] != "session-a" || firstSub["endpoint_cursor"] != "cursor-10" || secondSub["session_id"] != "session-b" || secondSub["endpoint_cursor"] != "cursor-10" {
+		t.Fatalf("resume subscriptions = %#v", rawSubs)
+	}
 	if _, ok := subscribes[0]["after_seq"]; ok {
-		t.Fatalf("canonical realtime subscribe must not use after_seq: %#v", subscribes[0])
+		t.Fatalf("canonical realtime resume must not use after_seq: %#v", subscribes[0])
 	}
 	var sawGap, sawB bool
 	for _, frame := range frames {
@@ -390,10 +399,10 @@ func TestStreamSessionsV3RealtimeDeliversEndpointWatermarkWithoutChangingSession
 		defer conn.Close()
 		_, payload, err := readClientLifecycleTestFrame(rw)
 		if err != nil {
-			t.Fatalf("read subscribe: %v", err)
+			t.Fatalf("read resume: %v", err)
 		}
 		if err := json.Unmarshal(payload, &subscribe); err != nil {
-			t.Fatalf("decode subscribe: %v", err)
+			t.Fatalf("decode resume: %v", err)
 		}
 		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.started", "session_id": "session-a", "endpoint_cursor": "cursor-1", "last_seq": 12})
 		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "replay.complete", "session_id": "session-a", "endpoint_cursor": "cursor-1", "last_seq": 12})
@@ -418,8 +427,16 @@ func TestStreamSessionsV3RealtimeDeliversEndpointWatermarkWithoutChangingSession
 	if gotPath != "/v3/realtime/stream" || gotQuery != "endpoint_cursor=cursor-1" {
 		t.Fatalf("realtime request path/query = %q?%q", gotPath, gotQuery)
 	}
-	if subscribe["endpoint_cursor"] != "cursor-1" || subscribe["session_id"] != "session-a" {
-		t.Fatalf("subscribe = %#v", subscribe)
+	if subscribe["kind"] != "resume" || subscribe["endpoint_cursor"] != "cursor-1" {
+		t.Fatalf("resume = %#v", subscribe)
+	}
+	rawSubs, ok := subscribe["subscriptions"].([]any)
+	if !ok || len(rawSubs) != 1 {
+		t.Fatalf("resume subscriptions = %#v", subscribe["subscriptions"])
+	}
+	firstSub, _ := rawSubs[0].(map[string]any)
+	if firstSub["session_id"] != "session-a" || firstSub["endpoint_cursor"] != "cursor-1" {
+		t.Fatalf("resume subscription = %#v", firstSub)
 	}
 	if len(frames) != 3 || frames[2].Kind != v3RealtimeKindEndpointWatermark || frames[2].EndpointCursor != "cursor-2" || frames[2].LastSeq != 0 || frames[2].SessionID != "" {
 		t.Fatalf("frames = %#v, want endpoint watermark delivered without session last_seq", frames)
@@ -503,5 +520,79 @@ func TestStreamSessionV3WebSocketDeliversCursorErrorWithoutClosing(t *testing.T)
 	}
 	if !sawCursorError || !sawEvent {
 		t.Fatalf("frames did not prove cursor.error was non-terminal; sawCursorError=%v sawEvent=%v", sawCursorError, sawEvent)
+	}
+}
+
+func TestStreamSessionsV3RealtimeResumeFrameIncludesWorksetSelector(t *testing.T) {
+	var gotPath, gotQuery string
+	var resume map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		if r.Method != http.MethodGet || r.URL.Path != "/v3/realtime/stream" {
+			t.Fatalf("websocket path = %s %s, want GET /v3/realtime/stream", r.Method, r.URL.Path)
+		}
+		conn, rw, err := hijackLifecycleTestWebsocket(w, r)
+		if err != nil {
+			t.Fatalf("hijack websocket: %v", err)
+		}
+		defer conn.Close()
+		_, payload, err := readClientLifecycleTestFrame(rw)
+		if err != nil {
+			t.Fatalf("read resume: %v", err)
+		}
+		if err := json.Unmarshal(payload, &resume); err != nil {
+			t.Fatalf("decode resume: %v", err)
+		}
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "endpoint.watermark", "endpoint_cursor": "cursor-next"})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := api.StreamV3Realtime(ctx, V3RealtimeResumeOptions{
+		EndpointCursor: "cursor-workset",
+		Surface:        "tui",
+		Worksets: []V3RealtimeWorksetSubscription{{
+			WorksetID:             "tui:cwd:/repo/subdir",
+			SubscriptionID:        "tui:test:workset:cwd:/repo/subdir",
+			Surface:               "tui",
+			Selector:              V3RealtimeWorksetSelector{Kind: "workspace", WorkspacePath: "/repo/subdir"},
+			Resources:             []string{"membership", "sessions"},
+			AutoSubscribeSessions: true,
+		}},
+	}, func(frame V3RealtimeFrame) {
+		if frame.Kind == v3RealtimeKindEndpointWatermark {
+			cancel()
+		}
+	})
+	if err != nil {
+		t.Fatalf("StreamV3Realtime() error = %v", err)
+	}
+	if gotPath != "/v3/realtime/stream" || gotQuery != "endpoint_cursor=cursor-workset&surface=tui" {
+		t.Fatalf("realtime request path/query = %q?%q", gotPath, gotQuery)
+	}
+	if resume["protocol"] != "v3.realtime" || resume["protocol_version"] != float64(1) || resume["kind"] != "resume" || resume["endpoint_cursor"] != "cursor-workset" {
+		t.Fatalf("resume frame header = %#v", resume)
+	}
+	if _, hasAfterSeq := resume["after_seq"]; hasAfterSeq {
+		t.Fatalf("canonical realtime resume must not use after_seq: %#v", resume)
+	}
+	rawWorksets, ok := resume["worksets"].([]any)
+	if !ok || len(rawWorksets) != 1 {
+		t.Fatalf("resume worksets = %#v", resume["worksets"])
+	}
+	workset, ok := rawWorksets[0].(map[string]any)
+	if !ok || workset["workset_id"] != "tui:cwd:/repo/subdir" || workset["subscription_id"] != "tui:test:workset:cwd:/repo/subdir" || workset["surface"] != "tui" || workset["auto_subscribe_sessions"] != true {
+		t.Fatalf("workset resume entry = %#v", rawWorksets[0])
+	}
+	selector, ok := workset["selector"].(map[string]any)
+	if !ok || selector["kind"] != "workspace" || selector["workspace_path"] != "/repo/subdir" {
+		t.Fatalf("workset selector = %#v", workset["selector"])
+	}
+	if cursor := resume["endpoint_cursor"].(string); cursor == "" {
+		t.Fatalf("resume endpoint cursor is empty: %#v", resume)
 	}
 }

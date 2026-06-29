@@ -11,51 +11,86 @@ import (
 )
 
 const (
-	v3RealtimeStreamPath            = "/v3/realtime/stream"
-	v3RealtimeProtocol              = "v3.realtime"
-	v3RealtimeProtocolVersion       = 1
-	v3RealtimeKindHello             = "hello"
-	v3RealtimeKindEvent             = "event"
-	v3RealtimeKindReplayStart       = "replay.started"
-	v3RealtimeKindReplayDone        = "replay.complete"
-	v3RealtimeKindCursorError       = "cursor.error"
-	v3RealtimeKindKeepalive         = "keepalive"
-	v3RealtimeKindEndpointWatermark = "endpoint.watermark"
-	v3RealtimeKindHighWater         = "projection.high_watermark"
-	v3RealtimeKindSubscribe         = "subscribe.session"
-	v3RealtimeKindUnsubscribe       = "unsubscribe.session"
-	v3RealtimeKindResume            = "resume"
-	v3RealtimeKindAuthDenied        = "auth.denied"
-	v3RealtimeKindSlowConsumer      = "slow_consumer.reconnect_required"
+	v3RealtimeStreamPath                   = "/v3/realtime/stream"
+	v3RealtimeProtocol                     = "v3.realtime"
+	v3RealtimeProtocolVersion              = 1
+	v3RealtimeKindHello                    = "hello"
+	v3RealtimeKindEvent                    = "event"
+	v3RealtimeKindReplayStart              = "replay.started"
+	v3RealtimeKindReplayDone               = "replay.complete"
+	v3RealtimeKindCursorError              = "cursor.error"
+	v3RealtimeKindKeepalive                = "keepalive"
+	v3RealtimeKindEndpointWatermark        = "endpoint.watermark"
+	v3RealtimeKindHighWater                = "projection.high_watermark"
+	v3RealtimeKindSubscribe                = "subscribe.session"
+	v3RealtimeKindUnsubscribe              = "unsubscribe.session"
+	v3RealtimeKindResume                   = "resume"
+	v3RealtimeKindWorksetSessionDiscovered = "workset.session.discovered"
+	v3RealtimeKindWorksetSessionUpdated    = "workset.session.updated"
+	v3RealtimeKindWorksetSessionRemoved    = "workset.session.removed"
+	v3RealtimeKindAuthDenied               = "auth.denied"
+	v3RealtimeKindSlowConsumer             = "slow_consumer.reconnect_required"
 )
 
 type V3RealtimeSubscription struct {
-	SessionID      string
+	SessionID      string `json:"session_id"`
+	EndpointCursor string `json:"endpoint_cursor,omitempty"`
+	LastSeq        uint64 `json:"last_seq,omitempty"`
+	SubscriptionID string `json:"subscription_id"`
+}
+
+type V3RealtimeWorksetSubscription struct {
+	WorksetID             string                    `json:"workset_id"`
+	SubscriptionID        string                    `json:"subscription_id"`
+	Surface               string                    `json:"surface,omitempty"`
+	Selector              V3RealtimeWorksetSelector `json:"selector"`
+	Resources             []string                  `json:"resources,omitempty"`
+	AutoSubscribeSessions bool                      `json:"auto_subscribe_sessions"`
+}
+
+type V3RealtimeWorksetSelector struct {
+	Kind           string                 `json:"kind,omitempty"`
+	Global         bool                   `json:"global,omitempty"`
+	WorkspacePath  string                 `json:"workspace_path,omitempty"`
+	WorkspacePaths []string               `json:"workspace_paths,omitempty"`
+	SessionIDs     []string               `json:"session_ids,omitempty"`
+	Recent         SessionV3WorksetRecent `json:"recent,omitempty"`
+}
+
+type V3RealtimeResumeOptions struct {
 	EndpointCursor string
-	LastSeq        uint64
-	SubscriptionID string
+	Surface        string
+	Subscriptions  []V3RealtimeSubscription
+	Worksets       []V3RealtimeWorksetSubscription
 }
 
 type V3RealtimeFrame struct {
-	Protocol         string               `json:"protocol"`
-	ProtocolVersion  int                  `json:"protocol_version"`
-	Kind             string               `json:"kind"`
-	SessionID        string               `json:"session_id,omitempty"`
-	SubscriptionID   string               `json:"subscription_id,omitempty"`
-	AfterSeq         uint64               `json:"after_seq,omitempty"`
-	AfterRev         uint64               `json:"afterRev,omitempty"`
-	LastSeq          uint64               `json:"last_seq,omitempty"`
-	NextSeq          uint64               `json:"next_seq,omitempty"`
-	HighWatermarkSeq uint64               `json:"high_watermark_seq,omitempty"`
-	EndpointCursor   string               `json:"endpoint_cursor,omitempty"`
-	Rev              uint64               `json:"rev,omitempty"`
-	PrevRev          uint64               `json:"prevRev"`
-	EventType        string               `json:"event_type,omitempty"`
-	Event            *SessionV3Event      `json:"event,omitempty"`
-	Projection       *SessionV3Projection `json:"projection,omitempty"`
-	ErrorCode        string               `json:"error_code,omitempty"`
-	Error            string               `json:"error,omitempty"`
-	Reason           string               `json:"reason,omitempty"`
+	Protocol              string                          `json:"protocol"`
+	ProtocolVersion       int                             `json:"protocol_version"`
+	Kind                  string                          `json:"kind"`
+	SessionID             string                          `json:"session_id,omitempty"`
+	SubscriptionID        string                          `json:"subscription_id,omitempty"`
+	WorksetID             string                          `json:"workset_id,omitempty"`
+	WorksetSubscriptionID string                          `json:"workset_subscription_id,omitempty"`
+	AutoSubscribed        bool                            `json:"auto_subscribed,omitempty"`
+	AfterSeq              uint64                          `json:"after_seq,omitempty"`
+	AfterRev              uint64                          `json:"afterRev,omitempty"`
+	LastSeq               uint64                          `json:"last_seq,omitempty"`
+	NextSeq               uint64                          `json:"next_seq,omitempty"`
+	HighWatermarkSeq      uint64                          `json:"high_watermark_seq,omitempty"`
+	EndpointCursor        string                          `json:"endpoint_cursor,omitempty"`
+	Subscriptions         []V3RealtimeSubscription        `json:"subscriptions,omitempty"`
+	Worksets              []V3RealtimeWorksetSubscription `json:"worksets,omitempty"`
+	Capabilities          []string                        `json:"capabilities,omitempty"`
+	Rev                   uint64                          `json:"rev,omitempty"`
+	PrevRev               uint64                          `json:"prevRev"`
+	EventType             string                          `json:"event_type,omitempty"`
+	Event                 *SessionV3Event                 `json:"event,omitempty"`
+	Projection            *SessionV3Projection            `json:"projection,omitempty"`
+	Session               *SessionSummary                 `json:"session,omitempty"`
+	ErrorCode             string                          `json:"error_code,omitempty"`
+	Error                 string                          `json:"error,omitempty"`
+	Reason                string                          `json:"reason,omitempty"`
 }
 
 func (f V3RealtimeFrame) Err() error {
@@ -76,6 +111,10 @@ func (f V3RealtimeFrame) Err() error {
 }
 
 func (c *API) StreamSessionsV3Realtime(ctx context.Context, subscriptions []V3RealtimeSubscription, onFrame func(V3RealtimeFrame)) error {
+	return c.StreamV3Realtime(ctx, V3RealtimeResumeOptions{Subscriptions: subscriptions}, onFrame)
+}
+
+func (c *API) StreamV3Realtime(ctx context.Context, options V3RealtimeResumeOptions, onFrame func(V3RealtimeFrame)) error {
 	if c == nil {
 		return errors.New("api client is not configured")
 	}
@@ -84,30 +123,21 @@ func (c *API) StreamSessionsV3Realtime(ctx context.Context, subscriptions []V3Re
 		ctx, cancel = context.WithCancel(context.Background())
 		defer cancel()
 	}
-	normalized := make([]V3RealtimeSubscription, 0, len(subscriptions))
-	seen := make(map[string]struct{}, len(subscriptions))
-	for _, sub := range subscriptions {
-		sessionID := strings.TrimSpace(sub.SessionID)
-		if sessionID == "" {
-			return errors.New("session id is required")
-		}
-		if _, ok := seen[sessionID]; ok {
-			return fmt.Errorf("duplicate v3 realtime session subscription %q", sessionID)
-		}
-		seen[sessionID] = struct{}{}
-		sub.SessionID = sessionID
-		if strings.TrimSpace(sub.SubscriptionID) == "" {
-			sub.SubscriptionID = fmt.Sprintf("tui-%s-%d", sessionID, time.Now().UnixNano())
-		}
-		normalized = append(normalized, sub)
-	}
-	if len(normalized) == 0 {
-		return errors.New("at least one v3 realtime session subscription is required")
+	normalized, endpointCursor, err := normalizeV3RealtimeResumeOptions(options)
+	if err != nil {
+		return err
 	}
 
 	streamPath := v3RealtimeStreamPath
-	if len(normalized) == 1 && strings.TrimSpace(normalized[0].EndpointCursor) != "" {
-		streamPath = streamPath + "?endpoint_cursor=" + url.QueryEscape(strings.TrimSpace(normalized[0].EndpointCursor))
+	query := url.Values{}
+	if endpointCursor != "" {
+		query.Set("endpoint_cursor", endpointCursor)
+	}
+	if surface := strings.TrimSpace(normalized.Surface); surface != "" {
+		query.Set("surface", surface)
+	}
+	if len(query) > 0 {
+		streamPath = streamPath + "?" + query.Encode()
 	}
 	baseURL, _, socketPath := c.requestTarget()
 	conn, err := dialDaemonWS(ctx, baseURL, c.Token(), socketPath, streamPath, "")
@@ -116,24 +146,25 @@ func (c *API) StreamSessionsV3Realtime(ctx context.Context, subscriptions []V3Re
 	}
 	defer conn.Close()
 
-	lastSeqBySession := make(map[string]uint64, len(normalized))
-	for _, sub := range normalized {
+	lastSeqBySession := make(map[string]uint64, len(normalized.Subscriptions))
+	unknownAutoSubscribedSeq := map[string]bool{}
+	for _, sub := range normalized.Subscriptions {
 		lastSeqBySession[sub.SessionID] = sub.LastSeq
-		msg := V3RealtimeFrame{
-			Protocol:        v3RealtimeProtocol,
-			ProtocolVersion: v3RealtimeProtocolVersion,
-			Kind:            v3RealtimeKindSubscribe,
-			SessionID:       sub.SessionID,
-			SubscriptionID:  strings.TrimSpace(sub.SubscriptionID),
-			EndpointCursor:  strings.TrimSpace(sub.EndpointCursor),
-		}
-		raw, err := json.Marshal(msg)
-		if err != nil {
-			return err
-		}
-		if err := conn.WriteText(raw); err != nil {
-			return fmt.Errorf("send v3 realtime subscribe: %w", err)
-		}
+	}
+	resume := V3RealtimeFrame{
+		Protocol:        v3RealtimeProtocol,
+		ProtocolVersion: v3RealtimeProtocolVersion,
+		Kind:            v3RealtimeKindResume,
+		EndpointCursor:  endpointCursor,
+		Subscriptions:   normalized.Subscriptions,
+		Worksets:        normalized.Worksets,
+	}
+	raw, err := json.Marshal(resume)
+	if err != nil {
+		return err
+	}
+	if err := conn.WriteText(raw); err != nil {
+		return fmt.Errorf("send v3 realtime resume: %w", err)
 	}
 
 	for {
@@ -158,11 +189,29 @@ func (c *API) StreamSessionsV3Realtime(ctx context.Context, subscriptions []V3Re
 		deliver := true
 		switch kind {
 		case v3RealtimeKindEvent:
-			if err := applyV3RealtimeSessionOrder(lastSeqBySession, &frame, onFrame); err != nil {
+			if err := applyV3RealtimeSessionOrder(lastSeqBySession, unknownAutoSubscribedSeq, &frame, onFrame); err != nil {
 				return err
 			}
 			if frame.Event == nil || frame.Event.Seq != frame.LastSeq {
 				deliver = false
+			}
+		case v3RealtimeKindWorksetSessionDiscovered:
+			if sessionID := strings.TrimSpace(frame.SessionID); sessionID != "" {
+				lastSeqBySession[sessionID] = frame.LastSeq
+				if frame.AutoSubscribed && frame.LastSeq == 0 {
+					unknownAutoSubscribedSeq[sessionID] = true
+				} else {
+					delete(unknownAutoSubscribedSeq, sessionID)
+				}
+			}
+		case v3RealtimeKindWorksetSessionUpdated:
+			// Workset membership/resource frames update list state but do not advance
+			// per-session event order. Subsequent event frames remain the session-local
+			// ordering authority for direct or auto-subscribed session streams.
+		case v3RealtimeKindWorksetSessionRemoved:
+			if sessionID := strings.TrimSpace(frame.SessionID); sessionID != "" {
+				delete(lastSeqBySession, sessionID)
+				delete(unknownAutoSubscribedSeq, sessionID)
 			}
 		case v3RealtimeKindCursorError, v3RealtimeKindAuthDenied:
 			// Per-session recovery state belongs to the named session; keep the shared
@@ -191,6 +240,89 @@ func (c *API) StreamSessionsV3Realtime(ctx context.Context, subscriptions []V3Re
 	}
 }
 
+func normalizeV3RealtimeResumeOptions(options V3RealtimeResumeOptions) (V3RealtimeResumeOptions, string, error) {
+	cursor := strings.TrimSpace(options.EndpointCursor)
+	normalized := V3RealtimeResumeOptions{
+		EndpointCursor: cursor,
+		Surface:        strings.TrimSpace(options.Surface),
+		Subscriptions:  make([]V3RealtimeSubscription, 0, len(options.Subscriptions)),
+		Worksets:       make([]V3RealtimeWorksetSubscription, 0, len(options.Worksets)),
+	}
+	seenSessions := make(map[string]struct{}, len(options.Subscriptions))
+	for _, sub := range options.Subscriptions {
+		sessionID := strings.TrimSpace(sub.SessionID)
+		if sessionID == "" {
+			return V3RealtimeResumeOptions{}, "", errors.New("session id is required")
+		}
+		if _, ok := seenSessions[sessionID]; ok {
+			return V3RealtimeResumeOptions{}, "", fmt.Errorf("duplicate v3 realtime session subscription %q", sessionID)
+		}
+		seenSessions[sessionID] = struct{}{}
+		sub.SessionID = sessionID
+		sub.EndpointCursor = strings.TrimSpace(sub.EndpointCursor)
+		if cursor == "" && sub.EndpointCursor != "" {
+			cursor = sub.EndpointCursor
+		}
+		if strings.TrimSpace(sub.SubscriptionID) == "" {
+			sub.SubscriptionID = fmt.Sprintf("tui-%s-%d", sessionID, time.Now().UnixNano())
+		} else {
+			sub.SubscriptionID = strings.TrimSpace(sub.SubscriptionID)
+		}
+		normalized.Subscriptions = append(normalized.Subscriptions, sub)
+	}
+	for i := range normalized.Subscriptions {
+		if cursor != "" {
+			normalized.Subscriptions[i].EndpointCursor = cursor
+		}
+	}
+	seenWorksets := make(map[string]struct{}, len(options.Worksets))
+	for _, workset := range options.Worksets {
+		worksetID := strings.TrimSpace(workset.WorksetID)
+		if worksetID == "" {
+			return V3RealtimeResumeOptions{}, "", errors.New("v3 realtime workset_id is required")
+		}
+		if _, ok := seenWorksets[worksetID]; ok {
+			return V3RealtimeResumeOptions{}, "", fmt.Errorf("duplicate v3 realtime workset subscription %q", worksetID)
+		}
+		seenWorksets[worksetID] = struct{}{}
+		workset.WorksetID = worksetID
+		workset.SubscriptionID = strings.TrimSpace(workset.SubscriptionID)
+		if workset.SubscriptionID == "" {
+			return V3RealtimeResumeOptions{}, "", fmt.Errorf("v3 realtime workset %q requires subscription_id", worksetID)
+		}
+		workset.Surface = strings.TrimSpace(workset.Surface)
+		workset.Selector.Kind = strings.TrimSpace(workset.Selector.Kind)
+		workset.Selector.WorkspacePath = strings.TrimSpace(workset.Selector.WorkspacePath)
+		workset.Selector.WorkspacePaths = trimNonEmptyStrings(workset.Selector.WorkspacePaths)
+		workset.Selector.SessionIDs = trimNonEmptyStrings(workset.Selector.SessionIDs)
+		workset.Selector.Recent.BeforeSessionID = strings.TrimSpace(workset.Selector.Recent.BeforeSessionID)
+		workset.Resources = trimNonEmptyStrings(workset.Resources)
+		normalized.Worksets = append(normalized.Worksets, workset)
+	}
+	if cursor == "" {
+		return V3RealtimeResumeOptions{}, "", errors.New("v3 realtime endpoint cursor is required")
+	}
+	if len(normalized.Subscriptions) == 0 && len(normalized.Worksets) == 0 {
+		return V3RealtimeResumeOptions{}, "", errors.New("at least one v3 realtime session or workset subscription is required")
+	}
+	normalized.EndpointCursor = cursor
+	return normalized, cursor, nil
+}
+
+func trimNonEmptyStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 func validateV3RealtimeFrameProtocol(frame V3RealtimeFrame) error {
 	if frame.Protocol != v3RealtimeProtocol {
 		return fmt.Errorf("v3 realtime protocol must be %q", v3RealtimeProtocol)
@@ -204,7 +336,7 @@ func validateV3RealtimeFrameProtocol(frame V3RealtimeFrame) error {
 	return nil
 }
 
-func applyV3RealtimeSessionOrder(lastSeqBySession map[string]uint64, frame *V3RealtimeFrame, onFrame func(V3RealtimeFrame)) error {
+func applyV3RealtimeSessionOrder(lastSeqBySession map[string]uint64, unknownAutoSubscribedSeq map[string]bool, frame *V3RealtimeFrame, onFrame func(V3RealtimeFrame)) error {
 	if frame == nil || frame.Event == nil {
 		return errors.New("v3 realtime event frame missing event")
 	}
@@ -231,8 +363,17 @@ func applyV3RealtimeSessionOrder(lastSeqBySession map[string]uint64, frame *V3Re
 	if !ok {
 		return fmt.Errorf("v3 realtime event for unsubscribed session %q", sessionID)
 	}
-	if frame.Event.Seq <= lastSeq {
+	if frame.Event.Seq <= lastSeq && !unknownAutoSubscribedSeq[sessionID] {
 		frame.Event = nil
+		return nil
+	}
+	if unknownAutoSubscribedSeq[sessionID] {
+		delete(unknownAutoSubscribedSeq, sessionID)
+		lastSeqBySession[sessionID] = frame.Event.Seq
+		frame.LastSeq = frame.Event.Seq
+		if strings.TrimSpace(frame.EventType) == "" {
+			frame.EventType = frame.Event.EventType
+		}
 		return nil
 	}
 	if frame.Event.Seq != lastSeq+1 {

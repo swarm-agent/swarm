@@ -27,9 +27,10 @@ type tuiSessionStore struct {
 }
 
 type tuiSessionStoreStaleState struct {
-	Stale     bool
-	SessionID string
-	Reason    string
+	Stale        bool
+	SessionID    string
+	Reason       string
+	ScopeChanged bool
 }
 
 type tuiSessionStoreApplyResult struct {
@@ -91,6 +92,91 @@ func (s *tuiSessionStore) MergeHydrated(hydrated client.SessionV3Hydrated) {
 	s.stale = tuiSessionStoreStaleState{}
 }
 
+func (s *tuiSessionStore) MergeMessageResult(result client.SessionV3MessageResult) tuiSessionStoreApplyResult {
+	if s == nil {
+		return tuiSessionStoreApplyResult{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sessionID := firstNonEmpty(strings.TrimSpace(result.Session.ID), strings.TrimSpace(result.Projection.SessionID), strings.TrimSpace(result.Message.SessionID), strings.TrimSpace(result.RunIntent.SessionID))
+	if sessionID == "" {
+		return tuiSessionStoreApplyResult{}
+	}
+	s.ensureWorksetMapsLocked()
+	if strings.TrimSpace(result.Session.ID) != "" {
+		session := cloneClientSessionSummary(result.Session)
+		if strings.TrimSpace(session.SessionAPI) == "" {
+			session.SessionAPI = "v3"
+		}
+		s.workset.SessionsByID[sessionID] = session
+	} else if _, ok := s.workset.SessionsByID[sessionID]; !ok {
+		s.workset.SessionsByID[sessionID] = client.SessionSummary{ID: sessionID, SessionAPI: "v3"}
+	}
+	if strings.TrimSpace(result.Projection.SessionID) != "" || result.Projection.LastEventSeq != 0 || result.Projection.ProjectionHighWatermarkSeq != 0 {
+		projection := result.Projection
+		if strings.TrimSpace(projection.SessionID) == "" {
+			projection.SessionID = sessionID
+		}
+		s.workset.ProjectionsBySession[sessionID] = projection
+	}
+	if strings.TrimSpace(result.Message.ID) != "" {
+		message := result.Message
+		if strings.TrimSpace(message.SessionID) == "" {
+			message.SessionID = sessionID
+		}
+		s.workset.MessagesBySession[sessionID] = appendOrReplaceMessage(s.workset.MessagesBySession[sessionID], message)
+	}
+	for _, message := range result.Messages {
+		if strings.TrimSpace(message.ID) == "" {
+			continue
+		}
+		if strings.TrimSpace(message.SessionID) == "" {
+			message.SessionID = sessionID
+		}
+		s.workset.MessagesBySession[sessionID] = appendOrReplaceMessage(s.workset.MessagesBySession[sessionID], message)
+	}
+	for _, event := range result.Events {
+		if strings.TrimSpace(event.SessionID) == "" {
+			event.SessionID = sessionID
+		}
+		if strings.TrimSpace(event.ID) != "" {
+			s.workset.EventsBySession[sessionID] = appendOrReplaceV3Event(s.workset.EventsBySession[sessionID], event)
+		}
+		s.applyEventPayloadLocked(sessionID, event)
+	}
+	if strings.TrimSpace(result.RunIntent.RunID) != "" {
+		intent := result.RunIntent
+		if strings.TrimSpace(intent.SessionID) == "" {
+			intent.SessionID = sessionID
+		}
+		s.workset.RunIntentsBySession[sessionID] = appendOrReplaceRunIntent(s.workset.RunIntentsBySession[sessionID], intent)
+		if lifecycle := v3RunIntentSessionLifecycle(sessionID, &intent); lifecycle != nil {
+			session := s.workset.SessionsByID[sessionID]
+			session.Lifecycle = lifecycle
+			s.workset.SessionsByID[sessionID] = session
+		}
+	}
+	if result.RealtimeOutbox != nil {
+		if cursor := strings.TrimSpace(result.RealtimeOutbox.EndpointCursor); cursor != "" {
+			s.workset.SnapshotEndpointCursor = cursor
+		}
+	}
+	if summary, ok := s.workset.SessionsByID[sessionID]; ok {
+		if strings.TrimSpace(summary.SessionAPI) == "" {
+			summary.SessionAPI = "v3"
+		}
+		summary.MessageCount = len(s.workset.MessagesBySession[sessionID])
+		if projection, ok := s.workset.ProjectionsBySession[sessionID]; ok {
+			summary.LastEventSeq = projection.LastEventSeq
+			summary.ProjectionHighWatermarkSeq = projection.ProjectionHighWatermarkSeq
+		}
+		s.workset.SessionsByID[sessionID] = summary
+	}
+	s.prependSessionOrderLocked(sessionID)
+	s.stale = tuiSessionStoreStaleState{}
+	return tuiSessionStoreApplyResult{Changed: true, SessionID: sessionID}
+}
+
 func (s *tuiSessionStore) ApplyRealtimeFrame(frame client.V3RealtimeFrame) tuiSessionStoreApplyResult {
 	if s == nil {
 		return tuiSessionStoreApplyResult{}
@@ -104,7 +190,11 @@ func (s *tuiSessionStore) ApplyRealtimeFrame(frame client.V3RealtimeFrame) tuiSe
 	}
 	switch kind {
 	case tuiRealtimeKindCursorError, tuiRealtimeKindAuthDenied, tuiRealtimeKindSlowConsumer, tuiRealtimeKindSessionGap:
-		return s.markStaleLocked(sessionID, kind)
+		return s.markStaleLocked(sessionID, tuiRealtimeFrameTerminalReason(frame))
+	case "workset.session.discovered", "workset.session.updated":
+		return s.applyWorksetSessionFrameLocked(frame)
+	case "workset.session.removed":
+		return s.applyWorksetSessionRemovedLocked(frame)
 	case "", "hello", "keepalive", "replay.started", "replay.complete":
 		return tuiSessionStoreApplyResult{}
 	case "projection.high_watermark":
@@ -220,7 +310,7 @@ func (s *tuiSessionStore) ChatSnapshot(sessionID string) (tuiSessionChatSnapshot
 	return snapshot, true
 }
 
-func (s *tuiSessionStore) DesiredSubscriptions() []client.V3RealtimeSubscription {
+func (s *tuiSessionStore) DesiredSubscriptions(clientID string) []client.V3RealtimeSubscription {
 	if s == nil {
 		return nil
 	}
@@ -229,16 +319,21 @@ func (s *tuiSessionStore) DesiredSubscriptions() []client.V3RealtimeSubscription
 	ids := orderedSessionIDs(s.workset)
 	out := make([]client.V3RealtimeSubscription, 0, len(ids))
 	cursor := strings.TrimSpace(s.workset.SnapshotEndpointCursor)
+	clientID = strings.TrimSpace(clientID)
 	for _, id := range ids {
 		lastSeq := uint64(0)
 		if projection, ok := s.workset.ProjectionsBySession[id]; ok {
 			lastSeq = projection.LastEventSeq
 		}
+		subscriptionID := "tui:" + id
+		if clientID != "" {
+			subscriptionID = clientID + ":session:" + id
+		}
 		out = append(out, client.V3RealtimeSubscription{
 			SessionID:      id,
 			EndpointCursor: cursor,
 			LastSeq:        lastSeq,
-			SubscriptionID: "tui-" + id,
+			SubscriptionID: subscriptionID,
 		})
 	}
 	return out
@@ -278,6 +373,80 @@ func (s *tuiSessionStore) StaleState() tuiSessionStoreStaleState {
 	return s.stale
 }
 
+func (s *tuiSessionStore) MarkScopeStale(reason string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stale = tuiSessionStoreStaleState{Stale: true, Reason: strings.TrimSpace(reason), ScopeChanged: true}
+}
+
+func (s *tuiSessionStore) applyWorksetSessionFrameLocked(frame client.V3RealtimeFrame) tuiSessionStoreApplyResult {
+	sessionID := strings.TrimSpace(frame.SessionID)
+	if sessionID == "" {
+		sessionID = frameSessionID(frame)
+	}
+	if sessionID == "" {
+		return tuiSessionStoreApplyResult{}
+	}
+	s.ensureWorksetMapsLocked()
+	if frame.Session != nil {
+		session := cloneClientSessionSummary(*frame.Session)
+		if session.ID == "" {
+			session.ID = sessionID
+		}
+		if strings.TrimSpace(session.SessionAPI) == "" {
+			session.SessionAPI = "v3"
+		}
+		s.workset.SessionsByID[sessionID] = session
+	} else if _, ok := s.workset.SessionsByID[sessionID]; !ok {
+		s.workset.SessionsByID[sessionID] = client.SessionSummary{ID: sessionID, SessionAPI: "v3"}
+	}
+	if frame.Projection != nil {
+		projection := *frame.Projection
+		if projection.SessionID == "" {
+			projection.SessionID = sessionID
+		}
+		s.workset.ProjectionsBySession[sessionID] = projection
+	}
+	if summary, ok := s.workset.SessionsByID[sessionID]; ok {
+		if projection, ok := s.workset.ProjectionsBySession[sessionID]; ok {
+			summary.LastEventSeq = projection.LastEventSeq
+			summary.ProjectionHighWatermarkSeq = projection.ProjectionHighWatermarkSeq
+		}
+		s.workset.SessionsByID[sessionID] = summary
+	}
+	s.prependSessionOrderLocked(sessionID)
+	return tuiSessionStoreApplyResult{Changed: true, SessionID: sessionID}
+}
+
+func (s *tuiSessionStore) applyWorksetSessionRemovedLocked(frame client.V3RealtimeFrame) tuiSessionStoreApplyResult {
+	sessionID := strings.TrimSpace(frame.SessionID)
+	if sessionID == "" {
+		sessionID = frameSessionID(frame)
+	}
+	if sessionID == "" {
+		return tuiSessionStoreApplyResult{}
+	}
+	delete(s.workset.SessionsByID, sessionID)
+	delete(s.workset.ProjectionsBySession, sessionID)
+	delete(s.workset.MessagesBySession, sessionID)
+	delete(s.workset.EventsBySession, sessionID)
+	delete(s.workset.PlansBySession, sessionID)
+	delete(s.workset.PlanRevisionsBySession, sessionID)
+	delete(s.workset.PermissionsBySession, sessionID)
+	delete(s.workset.UsageBySession, sessionID)
+	delete(s.workset.PreferencesBySession, sessionID)
+	delete(s.workset.AgentModelPolicyBySession, sessionID)
+	delete(s.workset.RunIntentsBySession, sessionID)
+	delete(s.workset.HistoryManifestsBySession, sessionID)
+	delete(s.workset.HistoryChunksByID, sessionID)
+	delete(s.hydratedSessions, sessionID)
+	s.workset.SessionOrder = removeStringFromOrder(s.workset.SessionOrder, sessionID)
+	return tuiSessionStoreApplyResult{Changed: true, SessionID: sessionID}
+}
+
 func (s *tuiSessionStore) applyEventFrameLocked(frame client.V3RealtimeFrame, sessionID string) tuiSessionStoreApplyResult {
 	if frame.Event == nil {
 		return tuiSessionStoreApplyResult{}
@@ -310,7 +479,7 @@ func (s *tuiSessionStore) applyEventFrameLocked(frame client.V3RealtimeFrame, se
 	if event.Seq == 0 {
 		event.Seq = seq
 	}
-	s.workset.EventsBySession[sessionID] = append(s.workset.EventsBySession[sessionID], event)
+	s.workset.EventsBySession[sessionID] = appendOrReplaceV3Event(s.workset.EventsBySession[sessionID], event)
 	projection.SessionID = sessionID
 	if seq > projection.LastEventSeq {
 		projection.LastEventSeq = seq
@@ -594,6 +763,22 @@ func (s *tuiSessionStore) prependSessionOrderLocked(sessionID string) {
 	s.workset.SessionOrder = next
 }
 
+func removeStringFromOrder(order []string, target string) []string {
+	target = strings.TrimSpace(target)
+	if target == "" || len(order) == 0 {
+		return order
+	}
+	next := make([]string, 0, len(order))
+	for _, value := range order {
+		value = strings.TrimSpace(value)
+		if value == "" || value == target {
+			continue
+		}
+		next = append(next, value)
+	}
+	return next
+}
+
 func mergeSessionV3Workset(dst *client.SessionV3Workset, incoming client.SessionV3Workset) {
 	if dst == nil {
 		return
@@ -836,6 +1021,22 @@ func orderedSessionIDs(workset client.SessionV3Workset) []string {
 func appendOrReplaceMessage(items []client.SessionMessage, item client.SessionMessage) []client.SessionMessage {
 	for i := range items {
 		if strings.TrimSpace(items[i].ID) == strings.TrimSpace(item.ID) {
+			items[i] = item
+			return items
+		}
+	}
+	return append(items, item)
+}
+
+func appendOrReplaceV3Event(items []client.SessionV3Event, item client.SessionV3Event) []client.SessionV3Event {
+	id := strings.TrimSpace(item.ID)
+	seq := item.Seq
+	for i := range items {
+		if id != "" && strings.TrimSpace(items[i].ID) == id {
+			items[i] = item
+			return items
+		}
+		if id == "" && seq != 0 && items[i].Seq == seq {
 			items[i] = item
 			return items
 		}

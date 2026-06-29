@@ -12,8 +12,10 @@ import (
 )
 
 type tuiRealtimeFakeStreamCall struct {
-	Index         int
-	Subscriptions []client.V3RealtimeSubscription
+	Index          int
+	Subscriptions  []client.V3RealtimeSubscription
+	Worksets       []client.V3RealtimeWorksetSubscription
+	EndpointCursor string
 }
 
 type tuiRealtimeFakeStreamer struct {
@@ -21,7 +23,7 @@ type tuiRealtimeFakeStreamer struct {
 	calls   []tuiRealtimeFakeStreamCall
 	started chan tuiRealtimeFakeStreamCall
 	ctxs    chan context.Context
-	handler func(index int, ctx context.Context, subscriptions []client.V3RealtimeSubscription, onFrame func(client.V3RealtimeFrame)) error
+	handler func(index int, ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error
 }
 
 func newTUIRealtimeFakeStreamer() *tuiRealtimeFakeStreamer {
@@ -31,10 +33,10 @@ func newTUIRealtimeFakeStreamer() *tuiRealtimeFakeStreamer {
 	}
 }
 
-func (f *tuiRealtimeFakeStreamer) StreamSessionsV3Realtime(ctx context.Context, subscriptions []client.V3RealtimeSubscription, onFrame func(client.V3RealtimeFrame)) error {
+func (f *tuiRealtimeFakeStreamer) StreamV3Realtime(ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
 	f.mu.Lock()
 	index := len(f.calls) + 1
-	call := tuiRealtimeFakeStreamCall{Index: index, Subscriptions: cloneTUIRealtimeSubscriptions(subscriptions)}
+	call := tuiRealtimeFakeStreamCall{Index: index, Subscriptions: cloneTUIRealtimeSubscriptions(options.Subscriptions), Worksets: cloneTUIRealtimeWorksets(options.Worksets), EndpointCursor: options.EndpointCursor}
 	f.calls = append(f.calls, call)
 	handler := f.handler
 	f.mu.Unlock()
@@ -47,7 +49,7 @@ func (f *tuiRealtimeFakeStreamer) StreamSessionsV3Realtime(ctx context.Context, 
 	default:
 	}
 	if handler != nil {
-		return handler(index, ctx, subscriptions, onFrame)
+		return handler(index, ctx, options, onFrame)
 	}
 	<-ctx.Done()
 	return nil
@@ -61,13 +63,13 @@ func (f *tuiRealtimeFakeStreamer) callCount() int {
 
 func TestTUIRealtimeControllerReconcileStartsOneStreamForUnchangedState(t *testing.T) {
 	fake := newTUIRealtimeFakeStreamer()
-	fake.handler = func(index int, ctx context.Context, subscriptions []client.V3RealtimeSubscription, onFrame func(client.V3RealtimeFrame)) error {
+	fake.handler = func(index int, ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
 		<-ctx.Done()
 		return nil
 	}
 	controller := newTestTUIRealtimeController(fake, make(chan client.V3RealtimeFrame, 4), make(chan tuiRealtimeStatus, 16))
 	subs := []client.V3RealtimeSubscription{{SessionID: "b", EndpointCursor: "cursor-1", LastSeq: 2}, {SessionID: "a", EndpointCursor: "cursor-1", LastSeq: 1}}
-	if err := controller.Reconcile(subs, "cursor-1"); err != nil {
+	if err := controller.Reconcile(subs, nil, "cursor-1"); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
 	first := waitTUIRealtimeCall(t, fake)
@@ -75,12 +77,12 @@ func TestTUIRealtimeControllerReconcileStartsOneStreamForUnchangedState(t *testi
 		t.Fatalf("subscriptions order = %v, want [a b]", got)
 	}
 	firstCtx := waitTUIRealtimeContext(t, fake)
-	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1", LastSeq: 1}, {SessionID: "b", EndpointCursor: "cursor-1", LastSeq: 2}}, "cursor-1"); err != nil {
+	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1", LastSeq: 1}, {SessionID: "b", EndpointCursor: "cursor-1", LastSeq: 2}}, nil, "cursor-1"); err != nil {
 		t.Fatalf("second Reconcile() error = %v", err)
 	}
 	assertNoTUIRealtimeCall(t, fake, 25*time.Millisecond)
 
-	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-2", LastSeq: 3}}, "cursor-2"); err != nil {
+	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-2", LastSeq: 3}}, nil, "cursor-2"); err != nil {
 		t.Fatalf("changed Reconcile() error = %v", err)
 	}
 	waitTUIRealtimeCall(t, fake)
@@ -88,19 +90,54 @@ func TestTUIRealtimeControllerReconcileStartsOneStreamForUnchangedState(t *testi
 	controller.Stop()
 }
 
-func TestTUIRealtimeControllerStopCancelsOnlyActiveGeneration(t *testing.T) {
+func TestTUIRealtimeControllerReconcileIncludesWorksetResume(t *testing.T) {
 	fake := newTUIRealtimeFakeStreamer()
-	fake.handler = func(index int, ctx context.Context, subscriptions []client.V3RealtimeSubscription, onFrame func(client.V3RealtimeFrame)) error {
+	fake.handler = func(index int, ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
 		<-ctx.Done()
 		return nil
 	}
 	controller := newTestTUIRealtimeController(fake, make(chan client.V3RealtimeFrame, 4), make(chan tuiRealtimeStatus, 16))
-	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, "cursor-1"); err != nil {
+	workset := client.V3RealtimeWorksetSubscription{
+		WorksetID:             "tui:workspace:/repo",
+		SubscriptionID:        "tui:test:workset:workspace:/repo",
+		Surface:               "tui",
+		Selector:              client.V3RealtimeWorksetSelector{Kind: "workspace", WorkspacePath: "/repo"},
+		Resources:             []string{"membership", "sessions"},
+		AutoSubscribeSessions: true,
+	}
+	if err := controller.Reconcile(nil, []client.V3RealtimeWorksetSubscription{workset}, "cursor-workset"); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	call := waitTUIRealtimeCall(t, fake)
+	if call.EndpointCursor != "cursor-workset" {
+		t.Fatalf("endpoint cursor = %q", call.EndpointCursor)
+	}
+	if len(call.Subscriptions) != 0 {
+		t.Fatalf("subscriptions = %+v, want none for workset resume", call.Subscriptions)
+	}
+	if len(call.Worksets) != 1 {
+		t.Fatalf("worksets = %+v, want one", call.Worksets)
+	}
+	got := call.Worksets[0]
+	if got.WorksetID != workset.WorksetID || got.SubscriptionID != workset.SubscriptionID || got.Surface != "tui" || !got.AutoSubscribeSessions || got.Selector.Kind != "workspace" || got.Selector.WorkspacePath != "/repo" {
+		t.Fatalf("workset = %+v", got)
+	}
+	controller.Stop()
+}
+
+func TestTUIRealtimeControllerStopCancelsOnlyActiveGeneration(t *testing.T) {
+	fake := newTUIRealtimeFakeStreamer()
+	fake.handler = func(index int, ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
+		<-ctx.Done()
+		return nil
+	}
+	controller := newTestTUIRealtimeController(fake, make(chan client.V3RealtimeFrame, 4), make(chan tuiRealtimeStatus, 16))
+	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, nil, "cursor-1"); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
 	waitTUIRealtimeCall(t, fake)
 	firstCtx := waitTUIRealtimeContext(t, fake)
-	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "b", EndpointCursor: "cursor-2"}}, "cursor-2"); err != nil {
+	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "b", EndpointCursor: "cursor-2"}}, nil, "cursor-2"); err != nil {
 		t.Fatalf("changed Reconcile() error = %v", err)
 	}
 	waitTUIRealtimeCall(t, fake)
@@ -113,7 +150,7 @@ func TestTUIRealtimeControllerStopCancelsOnlyActiveGeneration(t *testing.T) {
 
 func TestTUIRealtimeControllerTerminalFrameStopsWithoutReconnectLoop(t *testing.T) {
 	fake := newTUIRealtimeFakeStreamer()
-	fake.handler = func(index int, ctx context.Context, subscriptions []client.V3RealtimeSubscription, onFrame func(client.V3RealtimeFrame)) error {
+	fake.handler = func(index int, ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
 		onFrame(client.V3RealtimeFrame{Kind: tuiRealtimeKindSlowConsumer, SessionID: "a", Error: "slow"})
 		<-ctx.Done()
 		return errors.New("read v3 realtime stream: should not retry after terminal frame")
@@ -121,7 +158,7 @@ func TestTUIRealtimeControllerTerminalFrameStopsWithoutReconnectLoop(t *testing.
 	frames := make(chan client.V3RealtimeFrame, 4)
 	statuses := make(chan tuiRealtimeStatus, 16)
 	controller := newTestTUIRealtimeController(fake, frames, statuses)
-	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, "cursor-1"); err != nil {
+	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, nil, "cursor-1"); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
 	waitTUIRealtimeCall(t, fake)
@@ -141,13 +178,13 @@ func TestTUIRealtimeControllerTerminalFrameStopsWithoutReconnectLoop(t *testing.
 
 func TestTUIRealtimeControllerRetriesTransientErrorsWithinBudget(t *testing.T) {
 	fake := newTUIRealtimeFakeStreamer()
-	fake.handler = func(index int, ctx context.Context, subscriptions []client.V3RealtimeSubscription, onFrame func(client.V3RealtimeFrame)) error {
+	fake.handler = func(index int, ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
 		return errors.New("read v3 realtime stream: temporary websocket failure")
 	}
 	statuses := make(chan tuiRealtimeStatus, 32)
 	controller := newTestTUIRealtimeController(fake, make(chan client.V3RealtimeFrame, 4), statuses)
 	controller.retryBudget = 2
-	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, "cursor-1"); err != nil {
+	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, nil, "cursor-1"); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
 	waitForTUIRealtimeCallCount(t, fake, 3)
@@ -161,7 +198,7 @@ func TestTUIRealtimeControllerRetriesTransientErrorsWithinBudget(t *testing.T) {
 func TestTUIRealtimeControllerIgnoresStaleGenerationFramesAndStatuses(t *testing.T) {
 	releaseFirst := make(chan struct{})
 	fake := newTUIRealtimeFakeStreamer()
-	fake.handler = func(index int, ctx context.Context, subscriptions []client.V3RealtimeSubscription, onFrame func(client.V3RealtimeFrame)) error {
+	fake.handler = func(index int, ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
 		if index == 1 {
 			<-releaseFirst
 			onFrame(client.V3RealtimeFrame{Kind: tuiRealtimeKindEvent, SessionID: "a"})
@@ -173,11 +210,11 @@ func TestTUIRealtimeControllerIgnoresStaleGenerationFramesAndStatuses(t *testing
 	frames := make(chan client.V3RealtimeFrame, 8)
 	statuses := make(chan tuiRealtimeStatus, 32)
 	controller := newTestTUIRealtimeController(fake, frames, statuses)
-	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, "cursor-1"); err != nil {
+	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, nil, "cursor-1"); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
 	waitTUIRealtimeCall(t, fake)
-	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "b", EndpointCursor: "cursor-2"}}, "cursor-2"); err != nil {
+	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "b", EndpointCursor: "cursor-2"}}, nil, "cursor-2"); err != nil {
 		t.Fatalf("second Reconcile() error = %v", err)
 	}
 	waitTUIRealtimeCall(t, fake)
@@ -187,22 +224,59 @@ func TestTUIRealtimeControllerIgnoresStaleGenerationFramesAndStatuses(t *testing
 	controller.Stop()
 }
 
-func TestTUIRealtimeControllerNonblockingSendsDoNotDeadlockShutdown(t *testing.T) {
+func TestTUIRealtimeControllerBackpressuresInsteadOfDroppingFrames(t *testing.T) {
+	unblock := make(chan struct{})
 	fake := newTUIRealtimeFakeStreamer()
-	fake.handler = func(index int, ctx context.Context, subscriptions []client.V3RealtimeSubscription, onFrame func(client.V3RealtimeFrame)) error {
-		for i := 0; i < 16; i++ {
-			onFrame(client.V3RealtimeFrame{Kind: tuiRealtimeKindEvent, SessionID: "a"})
+	fake.handler = func(index int, ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
+		onFrame(client.V3RealtimeFrame{Kind: tuiRealtimeKindEvent, SessionID: "a", EndpointCursor: "cursor-2", LastSeq: 2})
+		select {
+		case <-unblock:
+		case <-ctx.Done():
+			return nil
 		}
+		onFrame(client.V3RealtimeFrame{Kind: tuiRealtimeKindEvent, SessionID: "a", EndpointCursor: "cursor-3", LastSeq: 3})
 		<-ctx.Done()
 		return nil
 	}
-	frames := make(chan client.V3RealtimeFrame)
-	statuses := make(chan tuiRealtimeStatus)
-	controller := newTestTUIRealtimeController(fake, frames, statuses)
-	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, "cursor-1"); err != nil {
+	frames := make(chan client.V3RealtimeFrame, 1)
+	controller := newTestTUIRealtimeController(fake, frames, make(chan tuiRealtimeStatus, 16))
+	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1", LastSeq: 1}}, nil, "cursor-1"); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
 	waitTUIRealtimeCall(t, fake)
+	first := waitTUIRealtimeFrame(t, frames)
+	if first.LastSeq != 2 || first.EndpointCursor != "cursor-2" {
+		t.Fatalf("first frame = %#v", first)
+	}
+	close(unblock)
+	second := waitTUIRealtimeFrame(t, frames)
+	if second.LastSeq != 3 || second.EndpointCursor != "cursor-3" {
+		t.Fatalf("second frame = %#v", second)
+	}
+	controller.Stop()
+}
+
+func TestTUIRealtimeControllerStopCancelsBlockedFrameSend(t *testing.T) {
+	startedSecondSend := make(chan struct{})
+	fake := newTUIRealtimeFakeStreamer()
+	fake.handler = func(index int, ctx context.Context, options client.V3RealtimeResumeOptions, onFrame func(client.V3RealtimeFrame)) error {
+		onFrame(client.V3RealtimeFrame{Kind: tuiRealtimeKindEvent, SessionID: "a", LastSeq: 1})
+		close(startedSecondSend)
+		onFrame(client.V3RealtimeFrame{Kind: tuiRealtimeKindEvent, SessionID: "a", LastSeq: 2})
+		return nil
+	}
+	frames := make(chan client.V3RealtimeFrame, 1)
+	statuses := make(chan tuiRealtimeStatus)
+	controller := newTestTUIRealtimeController(fake, frames, statuses)
+	if err := controller.Reconcile([]client.V3RealtimeSubscription{{SessionID: "a", EndpointCursor: "cursor-1"}}, nil, "cursor-1"); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	waitTUIRealtimeCall(t, fake)
+	select {
+	case <-startedSecondSend:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("stream did not reach blocked second frame send")
+	}
 	done := make(chan struct{})
 	go func() {
 		controller.Stop()
@@ -211,7 +285,7 @@ func TestTUIRealtimeControllerNonblockingSendsDoNotDeadlockShutdown(t *testing.T
 	select {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
-		t.Fatalf("Stop deadlocked with unbuffered frame/status channels")
+		t.Fatalf("Stop deadlocked with blocked frame send")
 	}
 }
 

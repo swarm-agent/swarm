@@ -143,9 +143,11 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 }
 
 type homeReloadResult struct {
-	model  model.HomeModel
-	err    error
-	silent bool
+	model     model.HomeModel
+	hydrated  *client.SessionV3Hydrated
+	sessionID string
+	err       error
+	silent    bool
 }
 
 type gitStatusRefreshResult struct {
@@ -271,6 +273,14 @@ type App struct {
 	lastStreamRenderAt      time.Time
 	streamRenderWakePending atomic.Bool
 
+	tuiSessionStore        *tuiSessionStore
+	tuiRealtime            *tuiRealtimeController
+	tuiRealtimeFrames      chan client.V3RealtimeFrame
+	tuiRealtimeStatuses    chan tuiRealtimeStatus
+	tuiRealtimeWorkset     tuiRealtimeWorksetState
+	tuiRealtimeClientID    string
+	tuiRealtimeScopeSerial atomic.Uint64
+
 	gitStatusCh        chan gitStatusRefreshResult
 	gitWatcher         *repoGitWatcher
 	gitWatchGeneration atomic.Uint64
@@ -301,6 +311,12 @@ type tuiSessionWorksetPagination struct {
 	NextBeforeSessionID string
 	HasMore             bool
 	LoadedAt            int64
+}
+
+type tuiRealtimeWorksetState struct {
+	ScopeKey       string
+	WorkspacePaths []string
+	CWDPath        string
 }
 
 func New() (*App, error) {
@@ -364,6 +380,10 @@ func New() (*App, error) {
 		gitStatusCh:         make(chan gitStatusRefreshResult, 8),
 		pendingChatRender:   make(chan struct{}, 1),
 		pendingStreamReady:  make(chan struct{}, 1),
+		tuiSessionStore:     newTUISessionStore(),
+		tuiRealtimeFrames:   make(chan client.V3RealtimeFrame, 256),
+		tuiRealtimeStatuses: make(chan tuiRealtimeStatus, 32),
+		tuiRealtimeClientID: fmt.Sprintf("tui:%d", time.Now().UnixNano()),
 		workspaceCandidates: make([]workspaceCandidate, 0, 128),
 	}
 	app.keybinds.ApplyOverrides(cfg.Input.Keybinds)
@@ -423,6 +443,11 @@ func New() (*App, error) {
 	if loadErr != nil && cfgErr != nil {
 		app.home.SetStatus(fmt.Sprintf("backend unavailable: %v (settings warning: %v)", loadErr, cfgErr))
 	}
+	if loadErr == nil {
+		if err := app.reconcileTUIRealtime(); err != nil && app.home != nil && app.home.Status() == "" {
+			app.home.SetStatus(fmt.Sprintf("realtime unavailable: %v", err))
+		}
+	}
 	app.startSessionEventStream()
 	app.refreshGitRealtimeWatcher()
 	app.announceAppliedUpdate()
@@ -434,6 +459,9 @@ func (a *App) Close() {
 	if a.streamCancel != nil {
 		a.streamCancel()
 		a.streamCancel = nil
+	}
+	if a.tuiRealtime != nil {
+		a.tuiRealtime.Stop()
 	}
 	a.stopGitRealtimeWatcher()
 	if a.voiceCapture.cancel != nil {
@@ -763,6 +791,9 @@ func (a *App) consumeStreamReadyForRender(now time.Time, scheduleWake bool) bool
 	}
 	a.consumePendingStreamReady()
 	if a.consumeSessionStreamEvents() {
+		a.streamRenderPending = true
+	}
+	if a.consumeTUIRealtimeEvents() {
 		a.streamRenderPending = true
 	}
 	if !a.streamRenderPending {
@@ -2931,10 +2962,11 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 	contextMode := ""
 	contextWindow := 0
 	var initialUsageSummary *ui.ChatUsageSummary
+	var hydratedSession *client.SessionV3Hydrated
+	workspaceScope := ""
+	cwdScope := ""
 	if a.api != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		workspaceScope := ""
-		cwdScope := ""
 		scopePath := strings.TrimSpace(summary.WorkspacePath)
 		if scopePath == "" {
 			scopePath = strings.TrimSpace(a.activeContextPath())
@@ -2953,6 +2985,7 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 			return fmt.Errorf("hydrate v3 session: %w", err)
 		}
 		if strings.TrimSpace(hydrated.Session.ID) != "" {
+			hydratedSession = &hydrated
 			summary = mergeHomeSessionSummary(summary, modelSessionSummaryFromClient(hydrated.Session))
 		}
 		if err := requireTUIV3SessionAPI(summary.SessionAPI, "open hydrated session"); err != nil {
@@ -3013,7 +3046,27 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		WorktreeBranch:     strings.TrimSpace(summary.WorktreeBranch),
 		UpdatedAgo:         strings.TrimSpace(summary.UpdatedAgo),
 	}
-	a.upsertHomeSessionSummary(openedSummary)
+	if hydratedSession != nil {
+		if a.tuiSessionStore == nil {
+			a.tuiSessionStore = newTUISessionStore()
+		}
+		if strings.TrimSpace(a.tuiRealtimeWorkset.ScopeKey) == "" {
+			state, err := tuiRealtimeWorksetStateFromOptions(tuiSessionWorksetLoadOptions{WorkspacePaths: []string{workspaceScope}, CWDPath: cwdScope})
+			if err != nil {
+				return err
+			}
+			a.tuiRealtimeWorkset = state
+		}
+		a.tuiSessionStore.MergeHydrated(*hydratedSession)
+		a.applyTUISessionStoreToHome()
+		if a.tuiSessionStore.EndpointCursor() != "" {
+			if err := a.reconcileTUIRealtime(); err != nil {
+				return fmt.Errorf("reconcile v3 realtime session subscription: %w", err)
+			}
+		}
+	} else {
+		a.upsertHomeSessionSummary(openedSummary)
+	}
 	if merged, ok := a.sessionSummaryByID(sessionID); ok {
 		summary = merged
 	} else {
@@ -3159,8 +3212,13 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 		chatWorkspace = "directory"
 	}
 
+	chatBackend := newAPIChatBackend(a.api, sessionAPI, targetSwarmIDForV3Session(sessionMetadata, a.homeModel.CurrentSwarmTarget))
 	a.chat = ui.NewChatPage(ui.ChatPageOptions{
-		Backend:             newAPIChatBackend(a.api, sessionAPI, targetSwarmIDForV3Session(sessionMetadata, a.homeModel.CurrentSwarmTarget)),
+		Backend: chatBackend,
+		Send: func(ctx context.Context, sessionID string, req ui.ChatSendRequest) error {
+			_, err := a.sendTUIV3ChatMessage(ctx, sessionID, req)
+			return err
+		},
 		SessionID:           strings.TrimSpace(sessionID),
 		SessionTitle:        strings.TrimSpace(sessionTitle),
 		InitialPrompt:       strings.TrimSpace(initialPrompt),
@@ -4400,15 +4458,14 @@ func (a *App) loadTUISessionWorkset(ctx context.Context, opts tuiSessionWorksetL
 	if limit <= 0 {
 		limit = homeRecentSessionLimit
 	}
-	workspacePaths := canonicalUniquePaths(opts.WorkspacePaths)
-	cwdPath := normalizePath(strings.TrimSpace(opts.CWDPath))
-	if len(workspacePaths) == 0 && cwdPath == "" {
-		return client.SessionV3Workset{}, errors.New("tui workset scope is required")
+	state, err := tuiRealtimeWorksetStateFromOptions(opts)
+	if err != nil {
+		return client.SessionV3Workset{}, err
 	}
 	return a.api.GetSessionV3TUIWorkset(ctx, client.SessionV3TUIWorksetRequest{
 		Scope: client.SessionV3TUIWorksetScope{
-			WorkspacePaths: workspacePaths,
-			CWDPath:        cwdPath,
+			WorkspacePaths: append([]string(nil), state.WorkspacePaths...),
+			CWDPath:        state.CWDPath,
 		},
 		Recent: client.SessionV3WorksetRecent{
 			Limit:           limit,
@@ -4755,8 +4812,6 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 			a.home.SetStatus(fmt.Sprintf("activate workspace failed: %v", err))
 			return
 		}
-		a.activePath = strings.TrimSpace(resolution.ResolvedPath)
-		a.workspacePath = strings.TrimSpace(resolution.WorkspacePath)
 		a.syncActiveWorkspaceSelection(resolution)
 		a.home.SetStatus(fmt.Sprintf("workspace active: %s", displayPath(resolution.ResolvedPath)))
 		a.queueReload(false)
@@ -5098,8 +5153,6 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 			}
 		}
 		if action.MakeCurrent {
-			a.activePath = strings.TrimSpace(resolution.ResolvedPath)
-			a.workspacePath = strings.TrimSpace(resolution.WorkspacePath)
 			a.syncActiveWorkspaceSelection(resolution)
 		}
 		a.refreshWorkspaceModalData("")
@@ -5119,8 +5172,6 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 			a.home.SetWorkspaceModalError(fmt.Sprintf("activate workspace failed: %v", err))
 			return
 		}
-		a.activePath = strings.TrimSpace(resolution.ResolvedPath)
-		a.workspacePath = strings.TrimSpace(resolution.WorkspacePath)
 		a.syncActiveWorkspaceSelection(resolution)
 		a.home.SetWorkspaceModalDirectory(a.activeContextPath())
 		a.refreshWorkspaceModalData("")
@@ -6548,8 +6599,6 @@ func (a *App) handleWorkspaceCommand(args []string) {
 		}
 		a.home.ClearCommandOverlay()
 		a.home.SetStatus(fmt.Sprintf("workspace active: %s", resolution.ResolvedPath))
-		a.activePath = strings.TrimSpace(resolution.ResolvedPath)
-		a.workspacePath = strings.TrimSpace(resolution.WorkspacePath)
 		a.syncActiveWorkspaceSelection(resolution)
 		a.queueReload(false)
 	case "tree", "find", "scan":
@@ -7316,6 +7365,10 @@ func (a *App) consumeReloadResult() {
 	defer a.reloading.Store(false)
 	select {
 	case result := <-a.reloadCh:
+		if result.hydrated != nil {
+			a.applyTUISessionHydratedReload(*result.hydrated, result.sessionID)
+			return
+		}
 		if result.err != nil {
 			if !result.silent {
 				a.home.SetStatus(fmt.Sprintf("reload failed: %v", result.err))
@@ -7325,6 +7378,9 @@ func (a *App) consumeReloadResult() {
 		a.syncActiveContextFromHomeModel(result.model)
 		a.applyHomeModel(result.model)
 		a.syncVaultUI()
+		if err := a.reconcileTUIRealtime(); err != nil && !result.silent {
+			a.home.SetStatus(fmt.Sprintf("realtime unavailable: %v", err))
+		}
 	default:
 	}
 }
@@ -7588,6 +7644,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 	}
 
 	activePath := normalizePath(strings.TrimSpace(next.CWD))
+	activeWorkspacePath := ""
 	activeIsWorkspace := false
 	activeIsWorkspaceRoot := false
 	if overviewErr == nil {
@@ -7644,7 +7701,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 			preferredWorkspacePath = normalizePath(strings.TrimSpace(a.workspacePath))
 		}
 		// ChatRoutes are authoritative only after /v1/workspace/cwd/resolve below.
-		activeWorkspacePath := resolveWorkspaceSelectionPath(activePath, next.Workspaces, preferredWorkspacePath)
+		activeWorkspacePath = resolveWorkspaceSelectionPath(activePath, next.Workspaces, preferredWorkspacePath)
 		activeIsWorkspace = activeWorkspacePath != ""
 		activeIsWorkspaceRoot = activeWorkspacePath != "" && pathsEqual(activePath, activeWorkspacePath)
 		for i := range next.Workspaces {
@@ -7681,6 +7738,14 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		preferredWorkspacePath := activePath
 		if cwdResolve.Workspace != nil && strings.TrimSpace(cwdResolve.Workspace.WorkspacePath) != "" {
 			preferredWorkspacePath = normalizePath(strings.TrimSpace(cwdResolve.Workspace.WorkspacePath))
+			if preferredWorkspacePath != "" && !pathsEqual(preferredWorkspacePath, activeWorkspacePath) {
+				activeWorkspacePath = preferredWorkspacePath
+				activeIsWorkspace = true
+				activeIsWorkspaceRoot = activeWorkspacePath != "" && pathsEqual(activePath, activeWorkspacePath)
+				for i := range next.Workspaces {
+					next.Workspaces[i].Active = activeWorkspacePath != "" && pathsEqual(next.Workspaces[i].Path, activeWorkspacePath)
+				}
+			}
 		}
 		if len(next.ChatRoutes) > 0 {
 			selectedRouteID := a.resolveSelectedChatRouteIDForWorkspace(preferredWorkspacePath, next.ChatRoutes)
@@ -7697,16 +7762,29 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 	sessionScopePaths := make([]string, 0, len(next.Workspaces)+1)
 	cwdSessionScope := ""
 	if activeIsWorkspace {
-		for _, ws := range next.Workspaces {
-			if path := normalizePath(ws.Path); path != "" {
-				sessionScopePaths = append(sessionScopePaths, path)
-			}
+		if path := normalizePath(activeWorkspacePath); path != "" {
+			sessionScopePaths = append(sessionScopePaths, path)
 		}
 	}
 	if len(sessionScopePaths) == 0 {
 		cwdSessionScope = contextPath
 	}
-	sessionWorkset, sessionsErr := a.loadTUISessionWorkset(ctx, tuiSessionWorksetLoadOptions{Limit: homeRecentSessionLimit, WorkspacePaths: sessionScopePaths, CWDPath: cwdSessionScope})
+	sessionWorksetOptions := tuiSessionWorksetLoadOptions{Limit: homeRecentSessionLimit, WorkspacePaths: sessionScopePaths, CWDPath: cwdSessionScope}
+	realtimeWorksetState, sessionsErr := tuiRealtimeWorksetStateFromOptions(sessionWorksetOptions)
+	var sessionWorkset client.SessionV3Workset
+	var sessionSummaries []model.SessionSummary
+	loadedSessionWorkset := false
+	if sessionsErr == nil {
+		if a.canUseCachedTUIWorkset(realtimeWorksetState) {
+			sessionSummaries = a.tuiSessionStore.HomeSessions()
+		} else {
+			sessionWorkset, realtimeWorksetState, sessionsErr = a.bootstrapTUIRealtimeWorkset(ctx, sessionWorksetOptions)
+			if sessionsErr == nil {
+				sessionSummaries = modelSessionSummariesFromTUIWorkset(sessionWorkset)
+				loadedSessionWorkset = true
+			}
+		}
+	}
 
 	gitStatus, _ := gitStatusForPath(activePath)
 	if activeIsWorkspace {
@@ -7800,7 +7878,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 	}
 
 	if sessionsErr == nil {
-		for _, session := range modelSessionSummariesFromTUIWorkset(sessionWorkset) {
+		for _, session := range sessionSummaries {
 			title := strings.TrimSpace(session.Title)
 			if title == "" {
 				title = session.ID
@@ -7809,11 +7887,16 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 			next.RecentSessions = append(next.RecentSessions, session)
 		}
 		next.BackgroundSessions = backgroundSessionSummariesForSessions(next.RecentSessions, next.BackgroundSessions)
-		a.sessionWorksetPagination = tuiSessionWorksetPagination{
-			NextBeforeUpdatedAt: sessionWorkset.Pagination.NextBeforeUpdatedAt,
-			NextBeforeSessionID: strings.TrimSpace(sessionWorkset.Pagination.NextBeforeSessionID),
-			HasMore:             sessionWorkset.Pagination.HasMore,
-			LoadedAt:            sessionWorkset.Watermarks.LoadedAt,
+		if loadedSessionWorkset {
+			a.applyTUISessionWorksetSnapshot(sessionWorkset, realtimeWorksetState)
+		}
+		if loadedSessionWorkset {
+			a.sessionWorksetPagination = tuiSessionWorksetPagination{
+				NextBeforeUpdatedAt: sessionWorkset.Pagination.NextBeforeUpdatedAt,
+				NextBeforeSessionID: strings.TrimSpace(sessionWorkset.Pagination.NextBeforeSessionID),
+				HasMore:             sessionWorkset.Pagination.HasMore,
+				LoadedAt:            sessionWorkset.Watermarks.LoadedAt,
+			}
 		}
 	} else {
 		errorsSeen = append(errorsSeen, "session workset unavailable")
@@ -8023,6 +8106,9 @@ func (a *App) syncKnownWorkspaceSelectionForPath(path string) {
 	}
 	target := normalizePath(strings.TrimSpace(path))
 	if target != "" {
+		if !pathsEqual(a.activePath, target) {
+			a.markTUIRealtimeScopeStale("workspace scope changed")
+		}
 		a.activePath = target
 		a.homeModel.CWD = target
 	}
@@ -8622,8 +8708,12 @@ func (a *App) syncActiveWorkspaceSelection(resolution client.WorkspaceResolution
 		a.syncKnownWorkspaceSelectionForPath(resolvedPath)
 		return
 	}
+	previousWorkspacePath := a.workspacePath
 	a.workspacePath = workspacePath
 	if resolvedPath != "" {
+		if !pathsEqual(a.activePath, resolvedPath) || !pathsEqual(previousWorkspacePath, workspacePath) {
+			a.markTUIRealtimeScopeStale("workspace scope changed")
+		}
 		a.activePath = resolvedPath
 		a.homeModel.CWD = resolvedPath
 	}
@@ -8795,8 +8885,6 @@ func (a *App) activateWorkspaceAtIndex(index int) {
 		a.home.SetStatus(fmt.Sprintf("workspace switch failed: %v", err))
 		return
 	}
-	a.activePath = strings.TrimSpace(resolution.ResolvedPath)
-	a.workspacePath = strings.TrimSpace(resolution.WorkspacePath)
 	a.syncActiveWorkspaceSelection(resolution)
 	a.home.SetStatus(fmt.Sprintf("workspace active: %s", resolution.WorkspaceName))
 	a.queueReload(false)

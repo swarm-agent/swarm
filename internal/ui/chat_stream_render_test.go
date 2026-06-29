@@ -56,42 +56,6 @@ func TestApplySessionLifecycleCompletedPreservesLiveAssistantUntilRunSuccess(t *
 	}
 }
 
-func TestApplyRunSuccessClearsLiveAssistantAfterPersistingFinalMessage(t *testing.T) {
-	page := NewChatPage(ChatPageOptions{
-		SessionID:      "session-test",
-		SessionMode:    "auto",
-		AuthConfigured: true,
-	})
-	page.liveAssistant = "streamed partial response"
-	page.streamingRun = true
-	page.busy = true
-	page.ownedRunID = "run-1"
-
-	page.applyRunSuccess(ChatRunResponse{
-		AssistantMessage: ChatMessageRecord{
-			Content:   "streamed partial response",
-			CreatedAt: time.Now().UnixMilli(),
-		},
-	})
-
-	if got := page.liveAssistant; got != "" {
-		t.Fatalf("live assistant not cleared after success: %q", got)
-	}
-	if got := page.ownedRunID; got != "" {
-		t.Fatalf("owned run id not cleared after success: %q", got)
-	}
-	if len(page.timeline) == 0 {
-		t.Fatal("expected assistant message appended to timeline")
-	}
-	last := page.timeline[len(page.timeline)-1]
-	if last.Role != "assistant" {
-		t.Fatalf("last role = %q, want assistant", last.Role)
-	}
-	if last.Text != "streamed partial response" {
-		t.Fatalf("last text = %q, want final assistant text", last.Text)
-	}
-}
-
 func TestCachedLiveAssistantLinesReuseRecentParseResult(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{
 		SessionID:      "session-test",
@@ -218,12 +182,19 @@ func TestStreamingMarkdownDrawRemainsVisibleAcrossCompletedLifecycleAndFinalPers
 		t.Fatalf("streamed markdown missing after completed lifecycle:\n%s", mid)
 	}
 
-	page.applyRunSuccess(ChatRunResponse{
-		AssistantMessage: ChatMessageRecord{
+	page.applyRunStreamEvent(ChatRunStreamEvent{
+		Type:      "message.stored",
+		SessionID: "session-test",
+		RunID:     "run-1",
+		Message: &ChatMessageRecord{
+			ID:        "msg-assistant",
+			SessionID: "session-test",
+			Role:      "assistant",
 			Content:   "# Title\n\n- item one\n- item two",
 			CreatedAt: time.Now().UnixMilli(),
+			Metadata:  map[string]any{"run_id": "run-1"},
 		},
-	})
+	}, time.Now().UnixMilli())
 	page.Draw(screen)
 	after := dumpScreenText(screen, 100, 24)
 	if !containsAll(after, []string{"Title", "item one", "item two"}) {

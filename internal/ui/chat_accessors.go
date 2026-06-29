@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -144,6 +145,58 @@ func (p *ChatPage) SetSessionTabs(tabs []ChatSessionTab) {
 	normalized := normalizeChatSessionTabs(tabs, p.sessionID, p.sessionTitle)
 	p.sessionTabs = normalized
 	p.sessionsPaletteItems = normalizeChatSessionPaletteItems(normalized)
+}
+
+func (p *ChatPage) SetMessages(messages []ChatMessageRecord) {
+	if p == nil {
+		return
+	}
+	lifecycle := p.lifecycle
+	restoreLiveAssistant := p.liveAssistant
+	restoreLiveThinking := p.liveThinking
+	restoreThinkingSummary := p.thinkingSummary
+	restoreThinkingCompletedAt := p.thinkingCompletedAt
+	restoreReasoningActive := p.reasoningActive
+	restoreReasoningStartedAt := p.reasoningStartedAt
+	restoreActiveReasoningMessageID := p.activeReasoningMessageID
+	restoreToolStream := cloneChatToolStreamEntries(p.toolStream)
+	restoreBashOutput := p.bashOutput
+	restoreStreamedTools := cloneStringSet(p.streamedTools)
+	restoreLiveState := lifecycle != nil && lifecycle.Active && !chatMessagesContainAssistantForRun(messages, lifecycle.RunID)
+	p.timeline = nil
+	p.toolStream = nil
+	p.bashOutput = chatBashOutputState{}
+	p.liveAssistant = ""
+	p.liveThinking = ""
+	p.thinkingCompletedAt = time.Time{}
+	p.reasoningActive = false
+	p.reasoningStartedAt = time.Time{}
+	p.activeReasoningMessageID = ""
+	p.streamedTools = make(map[string]struct{}, 16)
+	p.resetTimelineRenderCache()
+	p.applyHistory(messages)
+	if restoreLiveState {
+		p.lifecycle = lifecycle
+		p.busy = true
+		p.liveAssistant = restoreLiveAssistant
+		p.liveThinking = restoreLiveThinking
+		p.thinkingSummary = restoreThinkingSummary
+		p.thinkingCompletedAt = restoreThinkingCompletedAt
+		p.reasoningActive = restoreReasoningActive
+		p.reasoningStartedAt = restoreReasoningStartedAt
+		p.activeReasoningMessageID = restoreActiveReasoningMessageID
+		p.toolStream = mergeChatToolStreamEntries(p.toolStream, restoreToolStream)
+		p.bashOutput = restoreBashOutput
+		p.streamedTools = mergeStringSets(p.streamedTools, restoreStreamedTools)
+		p.rebuildToolLifecycleViews()
+	}
+}
+
+func (p *ChatPage) SetUsageSummary(summary *ChatUsageSummary) {
+	if p == nil {
+		return
+	}
+	p.applyContextUsageSummary(summary)
 }
 
 func (p *ChatPage) ApplySessionTitleWarning(warning string) {

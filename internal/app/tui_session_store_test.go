@@ -83,8 +83,8 @@ func TestTUISessionStoreDesiredSubscriptionsUseEndpointCursorAndLastSeq(t *testi
 		ProjectionsBySession:   map[string]client.SessionV3Projection{"a": {SessionID: "a", LastEventSeq: 12}},
 		SessionOrder:           []string{"a"},
 	})
-	subs := store.DesiredSubscriptions()
-	if len(subs) != 1 || subs[0].SessionID != "a" || subs[0].EndpointCursor != "endpoint-1" || subs[0].LastSeq != 12 {
+	subs := store.DesiredSubscriptions("tui:client")
+	if len(subs) != 1 || subs[0].SessionID != "a" || subs[0].EndpointCursor != "endpoint-1" || subs[0].LastSeq != 12 || subs[0].SubscriptionID != "tui:client:session:a" {
 		t.Fatalf("subscriptions = %#v", subs)
 	}
 }
@@ -111,8 +111,8 @@ func TestTUISessionStoreEndpointWatermarkAdvancesCursorWithoutMutatingLastSeq(t 
 	if got := store.EndpointCursor(); got != "cursor-2" {
 		t.Fatalf("endpoint cursor = %q, want cursor-2", got)
 	}
-	subs := store.DesiredSubscriptions()
-	if len(subs) != 1 || subs[0].EndpointCursor != "cursor-2" || subs[0].LastSeq != 12 {
+	subs := store.DesiredSubscriptions("tui:client")
+	if len(subs) != 1 || subs[0].EndpointCursor != "cursor-2" || subs[0].LastSeq != 12 || subs[0].SubscriptionID != "tui:client:session:a" {
 		t.Fatalf("subscriptions after watermark = %#v", subs)
 	}
 	projection := store.workset.ProjectionsBySession["a"]

@@ -1,0 +1,366 @@
+package app
+
+import (
+	"bufio"
+	"context"
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"testing"
+	"time"
+
+	"swarm-refactor/swarmtui/internal/client"
+	"swarm-refactor/swarmtui/internal/model"
+	"swarm-refactor/swarmtui/internal/ui"
+)
+
+func TestTUIRealtimeWorksetSubscriptionUsesBackendAcceptedWorkspaceSelector(t *testing.T) {
+	app := &App{tuiRealtimeClientID: "tui:test"}
+	state := tuiRealtimeWorksetState{ScopeKey: "workspace:/repo", WorkspacePaths: []string{"/repo"}}
+
+	workset := app.tuiRealtimeWorksetSubscription(state)
+
+	if workset.WorksetID != "tui:workspace:/repo" {
+		t.Fatalf("workset id = %q", workset.WorksetID)
+	}
+	if workset.SubscriptionID != "tui:test:workset:workspace:/repo" {
+		t.Fatalf("subscription id = %q", workset.SubscriptionID)
+	}
+	if workset.Surface != "tui" || !workset.AutoSubscribeSessions {
+		t.Fatalf("workset surface/auto = %q/%v", workset.Surface, workset.AutoSubscribeSessions)
+	}
+	if workset.Selector.Kind != "workspace" || workset.Selector.WorkspacePath != "/repo" || len(workset.Selector.WorkspacePaths) != 0 {
+		t.Fatalf("selector = %+v", workset.Selector)
+	}
+	if !reflect.DeepEqual(workset.Resources, tuiRealtimeWorksetResources) {
+		t.Fatalf("resources = %+v, want %+v", workset.Resources, tuiRealtimeWorksetResources)
+	}
+}
+
+func TestTUIRealtimeWorksetSubscriptionUsesCWDAsWorkspaceSelector(t *testing.T) {
+	app := &App{tuiRealtimeClientID: "tui:test"}
+	state := tuiRealtimeWorksetState{ScopeKey: "cwd:/repo/subdir", CWDPath: "/repo/subdir"}
+
+	workset := app.tuiRealtimeWorksetSubscription(state)
+
+	if workset.Selector.Kind != "workspace" || workset.Selector.WorkspacePath != "/repo/subdir" || len(workset.Selector.WorkspacePaths) != 0 {
+		t.Fatalf("selector = %+v", workset.Selector)
+	}
+}
+
+func TestTUIRealtimeWorksetSubscriptionUsesWorkspacePathsForMultipleRoots(t *testing.T) {
+	app := &App{tuiRealtimeClientID: "tui:test"}
+	state := tuiRealtimeWorksetState{ScopeKey: "workspace:/repo-a|/repo-b", WorkspacePaths: []string{"/repo-a", "/repo-b"}}
+
+	workset := app.tuiRealtimeWorksetSubscription(state)
+
+	if workset.Selector.Kind != "workspace" || workset.Selector.WorkspacePath != "" || !reflect.DeepEqual(workset.Selector.WorkspacePaths, []string{"/repo-a", "/repo-b"}) {
+		t.Fatalf("selector = %+v", workset.Selector)
+	}
+}
+
+func TestTUIHomeWorksetBootstrapThenRealtimeUpdatesWithoutPolling(t *testing.T) {
+	var worksetRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v3/tui/sessions:workset" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		worksetRequests++
+		if worksetRequests > 1 {
+			t.Fatalf("TUI must not poll workset after startup bootstrap; request %d", worksetRequests)
+		}
+		_ = json.NewEncoder(w).Encode(client.SessionV3Workset{
+			OK:                     true,
+			SnapshotEndpointCursor: "cursor-bootstrap",
+			SessionsByID:           map[string]client.SessionSummary{"session-a": {ID: "session-a", WorkspacePath: "/repo", Title: "Initial", SessionAPI: "v3"}},
+			ProjectionsBySession:   map[string]client.SessionV3Projection{"session-a": {SessionID: "session-a", LastEventSeq: 1}},
+			SessionOrder:           []string{"session-a"},
+		})
+	}))
+	defer server.Close()
+
+	fake := newTUIRealtimeFakeStreamer()
+	controller := newTestTUIRealtimeController(fake, make(chan client.V3RealtimeFrame, 8), make(chan tuiRealtimeStatus, 16))
+	app := &App{
+		api:                 testAPIWithToken(server.URL),
+		workspacePath:       "/repo",
+		tuiSessionStore:     newTUISessionStore(),
+		tuiRealtime:         controller,
+		tuiRealtimeClientID: "tui:test",
+		tuiRealtimeFrames:   make(chan client.V3RealtimeFrame, 8),
+		tuiRealtimeStatuses: make(chan tuiRealtimeStatus, 8),
+		homeModel:           model.EmptyHome(),
+	}
+	app.home = ui.NewHomePage(app.homeModel)
+
+	workset, state, err := app.bootstrapTUIRealtimeWorkset(context.Background(), tuiSessionWorksetLoadOptions{Limit: 25, WorkspacePaths: []string{"/repo"}})
+	if err != nil {
+		t.Fatalf("bootstrapTUIRealtimeWorkset() error = %v", err)
+	}
+	app.applyTUISessionWorksetSnapshot(workset, state)
+	app.applyTUISessionStoreToHome()
+	if err := app.reconcileTUIRealtime(); err != nil {
+		t.Fatalf("reconcileTUIRealtime() error = %v", err)
+	}
+	call := waitTUIRealtimeCall(t, fake)
+	if call.EndpointCursor != "cursor-bootstrap" || len(call.Worksets) != 1 || call.Worksets[0].Selector.WorkspacePath != "/repo" {
+		t.Fatalf("realtime workset resume = %#v", call)
+	}
+
+	for _, frame := range []client.V3RealtimeFrame{
+		{Kind: "workset.session.discovered", EndpointCursor: "cursor-2", SessionID: "session-b", Session: &client.SessionSummary{ID: "session-b", WorkspacePath: "/repo", Title: "Discovered", SessionAPI: "v3"}, Projection: &client.SessionV3Projection{SessionID: "session-b", LastEventSeq: 2}},
+		{Kind: "workset.session.updated", EndpointCursor: "cursor-3", SessionID: "session-b", Session: &client.SessionSummary{ID: "session-b", WorkspacePath: "/repo", Title: "Updated", SessionAPI: "v3"}, Projection: &client.SessionV3Projection{SessionID: "session-b", LastEventSeq: 3}},
+		{Kind: "workset.session.removed", EndpointCursor: "cursor-4", SessionID: "session-a"},
+	} {
+		if !app.applyTUIRealtimeFrame(frame) {
+			t.Fatalf("frame did not update home state: %#v", frame)
+		}
+	}
+	if worksetRequests != 1 {
+		t.Fatalf("workset requests = %d, want exactly one bootstrap request", worksetRequests)
+	}
+	if got := app.tuiSessionStore.EndpointCursor(); got != "cursor-4" {
+		t.Fatalf("endpoint cursor = %q, want cursor-4", got)
+	}
+	ids := sessionIDs(app.tuiSessionStore.HomeSessions())
+	if !reflect.DeepEqual(ids, []string{"session-b"}) || app.tuiSessionStore.HomeSessions()[0].Title != "Updated" {
+		t.Fatalf("home sessions after realtime frames = %#v", app.tuiSessionStore.HomeSessions())
+	}
+}
+
+func TestTUIRealtimeEndToEndHitsWorksetAndRealtimeAPIsAndRehydratesOnCursorError(t *testing.T) {
+	var worksetRequests int
+	var sessionHydrateRequests int
+	var realtimeRequests int
+	var resume map[string]any
+	rehydrateReady := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/tui/sessions:workset":
+			worksetRequests++
+			var req client.SessionV3TUIWorksetRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode workset request: %v", err)
+			}
+			if req.Scope.WorkspacePaths[0] != "/repo" || req.History.Mode != "tail" || !req.History.IncludeEvents {
+				t.Fatalf("workset request = %#v", req)
+			}
+			_ = json.NewEncoder(w).Encode(client.SessionV3Workset{
+				OK:                     true,
+				SnapshotEndpointCursor: "cursor-bootstrap",
+				SessionsByID:           map[string]client.SessionSummary{"session-a": {ID: "session-a", WorkspacePath: "/repo", Title: "Initial", SessionAPI: "v3"}},
+				ProjectionsBySession:   map[string]client.SessionV3Projection{"session-a": {SessionID: "session-a", LastEventSeq: uint64(worksetRequests)}},
+				SessionOrder:           []string{"session-a"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/tui/sessions/session-a":
+			sessionHydrateRequests++
+			if got := r.URL.Query().Get("workspace_path"); got != "/repo" {
+				t.Fatalf("session hydrate workspace_path query = %q, want /repo", got)
+			}
+			if sessionHydrateRequests > 1 {
+				t.Fatalf("cursor.error should trigger exactly one session rehydrate; request %d", sessionHydrateRequests)
+			}
+			_ = json.NewEncoder(w).Encode(client.SessionV3Hydrated{
+				Session:                client.SessionSummary{ID: "session-a", WorkspacePath: "/repo", Title: "Rehydrated", SessionAPI: "v3"},
+				Projection:             client.SessionV3Projection{SessionID: "session-a", LastEventSeq: 2},
+				SnapshotEndpointCursor: "cursor-rehydrated",
+			})
+			close(rehydrateReady)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/vault":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "enabled": false})
+		case r.Method == http.MethodGet && r.URL.Path == "/healthz":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "mode": "dev"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/worktrees":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "enabled": false})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/providers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "providers": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/model":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/update/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/agents":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "agents": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/context/sources":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "sources": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/workspace/overview":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "workspaces": []any{map[string]any{"path": "/repo", "workspace_path": "/repo", "workspace_name": "repo"}}, "directories": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/workspace/cwd/resolve":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "cwd": "/repo", "workspace": map[string]any{"workspace_path": "/repo", "workspace_name": "repo"}, "chat_routes": []any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/realtime/stream":
+			realtimeRequests++
+			if got := r.URL.Query().Get("endpoint_cursor"); got != "cursor-bootstrap" {
+				t.Fatalf("realtime endpoint_cursor query = %q, want cursor-bootstrap", got)
+			}
+			if got := r.URL.Query().Get("surface"); got != "tui" {
+				t.Fatalf("realtime surface query = %q, want tui", got)
+			}
+			conn, rw, err := hijackTUITestWebsocket(w, r)
+			if err != nil {
+				t.Fatalf("hijack realtime websocket: %v", err)
+			}
+			defer conn.Close()
+			_, payload, err := readTUITestWebsocketFrame(rw)
+			if err != nil {
+				t.Fatalf("read realtime resume: %v", err)
+			}
+			if err := json.Unmarshal(payload, &resume); err != nil {
+				t.Fatalf("decode realtime resume: %v", err)
+			}
+			writeTUITestWebsocketFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "cursor.error", "session_id": "session-a", "endpoint_cursor": "cursor-error", "error": "forced cursor gap; refetch required"})
+			<-r.Context().Done()
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	app := &App{
+		api:                 testAPIWithToken(server.URL),
+		workspacePath:       "/repo",
+		startupCWD:          "/repo",
+		tuiSessionStore:     newTUISessionStore(),
+		tuiRealtimeClientID: "tui:test",
+		tuiRealtimeFrames:   make(chan client.V3RealtimeFrame, 8),
+		tuiRealtimeStatuses: make(chan tuiRealtimeStatus, 8),
+		reloadCh:            make(chan homeReloadResult, 1),
+		homeModel:           model.EmptyHome(),
+	}
+	app.home = ui.NewHomePage(app.homeModel)
+
+	workset, state, err := app.bootstrapTUIRealtimeWorkset(context.Background(), tuiSessionWorksetLoadOptions{Limit: 25, WorkspacePaths: []string{"/repo"}})
+	if err != nil {
+		t.Fatalf("bootstrapTUIRealtimeWorkset() error = %v", err)
+	}
+	app.applyTUISessionWorksetSnapshot(workset, state)
+	app.applyTUISessionStoreToHome()
+	if err := app.reconcileTUIRealtime(); err != nil {
+		t.Fatalf("reconcileTUIRealtime() error = %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for app.tuiSessionStore.StaleState().Reason == "" {
+		select {
+		case <-deadline:
+			t.Fatalf("cursor.error was not applied; resume=%#v", resume)
+		default:
+			app.consumeTUIRealtimeEvents()
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if stale := app.tuiSessionStore.StaleState(); stale.Reason != "forced cursor gap; refetch required" || stale.SessionID != "session-a" {
+		t.Fatalf("stale state = %#v", stale)
+	}
+	select {
+	case <-rehydrateReady:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("cursor.error did not trigger second /v3/tui/sessions:workset request")
+	}
+	if worksetRequests != 1 || sessionHydrateRequests != 1 || realtimeRequests != 1 {
+		t.Fatalf("api calls: workset=%d sessionHydrate=%d realtime=%d resume=%#v", worksetRequests, sessionHydrateRequests, realtimeRequests, resume)
+	}
+	if resume["protocol"] != "v3.realtime" || resume["protocol_version"] != float64(1) || resume["kind"] != "resume" || resume["endpoint_cursor"] != "cursor-bootstrap" {
+		t.Fatalf("resume frame = %#v", resume)
+	}
+	rawWorksets, ok := resume["worksets"].([]any)
+	if !ok || len(rawWorksets) != 1 {
+		t.Fatalf("resume worksets = %#v", resume["worksets"])
+	}
+	worksetResume, ok := rawWorksets[0].(map[string]any)
+	if !ok || worksetResume["surface"] != "tui" || worksetResume["auto_subscribe_sessions"] != true {
+		t.Fatalf("resume workset = %#v", rawWorksets[0])
+	}
+	rawSubs, ok := resume["subscriptions"].([]any)
+	if !ok || len(rawSubs) != 1 {
+		t.Fatalf("resume subscriptions = %#v", resume["subscriptions"])
+	}
+	sub, ok := rawSubs[0].(map[string]any)
+	if !ok || sub["session_id"] != "session-a" || sub["endpoint_cursor"] != "cursor-bootstrap" || sub["last_seq"] != float64(1) {
+		t.Fatalf("resume subscription = %#v", rawSubs[0])
+	}
+}
+
+func hijackTUITestWebsocket(w http.ResponseWriter, r *http.Request) (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	conn, rw, err := hijacker.Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	accept := tuiTestWebsocketAccept(r.Header.Get("Sec-WebSocket-Key"))
+	if _, err := rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n"); err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+	if err := rw.Flush(); err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+	return conn, rw, nil
+}
+
+func tuiTestWebsocketAccept(key string) string {
+	hash := sha1.New()
+	_, _ = hash.Write([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	return base64.StdEncoding.EncodeToString(hash.Sum(nil))
+}
+
+func readTUITestWebsocketFrame(r io.Reader) (byte, []byte, error) {
+	head := make([]byte, 2)
+	if _, err := io.ReadFull(r, head); err != nil {
+		return 0, nil, err
+	}
+	opcode := head[0] & 0x0F
+	masked := head[1]&0x80 != 0
+	payloadLength := int(head[1] & 0x7F)
+	if payloadLength == 126 {
+		ext := make([]byte, 2)
+		if _, err := io.ReadFull(r, ext); err != nil {
+			return 0, nil, err
+		}
+		payloadLength = int(ext[0])<<8 | int(ext[1])
+	} else if payloadLength == 127 {
+		return 0, nil, http.ErrNotSupported
+	}
+	var mask [4]byte
+	if masked {
+		if _, err := io.ReadFull(r, mask[:]); err != nil {
+			return 0, nil, err
+		}
+	}
+	payload := make([]byte, payloadLength)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return 0, nil, err
+	}
+	if masked {
+		for i := range payload {
+			payload[i] ^= mask[i%4]
+		}
+	}
+	return opcode, payload, nil
+}
+
+func writeTUITestWebsocketFrame(t *testing.T, conn io.Writer, payload any) {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal server frame: %v", err)
+	}
+	header := []byte{0x80 | 0x1}
+	if len(raw) <= 125 {
+		header = append(header, byte(len(raw)))
+	} else if len(raw) <= 65535 {
+		header = append(header, 126, byte(len(raw)>>8), byte(len(raw)))
+	} else {
+		t.Fatalf("test frame too large")
+	}
+	if _, err := conn.Write(append(header, raw...)); err != nil {
+		t.Fatalf("write server frame: %v", err)
+	}
+}

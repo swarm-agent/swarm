@@ -100,14 +100,6 @@ func (s *chatPendingHydrationBackendStub) StopRun(context.Context, string, strin
 	return nil
 }
 
-func (s *chatPendingHydrationBackendStub) RunTurn(context.Context, string, ChatRunRequest) (ChatRunResponse, error) {
-	return ChatRunResponse{}, nil
-}
-
-func (s *chatPendingHydrationBackendStub) RunTurnStream(context.Context, string, ChatRunRequest, func(ChatRunStreamEvent)) (ChatRunResponse, error) {
-	return ChatRunResponse{}, nil
-}
-
 func TestChatPageInitialHydrationMergesDedicatedPendingPermissionsIntoConversation(t *testing.T) {
 	base := time.Now().Add(-10 * time.Minute).UnixMilli()
 	recent := make([]ChatPermissionRecord, 0, 200)

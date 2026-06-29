@@ -120,6 +120,7 @@ type ChatSessionPaletteItem struct {
 
 type ChatPageOptions struct {
 	Backend             ChatBackend
+	Send                ChatSendFunc
 	SessionID           string
 	SessionTitle        string
 	InitialPrompt       string
@@ -234,9 +235,8 @@ type chatUsageResult struct {
 }
 
 type chatRunResult struct {
-	RunID    int
-	Response ChatRunResponse
-	Err      error
+	RunID int
+	Err   error
 }
 
 type chatRunStreamResult struct {
@@ -281,6 +281,7 @@ type ChatPage struct {
 	meta     ChatSessionMeta
 
 	backend ChatBackend
+	send    ChatSendFunc
 
 	sessionID          string
 	sessionTitle       string
@@ -559,6 +560,7 @@ func NewChatPage(opts ChatPageOptions) *ChatPage {
 		keybinds:                opts.KeyBindings,
 		meta:                    meta,
 		backend:                 opts.Backend,
+		send:                    opts.Send,
 		sessionID:               strings.TrimSpace(opts.SessionID),
 		sessionTitle:            title,
 		presets:                 append([]string(nil), opts.Presets...),
@@ -1613,15 +1615,15 @@ func (p *ChatPage) startRun(prompt string) {
 	p.startRunRequest(p.runRequestForPrompt(prompt), prompt, true, "running turn")
 }
 
-func (p *ChatPage) runRequestForPrompt(prompt string) ChatRunRequest {
+func (p *ChatPage) runRequestForPrompt(prompt string) ChatSendRequest {
 	if targetName, task, ok := parseTargetedSubagentPrompt(prompt, p.mentionSubagents); ok {
-		return ChatRunRequest{
+		return ChatSendRequest{
 			Prompt:     task,
 			TargetKind: "subagent",
 			TargetName: targetName,
 		}
 	}
-	return ChatRunRequest{
+	return ChatSendRequest{
 		Prompt:    strings.TrimSpace(prompt),
 		AgentName: strings.TrimSpace(p.meta.Agent),
 	}
@@ -1633,14 +1635,14 @@ func (p *ChatPage) startManualCompact(note string) bool {
 	if note != "" {
 		displayPrompt = displayPrompt + " " + note
 	}
-	return p.startRunRequest(ChatRunRequest{
+	return p.startRunRequest(ChatSendRequest{
 		Prompt:    note,
 		AgentName: strings.TrimSpace(p.meta.Agent),
 		Compact:   true,
 	}, displayPrompt, false, "compacting context")
 }
 
-func (p *ChatPage) startRunRequest(req ChatRunRequest, displayPrompt string, appendUserMessage bool, runningStatus string) bool {
+func (p *ChatPage) startRunRequest(req ChatSendRequest, displayPrompt string, appendUserMessage bool, runningStatus string) bool {
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	if req.AgentName == "" && strings.TrimSpace(req.TargetKind) == "" && strings.TrimSpace(req.TargetName) == "" {
 		req.AgentName = strings.TrimSpace(p.meta.Agent)
@@ -1659,9 +1661,9 @@ func (p *ChatPage) startRunRequest(req ChatRunRequest, displayPrompt string, app
 		p.statusLine = "run already in progress"
 		return false
 	}
-	if p.backend == nil {
-		p.appendSystemMessage("Cannot run turn: backend is unavailable.")
-		p.statusLine = "run blocked"
+	if p.send == nil {
+		p.appendSystemMessage("Cannot send message: sender is unavailable.")
+		p.statusLine = "send blocked"
 		return false
 	}
 	if p.sessionID == "" {
@@ -1704,26 +1706,15 @@ func (p *ChatPage) startRunRequest(req ChatRunRequest, displayPrompt string, app
 	p.runCancel = cancel
 	go func() {
 		defer cancel()
-		resp, err := p.backend.RunTurnStream(runCtx, p.sessionID, ChatRunRequest{
+		err := p.send(runCtx, p.sessionID, ChatSendRequest{
 			Prompt:       req.Prompt,
 			AgentName:    req.AgentName,
 			Instructions: req.Instructions,
 			Compact:      req.Compact,
 			TargetKind:   req.TargetKind,
 			TargetName:   req.TargetName,
-		}, func(event ChatRunStreamEvent) {
-			queued := p.enqueueRunStreamEvent(chatRunStreamResult{RunID: runID, Event: event, AtUnix: time.Now().UnixMilli()})
-			if queued.queued {
-				eventType := strings.ToLower(strings.TrimSpace(event.Type))
-				switch eventType {
-				case "assistant.delta", "assistant.commentary", "message.updated", "reasoning.delta", "tool.delta":
-					p.requestAsyncRender()
-				default:
-					p.notifyAsyncEvent()
-				}
-			}
 		})
-		result := chatRunResult{RunID: runID, Response: resp, Err: err}
+		result := chatRunResult{RunID: runID, Err: err}
 		select {
 		case p.runResults <- result:
 			p.notifyAsyncEvent()
@@ -2232,7 +2223,7 @@ func (p *ChatPage) ApplySessionLifecycle(lifecycle ChatSessionLifecycle) {
 	}
 
 	switch strings.ToLower(lifecycle.Phase) {
-	case "errored":
+	case "errored", "blocked":
 		p.completeThinkingTimeline("error", time.Now().UnixMilli(), "")
 	default:
 		p.completeThinkingTimeline("done", time.Now().UnixMilli(), "")
@@ -2257,6 +2248,17 @@ func (p *ChatPage) ApplySessionLifecycle(lifecycle ChatSessionLifecycle) {
 			p.errorLine = lifecycle.Error
 		}
 		p.statusLine = "run failed"
+	case "blocked":
+		if lifecycle.Error != "" {
+			p.errorLine = lifecycle.Error
+		} else if lifecycle.StopReason != "" {
+			p.errorLine = lifecycle.StopReason
+		}
+		if lifecycle.StopReason != "" {
+			p.statusLine = lifecycle.StopReason
+		} else {
+			p.statusLine = "run blocked"
+		}
 	case "cancelled":
 		if lifecycle.StopReason != "" {
 			p.statusLine = lifecycle.StopReason
@@ -2460,8 +2462,10 @@ func (p *ChatPage) drainRunResults() bool {
 			if p.lifecycle == nil || !p.lifecycle.Active {
 				p.busy = false
 				p.runStarted = time.Time{}
+				p.streamingRun = false
 			}
-			p.applyRunSuccess(result.Response)
+			p.statusLine = "message sent"
+			p.errorLine = ""
 		default:
 			return changed
 		}
@@ -2871,107 +2875,6 @@ func (p *ChatPage) applyHistory(messages []ChatMessageRecord) {
 		p.ingestMessageRecord(message)
 	}
 	p.rebuildToolLifecycleViews()
-}
-
-func (p *ChatPage) applyRunSuccess(resp ChatRunResponse) {
-	defer func() {
-		p.ownedRunID = ""
-	}()
-	p.applyContextUsageSummary(resp.UsageSummary)
-
-	if strings.TrimSpace(resp.Model) != "" {
-		p.modelName = strings.TrimSpace(resp.Model)
-	}
-	if strings.TrimSpace(resp.Thinking) != "" {
-		p.thinkingLevel = strings.TrimSpace(resp.Thinking)
-	}
-	summaryFromResp := ""
-	rawSummaryFromResp := ""
-	if p.showThinkingTags {
-		if p.isCodexModel() {
-			rawSummaryFromResp = strings.TrimSpace(p.liveThinking)
-			if rawSummaryFromResp == "" {
-				rawSummaryFromResp = canonicalThinkingText(resp.ReasoningSummary)
-			}
-			if rawSummaryFromResp == "" {
-				rawSummaryFromResp = canonicalThinkingText(p.thinkingSummary)
-			}
-		} else {
-			rawSummaryFromResp = canonicalThinkingText(resp.ReasoningSummary)
-		}
-		summaryFromResp = normalizeThinkingSummary(rawSummaryFromResp)
-		if summaryFromResp == "" {
-			summaryFromResp = defaultSummaryFromText(p.liveThinking)
-		}
-		if summaryFromResp != "" {
-			p.thinkingSummary = summaryFromResp
-		}
-	}
-
-	if !p.streamingRun {
-		for _, toolMessage := range resp.ToolMessages {
-			p.ingestMessageRecord(toolMessage)
-		}
-		for _, commentaryMessage := range resp.Commentary {
-			p.ingestMessageRecord(commentaryMessage)
-		}
-	}
-
-	if p.lifecycle != nil && !p.lifecycle.Active {
-		p.streamingRun = false
-	}
-
-	assistantText := strings.TrimSpace(resp.AssistantMessage.Content)
-	if assistantText == "" {
-		assistantText = strings.TrimSpace(p.liveAssistant)
-	}
-	if assistantText == "" && resp.NoAssistant {
-		status := strings.TrimSpace(resp.PrimaryRunStatus)
-		if status == "" {
-			status = "pending_executor"
-		}
-		if reason := strings.TrimSpace(resp.PrimaryBlockedReason); reason != "" {
-			p.statusLine = status + ": " + reason
-		} else {
-			p.statusLine = status + " - no executor attached"
-		}
-		p.errorLine = ""
-		p.liveAssistant = ""
-		p.liveThinking = ""
-		p.thinkingCompletedAt = time.Time{}
-		p.reasoningActive = false
-		p.reasoningStartedAt = time.Time{}
-		p.streamingRun = false
-		return
-	}
-	if assistantText == "" {
-		assistantText = "No assistant response text was returned."
-	}
-	createdAt := resp.AssistantMessage.CreatedAt
-	if createdAt <= 0 {
-		createdAt = time.Now().UnixMilli()
-	}
-	reasoningToPersist := ""
-	reasoningToPersist = rawSummaryFromResp
-	if summary := normalizeThinkingSummary(reasoningToPersist); summary != "" {
-		p.thinkingSummary = summary
-	}
-	p.completeThinkingTimeline("done", createdAt, reasoningToPersist)
-	p.reasoningActive = false
-	p.appendMessageWithMetadata("assistant", assistantText, resp.AssistantMessage.Metadata, createdAt)
-	p.liveAssistant = ""
-	p.liveThinking = ""
-	p.thinkingCompletedAt = time.Time{}
-	p.reasoningStartedAt = time.Time{}
-	p.activeReasoningMessageID = ""
-	p.streamingRun = false
-
-	duration := time.Duration(0)
-	if started := p.effectiveRunStarted(); !started.IsZero() {
-		duration = time.Since(started)
-	}
-	p.statusLine = fmt.Sprintf("turn complete in %s", formatDurationCompact(duration))
-	p.errorLine = ""
 }
 
 func (p *ChatPage) applyContextUsageSummary(summary *ChatUsageSummary) {
@@ -4711,13 +4614,42 @@ func (p *ChatPage) friendlyRunError(err error) string {
 		return "Context compaction canceled."
 	case strings.Contains(lower, "resolved model provider is empty"):
 		return "No active model is configured. Open /models, set a provider/model, then retry."
-	case strings.Contains(lower, "auth") || strings.Contains(lower, "unauthorized"):
-		return "Auth is missing or invalid. Run /auth, then retry."
+	case isAuthenticationRunError(lower):
+		return "Auth is missing or invalid. Run /auth, then retry. Details: " + text
 	case strings.Contains(lower, "unsupported provider") || strings.Contains(lower, "not runnable yet"):
 		return "Selected provider is not runnable yet. Open /models, choose a supported model, then retry."
 	default:
 		return "Run failed: " + text
 	}
+}
+
+func isAuthenticationRunError(lower string) bool {
+	lower = strings.TrimSpace(lower)
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "unauthorized") || strings.Contains(lower, "401") {
+		return true
+	}
+	for _, phrase := range []string{
+		"auth not configured",
+		"auth is not configured",
+		"auth missing",
+		"missing auth",
+		"missing api key",
+		"api key is not configured",
+		"api key is required",
+		"oauth record is incomplete",
+		"oauth login failed",
+		"request unauthorized",
+		"token is missing",
+		"refresh token is missing",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func isCancelledRunError(err error) bool {
