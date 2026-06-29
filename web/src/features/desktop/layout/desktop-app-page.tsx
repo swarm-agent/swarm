@@ -1418,8 +1418,14 @@ function sessionBranchLabel(session: DesktopSessionRecord): string {
 }
 
 function sessionRowMetadataLabel(session: DesktopSessionRecord): string {
-  return [sessionWorkspaceLabel(session), sessionRepoLabel(session), sessionBranchLabel(session)]
-    .filter((value, index, values) => value && values.indexOf(value) === index)
+  const seen = new Set<string>()
+  return [sessionWorkspaceLabel(session), sessionBranchLabel(session)]
+    .filter((value) => {
+      const normalized = value.trim().toLowerCase()
+      if (!normalized || seen.has(normalized)) return false
+      seen.add(normalized)
+      return true
+    })
     .join(' · ')
 }
 
@@ -1735,6 +1741,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const checkpointProgressLabel = sessionPlanCheckpointProgressLabel(session)
   const checkpointCounts = sessionPlanCheckpointCounts(session)
   const activeCheckpointTitle = metadataText(session, 'swarm_v3_active_checkpoint_title')
+  const activeCheckpointStatus = metadataText(session, 'swarm_v3_active_checkpoint_status')
   const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
   const tooltip = sessionStatusTooltip(session)
   const isNestedSession = depth > 0
@@ -1759,10 +1766,45 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const hasPendingPermission = sessionHasPendingPermission(session)
   const rightSideLabel = isPlanRow && !hasPendingPermission ? '' : singleStatusLabel
   const statusTone = sessionStatusTone(session)
-  const planCheckpointText = activeCheckpointTitle
-    ? activeCheckpointTitle
-    : 'Checkpoints'
-
+  const checkpointProgressText = checkpointProgressLabel || (checkpointCounts.totalCount > 0
+    ? `${checkpointCounts.activeIndex || checkpointCounts.completedCount}/${checkpointCounts.totalCount}`
+    : '')
+  const checkpointStatusMeta = activeCheckpointStatus ? activeCheckpointStatus.replace(/[_-]+/g, ' ') : ''
+  const checkpointMetaParts = [
+    checkpointStatusMeta.toLowerCase() === 'in progress' ? '' : checkpointStatusMeta,
+    activeCheckpointTitle,
+  ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index)
+  const planCheckpointMeta = checkpointMetaParts.join(' · ') || 'No active checkpoint'
+  const showDetailsRow = !isPlanRow && Boolean(backgroundInfo || visibleChildLabel || hasAgentChildren)
+  const agentToggleControl = hasAgentChildren ? (
+    <button
+      type="button"
+      className={cn(
+        'inline-flex h-4 shrink-0 items-center gap-1 border-0 bg-transparent p-0 font-mono tabular-nums text-[10px] leading-4 transition-colors',
+        agentsExpanded
+          ? 'text-[var(--app-text)]'
+          : 'text-[var(--app-text-subtle)] hover:text-[var(--app-text)]',
+      )}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        onToggleAgents(session.id)
+      }}
+      aria-label={`${agentSummary.running} running of ${agentSummary.total} subagents`}
+      aria-pressed={agentsExpanded}
+      title={`${agentSummary.total} subagent${agentSummary.total === 1 ? '' : 's'} · ${agentSummary.running} running${agentsExpanded ? ' · click to hide subagent sessions' : ' · click to show subagent sessions'}`}
+    >
+      {agentsExpanded ? <ChevronDown size={10} className="shrink-0 opacity-75" /> : <ChevronRight size={10} className="shrink-0 opacity-75" />}
+      <Bot size={11} className={cn('shrink-0', agentSummary.running > 0 ? 'animate-pulse text-[var(--app-success)]' : null)} />
+      <span className={cn('font-mono tabular-nums text-[10px] leading-none', agentSummary.running > 0 ? 'text-[var(--app-success)]' : null)}>{agentDescriptor.primary}</span>
+      {agentDescriptor.secondary ? (
+        <span className={cn(
+          'font-mono tabular-nums text-[10px] leading-none',
+          agentSummary.running > 0 ? 'text-[var(--app-text-subtle)]' : 'text-[var(--app-text)]',
+        )}>{agentDescriptor.secondary}</span>
+      ) : null}
+    </button>
+  ) : null
   return (
     <Link
       to="/$workspaceSlug/$sessionId"
@@ -1832,34 +1874,20 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       </div>
 
       {isPlanRow ? (
-        <div className="flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
-            {checkpointCounts.totalCount > 0 ? (
-              <span className="inline-flex shrink-0 items-center gap-0.5" aria-label={checkpointProgressLabel || undefined}>
-                {Array.from({ length: checkpointCounts.totalCount }).map((_, index) => {
-                  const markerIndex = index + 1
-                  return (
-                    <span
-                      key={markerIndex}
-                      className={cn(
-                        'h-1.5 w-1.5 rounded-full border',
-                        markerIndex <= checkpointCounts.completedCount
-                          ? 'border-[var(--app-success-border)] bg-[var(--app-success)]'
-                          : markerIndex === checkpointCounts.activeIndex
-                            ? 'border-[var(--app-primary-hover)] bg-[var(--app-primary)]'
-                            : 'border-[var(--app-border)] bg-[var(--app-bg-inset)]',
-                      )}
-                    />
-                  )
-                })}
-              </span>
-            ) : null}
-            <span className="truncate">{planCheckpointText}</span>
+        <div className="flex min-w-0 items-start justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+          <div className="grid min-w-0 flex-1 gap-0.5 overflow-hidden">
+            <span className="shrink-0 font-mono font-semibold uppercase tracking-[0.08em] text-[var(--app-text-muted)]" aria-label={checkpointProgressLabel || undefined}>
+              {checkpointProgressText ? `CP ${checkpointProgressText}` : 'CP'}
+            </span>
+            <span className="truncate">{planCheckpointMeta}</span>
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {agentToggleControl}
           </div>
         </div>
       ) : null}
 
-      {(backgroundInfo || visibleChildLabel || hasAgentChildren || session.worktreeEnabled) ? (
+      {showDetailsRow ? (
         <div className="flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate">
             {backgroundInfo ? (
@@ -1875,43 +1903,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
             ) : null}
           </div>
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            {hasAgentChildren ? (
-              <button
-                type="button"
-                className={cn(
-                  'inline-flex h-4 shrink-0 items-center gap-1 border-0 bg-transparent p-0 font-mono tabular-nums text-[10px] leading-4 transition-colors',
-                  agentsExpanded
-                    ? 'text-[var(--app-text)]'
-                    : 'text-[var(--app-text-subtle)] hover:text-[var(--app-text)]',
-                )}
-                onClick={(event) => {
-                  event.preventDefault()
-                  event.stopPropagation()
-                  onToggleAgents(session.id)
-                }}
-                aria-label={`${agentSummary.running} running of ${agentSummary.total} subagents`}
-                aria-pressed={agentsExpanded}
-                title={`${agentSummary.total} subagent${agentSummary.total === 1 ? '' : 's'} · ${agentSummary.running} running${agentsExpanded ? ' · click to hide subagent sessions' : ' · click to show subagent sessions'}`}
-              >
-                {agentsExpanded ? <ChevronDown size={10} className="shrink-0 opacity-75" /> : <ChevronRight size={10} className="shrink-0 opacity-75" />}
-                <Bot size={11} className={cn('shrink-0', agentSummary.running > 0 ? 'animate-pulse text-[var(--app-success)]' : null)} />
-                <span className={cn('font-mono tabular-nums text-[10px] leading-none', agentSummary.running > 0 ? 'text-[var(--app-success)]' : null)}>{agentDescriptor.primary}</span>
-                {agentDescriptor.secondary ? (
-                  <span className={cn(
-                    'font-mono tabular-nums text-[10px] leading-none',
-                    agentSummary.running > 0 ? 'text-[var(--app-text-subtle)]' : 'text-[var(--app-text)]',
-                  )}>{agentDescriptor.secondary}</span>
-                ) : null}
-              </button>
-            ) : null}
-            {session.worktreeEnabled ? (
-              <span
-                className="inline-flex shrink-0 items-center justify-center text-[var(--app-text-subtle)] opacity-80"
-                title={tooltip || 'Worktree enabled'}
-              >
-                <GitBranch size={12} />
-              </span>
-            ) : null}
+            {!isPlanRow ? agentToggleControl : null}
           </div>
         </div>
       ) : null}
