@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -423,6 +424,51 @@ func TestSessionsV3PrimaryArchiveRouteStreamsWorkspaceTombstone(t *testing.T) {
 		}
 	}
 	t.Fatalf("workspace stream missed archive tombstone event for %s: %+v body=%s", created.ID, stream.Events, streamRec.Body.String())
+}
+
+func TestSessionsV3PrimaryBatchArchiveRouteArchivesMultipleSessions(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := "/workspace/stream-batch-archive"
+	createdA := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-batch-archive-a", "Batch Archive A", workspace)
+	createdB := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-batch-archive-b", "Batch Archive B", workspace)
+
+	body := fmt.Sprintf(`{"session_ids":[%q,%q,%q]}`, createdA.ID, createdB.ID, createdA.ID)
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:archive", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("batch archive status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Archived bool `json:"archived"`
+		Results  []struct {
+			SessionID string                         `json:"session_id"`
+			Archived  bool                           `json:"archived"`
+			Tombstone pebblestore.V3SessionTombstone `json:"tombstone"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode batch archive response: %v", err)
+	}
+	if !response.Archived || len(response.Results) != 2 || response.Results[0].SessionID != createdA.ID || response.Results[1].SessionID != createdB.ID {
+		t.Fatalf("batch archive response = %+v", response)
+	}
+	for _, result := range response.Results {
+		if !result.Archived || result.Tombstone.Kind != "archived" || !result.Tombstone.Archived {
+			t.Fatalf("batch archive result = %+v", result)
+		}
+	}
+	if sessions, err := server.sessions.ListSessionsForAccount(testPrincipal().AccountScopeID, 10); err != nil || len(sessions) != 0 {
+		t.Fatalf("active sessions after batch archive = %+v err=%v", sessions, err)
+	}
+	tombstones, err := server.sessions.ListSessionTombstonesForAccount(testPrincipal().AccountScopeID, 10)
+	if err != nil {
+		t.Fatalf("list tombstones: %v", err)
+	}
+	if len(tombstones) != 2 {
+		t.Fatalf("batch archive tombstones = %+v", tombstones)
+	}
 }
 
 func TestSessionsV3SyncStreamWorkspaceUsesDurableMembershipForRunIntentRecord(t *testing.T) {

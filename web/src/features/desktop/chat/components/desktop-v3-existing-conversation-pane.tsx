@@ -39,6 +39,7 @@ import {
 import { compactDesktopV3Session } from '../../session-v3/compact-session-flow'
 import {
   acceptAndContinueDesktopPlanCheckpoint,
+  archiveDesktopV3Sessions,
   resumeDesktopPlanAutomatic,
 } from '../../session-v3/plan-execution-api'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../../state/desktop-v3-session-api'
@@ -54,6 +55,13 @@ const EMPTY_AGENT_STATE: AgentStateRecord = {
   version: 0,
   providerDefaultsPreview: null,
   toolInventory: null,
+}
+
+function desktopPlanLifecycleComplete(response: { execution_summary?: unknown }): boolean {
+  const summary = response.execution_summary
+  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return false
+  const planComplete = (summary as Record<string, unknown>).plan_complete
+  return planComplete === true || planComplete === 'true'
 }
 
 function optionKey(provider: string, model: string, contextMode = ''): string {
@@ -618,6 +626,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   onNewSession?: () => void
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
   onCompactingChange?: (sessionId: string, startedAt: number | null) => void
+  onArchivePlanSession?: (sessionId: string) => void
   onOpenPlan?: () => void
 }
 
@@ -646,6 +655,7 @@ export function DesktopV3ExistingConversationPane({
   onNewSession,
   onSlashCommand,
   onCompactingChange,
+  onArchivePlanSession,
   onOpenPlan,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim()
@@ -1029,9 +1039,18 @@ export function DesktopV3ExistingConversationPane({
     try {
       await persistVisibleSettings()
       switch (input.action) {
-        case 'accept_checkpoint':
+        case 'accept_checkpoint': {
           if (!input.checkpointId) throw new Error('Accept checkpoint requires checkpoint_id')
-          await acceptAndContinueDesktopPlanCheckpoint(normalizedSessionId, input.checkpointId)
+          const response = await acceptAndContinueDesktopPlanCheckpoint(normalizedSessionId, input.checkpointId)
+          if (desktopPlanLifecycleComplete(response)) {
+            await archiveDesktopV3Sessions([normalizedSessionId])
+            onArchivePlanSession?.(normalizedSessionId)
+          }
+          break
+        }
+        case 'archive_plan':
+          await archiveDesktopV3Sessions([normalizedSessionId])
+          onArchivePlanSession?.(normalizedSessionId)
           break
         case 'resume_automatic':
           await resumeDesktopPlanAutomatic(normalizedSessionId)

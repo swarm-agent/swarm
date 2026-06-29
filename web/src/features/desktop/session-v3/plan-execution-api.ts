@@ -22,6 +22,12 @@ export interface DesktopPlanLifecycleResponse {
   session?: unknown
 }
 
+export interface DesktopSessionArchiveResponse {
+  ok?: boolean
+  archived?: boolean
+  results?: Array<{ session_id?: string; archived?: boolean; tombstone?: unknown }>
+}
+
 export interface DesktopPlanEnterInput {
   reason?: string
 }
@@ -170,6 +176,16 @@ export async function restartDesktopPlanCheckpoint(sessionId: string, checkpoint
 export async function rewindDesktopPlanCheckpoint(sessionId: string, checkpointId: string, input: DesktopPlanCheckpointInput = {}): Promise<DesktopPlanLifecycleResponse> {
   return postDesktopPlanLifecycle(sessionId, `checkpoints/${encodePathSegment(checkpointId)}/rewind`, {
     plan_id: trimmed(input.planId),
+  })
+}
+
+export async function archiveDesktopV3Sessions(sessionIds: string[]): Promise<DesktopSessionArchiveResponse> {
+  const normalizedIds = sessionIds.map((sessionId) => sessionId.trim()).filter(Boolean)
+  if (normalizedIds.length === 0) throw new Error('Archive request requires at least one session_id')
+  return requestJson<DesktopSessionArchiveResponse>('/v3/sessions:archive', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_ids: normalizedIds }),
   })
 }
 

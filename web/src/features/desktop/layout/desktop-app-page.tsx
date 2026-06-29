@@ -1937,7 +1937,10 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
   for (const node of input.nodes) {
     grouped.get(sessionSidebarGroup(node.session))?.push(node)
   }
-  return SIDEBAR_SESSION_GROUPS.flatMap((group) => {
+  const activeGroups = SIDEBAR_SESSION_GROUPS.filter((group) => group.id !== 'archived')
+  const archivedGroup = SIDEBAR_SESSION_GROUPS.find((group) => group.id === 'archived')
+  const groups = archivedGroup ? [...activeGroups, archivedGroup] : activeGroups
+  return groups.flatMap((group) => {
     const nodes = grouped.get(group.id) ?? []
     if (nodes.length === 0) return []
     return [(
@@ -2662,6 +2665,25 @@ export function DesktopAppPage() {
     dispatchDesktopV3Cache(selectSession(undefined))
     handleOpenWorkspace(wsPath, wsName)
   }, [handleOpenWorkspace])
+
+  const handleArchivePlanSession = useCallback((sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    const routeSession = normalizedSessionId ? sessionById.get(normalizedSessionId) : null
+    const workspacePath = routeSession
+      ? desktopSidebarWorkspacePathForSession(routeSession, workspacePathByBindingId)
+      : selectedWorkspacePath || routeWorkspace?.path || ''
+    const workspaceName = routeSession?.workspaceName || selectedWorkspace?.workspaceName || routeWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
+    dispatchDesktopV3Cache(selectSession(undefined))
+    if (workspacePath) {
+      handleOpenWorkspace(workspacePath, workspaceName)
+      return
+    }
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
+      return
+    }
+    void navigate({ to: '/' })
+  }, [handleOpenWorkspace, navigate, routeWorkspace?.path, routeWorkspace?.workspaceName, routeWorkspaceSlug, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, workspacePathByBindingId])
 
   const openWorktreeSessionModal = useCallback((input: {
     workspace: WorkspaceEntry
@@ -3815,6 +3837,7 @@ export function DesktopAppPage() {
             }) : []}
             onOpenChats={() => setMobileSidebarOpen(true)}
             onCompactingChange={handleCompactingSessionChange}
+            onArchivePlanSession={handleArchivePlanSession}
             onNewSession={() => {
               const routeSession = sessionById.get(routeSessionId)
               const workspacePath = routeSession ? desktopSidebarWorkspacePathForSession(routeSession, workspacePathByBindingId) : ''

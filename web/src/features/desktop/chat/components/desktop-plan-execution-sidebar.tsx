@@ -6,6 +6,7 @@ import type { DesktopPlanExecutionView } from '../../state/desktop-v3-cache-sele
 type DesktopPlanExecutionSidebarAction =
   | 'accept_checkpoint'
   | 'resume_automatic'
+  | 'archive_plan'
 
 export interface DesktopPlanExecutionSidebarActionInput {
   action: DesktopPlanExecutionSidebarAction
@@ -179,17 +180,20 @@ function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecuti
   const checkpointId = view.activeCheckpointId || view.activeCheckpoint?.id || ''
   const automatic = view.policyMode === 'automatic'
   const acceptBusy = busyAction === actionBusyKey('accept_checkpoint', checkpointId)
+  const archiveBusy = busyAction === actionBusyKey('archive_plan')
   const checkpoints = view.plan.document?.checkpoints ?? []
   const activeIndex = view.activeCheckpoint
     ? checkpoints.findIndex((checkpoint) => checkpoint.id === view.activeCheckpoint?.id)
     : -1
   const hasNextCheckpoint = checkpoints.some((checkpoint, index) => index > activeIndex && checkpointIsIncomplete(checkpoint))
-  const canAccept = Boolean(onAction && checkpointId && view.reviewRequired && !view.blocked && !view.failed && !view.completed && !canStop)
+  const canAccept = Boolean(onAction && checkpointId && view.reviewRequired && !view.blocked && !view.failed && !canStop)
+  const canArchive = Boolean(onAction && !canStop && !archiveBusy)
   const acceptReviewBusy = acceptBusy
-  const acceptReviewLabel = hasNextCheckpoint ? 'Accept & start next checkpoint' : 'Accept & finish plan'
+  const acceptReviewLabel = hasNextCheckpoint ? 'Accept & start next checkpoint' : 'Accept & archive plan'
   const acceptReviewHelp = hasNextCheckpoint
     ? 'Accepting review starts the next checkpoint. You can keep chatting first or ask the AI to add or adjust checkpoints.'
-    : 'Accept & finish plan archives this plan when you’re done. You can continue working inside of this session until you’re ready to commit.'
+    : 'Accept & archive plan accepts this review and moves the completed plan to Archived.'
+  const showDirectArchiveAction = !view.reviewRequired || hasNextCheckpoint
 
   if (automatic && !view.reviewRequired && !view.blocked && !view.failed && !view.completed) {
     const singleRun = isSingleRunView(view)
@@ -201,7 +205,22 @@ function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecuti
           <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
             {singleRun
               ? 'Execution will continue as one plan run until it completes or stops for review, a blocker, or a failure.'
-              : 'Execution will continue until the plan completes or stops for review, a blocker, or a failure.'}
+              : 'Execution will continue automatically through checkpoint, pause the chat at any time to change agent settings and continue'}
+          </p>
+        </div>
+        <div className="mt-3 grid gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className={cn('rounded-lg', archiveBusy ? 'animate-pulse' : '')}
+            onClick={() => void onAction?.({ action: 'archive_plan' })}
+            disabled={!canArchive}
+          >
+            Archive plan
+          </Button>
+          <p className="px-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
+            Archive this plan when you no longer need the chat in your active workspace.
           </p>
         </div>
       </section>
@@ -214,7 +233,7 @@ function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecuti
       <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
         <div className="text-sm font-medium text-[var(--app-text)]">Review Mode</div>
         <p className="mt-0.5 text-xs leading-5 text-[var(--app-text-muted)]">
-          You can keep chatting and ask the AI to continue work or add checkpoints. Accept and finish the plan to archive it when you’re done.
+          You can keep chatting and ask the AI to continue work or add checkpoints. Accept and archive the completed plan when you’re done.
         </p>
       </div>
 
@@ -236,6 +255,23 @@ function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecuti
             </p>
           ) : null}
         </div>
+        {showDirectArchiveAction ? (
+          <div className="grid gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className={cn('rounded-lg', archiveBusy ? 'animate-pulse' : '')}
+              onClick={() => void onAction?.({ action: 'archive_plan' })}
+              disabled={!canArchive}
+            >
+              Archive plan
+            </Button>
+            <p className="px-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
+              Move this plan to Archived without starting another checkpoint.
+            </p>
+          </div>
+        ) : null}
       </div>
     </section>
   )

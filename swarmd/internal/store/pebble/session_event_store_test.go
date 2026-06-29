@@ -525,6 +525,49 @@ func TestArchiveSessionCreatesTombstoneEventAndRealtimeOutbox(t *testing.T) {
 	}
 }
 
+func TestArchiveSessionsBatchCreatesOrderedTombstonesEventsAndOutbox(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-archive-a")
+	createV3SessionForTest(t, sessions, "session-archive-b")
+
+	if err := sessions.ArchiveSessions([]string{"session-archive-a", "session-archive-b"}); err != nil {
+		t.Fatalf("archive sessions: %v", err)
+	}
+	for _, sessionID := range []string{"session-archive-a", "session-archive-b"} {
+		if _, ok, err := sessions.GetSession(sessionID); err != nil || ok {
+			t.Fatalf("archived session %s visible ok=%v err=%v", sessionID, ok, err)
+		}
+	}
+
+	tombstones, err := sessions.ListV3SessionTombstonesForAccount("account-1", 10)
+	if err != nil {
+		t.Fatalf("list tombstones: %v", err)
+	}
+	if len(tombstones) != 2 {
+		t.Fatalf("tombstones = %+v, want 2", tombstones)
+	}
+	outbox, err := sessions.ListV3RealtimeOutboxAfter(0, 10)
+	if err != nil {
+		t.Fatalf("list outbox: %v", err)
+	}
+	archiveOutbox := make([]V3RealtimeOutboxRecord, 0, 2)
+	for _, record := range outbox {
+		if record.Event.EventType == "session.archived" {
+			archiveOutbox = append(archiveOutbox, record)
+		}
+	}
+	if len(archiveOutbox) != 2 {
+		t.Fatalf("archive outbox = %+v, want 2", archiveOutbox)
+	}
+	if archiveOutbox[0].EndpointSeq+1 != archiveOutbox[1].EndpointSeq {
+		t.Fatalf("archive outbox endpoint seqs not contiguous: %+v", archiveOutbox)
+	}
+	if archiveOutbox[0].SessionID != "session-archive-a" || archiveOutbox[1].SessionID != "session-archive-b" {
+		t.Fatalf("archive outbox order = %+v", archiveOutbox)
+	}
+}
+
 func TestApplyV3SessionMutationRealtimeOutboxIsAtomicAndOrdered(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

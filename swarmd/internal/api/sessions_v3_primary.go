@@ -158,6 +158,10 @@ type sessionsV3AgentModelPolicy struct {
 	MaxOutputTokens int                         `json:"max_output_tokens"`
 }
 
+type sessionsV3ArchiveBatchRequest struct {
+	SessionIDs []string `json:"session_ids"`
+}
+
 func (s *Server) handleSessionsV3Primary(w http.ResponseWriter, r *http.Request) {
 	if s.sessions == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("sessions v3 service is not configured"))
@@ -166,6 +170,11 @@ func (s *Server) handleSessionsV3Primary(w http.ResponseWriter, r *http.Request)
 	principal, principalOK := PrincipalFromRequest(r)
 	if !principalOK || !principal.Valid() {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+
+	if r.URL.Path == "/v3/sessions:archive" {
+		s.handleSessionsV3PrimaryArchiveBatch(w, r, principal)
 		return
 	}
 
@@ -430,6 +439,60 @@ func (s *Server) handleSessionV3PrimaryArchive(w http.ResponseWriter, r *http.Re
 	s.handleSessionV3PrimaryTombstone(w, r, principal, sessionID, "archived")
 }
 
+func (s *Server) handleSessionsV3PrimaryArchiveBatch(w http.ResponseWriter, r *http.Request, principal identity.Principal) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req sessionsV3ArchiveBatchRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(req.SessionIDs) == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("session_ids is required"))
+		return
+	}
+	sessions := make([]pebblestore.SessionSnapshot, 0, len(req.SessionIDs))
+	seen := make(map[string]struct{}, len(req.SessionIDs))
+	for _, rawID := range req.SessionIDs {
+		sessionID := strings.TrimSpace(rawID)
+		if sessionID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("session_ids must not contain empty ids"))
+			return
+		}
+		if _, exists := seen[sessionID]; exists {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+		session, found, err := s.requireSessionV3Access(principal, sessionID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !found {
+			writeSessionNotFound(w)
+			return
+		}
+		sessions = append(sessions, session)
+	}
+	if len(sessions) == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("session_ids must include at least one session id"))
+		return
+	}
+	events, err := s.sessions.ArchiveSessionsWithEvents(sessionIDsFromSnapshots(sessions))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.publishSessionsV3ArchiveRealtime(sessions, events)
+	results := make([]map[string]any, 0, len(sessions))
+	for _, session := range sessions {
+		results = append(results, sessionV3ArchiveResponse(session))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "archived": true, "results": results})
+}
+
 func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, kind string) {
 	session, found, err := s.requireSessionV3Access(principal, sessionID)
 	if err != nil {
@@ -455,6 +518,11 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if kind == "archived" {
+		s.publishSessionsV3ArchiveRealtime([]pebblestore.SessionSnapshot{session}, []*pebblestore.EventEnvelope{event})
+		writeJSON(w, http.StatusOK, sessionV3ArchiveResponse(session))
+		return
+	}
 	if head, headErr := s.sessions.CurrentRealtimeOutboxRevision(); headErr == nil && head > 0 {
 		if record, ok, recordErr := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(session.ID, head); recordErr == nil && ok && record.Event.EventType == eventType {
 			if publishErr := s.publishCommittedV3RealtimeOutbox(record); publishErr != nil {
@@ -469,19 +537,58 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 	response := map[string]any{
 		"ok":         true,
 		"session_id": session.ID,
+		"deleted":    true,
 		"tombstone": map[string]any{
 			"session_id":     session.ID,
 			"workspace_path": session.WorkspacePath,
+			"kind":           "deleted",
+			"deleted":        true,
 		},
 	}
-	if kind == "archived" {
-		response["archived"] = true
-		response["tombstone"].(map[string]any)["archived"] = true
-	} else {
-		response["deleted"] = true
-		response["tombstone"].(map[string]any)["deleted"] = true
-	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func sessionIDsFromSnapshots(sessions []pebblestore.SessionSnapshot) []string {
+	ids := make([]string, 0, len(sessions))
+	for _, session := range sessions {
+		ids = append(ids, session.ID)
+	}
+	return ids
+}
+
+func sessionV3ArchiveResponse(session pebblestore.SessionSnapshot) map[string]any {
+	return map[string]any{
+		"ok":         true,
+		"session_id": session.ID,
+		"archived":   true,
+		"tombstone": map[string]any{
+			"session_id":     session.ID,
+			"workspace_path": session.WorkspacePath,
+			"kind":           "archived",
+			"archived":       true,
+		},
+	}
+}
+
+func (s *Server) publishSessionsV3ArchiveRealtime(sessions []pebblestore.SessionSnapshot, events []*pebblestore.EventEnvelope) {
+	if head, headErr := s.sessions.CurrentRealtimeOutboxRevision(); headErr == nil && head > 0 {
+		for _, session := range sessions {
+			if record, ok, recordErr := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(session.ID, head); recordErr == nil && ok && record.Event.EventType == "session.archived" {
+				if publishErr := s.publishCommittedV3RealtimeOutbox(record); publishErr != nil {
+					// Durable commit succeeded; realtime wake is an accelerator only.
+					_ = publishErr
+				}
+			}
+		}
+	}
+	if s.hub == nil {
+		return
+	}
+	for _, event := range events {
+		if event != nil {
+			s.hub.Publish(*event)
+		}
+	}
 }
 
 func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   acceptAndContinueDesktopPlanCheckpoint,
   acceptDesktopPlanCheckpoint,
+  archiveDesktopV3Sessions,
   continueDesktopPlanCheckpoint,
   pauseDesktopPlanRun,
   restartDesktopPlanCheckpoint,
@@ -16,6 +17,22 @@ import {
 } from './plan-execution-api'
 
 const originalFetch = globalThis.fetch
+
+test('archiveDesktopV3Sessions posts to the batch archive endpoint', async () => {
+  const calls: Array<{ url: string; body: unknown }> = []
+  globalThis.fetch = jsonFetch(calls, { ok: true, archived: true, results: [{ session_id: 'session-1', archived: true }] })
+
+  try {
+    await archiveDesktopV3Sessions([' session-1 '])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.deepEqual(calls, [{
+    url: '/v3/sessions:archive',
+    body: { session_ids: ['session-1'] },
+  }])
+})
 
 test('startDesktopPlanAutomatic calls the dedicated start-automatic lifecycle endpoint only', async () => {
   const calls: Array<{ url: string; body: unknown }> = []

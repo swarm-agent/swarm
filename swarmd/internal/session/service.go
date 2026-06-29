@@ -460,51 +460,94 @@ func (s *Service) ArchiveSession(sessionID string) error {
 }
 
 func (s *Service) ArchiveSessionWithEvent(sessionID string) (*pebblestore.EventEnvelope, error) {
-	return s.tombstoneSessionWithEvent(sessionID, "archived")
+	events, err := s.ArchiveSessionsWithEvents([]string{sessionID})
+	if err != nil || len(events) == 0 {
+		return nil, err
+	}
+	return events[0], nil
+}
+
+func (s *Service) ArchiveSessionsWithEvents(sessionIDs []string) ([]*pebblestore.EventEnvelope, error) {
+	return s.tombstoneSessionsWithEvents(sessionIDs, "archived")
 }
 
 func (s *Service) tombstoneSessionWithEvent(sessionID, kind string) (*pebblestore.EventEnvelope, error) {
+	events, err := s.tombstoneSessionsWithEvents([]string{sessionID}, kind)
+	if err != nil || len(events) == 0 {
+		return nil, err
+	}
+	return events[0], nil
+}
+
+func (s *Service) tombstoneSessionsWithEvents(sessionIDs []string, kind string) ([]*pebblestore.EventEnvelope, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("session service is not configured")
-	}
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return nil, errors.New("session id is required")
 	}
 	kind = strings.TrimSpace(strings.ToLower(kind))
 	if kind != "deleted" && kind != "archived" {
 		return nil, fmt.Errorf("unsupported session tombstone kind %q", kind)
 	}
+	normalizedIDs := make([]string, 0, len(sessionIDs))
+	seen := make(map[string]struct{}, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" {
+			return nil, errors.New("session id is required")
+		}
+		if _, exists := seen[sessionID]; exists {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+		normalizedIDs = append(normalizedIDs, sessionID)
+	}
+	if len(normalizedIDs) == 0 {
+		return nil, errors.New("at least one session id is required")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	session, found, err := s.store.GetSession(sessionID)
-	if err != nil {
-		return nil, err
+	sessions := make([]pebblestore.SessionSnapshot, 0, len(normalizedIDs))
+	for _, sessionID := range normalizedIDs {
+		session, found, err := s.store.GetSession(sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			sessions = append(sessions, session)
+		}
 	}
 	if kind == "archived" {
-		err = s.store.ArchiveSession(sessionID)
+		err := s.store.ArchiveSessions(normalizedIDs)
+		if err != nil {
+			return nil, err
+		}
 	} else {
-		err = s.store.DeleteSession(sessionID)
+		for _, sessionID := range normalizedIDs {
+			if err := s.store.DeleteSession(sessionID); err != nil {
+				return nil, err
+			}
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	if !found || s.events == nil {
+	if len(sessions) == 0 || s.events == nil {
 		return nil, nil
-	}
-	payload, err := json.Marshal(session)
-	if err != nil {
-		return nil, err
 	}
 	eventType := "session.deleted"
 	if kind == "archived" {
 		eventType = "session.archived"
 	}
-	env, err := s.events.AppendWithSource("session:"+sessionID, eventType, sessionID, payload, "v3", "", "")
-	if err != nil {
-		return nil, err
+	events := make([]*pebblestore.EventEnvelope, 0, len(sessions))
+	for _, session := range sessions {
+		payload, err := json.Marshal(session)
+		if err != nil {
+			return nil, err
+		}
+		env, err := s.events.AppendWithSource("session:"+session.ID, eventType, session.ID, payload, "v3", "", "")
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, &env)
 	}
-	return &env, nil
+	return events, nil
 }
 
 func (s *Service) SetWorktreeBranch(sessionID, branch string) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {

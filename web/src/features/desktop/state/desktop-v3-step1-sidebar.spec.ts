@@ -190,6 +190,42 @@ test('Desktop V3 sidebar derives plan row state, checkpoint progress, and explic
   assert.deepEqual(grouped.archived, [])
 })
 
+test('Desktop V3 sidebar derives archived rows from archived tombstones only', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
+  state.sessionOrderByScope['scope-a'] = [sessionA.id, sessionB.id]
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.sessionsById[sessionB.id] = { kind: 'full', session: sessionB, needsHydrate: false }
+  state.tombstonesBySession[sessionA.id] = {
+    session_id: sessionA.id,
+    kind: 'archived',
+    archived: true,
+    updated_at: 50,
+    session: { ...sessionA, title: 'Archived A' },
+  }
+  state.tombstonesBySession[sessionB.id] = {
+    session_id: sessionB.id,
+    kind: 'deleted',
+    deleted: true,
+    updated_at: 60,
+    session: sessionB,
+  }
+
+  const rows = selectDesktopSidebarRows(state)
+  assert.deepEqual(rows.map((row) => row.sessionId), [sessionA.id])
+  assert.equal(rows[0].sidebarGroup, 'archived')
+
+  const grouped = selectDesktopSidebarGroupedRows(state)
+  assert.deepEqual(grouped.needs_review, [])
+  assert.deepEqual(grouped.in_progress, [])
+  assert.deepEqual(grouped.active_chats, [])
+  assert.deepEqual(grouped.archived.map((row) => row.sessionId), [sessionA.id])
+
+  const archivedRecord = desktopSessionRecordFromV3SidebarRow(grouped.archived[0])
+  assert.equal(archivedRecord.title, 'Archived A')
+  assert.equal(archivedRecord.metadata?.swarm_v3_sidebar_group, 'archived')
+})
+
 test('metadata-only bootstrap after hydrate preserves messages', () => {
   const state = createEmptyDesktopV3CacheState()
   state.messagesBySession[sessionA.id] = {

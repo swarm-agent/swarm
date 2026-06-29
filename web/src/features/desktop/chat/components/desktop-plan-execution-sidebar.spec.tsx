@@ -89,17 +89,21 @@ test('normal run-through sidebar shows the plan title instead of the synthetic c
   assert.match(markup, /Plan: ship sidebar fix/)
   assert.match(markup, /Continue normally/)
   assert.match(markup, /Running the approved plan normally/)
+  assert.match(markup, /Archive plan/)
+  assert.match(markup, /Archive this plan when you no longer need the chat in your active workspace/)
   assert.doesNotMatch(markup, /Active checkpoint/)
   assert.doesNotMatch(markup, /plan-run/)
   assert.doesNotMatch(markup, /Run approved plan/)
   assert.doesNotMatch(markup, /No remaining checkpoint/)
 })
 
-test('automatic checkpointed mode sidebar actions card is informational with no manual controls', () => {
+test('automatic checkpointed mode sidebar actions card explains continuation and exposes archive', () => {
   const markup = renderToStaticMarkup(<DesktopPlanExecutionSidebar view={view()} onAction={() => undefined} onEditPlan={() => undefined} />)
 
   assert.match(markup, /Automatic mode on/)
-  assert.match(markup, /Execution will continue until the plan completes/)
+  assert.match(markup, /Execution will continue automatically through checkpoint, pause the chat at any time to change agent settings and continue/)
+  assert.match(markup, /Archive plan/)
+  assert.match(markup, /Archive this plan when you no longer need the chat in your active workspace/)
   assert.doesNotMatch(markup, /Continue checkpoint/)
   assert.doesNotMatch(markup, /Accept this checkpoint/)
   assert.doesNotMatch(markup, /Restart/)
@@ -125,6 +129,8 @@ test('manual review mode keeps the start-next review button visible and enabled 
   assert.match(markup, /Accept &amp; start next checkpoint/)
   assert.match(markup, /Accepting review starts the next checkpoint/)
   assert.match(markup, /ask the AI to add or adjust checkpoints/)
+  assert.match(markup, /Archive plan/)
+  assert.match(markup, /Move this plan to Archived without starting another checkpoint/)
   assert.doesNotMatch(markup, /Actions \/ Plan Mode/)
   assert.doesNotMatch(markup, /Manual review mode/)
   assert.doesNotMatch(markup, /Restart/)
@@ -134,17 +140,31 @@ test('manual review mode keeps the start-next review button visible and enabled 
   assert.doesNotMatch(markup, /Accept &amp; move to next/)
 })
 
-test('manual review mode exposes a finish-plan review action on the final checkpoint', () => {
+test('manual review mode exposes only the enabled accept-and-archive review action on the final checkpoint', () => {
   const markup = renderToStaticMarkup(<DesktopPlanExecutionSidebar view={view({ policyMode: 'review_each_checkpoint', reviewRequired: true, status: 'waiting_review' })} onAction={() => undefined} onEditPlan={() => undefined} />)
 
   assert.match(markup, /Review Mode/)
   assert.match(markup, /You can keep chatting and ask the AI to continue work or add checkpoints/)
-  assert.match(markup, /Accept &amp; finish plan/)
-  assert.match(markup, /archives this plan when you’re done/)
-  assert.match(markup, /continue working inside of this session until you’re ready to commit/)
+  assert.match(markup, /Accept &amp; archive plan/)
+  assert.match(markup, /moves the completed plan to Archived/)
+  assert.match(markup, /Accept and archive the completed plan when you’re done/)
+  assert.doesNotMatch(markup, /Archive plan<\/button>/)
+  assert.doesNotMatch(markup, /Move this plan to Archived without starting another checkpoint/)
+  assert.doesNotMatch(markup, /disabled="">Accept &amp; archive plan/)
   assert.doesNotMatch(markup, /Manual review mode/)
   assert.doesNotMatch(markup, /Restart/)
   assert.doesNotMatch(markup, /Edit plan/)
   assert.doesNotMatch(markup, /Accept this checkpoint/)
   assert.doesNotMatch(markup, /Accept &amp; move to next/)
+})
+
+test('manual review mode keeps finish-plan action clickable when all checkpoints are complete but review is still pending', () => {
+  const base = view({ policyMode: 'review_each_checkpoint', reviewRequired: true, status: 'waiting_review', completed: true })
+  base.activeCheckpoint = { ...base.activeCheckpoint!, status: 'completed', review: { status: 'pending', reviewerId: '', reviewerType: '', result: '', notes: '', reviewedAt: 0 } }
+  base.plan.document.checkpoints = [base.activeCheckpoint]
+
+  const markup = renderToStaticMarkup(<DesktopPlanExecutionSidebar view={base} onAction={() => undefined} onEditPlan={() => undefined} />)
+
+  assert.match(markup, /Accept &amp; archive plan/)
+  assert.doesNotMatch(markup, /disabled="">Accept &amp; archive plan/)
 })
