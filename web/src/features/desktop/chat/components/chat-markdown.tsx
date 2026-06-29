@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useSyncExternalStore, useMemo } from "react";
 import { ArrowRight, CheckCircle2, XCircle, LoaderCircle } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
@@ -254,20 +254,81 @@ function taskElapsedLabel(row: TaskToolRow, nowMs: number): string {
   return row.terminal ? row.time || '-' : '0ms';
 }
 
-function TaskElapsedTime({ row }: { row: TaskToolRow }) {
-  const [timerNow, setTimerNow] = useState(() => Date.now());
-  const running = taskStatusKind(row) === "running" && !row.terminal;
+function taskRowKey(row: TaskToolRow, index: number): string {
+  return row.childSessionId.trim() || `launch-index:${row.launchIndex || index + 1}`;
+}
 
-  useEffect(() => {
-    if (!running || row.launchStartedAtMs <= 0) {
-      return;
+const TASK_ELAPSED_TICK_MS = 100;
+
+let taskElapsedNow = Date.now();
+let taskElapsedIntervalId: number | null = null;
+const taskElapsedSubscribers = new Set<() => void>();
+
+function emitTaskElapsedTick(): void {
+  taskElapsedNow = Date.now();
+  for (const subscriber of taskElapsedSubscribers) subscriber();
+}
+
+function subscribeTaskElapsedClock(subscriber: () => void): () => void {
+  taskElapsedSubscribers.add(subscriber);
+  if (taskElapsedIntervalId === null) {
+    taskElapsedIntervalId = window.setInterval(emitTaskElapsedTick, TASK_ELAPSED_TICK_MS);
+    emitTaskElapsedTick();
+  }
+  return () => {
+    taskElapsedSubscribers.delete(subscriber);
+    if (taskElapsedSubscribers.size === 0 && taskElapsedIntervalId !== null) {
+      window.clearInterval(taskElapsedIntervalId);
+      taskElapsedIntervalId = null;
     }
-    setTimerNow(Date.now());
-    const intervalID = window.setInterval(() => setTimerNow(Date.now()), 100);
-    return () => window.clearInterval(intervalID);
-  }, [running, row.launchStartedAtMs]);
+  };
+}
 
-  return <>{taskElapsedLabel(row, running ? timerNow : 0)}</>;
+function getTaskElapsedSnapshot(): number {
+  return taskElapsedNow;
+}
+
+function getTaskElapsedServerSnapshot(): number {
+  return 0;
+}
+
+function useTaskElapsedNow(enabled: boolean): number {
+  const now = useSyncExternalStore(
+    enabled ? subscribeTaskElapsedClock : () => () => undefined,
+    getTaskElapsedSnapshot,
+    getTaskElapsedServerSnapshot,
+  );
+  return enabled ? now : 0;
+}
+
+function taskRowsEqual(left: TaskToolRow, right: TaskToolRow, options: { comparePreview?: boolean } = {}): boolean {
+  if (left.launchIndex !== right.launchIndex
+    || left.childSessionId !== right.childSessionId
+    || left.status !== right.status
+    || left.agent !== right.agent
+    || left.assignmentLabel !== right.assignmentLabel
+    || left.modelLabel !== right.modelLabel
+    || left.tool !== right.tool
+    || left.time !== right.time
+    || left.terminal !== right.terminal) return false;
+
+  if (options.comparePreview !== false
+    && (left.previewKind !== right.previewKind || left.previewText !== right.previewText)) return false;
+
+  const leftRunning = taskStatusKind(left) === "running" && !left.terminal;
+  const rightRunning = taskStatusKind(right) === "running" && !right.terminal;
+  if (leftRunning && rightRunning) return true;
+
+  return left.launchStartedAtMs === right.launchStartedAtMs
+    && left.currentToolStartedAtMs === right.currentToolStartedAtMs
+    && left.elapsedMs === right.elapsedMs
+    && left.currentToolMs === right.currentToolMs;
+}
+
+function TaskElapsedTime({ row }: { row: TaskToolRow }) {
+  const running = taskStatusKind(row) === "running" && !row.terminal;
+  const nowMs = useTaskElapsedNow(running);
+  return <>{taskElapsedLabel(row, nowMs)}</>;
 }
 
 function taskPreviewLabel(row: TaskToolRow): string {
@@ -437,6 +498,17 @@ function TaskSwarmCompactRow({
   );
 }
 
+const MemoizedTaskAgentListRow = memo(TaskAgentListRow, (previous, next) => (
+  previous.index === next.index
+  && previous.dense === next.dense
+  && taskRowsEqual(previous.row, next.row)
+));
+
+const MemoizedTaskSwarmCompactRow = memo(TaskSwarmCompactRow, (previous, next) => (
+  previous.index === next.index
+  && taskRowsEqual(previous.row, next.row, { comparePreview: false })
+));
+
 function TaskSwarmRowsView({ rows }: { rows: TaskToolRow[] }) {
   const counts = taskRowsCounts(rows);
   return (
@@ -444,8 +516,8 @@ function TaskSwarmRowsView({ rows }: { rows: TaskToolRow[] }) {
       <TaskRowsHeader counts={counts} swarm />
       <div className="grid min-w-0 grid-cols-1 gap-1.5 p-2 md:grid-cols-2 xl:grid-cols-3">
         {rows.map((row, index) => (
-          <TaskSwarmCompactRow
-            key={row.childSessionId.trim() || `launch-index:${row.launchIndex || index + 1}`}
+          <MemoizedTaskSwarmCompactRow
+            key={taskRowKey(row, index)}
             row={row}
             index={index}
           />
@@ -455,13 +527,7 @@ function TaskSwarmRowsView({ rows }: { rows: TaskToolRow[] }) {
   );
 }
 
-function TaskRowsView({ rows }: { rows: TaskToolRow[] }) {
-  if (rows.length === 0) return null;
-
-  if (rows.length > TASK_SWARM_THRESHOLD) {
-    return <TaskSwarmRowsView rows={rows} />;
-  }
-
+function TaskAgentRowsView({ rows }: { rows: TaskToolRow[] }) {
   const counts = taskRowsCounts(rows);
   const dense = rows.length >= 50;
 
@@ -477,8 +543,8 @@ function TaskRowsView({ rows }: { rows: TaskToolRow[] }) {
       </div>
       <div className="min-w-0">
         {rows.map((row, index) => (
-          <TaskAgentListRow
-            key={row.childSessionId.trim() || `launch-index:${row.launchIndex || index + 1}`}
+          <MemoizedTaskAgentListRow
+            key={taskRowKey(row, index)}
             row={row}
             index={index}
             dense={dense}
@@ -487,6 +553,12 @@ function TaskRowsView({ rows }: { rows: TaskToolRow[] }) {
       </div>
     </div>
   );
+}
+
+function TaskRowsView({ rows }: { rows: TaskToolRow[] }) {
+  if (rows.length === 0) return null;
+  if (rows.length > TASK_SWARM_THRESHOLD) return <TaskSwarmRowsView rows={rows} />;
+  return <TaskAgentRowsView rows={rows} />;
 }
 
 function SearchSummaryLine({

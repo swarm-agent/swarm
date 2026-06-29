@@ -15,10 +15,12 @@ import (
 
 const (
 	WorkspacesDir   = "workspaces"
+	WorktreesDir    = "worktrees"
 	PrivateDirPerm  = 0o700
 	PrivateFilePerm = 0o600
 
 	workspaceHashBytes    = 10
+	worktreeHashBytes     = 4
 	workspaceSlugMaxRunes = 48
 	workspaceSlugFallback = "workspace"
 )
@@ -75,13 +77,22 @@ func WorkspaceDataDir(workspacePath string, parts ...string) (string, error) {
 
 // WorktreeDataDir returns the persistent app-owned directory for git worktrees
 // associated with a repository root path. Worktrees contain user code changes,
-// so they are stored under the canonical data root rather than cache.
+// so they are stored under the user-local Swarm data root rather than the daemon
+// data root.
 func WorktreeDataDir(repoRoot string, parts ...string) (string, error) {
-	bucket, err := WorkspaceBucketName(repoRoot)
+	bucket, err := WorktreeBucketName(repoRoot)
 	if err != nil {
 		return "", err
 	}
-	return DataDir(append([]string{"worktrees", bucket}, parts...)...)
+	root, err := userLocalSwarmDataRoot()
+	if err != nil {
+		return "", err
+	}
+	path, err := joinRootPath(root, append([]string{WorktreesDir, bucket}, parts...)...)
+	if err != nil {
+		return "", err
+	}
+	return ensurePrivateAppDir(root, path)
 }
 
 // TempDir returns a private disposable directory under the canonical daemon cache root.
@@ -113,13 +124,25 @@ func WorkspaceStateDir(workspacePath string, parts ...string) (string, error) {
 
 // WorkspaceBucketName maps a workspace path to a deterministic, safe, non-leaky bucket name.
 func WorkspaceBucketName(workspacePath string) (string, error) {
+	return workspaceBucketName(workspacePath, workspaceHashBytes)
+}
+
+// WorktreeBucketName maps a repository root to a shorter deterministic bucket name for user-visible worktree paths.
+func WorktreeBucketName(repoRoot string) (string, error) {
+	return workspaceBucketName(repoRoot, worktreeHashBytes)
+}
+
+func workspaceBucketName(workspacePath string, hashBytes int) (string, error) {
 	identity, err := WorkspaceIdentity(workspacePath)
 	if err != nil {
 		return "", err
 	}
 	slug := workspaceSlug(identity)
 	sum := sha256.Sum256([]byte(identity))
-	hash := hex.EncodeToString(sum[:workspaceHashBytes])
+	if hashBytes <= 0 || hashBytes > len(sum) {
+		return "", fmt.Errorf("invalid workspace bucket hash length %d", hashBytes)
+	}
+	hash := hex.EncodeToString(sum[:hashBytes])
 	return slug + "-" + hash, nil
 }
 
@@ -156,6 +179,29 @@ func WritePrivateFile(path string, data []byte) error {
 		return err
 	}
 	return os.Chmod(path, PrivateFilePerm)
+}
+
+func userLocalSwarmDataRoot() (string, error) {
+	dataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
+	if dataHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user home for worktree data root: %w", err)
+		}
+		dataHome = filepath.Join(home, ".local", "share")
+	}
+	dataHome = filepath.Clean(dataHome)
+	if dataHome == "." || dataHome == "" {
+		return "", fmt.Errorf("user data root is required")
+	}
+	if !filepath.IsAbs(dataHome) {
+		abs, err := filepath.Abs(dataHome)
+		if err != nil {
+			return "", fmt.Errorf("resolve user data root: %w", err)
+		}
+		dataHome = abs
+	}
+	return filepath.Join(dataHome, "swarm"), nil
 }
 
 func ensurePrivateDir(path string) (string, error) {

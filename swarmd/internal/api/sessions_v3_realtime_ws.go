@@ -831,20 +831,51 @@ func v3RealtimeSessionMatchesWorksetSelector(principal identity.Principal, sessi
 	candidates := []string{
 		strings.TrimSpace(session.WorkspacePath),
 		strings.TrimSpace(session.WorktreeRootPath),
+		sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_path"),
+		sessionsV3MetadataString(session.Metadata, "swarm_v2_source_workspace_path"),
 		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_cwd_path"),
+		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_original_cwd_path"),
 		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_worktree_path"),
 	}
 	for _, candidate := range candidates {
-		if strings.TrimSpace(candidate) == "" {
+		normalizedCandidate, ok := normalizeV3RealtimeWorkspaceCandidate(candidate)
+		if !ok {
 			continue
 		}
 		for _, path := range paths {
-			if strings.TrimSpace(path) != "" && strings.TrimSpace(path) == strings.TrimSpace(candidate) {
+			normalizedPath, ok := normalizeV3RealtimeWorkspaceCandidate(path)
+			if ok && strings.HasPrefix(normalizedCandidate+"/", normalizedPath+"/") {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func normalizeV3RealtimeWorkspaceCandidate(path string) (string, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", false
+	}
+	parts := strings.Split(path, "/")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			if len(out) == 0 {
+				return "", false
+			}
+			out = out[:len(out)-1]
+			continue
+		}
+		out = append(out, part)
+	}
+	if strings.HasPrefix(path, "/") {
+		return "/" + strings.Join(out, "/"), true
+	}
+	return strings.Join(out, "/"), true
 }
 
 func orderedV3RealtimeWorksets(worksets map[string]v3RealtimeWorksetSubscription) []v3RealtimeWorksetSubscription {

@@ -432,7 +432,7 @@ function useDesktopV3StickyBottomScroll(options: { resetKey: string; itemCount: 
     resizeObserver?.observe(scrollElement)
     resizeObserver?.observe(contentElement)
     const mutationObserver = typeof MutationObserver === 'undefined' ? null : new MutationObserver(handleObservedMutation)
-    mutationObserver?.observe(contentElement, { childList: true, subtree: true, characterData: true })
+    mutationObserver?.observe(contentElement, { childList: true })
     handleObservedResize()
     return () => {
       resizeObserver?.disconnect()

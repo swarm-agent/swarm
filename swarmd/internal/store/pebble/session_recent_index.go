@@ -105,16 +105,13 @@ func sessionRecentIndexEntries(session SessionSnapshot) []sessionRecentIndexEntr
 	if session.ID == "" {
 		return nil
 	}
-	workspacePath := strings.TrimSpace(session.WorkspacePath)
-	if normalized, err := normalizeSessionPath(workspacePath); err == nil {
-		workspacePath = normalized
-	}
+	workspacePaths := sessionWorkspaceScopeIndexPaths(session)
 	accountScopeID := strings.TrimSpace(session.AccountScopeID)
 	entries := []sessionRecentIndexEntry{{key: KeySessionRecentGlobal(session.UpdatedAt, session.ID), sessionID: session.ID}}
 	if accountScopeID != "" {
 		entries = append(entries, sessionRecentIndexEntry{key: KeySessionRecentForAccount(accountScopeID, session.UpdatedAt, session.ID), sessionID: session.ID})
 	}
-	if workspacePath != "" {
+	for _, workspacePath := range workspacePaths {
 		entries = append(entries, sessionRecentIndexEntry{key: KeySessionRecentForWorkspace(workspacePath, session.UpdatedAt, session.ID), sessionID: session.ID})
 		if accountScopeID != "" {
 			entries = append(entries, sessionRecentIndexEntry{key: KeySessionRecentForAccountWorkspace(accountScopeID, workspacePath, session.UpdatedAt, session.ID), sessionID: session.ID})

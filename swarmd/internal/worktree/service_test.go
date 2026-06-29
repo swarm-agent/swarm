@@ -14,7 +14,8 @@ import (
 
 func TestDeterministicSessionWorktreePathUsesPrivateWorktreeDataDir(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	dataHome := filepath.Join(t.TempDir(), "data")
+	t.Setenv("XDG_DATA_HOME", dataHome)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "state"))
 
 	repoRoot := filepath.Join(t.TempDir(), "repo")
@@ -29,6 +30,13 @@ func TestDeterministicSessionWorktreePathUsesPrivateWorktreeDataDir(t *testing.T
 	wantRoot, err := appstorage.WorktreeDataDir(repoRoot)
 	if err != nil {
 		t.Fatalf("WorktreeDataDir: %v", err)
+	}
+	bucket, err := appstorage.WorktreeBucketName(repoRoot)
+	if err != nil {
+		t.Fatalf("WorktreeBucketName: %v", err)
+	}
+	if wantRoot != filepath.Join(dataHome, "swarm", appstorage.WorktreesDir, bucket) {
+		t.Fatalf("worktree root = %q, want user-local bucket under XDG data home", wantRoot)
 	}
 	want := filepath.Join(wantRoot, "ws_abc123")
 	if got != want {
@@ -48,6 +56,7 @@ func TestDeterministicSessionWorktreePathUsesPrivateWorktreeDataDir(t *testing.T
 
 func TestDeterministicSessionWorktreePathRejectsUnsafeWorkspaceID(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	repoRoot := filepath.Join(t.TempDir(), "repo")
 
 	if _, err := deterministicSessionWorktreePath(repoRoot, "../escape"); err == nil {
@@ -55,6 +64,34 @@ func TestDeterministicSessionWorktreePathRejectsUnsafeWorkspaceID(t *testing.T) 
 	}
 	if _, err := deterministicSessionWorktreePath(repoRoot, "ws_escape/path"); err == nil {
 		t.Fatal("expected workspace id with slash to fail")
+	}
+	if _, err := deterministicSessionWorktreePath(repoRoot, "ws_"); err == nil {
+		t.Fatal("expected empty workspace slug to fail")
+	}
+}
+
+func TestWorkspaceIdentityForRequestedBranchUsesLiteralRequestSlug(t *testing.T) {
+	got, err := WorkspaceIdentityForRequestedBranch("agent/client-side-request")
+	if err != nil {
+		t.Fatalf("WorkspaceIdentityForRequestedBranch: %v", err)
+	}
+	if got != "agent-client-side-request" {
+		t.Fatalf("workspace id = %q, want branch-derived slug", got)
+	}
+	if strings.Contains(got, "da56285170") || strings.Contains(got, "session") {
+		t.Fatalf("workspace id fell back to session/random identity: %q", got)
+	}
+
+	got, err = WorkspaceIdentityForRequestedBranch(" Feature.Client Request ")
+	if err != nil {
+		t.Fatalf("WorkspaceIdentityForRequestedBranch mixed separators: %v", err)
+	}
+	if got != "feature-client-request" {
+		t.Fatalf("workspace id = %q, want sanitized literal branch slug", got)
+	}
+
+	if _, err := WorkspaceIdentityForRequestedBranch("../..."); err == nil {
+		t.Fatal("expected branch without filesystem-safe slug to fail")
 	}
 }
 
@@ -87,7 +124,8 @@ func TestParseWorktreeListAndManagedPathFilter(t *testing.T) {
 
 func TestEnsureWorktreeParentUsesPrivatePermissions(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	dataHome := filepath.Join(t.TempDir(), "data")
+	t.Setenv("XDG_DATA_HOME", dataHome)
 	repoRoot := filepath.Join(t.TempDir(), "repo")
 
 	if err := ensureWorktreeParent(repoRoot); err != nil {
@@ -96,6 +134,9 @@ func TestEnsureWorktreeParentUsesPrivatePermissions(t *testing.T) {
 	parent, err := worktreeCacheRoot(repoRoot)
 	if err != nil {
 		t.Fatalf("worktreeCacheRoot: %v", err)
+	}
+	if !strings.HasPrefix(parent, filepath.Join(dataHome, "swarm", appstorage.WorktreesDir)+string(filepath.Separator)) {
+		t.Fatalf("worktree parent = %q, want under user-local swarm worktrees root", parent)
 	}
 	info, err := os.Stat(parent)
 	if err != nil {

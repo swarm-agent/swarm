@@ -886,12 +886,8 @@ func v3SyncSnapshotSessionVisibleForWorkspaces(session SessionSnapshot, accountS
 	if len(paths) == 0 {
 		return true
 	}
-	normalizedSessionPath, err := normalizeSessionPath(session.WorkspacePath)
-	if err != nil {
-		return false
-	}
 	for _, path := range paths {
-		if normalizedSessionPath == path {
+		if sessionMatchesWorkspaceScope(session, path) {
 			return true
 		}
 	}
@@ -913,15 +909,11 @@ func v3SyncSnapshotSessionVisible(session SessionSnapshot, accountScopeID, userI
 	if workspacePath == "" {
 		return true
 	}
-	normalizedSessionPath, err := normalizeSessionPath(session.WorkspacePath)
-	if err != nil {
-		return false
-	}
 	normalizedWorkspacePath, err := normalizeSessionPath(workspacePath)
 	if err != nil {
 		return false
 	}
-	return normalizedSessionPath == normalizedWorkspacePath
+	return sessionMatchesWorkspaceScope(session, normalizedWorkspacePath)
 }
 
 func (s *SessionStore) addV3SyncSnapshotHistory(reader pebble.Reader, options V3SyncSnapshotOptions, session SessionSnapshot, projection V3SessionProjection, result *V3SyncSnapshotResult) error {

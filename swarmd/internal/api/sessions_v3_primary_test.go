@@ -161,8 +161,11 @@ func TestSessionsV3PrimaryWorktreeOnCreatesRequestedBranchSession(t *testing.T) 
 	if fake.lastWorkspace != "/host/swarm-go" || fake.lastNameSeed != "v3-wt-create" || fake.lastBaseBranch != "dev" || fake.lastBranchName != "agent/v3-requested" {
 		t.Fatalf("allocation request workspace=%q seed=%q base=%q branch=%q", fake.lastWorkspace, fake.lastNameSeed, fake.lastBaseBranch, fake.lastBranchName)
 	}
-	if !payload.Session.WorktreeEnabled || payload.Session.WorkspacePath != "/data/swarm/worktrees/swarm-go/ws_v3wtcreate" || payload.Session.WorktreeRootPath != payload.Session.WorkspacePath || payload.Session.WorktreeBaseBranch != "dev" || payload.Session.WorktreeBranch != "agent/v3-requested" {
+	if !payload.Session.WorktreeEnabled || payload.Session.WorkspacePath != "/host/swarm-go/.swarm/worktrees/agent-v3-requested" || payload.Session.WorktreeRootPath != payload.Session.WorkspacePath || payload.Session.WorktreeBaseBranch != "dev" || payload.Session.WorktreeBranch != "agent/v3-requested" {
 		t.Fatalf("session worktree facts = %+v", payload.Session)
+	}
+	if payload.Session.Metadata["workspace_id"] != "agent-v3-requested" {
+		t.Fatalf("workspace_id metadata = %v, want agent-v3-requested", payload.Session.Metadata["workspace_id"])
 	}
 }
 
@@ -5364,6 +5367,60 @@ func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing
 	}
 	if runner.callCount != 2 {
 		t.Fatalf("provider call count = %d, want tool turn plus finalization", runner.callCount)
+	}
+}
+
+func TestSessionsV3ExecutorFollowUpAfterAutomaticCheckpointUsesFreshContextBoundary(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	workspace := t.TempDir()
+	const oldPrompt = "old raw transcript before automatic checkpoint"
+	const checkpointReport = "automatic checkpoint report retained in boundary"
+	const followUp = "normal follow-up after automatic checkpoint"
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		switch runner.callCount {
+		case 1:
+			if req.ToolInvoker == nil {
+				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+			}
+			args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": checkpointReport, "result": "done", "validation": []string{"focused regression fixture"}})
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-auto-checkpoint", Name: "plan_manage", Arguments: args})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("terminal plan completion did not request finalization restart: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+		case 2:
+			return provideriface.Response{Text: "automatic checkpoint finalized"}, nil
+		case 3:
+			if sessionsV3ProviderInputContainsContentText(req.Input, oldPrompt) {
+				return provideriface.Response{}, fmt.Errorf("follow-up provider input leaked old raw transcript: %+v", req.Input)
+			}
+			for _, want := range []string{"[context-compact]", "origin=plan_fresh_context", checkpointReport, followUp} {
+				if !sessionsV3ProviderInputContainsContentText(req.Input, want) {
+					return provideriface.Response{}, fmt.Errorf("follow-up provider input missing %q: %+v", want, req.Input)
+				}
+			}
+			return provideriface.Response{Text: "follow-up answered from fresh boundary"}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-auto-follow-up-create", "provider auto follow-up", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	saveSessionsV3ActivePlanForFinalizationTest(t, sessionSvc, created.ID, sessionruntime.PlanExecutionPolicyModeAutomatic, []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Final", Status: sessionruntime.PlanCheckpointStatusInProgress}})
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-auto-follow-up-checkpoint", oldPrompt)
+	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-auto-follow-up-normal", followUp)
+	waitForSessionsV3SpecificRunIntentStatus(t, sessionSvc, created.ID, stableSessionsV3PrimaryRunID(created.ID, "provider-auto-follow-up-normal"), sessionruntime.RunIntentCompleted)
+	if runner.callCount != 3 {
+		t.Fatalf("provider call count = %d, want checkpoint tool turn, finalization, follow-up", runner.callCount)
+	}
+	if sessionsV3ProviderInputContainsContentText(runner.requests[2].Input, oldPrompt) {
+		t.Fatalf("follow-up request leaked old raw transcript: %+v", runner.requests[2].Input)
 	}
 }
 

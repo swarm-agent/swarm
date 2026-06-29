@@ -49,11 +49,13 @@ filter_allowed() {
   # - launcher.go intentionally resolves legacy user/XDG locations only for read-only stop diagnostics.
   # - lib-lane.sh still exposes lane metadata helpers for CLI/harness compatibility; daemon roots below in the same file are system paths.
   # - container entrypoint unsets XDG variables and rejects /root, /home, /workspaces, and /tmp storage paths.
+  # - appstorage.go intentionally resolves XDG_DATA_HOME/UserHomeDir only for user-owned git worktree checkout storage.
   # - local deploy/remotedeploy workspace strings are mount targets or API route names, not Swarm-owned daemon storage roots.
   grep -Ev \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
     -e '^internal/launcher/launcher\.go:.*(legacy|Legacy|XDG_STATE_HOME|XDG_DATA_HOME|UserHomeDir|UserConfigDir|\.local|\.config|resolve legacy|stat legacy|startupCWD|Getwd)' \
     -e '^swarmd/internal/config/config\.go:.*(resolveDefaultStartupCWD|UserHomeDir|user home directory|home = strings\.TrimSpace|return home)' \
+    -e '^swarmd/internal/appstorage/storage\.go:.*(XDG_DATA_HOME|UserHomeDir|\.local)' \
     -e '^internal/launcher/system_paths\.go:.*os\.CreateTemp\("", "swarmd-config-\*"\)' \
     -e '^scripts/lib-lane\.sh:[0-9]+:.*(swarm_xdg_|XDG_|\.local/state|\.local/share|\.config|migrate_legacy)' \
     -e '^deploy/container-mvp/(entrypoint\.sh|Containerfile\.base):.*(-u XDG_|/root|/home|/workspaces|/tmp|must not be under a user home|~|mkdir -p|VOLUME)' \

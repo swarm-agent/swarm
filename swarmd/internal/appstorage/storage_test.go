@@ -44,6 +44,57 @@ func TestWorkspaceBucketNameStableDistinctAndNonLeaky(t *testing.T) {
 	}
 }
 
+func TestWorktreeDataDirUsesUserLocalSwarmRootAndWorkspaceBucket(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "daemon-data"))
+
+	repoRoot := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	bucket, err := WorktreeBucketName(repoRoot)
+	if err != nil {
+		t.Fatalf("WorktreeBucketName: %v", err)
+	}
+	if !strings.HasPrefix(bucket, "repo-") || len(strings.TrimPrefix(bucket, "repo-")) != 8 {
+		t.Fatalf("worktree bucket = %q, want short repo hash bucket", bucket)
+	}
+	got, err := WorktreeDataDir(repoRoot, "ws_session")
+	if err != nil {
+		t.Fatalf("WorktreeDataDir: %v", err)
+	}
+	wantRoot := filepath.Join(home, ".local", "share", "swarm")
+	want := filepath.Join(wantRoot, WorktreesDir, bucket, "ws_session")
+	if got != want {
+		t.Fatalf("WorktreeDataDir = %q, want %q", got, want)
+	}
+	assertMode(t, wantRoot, PrivateDirPerm)
+	assertMode(t, filepath.Join(wantRoot, WorktreesDir), PrivateDirPerm)
+	assertMode(t, filepath.Join(wantRoot, WorktreesDir, bucket), PrivateDirPerm)
+	assertMode(t, got, PrivateDirPerm)
+}
+
+func TestWorktreeDataDirHonorsXDGDataHome(t *testing.T) {
+	dataHome := filepath.Join(t.TempDir(), "xdg-data")
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	repoRoot := filepath.Join(t.TempDir(), "repo")
+
+	bucket, err := WorktreeBucketName(repoRoot)
+	if err != nil {
+		t.Fatalf("WorktreeBucketName: %v", err)
+	}
+	got, err := WorktreeDataDir(repoRoot)
+	if err != nil {
+		t.Fatalf("WorktreeDataDir: %v", err)
+	}
+	want := filepath.Join(dataHome, "swarm", WorktreesDir, bucket)
+	if got != want {
+		t.Fatalf("WorktreeDataDir = %q, want %q", got, want)
+	}
+}
+
 func TestWorkspaceDirsUseStorageContractWorkspaceBucketsAndPrivatePermissions(t *testing.T) {
 	root := t.TempDir()
 	dataRoot := filepath.Join(root, "data")
@@ -154,6 +205,14 @@ func TestPathPartsCannotEscapeAppDirectory(t *testing.T) {
 	}
 	if _, err := CacheDir(filepath.Join(string(filepath.Separator), "tmp", "escape")); err == nil {
 		t.Fatalf("CacheDir accepted absolute path part")
+	}
+
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if _, err := WorktreeDataDir(t.TempDir(), "..", "escape"); err == nil {
+		t.Fatalf("WorktreeDataDir accepted escaping path part")
+	}
+	if _, err := WorktreeDataDir(t.TempDir(), filepath.Join(string(filepath.Separator), "tmp", "escape")); err == nil {
+		t.Fatalf("WorktreeDataDir accepted absolute path part")
 	}
 }
 

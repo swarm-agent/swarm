@@ -472,12 +472,8 @@ func v3SessionWorksetSessionVisibleForWorkspaces(
 	if len(paths) == 0 {
 		return true
 	}
-	normalizedSessionPath, err := normalizeSessionPath(session.WorkspacePath)
-	if err != nil {
-		return false
-	}
 	for _, path := range paths {
-		if normalizedSessionPath == path {
+		if sessionMatchesWorkspaceScope(session, path) {
 			return true
 		}
 	}
@@ -499,15 +495,11 @@ func v3SessionWorksetSessionVisible(session SessionSnapshot, accountScopeID stri
 	if workspacePath == "" {
 		return true
 	}
-	normalizedSessionPath, err := normalizeSessionPath(session.WorkspacePath)
-	if err != nil {
-		return false
-	}
 	normalizedWorkspacePath, err := normalizeSessionPath(workspacePath)
 	if err != nil {
 		return false
 	}
-	return normalizedSessionPath == normalizedWorkspacePath
+	return sessionMatchesWorkspaceScope(session, normalizedWorkspacePath)
 }
 
 func v3SessionWorksetBeforeCursor(session SessionSnapshot, beforeUpdatedAt *int64, beforeSessionID string) bool {

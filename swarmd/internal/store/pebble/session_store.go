@@ -737,7 +737,7 @@ func (s *SessionStore) ListSessionsForAccountWorkspaceBindings(accountScopeID, s
 			}
 		}
 		if !include && normalizedFallbackScope != "" {
-			include = pathInScope(session.WorkspacePath, normalizedFallbackScope)
+			include = sessionMatchesWorkspaceScope(session, normalizedFallbackScope)
 		}
 		if !include {
 			return nil
@@ -792,14 +792,10 @@ func (s *SessionStore) ListTopSessionsByWorkspace(workspacePaths []string, perWo
 			return nil
 		}
 		session = normalizeSessionOwnership(session)
-		normalizedWorkspacePath, err := normalizeSessionPath(session.WorkspacePath)
-		if err != nil {
-			return nil
-		}
 		matchedWorkspacePath := ""
 		for _, candidate := range order {
-			// Worktree sessions live under child paths; group them under the nearest workspace root.
-			if !normalizedPathInScope(normalizedWorkspacePath, candidate) {
+			// Worktree sessions are physically rooted outside the source workspace; group them by binding/source identity when present.
+			if !sessionMatchesWorkspaceScope(session, candidate) {
 				continue
 			}
 			if len(candidate) > len(matchedWorkspacePath) {

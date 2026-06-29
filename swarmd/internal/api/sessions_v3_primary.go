@@ -357,6 +357,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 			session.Metadata = make(map[string]any, 4)
 		}
 		session.Metadata["workspace_id"] = strings.TrimSpace(allocation.WorkspaceID)
+		session.Metadata["swarm_v3_source_workspace_path"] = binding.SourceWorkspacePath
 		session.Metadata["swarm_v3_runtime_workspace_path"] = strings.TrimSpace(allocation.WorkspacePath)
 	}
 	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
@@ -2176,7 +2177,11 @@ func (s *Server) allocateSessionsV3CreateWorktree(principal identity.Principal, 
 	if strings.TrimSpace(allocation.WorkspacePath) == "" || strings.TrimSpace(allocation.BaseBranch) == "" || strings.TrimSpace(allocation.BranchName) == "" || strings.TrimSpace(allocation.WorkspaceID) == "" {
 		return worktreeruntime.Allocation{}, errors.New("worktree_mode on did not allocate complete worktree facts")
 	}
-	if workspaceID := strings.TrimSpace(allocation.WorkspaceID); workspaceID != worktreeruntime.WorkspaceIdentityForSession(sessionID) {
+	expectedWorkspaceID, err := worktreeruntime.WorkspaceIdentityForRequestedBranch(strings.TrimSpace(requestedBranchName))
+	if err != nil {
+		return worktreeruntime.Allocation{}, err
+	}
+	if workspaceID := strings.TrimSpace(allocation.WorkspaceID); workspaceID != expectedWorkspaceID {
 		return worktreeruntime.Allocation{}, errors.New("worktree_mode on allocation workspace identity mismatch")
 	}
 	return allocation, nil
@@ -2568,7 +2573,9 @@ func (s *Server) sessionsV3PrimaryDispatchBlockedReason(principal identity.Princ
 		return "dispatch authority source workspace path mismatch"
 	}
 	if strings.TrimSpace(session.WorkspacePath) != "" && strings.TrimSpace(binding.SourceWorkspacePath) != "" && filepath.Clean(strings.TrimSpace(session.WorkspacePath)) != filepath.Clean(strings.TrimSpace(binding.SourceWorkspacePath)) {
-		return "dispatch authority session workspace path mismatch"
+		if !session.WorktreeEnabled || filepath.Clean(strings.TrimSpace(session.WorktreeRootPath)) != filepath.Clean(strings.TrimSpace(session.WorkspacePath)) {
+			return "dispatch authority session workspace path mismatch"
+		}
 	}
 	if runtimeWorkspacePath != "" && filepath.Clean(strings.TrimSpace(binding.DestinationWorkspacePath)) != filepath.Clean(runtimeWorkspacePath) {
 		return "dispatch authority runtime workspace path mismatch"

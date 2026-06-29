@@ -1052,7 +1052,11 @@ func (s *Server) realizeSessionsV2PrimaryWorktree(principal identity.Principal, 
 	if strings.TrimSpace(allocation.WorkspacePath) == "" || strings.TrimSpace(allocation.BaseBranch) == "" || strings.TrimSpace(allocation.BranchName) == "" {
 		return sessionruntime.SessionExecution{}, sessionV2BadRequest("worktree_mode on did not allocate complete worktree facts")
 	}
-	if workspaceID := strings.TrimSpace(allocation.WorkspaceID); workspaceID != worktreeruntime.WorkspaceIdentityForSession(sessionID) {
+	expectedWorkspaceID, err := worktreeruntime.WorkspaceIdentityForRequestedBranch(req.WorktreeBranchName)
+	if err != nil {
+		return sessionruntime.SessionExecution{}, sessionV2BadRequest("%v", err)
+	}
+	if workspaceID := strings.TrimSpace(allocation.WorkspaceID); workspaceID != expectedWorkspaceID {
 		return sessionruntime.SessionExecution{}, sessionV2BadRequest("worktree_mode on allocation workspace identity mismatch")
 	}
 	execution.SessionID = sessionID

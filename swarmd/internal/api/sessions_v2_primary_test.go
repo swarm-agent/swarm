@@ -130,8 +130,12 @@ func TestSessionsV2PrimaryWorktreeOnRealizesPerRequestWorktree(t *testing.T) {
 	if fake.lastWorkspace != "/host/swarm-go" || fake.lastNameSeed != payload.Session.ID || fake.lastBaseBranch != "dev" || fake.lastBranchName != "agent/session-primary-v2" {
 		t.Fatalf("allocation request workspace=%q seed=%q base=%q branch=%q session=%q", fake.lastWorkspace, fake.lastNameSeed, fake.lastBaseBranch, fake.lastBranchName, payload.Session.ID)
 	}
-	if !strings.HasSuffix(payload.Session.WorkspacePath, worktreeruntime.WorkspaceIdentityForSession(payload.Session.ID)) {
-		t.Fatalf("worktree path %q does not use session workspace identity %q", payload.Session.WorkspacePath, worktreeruntime.WorkspaceIdentityForSession(payload.Session.ID))
+	expectedWorkspaceID, err := worktreeruntime.WorkspaceIdentityForRequestedBranch("agent/session-primary-v2")
+	if err != nil {
+		t.Fatalf("WorkspaceIdentityForRequestedBranch: %v", err)
+	}
+	if !strings.HasSuffix(payload.Session.WorkspacePath, expectedWorkspaceID) {
+		t.Fatalf("worktree path %q does not use requested branch workspace identity %q", payload.Session.WorkspacePath, expectedWorkspaceID)
 	}
 	if !strings.HasPrefix(payload.Session.WorkspacePath, "/host/swarm-go/.swarm/worktrees/") || !payload.Session.WorktreeEnabled || payload.Session.WorktreeRootPath != payload.Session.WorkspacePath || payload.Session.WorktreeBaseBranch != "dev" || payload.Session.WorktreeBranch != "agent/session-primary-v2" {
 		t.Fatalf("session worktree facts = %+v", payload.Session)
@@ -139,7 +143,7 @@ func TestSessionsV2PrimaryWorktreeOnRealizesPerRequestWorktree(t *testing.T) {
 	if payload.SessionExecution.SessionID != payload.Session.ID || payload.SessionExecution.SourceWorkspacePath != "/host/swarm-go" || payload.SessionExecution.RuntimeWorkspacePath != payload.Session.WorkspacePath || !payload.SessionExecution.WorktreeEnabled || payload.SessionExecution.WorktreeRootPath != payload.Session.WorkspacePath || payload.SessionExecution.WorktreeBaseBranch != "dev" || payload.SessionExecution.WorktreeBranch != "agent/session-primary-v2" {
 		t.Fatalf("execution worktree facts = %+v session=%+v", payload.SessionExecution, payload.Session)
 	}
-	if payload.Session.Metadata["workspace_id"] != worktreeruntime.WorkspaceIdentityForSession(payload.Session.ID) || payload.Session.Metadata["swarm_v2_runtime_workspace_path"] != payload.Session.WorkspacePath || payload.Session.Metadata["swarm_v2_source_workspace_path"] != "/host/swarm-go" || payload.Session.Metadata["swarm_v2_worktree_enabled"] != true || payload.Session.Metadata["swarm_v2_worktree_root_path"] != payload.Session.WorkspacePath || payload.Session.Metadata["swarm_v2_worktree_base_branch"] != "dev" || payload.Session.Metadata["swarm_v2_worktree_branch"] != "agent/session-primary-v2" {
+	if payload.Session.Metadata["workspace_id"] != expectedWorkspaceID || payload.Session.Metadata["swarm_v2_runtime_workspace_path"] != payload.Session.WorkspacePath || payload.Session.Metadata["swarm_v2_source_workspace_path"] != "/host/swarm-go" || payload.Session.Metadata["swarm_v2_worktree_enabled"] != true || payload.Session.Metadata["swarm_v2_worktree_root_path"] != payload.Session.WorkspacePath || payload.Session.Metadata["swarm_v2_worktree_base_branch"] != "dev" || payload.Session.Metadata["swarm_v2_worktree_branch"] != "agent/session-primary-v2" {
 		t.Fatalf("metadata worktree projection = %+v", payload.Session.Metadata)
 	}
 	storedExecution, ok, err := sessionSvc.Store().GetSessionExecutionV2(payload.Session.ID)

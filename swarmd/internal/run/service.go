@@ -45,25 +45,26 @@ const (
 	emptyStepRetryMax            = 2 * time.Second
 	emptyStepRetryLimit          = 2
 
-	contextCompactionRetryLimit           = 2
-	memoryCompactionHeartbeatInterval     = 2 * time.Second
-	memoryCompactionFallbackChunkRunes    = 12000
-	memoryCompactionMinimumChunkRunes     = 4000
-	memoryCompactionChunkOverlapMinRunes  = 1200
-	memoryCompactionChunkOverlapMaxRunes  = 6000
-	memoryCompactionTokenEstimateDivisor  = 4
-	memoryCompactionChunkRetryLimit       = 2
-	memoryCompactionSummaryMaxRunes       = 9000
-	memoryCompactionHistorySlack          = 8
-	memoryCompactionOutputReserveTokens   = 4096
-	memoryCompactionSafetyMarginMinTokens = 2048
-	contextCompactionMarkerPrefix         = "[context-compact]"
-	contextCompactionUsageSource          = "context_compaction_reset"
-	contextCompactionPlanLabelMetadataKey = "context_compaction_attached_plan_label"
-	contextCompactionPlanTextMetadataKey  = "context_compaction_attached_plan_text"
-	contextCompactionOriginManual         = "manual"
-	contextCompactionOriginThreshold      = "threshold"
-	contextCompactionOriginOverflow       = "overflow"
+	contextCompactionRetryLimit             = 2
+	memoryCompactionHeartbeatInterval       = 2 * time.Second
+	memoryCompactionFallbackChunkRunes      = 12000
+	memoryCompactionMinimumChunkRunes       = 4000
+	memoryCompactionChunkOverlapMinRunes    = 1200
+	memoryCompactionChunkOverlapMaxRunes    = 6000
+	memoryCompactionTokenEstimateDivisor    = 4
+	memoryCompactionChunkRetryLimit         = 2
+	memoryCompactionSummaryMaxRunes         = 9000
+	memoryCompactionHistorySlack            = 8
+	memoryCompactionOutputReserveTokens     = 4096
+	memoryCompactionSafetyMarginMinTokens   = 2048
+	contextCompactionMarkerPrefix           = "[context-compact]"
+	contextCompactionUsageSource            = "context_compaction_reset"
+	contextCompactionPlanLabelMetadataKey   = "context_compaction_attached_plan_label"
+	contextCompactionPlanTextMetadataKey    = "context_compaction_attached_plan_text"
+	contextCompactionOriginManual           = "manual"
+	contextCompactionOriginThreshold        = "threshold"
+	contextCompactionOriginOverflow         = "overflow"
+	ContextCompactionOriginPlanFreshContext = "plan_fresh_context"
 
 	taskReportDefaultChars           = 12000 // roughly a 2k-word inline report excerpt
 	taskReportAggregateMaxChars      = 40000 // keep multi-subagent result payloads below context-stuffing territory
@@ -2450,6 +2451,8 @@ func memoryCompactionOriginLabel(origin string) string {
 		return "Auto compact"
 	case contextCompactionOriginOverflow:
 		return "Overflow compact"
+	case ContextCompactionOriginPlanFreshContext:
+		return "Plan fresh-context compact"
 	default:
 		return "Compact"
 	}
@@ -2630,6 +2633,11 @@ func TrimMessagesToLatestCompactionCheckpoint(messages []pebblestore.MessageSnap
 
 func CompactMessagesForProviderContext(messages []pebblestore.MessageSnapshot, limit int) []pebblestore.MessageSnapshot {
 	return compactMessagesForProviderContext(messages, limit)
+}
+
+func BuildProviderContextBoundaryMessage(summary, origin string, compactIndex int, activePlan *pebblestore.SessionPlanSnapshot) (string, map[string]any) {
+	checkpoint := buildCompactionCheckpointMessage(summary, origin, compactIndex, compactedActivePlanLabel(activePlan))
+	return checkpoint, compactedContextCheckpointMetadata(activePlan)
 }
 
 func trimMessagesToLatestCompactionCheckpoint(messages []pebblestore.MessageSnapshot) []pebblestore.MessageSnapshot {
@@ -3405,6 +3413,8 @@ func normalizeContextCompactionOrigin(origin string) string {
 		return contextCompactionOriginThreshold
 	case contextCompactionOriginOverflow:
 		return contextCompactionOriginOverflow
+	case ContextCompactionOriginPlanFreshContext:
+		return ContextCompactionOriginPlanFreshContext
 	default:
 		return contextCompactionOriginOverflow
 	}
@@ -3416,6 +3426,8 @@ func memoryCompactionContextLine(origin string) string {
 		return "Compaction context: the user manually requested a durable context summary."
 	case contextCompactionOriginThreshold:
 		return "Compaction context: remaining context hit the configured proactive auto-compact threshold before provider overflow."
+	case ContextCompactionOriginPlanFreshContext:
+		return "Compaction context: an automatic checkpoint fresh-context run superseded earlier transcript history; preserve completed checkpoint evidence, plan state, and the user's next action context."
 	default:
 		return "Compaction context: the previous provider step failed because the conversation exceeded the model context window."
 	}

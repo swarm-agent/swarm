@@ -1806,7 +1806,154 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 	if err != nil {
 		return nil, err
 	}
+	if boundary, insertAt, boundaryErr := e.sessionV3ProviderPlanFreshContextBoundary(job, messages); boundaryErr != nil {
+		return nil, boundaryErr
+	} else if boundary != nil {
+		if insertAt < 0 || insertAt > len(messages) {
+			insertAt = len(messages)
+		}
+		messages = append(messages[:insertAt], append([]pebblestore.MessageSnapshot{*boundary}, messages[insertAt:]...)...)
+	}
 	return runruntime.CompactMessagesForProviderContext(messages, 500), nil
+}
+
+func (e *sessionV3Executor) sessionV3ProviderPlanFreshContextBoundary(job sessionV3ExecutorJob, messages []pebblestore.MessageSnapshot) (*pebblestore.MessageSnapshot, int, error) {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return nil, 0, errors.New("v3 executor is not configured")
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "system") && strings.HasPrefix(strings.TrimSpace(msg.Content), "[context-compact]") {
+			return nil, 0, nil
+		}
+	}
+	activePlan, ok, err := e.server.sessions.GetActivePlan(job.SessionID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !ok || activePlan.Document == nil || activePlan.Document.ExecutionState == nil {
+		return nil, 0, nil
+	}
+	doc := activePlan.Document
+	if !strings.EqualFold(strings.TrimSpace(doc.ExecutionPolicy.Mode), sessionruntime.PlanExecutionPolicyModeAutomatic) {
+		return nil, 0, nil
+	}
+	state := doc.ExecutionState
+	if !sessionV3PlanFreshContextBoundaryStatus(state.Status) {
+		return nil, 0, nil
+	}
+	lastRunID := strings.TrimSpace(state.CurrentRunID)
+	if lastRunID == "" {
+		return nil, 0, nil
+	}
+	lastCheckpointID := strings.TrimSpace(state.LastCheckpointID)
+	if lastCheckpointID == "" {
+		lastCheckpointID = strings.TrimSpace(doc.ActiveCheckpointID)
+	}
+	lastRunMessage := -1
+	for i := range messages {
+		if strings.TrimSpace(sessionV3MetadataString(messages[i].Metadata, "run_id")) == lastRunID {
+			lastRunMessage = i
+		}
+	}
+	if lastRunMessage < 0 || lastRunMessage >= len(messages)-1 {
+		return nil, 0, nil
+	}
+	summary := sessionV3PlanFreshContextBoundarySummary(activePlan, lastCheckpointID, lastRunID)
+	if summary == "" {
+		return nil, 0, nil
+	}
+	content, metadata := runruntime.BuildProviderContextBoundaryMessage(summary, runruntime.ContextCompactionOriginPlanFreshContext, sessionV3NextSyntheticCompactionIndex(messages), &activePlan)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["source"] = "plan_fresh_context_boundary"
+	metadata["run_id"] = lastRunID
+	metadata["checkpoint_id"] = lastCheckpointID
+	metadata["synthetic"] = true
+	return &pebblestore.MessageSnapshot{SessionID: job.SessionID, Role: "system", Content: content, Metadata: metadata}, lastRunMessage + 1, nil
+}
+
+func sessionV3PlanFreshContextBoundaryStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case sessionruntime.PlanExecutionStateCompleted, sessionruntime.PlanExecutionStateWaitingReview, sessionruntime.PlanExecutionStateBlocked, sessionruntime.PlanExecutionStateFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func sessionV3PlanFreshContextBoundarySummary(plan pebblestore.SessionPlanSnapshot, checkpointID, runID string) string {
+	if plan.Document == nil {
+		return ""
+	}
+	doc := plan.Document
+	lines := []string{"Automatic checkpoint fresh-context boundary."}
+	if title := strings.TrimSpace(firstNonEmptyString(doc.Title, plan.Title)); title != "" {
+		lines = append(lines, "Plan: "+title)
+	}
+	if checkpointID != "" {
+		lines = append(lines, "Checkpoint: "+checkpointID)
+	}
+	if runID != "" {
+		lines = append(lines, "Run: "+runID)
+	}
+	if doc.ExecutionState != nil && strings.TrimSpace(doc.ExecutionState.Status) != "" {
+		lines = append(lines, "Execution status: "+strings.TrimSpace(doc.ExecutionState.Status))
+	}
+	for _, checkpoint := range doc.Checkpoints {
+		if checkpointID != "" && strings.TrimSpace(checkpoint.ID) != checkpointID {
+			continue
+		}
+		if title := strings.TrimSpace(checkpoint.Title); title != "" {
+			lines = append(lines, "Checkpoint title: "+title)
+		}
+		if report := strings.TrimSpace(checkpoint.Report); report != "" {
+			lines = append(lines, "Report: "+report)
+		}
+		if result := strings.TrimSpace(checkpoint.Result); result != "" {
+			lines = append(lines, "Result: "+result)
+		}
+		if len(checkpoint.ChangedFiles) > 0 {
+			lines = append(lines, "Changed files: "+strings.Join(trimStrings(checkpoint.ChangedFiles), ", "))
+		}
+		if len(checkpoint.Validation) > 0 {
+			lines = append(lines, "Validation: "+strings.Join(trimStrings(checkpoint.Validation), "; "))
+		}
+		break
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func sessionV3NextSyntheticCompactionIndex(messages []pebblestore.MessageSnapshot) int {
+	latest := 1
+	for _, message := range messages {
+		if !strings.EqualFold(strings.TrimSpace(message.Role), "system") || !strings.HasPrefix(strings.TrimSpace(message.Content), "[context-compact]") {
+			continue
+		}
+		line := strings.TrimSpace(strings.SplitN(message.Content, "\n", 2)[0])
+		for _, field := range strings.Fields(line) {
+			if !strings.HasPrefix(field, "index=") {
+				continue
+			}
+			parsed, err := strconv.Atoi(strings.TrimPrefix(field, "index="))
+			if err == nil && parsed > latest {
+				latest = parsed
+			}
+		}
+	}
+	return latest + 1
+}
+
+func trimStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (sessionV3ResolvedRuntime, error) {

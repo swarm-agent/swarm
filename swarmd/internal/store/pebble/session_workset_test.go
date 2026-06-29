@@ -87,6 +87,42 @@ func TestBuildV3SessionWorksetUsesSessionIDTieBreaker(t *testing.T) {
 	}
 }
 
+func TestBuildV3SessionWorksetResolvesWorktreeSessionBySourceWorkspace(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3WorksetSessionForTest(t, sessions, "session-worktree", "/data/swarm/worktrees/swarm-go/ws_session", 2000)
+	worktree, ok, err := sessions.GetSession("session-worktree")
+	if err != nil || !ok {
+		t.Fatalf("load worktree session: ok=%t err=%v", ok, err)
+	}
+	worktree.WorktreeEnabled = true
+	worktree.WorktreeRootPath = worktree.WorkspacePath
+	worktree.WorktreeBranch = "agent/session-worktree"
+	worktree.Metadata = map[string]any{
+		"swarm_v3_source_workspace_path":  "/host/swarm-go",
+		"swarm_v3_runtime_workspace_path": worktree.WorkspacePath,
+	}
+	if err := sessions.UpdateSession(worktree); err != nil {
+		t.Fatalf("update worktree session metadata: %v", err)
+	}
+
+	workset, err := sessions.BuildV3SessionWorkset(V3SessionWorksetOptions{
+		AccountScopeID: "account-1",
+		WorkspacePath:  "/host/swarm-go",
+		RecentLimit:    10,
+		History:        V3SessionWorksetHistoryOptions{Mode: V3SessionWorksetHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build source workspace workset: %v", err)
+	}
+	if got := workset.SessionOrder; len(got) != 1 || got[0] != "session-worktree" {
+		t.Fatalf("source workspace workset order = %+v", got)
+	}
+	if _, ok, err := store.GetBytes(KeySessionRecentForAccountWorkspace("account-1", "/host/swarm-go", worktree.UpdatedAt, worktree.ID)); err != nil || !ok {
+		t.Fatalf("source workspace recent index missing: ok=%t err=%v", ok, err)
+	}
+}
+
 func TestBuildV3SessionWorksetRecentIndexTracksUpdatesAndDeletes(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

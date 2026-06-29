@@ -64,6 +64,11 @@ func (f *fakeWorktreeService) AllocateDetachedWorkspace(workspacePath, nameSeed 
 	if strings.TrimSpace(allocation.WorkspaceID) == "" {
 		allocation.WorkspaceID = worktreeruntime.WorkspaceIdentityForSession(nameSeed)
 	}
+	if strings.TrimSpace(allocation.BranchName) != "" {
+		if branchWorkspaceID, err := worktreeruntime.WorkspaceIdentityForRequestedBranch(allocation.BranchName); err == nil {
+			allocation.WorkspaceID = branchWorkspaceID
+		}
+	}
 	if strings.TrimSpace(allocation.WorkspacePath) == "" {
 		allocation.WorkspacePath = strings.TrimRight(allocation.RepoRoot, "/") + "/.swarm/worktrees/" + allocation.WorkspaceID
 	}
@@ -89,6 +94,10 @@ func (f *fakeWorktreeService) AllocateDetachedWorkspaceRequested(workspacePath, 
 	}
 	if strings.TrimSpace(branchName) != "" {
 		allocation.BranchName = strings.TrimSpace(branchName)
+		if branchWorkspaceID, err := worktreeruntime.WorkspaceIdentityForRequestedBranch(allocation.BranchName); err == nil {
+			allocation.WorkspaceID = branchWorkspaceID
+			allocation.WorkspacePath = strings.TrimRight(allocation.RepoRoot, "/") + "/.swarm/worktrees/" + allocation.WorkspaceID
+		}
 	}
 	return allocation, nil
 }

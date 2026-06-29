@@ -30,7 +30,7 @@ const (
 
 const detachedWorkspaceFallbackWarning = "Opened without git worktree support; use a git repository and make sure git is installed for the app to work properly."
 
-var validWorktreeWorkspace = regexp.MustCompile(`^ws_[a-z0-9]+$`)
+var validWorktreeWorkspace = regexp.MustCompile(`^(ws_)?[a-z0-9][a-z0-9-]*$`)
 
 func DetachedWorkspaceFallbackWarning(err error) string {
 	if err == nil {
@@ -236,10 +236,16 @@ func (s *Service) allocateSessionWorkspaceWithBranchMode(workspacePath string, u
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	workspaceID := sessionWorkspaceID(sessionID)
 	branchName := strings.TrimSpace(configuredBranchName)
+	workspaceID := sessionWorkspaceID(sessionID)
 	if !exactBranchName {
 		branchName = effectiveWorktreeBranchName(configuredBranchName, sessionID)
+	} else {
+		var workspaceIDErr error
+		workspaceID, workspaceIDErr = workspaceIdentityForRequestedBranch(branchName)
+		if workspaceIDErr != nil {
+			return Allocation{}, workspaceIDErr
+		}
 	}
 	if branchName == "" {
 		return Allocation{}, errors.New("worktree branch name is required")
@@ -696,6 +702,41 @@ func sessionWorkspaceID(sessionID string) string {
 
 func WorkspaceIdentityForSession(sessionID string) string {
 	return sessionWorkspaceID(sessionID)
+}
+
+func WorkspaceIdentityForRequestedBranch(branchName string) (string, error) {
+	return workspaceIdentityForRequestedBranch(branchName)
+}
+
+func workspaceIdentityForRequestedBranch(branchName string) (string, error) {
+	slug := branchWorkspaceSlug(branchName)
+	if slug == "" {
+		return "", errors.New("worktree branch name is required")
+	}
+	return slug, nil
+}
+
+func branchWorkspaceSlug(branchName string) string {
+	branchName = strings.ToLower(strings.TrimSpace(branchName))
+	if branchName == "" {
+		return ""
+	}
+	var b strings.Builder
+	lastWasSeparator := false
+	for _, r := range branchName {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastWasSeparator = false
+			continue
+		}
+		if r == '/' || r == '\\' || r == '-' || r == '_' || r == '.' || r == ' ' || r == '\t' {
+			if b.Len() > 0 && !lastWasSeparator {
+				b.WriteByte('-')
+				lastWasSeparator = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func normalizeWorktreeBranchPrefix(configured string) string {
