@@ -39,7 +39,6 @@ import {
 import { compactDesktopV3Session } from '../../session-v3/compact-session-flow'
 import {
   acceptAndContinueDesktopPlanCheckpoint,
-  restartDesktopPlanCheckpoint,
   resumeDesktopPlanAutomatic,
 } from '../../session-v3/plan-execution-api'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../../state/desktop-v3-session-api'
@@ -1033,10 +1032,6 @@ export function DesktopV3ExistingConversationPane({
         case 'accept_checkpoint':
           if (!input.checkpointId) throw new Error('Accept checkpoint requires checkpoint_id')
           await acceptAndContinueDesktopPlanCheckpoint(normalizedSessionId, input.checkpointId)
-          break
-        case 'restart_checkpoint':
-          if (!input.checkpointId) throw new Error('Restart checkpoint requires checkpoint_id')
-          await restartDesktopPlanCheckpoint(normalizedSessionId, input.checkpointId)
           break
         case 'resume_automatic':
           await resumeDesktopPlanAutomatic(normalizedSessionId)

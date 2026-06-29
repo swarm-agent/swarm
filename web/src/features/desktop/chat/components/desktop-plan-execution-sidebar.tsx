@@ -1,15 +1,10 @@
 import { memo } from 'react'
-import {
-  RefreshCcw,
-  SquarePen,
-} from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { Button } from '../../../../components/ui/button'
 import type { DesktopSessionPlanCheckpoint } from '../types/chat'
 import type { DesktopPlanExecutionView } from '../../state/desktop-v3-cache-selectors'
 type DesktopPlanExecutionSidebarAction =
   | 'accept_checkpoint'
-  | 'restart_checkpoint'
   | 'resume_automatic'
 
 export interface DesktopPlanExecutionSidebarActionInput {
@@ -180,29 +175,27 @@ function ActiveCheckpointCard({ view, checkpoints, completedCount, totalCount, a
   )
 }
 
-function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: DesktopPlanExecutionSidebarProps & { view: DesktopPlanExecutionView }) {
+function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecutionSidebarProps & { view: DesktopPlanExecutionView }) {
   const checkpointId = view.activeCheckpointId || view.activeCheckpoint?.id || ''
   const automatic = view.policyMode === 'automatic'
   const acceptBusy = busyAction === actionBusyKey('accept_checkpoint', checkpointId)
-  const restartBusy = busyAction === actionBusyKey('restart_checkpoint', checkpointId)
   const checkpoints = view.plan.document?.checkpoints ?? []
   const activeIndex = view.activeCheckpoint
     ? checkpoints.findIndex((checkpoint) => checkpoint.id === view.activeCheckpoint?.id)
     : -1
   const hasNextCheckpoint = checkpoints.some((checkpoint, index) => index > activeIndex && checkpointIsIncomplete(checkpoint))
   const canAccept = Boolean(onAction && checkpointId && view.reviewRequired && !view.blocked && !view.failed && !view.completed && !canStop)
-  const canRestart = Boolean(onAction && checkpointId && !view.completed && !canStop)
   const acceptReviewBusy = acceptBusy
   const acceptReviewLabel = hasNextCheckpoint ? 'Accept & start next checkpoint' : 'Accept & finish plan'
   const acceptReviewHelp = hasNextCheckpoint
-    ? 'Accepting review advances to the next checkpoint and starts that checkpoint run.'
-    : 'Approves the final checkpoint and marks the plan complete. You can keep chatting or ask the agent to add follow-up checkpoints.'
+    ? 'Accepting review starts the next checkpoint. You can keep chatting first or ask the AI to add or adjust checkpoints.'
+    : 'Accept & finish plan archives this plan when you’re done. You can continue working inside of this session until you’re ready to commit.'
 
   if (automatic && !view.reviewRequired && !view.blocked && !view.failed && !view.completed) {
     const singleRun = isSingleRunView(view)
     return (
       <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.14)]">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Actions / Plan Mode</div>
+        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Actions</div>
         <div className="mt-3 rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-3 py-2.5">
           <div className="text-sm font-semibold text-[var(--app-text)]">{singleRun ? 'Continue normally' : 'Automatic mode on'}</div>
           <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
@@ -217,11 +210,11 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
 
   return (
     <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.14)]">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Actions / Plan Mode</div>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Actions</div>
       <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
-        <div className="text-sm font-medium text-[var(--app-text)]">Manual review mode</div>
+        <div className="text-sm font-medium text-[var(--app-text)]">Review Mode</div>
         <p className="mt-0.5 text-xs leading-5 text-[var(--app-text-muted)]">
-          Review actions approve completed work. Restart reruns the active checkpoint if needed.
+          You can keep chatting and ask the AI to continue work or add checkpoints. Accept and finish the plan to archive it when you’re done.
         </p>
       </div>
 
@@ -243,23 +236,6 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
             </p>
           ) : null}
         </div>
-      </div>
-
-      <div className="mt-3 grid grid-cols-2 gap-2 border-t border-[var(--app-border)] pt-3">
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          onClick={() => void onAction?.({ action: 'restart_checkpoint', checkpointId })}
-          disabled={!canRestart || restartBusy}
-        >
-          <RefreshCcw className={cn('size-4', restartBusy ? 'animate-pulse' : '')} />
-          Restart
-        </Button>
-        <Button type="button" size="sm" variant="ghost" onClick={onEditPlan} disabled={!onEditPlan}>
-          <SquarePen className="size-4" />
-          Edit plan
-        </Button>
       </div>
     </section>
   )
