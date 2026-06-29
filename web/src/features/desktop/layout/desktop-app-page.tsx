@@ -1424,7 +1424,7 @@ function sessionRowMetadataLabel(session: DesktopSessionRecord): string {
 }
 
 function sessionIsActive(session: DesktopSessionRecord): boolean {
-  return sessionSidebarGroup(session) === 'in_progress' || sessionSidebarGroup(session) === 'needs_review' || sessionHasPendingPermission(session) || sessionHasCanonicalActiveRun(session)
+  return sessionHasPendingPermission(session) || sessionHasCanonicalActiveRun(session)
 }
 
 function positiveTimestamp(value: number | null | undefined): number {

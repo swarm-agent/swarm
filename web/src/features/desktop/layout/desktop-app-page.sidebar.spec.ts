@@ -318,6 +318,21 @@ test('sidebar stopped sort resolves long sessions by durable activity instead of
 })
 
 
+test('sidebar needs review sessions without active runs sort by durable last activity', () => {
+  const staleNeedsReview = makeSession('stale-needs-review', {
+    updatedAt: 10_000,
+    createdAt: 1_000,
+    metadata: { swarm_v3_sidebar_group: 'needs_review' },
+  })
+  const recentPaused = makeSession('recent-paused', {
+    updatedAt: 90_000,
+    createdAt: 80_000,
+  })
+
+  assert.equal(compareSidebarSessions(recentPaused, staleNeedsReview, 120_000) < 0, true)
+  assert.equal(sessionStatusDetail(staleNeedsReview, 120_000), '1 min ago')
+})
+
 test('sidebar active status and timer ignore lifecycle/live-only liveness without canonical active run', () => {
   const liveOnly = makeSession('live-only', {
     updatedAt: 20_000,
