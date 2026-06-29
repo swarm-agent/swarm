@@ -106,7 +106,7 @@ test('automatic checkpointed mode sidebar actions card is informational with no 
   assert.doesNotMatch(markup, /role="switch"/)
 })
 
-test('manual review mode keeps the start-next review button visible but disabled when more checkpoints remain', () => {
+test('manual review mode keeps the start-next review button visible and enabled when more checkpoints remain', () => {
   const base = view({ policyMode: 'review_each_checkpoint', reviewRequired: true, status: 'waiting_review' })
   base.plan.document.checkpoints.push({
     ...base.plan.document.checkpoints[0],
@@ -122,8 +122,8 @@ test('manual review mode keeps the start-next review button visible but disabled
 
   assert.match(markup, /Manual review mode/)
   assert.match(markup, /Accept &amp; start next checkpoint/)
-  assert.match(markup, /Manual accept-and-continue is disabled/)
-  assert.match(markup, /disabled="">Accept &amp; start next checkpoint/)
+  assert.match(markup, /Accepting review advances to the next checkpoint and starts that checkpoint run/)
+  assert.doesNotMatch(markup, /disabled="">Accept &amp; start next checkpoint/)
   assert.doesNotMatch(markup, /Accept this checkpoint/)
   assert.doesNotMatch(markup, /Accept &amp; move to next/)
 })

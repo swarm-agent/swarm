@@ -1409,10 +1409,6 @@ function sessionWorkspaceLabel(session: DesktopSessionRecord): string {
   return session.workspaceName?.trim() || fallbackWorkspaceNameFromPath(session.workspacePath || '') || 'Workspace'
 }
 
-function sessionRepoLabel(session: DesktopSessionRecord): string {
-  return fallbackWorkspaceNameFromPath(session.workspacePath || sessionWorkspaceLabel(session))
-}
-
 function sessionBranchLabel(session: DesktopSessionRecord): string {
   return metadataText(session, 'swarm_v3_branch_label') || session.worktreeBranch?.trim() || session.gitBranch?.trim() || ''
 }

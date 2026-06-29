@@ -148,6 +148,15 @@ export async function acceptDesktopPlanCheckpoint(sessionId: string, checkpointI
   })
 }
 
+export async function acceptAndContinueDesktopPlanCheckpoint(sessionId: string, checkpointId: string, input: DesktopPlanCheckpointAcceptInput = {}): Promise<DesktopPlanLifecycleResponse> {
+  const acceptResponse = await acceptDesktopPlanCheckpoint(sessionId, checkpointId, input)
+  const nextCheckpointId = nextRunnableCheckpointIdAfterAccept(acceptResponse, checkpointId)
+  if (!nextCheckpointId) return acceptResponse
+  return continueDesktopPlanCheckpoint(sessionId, nextCheckpointId, {
+    planId: trimmed(input.planId) ?? trimmed(acceptResponse.plan_id),
+  })
+}
+
 export async function restartDesktopPlanCheckpoint(sessionId: string, checkpointId: string, input: DesktopPlanCheckpointInput = {}): Promise<DesktopPlanLifecycleResponse> {
   return postDesktopPlanLifecycle(sessionId, `checkpoints/${encodePathSegment(checkpointId)}/restart`, {
     plan_id: trimmed(input.planId),
@@ -185,6 +194,34 @@ function encodePathSegment(value: string): string {
 function trimmed(value: string | undefined): string | undefined {
   const normalized = value?.trim() ?? ''
   return normalized || undefined
+}
+
+function nextRunnableCheckpointIdAfterAccept(response: DesktopPlanLifecycleResponse, acceptedCheckpointId: string): string {
+  const summary = objectRecord(response.execution_summary)
+  if (booleanValue(summary?.plan_complete) || booleanValue(summary?.review_required) || booleanValue(summary?.blocked) || booleanValue(summary?.failed)) {
+    return ''
+  }
+  const status = String(summary?.next_checkpoint_status ?? '').trim().toLowerCase()
+  if (status && status !== 'pending' && status !== 'in_progress') {
+    return ''
+  }
+  const nextCheckpointId = String(summary?.next_checkpoint_id ?? fallbackActiveCheckpointId(response.plan)).trim()
+  if (!nextCheckpointId || nextCheckpointId === acceptedCheckpointId.trim()) return ''
+  return nextCheckpointId
+}
+
+function fallbackActiveCheckpointId(plan: DesktopSessionPlanWire | null | undefined): string {
+  const planRecord = objectRecord(plan)
+  const document = objectRecord(planRecord?.document)
+  return String(document?.active_checkpoint_id ?? document?.activeCheckpointId ?? '').trim()
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function booleanValue(value: unknown): boolean {
+  return value === true || value === 'true'
 }
 
 function applyDesktopPlanLifecycleResult(sessionId: string, plan: DesktopSessionPlanRecord): void {

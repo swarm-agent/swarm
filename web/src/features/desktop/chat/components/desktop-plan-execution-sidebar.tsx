@@ -203,7 +203,7 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
   const acceptReviewBusy = acceptBusy
   const acceptReviewLabel = hasNextCheckpoint ? 'Accept & start next checkpoint' : 'Accept & finish plan'
   const acceptReviewHelp = hasNextCheckpoint
-    ? 'Manual accept-and-continue is disabled; start the next checkpoint from the plan execution flow after review is accepted.'
+    ? 'Accepting review advances to the next checkpoint and starts that checkpoint run.'
     : 'Approves the final checkpoint and marks the plan complete. You can keep chatting or ask the agent to add follow-up checkpoints.'
 
   if (automatic && !view.reviewRequired && !view.blocked && !view.failed && !view.completed) {
@@ -240,8 +240,8 @@ function ActionsCard({ view, busyAction, canStop, onAction, onEditPlan }: Deskto
             size="sm"
             variant="primary"
             className={cn('rounded-lg', acceptReviewBusy ? 'animate-pulse' : '')}
-            onClick={hasNextCheckpoint ? undefined : () => void onAction?.({ action: 'accept_checkpoint', checkpointId })}
-            disabled={!canAccept || hasNextCheckpoint || acceptReviewBusy}
+            onClick={() => void onAction?.({ action: 'accept_checkpoint', checkpointId })}
+            disabled={!canAccept || acceptReviewBusy}
           >
             {acceptReviewLabel}
           </Button>
