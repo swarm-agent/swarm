@@ -12,12 +12,13 @@ interface AgentPickerProps {
 }
 
 const DROPDOWN_VIEWPORT_GUTTER = 8
+const MOBILE_DROPDOWN_BREAKPOINT = 640
 
 export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSelect, dropdownAlign = 'right' }: AgentPickerProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
-  const [position, setPosition] = useState<{ top: number; left?: number; right?: number; minWidth: number; maxWidth: number } | null>(null)
+  const [position, setPosition] = useState<{ top?: number; bottom?: number; left?: number; right?: number; minWidth: number; width?: number; maxWidth: number; maxHeight: number } | null>(null)
 
   const profileLabel = (profile: AgentProfileRecord) => profile.name === 'swarm' ? 'Swarm' : profile.name
   const profileModeLabel = (profile: AgentProfileRecord) => {
@@ -49,16 +50,33 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
     }
 
     const rect = triggerRef.current.getBoundingClientRect()
-    const maxWidth = Math.max(160, window.innerWidth - DROPDOWN_VIEWPORT_GUTTER * 2)
+    const viewportWidth = window.innerWidth
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight
+    const mobile = viewportWidth < MOBILE_DROPDOWN_BREAKPOINT
+    const maxWidth = Math.max(160, viewportWidth - DROPDOWN_VIEWPORT_GUTTER * 2)
+
+    if (mobile) {
+      const top = Math.min(rect.bottom + DROPDOWN_VIEWPORT_GUTTER, viewportHeight - 140)
+      setPosition({
+        top,
+        left: DROPDOWN_VIEWPORT_GUTTER,
+        minWidth: Math.min(rect.width, maxWidth),
+        width: maxWidth,
+        maxWidth,
+        maxHeight: Math.max(120, viewportHeight - top - DROPDOWN_VIEWPORT_GUTTER),
+      })
+      return
+    }
 
     setPosition({
-      top: rect.top - 8,
+      bottom: Math.max(DROPDOWN_VIEWPORT_GUTTER, viewportHeight - rect.top + DROPDOWN_VIEWPORT_GUTTER),
       left: dropdownAlign === 'left'
-        ? Math.min(Math.max(DROPDOWN_VIEWPORT_GUTTER, rect.left), Math.max(DROPDOWN_VIEWPORT_GUTTER, window.innerWidth - maxWidth - DROPDOWN_VIEWPORT_GUTTER))
+        ? Math.min(Math.max(DROPDOWN_VIEWPORT_GUTTER, rect.left), Math.max(DROPDOWN_VIEWPORT_GUTTER, viewportWidth - maxWidth - DROPDOWN_VIEWPORT_GUTTER))
         : undefined,
-      right: dropdownAlign === 'right' ? Math.max(DROPDOWN_VIEWPORT_GUTTER, window.innerWidth - rect.right) : undefined,
+      right: dropdownAlign === 'right' ? Math.max(DROPDOWN_VIEWPORT_GUTTER, viewportWidth - rect.right) : undefined,
       minWidth: Math.min(rect.width, maxWidth),
       maxWidth,
+      maxHeight: Math.max(180, Math.min(320, rect.top - DROPDOWN_VIEWPORT_GUTTER * 2)),
     })
   }, [dropdownAlign])
 
@@ -82,8 +100,9 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
 
   useEffect(() => {
     if (!open) return
-    function handleClickOutside(event: MouseEvent) {
-      const target = event.target as Node
+    function handlePointerDownOutside(event: PointerEvent) {
+      const target = event.target as Node | null
+      if (!target || !target.isConnected || !document.body.contains(target)) return
       if (
         triggerRef.current?.contains(target) ||
         dropdownRef.current?.contains(target)
@@ -97,10 +116,10 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
         setOpen(false)
       }
     }
-    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('pointerdown', handlePointerDownOutside)
     document.addEventListener('keydown', handleEscape)
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('pointerdown', handlePointerDownOutside)
       document.removeEventListener('keydown', handleEscape)
     }
   }, [open])
@@ -115,23 +134,26 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
       ref={dropdownRef}
       style={{
         position: 'fixed',
-        bottom: `${window.innerHeight - position.top}px`,
+        top: position.top === undefined ? undefined : `${position.top}px`,
+        bottom: position.bottom === undefined ? undefined : `${position.bottom}px`,
         left: position.left === undefined ? undefined : `${position.left}px`,
         right: position.right === undefined ? undefined : `${position.right}px`,
         minWidth: `${position.minWidth}px`,
+        width: position.width === undefined ? undefined : `${position.width}px`,
         maxWidth: `${position.maxWidth}px`,
+        maxHeight: `${position.maxHeight}px`,
         zIndex: 9999,
       }}
-      className="w-max max-w-[calc(100vw-16px)]"
+      className="w-[calc(100vw-16px)] max-w-[calc(100vw-16px)] sm:w-max"
     >
-      <div className="w-max max-w-full overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl shadow-black/40">
-        <div className="flex flex-col">
-          <div className="border-b border-[var(--app-border)] px-3 py-2">
+      <div className="max-w-full overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl shadow-black/40" style={{ maxHeight: `${position.maxHeight}px` }}>
+        <div className="flex max-h-[inherit] min-h-0 flex-col">
+          <div className="shrink-0 border-b border-[var(--app-border)] px-3 py-2">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
               Select Agent
             </span>
           </div>
-          <div className="max-h-[280px] overflow-y-auto py-1">
+          <div className="min-h-0 flex-1 overflow-y-auto py-1">
             {[
               { label: 'Primary', profiles: primaryAgents },
               { label: 'Subagent', profiles: subagentAgents },
@@ -151,7 +173,7 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
                       key={profile.name}
                       type="button"
                       onClick={() => handleSelect(profile.name)}
-                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition ${
+                      className={`flex w-full items-start gap-2 px-3 py-2.5 text-left text-sm transition ${
                         isSelected
                           ? 'bg-[var(--app-surface-subtle)] text-[var(--app-text)]'
                           : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'
@@ -162,9 +184,9 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
                       ) : (
                         <span className="w-[14px] shrink-0" />
                       )}
-                      <Bot size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 flex-1 truncate">{profileLabel(profile)}</span>
-                      <span className="shrink-0 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)]">
+                      <Bot size={14} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 flex-1 break-words leading-snug">{profileLabel(profile)}</span>
+                      <span className="mt-0.5 shrink-0 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)]">
                         {profileModeLabel(profile)}
                       </span>
                     </button>

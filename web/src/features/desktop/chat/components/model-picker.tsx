@@ -14,12 +14,14 @@ interface ModelPickerProps {
 }
 
 const DROPDOWN_WIDTH = 640
+const MOBILE_DROPDOWN_BREAKPOINT = 640
+const DROPDOWN_VIEWPORT_GUTTER = 8
 
 export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, disabled = false, disabledReason = '' }: ModelPickerProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null)
+  const [position, setPosition] = useState<{ top?: number; bottom?: number; left: number; width: number; maxHeight: number } | null>(null)
   const [activeProvider, setActiveProvider] = useState<string>('')
   const [activeModelIndex, setActiveModelIndex] = useState(0)
 
@@ -60,15 +62,35 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
     : 'Select model'
 
   const updatePosition = useCallback(() => {
-    if (!triggerRef.current) {
+    if (!triggerRef.current || typeof window === 'undefined') {
       setPosition(null)
       return
     }
     const rect = triggerRef.current.getBoundingClientRect()
-    const maxWidth = Math.min(DROPDOWN_WIDTH, window.innerWidth - 16)
+    const viewportWidth = window.innerWidth
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight
+    const mobile = viewportWidth < MOBILE_DROPDOWN_BREAKPOINT
+    const width = mobile ? viewportWidth - DROPDOWN_VIEWPORT_GUTTER * 2 : Math.min(DROPDOWN_WIDTH, viewportWidth - DROPDOWN_VIEWPORT_GUTTER * 2)
+    const left = mobile
+      ? DROPDOWN_VIEWPORT_GUTTER
+      : Math.min(Math.max(DROPDOWN_VIEWPORT_GUTTER, rect.left), Math.max(DROPDOWN_VIEWPORT_GUTTER, viewportWidth - width - DROPDOWN_VIEWPORT_GUTTER))
+
+    if (mobile) {
+      const top = Math.min(rect.bottom + DROPDOWN_VIEWPORT_GUTTER, viewportHeight - 160)
+      setPosition({
+        top,
+        left,
+        width,
+        maxHeight: Math.max(120, viewportHeight - top - DROPDOWN_VIEWPORT_GUTTER),
+      })
+      return
+    }
+
     setPosition({
-      top: rect.top - 8,
-      left: Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - maxWidth - 8)),
+      bottom: Math.max(DROPDOWN_VIEWPORT_GUTTER, viewportHeight - rect.top + DROPDOWN_VIEWPORT_GUTTER),
+      left,
+      width,
+      maxHeight: Math.max(260, Math.min(420, rect.top - DROPDOWN_VIEWPORT_GUTTER * 2)),
     })
   }, [])
 
@@ -132,8 +154,9 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
     if (!open) {
       return
     }
-    function handleClickOutside(event: MouseEvent) {
-      const target = event.target as Node
+    function handlePointerDownOutside(event: PointerEvent) {
+      const target = event.target as Node | null
+      if (!target || !target.isConnected || !document.body.contains(target)) return
       if (triggerRef.current?.contains(target) || dropdownRef.current?.contains(target)) {
         return
       }
@@ -184,10 +207,10 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
         }
       }
     }
-    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('pointerdown', handlePointerDownOutside)
     document.addEventListener('keydown', handleKeyDown)
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('pointerdown', handlePointerDownOutside)
       document.removeEventListener('keydown', handleKeyDown)
     }
   }, [activeModelIndex, activeModels, onSelect, open, providerIDs, resolvedActiveProvider])
@@ -197,21 +220,23 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
       ref={dropdownRef}
       style={{
         position: 'fixed',
-        bottom: `${window.innerHeight - position.top}px`,
+        top: position.top === undefined ? undefined : `${position.top}px`,
+        bottom: position.bottom === undefined ? undefined : `${position.bottom}px`,
         left: `${position.left}px`,
-        width: `${Math.min(DROPDOWN_WIDTH, window.innerWidth - 16)}px`,
+        width: `${position.width}px`,
+        maxHeight: `${position.maxHeight}px`,
         zIndex: 9999,
       }}
     >
-      <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl shadow-black/40">
-        <div className="grid max-h-[420px] grid-cols-[220px_minmax(0,1fr)]">
-          <div className="border-r border-[var(--app-border)] bg-[var(--app-surface-subtle)]">
-            <div className="flex h-11 items-center border-b border-[var(--app-border)] px-4">
+      <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl shadow-black/40" style={{ maxHeight: `${position.maxHeight}px` }}>
+        <div className="flex max-h-[inherit] min-h-0 flex-col min-[641px]:grid min-[641px]:grid-cols-[220px_minmax(0,1fr)]">
+          <div className="min-w-0 border-b border-[var(--app-border)] bg-[var(--app-surface-subtle)] min-[641px]:border-b-0 min-[641px]:border-r">
+            <div className="flex h-10 items-center border-b border-[var(--app-border)] px-3 min-[641px]:h-11 min-[641px]:px-4">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
-                Providers
+                Swipe providers
               </span>
             </div>
-            <div className="max-h-[368px] overflow-y-auto py-1">
+            <div className="flex max-w-full gap-2 overflow-x-auto overflow-y-hidden p-2 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden min-[641px]:max-h-[368px] min-[641px]:flex-col min-[641px]:gap-0 min-[641px]:overflow-y-auto min-[641px]:p-0">
               {providers.map(([provider, models]) => {
                 const isActive = provider === resolvedActiveProvider
                 const hasSelected = models.some((model) => model.key === selectedKey)
@@ -222,10 +247,10 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
                     onMouseEnter={() => setActiveProvider(provider)}
                     onFocus={() => setActiveProvider(provider)}
                     onClick={() => setActiveProvider(provider)}
-                    className={`flex w-full items-center justify-between gap-2 px-4 py-3 text-left text-sm transition ${
+                    className={`flex max-w-[75vw] shrink-0 items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left text-sm transition min-[641px]:max-w-none min-[641px]:shrink min-[641px]:rounded-none min-[641px]:border-0 min-[641px]:px-4 min-[641px]:py-3 ${
                       isActive
-                        ? 'bg-[var(--app-surface)] text-[var(--app-text)]'
-                        : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'
+                        ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)] text-[var(--app-text)]'
+                        : 'border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'
                     }`}
                   >
                     <div className="flex min-w-0 items-center gap-2">
@@ -239,13 +264,13 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
             </div>
           </div>
 
-          <div className="min-w-0">
-            <div className="flex h-11 min-w-0 items-center border-b border-[var(--app-border)] px-4">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="flex h-10 min-w-0 shrink-0 items-center border-b border-[var(--app-border)] px-3 min-[641px]:h-11 min-[641px]:px-4">
               <div className="truncate text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
-                {resolvedActiveProvider || 'Models'}
+                {resolvedActiveProvider || 'Models'} models
               </div>
             </div>
-            <div className="max-h-[368px] overflow-y-auto py-1">
+            <div className="min-h-0 flex-1 overflow-y-auto py-1">
               {activeModels.length === 0 ? (
                 <div className="px-4 py-6 text-sm text-[var(--app-text-muted)]">No models available.</div>
               ) : activeModels.map((option, index) => {
@@ -261,7 +286,7 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
                       onSelect(option.key)
                       setOpen(false)
                     }}
-                    className={`flex w-full items-start gap-3 px-4 py-3 text-left text-sm transition ${
+                    className={`flex w-full items-start gap-2 px-3 py-3 text-left text-sm transition min-[641px]:gap-3 min-[641px]:px-4 ${
                       isSelected
                         ? 'bg-[var(--app-surface-subtle)] text-[var(--app-text)]'
                         : isActive
@@ -272,8 +297,8 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
                     {isSelected ? <Check size={14} className="mt-0.5 shrink-0 text-[var(--app-primary)]" /> : <span className="mt-0.5 w-[14px] shrink-0" />}
                     {option.favorite ? <Star size={12} className="mt-1 shrink-0 text-[var(--app-primary)]" /> : <span className="mt-1 w-[12px] shrink-0" />}
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium text-[var(--app-text)]">{displayModelName(option.provider, option.model, option.contextMode)}</span>
-                      <span className="mt-1 block truncate text-[11px] text-[var(--app-text-subtle)]">{option.label}</span>
+                      <span className="block whitespace-normal break-words font-medium leading-snug text-[var(--app-text)] min-[641px]:truncate">{displayModelName(option.provider, option.model, option.contextMode)}</span>
+                      <span className="mt-1 block whitespace-normal break-words text-[11px] leading-snug text-[var(--app-text-subtle)] min-[641px]:truncate">{option.label}</span>
                       {effectiveContextWindow(option.provider, option.model, option.contextMode, option.contextWindow) > 0 ? (
                         <span className="mt-1 block text-[11px] text-[var(--app-text-subtle)]">
                           Context window {formatContextWindow(effectiveContextWindow(option.provider, option.model, option.contextMode, option.contextWindow))}

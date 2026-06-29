@@ -409,8 +409,9 @@ export function DesktopV3AgenticComposer({
 
   useEffect(() => {
     if (!mobileSettingsOpen) return
-    function handleClickOutside(event: MouseEvent) {
-      const target = event.target as Node
+    function handlePointerDownOutside(event: PointerEvent) {
+      const target = event.target as Node | null
+      if (!target || !target.isConnected || !document.body.contains(target)) return
       if (
         mobileSettingsRef.current?.contains(target) ||
         mobileSettingsTriggerRef.current?.contains(target) ||
@@ -418,8 +419,8 @@ export function DesktopV3AgenticComposer({
       ) return
       setMobileSettingsOpen(false)
     }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
+    document.addEventListener('pointerdown', handlePointerDownOutside)
+    return () => document.removeEventListener('pointerdown', handlePointerDownOutside)
   }, [mobileSettingsOpen])
 
   const handleDictationToggle = useCallback(() => {
@@ -573,6 +574,25 @@ export function DesktopV3AgenticComposer({
         ) : slashPalette.active ? (
           <DesktopSlashCommandPanel palette={slashPalette as DesktopSlashPaletteState} selectedIndex={slashSelectionIndex} onHover={setSlashSelectionIndex} onSelect={handleSlashSelect} />
         ) : null}
+        {mobileSettingsOpen ? (
+          <div ref={mobileSettingsRef} className="flex w-full flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)] min-[1000px]:hidden">
+            {showModePicker ? <ModePicker mode={mode} onSelect={onModeChange} /> : null}
+            <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={onAgentSelect} dropdownAlign="left" />
+            <ModelPicker options={modelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={onModelSelect} openSignal={effectiveModelPickerSignal} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
+            <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
+            {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" /> : null}
+            {settingsActionLabel && onSettingsAction ? (
+              <button
+                type="button"
+                onClick={() => { void onSettingsAction() }}
+                disabled={settingsActionBusy || busy}
+                className="inline-flex h-9 items-center justify-center rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 text-[11px] font-semibold text-[var(--app-warning-text)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {settingsActionBusy ? 'Restarting…' : settingsActionLabel}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         <div className="relative min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
           <div className="flex min-w-0 items-end gap-3 px-4 py-3 lg:py-2.5">
             <div className="min-w-0 flex-1">
@@ -648,26 +668,7 @@ export function DesktopV3AgenticComposer({
                 </Button>
               </div>
             </div>
-            <div className="relative flex w-full min-w-0 min-[1000px]:hidden">
-              {mobileSettingsOpen ? (
-                <div ref={mobileSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[max(260px,100%)] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
-                  {showModePicker ? <ModePicker mode={mode} onSelect={onModeChange} /> : null}
-                  <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={onAgentSelect} dropdownAlign="left" />
-                  <ModelPicker options={modelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={onModelSelect} openSignal={effectiveModelPickerSignal} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
-                  <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
-                  {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" /> : null}
-                  {settingsActionLabel && onSettingsAction ? (
-                    <button
-                      type="button"
-                      onClick={() => { void onSettingsAction() }}
-                      disabled={settingsActionBusy || busy}
-                      className="inline-flex h-9 items-center justify-center rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 text-[11px] font-semibold text-[var(--app-warning-text)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {settingsActionBusy ? 'Restarting…' : settingsActionLabel}
-                    </button>
-                  ) : null}
-                </div>
-              ) : null}
+            <div className="flex w-full min-w-0 min-[1000px]:hidden">
               <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_40px] sm:gap-2">
                 <button ref={mobileSettingsTriggerRef} type="button" onClick={() => setMobileSettingsOpen(!mobileSettingsOpen)} className="flex h-10 min-w-0 items-center gap-1.5 overflow-hidden rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] px-2 text-left shadow-sm transition hover:bg-[var(--app-surface-hover)]" title="Open mode, agent, model, thinking, and speed settings">
                   <Settings2 size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
