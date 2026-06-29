@@ -622,6 +622,9 @@ export function applyReconnectSnapshot(
       ...Object.keys(state.permissionSummaryBySessionId ?? {}),
     ]))
   }
+  if (resources.has('active_plan')) {
+    applySessionViews(state, raw.session_views_by_id, authoritativeSessionIds, { clearMissing: false })
+  }
   if (resources.has('messages')) {
     applyMessagesBySessionFromSnapshot(state, raw.messages_by_session)
   } else {
@@ -1287,6 +1290,7 @@ export function applyWorksetSessionDiscovered(
   applyCurrentRunStateFrame(state, sessionId, frame.current_run_state)
   const summary = normalizeDesktopPermissionSummary(frame.permission_summary, sessionId)
   if (summary) applyPermissionSummary(state, sessionId, summary)
+  applyPlanSnapshotFromWorksetFrame(state, sessionId, frame)
 
   // Intentionally do not update state.realtime.endpointCursor here.
   // The matching durable event for this same endpoint record must be applied first.
@@ -1333,6 +1337,7 @@ export function applyWorksetSessionUpdated(
   applyCurrentRunStateFrame(state, sessionId, frame.current_run_state)
   const summary = normalizeDesktopPermissionSummary(frame.permission_summary, sessionId)
   if (summary) applyPermissionSummary(state, sessionId, summary)
+  applyPlanSnapshotFromWorksetFrame(state, sessionId, frame)
   state.realtime.endpointCursor = frame.endpoint_cursor ?? state.realtime.endpointCursor
 }
 
@@ -1716,31 +1721,37 @@ function applySessionViewsFromSyncSnapshot(
   snapshot: SyncSnapshotResponse,
   authoritativeSessionIds: Set<string>,
 ): void {
-  if (!syncResourceSetContains(snapshot.sync_scope.resource_set, 'session_view')) return
-  const views = onlyRequested(snapshot.session_views_by_id, authoritativeSessionIds)
+  const resourceSet = snapshot.sync_scope.resource_set
+  const hasSessionView = syncResourceSetContains(resourceSet, 'session_view')
+  const hasActivePlan = syncResourceSetContains(resourceSet, 'active_plan')
+  if (!hasSessionView && !hasActivePlan) return
+  applySessionViews(state, snapshot.session_views_by_id, authoritativeSessionIds, { clearMissing: hasSessionView })
+}
+
+function applySessionViews(
+  state: DesktopV3CacheState,
+  viewsById: SyncSnapshotResponse['session_views_by_id'] | undefined,
+  authoritativeSessionIds: Set<string>,
+  options: { clearMissing: boolean },
+): void {
+  const views = onlyRequested(viewsById, authoritativeSessionIds)
   for (const sessionId of authoritativeSessionIds) {
     const view = views?.[sessionId]
     if (!view) {
-      delete state.sessionViewsById[sessionId]
-      delete state.permissionsBySession[sessionId]
-      delete state.usageBySession[sessionId]
-      delete state.plansBySession[sessionId]
-      delete state.hasActivePlanBySession[sessionId]
+      if (options.clearMissing) {
+        delete state.sessionViewsById[sessionId]
+        delete state.permissionsBySession[sessionId]
+        delete state.usageBySession[sessionId]
+        delete state.plansBySession[sessionId]
+        delete state.hasActivePlanBySession[sessionId]
+      }
       continue
     }
 
-    state.sessionViewsById[sessionId] = view
-    state.permissionsBySession[sessionId] = normalizeDesktopPendingPermissions(view.pending_permissions, sessionId)
+    state.sessionViewsById[sessionId] = { ...state.sessionViewsById[sessionId], ...view }
+    if (view.pending_permissions !== undefined) state.permissionsBySession[sessionId] = normalizeDesktopPendingPermissions(view.pending_permissions, sessionId)
     if (view.usage_summary !== undefined) state.usageBySession[sessionId] = view.usage_summary
-    if (view.has_active_plan !== undefined) {
-      state.hasActivePlanBySession[sessionId] = view.has_active_plan
-    }
-    if (view.active_plan !== undefined) {
-      state.plansBySession[sessionId] = view.active_plan === null ? null : normalizeDesktopSessionPlan(view.active_plan)
-    }
-    if (view.has_active_plan === false) {
-      state.plansBySession[sessionId] = null
-    }
+    applyPlanSnapshotFromSessionView(state, sessionId, view)
 
     const settings = view.agentic_settings
     const authoritativePreference = settings?.effective_preference ?? settings?.stored_preference
@@ -1764,6 +1775,25 @@ function applySessionViewsFromSyncSnapshot(
       }
     }
   }
+}
+
+function applyPlanSnapshotFromSessionView(state: DesktopV3CacheState, sessionId: string, view: Pick<NonNullable<SyncSnapshotResponse['session_views_by_id']>[string], 'has_active_plan' | 'active_plan'>): void {
+  if (view.has_active_plan !== undefined) {
+    state.hasActivePlanBySession[sessionId] = view.has_active_plan
+  }
+  if (view.active_plan !== undefined) {
+    state.plansBySession[sessionId] = view.active_plan === null ? null : normalizeDesktopSessionPlan(view.active_plan)
+  }
+  if (view.has_active_plan === false) {
+    state.plansBySession[sessionId] = null
+  }
+}
+
+function applyPlanSnapshotFromWorksetFrame(state: DesktopV3CacheState, sessionId: string, frame: RealtimeMessage): void {
+  applyPlanSnapshotFromSessionView(state, sessionId, {
+    has_active_plan: frame.has_active_plan,
+    active_plan: frame.active_plan,
+  })
 }
 
 function upsertSessions(state: DesktopV3CacheState, sessionsById: Record<string, SessionSnapshot> | undefined): void {

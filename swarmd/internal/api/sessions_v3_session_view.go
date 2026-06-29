@@ -8,6 +8,22 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func (s *Server) sessionsV3SyncActivePlanViews(snapshot pebblestore.V3SyncSnapshotResult) (map[string]sessionsV3SessionView, error) {
+	views := make(map[string]sessionsV3SessionView, len(snapshot.SessionOrder))
+	for _, sessionID := range snapshot.SessionOrder {
+		hasActive := false
+		view := sessionsV3SessionView{HasActivePlan: &hasActive}
+		if plan, ok, err := s.sessions.GetActivePlan(sessionID); err != nil {
+			return nil, err
+		} else if ok {
+			hasActive = true
+			view.ActivePlan = &plan
+		}
+		views[sessionID] = view
+	}
+	return views, nil
+}
+
 func (s *Server) sessionsV3SyncSessionViews(options sessionsV3ResolvedSyncOptions, snapshot pebblestore.V3SyncSnapshotResult) (map[string]sessionsV3SessionView, error) {
 	if len(snapshot.SessionOrder) > sessionsV3SyncHydrateMaxSessionViews {
 		return nil, errors.New("sync hydrate resources.session_view cannot target more than 8 sessions")

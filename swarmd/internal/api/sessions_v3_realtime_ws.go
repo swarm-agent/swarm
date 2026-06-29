@@ -981,6 +981,17 @@ func (s *Server) sendV3RealtimeWorksetSessionFrame(conn *transportws.Conn, kind 
 			_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(record.SessionID, "run_state_lookup_failed", err.Error(), record.EndpointSeq-1, record.EndpointSeq))
 			return false
 		}
+		if v3RealtimeWorksetIncludesResource(workset, "active_plan") {
+			hasActive := false
+			message.HasActivePlan = &hasActive
+			if plan, ok, err := s.sessions.GetActivePlan(record.SessionID); err != nil {
+				_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(record.SessionID, "active_plan_lookup_failed", err.Error(), record.EndpointSeq-1, record.EndpointSeq))
+				return false
+			} else if ok {
+				hasActive = true
+				message.ActivePlan = &plan
+			}
+		}
 	}
 	return s.sendV3RealtimeMessage(conn, message) == nil
 }

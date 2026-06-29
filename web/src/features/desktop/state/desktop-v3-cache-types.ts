@@ -144,7 +144,7 @@ export interface DesktopV3AgenticSettings {
 }
 
 export interface DesktopV3SessionView {
-  agentic_settings: DesktopV3AgenticSettings
+  agentic_settings?: DesktopV3AgenticSettings
   pending_permissions?: unknown[]
   usage_summary?: unknown
   current_run_state?: V3SessionRunState
@@ -287,6 +287,7 @@ export interface SessionsReconnectResponse {
   current_run_state_by_session?: Record<string, V3SessionRunState>
   permission_summaries_by_session?: Record<string, DesktopPermissionSummaryWire>
   active_session_ids?: string[]
+  session_views_by_id?: Record<string, DesktopV3SessionView>
   subscriptions: ReconnectSubscription[]
   session_order: string[]
   diagnostics_by_session: Record<string, ReconnectDiagnostic[]>
@@ -351,6 +352,8 @@ export interface RealtimeMessage {
   event?: V3SessionEvent
   session?: SessionSnapshot
   current_run_state?: V3SessionRunState
+  has_active_plan?: boolean
+  active_plan?: unknown | null
   permission_summary?: DesktopPermissionSummaryWire
   workset_subscription_id?: string
   auto_subscribed?: boolean

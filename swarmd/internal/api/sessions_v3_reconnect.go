@@ -199,6 +199,7 @@ func sessionsV3ReconnectMapFromSyncSnapshot(snapshot sessionsV3SyncSnapshotRespo
 		RunIntentsBySession:       nilIfEmptyMap(snapshot.RunIntentsBySession),
 		CurrentRunStateBySession:  nilIfEmptyMap(snapshot.CurrentRunStateBySession),
 		CurrentRunIntentBySession: sessionsV3ReconnectCurrentRunIntentsFromStates(snapshot.CurrentRunStateBySession),
+		SessionViewsByID:          nilIfEmptyMap(snapshot.SessionViewsByID),
 		ActiveSessionIDs:          snapshot.ActiveSessionIDs,
 		HistoryManifestsBySession: nilIfEmptyMap(snapshot.HistoryManifestsBySession),
 		HistoryChunksByID:         nilIfEmptyMap(snapshot.HistoryChunksByID),
@@ -329,6 +330,7 @@ type sessionsV3ReconnectResponseInput struct {
 	RunIntentsBySession       any
 	CurrentRunIntentBySession any
 	CurrentRunStateBySession  any
+	SessionViewsByID          any
 	ActiveSessionIDs          []string
 	HistoryManifestsBySession any
 	HistoryChunksByID         any
@@ -362,6 +364,7 @@ func sessionsV3ReconnectResponseMap(input sessionsV3ReconnectResponseInput) map[
 	optional := map[string]any{
 		"run_intents_by_session":       input.RunIntentsBySession,
 		"current_run_state_by_session": input.CurrentRunStateBySession,
+		"session_views_by_id":          input.SessionViewsByID,
 		"active_session_ids":           input.ActiveSessionIDs,
 		"client_id":                    input.ClientID,
 		"surface":                      input.Surface,

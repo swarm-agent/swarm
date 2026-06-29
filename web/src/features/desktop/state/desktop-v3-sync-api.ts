@@ -50,7 +50,7 @@ export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
     run_intents: false,
     current_run_state: true,
     session_view: false,
-    active_plan: false,
+    active_plan: true,
     plan_revisions: false,
     permission_summaries: true,
   },

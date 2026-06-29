@@ -167,6 +167,7 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 			History:                history,
 			IncludeRunIntents:      req.Resources.RunIntents,
 			IncludeCurrentRunState: req.Resources.CurrentRunState || req.IncludeActive,
+			IncludeActivePlan:      req.Resources.ActivePlan,
 			IncludeActiveSessions:  req.IncludeActive,
 		},
 		Principal:                         principal,
@@ -761,6 +762,12 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 			return sessionsV3SyncSnapshotResponseBody{}, err
 		}
 		response.SessionViewsByID = views
+	} else if options.Snapshot.IncludeActivePlan {
+		views, err := s.sessionsV3SyncActivePlanViews(snapshot)
+		if err != nil {
+			return sessionsV3SyncSnapshotResponseBody{}, err
+		}
+		response.SessionViewsByID = views
 	}
 	if timings != nil {
 		response.logTimings = timings
@@ -1100,6 +1107,9 @@ func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history ses
 	}
 	if resources.PermissionSummaries {
 		out = append(out, "permission_summaries")
+	}
+	if resources.ActivePlan {
+		out = append(out, "active_plan")
 	}
 	return out
 }

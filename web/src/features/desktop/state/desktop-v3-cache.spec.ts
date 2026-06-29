@@ -1440,6 +1440,76 @@ test('reconnect feeds same cache and stores resume frame exactly', () => {
   assert.equal(state.subscriptionsById['sub-a'].status, 'active')
 })
 
+test('reconnect applies active plan session views for all sidebar sessions', () => {
+  const state = createEmptyDesktopV3CacheState()
+  applyReconnectSnapshot(state, reconnectFixture({
+    sessions_by_id: { [sessionA.id]: sessionA, [sessionB.id]: sessionB },
+    projections_by_session: { [sessionA.id]: projectionA, [sessionB.id]: projectionB },
+    session_order: [sessionA.id, sessionB.id],
+    session_views_by_id: {
+      [sessionA.id]: {
+        has_active_plan: true,
+        active_plan: {
+          id: 'reconnect-plan-a',
+          title: 'Reconnect plan A',
+          plan: '# Reconnect plan A',
+          status: 'approved',
+          document: {
+            id: 'reconnect-plan-a',
+            title: 'Reconnect plan A',
+            status: 'approved',
+            execution_state: { status: 'waiting_review', last_checkpoint_id: 'cp-1', last_outcome: 'needs_review' },
+            active_checkpoint_id: 'cp-1',
+            checkpoints: [{ id: 'cp-1', title: 'Review A', status: 'needs_review', review: { status: 'pending' }, order: 1 }],
+          },
+        },
+      },
+      [sessionB.id]: {
+        has_active_plan: true,
+        active_plan: {
+          id: 'reconnect-plan-b',
+          title: 'Reconnect plan B',
+          plan: '# Reconnect plan B',
+          status: 'approved',
+          document: {
+            id: 'reconnect-plan-b',
+            title: 'Reconnect plan B',
+            status: 'approved',
+            execution_state: { status: 'in_progress', current_run_id: 'run-b', last_checkpoint_id: 'cp-1' },
+            active_checkpoint_id: 'cp-1',
+            checkpoints: [{ id: 'cp-1', title: 'Run B', status: 'in_progress', run_id: 'run-b', session_id: sessionB.id, order: 1 }],
+          },
+        },
+      },
+    },
+    realtime: {
+      stream_path: '/v3/realtime/stream',
+      resume: {
+        protocol: 'v3.realtime',
+        protocol_version: 1,
+        kind: 'resume',
+        endpoint_cursor: 'cursor-reconnect',
+        subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
+        worksets: [{
+          workset_id: 'workset-1',
+          subscription_id: 'workset-sub-1',
+          selector: { kind: 'global', global: true },
+          resources: ['current_run_state', 'active_plan'],
+          auto_subscribe_sessions: false,
+        }],
+      },
+    },
+  }))
+
+  const rows = selectDesktopSidebarRows(state, 'workset-1')
+  assert.deepEqual(rows.map((row) => row.sessionId), [sessionA.id, sessionB.id])
+  assert.equal(rows[0].planExecution?.statusLabel, 'REVIEW')
+  assert.equal(rows[0].sidebarGroup, 'needs_review')
+  assert.equal(rows[1].planExecution?.currentRunId, 'run-b')
+  assert.equal(rows[1].sidebarGroup, 'in_progress')
+})
+
+
 test('reconnect repopulates Path A and Path B sessions, visible order, and principal subscriptions', () => {
   const state = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'global-scope' }
@@ -3056,6 +3126,24 @@ test('workset.session.updated applies compact sidebar shell and current run stat
       updated_at: 12,
       event_seq: 9,
     },
+    has_active_plan: true,
+    active_plan: {
+      id: 'plan-workset-active',
+      title: 'Sidebar active plan',
+      plan: '# Sidebar active plan',
+      status: 'approved',
+      approval_state: 'approved',
+      updated_at: 12,
+      document: {
+        id: 'plan-workset-active',
+        title: 'Sidebar active plan',
+        status: 'approved',
+        execution_policy: { mode: 'automatic', shape: 'checkpointed' },
+        execution_state: { status: 'in_progress', active_attempt_id: 'cp-1:attempt-1', current_run_id: 'run-b-active', current_session_id: sessionB.id, last_checkpoint_id: 'cp-1' },
+        active_checkpoint_id: 'cp-1',
+        checkpoints: [{ id: 'cp-1', title: 'Keep sidebar fresh', status: 'in_progress', attempt_id: 'cp-1:attempt-1', run_id: 'run-b-active', session_id: sessionB.id, order: 1 }],
+      },
+    },
   }))
 
   for (const action of actions) desktopV3CacheReducer(state, action)
@@ -3067,6 +3155,9 @@ test('workset.session.updated applies compact sidebar shell and current run stat
   assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.metadata : undefined, { agent_name: 'explorer' })
   assert.deepEqual(state.sessionOrderByScope['scope-1'], [sessionB.id])
   assert.equal(state.currentRunIntentBySession[sessionB.id]?.run_id, 'run-b-active')
+  assert.equal(state.hasActivePlanBySession[sessionB.id], true)
+  assert.equal(state.plansBySession[sessionB.id]?.id, 'plan-workset-active')
+  assert.equal(selectDesktopSidebarRows(state, 'scope-1')[0]?.planExecution?.currentRunId, 'run-b-active')
   assert.equal(state.subscriptionsById['workset-sub-1'], undefined)
   assert.equal(state.realtime.endpointCursor, 'cursor-workset-update-9')
 })

@@ -749,7 +749,7 @@ export function buildDesktopV3ReconnectInput(
         run_intents: false,
         current_run_state: true,
         permission_summaries: true,
-        active_plan: false,
+        active_plan: true,
         plan_revisions: false,
       },
       include_active: true,

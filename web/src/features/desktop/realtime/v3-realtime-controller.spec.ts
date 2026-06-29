@@ -1074,6 +1074,7 @@ test('Desktop V3 reconnect input preserves bounded sidebar selector instead of w
   assert.equal(input.workset.resources.run_intents, false)
   assert.equal(input.workset.resources.current_run_state, true)
   assert.equal(input.workset.resources.permission_summaries, true)
+  assert.equal(input.workset.resources.active_plan, true)
   assert.equal(input.workset.auto_subscribe_sessions, false)
 
   state.syncScopesById['global-scope'].selector = { kind: 'global', global: true }

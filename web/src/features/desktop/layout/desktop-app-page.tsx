@@ -1405,15 +1405,6 @@ function sessionPlanCheckpointCounts(session: DesktopSessionRecord): { activeInd
   }
 }
 
-function sessionPlanWaitingLabel(session: DesktopSessionRecord): string {
-  const status = metadataText(session, 'swarm_v3_active_checkpoint_status').toLowerCase()
-  const executionStatus = metadataText(session, 'swarm_v3_plan_execution_status').toLowerCase()
-  if (status === 'needs_review' || executionStatus === 'waiting_review') return 'waiting review'
-  if (status === 'blocked' || executionStatus === 'blocked') return 'blocked'
-  if (status === 'failed' || executionStatus === 'failed') return 'failed'
-  return ''
-}
-
 function sessionWorkspaceLabel(session: DesktopSessionRecord): string {
   return session.workspaceName?.trim() || fallbackWorkspaceNameFromPath(session.workspacePath || '') || 'Workspace'
 }
@@ -1744,24 +1735,29 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const checkpointProgressLabel = sessionPlanCheckpointProgressLabel(session)
   const checkpointCounts = sessionPlanCheckpointCounts(session)
   const activeCheckpointTitle = metadataText(session, 'swarm_v3_active_checkpoint_title')
-  const waitingLabel = sessionPlanWaitingLabel(session)
   const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
   const tooltip = sessionStatusTooltip(session)
   const isNestedSession = depth > 0
   const nestedAssignmentTitle = isNestedSession && childAssignmentLabel ? childAssignmentLabel : ''
-  const rowTitle = nestedAssignmentTitle || (isPlanRow ? metadataText(session, 'swarm_v3_active_plan_title') || session.title : session.title) || 'New conversation'
+  const rowTitle = nestedAssignmentTitle || session.title || 'New conversation'
   const visibleChildLabel = childLabel && childLabel !== rowTitle ? childLabel : ''
   const nestedToneClass = childKind === 'subagent' ? 'text-[var(--app-info)]' : 'text-[var(--app-text-subtle)]'
   const hasAgentChildren = agentSummary.total > 0
   const agentDescriptor = agentSummaryDescriptor(agentSummary)
   const metadataLabel = sessionRowMetadataLabel(session)
+  const relativeActivityLabel = sessionStatusDetail(session, now)
+  const rowTimerLabel = compactingActive
+    ? compactingTimer
+    : sessionHasCanonicalActiveRun(session)
+      ? sessionTimerLabel(session, now)
+      : relativeActivityLabel
   const singleStatusLabel = compactingActive
     ? 'Compacting'
     : activeSession
       ? sessionActivityLabel(session)
-      : sessionStatusDetail(session, now) || sessionMeta(session) || ''
-  const attentionLabel = waitingLabel ? 'Needs Attention' : ''
-  const rightSideLabel = isPlanRow ? attentionLabel : singleStatusLabel
+      : sessionMeta(session) || ''
+  const hasPendingPermission = sessionHasPendingPermission(session)
+  const rightSideLabel = isPlanRow && !hasPendingPermission ? '' : singleStatusLabel
   const statusTone = sessionStatusTone(session)
   const planCheckpointText = activeCheckpointTitle
     ? activeCheckpointTitle
@@ -1790,7 +1786,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         'grid w-full min-w-0 rounded-md border text-left outline-none transition-colors',
         isPlanRow ? 'gap-1.5 px-2.5 py-2' : 'gap-1 px-2.5 py-1.5',
         active
-          ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)]'
+          ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45'
           : 'border-transparent bg-[var(--app-surface)]/45 hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]',
         isNestedSession ? 'ml-3' : null,
         hasAgentChildren && agentsExpanded ? 'border-[var(--app-border-accent)]' : null,
@@ -1811,21 +1807,21 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
               </span>
 
             </div>
-            <div className="mt-0.5 truncate text-[10px] leading-4 text-[var(--app-text-subtle)]">
-              {metadataLabel}
+            <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+              <span className="min-w-0 truncate">{metadataLabel}</span>
+              {rowTimerLabel ? <span className="ml-auto shrink-0 text-right tabular-nums text-[var(--app-text-muted)]">{rowTimerLabel}</span> : null}
             </div>
           </div>
         </div>
-        <span className={cn('inline-flex shrink-0 items-center gap-1.5 text-[10px] leading-4', attentionLabel ? 'text-[var(--app-warning)]' : 'text-[var(--app-text-muted)]')}>
+        <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] leading-4 text-[var(--app-text-muted)]">
           {compactingActive ? <LoaderCircle size={10} className="animate-spin text-[var(--app-primary)]" aria-hidden="true" /> : null}
           {rightSideLabel ? <span className="max-w-[5.5rem] truncate text-right">{rightSideLabel}</span> : null}
-          {compactingTimer ? <span className="tabular-nums text-[var(--app-text)]">{compactingTimer}</span> : null}
           <span
             className={cn(
               'h-1.5 w-1.5 shrink-0 rounded-full',
               compactingActive || statusTone === 'running'
                 ? 'bg-[var(--app-success)]'
-                : statusTone === 'blocked' || attentionLabel
+                : statusTone === 'blocked'
                   ? 'bg-[var(--app-warning)]'
                   : statusTone === 'error'
                     ? 'bg-[var(--app-danger)]'
@@ -1860,7 +1856,6 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
             ) : null}
             <span className="truncate">{planCheckpointText}</span>
           </div>
-          {attentionLabel ? <span className="shrink-0 text-[var(--app-warning)]">{attentionLabel}</span> : null}
         </div>
       ) : null}
 

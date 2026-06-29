@@ -1,7 +1,19 @@
-import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanRecord } from '../chat/types/chat'
+import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord } from '../chat/types/chat'
 import type { DesktopPermissionRecord } from '../types/realtime'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
+
+export type DesktopV3SidebarRowType = 'plan_session' | 'single_chat'
+export type DesktopV3SidebarPlanStatusLabel = 'RUNNING' | 'REVIEW' | 'BLOCKED' | 'QUEUED'
+export type DesktopV3SidebarGroupId = 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
+
+export interface DesktopV3SidebarCheckpointProgress {
+  activeCheckpointId: string
+  activeIndex: number
+  completedCount: number
+  totalCount: number
+  label: string
+}
 
 export interface DesktopV3SidebarRow {
   sessionId: string
@@ -13,6 +25,29 @@ export interface DesktopV3SidebarRow {
   pendingPermissions: DesktopPermissionRecord[]
   permissionSummary?: DesktopPermissionSummary
   pendingPermissionCount: number
+  hasActivePlan: boolean
+  activePlan?: DesktopSessionPlanRecord
+  planExecution?: DesktopV3SidebarPlanExecution
+  rowType: DesktopV3SidebarRowType
+  sidebarGroup: DesktopV3SidebarGroupId
+  branchLabel: string
+}
+
+export interface DesktopV3SidebarPlanExecution {
+  planId: string
+  title: string
+  status: string
+  statusLabel: DesktopV3SidebarPlanStatusLabel
+  checkpointProgress: DesktopV3SidebarCheckpointProgress
+  activeCheckpointId: string
+  activeCheckpointTitle: string
+  activeCheckpointStatus: string
+  currentRunId: string
+  currentSessionId: string
+  reviewRequired: boolean
+  blocked: boolean
+  failed: boolean
+  completed: boolean
 }
 
 export interface RenderedSessionMessages {
@@ -68,6 +103,7 @@ export function selectDesktopSidebarRows(state: DesktopV3CacheState, scopeId = s
   for (const sessionId of selectSessionOrder(state, resolvedScopeId)) {
     const record = state.sessionsById[sessionId]
     if (!record) continue
+    const planState = buildDesktopSidebarPlanState(state, sessionId)
     rows.push({
       sessionId,
       record: cloneSessionCacheRecord(record),
@@ -78,9 +114,138 @@ export function selectDesktopSidebarRows(state: DesktopV3CacheState, scopeId = s
       pendingPermissions: clonePendingPermissions(state.permissionsBySession[sessionId]),
       permissionSummary: clonePermissionSummary(state.permissionSummaryBySessionId[sessionId]),
       pendingPermissionCount: state.permissionSummaryBySessionId[sessionId]?.pendingApprovalCount ?? 0,
+      ...planState,
+      rowType: planState.planExecution ? 'plan_session' : 'single_chat',
+      sidebarGroup: desktopSidebarGroupForRow({
+        hasActivePlan: planState.hasActivePlan,
+        planExecution: planState.planExecution,
+        hasActiveRun: hasActiveRunIntent(state.currentRunIntentBySession[sessionId]),
+        pendingPermissionCount: state.permissionSummaryBySessionId[sessionId]?.pendingApprovalCount ?? 0,
+        tombstoned: Boolean(state.tombstonesBySession[sessionId]),
+      }),
+      branchLabel: desktopSidebarBranchLabel(record),
     })
   }
   return rows
+}
+
+export function selectDesktopSidebarGroupedRows(state: DesktopV3CacheState, scopeId = state.desktopSidebarBootstrap.scopeId): Record<DesktopV3SidebarGroupId, DesktopV3SidebarRow[]> {
+  const grouped: Record<DesktopV3SidebarGroupId, DesktopV3SidebarRow[]> = {
+    needs_review: [],
+    in_progress: [],
+    active_chats: [],
+    archived: [],
+  }
+  for (const row of selectDesktopSidebarRows(state, scopeId)) {
+    grouped[row.sidebarGroup].push(row)
+  }
+  return grouped
+}
+
+function buildDesktopSidebarPlanState(state: DesktopV3CacheState, sessionId: string): Pick<DesktopV3SidebarRow, 'hasActivePlan' | 'activePlan' | 'planExecution'> {
+  if (state.hasActivePlanBySession[sessionId] !== true) {
+    return { hasActivePlan: false }
+  }
+  const candidate = state.plansBySession[sessionId] as DesktopSessionPlanRecord | null | undefined
+  if (!candidate?.document) {
+    return { hasActivePlan: true }
+  }
+  return {
+    hasActivePlan: true,
+    activePlan: candidate,
+    planExecution: buildDesktopSidebarPlanExecution(candidate),
+  }
+}
+
+function buildDesktopSidebarPlanExecution(plan: DesktopSessionPlanRecord): DesktopV3SidebarPlanExecution | undefined {
+  const document = plan.document
+  if (!document) return undefined
+  const orderedCheckpoints = orderedPlanCheckpoints(document)
+  const activeCheckpointId = document.activeCheckpointId || document.executionState?.lastCheckpointId || orderedCheckpoints.find((checkpoint) => checkpoint.status.toLowerCase() === 'in_progress')?.id || ''
+  const activeCheckpoint = activeCheckpointId
+    ? orderedCheckpoints.find((checkpoint) => checkpoint.id === activeCheckpointId)
+    : undefined
+  const status = document.executionState?.status || document.status || plan.status || ''
+  const normalizedStatus = status.toLowerCase()
+  const checkpointStatus = (activeCheckpoint?.status || document.executionState?.lastOutcome || '').toLowerCase()
+  const reviewRequired = normalizedStatus === 'waiting_review' || checkpointStatus === 'needs_review' || activeCheckpoint?.review?.status === 'pending'
+  const blocked = normalizedStatus === 'blocked' || checkpointStatus === 'blocked'
+  const failed = normalizedStatus === 'failed' || checkpointStatus === 'failed'
+  const completed = normalizedStatus === 'completed' || allCheckpointsCompleted(document)
+  return {
+    planId: plan.id,
+    title: document.title || plan.title,
+    status,
+    statusLabel: desktopPlanStatusLabel({ normalizedStatus, checkpointStatus, reviewRequired, blocked, failed, completed }),
+    checkpointProgress: desktopSidebarCheckpointProgress(document, activeCheckpointId),
+    activeCheckpointId,
+    activeCheckpointTitle: activeCheckpoint?.title || '',
+    activeCheckpointStatus: activeCheckpoint?.status || document.executionState?.lastOutcome || '',
+    currentRunId: document.executionState?.currentRunId || activeCheckpoint?.runId || '',
+    currentSessionId: document.executionState?.currentSessionId || activeCheckpoint?.sessionId || '',
+    reviewRequired,
+    blocked,
+    failed,
+    completed,
+  }
+}
+
+function orderedPlanCheckpoints(document: DesktopSessionPlanDocument): DesktopSessionPlanCheckpoint[] {
+  return [...document.checkpoints].sort((left, right) => {
+    const leftOrder = Number.isFinite(left.order) && left.order > 0 ? left.order : Number.MAX_SAFE_INTEGER
+    const rightOrder = Number.isFinite(right.order) && right.order > 0 ? right.order : Number.MAX_SAFE_INTEGER
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder
+    return left.id.localeCompare(right.id)
+  })
+}
+
+function desktopSidebarCheckpointProgress(document: DesktopSessionPlanDocument, activeCheckpointId: string): DesktopV3SidebarCheckpointProgress {
+  const checkpoints = orderedPlanCheckpoints(document)
+  const totalCount = checkpoints.length
+  const completedCount = checkpoints.filter((checkpoint) => checkpoint.status.toLowerCase() === 'completed').length
+  const rawActiveIndex = activeCheckpointId ? checkpoints.findIndex((checkpoint) => checkpoint.id === activeCheckpointId) : -1
+  const activeIndex = rawActiveIndex >= 0 ? rawActiveIndex + 1 : 0
+  return {
+    activeCheckpointId,
+    activeIndex,
+    completedCount,
+    totalCount,
+    label: totalCount > 0 ? `${activeIndex || completedCount}/${totalCount}` : '',
+  }
+}
+
+function desktopPlanStatusLabel(input: { normalizedStatus: string; checkpointStatus: string; reviewRequired: boolean; blocked: boolean; failed: boolean; completed: boolean }): DesktopV3SidebarPlanStatusLabel {
+  if (input.reviewRequired) return 'REVIEW'
+  if (input.blocked || input.failed) return 'BLOCKED'
+  if (input.completed) return 'QUEUED'
+  if (input.normalizedStatus === 'queued' || input.normalizedStatus === 'pending' || input.checkpointStatus === 'pending') return 'QUEUED'
+  return 'RUNNING'
+}
+
+function desktopSidebarGroupForRow(input: { hasActivePlan: boolean; planExecution?: DesktopV3SidebarPlanExecution; hasActiveRun: boolean; pendingPermissionCount: number; tombstoned: boolean }): DesktopV3SidebarGroupId {
+  if (input.tombstoned) return 'archived'
+  if (input.planExecution?.reviewRequired) return 'needs_review'
+  if (input.planExecution && !input.planExecution.completed) return 'in_progress'
+  if (input.pendingPermissionCount > 0 || input.hasActiveRun || input.hasActivePlan) return 'active_chats'
+  return 'active_chats'
+}
+
+function hasActiveRunIntent(runIntent: V3SessionRunIntent | undefined): boolean {
+  return runIntent ? ['pending_executor', 'running', 'dispatch_blocked'].includes(runIntent.status) : false
+}
+
+function desktopSidebarBranchLabel(record: SessionCacheRecord): string {
+  if (record.kind !== 'full') return 'No branch'
+  return record.session.worktree_branch?.trim() || metadataString(record.session.metadata, 'git_branch') || metadataString(record.session.metadata, 'branch') || 'No branch'
+}
+
+function metadataString(metadata: Record<string, unknown> | undefined, key: string): string {
+  const value = metadata?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function allCheckpointsCompleted(document: DesktopSessionPlanDocument): boolean {
+  return document.checkpoints.length > 0 && document.checkpoints.every((checkpoint) => checkpoint.status.toLowerCase() === 'completed')
 }
 
 export function selectCommittedMessages(state: DesktopV3CacheState, sessionId: string): MessageSnapshot[] {

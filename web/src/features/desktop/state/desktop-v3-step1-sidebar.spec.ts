@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
 import { buildSidebarSessionTree, desktopSessionRecordFromV3SidebarRow, desktopSidebarWorkspacePathForSession } from '../layout/desktop-app-page'
-import { selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
+import { selectDesktopSidebarGroupedRows, selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
 import { selectSession } from './desktop-v3-cache-wire'
 import { hydrateResponseToAction } from './desktop-v3-cache-wire'
 import { messageA1, messageB1, projectionA, projectionB, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
@@ -80,33 +80,114 @@ test('Desktop V3 sidebar render includes bootstrapped session outside launcher w
 })
 
 test('Desktop V3 worktree sidebar uses source workspace metadata instead of runtime path', () => {
-  const record = desktopSessionRecordFromV3SidebarRow({
-    sessionId: 'worktree-session',
-    record: {
-      kind: 'full',
-      session: {
-        ...sessionA,
-        id: 'worktree-session',
-        workspace_path: '/worktrees/swarm-go/agent/feature',
-        workspace_name: 'swarm-go',
-        worktree_enabled: true,
-        worktree_root_path: '/worktrees/swarm-go/agent/feature',
-        metadata: {
-          swarm_v3_source_workspace_path: '/workspaces/swarm-go',
-          local_workspace_binding_id: 'binding-source',
-        },
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
+  state.sessionOrderByScope['scope-a'] = ['worktree-session']
+  state.sessionsById['worktree-session'] = {
+    kind: 'full',
+    session: {
+      ...sessionA,
+      id: 'worktree-session',
+      workspace_path: '/worktrees/swarm-go/agent/feature',
+      workspace_name: 'swarm-go',
+      worktree_enabled: true,
+      worktree_root_path: '/worktrees/swarm-go/agent/feature',
+      worktree_branch: 'agent/feature',
+      metadata: {
+        swarm_v3_source_workspace_path: '/workspaces/swarm-go',
+        local_workspace_binding_id: 'binding-source',
       },
-      needsHydrate: false,
     },
-    projection: undefined,
-    runIntents: {},
-    currentRunIntent: undefined,
-    pendingPermissions: [],
-    pendingPermissionCount: 0,
-  })
+    needsHydrate: false,
+  }
+  const row = selectDesktopSidebarRows(state)[0]
+  const record = desktopSessionRecordFromV3SidebarRow(row)
   const workspacePathByBinding = new Map([['binding-source', '/workspaces/swarm-go']])
 
   assert.equal(desktopSidebarWorkspacePathForSession(record, workspacePathByBinding), '/workspaces/swarm-go')
+  assert.equal(row.branchLabel, 'agent/feature')
+  assert.equal(record.metadata?.swarm_v3_branch_label, 'agent/feature')
+})
+
+test('Desktop V3 sidebar derives plan row state, checkpoint progress, and explicit groups from active plan payload', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
+  state.sessionOrderByScope['scope-a'] = [sessionA.id, sessionB.id, 'chat-session']
+  state.sessionsById[sessionA.id] = { kind: 'full', session: { ...sessionA, worktree_branch: '' }, needsHydrate: false }
+  state.sessionsById[sessionB.id] = { kind: 'full', session: { ...sessionB, worktree_branch: 'agent/blocked' }, needsHydrate: false }
+  state.sessionsById['chat-session'] = { kind: 'full', session: { ...sessionA, id: 'chat-session', title: 'Chat', worktree_branch: '' }, needsHydrate: false }
+  state.hasActivePlanBySession[sessionA.id] = true
+  state.plansBySession[sessionA.id] = {
+    id: 'plan-review',
+    title: 'Review plan',
+    plan: '# Review',
+    status: 'approved',
+    approvalState: 'approved',
+    updatedAt: 3,
+    document: {
+      id: 'plan-review',
+      title: 'Review plan',
+      status: 'approved',
+      schemaVersion: '',
+      revisionId: '',
+      info: { goal: '', scope: '', context: '', decisions: [], constraints: [], assumptions: [], openQuestions: [], relevantFiles: [], successCriteria: [], validationStrategy: '' },
+      executionPolicy: { mode: 'automatic', shape: 'checkpointed' },
+      executionState: { status: 'waiting_review', activeAttemptId: 'cp-2:attempt-1', parentSessionId: sessionA.id, currentSessionId: sessionA.id, currentRunId: 'run-review', lastCheckpointId: 'cp-2', lastAttemptId: 'cp-2:attempt-1', lastOutcome: 'needs_review', startedAt: 1, updatedAt: 3, completedAt: 0 },
+      checkpoints: [
+        { id: 'cp-1', title: 'Done', status: 'completed', objective: '', tasks: [], acceptanceCriteria: [], notes: '', report: '', result: '', changedFiles: [], validation: [], attemptId: '', runId: '', sessionId: '', startedAt: 0, completedAt: 0, review: null, attempts: [], order: 1 },
+        { id: 'cp-2', title: 'Review me', status: 'needs_review', objective: '', tasks: [], acceptanceCriteria: [], notes: '', report: '', result: '', changedFiles: [], validation: [], attemptId: 'cp-2:attempt-1', runId: 'run-review', sessionId: sessionA.id, startedAt: 2, completedAt: 3, review: { status: 'pending', reviewerId: '', reviewerType: '', result: '', notes: '', reviewedAt: 0 }, attempts: [], order: 2 },
+      ],
+      activeCheckpointId: 'cp-2',
+      renderedText: '',
+      displayText: '',
+    },
+  }
+  state.hasActivePlanBySession[sessionB.id] = true
+  state.plansBySession[sessionB.id] = {
+    id: 'plan-running',
+    title: 'Running plan',
+    plan: '# Running',
+    status: 'approved',
+    approvalState: 'approved',
+    updatedAt: 4,
+    document: {
+      id: 'plan-running',
+      title: 'Running plan',
+      status: 'approved',
+      schemaVersion: '',
+      revisionId: '',
+      info: { goal: '', scope: '', context: '', decisions: [], constraints: [], assumptions: [], openQuestions: [], relevantFiles: [], successCriteria: [], validationStrategy: '' },
+      executionPolicy: { mode: 'automatic', shape: 'checkpointed' },
+      executionState: { status: 'in_progress', activeAttemptId: 'cp-1:attempt-1', parentSessionId: sessionB.id, currentSessionId: sessionB.id, currentRunId: 'run-running', lastCheckpointId: 'cp-1', lastAttemptId: 'cp-1:attempt-1', lastOutcome: '', startedAt: 1, updatedAt: 4, completedAt: 0 },
+      checkpoints: [
+        { id: 'cp-1', title: 'Running', status: 'in_progress', objective: '', tasks: [], acceptanceCriteria: [], notes: '', report: '', result: '', changedFiles: [], validation: [], attemptId: 'cp-1:attempt-1', runId: 'run-running', sessionId: sessionB.id, startedAt: 1, completedAt: 0, review: null, attempts: [], order: 1 },
+      ],
+      activeCheckpointId: 'cp-1',
+      renderedText: '',
+      displayText: '',
+    },
+  }
+
+  const rows = selectDesktopSidebarRows(state)
+  const reviewRow = rows.find((row) => row.sessionId === sessionA.id)
+  const runningRow = rows.find((row) => row.sessionId === sessionB.id)
+  const chatRow = rows.find((row) => row.sessionId === 'chat-session')
+  assert.equal(reviewRow?.rowType, 'plan_session')
+  assert.equal(reviewRow?.sidebarGroup, 'needs_review')
+  assert.equal(reviewRow?.planExecution?.statusLabel, 'REVIEW')
+  assert.equal(reviewRow?.planExecution?.checkpointProgress.label, '2/2')
+  assert.equal(reviewRow?.branchLabel, 'No branch')
+  assert.equal(runningRow?.sidebarGroup, 'in_progress')
+  assert.equal(runningRow?.planExecution?.statusLabel, 'RUNNING')
+  assert.equal(runningRow?.branchLabel, 'agent/blocked')
+  assert.equal(chatRow?.rowType, 'single_chat')
+  assert.equal(chatRow?.sidebarGroup, 'active_chats')
+
+  const grouped = selectDesktopSidebarGroupedRows(state)
+  assert.deepEqual(grouped.needs_review.map((row) => row.sessionId), [sessionA.id])
+  assert.deepEqual(grouped.in_progress.map((row) => row.sessionId), [sessionB.id])
+  assert.deepEqual(grouped.active_chats.map((row) => row.sessionId), ['chat-session'])
+  assert.deepEqual(grouped.archived, [])
 })
 
 test('metadata-only bootstrap after hydrate preserves messages', () => {
