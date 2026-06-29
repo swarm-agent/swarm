@@ -1,8 +1,8 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { JSX, ReactNode, ChangeEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
-import { Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
+import { Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, GitBranch, Home, LayoutGrid, Link2, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -26,7 +26,6 @@ import {
   deleteAllWorkspaceTodos,
   deleteDoneWorkspaceTodos,
   deleteWorkspaceTodo,
-  fetchWorkspaceTodos,
   reorderWorkspaceTodos,
   setWorkspaceTodoInProgress,
   updateWorkspaceTodo,
@@ -68,7 +67,6 @@ import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
-const MIN_WORKSPACE_SECTION_HEIGHT_PX = 120
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
 const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
@@ -94,10 +92,6 @@ const MANAGED_DEV_UPDATE_PHASES = ['inspect', 'sync', 'rebuild', 'reconnect', 'v
 
 function SidebarActionRail({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn(SIDEBAR_ACTION_RAIL_CLASS, className)}>{children}</div>
-}
-
-function SidebarActionRailSpacer() {
-  return <span aria-hidden="true" className={SIDEBAR_ACTION_BOX_CLASS} />
 }
 
 function PwaLayoutDebugOverlay() {
@@ -144,15 +138,6 @@ interface SidebarWorkspaceLayout {
   collapsed: boolean
   hidden: boolean
   ratio: number
-}
-
-interface SidebarResizeState {
-  topPath: string
-  bottomPath: string
-  startY: number
-  topRatio: number
-  bottomRatio: number
-  totalVisibleRatio: number
 }
 
 interface TodoModalState {
@@ -374,6 +359,17 @@ function desktopV3SidebarRowEqual(left: DesktopV3SidebarRow | undefined, right: 
     && runIntentRecordEqual(left.runIntents, right.runIntents)
     && left.pendingPermissionCount === right.pendingPermissionCount
     && pendingPermissionIdsEqual(left.pendingPermissions, right.pendingPermissions)
+    && left.hasActivePlan === right.hasActivePlan
+    && left.rowType === right.rowType
+    && left.sidebarGroup === right.sidebarGroup
+    && left.branchLabel === right.branchLabel
+    && left.activePlan?.id === right.activePlan?.id
+    && left.planExecution?.status === right.planExecution?.status
+    && left.planExecution?.statusLabel === right.planExecution?.statusLabel
+    && left.planExecution?.checkpointProgress.label === right.planExecution?.checkpointProgress.label
+    && left.planExecution?.activeCheckpointId === right.planExecution?.activeCheckpointId
+    && left.planExecution?.activeCheckpointStatus === right.planExecution?.activeCheckpointStatus
+    && left.planExecution?.currentRunId === right.planExecution?.currentRunId
 }
 
 function sessionRecordEqual(left: DesktopV3SidebarRow['record'], right: DesktopV3SidebarRow['record']): boolean {
@@ -523,7 +519,6 @@ export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): 
     workspacePath: session.workspace_path || '',
     workspaceName: session.workspace_name || 'Unknown workspace',
     mode: session.mode || 'auto',
-    metadata: session.metadata,
     lastEventSeq: row.projection?.last_event_seq,
     projectionHighWatermarkSeq: row.projection?.projection_high_watermark_seq,
     messageCount: session.message_count ?? 0,
@@ -536,6 +531,26 @@ export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): 
     worktreeBranch: session.worktree_branch,
     lifecycle: null,
     runIntent,
+    metadata: {
+      ...(session.metadata ?? {}),
+      swarm_v3_has_active_plan: row.hasActivePlan,
+      swarm_v3_active_plan_id: row.activePlan?.id,
+      swarm_v3_active_plan_title: row.activePlan?.title,
+      swarm_v3_sidebar_row_type: row.rowType,
+      swarm_v3_sidebar_group: row.sidebarGroup,
+      swarm_v3_branch_label: row.branchLabel,
+      swarm_v3_plan_execution_status: row.planExecution?.status,
+      swarm_v3_plan_status_label: row.planExecution?.statusLabel,
+      swarm_v3_plan_checkpoint_progress: row.planExecution?.checkpointProgress.label,
+      swarm_v3_plan_checkpoint_active_index: row.planExecution?.checkpointProgress.activeIndex,
+      swarm_v3_plan_checkpoint_completed_count: row.planExecution?.checkpointProgress.completedCount,
+      swarm_v3_plan_checkpoint_total_count: row.planExecution?.checkpointProgress.totalCount,
+      swarm_v3_active_checkpoint_id: row.planExecution?.activeCheckpointId,
+      swarm_v3_active_checkpoint_title: row.planExecution?.activeCheckpointTitle,
+      swarm_v3_active_checkpoint_status: row.planExecution?.activeCheckpointStatus,
+      swarm_v3_plan_current_run_id: row.planExecution?.currentRunId,
+      swarm_v3_plan_current_session_id: row.planExecution?.currentSessionId,
+    },
     live: {
       runId: runIntentActive ? runIntent?.runId ?? null : null,
       agentName: null,
@@ -793,21 +808,6 @@ function gitFileStatusLabel(file: GitFileStatus): string {
   return labels.join(' + ') || file.kind || 'changed'
 }
 
-function gitSummaryTooltip(status: GitSnapshot | null | undefined): string {
-  if (!status?.has_git) return 'No git repository detected'
-  const files = status.files ?? []
-  const header = [
-    status.branch ? `branch ${status.branch}` : 'detached',
-    status.upstream ? `upstream ${status.upstream}` : '',
-    status.ahead_count > 0 ? `ahead ${status.ahead_count}` : '',
-    status.behind_count > 0 ? `behind ${status.behind_count}` : '',
-  ].filter(Boolean).join(' · ')
-  if (files.length === 0) return `${header || 'git'} · clean`
-  const lines = files.slice(0, 12).map((file) => `${gitFileStatusLabel(file)}: ${file.path}`)
-  if (files.length > 12) lines.push(`+${files.length - 12} more files`)
-  return [header, ...lines].filter(Boolean).join('\n')
-}
-
 function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): WorkspaceEntry {
   return {
     path,
@@ -836,22 +836,6 @@ function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): Work
     gitCommittedFileCount: 0,
     gitCommittedAdditions: 0,
     gitCommittedDeletions: 0,
-  }
-}
-
-function workspaceSectionHeightStyle(ratio: number, totalVisibleRatio: number, collapsed: boolean): CSSProperties {
-  if (collapsed) {
-    return {
-      flexShrink: 0,
-      flexGrow: 0,
-    }
-  }
-  const safeTotal = totalVisibleRatio > 0 ? totalVisibleRatio : 1
-  const safeRatio = normalizeRatio(ratio)
-  return {
-    flexGrow: safeRatio,
-    flexBasis: `${(safeRatio / safeTotal) * 100}%`,
-    minHeight: MIN_WORKSPACE_SECTION_HEIGHT_PX,
   }
 }
 
@@ -1324,66 +1308,6 @@ function sessionStatusTooltip(session: DesktopSessionRecord): string {
   return lines.join('\n')
 }
 
-function renderWorkspaceGitBar(args: {
-  workspace: WorkspaceEntry
-  gitSnapshot: GitSnapshot | null
-  gitLoading: boolean
-  gitError: string | null
-  onOpenGit: () => void
-  onBrancher: () => void
-}): JSX.Element {
-  const { workspace, gitSnapshot, gitLoading, gitError, onOpenGit, onBrancher } = args
-  const title = 'Create a new worktree session with a feature branch.'
-  const branch = gitSnapshot?.branch?.trim() || workspace.gitBranch?.trim() || 'git'
-  const ahead = Math.max(0, Number(gitSnapshot?.ahead_count ?? workspace.gitAheadCount ?? 0))
-  const behind = Math.max(0, Number(gitSnapshot?.behind_count ?? workspace.gitBehindCount ?? 0))
-  const syncLabel = `↑${ahead} ↓${behind}`
-  const modified = Math.max(0, Number(gitSnapshot?.modified_count ?? workspace.gitModifiedCount ?? 0))
-  const untracked = Math.max(0, Number(gitSnapshot?.untracked_count ?? workspace.gitUntrackedCount ?? 0))
-  const dirtyDetailParts: string[] = []
-  if (modified > 0) {
-    dirtyDetailParts.push(`${modified}M`)
-  }
-  if (untracked > 0) {
-    dirtyDetailParts.push(`${untracked}U`)
-  }
-  const dirtyLabel = dirtyDetailParts.join(' ')
-  const gitTitle = gitError ? `Git realtime error: ${gitError}` : gitSummaryTooltip(gitSnapshot)
-
-  return (
-    <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'pb-2 pl-6 pr-1 pt-0.5 text-[11px]')}>
-      <button
-        type="button"
-        className="flex min-w-0 items-center gap-2 overflow-hidden text-left hover:text-[var(--app-text)]"
-        onClick={onOpenGit}
-        title={gitTitle}
-        aria-label={`Open git status for ${workspace.workspaceName}`}
-      >
-        <span className={cn('truncate font-semibold text-[var(--app-text-muted)]', gitLoading && 'animate-pulse')}>{branch}</span>
-        <span className="shrink-0 text-[var(--app-text-muted)]">/</span>
-        <span className="shrink-0 text-[var(--app-text-muted)]">{syncLabel}</span>
-        {dirtyLabel ? <span className="shrink-0 text-[var(--app-text-muted)]">/</span> : null}
-        {dirtyLabel ? <span className="shrink-0 text-[10px] text-[var(--app-text-muted)]">{dirtyLabel}</span> : null}
-      </button>
-      <SidebarActionRail>
-        <SidebarActionRailSpacer />
-        <button
-          type="button"
-          className={cn(
-            SIDEBAR_ACTION_BUTTON_CLASS,
-            'text-[10px]',
-            'text-[var(--app-text-muted)] opacity-80 hover:opacity-100',
-          )}
-          onClick={onBrancher}
-          title={title}
-        >
-          +wt
-        </button>
-      </SidebarActionRail>
-    </div>
-  )
-}
-
 function sidebarSummaryLabel(session: DesktopSessionRecord): string {
   const compactLabel = sidebarCompactionLabel(session)
   if (compactLabel) {
@@ -1450,8 +1374,66 @@ function sidebarLiveToolLabel(session: DesktopSessionRecord): string {
   return session.live.sidebarToolName?.trim() ?? ''
 }
 
+function metadataText(session: DesktopSessionRecord, key: string): string {
+  const value = session.metadata?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function sessionSidebarRowType(session: DesktopSessionRecord): 'plan_session' | 'single_chat' {
+  return metadataText(session, 'swarm_v3_sidebar_row_type') === 'plan_session' ? 'plan_session' : 'single_chat'
+}
+
+function sessionSidebarGroup(session: DesktopSessionRecord): 'needs_review' | 'in_progress' | 'active_chats' | 'archived' {
+  const group = metadataText(session, 'swarm_v3_sidebar_group')
+  return group === 'needs_review' || group === 'in_progress' || group === 'archived' ? group : 'active_chats'
+}
+
+function sessionPlanCheckpointProgressLabel(session: DesktopSessionRecord): string {
+  return metadataText(session, 'swarm_v3_plan_checkpoint_progress')
+}
+
+function metadataNumber(session: DesktopSessionRecord, key: string): number {
+  const value = session.metadata?.[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function sessionPlanCheckpointCounts(session: DesktopSessionRecord): { activeIndex: number; completedCount: number; totalCount: number } {
+  return {
+    activeIndex: metadataNumber(session, 'swarm_v3_plan_checkpoint_active_index'),
+    completedCount: metadataNumber(session, 'swarm_v3_plan_checkpoint_completed_count'),
+    totalCount: metadataNumber(session, 'swarm_v3_plan_checkpoint_total_count'),
+  }
+}
+
+function sessionPlanWaitingLabel(session: DesktopSessionRecord): string {
+  const status = metadataText(session, 'swarm_v3_active_checkpoint_status').toLowerCase()
+  const executionStatus = metadataText(session, 'swarm_v3_plan_execution_status').toLowerCase()
+  if (status === 'needs_review' || executionStatus === 'waiting_review') return 'waiting review'
+  if (status === 'blocked' || executionStatus === 'blocked') return 'blocked'
+  if (status === 'failed' || executionStatus === 'failed') return 'failed'
+  return ''
+}
+
+function sessionWorkspaceLabel(session: DesktopSessionRecord): string {
+  return session.workspaceName?.trim() || fallbackWorkspaceNameFromPath(session.workspacePath || '') || 'Workspace'
+}
+
+function sessionRepoLabel(session: DesktopSessionRecord): string {
+  return fallbackWorkspaceNameFromPath(session.workspacePath || sessionWorkspaceLabel(session))
+}
+
+function sessionBranchLabel(session: DesktopSessionRecord): string {
+  return metadataText(session, 'swarm_v3_branch_label') || session.worktreeBranch?.trim() || session.gitBranch?.trim() || 'No branch'
+}
+
+function sessionRowMetadataLabel(session: DesktopSessionRecord): string {
+  return [sessionWorkspaceLabel(session), sessionRepoLabel(session), sessionBranchLabel(session)]
+    .filter((value, index, values) => value && values.indexOf(value) === index)
+    .join(' · ')
+}
+
 function sessionIsActive(session: DesktopSessionRecord): boolean {
-  return sessionHasPendingPermission(session) || sessionHasCanonicalActiveRun(session)
+  return sessionSidebarGroup(session) === 'in_progress' || sessionSidebarGroup(session) === 'needs_review' || sessionHasPendingPermission(session) || sessionHasCanonicalActiveRun(session)
 }
 
 function positiveTimestamp(value: number | null | undefined): number {
@@ -1737,7 +1719,7 @@ interface SessionRowProps {
   session: DesktopSessionRecord
   fallbackSwarmName: string
   routeOptions: DesktopChatRoute[]
-  workspaceSlug: string
+  workspaceSlug: string | ((session: DesktopSessionRecord) => string)
   depth?: number
   childLabel?: string | null
   childAssignmentLabel?: string | null
@@ -1756,30 +1738,39 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const activeSession = compactingActive || sessionIsActive(session)
   const originLabel = sessionOriginLabel(session, routeOptions, fallbackSwarmName)
   const backgroundInfo = sessionBackgroundInfo(session, originLabel)
-  const bottomLeftLabel = backgroundInfo?.targetLabel || originLabel
-  const bottomRightLabel = compactingActive
+  const rowWorkspaceSlug = typeof workspaceSlug === 'function' ? workspaceSlug(session) : workspaceSlug
+  const rowType = sessionSidebarRowType(session)
+  const isPlanRow = rowType === 'plan_session'
+  const checkpointProgressLabel = sessionPlanCheckpointProgressLabel(session)
+  const checkpointCounts = sessionPlanCheckpointCounts(session)
+  const activeCheckpointTitle = metadataText(session, 'swarm_v3_active_checkpoint_title')
+  const waitingLabel = sessionPlanWaitingLabel(session)
+  const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
+  const tooltip = sessionStatusTooltip(session)
+  const isNestedSession = depth > 0
+  const nestedAssignmentTitle = isNestedSession && childAssignmentLabel ? childAssignmentLabel : ''
+  const rowTitle = nestedAssignmentTitle || (isPlanRow ? metadataText(session, 'swarm_v3_active_plan_title') || session.title : session.title) || 'New conversation'
+  const visibleChildLabel = childLabel && childLabel !== rowTitle ? childLabel : ''
+  const nestedToneClass = childKind === 'subagent' ? 'text-[var(--app-info)]' : 'text-[var(--app-text-subtle)]'
+  const hasAgentChildren = agentSummary.total > 0
+  const agentDescriptor = agentSummaryDescriptor(agentSummary)
+  const metadataLabel = sessionRowMetadataLabel(session)
+  const singleStatusLabel = compactingActive
     ? 'Compacting'
     : activeSession
       ? sessionActivityLabel(session)
       : sessionStatusDetail(session, now) || sessionMeta(session) || ''
-  const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
-  const commitSummary = sessionCommitSummary(session)
-  const committedFileSummary = sessionCommittedFileSummary(session)
-  const committedDeltaSummary = sessionCommittedDeltaSummary(session)
-  const commitMetaLabel = [commitSummary, committedFileSummary, committedDeltaSummary].filter(Boolean).join(' · ')
-  const tooltip = sessionStatusTooltip(session)
-  const isNestedSession = depth > 0
-  const nestedAssignmentTitle = isNestedSession && childAssignmentLabel ? childAssignmentLabel : ''
-  const rowTitle = nestedAssignmentTitle || session.title || 'New conversation'
-  const visibleChildLabel = childLabel && childLabel !== rowTitle ? childLabel : ''
-  const nestedToneClass = childKind === 'subagent' ? 'text-sky-300/80' : 'text-[var(--app-text-subtle)]'
-  const hasAgentChildren = agentSummary.total > 0
-  const agentDescriptor = agentSummaryDescriptor(agentSummary)
+  const attentionLabel = waitingLabel ? 'Needs Attention' : ''
+  const rightSideLabel = isPlanRow ? attentionLabel : singleStatusLabel
+  const statusTone = sessionStatusTone(session)
+  const planCheckpointText = activeCheckpointTitle
+    ? activeCheckpointTitle
+    : 'Checkpoints'
 
   return (
     <Link
       to="/$workspaceSlug/$sessionId"
-      params={{ workspaceSlug, sessionId: session.id }}
+      params={{ workspaceSlug: rowWorkspaceSlug, sessionId: session.id }}
       onClick={(event) => {
         if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) {
           return
@@ -1796,72 +1787,98 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       onMouseEnter={() => onPrefetch(session.id)}
       onFocus={() => onPrefetch(session.id)}
       className={cn(
-        'grid w-full min-w-0 gap-1 rounded-lg text-left transition-colors outline-none',
-        isNestedSession ? 'px-2.5 py-1.5' : 'px-3 py-2',
+        'grid w-full min-w-0 rounded-md border text-left outline-none transition-colors',
+        isPlanRow ? 'gap-1.5 px-2.5 py-2' : 'gap-1 px-2.5 py-1.5',
         active
-          ? 'bg-[var(--app-surface-subtle)]'
-          : isNestedSession
-            ? 'bg-[var(--app-surface)]/45 hover:bg-[var(--app-surface-subtle)]'
-            : 'bg-transparent hover:bg-[var(--app-surface-subtle)]',
-        isNestedSession ? 'rounded-md border border-[var(--app-border)]/60' : null,
-        hasAgentChildren && agentsExpanded ? 'ring-1 ring-sky-400/20' : null,
+          ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)]'
+          : 'border-transparent bg-[var(--app-surface)]/45 hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]',
+        isNestedSession ? 'ml-3' : null,
+        hasAgentChildren && agentsExpanded ? 'border-[var(--app-border-accent)]' : null,
       )}
+      title={tooltip || metadataLabel}
     >
-      <div className="flex items-center justify-between gap-3 min-w-0 w-full">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-1 items-start gap-2">
           {isNestedSession ? (
-            <span aria-hidden="true" className={cn('relative grid h-5 w-5 shrink-0 place-items-center rounded-full border bg-[var(--app-bg-alt)]', nestedToneClass, childKind === 'subagent' ? 'border-sky-400/25' : 'border-[var(--app-border)]')}>
-              {childKind === 'subagent' ? <Bot size={10} /> : <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />}
+            <span aria-hidden="true" className={cn('mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)]', nestedToneClass)}>
+              {childKind === 'subagent' ? <Bot size={9} /> : <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />}
             </span>
           ) : null}
-          <span className={cn('truncate flex-1 min-w-0 font-medium text-[var(--app-text)]', isNestedSession ? 'text-[13px]' : 'text-sm')}>{rowTitle}</span>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className={cn('min-w-0 flex-1 truncate font-medium text-[var(--app-text)]', isNestedSession ? 'text-[12px]' : 'text-[13px]')}>
+                {rowTitle}
+              </span>
+
+            </div>
+            <div className="mt-0.5 truncate text-[10px] leading-4 text-[var(--app-text-subtle)]">
+              {metadataLabel}
+            </div>
+          </div>
         </div>
-        <span
-          className={cn(
-            'h-2 w-2 shrink-0 rounded-full',
-            compactingActive || sessionStatusTone(session) === 'running'
-              ? 'bg-emerald-500'
-              : sessionStatusTone(session) === 'blocked'
-                ? 'bg-amber-400'
-                : sessionStatusTone(session) === 'error'
-                  ? 'bg-rose-500'
-                  : 'bg-[var(--app-border-strong)]',
-          )}
-        />
-      </div>
-      <div className="flex items-center justify-between gap-3 text-xs text-[var(--app-text-muted)] min-w-0 w-full">
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
-          <span className={cn(backgroundInfo?.active ? 'max-w-[8rem]' : null, 'truncate')}>{bottomLeftLabel}</span>
-          {backgroundInfo ? (
-            <span className="inline-flex h-4 shrink-0 items-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 text-[10px] font-medium leading-none text-[var(--app-text-subtle)]">
-              {backgroundInfo.badge}
-            </span>
-          ) : visibleChildLabel ? (
-            <span className={cn(
-              'shrink-0 truncate text-[11px]',
-              childKind === 'subagent' ? 'text-sky-300/90' : 'text-[var(--app-text-subtle)]',
-            )}>
-              {visibleChildLabel}
-            </span>
-          ) : null}
-        </div>
-        <span className="inline-flex shrink-0 items-center gap-1.5 text-[var(--app-text-subtle)]">
+        <span className={cn('inline-flex shrink-0 items-center gap-1.5 text-[10px] leading-4', attentionLabel ? 'text-[var(--app-warning)]' : 'text-[var(--app-text-muted)]')}>
           {compactingActive ? <LoaderCircle size={10} className="animate-spin text-[var(--app-primary)]" aria-hidden="true" /> : null}
-          <span>{bottomRightLabel}</span>
+          {rightSideLabel ? <span className="max-w-[5.5rem] truncate text-right">{rightSideLabel}</span> : null}
           {compactingTimer ? <span className="tabular-nums text-[var(--app-text)]">{compactingTimer}</span> : null}
+          <span
+            className={cn(
+              'h-1.5 w-1.5 shrink-0 rounded-full',
+              compactingActive || statusTone === 'running'
+                ? 'bg-[var(--app-success)]'
+                : statusTone === 'blocked' || attentionLabel
+                  ? 'bg-[var(--app-warning)]'
+                  : statusTone === 'error'
+                    ? 'bg-[var(--app-danger)]'
+                    : 'bg-[var(--app-border-strong)]',
+            )}
+          />
         </span>
       </div>
-      {session.worktreeEnabled || commitMetaLabel || hasAgentChildren ? (
-        <div className="flex items-center justify-between gap-3 text-[10px] leading-4 text-[var(--app-text-subtle)] min-w-0 w-full">
-          {commitMetaLabel ? (
-            <span
-              className="inline-flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden font-mono tabular-nums"
-              title={tooltip}
-            >
-              <GitCommitHorizontal size={11} className="shrink-0 opacity-70" />
-              <span className="truncate">{commitMetaLabel}</span>
-            </span>
-          ) : <span className="min-w-0 flex-1" />}
+
+      {isPlanRow ? (
+        <div className="flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+            {checkpointCounts.totalCount > 0 ? (
+              <span className="inline-flex shrink-0 items-center gap-0.5" aria-label={checkpointProgressLabel || undefined}>
+                {Array.from({ length: checkpointCounts.totalCount }).map((_, index) => {
+                  const markerIndex = index + 1
+                  return (
+                    <span
+                      key={markerIndex}
+                      className={cn(
+                        'h-1.5 w-1.5 rounded-full border',
+                        markerIndex <= checkpointCounts.completedCount
+                          ? 'border-[var(--app-success-border)] bg-[var(--app-success)]'
+                          : markerIndex === checkpointCounts.activeIndex
+                            ? 'border-[var(--app-primary-hover)] bg-[var(--app-primary)]'
+                            : 'border-[var(--app-border)] bg-[var(--app-bg-inset)]',
+                      )}
+                    />
+                  )
+                })}
+              </span>
+            ) : null}
+            <span className="truncate">{planCheckpointText}</span>
+          </div>
+          {attentionLabel ? <span className="shrink-0 text-[var(--app-warning)]">{attentionLabel}</span> : null}
+        </div>
+      ) : null}
+
+      {(backgroundInfo || visibleChildLabel || hasAgentChildren || session.worktreeEnabled) ? (
+        <div className="flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate">
+            {backgroundInfo ? (
+              <span className="inline-flex h-4 shrink-0 items-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-1.5 font-medium leading-none text-[var(--app-text-muted)]">
+                {backgroundInfo.badge}
+              </span>
+            ) : null}
+            {backgroundInfo?.targetLabel ? <span className="truncate">{backgroundInfo.targetLabel}</span> : null}
+            {visibleChildLabel ? (
+              <span className={cn('truncate', childKind === 'subagent' ? 'text-[var(--app-info)]' : 'text-[var(--app-text-subtle)]')}>
+                {visibleChildLabel}
+              </span>
+            ) : null}
+          </div>
           <div className="ml-auto flex shrink-0 items-center gap-2">
             {hasAgentChildren ? (
               <button
@@ -1882,8 +1899,8 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
                 title={`${agentSummary.total} subagent${agentSummary.total === 1 ? '' : 's'} · ${agentSummary.running} running${agentsExpanded ? ' · click to hide subagent sessions' : ' · click to show subagent sessions'}`}
               >
                 {agentsExpanded ? <ChevronDown size={10} className="shrink-0 opacity-75" /> : <ChevronRight size={10} className="shrink-0 opacity-75" />}
-                <Bot size={11} className={cn('shrink-0', agentSummary.running > 0 ? 'animate-pulse' : null)} />
-                <span className={cn('font-mono tabular-nums text-[10px] leading-none', agentSummary.running > 0 ? 'text-emerald-300' : null)}>{agentDescriptor.primary}</span>
+                <Bot size={11} className={cn('shrink-0', agentSummary.running > 0 ? 'animate-pulse text-[var(--app-success)]' : null)} />
+                <span className={cn('font-mono tabular-nums text-[10px] leading-none', agentSummary.running > 0 ? 'text-[var(--app-success)]' : null)}>{agentDescriptor.primary}</span>
                 {agentDescriptor.secondary ? (
                   <span className={cn(
                     'font-mono tabular-nums text-[10px] leading-none',
@@ -1907,6 +1924,72 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   )
 }
 
+interface RenderSidebarSessionGroupsInput {
+  nodes: SidebarSessionNode[]
+  routeSessionId: string
+  now: number
+  fallbackSwarmName: string
+  routeOptions: DesktopChatRoute[]
+  workspaceSlug: string | ((session: DesktopSessionRecord) => string)
+  expandedAgentSessions: Record<string, boolean>
+  compactingSession: DesktopV3CompactingSessionState | null
+  onSelect: (sessionId: string) => void
+  onPrefetch: (sessionId: string) => void
+  onToggleAgents: (sessionId: string) => void
+}
+
+const SIDEBAR_SESSION_GROUPS = [
+  { id: 'needs_review', label: 'Needs Review' },
+  { id: 'in_progress', label: 'In Progress' },
+  { id: 'active_chats', label: 'Active Chats' },
+  { id: 'archived', label: 'Archived' },
+] as const
+
+function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX.Element[] | null {
+  if (input.nodes.length === 0) return null
+  const grouped = new Map<(typeof SIDEBAR_SESSION_GROUPS)[number]['id'], SidebarSessionNode[]>()
+  for (const group of SIDEBAR_SESSION_GROUPS) {
+    grouped.set(group.id, [])
+  }
+  for (const node of input.nodes) {
+    grouped.get(sessionSidebarGroup(node.session))?.push(node)
+  }
+  return SIDEBAR_SESSION_GROUPS.flatMap((group) => {
+    const nodes = grouped.get(group.id) ?? []
+    if (nodes.length === 0) return []
+    return [(
+      <section key={group.id} className="grid content-start gap-1.5">
+        <div className="px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+          {group.label}
+        </div>
+        <div className="grid gap-1">
+          {nodes.map((node) => (
+          <SessionRow
+            key={node.session.id}
+            active={input.routeSessionId === node.session.id}
+            now={input.now}
+            session={node.session}
+            fallbackSwarmName={input.fallbackSwarmName}
+            routeOptions={input.routeOptions}
+            workspaceSlug={input.workspaceSlug}
+            depth={node.depth}
+            childLabel={node.label}
+            childAssignmentLabel={node.assignmentLabel}
+            childKind={node.kind}
+            agentSummary={summarizeSubagentDescendants(node)}
+            agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
+            compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
+            onSelect={input.onSelect}
+            onPrefetch={input.onPrefetch}
+            onToggleAgents={input.onToggleAgents}
+          />
+          ))}
+        </div>
+      </section>
+    )]
+  })
+}
+
 export function DesktopAppPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -1919,7 +2002,7 @@ export function DesktopAppPage() {
   const routeWorkspaceSlug = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.workspaceSlug : workspaceFlowMatch ? workspaceFlowMatch.workspaceSlug : workspaceSessionMatch ? workspaceSessionMatch.workspaceSlug : workspaceMatch ? workspaceMatch.workspaceSlug : '').trim()
   const routeSessionId = (!isFlowRoute && workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
-  const { workspaces, selectingPath, saveWorkspace, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
+  const { workspaces, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
@@ -1946,7 +2029,6 @@ export function DesktopAppPage() {
   const [sidebarSwarmNameDraft, setSidebarSwarmNameDraft] = useState('')
   const [sidebarSwarmNameSaving, setSidebarSwarmNameSaving] = useState(false)
   const [sidebarSwarmNameError, setSidebarSwarmNameError] = useState<string | null>(null)
-  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [flowMenuOpen, setFlowMenuOpen] = useState(false)
   const [flowBusyID, setFlowBusyID] = useState<string | null>(null)
   const [flowMenuError, setFlowMenuError] = useState<string | null>(null)
@@ -1963,11 +2045,11 @@ export function DesktopAppPage() {
   const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
+  const [sidebarWorkspaceControlPath, setSidebarWorkspaceControlPath] = useState('')
   const [compactingSession, setCompactingSession] = useState<DesktopV3CompactingSessionState | null>(null)
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
-  const resizeStateRef = useRef<SidebarResizeState | null>(null)
   const workspaceByPath = useMemo<Map<string, WorkspaceEntry>>(
     () => new Map(workspaces.map((workspace) => [workspace.path, workspace] as const)),
     [workspaces],
@@ -2174,7 +2256,6 @@ export function DesktopAppPage() {
     : headerActionCount === 3
       ? '!w-[80px] !grid-cols-[24px_24px_24px]'
       : undefined
-  const workspaceCount = mergedSidebarWorkspaceEntries.length
   const sidebarFlows = useMemo(() => (flowsQuery.data ?? []).map(sidebarFlowRow), [flowsQuery.data])
   const flowCount = sidebarFlows.length
   const activeFlowCount = sidebarFlows.filter((flow) => flow.enabled).length
@@ -2267,29 +2348,6 @@ export function DesktopAppPage() {
       setPairingDecisionBusyID(null)
     }
   }, [pairingConfirmations, queryClient])
-
-  const openTodoModal = useCallback((workspacePath: string, workspaceName: string) => {
-    const normalizedPath = workspacePath.trim()
-    if (!normalizedPath) {
-      return
-    }
-    setTodoModal({ workspacePath: normalizedPath, workspaceName })
-    void Promise.all([
-      fetchWorkspaceTodos(normalizedPath, 'user'),
-      fetchWorkspaceTodos(normalizedPath, 'agent'),
-    ])
-      .then(([userResult, agentResult]) => {
-        setTodoItems((current) => ({
-          ...current,
-          [normalizedPath]: [...userResult.items, ...agentResult.items],
-        }))
-        setTodoSummaries((current) => ({ ...current, [normalizedPath]: normalizeWorkspaceTodoSummary(userResult.summary) }))
-      })
-      .catch(() => {
-        setTodoItems((current) => ({ ...current, [normalizedPath]: [] }))
-        setTodoSummaries((current) => ({ ...current, [normalizedPath]: createEmptyWorkspaceTodoSummary() }))
-      })
-  }, [])
 
   const closeTodoModal = useCallback(() => {
     setTodoModal(null)
@@ -2452,26 +2510,14 @@ export function DesktopAppPage() {
     dispatchDesktopV3Cache(selectSession(undefined))
   }, [routeSessionId, routeWorkspace?.path])
 
-  const sessionsByWorkspace = useMemo<Map<string, DesktopSessionRecord[]>>(() => {
-    const grouped = new Map<string, DesktopSessionRecord[]>()
-
-    for (const workspace of mergedSidebarWorkspaceEntries) {
-      grouped.set(workspace.path, [])
-    }
-
-    for (const session of desktopStateSessions) {
-      const workspacePath = desktopSidebarWorkspacePathForSession(session, workspacePathByBindingId)
-        || selectedWorkspacePath
-        || visibleWorkspacePaths[0]
-        || ''
-      if (!workspacePath) continue
-      const sessions = grouped.get(workspacePath) ?? []
-      sessions.push(session)
-      grouped.set(workspacePath, sessions)
-    }
-
-    return grouped
-  }, [desktopStateSessions, mergedSidebarWorkspaceEntries, selectedWorkspacePath, visibleWorkspacePaths, workspacePathByBindingId])
+  const globalSidebarSessionNodes = useMemo(
+    () => buildSidebarSessionTree(desktopStateSessions, sidebarNow),
+    [desktopStateSessions, sidebarNow],
+  )
+  const globalFlattenedSessionNodes = useMemo(
+    () => flattenVisibleSidebarSessionNodes(globalSidebarSessionNodes, expandedAgentSessions, routeSessionId),
+    [expandedAgentSessions, globalSidebarSessionNodes, routeSessionId],
+  )
 
   const sessionById = useMemo<Map<string, DesktopSessionRecord>>(
     () => new Map(desktopStateSessions.map((session) => [session.id, session] as const)),
@@ -2491,6 +2537,36 @@ export function DesktopAppPage() {
     }
     return buildWorkspaceRouteSlugMap(routeWorkspaces)
   }, [desktopStateSessions, mergedSidebarWorkspaceEntries, workspacePathByBindingId])
+  const selectedSidebarControlWorkspace = sidebarWorkspaceControlPath
+    ? mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === sidebarWorkspaceControlPath) ?? null
+    : null
+  const topWorkspace = selectedSidebarControlWorkspace
+    ?? mergedSidebarWorkspaceEntries[0]
+    ?? selectedWorkspace
+    ?? routeWorkspace
+    ?? visibleSidebarWorkspaceEntries[0]
+    ?? null
+  const topWorkspaceLabel = topWorkspace?.workspaceName?.trim() || 'Default Workspace'
+  const topWorkspacePath = topWorkspace?.path || selectedWorkspacePath || ''
+  const topWorkspaceSlug = topWorkspacePath
+    ? workspaceSlugByPath.get(topWorkspacePath) ?? workspaceRouteSlugBase({ path: topWorkspacePath, workspaceName: topWorkspaceLabel })
+    : routeWorkspaceSlug
+  const topWorkspaceOptions = useMemo(() => mergedSidebarWorkspaceEntries, [mergedSidebarWorkspaceEntries])
+  const globalSessionWorkspaceSlug = useCallback((session: DesktopSessionRecord): string => {
+    const workspacePath = desktopSidebarWorkspacePathForSession(session, workspacePathByBindingId)
+      || selectedWorkspacePath
+      || visibleWorkspacePaths[0]
+      || ''
+    if (!workspacePath) return topWorkspaceSlug || routeWorkspaceSlug || 'workspace'
+    return workspaceSlugByPath.get(workspacePath)
+      ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName || fallbackWorkspaceNameFromPath(workspacePath) })
+  }, [routeWorkspaceSlug, selectedWorkspacePath, topWorkspaceSlug, visibleWorkspacePaths, workspacePathByBindingId, workspaceSlugByPath])
+  const globalSessionRouteOptions = useMemo(() => buildDesktopChatRouteOptions({
+    hostSwarmName: swarmName,
+    workspacePath: topWorkspacePath,
+    workspaceName: topWorkspaceLabel,
+    topologyRoutes: topWorkspace?.topologyRoutes ?? [],
+  }), [swarmName, topWorkspace?.topologyRoutes, topWorkspaceLabel, topWorkspacePath])
 
   const routeReadinessStatus = 'idle'
   const routeSessionUnavailable = false
@@ -2517,91 +2593,6 @@ export function DesktopAppPage() {
       })
     }
   }, [routeSessionId, routeSessionId, selectedWorkspacePath])
-
-  const stopResize = useCallback(() => {
-    resizeStateRef.current = null
-  }, [])
-
-  const handlePointerMove = useCallback((event: PointerEvent) => {
-    const activeResize = resizeStateRef.current
-    const containerHeight = sidebarBodyRef.current?.getBoundingClientRect().height ?? 0
-    if (!activeResize || containerHeight <= 0) {
-      return
-    }
-
-    const pairRatio = activeResize.topRatio + activeResize.bottomRatio
-    const desiredMinRatio = (MIN_WORKSPACE_SECTION_HEIGHT_PX / containerHeight) * activeResize.totalVisibleRatio
-    const minRatio = Math.min(Math.max(desiredMinRatio, 0.12), Math.max((pairRatio - 0.12) / 2, 0.06))
-    const deltaRatio = ((event.clientY - activeResize.startY) / containerHeight) * activeResize.totalVisibleRatio
-    const nextTopRatio = Math.min(Math.max(activeResize.topRatio + deltaRatio, minRatio), pairRatio - minRatio)
-    const nextBottomRatio = pairRatio - nextTopRatio
-
-    setWorkspaceLayout((current) => ({
-      ...current,
-      [activeResize.topPath]: {
-        collapsed: current[activeResize.topPath]?.collapsed ?? true,
-        hidden: current[activeResize.topPath]?.hidden ?? false,
-        ratio: nextTopRatio,
-      },
-      [activeResize.bottomPath]: {
-        collapsed: current[activeResize.bottomPath]?.collapsed ?? true,
-        hidden: current[activeResize.bottomPath]?.hidden ?? false,
-        ratio: nextBottomRatio,
-      },
-    }))
-  }, [])
-
-  useEffect(() => {
-    const handlePointerUp = () => {
-      stopResize()
-    }
-
-    window.addEventListener('pointermove', handlePointerMove)
-    window.addEventListener('pointerup', handlePointerUp)
-    return () => {
-      window.removeEventListener('pointermove', handlePointerMove)
-      window.removeEventListener('pointerup', handlePointerUp)
-    }
-  }, [handlePointerMove, stopResize])
-
-  const handleResizeStart = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>, topPath: string, bottomPath: string) => {
-      event.preventDefault()
-
-      resizeStateRef.current = {
-        topPath,
-        bottomPath,
-        startY: event.clientY,
-        topRatio: normalizeRatio(workspaceLayout[topPath]?.ratio),
-        bottomRatio: normalizeRatio(workspaceLayout[bottomPath]?.ratio),
-        totalVisibleRatio: visibleWorkspacePaths.reduce((sum, path) => sum + normalizeRatio(workspaceLayout[path]?.ratio), 0) || visibleWorkspacePaths.length || 1,
-      }
-    },
-    [visibleWorkspacePaths, workspaceLayout],
-  )
-
-  const toggleWorkspaceCollapse = useCallback((path: string) => {
-    setWorkspaceLayout((current) => ({
-      ...current,
-      [path]: {
-        collapsed: !current[path]?.collapsed,
-        hidden: current[path]?.hidden ?? false,
-        ratio: normalizeRatio(current[path]?.ratio),
-      },
-    }))
-  }, [])
-
-  const toggleWorkspaceHidden = useCallback((path: string) => {
-    setWorkspaceLayout((current) => ({
-      ...current,
-      [path]: {
-        collapsed: current[path]?.collapsed ?? true,
-        hidden: !current[path]?.hidden,
-        ratio: normalizeRatio(current[path]?.ratio),
-      },
-    }))
-  }, [])
-
 
   useEffect(() => {
     if (!routeWorkspaceSlug || routeSessionId || !routeWorkspace?.path) {
@@ -2674,8 +2665,7 @@ export function DesktopAppPage() {
   const planModalPlan = useDesktopV3CacheSelector((state) => planModal?.sessionId ? (state.plansBySession[planModal.sessionId] ?? null) : null) as DesktopSessionPlanRecord | null
   const planModalRevisions = useDesktopV3CacheSelector((state) => planModal?.sessionId ? (state.planRevisionsBySession[planModal.sessionId] ?? []) : []) as DesktopSessionPlanRevisionRecord[]
 
-  const handleStartNewSessionInWorkspace = useCallback((wsPath: string, wsName: string) => {
-    dispatchDesktopV3Cache(selectSession(undefined))
+  const handleOpenWorkspace = useCallback((wsPath: string, wsName: string) => {
     setMobileSidebarOpen(false)
     const workspaceSlug = workspaceSlugByPath.get(wsPath)
       ?? workspaceRouteSlugBase({ path: wsPath, workspaceName: wsName })
@@ -2684,6 +2674,11 @@ export function DesktopAppPage() {
       params: { workspaceSlug },
     })
   }, [navigate, workspaceSlugByPath])
+
+  const handleStartNewSessionInWorkspace = useCallback((wsPath: string, wsName: string) => {
+    dispatchDesktopV3Cache(selectSession(undefined))
+    handleOpenWorkspace(wsPath, wsName)
+  }, [handleOpenWorkspace])
 
   const openWorktreeSessionModal = useCallback((input: {
     workspace: WorkspaceEntry
@@ -2889,8 +2884,8 @@ export function DesktopAppPage() {
       case 'open-workspace-launcher':
         setSwarmMenu({ open: false })
         setFlowMenuOpen(false)
-        setWorkspaceMenuOpen(true)
         setMobileSidebarOpen(true)
+        void navigate({ to: '/' })
         return
       case 'open-commit-modal': {
         const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || ''
@@ -2925,7 +2920,6 @@ export function DesktopAppPage() {
 
   const handleOpenFlowsSettings = useCallback(() => {
     setFlowMenuOpen(false)
-    setWorkspaceMenuOpen(false)
     setMobileSidebarOpen(false)
     if (routeWorkspaceSlug) {
       void navigate({ to: '/$workspaceSlug/flow', params: { workspaceSlug: routeWorkspaceSlug } })
@@ -2943,7 +2937,6 @@ export function DesktopAppPage() {
 
   const handleOpenFlow = useCallback((flow: SidebarFlowRow) => {
     setFlowMenuOpen(false)
-    setWorkspaceMenuOpen(false)
     setMobileSidebarOpen(false)
     if (routeWorkspaceSlug) {
       void navigate({ to: '/$workspaceSlug/flow/$flowId', params: { workspaceSlug: routeWorkspaceSlug, flowId: flow.id } })
@@ -3200,15 +3193,16 @@ export function DesktopAppPage() {
     }))
   }, [])
 
-  const handleToggleWorkspaceMenu = useCallback(() => {
-    setSwarmMenu({ open: false })
-    setFlowMenuOpen(false)
-    setWorkspaceMenuOpen((open) => !open)
-  }, [])
+  const handleWorkspaceSelect = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    const workspacePath = event.target.value.trim()
+    if (!workspacePath) return
+    const workspace = mergedSidebarWorkspaceEntries.find((entry) => entry.path === workspacePath)
+    if (!workspace) return
+    setSidebarWorkspaceControlPath(workspace.path)
+  }, [mergedSidebarWorkspaceEntries])
 
   const handleToggleFlowMenu = useCallback(() => {
     setSwarmMenu({ open: false })
-    setWorkspaceMenuOpen(false)
     setFlowMenuOpen((open) => !open)
   }, [])
 
@@ -3216,17 +3210,7 @@ export function DesktopAppPage() {
     setMobileSidebarOpen(false)
   }, [routeSessionId, routeWorkspaceSlug])
 
-  const totalVisibleRatio = useMemo(
-    () => visibleSidebarWorkspaceEntries.reduce((sum, workspace) => {
-      const layout = workspaceLayout[workspace.path]
-      if (layout?.collapsed) return sum
-      return sum + normalizeRatio(layout?.ratio)
-    }, 0) || visibleSidebarWorkspaceEntries.length || 1,
-    [visibleSidebarWorkspaceEntries, workspaceLayout],
-  )
-
   const openSwarmMenu = useCallback(() => {
-    setWorkspaceMenuOpen(false)
     setFlowMenuOpen(false)
     setSwarmMenu((current) => ({ open: !current.open }))
   }, [])
@@ -3254,9 +3238,6 @@ export function DesktopAppPage() {
           </Button>
           <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={handleOpenSwarmDashboard} aria-label="Open swarm dashboard">
             <Settings size={24} className="shrink-0" />
-          </Button>
-          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { if (selectedWorkspacePath) { openTodoModal(selectedWorkspacePath, selectedWorkspace?.workspaceName ?? 'Workspace') } }} aria-label="Open tasks" disabled={!selectedWorkspacePath}>
-            <ListChecks size={24} className="shrink-0" />
           </Button>
           {pairingRequestAttentionVisible ? (
             <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0 text-[var(--app-primary)]" onClick={handleOpenPairingRequests} aria-label="Open link requests" title={`${pairingRequestCount} pending link request${pairingRequestCount === 1 ? '' : 's'}`}>
@@ -3485,82 +3466,6 @@ export function DesktopAppPage() {
                     <div
                       className={cn(
                         'grid min-h-[30px] w-full grid-cols-[minmax(0,1fr)_28px] items-center rounded-md text-[var(--app-text-muted)]',
-                        workspaceMenuOpen && 'bg-[var(--app-surface-active)] text-[var(--app-text)]',
-                      )}
-                    >
-                      <Link
-                        to="/"
-                        className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                        onClick={() => {
-                          setMobileSidebarOpen(false)
-                        }}
-                        aria-label="Open workspace settings"
-                        title="Workspace settings"
-                      >
-                        <Home size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                        <span className="min-w-0 truncate">{workspaceCount} workspaces</span>
-                      </Link>
-                      <button
-                        type="button"
-                        className="grid min-h-[30px] place-items-center rounded-r-md hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                        onClick={handleToggleWorkspaceMenu}
-                        aria-expanded={workspaceMenuOpen}
-                        aria-label={`${workspaceMenuOpen ? 'Collapse' : 'Expand'} workspace list`}
-                        title={`${workspaceMenuOpen ? 'Collapse' : 'Expand'} workspaces`}
-                      >
-                        <ChevronDown size={13} strokeWidth={1.8} className={cn('transition-transform', workspaceMenuOpen && 'rotate-180')} />
-                      </button>
-                    </div>
-                    {workspaceMenuOpen ? (
-                      <div className="py-1 pl-5">
-                        {mergedSidebarWorkspaceEntries.length === 0 ? (
-                          <div className="px-2 py-1.5 text-[11px] text-[var(--app-text-subtle)]">No saved workspaces.</div>
-                        ) : mergedSidebarWorkspaceEntries.map((workspace) => {
-                          const hidden = workspaceLayout[workspace.path]?.hidden ?? false
-                          return (
-                            <div key={workspace.path} className={cn('group min-h-[30px] px-[7px] py-[5px] text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]', SIDEBAR_ACTION_ROW_CLASS)}>
-                              <button
-                                type="button"
-                                className="flex min-w-0 items-center gap-2 overflow-hidden text-left"
-                                onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)}
-                                title={workspace.path}
-                              >
-                                <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', hidden ? 'bg-[var(--app-text-subtle)]' : 'bg-[var(--app-success)]')} />
-                                <span className={cn('truncate', hidden && 'opacity-60')}>{workspace.workspaceName}</span>
-                              </button>
-                              <SidebarActionRail>
-                                <SidebarActionRailSpacer />
-                                <button
-                                  type="button"
-                                  className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-text-subtle)] opacity-0 hover:bg-[var(--app-surface-active)] group-hover:opacity-100')}
-                                  onClick={(e) => { e.stopPropagation(); toggleWorkspaceHidden(workspace.path) }}
-                                  aria-label={`${hidden ? 'Show' : 'Hide'} ${workspace.workspaceName} in sidebar`}
-                                  title={`${hidden ? 'Show' : 'Hide'} in sidebar`}
-                                >
-                                  {hidden ? <EyeOff size={14} /> : <Eye size={14} />}
-                                </button>
-                              </SidebarActionRail>
-                            </div>
-                          )
-                        })}
-                        <Link
-                          to="/"
-                          className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                          onClick={() => {
-                            setMobileSidebarOpen(false)
-                          }}
-                        >
-                          <Home size={14} className="shrink-0" />
-                          Workspace settings
-                        </Link>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div>
-                    <div
-                      className={cn(
-                        'grid min-h-[30px] w-full grid-cols-[minmax(0,1fr)_28px] items-center rounded-md text-[var(--app-text-muted)]',
                         flowMenuOpen && 'bg-[var(--app-surface-active)] text-[var(--app-text)]',
                       )}
                     >
@@ -3571,7 +3476,6 @@ export function DesktopAppPage() {
                           className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                           onClick={() => {
                             setFlowMenuOpen(false)
-                            setWorkspaceMenuOpen(false)
                             setMobileSidebarOpen(false)
                           }}
                           aria-label="Open flow settings"
@@ -3586,7 +3490,6 @@ export function DesktopAppPage() {
                           className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                           onClick={() => {
                             setFlowMenuOpen(false)
-                            setWorkspaceMenuOpen(false)
                             setMobileSidebarOpen(false)
                           }}
                           aria-label="Open flow settings"
@@ -3649,7 +3552,6 @@ export function DesktopAppPage() {
                             className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                             onClick={() => {
                               setFlowMenuOpen(false)
-                              setWorkspaceMenuOpen(false)
                               setMobileSidebarOpen(false)
                             }}
                           >
@@ -3662,7 +3564,6 @@ export function DesktopAppPage() {
                             className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                             onClick={() => {
                               setFlowMenuOpen(false)
-                              setWorkspaceMenuOpen(false)
                               setMobileSidebarOpen(false)
                             }}
                           >
@@ -3766,123 +3667,81 @@ export function DesktopAppPage() {
                   </div>
                   {flowMenuError ? <div className="border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[11px] text-[var(--app-warning)]">{flowMenuError}</div> : null}
                 </div>
-              ) : visibleSidebarWorkspaceEntries.map((workspace, index) => {
-                const workspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
-                const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow)
-                const flattenedSessionNodes = flattenVisibleSidebarSessionNodes(sessionNodes, expandedAgentSessions, routeSessionId)
-                const layout = workspaceLayout[workspace.path]
-                const collapsed = layout?.collapsed ?? true
-                const workspaceGitSnapshot = gitSnapshotByPath.get(workspace.path) ?? (workspace.path === selectedGitWorkspacePath ? gitSnapshot : null)
-                const workspaceGitLoading = workspace.path === selectedGitWorkspacePath && gitStatusQuery.isFetching
-                const workspaceGitError = gitRealtimeErrors[workspace.path] ?? (workspace.path === selectedGitWorkspacePath && gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : null)
-                const workspaceSlug = workspaceSlugByPath.get(workspace.path)
-                  ?? workspaceRouteSlugBase({ path: workspace.path, workspaceName: workspace.workspaceName })
-                const workspaceRouteOptions = buildDesktopChatRouteOptions({
-                  hostSwarmName: swarmName,
-                  workspacePath: workspace.path,
-                  workspaceName: workspace.workspaceName,
-                  topologyRoutes: workspace.topologyRoutes,
-                })
-                const handleStartWorktreeBrancher = () => {
-                  openWorktreeSessionModal({
-                    workspace,
-                    workspaceSlug,
-                    routeOptions: workspaceRouteOptions,
-                  })
-                }
-                return (
-                  <Fragment key={workspace.path}>
-                    <section style={workspaceSectionHeightStyle(layout?.ratio ?? 1, totalVisibleRatio, collapsed)} className="flex min-h-0 flex-col overflow-hidden">
-                      <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'px-1 py-1')}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            toggleWorkspaceCollapse(workspace.path)
-                          }}
-                          className="flex min-w-0 items-center gap-2 overflow-hidden text-left transition-colors hover:text-[var(--app-text)]"
-                          aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${workspace.workspaceName}`}
-                        >
-                          {collapsed ? <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" /> : <ChevronDown size={16} className="shrink-0 text-[var(--app-text-subtle)]" />}
-                          <div className="truncate text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">{workspace.workspaceName}</div>
-                        </button>
-                        <SidebarActionRail>
-                          {!workspaceByPath.has(workspace.path) ? (
-                            <button
-                              type="button"
-                              className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-warning)]')}
-                              onClick={() => {
-                                void saveWorkspace({
-                                  path: workspace.path,
-                                  name: workspace.workspaceName,
-                                  themeId: workspace.themeId,
-                                  makeCurrent: true,
-                                  linkedDirectories: [],
-                                })
-                              }}
-                              aria-label="Save this temporary folder as a workspace"
-                              title="Save this temporary folder as a workspace"
-                            >
-                              !
-                            </button>
-                          ) : selectingPath === workspace.path ? <span className="grid h-6 w-6 place-items-center text-[10px] text-[var(--app-text-muted)]">…</span> : (
-                            <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => { openTodoModal(workspace.path, workspace.workspaceName) }} aria-label={`Open tasks for ${workspace.workspaceName}`} title={`${workspace.todoSummary?.user.taskCount ?? 0} tasks`}>
-                              <ListChecks size={14} strokeWidth={1.8} className="shrink-0" />
-                            </button>
-                          )}
-                          <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)} aria-label={`New session in ${workspace.workspaceName}`} title="New session">
-                            <Plus size={14} strokeWidth={1.8} className="shrink-0" />
-                          </button>
-                        </SidebarActionRail>
-                      </div>
-                      {!collapsed && renderWorkspaceGitBar({
-                        workspace,
-                        gitSnapshot: workspaceGitSnapshot,
-                        gitLoading: workspaceGitLoading,
-                        gitError: workspaceGitError,
-                        onOpenGit: () => openGitPanel(workspace.path, workspace.workspaceName),
-                        onBrancher: handleStartWorktreeBrancher,
-                      })}
-                      {!collapsed && (
-                        <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-0.5 overflow-y-auto">
-                          {flattenedSessionNodes.length === 0 ? null : flattenedSessionNodes.map((node) => (
-                            <SessionRow
-                              key={node.session.id}
-                              active={routeSessionId === node.session.id}
-                              now={sidebarNow}
-                              session={node.session}
-                              fallbackSwarmName={swarmName}
-                              routeOptions={workspaceRouteOptions}
-                              workspaceSlug={workspaceSlug}
-                              depth={node.depth}
-                              childLabel={node.label}
-                              childAssignmentLabel={node.assignmentLabel}
-                              childKind={node.kind}
-                              agentSummary={summarizeSubagentDescendants(node)}
-                              agentsExpanded={Boolean(expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, routeSessionId || undefined)}
-                              compactingStartedAt={compactingSession?.sessionId === node.session.id ? compactingSession.startedAt : null}
-                              onSelect={handleSelectSession}
-                              onPrefetch={handlePrefetchSession}
-                              onToggleAgents={handleToggleAgentSessions}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </section>
-                    {index < visibleSidebarWorkspaceEntries.length - 1 && !collapsed && !workspaceLayout[visibleSidebarWorkspaceEntries[index + 1].path]?.collapsed ? (
-                      <div
-                        role="separator"
-                        aria-orientation="horizontal"
-                        className="relative my-2 h-4 cursor-row-resize group px-1"
-                        onPointerDown={(event) => handleResizeStart(event, workspace.path, visibleSidebarWorkspaceEntries[index + 1].path)}
+              ) : (
+                <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-2 overflow-y-auto font-mono">
+                  <div className="grid min-h-[34px] grid-cols-[minmax(0,1fr)_24px_24px] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1">
+                    <label className="relative min-w-0" title={topWorkspacePath || 'Default Workspace'}>
+                      <span className="sr-only">Workspace</span>
+                      <select
+                        value={topWorkspacePath}
+                        onChange={handleWorkspaceSelect}
+                        disabled={topWorkspaceOptions.length === 0}
+                        className="h-7 w-full min-w-0 appearance-none rounded border border-transparent bg-transparent py-0 pl-0 pr-5 text-[11px] font-semibold text-[var(--app-text)] outline-none hover:text-[var(--app-primary)] focus-visible:border-[var(--app-border-accent)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:opacity-70"
+                        aria-label="Workspace"
                       >
-                        <div className="absolute inset-x-1 top-1/2 h-px bg-[var(--app-border)] group-hover:bg-[var(--app-border-strong)] transition-colors" />
-                      </div>
-                    ) : index < visibleSidebarWorkspaceEntries.length - 1 ? (
-                      <div className="h-2" />
-                    ) : null}
-                  </Fragment>
-                )
-              })}
+                        {topWorkspacePath && !mergedSidebarWorkspaceEntries.some((workspace) => workspace.path === topWorkspacePath) ? (
+                          <option value={topWorkspacePath}>{topWorkspaceLabel}</option>
+                        ) : null}
+                        {topWorkspaceOptions.map((workspace) => (
+                          <option key={workspace.path} value={workspace.path}>{workspace.workspaceName}</option>
+                        ))}
+                      </select>
+                      <ChevronDown size={12} strokeWidth={1.8} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[var(--app-text-subtle)]" />
+                    </label>
+                    <button
+                      type="button"
+                      className={SIDEBAR_ACTION_BUTTON_CLASS}
+                      onClick={() => {
+                        if (topWorkspacePath) handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)
+                      }}
+                      disabled={!topWorkspacePath}
+                      aria-label={`New chat in ${topWorkspaceLabel}`}
+                      title="New Chat"
+                    >
+                      <Plus size={13} strokeWidth={1.8} className="shrink-0" />
+                    </button>
+                    <button
+                      type="button"
+                      className={SIDEBAR_ACTION_BUTTON_CLASS}
+                      onClick={() => {
+                        if (topWorkspace && topWorkspacePath) {
+                          openWorktreeSessionModal({
+                            workspace: topWorkspace,
+                            workspaceSlug: topWorkspaceSlug || workspaceRouteSlugBase({ path: topWorkspacePath, workspaceName: topWorkspaceLabel }),
+                            routeOptions: buildDesktopChatRouteOptions({
+                              hostSwarmName: swarmName,
+                              workspacePath: topWorkspace.path,
+                              workspaceName: topWorkspace.workspaceName,
+                              topologyRoutes: topWorkspace.topologyRoutes,
+                            }),
+                          })
+                        }
+                      }}
+                      disabled={!topWorkspace}
+                      aria-label={`New worktree for ${topWorkspaceLabel}`}
+                      title="Worktree"
+                    >
+                      <GitBranch size={13} strokeWidth={1.8} className="shrink-0" />
+                    </button>
+                  </div>
+                  {renderSidebarSessionGroups({
+                    nodes: globalFlattenedSessionNodes,
+                    routeSessionId,
+                    now: sidebarNow,
+                    fallbackSwarmName: swarmName,
+                    routeOptions: globalSessionRouteOptions,
+                    workspaceSlug: globalSessionWorkspaceSlug,
+                    expandedAgentSessions,
+                    compactingSession,
+                    onSelect: handleSelectSession,
+                    onPrefetch: handlePrefetchSession,
+                    onToggleAgents: handleToggleAgentSessions,
+                  })}
+                  {globalFlattenedSessionNodes.length === 0 ? (
+                    <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">No active sessions.</div>
+                  ) : null}
+                </div>
+              )}
             </div>
 
           </div>
