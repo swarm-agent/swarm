@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import { DesktopPermissionModal, exitPlanExecutionArguments, exitPlanExecutionChoiceFromApprovedArguments } from './desktop-permission-modal'
+import { DesktopPermissionModal, exitPlanExecutionArguments } from './desktop-permission-modal'
 import type { DesktopPermissionRecord } from '../../types/realtime'
 
 function exitPlanPermission(approvedArguments: Record<string, unknown> = {}, payloadOverrides: Record<string, unknown> = {}): DesktopPermissionRecord {
@@ -69,50 +69,57 @@ function renderPermission(permission: DesktopPermissionRecord, sessionMode = 'au
   }))
 }
 
-test('exit plan modal renders three clickable execution choices instead of select and checkbox controls', () => {
+test('exit plan modal renders three clickable execution choices in deterministic order instead of select and checkbox controls', () => {
   const markup = renderPermission(exitPlanPermission(), 'plan')
 
-  assert.match(markup, /Continue normally/)
-  assert.match(markup, /Continue checkpoint by checkpoint/)
-  assert.match(markup, /Automatic mode/)
+  const automaticIndex = markup.indexOf('Automatic mode')
+  const singleRunIndex = markup.indexOf('Single run')
+  const manualIndex = markup.indexOf('Manual checkpoint review')
+  assert(automaticIndex >= 0, 'expected automatic choice')
+  assert(singleRunIndex > automaticIndex, 'expected single run after automatic')
+  assert(manualIndex > singleRunIndex, 'expected manual checkpoint review after single run')
   assert.match(markup, /role="radiogroup"/)
   assert.match(markup, /role="radio"/)
   assert.doesNotMatch(markup, /<select/)
   assert.doesNotMatch(markup, /type="checkbox"/)
 })
 
-test('exit plan modal defaults to checkpointed automatic and describes it as an editable AI suggestion', () => {
+test('exit plan modal defaults to automatic mode without presenting an AI suggestion', () => {
   const markup = renderPermission(exitPlanPermission(), 'plan')
 
-  assert.match(markup, /AI-suggested run mode/)
-  assert.match(markup, /AI suggested Automatic mode for this run\./)
-  assert.match(markup, /Feel free to choose a different run mode before approving\./)
+  assert.match(markup, /Run mode/)
+  assert.match(markup, /Automatic mode is selected by default\./)
+  assert.match(markup, /Choose a different run mode before approving if needed\./)
+  assert.doesNotMatch(markup, /AI-suggested/)
+  assert.doesNotMatch(markup, /AI suggested/)
   assert.doesNotMatch(markup, /Approval will send/)
   assert.doesNotMatch(markup, /execution_granularity=checkpointed/)
   assert.doesNotMatch(markup, /continuation_policy=automatic/)
   assert.match(markup, /aria-checked="true"/)
 })
 
-test('exit plan modal initializes from top-level backend recommendation when AI chose one run', () => {
+test('exit plan modal ignores top-level backend execution recommendation', () => {
   const markup = renderPermission(exitPlanPermission({}, {
     execution_granularity: 'run_through',
     continuation_policy: 'automatic',
     continue_automatically: true,
   }), 'plan')
 
-  assert.match(markup, /AI suggested Continue normally for this run\./)
+  assert.match(markup, /Automatic mode is selected by default\./)
+  assert.doesNotMatch(markup, /AI suggested/)
   assert.doesNotMatch(markup, /execution_granularity=run_through/)
   assert.doesNotMatch(markup, /continuation_policy=automatic/)
 })
 
-test('exit plan modal falls back to approved arguments when top-level recommendation is absent', () => {
+test('exit plan modal ignores approved argument execution controls when choosing the default', () => {
   const markup = renderPermission(exitPlanPermission({
     execution_granularity: 'run_through',
     continuation_policy: 'automatic',
     continue_automatically: true,
   }), 'plan')
 
-  assert.match(markup, /AI suggested Continue normally for this run\./)
+  assert.match(markup, /Automatic mode is selected by default\./)
+  assert.doesNotMatch(markup, /AI suggested/)
   assert.doesNotMatch(markup, /execution_granularity=run_through/)
   assert.doesNotMatch(markup, /continuation_policy=automatic/)
 })
@@ -135,13 +142,6 @@ test('exit plan execution choices map to approved arguments', () => {
     continue_automatically: true,
     continuation_policy: 'automatic',
   })
-})
-
-test('exit plan execution choice parser respects approved arguments and defaults to automatic checkpointed', () => {
-  assert.equal(exitPlanExecutionChoiceFromApprovedArguments({}), 'checkpointed_automatic')
-  assert.equal(exitPlanExecutionChoiceFromApprovedArguments({ execution_granularity: 'run_through' }), 'run_through')
-  assert.equal(exitPlanExecutionChoiceFromApprovedArguments({ execution_granularity: 'checkpointed', continuation_policy: 'review_each_checkpoint' }), 'checkpointed_manual')
-  assert.equal(exitPlanExecutionChoiceFromApprovedArguments({ execution_granularity: 'checkpointed', continue_automatically: true }), 'checkpointed_automatic')
 })
 
 test('DesktopPermissionModal routes typed plan lifecycle approvals away from generic plan update modal', () => {

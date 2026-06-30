@@ -22,19 +22,12 @@ export interface AskUserPayload {
   questions: AskUserQuestion[]
 }
 
-export interface ExitPlanExecutionRecommendation {
-  execution_granularity: 'checkpointed' | 'run_through'
-  continuation_policy: 'automatic' | 'review_each_checkpoint'
-  continue_automatically: boolean
-}
-
 export interface ExitPlanPayload {
   title: string
   body: string
   planId: string
   document: unknown
   approvedArguments: Record<string, unknown>
-  executionRecommendation: ExitPlanExecutionRecommendation | null
 }
 
 export interface PlanUpdatePayload {
@@ -601,33 +594,6 @@ export function permissionRequirementLabel(raw: unknown): string {
   }
 }
 
-function parseExitPlanExecutionRecommendation(payload: Record<string, unknown> | null): ExitPlanExecutionRecommendation | null {
-  if (!payload) {
-    return null
-  }
-  const approvedArguments = mapObjectArg(payload, 'approved_arguments')
-  const recommendation = mapObjectArg(payload, 'execution_recommendation')
-  const source = Object.keys(recommendation).length > 0 ? recommendation : payload
-  const approvedFallback = Object.keys(approvedArguments).length > 0 ? approvedArguments : source
-  const granularity = (mapStringArg(source, 'execution_granularity') || mapStringArg(source, 'granularity') || mapStringArg(source, 'execution_shape') || mapStringArg(source, 'shape') || mapStringArg(approvedFallback, 'execution_granularity') || mapStringArg(approvedFallback, 'granularity') || mapStringArg(approvedFallback, 'execution_shape') || mapStringArg(approvedFallback, 'shape')).trim().toLowerCase().replace(/[\s-]+/g, '_')
-  const continuation = (mapStringArg(source, 'continuation_policy') || mapStringArg(source, 'continuation') || mapStringArg(source, 'mode') || mapStringArg(approvedFallback, 'continuation_policy') || mapStringArg(approvedFallback, 'continuation') || mapStringArg(approvedFallback, 'mode')).trim().toLowerCase().replace(/[\s-]+/g, '_')
-  const hasContinueAutomatically = 'continue_automatically' in source || 'continue_automatically' in approvedFallback
-  if (!granularity && !continuation && !hasContinueAutomatically) {
-    return null
-  }
-  if (['run', 'run_through', 'run_straight_through', 'straight_through', 'continuous', 'continuous_run', 'single', 'single_run', 'one_run', 'whole_plan'].includes(granularity)) {
-    return { execution_granularity: 'run_through', continuation_policy: 'automatic', continue_automatically: true }
-  }
-  const continueAutomatically = hasContinueAutomatically
-    ? mapBoolArg('continue_automatically' in source ? source : approvedFallback, 'continue_automatically')
-    : ['auto', 'automatic', 'auto_continue', 'continue_automatically', 'continue_automatic'].includes(continuation)
-  return {
-    execution_granularity: 'checkpointed',
-    continuation_policy: continueAutomatically ? 'automatic' : 'review_each_checkpoint',
-    continue_automatically: continueAutomatically,
-  }
-}
-
 export function parseExitPlanPermission(permission: DesktopPermissionRecord): ExitPlanPayload {
   const payload = decodePermissionArguments(permission.toolArguments)
   return {
@@ -639,7 +605,6 @@ export function parseExitPlanPermission(permission: DesktopPermissionRecord): Ex
     planId: payload ? mapStringArg(payload, 'plan_id') || mapStringArg(payload, 'planID') : '',
     document: payload?.document ?? null,
     approvedArguments: payload ? mapObjectArg(payload, 'approved_arguments') : {},
-    executionRecommendation: parseExitPlanExecutionRecommendation(payload),
   }
 }
 

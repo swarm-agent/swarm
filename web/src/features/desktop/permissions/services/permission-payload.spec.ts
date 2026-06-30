@@ -408,6 +408,11 @@ function testExitPlanParsesStructuredDocument(): void {
       execution_granularity: 'checkpointed',
       continuation_policy: 'automatic',
       continue_automatically: true,
+      execution_recommendation: {
+        execution_granularity: 'run_through',
+        continuation_policy: 'automatic',
+        continue_automatically: true,
+      },
       approved_arguments: {
         plan_id: 'plan_exit',
         document,
@@ -422,9 +427,7 @@ function testExitPlanParsesStructuredDocument(): void {
   assert((payload.document as { id?: string }).id === 'plan_exit', 'expected exit document id')
   assert(payload.approvedArguments.plan_id === 'plan_exit', 'expected approved arguments to preserve plan id')
   assert(payload.approvedArguments.continue_automatically === false, 'expected approved arguments to preserve execution controls')
-  assert(payload.executionRecommendation?.execution_granularity === 'checkpointed', 'expected top-level execution recommendation granularity')
-  assert(payload.executionRecommendation?.continuation_policy === 'automatic', 'expected top-level execution recommendation policy')
-  assert(payload.executionRecommendation?.continue_automatically === true, 'expected top-level execution recommendation automatic flag')
+  assert(!('executionRecommendation' in payload), 'expected exit plan parsing to ignore execution recommendations')
 }
 
 function testPlanUpdateDiffPreviewPreservesAllDiffRows(): void {
