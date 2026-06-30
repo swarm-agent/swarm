@@ -1782,6 +1782,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
     ? `${checkpointCounts.activeIndex || checkpointCounts.completedCount}/${checkpointCounts.totalCount}`
     : '')
   const [actionsOpen, setActionsOpen] = useState(false)
+  const actionMenuRef = useRef<HTMLSpanElement | null>(null)
   const hasDetailsRowContent = Boolean(backgroundInfo || visibleChildLabel || hasAgentChildren)
   const showDetailsRow = !isPlanRow && hasDetailsRowContent
   const showActionMenuInMetadataRow = !isPlanRow && !hasDetailsRowContent
@@ -1837,7 +1838,23 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
     </button>
   )
   const actionMenu = (
-    <span className="relative inline-flex translate-x-[5px] shrink-0 items-center">
+    <span
+      ref={actionMenuRef}
+      className={cn('relative z-20 inline-flex translate-x-[5px] shrink-0 items-center', actionsOpen ? 'z-40' : null)}
+      onMouseLeave={() => setActionsOpen(false)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          setActionsOpen(false)
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          setActionsOpen(false)
+        }
+      }}
+    >
       <button
         type="button"
         className={actionMenuButtonClass}
@@ -1854,7 +1871,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       </button>
       {actionsOpen ? (
         <span
-          className="absolute right-0 top-full z-30 mt-1 grid min-w-28 gap-0.5 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-elevated)] p-1 shadow-lg"
+          className="absolute right-0 top-full z-50 mt-1 grid min-w-28 gap-0.5 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] p-1 opacity-100 shadow-lg backdrop-blur-none [background-color:var(--app-surface-elevated)]"
           onClick={(event) => {
             event.preventDefault()
             event.stopPropagation()
