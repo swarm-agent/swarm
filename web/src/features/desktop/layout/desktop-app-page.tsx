@@ -1782,7 +1782,9 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
     ? `${checkpointCounts.activeIndex || checkpointCounts.completedCount}/${checkpointCounts.totalCount}`
     : '')
   const [actionsOpen, setActionsOpen] = useState(false)
-  const showDetailsRow = !isPlanRow && Boolean(backgroundInfo || visibleChildLabel || hasAgentChildren || actionsOpen)
+  const hasDetailsRowContent = Boolean(backgroundInfo || visibleChildLabel || hasAgentChildren)
+  const showDetailsRow = !isPlanRow && hasDetailsRowContent
+  const showActionMenuInMetadataRow = !isPlanRow && !hasDetailsRowContent
   const pinned = sessionAllowsManualSidebarPin(session) && sessionManuallyPinnedInSidebar(session)
   const pinDisabled = pendingAction !== null || !sessionAllowsManualSidebarPin(session)
   const archiveDisabled = pendingAction !== null
@@ -1927,10 +1929,6 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
               </span>
 
             </div>
-            <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-              <span className="min-w-0 truncate">{metadataLabel}</span>
-              {rowTimerLabel ? <span className="ml-auto shrink-0 text-right tabular-nums text-[var(--app-text-muted)]">{rowTimerLabel}</span> : null}
-            </div>
           </div>
         </div>
         <span className="inline-flex shrink-0 items-center justify-end gap-1.5 text-[10px] leading-4 text-[var(--app-text-muted)]">
@@ -1948,6 +1946,13 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
                     : 'bg-[var(--app-border-strong)]',
             )}
           />
+        </span>
+      </div>
+      <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+        <span className="min-w-0 truncate">{metadataLabel}</span>
+        <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-1 text-right tabular-nums text-[var(--app-text-muted)]">
+          {rowTimerLabel ? <span>{rowTimerLabel}</span> : null}
+          {showActionMenuInMetadataRow ? actionMenu : null}
         </span>
       </div>
 
