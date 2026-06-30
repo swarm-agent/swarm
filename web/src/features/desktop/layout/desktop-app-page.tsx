@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode, ChangeEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
-import { Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, GitBranch, Home, LayoutGrid, Link2, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, GitBranch, Home, LayoutGrid, Link2, LoaderCircle, Menu, MoreVertical, Pause, Pin, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -62,7 +62,8 @@ import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { fetchAndApplyDesktopV3PlanSnapshot, saveDesktopV3SessionPlan } from '../state/desktop-v3-session-api'
-import { startDesktopPlanAutomatic, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
+import { archiveDesktopV3Sessions, startDesktopPlanAutomatic, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
+import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned } from '../session-v3/api'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
@@ -1383,9 +1384,28 @@ function sessionSidebarRowType(session: DesktopSessionRecord): 'plan_session' | 
   return metadataText(session, 'swarm_v3_sidebar_row_type') === 'plan_session' ? 'plan_session' : 'single_chat'
 }
 
-function sessionSidebarGroup(session: DesktopSessionRecord): 'needs_review' | 'in_progress' | 'active_chats' | 'archived' {
+type SidebarBaseSessionGroupID = 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
+type SidebarSessionGroupID = SidebarBaseSessionGroupID | 'pinned'
+
+function sessionSidebarGroup(session: DesktopSessionRecord): SidebarBaseSessionGroupID {
   const group = metadataText(session, 'swarm_v3_sidebar_group')
   return group === 'needs_review' || group === 'in_progress' || group === 'archived' ? group : 'active_chats'
+}
+
+function sessionManuallyPinnedInSidebar(session: DesktopSessionRecord): boolean {
+  return session.metadata?.[DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY] === true
+}
+
+function sessionAllowsManualSidebarPin(session: DesktopSessionRecord): boolean {
+  return sessionSidebarGroup(session) === 'active_chats'
+}
+
+export function sessionSidebarDisplayGroup(session: DesktopSessionRecord): SidebarSessionGroupID {
+  const group = sessionSidebarGroup(session)
+  if (group === 'active_chats' && sessionManuallyPinnedInSidebar(session)) {
+    return 'pinned'
+  }
+  return group
 }
 
 function sessionPlanCheckpointProgressLabel(session: DesktopSessionRecord): string {
@@ -1465,6 +1485,9 @@ function sessionSidebarSortAnchor(session: DesktopSessionRecord): number {
 
 function sessionShouldPinInSidebar(session: DesktopSessionRecord, now: number): boolean {
   if (sessionIsActive(session)) {
+    return true
+  }
+  if (sessionAllowsManualSidebarPin(session) && sessionManuallyPinnedInSidebar(session)) {
     return true
   }
 
@@ -1711,12 +1734,15 @@ interface SessionRowProps {
   agentSummary: SessionAgentSummary
   agentsExpanded: boolean
   compactingStartedAt?: number | null
+  pendingAction?: 'pin' | 'archive' | null
   onSelect: (sessionId: string) => void
   onPrefetch: (sessionId: string) => void
   onToggleAgents: (sessionId: string) => void
+  onTogglePinned: (sessionId: string) => void
+  onArchive: (sessionId: string) => void
 }
 
-function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', agentSummary, agentsExpanded, compactingStartedAt = null, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
+function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, onSelect, onPrefetch, onToggleAgents, onTogglePinned, onArchive }: SessionRowProps) {
   const session = initialSession
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
@@ -1733,7 +1759,6 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const nestedAssignmentTitle = isNestedSession && childAssignmentLabel ? childAssignmentLabel : ''
   const rowTitle = nestedAssignmentTitle || session.title || 'New conversation'
   const visibleChildLabel = childLabel && childLabel !== rowTitle ? childLabel : ''
-  const nestedToneClass = childKind === 'subagent' ? 'text-[var(--app-info)]' : 'text-[var(--app-text-subtle)]'
   const hasAgentChildren = agentSummary.total > 0
   const metadataLabel = sessionRowMetadataLabel(session)
   const relativeActivityLabel = sessionStatusDetail(session, now)
@@ -1756,7 +1781,89 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const checkpointProgressText = checkpointProgressLabel || (checkpointCounts.totalCount > 0
     ? `${checkpointCounts.activeIndex || checkpointCounts.completedCount}/${checkpointCounts.totalCount}`
     : '')
-  const showDetailsRow = !isPlanRow && Boolean(backgroundInfo || visibleChildLabel || hasAgentChildren)
+  const [actionsOpen, setActionsOpen] = useState(false)
+  const showDetailsRow = !isPlanRow && Boolean(backgroundInfo || visibleChildLabel || hasAgentChildren || actionsOpen)
+  const pinned = sessionAllowsManualSidebarPin(session) && sessionManuallyPinnedInSidebar(session)
+  const pinDisabled = pendingAction !== null || !sessionAllowsManualSidebarPin(session)
+  const archiveDisabled = pendingAction !== null
+  const actionButtonBaseClass = cn(
+    'inline-flex h-6 w-full shrink-0 items-center gap-2 rounded border-0 bg-transparent px-2 text-left font-inherit text-[11px] leading-6 text-[var(--app-text-subtle)] transition-[background-color,color] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent',
+  )
+  const actionMenuButtonClass = cn(
+    'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border-0 bg-transparent p-0 text-[var(--app-text-subtle)] opacity-0 transition-[background-color,color,opacity] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100',
+    actionsOpen ? 'opacity-100 text-[var(--app-text)]' : null,
+  )
+  const pinActionControl = sessionAllowsManualSidebarPin(session) ? (
+    <button
+      type="button"
+      className={cn(actionButtonBaseClass, pinned ? 'text-[var(--app-primary)] hover:text-[var(--app-primary-hover)]' : null)}
+      disabled={pinDisabled}
+      aria-label={pinned ? `Unpin ${rowTitle}` : `Pin ${rowTitle}`}
+      aria-pressed={pinned}
+      title={pinned ? 'Unpin from sidebar' : 'Pin to sidebar'}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        if (!pinDisabled) {
+          setActionsOpen(false)
+          onTogglePinned(session.id)
+        }
+      }}
+    >
+      {pendingAction === 'pin' ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : <Pin size={12} aria-hidden="true" />}
+      <span>{pinned ? 'Unpin' : 'Pin'}</span>
+    </button>
+  ) : null
+  const archiveActionControl = (
+    <button
+      type="button"
+      className={actionButtonBaseClass}
+      disabled={archiveDisabled}
+      aria-label={`Archive ${rowTitle}`}
+      title="Archive session"
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        if (!archiveDisabled) {
+          setActionsOpen(false)
+          onArchive(session.id)
+        }
+      }}
+    >
+      {pendingAction === 'archive' ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : <Archive size={12} aria-hidden="true" />}
+      <span>Archive</span>
+    </button>
+  )
+  const actionMenu = (
+    <span className="relative inline-flex translate-x-[5px] shrink-0 items-center">
+      <button
+        type="button"
+        className={actionMenuButtonClass}
+        aria-label={`Open actions for ${rowTitle}`}
+        aria-expanded={actionsOpen}
+        title="Session actions"
+        onClick={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          setActionsOpen((open) => !open)
+        }}
+      >
+        <MoreVertical size={13} aria-hidden="true" />
+      </button>
+      {actionsOpen ? (
+        <span
+          className="absolute right-0 top-full z-30 mt-1 grid min-w-28 gap-0.5 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-elevated)] p-1 shadow-lg"
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+          }}
+        >
+          {pinActionControl}
+          {archiveActionControl}
+        </span>
+      ) : null}
+    </span>
+  )
   const agentToggleControl = hasAgentChildren ? (
     <button
       type="button"
@@ -1799,7 +1906,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       onMouseEnter={() => onPrefetch(session.id)}
       onFocus={() => onPrefetch(session.id)}
       className={cn(
-        'relative grid w-full min-w-0 rounded-md border text-left outline-none transition-colors',
+        'group relative grid w-full min-w-0 rounded-md border text-left outline-none transition-colors',
         isPlanRow ? 'gap-1.5 px-2.5 py-2' : 'gap-1 px-2.5 py-1.5',
         active
           ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45'
@@ -1826,7 +1933,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
             </div>
           </div>
         </div>
-        <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] leading-4 text-[var(--app-text-muted)]">
+        <span className="inline-flex shrink-0 items-center justify-end gap-1.5 text-[10px] leading-4 text-[var(--app-text-muted)]">
           {compactingActive ? <LoaderCircle size={10} className="animate-spin text-[var(--app-primary)]" aria-hidden="true" /> : null}
           {rightSideLabel ? <span className="max-w-[5.5rem] truncate text-right">{rightSideLabel}</span> : null}
           <span
@@ -1852,8 +1959,9 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
           >
             {checkpointProgressText ? `CP ${checkpointProgressText}` : 'CP'}
           </span>
-          <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
+          <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
             {agentToggleControl}
+            {actionMenu}
           </div>
         </div>
       ) : null}
@@ -1873,8 +1981,9 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
               </span>
             ) : null}
           </div>
-          <div className="ml-auto flex shrink-0 items-center gap-2">
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
             {!isPlanRow ? agentToggleControl : null}
+            {!isPlanRow ? actionMenu : null}
           </div>
         </div>
       ) : null}
@@ -1891,28 +2000,32 @@ interface RenderSidebarSessionGroupsInput {
   workspaceSlug: string | ((session: DesktopSessionRecord) => string)
   expandedAgentSessions: Record<string, boolean>
   compactingSession: DesktopV3CompactingSessionState | null
+  pendingActions: Record<string, 'pin' | 'archive' | undefined>
   onSelect: (sessionId: string) => void
   onPrefetch: (sessionId: string) => void
   onToggleAgents: (sessionId: string) => void
+  onTogglePinned: (sessionId: string) => void
+  onArchive: (sessionId: string) => void
 }
 
-const SIDEBAR_SESSION_GROUPS = [
+export const SIDEBAR_SESSION_GROUPS = [
   { id: 'needs_review', label: 'Needs Review' },
   { id: 'in_progress', label: 'In Progress' },
+  { id: 'pinned', label: 'Pinned' },
   { id: 'active_chats', label: 'Active Chats' },
   { id: 'archived', label: 'Archived' },
-] as const
+] as const satisfies ReadonlyArray<{ id: SidebarSessionGroupID; label: string }>
 
 function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX.Element[] | null {
   if (input.nodes.length === 0) return null
-  const grouped = new Map<(typeof SIDEBAR_SESSION_GROUPS)[number]['id'], SidebarSessionNode[]>()
+  const grouped = new Map<SidebarSessionGroupID, SidebarSessionNode[]>()
   for (const group of SIDEBAR_SESSION_GROUPS) {
     grouped.set(group.id, [])
   }
-  let currentRootGroup: (typeof SIDEBAR_SESSION_GROUPS)[number]['id'] | null = null
+  let currentRootGroup: SidebarSessionGroupID | null = null
   for (const node of input.nodes) {
     if (node.depth === 0 || !currentRootGroup) {
-      currentRootGroup = sessionSidebarGroup(node.session)
+      currentRootGroup = sessionSidebarDisplayGroup(node.session)
     }
     grouped.get(currentRootGroup)?.push(node)
   }
@@ -1944,9 +2057,12 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             agentSummary={summarizeSubagentDescendants(node)}
             agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
             compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
+            pendingAction={input.pendingActions[node.session.id] ?? null}
             onSelect={input.onSelect}
             onPrefetch={input.onPrefetch}
             onToggleAgents={input.onToggleAgents}
+            onTogglePinned={input.onTogglePinned}
+            onArchive={input.onArchive}
           />
           ))}
         </div>
@@ -2012,6 +2128,7 @@ export function DesktopAppPage() {
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
   const [sidebarWorkspaceControlPath, setSidebarWorkspaceControlPath] = useState('')
   const [compactingSession, setCompactingSession] = useState<DesktopV3CompactingSessionState | null>(null)
+  const [sidebarSessionActions, setSidebarSessionActions] = useState<Record<string, 'pin' | 'archive' | undefined>>({})
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
@@ -2663,6 +2780,56 @@ export function DesktopAppPage() {
     }
     void navigate({ to: '/' })
   }, [handleOpenWorkspace, navigate, routeWorkspace?.path, routeWorkspace?.workspaceName, routeWorkspaceSlug, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, workspacePathByBindingId])
+
+  const handleToggleSidebarPinned = useCallback((sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    const session = normalizedSessionId ? sessionById.get(normalizedSessionId) : null
+    if (!session || sidebarSessionActions[normalizedSessionId]) return
+    if (!sessionAllowsManualSidebarPin(session)) {
+      return
+    }
+    const nextPinned = !sessionManuallyPinnedInSidebar(session)
+    setSidebarSessionActions((current) => ({ ...current, [normalizedSessionId]: 'pin' }))
+    void updateAndApplySessionV3DesktopSidebarPinned(normalizedSessionId, nextPinned, session.metadata ?? {})
+      .then(() => {
+        setDesktopToast({ message: nextPinned ? 'Pinned session to sidebar.' : 'Unpinned session from sidebar.', tone: 'success' })
+      })
+      .catch((error) => {
+        setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to update sidebar pin.', tone: 'error' })
+      })
+      .finally(() => {
+        setSidebarSessionActions((current) => {
+          if (current[normalizedSessionId] !== 'pin') return current
+          const next = { ...current }
+          delete next[normalizedSessionId]
+          return next
+        })
+      })
+  }, [sessionById, sidebarSessionActions])
+
+  const handleArchiveSidebarSession = useCallback((sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId || sidebarSessionActions[normalizedSessionId]) return
+    setSidebarSessionActions((current) => ({ ...current, [normalizedSessionId]: 'archive' }))
+    void archiveDesktopV3Sessions([normalizedSessionId])
+      .then(() => {
+        setDesktopToast({ message: 'Archived session.', tone: 'success' })
+        if (routeSessionId === normalizedSessionId) {
+          handleArchivePlanSession(normalizedSessionId)
+        }
+      })
+      .catch((error) => {
+        setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to archive session.', tone: 'error' })
+      })
+      .finally(() => {
+        setSidebarSessionActions((current) => {
+          if (current[normalizedSessionId] !== 'archive') return current
+          const next = { ...current }
+          delete next[normalizedSessionId]
+          return next
+        })
+      })
+  }, [handleArchivePlanSession, routeSessionId, sidebarSessionActions])
 
   const openWorktreeSessionModal = useCallback((input: {
     workspace: WorkspaceEntry
@@ -3717,9 +3884,12 @@ export function DesktopAppPage() {
                     workspaceSlug: globalSessionWorkspaceSlug,
                     expandedAgentSessions,
                     compactingSession,
+                    pendingActions: sidebarSessionActions,
                     onSelect: handleSelectSession,
                     onPrefetch: handlePrefetchSession,
                     onToggleAgents: handleToggleAgentSessions,
+                    onTogglePinned: handleToggleSidebarPinned,
+                    onArchive: handleArchiveSidebarSession,
                   })}
                   {globalFlattenedSessionNodes.length === 0 ? (
                     <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">No active sessions.</div>

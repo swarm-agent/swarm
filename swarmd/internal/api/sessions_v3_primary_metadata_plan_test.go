@@ -14,7 +14,7 @@ func TestSessionsV3PrimaryMetadataUpdateUsesV3Mutation(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "metadata-create", "metadata", pebblestore.ModelPreference{})
 
-	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/metadata", bytes.NewBufferString(`{"metadata":{"subagent":"clone","agent_name":"forbidden"}}`))
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/metadata", bytes.NewBufferString(`{"metadata":{"subagent":"clone","swarm_v3_desktop_sidebar_pinned":true,"agent_name":"forbidden"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
@@ -38,6 +38,9 @@ func TestSessionsV3PrimaryMetadataUpdateUsesV3Mutation(t *testing.T) {
 	}
 	if payload.Metadata["subagent"] != "clone" {
 		t.Fatalf("metadata = %+v", payload.Metadata)
+	}
+	if payload.Metadata["swarm_v3_desktop_sidebar_pinned"] != true {
+		t.Fatalf("desktop sidebar pin metadata missing: %+v", payload.Metadata)
 	}
 	if payload.Metadata["agent_name"] != "swarm" {
 		t.Fatalf("protected metadata overwritten: %+v", payload.Metadata)

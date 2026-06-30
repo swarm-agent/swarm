@@ -2,13 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { DesktopSessionRecord } from '../types/realtime'
+import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY } from '../session-v3/api'
 import {
+  SIDEBAR_SESSION_GROUPS,
   compareSidebarSessions,
   sessionActivityLabel,
   sessionStatusDetail,
   sessionStatusTone,
   sessionTimerLabel,
   sessionActiveRunIntent,
+  sessionSidebarDisplayGroup,
 } from './desktop-app-page'
 
 function activeRunIntent(sessionId: string, runId: string, createdAt: number, updatedAt = createdAt) {
@@ -219,6 +222,50 @@ test('sidebar active sort positions a restarted old conversation by its new run 
   })
 
   assert.equal(compareSidebarSessions(existingActive, restartedOldConversation, 100_500) < 0, true)
+})
+
+test('sidebar manual pin moves an active chat into the Pinned display group', () => {
+  const pinnedIdle = makeSession('pinned-idle', {
+    updatedAt: 10_000,
+    createdAt: 1_000,
+    metadata: { [DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY]: true },
+  })
+  const staleIdle = makeSession('stale-idle', {
+    updatedAt: 80_000,
+    createdAt: 70_000,
+  })
+
+  assert.equal(sessionSidebarDisplayGroup(pinnedIdle), 'pinned')
+  assert.equal(sessionSidebarDisplayGroup(staleIdle), 'active_chats')
+  assert.equal(compareSidebarSessions(pinnedIdle, staleIdle, 100_500) < 0, true)
+})
+
+test('sidebar Pinned section renders above Active Chats', () => {
+  assert.deepEqual(SIDEBAR_SESSION_GROUPS.map((group) => group.id), [
+    'needs_review',
+    'in_progress',
+    'pinned',
+    'active_chats',
+    'archived',
+  ])
+})
+
+test('sidebar manual pin sort ignores pins for in-progress plan sessions', () => {
+  const pinnedInProgressPlan = makeSession('pinned-in-progress-plan', {
+    updatedAt: 10_000,
+    createdAt: 1_000,
+    metadata: {
+      [DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY]: true,
+      swarm_v3_sidebar_group: 'in_progress',
+    },
+  })
+  const staleIdle = makeSession('stale-idle', {
+    updatedAt: 80_000,
+    createdAt: 70_000,
+  })
+
+  assert.equal(sessionSidebarDisplayGroup(pinnedInProgressPlan), 'in_progress')
+  assert.equal(compareSidebarSessions(staleIdle, pinnedInProgressPlan, 100_500) < 0, true)
 })
 
 test('sidebar active sort keeps active DB sessions pinned above recent idle rows', () => {

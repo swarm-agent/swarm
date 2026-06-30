@@ -4,6 +4,7 @@ import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 import { normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
 import type {
   SessionV3AgentMutationResponseWire,
+  SessionV3MetadataMutationResponseWire,
   SessionV3ModeMutationResponseWire,
   SessionV3PermissionResolveRequestWire,
   SessionV3PermissionResolveResponseWire,
@@ -12,6 +13,8 @@ import type {
   SessionV3RunStopResponseWire,
 } from './types'
 import type { SessionSettingsMutationResponse } from '../state/desktop-v3-cache-types'
+
+export const DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY = 'swarm_v3_desktop_sidebar_pinned' as const
 
 function mapPreferenceResponse(response: SessionV3PreferenceResponseWire): ResolvedSessionPreference {
   return {
@@ -91,6 +94,21 @@ export function sessionV3PreferenceSettingsMutationResponse(
   }
 }
 
+export function sessionV3MetadataSettingsMutationResponse(
+  response: SessionV3MetadataMutationResponseWire,
+  fallbackSessionId: string,
+): SessionSettingsMutationResponse {
+  return {
+    ok: response.ok ?? true,
+    session_id: response.session_id ?? fallbackSessionId,
+    metadata: response.metadata,
+    turn_usage: response.turn_usage,
+    usage_summary: response.usage_summary,
+    mutation: mutationRecord(response.mutation),
+    realtime_outbox: response.realtime_outbox,
+  }
+}
+
 export async function fetchSessionV3Preference(sessionId: string, signal?: AbortSignal): Promise<ResolvedSessionPreference> {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) throw new Error('Desktop V3 preference fetch requires session_id')
@@ -157,6 +175,42 @@ export async function updateSessionV3Agent(sessionId: string, agentName: string)
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent_name: normalizedAgent }),
   })
+}
+
+export async function updateSessionV3DesktopSidebarPinned(
+  sessionId: string,
+  pinned: boolean,
+  currentMetadata: Record<string, unknown> = {},
+): Promise<SessionV3MetadataMutationResponseWire> {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) throw new Error('Desktop V3 sidebar pin update requires session_id')
+  return requestJson<SessionV3MetadataMutationResponseWire>(`/v3/sessions/${encodeURIComponent(normalizedSessionId)}/metadata`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      metadata: {
+        ...currentMetadata,
+        [DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY]: pinned,
+      },
+    }),
+  })
+}
+
+export async function updateAndApplySessionV3DesktopSidebarPinned(
+  sessionId: string,
+  pinned: boolean,
+  currentMetadata: Record<string, unknown> = {},
+): Promise<SessionSettingsMutationResponse> {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) throw new Error('Desktop V3 sidebar pin update requires session_id')
+  const response = await updateSessionV3DesktopSidebarPinned(normalizedSessionId, pinned, currentMetadata)
+  const settingsResponse = sessionV3MetadataSettingsMutationResponse(response, normalizedSessionId)
+  const { dispatchDesktopV3Cache } = await import('../state/desktop-v3-cache-store')
+  dispatchDesktopV3Cache({
+    type: 'mutation.sessionSettingsResult',
+    raw: settingsResponse,
+  })
+  return settingsResponse
 }
 
 export async function stopSessionV3Run(
