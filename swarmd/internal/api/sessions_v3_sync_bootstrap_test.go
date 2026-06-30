@@ -497,6 +497,59 @@ func TestSessionsV3SyncBootstrapRejectsSessionViewResource(t *testing.T) {
 	}
 }
 
+func TestSessionsV3SyncBootstrapDesktopIncludesPinnedSessionsOutsideRecentLimit(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	pinned := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-pinned-old", "Pinned old", "/workspace/bootstrap-pinned")
+	createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-recent-new", "Recent new", "/workspace/bootstrap-pinned")
+	createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-recent-mid", "Recent mid", "/workspace/bootstrap-pinned")
+	otherWorkspacePinned := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-other-workspace-pinned", "Other workspace pinned", "/workspace/other-bootstrap-pinned")
+
+	for _, session := range []pebblestore.SessionSnapshot{pinned, otherWorkspacePinned} {
+		body := `{"metadata":{"swarm_v3_desktop_sidebar_pinned":true}}`
+		req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+session.ID+"/metadata", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("pin %s status = %d, want %d, body=%s", session.ID, rec.Code, http.StatusOK, rec.Body.String())
+		}
+	}
+
+	older, ok, err := sessionSvc.Store().GetSession(pinned.ID)
+	if err != nil || !ok {
+		t.Fatalf("load pinned session: ok=%t err=%v", ok, err)
+	}
+	older.UpdatedAt = 1000
+	if err := sessionSvc.Store().UpdateSession(older); err != nil {
+		t.Fatalf("age pinned session: %v", err)
+	}
+
+	body := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/bootstrap-pinned","recent":{"limit":2}},"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		SessionsByID map[string]pebblestore.SessionSnapshot `json:"sessions_by_id"`
+		SessionOrder []string                               `json:"session_order"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode bootstrap response: %v", err)
+	}
+	if len(payload.SessionOrder) != 3 || payload.SessionOrder[2] != pinned.ID {
+		t.Fatalf("bootstrap session_order = %+v, want pinned session outside recent limit included last", payload.SessionOrder)
+	}
+	if payload.SessionsByID[pinned.ID].Metadata["swarm_v3_desktop_sidebar_pinned"] != true {
+		t.Fatalf("bootstrap pinned metadata missing: %+v", payload.SessionsByID[pinned.ID].Metadata)
+	}
+	if _, ok := payload.SessionsByID[otherWorkspacePinned.ID]; ok {
+		t.Fatalf("bootstrap leaked pinned session from other workspace: %+v", payload.SessionsByID)
+	}
+}
+
 func TestSessionsV3SyncBootstrapUsesNativeSnapshotBuilderNotLegacyWorkset(t *testing.T) {
 	source, err := os.ReadFile("sessions_v3_sync_bootstrap.go")
 	if err != nil {

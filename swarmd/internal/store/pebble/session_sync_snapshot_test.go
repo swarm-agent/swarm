@@ -318,6 +318,51 @@ func createV3SyncSnapshotSessionForAccountTest(t *testing.T, sessions *SessionSt
 	}
 }
 
+func TestBuildV3SyncSnapshotIncludesPinnedSessionsOutsideRecentLimit(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-sync-pinned-old", "user-1", "account-1", "/workspace/sync-pinned", 1000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-sync-recent-new", "user-1", "account-1", "/workspace/sync-pinned", 4000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-sync-recent-mid", "user-1", "account-1", "/workspace/sync-pinned", 3000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-sync-other-workspace-pinned", "user-1", "account-1", "/workspace/other", 2000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "session-sync-other-user-pinned", "user-2", "account-1", "/workspace/sync-pinned", 5000)
+
+	for _, sessionID := range []string{"session-sync-pinned-old", "session-sync-other-workspace-pinned", "session-sync-other-user-pinned"} {
+		session, ok, err := sessions.GetSession(sessionID)
+		if err != nil || !ok {
+			t.Fatalf("load %s: ok=%t err=%v", sessionID, ok, err)
+		}
+		session.Metadata = map[string]any{V3SessionDesktopSidebarPinnedMetadataKey: true}
+		if err := sessions.UpdateSession(session); err != nil {
+			t.Fatalf("pin %s: %v", sessionID, err)
+		}
+	}
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID:               "account-1",
+		UserID:                       "user-1",
+		WorkspacePath:                "/workspace/sync-pinned",
+		RecentLimit:                  2,
+		IncludePinnedSidebarSessions: true,
+		History:                      V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build pinned sync snapshot: %v", err)
+	}
+	if got := snapshot.SessionOrder; len(got) != 3 || got[0] != "session-sync-recent-new" || got[1] != "session-sync-recent-mid" || got[2] != "session-sync-pinned-old" {
+		t.Fatalf("pinned sync snapshot order = %+v", got)
+	}
+	if snapshot.SessionsByID["session-sync-pinned-old"].Metadata[V3SessionDesktopSidebarPinnedMetadataKey] != true {
+		t.Fatalf("pinned metadata not preserved: %+v", snapshot.SessionsByID["session-sync-pinned-old"].Metadata)
+	}
+	if _, ok := snapshot.SessionsByID["session-sync-other-workspace-pinned"]; ok {
+		t.Fatalf("pinned sync snapshot leaked other workspace session")
+	}
+	if _, ok := snapshot.SessionsByID["session-sync-other-user-pinned"]; ok {
+		t.Fatalf("pinned sync snapshot leaked other user session")
+	}
+}
+
 func TestBuildV3SyncSnapshotHydrateReturnsRequestedDeletedTombstoneBeyondAccountPage(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

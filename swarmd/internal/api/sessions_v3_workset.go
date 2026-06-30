@@ -93,6 +93,7 @@ func (s *Server) handleSessionsV3Workset(w http.ResponseWriter, r *http.Request)
 	}
 	options.Principal = principal
 	options.Surface = "desktop"
+	options.Store.IncludePinnedSidebarSessions = true
 	s.writeSessionsV3Workset(w, options)
 }
 

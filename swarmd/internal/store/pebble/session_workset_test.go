@@ -48,6 +48,54 @@ func TestBuildV3SessionWorksetPaginatesRecentSessions(t *testing.T) {
 	}
 }
 
+func TestBuildV3SessionWorksetIncludesPinnedSessionsOutsideRecentLimit(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3WorksetSessionForTest(t, sessions, "session-pinned-old", "/workspace/pinned", 1000)
+	createV3WorksetSessionForTest(t, sessions, "session-recent-new", "/workspace/pinned", 4000)
+	createV3WorksetSessionForTest(t, sessions, "session-recent-mid", "/workspace/pinned", 3000)
+	createV3WorksetSessionForTest(t, sessions, "session-other-workspace-pinned", "/workspace/other", 2000)
+	createV3WorksetSessionForTest(t, sessions, "session-other-user-pinned", "/workspace/pinned", 5000)
+
+	for _, sessionID := range []string{"session-pinned-old", "session-other-workspace-pinned", "session-other-user-pinned"} {
+		session, ok, err := sessions.GetSession(sessionID)
+		if err != nil || !ok {
+			t.Fatalf("load %s: ok=%t err=%v", sessionID, ok, err)
+		}
+		session.Metadata = map[string]any{V3SessionDesktopSidebarPinnedMetadataKey: true}
+		if sessionID == "session-other-user-pinned" {
+			session.UserID = "user-2"
+		}
+		if err := sessions.UpdateSession(session); err != nil {
+			t.Fatalf("pin %s: %v", sessionID, err)
+		}
+	}
+
+	workset, err := sessions.BuildV3SessionWorkset(V3SessionWorksetOptions{
+		AccountScopeID:               "account-1",
+		UserID:                       "user-1",
+		WorkspacePath:                "/workspace/pinned",
+		RecentLimit:                  2,
+		IncludePinnedSidebarSessions: true,
+		History:                      V3SessionWorksetHistoryOptions{Mode: V3SessionWorksetHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build pinned workset: %v", err)
+	}
+	if got := workset.SessionOrder; len(got) != 3 || got[0] != "session-recent-new" || got[1] != "session-recent-mid" || got[2] != "session-pinned-old" {
+		t.Fatalf("pinned workset order = %+v", got)
+	}
+	if workset.SessionsByID["session-pinned-old"].Metadata[V3SessionDesktopSidebarPinnedMetadataKey] != true {
+		t.Fatalf("pinned metadata not preserved: %+v", workset.SessionsByID["session-pinned-old"].Metadata)
+	}
+	if _, ok := workset.SessionsByID["session-other-workspace-pinned"]; ok {
+		t.Fatalf("pinned workset leaked other workspace session")
+	}
+	if _, ok := workset.SessionsByID["session-other-user-pinned"]; ok {
+		t.Fatalf("pinned workset leaked other user session")
+	}
+}
+
 func TestBuildV3SessionWorksetUsesSessionIDTieBreaker(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

@@ -71,6 +71,7 @@ type V3SessionWorksetOptions struct {
 	IncludeRunIntents                  bool
 	IncludeCurrentRunState             bool
 	IncludeActiveSessions              bool
+	IncludePinnedSidebarSessions       bool
 }
 
 type V3SessionWorksetHistoryOptions struct {
@@ -150,7 +151,8 @@ func (s *SessionStore) BuildV3SessionWorkset(options V3SessionWorksetOptions) (r
 		options.RecentLimit <= 0 &&
 		strings.TrimSpace(options.WorkspacePath) == "" &&
 		len(options.WorkspacePaths) == 0 &&
-		!options.IncludeActiveSessions {
+		!options.IncludeActiveSessions &&
+		!options.IncludePinnedSidebarSessions {
 		return V3SessionWorksetResult{}, errors.New("at least one workset selector is required")
 	}
 	snapshot := s.store.db.NewSnapshot()
@@ -326,6 +328,15 @@ func (s *SessionStore) selectV3SessionWorksetSessions(reader pebble.Reader, opti
 		}
 		pagination = page
 		for _, session := range recent {
+			appendSession(session)
+		}
+	}
+	if options.IncludePinnedSidebarSessions {
+		pinned, err := s.selectV3PinnedSidebarWorksetSessions(reader, options)
+		if err != nil {
+			return nil, V3SessionWorksetPagination{}, err
+		}
+		for _, session := range pinned {
 			appendSession(session)
 		}
 	}

@@ -84,6 +84,7 @@ type V3SyncSnapshotOptions struct {
 	IncludeRunIntents                  bool
 	IncludeCurrentRunState             bool
 	IncludeActiveSessions              bool
+	IncludePinnedSidebarSessions       bool
 	IncludeSessionView                 bool
 	IncludeActivePlan                  bool
 }
@@ -180,7 +181,7 @@ func (s *SessionStore) BuildV3SyncSnapshotWithContext(ctx context.Context, optio
 	if err := contextError(ctx); err != nil {
 		return V3SyncSnapshotResult{}, err
 	}
-	if !options.Global && len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" && len(options.WorkspacePaths) == 0 && !options.IncludeActiveSessions {
+	if !options.Global && len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" && len(options.WorkspacePaths) == 0 && !options.IncludeActiveSessions && !options.IncludePinnedSidebarSessions {
 		return V3SyncSnapshotResult{}, errors.New("at least one sync snapshot selector is required")
 	}
 	snapshot := s.store.db.NewSnapshot()
@@ -447,6 +448,15 @@ func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, option
 		}
 		pagination = page
 		for _, session := range recent {
+			appendSession(session)
+		}
+	}
+	if options.IncludePinnedSidebarSessions {
+		pinned, err := s.selectV3PinnedSidebarSyncSnapshotSessions(reader, options)
+		if err != nil {
+			return nil, V3SyncSnapshotPagination{}, err
+		}
+		for _, session := range pinned {
 			appendSession(session)
 		}
 	}
