@@ -26,7 +26,7 @@ import { Select } from '../../../../components/ui/select'
 import { Textarea } from '../../../../components/ui/textarea'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
-import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
+import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanExecutionPolicy, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import { structuredPlanDocumentToWire } from './structured-plan-document'
 
 interface DesktopPlanModalProps {
@@ -40,7 +40,7 @@ interface DesktopPlanModalProps {
   executing?: boolean
   onCopy: (text: string) => Promise<boolean>
   onSave: (planText: string, document?: Record<string, unknown>) => Promise<void>
-  onApproveStart?: (input: { executionGranularity: 'checkpointed' | 'run_through'; continueAutomatically: boolean }) => Promise<void>
+  onApproveStart?: (input: { executionGranularity: 'checkpointed' | 'run_through'; continueAutomatically: boolean; continuationPolicy: 'automatic' | 'review_each_checkpoint' }) => Promise<void>
 }
 
 function useEscapeToClose(open: boolean, onClose: () => void) {
@@ -108,6 +108,21 @@ function PlanInfoSection({ title, icon: Icon, children }: { title: string; icon:
       <div className="min-w-0 pl-6">{children}</div>
     </section>
   )
+}
+
+function planExecutionSelectionFromPolicy(policy: DesktopSessionPlanExecutionPolicy | null | undefined): {
+  executionGranularity: 'checkpointed' | 'run_through'
+  continueAutomatically: boolean
+} {
+  const shape = (policy?.shape ?? '').trim().toLowerCase()
+  const mode = (policy?.mode ?? '').trim().toLowerCase()
+  if (shape === 'single_run') {
+    return { executionGranularity: 'run_through', continueAutomatically: true }
+  }
+  return {
+    executionGranularity: 'checkpointed',
+    continueAutomatically: mode === 'automatic',
+  }
 }
 
 function PlanDetails({ document }: { document: DesktopSessionPlanDocument }) {
@@ -386,8 +401,8 @@ export function DesktopPlanModal({
   const [editing, setEditing] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const [selectedRevisionKey, setSelectedRevisionKey] = useState('current')
-  const [executionGranularity, setExecutionGranularity] = useState<'checkpointed' | 'run_through'>('run_through')
-  const [continueAutomatically, setContinueAutomatically] = useState(false)
+  const [executionGranularity, setExecutionGranularity] = useState<'checkpointed' | 'run_through'>('checkpointed')
+  const [continueAutomatically, setContinueAutomatically] = useState(true)
   const [revisionSelectWidth, setRevisionSelectWidth] = useState<number | undefined>(undefined)
   const revisionSelectSizerRef = useRef<HTMLSpanElement | null>(null)
 
@@ -401,8 +416,9 @@ export function DesktopPlanModal({
     setEditing(false)
     setCopyState('idle')
     setSelectedRevisionKey('current')
-    setExecutionGranularity('run_through')
-    setContinueAutomatically(false)
+    const executionSelection = planExecutionSelectionFromPolicy(plan?.document?.executionPolicy)
+    setExecutionGranularity(executionSelection.executionGranularity)
+    setContinueAutomatically(executionSelection.continueAutomatically)
   }, [open, plan?.id, plan?.updatedAt, plan?.plan, plan?.document])
 
   useEscapeToClose(open, () => onOpenChange(false))
@@ -488,9 +504,17 @@ export function DesktopPlanModal({
     setEditing(false)
   }
 
+  const effectiveContinueAutomatically = executionGranularity === 'run_through' ? true : continueAutomatically
+  const effectiveContinuationPolicy: 'automatic' | 'review_each_checkpoint' = effectiveContinueAutomatically ? 'automatic' : 'review_each_checkpoint'
+  const executionChoiceLabel = executionGranularity === 'run_through'
+    ? 'Execute as one run'
+    : effectiveContinueAutomatically
+      ? 'Execute checkpoint by checkpoint automatically'
+      : 'Execute checkpoint by checkpoint with review pauses'
+
   const handleApproveStart = async () => {
     if (!onApproveStart || editing || viewingRevision) return
-    await onApproveStart({ executionGranularity, continueAutomatically })
+    await onApproveStart({ executionGranularity, continueAutomatically: effectiveContinueAutomatically, continuationPolicy: effectiveContinuationPolicy })
   }
 
   return (
@@ -621,6 +645,11 @@ export function DesktopPlanModal({
                 <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
                   <SectionEyebrow>Execution on approval</SectionEyebrow>
                   <div className="mt-3 grid gap-3">
+                    <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
+                      <span className="font-semibold">Selected: {executionChoiceLabel}.</span>{' '}
+                      Approval will send <code className="rounded bg-[var(--app-bg-alt)] px-1 py-0.5">execution_granularity={executionGranularity}</code>{' '}
+                      and <code className="rounded bg-[var(--app-bg-alt)] px-1 py-0.5">continuation_policy={effectiveContinuationPolicy}</code>.
+                    </div>
                     <label className="grid gap-1.5 text-sm text-[var(--app-text)]">
                       <span className="font-medium">Execution style</span>
                       <Select
@@ -628,12 +657,12 @@ export function DesktopPlanModal({
                         onChange={(event) => setExecutionGranularity(event.target.value === 'checkpointed' ? 'checkpointed' : 'run_through')}
                         disabled={executing}
                       >
-                        <option value="run_through">Execute as one run</option>
                         <option value="checkpointed">Execute checkpoint by checkpoint</option>
+                        <option value="run_through">Execute as one run</option>
                       </Select>
                       <span className="text-xs text-[var(--app-text-muted)]">
                         {executionGranularity === 'run_through'
-                          ? 'Runs the approved plan as a single fresh-context execution. Best for most tasks.'
+                          ? 'Runs the approved plan as a single fresh-context execution.'
                           : 'Runs each checkpoint separately with fresh context.'}
                       </span>
                     </label>

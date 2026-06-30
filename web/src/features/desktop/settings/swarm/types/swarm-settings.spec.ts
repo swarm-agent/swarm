@@ -3,7 +3,9 @@ import test from 'node:test'
 
 import {
   localContainerUpdateWarningDismissed,
+  normalizeFollowupCheckpointPolicyDefault,
   normalizeSessionMode,
+  normalizeSwarmSettings,
   withDefaultNewSessionMode,
   withLocalContainerUpdateWarningDismissed,
   type UISettingsWire,
@@ -47,4 +49,19 @@ test('withLocalContainerUpdateWarningDismissed preserves existing settings while
     ...current,
     updates: { local_container_warning_dismissed: true },
   })
+})
+
+test('follow-up checkpoint policy default normalizes missing and unknown values to auto-start', () => {
+  assert.equal(normalizeFollowupCheckpointPolicyDefault(undefined), 'auto_start')
+  assert.equal(normalizeFollowupCheckpointPolicyDefault(null), 'auto_start')
+  assert.equal(normalizeFollowupCheckpointPolicyDefault(''), 'auto_start')
+  assert.equal(normalizeFollowupCheckpointPolicyDefault('unexpected'), 'auto_start')
+  assert.equal(normalizeSwarmSettings({}).followupCheckpointPolicyDefault, 'auto_start')
+})
+
+test('follow-up checkpoint policy default preserves ask-first aliases', () => {
+  assert.equal(normalizeFollowupCheckpointPolicyDefault('require_approval'), 'require_approval')
+  assert.equal(normalizeFollowupCheckpointPolicyDefault('ask'), 'require_approval')
+  assert.equal(normalizeFollowupCheckpointPolicyDefault('manual'), 'require_approval')
+  assert.equal(normalizeSwarmSettings({ chat: { followup_checkpoint_policy_default: 'require_approval' } }).followupCheckpointPolicyDefault, 'require_approval')
 })

@@ -657,6 +657,11 @@ func (s *Service) buildExitPlanModePermissionPayload(sessionID string, call tool
 		document = &documentClone
 	}
 
+	executionRecommendation, err := normalizeExitPlanModeExecutionRecommendation(args, document)
+	if err != nil {
+		return nil, err
+	}
+
 	approved := cloneGenericMap(args)
 	if approved == nil {
 		approved = map[string]any{}
@@ -676,6 +681,11 @@ func (s *Service) buildExitPlanModePermissionPayload(sessionID string, call tool
 	if document != nil {
 		approved["document"] = document
 	}
+	if executionRecommendation != nil {
+		approved["execution_granularity"] = executionRecommendation.ExecutionGranularity
+		approved["continuation_policy"] = executionRecommendation.ContinuationPolicy
+		approved["continue_automatically"] = executionRecommendation.ContinueAutomatically
+	}
 	delete(approved, "approved_arguments")
 
 	payload := map[string]any{
@@ -687,6 +697,16 @@ func (s *Service) buildExitPlanModePermissionPayload(sessionID string, call tool
 		"document":           document,
 		"approved_arguments": approved,
 	}
+	if executionRecommendation != nil {
+		payload["execution_granularity"] = executionRecommendation.ExecutionGranularity
+		payload["continuation_policy"] = executionRecommendation.ContinuationPolicy
+		payload["continue_automatically"] = executionRecommendation.ContinueAutomatically
+		payload["execution_recommendation"] = map[string]any{
+			"execution_granularity":  executionRecommendation.ExecutionGranularity,
+			"continuation_policy":    executionRecommendation.ContinuationPolicy,
+			"continue_automatically": executionRecommendation.ContinueAutomatically,
+		}
+	}
 	if existing != nil {
 		payload["prior_title"] = strings.TrimSpace(existing.Title)
 		payload["prior_plan"] = strings.TrimSpace(existing.Plan)
@@ -694,6 +714,69 @@ func (s *Service) buildExitPlanModePermissionPayload(sessionID string, call tool
 		payload["version"] = existing.Version
 	}
 	return payload, nil
+}
+
+type exitPlanModeExecutionRecommendation struct {
+	ExecutionGranularity  string
+	ContinuationPolicy    string
+	ContinueAutomatically bool
+}
+
+func normalizeExitPlanModeExecutionRecommendation(args map[string]any, document *pebblestore.SessionPlanDocument) (*exitPlanModeExecutionRecommendation, error) {
+	if args == nil {
+		args = map[string]any{}
+	}
+	recommended := false
+	granularity := strings.TrimSpace(firstNonEmptyString(mapString(args, "execution_granularity"), mapString(args, "granularity"), mapString(args, "execution_shape"), mapString(args, "shape")))
+	continuation := strings.TrimSpace(firstNonEmptyString(mapString(args, "continuation_policy"), mapString(args, "continuation"), mapString(args, "mode")))
+	if granularity != "" || continuation != "" {
+		recommended = true
+	}
+	if _, ok := args["continue_automatically"]; ok {
+		recommended = true
+		if mapBool(args, "continue_automatically") {
+			continuation = sessionruntime.PlanAcceptanceContinuationAutomatic
+		} else {
+			continuation = sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint
+		}
+	}
+	if !recommended && document != nil {
+		if document.ExecutionPolicy.Shape != "" || document.ExecutionPolicy.Mode != "" {
+			recommended = true
+		}
+		switch document.ExecutionPolicy.Shape {
+		case sessionruntime.PlanExecutionShapeSingleRun:
+			granularity = sessionruntime.PlanAcceptanceGranularityRunThrough
+		case sessionruntime.PlanExecutionShapeCheckpointed:
+			granularity = sessionruntime.PlanAcceptanceGranularityCheckpointed
+		}
+		switch document.ExecutionPolicy.Mode {
+		case sessionruntime.PlanExecutionPolicyModeAutomatic:
+			continuation = sessionruntime.PlanAcceptanceContinuationAutomatic
+		case sessionruntime.PlanExecutionPolicyModeReviewEachCheckpoint:
+			continuation = sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint
+		}
+	}
+	if !recommended {
+		return nil, nil
+	}
+	policy, err := sessionruntime.NormalizePlanAcceptanceExecutionPolicy(sessionruntime.PlanAcceptanceExecutionOptions{ExecutionGranularity: granularity, ContinuationPolicy: continuation})
+	if err != nil {
+		return nil, err
+	}
+	result := &exitPlanModeExecutionRecommendation{ContinuationPolicy: sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint}
+	if policy.Shape == sessionruntime.PlanExecutionShapeSingleRun {
+		result.ExecutionGranularity = sessionruntime.PlanAcceptanceGranularityRunThrough
+		result.ContinuationPolicy = sessionruntime.PlanAcceptanceContinuationAutomatic
+		result.ContinueAutomatically = true
+		return result, nil
+	}
+	result.ExecutionGranularity = sessionruntime.PlanAcceptanceGranularityCheckpointed
+	if policy.Mode == sessionruntime.PlanExecutionPolicyModeAutomatic {
+		result.ContinuationPolicy = sessionruntime.PlanAcceptanceContinuationAutomatic
+		result.ContinueAutomatically = true
+	}
+	return result, nil
 }
 
 func (s *Service) buildManageFlowPermissionPayload(sessionID string, call tool.Call) (manageFlowPermissionPayload, error) {

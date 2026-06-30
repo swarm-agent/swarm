@@ -1052,7 +1052,9 @@ function ExitPlanDocumentView({ document }: { document: StructuredPlanDocument }
   )
 }
 
-type ExitPlanExecutionChoice = 'run_through' | 'checkpointed_manual' | 'checkpointed_automatic'
+export type ExitPlanExecutionChoice = 'run_through' | 'checkpointed_manual' | 'checkpointed_automatic'
+
+const defaultExitPlanExecutionChoice: ExitPlanExecutionChoice = 'checkpointed_automatic'
 
 const exitPlanExecutionChoices: Array<{
   id: ExitPlanExecutionChoice
@@ -1064,7 +1066,7 @@ const exitPlanExecutionChoices: Array<{
     id: 'run_through',
     title: 'Continue normally',
     description: 'Run the approved plan as one fresh-context execution.',
-    detail: 'Best for most tasks. The sidebar follows the plan instead of individual checkpoints.',
+    detail: 'Available when you want one execution run instead of preserving checkpoint boundaries.'
   },
   {
     id: 'checkpointed_manual',
@@ -1106,6 +1108,61 @@ export function exitPlanExecutionArguments(choice: ExitPlanExecutionChoice): {
   }
 }
 
+function exitPlanExecutionToken(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase().replace(/[\s-]+/g, '_') : ''
+}
+
+type ExitPlanExecutionArgumentSource = {
+  execution_granularity?: unknown
+  granularity?: unknown
+  execution_shape?: unknown
+  shape?: unknown
+  continuation_policy?: unknown
+  continuation?: unknown
+  mode?: unknown
+  continue_automatically?: unknown
+}
+
+function exitPlanBooleanArgument(args: ExitPlanExecutionArgumentSource, key: keyof ExitPlanExecutionArgumentSource): boolean | null {
+  if (!(key in args)) {
+    return null
+  }
+  const value = args[key]
+  if (typeof value === 'boolean') {
+    return value
+  }
+  if (typeof value === 'string') {
+    const token = value.trim().toLowerCase()
+    if (['true', '1', 'yes', 'y', 'on', 'automatic', 'auto'].includes(token)) {
+      return true
+    }
+    if (['false', '0', 'no', 'n', 'off', 'manual', 'review_each_checkpoint'].includes(token)) {
+      return false
+    }
+  }
+  return null
+}
+
+export function exitPlanExecutionChoiceFromApprovedArguments(args: ExitPlanExecutionArgumentSource | null | undefined): ExitPlanExecutionChoice {
+  if (!args) {
+    return defaultExitPlanExecutionChoice
+  }
+  const granularity = exitPlanExecutionToken(args.execution_granularity ?? args.granularity ?? args.execution_shape ?? args.shape)
+  const continuation = exitPlanExecutionToken(args.continuation_policy ?? args.continuation ?? args.mode)
+  const continueAutomatically = exitPlanBooleanArgument(args, 'continue_automatically')
+
+  if (['run', 'run_through', 'run_straight_through', 'straight_through', 'continuous', 'continuous_run', 'single', 'single_run', 'one_run', 'whole_plan'].includes(granularity)) {
+    return 'run_through'
+  }
+  if (continueAutomatically === true || ['auto', 'automatic', 'auto_continue', 'continue_automatically', 'continue_automatic'].includes(continuation)) {
+    return 'checkpointed_automatic'
+  }
+  if (continueAutomatically === false || ['review', 'review_each', 'review_each_checkpoint', 'manual', 'pause', 'pause_for_review', 'pause_each_checkpoint'].includes(continuation)) {
+    return 'checkpointed_manual'
+  }
+  return defaultExitPlanExecutionChoice
+}
+
 function ExitPlanModal({
   permission,
   open,
@@ -1117,16 +1174,20 @@ function ExitPlanModal({
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
-  const [executionChoice, setExecutionChoice] = useState<ExitPlanExecutionChoice>('run_through')
+  const [executionChoice, setExecutionChoice] = useState<ExitPlanExecutionChoice>(() => {
+    const payload = permission ? parseExitPlanPermission(permission) : null
+    return exitPlanExecutionChoiceFromApprovedArguments(payload?.executionRecommendation ?? payload?.approvedArguments)
+  })
 
   useEffect(() => {
     if (open) {
+      const nextPayload = permission ? parseExitPlanPermission(permission) : null
       setNote('')
       setLoading(false)
       setCopyState('idle')
-      setExecutionChoice('run_through')
+      setExecutionChoice(exitPlanExecutionChoiceFromApprovedArguments(nextPayload?.executionRecommendation ?? nextPayload?.approvedArguments))
     }
-  }, [open, permission?.id])
+  }, [open, permission])
 
   if (!permission) {
     return null
@@ -1135,6 +1196,7 @@ function ExitPlanModal({
   const payload = parseExitPlanPermission(permission)
   const structuredDocument = normalizeStructuredPlanDocument(payload.document)
   const hasStructuredPlan = Boolean(structuredDocument)
+  const selectedExecutionChoice = exitPlanExecutionChoices.find((choice) => choice.id === executionChoice) ?? exitPlanExecutionChoices[2]
 
   const handleCopy = async () => {
     try {
@@ -1207,8 +1269,12 @@ function ExitPlanModal({
       <div className="grid gap-4">
         {hasStructuredPlan ? (
           <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
-            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Execution after approval</div>
-            <div className="mt-3 grid gap-3 md:grid-cols-3" role="radiogroup" aria-label="Execution after approval">
+            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">AI-suggested run mode</div>
+            <div className="mt-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
+              <span className="font-semibold">AI suggested {selectedExecutionChoice.title} for this run.</span>{' '}
+              Feel free to choose a different run mode before approving.
+            </div>
+            <div className="mt-3 grid gap-3 md:grid-cols-3" role="radiogroup" aria-label="AI-suggested run mode">
               {exitPlanExecutionChoices.map((choice) => {
                 const selected = executionChoice === choice.id
                 return (

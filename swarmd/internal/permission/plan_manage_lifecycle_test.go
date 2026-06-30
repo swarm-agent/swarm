@@ -20,6 +20,8 @@ func TestPlanManageLifecycleRequirementIsTyped(t *testing.T) {
 		{name: "revision", args: `{"action":"request_plan_revision","plan_id":"plan_1"}`, want: "plan_revision_request"},
 		{name: "new plan", args: `{"action":"request_new_plan","title":"New direction"}`, want: "plan_new_request"},
 		{name: "legacy save existing", args: `{"action":"save","plan_id":"plan_1","document":{"info":{"goal":"update"}}}`, want: "plan_revision_request"},
+		{name: "bulk operations existing", args: `{"action":"update_info","plan_id":"plan_1","operations":[{"operation":"update_info","info":{"goal":"bulk"}}]}`, want: "plan_revision_request"},
+		{name: "bulk checkpoint reorder existing", args: `{"action":"reorder_checkpoints","checkpoint_order":["cp-2","cp-1"]}`, want: "plan_revision_request"},
 		{name: "draft save no active plan id", args: `{"action":"save","document":{"info":{"goal":"draft"}}}`, want: ""},
 	}
 	for _, tc := range cases {

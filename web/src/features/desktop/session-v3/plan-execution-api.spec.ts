@@ -39,14 +39,14 @@ test('startDesktopPlanAutomatic calls the dedicated start-automatic lifecycle en
   globalThis.fetch = jsonFetch(calls, { ok: true, plan_id: 'plan-1', transition: 'start_plan_automatic' })
 
   try {
-    await startDesktopPlanAutomatic('session-1', 'plan-1', { executionGranularity: 'run_through' })
+    await startDesktopPlanAutomatic('session-1', 'plan-1', { executionGranularity: 'run_through', continuationPolicy: 'automatic', continueAutomatically: true })
   } finally {
     globalThis.fetch = originalFetch
   }
 
   assert.deepEqual(calls, [{
     url: '/v3/sessions/session-1/plan-mode/plans/plan-1/start-automatic',
-    body: { execution_granularity: 'run_through' },
+    body: { execution_granularity: 'run_through', continuation_policy: 'automatic', continue_automatically: true },
   }])
 })
 
@@ -58,6 +58,7 @@ test('startDesktopPlanCheckpointed calls the dedicated start-checkpointed lifecy
     await startDesktopPlanCheckpointed('session-1', 'plan-1', {
       executionGranularity: 'checkpointed',
       continuationPolicy: 'review_each_checkpoint',
+      continueAutomatically: false,
     })
   } finally {
     globalThis.fetch = originalFetch
@@ -65,7 +66,7 @@ test('startDesktopPlanCheckpointed calls the dedicated start-checkpointed lifecy
 
   assert.deepEqual(calls, [{
     url: '/v3/sessions/session-1/plan-mode/plans/plan-1/start-checkpointed',
-    body: { execution_granularity: 'checkpointed', continuation_policy: 'review_each_checkpoint' },
+    body: { execution_granularity: 'checkpointed', continuation_policy: 'review_each_checkpoint', continue_automatically: false },
   }])
 })
 

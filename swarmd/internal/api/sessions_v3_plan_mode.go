@@ -36,12 +36,15 @@ type sessionsV3PlanModeApproveRequest struct {
 }
 
 type sessionsV3PlanModeStartAutomaticRequest struct {
-	ExecutionGranularity string `json:"execution_granularity,omitempty"`
+	ExecutionGranularity  string `json:"execution_granularity,omitempty"`
+	ContinuationPolicy    string `json:"continuation_policy,omitempty"`
+	ContinueAutomatically *bool  `json:"continue_automatically,omitempty"`
 }
 
 type sessionsV3PlanModeStartCheckpointedRequest struct {
-	ExecutionGranularity string `json:"execution_granularity,omitempty"`
-	ContinuationPolicy   string `json:"continuation_policy,omitempty"`
+	ExecutionGranularity  string `json:"execution_granularity,omitempty"`
+	ContinuationPolicy    string `json:"continuation_policy,omitempty"`
+	ContinueAutomatically *bool  `json:"continue_automatically,omitempty"`
 }
 
 type sessionsV3PlanModeRunCurrentRequest struct {
@@ -248,6 +251,8 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartPlanAutomatic(w http.Respons
 	}
 	input := s.sessionsV3PlanModeRunInput(sessionID, planID, "")
 	input.ExecutionGranularity = req.ExecutionGranularity
+	input.ContinuationPolicy = req.ContinuationPolicy
+	input.ContinueAutomatically = req.ContinueAutomatically
 	result, err := s.planLifecycle.ApproveAndStartPlanAutomatic(input)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -277,6 +282,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartPlanCheckpointed(w http.Resp
 	input := s.sessionsV3PlanModeRunInput(sessionID, planID, "")
 	input.ExecutionGranularity = req.ExecutionGranularity
 	input.ContinuationPolicy = req.ContinuationPolicy
+	input.ContinueAutomatically = req.ContinueAutomatically
 	result, err := s.planLifecycle.ApproveAndStartPlanCheckpointed(input)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)

@@ -12,9 +12,8 @@ import type { DesktopPermissionRecord, DesktopSessionRecord } from '../../types/
 import type { StructuredToolMessage, ToolMessageState, AgentProfileRecord, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
 import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
 import { agentStateQueryOptions, draftModelQueryKey, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
-import { normalizeFollowupCheckpointPolicyDefault, normalizeSessionMode, normalizeSwarmSettings, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
+import { normalizeSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
-import { saveFollowupCheckpointPolicyDefault } from '../../settings/swarm/mutations/save-followup-checkpoint-policy-default'
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
@@ -27,8 +26,6 @@ import {
   updateSessionV3Agent,
   updateSessionV3Mode,
   updateSessionV3Preference,
-  desktopPlanFollowupPolicyResponsePlan,
-  setSessionV3PlanFollowupPolicy,
   stopSessionV3Run,
 } from '../../session-v3/api'
 import {
@@ -46,7 +43,6 @@ import {
   resumeDesktopPlanAutomatic,
 } from '../../session-v3/plan-execution-api'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../../state/desktop-v3-session-api'
-import { normalizeDesktopSessionPlan } from '../services/session-plan-record'
 import { resolveSessionPermission, sendSessionMessage, updateDraftModelPreference } from '../queries/chat-queries'
 import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
 import { permissionRequiresApproval } from '../../permissions/services/permission-payload'
@@ -66,18 +62,6 @@ function desktopPlanLifecycleComplete(response: { execution_summary?: unknown })
   if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return false
   const planComplete = (summary as Record<string, unknown>).plan_complete
   return planComplete === true || planComplete === 'true'
-}
-
-function applyPlanFollowupPolicyResponse(sessionId: string, response: Parameters<typeof desktopPlanFollowupPolicyResponsePlan>[0]): void {
-  const plan = desktopPlanFollowupPolicyResponsePlan(response)
-  if (!plan) return
-  dispatchDesktopV3Cache({
-    type: 'planSnapshot.apply',
-    sessionId,
-    hasActivePlan: true,
-    activePlan: normalizeDesktopSessionPlan(plan),
-    planRevisions: [],
-  })
 }
 
 function optionKey(provider: string, model: string, contextMode = ''): string {
@@ -688,7 +672,6 @@ export function DesktopV3ExistingConversationPane({
   const agentState = agentStateQuery.data ?? EMPTY_AGENT_STATE
   const modelOptions = modelOptionsQuery.data ?? []
   const thinkingTagsEnabled = normalizeThinkingTagsEnabled(uiSettingsQuery.data)
-  const followupCheckpointPolicyDefault = normalizeFollowupCheckpointPolicyDefault(uiSettingsQuery.data?.chat?.followup_checkpoint_policy_default)
   const selectPlanExecutionViewForSession = useCallback(
     (state: DesktopV3CacheState) => selectDesktopPlanExecutionView(state, normalizedSessionId),
     [normalizedSessionId],
@@ -1049,9 +1032,7 @@ export function DesktopV3ExistingConversationPane({
 
   async function handlePlanExecutionAction(input: DesktopPlanExecutionSidebarActionInput) {
     if (!normalizedSessionId || planExecutionBusyAction || currentRun) return
-    const busyKey = input.action === 'set_followup_policy'
-      ? `${input.action}:${input.followupCheckpointPolicyScope ?? 'plan_override'}`
-      : `${input.action}:${input.checkpointId ?? ''}`
+    const busyKey = `${input.action}:${input.checkpointId ?? ''}`
     setPlanExecutionBusyAction(busyKey)
     setSendError(null)
     if (input.action !== 'resume_automatic') scrollToBottom('smooth')
@@ -1070,33 +1051,6 @@ export function DesktopV3ExistingConversationPane({
         case 'archive_plan':
           await archiveDesktopV3Sessions([normalizedSessionId])
           onArchivePlanSession?.(normalizedSessionId)
-          break
-        case 'set_followup_policy':
-          if (input.followupCheckpointPolicyScope === 'global_default') {
-            const currentSettings = uiSettingsQuery.data
-            if (!currentSettings) throw new Error('Follow-up default update requires loaded UI settings')
-            const saved = await saveFollowupCheckpointPolicyDefault({
-              current: currentSettings,
-              policy: normalizeFollowupCheckpointPolicyDefault(input.followupCheckpointPolicy),
-            })
-            queryClient.setQueryData(uiSettingsQueryKey(), saved)
-            queryClient.setQueryData(['ui-settings', 'swarm'], normalizeSwarmSettings(saved))
-            const response = await setSessionV3PlanFollowupPolicy(normalizedSessionId, {
-              planId: planExecutionView?.plan.id,
-              followupCheckpointPolicy: '',
-              reason: 'Updated Desktop follow-up handling global default',
-            })
-            applyPlanFollowupPolicyResponse(normalizedSessionId, response)
-            await fetchAndApplyDesktopV3PlanSnapshot(normalizedSessionId)
-            break
-          }
-          const response = await setSessionV3PlanFollowupPolicy(normalizedSessionId, {
-            planId: planExecutionView?.plan.id,
-            followupCheckpointPolicy: input.followupCheckpointPolicy ?? '',
-            reason: 'Updated Desktop follow-up handling preference',
-          })
-          applyPlanFollowupPolicyResponse(normalizedSessionId, response)
-          await fetchAndApplyDesktopV3PlanSnapshot(normalizedSessionId)
           break
         case 'resume_automatic':
           await resumeDesktopPlanAutomatic(normalizedSessionId)
@@ -1303,7 +1257,6 @@ export function DesktopV3ExistingConversationPane({
           onAction={stablePlanExecutionAction}
           onStop={stableStop}
           onEditPlan={stableOpenPlan}
-          followupCheckpointPolicyDefault={followupCheckpointPolicyDefault}
         />
       </div>
 

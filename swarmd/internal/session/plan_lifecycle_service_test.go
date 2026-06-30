@@ -200,6 +200,46 @@ func TestPlanLifecycleRequestFollowupCheckpointAutoStartResolvesInProgressBefore
 	assertNoInProgressBeforeActive(t, result.Plan.Document)
 }
 
+func TestPlanLifecycleRequestFollowupCheckpointAutoStartAppendsSequentially(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	plan := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:                     PlanExecutionPolicyModeAutomatic,
+		Shape:                    PlanExecutionShapeCheckpointed,
+		FollowupCheckpointPolicy: PlanFollowupCheckpointPolicyAutoStart,
+	}, []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "One", Status: PlanCheckpointStatusCompleted}})
+	lifecycle := NewPlanLifecycleService(svc)
+
+	first, err := lifecycle.RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: plan.ID, ChangeRequest: "First follow-up.", RunID: "run-followup-1", RunSessionID: "child-followup-1", ParentSessionID: sessionID, StartedAt: 100})
+	if err != nil {
+		t.Fatalf("first follow-up: %v", err)
+	}
+	second, err := lifecycle.RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: plan.ID, ChangeRequest: "Second follow-up.", RunID: "run-followup-2", RunSessionID: "child-followup-2", ParentSessionID: sessionID, StartedAt: 200})
+	if err != nil {
+		t.Fatalf("second follow-up: %v", err)
+	}
+	if first.CheckpointID != "followup-1" || second.CheckpointID != "followup-2" || second.AttemptID != "followup-2:attempt-1" {
+		t.Fatalf("checkpoint sequence = %q/%q attempt=%q", first.CheckpointID, second.CheckpointID, second.AttemptID)
+	}
+	if len(second.Plan.Document.Checkpoints) != 3 {
+		t.Fatalf("checkpoint count = %d, want 3", len(second.Plan.Document.Checkpoints))
+	}
+	followup1 := second.Plan.Document.Checkpoints[1]
+	followup2 := second.Plan.Document.Checkpoints[2]
+	if followup1.ID != "followup-1" || followup1.Status != PlanCheckpointStatusNeedsReview || followup1.Result != "superseded_by_followup" {
+		t.Fatalf("first follow-up after second append = %#v", followup1)
+	}
+	if followup2.ID != "followup-2" || followup2.Status != PlanCheckpointStatusInProgress || followup2.RunID != "run-followup-2" || second.Plan.Document.ActiveCheckpointID != "followup-2" {
+		t.Fatalf("second follow-up active state = checkpoint %#v active=%q", followup2, second.Plan.Document.ActiveCheckpointID)
+	}
+	assertNoInProgressBeforeActive(t, second.Plan.Document)
+}
+
 func TestPlanLifecycleSetFollowupCheckpointPolicyOverridePersistsWithoutModeSwitch(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()

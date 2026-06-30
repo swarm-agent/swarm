@@ -131,8 +131,11 @@ func TestExitPlanModePermissionPayloadIncludesStructuredDocument(t *testing.T) {
 	}
 
 	args := map[string]any{
-		"plan_id": "plan-exit",
-		"title":   "Exit Structured Plan",
+		"plan_id":                "plan-exit",
+		"title":                  "Exit Structured Plan",
+		"execution_granularity":  "checkpointed",
+		"continuation_policy":    "automatic",
+		"continue_automatically": true,
 		"document": pebblestore.SessionPlanDocument{
 			Info:               pebblestore.SessionPlanInfo{Goal: "approval sees structured goal"},
 			Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Initial", Status: sessionruntime.PlanCheckpointStatusCompleted}, {ID: "cp-2", Title: "Next", Status: "pending"}},
@@ -154,6 +157,9 @@ func TestExitPlanModePermissionPayloadIncludesStructuredDocument(t *testing.T) {
 	if document.ID != "plan-exit" || document.Title != "Exit Structured Plan" || document.Info.Goal != "approval sees structured goal" || len(document.Checkpoints) != 2 || document.Checkpoints[1].ID != "cp-2" || document.ActiveCheckpointID != "cp-2" {
 		t.Fatalf("permission document = %#v", document)
 	}
+	if permissionPayload["execution_granularity"] != sessionruntime.PlanAcceptanceGranularityCheckpointed || permissionPayload["continuation_policy"] != sessionruntime.PlanAcceptanceContinuationAutomatic || permissionPayload["continue_automatically"] != true {
+		t.Fatalf("permission execution recommendation = %#v", permissionPayload)
+	}
 	approved, ok := permissionPayload["approved_arguments"].(map[string]any)
 	if !ok {
 		t.Fatalf("approved arguments missing: %#v", permissionPayload["approved_arguments"])
@@ -168,6 +174,9 @@ func TestExitPlanModePermissionPayloadIncludesStructuredDocument(t *testing.T) {
 	}
 	if decodedApprovedDoc.ID != "plan-exit" || decodedApprovedDoc.Title != "Exit Structured Plan" || decodedApprovedDoc.Info.Goal != document.Info.Goal {
 		t.Fatalf("approved structured document missing: %#v", approved["document"])
+	}
+	if approved["execution_granularity"] != sessionruntime.PlanAcceptanceGranularityCheckpointed || approved["continuation_policy"] != sessionruntime.PlanAcceptanceContinuationAutomatic || approved["continue_automatically"] != true {
+		t.Fatalf("approved execution recommendation missing: %#v", approved)
 	}
 	if _, ok := permissionPayload["prior_document"]; !ok {
 		t.Fatalf("permission payload missing prior_document: %#v", permissionPayload)

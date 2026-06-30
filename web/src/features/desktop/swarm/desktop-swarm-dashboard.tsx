@@ -2592,8 +2592,8 @@ export function DesktopSwarmDashboard() {
                 aria-label="Follow-up checkpoint default"
                 className="h-10 min-h-0 w-full rounded-xl bg-[var(--app-surface)] py-2 text-sm font-medium"
               >
-                <option value="require_approval">Ask</option>
                 <option value="auto_start">Auto-add &amp; start</option>
+                <option value="require_approval">Ask first</option>
               </Select>
             </div>
           </div>

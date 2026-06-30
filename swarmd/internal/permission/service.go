@@ -1460,18 +1460,43 @@ func PlanManageLifecycleRequirement(toolArguments string) string {
 	case "request_new_plan":
 		return "plan_new_request"
 	case "save":
-		planID := strings.TrimSpace(mapStringAny(payload["plan_id"]))
-		if planID == "" {
-			planID = strings.TrimSpace(mapStringAny(payload["id"]))
-		}
-		if planID != "" {
+		if planManageTargetsExistingPlan(payload) {
 			return "plan_revision_request"
 		}
-		if updateType := strings.ToLower(strings.TrimSpace(mapStringAny(payload["update_type"]))); updateType == "existing_plan" {
+	case "patch", "update_section", "update_info", "update_execution_policy", "update_execution_state", "upsert_checkpoint", "remove_checkpoint", "reorder_checkpoints", "set_active_checkpoint":
+		if planManageTargetsExistingPlan(payload) || planManageHasRevisionPayload(payload) {
 			return "plan_revision_request"
 		}
 	}
 	return ""
+}
+
+func planManageTargetsExistingPlan(payload map[string]any) bool {
+	planID := strings.TrimSpace(mapStringAny(payload["plan_id"]))
+	if planID == "" {
+		planID = strings.TrimSpace(mapStringAny(payload["id"]))
+	}
+	if planID != "" {
+		return true
+	}
+	return strings.ToLower(strings.TrimSpace(mapStringAny(payload["update_type"]))) == "existing_plan"
+}
+
+func planManageHasRevisionPayload(payload map[string]any) bool {
+	for _, key := range []string{"plan", "document", "document_patch", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "patch", "old_text", "new_text", "text", "checklist_item", "item"} {
+		if value, ok := payload[key]; ok && value != nil {
+			if text, ok := value.(string); ok && strings.TrimSpace(text) == "" {
+				continue
+			}
+			return true
+		}
+	}
+	if value, ok := payload["checkpoint"]; ok && value != nil {
+		if _, isBool := value.(bool); !isBool {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizePlanManageAction(action string, op string, payload map[string]any) string {

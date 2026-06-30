@@ -93,7 +93,7 @@ func TestExitPlanModeDefinitionAcceptsStructuredDocument(t *testing.T) {
 	if !ok {
 		t.Fatalf("properties type = %T", definition.Parameters["properties"])
 	}
-	for _, name := range []string{"title", "plan", "document", "plan_id", "id"} {
+	for _, name := range []string{"title", "plan", "document", "plan_id", "id", "execution_granularity", "continuation_policy", "continue_automatically"} {
 		if _, ok := params[name].(map[string]any); !ok {
 			t.Fatalf("%s property missing or wrong type: %T", name, params[name])
 		}

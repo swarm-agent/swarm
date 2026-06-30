@@ -3034,18 +3034,23 @@ export function DesktopAppPage() {
     }
   }, [planModal?.sessionId, planModalPlan?.approvalState, planModalPlan?.id, planModalPlan?.status, planModalPlan?.title])
 
-  const handleApproveStartPlanModal = useCallback(async (input: { executionGranularity: 'checkpointed' | 'run_through'; continueAutomatically: boolean }) => {
+  const handleApproveStartPlanModal = useCallback(async (input: { executionGranularity: 'checkpointed' | 'run_through'; continueAutomatically: boolean; continuationPolicy: 'automatic' | 'review_each_checkpoint' }) => {
     const sessionId = planModal?.sessionId.trim() ?? ''
     if (!sessionId || !planModalPlan?.id) return
     setPlanModalExecuting(true)
     setPlanModalError(null)
     try {
       if (input.executionGranularity === 'run_through') {
-        await startDesktopPlanAutomatic(sessionId, planModalPlan.id, { executionGranularity: input.executionGranularity })
+        await startDesktopPlanAutomatic(sessionId, planModalPlan.id, {
+          executionGranularity: input.executionGranularity,
+          continuationPolicy: input.continuationPolicy,
+          continueAutomatically: input.continueAutomatically,
+        })
       } else {
         await startDesktopPlanCheckpointed(sessionId, planModalPlan.id, {
           executionGranularity: input.executionGranularity,
-          continuationPolicy: input.continueAutomatically ? 'automatic' : 'review_each_checkpoint',
+          continuationPolicy: input.continuationPolicy,
+          continueAutomatically: input.continueAutomatically,
         })
       }
       setPlanModal(null)

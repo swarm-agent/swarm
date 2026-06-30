@@ -206,7 +206,7 @@ func DefaultUISettingsRecord() UISettingsRecord {
 			ThinkingTags:                    true,
 			ThinkingTagsSet:                 true,
 			DefaultNewSessionMode:           "auto",
-			FollowupCheckpointPolicyDefault: "require_approval",
+			FollowupCheckpointPolicyDefault: "auto_start",
 			ToolStream: UIChatToolStreamSettingsRecord{
 				ShowAnchor:    true,
 				PulseFrames:   []string{"·", "•", "◦", "•"},
@@ -330,10 +330,12 @@ func normalizeDefaultNewSessionMode(value string) string {
 
 func normalizeFollowupCheckpointPolicyDefault(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "approval", "approve", "require_approval", "manual", "ask":
+		return "require_approval"
 	case "auto", "automatic", "auto_start", "append_and_start", "start":
 		return "auto_start"
 	default:
-		return "require_approval"
+		return "auto_start"
 	}
 }
 

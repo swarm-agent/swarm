@@ -52,11 +52,14 @@ export interface DesktopPlanApprovalInput {
 
 export interface DesktopPlanStartAutomaticInput {
   executionGranularity?: DesktopPlanExecutionGranularity
+  continuationPolicy?: DesktopPlanContinuationPolicy
+  continueAutomatically?: boolean
 }
 
 export interface DesktopPlanStartCheckpointedInput {
   executionGranularity?: DesktopPlanExecutionGranularity
   continuationPolicy?: DesktopPlanContinuationPolicy
+  continueAutomatically?: boolean
 }
 
 export interface DesktopPlanCurrentRunInput {
@@ -103,6 +106,8 @@ export async function approveDesktopPlan(sessionId: string, planId: string, inpu
 export async function startDesktopPlanAutomatic(sessionId: string, planId: string, input: DesktopPlanStartAutomaticInput = {}): Promise<DesktopPlanLifecycleResponse> {
   return postDesktopPlanLifecycle(sessionId, `plans/${encodePathSegment(planId)}/start-automatic`, {
     execution_granularity: input.executionGranularity,
+    continuation_policy: input.continuationPolicy,
+    continue_automatically: input.continueAutomatically,
   })
 }
 
@@ -110,6 +115,7 @@ export async function startDesktopPlanCheckpointed(sessionId: string, planId: st
   return postDesktopPlanLifecycle(sessionId, `plans/${encodePathSegment(planId)}/start-checkpointed`, {
     execution_granularity: input.executionGranularity,
     continuation_policy: input.continuationPolicy,
+    continue_automatically: input.continueAutomatically,
   })
 }
 

@@ -84,9 +84,10 @@ export function normalizeDefaultNewSessionMode(value: unknown): DesktopSessionMo
 }
 
 export function normalizeFollowupCheckpointPolicyDefault(value: unknown): FollowupCheckpointPolicyDefault {
-  return typeof value === 'string' && ['auto', 'automatic', 'auto_start', 'append_and_start', 'start'].includes(value.trim().toLowerCase())
-    ? 'auto_start'
-    : 'require_approval'
+  if (typeof value !== 'string') return 'auto_start'
+  return ['approval', 'approve', 'require_approval', 'manual', 'ask'].includes(value.trim().toLowerCase())
+    ? 'require_approval'
+    : 'auto_start'
 }
 
 export function normalizeGlobalThemeSettings(payload?: UISettingsWire | null): GlobalThemeSettings {
