@@ -713,3 +713,71 @@ func TestProviderManagedPlanManageLifecycleMessageFollowsToolCompletion(t *testi
 		t.Fatalf("system lifecycle metadata = %#v", messages[1].Metadata)
 	}
 }
+
+func TestProviderManagedPlanManageRejectsFollowupFromCheckpointRun(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-provider-lifecycle", "Provider Lifecycle", "# Lifecycle", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:  &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateInProgress, ActiveAttemptID: "cp-1:attempt-1", CurrentRunID: "run-provider-lifecycle", CurrentSessionID: sessionID, ParentSessionID: sessionID},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "First", Status: sessionruntime.PlanCheckpointStatusInProgress, AttemptID: "cp-1:attempt-1", RunID: "run-provider-lifecycle", SessionID: sessionID},
+			{ID: "cp-2", Title: "Second", Status: sessionruntime.PlanCheckpointStatusPending},
+		},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save provider lifecycle plan: %v", err)
+	}
+
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-test", AccountScopeID: "account-test"}
+	var appliedMutations []sessionruntime.SessionMutationInput
+	applyMutation := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		if input.UserID == "" {
+			input.UserID = principal.UserID
+		}
+		if input.AccountScopeID == "" {
+			input.AccountScopeID = principal.AccountScopeID
+		}
+		appliedMutations = append(appliedMutations, input)
+		return sessionSvc.ApplySessionMutation(input)
+	}
+	invoker := runSvc.NewProviderManagedToolInvoker(ProviderManagedToolInvokerConfig{
+		SessionID:            sessionID,
+		PermissionSessionID:  sessionID,
+		RunID:                "run-provider-lifecycle",
+		Step:                 1,
+		SessionMode:          sessionruntime.ModeAuto,
+		Principal:            principal,
+		ApplySessionMutation: applyMutation,
+		ProviderManagedV3:    true,
+	})
+	if invoker == nil {
+		t.Fatal("provider managed invoker is nil")
+	}
+
+	result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-plan", Name: "plan_manage", Arguments: `{"action":"request_followup_checkpoint","change_request":"add another checkpoint"}`})
+	if err != nil {
+		t.Fatalf("execute provider managed plan_manage: %v", err)
+	}
+	if result.RestartTurn {
+		t.Fatalf("rejected follow-up should not request restart, result = %#v", result)
+	}
+	if !strings.Contains(result.Error, "request_followup_checkpoint is not allowed from checkpoint run") {
+		t.Fatalf("result error = %q", result.Error)
+	}
+	for _, mutation := range appliedMutations {
+		if mutation.Kind == sessionruntime.SessionMutationSavePlan {
+			t.Fatalf("rejected follow-up should not save plan, mutations = %#v", appliedMutations)
+		}
+	}
+	plan, ok, err := sessionSvc.GetPlan(sessionID, "plan-provider-lifecycle")
+	if err != nil || !ok {
+		t.Fatalf("get plan ok=%v err=%v", ok, err)
+	}
+	if len(plan.Document.Checkpoints) != 2 || plan.Document.ActiveCheckpointID != "cp-1" {
+		t.Fatalf("plan changed after rejection: %#v", plan.Document)
+	}
+}

@@ -69,6 +69,7 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"Use plan_manage as the only checkpoint lifecycle surface",
 		"Do not use manage_todos for agent self-tracking",
 		"Do not call plan_manage update_checkpoint",
+		"Do not call request_followup_checkpoint from this checkpoint run",
 		"Always include the current checkpoint_id from the payload",
 		"complete_checkpoint may continue to the next checkpoint only if backend execution policy allows it",
 		"mark_needs_review always pauses for review and never advances to the next checkpoint",

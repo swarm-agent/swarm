@@ -404,11 +404,23 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 		if id == "" {
 			return errors.New("set_active_checkpoint plan document patch requires active_checkpoint_id or checkpoint_id")
 		}
-		if findPlanCheckpointIndex(doc.Checkpoints, id) < 0 {
+		idx := findPlanCheckpointIndex(doc.Checkpoints, id)
+		if idx < 0 {
 			return fmt.Errorf("plan document checkpoint %q was not found", id)
 		}
 		if inProgressID, _, ok := findInProgressPlanCheckpoint(doc.Checkpoints, id); ok {
 			return fmt.Errorf("cannot set active_checkpoint_id to %q while checkpoint %q is in_progress; resolve it first", id, inProgressID)
+		}
+		for i := 0; i < idx; i++ {
+			checkpoint := doc.Checkpoints[i]
+			status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
+			checkpointID := strings.TrimSpace(checkpoint.ID)
+			if status != PlanCheckpointStatusCompleted {
+				return fmt.Errorf("cannot set active_checkpoint_id to %q while earlier checkpoint %q status is %q; resolve it first", id, checkpointID, status)
+			}
+			if planCheckpointReviewPending(doc.ExecutionPolicy, checkpoint, i < len(doc.Checkpoints)-1) {
+				return fmt.Errorf("cannot set active_checkpoint_id to %q while earlier checkpoint %q is waiting for review; resolve it first", id, checkpointID)
+			}
 		}
 		doc.ActiveCheckpointID = id
 		return nil

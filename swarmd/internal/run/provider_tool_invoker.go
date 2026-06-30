@@ -219,7 +219,16 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			principal = config.principal
 		}
 		ctx = identity.ContextWithPrincipal(ctx, principal)
-		handled, controlResult, controlErr := s.executeControlPlaneToolWithMutation(ctx, config.sessionID, config.sessionMode, config.agentProfile, config.step, call, feedback.ApprovedArguments, config.emit, config.applySessionMutation)
+		handled := false
+		var controlResult tool.Result
+		var controlErr error
+		if guardErr := s.rejectProviderManagedCheckpointRunFollowup(config, call); guardErr != nil {
+			handled = true
+			controlErr = guardErr
+			controlResult = tool.Result{CallID: call.CallID, Name: call.Name}
+		} else {
+			handled, controlResult, controlErr = s.executeControlPlaneToolWithMutation(ctx, config.sessionID, config.sessionMode, config.agentProfile, config.step, call, feedback.ApprovedArguments, config.emit, config.applySessionMutation)
+		}
 		if handled {
 			if config.emit != nil {
 				config.emit(StreamEvent{
@@ -360,6 +369,45 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	}
 
 	return result, nil
+}
+
+func (s *Service) rejectProviderManagedCheckpointRunFollowup(config providerToolInvokerConfig, call tool.Call) error {
+	if !config.providerManagedV3 || s == nil || s.sessions == nil {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(call.Name), "plan_manage") {
+		return nil
+	}
+	args := decodeToolPayload(strings.TrimSpace(call.Arguments))
+	if args == nil || !isPlanManageFollowupRequestAction(mapString(args, "action")) {
+		return nil
+	}
+	active, ok, err := s.sessions.GetActivePlan(strings.TrimSpace(config.sessionID))
+	if err != nil || !ok || active.Document == nil || active.Document.ExecutionState == nil {
+		return err
+	}
+	state := active.Document.ExecutionState
+	runID := strings.TrimSpace(config.runID)
+	if runID == "" || strings.TrimSpace(state.CurrentRunID) != runID {
+		return nil
+	}
+	checkpointID := strings.TrimSpace(active.Document.ActiveCheckpointID)
+	if checkpointID == "" {
+		checkpointID = strings.TrimSpace(state.LastCheckpointID)
+	}
+	if checkpointID == "" {
+		return nil
+	}
+	return fmt.Errorf("request_followup_checkpoint is not allowed from checkpoint run %q for active checkpoint %q; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
+}
+
+func isPlanManageFollowupRequestAction(action string) bool {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) appendPlanLifecycleMessageForToolResult(sessionID string, call tool.Call, result tool.Result, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {

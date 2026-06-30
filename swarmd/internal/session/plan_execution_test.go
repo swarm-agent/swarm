@@ -157,14 +157,27 @@ func TestPlanCheckpointStartRejectsAdvancingWhileAnotherCheckpointInProgress(t *
 	}
 }
 
-func TestValidatePlanDocumentRejectsStaleInProgressBeforeActive(t *testing.T) {
-	_, err := NormalizePlanDocumentForSave("plan-exec", "Execution Plan", &pebblestore.SessionPlanDocument{
-		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
-		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: PlanCheckpointStatusInProgress}, {ID: "cp-2", Status: PlanCheckpointStatusPending}},
-		ActiveCheckpointID: "cp-2",
-	}, nil)
-	if err == nil || !strings.Contains(err.Error(), "in_progress before active_checkpoint_id") {
-		t.Fatalf("normalize stale in_progress error = %v, want continuity rejection", err)
+func TestValidatePlanDocumentRejectsUnresolvedCheckpointsBeforeActive(t *testing.T) {
+	tests := []struct {
+		name       string
+		checkpoint pebblestore.SessionPlanCheckpoint
+		want       string
+	}{
+		{name: "in progress", checkpoint: pebblestore.SessionPlanCheckpoint{ID: "cp-1", Status: PlanCheckpointStatusInProgress}, want: "status \"in_progress\" is before active_checkpoint_id"},
+		{name: "pending", checkpoint: pebblestore.SessionPlanCheckpoint{ID: "cp-1", Status: PlanCheckpointStatusPending}, want: "status \"pending\" is before active_checkpoint_id"},
+		{name: "waiting review", checkpoint: pebblestore.SessionPlanCheckpoint{ID: "cp-1", Status: PlanCheckpointStatusCompleted, Review: &pebblestore.SessionPlanCheckpointReview{Status: PlanCheckpointReviewStatusPending}}, want: "waiting for review before active_checkpoint_id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NormalizePlanDocumentForSave("plan-exec", "Execution Plan", &pebblestore.SessionPlanDocument{
+				ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+				Checkpoints:        []pebblestore.SessionPlanCheckpoint{tt.checkpoint, {ID: "cp-2", Status: PlanCheckpointStatusPending}},
+				ActiveCheckpointID: "cp-2",
+			}, nil)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("normalize unresolved checkpoint error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

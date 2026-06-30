@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 
@@ -229,8 +230,9 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 	if request == "" {
 		return PlanLifecycleResult{}, errors.New("request_followup_checkpoint requires change_request")
 	}
-	if summary := SummarizePlanExecution(state.doc); summary.Blocked || summary.Failed {
-		return PlanLifecycleResult{}, fmt.Errorf("request_followup_checkpoint requires an unblocked plan; current stop reason is %q", summary.StopReason)
+	insertionPoint := followupCheckpointInsertionPointForDocument(state.doc)
+	if insertionPoint.StopReason == PlanCheckpointStatusBlocked || insertionPoint.StopReason == PlanCheckpointStatusFailed {
+		return PlanLifecycleResult{}, fmt.Errorf("request_followup_checkpoint requires an unblocked plan; current stop reason is %q", insertionPoint.StopReason)
 	}
 	policy, err := s.resolveFollowupCheckpointPolicy(state, input.GlobalDefaultPolicy)
 	if err != nil {
@@ -239,7 +241,10 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 	if policy == PlanFollowupCheckpointPolicyRequireApproval && !input.ApprovalConfirmed {
 		return PlanLifecycleResult{}, errors.New("request_followup_checkpoint requires user approval by resolved follow-up checkpoint policy")
 	}
-	checkpointID := nextFollowupCheckpointID(state.doc)
+	checkpointID, err := nextFollowupCheckpointID(state.doc, insertionPoint.Index)
+	if err != nil {
+		return PlanLifecycleResult{}, err
+	}
 	title := strings.TrimSpace(input.Title)
 	if title == "" {
 		title = fmt.Sprintf("Follow-up: %s", truncatePlanLifecycleTitle(request, 72))
@@ -256,11 +261,12 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 		Tasks:              tasks,
 		AcceptanceCriteria: trimStringSlice(input.AcceptanceCriteria),
 		SourceMessageID:    strings.TrimSpace(input.SourceMessageID),
-		Order:              len(state.doc.Checkpoints) + 1,
+		Order:              insertionPoint.Index + 1,
 	}
-	state.doc.Checkpoints = append(state.doc.Checkpoints, checkpoint)
+	resolvedID := resolveFollowupInsertionPoint(state.doc, insertionPoint, checkpointID, time.Now().UnixMilli())
+	state.doc.Checkpoints = insertPlanCheckpointAt(state.doc.Checkpoints, insertionPoint.Index, checkpoint)
 	normalizeCheckpointOrder(state.doc)
-	if resolvedID := resolveCurrentInProgressCheckpointForFollowup(state.doc, checkpointID, time.Now().UnixMilli()); resolvedID != "" {
+	if resolvedID != "" {
 		state.doc.ExecutionState.LastCheckpointID = resolvedID
 	}
 	state.doc.ActiveCheckpointID = checkpointID
@@ -274,9 +280,12 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 	state.doc.ExecutionPolicy.Shape = PlanExecutionShapeCheckpointed
 	normalizePlanExecutionPolicy(&state.doc.ExecutionPolicy, len(state.doc.Checkpoints))
 	if policy == PlanFollowupCheckpointPolicyAutoStart {
-		return s.applyCheckpointStartAndSave(state, PlanLifecycleExecutionInput{SessionID: input.SessionID, PlanID: state.plan.ID, CheckpointID: checkpointID, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, AttemptID: input.AttemptID, StartedAt: input.StartedAt}, checkpointID, "request_followup_checkpoint", "Appended follow-up checkpoint and prepared fresh-context checkpoint start", state.plan.Status, state.plan.ApprovalState)
+		if strings.TrimSpace(input.RunID) == "" {
+			return s.saveLifecyclePlan(state, checkpointID, "request_followup_checkpoint", "Inserted follow-up checkpoint and queued fresh-context checkpoint start")
+		}
+		return s.applyCheckpointStartAndSave(state, PlanLifecycleExecutionInput{SessionID: input.SessionID, PlanID: state.plan.ID, CheckpointID: checkpointID, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, AttemptID: input.AttemptID, StartedAt: input.StartedAt}, checkpointID, "request_followup_checkpoint", "Inserted follow-up checkpoint and prepared fresh-context checkpoint start", state.plan.Status, state.plan.ApprovalState)
 	}
-	return s.saveLifecyclePlan(state, checkpointID, "request_followup_checkpoint", "Appended follow-up checkpoint")
+	return s.saveLifecyclePlan(state, checkpointID, "request_followup_checkpoint", "Inserted follow-up checkpoint")
 }
 
 func (s *PlanLifecycleService) RequestPlanRevision(input PlanLifecycleProposalInput) (PlanLifecycleResult, error) {
@@ -615,6 +624,98 @@ func (s *PlanLifecycleService) resolveFollowupCheckpointPolicy(state planLifecyc
 	return ResolvePlanFollowupCheckpointPolicy(state.doc, globalDefault), nil
 }
 
+type followupCheckpointInsertionPoint struct {
+	Index             int
+	CheckpointID      string
+	StopReason        string
+	ResolveCheckpoint bool
+}
+
+func followupCheckpointInsertionPointForDocument(doc *pebblestore.SessionPlanDocument) followupCheckpointInsertionPoint {
+	if doc == nil {
+		return followupCheckpointInsertionPoint{}
+	}
+	for i := range doc.Checkpoints {
+		checkpoint := doc.Checkpoints[i]
+		id := strings.TrimSpace(checkpoint.ID)
+		status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
+		if planCheckpointReviewPending(doc.ExecutionPolicy, checkpoint, i < len(doc.Checkpoints)-1) || status == PlanCheckpointStatusNeedsReview {
+			return followupCheckpointInsertionPoint{Index: i + 1, CheckpointID: id, StopReason: PlanCheckpointStatusNeedsReview, ResolveCheckpoint: true}
+		}
+		switch status {
+		case PlanCheckpointStatusPending:
+			return followupCheckpointInsertionPoint{Index: i, CheckpointID: id}
+		case PlanCheckpointStatusInProgress:
+			return followupCheckpointInsertionPoint{Index: i, CheckpointID: id, ResolveCheckpoint: true}
+		case PlanCheckpointStatusBlocked, PlanCheckpointStatusFailed:
+			return followupCheckpointInsertionPoint{Index: i, CheckpointID: id, StopReason: status, ResolveCheckpoint: false}
+		}
+	}
+	if planFinalReviewPending(doc) {
+		checkpointID := finalPlanReviewCheckpointID(doc)
+		idx := findPlanCheckpointIndex(doc.Checkpoints, checkpointID)
+		if idx < 0 {
+			idx = len(doc.Checkpoints) - 1
+		}
+		return followupCheckpointInsertionPoint{Index: idx + 1, CheckpointID: strings.TrimSpace(checkpointID), StopReason: PlanCheckpointStatusNeedsReview, ResolveCheckpoint: true}
+	}
+	return followupCheckpointInsertionPoint{Index: len(doc.Checkpoints)}
+}
+
+func resolveFollowupInsertionPoint(doc *pebblestore.SessionPlanDocument, point followupCheckpointInsertionPoint, followupID string, resolvedAt int64) string {
+	if doc == nil || !point.ResolveCheckpoint {
+		return ""
+	}
+	checkpointID := strings.TrimSpace(point.CheckpointID)
+	if checkpointID == "" || checkpointID == strings.TrimSpace(followupID) {
+		return ""
+	}
+	idx := findPlanCheckpointIndex(doc.Checkpoints, checkpointID)
+	if idx < 0 {
+		return ""
+	}
+	checkpoint := &doc.Checkpoints[idx]
+	status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
+	if status == PlanCheckpointStatusInProgress {
+		return resolveCurrentInProgressCheckpointForFollowup(doc, followupID, resolvedAt)
+	}
+	if status != PlanCheckpointStatusCompleted && status != PlanCheckpointStatusNeedsReview {
+		return ""
+	}
+	checkpoint.Status = PlanCheckpointStatusCompleted
+	checkpoint.Result = "superseded_by_followup"
+	checkpoint.Report = firstNonBlank(strings.TrimSpace(checkpoint.Report), fmt.Sprintf("Superseded by follow-up checkpoint %q before plan execution continued.", followupID))
+	if resolvedAt > 0 && checkpoint.CompletedAt == 0 {
+		checkpoint.CompletedAt = resolvedAt
+	}
+	if checkpoint.Review == nil {
+		checkpoint.Review = &pebblestore.SessionPlanCheckpointReview{}
+	}
+	checkpoint.Review.Status = PlanCheckpointReviewStatusApproved
+	checkpoint.Review.Result = "superseded_by_followup"
+	checkpoint.Review.Notes = firstNonBlank(strings.TrimSpace(checkpoint.Review.Notes), fmt.Sprintf("Review was closed because follow-up checkpoint %q was inserted before execution continued.", followupID))
+	if resolvedAt > 0 && checkpoint.Review.ReviewedAt == 0 {
+		checkpoint.Review.ReviewedAt = resolvedAt
+	}
+	if doc.ExecutionState == nil {
+		doc.ExecutionState = &pebblestore.SessionPlanExecutionState{}
+	}
+	doc.ExecutionState.LastCheckpointID = checkpointID
+	doc.ExecutionState.LastOutcome = PlanCheckpointStatusCompleted
+	doc.ExecutionState.UpdatedAt = resolvedAt
+	return checkpointID
+}
+
+func insertPlanCheckpointAt(checkpoints []pebblestore.SessionPlanCheckpoint, idx int, checkpoint pebblestore.SessionPlanCheckpoint) []pebblestore.SessionPlanCheckpoint {
+	if idx < 0 || idx >= len(checkpoints) {
+		return append(checkpoints, checkpoint)
+	}
+	checkpoints = append(checkpoints, pebblestore.SessionPlanCheckpoint{})
+	copy(checkpoints[idx+1:], checkpoints[idx:])
+	checkpoints[idx] = checkpoint
+	return checkpoints
+}
+
 func resolveCurrentInProgressCheckpointForFollowup(doc *pebblestore.SessionPlanDocument, followupID string, resolvedAt int64) string {
 	if doc == nil {
 		return ""
@@ -832,14 +933,82 @@ func requireCheckpointResettable(doc *pebblestore.SessionPlanDocument, checkpoin
 	return nil
 }
 
-func nextFollowupCheckpointID(doc *pebblestore.SessionPlanDocument) string {
-	base := "followup"
-	for i := 1; ; i++ {
-		candidate := fmt.Sprintf("%s-%d", base, i)
-		if doc == nil || findPlanCheckpointIndex(doc.Checkpoints, candidate) < 0 {
-			return candidate
+func nextFollowupCheckpointID(doc *pebblestore.SessionPlanDocument, insertionIndex int) (string, error) {
+	const base = "followup"
+	if doc == nil || len(doc.Checkpoints) == 0 || insertionIndex >= len(doc.Checkpoints) {
+		for i := 1; ; i++ {
+			candidate := fmt.Sprintf("%s-%d", base, i)
+			if doc == nil || findPlanCheckpointIndex(doc.Checkpoints, candidate) < 0 {
+				return candidate, nil
+			}
 		}
 	}
+	if insertionIndex < 0 {
+		insertionIndex = 0
+	}
+	if insertionIndex > len(doc.Checkpoints) {
+		insertionIndex = len(doc.Checkpoints)
+	}
+	previous, hasPrevious := adjacentFollowupIDNumber(doc.Checkpoints, insertionIndex-1)
+	next, hasNext := adjacentFollowupIDNumber(doc.Checkpoints, insertionIndex)
+	var candidateNumber *big.Rat
+	switch {
+	case hasPrevious && hasNext:
+		candidateNumber = new(big.Rat).Add(previous, next)
+		candidateNumber.Quo(candidateNumber, big.NewRat(2, 1))
+	case hasPrevious:
+		candidateNumber = new(big.Rat).Add(previous, big.NewRat(1, 1))
+	case hasNext:
+		candidateNumber = new(big.Rat).Sub(next, big.NewRat(1, 2))
+		if candidateNumber.Sign() <= 0 {
+			candidateNumber = new(big.Rat).Quo(next, big.NewRat(2, 1))
+		}
+	default:
+		return nextFollowupCheckpointID(doc, len(doc.Checkpoints))
+	}
+	if candidateNumber == nil || candidateNumber.Sign() <= 0 {
+		return "", fmt.Errorf("request_followup_checkpoint could not resolve a positive follow-up id before checkpoint %q", strings.TrimSpace(doc.Checkpoints[insertionIndex].ID))
+	}
+	candidate := formatFollowupCheckpointID(candidateNumber)
+	if candidate == "" || findPlanCheckpointIndex(doc.Checkpoints, candidate) >= 0 {
+		return "", fmt.Errorf("request_followup_checkpoint could not resolve a unique follow-up id %q at insertion index %d", candidate, insertionIndex)
+	}
+	return candidate, nil
+}
+
+func adjacentFollowupIDNumber(checkpoints []pebblestore.SessionPlanCheckpoint, index int) (*big.Rat, bool) {
+	if index < 0 || index >= len(checkpoints) {
+		return nil, false
+	}
+	id := strings.TrimSpace(checkpoints[index].ID)
+	if !strings.HasPrefix(id, "followup-") {
+		return nil, false
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(id, "followup-"))
+	if value == "" {
+		return nil, false
+	}
+	r := new(big.Rat)
+	if _, ok := r.SetString(value); !ok || r.Sign() <= 0 {
+		return nil, false
+	}
+	return r, true
+}
+
+func formatFollowupCheckpointID(value *big.Rat) string {
+	if value == nil || value.Sign() <= 0 {
+		return ""
+	}
+	if value.IsInt() {
+		return "followup-" + value.Num().String()
+	}
+	for _, precision := range []int{1, 2, 3, 6, 9, 12} {
+		text := strings.TrimRight(strings.TrimRight(value.FloatString(precision), "0"), ".")
+		if parsed, ok := new(big.Rat).SetString(text); ok && parsed.Cmp(value) == 0 {
+			return "followup-" + text
+		}
+	}
+	return ""
 }
 
 func truncatePlanLifecycleTitle(value string, limit int) string {

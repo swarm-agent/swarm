@@ -211,7 +211,8 @@ func TestApplyPlanDocumentPatchBatchCreatesOneRevision(t *testing.T) {
 
 	sessionID := createPlanTestSession(t, svc)
 	first, _, err := svc.SavePlanWithMetadata(sessionID, "plan-one", "One Plan", "# Plan", "draft", "draft", true, PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
-		Info: pebblestore.SessionPlanInfo{Goal: "initial goal", Scope: "initial scope"},
+		Info:            pebblestore.SessionPlanInfo{Goal: "initial goal", Scope: "initial scope"},
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
 			{ID: "cp-1", Title: "Model", Status: "active"},
 			{ID: "cp-2", Title: "API", Status: "pending"},

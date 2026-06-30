@@ -471,6 +471,19 @@ func validatePlanCheckpointContinuity(doc *pebblestore.SessionPlanDocument) erro
 	if activeID != "" {
 		activeIdx = findPlanCheckpointIndex(doc.Checkpoints, activeID)
 	}
+	if activeIdx > 0 {
+		for i := 0; i < activeIdx; i++ {
+			checkpoint := doc.Checkpoints[i]
+			id := strings.TrimSpace(checkpoint.ID)
+			status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
+			if status != PlanCheckpointStatusCompleted {
+				return fmt.Errorf("plan document checkpoint %q status %q is before active_checkpoint_id %q; resolve it before advancing active checkpoint", id, status, activeID)
+			}
+			if planCheckpointReviewPending(doc.ExecutionPolicy, checkpoint, i < len(doc.Checkpoints)-1) {
+				return fmt.Errorf("plan document checkpoint %q is waiting for review before active_checkpoint_id %q; accept or resolve it before advancing active checkpoint", id, activeID)
+			}
+		}
+	}
 	for i := range doc.Checkpoints {
 		if normalizePlanCheckpointStatusForSave(doc.Checkpoints[i].Status) != PlanCheckpointStatusInProgress {
 			continue
