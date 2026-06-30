@@ -92,6 +92,9 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 			return fmt.Errorf("plan document active_checkpoint_id %q does not match a checkpoint", activeID)
 		}
 	}
+	if err := validatePlanCheckpointContinuity(doc); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -256,6 +259,11 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 		if checkpoint.ID == "" {
 			return errors.New("upsert_checkpoint plan document patch requires checkpoint.id")
 		}
+		if checkpoint.Status == PlanCheckpointStatusInProgress {
+			if inProgressID, _, ok := findInProgressPlanCheckpoint(doc.Checkpoints, checkpoint.ID); ok {
+				return fmt.Errorf("cannot upsert checkpoint %q as in_progress while checkpoint %q is in_progress; resolve it first", checkpoint.ID, inProgressID)
+			}
+		}
 		idx := findPlanCheckpointIndex(doc.Checkpoints, checkpoint.ID)
 		if idx >= 0 {
 			if checkpoint.Order == 0 {
@@ -398,6 +406,9 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 		}
 		if findPlanCheckpointIndex(doc.Checkpoints, id) < 0 {
 			return fmt.Errorf("plan document checkpoint %q was not found", id)
+		}
+		if inProgressID, _, ok := findInProgressPlanCheckpoint(doc.Checkpoints, id); ok {
+			return fmt.Errorf("cannot set active_checkpoint_id to %q while checkpoint %q is in_progress; resolve it first", id, inProgressID)
 		}
 		doc.ActiveCheckpointID = id
 		return nil

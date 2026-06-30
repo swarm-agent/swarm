@@ -447,6 +447,59 @@ func defaultActiveCheckpointID(checkpoints []pebblestore.SessionPlanCheckpoint) 
 	return ""
 }
 
+func findInProgressPlanCheckpoint(checkpoints []pebblestore.SessionPlanCheckpoint, excludeID string) (string, int, bool) {
+	excludeID = strings.TrimSpace(excludeID)
+	for i := range checkpoints {
+		if normalizePlanCheckpointStatusForSave(checkpoints[i].Status) != PlanCheckpointStatusInProgress {
+			continue
+		}
+		id := strings.TrimSpace(checkpoints[i].ID)
+		if excludeID != "" && id == excludeID {
+			continue
+		}
+		return id, i, true
+	}
+	return "", -1, false
+}
+
+func validatePlanCheckpointContinuity(doc *pebblestore.SessionPlanDocument) error {
+	if doc == nil {
+		return nil
+	}
+	activeID := strings.TrimSpace(doc.ActiveCheckpointID)
+	activeIdx := -1
+	if activeID != "" {
+		activeIdx = findPlanCheckpointIndex(doc.Checkpoints, activeID)
+	}
+	for i := range doc.Checkpoints {
+		if normalizePlanCheckpointStatusForSave(doc.Checkpoints[i].Status) != PlanCheckpointStatusInProgress {
+			continue
+		}
+		id := strings.TrimSpace(doc.Checkpoints[i].ID)
+		if activeID == "" {
+			return fmt.Errorf("plan document checkpoint %q is in_progress but active_checkpoint_id is empty", id)
+		}
+		if id != activeID {
+			if activeIdx >= 0 && i < activeIdx {
+				return fmt.Errorf("plan document checkpoint %q is in_progress before active_checkpoint_id %q; resolve it before advancing active checkpoint", id, activeID)
+			}
+			return fmt.Errorf("plan document checkpoint %q is in_progress but active_checkpoint_id is %q", id, activeID)
+		}
+	}
+	if doc.ExecutionState != nil && normalizePlanExecutionStateStatus(doc.ExecutionState.Status) == PlanExecutionStateInProgress {
+		if activeID == "" {
+			return errors.New("plan document execution_state is in_progress but active_checkpoint_id is empty")
+		}
+		if activeIdx < 0 {
+			return fmt.Errorf("plan document execution_state is in_progress but active_checkpoint_id %q does not match a checkpoint", activeID)
+		}
+		if normalizePlanCheckpointStatusForSave(doc.Checkpoints[activeIdx].Status) != PlanCheckpointStatusInProgress {
+			return fmt.Errorf("plan document execution_state is in_progress but active checkpoint %q status is %q", activeID, normalizePlanCheckpointStatusForSave(doc.Checkpoints[activeIdx].Status))
+		}
+	}
+	return nil
+}
+
 func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionSummary {
 	if doc == nil {
 		return PlanExecutionSummary{PolicyMode: PlanExecutionPolicyModeReviewEachCheckpoint, ExecutionShape: PlanExecutionShapeSingleRun, PlanComplete: true}
@@ -652,6 +705,9 @@ func ApplyPlanCheckpointStart(doc *pebblestore.SessionPlanDocument, options Plan
 	}
 	checkpoint := &doc.Checkpoints[idx]
 	status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
+	if inProgressID, _, ok := findInProgressPlanCheckpoint(doc.Checkpoints, checkpointID); ok {
+		return PlanCheckpointStartDecision{CheckpointID: checkpointID, Status: status, NextCheckpointID: inProgressID, StopReason: PlanCheckpointStatusInProgress}, fmt.Errorf("cannot start checkpoint %q while checkpoint %q is in_progress; resolve it first", checkpointID, inProgressID)
+	}
 	summary := SummarizePlanExecution(doc)
 	if planCheckpointReviewPending(doc.ExecutionPolicy, *checkpoint, idx < len(doc.Checkpoints)-1) || status == PlanCheckpointStatusNeedsReview {
 		return PlanCheckpointStartDecision{CheckpointID: checkpointID, Status: status, NextCheckpointID: checkpointID, ReviewRequired: true, StopReason: PlanCheckpointStatusNeedsReview}, fmt.Errorf("checkpoint %q is waiting for review", checkpointID)
@@ -851,6 +907,10 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 			doc.ActiveCheckpointID = summary.NextCheckpointID
 			decision.NextCheckpointID = summary.NextCheckpointID
 			decision.AutoAdvanceAllowed = summary.AutoAdvanceAllowed
+			doc.ExecutionState.Status = PlanExecutionStateIdle
+			doc.ExecutionState.ActiveAttemptID = ""
+			doc.ExecutionState.CurrentRunID = ""
+			doc.ExecutionState.CurrentSessionID = ""
 		} else if summary.PlanComplete {
 			doc.ActiveCheckpointID = checkpointID
 			decision.ReviewRequired = true

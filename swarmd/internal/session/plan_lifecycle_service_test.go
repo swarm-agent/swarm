@@ -117,6 +117,89 @@ func TestPlanLifecycleRequestFollowupCheckpointAutoStartPreparesFreshRun(t *test
 	}
 }
 
+func TestPlanLifecycleRequestFollowupCheckpointResolvesInProgressBeforeApprovalAppend(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	plan := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:                     PlanExecutionPolicyModeAutomatic,
+		Shape:                    PlanExecutionShapeCheckpointed,
+		FollowupCheckpointPolicy: PlanFollowupCheckpointPolicyRequireApproval,
+	}, []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "One", Status: PlanCheckpointStatusInProgress, AttemptID: "cp-1:attempt-1", RunID: "run-cp-1", SessionID: "child-cp-1", StartedAt: 100},
+	})
+
+	result, err := NewPlanLifecycleService(svc).RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{
+		SessionID:         sessionID,
+		PlanID:            plan.ID,
+		ChangeRequest:     "Add approved follow-up.",
+		ApprovalConfirmed: true,
+	})
+	if err != nil {
+		t.Fatalf("request follow-up append: %v", err)
+	}
+	if result.CheckpointID != "followup-1" || result.Plan.Document.ActiveCheckpointID != "followup-1" {
+		t.Fatalf("checkpoint/active = %q/%q", result.CheckpointID, result.Plan.Document.ActiveCheckpointID)
+	}
+	old := result.Plan.Document.Checkpoints[0]
+	if old.Status == PlanCheckpointStatusInProgress || old.Status != PlanCheckpointStatusNeedsReview {
+		t.Fatalf("old checkpoint status = %q, want superseded needs_review", old.Status)
+	}
+	if old.Result != "superseded_by_followup" || old.Review == nil || old.Review.Status != PlanCheckpointReviewStatusPending {
+		t.Fatalf("old checkpoint supersede metadata = %#v", old)
+	}
+	if result.Plan.Document.Checkpoints[1].Status != PlanCheckpointStatusPending {
+		t.Fatalf("follow-up status = %q, want pending", result.Plan.Document.Checkpoints[1].Status)
+	}
+	assertNoInProgressBeforeActive(t, result.Plan.Document)
+}
+
+func TestPlanLifecycleRequestFollowupCheckpointAutoStartResolvesInProgressBeforeStartingFollowup(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	plan := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:                     PlanExecutionPolicyModeAutomatic,
+		Shape:                    PlanExecutionShapeCheckpointed,
+		FollowupCheckpointPolicy: PlanFollowupCheckpointPolicyAutoStart,
+	}, []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "One", Status: PlanCheckpointStatusInProgress, AttemptID: "cp-1:attempt-1", RunID: "run-cp-1", SessionID: "child-cp-1", StartedAt: 100},
+	})
+
+	result, err := NewPlanLifecycleService(svc).RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{
+		SessionID:       sessionID,
+		PlanID:          plan.ID,
+		ChangeRequest:   "Auto-start follow-up.",
+		RunID:           "run-followup-1",
+		RunSessionID:    "child-followup-1",
+		ParentSessionID: sessionID,
+		StartedAt:       200,
+	})
+	if err != nil {
+		t.Fatalf("request follow-up auto-start: %v", err)
+	}
+	old := result.Plan.Document.Checkpoints[0]
+	followup := result.Plan.Document.Checkpoints[1]
+	if old.Status != PlanCheckpointStatusNeedsReview || old.Result != "superseded_by_followup" {
+		t.Fatalf("old checkpoint = %#v", old)
+	}
+	if followup.Status != PlanCheckpointStatusInProgress || followup.RunID != "run-followup-1" || result.AttemptID != "followup-1:attempt-1" {
+		t.Fatalf("follow-up checkpoint = %#v result_attempt=%q", followup, result.AttemptID)
+	}
+	if result.Plan.Document.ExecutionState == nil || result.Plan.Document.ExecutionState.Status != PlanExecutionStateInProgress || result.Plan.Document.ExecutionState.LastCheckpointID != "cp-1" {
+		t.Fatalf("execution state = %#v", result.Plan.Document.ExecutionState)
+	}
+	assertNoInProgressBeforeActive(t, result.Plan.Document)
+}
+
 func TestPlanLifecycleSetFollowupCheckpointPolicyOverridePersistsWithoutModeSwitch(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()
@@ -159,6 +242,22 @@ func TestPlanLifecycleRequestFollowupCheckpointRequiresResolvedApprovalByDefault
 	_, err := NewPlanLifecycleService(svc).RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: plan.ID, ChangeRequest: "Add one more thing."})
 	if err == nil || !strings.Contains(err.Error(), "requires user approval") {
 		t.Fatalf("error = %v, want approval requirement", err)
+	}
+}
+
+func assertNoInProgressBeforeActive(t *testing.T, doc *pebblestore.SessionPlanDocument) {
+	t.Helper()
+	if doc == nil {
+		t.Fatalf("document is nil")
+	}
+	activeIdx := findPlanCheckpointIndex(doc.Checkpoints, doc.ActiveCheckpointID)
+	if activeIdx < 0 {
+		t.Fatalf("active checkpoint %q not found", doc.ActiveCheckpointID)
+	}
+	for i := 0; i < activeIdx; i++ {
+		if doc.Checkpoints[i].Status == PlanCheckpointStatusInProgress {
+			t.Fatalf("checkpoint %q before active %q is still in_progress", doc.Checkpoints[i].ID, doc.ActiveCheckpointID)
+		}
 	}
 }
 

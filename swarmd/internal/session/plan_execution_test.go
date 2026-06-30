@@ -138,3 +138,50 @@ func TestPlanDocumentPatchUpdatesExecutionPolicyAndOutcome(t *testing.T) {
 		t.Fatalf("patched runtime metadata = checkpoint %#v state %#v", doc.Checkpoints[0], doc.ExecutionState)
 	}
 }
+
+func TestPlanCheckpointStartRejectsAdvancingWhileAnotherCheckpointInProgress(t *testing.T) {
+	doc, err := NormalizePlanDocumentForSave("plan-exec", "Execution Plan", &pebblestore.SessionPlanDocument{
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: PlanCheckpointStatusInProgress}, {ID: "cp-2", Status: PlanCheckpointStatusPending}},
+		ActiveCheckpointID: "cp-1",
+	}, nil)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	_, err = ApplyPlanCheckpointStart(doc, PlanCheckpointStartOptions{CheckpointID: "cp-2", AttemptID: "cp-2:attempt-1"})
+	if err == nil || !strings.Contains(err.Error(), "resolve it first") {
+		t.Fatalf("start cp-2 error = %v, want continuity rejection", err)
+	}
+	if doc.ActiveCheckpointID != "cp-1" || doc.Checkpoints[0].Status != PlanCheckpointStatusInProgress || doc.Checkpoints[1].Status != PlanCheckpointStatusPending {
+		t.Fatalf("doc mutated after rejected start: active=%q checkpoints=%#v", doc.ActiveCheckpointID, doc.Checkpoints)
+	}
+}
+
+func TestValidatePlanDocumentRejectsStaleInProgressBeforeActive(t *testing.T) {
+	_, err := NormalizePlanDocumentForSave("plan-exec", "Execution Plan", &pebblestore.SessionPlanDocument{
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: PlanCheckpointStatusInProgress}, {ID: "cp-2", Status: PlanCheckpointStatusPending}},
+		ActiveCheckpointID: "cp-2",
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "in_progress before active_checkpoint_id") {
+		t.Fatalf("normalize stale in_progress error = %v, want continuity rejection", err)
+	}
+}
+
+func TestPlanDocumentPatchRejectsSetActiveAndUpsertThatStrandInProgress(t *testing.T) {
+	base := &pebblestore.SessionPlanDocument{
+		ID:                 "plan-exec",
+		Title:              "Execution Plan",
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: PlanCheckpointStatusInProgress}, {ID: "cp-2", Status: PlanCheckpointStatusPending}},
+		ActiveCheckpointID: "cp-1",
+	}
+	_, err := ApplyPlanDocumentPatch("plan-exec", "Execution Plan", base, PlanDocumentPatch{Operation: "set_active_checkpoint", ActiveCheckpointID: "cp-2"})
+	if err == nil || !strings.Contains(err.Error(), "resolve it first") {
+		t.Fatalf("set active error = %v, want continuity rejection", err)
+	}
+	_, err = ApplyPlanDocumentPatch("plan-exec", "Execution Plan", base, PlanDocumentPatch{Operation: "upsert_checkpoint", Checkpoint: &pebblestore.SessionPlanCheckpoint{ID: "cp-2", Status: PlanCheckpointStatusInProgress}})
+	if err == nil || !strings.Contains(err.Error(), "resolve it first") {
+		t.Fatalf("upsert in_progress error = %v, want continuity rejection", err)
+	}
+}

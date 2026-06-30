@@ -260,6 +260,9 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 	}
 	state.doc.Checkpoints = append(state.doc.Checkpoints, checkpoint)
 	normalizeCheckpointOrder(state.doc)
+	if resolvedID := resolveCurrentInProgressCheckpointForFollowup(state.doc, checkpointID, time.Now().UnixMilli()); resolvedID != "" {
+		state.doc.ExecutionState.LastCheckpointID = resolvedID
+	}
 	state.doc.ActiveCheckpointID = checkpointID
 	if state.doc.ExecutionState == nil {
 		state.doc.ExecutionState = &pebblestore.SessionPlanExecutionState{}
@@ -610,6 +613,74 @@ func (s *PlanLifecycleService) resolveFollowupCheckpointPolicy(state planLifecyc
 		globalDefault = strings.TrimSpace(policy)
 	}
 	return ResolvePlanFollowupCheckpointPolicy(state.doc, globalDefault), nil
+}
+
+func resolveCurrentInProgressCheckpointForFollowup(doc *pebblestore.SessionPlanDocument, followupID string, resolvedAt int64) string {
+	if doc == nil {
+		return ""
+	}
+	followupID = strings.TrimSpace(followupID)
+	activeID := strings.TrimSpace(doc.ActiveCheckpointID)
+	if activeID == "" || activeID == followupID {
+		return ""
+	}
+	idx := findPlanCheckpointIndex(doc.Checkpoints, activeID)
+	if idx < 0 {
+		return ""
+	}
+	checkpoint := &doc.Checkpoints[idx]
+	if normalizePlanCheckpointStatusForSave(checkpoint.Status) != PlanCheckpointStatusInProgress {
+		return ""
+	}
+	checkpoint.Status = PlanCheckpointStatusNeedsReview
+	checkpoint.Result = firstNonBlank(strings.TrimSpace(checkpoint.Result), "superseded_by_followup")
+	checkpoint.Report = firstNonBlank(strings.TrimSpace(checkpoint.Report), fmt.Sprintf("Superseded by follow-up checkpoint %q before active checkpoint changed.", followupID))
+	if resolvedAt > 0 {
+		checkpoint.CompletedAt = resolvedAt
+	}
+	if checkpoint.Review == nil {
+		checkpoint.Review = &pebblestore.SessionPlanCheckpointReview{}
+	}
+	checkpoint.Review.Status = PlanCheckpointReviewStatusPending
+	checkpoint.Review.Notes = firstNonBlank(strings.TrimSpace(checkpoint.Review.Notes), fmt.Sprintf("Checkpoint was superseded by follow-up checkpoint %q.", followupID))
+	attemptID := strings.TrimSpace(checkpoint.AttemptID)
+	if attemptID == "" && doc.ExecutionState != nil {
+		attemptID = strings.TrimSpace(doc.ExecutionState.ActiveAttemptID)
+	}
+	if attemptID != "" {
+		runID := strings.TrimSpace(checkpoint.RunID)
+		runSessionID := strings.TrimSpace(checkpoint.SessionID)
+		parentSessionID := ""
+		if doc.ExecutionState != nil {
+			parentSessionID = strings.TrimSpace(doc.ExecutionState.ParentSessionID)
+		}
+		upsertPlanCheckpointAttempt(checkpoint, pebblestore.SessionPlanCheckpointAttempt{
+			ID:              attemptID,
+			CheckpointID:    activeID,
+			Status:          PlanCheckpointStatusNeedsReview,
+			Outcome:         PlanCheckpointStatusNeedsReview,
+			RunID:           runID,
+			SessionID:       runSessionID,
+			ParentSessionID: parentSessionID,
+			StartedAt:       checkpoint.StartedAt,
+			CompletedAt:     resolvedAt,
+			Report:          checkpoint.Report,
+			Result:          checkpoint.Result,
+			ChangedFiles:    cloneStringSlice(checkpoint.ChangedFiles),
+			Validation:      cloneStringSlice(checkpoint.Validation),
+		})
+		checkpoint.AttemptID = attemptID
+	}
+	if doc.ExecutionState == nil {
+		doc.ExecutionState = &pebblestore.SessionPlanExecutionState{}
+	}
+	doc.ExecutionState.LastCheckpointID = activeID
+	doc.ExecutionState.LastAttemptID = attemptID
+	doc.ExecutionState.LastOutcome = PlanCheckpointStatusNeedsReview
+	if resolvedAt > 0 {
+		doc.ExecutionState.UpdatedAt = resolvedAt
+	}
+	return activeID
 }
 
 func (s *PlanLifecycleService) loadApprovedPlan(sessionID, planID, action string) (planLifecycleState, error) {
