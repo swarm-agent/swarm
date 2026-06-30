@@ -1,10 +1,53 @@
 import React from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import { DesktopPlanExecutionSidebar } from './desktop-plan-execution-sidebar'
+import type { DesktopPlanExecutionSidebarActionInput } from './desktop-plan-execution-sidebar'
 import type { DesktopPlanExecutionView } from '../../state/desktop-v3-cache-selectors'
+
+type HostElement = ReactElement<{
+  children?: ReactNode
+  disabled?: boolean
+  onClick?: (event?: unknown) => void
+}, string>
+
+function textContent(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number' || typeof node === 'bigint') return String(node)
+  if (Array.isArray(node)) return node.map(textContent).join('')
+  if (React.isValidElement(node)) return textContent((node.props as { children?: ReactNode }).children)
+  return ''
+}
+
+function collectHostElements(node: ReactNode, elements: HostElement[] = []): HostElement[] {
+  if (node === null || node === undefined || typeof node === 'boolean') return elements
+  if (Array.isArray(node)) {
+    for (const child of node) collectHostElements(child, elements)
+    return elements
+  }
+  if (!React.isValidElement(node)) return elements
+
+  const element = node as ReactElement<{ children?: ReactNode }>
+  const elementType = element.type as unknown
+  if (typeof elementType === 'function') return collectHostElements(elementType(element.props), elements)
+  if (typeof elementType === 'object' && elementType && '$$typeof' in elementType && (elementType as { $$typeof?: symbol }).$$typeof === Symbol.for('react.memo')) {
+    const memoType = (elementType as { type?: unknown }).type
+    if (typeof memoType === 'function') return collectHostElements(memoType(element.props), elements)
+  }
+
+  if (typeof element.type === 'string') elements.push(element as HostElement)
+  collectHostElements(element.props.children, elements)
+  return elements
+}
+
+function findSidebarButton(element: ReactElement, label: string): HostElement {
+  const button = collectHostElements(element).find((candidate) => candidate.type === 'button' && textContent(candidate.props.children).replace(/\s+/g, ' ').trim() === label)
+  assert.ok(button, `expected ${label} button`)
+  return button
+}
 
 function view(overrides: Partial<DesktopPlanExecutionView> = {}): DesktopPlanExecutionView {
   const checkpoint = {
@@ -154,7 +197,7 @@ test('manual review mode exposes only the enabled accept-and-archive review acti
   assert.match(markup, /Review Mode/)
   assert.match(markup, /You can keep chatting and ask the AI to continue work or add checkpoints/)
   assert.match(markup, /Accept &amp; archive plan/)
-  assert.match(markup, /moves the completed plan to Archived/)
+  assert.match(markup, /moves the completed plan to Archived without running checkpoint acceptance first/)
   assert.match(markup, /Accept and archive the completed plan when you’re done/)
   assert.doesNotMatch(markup, /Archive plan<\/button>/)
   assert.doesNotMatch(markup, /Move this plan to Archived without starting another checkpoint/)
@@ -175,4 +218,49 @@ test('manual review mode keeps finish-plan action clickable when all checkpoints
 
   assert.match(markup, /Accept &amp; archive plan/)
   assert.doesNotMatch(markup, /disabled="">Accept &amp; archive plan/)
+})
+
+test('final accept-and-archive review action dispatches archive without checkpoint acceptance', () => {
+  const actions: DesktopPlanExecutionSidebarActionInput[] = []
+  const button = findSidebarButton(
+    <DesktopPlanExecutionSidebar
+      view={view({ policyMode: 'review_each_checkpoint', reviewRequired: true, status: 'waiting_review' })}
+      onAction={(input) => { actions.push(input) }}
+      onEditPlan={() => undefined}
+    />,
+    'Accept & archive plan',
+  )
+
+  assert.equal(button.props.disabled, false)
+  button.props.onClick?.()
+
+  assert.deepEqual(actions, [{ action: 'archive_plan' }])
+})
+
+test('non-final review action dispatches checkpoint acceptance to start the next checkpoint', () => {
+  const base = view({ policyMode: 'review_each_checkpoint', reviewRequired: true, status: 'waiting_review' })
+  base.plan.document.checkpoints.push({
+    ...base.plan.document.checkpoints[0],
+    id: 'cp-2',
+    title: 'Follow-up',
+    status: 'pending',
+    attemptId: '',
+    runId: '',
+    sessionId: '',
+    startedAt: 0,
+  })
+  const actions: DesktopPlanExecutionSidebarActionInput[] = []
+  const button = findSidebarButton(
+    <DesktopPlanExecutionSidebar
+      view={base}
+      onAction={(input) => { actions.push(input) }}
+      onEditPlan={() => undefined}
+    />,
+    'Accept & start next checkpoint',
+  )
+
+  assert.equal(button.props.disabled, false)
+  button.props.onClick?.()
+
+  assert.deepEqual(actions, [{ action: 'accept_checkpoint', checkpointId: 'cp-1' }])
 })

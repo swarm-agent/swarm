@@ -188,11 +188,15 @@ function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecuti
   const hasNextCheckpoint = checkpoints.some((checkpoint, index) => index > activeIndex && checkpointIsIncomplete(checkpoint))
   const canAccept = Boolean(onAction && checkpointId && view.reviewRequired && !view.blocked && !view.failed && !canStop)
   const canArchive = Boolean(onAction && !canStop && !archiveBusy)
-  const acceptReviewBusy = acceptBusy
+  const finalReviewArchive = view.reviewRequired && !hasNextCheckpoint
+  const acceptReviewBusy = finalReviewArchive ? archiveBusy : acceptBusy
+  const canAcceptReview = finalReviewArchive
+    ? Boolean(onAction && view.reviewRequired && !view.blocked && !view.failed && !canStop && !archiveBusy)
+    : canAccept
   const acceptReviewLabel = hasNextCheckpoint ? 'Accept & start next checkpoint' : 'Accept & archive plan'
   const acceptReviewHelp = hasNextCheckpoint
     ? 'Accepting review starts the next checkpoint. You can keep chatting first or ask the AI to add or adjust checkpoints.'
-    : 'Accept & archive plan accepts this review and moves the completed plan to Archived.'
+    : 'Accept & archive plan moves the completed plan to Archived without running checkpoint acceptance first.'
   const showDirectArchiveAction = !view.reviewRequired || hasNextCheckpoint
   if (automatic && !view.reviewRequired && !view.blocked && !view.failed && !view.completed) {
     const singleRun = isSingleRunView(view)
@@ -243,8 +247,8 @@ function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecuti
             size="sm"
             variant="primary"
             className={cn('rounded-lg', acceptReviewBusy ? 'animate-pulse' : '')}
-            onClick={() => void onAction?.({ action: 'accept_checkpoint', checkpointId })}
-            disabled={!canAccept || acceptReviewBusy}
+            onClick={() => void onAction?.(finalReviewArchive ? { action: 'archive_plan' } : { action: 'accept_checkpoint', checkpointId })}
+            disabled={!canAcceptReview || acceptReviewBusy}
           >
             {acceptReviewLabel}
           </Button>
