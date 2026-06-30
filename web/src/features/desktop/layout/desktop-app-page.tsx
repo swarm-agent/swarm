@@ -1697,15 +1697,6 @@ function flattenVisibleSidebarSessionNodes(
   return output
 }
 
-function agentSummaryDescriptor(summary: SessionAgentSummary): { primary: string; secondary: string; secondaryRunning: boolean } {
-  const total = summary.total
-  const running = summary.running
-  if (running > 0) {
-    return { primary: `${running} live`, secondary: `${total} agents`, secondaryRunning: false }
-  }
-  return { primary: `${total} agents`, secondary: '', secondaryRunning: false }
-}
-
 interface SessionRowProps {
   active: boolean
   now: number
@@ -1736,8 +1727,6 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const isPlanRow = rowType === 'plan_session'
   const checkpointProgressLabel = sessionPlanCheckpointProgressLabel(session)
   const checkpointCounts = sessionPlanCheckpointCounts(session)
-  const activeCheckpointTitle = metadataText(session, 'swarm_v3_active_checkpoint_title')
-  const activeCheckpointStatus = metadataText(session, 'swarm_v3_active_checkpoint_status')
   const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
   const tooltip = sessionStatusTooltip(session)
   const isNestedSession = depth > 0
@@ -1746,7 +1735,6 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const visibleChildLabel = childLabel && childLabel !== rowTitle ? childLabel : ''
   const nestedToneClass = childKind === 'subagent' ? 'text-[var(--app-info)]' : 'text-[var(--app-text-subtle)]'
   const hasAgentChildren = agentSummary.total > 0
-  const agentDescriptor = agentSummaryDescriptor(agentSummary)
   const metadataLabel = sessionRowMetadataLabel(session)
   const relativeActivityLabel = sessionStatusDetail(session, now)
   const rowTimerLabel = compactingActive
@@ -1765,12 +1753,6 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const checkpointProgressText = checkpointProgressLabel || (checkpointCounts.totalCount > 0
     ? `${checkpointCounts.activeIndex || checkpointCounts.completedCount}/${checkpointCounts.totalCount}`
     : '')
-  const checkpointStatusMeta = activeCheckpointStatus ? activeCheckpointStatus.replace(/[_-]+/g, ' ') : ''
-  const checkpointMetaParts = [
-    checkpointStatusMeta.toLowerCase() === 'in progress' ? '' : checkpointStatusMeta,
-    activeCheckpointTitle,
-  ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index)
-  const planCheckpointMeta = checkpointMetaParts.join(' · ') || 'No active checkpoint'
   const showDetailsRow = !isPlanRow && Boolean(backgroundInfo || visibleChildLabel || hasAgentChildren)
   const agentToggleControl = hasAgentChildren ? (
     <button
@@ -1790,15 +1772,8 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       aria-pressed={agentsExpanded}
       title={`${agentSummary.total} subagent${agentSummary.total === 1 ? '' : 's'} · ${agentSummary.running} running${agentsExpanded ? ' · click to hide subagent sessions' : ' · click to show subagent sessions'}`}
     >
-      {agentsExpanded ? <ChevronDown size={10} className="shrink-0 opacity-75" /> : <ChevronRight size={10} className="shrink-0 opacity-75" />}
       <Bot size={11} className={cn('shrink-0', agentSummary.running > 0 ? 'animate-pulse text-[var(--app-success)]' : null)} />
-      <span className={cn('font-mono tabular-nums text-[10px] leading-none', agentSummary.running > 0 ? 'text-[var(--app-success)]' : null)}>{agentDescriptor.primary}</span>
-      {agentDescriptor.secondary ? (
-        <span className={cn(
-          'font-mono tabular-nums text-[10px] leading-none',
-          agentSummary.running > 0 ? 'text-[var(--app-text-subtle)]' : 'text-[var(--app-text)]',
-        )}>{agentDescriptor.secondary}</span>
-      ) : null}
+      <span className={cn('font-mono tabular-nums text-[10px] leading-none', agentSummary.running > 0 ? 'text-[var(--app-success)]' : null)}>{agentSummary.total}</span>
     </button>
   ) : null
   return (
@@ -1821,23 +1796,19 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       onMouseEnter={() => onPrefetch(session.id)}
       onFocus={() => onPrefetch(session.id)}
       className={cn(
-        'grid w-full min-w-0 rounded-md border text-left outline-none transition-colors',
+        'relative grid w-full min-w-0 rounded-md border text-left outline-none transition-colors',
         isPlanRow ? 'gap-1.5 px-2.5 py-2' : 'gap-1 px-2.5 py-1.5',
         active
           ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45'
           : 'border-transparent bg-[var(--app-surface)]/45 hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]',
-        isNestedSession ? 'ml-3' : null,
-        hasAgentChildren && agentsExpanded ? 'border-[var(--app-border-accent)]' : null,
+        isNestedSession ? 'ml-0 rounded-sm border-transparent bg-[var(--app-bg-alt)]/20 py-1 pl-1 pr-2 hover:border-transparent hover:bg-[var(--app-surface)]/25' : null,
+        isNestedSession && active ? 'border-transparent bg-[var(--app-surface)]/30' : null,
+        hasAgentChildren && agentsExpanded && !isNestedSession ? 'border-[var(--app-border-accent)]' : null,
       )}
       title={tooltip || metadataLabel}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-start gap-2">
-          {isNestedSession ? (
-            <span aria-hidden="true" className={cn('mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)]', nestedToneClass)}>
-              {childKind === 'subagent' ? <Bot size={9} /> : <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />}
-            </span>
-          ) : null}
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
               <span className={cn('min-w-0 flex-1 truncate font-medium text-[var(--app-text)]', isNestedSession ? 'text-[12px]' : 'text-[13px]')}>
@@ -1870,14 +1841,14 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       </div>
 
       {isPlanRow ? (
-        <div className="flex min-w-0 items-start justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-          <div className="grid min-w-0 flex-1 gap-0.5 overflow-hidden">
-            <span className="shrink-0 font-mono font-semibold uppercase tracking-[0.08em] text-[var(--app-text-muted)]" aria-label={checkpointProgressLabel || undefined}>
-              {checkpointProgressText ? `CP ${checkpointProgressText}` : 'CP'}
-            </span>
-            <span className="truncate">{planCheckpointMeta}</span>
-          </div>
-          <div className="ml-auto flex shrink-0 items-center gap-2">
+        <div className="flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+          <span
+            className="inline-flex shrink-0 items-center rounded-full bg-[var(--app-surface-subtle)]/70 px-1.5 py-0 font-mono text-[10px] font-semibold uppercase leading-4 tracking-[0.08em] text-[var(--app-text-muted)]"
+            aria-label={checkpointProgressLabel || undefined}
+          >
+            {checkpointProgressText ? `CP ${checkpointProgressText}` : 'CP'}
+          </span>
+          <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
             {agentToggleControl}
           </div>
         </div>
@@ -1934,8 +1905,12 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
   for (const group of SIDEBAR_SESSION_GROUPS) {
     grouped.set(group.id, [])
   }
+  let currentRootGroup: (typeof SIDEBAR_SESSION_GROUPS)[number]['id'] | null = null
   for (const node of input.nodes) {
-    grouped.get(sessionSidebarGroup(node.session))?.push(node)
+    if (node.depth === 0 || !currentRootGroup) {
+      currentRootGroup = sessionSidebarGroup(node.session)
+    }
+    grouped.get(currentRootGroup)?.push(node)
   }
   const activeGroups = SIDEBAR_SESSION_GROUPS.filter((group) => group.id !== 'archived')
   const archivedGroup = SIDEBAR_SESSION_GROUPS.find((group) => group.id === 'archived')
