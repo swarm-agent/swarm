@@ -999,7 +999,6 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	}
 	changeRequest := strings.TrimSpace(firstNonEmptyString(mapString(args, "change_request"), mapString(args, "user_request"), mapString(args, "request"), mapString(args, "prompt"), mapString(args, "text")))
 	checkpointTitle := strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title")))
-	followupPolicy := strings.TrimSpace(firstNonEmptyString(mapString(args, "followup_checkpoint_policy"), mapString(args, "policy")))
 	previewDocument := document
 	if documentPatch != nil {
 		previewDocument, err = sessionruntime.ApplyPlanDocumentPatch(planID, title, existing.Document, *documentPatch)
@@ -1041,31 +1040,30 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		previewDocument = existing.Document
 	}
 	payload := planManagePermissionPayload{
-		PathID:                   "tool.plan-manage-update.v1",
-		Title:                    title,
-		PlanID:                   planID,
-		PriorTitle:               strings.TrimSpace(existing.Title),
-		PriorPlan:                strings.TrimSpace(existing.Plan),
-		Plan:                     previewPlan,
-		Document:                 previewDocument,
-		DiffLines:                sessionruntime.BuildPlanDiffLines(existing.Plan, previewPlan),
-		Status:                   status,
-		ApprovalState:            approvalState,
-		Activate:                 activate,
-		Action:                   action,
-		UpdateType:               "existing_plan",
-		UpdateSummary:            updateSummary,
-		UpdateScope:              updateScope,
-		UpdateKind:               updateKind,
-		DocumentOperation:        action,
-		Checkpoint:               checkpoint,
-		ChangeRequest:            changeRequest,
-		CheckpointTitle:          checkpointTitle,
-		Tasks:                    mapStringSlice(args, "tasks"),
-		AcceptanceCriteria:       mapStringSlice(args, "acceptance_criteria"),
-		FollowupCheckpointPolicy: followupPolicy,
-		PolicyEffective:          s.resolvePlanFollowupCheckpointPolicyForPermission(existing, followupPolicy),
-		ApprovalRequired:         action == "request_plan_revision" || action == "request_new_plan" || (action == "request_followup_checkpoint" && s.resolvePlanFollowupCheckpointPolicyForPermission(existing, followupPolicy) == sessionruntime.PlanFollowupCheckpointPolicyRequireApproval),
+		PathID:             "tool.plan-manage-update.v1",
+		Title:              title,
+		PlanID:             planID,
+		PriorTitle:         strings.TrimSpace(existing.Title),
+		PriorPlan:          strings.TrimSpace(existing.Plan),
+		Plan:               previewPlan,
+		Document:           previewDocument,
+		DiffLines:          sessionruntime.BuildPlanDiffLines(existing.Plan, previewPlan),
+		Status:             status,
+		ApprovalState:      approvalState,
+		Activate:           activate,
+		Action:             action,
+		UpdateType:         "existing_plan",
+		UpdateSummary:      updateSummary,
+		UpdateScope:        updateScope,
+		UpdateKind:         updateKind,
+		DocumentOperation:  action,
+		Checkpoint:         checkpoint,
+		ChangeRequest:      changeRequest,
+		CheckpointTitle:    checkpointTitle,
+		Tasks:              mapStringSlice(args, "tasks"),
+		AcceptanceCriteria: mapStringSlice(args, "acceptance_criteria"),
+		PolicyEffective:    s.resolvePlanFollowupCheckpointPolicyForPermission(existing, ""),
+		ApprovalRequired:   action == "request_plan_revision" || action == "request_new_plan" || (action == "request_followup_checkpoint" && s.resolvePlanFollowupCheckpointPolicyForPermission(existing, "") == sessionruntime.PlanFollowupCheckpointPolicyRequireApproval),
 		ApprovedArguments: map[string]any{
 			"action":         action,
 			"plan_id":        planID,
@@ -1089,7 +1087,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	} else {
 		for key, value := range args {
 			switch key {
-			case "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically", "change_request", "user_request", "request", "prompt", "checkpoint_title", "tasks", "acceptance_criteria", "source_message_id", "followup_checkpoint_policy", "policy", "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
+			case "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically", "change_request", "user_request", "request", "prompt", "checkpoint_title", "tasks", "acceptance_criteria", "source_message_id", "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
 				payload.ApprovedArguments[key] = value
 			case "checkpoint":
 				if _, isBool := value.(bool); !isBool {

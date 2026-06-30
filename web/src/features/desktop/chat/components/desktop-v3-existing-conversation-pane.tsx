@@ -27,6 +27,7 @@ import {
   updateSessionV3Agent,
   updateSessionV3Mode,
   updateSessionV3Preference,
+  desktopPlanFollowupPolicyResponsePlan,
   setSessionV3PlanFollowupPolicy,
   stopSessionV3Run,
 } from '../../session-v3/api'
@@ -45,6 +46,7 @@ import {
   resumeDesktopPlanAutomatic,
 } from '../../session-v3/plan-execution-api'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../../state/desktop-v3-session-api'
+import { normalizeDesktopSessionPlan } from '../services/session-plan-record'
 import { resolveSessionPermission, sendSessionMessage, updateDraftModelPreference } from '../queries/chat-queries'
 import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
 import { permissionRequiresApproval } from '../../permissions/services/permission-payload'
@@ -64,6 +66,18 @@ function desktopPlanLifecycleComplete(response: { execution_summary?: unknown })
   if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return false
   const planComplete = (summary as Record<string, unknown>).plan_complete
   return planComplete === true || planComplete === 'true'
+}
+
+function applyPlanFollowupPolicyResponse(sessionId: string, response: Parameters<typeof desktopPlanFollowupPolicyResponsePlan>[0]): void {
+  const plan = desktopPlanFollowupPolicyResponsePlan(response)
+  if (!plan) return
+  dispatchDesktopV3Cache({
+    type: 'planSnapshot.apply',
+    sessionId,
+    hasActivePlan: true,
+    activePlan: normalizeDesktopSessionPlan(plan),
+    planRevisions: [],
+  })
 }
 
 function optionKey(provider: string, model: string, contextMode = ''): string {
@@ -1067,19 +1081,21 @@ export function DesktopV3ExistingConversationPane({
             })
             queryClient.setQueryData(uiSettingsQueryKey(), saved)
             queryClient.setQueryData(['ui-settings', 'swarm'], normalizeSwarmSettings(saved))
-            await setSessionV3PlanFollowupPolicy(normalizedSessionId, {
+            const response = await setSessionV3PlanFollowupPolicy(normalizedSessionId, {
               planId: planExecutionView?.plan.id,
               followupCheckpointPolicy: '',
               reason: 'Updated Desktop follow-up handling global default',
             })
+            applyPlanFollowupPolicyResponse(normalizedSessionId, response)
             await fetchAndApplyDesktopV3PlanSnapshot(normalizedSessionId)
             break
           }
-          await setSessionV3PlanFollowupPolicy(normalizedSessionId, {
+          const response = await setSessionV3PlanFollowupPolicy(normalizedSessionId, {
             planId: planExecutionView?.plan.id,
             followupCheckpointPolicy: input.followupCheckpointPolicy ?? '',
             reason: 'Updated Desktop follow-up handling preference',
           })
+          applyPlanFollowupPolicyResponse(normalizedSessionId, response)
           await fetchAndApplyDesktopV3PlanSnapshot(normalizedSessionId)
           break
         case 'resume_automatic':

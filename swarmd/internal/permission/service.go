@@ -35,17 +35,18 @@ const (
 )
 
 type Service struct {
-	store                   *pebblestore.PermissionStore
-	events                  *pebblestore.EventLog
-	publish                 func(pebblestore.EventEnvelope)
-	summaryRealtimePublish  func(sessionID string, summary pebblestore.PermissionSummary) error
-	sessions                sessionLookup
-	hosted                  HostedPermissionSync
-	notifications           *notification.Service
-	localSwarmIDResolver    func() string
-	principalID             string
-	bypassPermissions       bool
-	retainToolOutputHistory bool
+	store                            *pebblestore.PermissionStore
+	events                           *pebblestore.EventLog
+	publish                          func(pebblestore.EventEnvelope)
+	summaryRealtimePublish           func(sessionID string, summary pebblestore.PermissionSummary) error
+	sessions                         sessionLookup
+	followupCheckpointPolicyResolver func(accountScopeID string) (string, error)
+	hosted                           HostedPermissionSync
+	notifications                    *notification.Service
+	localSwarmIDResolver             func() string
+	principalID                      string
+	bypassPermissions                bool
+	retainToolOutputHistory          bool
 
 	mu                   sync.Mutex
 	waiters              map[string][]chan pebblestore.PermissionRecord
@@ -109,6 +110,11 @@ type sessionLookup interface {
 	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
 }
 
+type sessionPlanLookup interface {
+	GetPlan(sessionID, planID string) (pebblestore.SessionPlanSnapshot, bool, error)
+	GetActivePlan(sessionID string) (pebblestore.SessionPlanSnapshot, bool, error)
+}
+
 type ResolveInput struct {
 	SessionID         string
 	PermissionID      string
@@ -147,6 +153,13 @@ func (s *Service) SetSessionResolver(resolver sessionLookup) {
 		return
 	}
 	s.sessions = resolver
+}
+
+func (s *Service) SetFollowupCheckpointPolicyResolver(resolver func(accountScopeID string) (string, error)) {
+	if s == nil {
+		return
+	}
+	s.followupCheckpointPolicyResolver = resolver
 }
 
 func (s *Service) SetSummaryRealtimePublisher(publish func(sessionID string, summary pebblestore.PermissionSummary) error) {
@@ -382,6 +395,12 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		RulePreview: strings.TrimSpace(explain.RulePreview),
 	}
 
+	if explain.Decision != PolicyDecisionDeny {
+		if dynamic, handled, err := s.authorizeDynamicToolAction(input, sessionID, requirement); handled || err != nil {
+			return dynamic, err
+		}
+	}
+
 	switch explain.Decision {
 	case PolicyDecisionAllow:
 		result.Decision = AuthorizationApprove
@@ -390,24 +409,110 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		result.Decision = AuthorizationDeny
 		return result, nil
 	default:
-		record, err := s.CreatePending(CreateInput{
-			SessionID:         sessionID,
-			RunID:             input.RunID,
-			Step:              input.Step,
-			CallID:            input.CallID,
-			ToolName:          input.ToolName,
-			ToolArguments:     input.ToolArguments,
-			ToolCallArguments: input.ToolCallArguments,
-			Requirement:       requirement,
-			Mode:              input.Mode,
-		})
-		if err != nil {
-			return AuthorizationResult{}, err
-		}
-		result.Decision = AuthorizationPending
-		result.Record = &record
-		return result, nil
+		return s.createPendingAuthorization(input, sessionID, requirement, strings.TrimSpace(explain.Reason), strings.TrimSpace(explain.Source), strings.TrimSpace(explain.RulePreview))
 	}
+}
+
+func (s *Service) createPendingAuthorization(input AuthorizationInput, sessionID, requirement, reason, source, rulePreview string) (AuthorizationResult, error) {
+	record, err := s.CreatePending(CreateInput{
+		SessionID:         sessionID,
+		RunID:             input.RunID,
+		Step:              input.Step,
+		CallID:            input.CallID,
+		ToolName:          input.ToolName,
+		ToolArguments:     input.ToolArguments,
+		ToolCallArguments: input.ToolCallArguments,
+		Requirement:       requirement,
+		Mode:              input.Mode,
+	})
+	if err != nil {
+		return AuthorizationResult{}, err
+	}
+	result := AuthorizationResult{Decision: AuthorizationPending, Requirement: requirement, Reason: reason, Source: source, RulePreview: rulePreview, Record: &record}
+	return result, nil
+}
+
+func (s *Service) authorizeDynamicToolAction(input AuthorizationInput, sessionID, requirement string) (AuthorizationResult, bool, error) {
+	if normalizePolicyToolName(input.ToolName) != "plan_manage" {
+		return AuthorizationResult{}, false, nil
+	}
+	args := parsePermissionJSONMap(input.ToolArguments)
+	action := normalizePlanManageAction(mapStringAny(args["action"]), mapStringAny(args["op"]), args)
+	switch action {
+	case "request_followup_checkpoint":
+		approvalRequired, policyEffective, err := s.planFollowupCheckpointApprovalRequired(sessionID, input.AccountScopeID, args)
+		if err != nil {
+			return AuthorizationResult{}, true, err
+		}
+		if !approvalRequired {
+			return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "resolved follow-up checkpoint policy allows auto-add and start", Source: "dynamic_action_policy"}, true, nil
+		}
+		reason := "resolved follow-up checkpoint policy requires approval"
+		if policyEffective != "" {
+			reason = fmt.Sprintf("resolved follow-up checkpoint policy %q requires approval", policyEffective)
+		}
+		result, err := s.createPendingAuthorization(input, sessionID, requirement, reason, "dynamic_action_policy", "ask plan follow-up request")
+		return result, true, err
+	case "request_plan_revision", "request_new_plan":
+		result, err := s.createPendingAuthorization(input, sessionID, requirement, "typed plan lifecycle request requires approval", "dynamic_action_policy", "ask plan lifecycle request")
+		return result, true, err
+	default:
+		return AuthorizationResult{}, false, nil
+	}
+}
+
+func (s *Service) planFollowupCheckpointApprovalRequired(sessionID, accountScopeID string, args map[string]any) (bool, string, error) {
+	if s == nil || s.sessions == nil {
+		return true, sessionruntime.PlanFollowupCheckpointPolicyRequireApproval, nil
+	}
+	plans, ok := s.sessions.(sessionPlanLookup)
+	if !ok {
+		return true, sessionruntime.PlanFollowupCheckpointPolicyRequireApproval, nil
+	}
+	planID := strings.TrimSpace(firstNonEmpty(mapStringAny(args["plan_id"]), mapStringAny(args["planID"]), mapStringAny(args["id"])))
+	var plan pebblestore.SessionPlanSnapshot
+	var found bool
+	var err error
+	if planID != "" {
+		plan, found, err = plans.GetPlan(sessionID, planID)
+	} else {
+		plan, found, err = plans.GetActivePlan(sessionID)
+	}
+	if err != nil {
+		return false, "", err
+	}
+	if !found {
+		return true, sessionruntime.PlanFollowupCheckpointPolicyRequireApproval, nil
+	}
+	globalDefault := ""
+	if s.followupCheckpointPolicyResolver != nil {
+		account := strings.TrimSpace(plan.AccountScopeID)
+		if account == "" {
+			account = strings.TrimSpace(accountScopeID)
+		}
+		if account == "" {
+			if session, ok, err := s.sessions.GetSession(sessionID); err != nil {
+				return false, "", err
+			} else if ok {
+				account = strings.TrimSpace(session.AccountScopeID)
+			}
+		}
+		resolved, err := s.followupCheckpointPolicyResolver(account)
+		if err != nil {
+			return false, "", err
+		}
+		globalDefault = strings.TrimSpace(resolved)
+	}
+	policy := sessionruntime.ResolvePlanFollowupCheckpointPolicy(plan.Document, globalDefault)
+	return policy == sessionruntime.PlanFollowupCheckpointPolicyRequireApproval, policy, nil
+}
+
+func parsePermissionJSONMap(raw string) map[string]any {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &payload); err != nil || payload == nil {
+		return map[string]any{}
+	}
+	return payload
 }
 
 func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord, error) {

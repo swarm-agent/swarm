@@ -2170,21 +2170,20 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		result, err = lifecycle.RewindToCheckpoint(input)
 	case "request_followup_checkpoint":
 		input := sessionruntime.PlanLifecycleFollowupCheckpointInput{
-			SessionID:           sessionID,
-			PlanID:              planID,
-			ChangeRequest:       strings.TrimSpace(mapString(args, "change_request")),
-			UserRequest:         strings.TrimSpace(firstNonEmptyString(mapString(args, "user_request"), mapString(args, "request"), mapString(args, "prompt"), mapString(args, "text"))),
-			Title:               strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title"))),
-			Tasks:               mapStringSlice(args, "tasks"),
-			AcceptanceCriteria:  mapStringSlice(args, "acceptance_criteria"),
-			SourceMessageID:     strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message"))),
-			GlobalDefaultPolicy: strings.TrimSpace(firstNonEmptyString(mapString(args, "followup_checkpoint_policy"), mapString(args, "policy"))),
-			ApprovalConfirmed:   mapBool(args, "approval_confirmed"),
-			RunID:               strings.TrimSpace(mapString(args, "run_id")),
-			RunSessionID:        strings.TrimSpace(firstNonEmptyString(mapString(args, "run_session_id"), mapString(args, "session_id"))),
-			ParentSessionID:     strings.TrimSpace(mapString(args, "parent_session_id")),
-			StartedAt:           int64(mapInt(args, "started_at")),
-			AttemptID:           strings.TrimSpace(mapString(args, "attempt_id")),
+			SessionID:          sessionID,
+			PlanID:             planID,
+			ChangeRequest:      strings.TrimSpace(mapString(args, "change_request")),
+			UserRequest:        strings.TrimSpace(firstNonEmptyString(mapString(args, "user_request"), mapString(args, "request"), mapString(args, "prompt"), mapString(args, "text"))),
+			Title:              strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title"))),
+			Tasks:              mapStringSlice(args, "tasks"),
+			AcceptanceCriteria: mapStringSlice(args, "acceptance_criteria"),
+			SourceMessageID:    strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message"))),
+			ApprovalConfirmed:  mapBool(args, "approval_confirmed"),
+			RunID:              strings.TrimSpace(mapString(args, "run_id")),
+			RunSessionID:       strings.TrimSpace(firstNonEmptyString(mapString(args, "run_session_id"), mapString(args, "session_id"))),
+			ParentSessionID:    strings.TrimSpace(mapString(args, "parent_session_id")),
+			StartedAt:          int64(mapInt(args, "started_at")),
+			AttemptID:          strings.TrimSpace(mapString(args, "attempt_id")),
 		}
 		result, err = lifecycle.RequestFollowupCheckpoint(input)
 	case "request_plan_revision":

@@ -216,9 +216,13 @@ function ActionsCard({ view, busyAction, canStop, onAction, followupCheckpointPo
   const globalPolicyBusy = busyAction === actionBusyKey('set_followup_policy', 'global_default')
   const policyBusy = planPolicyBusy || globalPolicyBusy
   const selectionMatchesDefault = selectedFollowupPolicy === globalFollowupPolicyDefault
+  const selectionMatchesPlanOverride = hasPlanOverride && selectedFollowupPolicy === effectiveFollowupPolicy
   const selectedPolicyOption = followupPolicyOptions.find((option) => option.value === selectedFollowupPolicy) ?? followupPolicyOptions[0]
   const selectedPolicyLabel = followupPolicyLabel(selectedFollowupPolicy)
   const defaultPolicyLabel = followupPolicyLabel(globalFollowupPolicyDefault)
+  const currentPolicyLabel = hasPlanOverride
+    ? `${followupPolicyLabel(effectiveFollowupPolicy)} (Override)`
+    : `${defaultPolicyLabel} (Default)`
   const acceptReviewBusy = acceptBusy
   const acceptReviewLabel = hasNextCheckpoint ? 'Accept & start next checkpoint' : 'Accept & archive plan'
   const acceptReviewHelp = hasNextCheckpoint
@@ -242,13 +246,22 @@ function ActionsCard({ view, busyAction, canStop, onAction, followupCheckpointPo
           disabled={!onAction || canStop || policyBusy}
           className="min-h-9 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-border-active)]"
         >
-          {followupPolicyOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}{option.value === globalFollowupPolicyDefault ? ' (Default)' : ''}
-            </option>
-          ))}
+          {followupPolicyOptions.map((option) => {
+            const policyLabels = [
+              option.value === globalFollowupPolicyDefault ? 'Default' : '',
+              hasPlanOverride && option.value === effectiveFollowupPolicy ? 'Override' : '',
+            ].filter(Boolean)
+            return (
+              <option key={option.value} value={option.value}>
+                {option.label}{policyLabels.length > 0 ? ` (${policyLabels.join(', ')})` : ''}
+              </option>
+            )
+          })}
         </select>
       </label>
+      <p className="mt-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
+        Current setting: <span className="font-semibold text-[var(--app-text)]">{currentPolicyLabel}</span>
+      </p>
       <p className="mt-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
         {selectedPolicyOption.detail}
       </p>
@@ -285,10 +298,14 @@ function ActionsCard({ view, busyAction, canStop, onAction, followupCheckpointPo
               size="sm"
               variant="primary"
               className={cn('w-full rounded-lg', planPolicyBusy ? 'animate-pulse' : '')}
-              onClick={() => void onAction?.({ action: 'set_followup_policy', followupCheckpointPolicy: selectedFollowupPolicy, followupCheckpointPolicyScope: 'plan_override' })}
-              disabled={!onAction || canStop || policyBusy}
+              aria-current={selectionMatchesPlanOverride ? 'true' : undefined}
+              onClick={() => {
+                if (selectionMatchesPlanOverride) return
+                void onAction?.({ action: 'set_followup_policy', followupCheckpointPolicy: selectedFollowupPolicy, followupCheckpointPolicyScope: 'plan_override' })
+              }}
+              disabled={selectionMatchesPlanOverride || !onAction || canStop || policyBusy}
             >
-              {selectedPolicyLabel} (override)
+              {selectedPolicyLabel} (Override)
             </Button>
           </div>
           <Button

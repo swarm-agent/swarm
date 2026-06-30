@@ -581,6 +581,18 @@ func (s *Service) SetUISettingsService(uiSettingsSvc *uisettings.Service) {
 		return
 	}
 	s.uiSettings = uiSettingsSvc
+	if s.permissions != nil {
+		s.permissions.SetFollowupCheckpointPolicyResolver(func(accountScopeID string) (string, error) {
+			if uiSettingsSvc == nil {
+				return "", nil
+			}
+			settings, err := uiSettingsSvc.GetForAccount(accountScopeID)
+			if err != nil {
+				return "", err
+			}
+			return settings.Chat.FollowupCheckpointPolicyDefault, nil
+		})
+	}
 }
 
 func (s *Service) SetWorktreeService(worktreeSvc worktreeService) {

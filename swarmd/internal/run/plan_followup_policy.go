@@ -8,8 +8,8 @@ import (
 )
 
 func (s *Service) resolvePlanFollowupCheckpointPolicyForPermission(plan pebblestore.SessionPlanSnapshot, explicitDefault string) string {
-	globalDefault := strings.TrimSpace(explicitDefault)
-	if globalDefault == "" && s != nil && s.uiSettings != nil {
+	globalDefault := ""
+	if s != nil && s.uiSettings != nil {
 		settings, err := s.uiSettings.GetForAccount(plan.AccountScopeID)
 		if err == nil {
 			globalDefault = strings.TrimSpace(settings.Chat.FollowupCheckpointPolicyDefault)

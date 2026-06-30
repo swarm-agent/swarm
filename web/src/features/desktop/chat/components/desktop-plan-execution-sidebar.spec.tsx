@@ -108,6 +108,7 @@ test('automatic checkpointed mode sidebar actions card explains continuation and
   assert.doesNotMatch(markup, /Accept this checkpoint/)
   assert.doesNotMatch(markup, /Restart/)
   assert.match(markup, /Using default/)
+  assert.match(markup, /Current setting:/)
   assert.match(markup, /Ask \(Default\)/)
   assert.match(markup, /Auto-add .* start/)
   assert.doesNotMatch(markup, /Use default/)
@@ -131,9 +132,10 @@ test('plan override different from default exposes concrete override and return-
   )
 
   assert.match(markup, /Current plan override/)
+  assert.match(markup, /Current setting:/)
+  assert.match(markup, /Auto-add .* start \(Override\)/)
   assert.match(markup, /Ask \(Default\)/)
   assert.match(markup, /Change Default/)
-  assert.match(markup, /Auto-add .* start \(override\)/)
   assert.match(markup, /Use Ask \(Default\)/)
   assert.doesNotMatch(markup, /Override Default/)
   assert.doesNotMatch(markup, /Make Auto-add .* start the global default and clear this plan override/)
@@ -155,10 +157,11 @@ test('sidebar renders a non-Ask backend follow-up default after refresh', () => 
   )
 
   assert.match(markup, /Using default/)
+  assert.match(markup, /Current setting:/)
   assert.match(markup, /Auto-add .* start \(Default\)/)
   assert.doesNotMatch(markup, /Ask \(Default\)/)
   assert.doesNotMatch(markup, /Change Default/)
-  assert.doesNotMatch(markup, /\(override\)/)
+  assert.doesNotMatch(markup, /\(Override\)/)
   assert.doesNotMatch(markup, /Use Auto-add .* start \(Default\)/)
 })
 

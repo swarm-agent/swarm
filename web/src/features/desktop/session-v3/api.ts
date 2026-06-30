@@ -1,7 +1,7 @@
 import { requestJson } from '../../../app/api'
 import type { ResolvedSessionPreference } from '../chat/types/chat'
-import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
-import { normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
+import type { DesktopSessionMode, FollowupCheckpointPolicyDefault } from '../settings/swarm/types/swarm-settings'
+import { normalizeFollowupCheckpointPolicyDefault, normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
 import type {
   SessionV3AgentMutationResponseWire,
   SessionV3MetadataMutationResponseWire,
@@ -269,26 +269,56 @@ export async function requestSessionV3NewPlan(
   })
 }
 
+export interface SessionV3PlanFollowupPolicyResponseWire {
+  ok?: boolean
+  session_id?: string
+  plan_id?: string
+  plan?: unknown
+  transition?: string
+  change_type?: string
+  policy_effective?: string
+  approval_required?: boolean
+  run_queued?: boolean
+  execution_summary?: unknown
+  session?: unknown
+}
+
 export async function setSessionV3PlanFollowupPolicy(
   sessionId: string,
   input: { planId?: string; followupCheckpointPolicy: string; reason?: string },
-): Promise<unknown> {
+): Promise<SessionV3PlanFollowupPolicyResponseWire> {
   const normalizedSessionId = sessionId.trim()
-  const followupCheckpointPolicy = input.followupCheckpointPolicy.trim()
+  const followupCheckpointPolicy = normalizePlanFollowupPolicyOverride(input.followupCheckpointPolicy)
   if (!normalizedSessionId) throw new Error('Desktop V3 follow-up policy requires session_id')
-  return requestSessionV3PlanLifecycle(normalizedSessionId, 'followup-policy', {
+  return requestSessionV3PlanLifecycle<SessionV3PlanFollowupPolicyResponseWire>(normalizedSessionId, 'followup-policy', {
     plan_id: input.planId?.trim() || undefined,
     followup_checkpoint_policy: followupCheckpointPolicy,
     reason: input.reason?.trim() || undefined,
   })
 }
 
-function requestSessionV3PlanLifecycle(sessionId: string, action: string, body: Record<string, unknown>): Promise<unknown> {
-  return requestJson(`/v3/sessions/${encodeURIComponent(sessionId)}/plan-mode/lifecycle/${action}`, {
+function normalizePlanFollowupPolicyOverride(value: string): '' | FollowupCheckpointPolicyDefault {
+  const trimmed = value.trim()
+  return trimmed ? normalizeFollowupCheckpointPolicyDefault(trimmed) : ''
+}
+
+export function desktopPlanFollowupPolicyResponsePlan(response: SessionV3PlanFollowupPolicyResponseWire): unknown {
+  const plan = objectRecord(response.plan)
+  if (plan) return plan
+  const session = objectRecord(response.session)
+  return objectRecord(session?.active_plan) ?? objectRecord(session?.activePlan) ?? null
+}
+
+function requestSessionV3PlanLifecycle<T = unknown>(sessionId: string, action: string, body: Record<string, unknown>): Promise<T> {
+  return requestJson<T>(`/v3/sessions/${encodeURIComponent(sessionId)}/plan-mode/lifecycle/${action}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
 
 export async function stopSessionV3Run(
