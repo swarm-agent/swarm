@@ -3,13 +3,13 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/ssh-fast-test.sh <ssh-alias> [--remote-dir <path>] [--service <unit>] [--no-restart]
-       scripts/ssh-fast-test.sh <ssh-alias> --from-zero [--remote-dir <path>] [--service <unit>] [--db-path <path>]
+Usage: scripts/ssh-fast-test.sh <ssh-alias> [--branch <name>] [--remote-dir <path>] [--service <unit>] [--no-restart]
+       scripts/ssh-fast-test.sh <ssh-alias> --from-zero [--branch <name>] [--remote-dir <path>] [--service <unit>] [--db-path <path>]
 
 Fast SSH testing flow:
   1. require the local git worktree to be clean so only committed changes sync
   2. find the remote swarm-go checkout unless --remote-dir is provided
-  3. create a git bundle for the local HEAD and copy it over SSH
+  3. create a git bundle for the selected local branch or HEAD and copy it over SSH
   4. fetch/reset the remote checkout to the bundled commit and clean untracked files
   5. run the checked-in rebuild script from the remote checkout
   6. restart the remote user systemd service unless --no-restart is set
@@ -52,10 +52,18 @@ require_clean_git_tree() {
   fi
 }
 
-create_head_bundle() {
+create_ref_bundle() {
   local bundle_path="$1"
-  git bundle create "${bundle_path}" HEAD >/dev/null
+  local git_ref="$2"
+  git bundle create "${bundle_path}" "${git_ref}" >/dev/null
   git bundle verify "${bundle_path}" >/dev/null
+}
+
+require_local_branch() {
+  local branch_name="$1"
+  [[ -n "${branch_name}" ]] || fail "--branch requires a non-empty value"
+  git check-ref-format --branch "${branch_name}" >/dev/null || fail "invalid branch name: ${branch_name}"
+  git show-ref --verify --quiet "refs/heads/${branch_name}" || fail "local branch not found: ${branch_name}"
 }
 
 copy_bundle_to_remote() {
@@ -86,6 +94,7 @@ SERVICE_UNIT="swarm.service"
 RESTART_SERVICE="true"
 FROM_ZERO="false"
 DB_PATH="/var/lib/swarmd/swarmd.pebble"
+TARGET_BRANCH=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -97,6 +106,11 @@ while [[ $# -gt 0 ]]; do
     --service)
       [[ $# -ge 2 ]] || fail "--service requires a value"
       SERVICE_UNIT="$2"
+      shift 2
+      ;;
+    --branch)
+      [[ $# -ge 2 ]] || fail "--branch requires a value"
+      TARGET_BRANCH="$2"
       shift 2
       ;;
     --db-path)
@@ -133,11 +147,19 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
 require_clean_git_tree
-LOCAL_HEAD="$(git rev-parse --verify HEAD)"
-LOCAL_BRANCH="$(git branch --show-current 2>/dev/null || true)"
+if [[ -n "${TARGET_BRANCH}" ]]; then
+  require_local_branch "${TARGET_BRANCH}"
+  LOCAL_REF="refs/heads/${TARGET_BRANCH}"
+  LOCAL_HEAD="$(git rev-parse --verify "${LOCAL_REF}^{commit}")"
+  LOCAL_BRANCH="${TARGET_BRANCH}"
+else
+  LOCAL_REF="HEAD"
+  LOCAL_HEAD="$(git rev-parse --verify HEAD)"
+  LOCAL_BRANCH="$(git branch --show-current 2>/dev/null || true)"
+fi
 LOCAL_BUNDLE="$(mktemp "${TMPDIR:-/tmp}/swarm-fast-test-${LOCAL_HEAD:0:12}-XXXXXX.bundle")"
 trap 'rm -f -- "${LOCAL_BUNDLE}"' EXIT
-create_head_bundle "${LOCAL_BUNDLE}"
+create_ref_bundle "${LOCAL_BUNDLE}" "${LOCAL_REF}"
 
 if [[ -z "${REMOTE_DIR}" ]]; then
   REMOTE_DIR="$(ssh "${SSH_ALIAS}" 'bash -s' 2>/dev/null <<'REMOTE_DISCOVER_CHECKOUT'
@@ -182,7 +204,7 @@ fi
 REMOTE_STOP_SERVICE
 fi
 
-ssh "${SSH_ALIAS}" 'bash -s' -- "${REMOTE_DIR}" "${FROM_ZERO}" "${DB_PATH}" "${RESTART_SERVICE}" "${SERVICE_UNIT}" "${REMOTE_BUNDLE_PATH}" "${LOCAL_HEAD}" "${LOCAL_BRANCH}" <<'REMOTE_SSH_FAST_TEST'
+ssh "${SSH_ALIAS}" 'bash -s' -- "${REMOTE_DIR}" "${FROM_ZERO}" "${DB_PATH}" "${RESTART_SERVICE}" "${SERVICE_UNIT}" "${REMOTE_BUNDLE_PATH}" "${LOCAL_HEAD}" "${LOCAL_BRANCH}" "${LOCAL_REF}" <<'REMOTE_SSH_FAST_TEST'
 set -euo pipefail
 remote_dir="$1"
 from_zero="$2"
@@ -192,15 +214,16 @@ service_unit="$5"
 remote_bundle_path="$6"
 local_head="$7"
 local_branch="$8"
+bundle_ref="$9"
 
 cd "${remote_dir}"
 if [ ! -d .git ]; then
   printf 'ssh-fast-test: remote checkout %s is not a git repository\n' "${remote_dir}" >&2
   exit 1
 fi
-printf 'ssh-fast-test: fetching bundled commit %s\n' "${local_head}"
+printf 'ssh-fast-test: fetching bundled ref %s commit %s\n' "${bundle_ref}" "${local_head}"
 git bundle verify "${remote_bundle_path}" >/dev/null
-git fetch --force "${remote_bundle_path}" HEAD
+git fetch --force "${remote_bundle_path}" "${bundle_ref}"
 git reset --hard
 git clean -fdx -e .tools/go/ -e .cache/ -e web/node_modules/ -e node_modules/
 if [ -n "${local_branch}" ]; then
