@@ -1267,8 +1267,8 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 		}
 		return "manage_skill"
 	case "plan_manage":
-		if ShouldApprovePlanManageUpdate(toolArguments) {
-			return "plan_update"
+		if requirement := PlanManageLifecycleRequirement(toolArguments); requirement != "" {
+			return requirement
 		}
 		return "plan_manage"
 	case "manage_agent":
@@ -1334,32 +1334,63 @@ func manageAction(toolArguments string) string {
 }
 
 func ShouldApprovePlanManageUpdate(toolArguments string) bool {
+	return PlanManageLifecycleRequirement(toolArguments) != ""
+}
+
+func PlanManageLifecycleRequirement(toolArguments string) string {
 	toolArguments = strings.TrimSpace(toolArguments)
 	if toolArguments == "" {
-		return false
+		return ""
 	}
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(toolArguments), &payload); err != nil {
-		return false
+		return ""
 	}
-	action := strings.ToLower(strings.TrimSpace(mapStringAny(payload["action"])))
-	if action == "" {
-		action = strings.ToLower(strings.TrimSpace(mapStringAny(payload["op"])))
-	}
-	if action != "save" {
-		return false
-	}
-	planID := strings.TrimSpace(mapStringAny(payload["plan_id"]))
-	if planID == "" {
-		planID = strings.TrimSpace(mapStringAny(payload["id"]))
-	}
-	if planID == "" {
-		if updateType := strings.ToLower(strings.TrimSpace(mapStringAny(payload["update_type"]))); updateType != "" {
-			return updateType == "existing_plan"
+	action := normalizePlanManageAction(mapStringAny(payload["action"]), mapStringAny(payload["op"]), payload)
+	switch action {
+	case "request_followup_checkpoint":
+		return "plan_followup_request"
+	case "request_plan_revision":
+		return "plan_revision_request"
+	case "request_new_plan":
+		return "plan_new_request"
+	case "save":
+		planID := strings.TrimSpace(mapStringAny(payload["plan_id"]))
+		if planID == "" {
+			planID = strings.TrimSpace(mapStringAny(payload["id"]))
 		}
-		return false
+		if planID != "" {
+			return "plan_revision_request"
+		}
+		if updateType := strings.ToLower(strings.TrimSpace(mapStringAny(payload["update_type"]))); updateType == "existing_plan" {
+			return "plan_revision_request"
+		}
 	}
-	return true
+	return ""
+}
+
+func normalizePlanManageAction(action string, op string, payload map[string]any) string {
+	action = strings.ToLower(strings.TrimSpace(action))
+	if action == "" {
+		action = strings.ToLower(strings.TrimSpace(op))
+	}
+	switch action {
+	case "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
+		return "request_followup_checkpoint"
+	case "request-plan-revision", "request_plan_revision", "plan-revision", "plan_revision":
+		return "request_plan_revision"
+	case "request-new-plan", "request_new_plan", "new-plan-proposal", "new_plan_proposal":
+		return "request_new_plan"
+	case "upsert", "set", "write-active", "write_active":
+		return "save"
+	case "update", "edit":
+		if strings.TrimSpace(mapStringAny(payload["plan"])) == "" && payload["document"] == nil {
+			return "patch"
+		}
+		return "save"
+	default:
+		return action
+	}
 }
 
 func mapStringAny(value any) string {

@@ -37,15 +37,39 @@ function exitPlanPermission(): DesktopPermissionRecord {
   }
 }
 
-test('exit plan modal renders three clickable execution choices instead of select and checkbox controls', () => {
-  const markup = renderToStaticMarkup(React.createElement(DesktopPermissionModal, {
+function planLifecyclePermission(requirement: string, toolArguments: Record<string, unknown>): DesktopPermissionRecord {
+  return {
+    id: `perm-${requirement}`,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    callId: 'call-1',
+    toolName: 'plan_manage',
+    toolArguments: JSON.stringify(toolArguments),
+    status: 'pending',
+    decision: '',
+    reason: '',
+    requirement,
+    mode: 'auto',
+    createdAt: 1,
+    updatedAt: 1,
+    resolvedAt: 0,
+    permissionRequestedAt: 1,
+  }
+}
+
+function renderPermission(permission: DesktopPermissionRecord, sessionMode = 'auto'): string {
+  return renderToStaticMarkup(React.createElement(DesktopPermissionModal, {
     open: true,
-    permission: exitPlanPermission(),
+    permission,
     pendingCount: 1,
-    sessionMode: 'plan',
+    sessionMode,
     onOpenChange: () => undefined,
     onResolve: async () => undefined,
   }))
+}
+
+test('exit plan modal renders three clickable execution choices instead of select and checkbox controls', () => {
+  const markup = renderPermission(exitPlanPermission(), 'plan')
 
   assert.match(markup, /Continue normally/)
   assert.match(markup, /Continue checkpoint by checkpoint/)
@@ -74,4 +98,35 @@ test('exit plan execution choices map to approved arguments', () => {
     continue_automatically: true,
     continuation_policy: 'automatic',
   })
+})
+
+test('DesktopPermissionModal routes typed plan lifecycle approvals away from generic plan update modal', () => {
+  const followup = renderPermission(planLifecyclePermission('plan_followup_request', {
+    action: 'request_followup_checkpoint',
+    title: 'Follow-up: audit',
+    change_request: 'Add an audit note before final review.',
+    checkpoint_title: 'Follow-up: audit',
+    tasks: ['Add an audit note before final review.'],
+  }))
+  assert.match(followup, /Follow-up: audit/)
+  assert.match(followup, /append-only/)
+  assert.doesNotMatch(followup, /Plan update overview/)
+
+  const revision = renderPermission(planLifecyclePermission('plan_revision_request', {
+    action: 'request_plan_revision',
+    title: 'Review revised plan',
+    plan: '# Revised plan',
+  }))
+  assert.match(revision, /Review revised plan/)
+  assert.match(revision, /Approve revision/)
+  assert.doesNotMatch(revision, /Plan update overview/)
+
+  const newPlan = renderPermission(planLifecyclePermission('plan_new_request', {
+    action: 'request_new_plan',
+    title: 'Review new plan',
+    plan: '# New plan',
+  }))
+  assert.match(newPlan, /Review new plan/)
+  assert.match(newPlan, /Approve new plan/)
+  assert.doesNotMatch(newPlan, /Plan update overview/)
 })

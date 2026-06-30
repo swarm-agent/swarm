@@ -28,6 +28,7 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	"swarm/packages/swarmd/internal/uisettings"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -101,6 +102,7 @@ type Service struct {
 	agents       *agentruntime.Service
 	discovery    *discovery.Service
 	workspace    *workspaceruntime.Service
+	uiSettings   *uisettings.Service
 	worktrees    worktreeService
 	events       *pebblestore.EventLog
 	eventPublish func(pebblestore.EventEnvelope)
@@ -572,6 +574,13 @@ func (s *Service) SetWorkspaceService(workspaceSvc *workspaceruntime.Service) {
 		return
 	}
 	s.workspace = workspaceSvc
+}
+
+func (s *Service) SetUISettingsService(uiSettingsSvc *uisettings.Service) {
+	if s == nil {
+		return
+	}
+	s.uiSettings = uiSettingsSvc
 }
 
 func (s *Service) SetWorktreeService(worktreeSvc worktreeService) {

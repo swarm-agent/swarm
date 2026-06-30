@@ -131,7 +131,7 @@ test('Desktop V3 sidebar derives plan row state, checkpoint progress, and explic
       schemaVersion: '',
       revisionId: '',
       info: { goal: '', scope: '', context: '', decisions: [], constraints: [], assumptions: [], openQuestions: [], relevantFiles: [], successCriteria: [], validationStrategy: '' },
-      executionPolicy: { mode: 'automatic', shape: 'checkpointed' },
+      executionPolicy: { mode: 'automatic', shape: 'checkpointed', followupCheckpointPolicy: '' },
       executionState: { status: 'waiting_review', activeAttemptId: 'cp-2:attempt-1', parentSessionId: sessionA.id, currentSessionId: sessionA.id, currentRunId: 'run-review', lastCheckpointId: 'cp-2', lastAttemptId: 'cp-2:attempt-1', lastOutcome: 'needs_review', startedAt: 1, updatedAt: 3, completedAt: 0 },
       checkpoints: [
         { id: 'cp-1', title: 'Done', status: 'completed', objective: '', tasks: [], acceptanceCriteria: [], notes: '', report: '', result: '', changedFiles: [], validation: [], attemptId: '', runId: '', sessionId: '', startedAt: 0, completedAt: 0, review: null, attempts: [], order: 1 },
@@ -157,7 +157,7 @@ test('Desktop V3 sidebar derives plan row state, checkpoint progress, and explic
       schemaVersion: '',
       revisionId: '',
       info: { goal: '', scope: '', context: '', decisions: [], constraints: [], assumptions: [], openQuestions: [], relevantFiles: [], successCriteria: [], validationStrategy: '' },
-      executionPolicy: { mode: 'automatic', shape: 'checkpointed' },
+      executionPolicy: { mode: 'automatic', shape: 'checkpointed', followupCheckpointPolicy: '' },
       executionState: { status: 'in_progress', activeAttemptId: 'cp-1:attempt-1', parentSessionId: sessionB.id, currentSessionId: sessionB.id, currentRunId: 'run-running', lastCheckpointId: 'cp-1', lastAttemptId: 'cp-1:attempt-1', lastOutcome: '', startedAt: 1, updatedAt: 4, completedAt: 0 },
       checkpoints: [
         { id: 'cp-1', title: 'Running', status: 'in_progress', objective: '', tasks: [], acceptanceCriteria: [], notes: '', report: '', result: '', changedFiles: [], validation: [], attemptId: 'cp-1:attempt-1', runId: 'run-running', sessionId: sessionB.id, startedAt: 1, completedAt: 0, review: null, attempts: [], order: 1 },

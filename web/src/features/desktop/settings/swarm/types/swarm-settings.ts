@@ -30,11 +30,13 @@ export interface UIToolSettingsWire {
 }
 
 export type DesktopSessionMode = 'auto' | 'plan'
+export type FollowupCheckpointPolicyDefault = 'require_approval' | 'auto_start'
 
 export interface UIChatSettingsWire {
   show_header?: boolean
   thinking_tags?: boolean
   default_new_session_mode?: DesktopSessionMode
+  followup_checkpoint_policy_default?: FollowupCheckpointPolicyDefault
   default_workspace_routes?: Record<string, string>
   tool_stream?: Record<string, unknown>
 }
@@ -63,6 +65,7 @@ export interface GlobalThemeSettings {
 export interface SwarmSettings {
   name: string
   defaultNewSessionMode: DesktopSessionMode
+  followupCheckpointPolicyDefault: FollowupCheckpointPolicyDefault
   updatedAt: number
   raw: UISettingsWire
 }
@@ -78,6 +81,12 @@ export function normalizeSessionMode(value: unknown): DesktopSessionMode {
 
 export function normalizeDefaultNewSessionMode(value: unknown): DesktopSessionMode {
   return normalizeSessionMode(value)
+}
+
+export function normalizeFollowupCheckpointPolicyDefault(value: unknown): FollowupCheckpointPolicyDefault {
+  return typeof value === 'string' && ['auto', 'automatic', 'auto_start', 'append_and_start', 'start'].includes(value.trim().toLowerCase())
+    ? 'auto_start'
+    : 'require_approval'
 }
 
 export function normalizeGlobalThemeSettings(payload?: UISettingsWire | null): GlobalThemeSettings {
@@ -137,6 +146,16 @@ export function withDefaultNewSessionMode(current: UISettingsWire, mode: Desktop
   }
 }
 
+export function withFollowupCheckpointPolicyDefault(current: UISettingsWire, policy: FollowupCheckpointPolicyDefault): UISettingsWire {
+  return {
+    ...current,
+    chat: {
+      ...(current.chat ?? {}),
+      followup_checkpoint_policy_default: normalizeFollowupCheckpointPolicyDefault(policy),
+    },
+  }
+}
+
 export function withThinkingTagsEnabled(current: UISettingsWire, enabled: boolean): UISettingsWire {
   return {
     ...current,
@@ -191,6 +210,7 @@ export function normalizeSwarmSettings(payload?: UISettingsWire | null): SwarmSe
   return {
     name: normalizeSwarmName(typeof raw.swarm?.name === 'string' ? raw.swarm.name : ''),
     defaultNewSessionMode: normalizeDefaultNewSessionMode(raw.chat?.default_new_session_mode),
+    followupCheckpointPolicyDefault: normalizeFollowupCheckpointPolicyDefault(raw.chat?.followup_checkpoint_policy_default),
     updatedAt: typeof raw.updated_at === 'number' ? raw.updated_at : 0,
     raw,
   }

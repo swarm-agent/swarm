@@ -48,6 +48,7 @@ import {
   parseManageFlowPermission,
   parseManageImagePermission,
   parsePlanUpdatePermission,
+  type PlanUpdatePayload,
   parseTaskLaunchPermission,
   type TaskLaunchPayload,
   type TaskLaunchResolvedTools,
@@ -1492,6 +1493,270 @@ function PlanUpdateReview({
   )
 }
 
+function planLifecycleApprovedArguments(payload: PlanUpdatePayload, fallbackAction: string): Record<string, unknown> {
+  if (Object.keys(payload.approvedArguments).length > 0) {
+    return payload.approvedArguments
+  }
+  const approved: Record<string, unknown> = {
+    action: payload.action || fallbackAction,
+  }
+  if (payload.planId) approved.plan_id = payload.planId
+  if (payload.title) approved.title = payload.title
+  if (payload.plan) approved.plan = payload.plan
+  if (payload.document) approved.document = payload.document
+  if (payload.changeRequest) approved.change_request = payload.changeRequest
+  if (payload.checkpointTitle) approved.checkpoint_title = payload.checkpointTitle
+  if (payload.tasks.length > 0) approved.tasks = payload.tasks
+  if (payload.acceptanceCriteria.length > 0) approved.acceptance_criteria = payload.acceptanceCriteria
+  if (payload.followupCheckpointPolicy) approved.followup_checkpoint_policy = payload.followupCheckpointPolicy
+  if (payload.action === 'request_followup_checkpoint' || fallbackAction === 'request_followup_checkpoint') approved.approval_confirmed = true
+  return approved
+}
+
+function followupPolicyLabel(policy: string): string {
+  switch (policy.trim().toLowerCase()) {
+    case 'auto_start':
+      return 'Auto-add & start'
+    case 'require_approval':
+      return 'Ask first'
+    default:
+      return policy.trim() || 'Ask first'
+  }
+}
+
+function followupApproveLabel(policy: string): string {
+  switch (policy.trim().toLowerCase()) {
+    case 'auto_start':
+      return 'Add & start checkpoint'
+    default:
+      return 'Approve follow-up checkpoint'
+  }
+}
+
+function planLifecycleDocumentPreview(payload: PlanUpdatePayload, emptyText: string) {
+  const structuredDocument = normalizeStructuredPlanDocument(payload.document)
+  if (structuredDocument) {
+    return <StructuredPlanDocumentView document={structuredDocument} emptyText={emptyText} />
+  }
+  return (
+    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+      {payload.plan.trim() ? (
+        <ChatMarkdown content={payload.plan} className="text-base leading-7" />
+      ) : (
+        <div className="text-sm text-[var(--app-text-muted)]">{emptyText}</div>
+      )}
+    </section>
+  )
+}
+
+function PlanFollowupRequestModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) return null
+
+  const payload = parsePlanUpdatePermission(permission)
+  const effectivePolicy = payload.policyEffective || 'require_approval'
+  const checkpointTitle = payload.checkpointTitle || payload.title || `Follow-up: ${promptWordPreview(payload.changeRequest, 10) || 'New checkpoint'}`
+  const tasks = payload.tasks.length > 0 ? payload.tasks : payload.changeRequest ? [payload.changeRequest] : []
+  const resolve = async (action: 'approve' | 'deny') => {
+    setLoading(true)
+    try {
+      await onResolve(
+        action,
+        note.trim(),
+        action === 'approve' ? planLifecycleApprovedArguments(payload, 'request_followup_checkpoint') : undefined,
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title || 'Review Follow-up Checkpoint'}
+      subtitle={payload.planId ? `Plan ${payload.planId}` : 'Append one new checkpoint to the approved plan'}
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-full sm:w-[min(980px,calc(100vw-48px))]"
+      bodyClassName="overflow-y-auto"
+      footer={
+        <PermissionActionBar
+          loading={loading}
+          onApprove={() => void resolve('approve')}
+          onDeny={() => void resolve('deny')}
+          approveLabel={followupApproveLabel(effectivePolicy)}
+          note={note}
+          onNoteChange={setNote}
+          noteLabel="Message to agent"
+        />
+      }
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
+    >
+      <div className="grid gap-4">
+        <section className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4">
+          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">User request</div>
+          <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--app-text)]">{payload.changeRequest || 'No change request text was provided.'}</p>
+        </section>
+        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Checkpoint preview</div>
+          <div className="mt-2 text-base font-semibold text-[var(--app-text)]">{checkpointTitle}</div>
+          {tasks.length > 0 ? (
+            <ul className="mt-3 grid gap-2 text-sm leading-6 text-[var(--app-text)]">
+              {tasks.map((task) => <li key={task} className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">{task}</li>)}
+            </ul>
+          ) : null}
+          {payload.acceptanceCriteria.length > 0 ? (
+            <div className="mt-3">
+              <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Acceptance criteria</div>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm leading-6 text-[var(--app-text-muted)]">
+                {payload.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}
+              </ul>
+            </div>
+          ) : null}
+        </section>
+        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm leading-6">
+          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Effective follow-up policy</div>
+          <div className="mt-2 font-medium text-[var(--app-text)]">{followupPolicyLabel(effectivePolicy)}</div>
+          <p className="mt-1 text-[var(--app-text-muted)]">Follow-up requests are append-only: this approval adds one checkpoint and does not rewrite completed checkpoints or change execution shape.</p>
+        </section>
+      </div>
+    </ModalShell>
+  )
+}
+
+function PlanRevisionRequestModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) return null
+  const payload = parsePlanUpdatePermission(permission)
+  const resolve = async (action: 'approve' | 'deny') => {
+    setLoading(true)
+    try {
+      await onResolve(action, note.trim(), action === 'approve' ? planLifecycleApprovedArguments(payload, 'request_plan_revision') : undefined)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title || 'Review Plan Revision'}
+      subtitle={payload.planId ? `Plan ${payload.planId} · explicit revision approval required` : 'Explicit revision approval required'}
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-full sm:w-[min(1180px,calc(100vw-48px))]"
+      bodyClassName="overflow-y-auto"
+      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Approve revision" note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
+    >
+      <div className="grid gap-4">
+        <section className="rounded-2xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4 text-sm leading-6 text-[var(--app-text)]">
+          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Lifecycle action</div>
+          <p className="mt-2">Approve a structured plan revision. This is not an ordinary diff save.</p>
+          {payload.updateSummary ? <p className="mt-2 whitespace-pre-wrap break-words text-[var(--app-text-muted)]">{payload.updateSummary}</p> : null}
+        </section>
+        {planLifecycleDocumentPreview(payload, 'No proposed revision document or plan text was provided.')}
+      </div>
+    </ModalShell>
+  )
+}
+
+function NewPlanRequestModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) return null
+  const payload = parsePlanUpdatePermission(permission)
+  const resolve = async (action: 'approve' | 'deny') => {
+    setLoading(true)
+    try {
+      await onResolve(action, note.trim(), action === 'approve' ? planLifecycleApprovedArguments(payload, 'request_new_plan') : undefined)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title || 'Review New Plan'}
+      subtitle="Explicit approval required before saving a new plan proposal"
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-full sm:w-[min(1180px,calc(100vw-48px))]"
+      bodyClassName="overflow-y-auto"
+      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Approve new plan" note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
+    >
+      <div className="grid gap-4">
+        <section className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4 text-sm leading-6 text-[var(--app-text)]">
+          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Lifecycle action</div>
+          <p className="mt-2">Approve a separate new plan proposal. This does not silently overwrite the current active plan.</p>
+          {payload.updateSummary ? <p className="mt-2 whitespace-pre-wrap break-words text-[var(--app-text-muted)]">{payload.updateSummary}</p> : null}
+        </section>
+        {planLifecycleDocumentPreview(payload, 'No proposed new plan document or plan text was provided.')}
+      </div>
+    </ModalShell>
+  )
+}
+
+// Legacy generic plan update approvals are reserved for draft/non-lifecycle saves.
+// Active approved-plan lifecycle changes route to the typed modals above.
 function PlanUpdateModal({
   permission,
   open,
@@ -1519,23 +1784,7 @@ function PlanUpdateModal({
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
     try {
-      const reason =
-        action === 'approve'
-          ? JSON.stringify({
-              action: 'save',
-              approved_arguments:
-                Object.keys(payload.approvedArguments).length > 0
-                  ? payload.approvedArguments
-                  : {
-                      action: 'save',
-                      plan_id: payload.planId,
-                      title: payload.title,
-                      plan: payload.plan,
-                    },
-              note: note.trim(),
-            })
-          : note.trim()
-      await onResolve(action, reason)
+      await onResolve(action, note.trim(), action === 'approve' ? planLifecycleApprovedArguments(payload, 'save') : undefined)
     } finally {
       setLoading(false)
     }
@@ -3164,6 +3413,15 @@ export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
   }
   if (kind === 'exit-plan') {
     return <ExitPlanModal {...props} />
+  }
+  if (kind === 'plan-followup-request') {
+    return <PlanFollowupRequestModal {...props} />
+  }
+  if (kind === 'plan-revision-request') {
+    return <PlanRevisionRequestModal {...props} />
+  }
+  if (kind === 'plan-new-request') {
+    return <NewPlanRequestModal {...props} />
   }
   if (kind === 'plan-update') {
     return <PlanUpdateModal {...props} />

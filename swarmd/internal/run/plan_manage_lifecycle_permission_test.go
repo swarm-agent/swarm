@@ -1,0 +1,24 @@
+package run
+
+import "testing"
+
+func TestPlanManagePermissionRequirementIsTypedForLifecycleActions(t *testing.T) {
+	cases := []struct {
+		name            string
+		args            string
+		wantRequirement string
+	}{
+		{name: "follow-up", args: `{"action":"request_followup_checkpoint","change_request":"add a review note"}`, wantRequirement: "plan_followup_request"},
+		{name: "revision", args: `{"action":"request_plan_revision","plan_id":"plan_1"}`, wantRequirement: "plan_revision_request"},
+		{name: "new plan", args: `{"action":"request_new_plan","title":"New direction"}`, wantRequirement: "plan_new_request"},
+		{name: "legacy draft update", args: `{"action":"save","plan_id":"plan_1","document":{"info":{"goal":"update"}}}`, wantRequirement: "plan_revision_request"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			requirement, needsApproval := permissionRequirement("auto", "plan_manage", tc.args)
+			if !needsApproval || requirement != tc.wantRequirement {
+				t.Fatalf("permissionRequirement() = %q/%v, want %q/true", requirement, needsApproval, tc.wantRequirement)
+			}
+		})
+	}
+}

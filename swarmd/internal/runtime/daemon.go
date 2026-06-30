@@ -249,6 +249,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	)
 	uiSettingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	uiSettingsSvc.SetEventPublisher(events, hub.Publish)
+	planLifecycleSvc := sessionruntime.NewPlanLifecycleService(sessionSvc)
+	planLifecycleSvc.SetGlobalFollowupCheckpointPolicyResolver(func(accountScopeID string) (string, error) {
+		settings, err := uiSettingsSvc.GetForAccount(accountScopeID)
+		if err != nil {
+			return "", err
+		}
+		return settings.Chat.FollowupCheckpointPolicyDefault, nil
+	})
 	swarmDesktopTargetSelectionStore := pebblestore.NewSwarmDesktopTargetSelectionStore(store)
 	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(store), events, hub.Publish, sessionSvc)
 	integrationSvc := integrationruntime.NewService(pebblestore.NewIntegrationStore(store))
@@ -332,6 +340,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	providers.RegisterRunner(openrouter.NewRunner(authStore))
 	runSvc := run.NewService(sessionSvc, modelSvc, providers, toolRuntime, permissionSvc, agentSvc, discoverySvc, events)
 	runSvc.SetWorkspaceService(workspaceSvc)
+	runSvc.SetUISettingsService(uiSettingsSvc)
 	runSvc.SetWorktreeService(worktreeSvc)
 	runSvc.SetEventPublisher(hub.Publish)
 
@@ -403,6 +412,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetMCPService(mcpSvc)
 	apiServer.SetVoiceService(voiceSvc)
 	apiServer.SetUISettingsService(uiSettingsSvc)
+	apiServer.SetPlanLifecycleService(planLifecycleSvc)
 	apiServer.SetSwarmDesktopTargetSelectionStore(swarmDesktopTargetSelectionStore)
 	apiServer.SetSwarmNodeStore(swarmNodeStore)
 	apiServer.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))

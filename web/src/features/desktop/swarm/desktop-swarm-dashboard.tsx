@@ -28,9 +28,10 @@ import type { DesktopOnboardingStatus, DesktopSwarmGroupMember, DesktopSwarmGrou
 import { uiSettingsQueryKey } from '../../queries/query-options'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveDefaultNewSessionMode } from '../settings/swarm/mutations/save-default-new-session-mode'
+import { saveFollowupCheckpointPolicyDefault } from '../settings/swarm/mutations/save-followup-checkpoint-policy-default'
 import { saveLocalContainerUpdateWarningDismissal } from '../settings/swarm/mutations/save-local-container-update-warning-dismissal'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
-import { localContainerUpdateWarningDismissed, normalizeDefaultNewSessionMode, normalizeSwarmSettings, type DesktopSessionMode, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { localContainerUpdateWarningDismissed, normalizeDefaultNewSessionMode, normalizeFollowupCheckpointPolicyDefault, normalizeSwarmSettings, type DesktopSessionMode, type FollowupCheckpointPolicyDefault, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { AddSwarmModal } from './components/add-swarm-modal'
 import { fetchSwarmTargets, type SwarmTarget } from './api/swarm-targets'
 import { deleteSwarmMirrorResources, fetchSwarmMirrorResources, type SwarmMirrorResource, type SwarmMirrorResources, type SwarmMirrorWorkspaceResource } from './api/swarm-mirror'
@@ -1462,6 +1463,7 @@ export function DesktopSwarmDashboard() {
   const visiblePendingPairings = activePendingPairings(pendingPairings)
   const localNameDirty = localNameDraft.trim() !== localSwarmName.trim()
   const defaultNewSessionMode = normalizeDefaultNewSessionMode(uiSettings?.chat?.default_new_session_mode)
+  const followupCheckpointPolicyDefault = normalizeFollowupCheckpointPolicyDefault(uiSettings?.chat?.followup_checkpoint_policy_default)
   const frontendOrigin = typeof window !== 'undefined' ? window.location.origin : ''
   const browserProtocol = typeof window !== 'undefined' ? window.location.protocol : 'http:'
   const configuredHost = onboardingStatus?.config.host || '127.0.0.1'
@@ -1915,6 +1917,28 @@ export function DesktopSwarmDashboard() {
       setStatus(`Default new chat mode set to ${normalizeDefaultNewSessionMode(saved.chat?.default_new_session_mode)}.`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save default new chat mode')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleSaveFollowupCheckpointPolicyDefault = async (policy: FollowupCheckpointPolicyDefault) => {
+    if (!uiSettings) {
+      setError('UI settings are not loaded yet.')
+      return
+    }
+    if (policy === followupCheckpointPolicyDefault) return
+    setBusy(true)
+    setError(null)
+    setStatus(null)
+    try {
+      const saved = await saveFollowupCheckpointPolicyDefault({ current: uiSettings, policy })
+      setUISettings(saved)
+      queryClient.setQueryData(uiSettingsQueryKey(), saved)
+      queryClient.setQueryData(['ui-settings', 'swarm'], normalizeSwarmSettings(saved))
+      setStatus(`Follow-up checkpoint default set to ${normalizeFollowupCheckpointPolicyDefault(saved.chat?.followup_checkpoint_policy_default) === 'auto_start' ? 'Auto-add & start' : 'Ask'}.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save follow-up checkpoint default')
     } finally {
       setBusy(false)
     }
@@ -2535,7 +2559,7 @@ export function DesktopSwarmDashboard() {
             <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">No peer group exists yet. Local containers still work; use Link a Managed Host or create a peer group when you want to connect another machine.</div>
           ) : null}
 
-          <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-transparent p-3">
+          <div className="mt-4 grid gap-3 rounded-xl border border-[var(--app-border)] bg-transparent p-3">
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_220px] sm:items-center">
               <div>
                 <div className="text-sm font-semibold text-[var(--app-text)]">Default new chat mode</div>
@@ -2552,6 +2576,24 @@ export function DesktopSwarmDashboard() {
               >
                 <option value="auto">Auto</option>
                 <option value="plan">Plan</option>
+              </Select>
+            </div>
+            <div className="grid gap-3 border-t border-[var(--app-border)] pt-3 sm:grid-cols-[minmax(0,1fr)_220px] sm:items-center">
+              <div>
+                <div className="text-sm font-semibold text-[var(--app-text)]">Follow-up checkpoint default</div>
+                <div className="text-xs text-[var(--app-text-muted)]">
+                  Backend default for plan follow-up requests when the current plan has no override. Auto-add &amp; start lets the AI continue.
+                </div>
+              </div>
+              <Select
+                value={followupCheckpointPolicyDefault}
+                onChange={(event) => void handleSaveFollowupCheckpointPolicyDefault(event.target.value as FollowupCheckpointPolicyDefault)}
+                disabled={busy || !uiSettings}
+                aria-label="Follow-up checkpoint default"
+                className="h-10 min-h-0 w-full rounded-xl bg-[var(--app-surface)] py-2 text-sm font-medium"
+              >
+                <option value="require_approval">Ask</option>
+                <option value="auto_start">Auto-add &amp; start</option>
               </Select>
             </div>
           </div>

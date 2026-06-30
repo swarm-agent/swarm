@@ -15,6 +15,9 @@ const (
 	PlanExecutionShapeSingleRun    = "single_run"
 	PlanExecutionShapeCheckpointed = "checkpointed"
 
+	PlanFollowupCheckpointPolicyRequireApproval = "require_approval"
+	PlanFollowupCheckpointPolicyAutoStart       = "auto_start"
+
 	PlanExecutionStateIdle          = "idle"
 	PlanExecutionStateInProgress    = "in_progress"
 	PlanExecutionStateWaitingReview = "waiting_review"
@@ -126,6 +129,7 @@ func normalizePlanExecutionPolicy(policy *pebblestore.SessionPlanExecutionPolicy
 			policy.Shape = PlanExecutionShapeSingleRun
 		}
 	}
+	policy.FollowupCheckpointPolicy = normalizePlanFollowupCheckpointPolicy(policy.FollowupCheckpointPolicy)
 }
 
 func normalizePlanExecutionState(state *pebblestore.SessionPlanExecutionState) {
@@ -216,6 +220,35 @@ func normalizePlanExecutionShape(shape string) string {
 	default:
 		return token
 	}
+}
+
+func normalizePlanFollowupCheckpointPolicy(policy string) string {
+	switch token := normalizePlanToken(policy); token {
+	case "", "default", "inherit", "global", "global_default":
+		return ""
+	case "approval", "approve", "require_approval", "manual", "ask":
+		return PlanFollowupCheckpointPolicyRequireApproval
+	case "auto", "automatic", "auto_start", "append_and_start", "start":
+		return PlanFollowupCheckpointPolicyAutoStart
+	case "auto_append", "append", "append_only":
+		return ""
+	default:
+		return token
+	}
+}
+
+func ResolvePlanFollowupCheckpointPolicy(doc *pebblestore.SessionPlanDocument, globalDefault string) string {
+	policy := ""
+	if doc != nil {
+		policy = normalizePlanFollowupCheckpointPolicy(doc.ExecutionPolicy.FollowupCheckpointPolicy)
+	}
+	if policy == "" {
+		policy = normalizePlanFollowupCheckpointPolicy(globalDefault)
+	}
+	if policy == "" {
+		return PlanFollowupCheckpointPolicyRequireApproval
+	}
+	return policy
 }
 
 func normalizePlanExecutionStateStatus(status string) string {
@@ -317,6 +350,11 @@ func validatePlanExecutionPolicy(policy pebblestore.SessionPlanExecutionPolicy) 
 	case "", PlanExecutionShapeSingleRun, PlanExecutionShapeCheckpointed:
 	default:
 		return fmt.Errorf("plan document execution_policy.shape %q is not supported", policy.Shape)
+	}
+	switch policy.FollowupCheckpointPolicy {
+	case "", PlanFollowupCheckpointPolicyRequireApproval, PlanFollowupCheckpointPolicyAutoStart:
+	default:
+		return fmt.Errorf("plan document execution_policy.followup_checkpoint_policy %q is not supported", policy.FollowupCheckpointPolicy)
 	}
 	return nil
 }
@@ -697,6 +735,10 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 	}
 	checkpoint := &doc.Checkpoints[idx]
 	currentStatus := normalizePlanCheckpointStatusForSave(checkpoint.Status)
+	currentSummary := SummarizePlanExecution(doc)
+	if currentStatus == PlanCheckpointStatusCompleted && outcome == PlanCheckpointStatusCompleted && currentSummary.ReviewRequired && currentSummary.StopReason == PlanCheckpointStatusNeedsReview && allPlanCheckpointsCompleted(doc.Checkpoints) {
+		return PlanCheckpointOutcomeDecision{}, errors.New("plan is already waiting for final review; accept review or request_followup_checkpoint instead of completing the checkpoint again")
+	}
 	if currentStatus == PlanCheckpointStatusCompleted || currentStatus == PlanCheckpointStatusBlocked || currentStatus == PlanCheckpointStatusFailed {
 		if currentStatus != outcome {
 			return PlanCheckpointOutcomeDecision{}, fmt.Errorf("checkpoint %q is already terminal with status %q", checkpointID, currentStatus)

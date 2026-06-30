@@ -1,16 +1,20 @@
-import { memo } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { cn } from '../../../../lib/cn'
 import { Button } from '../../../../components/ui/button'
 import type { DesktopSessionPlanCheckpoint } from '../types/chat'
 import type { DesktopPlanExecutionView } from '../../state/desktop-v3-cache-selectors'
+import { normalizeFollowupCheckpointPolicyDefault, type FollowupCheckpointPolicyDefault } from '../../settings/swarm/types/swarm-settings'
 type DesktopPlanExecutionSidebarAction =
   | 'accept_checkpoint'
   | 'resume_automatic'
   | 'archive_plan'
+  | 'set_followup_policy'
 
 export interface DesktopPlanExecutionSidebarActionInput {
   action: DesktopPlanExecutionSidebarAction
   checkpointId?: string
+  followupCheckpointPolicy?: FollowupCheckpointPolicyDefault | ''
+  followupCheckpointPolicyScope?: 'global_default' | 'plan_override'
 }
 
 interface DesktopPlanExecutionSidebarProps {
@@ -20,6 +24,7 @@ interface DesktopPlanExecutionSidebarProps {
   onAction?: (input: DesktopPlanExecutionSidebarActionInput) => void | Promise<void>
   onStop?: () => void | Promise<void>
   onEditPlan?: () => void
+  followupCheckpointPolicyDefault?: FollowupCheckpointPolicyDefault
 }
 
 type Tone = 'muted' | 'primary' | 'success' | 'warning' | 'danger'
@@ -65,6 +70,15 @@ function toneBadgeClass(tone: Tone): string {
 }
 
 const waitingReviewBadgeClass = 'rounded-md border border-[var(--app-border)] bg-[linear-gradient(135deg,var(--app-warning-bg),var(--app-primary-soft))] px-2 py-0.5 text-[9px] font-semibold uppercase leading-4 tracking-[0.06em] text-[var(--app-text)] shadow-[0_0_18px_color-mix(in_oklab,var(--app-warning-text)_12%,transparent)]'
+
+const followupPolicyOptions: Array<{ value: FollowupCheckpointPolicyDefault; label: string; detail: string }> = [
+  { value: 'require_approval', label: 'Ask', detail: 'Ask before adding a follow-up checkpoint.' },
+  { value: 'auto_start', label: 'Auto-add & start', detail: 'Append one checkpoint and start it when policy permits.' },
+]
+
+function followupPolicyLabel(policy: FollowupCheckpointPolicyDefault): string {
+  return followupPolicyOptions.find((option) => option.value === policy)?.label ?? 'Ask'
+}
 
 function actionBusyKey(action: DesktopPlanExecutionSidebarAction, checkpointId?: string): string {
   return `${action}:${checkpointId ?? ''}`
@@ -176,7 +190,7 @@ function ActiveCheckpointCard({ view, checkpoints, completedCount, totalCount, a
   )
 }
 
-function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecutionSidebarProps & { view: DesktopPlanExecutionView }) {
+function ActionsCard({ view, busyAction, canStop, onAction, followupCheckpointPolicyDefault }: DesktopPlanExecutionSidebarProps & { view: DesktopPlanExecutionView }) {
   const checkpointId = view.activeCheckpointId || view.activeCheckpoint?.id || ''
   const automatic = view.policyMode === 'automatic'
   const acceptBusy = busyAction === actionBusyKey('accept_checkpoint', checkpointId)
@@ -188,12 +202,115 @@ function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecuti
   const hasNextCheckpoint = checkpoints.some((checkpoint, index) => index > activeIndex && checkpointIsIncomplete(checkpoint))
   const canAccept = Boolean(onAction && checkpointId && view.reviewRequired && !view.blocked && !view.failed && !canStop)
   const canArchive = Boolean(onAction && !canStop && !archiveBusy)
+  const globalFollowupPolicyDefault = normalizeFollowupCheckpointPolicyDefault(followupCheckpointPolicyDefault)
+  const planFollowupPolicyOverride = view.plan.document?.executionPolicy?.followupCheckpointPolicy || ''
+  const hasPlanOverride = planFollowupPolicyOverride.trim() !== ''
+  const effectiveFollowupPolicy = hasPlanOverride
+    ? normalizeFollowupCheckpointPolicyDefault(planFollowupPolicyOverride)
+    : globalFollowupPolicyDefault
+  const [selectedFollowupPolicy, setSelectedFollowupPolicy] = useState<FollowupCheckpointPolicyDefault>(effectiveFollowupPolicy)
+  useEffect(() => {
+    setSelectedFollowupPolicy(effectiveFollowupPolicy)
+  }, [effectiveFollowupPolicy])
+  const planPolicyBusy = busyAction === actionBusyKey('set_followup_policy', 'plan_override')
+  const globalPolicyBusy = busyAction === actionBusyKey('set_followup_policy', 'global_default')
+  const policyBusy = planPolicyBusy || globalPolicyBusy
+  const selectionMatchesDefault = selectedFollowupPolicy === globalFollowupPolicyDefault
+  const selectedPolicyOption = followupPolicyOptions.find((option) => option.value === selectedFollowupPolicy) ?? followupPolicyOptions[0]
+  const selectedPolicyLabel = followupPolicyLabel(selectedFollowupPolicy)
+  const defaultPolicyLabel = followupPolicyLabel(globalFollowupPolicyDefault)
   const acceptReviewBusy = acceptBusy
   const acceptReviewLabel = hasNextCheckpoint ? 'Accept & start next checkpoint' : 'Accept & archive plan'
   const acceptReviewHelp = hasNextCheckpoint
     ? 'Accepting review starts the next checkpoint. You can keep chatting first or ask the AI to add or adjust checkpoints.'
     : 'Accept & archive plan accepts this review and moves the completed plan to Archived.'
   const showDirectArchiveAction = !view.reviewRequired || hasNextCheckpoint
+  const followupPolicyControl = (
+    <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
+      <div className="text-sm font-medium text-[var(--app-text)]">Follow-up handling</div>
+      <div className="mt-1 text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--app-text-subtle)]">
+        {hasPlanOverride ? 'Current plan override' : 'Using default'}
+      </div>
+      <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
+        Ask Swarm for plan changes in chat; don’t switch modes to change the plan. Follow-up requests use the typed append-only lifecycle.
+      </p>
+      <label className="mt-2 grid gap-1.5 text-xs text-[var(--app-text-muted)]">
+        <span className="font-medium uppercase tracking-[0.06em] text-[var(--app-text-subtle)]">Policy</span>
+        <select
+          value={selectedFollowupPolicy}
+          onChange={(event) => setSelectedFollowupPolicy(normalizeFollowupCheckpointPolicyDefault(event.target.value))}
+          disabled={!onAction || canStop || policyBusy}
+          className="min-h-9 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-border-active)]"
+        >
+          {followupPolicyOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}{option.value === globalFollowupPolicyDefault ? ' (Default)' : ''}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="mt-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
+        {selectedPolicyOption.detail}
+      </p>
+      {selectionMatchesDefault ? (
+        hasPlanOverride ? (
+          <div className="mt-2 grid gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className={cn('w-full rounded-lg', planPolicyBusy ? 'animate-pulse' : '')}
+              onClick={() => void onAction?.({ action: 'set_followup_policy', followupCheckpointPolicy: '', followupCheckpointPolicyScope: 'plan_override' })}
+              disabled={!onAction || canStop || policyBusy}
+            >
+              Use {defaultPolicyLabel} (Default)
+            </Button>
+          </div>
+        ) : null
+      ) : (
+        <div className="mt-2 grid gap-2">
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className={cn('w-full rounded-lg', globalPolicyBusy ? 'animate-pulse' : '')}
+              onClick={() => void onAction?.({ action: 'set_followup_policy', followupCheckpointPolicy: selectedFollowupPolicy, followupCheckpointPolicyScope: 'global_default' })}
+              disabled={!onAction || canStop || policyBusy}
+            >
+              Change Default
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="primary"
+              className={cn('w-full rounded-lg', planPolicyBusy ? 'animate-pulse' : '')}
+              onClick={() => void onAction?.({ action: 'set_followup_policy', followupCheckpointPolicy: selectedFollowupPolicy, followupCheckpointPolicyScope: 'plan_override' })}
+              disabled={!onAction || canStop || policyBusy}
+            >
+              {selectedPolicyLabel} (override)
+            </Button>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="w-full rounded-lg"
+            onClick={() => {
+              if (hasPlanOverride) {
+                void onAction?.({ action: 'set_followup_policy', followupCheckpointPolicy: '', followupCheckpointPolicyScope: 'plan_override' })
+                return
+              }
+              setSelectedFollowupPolicy(globalFollowupPolicyDefault)
+            }}
+            disabled={hasPlanOverride ? (!onAction || canStop || policyBusy) : (canStop || policyBusy)}
+          >
+            Use {defaultPolicyLabel} (Default)
+          </Button>
+        </div>
+      )}
+    </div>
+  )
 
   if (automatic && !view.reviewRequired && !view.blocked && !view.failed && !view.completed) {
     const singleRun = isSingleRunView(view)
@@ -208,6 +325,7 @@ function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecuti
               : 'Execution will continue automatically through checkpoint, pause the chat at any time to change agent settings and continue'}
           </p>
         </div>
+        {followupPolicyControl}
         <div className="mt-3 grid gap-1.5">
           <Button
             type="button"
@@ -238,6 +356,7 @@ function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecuti
       </div>
 
       <div className="mt-3 grid gap-2">
+        {followupPolicyControl}
         <div className="grid gap-1.5">
           <Button
             type="button"
@@ -277,7 +396,7 @@ function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecuti
   )
 }
 
-export const DesktopPlanExecutionSidebar = memo(function DesktopPlanExecutionSidebar({ view, busyAction, canStop = false, onAction, onStop: _onStop, onEditPlan }: DesktopPlanExecutionSidebarProps) {
+export const DesktopPlanExecutionSidebar = memo(function DesktopPlanExecutionSidebar({ view, busyAction, canStop = false, onAction, onStop: _onStop, onEditPlan, followupCheckpointPolicyDefault }: DesktopPlanExecutionSidebarProps) {
   const document = view?.plan.document ?? null
   if (!view || !document) return null
 
@@ -314,6 +433,7 @@ export const DesktopPlanExecutionSidebar = memo(function DesktopPlanExecutionSid
           canStop={canStop}
           onAction={onAction}
           onEditPlan={onEditPlan}
+          followupCheckpointPolicyDefault={followupCheckpointPolicyDefault}
         />
       </div>
     </aside>

@@ -29,6 +29,7 @@ export interface StructuredPlanInfo {
 export interface StructuredPlanExecutionPolicy {
   mode: string
   shape: string
+  followupCheckpointPolicy: string
 }
 
 export interface StructuredPlanExecutionState {
@@ -166,8 +167,9 @@ function normalizeStructuredPlanExecutionPolicy(value: unknown): StructuredPlanD
   const policy = {
     mode: stringValue(record, 'mode'),
     shape: stringValue(record, 'shape'),
+    followupCheckpointPolicy: stringValue(record, 'followupCheckpointPolicy', 'followup_checkpoint_policy'),
   }
-  return policy.mode || policy.shape ? policy : null
+  return policy.mode || policy.shape || policy.followupCheckpointPolicy ? policy : null
 }
 
 function normalizeStructuredPlanExecutionState(value: unknown): StructuredPlanDocument['executionState'] {
@@ -366,6 +368,7 @@ export function structuredPlanDocumentToWire(document: StructuredPlanDocument): 
     execution_policy: document.executionPolicy ? {
       mode: document.executionPolicy.mode,
       shape: document.executionPolicy.shape,
+      followup_checkpoint_policy: document.executionPolicy.followupCheckpointPolicy,
     } : undefined,
     execution_state: document.executionState ? {
       status: document.executionState.status,

@@ -41,6 +41,15 @@ export interface PlanUpdatePayload {
   updateScope: string
   updateKind: string
   checkpoint: boolean
+  action: string
+  changeRequest: string
+  checkpointTitle: string
+  tasks: string[]
+  acceptanceCriteria: string[]
+  followupCheckpointPolicy: string
+  policyEffective: string
+  approvalRequired: boolean
+  runQueued: boolean
   document: unknown
   priorDocument: unknown
   approvedArguments: Record<string, unknown>
@@ -233,7 +242,7 @@ export interface AgentChangePayload {
   changes: AgentChangeField[]
 }
 
-export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'manage-todos' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image' | 'manage-flow'
+export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-revision-request' | 'plan-new-request' | 'manage-todos' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image' | 'manage-flow'
 
 function decodePermissionArguments(raw: string): Record<string, unknown> | null {
   const trimmed = raw.trim()
@@ -473,7 +482,9 @@ export function permissionRequiresApproval(
     case 'skill_use':
       return false
     case 'plan_manage':
-      return safeString(permission.requirement).toLowerCase() === 'plan_update'
+      return ['plan_update', 'plan_followup_request', 'plan_revision_request', 'plan_new_request'].includes(
+        safeString(permission.requirement).toLowerCase(),
+      )
     case 'task':
       return true
     case 'ask_user':
@@ -511,10 +522,20 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
     case 'exit_plan_mode':
       return 'exit-plan'
     case 'plan_manage':
-      if (safeString(permission.requirement).toLowerCase() === 'plan_update') {
-        return 'plan-update'
+      switch (safeString(permission.requirement).toLowerCase()) {
+        case 'plan_followup_request':
+          return 'plan-followup-request'
+        case 'plan_revision_request':
+          return 'plan-revision-request'
+        case 'plan_new_request':
+          return 'plan-new-request'
+        case 'plan_update':
+          // Legacy generic plan updates are non-lifecycle/draft-only; active plan lifecycle
+          // changes must arrive as plan_followup_request, plan_revision_request, or plan_new_request.
+          return 'plan-update'
+        default:
+          return 'generic'
       }
-      return 'generic'
     case 'manage_todos':
       return 'manage-todos'
     case 'manage_image':
@@ -601,6 +622,15 @@ export function parsePlanUpdatePermission(permission: DesktopPermissionRecord): 
     updateScope: mapStringArg(payload, 'update_scope') || mapStringArg(payload, 'scope'),
     updateKind: mapStringArg(payload, 'update_kind') || mapStringArg(payload, 'kind'),
     checkpoint: mapBoolArg(payload, 'checkpoint'),
+    action: mapStringArg(payload, 'action'),
+    changeRequest: mapStringArg(payload, 'change_request'),
+    checkpointTitle: mapStringArg(payload, 'checkpoint_title'),
+    tasks: mapStringArrayArg(payload, 'tasks'),
+    acceptanceCriteria: mapStringArrayArg(payload, 'acceptance_criteria'),
+    followupCheckpointPolicy: mapStringArg(payload, 'followup_checkpoint_policy'),
+    policyEffective: mapStringArg(payload, 'policy_effective'),
+    approvalRequired: mapBoolArg(payload, 'approval_required'),
+    runQueued: mapBoolArg(payload, 'run_queued'),
     document: payload.document ?? null,
     priorDocument: payload.prior_document ?? null,
     approvedArguments: mapObjectArg(payload, 'approved_arguments'),

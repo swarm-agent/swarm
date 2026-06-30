@@ -231,7 +231,7 @@ test('Desktop plan execution view derives terminal status from durable plan stat
         schemaVersion: '',
         revisionId: '',
         info: { goal: 'Durable state', scope: '', context: '', decisions: [], constraints: [], assumptions: [], openQuestions: [], relevantFiles: [], successCriteria: [], validationStrategy: '' },
-        executionPolicy: { mode: 'review_each_checkpoint', shape: 'checkpointed' },
+        executionPolicy: { mode: 'review_each_checkpoint', shape: 'checkpointed', followupCheckpointPolicy: '' },
         executionState: {
           status: 'waiting_review',
           activeAttemptId: 'cp-1:attempt-1',

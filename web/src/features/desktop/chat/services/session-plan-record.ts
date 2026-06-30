@@ -159,8 +159,9 @@ function normalizeDesktopSessionPlanExecutionPolicy(value: unknown): DesktopSess
   const policy = {
     mode: stringValue(record, 'mode'),
     shape: stringValue(record, 'shape'),
+    followupCheckpointPolicy: stringValue(record, 'followupCheckpointPolicy', 'followup_checkpoint_policy'),
   }
-  return policy.mode || policy.shape ? policy : null
+  return policy.mode || policy.shape || policy.followupCheckpointPolicy ? policy : null
 }
 
 function normalizeDesktopSessionPlanExecutionState(value: unknown): DesktopSessionPlanDocument['executionState'] {

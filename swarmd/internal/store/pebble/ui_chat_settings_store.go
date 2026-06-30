@@ -58,14 +58,15 @@ type UIChatToolStreamSettingsRecord struct {
 }
 
 type UIChatSettingsRecord struct {
-	ShowHeader             bool                           `json:"show_header"`
-	ShowHeaderSet          bool                           `json:"-"`
-	ThinkingTags           bool                           `json:"thinking_tags"`
-	ThinkingTagsSet        bool                           `json:"-"`
-	DefaultNewSessionMode  string                         `json:"default_new_session_mode,omitempty"`
-	DefaultWorkspaceRoutes map[string]string              `json:"default_workspace_routes,omitempty"`
-	ToolStream             UIChatToolStreamSettingsRecord `json:"tool_stream,omitempty"`
-	UpdatedAt              int64                          `json:"updated_at"`
+	ShowHeader                      bool                           `json:"show_header"`
+	ShowHeaderSet                   bool                           `json:"-"`
+	ThinkingTags                    bool                           `json:"thinking_tags"`
+	ThinkingTagsSet                 bool                           `json:"-"`
+	DefaultNewSessionMode           string                         `json:"default_new_session_mode,omitempty"`
+	FollowupCheckpointPolicyDefault string                         `json:"followup_checkpoint_policy_default,omitempty"`
+	DefaultWorkspaceRoutes          map[string]string              `json:"default_workspace_routes,omitempty"`
+	ToolStream                      UIChatToolStreamSettingsRecord `json:"tool_stream,omitempty"`
+	UpdatedAt                       int64                          `json:"updated_at"`
 }
 
 type UISwarmingSettingsRecord struct {
@@ -200,11 +201,12 @@ func DefaultUISettingsRecord() UISettingsRecord {
 			ActiveID: "crimson",
 		},
 		Chat: UIChatSettingsRecord{
-			ShowHeader:            true,
-			ShowHeaderSet:         true,
-			ThinkingTags:          true,
-			ThinkingTagsSet:       true,
-			DefaultNewSessionMode: "auto",
+			ShowHeader:                      true,
+			ShowHeaderSet:                   true,
+			ThinkingTags:                    true,
+			ThinkingTagsSet:                 true,
+			DefaultNewSessionMode:           "auto",
+			FollowupCheckpointPolicyDefault: "require_approval",
 			ToolStream: UIChatToolStreamSettingsRecord{
 				ShowAnchor:    true,
 				PulseFrames:   []string{"·", "•", "◦", "•"},
@@ -244,6 +246,7 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	} else {
 		record.Chat.DefaultNewSessionMode = normalizeDefaultNewSessionMode(record.Chat.DefaultNewSessionMode)
 	}
+	record.Chat.FollowupCheckpointPolicyDefault = normalizeFollowupCheckpointPolicyDefault(record.Chat.FollowupCheckpointPolicyDefault)
 	record.Chat.DefaultWorkspaceRoutes = normalizeDefaultWorkspaceRoutes(record.Chat.DefaultWorkspaceRoutes)
 	if len(record.Chat.ToolStream.PulseFrames) == 0 {
 		record.Chat.ToolStream.PulseFrames = []string{"·", "•", "◦", "•"}
@@ -322,6 +325,15 @@ func normalizeDefaultNewSessionMode(value string) string {
 		return "plan"
 	default:
 		return "auto"
+	}
+}
+
+func normalizeFollowupCheckpointPolicyDefault(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "auto", "automatic", "auto_start", "append_and_start", "start":
+		return "auto_start"
+	default:
+		return "require_approval"
 	}
 }
 

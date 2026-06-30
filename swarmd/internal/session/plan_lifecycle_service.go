@@ -10,15 +10,25 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// PlanLifecycleService owns user-facing plan-mode lifecycle transitions. HTTP
+// PlanLifecycleService owns user-facing typed plan lifecycle transitions. HTTP
 // handlers and tools should call these explicit methods instead of embedding
-// lifecycle state changes inline.
+// lifecycle state changes inline: follow-up requests append one checkpoint,
+// revision requests create approval-gated replacements for the current plan,
+// and new-plan requests create approval-gated separate proposals.
 type PlanLifecycleService struct {
-	sessions *Service
+	sessions             *Service
+	globalFollowupPolicy func(accountScopeID string) (string, error)
 }
 
 func NewPlanLifecycleService(sessions *Service) *PlanLifecycleService {
 	return &PlanLifecycleService{sessions: sessions}
+}
+
+func (s *PlanLifecycleService) SetGlobalFollowupCheckpointPolicyResolver(resolver func(accountScopeID string) (string, error)) {
+	if s == nil {
+		return
+	}
+	s.globalFollowupPolicy = resolver
 }
 
 type PlanLifecyclePlanInput struct {
@@ -31,6 +41,40 @@ type PlanLifecyclePlanInput struct {
 	ExecutionGranularity  string
 	ContinuationPolicy    string
 	ContinueAutomatically *bool
+}
+
+type PlanLifecycleFollowupCheckpointInput struct {
+	SessionID           string
+	PlanID              string
+	ChangeRequest       string
+	UserRequest         string
+	Title               string
+	Tasks               []string
+	AcceptanceCriteria  []string
+	SourceMessageID     string
+	GlobalDefaultPolicy string
+	ApprovalConfirmed   bool
+	RunID               string
+	RunSessionID        string
+	ParentSessionID     string
+	StartedAt           int64
+	AttemptID           string
+}
+
+type PlanLifecycleProposalInput struct {
+	SessionID string
+	PlanID    string
+	Title     string
+	Plan      string
+	Document  *pebblestore.SessionPlanDocument
+	Reason    string
+}
+
+type PlanLifecycleFollowupPolicyInput struct {
+	SessionID                string
+	PlanID                   string
+	FollowupCheckpointPolicy string
+	Reason                   string
 }
 
 type PlanLifecycleExecutionInput struct {
@@ -174,6 +218,133 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 		checkpointID = strings.TrimSpace(summary.NextCheckpointID)
 	}
 	return PlanLifecycleResult{Session: updated, Plan: saved, PlanEvent: planEvent, ModeEvent: modeEvent, Summary: summary, CheckpointID: checkpointID, Action: "submit_plan_for_approval", Message: "structured plan saved, approved; mode switched to auto"}, nil
+}
+
+func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFollowupCheckpointInput) (PlanLifecycleResult, error) {
+	state, err := s.loadApprovedPlan(input.SessionID, input.PlanID, "request_followup_checkpoint")
+	if err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	request := strings.TrimSpace(input.ChangeRequest)
+	if request == "" {
+		return PlanLifecycleResult{}, errors.New("request_followup_checkpoint requires change_request")
+	}
+	if summary := SummarizePlanExecution(state.doc); summary.Blocked || summary.Failed {
+		return PlanLifecycleResult{}, fmt.Errorf("request_followup_checkpoint requires an unblocked plan; current stop reason is %q", summary.StopReason)
+	}
+	policy, err := s.resolveFollowupCheckpointPolicy(state, input.GlobalDefaultPolicy)
+	if err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	if policy == PlanFollowupCheckpointPolicyRequireApproval && !input.ApprovalConfirmed {
+		return PlanLifecycleResult{}, errors.New("request_followup_checkpoint requires user approval by resolved follow-up checkpoint policy")
+	}
+	checkpointID := nextFollowupCheckpointID(state.doc)
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		title = fmt.Sprintf("Follow-up: %s", truncatePlanLifecycleTitle(request, 72))
+	}
+	tasks := trimStringSlice(input.Tasks)
+	if len(tasks) == 0 {
+		tasks = []string{request}
+	}
+	checkpoint := pebblestore.SessionPlanCheckpoint{
+		ID:                 checkpointID,
+		Title:              title,
+		Status:             PlanCheckpointStatusPending,
+		Objective:          request,
+		Tasks:              tasks,
+		AcceptanceCriteria: trimStringSlice(input.AcceptanceCriteria),
+		SourceMessageID:    strings.TrimSpace(input.SourceMessageID),
+		Order:              len(state.doc.Checkpoints) + 1,
+	}
+	state.doc.Checkpoints = append(state.doc.Checkpoints, checkpoint)
+	normalizeCheckpointOrder(state.doc)
+	state.doc.ActiveCheckpointID = checkpointID
+	if state.doc.ExecutionState == nil {
+		state.doc.ExecutionState = &pebblestore.SessionPlanExecutionState{}
+	}
+	state.doc.ExecutionState.Status = PlanExecutionStateIdle
+	state.doc.ExecutionState.ActiveAttemptID = ""
+	state.doc.ExecutionState.CurrentRunID = ""
+	state.doc.ExecutionState.CurrentSessionID = ""
+	state.doc.ExecutionPolicy.Shape = PlanExecutionShapeCheckpointed
+	normalizePlanExecutionPolicy(&state.doc.ExecutionPolicy, len(state.doc.Checkpoints))
+	if policy == PlanFollowupCheckpointPolicyAutoStart {
+		return s.applyCheckpointStartAndSave(state, PlanLifecycleExecutionInput{SessionID: input.SessionID, PlanID: state.plan.ID, CheckpointID: checkpointID, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, AttemptID: input.AttemptID, StartedAt: input.StartedAt}, checkpointID, "request_followup_checkpoint", "Appended follow-up checkpoint and prepared fresh-context checkpoint start", state.plan.Status, state.plan.ApprovalState)
+	}
+	return s.saveLifecyclePlan(state, checkpointID, "request_followup_checkpoint", "Appended follow-up checkpoint")
+}
+
+func (s *PlanLifecycleService) RequestPlanRevision(input PlanLifecycleProposalInput) (PlanLifecycleResult, error) {
+	state, err := s.loadPlanForLifecycle(input.SessionID, input.PlanID, "request_plan_revision")
+	if err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	doc := clonePlanLifecycleDocument(input.Document)
+	planText := strings.TrimSpace(input.Plan)
+	if doc == nil {
+		doc = state.doc
+	}
+	if planText == "" {
+		planText = state.plan.Plan
+	}
+	title := strings.TrimSpace(firstNonBlank(input.Title, doc.Title, state.plan.Title))
+	if title == "" {
+		title = "Plan revision proposal"
+	}
+	doc.ID = state.plan.ID
+	doc.Title = title
+	doc.Status = "pending_approval"
+	saved, event, err := s.sessions.SavePlanWithMetadata(state.session.ID, state.plan.ID, title, planText, "pending_approval", "pending", true, PlanSaveMetadata{UpdateSummary: firstNonBlank(strings.TrimSpace(input.Reason), "Plan revision proposal pending approval"), UpdateScope: "plan", UpdateKind: "request_plan_revision", Document: doc})
+	if err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	return PlanLifecycleResult{Session: state.session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), Action: "request_plan_revision", Message: "plan revision proposal saved for approval"}, nil
+}
+
+func (s *PlanLifecycleService) RequestNewPlan(input PlanLifecycleProposalInput) (PlanLifecycleResult, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	session, err := s.requireSession(input.SessionID)
+	if err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	doc := clonePlanLifecycleDocument(input.Document)
+	title := strings.TrimSpace(firstNonBlank(input.Title, planLifecycleDocumentTitle(doc), "New plan proposal"))
+	planText := strings.TrimSpace(input.Plan)
+	if planText == "" && doc != nil {
+		planText = strings.TrimSpace(firstNonBlank(doc.DisplayText, doc.RenderedText))
+	}
+	if planText == "" {
+		planText = "# " + title
+	}
+	if doc != nil {
+		doc.Title = title
+		doc.Status = "pending_approval"
+	}
+	saved, event, err := s.sessions.SavePlanWithMetadata(session.ID, "", title, planText, "pending_approval", "pending", false, PlanSaveMetadata{UpdateSummary: firstNonBlank(strings.TrimSpace(input.Reason), "New plan proposal pending approval"), UpdateScope: "plan", UpdateKind: "request_new_plan", Document: doc})
+	if err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	return PlanLifecycleResult{Session: session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), Action: "request_new_plan", Message: "new plan proposal saved for approval"}, nil
+}
+
+func (s *PlanLifecycleService) SetFollowupCheckpointPolicy(input PlanLifecycleFollowupPolicyInput) (PlanLifecycleResult, error) {
+	state, err := s.loadPlanForLifecycle(input.SessionID, input.PlanID, "set_followup_checkpoint_policy")
+	if err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	policy := normalizePlanFollowupCheckpointPolicy(input.FollowupCheckpointPolicy)
+	switch policy {
+	case "", PlanFollowupCheckpointPolicyRequireApproval, PlanFollowupCheckpointPolicyAutoStart:
+	default:
+		return PlanLifecycleResult{}, fmt.Errorf("followup checkpoint policy %q is not supported", input.FollowupCheckpointPolicy)
+	}
+	state.doc.ExecutionPolicy.FollowupCheckpointPolicy = policy
+	normalizePlanExecutionPolicy(&state.doc.ExecutionPolicy, len(state.doc.Checkpoints))
+	return s.saveLifecyclePlan(state, "", "set_followup_checkpoint_policy", firstNonBlank(strings.TrimSpace(input.Reason), "Updated follow-up checkpoint policy"))
 }
 
 func (s *PlanLifecycleService) ApprovePlan(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
@@ -429,6 +600,18 @@ func (s *PlanLifecycleService) updateExecutionState(input PlanLifecycleExecution
 	return s.saveLifecyclePlan(state, state.doc.ActiveCheckpointID, action, summary)
 }
 
+func (s *PlanLifecycleService) resolveFollowupCheckpointPolicy(state planLifecycleState, explicitDefault string) (string, error) {
+	globalDefault := strings.TrimSpace(explicitDefault)
+	if globalDefault == "" && s != nil && s.globalFollowupPolicy != nil {
+		policy, err := s.globalFollowupPolicy(state.session.AccountScopeID)
+		if err != nil {
+			return "", err
+		}
+		globalDefault = strings.TrimSpace(policy)
+	}
+	return ResolvePlanFollowupCheckpointPolicy(state.doc, globalDefault), nil
+}
+
 func (s *PlanLifecycleService) loadApprovedPlan(sessionID, planID, action string) (planLifecycleState, error) {
 	state, err := s.loadPlanForLifecycle(sessionID, planID, action)
 	if err != nil {
@@ -436,6 +619,9 @@ func (s *PlanLifecycleService) loadApprovedPlan(sessionID, planID, action string
 	}
 	if !IsValidMode(NormalizeMode(state.session.Mode)) {
 		return planLifecycleState{}, fmt.Errorf("%s requires a valid session mode, got %q", action, state.session.Mode)
+	}
+	if !strings.EqualFold(strings.TrimSpace(state.plan.ApprovalState), "approved") {
+		return planLifecycleState{}, fmt.Errorf("%s requires an approved plan", action)
 	}
 	if state.doc.ExecutionPolicy.Mode == "" || state.doc.ExecutionPolicy.Shape == "" {
 		return planLifecycleState{}, fmt.Errorf("%s requires an accepted plan execution policy", action)
@@ -573,6 +759,32 @@ func requireCheckpointResettable(doc *pebblestore.SessionPlanDocument, checkpoin
 		return fmt.Errorf("plan document checkpoint %q was not found", checkpointID)
 	}
 	return nil
+}
+
+func nextFollowupCheckpointID(doc *pebblestore.SessionPlanDocument) string {
+	base := "followup"
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if doc == nil || findPlanCheckpointIndex(doc.Checkpoints, candidate) < 0 {
+			return candidate
+		}
+	}
+}
+
+func truncatePlanLifecycleTitle(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len([]rune(value)) <= limit {
+		return value
+	}
+	runes := []rune(value)
+	return strings.TrimSpace(string(runes[:limit])) + "…"
+}
+
+func planLifecycleDocumentTitle(doc *pebblestore.SessionPlanDocument) string {
+	if doc == nil {
+		return ""
+	}
+	return strings.TrimSpace(doc.Title)
 }
 
 func clonePlanLifecycleDocument(doc *pebblestore.SessionPlanDocument) *pebblestore.SessionPlanDocument {

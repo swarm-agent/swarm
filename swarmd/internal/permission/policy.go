@@ -654,7 +654,7 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		}
 		return PolicyDecisionAllow
 	case "plan_manage":
-		if ShouldApprovePlanManageUpdate(toolArguments) {
+		if PlanManageLifecycleRequirement(toolArguments) != "" {
 			return PolicyDecisionAsk
 		}
 		return PolicyDecisionAllow

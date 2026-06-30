@@ -44,7 +44,7 @@ function view(overrides: Partial<DesktopPlanExecutionView> = {}): DesktopPlanExe
         schemaVersion: '',
         revisionId: '',
         info: { goal: '', scope: '', context: '', decisions: [], constraints: [], assumptions: [], openQuestions: [], relevantFiles: [], successCriteria: [], validationStrategy: '' },
-        executionPolicy: { mode: 'automatic', shape: 'checkpointed' },
+        executionPolicy: { mode: 'automatic', shape: 'checkpointed', followupCheckpointPolicy: '' },
         executionState: { status: 'in_progress', activeAttemptId: 'attempt-1', parentSessionId: 'session-1', currentSessionId: 'session-1', currentRunId: 'run-1', lastCheckpointId: '', lastAttemptId: '', lastOutcome: '', startedAt: 1, updatedAt: 1, completedAt: 0 },
         checkpoints,
         activeCheckpointId: 'cp-1',
@@ -73,7 +73,7 @@ test('normal run-through sidebar shows the plan title instead of the synthetic c
   const base = view({ policyShape: 'single_run' })
   base.plan.title = 'Plan: ship sidebar fix'
   base.plan.document.title = 'Plan: ship sidebar fix'
-  base.plan.document.executionPolicy = { mode: 'automatic', shape: 'single_run' }
+  base.plan.document.executionPolicy = { mode: 'automatic', shape: 'single_run', followupCheckpointPolicy: '' }
   base.plan.document.activeCheckpointId = 'plan-run'
   base.activeCheckpointId = 'plan-run'
   base.activeCheckpoint = {
@@ -107,7 +107,59 @@ test('automatic checkpointed mode sidebar actions card explains continuation and
   assert.doesNotMatch(markup, /Continue checkpoint/)
   assert.doesNotMatch(markup, /Accept this checkpoint/)
   assert.doesNotMatch(markup, /Restart/)
+  assert.match(markup, /Using default/)
+  assert.match(markup, /Ask \(Default\)/)
+  assert.match(markup, /Auto-add .* start/)
+  assert.doesNotMatch(markup, /Use default/)
+  assert.doesNotMatch(markup, /disabled=""[^>]*>Use Ask \(Default\)/)
+  assert.doesNotMatch(markup, /Inherit global default/)
+  assert.doesNotMatch(markup, /Auto-add only/)
   assert.doesNotMatch(markup, /role="switch"/)
+})
+
+test('plan override different from default exposes concrete override and return-to-default choices', () => {
+  const base = view()
+  base.plan.document.executionPolicy.followupCheckpointPolicy = 'auto_start'
+
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar
+      view={base}
+      followupCheckpointPolicyDefault="require_approval"
+      onAction={() => undefined}
+      onEditPlan={() => undefined}
+    />,
+  )
+
+  assert.match(markup, /Current plan override/)
+  assert.match(markup, /Ask \(Default\)/)
+  assert.match(markup, /Change Default/)
+  assert.match(markup, /Auto-add .* start \(override\)/)
+  assert.match(markup, /Use Ask \(Default\)/)
+  assert.doesNotMatch(markup, /Override Default/)
+  assert.doesNotMatch(markup, /Make Auto-add .* start the global default and clear this plan override/)
+  assert.doesNotMatch(markup, /Use Auto-add .* start only for this plan and keep the global default unchanged/)
+  assert.doesNotMatch(markup, /Inherit global default/)
+})
+
+test('sidebar renders a non-Ask backend follow-up default after refresh', () => {
+  const base = view()
+  base.plan.document.executionPolicy.followupCheckpointPolicy = ''
+
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar
+      view={base}
+      followupCheckpointPolicyDefault="auto_start"
+      onAction={() => undefined}
+      onEditPlan={() => undefined}
+    />,
+  )
+
+  assert.match(markup, /Using default/)
+  assert.match(markup, /Auto-add .* start \(Default\)/)
+  assert.doesNotMatch(markup, /Ask \(Default\)/)
+  assert.doesNotMatch(markup, /Change Default/)
+  assert.doesNotMatch(markup, /\(override\)/)
+  assert.doesNotMatch(markup, /Use Auto-add .* start \(Default\)/)
 })
 
 test('manual review mode keeps the start-next review button visible and enabled when more checkpoints remain', () => {

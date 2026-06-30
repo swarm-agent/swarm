@@ -11,6 +11,9 @@ export interface DesktopPlanLifecycleResponse {
   session_id?: string
   plan_id?: string
   transition?: string
+  change_type?: string
+  policy_effective?: string
+  approval_required?: boolean
   status?: string
   summary?: string
   checkpoint_id?: string

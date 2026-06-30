@@ -429,6 +429,33 @@ func TestExecutePlanManageFinalCheckpointAwaitsReview(t *testing.T) {
 	}
 }
 
+func TestExecutePlanManageRepeatedFinalCompleteCheckpointIsRejected(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-final-review-repeat", "Final Review Repeat", "# Final", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:  &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Model", Status: sessionruntime.PlanCheckpointStatusCompleted},
+			{ID: "cp-2", Title: "API", Status: sessionruntime.PlanCheckpointStatusCompleted},
+		},
+		ActiveCheckpointID: "cp-2",
+	}})
+	if err != nil {
+		t.Fatalf("save waiting-review plan: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"done again"}`, "")
+	if err == nil {
+		t.Fatalf("repeated complete_checkpoint succeeded unexpectedly: %s", raw)
+	}
+	if !strings.Contains(err.Error(), "request_followup_checkpoint") {
+		t.Fatalf("error = %v, want request_followup_checkpoint guidance (raw=%s)", err, raw)
+	}
+}
+
 func TestExecutePlanManageApproveAndStartRunThroughCollapsesToSingleCheckpoint(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()

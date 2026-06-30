@@ -156,8 +156,9 @@ type SessionPlanDocument struct {
 // with the plan document so checkpoint execution can be resumed without reading
 // chat history.
 type SessionPlanExecutionPolicy struct {
-	Mode  string `json:"mode,omitempty"`
-	Shape string `json:"shape,omitempty"`
+	Mode                     string `json:"mode,omitempty"`
+	Shape                    string `json:"shape,omitempty"`
+	FollowupCheckpointPolicy string `json:"followup_checkpoint_policy,omitempty"`
 }
 
 // SessionPlanExecutionState stores the active execution linkage for the plan.
@@ -195,6 +196,7 @@ type SessionPlanCheckpoint struct {
 	Objective          string                         `json:"objective,omitempty"`
 	Tasks              []string                       `json:"tasks,omitempty"`
 	AcceptanceCriteria []string                       `json:"acceptance_criteria,omitempty"`
+	SourceMessageID    string                         `json:"source_message_id,omitempty"`
 	Notes              string                         `json:"notes,omitempty"`
 	Report             string                         `json:"report,omitempty"`
 	Result             string                         `json:"result,omitempty"`

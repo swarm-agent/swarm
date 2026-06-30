@@ -1637,6 +1637,12 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 		action = "set_active_checkpoint"
 	case "approve-and-start", "approve_and_start", "approve-start", "approve_start", "start-plan", "start_plan":
 		action = "approve_and_start"
+	case "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
+		action = "request_followup_checkpoint"
+	case "request-plan-revision", "request_plan_revision", "plan-revision", "plan_revision":
+		action = "request_plan_revision"
+	case "request-new-plan", "request_new_plan", "new-plan-proposal", "new_plan_proposal":
+		action = "request_new_plan"
 	case "restart-checkpoint", "restart_checkpoint", "retry-checkpoint", "retry_checkpoint", "restart-checkpoint-from-zero", "restart_checkpoint_from_zero":
 		action = "restart_checkpoint"
 	case "rewind-to-checkpoint", "rewind_to_checkpoint", "rewind-checkpoint", "rewind_checkpoint":
@@ -1649,7 +1655,7 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 	}
 
 	switch action {
-	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint":
+	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "request_followup_checkpoint", "request_plan_revision", "request_new_plan":
 		return s.executePlanLifecycleControlAction(sessionID, action, args, applySessionMutation)
 	case "list":
 		limit := mapInt(args, "limit")
@@ -2113,6 +2119,10 @@ func planManagePlanRevisionSummary(plan pebblestore.SessionPlanSnapshot) map[str
 func (s *Service) executePlanLifecycleControlAction(sessionID, action string, args map[string]any, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
 	planID := strings.TrimSpace(firstNonEmptyString(mapString(args, "plan_id"), mapString(args, "id")))
 	checkpointID := strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_id"), mapString(args, "active_checkpoint_id"), mapString(args, "active_checkpoint")))
+	document, err := planDocumentFromArgs(args)
+	if err != nil {
+		return "", err
+	}
 	continueAutomatically := (*bool)(nil)
 	if _, ok := args["continue_automatically"]; ok {
 		value := mapBool(args, "continue_automatically")
@@ -2127,8 +2137,16 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		ContinueAutomatically: continueAutomatically,
 	}
 	lifecycle := sessionruntime.NewPlanLifecycleService(s.sessions)
+	if s != nil && s.uiSettings != nil {
+		lifecycle.SetGlobalFollowupCheckpointPolicyResolver(func(accountScopeID string) (string, error) {
+			settings, err := s.uiSettings.GetForAccount(accountScopeID)
+			if err != nil {
+				return "", err
+			}
+			return settings.Chat.FollowupCheckpointPolicyDefault, nil
+		})
+	}
 	var result sessionruntime.PlanLifecycleResult
-	var err error
 	switch action {
 	case "approve_and_start":
 		if session, ok, getErr := s.sessions.GetSession(sessionID); getErr != nil {
@@ -2150,6 +2168,29 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		result, err = lifecycle.RestartCheckpointFromZero(input)
 	case "rewind_to_checkpoint":
 		result, err = lifecycle.RewindToCheckpoint(input)
+	case "request_followup_checkpoint":
+		input := sessionruntime.PlanLifecycleFollowupCheckpointInput{
+			SessionID:           sessionID,
+			PlanID:              planID,
+			ChangeRequest:       strings.TrimSpace(mapString(args, "change_request")),
+			UserRequest:         strings.TrimSpace(firstNonEmptyString(mapString(args, "user_request"), mapString(args, "request"), mapString(args, "prompt"), mapString(args, "text"))),
+			Title:               strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title"))),
+			Tasks:               mapStringSlice(args, "tasks"),
+			AcceptanceCriteria:  mapStringSlice(args, "acceptance_criteria"),
+			SourceMessageID:     strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message"))),
+			GlobalDefaultPolicy: strings.TrimSpace(firstNonEmptyString(mapString(args, "followup_checkpoint_policy"), mapString(args, "policy"))),
+			ApprovalConfirmed:   mapBool(args, "approval_confirmed"),
+			RunID:               strings.TrimSpace(mapString(args, "run_id")),
+			RunSessionID:        strings.TrimSpace(firstNonEmptyString(mapString(args, "run_session_id"), mapString(args, "session_id"))),
+			ParentSessionID:     strings.TrimSpace(mapString(args, "parent_session_id")),
+			StartedAt:           int64(mapInt(args, "started_at")),
+			AttemptID:           strings.TrimSpace(mapString(args, "attempt_id")),
+		}
+		result, err = lifecycle.RequestFollowupCheckpoint(input)
+	case "request_plan_revision":
+		result, err = lifecycle.RequestPlanRevision(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, Reason: strings.TrimSpace(firstNonEmptyString(mapString(args, "reason"), mapString(args, "update_summary"), mapString(args, "summary")))})
+	case "request_new_plan":
+		result, err = lifecycle.RequestNewPlan(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, Reason: strings.TrimSpace(firstNonEmptyString(mapString(args, "reason"), mapString(args, "update_summary"), mapString(args, "summary")))})
 	default:
 		return "", fmt.Errorf("plan execution action %q is not supported", action)
 	}
@@ -3266,8 +3307,8 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 		}
 		return "manage_image", false
 	case "plan_manage":
-		if permission.ShouldApprovePlanManageUpdate(arguments) {
-			return "plan_update", true
+		if requirement := permission.PlanManageLifecycleRequirement(arguments); requirement != "" {
+			return requirement, true
 		}
 		return toolName, false
 	case "manage_skill":

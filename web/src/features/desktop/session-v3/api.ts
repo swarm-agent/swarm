@@ -213,6 +213,84 @@ export async function updateAndApplySessionV3DesktopSidebarPinned(
   return settingsResponse
 }
 
+export async function requestSessionV3PlanFollowupCheckpoint(
+  sessionId: string,
+  input: {
+    planId?: string
+    changeRequest: string
+    checkpointTitle?: string
+    tasks?: string[]
+    acceptanceCriteria?: string[]
+    sourceMessageId?: string
+    followupCheckpointPolicy?: string
+  },
+): Promise<unknown> {
+  const normalizedSessionId = sessionId.trim()
+  const changeRequest = input.changeRequest.trim()
+  if (!normalizedSessionId) throw new Error('Desktop V3 plan follow-up requires session_id')
+  if (!changeRequest) throw new Error('Desktop V3 plan follow-up requires change_request')
+  return requestSessionV3PlanLifecycle(normalizedSessionId, 'request-followup-checkpoint', {
+    plan_id: input.planId?.trim() || undefined,
+    change_request: changeRequest,
+    checkpoint_title: input.checkpointTitle?.trim() || undefined,
+    tasks: input.tasks,
+    acceptance_criteria: input.acceptanceCriteria,
+    source_message_id: input.sourceMessageId?.trim() || undefined,
+    followup_checkpoint_policy: input.followupCheckpointPolicy?.trim() || undefined,
+  })
+}
+
+export async function requestSessionV3PlanRevision(
+  sessionId: string,
+  input: { planId?: string; title?: string; plan?: string; document?: unknown; reason?: string },
+): Promise<unknown> {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) throw new Error('Desktop V3 plan revision requires session_id')
+  return requestSessionV3PlanLifecycle(normalizedSessionId, 'request-plan-revision', {
+    plan_id: input.planId?.trim() || undefined,
+    title: input.title?.trim() || undefined,
+    plan: input.plan?.trim() || undefined,
+    document: input.document,
+    reason: input.reason?.trim() || undefined,
+  })
+}
+
+export async function requestSessionV3NewPlan(
+  sessionId: string,
+  input: { title?: string; plan?: string; document?: unknown; reason?: string },
+): Promise<unknown> {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) throw new Error('Desktop V3 new plan request requires session_id')
+  return requestSessionV3PlanLifecycle(normalizedSessionId, 'request-new-plan', {
+    title: input.title?.trim() || undefined,
+    plan: input.plan?.trim() || undefined,
+    document: input.document,
+    reason: input.reason?.trim() || undefined,
+  })
+}
+
+export async function setSessionV3PlanFollowupPolicy(
+  sessionId: string,
+  input: { planId?: string; followupCheckpointPolicy: string; reason?: string },
+): Promise<unknown> {
+  const normalizedSessionId = sessionId.trim()
+  const followupCheckpointPolicy = input.followupCheckpointPolicy.trim()
+  if (!normalizedSessionId) throw new Error('Desktop V3 follow-up policy requires session_id')
+  return requestSessionV3PlanLifecycle(normalizedSessionId, 'followup-policy', {
+    plan_id: input.planId?.trim() || undefined,
+    followup_checkpoint_policy: followupCheckpointPolicy,
+    reason: input.reason?.trim() || undefined,
+  })
+}
+
+function requestSessionV3PlanLifecycle(sessionId: string, action: string, body: Record<string, unknown>): Promise<unknown> {
+  return requestJson(`/v3/sessions/${encodeURIComponent(sessionId)}/plan-mode/lifecycle/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
 export async function stopSessionV3Run(
   sessionId: string,
   input: { runId: string; targetSwarmId: string },

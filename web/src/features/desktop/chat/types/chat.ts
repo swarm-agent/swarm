@@ -295,6 +295,7 @@ export interface DesktopSessionPlanInfo {
 export interface DesktopSessionPlanExecutionPolicy {
   mode: string;
   shape: string;
+  followupCheckpointPolicy: string;
 }
 
 export interface DesktopSessionPlanExecutionState {

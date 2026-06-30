@@ -733,6 +733,7 @@ func clonePlanDocument(doc *pebblestore.SessionPlanDocument) *pebblestore.Sessio
 		clone.Checkpoints[i] = doc.Checkpoints[i]
 		clone.Checkpoints[i].Tasks = cloneStringSlice(doc.Checkpoints[i].Tasks)
 		clone.Checkpoints[i].AcceptanceCriteria = cloneStringSlice(doc.Checkpoints[i].AcceptanceCriteria)
+		clone.Checkpoints[i].SourceMessageID = strings.TrimSpace(doc.Checkpoints[i].SourceMessageID)
 		clone.Checkpoints[i].ChangedFiles = cloneStringSlice(doc.Checkpoints[i].ChangedFiles)
 		clone.Checkpoints[i].Validation = cloneStringSlice(doc.Checkpoints[i].Validation)
 		if doc.Checkpoints[i].Review != nil {
@@ -787,6 +788,7 @@ func trimPlanCheckpoint(checkpoint *pebblestore.SessionPlanCheckpoint) {
 	checkpoint.Objective = strings.TrimSpace(checkpoint.Objective)
 	checkpoint.Tasks = trimStringSlice(checkpoint.Tasks)
 	checkpoint.AcceptanceCriteria = trimStringSlice(checkpoint.AcceptanceCriteria)
+	checkpoint.SourceMessageID = strings.TrimSpace(checkpoint.SourceMessageID)
 	checkpoint.Notes = strings.TrimSpace(checkpoint.Notes)
 	checkpoint.Report = strings.TrimSpace(checkpoint.Report)
 	checkpoint.Result = strings.TrimSpace(checkpoint.Result)

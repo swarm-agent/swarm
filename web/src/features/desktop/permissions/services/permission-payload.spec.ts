@@ -303,6 +303,39 @@ function testManageFlowKindAndPayloadParsing(): void {
   assert(payload.summary.includes('Daily report'), 'expected readable flow summary')
 }
 
+function testTypedPlanLifecycleKindAndPayloadParsing(): void {
+  const followup = makePermission({
+    toolName: 'plan_manage',
+    requirement: 'plan_followup_request',
+    toolArguments: JSON.stringify({
+      title: 'Follow-up: add audit note',
+      plan_id: 'plan_123',
+      action: 'request_followup_checkpoint',
+      change_request: 'Add an audit note before final review.',
+      approved_arguments: { action: 'request_followup_checkpoint', plan_id: 'plan_123', change_request: 'Add an audit note before final review.' },
+    }),
+  })
+  assert(permissionKind(followup) === 'plan-followup-request', 'expected plan-followup-request permission kind')
+  assert(permissionRequiresApproval(followup, 'auto') === true, 'expected plan_followup_request approval requirement')
+  const followupPayload = parsePlanUpdatePermission(followup)
+  assert(followupPayload.action === 'request_followup_checkpoint', 'expected follow-up action')
+  assert(followupPayload.changeRequest.includes('audit note'), 'expected exact change request')
+
+  const revision = makePermission({
+    toolName: 'plan_manage',
+    requirement: 'plan_revision_request',
+    toolArguments: JSON.stringify({ action: 'request_plan_revision', plan_id: 'plan_123' }),
+  })
+  assert(permissionKind(revision) === 'plan-revision-request', 'expected plan-revision-request permission kind')
+
+  const newPlan = makePermission({
+    toolName: 'plan_manage',
+    requirement: 'plan_new_request',
+    toolArguments: JSON.stringify({ action: 'request_new_plan', title: 'New plan' }),
+  })
+  assert(permissionKind(newPlan) === 'plan-new-request', 'expected plan-new-request permission kind')
+}
+
 function testPlanUpdateKindAndPayloadParsing(): void {
   const permission = makePermission({
     toolName: 'plan_manage',
@@ -488,6 +521,7 @@ function main(): void {
   testTaskLaunchPayloadParsing()
   testManageTodosKindAndPayloadParsing()
   testManageFlowKindAndPayloadParsing()
+  testTypedPlanLifecycleKindAndPayloadParsing()
   testPlanUpdateKindAndPayloadParsing()
   testPlanUpdateParsesStructuredDocument()
   testExitPlanParsesStructuredDocument()

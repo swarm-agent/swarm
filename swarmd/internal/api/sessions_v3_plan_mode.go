@@ -64,6 +64,35 @@ type sessionsV3PlanModeCheckpointResetRequest struct {
 	PlanID string `json:"plan_id,omitempty"`
 }
 
+type sessionsV3PlanLifecycleFollowupRequest struct {
+	PlanID                   string   `json:"plan_id,omitempty"`
+	ChangeRequest            string   `json:"change_request,omitempty"`
+	UserRequest              string   `json:"user_request,omitempty"`
+	Request                  string   `json:"request,omitempty"`
+	CheckpointTitle          string   `json:"checkpoint_title,omitempty"`
+	Title                    string   `json:"title,omitempty"`
+	Tasks                    []string `json:"tasks,omitempty"`
+	AcceptanceCriteria       []string `json:"acceptance_criteria,omitempty"`
+	SourceMessageID          string   `json:"source_message_id,omitempty"`
+	FollowupCheckpointPolicy string   `json:"followup_checkpoint_policy,omitempty"`
+	SuppressLifecycleMessage bool     `json:"suppress_lifecycle_message,omitempty"`
+}
+
+type sessionsV3PlanLifecycleProposalRequest struct {
+	PlanID   string                           `json:"plan_id,omitempty"`
+	Title    string                           `json:"title,omitempty"`
+	Plan     string                           `json:"plan,omitempty"`
+	Document *pebblestore.SessionPlanDocument `json:"document,omitempty"`
+	Reason   string                           `json:"reason,omitempty"`
+}
+
+type sessionsV3PlanLifecycleFollowupPolicyRequest struct {
+	PlanID                   string `json:"plan_id,omitempty"`
+	FollowupCheckpointPolicy string `json:"followup_checkpoint_policy,omitempty"`
+	Policy                   string `json:"policy,omitempty"`
+	Reason                   string `json:"reason,omitempty"`
+}
+
 type sessionsV3PlanModeRunStart struct {
 	RunIntent    *pebblestore.V3SessionRunIntent `json:"run_intent,omitempty"`
 	CheckpointID string                          `json:"checkpoint_id,omitempty"`
@@ -91,6 +120,22 @@ func (s *Server) handleSessionV3PrimaryPlanMode(w http.ResponseWriter, r *http.R
 	}
 	if tail == "runs/current/resume-checkpointed" {
 		s.handleSessionV3PrimaryPlanModeResumeCheckpointed(w, r, principal, sessionID)
+		return
+	}
+	if tail == "lifecycle/request-followup-checkpoint" {
+		s.handleSessionV3PrimaryPlanModeRequestFollowupCheckpoint(w, r, principal, sessionID)
+		return
+	}
+	if tail == "lifecycle/request-plan-revision" {
+		s.handleSessionV3PrimaryPlanModeRequestPlanRevision(w, r, principal, sessionID)
+		return
+	}
+	if tail == "lifecycle/request-new-plan" {
+		s.handleSessionV3PrimaryPlanModeRequestNewPlan(w, r, principal, sessionID)
+		return
+	}
+	if tail == "lifecycle/followup-policy" {
+		s.handleSessionV3PrimaryPlanModeSetFollowupPolicy(w, r, principal, sessionID)
 		return
 	}
 	if strings.HasPrefix(tail, "plans/") {
@@ -259,6 +304,75 @@ func (s *Server) handleSessionV3PrimaryPlanModeResumeAutomatic(w http.ResponseWr
 
 func (s *Server) handleSessionV3PrimaryPlanModeResumeCheckpointed(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
 	s.handleSessionV3PrimaryPlanModeRunCurrent(w, r, principal, sessionID, "resume_checkpointed", s.planLifecycle.ResumeCheckpointed)
+}
+
+func (s *Server) handleSessionV3PrimaryPlanModeRequestFollowupCheckpoint(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if !s.prepareSessionsV3PlanModeLifecycle(w, r, principal, sessionID) {
+		return
+	}
+	var req sessionsV3PlanLifecycleFollowupRequest
+	if err := decodeSessionsV3PlanModeRequest(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	input := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, "")
+	result, err := s.planLifecycle.RequestFollowupCheckpoint(sessionruntime.PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: req.PlanID, ChangeRequest: req.ChangeRequest, UserRequest: firstNonEmptyString(req.UserRequest, req.Request), Title: firstNonEmptyString(req.CheckpointTitle, req.Title), Tasks: req.Tasks, AcceptanceCriteria: req.AcceptanceCriteria, SourceMessageID: req.SourceMessageID, GlobalDefaultPolicy: req.FollowupCheckpointPolicy, ApprovalConfirmed: true, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var runStart *sessionsV3PlanModeRunStart
+	if result.Summary.NextCheckpointID != "" && result.Summary.NextCheckpointStatus == sessionruntime.PlanCheckpointStatusInProgress && strings.TrimSpace(result.AttemptID) != "" {
+		var status int
+		runStart, status, err = s.startSessionsV3PlanModeRun(principal, sessionID, "request_followup_checkpoint", result, req.SuppressLifecycleMessage)
+		if err != nil {
+			writeError(w, status, err)
+			return
+		}
+	}
+	s.finishSessionsV3PlanModeLifecycle(w, principal, sessionID, "request_followup_checkpoint", result, runStart)
+}
+
+func (s *Server) handleSessionV3PrimaryPlanModeRequestPlanRevision(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	s.handleSessionV3PrimaryPlanModeProposal(w, r, principal, sessionID, "request_plan_revision", s.planLifecycle.RequestPlanRevision)
+}
+
+func (s *Server) handleSessionV3PrimaryPlanModeRequestNewPlan(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	s.handleSessionV3PrimaryPlanModeProposal(w, r, principal, sessionID, "request_new_plan", s.planLifecycle.RequestNewPlan)
+}
+
+func (s *Server) handleSessionV3PrimaryPlanModeSetFollowupPolicy(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if !s.prepareSessionsV3PlanModeLifecycle(w, r, principal, sessionID) {
+		return
+	}
+	var req sessionsV3PlanLifecycleFollowupPolicyRequest
+	if err := decodeSessionsV3PlanModeRequest(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.planLifecycle.SetFollowupCheckpointPolicy(sessionruntime.PlanLifecycleFollowupPolicyInput{SessionID: sessionID, PlanID: req.PlanID, FollowupCheckpointPolicy: firstNonEmptyString(req.FollowupCheckpointPolicy, req.Policy), Reason: req.Reason})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.finishSessionsV3PlanModeLifecycle(w, principal, sessionID, "set_followup_checkpoint_policy", result, nil)
+}
+
+func (s *Server) handleSessionV3PrimaryPlanModeProposal(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, transition string, method func(sessionruntime.PlanLifecycleProposalInput) (sessionruntime.PlanLifecycleResult, error)) {
+	if !s.prepareSessionsV3PlanModeLifecycle(w, r, principal, sessionID) {
+		return
+	}
+	var req sessionsV3PlanLifecycleProposalRequest
+	if err := decodeSessionsV3PlanModeRequest(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := method(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: req.PlanID, Title: req.Title, Plan: req.Plan, Document: req.Document, Reason: req.Reason})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.finishSessionsV3PlanModeLifecycle(w, principal, sessionID, transition, result, nil)
 }
 
 func (s *Server) handleSessionV3PrimaryPlanModeRunCurrent(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, transition string, method func(sessionruntime.PlanLifecycleExecutionInput) (sessionruntime.PlanLifecycleResult, error)) {
@@ -491,6 +605,20 @@ func sessionsV3PlanModeRunIntentPayloadHash(sessionID, runID, checkpointID, atte
 	return hex.EncodeToString(sum[:])
 }
 
+func (s *Server) resolveSessionsV3FollowupCheckpointPolicy(result sessionruntime.PlanLifecycleResult) string {
+	globalDefault := ""
+	if s != nil && s.uiSettings != nil {
+		accountScopeID := strings.TrimSpace(result.Plan.AccountScopeID)
+		if accountScopeID == "" {
+			accountScopeID = strings.TrimSpace(result.Session.AccountScopeID)
+		}
+		if settings, err := s.uiSettings.GetForAccount(accountScopeID); err == nil {
+			globalDefault = strings.TrimSpace(settings.Chat.FollowupCheckpointPolicyDefault)
+		}
+	}
+	return sessionruntime.ResolvePlanFollowupCheckpointPolicy(result.Plan.Document, globalDefault)
+}
+
 func (s *Server) finishSessionsV3PlanModeLifecycle(w http.ResponseWriter, principal identity.Principal, sessionID, transition string, result sessionruntime.PlanLifecycleResult, runStart *sessionsV3PlanModeRunStart) {
 	if runStart == nil {
 		if err := s.publishPlanLifecycleResult(result); err != nil {
@@ -507,10 +635,29 @@ func (s *Server) finishSessionsV3PlanModeLifecycle(w http.ResponseWriter, princi
 			return
 		}
 	}
-	payload := map[string]any{"ok": true, "session_id": strings.TrimSpace(sessionID), "transition": transition, "execution_summary": result.Summary}
+	changeType := strings.TrimPrefix(strings.TrimSpace(transition), "request_")
+	if changeType == "" || changeType == transition {
+		changeType = strings.TrimSpace(result.Action)
+	}
+	policyEffective := ""
+	if transition == "request_followup_checkpoint" && result.Plan.Document != nil {
+		policyEffective = s.resolveSessionsV3FollowupCheckpointPolicy(result)
+	}
+	approvalRequired := transition == "request_plan_revision" || transition == "request_new_plan" || (transition == "request_followup_checkpoint" && policyEffective == sessionruntime.PlanFollowupCheckpointPolicyRequireApproval)
+	runQueued := false
+	if runStart != nil {
+		runQueued = runStart.Queued
+	}
+	payload := map[string]any{"ok": true, "session_id": strings.TrimSpace(sessionID), "transition": transition, "change_type": changeType, "policy_effective": policyEffective, "approval_required": approvalRequired, "run_queued": runQueued, "execution_summary": result.Summary}
 	if strings.TrimSpace(result.Plan.ID) != "" {
 		payload["plan_id"] = strings.TrimSpace(result.Plan.ID)
 		payload["plan"] = result.Plan
+	}
+	if strings.TrimSpace(result.CheckpointID) != "" {
+		payload["checkpoint_id"] = strings.TrimSpace(result.CheckpointID)
+	}
+	if strings.TrimSpace(result.AttemptID) != "" {
+		payload["attempt_id"] = strings.TrimSpace(result.AttemptID)
 	}
 	if strings.TrimSpace(result.Session.ID) != "" {
 		payload["session"] = result.Session

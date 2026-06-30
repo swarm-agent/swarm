@@ -69,6 +69,7 @@ import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
+const SIDEBAR_ACTION_MENU_MOUSE_LEAVE_GRACE_MS = 1_000
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
 const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
 const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
@@ -1783,6 +1784,27 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
     : '')
   const [actionsOpen, setActionsOpen] = useState(false)
   const actionMenuRef = useRef<HTMLSpanElement | null>(null)
+  const actionMenuCloseTimerRef = useRef<number | null>(null)
+  const clearActionMenuCloseTimer = useCallback(() => {
+    if (actionMenuCloseTimerRef.current !== null) {
+      window.clearTimeout(actionMenuCloseTimerRef.current)
+      actionMenuCloseTimerRef.current = null
+    }
+  }, [])
+  const closeActionMenu = useCallback(() => {
+    clearActionMenuCloseTimer()
+    setActionsOpen(false)
+  }, [clearActionMenuCloseTimer])
+  const scheduleActionMenuClose = useCallback(() => {
+    clearActionMenuCloseTimer()
+    actionMenuCloseTimerRef.current = window.setTimeout(() => {
+      actionMenuCloseTimerRef.current = null
+      if (!actionMenuRef.current?.matches(':hover') && !actionMenuRef.current?.contains(document.activeElement)) {
+        setActionsOpen(false)
+      }
+    }, SIDEBAR_ACTION_MENU_MOUSE_LEAVE_GRACE_MS)
+  }, [clearActionMenuCloseTimer])
+  useEffect(() => clearActionMenuCloseTimer, [clearActionMenuCloseTimer])
   const hasDetailsRowContent = Boolean(backgroundInfo || visibleChildLabel || hasAgentChildren)
   const showDetailsRow = !isPlanRow && hasDetailsRowContent
   const showActionMenuInMetadataRow = !isPlanRow && !hasDetailsRowContent
@@ -1808,7 +1830,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         event.preventDefault()
         event.stopPropagation()
         if (!pinDisabled) {
-          setActionsOpen(false)
+          closeActionMenu()
           onTogglePinned(session.id)
         }
       }}
@@ -1828,7 +1850,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         event.preventDefault()
         event.stopPropagation()
         if (!archiveDisabled) {
-          setActionsOpen(false)
+          closeActionMenu()
           onArchive(session.id)
         }
       }}
@@ -1841,17 +1863,18 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
     <span
       ref={actionMenuRef}
       className={cn('relative z-20 inline-flex translate-x-[5px] shrink-0 items-center', actionsOpen ? 'z-40' : null)}
-      onMouseLeave={() => setActionsOpen(false)}
+      onMouseEnter={clearActionMenuCloseTimer}
+      onMouseLeave={scheduleActionMenuClose}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) {
-          setActionsOpen(false)
+          closeActionMenu()
         }
       }}
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
           event.preventDefault()
           event.stopPropagation()
-          setActionsOpen(false)
+          closeActionMenu()
         }
       }}
     >
@@ -1864,7 +1887,10 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         onClick={(event) => {
           event.preventDefault()
           event.stopPropagation()
-          setActionsOpen((open) => !open)
+          setActionsOpen((open) => {
+            clearActionMenuCloseTimer()
+            return !open
+          })
         }}
       >
         <MoreVertical size={13} aria-hidden="true" />
@@ -1872,6 +1898,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       {actionsOpen ? (
         <span
           className="absolute right-0 top-full z-50 mt-1 grid min-w-28 gap-0.5 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] p-1 opacity-100 shadow-lg backdrop-blur-none [background-color:var(--app-surface-elevated)]"
+          onMouseEnter={clearActionMenuCloseTimer}
           onClick={(event) => {
             event.preventDefault()
             event.stopPropagation()

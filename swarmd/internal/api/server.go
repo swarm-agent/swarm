@@ -425,6 +425,13 @@ func (s *Server) SetVoiceService(voiceSvc *voice.Service) {
 	s.voice = voiceSvc
 }
 
+func (s *Server) SetPlanLifecycleService(planLifecycle *sessionruntime.PlanLifecycleService) {
+	if s == nil {
+		return
+	}
+	s.planLifecycle = planLifecycle
+}
+
 func (s *Server) SetUISettingsService(uiSettingsSvc *uisettings.Service) {
 	if s == nil {
 		return
@@ -3942,11 +3949,12 @@ type uiChatToolStreamSettingsPatchPresence struct {
 }
 
 type uiChatSettingsPatchPresence struct {
-	ShowHeader             *bool                                  `json:"show_header"`
-	ThinkingTags           *bool                                  `json:"thinking_tags"`
-	DefaultNewSessionMode  *string                                `json:"default_new_session_mode"`
-	DefaultWorkspaceRoutes *map[string]string                     `json:"default_workspace_routes"`
-	ToolStream             *uiChatToolStreamSettingsPatchPresence `json:"tool_stream"`
+	ShowHeader                      *bool                                  `json:"show_header"`
+	ThinkingTags                    *bool                                  `json:"thinking_tags"`
+	DefaultNewSessionMode           *string                                `json:"default_new_session_mode"`
+	FollowupCheckpointPolicyDefault *string                                `json:"followup_checkpoint_policy_default"`
+	DefaultWorkspaceRoutes          *map[string]string                     `json:"default_workspace_routes"`
+	ToolStream                      *uiChatToolStreamSettingsPatchPresence `json:"tool_stream"`
 }
 
 type uiSwarmingSettingsPatchPresence struct {
@@ -3998,6 +4006,9 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		}
 		if raw.Chat.DefaultNewSessionMode != nil {
 			settings.Chat.DefaultNewSessionMode = patch.Chat.DefaultNewSessionMode
+		}
+		if raw.Chat.FollowupCheckpointPolicyDefault != nil {
+			settings.Chat.FollowupCheckpointPolicyDefault = patch.Chat.FollowupCheckpointPolicyDefault
 		}
 		if raw.Chat.DefaultWorkspaceRoutes != nil {
 			settings.Chat.DefaultWorkspaceRoutes = patch.Chat.DefaultWorkspaceRoutes

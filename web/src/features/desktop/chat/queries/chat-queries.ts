@@ -338,6 +338,7 @@ interface SessionPlanInfoWire {
 interface SessionPlanExecutionPolicyWire {
   mode?: string;
   shape?: string;
+  followup_checkpoint_policy?: string;
 }
 
 interface SessionPlanExecutionStateWire {
@@ -747,8 +748,9 @@ function mapSessionPlanExecutionPolicy(policy: SessionPlanExecutionPolicyWire | 
   const mapped = {
     mode: String(policy.mode ?? "").trim(),
     shape: String(policy.shape ?? "").trim(),
+    followupCheckpointPolicy: String(policy.followup_checkpoint_policy ?? "").trim(),
   };
-  return mapped.mode || mapped.shape ? mapped : null;
+  return mapped.mode || mapped.shape || mapped.followupCheckpointPolicy ? mapped : null;
 }
 
 function mapSessionPlanExecutionState(state: SessionPlanExecutionStateWire | null | undefined): DesktopSessionPlanDocument['executionState'] {
