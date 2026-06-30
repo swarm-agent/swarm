@@ -1737,18 +1737,21 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const hasAgentChildren = agentSummary.total > 0
   const metadataLabel = sessionRowMetadataLabel(session)
   const relativeActivityLabel = sessionStatusDetail(session, now)
-  const rowTimerLabel = compactingActive
-    ? compactingTimer
-    : sessionHasCanonicalActiveRun(session)
-      ? sessionTimerLabel(session, now)
-      : relativeActivityLabel
+  const hasPendingPermission = sessionHasPendingPermission(session)
+  const pendingPermissionAlertActive = hasPendingPermission && !active
+  const rowTimerLabel = pendingPermissionAlertActive
+    ? 'Needs approval'
+    : compactingActive
+      ? compactingTimer
+      : sessionHasCanonicalActiveRun(session)
+        ? sessionTimerLabel(session, now)
+        : relativeActivityLabel
   const singleStatusLabel = compactingActive
     ? 'Compacting'
     : activeSession
       ? sessionActivityLabel(session)
       : sessionMeta(session) || ''
-  const hasPendingPermission = sessionHasPendingPermission(session)
-  const rightSideLabel = isPlanRow && !hasPendingPermission ? '' : singleStatusLabel
+  const rightSideLabel = hasPendingPermission || isPlanRow ? '' : singleStatusLabel
   const statusTone = sessionStatusTone(session)
   const checkpointProgressText = checkpointProgressLabel || (checkpointCounts.totalCount > 0
     ? `${checkpointCounts.activeIndex || checkpointCounts.completedCount}/${checkpointCounts.totalCount}`
@@ -1801,6 +1804,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         active
           ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45'
           : 'border-transparent bg-[var(--app-surface)]/45 hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]',
+        pendingPermissionAlertActive ? 'border-transparent bg-[var(--app-warning-bg)] hover:border-transparent hover:bg-[var(--app-warning-bg)]' : null,
         isNestedSession ? 'ml-0 rounded-sm border-transparent bg-[var(--app-bg-alt)]/20 py-1 pl-1 pr-2 hover:border-transparent hover:bg-[var(--app-surface)]/25' : null,
         isNestedSession && active ? 'border-transparent bg-[var(--app-surface)]/30' : null,
         hasAgentChildren && agentsExpanded && !isNestedSession ? 'border-[var(--app-border-accent)]' : null,
