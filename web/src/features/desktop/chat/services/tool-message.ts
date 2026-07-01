@@ -59,6 +59,12 @@ function jsonStr(obj: Record<string, unknown> | null, key: string): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
+function jsonRawStr(obj: Record<string, unknown> | null, key: string): string {
+  if (!obj) return "";
+  const v = obj[key];
+  return typeof v === "string" ? v : "";
+}
+
 function jsonNum(obj: Record<string, unknown> | null, key: string): number {
   if (!obj) return 0;
   const v = obj[key];
@@ -103,6 +109,13 @@ function firstNonEmpty(...values: string[]): string {
   for (const value of values) {
     const trimmed = value.trim();
     if (trimmed) return trimmed;
+  }
+  return "";
+}
+
+function firstNonEmptyRaw(...values: string[]): string {
+  for (const value of values) {
+    if (value.trim()) return value;
   }
   return "";
 }
@@ -996,6 +1009,33 @@ function buildSearchContentFileGroups(
   });
 }
 
+function extractBashToolData(
+  outputJson: Record<string, unknown> | null,
+  outputText: string,
+  completedOutputText: string,
+  argumentsJson: Record<string, unknown> | null,
+): NonNullable<StructuredToolMessage["bashData"]> {
+  const output = firstNonEmptyRaw(
+    jsonRawStr(outputJson, "output"),
+    jsonRawStr(outputJson, "stdout"),
+    jsonRawStr(outputJson, "output_text"),
+  );
+  const stdout = jsonRawStr(outputJson, "stdout");
+  const stderr = jsonRawStr(outputJson, "stderr");
+  const exitCode = hasJsonKey(outputJson, "exit_code")
+    ? jsonNum(outputJson, "exit_code")
+    : null;
+  return {
+    command: jsonStr(outputJson, "command") || jsonStr(argumentsJson, "command"),
+    output: output || (outputJson ? "" : outputText),
+    stdout,
+    stderr,
+    outputText,
+    completedOutput: completedOutputText || outputText,
+    exitCode,
+  };
+}
+
 function extractPreviewLines(
   toolName: string,
   outputJson: Record<string, unknown> | null,
@@ -1019,12 +1059,8 @@ function extractPreviewLines(
     }
     case "bash": {
       const lines: string[] = [];
-      const stdout =
-        jsonStr(outputJson, "output") ||
-        jsonStr(outputJson, "stdout") ||
-        jsonStr(outputJson, "output_text") ||
-        (outputJson ? "" : outputText);
-      for (const line of previewTextLines(stdout)) {
+      const bashData = extractBashToolData(outputJson, outputText, "", argumentsJson);
+      for (const line of previewTextLines(bashData.output || bashData.stdout || bashData.stderr)) {
         pushPreviewLine(lines, line, 6);
       }
       return lines;
@@ -1642,8 +1678,10 @@ export function buildStructuredToolMessage(
 
   const argumentsText = String(input.argumentsText ?? "").trim();
   const argumentsJson = argumentsText ? parseJsonRecord(argumentsText) : null;
-  const outputText = String(input.outputText ?? "").trim();
-  const completedOutputText = String(input.completedOutputText ?? "").trim();
+  const rawOutputText = String(input.outputText ?? "");
+  const rawCompletedOutputText = String(input.completedOutputText ?? "");
+  const outputText = rawOutputText.trim();
+  const completedOutputText = rawCompletedOutputText.trim();
   const outputJson =
     parseJsonRecord(outputText) ?? parseJsonRecord(completedOutputText);
 
@@ -1658,6 +1696,10 @@ export function buildStructuredToolMessage(
   const todoData =
     normalizedToolName === "manage_todos" || normalizedToolName === "manage-todos"
       ? extractTodoToolData(outputJson ?? argumentsJson)
+      : null;
+  const bashData =
+    normalizedToolName === "bash"
+      ? extractBashToolData(outputJson, rawOutputText || rawCompletedOutputText, rawCompletedOutputText, argumentsJson)
       : null;
   const previewLines = searchData
     ? []
@@ -1679,10 +1721,7 @@ export function buildStructuredToolMessage(
     callId: String(input.callId ?? "").trim(),
     toolInstanceId: String(input.toolInstanceId ?? "").trim(),
     target: resolveToolTarget(argumentsJson) ?? resolveToolTarget(outputJson),
-    commandText:
-      toolName.toLowerCase() === "bash"
-        ? jsonStr(outputJson, "command") || jsonStr(argumentsJson, "command")
-        : "",
+    commandText: bashData?.command ?? "",
     argumentsText,
     argumentsJson,
     output: outputText,
@@ -1694,6 +1733,7 @@ export function buildStructuredToolMessage(
     editDiff,
     searchData,
     todoData,
+    bashData,
     previewLines,
     taskRows,
   };

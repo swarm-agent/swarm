@@ -1377,9 +1377,10 @@ function DesktopV3AssistantMessage({ content, role }: { content: string; role: s
 }
 
 function DesktopV3ToolMessage({ content, toolMessage, thinkingTagsEnabled = true }: { content: string; toolMessage: StructuredToolMessage | null; thinkingTagsEnabled?: boolean }) {
+  const isBash = toolMessage?.tool.trim().toLowerCase() === 'bash'
   return (
     <div className="flex justify-start">
-      <div className="min-w-0 max-w-[calc(100%-2rem)]">
+      <div className={cn('min-w-0', isBash ? 'w-full max-w-full' : 'max-w-[calc(100%-2rem)]')}>
         <ChatMarkdown content={content} toolMessage={toolMessage ?? undefined} thinkingTagsEnabled={thinkingTagsEnabled} />
       </div>
     </div>
@@ -1405,8 +1406,8 @@ function DesktopV3ReasoningMessage({ item, thinkingTagsEnabled, timerNow }: { it
 
 function DesktopV3LiveToolCall({ tool }: { tool: LiveRunOverlay['toolCallsByCallId'][string] }) {
   const state: ToolMessageState = tool.status === 'failed' || tool.status === 'error' ? 'error' : tool.status === 'completed' || tool.status === 'done' || tool.status === 'cancelled' || tool.status === 'canceled' ? 'done' : 'running'
-  const output = tool.outputText?.trim() ?? ''
-  const args = tool.argumentsText?.trim() ?? ''
+  const output = tool.outputText ?? ''
+  const args = tool.argumentsText ?? ''
   const error = tool.errorText?.trim() || (state === 'error' ? output : '')
   const parsed = buildStructuredToolMessage({
     pathId: 'run.v3.provider-tool-result.v1',

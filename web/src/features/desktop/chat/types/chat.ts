@@ -90,6 +90,16 @@ export interface TodoToolData {
   summary: TodoToolSummaryCounts | null;
 }
 
+export interface BashToolData {
+  command: string;
+  output: string;
+  stdout: string;
+  stderr: string;
+  outputText: string;
+  completedOutput: string;
+  exitCode: number | null;
+}
+
 export interface StructuredToolMessage {
   pathId: "run.tool-history.v2" | "run.v3.provider-tool-result.v1";
   tool: string;
@@ -109,6 +119,7 @@ export interface StructuredToolMessage {
   editDiff: EditDiffPreview | null;
   searchData?: SearchToolData | null;
   todoData?: TodoToolData | null;
+  bashData?: BashToolData | null;
   previewLines: string[];
   taskRows: TaskToolRow[];
 }

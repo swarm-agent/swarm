@@ -157,6 +157,26 @@ function testTaskTerminalTimerUsesFinalElapsed(): void {
   assert(!markup.includes("child child-visible"), "task rows should not render child session ids");
 }
 
+function testBashToolUsesDedicatedFullWidthCard(): void {
+  const command = "for i in {1..80}; do echo line-$i; done";
+  const output = Array.from({ length: 80 }, (_, index) => `line-${index + 1}`).join("\n");
+  const message = buildStructuredToolMessage({
+    tool: "bash",
+    callId: "call_bash_card",
+    argumentsText: JSON.stringify({ command }),
+    outputText: JSON.stringify({ command, stdout: output, exit_code: 0 }),
+    durationMs: 1200,
+  });
+  assert(Boolean(message), "expected structured bash message");
+
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("Copy"), "bash card should include copy control");
+  assert(markup.includes("max-height"), "bash output should render in a bounded scroll container");
+  assert(markup.includes("overflow-auto"), "bash output should be scrollable");
+  assert(markup.includes("line-80"), "bash card should render final output line without data truncation");
+  assert(!markup.includes("odd:bg"), "bash output should not use striped preview rows");
+}
+
 function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
   const description = "Map backend and UI task stream behavior";
   const firstMessage = buildStructuredToolMessage({
@@ -217,6 +237,7 @@ function main(): void {
   testTaskSwarmUsesCompactPreview();
   testTaskRunningTimerUsesStartTimestamp();
   testTaskTerminalTimerUsesFinalElapsed();
+  testBashToolUsesDedicatedFullWidthCard();
   testTaskHeaderDoesNotShiftBetweenLaunchAssignments();
   console.log("chat-markdown preview tests passed");
 }

@@ -1,5 +1,5 @@
-import { memo, useSyncExternalStore, useMemo } from "react";
-import { ArrowRight, CheckCircle2, XCircle, LoaderCircle } from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Copy, LoaderCircle, XCircle } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
 import type {
@@ -46,6 +46,234 @@ function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${(ms / 60_000).toFixed(1)}m`;
+}
+
+const BASH_COLLAPSED_MIN_HEIGHT = 180;
+const BASH_COLLAPSED_MAX_HEIGHT = 420;
+const BASH_COLLAPSED_FALLBACK_HEIGHT = 320;
+const BASH_EXPANDED_MAX_HEIGHT = "min(72vh, 48rem)";
+
+function joinBashOutputParts(parts: string[]): string {
+  let out = "";
+  for (const part of parts) {
+    if (!part) continue;
+    if (!out) {
+      out = part;
+      continue;
+    }
+    out += out.endsWith("\n") ? part : `\n${part}`;
+  }
+  return out;
+}
+
+function bashOutputText(toolMessage: StructuredToolMessage): string {
+  const data = toolMessage.bashData;
+  if (!data) return toolMessage.output || toolMessage.completedOutput || "";
+
+  const parts: string[] = [];
+  const addPart = (value: string) => {
+    if (!value) return;
+    if (parts.some((part) => part === value || part.includes(value))) return;
+    parts.push(value);
+  };
+
+  addPart(data.output);
+  if (!data.output || !data.output.includes(data.stdout)) addPart(data.stdout);
+  if (!data.output || !data.output.includes(data.stderr)) addPart(data.stderr);
+
+  return joinBashOutputParts(parts) || data.outputText || data.completedOutput || toolMessage.output || toolMessage.completedOutput || "";
+}
+
+function bashCopyText(command: string, output: string): string {
+  const parts: string[] = [];
+  if (command) parts.push(`$ ${command}`);
+  if (output) parts.push(output);
+  return parts.join("\n\n");
+}
+
+function bashStatusLabel(state: ToolState): string {
+  switch (state) {
+    case "running":
+      return "running";
+    case "error":
+      return "error";
+    default:
+      return "done";
+  }
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  if (typeof document === "undefined") return;
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
+}
+
+function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToolMessage; isGroupItem?: boolean }) {
+  const toolTheme = getToolTheme(toolMessage.tool);
+  const ToolIcon = toolTheme.icon;
+  const state = resolveToolState(toolMessage);
+  const StateIcon = state === "error" ? XCircle : state === "running" ? LoaderCircle : CheckCircle2;
+  const command = toolMessage.bashData?.command || toolMessage.commandText;
+  const output = useMemo(() => bashOutputText(toolMessage), [toolMessage]);
+  const copyPayload = useMemo(() => bashCopyText(command, output), [command, output]);
+  const outputRef = useRef<HTMLDivElement | null>(null);
+  const userScrolledAwayRef = useRef(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [canExpand, setCanExpand] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [collapsedMaxHeight, setCollapsedMaxHeight] = useState(BASH_COLLAPSED_FALLBACK_HEIGHT);
+
+  const measureOutput = useCallback(() => {
+    const viewportHeight = typeof window === "undefined" ? BASH_COLLAPSED_FALLBACK_HEIGHT * 2 : window.innerHeight;
+    const nextCollapsedHeight = Math.max(
+      BASH_COLLAPSED_MIN_HEIGHT,
+      Math.min(BASH_COLLAPSED_MAX_HEIGHT, Math.floor(viewportHeight * 0.5)),
+    );
+    setCollapsedMaxHeight(nextCollapsedHeight);
+    const node = outputRef.current;
+    if (node) setCanExpand(node.scrollHeight > nextCollapsedHeight + 8);
+  }, []);
+
+  useEffect(() => {
+    measureOutput();
+    if (typeof window === "undefined") return;
+    const node = outputRef.current;
+    const resizeObserver = typeof ResizeObserver !== "undefined" && node ? new ResizeObserver(measureOutput) : null;
+    if (node && resizeObserver) resizeObserver.observe(node);
+    window.addEventListener("resize", measureOutput);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", measureOutput);
+    };
+  }, [measureOutput, output]);
+
+  useEffect(() => {
+    const node = outputRef.current;
+    if (!node || userScrolledAwayRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      node.scrollTop = node.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [collapsedMaxHeight, expanded, output, state]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  const handleOutputScroll = useCallback(() => {
+    const node = outputRef.current;
+    if (!node) return;
+    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
+    userScrolledAwayRef.current = distanceFromBottom > 64;
+  }, []);
+
+  const handleCopy = useCallback(async () => {
+    if (!copyPayload) return;
+    await copyTextToClipboard(copyPayload);
+    setCopied(true);
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = setTimeout(() => setCopied(false), 1400);
+  }, [copyPayload]);
+
+  const accentWash = toolAccentWash(toolTheme.color, 14);
+  const statusText = bashStatusLabel(state);
+  const exitCode = toolMessage.bashData?.exitCode;
+  const outputMaxHeight = expanded ? BASH_EXPANDED_MAX_HEIGHT : `${collapsedMaxHeight}px`;
+
+  return (
+    <div className={cn(isGroupItem ? "py-2" : "mb-2 py-2", "w-full min-w-0")}>
+      <div className="w-full min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] shadow-sm">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-[var(--app-border)] px-3 py-2 text-xs">
+          <span
+            className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 font-semibold"
+            style={{ color: toolTheme.color, backgroundColor: accentWash }}
+          >
+            <ToolIcon size={12} className="shrink-0" />
+            bash
+          </span>
+          <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)]">
+            <StateIcon
+              size={12}
+              className={cn(
+                state === "running" ? "animate-spin text-[var(--app-primary)]" : state === "error" ? "text-[var(--app-danger)]" : "text-[var(--app-text-subtle)]",
+              )}
+            />
+            {statusText}
+          </span>
+          {typeof exitCode === "number" ? (
+            <span className="shrink-0 text-[11px] text-[var(--app-text-subtle)]">exit {exitCode}</span>
+          ) : null}
+          {toolMessage.durationMs > 0 ? (
+            <span className="shrink-0 text-[11px] text-[var(--app-text-subtle)]">{formatDuration(toolMessage.durationMs)}</span>
+          ) : null}
+          <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1">
+            <button
+              type="button"
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--app-border)] px-2 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface)] disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={handleCopy}
+              disabled={!copyPayload}
+              aria-label="Copy Bash command and output"
+            >
+              <Copy size={12} className="shrink-0" />
+              <span className="hidden sm:inline">{copied ? "Copied" : "Copy"}</span>
+            </button>
+            {canExpand ? (
+              <button
+                type="button"
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--app-border)] px-2 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface)]"
+                onClick={() => setExpanded((value) => !value)}
+                aria-expanded={expanded}
+              >
+                {expanded ? <ChevronUp size={12} className="shrink-0" /> : <ChevronDown size={12} className="shrink-0" />}
+                <span className="hidden sm:inline">{expanded ? "Collapse" : "Expand"}</span>
+              </button>
+            ) : null}
+          </div>
+        </div>
+        {command ? (
+          <div className="min-w-0 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-[12px] leading-5 text-[var(--app-text)]">
+            <span className="mr-1 select-none text-[var(--app-accent)]">$</span>
+            <ToolSyntaxLine text={command} language="bash" className="whitespace-pre-wrap break-words font-mono [overflow-wrap:anywhere]" />
+          </div>
+        ) : null}
+        {toolMessage.error ? (
+          <div className="border-b border-[var(--app-border)] px-3 py-2 text-[12px] text-[var(--app-danger)]">
+            {toolMessage.error}
+          </div>
+        ) : null}
+        {output ? (
+          <div
+            ref={outputRef}
+            className="min-w-0 overflow-auto overscroll-contain bg-[var(--app-code-bg)] text-[12px] leading-5 text-[var(--app-code-text)]"
+            style={{ maxHeight: outputMaxHeight }}
+            onScroll={handleOutputScroll}
+          >
+            <pre className="m-0 min-w-0 whitespace-pre-wrap break-words p-3 font-mono [overflow-wrap:anywhere]">
+              <code>{output}</code>
+            </pre>
+          </div>
+        ) : (
+          <div className="px-3 py-2 text-[12px] text-[var(--app-text-subtle)]">
+            {state === "running" ? "Waiting for output…" : "No output"}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
@@ -775,6 +1003,10 @@ export function ToolMessageView({
   isGroupItem?: boolean;
   thinkingTagsEnabled?: boolean;
 }) {
+  if (toolMessage.tool.trim().toLowerCase() === "bash") {
+    return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
+  }
+
   const toolTheme = getToolTheme(toolMessage.tool);
   const ToolIcon = toolTheme.icon;
   const state = resolveToolState(toolMessage);

@@ -484,6 +484,7 @@ function testBashToolMessageShowsCommandAsMetadata(): void {
   assert(Boolean(message), 'expected structured bash tool message')
   assert(message?.summary === 'bash', `unexpected bash summary: ${message?.summary}`)
   assert(message?.commandText === command, `missing bash command metadata: ${message?.commandText}`)
+  assert(message?.bashData?.command === command, `missing bash data command: ${message?.bashData?.command}`)
   assert(
     message?.previewLines.includes(`$ ${command}`) === false,
     `command should not be quoted in preview lines: ${message?.previewLines.join(' | ')}`,
@@ -492,6 +493,26 @@ function testBashToolMessageShowsCommandAsMetadata(): void {
     message?.previewLines.includes('ok') === true,
     `missing bash output preview: ${message?.previewLines.join(' | ')}`,
   )
+}
+
+function testBashToolMessagePreservesFullOutput(): void {
+  const command = 'printf long-output'
+  const fullOutput = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join('\n')
+  const stderr = 'warning\nsecond warning'
+  const message = parseStructuredToolMessage(JSON.stringify({
+    path_id: 'run.tool-history.v2',
+    tool: 'bash',
+    call_id: 'call_bash_long_output',
+    arguments: JSON.stringify({ command }),
+    output: JSON.stringify({ command, exit_code: 0, output: fullOutput, stdout: fullOutput, stderr }),
+  }))
+
+  assert(Boolean(message), 'expected structured bash tool message')
+  assert(message?.bashData?.output === fullOutput, 'bash data should preserve full output text')
+  assert(message?.bashData?.stdout === fullOutput, 'bash data should preserve full stdout text')
+  assert(message?.bashData?.stderr === stderr, 'bash data should preserve full stderr text')
+  assert(message?.bashData?.output.includes('line 20') === true, 'bash data should include the final output line')
+  assert(message?.commandText === command, `missing bash command metadata: ${message?.commandText}`)
 }
 
 function testSearchToolPreservesContentMatchText(): void {
@@ -893,6 +914,7 @@ function main(): void {
   testTaskRowsMapReasoningToThinkingWithoutPreviewLeak();
   testTaskRowsHideAssistantPreviewText();
   testBashToolMessageShowsCommandAsMetadata();
+  testBashToolMessagePreservesFullOutput();
   testSearchToolPreservesContentMatchText();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
   testTaskRowsParseCanonicalStreamContractFields();
