@@ -3,6 +3,7 @@ import { DesktopV3RealtimeTransport, type DesktopV3RealtimeTransportStatus } fro
 import type { SessionV3RealtimeWorksetSubscriptionRequestWire } from '../session-v3/types'
 import { DesktopV3LivePatchCoordinator, createDefaultDesktopV3LivePatchCoordinatorDeps } from './v3-live-patch-coordinator'
 import { openDesktopV3RealtimeTransportSocket } from './client'
+import { handleDesktopV3ToolResourceUpdate } from './v3-tool-resource-update-bridge'
 import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
 import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, commitDesktopV3CacheSnapshot, subscribeDesktopV3Cache, type DesktopV3CacheMutation } from '../state/desktop-v3-cache-store'
@@ -12,6 +13,7 @@ import {
   type DesktopV3ReconnectInput,
 } from '../state/desktop-v3-sync-api'
 import type {
+  CacheEvent,
   DesktopV3CacheAction,
   DesktopV3CacheState,
   SyncSelector,
@@ -337,7 +339,11 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private async handleFrame(frame: RealtimeMessage): Promise<void> {
     try {
       this.livePatchCoordinator.beforeDurableFrame(frame)
+      const committedEvents = eventsForDesktopV3ToolResourceBridge(frame)
       await commitDesktopV3StreamFrame(this.streamCommit, frame)
+      for (const event of committedEvents) {
+        handleDesktopV3ToolResourceUpdate(event)
+      }
       this.livePatchCoordinator.afterDurableFrame(frame)
       if (frame.kind === 'event' || frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.updated' || frame.kind === 'workset.session.removed') {
         // Reconcile after durable state commits. Workset frames update transport
@@ -422,6 +428,14 @@ export function commitDesktopV3StreamFrame(
   frame: RealtimeMessage,
 ): Promise<void> {
   return streamCommit.commitActions(realtimeFrameToActions(frame))
+}
+
+export function eventsForDesktopV3ToolResourceBridge(frame: RealtimeMessage): CacheEvent[] {
+  if (frame.kind !== 'event') return []
+  const events = realtimeFrameToActions(frame)
+    .map((action) => action.type === 'realtime.applyEvent' ? action.event : undefined)
+    .filter((event): event is CacheEvent => Boolean(event))
+  return events.filter((event) => event.eventType === 'session.tool.completed')
 }
 
 export class DesktopV3StreamCommitError extends Error {
