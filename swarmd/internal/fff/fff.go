@@ -264,6 +264,29 @@ type SearchItem struct {
 	Score                     int
 }
 
+type DirectoryItem struct {
+	Path              string
+	RelativePath      string
+	DirectoryName     string
+	MaxAccessFrecency int32
+	Score             int
+}
+
+type MixedItem struct {
+	Path                      string
+	RelativePath              string
+	DisplayName               string
+	ItemType                  string
+	GitStatus                 string
+	Size                      uint64
+	Modified                  uint64
+	AccessFrecencyScore       int64
+	ModificationFrecencyScore int64
+	TotalFrecencyScore        int64
+	IsBinary                  bool
+	Score                     int
+}
+
 type SearchMetrics struct {
 	Duration     time.Duration
 	Count        uint32
@@ -307,6 +330,44 @@ func (i *Instance) GlobWithOptions(pattern string, pageSize uint32, pageIndex ui
 	}
 	defer res.free()
 	return extractSearchResult((*C.struct_FffSearchResult)(res.ptr.handle), start)
+}
+
+func (i *Instance) SearchDirectories(query string, pageSize uint32) ([]DirectoryItem, SearchMetrics, error) {
+	return i.SearchDirectoriesWithOptions(query, pageSize, 0)
+}
+
+func (i *Instance) SearchDirectoriesWithOptions(query string, pageSize uint32, pageIndex uint32) ([]DirectoryItem, SearchMetrics, error) {
+	if i == nil || i.handle == nil {
+		return nil, SearchMetrics{}, fmt.Errorf("nil FFF instance")
+	}
+	start := time.Now()
+	cQuery := cString(query)
+	defer C.free(unsafe.Pointer(cQuery))
+	res, err := wrapResult(C.fff_search_directories(i.handle, cQuery, nil, 0, C.uint32_t(pageIndex), C.uint32_t(pageSize)))
+	if err != nil {
+		return nil, SearchMetrics{Duration: time.Since(start)}, err
+	}
+	defer res.free()
+	return extractDirectorySearchResult((*C.struct_FffDirSearchResult)(res.ptr.handle), start)
+}
+
+func (i *Instance) SearchMixed(query string, pageSize uint32) ([]MixedItem, SearchMetrics, error) {
+	return i.SearchMixedWithOptions(query, pageSize, 0)
+}
+
+func (i *Instance) SearchMixedWithOptions(query string, pageSize uint32, pageIndex uint32) ([]MixedItem, SearchMetrics, error) {
+	if i == nil || i.handle == nil {
+		return nil, SearchMetrics{}, fmt.Errorf("nil FFF instance")
+	}
+	start := time.Now()
+	cQuery := cString(query)
+	defer C.free(unsafe.Pointer(cQuery))
+	res, err := wrapResult(C.fff_search_mixed(i.handle, cQuery, nil, 0, C.uint32_t(pageIndex), C.uint32_t(pageSize), 0, 0))
+	if err != nil {
+		return nil, SearchMetrics{Duration: time.Since(start)}, err
+	}
+	defer res.free()
+	return extractMixedSearchResult((*C.struct_FffMixedSearchResult)(res.ptr.handle), start)
 }
 
 type MatchRange struct {
@@ -561,6 +622,85 @@ func extractSearchResult(searchRes *C.struct_FffSearchResult, start time.Time) (
 		Count:        uint32(C.fff_search_result_get_count(searchRes)),
 		TotalMatched: uint32(C.fff_search_result_get_total_matched(searchRes)),
 		TotalFiles:   uint32(C.fff_search_result_get_total_files(searchRes)),
+	}
+	return items, metrics, nil
+}
+
+func extractDirectorySearchResult(dirRes *C.struct_FffDirSearchResult, start time.Time) ([]DirectoryItem, SearchMetrics, error) {
+	if dirRes == nil {
+		return nil, SearchMetrics{Duration: time.Since(start)}, fmt.Errorf("nil directory search result")
+	}
+	defer C.fff_free_dir_search_result(dirRes)
+
+	items := make([]DirectoryItem, 0, int(dirRes.count))
+	for idx := C.uint32_t(0); idx < dirRes.count; idx++ {
+		item := C.fff_dir_search_result_get_item(dirRes, idx)
+		score := C.fff_dir_search_result_get_score(dirRes, idx)
+		if item == nil {
+			continue
+		}
+		relativePath := fromCString(item.relative_path)
+		entry := DirectoryItem{
+			Path:              relativePath,
+			RelativePath:      relativePath,
+			DirectoryName:     fromCString(item.dir_name),
+			MaxAccessFrecency: int32(item.max_access_frecency),
+		}
+		if score != nil {
+			entry.Score = int(score.total)
+		}
+		items = append(items, entry)
+	}
+	metrics := SearchMetrics{
+		Duration:     time.Since(start),
+		Count:        uint32(dirRes.count),
+		TotalMatched: uint32(dirRes.total_matched),
+		TotalFiles:   uint32(dirRes.total_dirs),
+	}
+	return items, metrics, nil
+}
+
+func extractMixedSearchResult(mixedRes *C.struct_FffMixedSearchResult, start time.Time) ([]MixedItem, SearchMetrics, error) {
+	if mixedRes == nil {
+		return nil, SearchMetrics{Duration: time.Since(start)}, fmt.Errorf("nil mixed search result")
+	}
+	defer C.fff_free_mixed_search_result(mixedRes)
+
+	items := make([]MixedItem, 0, int(mixedRes.count))
+	for idx := C.uint32_t(0); idx < mixedRes.count; idx++ {
+		item := C.fff_mixed_search_result_get_item(mixedRes, idx)
+		score := C.fff_mixed_search_result_get_score(mixedRes, idx)
+		if item == nil {
+			continue
+		}
+		relativePath := fromCString(item.relative_path)
+		itemType := "file"
+		if item.item_type == 1 {
+			itemType = "directory"
+		}
+		entry := MixedItem{
+			Path:                      relativePath,
+			RelativePath:              relativePath,
+			DisplayName:               fromCString(item.display_name),
+			ItemType:                  itemType,
+			GitStatus:                 fromCString(item.git_status),
+			Size:                      uint64(item.size),
+			Modified:                  uint64(item.modified),
+			AccessFrecencyScore:       int64(item.access_frecency_score),
+			ModificationFrecencyScore: int64(item.modification_frecency_score),
+			TotalFrecencyScore:        int64(item.total_frecency_score),
+			IsBinary:                  bool(item.is_binary),
+		}
+		if score != nil {
+			entry.Score = int(score.total)
+		}
+		items = append(items, entry)
+	}
+	metrics := SearchMetrics{
+		Duration:     time.Since(start),
+		Count:        uint32(mixedRes.count),
+		TotalMatched: uint32(mixedRes.total_matched),
+		TotalFiles:   uint32(mixedRes.total_files + mixedRes.total_dirs),
 	}
 	return items, metrics, nil
 }

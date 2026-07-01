@@ -535,18 +535,43 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "search",
-			Description: "Canonical workspace search powered directly by FFF. Supports single-query and multi-query search in one call. Prefer narrow path/include scopes first, and use `queries` for multi-symbol search instead of packing OR syntax into one string. Returns line-level content matches when available, with stable summaries, truncation signals, and file metadata to guide follow-up reads.",
+			Description: "Canonical FFF content/symbol search. Use for text inside files: exact symbols, error strings, config keys, or short natural fragments. Supports literal, regex, and fuzzy content modes, context lines, file-offset pagination, per-file match caps, include globs, tight path scoping, and multi-query batching. For path/directory discovery, use find instead.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"pattern":     map[string]any{"type": "string", "description": "Legacy single-query alias. Use an exact symbol, error string, config key, or short natural fragment."},
-					"query":       map[string]any{"type": "string", "description": "Single search query. Preferred over `pattern` for new callers."},
-					"queries":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional multi-query batch for one search call. Use this for parallel/multi-symbol search within the same path/include scope."},
-					"path":        map[string]any{"type": "string", "description": "Search root directory (absolute or workspace-relative). Keep this as narrow as possible for model-readable results. For multiple roots, prefer `paths`."},
-					"paths":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional explicit batch of search root directories. Use instead of stuffing multiple directories into `path`."},
-					"include":     map[string]any{"type": "string", "description": "Optional file include glob such as `*.go`. This is the canonical way to scope search to file types."},
-					"max_results": map[string]any{"type": "integer", "description": "Maximum merged results to return (default 100, max 4000). If results truncate, narrow path/include/query scope and rerun instead of broadening search scope."},
-					"timeout_ms":  map[string]any{"type": "integer", "description": "Search timeout in milliseconds (default 8000, max 45000). Used for FFF scan wait and grep time budget."},
+					"pattern":              map[string]any{"type": "string", "description": "Legacy single-query alias. Use an exact symbol, error string, config key, or short natural fragment."},
+					"query":                map[string]any{"type": "string", "description": "Single content search query. Preferred over `pattern` for new callers."},
+					"queries":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional multi-query batch for one search call. Use this for parallel/multi-symbol content search within the same path/include scope."},
+					"path":                 map[string]any{"type": "string", "description": "Search root directory or file (absolute or workspace-relative). Keep this as narrow as possible for model-readable results. For multiple roots, prefer `paths`."},
+					"paths":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional explicit batch of search root directories/files. Use instead of stuffing multiple roots into `path`."},
+					"include":              map[string]any{"type": "string", "description": "Optional file include glob such as `*.go`. This is the canonical way to scope content search to file types."},
+					"content_mode":         map[string]any{"type": "string", "description": "Content matching mode: literal (default), regex, or fuzzy. Prefer literal for exact code/symbol strings; use regex only when pattern syntax is needed."},
+					"before_context":       map[string]any{"type": "integer", "description": "Context lines before each content match (default 0)."},
+					"after_context":        map[string]any{"type": "integer", "description": "Context lines after each content match (default 5 for definition-aware search)."},
+					"file_offset":          map[string]any{"type": "integer", "description": "File-based pagination offset returned as next_file_offset; use to continue a truncated content search."},
+					"max_matches_per_file": map[string]any{"type": "integer", "description": "Maximum content matches per file (0 = unlimited). Use to keep broad searches readable."},
+					"max_results":          map[string]any{"type": "integer", "description": "Maximum merged results to return (default 100, max 4000). If results truncate, narrow path/include/query scope or continue with file_offset."},
+					"timeout_ms":           map[string]any{"type": "integer", "description": "Search timeout in milliseconds (default 8000, max 45000). Used for FFF scan wait and grep time budget."},
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
+			Name:        "find",
+			Description: "FFF-backed path discovery for files, directories, mixed file+directory results, or glob-only file-pattern lookup. Use find when you need candidate paths before read/edit, not content matches. Supports multi-query batching, path/include scoping, pagination, and compact typed output.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query":       map[string]any{"type": "string", "description": "Single fuzzy path/directory query or glob pattern when mode=glob."},
+					"queries":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional multi-query batch for one find call within the same path/include scope."},
+					"mode":        map[string]any{"type": "string", "description": "Discovery mode: files (default), directories, mixed, or glob. Use mixed when either files or directories may be relevant."},
+					"path":        map[string]any{"type": "string", "description": "Discovery root directory (absolute or workspace-relative). Keep narrow when possible. For multiple roots, prefer `paths`."},
+					"paths":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional explicit batch of discovery roots."},
+					"include":     map[string]any{"type": "string", "description": "Optional file include glob for files/mixed results, such as `*.go`. Directory matches are not filtered by include."},
+					"page_index":  map[string]any{"type": "integer", "description": "Result page index for FFF file/directory/mixed discovery (default 0)."},
+					"max_results": map[string]any{"type": "integer", "description": "Maximum merged path results to return (default 100, max 4000). If truncated, narrow scope/query or increment page_index."},
+					"timeout_ms":  map[string]any{"type": "integer", "description": "Discovery timeout in milliseconds (default 8000, max 45000)."},
 				},
 				"additionalProperties": false,
 			},
@@ -1356,6 +1381,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return "", errors.New("glob is disabled; use list for path discovery and search for canonical FFF-backed retrieval")
 	case "search":
 		return r.executeSearch(ctx, scope, args)
+	case "find":
+		return r.executeFind(ctx, scope, args)
 	case "websearch":
 		return r.executeWebSearch(ctx, args)
 	case "webfetch":
@@ -1846,6 +1873,11 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 
 	include := strings.TrimSpace(asString(args["include"]))
 	payloadStyle := strings.ToLower(strings.TrimSpace(asString(args["_search_payload_style"])))
+	contentMode := normalizeSearchContentMode(args["content_mode"])
+	beforeContext := uint32FromArgs(args, "before_context", 0)
+	afterContext := uint32FromArgs(args, "after_context", searchDefinitionAfterContext)
+	fileOffset := uint32FromArgs(args, "file_offset", 0)
+	maxMatchesPerFile := uint32FromArgs(args, "max_matches_per_file", 0)
 	maxResults := clampInt(asInt(args["max_results"], defaultSearchResults), 1, maxSearchResults)
 	rootResultLimit := maxResults
 	if len(searchRoots) > 1 && rootResultLimit > 0 {
@@ -1868,13 +1900,18 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 		timeout := resolveSearchTimeout(args["timeout_ms"])
 		ctx, cancel := context.WithTimeout(parent, timeout)
 		helperResp, err := executeSearchHelper(ctx, searchipc.Request{
-			SearchRoot:    root,
-			Queries:       queries,
-			Include:       targetInclude,
-			MaxResults:    rootResultLimit,
-			PageLimit:     uint32(rootResultLimit + searchResultPageSlack),
-			TimeoutMillis: timeout.Milliseconds(),
-			AfterContext:  searchDefinitionAfterContext,
+			SearchRoot:        root,
+			Operation:         "content",
+			Queries:           queries,
+			Include:           targetInclude,
+			MaxResults:        rootResultLimit,
+			PageLimit:         uint32(rootResultLimit + searchResultPageSlack),
+			TimeoutMillis:     timeout.Milliseconds(),
+			ContentMode:       contentMode,
+			FileOffset:        fileOffset,
+			MaxMatchesPerFile: maxMatchesPerFile,
+			BeforeContext:     beforeContext,
+			AfterContext:      afterContext,
 		})
 		ctxErr := ctx.Err()
 		cancel()
@@ -1913,6 +1950,86 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 		payload["search_errors"] = formatSearchQueryErrors(rootErrors)
 	} else if len(rootErrors) > 0 && !completed {
 		payload["search_warnings"] = formatSearchQueryErrors(rootErrors)
+	}
+	return encodeSearchPayload(payload)
+}
+
+func (r *Runtime) executeFind(parent context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
+	queries, err := parseFindQueries(args)
+	if err != nil {
+		return "", err
+	}
+	searchTargets, err := resolveSearchTargets(scope, args)
+	if err != nil {
+		return "", err
+	}
+	searchRoots := searchTargetRoots(searchTargets)
+	include := strings.TrimSpace(asString(args["include"]))
+	mode := normalizeFindMode(args["mode"])
+	pageIndex := uint32FromArgs(args, "page_index", 0)
+	maxResults := clampInt(asInt(args["max_results"], defaultSearchResults), 1, maxSearchResults)
+	rootResultLimit := maxResults
+	if len(searchRoots) > 1 && rootResultLimit > 0 {
+		rootResultLimit = max(1, maxResults/len(searchRoots))
+	}
+	if rootResultLimit < 1 {
+		rootResultLimit = 1
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+
+	combinedResults := make([]findQueryExecution, 0, len(searchTargets)*len(queries))
+	rootErrors := make([]error, 0)
+	completed := true
+	searchRoot := searchRootLabel(searchTargets)
+	for _, target := range searchTargets {
+		root := target.Root
+		targetInclude := searchTargetInclude(target, include)
+		timeout := resolveSearchTimeout(args["timeout_ms"])
+		ctx, cancel := context.WithTimeout(parent, timeout)
+		helperResp, err := executeSearchHelper(ctx, searchipc.Request{
+			SearchRoot:    root,
+			Operation:     mode,
+			Queries:       queries,
+			Include:       targetInclude,
+			MaxResults:    rootResultLimit,
+			PageLimit:     uint32(rootResultLimit + searchResultPageSlack),
+			PageIndex:     pageIndex,
+			TimeoutMillis: timeout.Milliseconds(),
+		})
+		ctxErr := ctx.Err()
+		cancel()
+		if err != nil {
+			rootErrors = append(rootErrors, fmt.Errorf("%s: %w", searchTargetDisplay(target), err))
+			completed = false
+			combinedResults = append(combinedResults, timedOutFindResults(queries, mode)...)
+			continue
+		}
+		if strings.TrimSpace(helperResp.HelperError) != "" {
+			rootErrors = append(rootErrors, fmt.Errorf("%s: %s", searchTargetDisplay(target), strings.TrimSpace(helperResp.HelperError)))
+			completed = false
+			combinedResults = append(combinedResults, erroredFindResults(queries, mode, strings.TrimSpace(helperResp.HelperError))...)
+			continue
+		}
+		if !helperResp.Completed || ctxErr != nil {
+			completed = false
+			combinedResults = append(combinedResults, timedOutFindResults(queries, mode)...)
+			continue
+		}
+		results, errs := findHelperResults(helperResp, root, queries, targetInclude, rootResultLimit, mode)
+		combinedResults = append(combinedResults, results...)
+		rootErrors = append(rootErrors, errs...)
+	}
+	combinedResults = rewriteFindResultsForDisplay(scope.PrimaryPath, searchRoots, searchTargetsContainFile(searchTargets), combinedResults)
+	if len(combinedResults) == 0 {
+		return "", fmt.Errorf("find query execution failed: %s", formatSearchQueryErrors(rootErrors))
+	}
+	payload := buildFindPayload(searchRoot, queries, include, combinedResults, maxResults, mode)
+	if len(rootErrors) > 0 && !hasFindResultRows(combinedResults) {
+		payload["find_errors"] = formatSearchQueryErrors(rootErrors)
+	} else if len(rootErrors) > 0 && !completed {
+		payload["find_warnings"] = formatSearchQueryErrors(rootErrors)
 	}
 	return encodeSearchPayload(payload)
 }
@@ -2082,6 +2199,131 @@ func searchHelperFileResults(helperResults []searchipc.SearchQueryResult, search
 	return results, errs
 }
 
+func findHelperResults(resp searchipc.Response, searchRoot string, queries []string, include string, maxResults int, mode string) ([]findQueryExecution, []error) {
+	switch mode {
+	case "directories":
+		return findHelperDirectoryResults(resp.DirectoryResults, searchRoot, queries, maxResults)
+	case "mixed":
+		return findHelperMixedResults(resp.MixedResults, searchRoot, queries, include, maxResults)
+	default:
+		return findHelperFileResults(resp.FileResults, searchRoot, queries, include, maxResults, mode)
+	}
+}
+
+func findHelperFileResults(helperResults []searchipc.SearchQueryResult, searchRoot string, queries []string, include string, maxResults int, mode string) ([]findQueryExecution, []error) {
+	byQuery := make(map[string]searchipc.SearchQueryResult, len(helperResults))
+	for _, result := range helperResults {
+		byQuery[strings.ToLower(strings.TrimSpace(result.Query))] = result
+	}
+	results := make([]findQueryExecution, 0, len(queries))
+	errs := make([]error, 0)
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		helperResult, ok := byQuery[strings.ToLower(query)]
+		result := findQueryExecution{Query: query, Mode: mode}
+		if !ok {
+			err := fmt.Errorf("query %q: FFF find helper did not return %s results", query, mode)
+			result.Error = err.Error()
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		if strings.TrimSpace(helperResult.Error) != "" {
+			err := fmt.Errorf("query %q: %s", query, strings.TrimSpace(helperResult.Error))
+			result.Error = strings.TrimSpace(helperResult.Error)
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		rows, totals, truncated := collectFindFileRows(query, searchRoot, include, helperResult.Items, helperResult.Metrics, maxResults, "file")
+		result.Rows = rows
+		result.Totals = totals
+		result.ReturnedCount = len(rows)
+		result.Truncated = truncated
+		results = append(results, result)
+	}
+	return results, errs
+}
+
+func findHelperDirectoryResults(helperResults []searchipc.DirectoryQueryResult, searchRoot string, queries []string, maxResults int) ([]findQueryExecution, []error) {
+	byQuery := make(map[string]searchipc.DirectoryQueryResult, len(helperResults))
+	for _, result := range helperResults {
+		byQuery[strings.ToLower(strings.TrimSpace(result.Query))] = result
+	}
+	results := make([]findQueryExecution, 0, len(queries))
+	errs := make([]error, 0)
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		helperResult, ok := byQuery[strings.ToLower(query)]
+		result := findQueryExecution{Query: query, Mode: "directories"}
+		if !ok {
+			err := fmt.Errorf("query %q: FFF find helper did not return directory results", query)
+			result.Error = err.Error()
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		if strings.TrimSpace(helperResult.Error) != "" {
+			err := fmt.Errorf("query %q: %s", query, strings.TrimSpace(helperResult.Error))
+			result.Error = strings.TrimSpace(helperResult.Error)
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		rows, totals, truncated := collectFindDirectoryRows(query, searchRoot, helperResult.Items, helperResult.Metrics, maxResults)
+		result.Rows = rows
+		result.Totals = totals
+		result.ReturnedCount = len(rows)
+		result.Truncated = truncated
+		results = append(results, result)
+	}
+	return results, errs
+}
+
+func findHelperMixedResults(helperResults []searchipc.MixedQueryResult, searchRoot string, queries []string, include string, maxResults int) ([]findQueryExecution, []error) {
+	byQuery := make(map[string]searchipc.MixedQueryResult, len(helperResults))
+	for _, result := range helperResults {
+		byQuery[strings.ToLower(strings.TrimSpace(result.Query))] = result
+	}
+	results := make([]findQueryExecution, 0, len(queries))
+	errs := make([]error, 0)
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		helperResult, ok := byQuery[strings.ToLower(query)]
+		result := findQueryExecution{Query: query, Mode: "mixed"}
+		if !ok {
+			err := fmt.Errorf("query %q: FFF find helper did not return mixed results", query)
+			result.Error = err.Error()
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		if strings.TrimSpace(helperResult.Error) != "" {
+			err := fmt.Errorf("query %q: %s", query, strings.TrimSpace(helperResult.Error))
+			result.Error = strings.TrimSpace(helperResult.Error)
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		rows, totals, truncated := collectFindMixedRows(query, searchRoot, include, helperResult.Items, helperResult.Metrics, maxResults)
+		result.Rows = rows
+		result.Totals = totals
+		result.ReturnedCount = len(rows)
+		result.Truncated = truncated
+		results = append(results, result)
+	}
+	return results, errs
+}
+
 func selectSearchContentPayload(style, searchRoot string, queries []string, include string, results []searchQueryExecution, maxResults int) map[string]any {
 	if strings.EqualFold(strings.TrimSpace(style), "legacy") {
 		return buildSearchContentLegacyPayload(searchRoot, queries, include, results, maxResults)
@@ -2095,6 +2337,73 @@ func encodeSearchPayload(payload map[string]any) (string, error) {
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func normalizeSearchContentMode(raw any) string {
+	switch strings.ToLower(strings.TrimSpace(asString(raw))) {
+	case "regex", "regexp":
+		return "regex"
+	case "fuzzy":
+		return "fuzzy"
+	default:
+		return "literal"
+	}
+}
+
+func normalizeFindMode(raw any) string {
+	switch strings.ToLower(strings.TrimSpace(asString(raw))) {
+	case "dir", "dirs", "directory", "directories":
+		return "directories"
+	case "mixed", "all":
+		return "mixed"
+	case "glob", "pattern":
+		return "glob"
+	default:
+		return "files"
+	}
+}
+
+func uint32FromArgs(args map[string]any, key string, fallback uint32) uint32 {
+	value := asInt(args[key], int(fallback))
+	if value < 0 {
+		return fallback
+	}
+	if value > int(^uint32(0)) {
+		return ^uint32(0)
+	}
+	return uint32(value)
+}
+
+func parseFindQueries(args map[string]any) ([]string, error) {
+	queries := make([]string, 0, 8)
+	if single := strings.TrimSpace(asString(args["query"])); single != "" {
+		queries = append(queries, single)
+	}
+	queries = append(queries, asStringSlice(args["queries"])...)
+	if len(queries) == 0 {
+		return nil, errors.New("find requires query or queries")
+	}
+	seen := make(map[string]struct{}, len(queries))
+	deduped := make([]string, 0, len(queries))
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		key := strings.ToLower(query)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, query)
+	}
+	if len(deduped) == 0 {
+		return nil, errors.New("find requires at least one non-empty query")
+	}
+	if len(deduped) > maxSearchQueries {
+		return nil, fmt.Errorf("find supports at most %d queries per call; split the batch and retry", maxSearchQueries)
+	}
+	return deduped, nil
 }
 
 func buildFFFGrepQuery(include, pattern string) string {
@@ -2155,6 +2464,27 @@ type searchFileRow struct {
 	FileName     string
 	GitStatus    string
 	Score        int
+}
+
+type findRow struct {
+	Query        string
+	Path         string
+	RelativePath string
+	Name         string
+	Kind         string
+	GitStatus    string
+	Score        int
+}
+
+type findQueryExecution struct {
+	Query         string
+	Mode          string
+	Rows          []findRow
+	Totals        searchAggregateTotals
+	ReturnedCount int
+	Truncated     bool
+	TimedOut      bool
+	Error         string
 }
 
 type searchAggregateTotals struct {
@@ -2504,6 +2834,93 @@ func collectSearchFileRows(query, searchRoot, include string, items []fff.Search
 	}, truncated
 }
 
+func collectFindFileRows(query, searchRoot, include string, items []fff.SearchItem, metrics fff.SearchMetrics, maxResults int, kind string) ([]findRow, searchAggregateTotals, bool) {
+	rows := make([]findRow, 0, minInt(len(items), maxResults))
+	truncated := false
+	for _, item := range items {
+		pathValue := filepath.Clean(item.Path)
+		relPath := normalizeSearchRelativePath(searchRoot, pathValue, item.RelativePath)
+		if !matchesIncludeGlob(include, relPath) {
+			continue
+		}
+		rows = append(rows, findRow{
+			Query:        query,
+			Path:         pathValue,
+			RelativePath: relPath,
+			Name:         strings.TrimSpace(item.FileName),
+			Kind:         kind,
+			GitStatus:    strings.TrimSpace(item.GitStatus),
+			Score:        item.Score,
+		})
+		if len(rows) >= maxResults {
+			truncated = true
+			break
+		}
+	}
+	if metrics.TotalMatched > uint32(len(rows)) {
+		truncated = true
+	}
+	return rows, searchAggregateTotals{TotalMatched: int(metrics.TotalMatched), TotalFiles: int(metrics.TotalFiles)}, truncated
+}
+
+func collectFindDirectoryRows(query, searchRoot string, items []fff.DirectoryItem, metrics fff.SearchMetrics, maxResults int) ([]findRow, searchAggregateTotals, bool) {
+	rows := make([]findRow, 0, minInt(len(items), maxResults))
+	truncated := false
+	for _, item := range items {
+		pathValue := filepath.Clean(item.Path)
+		relPath := normalizeSearchRelativePath(searchRoot, pathValue, item.RelativePath)
+		rows = append(rows, findRow{
+			Query:        query,
+			Path:         pathValue,
+			RelativePath: relPath,
+			Name:         strings.TrimSpace(item.DirectoryName),
+			Kind:         "directory",
+			Score:        item.Score,
+		})
+		if len(rows) >= maxResults {
+			truncated = true
+			break
+		}
+	}
+	if metrics.TotalMatched > uint32(len(rows)) {
+		truncated = true
+	}
+	return rows, searchAggregateTotals{TotalMatched: int(metrics.TotalMatched), TotalFiles: int(metrics.TotalFiles)}, truncated
+}
+
+func collectFindMixedRows(query, searchRoot, include string, items []fff.MixedItem, metrics fff.SearchMetrics, maxResults int) ([]findRow, searchAggregateTotals, bool) {
+	rows := make([]findRow, 0, minInt(len(items), maxResults))
+	truncated := false
+	for _, item := range items {
+		pathValue := filepath.Clean(item.Path)
+		relPath := normalizeSearchRelativePath(searchRoot, pathValue, item.RelativePath)
+		kind := strings.TrimSpace(item.ItemType)
+		if kind == "" {
+			kind = "file"
+		}
+		if kind == "file" && !matchesIncludeGlob(include, relPath) {
+			continue
+		}
+		rows = append(rows, findRow{
+			Query:        query,
+			Path:         pathValue,
+			RelativePath: relPath,
+			Name:         strings.TrimSpace(item.DisplayName),
+			Kind:         kind,
+			GitStatus:    strings.TrimSpace(item.GitStatus),
+			Score:        item.Score,
+		})
+		if len(rows) >= maxResults {
+			truncated = true
+			break
+		}
+	}
+	if metrics.TotalMatched > uint32(len(rows)) {
+		truncated = true
+	}
+	return rows, searchAggregateTotals{TotalMatched: int(metrics.TotalMatched), TotalFiles: int(metrics.TotalFiles)}, truncated
+}
+
 func buildSearchQuerySummaries(results []searchQueryExecution) []searchQuerySummary {
 	out := make([]searchQuerySummary, 0, len(results))
 	for _, result := range results {
@@ -2624,6 +3041,185 @@ func buildSearchContentPayload(searchRoot string, queries []string, include stri
 		response["regex_fallback_error"] = fallback
 	}
 	return response
+}
+
+func buildFindPayload(searchRoot string, queries []string, include string, results []findQueryExecution, maxResults int, mode string) map[string]any {
+	merged, mergeTruncated := mergeFindRows(results, maxResults)
+	totals := aggregateFindTotals(results)
+	truncated, timedOut := findBatchFlags(results)
+	truncated = truncated || mergeTruncated
+	response := map[string]any{
+		"path_id":           toolPathID("find"),
+		"search_mode":       mode,
+		"path":              searchRoot,
+		"count":             len(merged),
+		"results":           buildCompactFindResults(merged, len(queries) > 1),
+		"truncated":         truncated,
+		"timed_out":         timedOut,
+		"summary":           findSummaryForQueries(queries, searchRoot, len(merged), truncated, timedOut, mode),
+		"details_truncated": truncated,
+		"provider":          "fff",
+		"total_matched":     totals.TotalMatched,
+		"total_files":       totals.TotalFiles,
+		"query_results":     buildFindQuerySummaries(results),
+	}
+	if trimmed := strings.TrimSpace(include); trimmed != "" {
+		response["include"] = trimmed
+	}
+	return response
+}
+
+func mergeFindRows(results []findQueryExecution, maxResults int) ([]findRow, bool) {
+	merged := make([]findRow, 0, maxResults)
+	positions := make([]int, len(results))
+	for len(merged) < maxResults {
+		progressed := false
+		for idx, result := range results {
+			if positions[idx] >= len(result.Rows) {
+				continue
+			}
+			merged = append(merged, result.Rows[positions[idx]])
+			positions[idx]++
+			progressed = true
+			if len(merged) >= maxResults {
+				break
+			}
+		}
+		if !progressed {
+			break
+		}
+	}
+	truncated := false
+	for idx, result := range results {
+		if positions[idx] < len(result.Rows) {
+			truncated = true
+			break
+		}
+	}
+	return merged, truncated
+}
+
+func buildCompactFindResults(rows []findRow, multiQuery bool) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		pathValue := strings.TrimSpace(row.RelativePath)
+		if pathValue == "" {
+			pathValue = strings.TrimSpace(row.Path)
+		}
+		entry := map[string]any{
+			"path": pathValue,
+			"kind": row.Kind,
+		}
+		if multiQuery && strings.TrimSpace(row.Query) != "" {
+			entry["query"] = row.Query
+		}
+		if strings.TrimSpace(row.Name) != "" {
+			entry["name"] = row.Name
+		}
+		if strings.TrimSpace(row.GitStatus) != "" {
+			entry["git_status"] = row.GitStatus
+		}
+		if row.Score != 0 {
+			entry["score"] = row.Score
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func buildFindQuerySummaries(results []findQueryExecution) []searchQuerySummary {
+	out := make([]searchQuerySummary, 0, len(results))
+	for _, result := range results {
+		count := result.ReturnedCount
+		if count <= 0 {
+			count = len(result.Rows)
+		}
+		out = append(out, searchQuerySummary{
+			Query:        result.Query,
+			Mode:         result.Mode,
+			Count:        count,
+			TotalMatched: result.Totals.TotalMatched,
+			TotalFiles:   result.Totals.TotalFiles,
+			TimedOut:     result.TimedOut,
+			Truncated:    result.Truncated,
+			Error:        result.Error,
+			Summary:      findSummaryForQueries([]string{result.Query}, "", count, result.Truncated, result.TimedOut, result.Mode),
+		})
+	}
+	return out
+}
+
+func aggregateFindTotals(results []findQueryExecution) searchAggregateTotals {
+	var totals searchAggregateTotals
+	for _, result := range results {
+		totals.TotalMatched += result.Totals.TotalMatched
+		if result.Totals.TotalFiles > totals.TotalFiles {
+			totals.TotalFiles = result.Totals.TotalFiles
+		}
+	}
+	return totals
+}
+
+func findBatchFlags(results []findQueryExecution) (bool, bool) {
+	truncated := false
+	timedOut := false
+	for _, result := range results {
+		if result.Truncated {
+			truncated = true
+		}
+		if result.TimedOut {
+			timedOut = true
+			truncated = true
+		}
+	}
+	return truncated, timedOut
+}
+
+func hasFindResultRows(results []findQueryExecution) bool {
+	for _, result := range results {
+		if len(result.Rows) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func timedOutFindResults(queries []string, mode string) []findQueryExecution {
+	results := make([]findQueryExecution, 0, len(queries))
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		results = append(results, findQueryExecution{Query: query, Mode: mode, Truncated: true, TimedOut: true})
+	}
+	return results
+}
+
+func erroredFindResults(queries []string, mode string, message string) []findQueryExecution {
+	results := make([]findQueryExecution, 0, len(queries))
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		results = append(results, findQueryExecution{Query: query, Mode: mode, Error: strings.TrimSpace(message)})
+	}
+	return results
+}
+
+func rewriteFindResultsForDisplay(primaryRoot string, searchRoots []string, force bool, results []findQueryExecution) []findQueryExecution {
+	if len(results) == 0 || (!force && len(searchRoots) <= 1) {
+		return results
+	}
+	primaryRoot = filepath.Clean(strings.TrimSpace(primaryRoot))
+	for resultIdx := range results {
+		for rowIdx := range results[resultIdx].Rows {
+			row := &results[resultIdx].Rows[rowIdx]
+			row.RelativePath = workspaceRelativeSearchPath(primaryRoot, row.Path, row.RelativePath)
+		}
+	}
+	return results
 }
 
 func hasSearchResultRows(results []searchQueryExecution) bool {
@@ -8893,6 +9489,36 @@ func searchSummaryForQueries(queries []string, root string, count int, truncated
 	notes := []string{countSummary(count, "file", "files")}
 	if contentMode {
 		notes[0] = countSummary(count, "match", "matches")
+	}
+	if timedOut {
+		notes = append(notes, "timed out")
+	} else if truncated {
+		notes = append(notes, "partial results")
+	}
+	return parentheticalSummary(label, notes...)
+}
+
+func findSummaryForQueries(queries []string, root string, count int, truncated, timedOut bool, mode string) string {
+	label := "find"
+	queries = compactSearchQueries(queries)
+	if len(queries) == 1 {
+		label += " " + fmt.Sprintf("%q", truncateSummary(queries[0], 80))
+	} else if len(queries) > 1 {
+		label += " [" + countSummary(len(queries), "query", "queries") + "]"
+	}
+	if root = strings.TrimSpace(truncateSummary(root, 120)); root != "" {
+		label += " in " + root
+	}
+	mode = strings.TrimSpace(mode)
+	itemSingular, itemPlural := "path", "paths"
+	if mode == "directories" {
+		itemSingular, itemPlural = "directory", "directories"
+	} else if mode == "files" || mode == "glob" {
+		itemSingular, itemPlural = "file", "files"
+	}
+	notes := []string{countSummary(count, itemSingular, itemPlural)}
+	if mode != "" {
+		notes = append(notes, mode)
 	}
 	if timedOut {
 		notes = append(notes, "timed out")
