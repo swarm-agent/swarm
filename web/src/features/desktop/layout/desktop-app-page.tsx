@@ -1600,7 +1600,7 @@ export function sessionActivityLabel(session: DesktopSessionRecord): string {
   return sidebarCompactionLabel(session)
     || toolLabel
     || sidebarSummaryLabel(session)
-    || 'Running'
+    || ''
 }
 
 interface SidebarSessionNode {

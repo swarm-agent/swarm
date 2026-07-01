@@ -129,7 +129,7 @@ test('sidebar labels do not fall back to retained tool state', () => {
     },
   })
 
-  assert.equal(sessionActivityLabel(session), 'Running')
+  assert.equal(sessionActivityLabel(session), '')
 })
 
 test('sidebar labels do not fall back to live tool history', () => {
@@ -168,7 +168,7 @@ test('sidebar labels do not fall back to live tool history', () => {
     },
   })
 
-  assert.equal(sessionActivityLabel(session), 'Running')
+  assert.equal(sessionActivityLabel(session), '')
 })
 
 test('sidebar active sort keeps earlier active positions above newer live activity', () => {
@@ -505,7 +505,7 @@ test('sidebar active timer falls back to canonical run created_at when started_a
   })
 
   assert.equal(sessionTimerLabel(session, 15_500), '5s')
-  assert.equal(sessionActivityLabel(session), 'Running')
+  assert.equal(sessionActivityLabel(session), '')
 })
 
 test('sidebar pending executor status uses canonical run state and usable timing', () => {
@@ -518,7 +518,7 @@ test('sidebar pending executor status uses canonical run state and usable timing
   })
 
   assert.equal(sessionTimerLabel(session, 12_500), '2s')
-  assert.equal(sessionActivityLabel(session), 'Running')
+  assert.equal(sessionActivityLabel(session), '')
   assert.notEqual(sessionActivityLabel(session), 'Starting')
   assert.notEqual(sessionActivityLabel(session), 'Pending executor')
   assert.notEqual(sessionActivityLabel(session), 'Pending execution')
@@ -533,7 +533,7 @@ test('sidebar active timer falls back to canonical run updated_at when start and
   })
 
   assert.equal(sessionTimerLabel(session, 12_500), '2s')
-  assert.equal(sessionActivityLabel(session), 'Running')
+  assert.equal(sessionActivityLabel(session), '')
 })
 
 test('sidebar timer does not fall back to live without a canonical active run intent', () => {
