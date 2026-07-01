@@ -504,7 +504,6 @@ function applyHydrateAuthoritativeResources(
   }
 
   enforceHydratedTranscriptRetention(state)
-  applyCurrentRunStateFromSyncSnapshot(state, snapshot, requested)
   applyPermissionSummariesFromSyncSnapshot(state, snapshot, requested)
   applySessionViewsFromSyncSnapshot(state, snapshot, requested)
 
@@ -520,6 +519,7 @@ function applyHydrateAuthoritativeResources(
       }
     }
   }
+  applyCurrentRunStateFromSyncSnapshot(state, snapshot, requested)
 }
 
 function hydrateProjectionIsFresh(
@@ -607,7 +607,11 @@ export function applyReconnectSnapshot(
 
   if (resources.has('run_intents')) {
     replaceRunIntentsBySession(state, raw.run_intents_by_session, authoritativeSessionIds)
-    applyCurrentRunIntentsFromReconnect(state, raw, authoritativeSessionIds)
+    if (resources.has('current_run_state')) {
+      applyCurrentRunStateFromReconnect(state, raw, authoritativeSessionIds)
+    } else {
+      applyCurrentRunIntentsFromReconnect(state, raw, authoritativeSessionIds)
+    }
   } else if (resources.has('current_run_state')) {
     applyCurrentRunStateFromReconnect(state, raw, authoritativeSessionIds)
   } else {
@@ -801,7 +805,9 @@ export function applyMessageMutationResult(
       delete state.pendingUserByClientRequestId[pendingClientRequestId]
     }
   }
-  if (runIntent) {
+  if (raw.current_run_state?.run_id?.trim()) {
+    applyCurrentRunStateFrame(state, sessionId || raw.current_run_state.session_id || raw.session_id, raw.current_run_state)
+  } else if (runIntent) {
     upsertRunIntent(state, runIntent.session_id || raw.session_id, runIntent)
   }
   return state
@@ -1657,8 +1663,8 @@ function applyCurrentRunStateFrame(
   sessionId: string,
   runState: NonNullable<SyncSnapshotResponse['current_run_state_by_session']>[string] | undefined,
 ): void {
-  if (runState?.active && runState.run_id?.trim()) {
-    state.currentRunIntentBySession[sessionId] = {
+  if (runState?.run_id?.trim()) {
+    const runIntent: V3SessionRunIntent = {
       session_id: runState.session_id,
       user_id: runState.user_id,
       account_scope_id: runState.account_scope_id,
@@ -1666,8 +1672,23 @@ function applyCurrentRunStateFrame(
       status: runState.status,
       blocked_reason: runState.blocked_reason,
       created_at: runState.created_at,
+      started_at: runState.started_at,
+      completed_at: runState.completed_at,
+      duration_ms: runState.duration_ms,
+      cumulative_duration_ms: runState.cumulative_duration_ms,
       updated_at: runState.updated_at,
       event_seq: runState.event_seq ?? 0,
+    }
+    const byRunId = state.runIntentsBySession[sessionId] ?? {}
+    byRunId[runIntent.run_id] = {
+      ...byRunId[runIntent.run_id],
+      ...runIntent,
+    }
+    state.runIntentsBySession[sessionId] = byRunId
+    if (runState.active) {
+      state.currentRunIntentBySession[sessionId] = runIntent
+    } else {
+      delete state.currentRunIntentBySession[sessionId]
     }
   } else {
     delete state.currentRunIntentBySession[sessionId]

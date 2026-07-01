@@ -166,6 +166,10 @@ interface V3RunIntentWire {
   status?: string;
   blocked_reason?: string;
   created_at?: number;
+  started_at?: number;
+  completed_at?: number;
+  duration_ms?: number;
+  cumulative_duration_ms?: number;
   updated_at?: number;
   event_seq?: number;
 }
@@ -901,6 +905,10 @@ function mapV3RunIntent(intent: V3RunIntentWire | null | undefined): DesktopRunI
     status: String(intent.status ?? "").trim(),
     blockedReason: String(intent.blocked_reason ?? "").trim(),
     createdAt: typeof intent.created_at === "number" ? intent.created_at : 0,
+    startedAt: typeof intent.started_at === "number" ? intent.started_at : undefined,
+    completedAt: typeof intent.completed_at === "number" ? intent.completed_at : undefined,
+    durationMs: typeof intent.duration_ms === "number" ? intent.duration_ms : undefined,
+    cumulativeDurationMs: typeof intent.cumulative_duration_ms === "number" ? intent.cumulative_duration_ms : undefined,
     updatedAt: typeof intent.updated_at === "number" ? intent.updated_at : 0,
     eventSeq: typeof intent.event_seq === "number" ? intent.event_seq : 0,
   };

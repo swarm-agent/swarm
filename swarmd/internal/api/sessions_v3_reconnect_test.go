@@ -20,6 +20,7 @@ type sessionsV3ReconnectTestPayload struct {
 	SessionsByID              map[string]pebblestore.SessionSnapshot         `json:"sessions_by_id"`
 	ProjectionsBySession      map[string]pebblestore.V3SessionProjection     `json:"projections_by_session"`
 	RunIntentsBySession       map[string][]pebblestore.V3SessionRunIntent    `json:"run_intents_by_session"`
+	CurrentRunStateBySession  map[string]pebblestore.V3SessionRunState       `json:"current_run_state_by_session"`
 	CurrentRunIntentBySession map[string]pebblestore.V3SessionRunIntent      `json:"current_run_intent_by_session"`
 	Subscriptions             []sessionsV3ReconnectSubscription              `json:"subscriptions"`
 	Worksets                  []V3RealtimeWorksetSubscriptionRequest         `json:"worksets"`
@@ -75,6 +76,13 @@ func TestSessionsV3ReconnectIncludesRunningAndExcludesTerminal(t *testing.T) {
 	if got := payload.CurrentRunIntentBySession[runningSession.ID]; got.RunID != "run-running" || got.Status != sessionruntime.RunIntentRunning {
 		t.Fatalf("running current intent = %+v", got)
 	}
+	runningState, ok := payload.CurrentRunStateBySession[runningSession.ID]
+	if !ok || runningState.RunID != "run-running" || !runningState.Active {
+		t.Fatalf("running current run state = %+v, ok=%v", runningState, ok)
+	}
+	if runningState.StartedAt != 1000 || runningState.CompletedAt != 0 || runningState.DurationMs != 0 || runningState.CumulativeDurationMs != 0 {
+		t.Fatalf("running current run state timing = %+v", runningState)
+	}
 	if _, ok := payload.SessionsByID[terminalSession.ID]; ok {
 		t.Fatalf("terminal session must be inactive in reconnect response: %+v", payload.SessionsByID[terminalSession.ID])
 	}
@@ -109,6 +117,13 @@ func TestSessionsV3ReconnectIncludesCanonicalActiveWithStaleInactiveLifecycle(t 
 	current := payload.CurrentRunIntentBySession[created.ID]
 	if current.RunID != "run-canonical" || current.Status != sessionruntime.RunIntentRunning {
 		t.Fatalf("current canonical intent = %+v", current)
+	}
+	state, ok := payload.CurrentRunStateBySession[created.ID]
+	if !ok || state.RunID != "run-canonical" || !state.Active {
+		t.Fatalf("current canonical run state = %+v, ok=%v", state, ok)
+	}
+	if state.StartedAt != 1000 || state.CompletedAt != 0 || state.DurationMs != 0 || state.CumulativeDurationMs != 0 {
+		t.Fatalf("current canonical run state timing = %+v", state)
 	}
 	assertSessionsV3ReconnectSubscription(t, payload, created.ID)
 }

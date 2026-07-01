@@ -81,3 +81,16 @@ test('Desktop V3 route selection stays isolated from runtime ownership', async (
   assert.doesNotMatch(source, /selectedSessionId=\{routeSessionId \|\| selectedDesktopV3SessionId\}/)
   assert.doesNotMatch(source, /<DesktopV3ChatPane[\s\S]*selectedSessionId=\{selectedDesktopV3SessionId\}/)
 })
+
+test('Desktop V3 sidebar active timer replaces the relative-time metadata slot', async () => {
+  const source = await readDesktopAppPage()
+
+  assert.match(
+    source,
+    /sessionHasCanonicalActiveRun\(session\)[\s\S]*\? sessionTimerLabel\(session, now\)[\s\S]*: relativeActivityLabel/,
+  )
+  assert.ok(source.includes('<div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">'))
+  assert.ok(source.includes('{rowTimerLabel ? <span>{rowTimerLabel}</span> : null}'))
+  assert.doesNotMatch(source, /grid-cols-\[minmax\(0,1fr\)_5\.5rem\]/)
+  assert.doesNotMatch(source, /ml-auto w-\[5\.5rem\] shrink-0 truncate text-right tabular-nums/)
+})

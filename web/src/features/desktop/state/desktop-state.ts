@@ -1216,6 +1216,10 @@ function durableRunIntent(payload: Record<string, unknown>, eventType: string, f
     status: status.toLowerCase(),
     blockedReason: payloadString(source, 'blocked_reason') || payloadString(source, 'blockedReason') || payloadString(payload, 'error'),
     createdAt: payloadNumber(source, 'created_at') || payloadNumber(source, 'createdAt'),
+    startedAt: payloadNumber(source, 'started_at') || payloadNumber(source, 'startedAt') || undefined,
+    completedAt: payloadNumber(source, 'completed_at') || payloadNumber(source, 'completedAt') || undefined,
+    durationMs: payloadNumber(source, 'duration_ms') || payloadNumber(source, 'durationMs') || undefined,
+    cumulativeDurationMs: payloadNumber(source, 'cumulative_duration_ms') || payloadNumber(source, 'cumulativeDurationMs') || undefined,
     updatedAt: payloadNumber(source, 'updated_at') || payloadNumber(source, 'updatedAt') || payloadNumber(payload, 'updated_at'),
     eventSeq: payloadNumber(source, 'event_seq') || payloadNumber(source, 'eventSeq'),
   }

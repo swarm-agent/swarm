@@ -106,6 +106,10 @@ export interface V3SessionRunIntent {
   status: string
   blocked_reason?: string
   created_at: number
+  started_at?: number
+  completed_at?: number
+  duration_ms?: number
+  cumulative_duration_ms?: number
   updated_at: number
   event_seq: number
 }
@@ -121,6 +125,8 @@ export interface V3SessionRunState {
   created_at: number
   started_at?: number
   completed_at?: number
+  duration_ms?: number
+  cumulative_duration_ms?: number
   updated_at: number
   event_seq?: number
 }
@@ -422,6 +428,7 @@ export interface SessionMessageMutationResponse {
   session_id: string
   message: unknown
   run_intent: V3SessionRunIntent | null
+  current_run_state?: V3SessionRunState | null
   turn_usage?: unknown
   usage_summary?: unknown
   mutation: SessionMutationResult

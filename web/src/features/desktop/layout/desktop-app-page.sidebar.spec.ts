@@ -14,13 +14,21 @@ import {
   sessionSidebarDisplayGroup,
 } from './desktop-app-page'
 
-function activeRunIntent(sessionId: string, runId: string, createdAt: number, updatedAt = createdAt) {
+function activeRunIntent(
+  sessionId: string,
+  runId: string,
+  createdAt: number,
+  updatedAt = createdAt,
+  timing: { startedAt?: number; cumulativeDurationMs?: number } = {},
+) {
   return {
     sessionId,
     runId,
     status: 'running',
     blockedReason: '',
     createdAt,
+    startedAt: timing.startedAt ?? createdAt,
+    cumulativeDurationMs: timing.cumulativeDurationMs,
     updatedAt,
     eventSeq: 1,
   }
@@ -456,4 +464,48 @@ test('sidebar terminal canonical run intent clears active status even if live re
   assert.equal(sessionActiveRunIntent(terminal), null)
   assert.equal(sessionStatusTone(terminal), 'idle')
   assert.equal(sessionActivityLabel(terminal), '')
+})
+
+
+test('sidebar timer uses backend run timing and cumulative duration instead of created_at', () => {
+  const session = makeSession('backend-timed-run', {
+    runIntent: activeRunIntent('backend-timed-run', 'run-backend', 1_000, 120_000, {
+      startedAt: 120_000,
+      cumulativeDurationMs: 90_000,
+    }),
+    live: {
+      ...makeSession('base').live,
+      status: 'running',
+      runId: 'run-backend',
+      startedAt: 1_000,
+      lastEventAt: 125_000,
+    },
+  })
+
+  assert.equal(sessionTimerLabel(session, 125_000), '5s (1m35s)')
+})
+
+test('sidebar timer uses compact loop and overall duration pattern', () => {
+  const session = makeSession('second-run', {
+    runIntent: activeRunIntent('second-run', 'run-second', 1_000, 120_000, {
+      startedAt: 120_000,
+      cumulativeDurationMs: 90_000,
+    }),
+  })
+
+  assert.equal(sessionTimerLabel(session, 125_000), '5s (1m35s)')
+})
+
+test('sidebar timer does not fall back to live without a canonical active run intent', () => {
+  const session = makeSession('no-run-intent', {
+    live: {
+      ...makeSession('base').live,
+      status: 'running',
+      runId: 'run-live-only',
+      startedAt: 1_000,
+      lastEventAt: 125_000,
+    },
+  })
+
+  assert.equal(sessionTimerLabel(session, 125_000), '')
 })

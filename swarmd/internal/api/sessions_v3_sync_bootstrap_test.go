@@ -290,6 +290,9 @@ func TestSessionsV3SyncIncludeActiveUsesCurrentRunStateWithoutRunIntentHistory(t
 			if !ok || state.RunID != runID || !state.Active {
 				t.Fatalf("current_run_state_by_session[%s] = %+v, ok=%v", created.ID, state, ok)
 			}
+			if state.StartedAt != now || state.CompletedAt != 0 || state.DurationMs != 0 || state.CumulativeDurationMs != 0 {
+				t.Fatalf("current_run_state timing = %+v, want started_at=%d and no terminal durations", state, now)
+			}
 			foundActiveSessionID := false
 			for _, sessionID := range payload.ActiveSessionIDs {
 				if sessionID == created.ID {
@@ -682,6 +685,9 @@ func TestSessionsV3SyncHydrateReturnsSessionView(t *testing.T) {
 	}
 	if view.CurrentRunState == nil || !view.CurrentRunState.Active || view.CurrentRunState.RunID != "run-sync-hydrate-view" {
 		t.Fatalf("session view current run state = %+v", view.CurrentRunState)
+	}
+	if view.CurrentRunState.StartedAt != now || view.CurrentRunState.CompletedAt != 0 || view.CurrentRunState.DurationMs != 0 || view.CurrentRunState.CumulativeDurationMs != 0 {
+		t.Fatalf("session view current run state timing = %+v", view.CurrentRunState)
 	}
 	if view.HasActivePlan == nil || !*view.HasActivePlan || view.ActivePlan == nil || view.ActivePlan.ID != "sync-view-plan" {
 		t.Fatalf("session view active plan = has:%v plan:%+v", view.HasActivePlan, view.ActivePlan)

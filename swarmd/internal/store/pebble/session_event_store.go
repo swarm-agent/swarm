@@ -250,17 +250,20 @@ type V3SessionRunIntent struct {
 }
 
 type V3SessionRunState struct {
-	SessionID      string `json:"session_id"`
-	UserID         string `json:"user_id,omitempty"`
-	AccountScopeID string `json:"account_scope_id,omitempty"`
-	RunID          string `json:"run_id"`
-	Active         bool   `json:"active"`
-	Status         string `json:"status"`
-	BlockedReason  string `json:"blocked_reason,omitempty"`
-	CreatedAt      int64  `json:"created_at"`
-	StartedAt      int64  `json:"started_at,omitempty"`
-	UpdatedAt      int64  `json:"updated_at"`
-	EventSeq       uint64 `json:"event_seq"`
+	SessionID            string `json:"session_id"`
+	UserID               string `json:"user_id,omitempty"`
+	AccountScopeID       string `json:"account_scope_id,omitempty"`
+	RunID                string `json:"run_id"`
+	Active               bool   `json:"active"`
+	Status               string `json:"status"`
+	BlockedReason        string `json:"blocked_reason,omitempty"`
+	CreatedAt            int64  `json:"created_at"`
+	StartedAt            int64  `json:"started_at,omitempty"`
+	CompletedAt          int64  `json:"completed_at,omitempty"`
+	DurationMs           int64  `json:"duration_ms,omitempty"`
+	CumulativeDurationMs int64  `json:"cumulative_duration_ms,omitempty"`
+	UpdatedAt            int64  `json:"updated_at"`
+	EventSeq             uint64 `json:"event_seq"`
 }
 
 type V3SessionReplay struct {
@@ -1636,6 +1639,7 @@ func (s *SessionStore) setV3SessionRunStateInBatch(batch *pebble.Batch, intent V
 		return errors.New("pebble batch is required")
 	}
 	state := v3SessionRunStateFromIntent(intent)
+	state = v3SessionRunStateWithPreviousTiming(state, previous, previousOK)
 	activeKey := KeyV3SessionRunIntentActive(state.SessionID)
 	if previousOK && previous.Active {
 		previousAccountKey := KeyV3SessionRunIntentActiveByAccount(previous.AccountScopeID, previous.UpdatedAt, previous.SessionID, previous.RunID)
@@ -1666,8 +1670,17 @@ func v3SessionRunStateFromIntent(intent V3SessionRunIntent) V3SessionRunState {
 		updatedAt = intent.CreatedAt
 	}
 	startedAt := int64(0)
-	if isV3RunIntentActive(status) {
+	if isV3RunIntentActive(status) || isV3RunIntentTerminal(status) {
 		startedAt = intent.CreatedAt
+	}
+	completedAt := int64(0)
+	durationMs := int64(0)
+	if isV3RunIntentTerminal(status) {
+		completedAt = updatedAt
+		if completedAt == 0 {
+			completedAt = intent.CreatedAt
+		}
+		durationMs = v3SessionRunDurationMs(startedAt, completedAt)
 	}
 	return V3SessionRunState{
 		SessionID:      strings.TrimSpace(intent.SessionID),
@@ -1679,9 +1692,48 @@ func v3SessionRunStateFromIntent(intent V3SessionRunIntent) V3SessionRunState {
 		BlockedReason:  strings.TrimSpace(intent.BlockedReason),
 		CreatedAt:      intent.CreatedAt,
 		StartedAt:      startedAt,
+		CompletedAt:    completedAt,
+		DurationMs:     durationMs,
 		UpdatedAt:      updatedAt,
 		EventSeq:       intent.EventSeq,
 	}
+}
+
+func v3SessionRunStateWithPreviousTiming(state V3SessionRunState, previous V3SessionRunState, previousOK bool) V3SessionRunState {
+	if previousOK {
+		state.CumulativeDurationMs = previous.CumulativeDurationMs
+		if previous.RunID == state.RunID && previous.StartedAt > 0 {
+			state.StartedAt = previous.StartedAt
+		}
+	}
+	if !isV3RunIntentTerminal(state.Status) {
+		state.CompletedAt = 0
+		state.DurationMs = 0
+		return state
+	}
+	if state.CompletedAt == 0 {
+		state.CompletedAt = state.UpdatedAt
+		if state.CompletedAt == 0 {
+			state.CompletedAt = state.CreatedAt
+		}
+	}
+	state.DurationMs = v3SessionRunDurationMs(state.StartedAt, state.CompletedAt)
+	priorCumulative := state.CumulativeDurationMs
+	if previousOK && previous.RunID == state.RunID && previous.CompletedAt > 0 {
+		priorCumulative = previous.CumulativeDurationMs - previous.DurationMs
+		if priorCumulative < 0 {
+			priorCumulative = 0
+		}
+	}
+	state.CumulativeDurationMs = priorCumulative + state.DurationMs
+	return state
+}
+
+func v3SessionRunDurationMs(startedAt, completedAt int64) int64 {
+	if startedAt <= 0 || completedAt <= startedAt {
+		return 0
+	}
+	return completedAt - startedAt
 }
 
 func v3SessionRunIntentFromState(state V3SessionRunState) V3SessionRunIntent {

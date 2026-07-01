@@ -2634,6 +2634,82 @@ test('realtime workset discovered applies child session shell and running state 
   assert.equal(state.realtime.endpointCursor, undefined)
 })
 
+test('current_run_state preserves backend timing fields in current and latest run models', () => {
+  const state = createEmptyDesktopV3CacheState()
+  applyBootstrapSnapshot(state, snapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA },
+    projections_by_session: { [sessionA.id]: projectionA },
+    run_intents_by_session: {},
+    current_run_state_by_session: {
+      [sessionA.id]: {
+        session_id: sessionA.id,
+        run_id: 'run-second',
+        active: true,
+        status: 'running',
+        created_at: 1_000,
+        started_at: 120_000,
+        completed_at: 0,
+        duration_ms: 0,
+        cumulative_duration_ms: 90_000,
+        updated_at: 120_000,
+        event_seq: 12,
+      },
+    },
+    session_order: [sessionA.id],
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'selector-hash',
+      resource_set: 'current_run_state',
+    },
+    scope_id: 'selector-hash:current_run_state',
+  }))
+
+  const rendered = selectRenderedSessionMessages(state, sessionA.id)
+  assert.equal(rendered.currentRunIntent?.started_at, 120_000)
+  assert.equal(rendered.currentRunIntent?.cumulative_duration_ms, 90_000)
+  assert.equal(rendered.latestRunIntent?.run_id, 'run-second')
+  assert.equal(rendered.latestRunIntent?.started_at, 120_000)
+  assert.equal(rendered.latestRunIntent?.cumulative_duration_ms, 90_000)
+})
+
+test('current_run_state preserves terminal backend cumulative duration after refresh', () => {
+  const state = createEmptyDesktopV3CacheState()
+  applyBootstrapSnapshot(state, snapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA },
+    projections_by_session: { [sessionA.id]: projectionA },
+    run_intents_by_session: {},
+    current_run_state_by_session: {
+      [sessionA.id]: {
+        session_id: sessionA.id,
+        run_id: 'run-second',
+        active: false,
+        status: 'completed',
+        created_at: 1_000,
+        started_at: 120_000,
+        completed_at: 125_000,
+        duration_ms: 5_000,
+        cumulative_duration_ms: 95_000,
+        updated_at: 125_000,
+        event_seq: 13,
+      },
+    },
+    session_order: [sessionA.id],
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'selector-hash',
+      resource_set: 'current_run_state',
+    },
+    scope_id: 'selector-hash:current_run_state',
+  }))
+
+  const rendered = selectRenderedSessionMessages(state, sessionA.id)
+  assert.equal(rendered.currentRunIntent, undefined)
+  assert.equal(rendered.latestRunIntent?.duration_ms, 5_000)
+  assert.equal(rendered.latestRunIntent?.cumulative_duration_ms, 95_000)
+})
+
 test('realtime workset removed preserves transcript after child discovery', () => {
   const state = createEmptyDesktopV3CacheState()
   applyRealtimeFrame(state, {
@@ -2682,6 +2758,29 @@ test('message mutation reconciles pending by client request and message id', () 
   assert.equal(state.pendingUserByClientRequestId['client-1'], undefined)
   assert.equal(state.messagesBySession[sessionA.id].items[0].id, messageA1.id)
   assert.equal(state.runIntentsBySession[sessionA.id]['run-a'].status, 'running')
+})
+
+test('message mutation applies current_run_state timing for existing chat resume timer', () => {
+  const state = createEmptyDesktopV3CacheState()
+  applyMessageMutationResult(state, messageMutationFixture({
+    run_intent: { ...runIntentA, started_at: undefined, cumulative_duration_ms: undefined },
+    current_run_state: {
+      session_id: sessionA.id,
+      run_id: runIntentA.run_id,
+      active: true,
+      status: 'running',
+      created_at: 10,
+      started_at: 10,
+      cumulative_duration_ms: 90_000,
+      updated_at: 10,
+      event_seq: 2,
+    },
+  }), 'client-1', messageA1.id)
+
+  assert.equal(state.currentRunIntentBySession[sessionA.id]?.started_at, 10)
+  assert.equal(state.currentRunIntentBySession[sessionA.id]?.cumulative_duration_ms, 90_000)
+  assert.equal(state.runIntentsBySession[sessionA.id]['run-a'].started_at, 10)
+  assert.equal(state.runIntentsBySession[sessionA.id]['run-a'].cumulative_duration_ms, 90_000)
 })
 
 test('wire adapters normalize frame/event boundaries', () => {

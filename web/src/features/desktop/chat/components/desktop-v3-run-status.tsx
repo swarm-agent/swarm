@@ -9,6 +9,8 @@ export interface DesktopV3RunStatusModel {
   label: string
   startedAt?: number
   endedAt?: number
+  durationMs?: number
+  cumulativeDurationMs?: number
   active: boolean
 }
 
@@ -19,12 +21,29 @@ function timestamp(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
 }
 
+function duration(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
 function runIntentStatus(intent: V3SessionRunIntent | null | undefined): string {
   return intent?.status?.trim().toLowerCase() ?? ''
 }
 
 function liveRunActive(run: LiveRunOverlay): boolean {
   return run.status === 'pending_executor' || run.status === 'running'
+}
+
+function timingPresent(timing: Pick<DesktopV3RunStatusModel, 'startedAt' | 'endedAt' | 'durationMs' | 'cumulativeDurationMs'>): boolean {
+  return Boolean(timing.startedAt) || timing.durationMs !== undefined || timing.cumulativeDurationMs !== undefined
+}
+
+function runTiming(intent: V3SessionRunIntent | null | undefined): Pick<DesktopV3RunStatusModel, 'startedAt' | 'endedAt' | 'durationMs' | 'cumulativeDurationMs'> {
+  return {
+    startedAt: timestamp(intent?.started_at),
+    endedAt: timestamp(intent?.completed_at),
+    durationMs: duration(intent?.duration_ms),
+    cumulativeDurationMs: duration(intent?.cumulative_duration_ms),
+  }
 }
 
 function terminalKind(status: string): DesktopV3RunStatusKind {
@@ -61,28 +80,23 @@ export function buildDesktopV3RunStatusModel(input: {
   currentRunIntent?: V3SessionRunIntent | null
   latestRunIntent?: V3SessionRunIntent | null
   liveRuns?: LiveRunOverlay[]
-  pendingStartAt?: number | null
 }): DesktopV3RunStatusModel | null {
-  const pendingStartAt = timestamp(input.pendingStartAt)
-  if (pendingStartAt) {
-    return { kind: 'starting', label: 'Starting', startedAt: pendingStartAt, active: true }
-  }
-
   const currentStatus = runIntentStatus(input.currentRunIntent)
   if (currentStatus === 'dispatch_blocked') {
     return {
       kind: 'paused',
       label: 'Paused',
-      startedAt: timestamp(input.currentRunIntent?.created_at),
-      endedAt: timestamp(input.currentRunIntent?.updated_at),
+      ...runTiming(input.currentRunIntent),
       active: false,
     }
   }
   if (ACTIVE_RUN_INTENT_STATUSES.has(currentStatus)) {
+    const timing = runTiming(input.currentRunIntent)
+    if (!timingPresent(timing)) return null
     return {
       kind: currentStatus === 'pending_executor' ? 'starting' : 'active',
       label: currentStatus === 'pending_executor' ? 'Starting' : 'Running',
-      startedAt: timestamp(input.currentRunIntent?.created_at),
+      ...timing,
       active: true,
     }
   }
@@ -92,23 +106,33 @@ export function buildDesktopV3RunStatusModel(input: {
     return {
       kind: 'paused',
       label: 'Paused',
-      startedAt: timestamp(input.latestRunIntent?.created_at),
-      endedAt: timestamp(input.latestRunIntent?.updated_at),
+      ...runTiming(input.latestRunIntent),
       active: false,
     }
   }
   if (ACTIVE_RUN_INTENT_STATUSES.has(latestStatus)) {
+    const timing = runTiming(input.latestRunIntent)
+    if (!timingPresent(timing)) return null
     return {
       kind: latestStatus === 'pending_executor' ? 'starting' : 'active',
       label: latestStatus === 'pending_executor' ? 'Starting' : 'Running',
-      startedAt: timestamp(input.latestRunIntent?.created_at),
+      ...timing,
       active: true,
     }
   }
 
   const liveActive = input.liveRuns?.some(liveRunActive) ?? false
   if (liveActive) {
-    return { kind: 'active', label: 'Running', active: true }
+    const timing = runTiming(input.currentRunIntent ?? input.latestRunIntent)
+    if (!timingPresent(timing)) {
+      return null
+    }
+    return {
+      kind: 'active',
+      label: 'Running',
+      ...timing,
+      active: true,
+    }
   }
 
   if (TERMINAL_RUN_INTENT_STATUSES.has(latestStatus)) {
@@ -116,8 +140,7 @@ export function buildDesktopV3RunStatusModel(input: {
     return {
       kind,
       label: terminalLabel(kind),
-      startedAt: timestamp(input.latestRunIntent?.created_at),
-      endedAt: timestamp(input.latestRunIntent?.updated_at),
+      ...runTiming(input.latestRunIntent),
       active: false,
     }
   }
@@ -125,11 +148,8 @@ export function buildDesktopV3RunStatusModel(input: {
   return null
 }
 
-export function formatDesktopV3RunTimer(model: DesktopV3RunStatusModel, now: number): string {
-  const startedAt = timestamp(model.startedAt)
-  if (!startedAt) return ''
-  const endAt = model.active ? now : timestamp(model.endedAt) ?? now
-  const elapsedMs = Math.max(0, endAt - startedAt)
+function formatDurationMs(elapsedMs: number | undefined): string {
+  if (elapsedMs === undefined) return ''
   const totalSeconds = Math.floor(elapsedMs / 1000)
   const seconds = totalSeconds % 60
   const minutes = Math.floor(totalSeconds / 60) % 60
@@ -140,23 +160,70 @@ export function formatDesktopV3RunTimer(model: DesktopV3RunStatusModel, now: num
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
+function currentRunDurationMs(model: DesktopV3RunStatusModel, now: number): number | undefined {
+  const storedRunDurationMs = duration(model.durationMs)
+  if (model.active) {
+    const startedAt = timestamp(model.startedAt)
+    return startedAt ? Math.max(0, now - startedAt) : storedRunDurationMs
+  }
+  return storedRunDurationMs
+}
+
+function totalRunDurationMs(model: DesktopV3RunStatusModel, now: number): number | undefined {
+  const storedCumulativeMs = duration(model.cumulativeDurationMs)
+  const runDurationMs = currentRunDurationMs(model, now)
+  if (model.active && runDurationMs !== undefined) {
+    return (storedCumulativeMs ?? 0) + runDurationMs
+  }
+  return storedCumulativeMs ?? runDurationMs
+}
+
+export function formatDesktopV3RunTimer(model: DesktopV3RunStatusModel, now: number): string {
+  return formatDurationMs(totalRunDurationMs(model, now))
+}
+
+export function formatDesktopV3CurrentRunTimer(model: DesktopV3RunStatusModel, now: number): string {
+  return formatDurationMs(currentRunDurationMs(model, now))
+}
+
+export const DESKTOP_V3_RUN_TIMER_TOOLTIP = 'Loop timer is the current run. Overall timer is cumulative agent run time for this session.'
+
+export function formatDesktopV3RunTimerLabel(model: DesktopV3RunStatusModel, now: number): string {
+  const runTimer = formatDesktopV3CurrentRunTimer(model, now)
+  const totalTimer = formatDesktopV3RunTimer(model, now)
+  const showTotalTimer = Boolean(totalTimer && totalTimer !== runTimer && duration(model.cumulativeDurationMs) !== undefined)
+  if (!runTimer) return totalTimer
+  return showTotalTimer ? `${runTimer} (${totalTimer})` : runTimer
+}
+
 export function DesktopV3RunStatusPill({ model, now }: { model: DesktopV3RunStatusModel | null; now: number }) {
   if (!model) return null
-  const timer = formatDesktopV3RunTimer(model, now)
+  const runTimer = formatDesktopV3CurrentRunTimer(model, now)
+  const totalTimer = formatDesktopV3RunTimer(model, now)
+  const showTotalTimer = Boolean(totalTimer && totalTimer !== runTimer && duration(model.cumulativeDurationMs) !== undefined)
   const spinning = model.kind === 'starting' || model.kind === 'active'
+  const title = [
+    model.label,
+    runTimer ? `Loop timer: ${runTimer}` : '',
+    showTotalTimer ? `Overall timer: ${totalTimer}` : '',
+    runTimer ? DESKTOP_V3_RUN_TIMER_TOOLTIP : '',
+  ].filter(Boolean).join(' · ')
   return (
     <div
-      className="inline-flex h-9 max-w-[12rem] shrink-0 items-center gap-1.5 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[11px] font-medium text-[var(--app-text-muted)] shadow-sm sm:max-w-none sm:gap-2 sm:px-3"
+      className="inline-flex h-9 max-w-[15rem] shrink-0 items-center gap-1.5 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[11px] font-medium text-[var(--app-text-muted)] shadow-sm sm:max-w-none sm:gap-2 sm:px-3"
       aria-live="polite"
       data-testid="desktop-v3-run-status-pill"
-      title={timer ? `${model.label} · ${timer}` : model.label}
+      title={title || model.label}
     >
       {spinning ? <LoaderCircle size={12} className="shrink-0 animate-spin text-[var(--app-primary)]" /> : <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', model.kind === 'paused' ? 'bg-[var(--app-warning)]' : 'bg-[var(--app-text-subtle)]')} />}
       <span className="truncate">{model.label}</span>
-      {timer ? (
+      {runTimer ? (
         <>
           <span className="shrink-0 text-[var(--app-text-subtle)]">·</span>
-          <span className="shrink-0 tabular-nums text-[var(--app-text)]">{timer}</span>
+          <span className="shrink-0 tabular-nums text-[var(--app-text)]">
+            {runTimer}
+            {showTotalTimer ? <span className="text-[var(--app-text-subtle)]"> ({totalTimer})</span> : null}
+          </span>
         </>
       ) : null}
     </div>

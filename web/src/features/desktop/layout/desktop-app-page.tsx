@@ -65,6 +65,7 @@ import { fetchAndApplyDesktopV3PlanSnapshot, saveDesktopV3SessionPlan } from '..
 import { archiveDesktopV3Sessions, startDesktopPlanAutomatic, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned } from '../session-v3/api'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
+import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
@@ -216,6 +217,10 @@ function desktopRunIntentFromV3(runIntent: V3SessionRunIntent | undefined) {
     status: runIntent.status,
     blockedReason: runIntent.blocked_reason ?? '',
     createdAt: runIntent.created_at,
+    startedAt: runIntent.started_at,
+    completedAt: runIntent.completed_at,
+    durationMs: runIntent.duration_ms,
+    cumulativeDurationMs: runIntent.cumulative_duration_ms,
     updatedAt: runIntent.updated_at,
     eventSeq: runIntent.event_seq,
   }
@@ -236,6 +241,10 @@ function runIntentEqual(left: V3SessionRunIntent | undefined, right: V3SessionRu
     && left.status === right.status
     && left.blocked_reason === right.blocked_reason
     && left.created_at === right.created_at
+    && left.started_at === right.started_at
+    && left.completed_at === right.completed_at
+    && left.duration_ms === right.duration_ms
+    && left.cumulative_duration_ms === right.cumulative_duration_ms
     && left.updated_at === right.updated_at
     && left.event_seq === right.event_seq
 }
@@ -556,7 +565,7 @@ export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): 
     live: {
       runId: runIntentActive ? runIntent?.runId ?? null : null,
       agentName: null,
-      startedAt: runIntentActive ? runIntent?.createdAt ?? null : null,
+      startedAt: runIntentActive ? runIntent?.startedAt ?? null : null,
       status: liveStatus,
       step: 0,
       toolName: null,
@@ -1207,6 +1216,10 @@ function formatDurationCompact(durationMs: number): string {
   return `${minutes}m${String(seconds).padStart(2, '0')}s`
 }
 
+function nonNegativeDuration(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+}
+
 function formatRelativeTime(timestamp: number | null, now: number): string {
   if (typeof timestamp !== 'number' || timestamp <= 0) {
     return ''
@@ -1455,7 +1468,9 @@ function positiveTimestamp(value: number | null | undefined): number {
 }
 
 function sessionStartedSortAnchor(session: DesktopSessionRecord): number {
-  return positiveTimestamp(sessionActiveRunIntent(session)?.createdAt)
+  const activeRun = sessionActiveRunIntent(session)
+  return positiveTimestamp(activeRun?.startedAt)
+    || positiveTimestamp(activeRun?.createdAt)
     || positiveTimestamp(session.live.startedAt)
     || positiveTimestamp(session.createdAt)
     || positiveTimestamp(session.updatedAt)
@@ -1547,10 +1562,23 @@ export function sessionStatusDetail(session: DesktopSessionRecord, now: number):
 }
 
 export function sessionTimerLabel(session: DesktopSessionRecord, now: number): string {
-  const activeSince = sessionActiveRunIntent(session)?.createdAt ?? null
-  return typeof activeSince === 'number' && activeSince > 0
-    ? formatDurationCompact(now - activeSince)
-    : 'live'
+  const activeRun = sessionActiveRunIntent(session)
+  if (!activeRun) return ''
+
+  const storedRunDurationMs = nonNegativeDuration(activeRun.durationMs)
+  const startedAt = positiveTimestamp(activeRun.startedAt)
+  const loopDurationMs = startedAt > 0 ? Math.max(0, now - startedAt) : storedRunDurationMs
+  if (loopDurationMs === null) return ''
+
+  const cumulativeDurationMs = nonNegativeDuration(activeRun.cumulativeDurationMs)
+  const loopTimer = formatDurationCompact(loopDurationMs)
+  const overallDurationMs = cumulativeDurationMs !== null ? cumulativeDurationMs + loopDurationMs : loopDurationMs
+  const overallTimer = formatDurationCompact(overallDurationMs)
+  return cumulativeDurationMs !== null && overallTimer !== loopTimer ? `${loopTimer} (${overallTimer})` : loopTimer
+}
+
+function sessionTimerTooltip(session: DesktopSessionRecord): string {
+  return sessionActiveRunIntent(session) ? DESKTOP_V3_RUN_TIMER_TOOLTIP : ''
 }
 
 export function sessionActivityLabel(session: DesktopSessionRecord): string {
@@ -1755,7 +1783,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const checkpointProgressLabel = sessionPlanCheckpointProgressLabel(session)
   const checkpointCounts = sessionPlanCheckpointCounts(session)
   const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
-  const tooltip = sessionStatusTooltip(session)
+  const tooltip = [sessionStatusTooltip(session), sessionTimerTooltip(session)].filter(Boolean).join('\n')
   const isNestedSession = depth > 0
   const nestedAssignmentTitle = isNestedSession && childAssignmentLabel ? childAssignmentLabel : ''
   const rowTitle = nestedAssignmentTitle || session.title || 'New conversation'

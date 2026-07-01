@@ -439,6 +439,13 @@ func TestSessionsV3WorksetIncludeActiveUsesCanonicalRunStateOnly(t *testing.T) {
 	if got := payload.RunIntentsBySession[canonical.ID]; len(got) == 0 || got[len(got)-1].RunID != "run-canonical" || got[len(got)-1].Status != sessionruntime.RunIntentRunning {
 		t.Fatalf("canonical run intents = %+v", got)
 	}
+	state, ok := payload.CurrentRunStateBySession[canonical.ID]
+	if !ok || state.RunID != "run-canonical" || !state.Active {
+		t.Fatalf("current_run_state_by_session[%s] = %+v, ok=%v", canonical.ID, state, ok)
+	}
+	if state.StartedAt != 1000 || state.CompletedAt != 0 || state.DurationMs != 0 || state.CumulativeDurationMs != 0 {
+		t.Fatalf("current_run_state timing = %+v, want started_at=1000 and no terminal durations", state)
+	}
 }
 
 func TestSessionsV3TUIWorksetEndpointRejectsEmptyAndNonCanonicalSelectors(t *testing.T) {
@@ -550,12 +557,13 @@ func TestSessionsV3WorksetEndpointRejectsGlobalWorkspaceCombination(t *testing.T
 }
 
 type sessionsV3WorksetTestPayload struct {
-	OK                     bool                                        `json:"ok"`
-	SnapshotEndpointCursor string                                      `json:"snapshot_endpoint_cursor"`
-	SessionsByID           map[string]pebblestore.SessionSnapshot      `json:"sessions_by_id"`
-	ProjectionsBySession   map[string]pebblestore.V3SessionProjection  `json:"projections_by_session"`
-	RunIntentsBySession    map[string][]pebblestore.V3SessionRunIntent `json:"run_intents_by_session"`
-	SessionOrder           []string                                    `json:"session_order"`
+	OK                       bool                                        `json:"ok"`
+	SnapshotEndpointCursor   string                                      `json:"snapshot_endpoint_cursor"`
+	SessionsByID             map[string]pebblestore.SessionSnapshot      `json:"sessions_by_id"`
+	ProjectionsBySession     map[string]pebblestore.V3SessionProjection  `json:"projections_by_session"`
+	RunIntentsBySession      map[string][]pebblestore.V3SessionRunIntent `json:"run_intents_by_session"`
+	CurrentRunStateBySession map[string]pebblestore.V3SessionRunState    `json:"current_run_state_by_session"`
+	SessionOrder             []string                                    `json:"session_order"`
 }
 
 func postSessionsV3WorksetForTest(t *testing.T, server *Server, wantStatus int, body map[string]any) sessionsV3WorksetTestPayload {

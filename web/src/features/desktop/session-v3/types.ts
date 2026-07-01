@@ -197,6 +197,10 @@ export interface SessionV3RunIntentWire {
   status?: string
   blocked_reason?: string
   created_at?: number
+  started_at?: number
+  completed_at?: number
+  duration_ms?: number
+  cumulative_duration_ms?: number
   updated_at?: number
   event_seq?: number
 }
@@ -234,6 +238,7 @@ export interface SessionV3StateSnapshotResponseWire {
   events_by_session?: Record<string, SessionV3EventWire[]>
   run_intents_by_session?: Record<string, SessionV3RunIntentWire[]>
   current_run_intent_by_session?: Record<string, SessionV3RunIntentWire>
+  current_run_state_by_session?: Record<string, SessionV3RunIntentWire & { active?: boolean }>
   session_order?: string[]
   history_manifests_by_session?: Record<string, unknown>
   history_chunks_by_id?: Record<string, unknown>

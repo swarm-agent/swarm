@@ -192,6 +192,116 @@ func TestV3RunIntentPreservesCreatedAtAcrossStatusTransitions(t *testing.T) {
 	}
 }
 
+func TestV3RunStatePersistsSequentialRunTiming(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-run-timing")
+
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-run-timing",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-timing-1-pending",
+		PayloadHash:    "hash-run-timing-1-pending",
+		Kind:           V3SessionMutationAppendMessage,
+		Message:        &MessageSnapshot{Role: "user", Content: "first timed run"},
+		RunIntent:      &V3SessionRunIntent{RunID: "run-timing-1", Status: V3RunIntentPendingExecutor},
+		NowUnixMs:      1000,
+	}); err != nil {
+		t.Fatalf("record first pending run: %v", err)
+	}
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-run-timing",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-timing-1-running",
+		PayloadHash:    "hash-run-timing-1-running",
+		Kind:           V3SessionMutationRecordRunIntent,
+		RunIntent:      &V3SessionRunIntent{RunID: "run-timing-1", Status: V3RunIntentRunning},
+		NowUnixMs:      1500,
+	}); err != nil {
+		t.Fatalf("record first running run: %v", err)
+	}
+	runningFirst, ok, err := sessions.GetV3SessionRunState("session-run-timing")
+	if err != nil || !ok {
+		t.Fatalf("load first running state ok=%v err=%v", ok, err)
+	}
+	if !runningFirst.Active || runningFirst.RunID != "run-timing-1" || runningFirst.StartedAt != 1000 || runningFirst.CompletedAt != 0 || runningFirst.DurationMs != 0 || runningFirst.CumulativeDurationMs != 0 {
+		t.Fatalf("first running state = %+v", runningFirst)
+	}
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-run-timing",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-timing-1-completed",
+		PayloadHash:    "hash-run-timing-1-completed",
+		Kind:           V3SessionMutationRecordRunIntent,
+		RunIntent:      &V3SessionRunIntent{RunID: "run-timing-1", Status: V3RunIntentCompleted},
+		NowUnixMs:      4000,
+	}); err != nil {
+		t.Fatalf("record first completed run: %v", err)
+	}
+	terminalFirst, ok, err := sessions.GetV3SessionRunState("session-run-timing")
+	if err != nil || !ok {
+		t.Fatalf("load first terminal state ok=%v err=%v", ok, err)
+	}
+	if terminalFirst.Active || terminalFirst.RunID != "run-timing-1" || terminalFirst.StartedAt != 1000 || terminalFirst.CompletedAt != 4000 || terminalFirst.DurationMs != 3000 || terminalFirst.CumulativeDurationMs != 3000 {
+		t.Fatalf("first terminal state = %+v", terminalFirst)
+	}
+
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-run-timing",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-timing-2-pending",
+		PayloadHash:    "hash-run-timing-2-pending",
+		Kind:           V3SessionMutationAppendMessage,
+		Message:        &MessageSnapshot{Role: "user", Content: "second timed run"},
+		RunIntent:      &V3SessionRunIntent{RunID: "run-timing-2", Status: V3RunIntentPendingExecutor},
+		NowUnixMs:      7000,
+	}); err != nil {
+		t.Fatalf("record second pending run: %v", err)
+	}
+	pendingSecond, ok, err := sessions.GetV3SessionRunState("session-run-timing")
+	if err != nil || !ok {
+		t.Fatalf("load second pending state ok=%v err=%v", ok, err)
+	}
+	if !pendingSecond.Active || pendingSecond.RunID != "run-timing-2" || pendingSecond.StartedAt != 7000 || pendingSecond.CompletedAt != 0 || pendingSecond.DurationMs != 0 || pendingSecond.CumulativeDurationMs != 3000 {
+		t.Fatalf("second pending state = %+v", pendingSecond)
+	}
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-run-timing",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-timing-2-running",
+		PayloadHash:    "hash-run-timing-2-running",
+		Kind:           V3SessionMutationRecordRunIntent,
+		RunIntent:      &V3SessionRunIntent{RunID: "run-timing-2", Status: V3RunIntentRunning},
+		NowUnixMs:      9000,
+	}); err != nil {
+		t.Fatalf("record second running run: %v", err)
+	}
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-run-timing",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "run-timing-2-failed",
+		PayloadHash:    "hash-run-timing-2-failed",
+		Kind:           V3SessionMutationRecordRunIntent,
+		RunIntent:      &V3SessionRunIntent{RunID: "run-timing-2", Status: V3RunIntentFailed},
+		NowUnixMs:      10000,
+	}); err != nil {
+		t.Fatalf("record second failed run: %v", err)
+	}
+	terminalSecond, ok, err := sessions.GetV3SessionRunState("session-run-timing")
+	if err != nil || !ok {
+		t.Fatalf("load second terminal state ok=%v err=%v", ok, err)
+	}
+	if terminalSecond.Active || terminalSecond.RunID != "run-timing-2" || terminalSecond.StartedAt != 7000 || terminalSecond.CompletedAt != 10000 || terminalSecond.DurationMs != 3000 || terminalSecond.CumulativeDurationMs != 6000 {
+		t.Fatalf("second terminal state = %+v", terminalSecond)
+	}
+}
+
 func TestRepairV3SessionRunStateBackfillsLegacyRunIntentsOnly(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

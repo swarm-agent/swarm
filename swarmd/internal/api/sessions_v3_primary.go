@@ -651,7 +651,14 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionV3MessageMutationResponse(sessionID, result))
+	var currentRunState *pebblestore.V3SessionRunState
+	if state, ok, err := s.sessions.GetSessionRunState(sessionID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	} else if ok {
+		currentRunState = &state
+	}
+	writeJSON(w, http.StatusOK, sessionV3MessageMutationResponse(sessionID, result, currentRunState))
 	if enqueueJob != nil {
 		s.v3SessionExecutor.EnqueueRun(*enqueueJob)
 	}
@@ -1812,16 +1819,17 @@ func sessionV3MutationResultResponse(result sessionruntime.SessionMutationResult
 	return mutation
 }
 
-func sessionV3MessageMutationResponse(sessionID string, result sessionruntime.SessionMutationResult) map[string]any {
+func sessionV3MessageMutationResponse(sessionID string, result sessionruntime.SessionMutationResult, currentRunState *pebblestore.V3SessionRunState) map[string]any {
 	return map[string]any{
-		"ok":              true,
-		"session_id":      sessionID,
-		"message":         result.Message,
-		"run_intent":      result.RunIntent,
-		"turn_usage":      result.TurnUsage,
-		"usage_summary":   result.UsageSummary,
-		"mutation":        sessionV3MutationResultResponse(result),
-		"realtime_outbox": result.RealtimeOutbox,
+		"ok":                true,
+		"session_id":        sessionID,
+		"message":           result.Message,
+		"run_intent":        result.RunIntent,
+		"current_run_state": currentRunState,
+		"turn_usage":        result.TurnUsage,
+		"usage_summary":     result.UsageSummary,
+		"mutation":          sessionV3MutationResultResponse(result),
+		"realtime_outbox":   result.RealtimeOutbox,
 	}
 }
 

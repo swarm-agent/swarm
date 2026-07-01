@@ -19,6 +19,10 @@ export interface DesktopRunIntentRecord {
   status: string
   blockedReason: string
   createdAt: number
+  startedAt?: number
+  completedAt?: number
+  durationMs?: number
+  cumulativeDurationMs?: number
   updatedAt: number
   eventSeq: number
 }

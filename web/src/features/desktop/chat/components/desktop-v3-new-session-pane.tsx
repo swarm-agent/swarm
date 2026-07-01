@@ -11,7 +11,6 @@ import type { AgentStateRecord, ModelOptionRecord, ResolvedSessionPreference, Se
 import { updateDraftModelPreference } from '../queries/chat-queries'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
-import { buildDesktopV3RunStatusModel } from './desktop-v3-run-status'
 import type { DesktopSlashCommand } from '../services/slash-commands'
 import {
   clearDesktopV3NewSessionOperation,
@@ -262,9 +261,7 @@ export function DesktopV3NewSessionPane({
       && selectedModelAvailable
       && (operationRef.current || draft.trim()),
   )
-  const runStatusModel = buildDesktopV3RunStatusModel({
-    pendingStartAt: operationRef.current?.createdAt ?? (starting ? Date.now() : null),
-  })
+  const runStatusModel = starting ? { kind: 'starting' as const, label: 'Starting', active: true } : null
 
   async function persistDraftModelDefault(nextPreference: SessionPreferenceRecord) {
     if (!nextPreference.provider.trim() || !nextPreference.model.trim()) return

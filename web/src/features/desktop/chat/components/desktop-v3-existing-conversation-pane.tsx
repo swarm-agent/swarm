@@ -694,14 +694,10 @@ export function DesktopV3ExistingConversationPane({
   const pendingPermissions = useDesktopV3CacheSelector(selectPendingPermissionsForSession, pendingPermissionsEqual)
   const selectedPermission = pendingPermissions[0] ?? null
   const currentRun = renderedMessages.liveRuns.find((run) => run.status === 'running' || run.status === 'pending_executor') ?? null
-  const pendingStartAt = !renderedMessages.currentRunIntent
-    ? renderedMessages.pendingUser.find((message) => message.status === 'pending')?.createdAt ?? storedOperation?.createdAt ?? null
-    : null
   const canonicalRunStatusModel = buildDesktopV3RunStatusModel({
     currentRunIntent: renderedMessages.currentRunIntent,
     latestRunIntent: renderedMessages.latestRunIntent,
     liveRuns: renderedMessages.liveRuns,
-    pendingStartAt,
   })
   const sessionMetadata = session?.metadata ?? cacheSession?.metadata ?? metadata
   const settingsBaseline = useMemo(() => buildDesktopV3ExistingSettingsSnapshot({
