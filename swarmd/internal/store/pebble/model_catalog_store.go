@@ -9,25 +9,54 @@ import (
 )
 
 type ModelCatalogRecord struct {
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	ContextWindow   int    `json:"context_window"`
-	MaxOutputTokens int    `json:"max_output_tokens"`
-	Reasoning       bool   `json:"reasoning"`
-	Source          string `json:"source"`
-	ETag            string `json:"etag,omitempty"`
-	FetchedAt       int64  `json:"fetched_at"`
-	ExpiresAt       int64  `json:"expires_at"`
+	Provider              string          `json:"provider"`
+	ProviderDisplayName   string          `json:"provider_display_name,omitempty"`
+	Model                 string          `json:"model"`
+	DisplayName           string          `json:"display_name,omitempty"`
+	CatalogID             string          `json:"catalog_id,omitempty"`
+	ContextWindow         int             `json:"context_window"`
+	MaxOutputTokens       int             `json:"max_output_tokens"`
+	Reasoning             bool            `json:"reasoning"`
+	Source                string          `json:"source"`
+	SourceSnapshotID      string          `json:"source_snapshot_id,omitempty"`
+	SourceSnapshotVersion string          `json:"source_snapshot_version,omitempty"`
+	SourceGeneratedAt     string          `json:"source_generated_at,omitempty"`
+	ETag                  string          `json:"etag,omitempty"`
+	FetchedAt             int64           `json:"fetched_at"`
+	ExpiresAt             int64           `json:"expires_at"`
+	Pricing               json.RawMessage `json:"pricing,omitempty"`
+	Thinking              json.RawMessage `json:"thinking,omitempty"`
 }
 
 type ModelCatalogMeta struct {
-	SourceURL   string `json:"source_url"`
-	ETag        string `json:"etag,omitempty"`
-	FetchedAt   int64  `json:"fetched_at"`
-	ExpiresAt   int64  `json:"expires_at"`
-	LastError   string `json:"last_error,omitempty"`
-	LastErrorAt int64  `json:"last_error_at,omitempty"`
-	RecordCount int    `json:"record_count"`
+	Source                string `json:"source,omitempty"`
+	SourceURL             string `json:"source_url"`
+	VersionURL            string `json:"version_url,omitempty"`
+	SnapshotURL           string `json:"snapshot_url,omitempty"`
+	ETag                  string `json:"etag,omitempty"`
+	VersionETag           string `json:"version_etag,omitempty"`
+	SnapshotID            string `json:"snapshot_id,omitempty"`
+	SnapshotVersion       string `json:"snapshot_version,omitempty"`
+	SnapshotSchemaVersion string `json:"snapshot_schema_version,omitempty"`
+	GeneratedAt           string `json:"generated_at,omitempty"`
+	FetchedAt             int64  `json:"fetched_at"`
+	LastCheckedAt         int64  `json:"last_checked_at,omitempty"`
+	ExpiresAt             int64  `json:"expires_at"`
+	LastError             string `json:"last_error,omitempty"`
+	LastErrorAt           int64  `json:"last_error_at,omitempty"`
+	LastRefreshReason     string `json:"last_refresh_reason,omitempty"`
+	RecordCount           int    `json:"record_count"`
+	ModelCount            int    `json:"model_count,omitempty"`
+	ProviderCount         int    `json:"provider_count,omitempty"`
+	HydratedProviderCount int    `json:"hydrated_provider_count,omitempty"`
+	PinnedSnapshotID      string `json:"pinned_snapshot_id,omitempty"`
+	PinnedSnapshotVersion string `json:"pinned_snapshot_version,omitempty"`
+	PinnedGeneratedAt     string `json:"pinned_generated_at,omitempty"`
+	LiveSnapshotID        string `json:"live_snapshot_id,omitempty"`
+	LiveSnapshotVersion   string `json:"live_snapshot_version,omitempty"`
+	LiveGeneratedAt       string `json:"live_generated_at,omitempty"`
+	LiveCheckedAt         int64  `json:"live_checked_at,omitempty"`
+	UsingCacheFallback    bool   `json:"using_cache_fallback,omitempty"`
 }
 
 type ModelCatalogStore struct {

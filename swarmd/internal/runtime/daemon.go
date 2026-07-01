@@ -356,9 +356,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("load default model stack: %w", err)
 	}
-	if _, err := modelCatalog.Refresh(context.Background()); err != nil {
-		log.Printf("warning: refresh model catalog: %v", err)
-	}
 	if _, err := securitySvc.EnsureAttachAuth(); err != nil {
 		_ = secretStore.Close()
 		_ = store.Close()

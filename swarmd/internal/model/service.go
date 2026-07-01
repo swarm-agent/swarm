@@ -304,6 +304,13 @@ func (s *Service) RefreshCatalog(ctx context.Context) (CatalogRefreshResult, err
 	return s.catalog.Refresh(ctx)
 }
 
+func (s *Service) RefreshCatalogManual(ctx context.Context) (CatalogRefreshResult, error) {
+	if s.catalog == nil {
+		return CatalogRefreshResult{}, errors.New("model catalog is not configured")
+	}
+	return s.catalog.RefreshManual(ctx)
+}
+
 func (s *Service) CatalogMeta() (pebblestore.ModelCatalogMeta, bool, error) {
 	if s.catalog == nil {
 		return pebblestore.ModelCatalogMeta{}, false, nil
@@ -315,7 +322,7 @@ func (s *Service) StartCatalogAutoRefresh(ctx context.Context) {
 	if s.catalog == nil {
 		return
 	}
-	s.catalog.StartAutoRefresh(ctx, 24*time.Hour)
+	s.catalog.StartAutoRefresh(ctx, time.Hour)
 }
 
 func (s *Service) ListFavorites(providerID, query string, limit int) ([]pebblestore.ModelFavoriteRecord, error) {

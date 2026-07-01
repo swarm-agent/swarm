@@ -1,11 +1,13 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -15,24 +17,30 @@ import (
 )
 
 const (
-	defaultCatalogURL          = "https://models.dev/api.json"
-	defaultCatalogTTL          = 24 * time.Hour
+	defaultCatalogURL          = "https://models.swarmagent.dev/v1/snapshot.json"
+	defaultCatalogVersionURL   = "https://models.swarmagent.dev/v1/snapshot-version.json"
+	defaultCatalogTTL          = time.Hour
 	defaultCatalogFetchTimeout = 10 * time.Second
+
+	catalogSourcePinned = "swarm_snapshot:pinned"
+	catalogSourceLive   = "swarm_snapshot:live"
+
+	pinnedCatalogSourceURL  = "embedded:swarm-models/v1/snapshot.json"
+	pinnedCatalogVersionURL = "embedded:swarm-models/v1/snapshot-version.json"
 )
 
 var catalogProviderCanonicalIDs = map[string]string{
-	"openai":         "codex",
 	"github-copilot": "copilot",
 	"fireworks-ai":   "fireworks",
-	"openrouter":     "openrouter",
 }
 
 type CatalogService struct {
-	store     *pebblestore.ModelCatalogStore
-	client    *http.Client
-	sourceURL string
-	now       func() time.Time
-	mu        sync.Mutex
+	store      *pebblestore.ModelCatalogStore
+	client     *http.Client
+	sourceURL  string
+	versionURL string
+	now        func() time.Time
+	mu         sync.Mutex
 }
 
 type CatalogLookup struct {
@@ -42,33 +50,86 @@ type CatalogLookup struct {
 }
 
 type CatalogRefreshResult struct {
-	SourceURL   string `json:"source_url"`
-	ETag        string `json:"etag,omitempty"`
-	FetchedAt   int64  `json:"fetched_at"`
-	ExpiresAt   int64  `json:"expires_at"`
-	RecordCount int    `json:"record_count"`
-	NotModified bool   `json:"not_modified"`
-	UsedCache   bool   `json:"used_cache"`
+	Source             string `json:"source,omitempty"`
+	SourceURL          string `json:"source_url"`
+	VersionURL         string `json:"version_url,omitempty"`
+	SnapshotID         string `json:"snapshot_id,omitempty"`
+	SnapshotVersion    string `json:"snapshot_version,omitempty"`
+	GeneratedAt        string `json:"generated_at,omitempty"`
+	ETag               string `json:"etag,omitempty"`
+	VersionETag        string `json:"version_etag,omitempty"`
+	FetchedAt          int64  `json:"fetched_at"`
+	LastCheckedAt      int64  `json:"last_checked_at,omitempty"`
+	ExpiresAt          int64  `json:"expires_at"`
+	RecordCount        int    `json:"record_count"`
+	ModelCount         int    `json:"model_count,omitempty"`
+	NotModified        bool   `json:"not_modified"`
+	UsedCache          bool   `json:"used_cache"`
+	UsedPinned         bool   `json:"used_pinned"`
+	UsingCacheFallback bool   `json:"using_cache_fallback,omitempty"`
+	Manual             bool   `json:"manual,omitempty"`
+	LastRefreshReason  string `json:"last_refresh_reason,omitempty"`
 }
 
-type modelsDevProvider struct {
-	ID     string                    `json:"id"`
-	Models map[string]modelsDevModel `json:"models"`
+type swarmSnapshotVersion struct {
+	SchemaVersion         string `json:"schema_version"`
+	APIVersion            string `json:"api_version"`
+	SnapshotSchemaVersion string `json:"snapshot_schema_version"`
+	SnapshotID            string `json:"snapshot_id"`
+	SnapshotVersion       string `json:"snapshot_version"`
+	GeneratedAt           string `json:"generated_at"`
+	ModelCount            int    `json:"model_count"`
+	ProviderCount         int    `json:"provider_count"`
+	HydratedProviderCount int    `json:"hydrated_provider_count"`
+	SnapshotURL           string `json:"snapshot_url"`
 }
 
-type modelsDevModel struct {
-	Reasoning bool `json:"reasoning"`
-	Limit     struct {
-		Context int `json:"context"`
-		Output  int `json:"output"`
-	} `json:"limit"`
+type swarmSnapshot struct {
+	SchemaVersion         string               `json:"schema_version"`
+	APIVersion            string               `json:"api_version"`
+	SnapshotSchemaVersion string               `json:"snapshot_schema_version"`
+	SnapshotID            string               `json:"snapshot_id"`
+	SnapshotVersion       string               `json:"snapshot_version"`
+	GeneratedAt           string               `json:"generated_at"`
+	ModelCount            int                  `json:"model_count"`
+	ProviderCount         int                  `json:"provider_count"`
+	HydratedProviderCount int                  `json:"hydrated_provider_count"`
+	Models                []swarmSnapshotModel `json:"models"`
+}
+
+type swarmSnapshotModel struct {
+	CatalogID           string `json:"catalog_id"`
+	ProviderID          string `json:"provider_id"`
+	ProviderDisplayName string `json:"provider_display_name"`
+	ModelID             string `json:"model_id"`
+	DisplayName         string `json:"display_name"`
+	Capabilities        struct {
+		SupportsReasoning *bool `json:"supports_reasoning"`
+	} `json:"capabilities"`
+	Limits struct {
+		ContextWindowTokens *int `json:"context_window_tokens"`
+		MaxOutputTokens     *int `json:"max_output_tokens"`
+	} `json:"limits"`
+	Pricing  json.RawMessage `json:"pricing"`
+	Thinking json.RawMessage `json:"thinking"`
+	Routing  struct {
+		TopProviderContextWindowTokens *int `json:"top_provider_context_window_tokens"`
+		TopProviderMaxOutputTokens     *int `json:"top_provider_max_output_tokens"`
+	} `json:"routing"`
+}
+
+type catalogVersionFetch struct {
+	Version     swarmSnapshotVersion
+	ETag        string
+	NotModified bool
 }
 
 func NewCatalogService(store *pebblestore.ModelCatalogStore) *CatalogService {
 	return &CatalogService{
-		store:     store,
-		sourceURL: defaultCatalogURL,
-		now:       time.Now,
+		store:      store,
+		sourceURL:  defaultCatalogURL,
+		versionURL: defaultCatalogVersionURL,
+		now:        time.Now,
 		client: &http.Client{
 			Timeout: defaultCatalogFetchTimeout,
 		},
@@ -76,6 +137,10 @@ func NewCatalogService(store *pebblestore.ModelCatalogStore) *CatalogService {
 }
 
 func (s *CatalogService) EnsureBootDefaults() error {
+	if err := s.seedPinnedSnapshotIfNeeded(); err != nil {
+		return err
+	}
+
 	providerID := strings.ToLower(strings.TrimSpace(pebblestore.DefaultModelProvider))
 	modelID := strings.TrimSpace(pebblestore.DefaultModelName)
 	if providerID == "" || modelID == "" {
@@ -112,6 +177,21 @@ func (s *CatalogService) EnsureBootDefaults() error {
 		return fmt.Errorf("write default model catalog record: %w", err)
 	}
 	return nil
+}
+
+func (s *CatalogService) seedPinnedSnapshotIfNeeded() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	meta, ok, err := s.store.GetMeta()
+	if err != nil {
+		return fmt.Errorf("read model catalog meta: %w", err)
+	}
+	if ok && !catalogMetaNeedsPinnedSeed(meta) {
+		return nil
+	}
+	_, err = s.replaceSnapshotLocked(pinnedSwarmSnapshotJSON, catalogSourcePinned, pinnedCatalogSourceURL, pinnedCatalogVersionURL, "", "", "pinned_seed")
+	return err
 }
 
 func (s *CatalogService) Get(providerID, modelID string) (CatalogLookup, error) {
@@ -153,97 +233,269 @@ func (s *CatalogService) Meta() (pebblestore.ModelCatalogMeta, bool, error) {
 }
 
 func (s *CatalogService) Refresh(ctx context.Context) (CatalogRefreshResult, error) {
+	return s.refresh(ctx, false, "scheduled")
+}
+
+func (s *CatalogService) RefreshManual(ctx context.Context) (CatalogRefreshResult, error) {
+	return s.refresh(ctx, true, "manual")
+}
+
+func (s *CatalogService) refresh(ctx context.Context, force bool, reason string) (CatalogRefreshResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if strings.TrimSpace(reason) == "" {
+		reason = "scheduled"
+	}
 	meta, _, err := s.store.GetMeta()
 	if err != nil {
 		return CatalogRefreshResult{}, fmt.Errorf("read model catalog meta: %w", err)
 	}
+	if catalogMetaNeedsPinnedSeed(meta) {
+		if _, err := s.replaceSnapshotLocked(pinnedSwarmSnapshotJSON, catalogSourcePinned, pinnedCatalogSourceURL, pinnedCatalogVersionURL, "", "", "pinned_seed"); err != nil {
+			return CatalogRefreshResult{}, err
+		}
+		meta, _, err = s.store.GetMeta()
+		if err != nil {
+			return CatalogRefreshResult{}, fmt.Errorf("read seeded model catalog meta: %w", err)
+		}
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.sourceURL, nil)
+	version, err := s.fetchSnapshotVersion(ctx, meta, force)
+	if err != nil {
+		updated := s.persistRefreshErrorLocked(meta, err, reason)
+		result := catalogRefreshResultFromMeta(updated)
+		result.UsedCache = updated.RecordCount > 0
+		result.UsedPinned = updated.Source == catalogSourcePinned
+		result.Manual = force
+		return result, fmt.Errorf("fetch Swarm model snapshot version: %w", err)
+	}
+
+	now := s.now()
+	nowMs := now.UnixMilli()
+	expiresAt := now.Add(defaultCatalogTTL).UnixMilli()
+	if version.NotModified {
+		meta.VersionURL = s.versionURL
+		meta.SourceURL = firstNonEmpty(meta.SourceURL, s.sourceURL)
+		meta.SnapshotURL = firstNonEmpty(meta.SnapshotURL, s.sourceURL)
+		meta.VersionETag = firstNonEmpty(version.ETag, meta.VersionETag)
+		meta.LastCheckedAt = nowMs
+		meta.ExpiresAt = expiresAt
+		meta.LastError = ""
+		meta.LastErrorAt = 0
+		meta.LastRefreshReason = reason
+		meta.UsingCacheFallback = false
+		applyPinnedMetadata(&meta)
+		applyLiveMetadataFromMeta(&meta, nowMs)
+		if err := s.store.SetMeta(meta); err != nil {
+			return CatalogRefreshResult{}, fmt.Errorf("persist model catalog meta: %w", err)
+		}
+		result := catalogRefreshResultFromMeta(meta)
+		result.NotModified = true
+		result.UsedCache = true
+		result.UsedPinned = meta.Source == catalogSourcePinned
+		result.Manual = force
+		return result, nil
+	}
+
+	snapshotURL := resolveSnapshotURL(s.sourceURL, version.Version.SnapshotURL)
+	if snapshotURL == "" {
+		snapshotURL = s.sourceURL
+	}
+	changed := force || catalogMetaNeedsPinnedSeed(meta) || meta.RecordCount <= 0 || !sameCatalogSnapshot(meta, version.Version)
+	if !changed {
+		meta.SourceURL = firstNonEmpty(meta.SourceURL, snapshotURL)
+		meta.SnapshotURL = firstNonEmpty(meta.SnapshotURL, snapshotURL)
+		meta.VersionURL = s.versionURL
+		meta.VersionETag = firstNonEmpty(version.ETag, meta.VersionETag)
+		meta.LastCheckedAt = nowMs
+		meta.ExpiresAt = expiresAt
+		meta.LastError = ""
+		meta.LastErrorAt = 0
+		meta.LastRefreshReason = reason
+		meta.UsingCacheFallback = false
+		applyPinnedMetadata(&meta)
+		applyLiveMetadata(&meta, version.Version, nowMs)
+		if err := s.store.SetMeta(meta); err != nil {
+			return CatalogRefreshResult{}, fmt.Errorf("persist model catalog meta: %w", err)
+		}
+		result := catalogRefreshResultFromMeta(meta)
+		result.NotModified = true
+		result.UsedCache = true
+		result.UsedPinned = meta.Source == catalogSourcePinned
+		result.Manual = force
+		return result, nil
+	}
+
+	payload, snapshotETag, notModified, err := s.fetchSnapshot(ctx, snapshotURL, meta, !force && strings.TrimSpace(meta.ETag) != "")
+	if err != nil {
+		applyLiveMetadata(&meta, version.Version, nowMs)
+		updated := s.persistRefreshErrorLocked(meta, err, reason)
+		result := catalogRefreshResultFromMeta(updated)
+		result.UsedCache = updated.RecordCount > 0
+		result.UsedPinned = updated.Source == catalogSourcePinned
+		result.Manual = force
+		return result, fmt.Errorf("fetch Swarm model snapshot: %w", err)
+	}
+	if notModified && meta.RecordCount > 0 {
+		meta.SourceURL = snapshotURL
+		meta.SnapshotURL = snapshotURL
+		meta.VersionURL = s.versionURL
+		meta.VersionETag = firstNonEmpty(version.ETag, meta.VersionETag)
+		meta.LastCheckedAt = nowMs
+		meta.ExpiresAt = expiresAt
+		meta.LastError = ""
+		meta.LastErrorAt = 0
+		meta.LastRefreshReason = reason
+		meta.UsingCacheFallback = false
+		applyPinnedMetadata(&meta)
+		applyLiveMetadata(&meta, version.Version, nowMs)
+		if err := s.store.SetMeta(meta); err != nil {
+			return CatalogRefreshResult{}, fmt.Errorf("persist model catalog meta: %w", err)
+		}
+		result := catalogRefreshResultFromMeta(meta)
+		result.NotModified = true
+		result.UsedCache = true
+		result.Manual = force
+		return result, nil
+	}
+
+	result, err := s.replaceSnapshotLocked(payload, catalogSourceLive, snapshotURL, s.versionURL, snapshotETag, version.ETag, reason)
+	if err != nil {
+		applyLiveMetadata(&meta, version.Version, nowMs)
+		updated := s.persistRefreshErrorLocked(meta, err, reason)
+		fallbackResult := catalogRefreshResultFromMeta(updated)
+		fallbackResult.UsedCache = updated.RecordCount > 0
+		fallbackResult.UsedPinned = updated.Source == catalogSourcePinned
+		fallbackResult.Manual = force
+		return fallbackResult, err
+	}
+	result.Manual = force
+	return result, nil
+}
+
+func (s *CatalogService) replaceSnapshotLocked(payload []byte, source, sourceURL, versionURL, etag, versionETag, reason string) (CatalogRefreshResult, error) {
+	now := s.now()
+	nowMs := now.UnixMilli()
+	expiresAt := now.Add(defaultCatalogTTL).UnixMilli()
+	records, snapshot, err := decodeSwarmSnapshotRecords(payload, nowMs, expiresAt, source, etag)
 	if err != nil {
 		return CatalogRefreshResult{}, err
 	}
-	if strings.TrimSpace(meta.ETag) != "" {
+	if len(records) == 0 {
+		return CatalogRefreshResult{}, fmt.Errorf("Swarm model snapshot returned no cacheable model records")
+	}
+	meta := metaFromSnapshot(snapshot, source, sourceURL, versionURL, etag, versionETag, nowMs, expiresAt, reason, len(records))
+	applyPinnedMetadata(&meta)
+	if source == catalogSourceLive {
+		applyLiveMetadata(&meta, snapshot, nowMs)
+	}
+	if source == catalogSourcePinned {
+		meta.PinnedSnapshotID = snapshot.SnapshotID
+		meta.PinnedSnapshotVersion = snapshot.SnapshotVersion
+		meta.PinnedGeneratedAt = snapshot.GeneratedAt
+	}
+	if err := s.store.ReplaceSnapshot(records, meta); err != nil {
+		return CatalogRefreshResult{}, fmt.Errorf("persist model catalog snapshot: %w", err)
+	}
+	result := catalogRefreshResultFromMeta(meta)
+	result.UsedPinned = source == catalogSourcePinned
+	return result, nil
+}
+
+func (s *CatalogService) fetchSnapshotVersion(ctx context.Context, meta pebblestore.ModelCatalogMeta, force bool) (catalogVersionFetch, error) {
+	versionURL := strings.TrimSpace(s.versionURL)
+	if versionURL == "" {
+		return catalogVersionFetch{}, fmt.Errorf("Swarm model snapshot version URL is not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, versionURL, nil)
+	if err != nil {
+		return catalogVersionFetch{}, err
+	}
+	if !force && strings.TrimSpace(meta.VersionETag) != "" {
+		req.Header.Set("If-None-Match", meta.VersionETag)
+	}
+	req.Header.Set("User-Agent", "swarmd/0")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return catalogVersionFetch{}, err
+	}
+	defer resp.Body.Close()
+	etag := strings.TrimSpace(resp.Header.Get("ETag"))
+	if resp.StatusCode == http.StatusNotModified {
+		return catalogVersionFetch{ETag: etag, NotModified: true}, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		return catalogVersionFetch{}, fmt.Errorf("Swarm model snapshot version returned status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	body, err := readLimitedHTTPResponse(resp.Body, 1<<20, "Swarm model snapshot version")
+	if err != nil {
+		return catalogVersionFetch{}, err
+	}
+	version, err := decodeSwarmSnapshotVersion(body)
+	if err != nil {
+		return catalogVersionFetch{}, err
+	}
+	return catalogVersionFetch{Version: version, ETag: etag}, nil
+}
+
+func (s *CatalogService) fetchSnapshot(ctx context.Context, snapshotURL string, meta pebblestore.ModelCatalogMeta, useConditional bool) ([]byte, string, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, snapshotURL, nil)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if useConditional && strings.TrimSpace(meta.ETag) != "" {
 		req.Header.Set("If-None-Match", meta.ETag)
 	}
 	req.Header.Set("User-Agent", "swarmd/0")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		nowMs := s.now().UnixMilli()
-		meta.SourceURL = s.sourceURL
-		meta.LastError = err.Error()
-		meta.LastErrorAt = nowMs
-		_ = s.store.SetMeta(meta)
-		return CatalogRefreshResult{
-			SourceURL:   s.sourceURL,
-			FetchedAt:   meta.FetchedAt,
-			ExpiresAt:   meta.ExpiresAt,
-			RecordCount: meta.RecordCount,
-			UsedCache:   meta.RecordCount > 0,
-		}, fmt.Errorf("fetch model catalog: %w", err)
+		return nil, "", false, err
 	}
 	defer resp.Body.Close()
-
-	now := s.now()
-	nowMs := now.UnixMilli()
-	expiresAt := now.Add(defaultCatalogTTL).UnixMilli()
+	etag := strings.TrimSpace(resp.Header.Get("ETag"))
 	if resp.StatusCode == http.StatusNotModified {
-		meta.SourceURL = s.sourceURL
-		meta.FetchedAt = nowMs
-		meta.ExpiresAt = expiresAt
-		meta.LastError = ""
-		meta.LastErrorAt = 0
-		if err := s.store.SetMeta(meta); err != nil {
-			return CatalogRefreshResult{}, fmt.Errorf("persist model catalog meta: %w", err)
-		}
-		return CatalogRefreshResult{
-			SourceURL:   s.sourceURL,
-			ETag:        meta.ETag,
-			FetchedAt:   meta.FetchedAt,
-			ExpiresAt:   meta.ExpiresAt,
-			RecordCount: meta.RecordCount,
-			NotModified: true,
-		}, nil
+		return nil, etag, true, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		return CatalogRefreshResult{}, fmt.Errorf("models.dev returned status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, "", false, fmt.Errorf("Swarm model snapshot returned status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	body, err := readLimitedHTTPResponse(resp.Body, 32<<20, "Swarm model snapshot")
 	if err != nil {
-		return CatalogRefreshResult{}, fmt.Errorf("read model catalog response: %w", err)
+		return nil, "", false, err
 	}
+	return body, etag, false, nil
+}
 
-	records, err := decodeModelsDevRecords(body)
+func readLimitedHTTPResponse(body io.Reader, limit int64, label string) ([]byte, error) {
+	limited := io.LimitReader(body, limit+1)
+	payload, err := io.ReadAll(limited)
 	if err != nil {
-		return CatalogRefreshResult{}, err
+		return nil, fmt.Errorf("read %s response: %w", label, err)
 	}
-	if len(records) == 0 {
-		return CatalogRefreshResult{}, fmt.Errorf("models.dev returned an empty model catalog snapshot")
+	if int64(len(payload)) > limit {
+		return nil, fmt.Errorf("read %s response: body exceeds %d byte limit", label, limit)
 	}
+	return payload, nil
+}
 
-	newMeta := pebblestore.ModelCatalogMeta{
-		SourceURL:   s.sourceURL,
-		ETag:        strings.TrimSpace(resp.Header.Get("ETag")),
-		FetchedAt:   nowMs,
-		ExpiresAt:   expiresAt,
-		RecordCount: len(records),
-	}
-	if err := s.store.ReplaceSnapshot(records, newMeta); err != nil {
-		return CatalogRefreshResult{}, fmt.Errorf("persist model catalog snapshot: %w", err)
-	}
-
-	return CatalogRefreshResult{
-		SourceURL:   newMeta.SourceURL,
-		ETag:        newMeta.ETag,
-		FetchedAt:   newMeta.FetchedAt,
-		ExpiresAt:   newMeta.ExpiresAt,
-		RecordCount: newMeta.RecordCount,
-	}, nil
+func (s *CatalogService) persistRefreshErrorLocked(meta pebblestore.ModelCatalogMeta, err error, reason string) pebblestore.ModelCatalogMeta {
+	nowMs := s.now().UnixMilli()
+	meta.SourceURL = firstNonEmpty(meta.SourceURL, s.sourceURL)
+	meta.SnapshotURL = firstNonEmpty(meta.SnapshotURL, s.sourceURL)
+	meta.VersionURL = firstNonEmpty(meta.VersionURL, s.versionURL)
+	meta.LastCheckedAt = nowMs
+	meta.LastError = err.Error()
+	meta.LastErrorAt = nowMs
+	meta.LastRefreshReason = reason
+	meta.UsingCacheFallback = meta.RecordCount > 0
+	applyPinnedMetadata(&meta)
+	_ = s.store.SetMeta(meta)
+	return meta
 }
 
 func (s *CatalogService) StartAutoRefresh(ctx context.Context, interval time.Duration) {
@@ -251,6 +503,11 @@ func (s *CatalogService) StartAutoRefresh(ctx context.Context, interval time.Dur
 		interval = defaultCatalogTTL
 	}
 	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		_, _ = s.Refresh(context.Background())
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -265,43 +522,267 @@ func (s *CatalogService) StartAutoRefresh(ctx context.Context, interval time.Dur
 	}()
 }
 
-func decodeModelsDevRecords(payload []byte) ([]pebblestore.ModelCatalogRecord, error) {
-	var providers map[string]modelsDevProvider
-	if err := json.Unmarshal(payload, &providers); err != nil {
-		return nil, fmt.Errorf("decode models.dev payload: %w", err)
+func decodeSwarmSnapshotVersion(payload []byte) (swarmSnapshotVersion, error) {
+	var version swarmSnapshotVersion
+	if err := json.Unmarshal(payload, &version); err != nil {
+		return swarmSnapshotVersion{}, fmt.Errorf("decode Swarm model snapshot version payload: %w", err)
+	}
+	if strings.TrimSpace(version.SnapshotID) == "" || strings.TrimSpace(version.SnapshotVersion) == "" {
+		return swarmSnapshotVersion{}, fmt.Errorf("Swarm model snapshot version is missing snapshot_id or snapshot_version")
+	}
+	return version, nil
+}
+
+func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, etag string) ([]pebblestore.ModelCatalogRecord, swarmSnapshotVersion, error) {
+	var snapshot swarmSnapshot
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	if err := decoder.Decode(&snapshot); err != nil {
+		return nil, swarmSnapshotVersion{}, fmt.Errorf("decode Swarm model snapshot payload: %w", err)
+	}
+	version := snapshot.version()
+	if strings.TrimSpace(version.SnapshotID) == "" || strings.TrimSpace(version.SnapshotVersion) == "" {
+		return nil, swarmSnapshotVersion{}, fmt.Errorf("Swarm model snapshot is missing snapshot_id or snapshot_version")
+	}
+	if len(snapshot.Models) == 0 {
+		return nil, swarmSnapshotVersion{}, fmt.Errorf("Swarm model snapshot returned an empty models array")
 	}
 
-	nowMs := time.Now().UnixMilli()
-	expiresAt := time.Now().Add(defaultCatalogTTL).UnixMilli()
-	records := make([]pebblestore.ModelCatalogRecord, 0, 2048)
-	for providerKey, provider := range providers {
-		providerID := strings.TrimSpace(provider.ID)
-		if providerID == "" {
-			providerID = strings.TrimSpace(providerKey)
-		}
-		providerID = canonicalCatalogProviderID(providerID)
-		if providerID == "" {
+	records := make([]pebblestore.ModelCatalogRecord, 0, len(snapshot.Models))
+	seen := make(map[string]struct{}, len(snapshot.Models))
+	for _, model := range snapshot.Models {
+		providerID := canonicalCatalogProviderID(model.ProviderID)
+		modelID := strings.TrimSpace(model.ModelID)
+		if providerID == "" || modelID == "" {
 			continue
 		}
-		for modelID, model := range provider.Models {
-			modelID = strings.TrimSpace(modelID)
-			if modelID == "" || model.Limit.Context <= 0 {
-				continue
-			}
-			record := pebblestore.ModelCatalogRecord{
-				Provider:        providerID,
-				Model:           modelID,
-				ContextWindow:   codexruntime.EffectiveContextWindow(modelID, "", model.Limit.Context),
-				MaxOutputTokens: model.Limit.Output,
-				Reasoning:       model.Reasoning,
-				Source:          "models.dev",
-				FetchedAt:       nowMs,
-				ExpiresAt:       expiresAt,
-			}
-			records = append(records, record)
+		contextWindow := firstPositiveInt(model.Limits.ContextWindowTokens, model.Routing.TopProviderContextWindowTokens)
+		if contextWindow <= 0 {
+			continue
+		}
+		maxOutputTokens := firstPositiveInt(model.Limits.MaxOutputTokens, model.Routing.TopProviderMaxOutputTokens)
+		key := providerID + "\x00" + modelID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		reasoning := model.Capabilities.SupportsReasoning != nil && *model.Capabilities.SupportsReasoning
+		record := pebblestore.ModelCatalogRecord{
+			Provider:              providerID,
+			ProviderDisplayName:   strings.TrimSpace(model.ProviderDisplayName),
+			Model:                 modelID,
+			DisplayName:           strings.TrimSpace(model.DisplayName),
+			CatalogID:             strings.TrimSpace(model.CatalogID),
+			ContextWindow:         codexruntime.EffectiveContextWindow(modelID, "", contextWindow),
+			MaxOutputTokens:       maxOutputTokens,
+			Reasoning:             reasoning,
+			Source:                source,
+			SourceSnapshotID:      snapshot.SnapshotID,
+			SourceSnapshotVersion: snapshot.SnapshotVersion,
+			SourceGeneratedAt:     snapshot.GeneratedAt,
+			ETag:                  etag,
+			FetchedAt:             nowMs,
+			ExpiresAt:             expiresAt,
+			Pricing:               cloneRawJSON(model.Pricing),
+			Thinking:              cloneRawJSON(model.Thinking),
+		}
+		records = append(records, record)
+	}
+	return records, version, nil
+}
+
+func (snapshot swarmSnapshot) version() swarmSnapshotVersion {
+	return swarmSnapshotVersion{
+		SchemaVersion:         snapshot.SchemaVersion,
+		APIVersion:            snapshot.APIVersion,
+		SnapshotSchemaVersion: snapshot.SnapshotSchemaVersion,
+		SnapshotID:            snapshot.SnapshotID,
+		SnapshotVersion:       snapshot.SnapshotVersion,
+		GeneratedAt:           snapshot.GeneratedAt,
+		ModelCount:            snapshot.ModelCount,
+		ProviderCount:         snapshot.ProviderCount,
+		HydratedProviderCount: snapshot.HydratedProviderCount,
+		SnapshotURL:           "/v1/snapshot.json",
+	}
+}
+
+func metaFromSnapshot(snapshot swarmSnapshotVersion, source, sourceURL, versionURL, etag, versionETag string, nowMs, expiresAt int64, reason string, recordCount int) pebblestore.ModelCatalogMeta {
+	meta := pebblestore.ModelCatalogMeta{
+		Source:                source,
+		SourceURL:             sourceURL,
+		SnapshotURL:           sourceURL,
+		VersionURL:            versionURL,
+		ETag:                  strings.TrimSpace(etag),
+		VersionETag:           strings.TrimSpace(versionETag),
+		SnapshotID:            snapshot.SnapshotID,
+		SnapshotVersion:       snapshot.SnapshotVersion,
+		SnapshotSchemaVersion: snapshot.SnapshotSchemaVersion,
+		GeneratedAt:           snapshot.GeneratedAt,
+		FetchedAt:             nowMs,
+		LastCheckedAt:         nowMs,
+		ExpiresAt:             expiresAt,
+		RecordCount:           recordCount,
+		ModelCount:            snapshot.ModelCount,
+		ProviderCount:         snapshot.ProviderCount,
+		HydratedProviderCount: snapshot.HydratedProviderCount,
+		LastRefreshReason:     reason,
+	}
+	if source == catalogSourcePinned {
+		meta.PinnedSnapshotID = snapshot.SnapshotID
+		meta.PinnedSnapshotVersion = snapshot.SnapshotVersion
+		meta.PinnedGeneratedAt = snapshot.GeneratedAt
+	}
+	if source == catalogSourceLive {
+		meta.LiveSnapshotID = snapshot.SnapshotID
+		meta.LiveSnapshotVersion = snapshot.SnapshotVersion
+		meta.LiveGeneratedAt = snapshot.GeneratedAt
+		meta.LiveCheckedAt = nowMs
+	}
+	return meta
+}
+
+func catalogRefreshResultFromMeta(meta pebblestore.ModelCatalogMeta) CatalogRefreshResult {
+	return CatalogRefreshResult{
+		Source:             meta.Source,
+		SourceURL:          meta.SourceURL,
+		VersionURL:         meta.VersionURL,
+		SnapshotID:         meta.SnapshotID,
+		SnapshotVersion:    meta.SnapshotVersion,
+		GeneratedAt:        meta.GeneratedAt,
+		ETag:               meta.ETag,
+		VersionETag:        meta.VersionETag,
+		FetchedAt:          meta.FetchedAt,
+		LastCheckedAt:      meta.LastCheckedAt,
+		ExpiresAt:          meta.ExpiresAt,
+		RecordCount:        meta.RecordCount,
+		ModelCount:         meta.ModelCount,
+		UsingCacheFallback: meta.UsingCacheFallback,
+		LastRefreshReason:  meta.LastRefreshReason,
+	}
+}
+
+func catalogMetaNeedsPinnedSeed(meta pebblestore.ModelCatalogMeta) bool {
+	if meta.RecordCount <= 0 {
+		return true
+	}
+	if strings.TrimSpace(meta.SnapshotID) == "" || strings.TrimSpace(meta.SnapshotVersion) == "" {
+		return true
+	}
+	pinned, ok := pinnedSnapshotVersionMetadata()
+	if !ok {
+		return false
+	}
+	if meta.Source == catalogSourcePinned && !sameCatalogSnapshot(meta, pinned) {
+		return true
+	}
+	return false
+}
+
+func sameCatalogSnapshot(meta pebblestore.ModelCatalogMeta, version swarmSnapshotVersion) bool {
+	return strings.TrimSpace(meta.SnapshotID) != "" &&
+		strings.TrimSpace(meta.SnapshotVersion) != "" &&
+		strings.TrimSpace(meta.SnapshotID) == strings.TrimSpace(version.SnapshotID) &&
+		strings.TrimSpace(meta.SnapshotVersion) == strings.TrimSpace(version.SnapshotVersion)
+}
+
+func applyPinnedMetadata(meta *pebblestore.ModelCatalogMeta) {
+	pinned, ok := pinnedSnapshotVersionMetadata()
+	if !ok {
+		return
+	}
+	meta.PinnedSnapshotID = pinned.SnapshotID
+	meta.PinnedSnapshotVersion = pinned.SnapshotVersion
+	meta.PinnedGeneratedAt = pinned.GeneratedAt
+}
+
+func applyLiveMetadata(meta *pebblestore.ModelCatalogMeta, version swarmSnapshotVersion, checkedAt int64) {
+	meta.LiveSnapshotID = version.SnapshotID
+	meta.LiveSnapshotVersion = version.SnapshotVersion
+	meta.LiveGeneratedAt = version.GeneratedAt
+	meta.LiveCheckedAt = checkedAt
+	if version.SnapshotSchemaVersion != "" {
+		meta.SnapshotSchemaVersion = version.SnapshotSchemaVersion
+	}
+	if version.ModelCount > 0 {
+		meta.ModelCount = version.ModelCount
+	}
+	if version.ProviderCount > 0 {
+		meta.ProviderCount = version.ProviderCount
+	}
+	if version.HydratedProviderCount > 0 {
+		meta.HydratedProviderCount = version.HydratedProviderCount
+	}
+}
+
+func applyLiveMetadataFromMeta(meta *pebblestore.ModelCatalogMeta, checkedAt int64) {
+	if meta.LiveSnapshotID == "" {
+		meta.LiveSnapshotID = meta.SnapshotID
+	}
+	if meta.LiveSnapshotVersion == "" {
+		meta.LiveSnapshotVersion = meta.SnapshotVersion
+	}
+	if meta.LiveGeneratedAt == "" {
+		meta.LiveGeneratedAt = meta.GeneratedAt
+	}
+	meta.LiveCheckedAt = checkedAt
+}
+
+func pinnedSnapshotVersionMetadata() (swarmSnapshotVersion, bool) {
+	if len(pinnedSwarmSnapshotVersionJSON) > 0 {
+		version, err := decodeSwarmSnapshotVersion(pinnedSwarmSnapshotVersionJSON)
+		if err == nil {
+			return version, true
 		}
 	}
-	return records, nil
+	var snapshot swarmSnapshot
+	decoder := json.NewDecoder(bytes.NewReader(pinnedSwarmSnapshotJSON))
+	if err := decoder.Decode(&snapshot); err != nil {
+		return swarmSnapshotVersion{}, false
+	}
+	version := snapshot.version()
+	return version, strings.TrimSpace(version.SnapshotID) != "" && strings.TrimSpace(version.SnapshotVersion) != ""
+}
+
+func resolveSnapshotURL(baseURL, snapshotURL string) string {
+	snapshotURL = strings.TrimSpace(snapshotURL)
+	if snapshotURL == "" {
+		return strings.TrimSpace(baseURL)
+	}
+	snapshot, err := url.Parse(snapshotURL)
+	if err == nil && snapshot.IsAbs() {
+		return snapshot.String()
+	}
+	base, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return snapshotURL
+	}
+	return base.ResolveReference(snapshot).String()
+}
+
+func cloneRawJSON(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	return append(json.RawMessage(nil), trimmed...)
+}
+
+func firstPositiveInt(values ...*int) int {
+	for _, value := range values {
+		if value != nil && *value > 0 {
+			return *value
+		}
+	}
+	return 0
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func canonicalCatalogProviderID(providerID string) string {

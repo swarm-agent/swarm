@@ -1515,12 +1515,28 @@ func (s *Server) handleModelPreference(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
 	if _, ok := PrincipalFromRequest(r); !ok {
 		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	if r.Method == http.MethodPost {
+		refresh, err := s.model.RefreshCatalogManual(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{
+				"ok":      false,
+				"error":   err.Error(),
+				"refresh": refresh,
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"refresh": refresh,
+		})
+		return
+	}
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
 		return
 	}
 
@@ -1560,6 +1576,7 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 		if metaOK {
 			body["meta"] = meta
 		}
+		body["catalog_status"] = catalogStatusPayload(meta, metaOK)
 		writeJSON(w, http.StatusOK, body)
 		return
 	}
@@ -1588,7 +1605,44 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	if metaOK {
 		body["meta"] = meta
 	}
+	body["catalog_status"] = catalogStatusPayload(meta, metaOK)
 	writeJSON(w, http.StatusOK, body)
+}
+
+func catalogStatusPayload(meta pebblestore.ModelCatalogMeta, ok bool) map[string]any {
+	status := map[string]any{
+		"configured": ok,
+	}
+	if !ok {
+		return status
+	}
+	status["source"] = meta.Source
+	status["source_url"] = meta.SourceURL
+	status["version_url"] = meta.VersionURL
+	status["snapshot_id"] = meta.SnapshotID
+	status["snapshot_version"] = meta.SnapshotVersion
+	status["generated_at"] = meta.GeneratedAt
+	status["fetched_at"] = meta.FetchedAt
+	status["last_checked_at"] = meta.LastCheckedAt
+	status["expires_at"] = meta.ExpiresAt
+	status["record_count"] = meta.RecordCount
+	status["model_count"] = meta.ModelCount
+	status["pinned_snapshot_id"] = meta.PinnedSnapshotID
+	status["pinned_snapshot_version"] = meta.PinnedSnapshotVersion
+	status["live_snapshot_id"] = meta.LiveSnapshotID
+	status["live_snapshot_version"] = meta.LiveSnapshotVersion
+	status["live_checked_at"] = meta.LiveCheckedAt
+	status["using_cache_fallback"] = meta.UsingCacheFallback
+	status["last_error"] = meta.LastError
+	status["last_error_at"] = meta.LastErrorAt
+	status["last_refresh_reason"] = meta.LastRefreshReason
+	if meta.PinnedSnapshotVersion != "" && meta.SnapshotVersion != "" {
+		status["matches_pinned_snapshot"] = meta.PinnedSnapshotID == meta.SnapshotID && meta.PinnedSnapshotVersion == meta.SnapshotVersion
+	}
+	if meta.LiveSnapshotVersion != "" && meta.SnapshotVersion != "" {
+		status["matches_live_snapshot"] = meta.LiveSnapshotID == meta.SnapshotID && meta.LiveSnapshotVersion == meta.SnapshotVersion
+	}
+	return status
 }
 
 func (s *Server) handleModelFavorites(w http.ResponseWriter, r *http.Request) {
