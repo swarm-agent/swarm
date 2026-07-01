@@ -15,23 +15,45 @@ import {
   startDesktopPlanCheckpoint,
   startDesktopPlanCheckpointed,
 } from './plan-execution-api'
+import { resetDesktopV3CacheForTests } from '../state/desktop-v3-cache-store'
+import { createEmptyDesktopV3CacheState } from '../state/desktop-v3-cache-reducer'
+import { selectDesktopSidebarGroupedRows } from '../state/desktop-v3-cache-selectors'
+import { sessionA } from '../state/desktop-v3-cache.backend-fixtures'
 
 const originalFetch = globalThis.fetch
 
-test('archiveDesktopV3Sessions posts to the batch archive endpoint', async () => {
+test('archiveDesktopV3Sessions posts to the batch archive endpoint and applies the archive result', async () => {
   const calls: Array<{ url: string; body: unknown }> = []
-  globalThis.fetch = jsonFetch(calls, { ok: true, archived: true, results: [{ session_id: 'session-1', archived: true }] })
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
+  state.sessionOrderByScope['scope-a'] = [sessionA.id]
+  state.sessionsById[sessionA.id] = { kind: 'full', session: { ...sessionA, title: 'Cached title' }, needsHydrate: false }
+  resetDesktopV3CacheForTests(state)
+  globalThis.fetch = jsonFetch(calls, {
+    ok: true,
+    archived: true,
+    results: [{
+      session_id: sessionA.id,
+      archived: true,
+      tombstone: { session_id: sessionA.id, kind: 'archived', archived: true },
+    }],
+  })
 
   try {
-    await archiveDesktopV3Sessions([' session-1 '])
+    await archiveDesktopV3Sessions([` ${sessionA.id} `])
+
+    assert.deepEqual(calls, [{
+      url: '/v3/sessions:archive',
+      body: { session_ids: [sessionA.id] },
+    }])
+    const grouped = selectDesktopSidebarGroupedRows(state)
+    assert.deepEqual(grouped.active_chats, [])
+    assert.deepEqual(grouped.archived.map((row) => row.sessionId), [sessionA.id])
+    assert.equal(grouped.archived[0].record.kind === 'full' ? grouped.archived[0].record.session.title : '', 'Cached title')
   } finally {
     globalThis.fetch = originalFetch
+    resetDesktopV3CacheForTests()
   }
-
-  assert.deepEqual(calls, [{
-    url: '/v3/sessions:archive',
-    body: { session_ids: ['session-1'] },
-  }])
 })
 
 test('startDesktopPlanAutomatic calls the dedicated start-automatic lifecycle endpoint only', async () => {

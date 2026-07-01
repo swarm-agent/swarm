@@ -129,7 +129,7 @@ test('sidebar labels do not fall back to retained tool state', () => {
     },
   })
 
-  assert.equal(sessionActivityLabel(session), '')
+  assert.equal(sessionActivityLabel(session), 'Running')
 })
 
 test('sidebar labels do not fall back to live tool history', () => {
@@ -168,7 +168,7 @@ test('sidebar labels do not fall back to live tool history', () => {
     },
   })
 
-  assert.equal(sessionActivityLabel(session), '')
+  assert.equal(sessionActivityLabel(session), 'Running')
 })
 
 test('sidebar active sort keeps earlier active positions above newer live activity', () => {
@@ -494,6 +494,46 @@ test('sidebar timer uses compact loop and overall duration pattern', () => {
   })
 
   assert.equal(sessionTimerLabel(session, 125_000), '5s (1m35s)')
+})
+
+test('sidebar active timer falls back to canonical run created_at when started_at is absent', () => {
+  const session = makeSession('created-at-run', {
+    runIntent: {
+      ...activeRunIntent('created-at-run', 'run-created-at', 10_000, 15_000),
+      startedAt: undefined,
+    },
+  })
+
+  assert.equal(sessionTimerLabel(session, 15_500), '5s')
+  assert.equal(sessionActivityLabel(session), 'Running')
+})
+
+test('sidebar pending executor status uses canonical run state and usable timing', () => {
+  const session = makeSession('pending-run', {
+    runIntent: {
+      ...activeRunIntent('pending-run', 'run-pending', 10_000, 10_500),
+      status: 'pending_executor',
+      startedAt: undefined,
+    },
+  })
+
+  assert.equal(sessionTimerLabel(session, 12_500), '2s')
+  assert.equal(sessionActivityLabel(session), 'Running')
+  assert.notEqual(sessionActivityLabel(session), 'Starting')
+  assert.notEqual(sessionActivityLabel(session), 'Pending executor')
+  assert.notEqual(sessionActivityLabel(session), 'Pending execution')
+})
+
+test('sidebar active timer falls back to canonical run updated_at when start and create times are absent', () => {
+  const session = makeSession('updated-at-run', {
+    runIntent: {
+      ...activeRunIntent('updated-at-run', 'run-updated-at', 0, 10_500),
+      startedAt: undefined,
+    },
+  })
+
+  assert.equal(sessionTimerLabel(session, 12_500), '2s')
+  assert.equal(sessionActivityLabel(session), 'Running')
 })
 
 test('sidebar timer does not fall back to live without a canonical active run intent', () => {

@@ -2,6 +2,7 @@ import { requestJson } from '../../../app/api'
 import { normalizeDesktopSessionPlan, type DesktopSessionPlanWire } from '../chat/services/session-plan-record'
 import type { DesktopSessionPlanRecord } from '../chat/types/chat'
 import { dispatchDesktopV3Cache } from '../state/desktop-v3-cache-store'
+import type { SessionArchiveMutationResponse } from '../state/desktop-v3-cache-types'
 
 export type DesktopPlanExecutionGranularity = 'checkpointed' | 'run_through'
 export type DesktopPlanContinuationPolicy = 'automatic' | 'review_each_checkpoint'
@@ -25,11 +26,7 @@ export interface DesktopPlanLifecycleResponse {
   session?: unknown
 }
 
-export interface DesktopSessionArchiveResponse {
-  ok?: boolean
-  archived?: boolean
-  results?: Array<{ session_id?: string; archived?: boolean; tombstone?: unknown }>
-}
+export type DesktopSessionArchiveResponse = SessionArchiveMutationResponse
 
 export interface DesktopPlanEnterInput {
   reason?: string
@@ -191,11 +188,16 @@ export async function rewindDesktopPlanCheckpoint(sessionId: string, checkpointI
 export async function archiveDesktopV3Sessions(sessionIds: string[]): Promise<DesktopSessionArchiveResponse> {
   const normalizedIds = sessionIds.map((sessionId) => sessionId.trim()).filter(Boolean)
   if (normalizedIds.length === 0) throw new Error('Archive request requires at least one session_id')
-  return requestJson<DesktopSessionArchiveResponse>('/v3/sessions:archive', {
+  const response = await requestJson<DesktopSessionArchiveResponse>('/v3/sessions:archive', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_ids: normalizedIds }),
   })
+  dispatchDesktopV3Cache({
+    type: 'mutation.sessionArchiveResult',
+    raw: response,
+  })
+  return response
 }
 
 async function postDesktopPlanLifecycle(sessionId: string, path: string, body: Record<string, unknown> = {}): Promise<DesktopPlanLifecycleResponse> {

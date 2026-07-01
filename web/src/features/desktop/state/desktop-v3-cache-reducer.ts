@@ -10,6 +10,7 @@ import type {
   PendingUserMessage,
   RealtimeMessage,
   SessionEventPayload,
+  SessionArchiveMutationResponse,
   SessionCreateMutationResponse,
   SessionMessageMutationResponse,
   SessionMutationErrorResponse,
@@ -181,6 +182,8 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       return applyMessageMutationResult(state, action.raw, action.clientRequestId, action.messageId)
     case 'mutation.sessionSettingsResult':
       return applySessionSettingsMutationResult(state, action.raw)
+    case 'mutation.sessionArchiveResult':
+      return applySessionArchiveMutationResult(state, action.raw)
     case 'pendingUser.upsert':
       return upsertPendingUserMessage(state, action.input)
     default: {
@@ -823,6 +826,51 @@ function runIntentFromMutationResponse(raw: SessionMessageMutationResponse): V3S
   return raw.run_intent ?? undefined
 }
 
+export function applySessionArchiveMutationResult(
+  state: DesktopV3CacheState,
+  raw: SessionArchiveMutationResponse,
+): DesktopV3CacheState {
+  if (raw.ok === false) return state
+  for (const result of raw.results ?? []) {
+    if (result?.archived !== true) continue
+    const sessionId = stringField(result.session_id) || stringField(recordValue(result.tombstone)?.session_id)
+    if (!sessionId) continue
+    const tombstone = archiveTombstoneFromMutationResult(state, sessionId, result.tombstone)
+    applyTombstone(state, sessionId, tombstone)
+  }
+  return state
+}
+
+function archiveTombstoneFromMutationResult(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  rawTombstone: unknown,
+): V3SessionTombstone {
+  const tombstoneRecord = recordValue(rawTombstone)
+  const tombstone: V3SessionTombstone = {
+    ...(tombstoneRecord ?? {}),
+    session_id: stringField(tombstoneRecord?.session_id) || sessionId,
+    kind: stringField(tombstoneRecord?.kind) || 'archived',
+    archived: true,
+  }
+  if (tombstoneRecord?.deleted !== true) {
+    tombstone.deleted = false
+  }
+  return tombstoneWithRetainedSession(state, sessionId, tombstone)
+}
+
+function tombstoneWithRetainedSession(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  tombstone: V3SessionTombstone,
+): V3SessionTombstone {
+  if (tombstone.session) return tombstone
+  if (tombstone.kind !== 'archived' || tombstone.archived !== true || tombstone.deleted === true) return tombstone
+  const cachedSession = state.sessionsById[sessionId]
+  if (cachedSession?.kind !== 'full') return tombstone
+  return { ...tombstone, session: cachedSession.session }
+}
+
 export function applySessionSettingsMutationResult(
   state: DesktopV3CacheState,
   raw: SessionSettingsMutationResponse,
@@ -1220,7 +1268,11 @@ export function applyTombstone(
   sessionId: string,
   tombstone?: V3SessionTombstone,
 ): void {
-  state.tombstonesBySession[sessionId] = tombstone ?? { session_id: sessionId, deleted: true }
+  state.tombstonesBySession[sessionId] = tombstoneWithRetainedSession(
+    state,
+    sessionId,
+    tombstone ?? { session_id: sessionId, deleted: true },
+  )
   for (const [scopeId, order] of Object.entries(state.sessionOrderByScope)) {
     state.sessionOrderByScope[scopeId] = order.filter((id) => id !== sessionId)
   }

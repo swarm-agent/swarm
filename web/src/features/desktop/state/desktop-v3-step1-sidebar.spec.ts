@@ -6,7 +6,7 @@ import { buildSidebarSessionTree, desktopSessionRecordFromV3SidebarRow, desktopS
 import { selectDesktopSidebarGroupedRows, selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
 import { selectSession } from './desktop-v3-cache-wire'
 import { hydrateResponseToAction } from './desktop-v3-cache-wire'
-import { messageA1, messageB1, projectionA, projectionB, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
+import { messageA1, messageB1, projectionA, projectionB, runIntentA, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
 
 test('sidebar selector uses scope order', () => {
   const state = createEmptyDesktopV3CacheState()
@@ -223,6 +223,59 @@ test('Desktop V3 sidebar derives archived rows from archived tombstones only', (
 
   const archivedRecord = desktopSessionRecordFromV3SidebarRow(grouped.archived[0])
   assert.equal(archivedRecord.title, 'Archived A')
+  assert.equal(archivedRecord.metadata?.swarm_v3_sidebar_group, 'archived')
+})
+
+test('archive mutation result moves sidebar row into Archived with cached session metadata', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
+  state.sessionOrderByScope['scope-a'] = [sessionA.id, sessionB.id]
+  state.sessionOrderByScope['scope-pinned'] = [sessionA.id]
+  state.sessionsById[sessionA.id] = {
+    kind: 'full',
+    session: {
+      ...sessionA,
+      title: 'Cached Session A',
+      workspace_path: '/workspace/cached',
+      workspace_name: 'cached-workspace',
+      metadata: { swarm_v3_desktop_sidebar_pinned: true },
+    },
+    needsHydrate: false,
+  }
+  state.sessionsById[sessionB.id] = { kind: 'full', session: sessionB, needsHydrate: false }
+  state.currentRunIntentBySession[sessionA.id] = { ...runIntentA, session_id: sessionA.id, status: 'running' }
+
+  desktopV3CacheReducer(state, {
+    type: 'mutation.sessionArchiveResult',
+    raw: {
+      ok: true,
+      archived: true,
+      results: [{
+        session_id: sessionA.id,
+        archived: true,
+        tombstone: {
+          session_id: sessionA.id,
+          kind: 'archived',
+          archived: true,
+          updated_at: 75,
+        },
+      }],
+    },
+  })
+
+  assert.deepEqual(state.sessionOrderByScope['scope-a'], [sessionB.id])
+  assert.deepEqual(state.sessionOrderByScope['scope-pinned'], [])
+  assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
+
+  const grouped = selectDesktopSidebarGroupedRows(state)
+  assert.deepEqual(grouped.active_chats.map((row) => row.sessionId), [sessionB.id])
+  assert.deepEqual(grouped.in_progress, [])
+  assert.deepEqual(grouped.archived.map((row) => row.sessionId), [sessionA.id])
+
+  const archivedRecord = desktopSessionRecordFromV3SidebarRow(grouped.archived[0])
+  assert.equal(archivedRecord.title, 'Cached Session A')
+  assert.equal(archivedRecord.workspacePath, '/workspace/cached')
+  assert.equal(archivedRecord.workspaceName, 'cached-workspace')
   assert.equal(archivedRecord.metadata?.swarm_v3_sidebar_group, 'archived')
 })
 

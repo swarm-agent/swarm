@@ -1561,12 +1561,18 @@ export function sessionStatusDetail(session: DesktopSessionRecord, now: number):
   return formatRelativeTime(sessionSidebarDisplayTimestamp(session), now)
 }
 
+function activeRunTimerAnchor(activeRun: NonNullable<ReturnType<typeof sessionActiveRunIntent>>): number {
+  return positiveTimestamp(activeRun.startedAt)
+    || positiveTimestamp(activeRun.createdAt)
+    || positiveTimestamp(activeRun.updatedAt)
+}
+
 export function sessionTimerLabel(session: DesktopSessionRecord, now: number): string {
   const activeRun = sessionActiveRunIntent(session)
   if (!activeRun) return ''
 
   const storedRunDurationMs = nonNegativeDuration(activeRun.durationMs)
-  const startedAt = positiveTimestamp(activeRun.startedAt)
+  const startedAt = activeRunTimerAnchor(activeRun)
   const loopDurationMs = startedAt > 0 ? Math.max(0, now - startedAt) : storedRunDurationMs
   if (loopDurationMs === null) return ''
 
@@ -1591,14 +1597,10 @@ export function sessionActivityLabel(session: DesktopSessionRecord): string {
   }
 
   const toolLabel = sidebarLiveToolLabel(session)
-  const runStatus = sessionActiveRunIntent(session)?.status.trim().toLowerCase() ?? ''
-  if (runStatus === 'pending_executor') {
-    return toolLabel || 'Starting'
-  }
   return sidebarCompactionLabel(session)
     || toolLabel
     || sidebarSummaryLabel(session)
-    || ''
+    || 'Running'
 }
 
 interface SidebarSessionNode {

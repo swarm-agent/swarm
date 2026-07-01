@@ -37,9 +37,11 @@ function timingPresent(timing: Pick<DesktopV3RunStatusModel, 'startedAt' | 'ende
   return Boolean(timing.startedAt) || timing.durationMs !== undefined || timing.cumulativeDurationMs !== undefined
 }
 
-function runTiming(intent: V3SessionRunIntent | null | undefined): Pick<DesktopV3RunStatusModel, 'startedAt' | 'endedAt' | 'durationMs' | 'cumulativeDurationMs'> {
+function runTiming(intent: V3SessionRunIntent | null | undefined, options: { active?: boolean } = {}): Pick<DesktopV3RunStatusModel, 'startedAt' | 'endedAt' | 'durationMs' | 'cumulativeDurationMs'> {
+  const startedAt = timestamp(intent?.started_at)
+    || (options.active ? timestamp(intent?.created_at) || timestamp(intent?.updated_at) : undefined)
   return {
-    startedAt: timestamp(intent?.started_at),
+    startedAt,
     endedAt: timestamp(intent?.completed_at),
     durationMs: duration(intent?.duration_ms),
     cumulativeDurationMs: duration(intent?.cumulative_duration_ms),
@@ -91,11 +93,11 @@ export function buildDesktopV3RunStatusModel(input: {
     }
   }
   if (ACTIVE_RUN_INTENT_STATUSES.has(currentStatus)) {
-    const timing = runTiming(input.currentRunIntent)
+    const timing = runTiming(input.currentRunIntent, { active: true })
     if (!timingPresent(timing)) return null
     return {
-      kind: currentStatus === 'pending_executor' ? 'starting' : 'active',
-      label: currentStatus === 'pending_executor' ? 'Starting' : 'Running',
+      kind: 'active',
+      label: 'Running',
       ...timing,
       active: true,
     }
@@ -111,11 +113,11 @@ export function buildDesktopV3RunStatusModel(input: {
     }
   }
   if (ACTIVE_RUN_INTENT_STATUSES.has(latestStatus)) {
-    const timing = runTiming(input.latestRunIntent)
+    const timing = runTiming(input.latestRunIntent, { active: true })
     if (!timingPresent(timing)) return null
     return {
-      kind: latestStatus === 'pending_executor' ? 'starting' : 'active',
-      label: latestStatus === 'pending_executor' ? 'Starting' : 'Running',
+      kind: 'active',
+      label: 'Running',
       ...timing,
       active: true,
     }
@@ -123,7 +125,7 @@ export function buildDesktopV3RunStatusModel(input: {
 
   const liveActive = input.liveRuns?.some(liveRunActive) ?? false
   if (liveActive) {
-    const timing = runTiming(input.currentRunIntent ?? input.latestRunIntent)
+    const timing = runTiming(input.currentRunIntent ?? input.latestRunIntent, { active: true })
     if (!timingPresent(timing)) {
       return null
     }

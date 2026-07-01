@@ -103,7 +103,7 @@ test('terminal timer can render exact stored run duration without local timestam
   assert.equal(formatDesktopV3RunTimer(model!, 999_000), '0:42')
 })
 
-test('active run intent without backend timing does not render timerless Running fallback', () => {
+test('active run intent without started_at uses backend created_at timing', () => {
   const model = buildDesktopV3RunStatusModel({
     currentRunIntent: {
       session_id: 'session-a',
@@ -115,7 +115,33 @@ test('active run intent without backend timing does not render timerless Running
     },
   })
 
-  assert.equal(model, null)
+  assert.equal(model?.label, 'Running')
+  assert.equal(model?.startedAt, 1_000)
+  assert.equal(formatDesktopV3RunTimer(model!, 3_500), '0:02')
+})
+
+test('pending executor run intent with timing is displayed as running', () => {
+  const model = buildDesktopV3RunStatusModel({
+    currentRunIntent: {
+      session_id: 'session-a',
+      run_id: 'run-pending',
+      status: 'pending_executor',
+      created_at: 1_000,
+      updated_at: 1_000,
+      event_seq: 1,
+    },
+  })
+
+  assert.equal(model?.kind, 'active')
+  assert.equal(model?.label, 'Running')
+  assert.equal(model?.startedAt, 1_000)
+  assert.equal(formatDesktopV3RunTimer(model!, 3_500), '0:02')
+
+  const markup = renderToStaticMarkup(<DesktopV3RunStatusPill model={model} now={3_500} />)
+  assert.match(markup, /Running/)
+  assert.match(markup, /0:02/)
+  assert.doesNotMatch(markup, /Starting/)
+  assert.doesNotMatch(markup, /Pending execution/)
 })
 
 test('live run overlay does not render timerless Running fallback', () => {

@@ -461,6 +461,13 @@ export interface SessionSettingsMutationResponse {
   [key: string]: unknown
 }
 
+export interface SessionArchiveMutationResponse {
+  ok?: boolean
+  archived?: boolean
+  results?: Array<{ session_id?: string; archived?: boolean; tombstone?: unknown }>
+  [key: string]: unknown
+}
+
 export interface SessionMutationErrorResponse {
   ok: false
   error?: string
@@ -746,4 +753,5 @@ export type DesktopV3CacheAction =
   | { type: 'mutation.sessionCreateResult'; raw: SessionCreateMutationResponse | SessionMutationErrorResponse; sidebarScopeId: string }
   | { type: 'mutation.messageResult'; raw: SessionMessageMutationResponse | MessageMutationConflictResponse; clientRequestId: string; messageId: string }
   | { type: 'mutation.sessionSettingsResult'; raw: SessionSettingsMutationResponse }
+  | { type: 'mutation.sessionArchiveResult'; raw: SessionArchiveMutationResponse }
   | { type: 'pendingUser.upsert'; input: Omit<PendingUserMessage, 'role' | 'status'> }
