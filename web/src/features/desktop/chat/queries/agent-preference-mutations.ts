@@ -1,5 +1,6 @@
 import { requestJson } from '../../../../app/api'
 import type { AgentProfileRecord } from '../types/chat'
+import type { AgentModelControlProfilePatch } from '../components/agent-model-control'
 
 function runtimeModeForAgent(profile: AgentProfileRecord): 'plan_auto' | 'read' | 'readwrite' {
   const raw = (profile.exitPlanModeEnabled ? 'plan_auto' : profile.runtimeMode || profile.executionSetting || '').trim()
@@ -40,7 +41,7 @@ function agentPayload(profile: AgentProfileRecord, patch: Partial<AgentProfileRe
   }
 }
 
-async function updateAgentProfile(profile: AgentProfileRecord, patch: Partial<AgentProfileRecord>): Promise<void> {
+export async function updateAgentProfile(profile: AgentProfileRecord, patch: AgentModelControlProfilePatch): Promise<void> {
   await requestJson(
     `/v2/agents/${encodeURIComponent(profile.name.trim())}`,
     {

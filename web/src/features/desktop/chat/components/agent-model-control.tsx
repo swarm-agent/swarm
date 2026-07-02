@@ -1,9 +1,30 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Bot, Check, ChevronDown, ExternalLink, GitBranch, Lock, RotateCcw } from 'lucide-react'
+import { Bot, Check, ChevronDown, ExternalLink, GitBranch, Lock } from 'lucide-react'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
-import { displayModelName, formatModelPricing } from '../services/model-options'
+import { displayModelName, formatModelPricing, supportsCodexFastMode } from '../services/model-options'
+
+export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
+  | 'modelMode'
+  | 'provider'
+  | 'model'
+  | 'thinking'
+  | 'planProvider'
+  | 'planModel'
+  | 'planThinking'
+  | 'planServiceTier'
+  | 'autoProvider'
+  | 'autoModel'
+  | 'autoThinking'
+  | 'autoServiceTier'
+>>
+
+export type AgentModelControlConfirmInput = {
+  agentName: string
+  profile: AgentProfileRecord
+  patch: AgentModelControlProfilePatch
+}
 
 interface AgentModelControlProps {
   currentAgent: string
@@ -11,22 +32,23 @@ interface AgentModelControlProps {
   agents: AgentProfileRecord[]
   mode: DesktopSessionMode
   selectedModel: ModelOptionRecord | null
+  modelOptions: ModelOptionRecord[]
   modelLocked?: boolean
   modelLockNotice?: string
-  onAgentSelect: (agent: string) => void
-  onModeSelect: (mode: DesktopSessionMode) => void
-  onOpenModelPicker: () => void
+  openSignal?: number
   onOpenAgentSettings?: () => void
-  onUseSingleModel?: (agent: AgentProfileRecord) => void | Promise<void>
-  onUseDefaultModel?: (agent: AgentProfileRecord) => void | Promise<void>
-  onConfirmSettings?: () => void | Promise<void>
-  allowModeChange?: boolean
+  onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
   busy?: boolean
-  dropdownAlign?: 'left' | 'right'
 }
 
-const DROPDOWN_VIEWPORT_GUTTER = 8
-const MOBILE_DROPDOWN_BREAKPOINT = 700
+const THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
+const FAST_OPTIONS = [
+  { label: 'Off', value: '' },
+  { label: 'On', value: 'fast' },
+]
+
+type DraftMode = 'default' | 'single' | 'split'
+type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string }
 
 function agentMode(profile: AgentProfileRecord): string {
   return (profile.mode || 'primary').trim().toLowerCase()
@@ -34,6 +56,15 @@ function agentMode(profile: AgentProfileRecord): string {
 
 function agentLabel(profile: AgentProfileRecord): string {
   return profile.name === 'swarm' ? 'Swarm' : profile.name
+}
+
+function agentModeLabel(profile: AgentProfileRecord): string {
+  switch (agentMode(profile)) {
+    case 'primary': return 'Primary'
+    case 'subagent': return 'Subagent'
+    case 'background': return 'Background'
+    default: return profile.mode || 'Agent'
+  }
 }
 
 function runtimeLabel(profile: AgentProfileRecord | null): string {
@@ -46,15 +77,6 @@ function runtimeLabel(profile: AgentProfileRecord | null): string {
   }
 }
 
-function agentModeLabel(profile: AgentProfileRecord): string {
-  switch (agentMode(profile)) {
-    case 'primary': return 'Primary'
-    case 'subagent': return 'Subagent'
-    case 'background': return 'Background'
-    default: return profile.mode || 'Agent'
-  }
-}
-
 function modelBehaviorLabel(profile: AgentProfileRecord | null): string {
   if (!profile) return 'Default model'
   if (profile.modelMode === 'split') return 'Split plan/auto models'
@@ -62,13 +84,110 @@ function modelBehaviorLabel(profile: AgentProfileRecord | null): string {
   return 'Default model'
 }
 
-function agentSingleModelLabel(profile: AgentProfileRecord): string {
-  if (profile.provider.trim() || profile.model.trim()) {
-    return `${profile.provider || 'provider'}/${profile.model || 'model'}`
+function selectedDraftMode(profile: AgentProfileRecord | null): DraftMode {
+  if (!profile) return 'default'
+  if (profile.modelMode === 'split') return 'split'
+  if (profile.provider.trim() || profile.model.trim()) return 'single'
+  return 'default'
+}
+
+function defaultDraftFromModel(model: ModelOptionRecord | null): ModelDraft {
+  return {
+    provider: model?.provider ?? '',
+    model: model?.model ?? '',
+    thinking: model?.thinking || 'off',
+    serviceTier: '',
   }
-  const provider = profile.autoProvider || profile.planProvider
-  const model = profile.autoModel || profile.planModel
-  return provider || model ? `${provider || 'provider'}/${model || 'model'}` : 'Use current defaults'
+}
+
+function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedModel: ModelOptionRecord | null): ModelDraft {
+  const fallback = defaultDraftFromModel(selectedModel)
+  return {
+    provider: profile?.provider.trim() || fallback.provider,
+    model: profile?.model.trim() || fallback.model,
+    thinking: profile?.thinking.trim() || fallback.thinking,
+    serviceTier: '',
+  }
+}
+
+function splitDraftFromProfile(profile: AgentProfileRecord | null, prefix: 'plan' | 'auto', selectedModel: ModelOptionRecord | null): ModelDraft {
+  const fallback = defaultDraftFromModel(selectedModel)
+  if (prefix === 'plan') {
+    return {
+      provider: profile?.planProvider.trim() || fallback.provider,
+      model: profile?.planModel.trim() || fallback.model,
+      thinking: profile?.planThinking.trim() || fallback.thinking,
+      serviceTier: profile?.planServiceTier.trim() || '',
+    }
+  }
+  return {
+    provider: profile?.autoProvider.trim() || fallback.provider,
+    model: profile?.autoModel.trim() || fallback.model,
+    thinking: profile?.autoThinking.trim() || fallback.thinking,
+    serviceTier: profile?.autoServiceTier.trim() || '',
+  }
+}
+
+function providerOptions(modelOptions: ModelOptionRecord[]): string[] {
+  return Array.from(new Set(modelOptions.map((option) => option.provider.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right))
+}
+
+function modelChoices(provider: string, modelOptions: ModelOptionRecord[]): ModelOptionRecord[] {
+  const normalized = provider.trim()
+  return modelOptions.filter((option) => option.provider === normalized)
+}
+
+function normalizeThinking(value: string): string {
+  return value.trim() || 'off'
+}
+
+function buildPatch(mode: DraftMode, single: ModelDraft, plan: ModelDraft, auto: ModelDraft): AgentModelControlProfilePatch {
+  if (mode === 'default') {
+    return {
+      modelMode: 'single',
+      provider: '',
+      model: '',
+      thinking: '',
+      planProvider: '',
+      planModel: '',
+      planThinking: '',
+      planServiceTier: '',
+      autoProvider: '',
+      autoModel: '',
+      autoThinking: '',
+      autoServiceTier: '',
+    }
+  }
+  if (mode === 'single') {
+    return {
+      modelMode: 'single',
+      provider: single.provider.trim(),
+      model: single.model.trim(),
+      thinking: normalizeThinking(single.thinking),
+      planProvider: '',
+      planModel: '',
+      planThinking: '',
+      planServiceTier: '',
+      autoProvider: '',
+      autoModel: '',
+      autoThinking: '',
+      autoServiceTier: '',
+    }
+  }
+  return {
+    modelMode: 'split',
+    provider: '',
+    model: '',
+    thinking: '',
+    planProvider: plan.provider.trim(),
+    planModel: plan.model.trim(),
+    planThinking: normalizeThinking(plan.thinking),
+    planServiceTier: supportsCodexFastMode(plan.provider, plan.model) ? plan.serviceTier.trim() : '',
+    autoProvider: auto.provider.trim(),
+    autoModel: auto.model.trim(),
+    autoThinking: normalizeThinking(auto.thinking),
+    autoServiceTier: supportsCodexFastMode(auto.provider, auto.model) ? auto.serviceTier.trim() : '',
+  }
 }
 
 export function AgentModelControl({
@@ -77,263 +196,189 @@ export function AgentModelControl({
   agents,
   mode,
   selectedModel,
+  modelOptions,
   modelLocked = false,
   modelLockNotice = '',
-  onAgentSelect,
-  onModeSelect,
-  onOpenModelPicker,
+  openSignal = 0,
   onOpenAgentSettings,
-  onUseSingleModel,
-  onUseDefaultModel,
-  onConfirmSettings,
-  allowModeChange = true,
+  onConfirmAgentSettings,
   busy = false,
-  dropdownAlign = 'left',
 }: AgentModelControlProps) {
   const [open, setOpen] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  const triggerRef = useRef<HTMLButtonElement | null>(null)
-  const dropdownRef = useRef<HTMLDivElement | null>(null)
-  const [position, setPosition] = useState<{ top?: number; bottom?: number; left?: number; right?: number; width: number; maxHeight: number } | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const selectableAgents = useMemo(() => agents.filter((agent) => agent.enabled !== false), [agents])
-  const selectedProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? null
+  const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
+  const [draftAgentName, setDraftAgentName] = useState(activeProfile?.name ?? selectedPrimaryAgent)
+  const draftProfile = selectableAgents.find((agent) => agent.name === draftAgentName) ?? activeProfile
+  const [draftMode, setDraftMode] = useState<DraftMode>(() => selectedDraftMode(activeProfile))
+  const [singleDraft, setSingleDraft] = useState<ModelDraft>(() => singleDraftFromProfile(activeProfile, selectedModel))
+  const [planDraft, setPlanDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'plan', selectedModel))
+  const [autoDraft, setAutoDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'auto', selectedModel))
+  const providers = useMemo(() => providerOptions(modelOptions), [modelOptions])
   const agentSections = useMemo(() => {
     const sections = [
       { label: 'Primary agents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'primary') },
       { label: 'Subagents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'subagent') },
       { label: 'Other agents', profiles: selectableAgents.filter((agent) => {
-        const mode = agentMode(agent)
-        return mode !== 'primary' && mode !== 'subagent'
+        const profileMode = agentMode(agent)
+        return profileMode !== 'primary' && profileMode !== 'subagent'
       }) },
     ]
     return sections.filter((section) => section.profiles.length > 0)
   }, [selectableAgents])
   const pricingLabel = selectedModel ? formatModelPricing(selectedModel.pricing) : ''
-  const modelLabel = selectedModel
+  const selectedModelLabel = selectedModel
     ? `${selectedModel.provider}/${displayModelName(selectedModel.provider, selectedModel.model, selectedModel.contextMode)}`
-    : 'No model selected'
+    : 'Default model'
 
-  const updatePosition = useCallback(() => {
-    if (!triggerRef.current || typeof window === 'undefined') {
-      setPosition(null)
-      return
-    }
-    const rect = triggerRef.current.getBoundingClientRect()
-    const viewportWidth = window.innerWidth
-    const viewportHeight = window.visualViewport?.height ?? window.innerHeight
-    const mobile = viewportWidth < MOBILE_DROPDOWN_BREAKPOINT
-    const width = mobile ? viewportWidth - DROPDOWN_VIEWPORT_GUTTER * 2 : Math.min(640, viewportWidth - DROPDOWN_VIEWPORT_GUTTER * 2)
-    const maxHeight = mobile ? Math.max(220, viewportHeight - rect.bottom - DROPDOWN_VIEWPORT_GUTTER * 2) : Math.max(260, Math.min(520, rect.top - DROPDOWN_VIEWPORT_GUTTER * 2))
-    if (mobile) {
-      setPosition({ top: Math.min(rect.bottom + DROPDOWN_VIEWPORT_GUTTER, viewportHeight - 180), left: DROPDOWN_VIEWPORT_GUTTER, width, maxHeight })
-      return
-    }
-    setPosition({
-      bottom: Math.max(DROPDOWN_VIEWPORT_GUTTER, viewportHeight - rect.top + DROPDOWN_VIEWPORT_GUTTER),
-      left: dropdownAlign === 'left' ? Math.min(Math.max(DROPDOWN_VIEWPORT_GUTTER, rect.left), Math.max(DROPDOWN_VIEWPORT_GUTTER, viewportWidth - width - DROPDOWN_VIEWPORT_GUTTER)) : undefined,
-      right: dropdownAlign === 'right' ? Math.max(DROPDOWN_VIEWPORT_GUTTER, viewportWidth - rect.right) : undefined,
-      width,
-      maxHeight,
-    })
-  }, [dropdownAlign])
-
-  useLayoutEffect(() => {
-    if (!open) {
-      setPosition(null)
-      return
-    }
-    updatePosition()
-  }, [open, updatePosition])
+  useEffect(() => {
+    if (openSignal > 0) setOpen(true)
+  }, [openSignal])
 
   useEffect(() => {
     if (!open) return
-    function handlePointerDownOutside(event: PointerEvent) {
-      const target = event.target as Node | null
-      if (!target || !target.isConnected || !document.body.contains(target)) return
-      if (triggerRef.current?.contains(target) || dropdownRef.current?.contains(target)) return
-      setOpen(false)
-    }
-    function handleEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    window.addEventListener('scroll', updatePosition, true)
-    window.addEventListener('resize', updatePosition)
-    document.addEventListener('pointerdown', handlePointerDownOutside)
-    document.addEventListener('keydown', handleEscape)
-    return () => {
-      window.removeEventListener('scroll', updatePosition, true)
-      window.removeEventListener('resize', updatePosition)
-      document.removeEventListener('pointerdown', handlePointerDownOutside)
-      document.removeEventListener('keydown', handleEscape)
-    }
-  }, [open, updatePosition])
+    const profile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? activeProfile
+    setDraftAgentName(profile?.name ?? selectedPrimaryAgent)
+    setDraftMode(selectedDraftMode(profile))
+    setSingleDraft(singleDraftFromProfile(profile, selectedModel))
+    setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel))
+    setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel))
+    setError(null)
+  }, [activeProfile, open, selectableAgents, selectedModel, selectedPrimaryAgent])
 
-  const chooseAgent = (agent: string) => {
-    onAgentSelect(agent)
+  function chooseAgent(profile: AgentProfileRecord) {
+    setDraftAgentName(profile.name)
+    setDraftMode(selectedDraftMode(profile))
+    setSingleDraft(singleDraftFromProfile(profile, selectedModel))
+    setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel))
+    setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel))
+    setError(null)
   }
 
-  const openModels = () => {
-    setOpen(false)
-    onOpenModelPicker()
+  function selectProvider(target: 'single' | 'plan' | 'auto', provider: string) {
+    const update = (current: ModelDraft): ModelDraft => ({ ...current, provider, model: '', serviceTier: '' })
+    if (target === 'single') setSingleDraft(update)
+    else if (target === 'plan') setPlanDraft(update)
+    else setAutoDraft(update)
   }
 
-  const confirmSettings = async () => {
-    if (busy || confirming) return
-    setConfirming(true)
+  function selectModel(target: 'single' | 'plan' | 'auto', model: string) {
+    const update = (current: ModelDraft): ModelDraft => ({ ...current, model, serviceTier: supportsCodexFastMode(current.provider, model) ? current.serviceTier : '' })
+    if (target === 'single') setSingleDraft(update)
+    else if (target === 'plan') setPlanDraft(update)
+    else setAutoDraft(update)
+  }
+
+  async function confirm() {
+    const profile = draftProfile
+    if (!profile || saving || busy) return
+    const patch = buildPatch(draftMode, singleDraft, planDraft, autoDraft)
+    if (draftMode === 'single' && (!patch.provider || !patch.model || !patch.thinking)) {
+      setError('Choose provider, model, and thinking for the single-model lock.')
+      return
+    }
+    if (draftMode === 'split' && (!patch.planProvider || !patch.planModel || !patch.planThinking || !patch.autoProvider || !patch.autoModel || !patch.autoThinking)) {
+      setError('Choose provider, model, and thinking for both plan and auto split settings.')
+      return
+    }
+    setSaving(true)
+    setError(null)
     try {
-      await onConfirmSettings?.()
+      await onConfirmAgentSettings?.({ agentName: profile.name, profile, patch })
       setOpen(false)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
-      setConfirming(false)
+      setSaving(false)
     }
   }
 
-  const dropdown = open && position ? createPortal(
-    <div
-      ref={dropdownRef}
-      style={{
-        position: 'fixed',
-        top: position.top === undefined ? undefined : `${position.top}px`,
-        bottom: position.bottom === undefined ? undefined : `${position.bottom}px`,
-        left: position.left === undefined ? undefined : `${position.left}px`,
-        right: position.right === undefined ? undefined : `${position.right}px`,
-        width: `${position.width}px`,
-        maxHeight: `${position.maxHeight}px`,
-        zIndex: 9999,
-      }}
-    >
-      <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl shadow-black/40" style={{ maxHeight: `${position.maxHeight}px` }}>
-        <div className="flex max-h-[inherit] min-h-0 flex-col">
-          <div className="border-b border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Chat setup</div>
-                <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">{currentAgent || selectedPrimaryAgent || 'Agent'}</div>
+  const modal = open ? createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-end justify-center bg-black/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Agent and model settings">
+      <div className="flex max-h-[min(92vh,760px)] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent setup</div>
+            <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">{draftProfile?.name || currentAgent || 'Agent'}</div>
+            <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Changes are staged here and saved to the agent profile only when confirmed.</div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {onOpenAgentSettings ? (
+              <button type="button" onClick={() => { setOpen(false); onOpenAgentSettings() }} className="inline-flex items-center gap-1 rounded-full border border-[var(--app-border)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+                Agents <ExternalLink size={12} />
+              </button>
+            ) : null}
+            <button type="button" onClick={() => setOpen(false)} className="rounded-full border border-[var(--app-border)] px-3 py-1 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Close</button>
+          </div>
+        </div>
+
+        <div className="grid min-h-0 flex-1 min-[780px]:grid-cols-[260px_minmax(0,1fr)]">
+          <div className="min-h-0 border-b border-[var(--app-border)] min-[780px]:border-b-0 min-[780px]:border-r">
+            <div className="border-b border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Choose agent</div>
+            <div className="max-h-56 overflow-y-auto py-1 min-[780px]:max-h-[560px]">
+              {agentSections.map((section, sectionIndex) => (
+                <div key={section.label} className={sectionIndex === 0 ? '' : 'mt-1 border-t border-[var(--app-border)] pt-1'}>
+                  <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{section.label}</div>
+                  {section.profiles.map((profile) => {
+                    const selected = profile.name === draftAgentName
+                    return (
+                      <button key={profile.name} type="button" onClick={() => chooseAgent(profile)} className={`flex w-full items-start gap-2 px-3 py-2.5 text-left text-sm transition ${selected ? 'bg-[var(--app-surface-subtle)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
+                        {selected ? <Check size={14} className="mt-0.5 shrink-0 text-[var(--app-primary)]" /> : <span className="mt-0.5 w-[14px] shrink-0" />}
+                        <Bot size={14} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-medium">{agentLabel(profile)}</span>
+                          <span className="mt-0.5 block truncate text-[11px] text-[var(--app-text-subtle)]">{modelBehaviorLabel(profile)} · {agentModeLabel(profile)}</span>
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="min-h-0 overflow-y-auto p-4">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <SummaryCard label="Session mode" value={mode} />
+              <SummaryCard label="Runtime" value={runtimeLabel(draftProfile)} />
+              <SummaryCard label="Current resolved model" value={selectedModelLabel} detail={pricingLabel} />
+            </div>
+
+            <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                <ModeButton selected={draftMode === 'default'} title="Default" description="Inherit the global/default model." onClick={() => setDraftMode('default')} />
+                <ModeButton selected={draftMode === 'single'} title="Single" description="Lock this agent to one model." onClick={() => setDraftMode('single')} />
+                <ModeButton selected={draftMode === 'split'} title="Split" description="Use separate plan and auto models." onClick={() => setDraftMode('split')} />
               </div>
-              {onOpenAgentSettings ? (
-                <button type="button" onClick={() => { setOpen(false); onOpenAgentSettings() }} className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--app-border)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                  Agents <ExternalLink size={12} />
-                </button>
+              {modelLocked ? (
+                <div className="mt-3 flex gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-[11px] text-[var(--app-text-muted)]">
+                  <Lock size={13} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
+                  <span>{modelLockNotice || 'The current session is resolved from the selected agent profile.'}</span>
+                </div>
               ) : null}
             </div>
-            <div className="mt-3 grid gap-2 text-[11px] text-[var(--app-text-muted)] sm:grid-cols-3">
-              <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
-                <div className="font-semibold text-[var(--app-text-subtle)]">Start mode</div>
-                {allowModeChange ? (
-                  <div className="mt-1 flex gap-1">
-                    {(['plan', 'auto'] as DesktopSessionMode[]).map((candidate) => (
-                      <button key={candidate} type="button" onClick={() => onModeSelect(candidate)} className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${candidate === mode ? 'bg-[var(--app-primary)] text-[var(--app-primary-text)]' : 'bg-[var(--app-bg-alt)] text-[var(--app-text-muted)] hover:text-[var(--app-text)]'}`}>
-                        {candidate}
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="mt-1 font-semibold uppercase text-[var(--app-primary)]">{mode}</div>
-                )}
+
+            {draftMode === 'single' ? (
+              <ModelDraftEditor title="Single model" draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} />
+            ) : draftMode === 'split' ? (
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                <ModelDraftEditor title="Plan model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showFast />
+                <ModelDraftEditor title="Auto model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showFast />
               </div>
-              <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
-                <div className="font-semibold text-[var(--app-text-subtle)]">Agent model mode</div>
-                <div className="mt-1 text-[var(--app-text)]">{modelBehaviorLabel(selectedProfile)}</div>
-              </div>
-              <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
-                <div className="font-semibold text-[var(--app-text-subtle)]">Runtime</div>
-                <div className="mt-1 text-[var(--app-text)]">{runtimeLabel(selectedProfile)}</div>
-              </div>
-            </div>
+            ) : (
+              <div className="mt-4 rounded-xl border border-[var(--app-border)] p-3 text-sm text-[var(--app-text-muted)]">This agent will inherit the default model. Confirm to save the profile as default/inherited.</div>
+            )}
+            {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
           </div>
+        </div>
 
-          <div className="grid min-h-0 flex-1 gap-0 min-[701px]:grid-cols-[240px_minmax(0,1fr)]">
-            <div className="min-h-0 border-b border-[var(--app-border)] min-[701px]:border-b-0 min-[701px]:border-r">
-              <div className="border-b border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agents</div>
-              <div className="max-h-56 overflow-y-auto py-1 min-[701px]:max-h-[340px]">
-                {agentSections.map((section, sectionIndex) => (
-                  <div key={section.label} className={sectionIndex === 0 ? '' : 'mt-1 border-t border-[var(--app-border)] pt-1'}>
-                    <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{section.label}</div>
-                    {section.profiles.map((profile) => {
-                      const selected = profile.name === selectedPrimaryAgent
-                      return (
-                        <button key={profile.name} type="button" onClick={() => chooseAgent(profile.name)} className={`flex w-full items-start gap-2 px-3 py-2.5 text-left text-sm transition ${selected ? 'bg-[var(--app-surface-subtle)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
-                          {selected ? <Check size={14} className="mt-0.5 shrink-0 text-[var(--app-primary)]" /> : <span className="mt-0.5 w-[14px] shrink-0" />}
-                          <Bot size={14} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate font-medium">{agentLabel(profile)}</span>
-                            <span className="mt-0.5 block truncate text-[11px] text-[var(--app-text-subtle)]">{modelBehaviorLabel(profile)} · {agentModeLabel(profile)}</span>
-                          </span>
-                        </button>
-                      )
-                    })}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="min-h-0 overflow-y-auto p-4">
-              <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Current model</div>
-                    <div className="mt-1 break-words text-sm font-semibold text-[var(--app-text)]">{modelLabel}</div>
-                    {pricingLabel ? <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">{pricingLabel}</div> : null}
-                  </div>
-                  <button type="button" onClick={openModels} disabled={modelLocked} title={modelLocked ? modelLockNotice : 'Choose provider/model'} className="rounded-full border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-60">
-                    Change
-                  </button>
-                </div>
-                {modelLocked ? (
-                  <div className="mt-3 flex gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-[11px] text-[var(--app-text-muted)]">
-                    <Lock size={13} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
-                    <span>{modelLockNotice || 'This agent controls the model from its profile.'}</span>
-                  </div>
-                ) : null}
-              </div>
-
-              {selectedProfile?.modelMode === 'split' ? (
-                <div className="mt-3 rounded-xl border border-[var(--app-border)] p-3">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]"><GitBranch size={14} /> Split model preferences</div>
-                  <div className="mt-2 grid gap-2 text-[11px] text-[var(--app-text-muted)] sm:grid-cols-2">
-                    <div className="rounded-lg bg-[var(--app-bg-alt)] px-3 py-2">Plan: {selectedProfile.planProvider || 'provider'}/{selectedProfile.planModel || 'model'}</div>
-                    <div className="rounded-lg bg-[var(--app-bg-alt)] px-3 py-2">Auto: {selectedProfile.autoProvider || 'provider'}/{selectedProfile.autoModel || 'model'}</div>
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {onUseSingleModel ? (
-                      <button type="button" disabled={busy} onClick={() => { void onUseSingleModel(selectedProfile) }} className="inline-flex items-center gap-1 rounded-full border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-60">
-                        <RotateCcw size={12} /> Use single: {agentSingleModelLabel(selectedProfile)}
-                      </button>
-                    ) : null}
-                    {onUseDefaultModel ? (
-                      <button type="button" disabled={busy} onClick={() => { void onUseDefaultModel(selectedProfile) }} className="rounded-full border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-60">
-                        Inherit default model
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              ) : selectedProfile && (selectedProfile.provider.trim() || selectedProfile.model.trim()) ? (
-                <div className="mt-3 rounded-xl border border-[var(--app-border)] p-3 text-sm text-[var(--app-text-muted)]">
-                  <div className="font-semibold text-[var(--app-text)]">Single model lock</div>
-                  <div className="mt-1 text-[11px]">This agent always uses {agentSingleModelLabel(selectedProfile)} unless changed in Agents.</div>
-                  {onUseDefaultModel ? (
-                    <button type="button" disabled={busy} onClick={() => { void onUseDefaultModel(selectedProfile) }} className="mt-3 rounded-full border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-60">
-                      Inherit default model
-                    </button>
-                  ) : null}
-                </div>
-              ) : (
-                <div className="mt-3 rounded-xl border border-[var(--app-border)] p-3 text-[11px] text-[var(--app-text-muted)]">
-                  This agent inherits the default model. Use Change for this chat, or Agents for advanced defaults and split plan/auto setup.
-                </div>
-              )}
-            </div>
-          </div>
-          {onConfirmSettings ? (
-            <div className="flex items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3">
-              <button type="button" onClick={() => setOpen(false)} className="rounded-full border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                Cancel
-              </button>
-              <button type="button" disabled={busy || confirming} onClick={() => { void confirmSettings() }} className="rounded-full bg-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-60">
-                {confirming ? 'Saving…' : 'Confirm changes'}
-              </button>
-            </div>
-          ) : null}
+        <div className="flex items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3">
+          <button type="button" onClick={() => setOpen(false)} className="rounded-full border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Cancel</button>
+          <button type="button" disabled={busy || saving || !draftProfile} onClick={() => { void confirm() }} className="rounded-full bg-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-60">
+            {saving || busy ? 'Saving…' : 'Confirm changes'}
+          </button>
         </div>
       </div>
     </div>,
@@ -343,18 +388,87 @@ export function AgentModelControl({
   return (
     <div className="inline-flex min-w-0 items-center">
       <button
-        ref={triggerRef}
         type="button"
-        onClick={() => setOpen((prev) => !prev)}
-        title="Open chat agent, model, and mode setup"
+        onClick={() => setOpen(true)}
+        title="Open agent and model setup"
         className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)]"
       >
         <Bot size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
         <span className="max-w-[120px] truncate">{currentAgent || selectedPrimaryAgent || 'Agent'}</span>
         <span className="hidden rounded-full bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)] min-[1120px]:inline">{mode}</span>
-        <ChevronDown size={12} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
+        <ChevronDown size={12} />
       </button>
-      {dropdown}
+      {modal}
     </div>
+  )
+}
+
+function SummaryCard({ label, value, detail = '' }: { label: string; value: string; detail?: string }) {
+  return (
+    <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-[11px]">
+      <div className="font-semibold text-[var(--app-text-subtle)]">{label}</div>
+      <div className="mt-1 break-words text-[var(--app-text)]">{value || '—'}</div>
+      {detail ? <div className="mt-1 text-[var(--app-text-muted)]">{detail}</div> : null}
+    </div>
+  )
+}
+
+function ModeButton({ selected, title, description, onClick }: { selected: boolean; title: string; description: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className={`rounded-xl border px-3 py-2 text-left transition ${selected ? 'border-[var(--app-border-accent)] bg-[var(--app-primary-soft)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
+      <span className="flex items-center gap-2 text-sm font-semibold">{selected ? <Check size={14} className="text-[var(--app-primary)]" /> : null}{title}</span>
+      <span className="mt-1 block text-[11px] leading-4">{description}</span>
+    </button>
+  )
+}
+
+function ModelDraftEditor({
+  title,
+  draft,
+  providers,
+  modelOptions,
+  showFast = false,
+  onProviderChange,
+  onModelChange,
+  onThinkingChange,
+  onServiceTierChange,
+}: {
+  title: string
+  draft: ModelDraft
+  providers: string[]
+  modelOptions: ModelOptionRecord[]
+  showFast?: boolean
+  onProviderChange: (provider: string) => void
+  onModelChange: (model: string) => void
+  onThinkingChange: (thinking: string) => void
+  onServiceTierChange?: (serviceTier: string) => void
+}) {
+  const choices = modelChoices(draft.provider, modelOptions)
+  const fastSupported = supportsCodexFastMode(draft.provider, draft.model)
+  return (
+    <div className="mt-4 rounded-xl border border-[var(--app-border)] p-3">
+      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]"><GitBranch size={14} />{title}</div>
+      <div className="grid gap-3">
+        <SelectField label="Provider" value={draft.provider} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider, value: provider }))} placeholder="Choose provider" />
+        <SelectField label="Model" value={draft.model} onChange={onModelChange} options={choices.map((option) => ({ label: displayModelName(option.provider, option.model, option.contextMode), value: option.model }))} placeholder="Choose model" disabled={!draft.provider.trim()} />
+        <SelectField label="Thinking" value={normalizeThinking(draft.thinking)} onChange={onThinkingChange} options={THINKING_OPTIONS.map((option) => ({ label: option, value: option }))} />
+        {showFast ? <SelectField label="Fast" value={fastSupported ? draft.serviceTier : ''} onChange={(value) => onServiceTierChange?.(value)} options={FAST_OPTIONS} disabled={!fastSupported} /> : null}
+      </div>
+    </div>
+  )
+}
+
+function SelectField({ label, value, options, placeholder = '', disabled = false, onChange }: { label: string; value: string; options: Array<{ label: string; value: string }>; placeholder?: string; disabled?: boolean; onChange: (value: string) => void }) {
+  return (
+    <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
+      {label}
+      <span className="relative">
+        <select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 pr-8 text-sm normal-case tracking-normal text-[var(--app-text)] outline-none transition hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50">
+          {placeholder ? <option value="" disabled>{placeholder}</option> : null}
+          {options.map((option) => <option key={`${label}:${option.value || 'empty'}`} value={option.value}>{option.label}</option>)}
+        </select>
+        <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+      </span>
+    </label>
   )
 }

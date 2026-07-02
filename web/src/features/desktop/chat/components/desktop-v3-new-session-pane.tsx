@@ -2,15 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
-import { draftModelQueryKey, draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
-import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
-import { findAgentProfile, preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
-import type { AgentProfileRecord, AgentStateRecord, ModelOptionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
-import { updateDraftModelPreference } from '../queries/chat-queries'
-import { switchAgentToDefaultModel, switchAgentToSingleModel } from '../queries/agent-preference-mutations'
+import { formatContextWindow, effectiveContextWindow } from '../services/model-options'
+import { preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
+import type { AgentStateRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
+import { updateAgentProfile } from '../queries/agent-preference-mutations'
+import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
 import type { DesktopSlashCommand } from '../services/slash-commands'
@@ -48,24 +48,8 @@ function preferenceFromResolved(resolved: ResolvedSessionPreference | undefined)
   }
 }
 
-function preferenceFromOption(option: ModelOptionRecord | null, current: SessionPreferenceRecord): SessionPreferenceRecord {
-  if (!option) return current
-  return {
-    ...current,
-    provider: option.provider,
-    model: option.model,
-    thinking: current.thinking || option.thinking,
-    contextMode: option.contextMode,
-  }
-}
-
 function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | 'off' {
   return preference.serviceTier.trim().toLowerCase() === 'fast' ? 'on' : 'off'
-}
-
-function thinkingForDraftDefault(thinking: string): string {
-  const normalized = thinking.trim()
-  return normalized || 'off'
 }
 
 function preferenceForRequest(preference: SessionPreferenceRecord): DesktopV3NewSessionPreference {
@@ -266,7 +250,6 @@ export function DesktopV3NewSessionPane({
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
   const hasResolvedPreference = Boolean(preference.provider.trim() && preference.model.trim() && preference.thinking.trim())
   const selectedModelAvailable = Boolean(selectedModelOption && hasResolvedPreference)
-  const fastSupported = selectedModelOption ? supportsCodexFastMode(selectedModelOption.provider, selectedModelOption.model) : false
   const selectedContextWindow = selectedModelOption
     ? effectiveContextWindow(selectedModelOption.provider, selectedModelOption.model, selectedModelOption.contextMode, selectedModelOption.contextWindow)
     : draftPreferenceQuery.data?.contextWindow ?? 0
@@ -287,74 +270,30 @@ export function DesktopV3NewSessionPane({
   )
   const runStatusModel = starting ? { kind: 'starting' as const, label: 'Starting', active: true } : null
 
-  async function persistDraftModelDefault(nextPreference: SessionPreferenceRecord) {
-    if (!nextPreference.provider.trim() || !nextPreference.model.trim()) return
-    const agentProfile = findAgentProfile(agentState.profiles, selectedAgentName)
-    if (agentProfile && (agentProfile.modelMode === 'split' || agentProfile.provider.trim() || agentProfile.model.trim())) return
+  async function handleConfirmAgentSettings(input: AgentModelControlConfirmInput) {
+    if (agentModelSaving) return
+    setAgentModelSaving(true)
+    setStartError(null)
     try {
-      const updated = await updateDraftModelPreference({
-        ...nextPreference,
-        thinking: thinkingForDraftDefault(nextPreference.thinking),
-      })
-      queryClient.setQueryData(draftModelQueryKey(), updated)
-    } catch (error) {
-      if (mountedRef.current) {
-        setStartError(error instanceof Error ? error.message : 'Failed to update default model preference')
+      await updateAgentProfile(input.profile, input.patch)
+      const agentStateResult = await queryClient.fetchQuery(agentStateQueryOptions())
+      const refreshedLock = resolveDesktopV3AgentModelLock(agentStateResult.profiles, input.agentName, mode)
+      const nextPreference = refreshedLock.locked
+        ? preferenceFromAgentModelLock(refreshedLock, preference, modelOptions)
+        : preference
+      if (refreshedLock.locked) {
+        unlockedPreferenceRef.current = nextPreference
+        setPreference(nextPreference)
       }
+      agentManuallySelectedRef.current = true
+      preferenceManuallyChangedRef.current = false
+      setSelectedAgent(input.agentName)
+    } catch (error) {
+      if (mountedRef.current) setStartError(error instanceof Error ? error.message : 'Failed to update agent settings')
+      throw error
+    } finally {
+      if (mountedRef.current) setAgentModelSaving(false)
     }
-  }
-
-  function handleModelSelect(key: string) {
-    preferenceManuallyChangedRef.current = true
-    const option = modelOptions.find((candidate) => candidate.key === key) ?? null
-    const next = preferenceFromOption(option, preference)
-    unlockedPreferenceRef.current = next
-    setPreference(next)
-    void persistDraftModelDefault(next)
-  }
-
-  function handleThinkingChange(value: string) {
-    preferenceManuallyChangedRef.current = true
-    const next = { ...preference, thinking: value.trim() === 'off' ? '' : value.trim() }
-    unlockedPreferenceRef.current = next
-    setPreference(next)
-    void persistDraftModelDefault(next)
-  }
-
-  function handleFastChange(value: 'on' | 'off') {
-    preferenceManuallyChangedRef.current = true
-    const next = {
-      ...preference,
-      serviceTier: value === 'on' && fastSupported ? 'fast' : '',
-    }
-    unlockedPreferenceRef.current = next
-    setPreference(next)
-    void persistDraftModelDefault(next)
-  }
-
-  function applyAgentModelPreference(agentName: string, nextMode: DesktopSessionMode, options: { manualPreference?: boolean } = {}) {
-    const lock = resolveDesktopV3AgentModelLock(agentState.profiles, agentName, nextMode)
-    if (options.manualPreference) preferenceManuallyChangedRef.current = true
-    if (!lock.locked) {
-      setPreference(unlockedPreferenceRef.current)
-      return
-    }
-    setPreference((current) => {
-      unlockedPreferenceRef.current = current
-      return preferenceFromAgentModelLock(lock, current, modelOptions)
-    })
-  }
-
-  function handleAgentSelect(agentName: string) {
-    agentManuallySelectedRef.current = true
-    setSelectedAgent(agentName)
-    applyAgentModelPreference(agentName, mode, { manualPreference: true })
-  }
-
-  function handleModeChange(nextMode: DesktopSessionMode) {
-    modeManuallySelectedRef.current = true
-    setMode(nextMode)
-    applyAgentModelPreference(selectedAgent, nextMode, { manualPreference: true })
   }
 
   function handleOpenAgentSettings() {
@@ -363,48 +302,6 @@ export function DesktopV3NewSessionPane({
       return
     }
     void navigate({ to: '/settings', search: { tab: 'agents' } })
-  }
-
-  async function handleUseSingleAgentModel(agent: AgentProfileRecord) {
-    if (agentModelSaving) return
-    setAgentModelSaving(true)
-    setStartError(null)
-    try {
-      await switchAgentToSingleModel(agent)
-      await queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey })
-      const nextPreference = preferenceFromAgentModelLock({
-        profile: agent,
-        locked: true,
-        agentName: agent.name,
-        provider: agent.provider || agent.autoProvider || agent.planProvider,
-        model: agent.model || agent.autoModel || agent.planModel,
-        thinking: agent.thinking || agent.autoThinking || agent.planThinking || 'off',
-        serviceTier: '',
-        mode,
-        disabledReason: '',
-      }, preference, modelOptions)
-      unlockedPreferenceRef.current = nextPreference
-      setPreference(nextPreference)
-    } catch (error) {
-      if (mountedRef.current) setStartError(error instanceof Error ? error.message : 'Failed to update agent model mode')
-    } finally {
-      if (mountedRef.current) setAgentModelSaving(false)
-    }
-  }
-
-  async function handleUseDefaultAgentModel(agent: AgentProfileRecord) {
-    if (agentModelSaving) return
-    setAgentModelSaving(true)
-    setStartError(null)
-    try {
-      await switchAgentToDefaultModel(agent)
-      await queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey })
-      setPreference(unlockedPreferenceRef.current)
-    } catch (error) {
-      if (mountedRef.current) setStartError(error instanceof Error ? error.message : 'Failed to update agent model mode')
-    } finally {
-      if (mountedRef.current) setAgentModelSaving(false)
-    }
   }
 
   async function handleThinkingTagsToggle(enabled: boolean) {
@@ -521,33 +418,22 @@ export function DesktopV3NewSessionPane({
         error={startError || unsupportedReason}
         onSubmit={handleSubmit}
         mode={mode}
-        onModeChange={handleModeChange}
         currentAgent={selectedAgentName || agentState.activePrimary || 'Agent'}
         selectedPrimaryAgent={selectedAgentName || agentState.activePrimary || ''}
         agents={agentState.profiles}
-        onAgentSelect={handleAgentSelect}
         modelOptions={modelOptions}
         selectedModelKey={selectedModelKey}
-        selectedModelAvailable={selectedModelAvailable}
-        onModelSelect={handleModelSelect}
         modelPickerDisabled={selectedAgentModelLock.locked}
         modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
         modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
         onOpenAgentSettings={handleOpenAgentSettings}
-        onUseSingleAgentModel={(agent) => { void handleUseSingleAgentModel(agent) }}
-        onUseDefaultAgentModel={(agent) => { void handleUseDefaultAgentModel(agent) }}
+        onConfirmAgentSettings={handleConfirmAgentSettings}
         agentModelControlBusy={agentModelSaving}
         thinking={preference.thinking}
-        onThinkingChange={handleThinkingChange}
         thinkingTagsEnabled={thinkingTagsEnabled}
         onThinkingTagsToggle={(enabled) => { void handleThinkingTagsToggle(enabled) }}
         thinkingTagsBusy={thinkingTagsSaving}
         fast={fastToggleFromPreference(preference)}
-        onFastChange={handleFastChange}
-        route={selectedRoute}
-        routeOptions={routeOptions}
-        onRouteSelect={setSelectedRouteId}
-        routeTitle="Route this chat through the host or a linked child swarm."
         contextLabel={contextLabel}
         compactDisabled
         onSlashCommand={onSlashCommand}
