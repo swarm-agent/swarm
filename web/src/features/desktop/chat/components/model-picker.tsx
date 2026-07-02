@@ -13,7 +13,7 @@ interface ModelPickerProps {
   disabledReason?: string
 }
 
-const DROPDOWN_WIDTH = 640
+const DROPDOWN_WIDTH = 760
 const MOBILE_DROPDOWN_BREAKPOINT = 640
 const DROPDOWN_VIEWPORT_GUTTER = 8
 
@@ -228,12 +228,12 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
         zIndex: 9999,
       }}
     >
-      <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl shadow-black/40" style={{ maxHeight: `${position.maxHeight}px` }}>
+      <div className="overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-lg shadow-black/30" style={{ maxHeight: `${position.maxHeight}px` }}>
         <div className="flex max-h-[inherit] min-h-0 flex-col min-[641px]:grid min-[641px]:grid-cols-[220px_minmax(0,1fr)]">
           <div className="min-w-0 border-b border-[var(--app-border)] bg-[var(--app-surface-subtle)] min-[641px]:border-b-0 min-[641px]:border-r">
             <div className="flex h-10 items-center border-b border-[var(--app-border)] px-3 min-[641px]:h-11 min-[641px]:px-4">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
-                Swipe providers
+                Providers
               </span>
             </div>
             <div className="flex max-w-full gap-2 overflow-x-auto overflow-y-hidden p-2 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden min-[641px]:max-h-[368px] min-[641px]:flex-col min-[641px]:gap-0 min-[641px]:overflow-y-auto min-[641px]:p-0">
@@ -277,6 +277,8 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
                 const isSelected = option.key === selectedKey
                 const isActive = index === activeModelIndex
                 const pricingLabel = formatModelPricing(option.pricing)
+                const contextLabel = formatContextWindow(effectiveContextWindow(option.provider, option.model, option.contextMode, option.contextWindow))
+                const serviceTiers = option.serviceTiers.map((tier) => tier.trim()).filter(Boolean)
                 return (
                   <button
                     key={option.key}
@@ -301,10 +303,9 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
                       <span className="block whitespace-normal break-words font-medium leading-snug text-[var(--app-text)] min-[641px]:truncate">{displayModelName(option.provider, option.model, option.contextMode)}</span>
                       <span className="mt-1 block whitespace-normal break-words text-[11px] leading-snug text-[var(--app-text-subtle)] min-[641px]:truncate">{option.label}</span>
                       <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--app-text-subtle)]">
-                        {effectiveContextWindow(option.provider, option.model, option.contextMode, option.contextWindow) > 0 ? (
-                          <span>Context {formatContextWindow(effectiveContextWindow(option.provider, option.model, option.contextMode, option.contextWindow))}</span>
-                        ) : null}
+                        {contextLabel ? <span>Context {contextLabel}</span> : null}
                         {pricingLabel ? <span>{pricingLabel}</span> : null}
+                        {serviceTiers.length > 0 ? <span>Tiers {serviceTiers.join(', ')}</span> : null}
                       </span>
                     </span>
                   </button>

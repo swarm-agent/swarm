@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Bot, Check, ChevronDown, ExternalLink, GitBranch, Lightbulb, Lock, Zap, ZapOff } from 'lucide-react'
+import { Bot, Check, ChevronDown, Cpu, ExternalLink, GitBranch, Lightbulb, Lock, Zap, ZapOff } from 'lucide-react'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
-import { displayModelName, formatModelPricing, supportsCodexFastMode } from '../services/model-options'
+import { displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, supportsCodexFastMode } from '../services/model-options'
 
 export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
   | 'modelMode'
@@ -149,6 +149,15 @@ function providerOptions(modelOptions: ModelOptionRecord[]): string[] {
 function modelChoices(provider: string, modelOptions: ModelOptionRecord[]): ModelOptionRecord[] {
   const normalized = provider.trim()
   return modelOptions.filter((option) => option.provider === normalized)
+}
+
+function modelOptionKey(option: ModelOptionRecord): string {
+  return `${option.model}::${option.contextMode.trim().toLowerCase()}`
+}
+
+function modelContextLabel(option: ModelOptionRecord): string {
+  const contextWindow = effectiveContextWindow(option.provider, option.model, option.contextMode, option.contextWindow)
+  return contextWindow > 0 ? formatContextWindow(contextWindow) : ''
 }
 
 function normalizeThinking(value: string): string {
@@ -330,8 +339,8 @@ export function AgentModelControl({
 
   const modal = open ? createPortal(
     <div className="fixed inset-0 z-[9999] flex items-end justify-center bg-black/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Agent and model settings">
-      <div className="flex max-h-[min(92vh,760px)] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-2xl">
-        <div className="flex items-start justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3">
+      <div className="flex max-h-[min(94vh,880px)] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl">
+        <div className="flex items-start justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4">
           <div className="min-w-0">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent setup</div>
             <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">{draftProfile?.name || currentAgent || 'Agent'}</div>
@@ -339,18 +348,18 @@ export function AgentModelControl({
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {onOpenAgentSettings ? (
-              <button type="button" onClick={() => { setOpen(false); onOpenAgentSettings() }} className="inline-flex items-center gap-1 rounded-full border border-[var(--app-border)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+              <button type="button" onClick={() => { setOpen(false); onOpenAgentSettings() }} className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
                 Agents <ExternalLink size={12} />
               </button>
             ) : null}
-            <button type="button" onClick={() => setOpen(false)} className="rounded-full border border-[var(--app-border)] px-3 py-1 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Close</button>
+            <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-[var(--app-border)] px-3 py-1 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Close</button>
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 min-[780px]:grid-cols-[260px_minmax(0,1fr)]">
+        <div className="grid min-h-0 flex-1 min-[780px]:grid-cols-[280px_minmax(0,1fr)]">
           <div className="min-h-0 border-b border-[var(--app-border)] min-[780px]:border-b-0 min-[780px]:border-r">
             <div className="border-b border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Choose agent</div>
-            <div className="max-h-56 overflow-y-auto py-1 min-[780px]:max-h-[560px]">
+            <div className="max-h-56 overflow-y-auto py-1 min-[780px]:max-h-[660px]">
               {agentSections.map((section, sectionIndex) => (
                 <div key={section.label} className={sectionIndex === 0 ? '' : 'mt-1 border-t border-[var(--app-border)] pt-1'}>
                   <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{section.label}</div>
@@ -372,7 +381,7 @@ export function AgentModelControl({
             </div>
           </div>
 
-          <div className="min-h-0 overflow-y-auto p-4">
+          <div className="min-h-0 overflow-y-auto p-5">
             <div className="grid gap-3 sm:grid-cols-3">
               <SummaryCard label="Session mode" value={mode} />
               <SummaryCard label="Runtime" value={runtimeLabel(draftProfile)} />
@@ -413,9 +422,9 @@ export function AgentModelControl({
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3">
-          <button type="button" onClick={() => setOpen(false)} className="rounded-full border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Cancel</button>
-          <button type="button" disabled={busy || saving || !draftProfile} onClick={() => { void confirm() }} className="rounded-full bg-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-60">
+        <div className="flex items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4">
+          <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Cancel</button>
+          <button type="button" disabled={busy || saving || !draftProfile} onClick={() => { void confirm() }} className="rounded-lg bg-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-60">
             {saving || busy ? 'Saving…' : 'Confirm changes'}
           </button>
         </div>
@@ -493,15 +502,70 @@ function ModelDraftEditor({
   onServiceTierChange?: (serviceTier: string) => void
 }) {
   const choices = modelChoices(draft.provider, modelOptions)
+  const selectedOption = choices.find((option) => option.model === draft.model) ?? null
   const fastSupported = modelSupportsFast(draft.provider, draft.model, modelOptions)
   return (
-    <div className="mt-4 rounded-xl border border-[var(--app-border)] p-3">
+    <div className="mt-4 rounded-xl border border-[var(--app-border)] p-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]"><GitBranch size={14} />{title}</div>
-      <div className="grid gap-3">
+      <div className="grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)]">
         <SelectField label="Provider" value={draft.provider} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider, value: provider }))} placeholder="Choose provider" />
-        <SelectField label="Model" value={draft.model} onChange={onModelChange} options={choices.map((option) => ({ label: displayModelName(option.provider, option.model, option.contextMode), value: option.model }))} placeholder="Choose model" disabled={!draft.provider.trim()} />
+        <ModelSelectField label="Model" value={draft.model} onChange={onModelChange} options={choices} placeholder="Choose model" disabled={!draft.provider.trim()} />
         <SelectField label="Thinking" value={normalizeThinking(draft.thinking)} onChange={onThinkingChange} options={THINKING_OPTIONS.map((option) => ({ label: option, value: option }))} />
         {showFast ? <SelectField label="Fast" value={fastSupported ? normalizeFastServiceTier(draft.serviceTier) : ''} onChange={(value) => onServiceTierChange?.(normalizeFastServiceTier(value))} options={FAST_OPTIONS} disabled={!fastSupported} /> : null}
+      </div>
+      {selectedOption ? <ModelInfoPanel option={selectedOption} /> : null}
+    </div>
+  )
+}
+
+function ModelSelectField({ label, value, options, placeholder = '', disabled = false, onChange }: { label: string; value: string; options: ModelOptionRecord[]; placeholder?: string; disabled?: boolean; onChange: (value: string) => void }) {
+  return (
+    <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)] lg:col-span-1">
+      {label}
+      <span className="relative">
+        <select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 pr-8 text-sm normal-case tracking-normal text-[var(--app-text)] outline-none transition hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50">
+          {placeholder ? <option value="" disabled>{placeholder}</option> : null}
+          {options.map((option) => {
+            const contextLabel = modelContextLabel(option)
+            const pricingLabel = formatModelPricing(option.pricing)
+            const meta = [contextLabel ? `Context ${contextLabel}` : '', pricingLabel].filter(Boolean).join(' · ')
+            const labelText = `${displayModelName(option.provider, option.model, option.contextMode)}${meta ? ` — ${meta}` : ''}`
+            return <option key={`model:${modelOptionKey(option)}`} value={option.model}>{labelText}</option>
+          })}
+        </select>
+        <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+      </span>
+    </label>
+  )
+}
+
+function ModelInfoPanel({ option }: { option: ModelOptionRecord }) {
+  const contextLabel = modelContextLabel(option)
+  const pricingLabel = formatModelPricing(option.pricing)
+  const serviceTiers = option.serviceTiers.map((tier) => tier.trim()).filter(Boolean)
+  const details = [
+    { label: 'Provider', value: option.provider },
+    { label: 'Context', value: contextLabel || 'Unknown' },
+    { label: 'Price', value: pricingLabel || 'Not listed' },
+    { label: 'Thinking', value: option.thinking || 'default' },
+    serviceTiers.length > 0 ? { label: 'Tiers', value: serviceTiers.join(', ') } : null,
+  ].filter(Boolean) as Array<{ label: string; value: string }>
+  return (
+    <div className="mt-4 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
+      <div className="flex items-start gap-2">
+        <Cpu size={14} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-semibold text-[var(--app-text)]">{displayModelName(option.provider, option.model, option.contextMode)}</div>
+          <div className="mt-1 break-words text-[11px] text-[var(--app-text-muted)]">{option.label || option.model}</div>
+        </div>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {details.map((detail) => (
+          <div key={detail.label} className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{detail.label}</div>
+            <div className="mt-1 break-words text-[11px] text-[var(--app-text)]">{detail.value}</div>
+          </div>
+        ))}
       </div>
     </div>
   )
