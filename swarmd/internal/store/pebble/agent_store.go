@@ -122,8 +122,10 @@ func NormalizeAgentModelMode(value string) string {
 
 func NormalizeModelServiceTier(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "fast", "flex", "priority":
-		return strings.ToLower(strings.TrimSpace(value))
+	case "fast", "priority":
+		return "fast"
+	case "flex":
+		return "flex"
 	default:
 		return ""
 	}

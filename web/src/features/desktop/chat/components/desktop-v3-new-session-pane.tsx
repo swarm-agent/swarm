@@ -49,14 +49,13 @@ function preferenceFromResolved(resolved: ResolvedSessionPreference | undefined)
   }
 }
 
-function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | 'off' | 'priority' {
+function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | 'off' {
   const serviceTier = preference.serviceTier.trim().toLowerCase()
-  if (serviceTier === 'fast') return 'on'
-  return serviceTier === 'priority' ? 'priority' : 'off'
+  return serviceTier === 'fast' || serviceTier === 'priority' ? 'on' : 'off'
 }
 
-function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; fast: 'on' | 'off' | 'priority' }): string {
-  return `${input.modelLabel || 'Model'} · 💡 ${input.thinking || 'off'}${input.fast !== 'off' ? ` · ⚡ ${input.fast}` : ''}`
+function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; fast: 'on' | 'off' }): string {
+  return `${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'}${input.fast !== 'off' ? ' · fast on' : ''}`
 }
 
 function preferenceFromDefaultPatch(patch: ModelDraft, modelOptions: ModelOptionRecord[]): SessionPreferenceRecord {

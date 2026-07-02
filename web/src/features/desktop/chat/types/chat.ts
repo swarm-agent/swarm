@@ -312,6 +312,8 @@ export interface ModelOptionRecord {
   favorite: boolean;
   contextWindow: number;
   pricing: ModelPricingRecord | null;
+  serviceTiers: string[];
+  defaultServiceTier: string;
 }
 
 export interface DesktopSessionPlanInfo {

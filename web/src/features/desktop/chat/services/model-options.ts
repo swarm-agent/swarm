@@ -41,9 +41,11 @@ function modelPresetListForProvider(provider: string): string[] {
   return MODEL_PRESETS_BY_PROVIDER[normalizeProviderID(provider)] ?? []
 }
 
-export function supportsCodexFastMode(provider: string, model: string): boolean {
+export function supportsCodexFastMode(provider: string, model: string, serviceTiers: string[] = []): boolean {
+  if (normalizeProviderID(provider) !== 'codex') return false
+  if (serviceTiers.map((tier) => tier.trim().toLowerCase()).includes('fast')) return true
   const normalizedModel = model.trim().toLowerCase()
-  return normalizeProviderID(provider) === 'codex' && (normalizedModel === 'gpt-5.4' || normalizedModel === 'gpt-5.5')
+  return normalizedModel === 'gpt-5.4' || normalizedModel === 'gpt-5.5'
 }
 
 export function codexFastEnabled(provider: string, model: string, serviceTier: string): boolean {

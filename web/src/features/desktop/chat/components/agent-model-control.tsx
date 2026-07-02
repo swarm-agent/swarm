@@ -48,7 +48,6 @@ const THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
 const FAST_OPTIONS = [
   { label: 'Off', value: '' },
   { label: 'On', value: 'fast' },
-  { label: 'Priority', value: 'priority' },
 ]
 
 type DraftMode = 'default' | 'single' | 'split'
@@ -95,12 +94,22 @@ function selectedDraftMode(profile: AgentProfileRecord | null): DraftMode {
   return 'default'
 }
 
+function normalizeFastServiceTier(value: string): string {
+  const normalized = value.trim().toLowerCase()
+  return normalized === 'fast' || normalized === 'priority' ? 'fast' : ''
+}
+
+function modelSupportsFast(provider: string, model: string, modelOptions: ModelOptionRecord[]): boolean {
+  const option = modelOptions.find((candidate) => candidate.provider === provider && candidate.model === model)
+  return supportsCodexFastMode(provider, model, option?.serviceTiers ?? [])
+}
+
 function defaultDraftFromModel(model: ModelOptionRecord | null, serviceTier = ''): ModelDraft {
   return {
     provider: model?.provider ?? '',
     model: model?.model ?? '',
     thinking: model?.thinking || 'off',
-    serviceTier: supportsCodexFastMode(model?.provider ?? '', model?.model ?? '') ? serviceTier.trim() : '',
+    serviceTier: supportsCodexFastMode(model?.provider ?? '', model?.model ?? '', model?.serviceTiers ?? []) ? normalizeFastServiceTier(serviceTier) : '',
   }
 }
 
@@ -110,7 +119,7 @@ function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedMode
     provider: profile?.provider.trim() || fallback.provider,
     model: profile?.model.trim() || fallback.model,
     thinking: profile?.thinking.trim() || fallback.thinking,
-    serviceTier: profile?.autoServiceTier.trim() || '',
+    serviceTier: normalizeFastServiceTier(profile?.autoServiceTier ?? ''),
   }
 }
 
@@ -121,14 +130,14 @@ function splitDraftFromProfile(profile: AgentProfileRecord | null, prefix: 'plan
       provider: profile?.planProvider.trim() || fallback.provider,
       model: profile?.planModel.trim() || fallback.model,
       thinking: profile?.planThinking.trim() || fallback.thinking,
-      serviceTier: profile?.planServiceTier.trim() || '',
+      serviceTier: normalizeFastServiceTier(profile?.planServiceTier ?? ''),
     }
   }
   return {
     provider: profile?.autoProvider.trim() || fallback.provider,
     model: profile?.autoModel.trim() || fallback.model,
     thinking: profile?.autoThinking.trim() || fallback.thinking,
-    serviceTier: profile?.autoServiceTier.trim() || '',
+    serviceTier: normalizeFastServiceTier(profile?.autoServiceTier ?? ''),
   }
 }
 
@@ -145,7 +154,7 @@ function normalizeThinking(value: string): string {
   return value.trim() || 'off'
 }
 
-function buildPatch(mode: DraftMode, single: ModelDraft, plan: ModelDraft, auto: ModelDraft): AgentModelControlProfilePatch {
+function buildPatch(mode: DraftMode, single: ModelDraft, plan: ModelDraft, auto: ModelDraft, modelOptions: ModelOptionRecord[]): AgentModelControlProfilePatch {
   if (mode === 'default') {
     return {
       modelMode: 'single',
@@ -175,7 +184,7 @@ function buildPatch(mode: DraftMode, single: ModelDraft, plan: ModelDraft, auto:
       autoProvider: '',
       autoModel: '',
       autoThinking: '',
-      autoServiceTier: supportsCodexFastMode(single.provider, single.model) ? single.serviceTier.trim() : '',
+      autoServiceTier: modelSupportsFast(single.provider, single.model, modelOptions) ? normalizeFastServiceTier(single.serviceTier) : '',
     }
   }
   return {
@@ -186,11 +195,11 @@ function buildPatch(mode: DraftMode, single: ModelDraft, plan: ModelDraft, auto:
     planProvider: plan.provider.trim(),
     planModel: plan.model.trim(),
     planThinking: normalizeThinking(plan.thinking),
-    planServiceTier: supportsCodexFastMode(plan.provider, plan.model) ? plan.serviceTier.trim() : '',
+    planServiceTier: modelSupportsFast(plan.provider, plan.model, modelOptions) ? normalizeFastServiceTier(plan.serviceTier) : '',
     autoProvider: auto.provider.trim(),
     autoModel: auto.model.trim(),
     autoThinking: normalizeThinking(auto.thinking),
-    autoServiceTier: supportsCodexFastMode(auto.provider, auto.model) ? auto.serviceTier.trim() : '',
+    autoServiceTier: modelSupportsFast(auto.provider, auto.model, modelOptions) ? normalizeFastServiceTier(auto.serviceTier) : '',
   }
 }
 
@@ -270,7 +279,7 @@ export function AgentModelControl({
   }
 
   function selectModel(target: 'single' | 'plan' | 'auto', model: string) {
-    const update = (current: ModelDraft): ModelDraft => ({ ...current, model, serviceTier: supportsCodexFastMode(current.provider, model) ? current.serviceTier : '' })
+    const update = (current: ModelDraft): ModelDraft => ({ ...current, model, serviceTier: modelSupportsFast(current.provider, model, modelOptions) ? current.serviceTier : '' })
     if (target === 'single') setSingleDraft(update)
     else if (target === 'plan') setPlanDraft(update)
     else setAutoDraft(update)
@@ -279,14 +288,14 @@ export function AgentModelControl({
   async function confirm() {
     const profile = draftProfile
     if (!profile || saving || busy) return
-    const patch = buildPatch(draftMode, singleDraft, planDraft, autoDraft)
+    const patch = buildPatch(draftMode, singleDraft, planDraft, autoDraft, modelOptions)
     const defaultPreferencePatch = draftMode === 'default'
       ? {
         ...singleDraft,
         provider: singleDraft.provider.trim(),
         model: singleDraft.model.trim(),
         thinking: normalizeThinking(singleDraft.thinking),
-        serviceTier: supportsCodexFastMode(singleDraft.provider, singleDraft.model) ? singleDraft.serviceTier.trim() : '',
+        serviceTier: modelSupportsFast(singleDraft.provider, singleDraft.model, modelOptions) ? normalizeFastServiceTier(singleDraft.serviceTier) : '',
       }
       : undefined
     if (draftMode === 'default' && (!defaultPreferencePatch?.provider || !defaultPreferencePatch.model || !defaultPreferencePatch.thinking)) {
@@ -468,7 +477,7 @@ function ModelDraftEditor({
   onServiceTierChange?: (serviceTier: string) => void
 }) {
   const choices = modelChoices(draft.provider, modelOptions)
-  const fastSupported = supportsCodexFastMode(draft.provider, draft.model)
+  const fastSupported = modelSupportsFast(draft.provider, draft.model, modelOptions)
   return (
     <div className="mt-4 rounded-xl border border-[var(--app-border)] p-3">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]"><GitBranch size={14} />{title}</div>
@@ -476,7 +485,7 @@ function ModelDraftEditor({
         <SelectField label="Provider" value={draft.provider} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider, value: provider }))} placeholder="Choose provider" />
         <SelectField label="Model" value={draft.model} onChange={onModelChange} options={choices.map((option) => ({ label: displayModelName(option.provider, option.model, option.contextMode), value: option.model }))} placeholder="Choose model" disabled={!draft.provider.trim()} />
         <SelectField label="Thinking" value={normalizeThinking(draft.thinking)} onChange={onThinkingChange} options={THINKING_OPTIONS.map((option) => ({ label: option, value: option }))} />
-        {showFast ? <SelectField label="Fast" value={fastSupported ? draft.serviceTier : ''} onChange={(value) => onServiceTierChange?.(value)} options={FAST_OPTIONS} disabled={!fastSupported} /> : null}
+        {showFast ? <SelectField label="Fast" value={fastSupported ? normalizeFastServiceTier(draft.serviceTier) : ''} onChange={(value) => onServiceTierChange?.(normalizeFastServiceTier(value))} options={FAST_OPTIONS} disabled={!fastSupported} /> : null}
       </div>
     </div>
   )

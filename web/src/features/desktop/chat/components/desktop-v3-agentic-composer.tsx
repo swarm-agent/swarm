@@ -140,7 +140,7 @@ export interface DesktopV3AgenticComposerProps {
   thinkingTagsEnabled?: boolean
   onThinkingTagsToggle?: (enabled: boolean) => void
   thinkingTagsBusy?: boolean
-  fast: 'on' | 'off' | 'priority'
+  fast: 'on' | 'off'
   contextLabel?: string
   contextTooltip?: string
   onCompact?: (draft: string) => void | Promise<void>
@@ -237,7 +237,7 @@ export function DesktopV3AgenticComposer({
   const modelPickerLocked = modelPickerDisabled || Boolean(modelLockNotice.trim())
   const modelPickerReason = modelPickerDisabledReason || modelLockNotice
   const normalizedThinking = normalizeThinking(thinking)
-  const fastSupported = selectedModel ? supportsCodexFastMode(selectedModel.provider, selectedModel.model) : false
+  const fastSupported = selectedModel ? supportsCodexFastMode(selectedModel.provider, selectedModel.model, selectedModel.serviceTiers) : false
   const ModeIcon = mode === 'plan' ? NotepadText : ChevronsUp
   const effectiveAgentSettingsSignal = agentSettingsOpenSignal + internalAgentSettingsSignal
   const dictationComposer = dictationEnabled
@@ -514,8 +514,7 @@ export function DesktopV3AgenticComposer({
   )
 
   const modelSummary = selectedModel?.label || selectedModel?.model || 'Model'
-  const fastLabel = fast === 'priority' ? 'priority' : fast
-  const settingsSummary = `${modelSummary} · 💡 ${normalizedThinking}${fastSupported && fast !== 'off' ? ` · ⚡ ${fastLabel}` : ''}`
+  const settingsSummary = `${modelSummary} · thinking ${normalizedThinking}${fastSupported && fast !== 'off' ? ' · fast on' : ''}`
 
   function handleModeToggle() {
     if (!onModeSelect) return
@@ -632,7 +631,7 @@ export function DesktopV3AgenticComposer({
                         <Lightbulb size={10} className="shrink-0" />
                         <span>{normalizedThinking}</span>
                         {fastSupported && fast !== 'off' ? <Zap size={10} className="shrink-0" /> : null}
-                        {fastSupported && fast !== 'off' ? <span>{fastLabel}</span> : null}
+                        {fastSupported && fast !== 'off' ? <span>fast on</span> : null}
                       </span>
                     </span>
                   </button>

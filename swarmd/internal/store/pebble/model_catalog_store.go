@@ -17,6 +17,8 @@ type ModelCatalogRecord struct {
 	ContextWindow         int             `json:"context_window"`
 	MaxOutputTokens       int             `json:"max_output_tokens"`
 	Reasoning             bool            `json:"reasoning"`
+	ServiceTiers          []string        `json:"service_tiers,omitempty"`
+	DefaultServiceTier    string          `json:"default_service_tier,omitempty"`
 	Source                string          `json:"source"`
 	SourceSnapshotID      string          `json:"source_snapshot_id,omitempty"`
 	SourceSnapshotVersion string          `json:"source_snapshot_version,omitempty"`

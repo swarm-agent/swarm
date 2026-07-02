@@ -618,6 +618,8 @@ interface ModelCatalogRecordWire {
   model?: string;
   context_window?: number;
   pricing?: ModelPricingRecord | null;
+  service_tiers?: string[] | null;
+  default_service_tier?: string | null;
 }
 
 interface CatalogResponseWire {
@@ -2018,6 +2020,19 @@ function normalizeModelPricing(value: unknown): ModelPricingRecord | null {
   return value as ModelPricingRecord;
 }
 
+function normalizeServiceTiers(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of value) {
+    const normalized = String(item ?? "").trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
 export async function fetchModelOptions(
   signal?: AbortSignal,
 ): Promise<ModelOptionRecord[]> {
@@ -2080,6 +2095,8 @@ export async function fetchModelOptions(
         favorite: true,
         contextWindow: 0,
         pricing: null,
+        serviceTiers: [],
+        defaultServiceTier: "",
       });
     }
   }
@@ -2106,6 +2123,8 @@ export async function fetchModelOptions(
               ? record.context_window
               : 0,
           pricing: normalizeModelPricing(record.pricing),
+          serviceTiers: normalizeServiceTiers(record.service_tiers),
+          defaultServiceTier: String(record.default_service_tier ?? "").trim().toLowerCase(),
         });
         continue;
       }
@@ -2116,6 +2135,8 @@ export async function fetchModelOptions(
             ? record.context_window
             : current.contextWindow,
         pricing: normalizeModelPricing(record.pricing) ?? current.pricing,
+        serviceTiers: normalizeServiceTiers(record.service_tiers),
+        defaultServiceTier: String(record.default_service_tier ?? "").trim().toLowerCase(),
       });
     }
   }

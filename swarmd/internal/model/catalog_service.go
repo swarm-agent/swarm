@@ -110,9 +110,15 @@ type swarmSnapshotModel struct {
 		ContextWindowTokens *int `json:"context_window_tokens"`
 		MaxOutputTokens     *int `json:"max_output_tokens"`
 	} `json:"limits"`
-	Pricing  json.RawMessage `json:"pricing"`
-	Thinking json.RawMessage `json:"thinking"`
-	Routing  struct {
+	Pricing          json.RawMessage `json:"pricing"`
+	Thinking         json.RawMessage `json:"thinking"`
+	ProviderSpecific map[string]struct {
+		Serving struct {
+			SupportedTiers []string `json:"supported_tiers"`
+			DefaultTier    string   `json:"default_tier"`
+		} `json:"serving"`
+	} `json:"provider_specific"`
+	Routing struct {
 		TopProviderContextWindowTokens *int `json:"top_provider_context_window_tokens"`
 		TopProviderMaxOutputTokens     *int `json:"top_provider_max_output_tokens"`
 	} `json:"routing"`
@@ -567,6 +573,7 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 		seen[key] = struct{}{}
 
 		reasoning := model.Capabilities.SupportsReasoning != nil && *model.Capabilities.SupportsReasoning
+		serviceTiers, defaultServiceTier := modelServingTiers(model, providerID)
 		record := pebblestore.ModelCatalogRecord{
 			Provider:              providerID,
 			ProviderDisplayName:   strings.TrimSpace(model.ProviderDisplayName),
@@ -576,6 +583,8 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 			ContextWindow:         codexruntime.EffectiveContextWindow(modelID, "", contextWindow),
 			MaxOutputTokens:       maxOutputTokens,
 			Reasoning:             reasoning,
+			ServiceTiers:          serviceTiers,
+			DefaultServiceTier:    defaultServiceTier,
 			Source:                source,
 			SourceSnapshotID:      snapshot.SnapshotID,
 			SourceSnapshotVersion: snapshot.SnapshotVersion,
@@ -589,6 +598,27 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 		records = append(records, record)
 	}
 	return records, version, nil
+}
+
+func modelServingTiers(model swarmSnapshotModel, providerID string) ([]string, string) {
+	providerSpecific, ok := model.ProviderSpecific[providerID]
+	if !ok {
+		return nil, ""
+	}
+	seen := make(map[string]struct{}, len(providerSpecific.Serving.SupportedTiers))
+	out := make([]string, 0, len(providerSpecific.Serving.SupportedTiers))
+	for _, tier := range providerSpecific.Serving.SupportedTiers {
+		normalized := strings.ToLower(strings.TrimSpace(tier))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out, strings.ToLower(strings.TrimSpace(providerSpecific.Serving.DefaultTier))
 }
 
 func (snapshot swarmSnapshot) version() swarmSnapshotVersion {
