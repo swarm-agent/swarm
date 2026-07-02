@@ -6,9 +6,9 @@ import {
   buildDesktopV3LiveRunRenderItems,
   isDesktopV3PlanExecutionBreakMessage,
   completeDesktopV3ExistingMessage,
-  resolveDesktopV3AgentModelLock,
   resolveDesktopV3StopRunRequest,
 } from './desktop-v3-existing-conversation-pane'
+import { resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import {
   completeDesktopV3NewSessionStarted,
 } from './desktop-v3-new-session-pane'
@@ -224,6 +224,15 @@ function agentProfile(overrides: Partial<AgentProfileRecord>): AgentProfileRecor
     provider: '',
     model: '',
     thinking: '',
+    modelMode: 'single',
+    planProvider: '',
+    planModel: '',
+    planThinking: '',
+    planServiceTier: '',
+    autoProvider: '',
+    autoModel: '',
+    autoThinking: '',
+    autoServiceTier: '',
     prompt: '',
     runtimeMode: 'plan_auto',
     executionSetting: '',
@@ -255,4 +264,37 @@ test('Desktop V3 agent model lock is derived synchronously from loaded agent pro
 
   assert.equal(unlocked.locked, false)
   assert.equal(unlocked.disabledReason, '')
+})
+
+test('Desktop V3 split agent model lock resolves by composer mode', () => {
+  const profiles = [
+    agentProfile({
+      name: 'swarm',
+      modelMode: 'split',
+      planProvider: 'codex',
+      planModel: 'gpt-5.4',
+      planThinking: 'high',
+      planServiceTier: 'fast',
+      autoProvider: 'openai',
+      autoModel: 'gpt-5.5',
+      autoThinking: 'medium',
+      autoServiceTier: '',
+    }),
+  ]
+
+  const plan = resolveDesktopV3AgentModelLock(profiles, 'swarm', 'plan')
+  assert.equal(plan.locked, true)
+  assert.equal(plan.provider, 'codex')
+  assert.equal(plan.model, 'gpt-5.4')
+  assert.equal(plan.thinking, 'high')
+  assert.equal(plan.serviceTier, 'fast')
+  assert.match(plan.disabledReason, /set the plan model to Default in Settings → Agents/)
+
+  const auto = resolveDesktopV3AgentModelLock(profiles, 'swarm', 'auto')
+  assert.equal(auto.locked, true)
+  assert.equal(auto.provider, 'openai')
+  assert.equal(auto.model, 'gpt-5.5')
+  assert.equal(auto.thinking, 'medium')
+  assert.equal(auto.serviceTier, '')
+  assert.match(auto.disabledReason, /set the auto model to Default in Settings → Agents/)
 })

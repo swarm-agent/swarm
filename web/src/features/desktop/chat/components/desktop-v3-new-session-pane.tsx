@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import { draftModelQueryKey, draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
@@ -7,6 +7,7 @@ import { normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled, type Desk
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
+import { findAgentProfile, preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import type { AgentStateRecord, ModelOptionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
 import { updateDraftModelPreference } from '../queries/chat-queries'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
@@ -117,6 +118,7 @@ export function DesktopV3NewSessionPane({
   onSlashCommand,
 }: DesktopV3NewSessionPaneProps) {
   const navigate = useNavigate()
+  const matchRoute = useMatchRoute()
   const queryClient = useQueryClient()
   const mountedRef = useRef(true)
   const storedOperation = useMemo(
@@ -175,6 +177,7 @@ export function DesktopV3NewSessionPane({
     serviceTier: preferenceProp?.serviceTier ?? draftPreferenceQuery.data?.preference.serviceTier ?? '',
     contextMode: preferenceProp?.contextMode ?? draftPreferenceQuery.data?.preference.contextMode ?? '',
   }))
+  const unlockedPreferenceRef = useRef<SessionPreferenceRecord>(preference)
 
   useEffect(() => {
     mountedRef.current = true
@@ -224,9 +227,15 @@ export function DesktopV3NewSessionPane({
       ) {
         return current
       }
+      unlockedPreferenceRef.current = nextPreference
       return nextPreference
     })
   }, [draftPreferenceQuery.data, preferenceProp])
+
+  const selectedAgentModelLock = useMemo(
+    () => resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, mode),
+    [agentState.profiles, mode, selectedAgent],
+  )
 
   useEffect(() => {
     if (writableRoutes.length === 0) return
@@ -234,6 +243,14 @@ export function DesktopV3NewSessionPane({
       setSelectedRouteId(writableRoutes[0]?.id ?? '')
     }
   }, [selectedRouteId, writableRoutes])
+
+  useEffect(() => {
+    if (!selectedAgentModelLock.locked) return
+    setPreference((current) => {
+      unlockedPreferenceRef.current = current
+      return preferenceFromAgentModelLock(selectedAgentModelLock, current, modelOptions)
+    })
+  }, [modelOptions, selectedAgentModelLock])
 
   useEffect(() => {
     const operation = loadDesktopV3NewSessionOperation(workspace.path)
@@ -253,6 +270,11 @@ export function DesktopV3NewSessionPane({
     : draftPreferenceQuery.data?.contextWindow ?? 0
   const contextLabel = selectedContextWindow > 0 ? `${formatContextWindow(selectedContextWindow)} ctx` : 'ctx'
   const selectedAgentName = selectedAgent.trim()
+  const workspaceSettingsMatch = matchRoute({ to: '/$workspaceSlug/settings', fuzzy: false })
+    ?? matchRoute({ to: '/$workspaceSlug', fuzzy: false })
+  const routeWorkspaceSlug = workspaceSettingsMatch && 'workspaceSlug' in workspaceSettingsMatch
+    ? String(workspaceSettingsMatch.workspaceSlug ?? '').trim()
+    : ''
   const canSubmit = Boolean(
     !starting
       && selectedRoute
@@ -265,10 +287,8 @@ export function DesktopV3NewSessionPane({
 
   async function persistDraftModelDefault(nextPreference: SessionPreferenceRecord) {
     if (!nextPreference.provider.trim() || !nextPreference.model.trim()) return
-    const agentProfile = agentState.profiles.find((profile) => profile.name === selectedAgentName)
-      ?? agentState.profiles.find((profile) => profile.name.trim().toLowerCase() === selectedAgentName.toLowerCase())
-      ?? null
-    if (agentProfile && (agentProfile.provider.trim() || agentProfile.model.trim())) return
+    const agentProfile = findAgentProfile(agentState.profiles, selectedAgentName)
+    if (agentProfile && (agentProfile.modelMode === 'split' || agentProfile.provider.trim() || agentProfile.model.trim())) return
     try {
       const updated = await updateDraftModelPreference({
         ...nextPreference,
@@ -286,6 +306,7 @@ export function DesktopV3NewSessionPane({
     preferenceManuallyChangedRef.current = true
     const option = modelOptions.find((candidate) => candidate.key === key) ?? null
     const next = preferenceFromOption(option, preference)
+    unlockedPreferenceRef.current = next
     setPreference(next)
     void persistDraftModelDefault(next)
   }
@@ -293,6 +314,7 @@ export function DesktopV3NewSessionPane({
   function handleThinkingChange(value: string) {
     preferenceManuallyChangedRef.current = true
     const next = { ...preference, thinking: value.trim() === 'off' ? '' : value.trim() }
+    unlockedPreferenceRef.current = next
     setPreference(next)
     void persistDraftModelDefault(next)
   }
@@ -303,18 +325,42 @@ export function DesktopV3NewSessionPane({
       ...preference,
       serviceTier: value === 'on' && fastSupported ? 'fast' : '',
     }
+    unlockedPreferenceRef.current = next
     setPreference(next)
     void persistDraftModelDefault(next)
+  }
+
+  function applyAgentModelPreference(agentName: string, nextMode: DesktopSessionMode, options: { manualPreference?: boolean } = {}) {
+    const lock = resolveDesktopV3AgentModelLock(agentState.profiles, agentName, nextMode)
+    if (options.manualPreference) preferenceManuallyChangedRef.current = true
+    if (!lock.locked) {
+      setPreference(unlockedPreferenceRef.current)
+      return
+    }
+    setPreference((current) => {
+      unlockedPreferenceRef.current = current
+      return preferenceFromAgentModelLock(lock, current, modelOptions)
+    })
   }
 
   function handleAgentSelect(agentName: string) {
     agentManuallySelectedRef.current = true
     setSelectedAgent(agentName)
+    applyAgentModelPreference(agentName, mode, { manualPreference: true })
   }
 
   function handleModeChange(nextMode: DesktopSessionMode) {
     modeManuallySelectedRef.current = true
     setMode(nextMode)
+    applyAgentModelPreference(selectedAgent, nextMode, { manualPreference: true })
+  }
+
+  function handleOpenAgentSettings() {
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab: 'agents' } })
+      return
+    }
+    void navigate({ to: '/settings', search: { tab: 'agents' } })
   }
 
   async function handleThinkingTagsToggle(enabled: boolean) {
@@ -440,6 +486,10 @@ export function DesktopV3NewSessionPane({
         selectedModelKey={selectedModelKey}
         selectedModelAvailable={selectedModelAvailable}
         onModelSelect={handleModelSelect}
+        modelPickerDisabled={selectedAgentModelLock.locked}
+        modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
+        modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
+        onOpenAgentSettings={handleOpenAgentSettings}
         thinking={preference.thinking}
         onThinkingChange={handleThinkingChange}
         thinkingTagsEnabled={thinkingTagsEnabled}

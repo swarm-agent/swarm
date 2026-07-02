@@ -9,12 +9,13 @@ import { selectDesktopPlanExecutionView, type DesktopPlanExecutionView, type Ren
 import type { DesktopV3CacheState, LiveRunOverlay, MessageSnapshot, PendingUserMessage } from '../../state/desktop-v3-cache-types'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import type { DesktopPermissionRecord, DesktopSessionRecord } from '../../types/realtime'
-import type { StructuredToolMessage, ToolMessageState, AgentProfileRecord, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
+import type { StructuredToolMessage, ToolMessageState, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
 import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
 import { agentStateQueryOptions, draftModelQueryKey, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
+import { preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
 import { buildDesktopV3RunStatusModel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
@@ -134,55 +135,6 @@ function preferenceFromOption(option: ModelOptionRecord | null, current: Session
     model: option.model,
     thinking: current.thinking || option.thinking,
     contextMode: option.contextMode,
-  }
-}
-
-type AgentModelLockState = {
-  profile: AgentProfileRecord | null
-  locked: boolean
-  agentName: string
-  provider: string
-  model: string
-  thinking: string
-  disabledReason: string
-}
-
-function findAgentProfile(agents: AgentProfileRecord[], agentName: string): AgentProfileRecord | null {
-  const normalizedAgentName = agentName.trim()
-  if (!normalizedAgentName) return null
-  return agents.find((agent) => agent.name === normalizedAgentName)
-    ?? agents.find((agent) => agent.name.trim().toLowerCase() === normalizedAgentName.toLowerCase())
-    ?? null
-}
-
-export function resolveDesktopV3AgentModelLock(agents: AgentProfileRecord[], selectedAgentName: string): AgentModelLockState {
-  const profile = findAgentProfile(agents, selectedAgentName)
-  const provider = profile?.provider.trim() ?? ''
-  const model = profile?.model.trim() ?? ''
-  const agentName = profile?.name.trim() || selectedAgentName.trim()
-  const locked = Boolean(provider && model)
-  return {
-    profile,
-    locked,
-    agentName,
-    provider,
-    model,
-    thinking: profile?.thinking.trim() ?? '',
-    disabledReason: locked && agentName
-      ? `To change models for ${agentName}, set the model to Default in Settings → Agents.`
-      : '',
-  }
-}
-
-function preferenceFromAgentModelLock(lock: AgentModelLockState, current: SessionPreferenceRecord, modelOptions: ModelOptionRecord[]): SessionPreferenceRecord {
-  if (!lock.locked) return current
-  const matchingOption = modelOptions.find((option) => option.provider === lock.provider && option.model === lock.model) ?? null
-  return {
-    ...current,
-    provider: lock.provider,
-    model: lock.model,
-    thinking: lock.thinking || current.thinking || matchingOption?.thinking || '',
-    contextMode: matchingOption?.contextMode ?? '',
   }
 }
 
@@ -727,8 +679,8 @@ export function DesktopV3ExistingConversationPane({
     || renderedMessages.pendingUser.length > 0
     || renderedMessages.liveRuns.length > 0
   const selectedAgentModelLock = useMemo(
-    () => resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent),
-    [agentState.profiles, selectedAgent],
+    () => resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, mode),
+    [agentState.profiles, mode, selectedAgent],
   )
   const selectedModelKey = optionKey(preference.provider, preference.model, preference.contextMode)
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
@@ -843,24 +795,30 @@ export function DesktopV3ExistingConversationPane({
     setPreference((current) => preferenceFromAgentModelLock(selectedAgentModelLock, current, modelOptions))
   }, [modelOptions, selectedAgentModelLock])
 
+  function applyAgentModelPreference(agentName: string, nextMode: DesktopSessionMode) {
+    const lock = resolveDesktopV3AgentModelLock(agentState.profiles, agentName, nextMode)
+    if (!lock.locked) {
+      setPreference(unlockedPreferenceRef.current)
+      return
+    }
+    setPreference((current) => {
+      unlockedPreferenceRef.current = current
+      return preferenceFromAgentModelLock(lock, current, modelOptions)
+    })
+  }
+
   function handleModeChange(nextMode: DesktopSessionMode) {
     localSettingsDirtyRef.current.mode = true
+    localSettingsDirtyRef.current.preference = true
     setMode(nextMode)
+    applyAgentModelPreference(selectedAgent, nextMode)
   }
 
   function handleAgentSelect(agentName: string) {
     localSettingsDirtyRef.current.agent = true
     localSettingsDirtyRef.current.preference = true
     setSelectedAgent(agentName)
-    const lock = resolveDesktopV3AgentModelLock(agentState.profiles, agentName)
-    if (lock.locked) {
-      setPreference((current) => {
-        unlockedPreferenceRef.current = current
-        return preferenceFromAgentModelLock(lock, current, modelOptions)
-      })
-      return
-    }
-    setPreference(unlockedPreferenceRef.current)
+    applyAgentModelPreference(agentName, mode)
   }
 
   function handleOpenAgentSettings() {

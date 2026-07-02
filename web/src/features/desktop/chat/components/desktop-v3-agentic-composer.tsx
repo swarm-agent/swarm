@@ -580,7 +580,7 @@ export function DesktopV3AgenticComposer({
             <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={onAgentSelect} dropdownAlign="left" />
             <ModelPicker options={modelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={onModelSelect} openSignal={effectiveModelPickerSignal} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
             <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
-            {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" /> : null}
+            {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" disabled={modelPickerLocked} disabledReason={modelPickerReason} /> : null}
             {settingsActionLabel && onSettingsAction ? (
               <button
                 type="button"
@@ -649,7 +649,7 @@ export function DesktopV3AgenticComposer({
                 <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={onAgentSelect} />
                 <ModelPicker options={modelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={onModelSelect} openSignal={effectiveModelPickerSignal} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
                 <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
-                {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" /> : null}
+                {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" disabled={modelPickerLocked} disabledReason={modelPickerReason} /> : null}
                 {compactButton(false)}
                 {settingsActionLabel && onSettingsAction ? (
                   <button

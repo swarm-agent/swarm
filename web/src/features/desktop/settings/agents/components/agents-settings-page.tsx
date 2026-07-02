@@ -699,7 +699,7 @@ function SplitModelSection({
               disabled={busy}
               className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
             >
-              <option value="">Default</option>
+              <option value="" disabled>Choose provider</option>
               {providerOptions.map((option) => (
                 <option key={option} value={option}>
                   {option}
@@ -720,7 +720,7 @@ function SplitModelSection({
               disabled={busy || !provider.trim()}
               className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
             >
-              <option value="">Default</option>
+              <option value="" disabled>Choose model</option>
               {modelChoices.map((option) => (
                 <option key={option} value={option}>
                   {option}
@@ -772,7 +772,7 @@ function SplitModelSection({
         </div>
       </div>
       <p className="mt-3 text-xs leading-5 text-[var(--app-text-muted)]">
-        Default means this {title.toLowerCase()} uses your current default chat model ({currentDefaultModelLabel}) and stays switchable in chat. Choose a provider/model here to lock this mode to that preset. Fast is available for supported Codex models.
+        Split mode requires explicit provider/model choices for both Plan and Auto. Choose a provider/model here to lock this mode to that preset. Fast is available for supported Codex models. Current default chat model: {currentDefaultModelLabel}.
       </p>
     </div>
   );
@@ -1661,6 +1661,16 @@ export function AgentsSettingsPage() {
       setError("Agent mode is required.");
       return;
     }
+    if (
+      form.modelMode === "split" &&
+      (!form.planProvider.trim() ||
+        !form.planModel.trim() ||
+        !form.autoProvider.trim() ||
+        !form.autoModel.trim())
+    ) {
+      setError("Split model mode requires explicit Plan and Auto provider/model selections.");
+      return;
+    }
     setSaving(true);
     setError(null);
     setStatus(null);
@@ -1697,6 +1707,16 @@ export function AgentsSettingsPage() {
     }
     if (!form.mode.trim()) {
       setError("Agent mode is required.");
+      return;
+    }
+    if (
+      form.modelMode === "split" &&
+      (!form.planProvider.trim() ||
+        !form.planModel.trim() ||
+        !form.autoProvider.trim() ||
+        !form.autoModel.trim())
+    ) {
+      setError("Split model mode requires explicit Plan and Auto provider/model selections.");
       return;
     }
     setSaving(true);
