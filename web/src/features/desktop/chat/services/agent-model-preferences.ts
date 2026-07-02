@@ -4,6 +4,7 @@ import type { AgentProfileRecord, ModelOptionRecord, SessionPreferenceRecord } f
 export type AgentModelLockState = {
   profile: AgentProfileRecord | null
   locked: boolean
+  customized: boolean
   agentName: string
   provider: string
   model: string
@@ -59,6 +60,7 @@ export function resolveDesktopV3AgentModelLock(
   return {
     profile,
     locked,
+    customized: Boolean(profile && (profile.modelMode === 'split' || profile.provider.trim() || profile.model.trim())),
     agentName,
     provider: preference.provider,
     model: preference.model,

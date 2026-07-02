@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
-import { LoaderCircle, Mic, Minimize2, Send, Settings2, Square } from 'lucide-react'
+import { ChevronsUp, LoaderCircle, Mic, Minimize2, NotepadText, Send, Settings2, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
@@ -119,6 +119,7 @@ export interface DesktopV3AgenticComposerProps {
   onSubmit: () => void | Promise<void>
   onStop?: () => void | Promise<void>
   mode: DesktopSessionMode
+  onModeSelect?: (mode: DesktopSessionMode) => void
   showModePicker?: boolean
   executionLabel?: string
   currentAgent: string
@@ -130,6 +131,7 @@ export interface DesktopV3AgenticComposerProps {
   modelPickerDisabled?: boolean
   modelPickerDisabledReason?: string
   modelLockNotice?: string
+  modelControlDetail?: string
   onOpenAgentSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
   agentModelControlBusy?: boolean
@@ -165,6 +167,7 @@ export function DesktopV3AgenticComposer({
   onSubmit,
   onStop,
   mode,
+  onModeSelect,
   showModePicker = true,
   executionLabel,
   currentAgent,
@@ -176,6 +179,7 @@ export function DesktopV3AgenticComposer({
   modelPickerDisabled = false,
   modelPickerDisabledReason = '',
   modelLockNotice = '',
+  modelControlDetail = '',
   onOpenAgentSettings,
   onConfirmAgentSettings,
   agentModelControlBusy = false,
@@ -232,6 +236,7 @@ export function DesktopV3AgenticComposer({
   const modelPickerReason = modelPickerDisabledReason || modelLockNotice
   const normalizedThinking = normalizeThinking(thinking)
   const fastSupported = selectedModel ? supportsCodexFastMode(selectedModel.provider, selectedModel.model) : false
+  const ModeIcon = mode === 'plan' ? NotepadText : ChevronsUp
   const effectiveAgentSettingsSignal = agentSettingsOpenSignal + internalAgentSettingsSignal
   const dictationComposer = dictationEnabled
     ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
@@ -510,6 +515,11 @@ export function DesktopV3AgenticComposer({
   const runtimeSummary = selectedAgentRuntimeMode ? ` · ${selectedAgentRuntimeMode.replace('_', ' ')}` : ''
   const settingsSummary = `${mode}${runtimeSummary} · ${selectedModel?.label || 'Model'} · ${normalizedThinking}${fastSupported ? ` · fast ${fast}` : ''}`
 
+  function handleModeToggle() {
+    if (!onModeSelect) return
+    onModeSelect(mode === 'plan' ? 'auto' : 'plan')
+  }
+
   return (
     <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-v3-agentic-composer">
       <div className="mx-auto grid w-full min-w-0 max-w-[70rem] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 focus-within:pb-[calc(1rem+var(--app-safe-area-bottom))] sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5">
@@ -566,18 +576,19 @@ export function DesktopV3AgenticComposer({
           ) : null}
           <div className="min-w-0 overflow-hidden border-t border-[var(--app-border)] px-4 py-2 text-[11px]">
             <div className="hidden min-w-0 items-center justify-between gap-2 min-[1000px]:flex">
-              <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {showModePicker ? <AgentModelControl currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} selectedModel={selectedModel} modelOptions={modelOptions} modelLocked={modelPickerLocked} modelLockNotice={modelPickerReason} openSignal={effectiveAgentSettingsSignal} onOpenAgentSettings={onOpenAgentSettings} onConfirmAgentSettings={onConfirmAgentSettings} busy={agentModelControlBusy} /> : executionLabel ? (
+              <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                {showModePicker ? (
+                  <button type="button" onClick={handleModeToggle} disabled={!onModeSelect || composerDisabled} title="Toggle plan/auto mode" className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--app-primary)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50">
+                    <ModeIcon size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
+                    {mode}
+                  </button>
+                ) : executionLabel ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
                     <span className="text-[var(--app-text-subtle)]">Execution:</span>
                     <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">{executionLabel}</span>
                   </span>
                 ) : null}
-                <span className="inline-flex min-w-0 items-center gap-1 text-[11px] text-[var(--app-text-muted)]">
-                  <span className="max-w-[220px] truncate font-medium text-[var(--app-text)]">{selectedModel?.label || selectedModel?.model || 'Model'}</span>
-                  <span>· thinking {normalizedThinking}</span>
-                  {fastSupported ? <span>· fast {fast}</span> : null}
-                </span>
+                {showModePicker ? <AgentModelControl currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} selectedModel={selectedModel} modelOptions={modelOptions} modelLocked={modelPickerLocked} modelLockNotice={modelPickerReason} triggerDetail={modelControlDetail || `${selectedModel?.label || selectedModel?.model || 'Model'} · thinking ${normalizedThinking}${fastSupported ? ` · fast ${fast}` : ''}`} openSignal={effectiveAgentSettingsSignal} onOpenAgentSettings={onOpenAgentSettings} onConfirmAgentSettings={onConfirmAgentSettings} busy={agentModelControlBusy} /> : null}
                 {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? (
                   <button type="button" onClick={() => onThinkingTagsToggle(!thinkingTagsEnabled)} disabled={thinkingTagsBusy} className="inline-flex h-6 items-center rounded-full border border-[var(--app-border)] px-2 text-[10px] font-semibold text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-60">
                     tags {thinkingTagsEnabled ? 'on' : 'off'}
@@ -603,13 +614,21 @@ export function DesktopV3AgenticComposer({
             </div>
             <div className="flex w-full min-w-0 min-[1000px]:hidden">
               <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_40px] sm:gap-2">
-                <button type="button" onClick={() => setInternalAgentSettingsSignal((current) => current + 1)} className="flex h-10 min-w-0 items-center gap-1.5 overflow-hidden rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] px-2 text-left shadow-sm transition hover:bg-[var(--app-surface-hover)]" title="Open agent, model, thinking, and speed settings">
-                  <Settings2 size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
-                  <span className="flex min-w-0 flex-col leading-tight">
-                    <span className="truncate text-[11px] font-medium text-[var(--app-text)] sm:text-[12px]">{currentAgent}</span>
-                    <span className="truncate text-[10px] text-[var(--app-text-muted)]">{settingsSummary}</span>
-                  </span>
-                </button>
+                <div className="flex h-10 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] shadow-sm">
+                  {showModePicker ? (
+                    <button type="button" onClick={handleModeToggle} disabled={!onModeSelect || composerDisabled} className="inline-flex h-full shrink-0 items-center gap-1 border-r border-[var(--app-border)] px-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-primary)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50" title="Toggle plan/auto mode">
+                      <ModeIcon size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
+                      {mode}
+                    </button>
+                  ) : null}
+                  <button type="button" onClick={() => setInternalAgentSettingsSignal((current) => current + 1)} className="flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-hidden px-2 text-left transition hover:bg-[var(--app-surface-hover)]" title="Open agent defaults and model settings">
+                    <Settings2 size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
+                    <span className="flex min-w-0 flex-col leading-tight">
+                      <span className="truncate text-[11px] font-medium text-[var(--app-text)] sm:text-[12px]">{currentAgent}</span>
+                      <span className="truncate text-[10px] text-[var(--app-text-muted)]">{settingsSummary}</span>
+                    </span>
+                  </button>
+                </div>
                 {compactButton(true)}
                 <Button size="sm" className="h-10 w-10 shrink-0 rounded-xl border border-transparent bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <Send size={20} />}

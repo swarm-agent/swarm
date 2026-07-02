@@ -35,6 +35,7 @@ interface AgentModelControlProps {
   modelOptions: ModelOptionRecord[]
   modelLocked?: boolean
   modelLockNotice?: string
+  triggerDetail?: string
   openSignal?: number
   onOpenAgentSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
@@ -45,6 +46,7 @@ const THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
 const FAST_OPTIONS = [
   { label: 'Off', value: '' },
   { label: 'On', value: 'fast' },
+  { label: 'Priority', value: 'priority' },
 ]
 
 type DraftMode = 'default' | 'single' | 'split'
@@ -106,7 +108,7 @@ function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedMode
     provider: profile?.provider.trim() || fallback.provider,
     model: profile?.model.trim() || fallback.model,
     thinking: profile?.thinking.trim() || fallback.thinking,
-    serviceTier: '',
+    serviceTier: profile?.autoServiceTier.trim() || '',
   }
 }
 
@@ -171,7 +173,7 @@ function buildPatch(mode: DraftMode, single: ModelDraft, plan: ModelDraft, auto:
       autoProvider: '',
       autoModel: '',
       autoThinking: '',
-      autoServiceTier: '',
+      autoServiceTier: supportsCodexFastMode(single.provider, single.model) ? single.serviceTier.trim() : '',
     }
   }
   return {
@@ -199,6 +201,7 @@ export function AgentModelControl({
   modelOptions,
   modelLocked = false,
   modelLockNotice = '',
+  triggerDetail = '',
   openSignal = 0,
   onOpenAgentSettings,
   onConfirmAgentSettings,
@@ -348,7 +351,7 @@ export function AgentModelControl({
             <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
               <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                <ModeButton selected={draftMode === 'default'} title="Default" description="Inherit the global/default model." onClick={() => setDraftMode('default')} />
+                <ModeButton selected={draftMode === 'default'} title="Default" description={'In the default state, you can freely change your settings and new chats will continue with your settings for agents with "Default" settings.'} onClick={() => setDraftMode('default')} />
                 <ModeButton selected={draftMode === 'single'} title="Single" description="Lock this agent to one model." onClick={() => setDraftMode('single')} />
                 <ModeButton selected={draftMode === 'split'} title="Split" description="Use separate plan and auto models." onClick={() => setDraftMode('split')} />
               </div>
@@ -361,14 +364,19 @@ export function AgentModelControl({
             </div>
 
             {draftMode === 'single' ? (
-              <ModelDraftEditor title="Single model" draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} />
+              <ModelDraftEditor title="Single model" draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showFast />
             ) : draftMode === 'split' ? (
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
                 <ModelDraftEditor title="Plan model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showFast />
                 <ModelDraftEditor title="Auto model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showFast />
               </div>
             ) : (
-              <div className="mt-4 rounded-xl border border-[var(--app-border)] p-3 text-sm text-[var(--app-text-muted)]">This agent will inherit the default model. Confirm to save the profile as default/inherited.</div>
+              <div className="mt-4 grid gap-3">
+                <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-sm text-[var(--app-text-muted)]">
+                  This agent is currently using your resolved defaults. The fields below show those defaults; changing one will customize this agent with a single model lock.
+                </div>
+                <ModelDraftEditor title="Resolved default model" draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => { setDraftMode('single'); selectProvider('single', provider) }} onModelChange={(model) => { setDraftMode('single'); selectModel('single', model) }} onThinkingChange={(thinking) => { setDraftMode('single'); setSingleDraft((current) => ({ ...current, thinking })) }} onServiceTierChange={(serviceTier) => { setDraftMode('single'); setSingleDraft((current) => ({ ...current, serviceTier })) }} showFast />
+              </div>
             )}
             {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
           </div>
@@ -390,13 +398,13 @@ export function AgentModelControl({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        title="Open agent and model setup"
-        className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)]"
+        title={triggerDetail ? `Open defaults for ${currentAgent || selectedPrimaryAgent || 'Agent'}: ${triggerDetail}` : 'Open agent and model setup'}
+        className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
       >
         <Bot size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
-        <span className="max-w-[120px] truncate">{currentAgent || selectedPrimaryAgent || 'Agent'}</span>
-        <span className="hidden rounded-full bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)] min-[1120px]:inline">{mode}</span>
-        <ChevronDown size={12} />
+        <span className="max-w-[110px] truncate text-[var(--app-text)]">{currentAgent || selectedPrimaryAgent || 'Agent'}</span>
+        <span className="hidden min-w-0 max-w-[260px] truncate text-[var(--app-text-muted)] min-[1120px]:inline">{triggerDetail || modelBehaviorLabel(activeProfile)}</span>
+        <ChevronDown size={12} className="shrink-0" />
       </button>
       {modal}
     </div>

@@ -2773,11 +2773,22 @@ func applySessionV3AgentPreferenceOverrides(base pebblestore.ModelPreference, ag
 		base.Thinking = thinkingOverride
 	}
 	base.Thinking = normalizeSessionV3ThinkingWithProvider(base.Provider, base.Thinking)
-	if !strings.EqualFold(strings.TrimSpace(base.Provider), "codex") || !strings.EqualFold(strings.TrimSpace(base.Model), "gpt-5.4") {
+	if !strings.EqualFold(strings.TrimSpace(base.Provider), "codex") || !sessionV3SupportsServiceTier(base.Model) {
 		base.ServiceTier = ""
+	}
+	if !strings.EqualFold(strings.TrimSpace(base.Provider), "codex") || !strings.EqualFold(strings.TrimSpace(base.Model), "gpt-5.4") {
 		base.ContextMode = ""
 	}
 	return base
+}
+
+func sessionV3SupportsServiceTier(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-5.4", "gpt-5.5":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeSessionV3ThinkingWithProvider(providerID, thinking string) string {

@@ -22,7 +22,9 @@ import { buildDesktopV3RunStatusModel, type DesktopV3RunStatusModel } from './de
 import type { DesktopSlashCommand } from '../services/slash-commands'
 import {
   sessionV3AgentSettingsMutationResponse,
+  sessionV3ModeSettingsMutationResponse,
   updateSessionV3Agent,
+  updateSessionV3Mode,
   stopSessionV3Run,
 } from '../../session-v3/api'
 import {
@@ -241,6 +243,13 @@ function permissionSavedRuleEqual(left: DesktopPermissionRecord['savedRule'], ri
     && left.pattern === right.pattern
     && left.createdAt === right.createdAt
     && left.updatedAt === right.updatedAt
+}
+
+function modelControlDetail(input: { locked: boolean; customized: boolean; mode: DesktopSessionMode; modelLabel: string; thinking: string; fast: 'on' | 'off' }): string {
+  const prefix = input.locked
+    ? input.customized ? 'Agent default' : 'Resolved default'
+    : 'Session default'
+  return `${prefix} · ${input.mode} · ${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'} · fast ${input.fast}`
 }
 
 function formatSettingsChangeSummary(input: {
@@ -785,6 +794,15 @@ export function DesktopV3ExistingConversationPane({
     void navigate({ to: '/settings', search: { tab: 'agents' } })
   }
 
+  function handleModeSelect(nextMode: DesktopSessionMode) {
+    if (!normalizedSessionId || nextMode === mode) return
+    localSettingsDirtyRef.current.mode = true
+    setMode(nextMode)
+    if (!selectedAgentModelLock.locked) return
+    const nextLock = resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, nextMode)
+    setPreference((current) => preferenceFromAgentModelLock(nextLock, current, modelOptions))
+  }
+
   async function handleConfirmAgentSettings(input: AgentModelControlConfirmInput) {
     if (!normalizedSessionId || agentModelSaving) return
     setAgentModelSaving(true)
@@ -826,6 +844,13 @@ export function DesktopV3ExistingConversationPane({
       dispatchDesktopV3Cache({
         type: 'mutation.sessionSettingsResult',
         raw: sessionV3AgentSettingsMutationResponse(agentResponse, normalizedSessionId),
+      })
+    }
+    if (mode !== settingsBaseline.mode) {
+      const modeResponse = await updateSessionV3Mode(normalizedSessionId, mode)
+      dispatchDesktopV3Cache({
+        type: 'mutation.sessionSettingsResult',
+        raw: sessionV3ModeSettingsMutationResponse(modeResponse, normalizedSessionId, mode),
       })
     }
   }
@@ -1100,6 +1125,7 @@ export function DesktopV3ExistingConversationPane({
             onStop={handleStop}
             onCompact={handleCompact}
             mode={mode}
+            onModeSelect={handleModeSelect}
             currentAgent={selectedAgent || 'Agent'}
             selectedPrimaryAgent={selectedAgent || ''}
             agents={agentState.profiles}
@@ -1108,6 +1134,7 @@ export function DesktopV3ExistingConversationPane({
             modelPickerDisabled={selectedAgentModelLock.locked}
             modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
             modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
+            modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, mode, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, fast: fastToggleFromPreference(preference) })}
             onOpenAgentSettings={handleOpenAgentSettings}
             onConfirmAgentSettings={handleConfirmAgentSettings}
             agentModelControlBusy={agentModelSaving}

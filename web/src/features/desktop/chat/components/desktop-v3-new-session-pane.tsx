@@ -52,6 +52,13 @@ function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | '
   return preference.serviceTier.trim().toLowerCase() === 'fast' ? 'on' : 'off'
 }
 
+function modelControlDetail(input: { locked: boolean; customized: boolean; mode: DesktopSessionMode; modelLabel: string; thinking: string; fast: 'on' | 'off' }): string {
+  const prefix = input.locked
+    ? input.customized ? 'Agent default' : 'Resolved default'
+    : 'Your default'
+  return `${prefix} · ${input.mode} · ${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'} · fast ${input.fast}`
+}
+
 function preferenceForRequest(preference: SessionPreferenceRecord): DesktopV3NewSessionPreference {
   const provider = preference.provider.trim()
   const model = preference.model.trim()
@@ -270,6 +277,11 @@ export function DesktopV3NewSessionPane({
   )
   const runStatusModel = starting ? { kind: 'starting' as const, label: 'Starting', active: true } : null
 
+  function handleModeSelect(nextMode: DesktopSessionMode) {
+    modeManuallySelectedRef.current = true
+    setMode(nextMode)
+  }
+
   async function handleConfirmAgentSettings(input: AgentModelControlConfirmInput) {
     if (agentModelSaving) return
     setAgentModelSaving(true)
@@ -418,6 +430,7 @@ export function DesktopV3NewSessionPane({
         error={startError || unsupportedReason}
         onSubmit={handleSubmit}
         mode={mode}
+        onModeSelect={handleModeSelect}
         currentAgent={selectedAgentName || agentState.activePrimary || 'Agent'}
         selectedPrimaryAgent={selectedAgentName || agentState.activePrimary || ''}
         agents={agentState.profiles}
@@ -426,6 +439,7 @@ export function DesktopV3NewSessionPane({
         modelPickerDisabled={selectedAgentModelLock.locked}
         modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
         modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
+        modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, mode, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, fast: fastToggleFromPreference(preference) })}
         onOpenAgentSettings={handleOpenAgentSettings}
         onConfirmAgentSettings={handleConfirmAgentSettings}
         agentModelControlBusy={agentModelSaving}

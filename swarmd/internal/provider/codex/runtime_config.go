@@ -5,6 +5,7 @@ import "strings"
 const (
 	ServiceTierFast           = "fast"
 	ServiceTierFlex           = "flex"
+	ServiceTierPriority       = "priority"
 	ContextMode1M             = "1m"
 	gpt54DefaultContextWindow = 272_000
 	gpt54LargeContextWindow   = 1_050_000
@@ -15,6 +16,8 @@ func NormalizeServiceTier(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case ServiceTierFast:
 		return ServiceTierFast
+	case ServiceTierPriority:
+		return ServiceTierPriority
 	case ServiceTierFlex:
 		return ServiceTierFlex
 	default:

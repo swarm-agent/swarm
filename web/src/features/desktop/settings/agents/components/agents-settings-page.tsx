@@ -110,6 +110,7 @@ const THINKING_OPTIONS = [
 const FAST_OPTIONS = [
   { value: "", label: "Default" },
   { value: "fast", label: "On" },
+  { value: "priority", label: "Priority" },
   { value: "off", label: "Off" },
 ];
 
@@ -2410,6 +2411,8 @@ export function AgentsSettingsPage() {
                             provider,
                             model:
                               provider === current.provider ? current.model : "",
+                            autoServiceTier:
+                              provider === current.provider ? current.autoServiceTier : "",
                           }));
                         }}
                         disabled={busy}
@@ -2441,6 +2444,9 @@ export function AgentsSettingsPage() {
                             setForm((current) => ({
                               ...current,
                               model: event.target.value,
+                              autoServiceTier: supportsCodexFastMode(current.provider, event.target.value)
+                                ? current.autoServiceTier
+                                : "",
                             }))
                           }
                           disabled={busy || !form.provider.trim()}
@@ -2460,11 +2466,11 @@ export function AgentsSettingsPage() {
                       </div>
                     </div>
                     <p className="mt-2 pl-[25%] text-xs leading-5 text-[var(--app-text-muted)]">
-                      Default means this agent uses your current default chat model ({currentDefaultModelLabel}) and stays switchable in chat. Choose a provider/model here to lock the agent to that preset.
+                      In the default state, you can freely change your settings and new chats will continue with your settings for agents with "Default" settings. Current default chat model: {currentDefaultModelLabel}. Choose a provider/model here to lock the agent to that preset.
                     </p>
                   </div>
 
-                  <div className="flex items-center px-4 py-3">
+                  <div className="flex items-center border-b border-[var(--app-border)] px-4 py-3">
                     <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
                       Thinking
                     </label>
@@ -2481,6 +2487,35 @@ export function AgentsSettingsPage() {
                         className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                       >
                         {THINKING_OPTIONS.map((option) => (
+                          <option key={option.label} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown
+                        size={14}
+                        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center px-4 py-3">
+                    <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                      Fast
+                    </label>
+                    <div className="relative w-full">
+                      <select
+                        value={supportsCodexFastMode(form.provider, form.model) ? form.autoServiceTier : ""}
+                        onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                          setForm((current) => ({
+                            ...current,
+                            autoServiceTier: event.target.value,
+                          }))
+                        }
+                        disabled={busy || !supportsCodexFastMode(form.provider, form.model)}
+                        className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                      >
+                        {FAST_OPTIONS.map((option) => (
                           <option key={option.label} value={option.value}>
                             {option.label}
                           </option>
