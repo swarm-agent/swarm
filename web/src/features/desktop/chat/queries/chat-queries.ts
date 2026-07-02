@@ -18,6 +18,7 @@ import type {
   ResolvedAgentToolContractRecord,
   ChatMessageRecord,
   ModelOptionRecord,
+  ModelPricingRecord,
   ProviderDefaultsPreviewRecord,
   ResolvedSessionPreference,
   DesktopSessionPlanCheckpoint,
@@ -616,6 +617,7 @@ interface ModelCatalogRecordWire {
   provider?: string;
   model?: string;
   context_window?: number;
+  pricing?: ModelPricingRecord | null;
 }
 
 interface CatalogResponseWire {
@@ -2009,6 +2011,13 @@ function modelOptionKey(
   return `${provider}:${model}:${contextMode.trim().toLowerCase()}`;
 }
 
+function normalizeModelPricing(value: unknown): ModelPricingRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as ModelPricingRecord;
+}
+
 export async function fetchModelOptions(
   signal?: AbortSignal,
 ): Promise<ModelOptionRecord[]> {
@@ -2070,6 +2079,7 @@ export async function fetchModelOptions(
         thinking: String(record.thinking ?? "").trim(),
         favorite: true,
         contextWindow: 0,
+        pricing: null,
       });
     }
   }
@@ -2095,6 +2105,7 @@ export async function fetchModelOptions(
             typeof record.context_window === "number"
               ? record.context_window
               : 0,
+          pricing: normalizeModelPricing(record.pricing),
         });
         continue;
       }
@@ -2104,6 +2115,7 @@ export async function fetchModelOptions(
           typeof record.context_window === "number"
             ? record.context_window
             : current.contextWindow,
+        pricing: normalizeModelPricing(record.pricing) ?? current.pricing,
       });
     }
   }

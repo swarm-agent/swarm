@@ -1,4 +1,4 @@
-import type { ModelOptionRecord } from '../types/chat'
+import type { ModelOptionRecord, ModelPricingRecord } from '../types/chat'
 
 const CODEX_CONTEXT_MODE_1M = '1m'
 const CODEX_GPT54_DEFAULT_CONTEXT_WINDOW = 272_000
@@ -173,4 +173,28 @@ export function formatContextWindow(value: number): string {
     return thousands % 1 === 0 ? `${thousands}k` : `${thousands.toFixed(1)}k`
   }
   return `${value}`
+}
+
+function finitePricingNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+}
+
+function formatPricingAmount(value: number): string {
+  if (value === 0) return '$0'
+  if (value < 0.01) return `$${value.toFixed(4)}`
+  if (value < 1) return `$${value.toFixed(3).replace(/0+$/u, '').replace(/\.$/u, '')}`
+  return `$${value.toFixed(2).replace(/\.00$/u, '')}`
+}
+
+export function formatModelPricing(pricing: ModelPricingRecord | null | undefined): string {
+  if (!pricing || typeof pricing !== 'object') return ''
+  if (pricing.is_free === true) return 'Free'
+  const input = finitePricingNumber(pricing.input_price_per_million_tokens)
+  const output = finitePricingNumber(pricing.output_price_per_million_tokens)
+  const cached = finitePricingNumber(pricing.cached_input_price_per_million_tokens)
+  const parts: string[] = []
+  if (input !== null) parts.push(`${formatPricingAmount(input)} in`)
+  if (output !== null) parts.push(`${formatPricingAmount(output)} out`)
+  if (cached !== null) parts.push(`${formatPricingAmount(cached)} cached`)
+  return parts.length > 0 ? `${parts.join(' / ')} per 1M tokens` : ''
 }

@@ -13,10 +13,9 @@ import {
   mentionPaletteQuery,
   normalizeMentionSubagents,
 } from '../services/subagent-mentions'
-import { AgentPicker } from './agent-picker'
+import { AgentModelControl } from './agent-model-control'
 import { DesktopMentionPanel } from './desktop-mention-panel'
 import { DesktopSlashCommandPanel } from './desktop-slash-command-panel'
-import { ModePicker } from './mode-picker'
 import { ModelPicker } from './model-picker'
 import { ThinkingPicker } from './thinking-picker'
 
@@ -145,6 +144,9 @@ export interface DesktopV3AgenticComposerProps {
   modelPickerDisabledReason?: string
   modelLockNotice?: string
   onOpenAgentSettings?: () => void
+  onUseSingleAgentModel?: (agent: AgentProfileRecord) => void | Promise<void>
+  onUseDefaultAgentModel?: (agent: AgentProfileRecord) => void | Promise<void>
+  agentModelControlBusy?: boolean
   thinking: string
   onThinkingChange: (value: string) => void
   thinkingTagsEnabled?: boolean
@@ -199,6 +201,9 @@ export function DesktopV3AgenticComposer({
   modelPickerDisabledReason = '',
   modelLockNotice = '',
   onOpenAgentSettings,
+  onUseSingleAgentModel,
+  onUseDefaultAgentModel,
+  agentModelControlBusy = false,
   thinking,
   onThinkingChange,
   thinkingTagsEnabled,
@@ -576,8 +581,7 @@ export function DesktopV3AgenticComposer({
         ) : null}
         {mobileSettingsOpen ? (
           <div ref={mobileSettingsRef} className="flex w-full flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)] min-[1000px]:hidden">
-            {showModePicker ? <ModePicker mode={mode} onSelect={onModeChange} /> : null}
-            <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={onAgentSelect} dropdownAlign="left" />
+            <AgentModelControl currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} selectedModel={selectedModel} modelLocked={modelPickerLocked} modelLockNotice={modelPickerReason} onAgentSelect={onAgentSelect} onModeSelect={onModeChange} onOpenModelPicker={() => setInternalModelPickerSignal((value) => value + 1)} onOpenAgentSettings={onOpenAgentSettings} onUseSingleModel={onUseSingleAgentModel} onUseDefaultModel={onUseDefaultAgentModel} allowModeChange={showModePicker} busy={agentModelControlBusy} dropdownAlign="left" />
             <ModelPicker options={modelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={onModelSelect} openSignal={effectiveModelPickerSignal} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
             <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
             {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" disabled={modelPickerLocked} disabledReason={modelPickerReason} /> : null}
@@ -640,13 +644,12 @@ export function DesktopV3AgenticComposer({
           <div className="min-w-0 overflow-hidden border-t border-[var(--app-border)] px-4 py-2 text-[11px]">
             <div className="hidden min-w-0 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {showModePicker ? <ModePicker mode={mode} onSelect={onModeChange} /> : executionLabel ? (
+                {showModePicker ? <AgentModelControl currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} selectedModel={selectedModel} modelLocked={modelPickerLocked} modelLockNotice={modelPickerReason} onAgentSelect={onAgentSelect} onModeSelect={onModeChange} onOpenModelPicker={() => setInternalModelPickerSignal((value) => value + 1)} onOpenAgentSettings={onOpenAgentSettings} onUseSingleModel={onUseSingleAgentModel} onUseDefaultModel={onUseDefaultAgentModel} busy={agentModelControlBusy} /> : executionLabel ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
                     <span className="text-[var(--app-text-subtle)]">Execution:</span>
                     <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">{executionLabel}</span>
                   </span>
                 ) : null}
-                <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={onAgentSelect} />
                 <ModelPicker options={modelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={onModelSelect} openSignal={effectiveModelPickerSignal} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
                 <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
                 {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" disabled={modelPickerLocked} disabledReason={modelPickerReason} /> : null}

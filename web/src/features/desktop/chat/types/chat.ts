@@ -288,6 +288,20 @@ export interface AgentStateRecord {
   toolInventory: AgentToolInventoryRecord | null;
 }
 
+export interface ModelPricingRecord {
+  currency?: string;
+  input_price_per_million_tokens?: number | null;
+  output_price_per_million_tokens?: number | null;
+  cached_input_price_per_million_tokens?: number | null;
+  reasoning_price_per_million_tokens?: number | null;
+  image_input_price?: number | null;
+  image_output_price?: number | null;
+  audio_input_price?: number | null;
+  audio_output_price?: number | null;
+  is_free?: boolean | null;
+  [key: string]: unknown;
+}
+
 export interface ModelOptionRecord {
   key: string;
   provider: string;
@@ -297,6 +311,7 @@ export interface ModelOptionRecord {
   thinking: string;
   favorite: boolean;
   contextWindow: number;
+  pricing: ModelPricingRecord | null;
 }
 
 export interface DesktopSessionPlanInfo {

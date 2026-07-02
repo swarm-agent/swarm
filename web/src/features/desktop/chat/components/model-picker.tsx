@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom'
 import { ChevronDown, Check, Cpu, Star } from 'lucide-react'
 import type { ModelOptionRecord } from '../types/chat'
-import { displayModelName, formatContextWindow, effectiveContextWindow } from '../services/model-options'
+import { displayModelName, formatContextWindow, effectiveContextWindow, formatModelPricing } from '../services/model-options'
 
 interface ModelPickerProps {
   options: ModelOptionRecord[]
@@ -276,6 +276,7 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
               ) : activeModels.map((option, index) => {
                 const isSelected = option.key === selectedKey
                 const isActive = index === activeModelIndex
+                const pricingLabel = formatModelPricing(option.pricing)
                 return (
                   <button
                     key={option.key}
@@ -299,11 +300,12 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
                     <span className="min-w-0 flex-1">
                       <span className="block whitespace-normal break-words font-medium leading-snug text-[var(--app-text)] min-[641px]:truncate">{displayModelName(option.provider, option.model, option.contextMode)}</span>
                       <span className="mt-1 block whitespace-normal break-words text-[11px] leading-snug text-[var(--app-text-subtle)] min-[641px]:truncate">{option.label}</span>
-                      {effectiveContextWindow(option.provider, option.model, option.contextMode, option.contextWindow) > 0 ? (
-                        <span className="mt-1 block text-[11px] text-[var(--app-text-subtle)]">
-                          Context window {formatContextWindow(effectiveContextWindow(option.provider, option.model, option.contextMode, option.contextWindow))}
-                        </span>
-                      ) : null}
+                      <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--app-text-subtle)]">
+                        {effectiveContextWindow(option.provider, option.model, option.contextMode, option.contextWindow) > 0 ? (
+                          <span>Context {formatContextWindow(effectiveContextWindow(option.provider, option.model, option.contextMode, option.contextWindow))}</span>
+                        ) : null}
+                        {pricingLabel ? <span>{pricingLabel}</span> : null}
+                      </span>
                     </span>
                   </button>
                 )

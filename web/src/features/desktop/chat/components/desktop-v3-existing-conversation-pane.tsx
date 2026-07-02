@@ -9,7 +9,7 @@ import { selectDesktopPlanExecutionView, type DesktopPlanExecutionView, type Ren
 import type { DesktopV3CacheState, LiveRunOverlay, MessageSnapshot, PendingUserMessage } from '../../state/desktop-v3-cache-types'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import type { DesktopPermissionRecord, DesktopSessionRecord } from '../../types/realtime'
-import type { StructuredToolMessage, ToolMessageState, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
+import type { StructuredToolMessage, ToolMessageState, AgentProfileRecord, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
 import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
 import { agentStateQueryOptions, draftModelQueryKey, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
@@ -45,6 +45,7 @@ import {
 } from '../../session-v3/plan-execution-api'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../../state/desktop-v3-session-api'
 import { resolveSessionPermission, sendSessionMessage, updateDraftModelPreference } from '../queries/chat-queries'
+import { switchAgentToDefaultModel, switchAgentToSingleModel } from '../queries/agent-preference-mutations'
 import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
 import { permissionRequiresApproval } from '../../permissions/services/permission-payload'
 import { DesktopPlanExecutionSidebar, type DesktopPlanExecutionSidebarActionInput } from './desktop-plan-execution-sidebar'
@@ -665,6 +666,7 @@ export function DesktopV3ExistingConversationPane({
   const [sending, setSending] = useState(false)
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
+  const [agentModelSaving, setAgentModelSaving] = useState(false)
   const [restartingWithSettings, setRestartingWithSettings] = useState(false)
   const [planExecutionBusyAction, setPlanExecutionBusyAction] = useState<string | null>(null)
   const [mode, setMode] = useState<DesktopSessionMode>(settingsBaseline.mode)
@@ -827,6 +829,49 @@ export function DesktopV3ExistingConversationPane({
       return
     }
     void navigate({ to: '/settings', search: { tab: 'agents' } })
+  }
+
+  async function handleUseSingleAgentModel(agent: AgentProfileRecord) {
+    if (agentModelSaving) return
+    setAgentModelSaving(true)
+    setSendError(null)
+    try {
+      await switchAgentToSingleModel(agent)
+      await queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey })
+      const nextPreference = preferenceFromAgentModelLock({
+        profile: agent,
+        locked: true,
+        agentName: agent.name,
+        provider: agent.provider || agent.autoProvider || agent.planProvider,
+        model: agent.model || agent.autoModel || agent.planModel,
+        thinking: agent.thinking || agent.autoThinking || agent.planThinking || 'off',
+        serviceTier: '',
+        mode,
+        disabledReason: '',
+      }, preference, modelOptions)
+      unlockedPreferenceRef.current = nextPreference
+      localSettingsDirtyRef.current.preference = true
+      setPreference(nextPreference)
+    } catch (error) {
+      if (mountedRef.current) setSendError(error instanceof Error ? error.message : 'Failed to update agent model mode')
+    } finally {
+      if (mountedRef.current) setAgentModelSaving(false)
+    }
+  }
+
+  async function handleUseDefaultAgentModel(agent: AgentProfileRecord) {
+    if (agentModelSaving) return
+    setAgentModelSaving(true)
+    setSendError(null)
+    try {
+      await switchAgentToDefaultModel(agent)
+      await queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey })
+      setPreference(unlockedPreferenceRef.current)
+    } catch (error) {
+      if (mountedRef.current) setSendError(error instanceof Error ? error.message : 'Failed to update agent model mode')
+    } finally {
+      if (mountedRef.current) setAgentModelSaving(false)
+    }
   }
 
   function handleModelSelect(key: string) {
@@ -1184,6 +1229,9 @@ export function DesktopV3ExistingConversationPane({
             modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
             modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
             onOpenAgentSettings={handleOpenAgentSettings}
+            onUseSingleAgentModel={(agent) => { void handleUseSingleAgentModel(agent) }}
+            onUseDefaultAgentModel={(agent) => { void handleUseDefaultAgentModel(agent) }}
+            agentModelControlBusy={agentModelSaving}
             thinking={preference.thinking}
             onThinkingChange={handleThinkingChange}
             thinkingTagsEnabled={thinkingTagsEnabled}

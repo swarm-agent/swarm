@@ -8,8 +8,9 @@ import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thi
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
 import { findAgentProfile, preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
-import type { AgentStateRecord, ModelOptionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
+import type { AgentProfileRecord, AgentStateRecord, ModelOptionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
 import { updateDraftModelPreference } from '../queries/chat-queries'
+import { switchAgentToDefaultModel, switchAgentToSingleModel } from '../queries/agent-preference-mutations'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
 import type { DesktopSlashCommand } from '../services/slash-commands'
@@ -163,6 +164,7 @@ export function DesktopV3NewSessionPane({
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
+  const [agentModelSaving, setAgentModelSaving] = useState(false)
   const [timerNow, setTimerNow] = useState(() => Date.now())
   const [mode, setMode] = useState<DesktopSessionMode>(defaultMode)
   const [selectedAgent, setSelectedAgent] = useState(agentNameProp.trim() || agentState.activePrimary || '')
@@ -363,6 +365,48 @@ export function DesktopV3NewSessionPane({
     void navigate({ to: '/settings', search: { tab: 'agents' } })
   }
 
+  async function handleUseSingleAgentModel(agent: AgentProfileRecord) {
+    if (agentModelSaving) return
+    setAgentModelSaving(true)
+    setStartError(null)
+    try {
+      await switchAgentToSingleModel(agent)
+      await queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey })
+      const nextPreference = preferenceFromAgentModelLock({
+        profile: agent,
+        locked: true,
+        agentName: agent.name,
+        provider: agent.provider || agent.autoProvider || agent.planProvider,
+        model: agent.model || agent.autoModel || agent.planModel,
+        thinking: agent.thinking || agent.autoThinking || agent.planThinking || 'off',
+        serviceTier: '',
+        mode,
+        disabledReason: '',
+      }, preference, modelOptions)
+      unlockedPreferenceRef.current = nextPreference
+      setPreference(nextPreference)
+    } catch (error) {
+      if (mountedRef.current) setStartError(error instanceof Error ? error.message : 'Failed to update agent model mode')
+    } finally {
+      if (mountedRef.current) setAgentModelSaving(false)
+    }
+  }
+
+  async function handleUseDefaultAgentModel(agent: AgentProfileRecord) {
+    if (agentModelSaving) return
+    setAgentModelSaving(true)
+    setStartError(null)
+    try {
+      await switchAgentToDefaultModel(agent)
+      await queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey })
+      setPreference(unlockedPreferenceRef.current)
+    } catch (error) {
+      if (mountedRef.current) setStartError(error instanceof Error ? error.message : 'Failed to update agent model mode')
+    } finally {
+      if (mountedRef.current) setAgentModelSaving(false)
+    }
+  }
+
   async function handleThinkingTagsToggle(enabled: boolean) {
     if (thinkingTagsSaving) return
     setThinkingTagsSaving(true)
@@ -490,6 +534,9 @@ export function DesktopV3NewSessionPane({
         modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
         modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
         onOpenAgentSettings={handleOpenAgentSettings}
+        onUseSingleAgentModel={(agent) => { void handleUseSingleAgentModel(agent) }}
+        onUseDefaultAgentModel={(agent) => { void handleUseDefaultAgentModel(agent) }}
+        agentModelControlBusy={agentModelSaving}
         thinking={preference.thinking}
         onThinkingChange={handleThinkingChange}
         thinkingTagsEnabled={thinkingTagsEnabled}
