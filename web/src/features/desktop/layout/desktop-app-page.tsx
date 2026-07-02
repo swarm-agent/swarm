@@ -2893,7 +2893,7 @@ export function DesktopAppPage() {
     }
   }, [planModal?.sessionId, planModalPlan?.id])
 
-  const handleApproveStartPlanModal = useCallback(async (input: { executionGranularity: 'checkpointed' | 'run_through'; continueAutomatically: boolean; continuationPolicy: 'automatic' | 'review_each_checkpoint' }) => {
+  const handleApproveStartPlanModal = useCallback(async (input: { checkpointId?: string; executionGranularity: 'checkpointed' | 'run_through'; continueAutomatically: boolean; continuationPolicy: 'automatic' | 'review_each_checkpoint' }) => {
     const sessionId = planModal?.sessionId.trim() ?? ''
     if (!sessionId || !planModalPlan?.id) return
     setPlanModalExecuting(true)
@@ -2901,12 +2901,14 @@ export function DesktopAppPage() {
     try {
       if (input.executionGranularity === 'run_through') {
         await startDesktopPlanAutomatic(sessionId, planModalPlan.id, {
+          checkpointId: input.checkpointId,
           executionGranularity: input.executionGranularity,
           continuationPolicy: input.continuationPolicy,
           continueAutomatically: input.continueAutomatically,
         })
       } else {
         await startDesktopPlanCheckpointed(sessionId, planModalPlan.id, {
+          checkpointId: input.checkpointId,
           executionGranularity: input.executionGranularity,
           continuationPolicy: input.continuationPolicy,
           continueAutomatically: input.continueAutomatically,
