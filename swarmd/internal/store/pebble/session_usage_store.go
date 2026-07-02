@@ -29,6 +29,8 @@ type SessionTurnUsageSnapshot struct {
 	CacheReadTokens  int64            `json:"cache_read_tokens"`
 	CacheWriteTokens int64            `json:"cache_write_tokens"`
 	TotalTokens      int64            `json:"total_tokens"`
+	ServiceTier      string           `json:"service_tier,omitempty"`
+	EstimatedCostUSD float64          `json:"estimated_cost_usd,omitempty"`
 	APIUsageRaw      map[string]any   `json:"api_usage_raw,omitempty"`
 	APIUsageRawPath  string           `json:"api_usage_raw_path,omitempty"`
 	APIUsageHistory  []map[string]any `json:"api_usage_history,omitempty"`
@@ -38,25 +40,27 @@ type SessionTurnUsageSnapshot struct {
 }
 
 type SessionUsageSummary struct {
-	SessionID          string `json:"session_id"`
-	UserID             string `json:"user_id,omitempty"`
-	AccountScopeID     string `json:"account_scope_id,omitempty"`
-	Provider           string `json:"provider"`
-	Model              string `json:"model"`
-	Source             string `json:"source"`
-	LastTransport      string `json:"last_transport,omitempty"`
-	LastConnectedViaWS *bool  `json:"last_connected_via_websocket,omitempty"`
-	ContextWindow      int    `json:"context_window"`
-	TurnCount          int    `json:"turn_count"`
-	InputTokens        int64  `json:"input_tokens"`
-	OutputTokens       int64  `json:"output_tokens"`
-	ThinkingTokens     int64  `json:"thinking_tokens"`
-	CacheReadTokens    int64  `json:"cache_read_tokens"`
-	CacheWriteTokens   int64  `json:"cache_write_tokens"`
-	TotalTokens        int64  `json:"total_tokens"`
-	RemainingTokens    int64  `json:"remaining_tokens"`
-	LastRunID          string `json:"last_run_id"`
-	UpdatedAt          int64  `json:"updated_at"`
+	SessionID          string  `json:"session_id"`
+	UserID             string  `json:"user_id,omitempty"`
+	AccountScopeID     string  `json:"account_scope_id,omitempty"`
+	Provider           string  `json:"provider"`
+	Model              string  `json:"model"`
+	Source             string  `json:"source"`
+	LastTransport      string  `json:"last_transport,omitempty"`
+	LastConnectedViaWS *bool   `json:"last_connected_via_websocket,omitempty"`
+	ContextWindow      int     `json:"context_window"`
+	TurnCount          int     `json:"turn_count"`
+	InputTokens        int64   `json:"input_tokens"`
+	OutputTokens       int64   `json:"output_tokens"`
+	ThinkingTokens     int64   `json:"thinking_tokens"`
+	CacheReadTokens    int64   `json:"cache_read_tokens"`
+	CacheWriteTokens   int64   `json:"cache_write_tokens"`
+	TotalTokens        int64   `json:"total_tokens"`
+	ServiceTier        string  `json:"service_tier,omitempty"`
+	EstimatedCostUSD   float64 `json:"estimated_cost_usd,omitempty"`
+	RemainingTokens    int64   `json:"remaining_tokens"`
+	LastRunID          string  `json:"last_run_id"`
+	UpdatedAt          int64   `json:"updated_at"`
 }
 
 func ApplyProviderUsageSnapshotToSummary(summary SessionUsageSummary, usage SessionTurnUsageSnapshot) SessionUsageSummary {
@@ -66,6 +70,7 @@ func ApplyProviderUsageSnapshotToSummary(summary SessionUsageSummary, usage Sess
 	summary.CacheReadTokens = clampUsageTokenCount(usage.CacheReadTokens)
 	summary.CacheWriteTokens = clampUsageTokenCount(usage.CacheWriteTokens)
 	summary.TotalTokens = clampUsageTokenCount(usage.TotalTokens)
+	summary.ServiceTier = strings.ToLower(strings.TrimSpace(usage.ServiceTier))
 	if summary.ContextWindow > 0 {
 		remaining := int64(summary.ContextWindow) - summary.TotalTokens
 		if remaining < 0 {
@@ -226,16 +231,54 @@ func (s *SessionStore) ResetUsage(sessionID string, summary SessionUsageSummary)
 	return nil
 }
 
+func sanitizeUsageHistory(history []map[string]any) []map[string]any {
+	if len(history) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(history))
+	for _, sample := range history {
+		if len(sample) == 0 {
+			continue
+		}
+		out = append(out, privacy.SanitizeMap(sample))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sanitizeUsagePaths(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = privacy.SanitizeText(path)
+		if strings.TrimSpace(path) != "" {
+			out = append(out, path)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func sanitizeTurnUsageSnapshot(record SessionTurnUsageSnapshot) SessionTurnUsageSnapshot {
 	record.SessionID = strings.TrimSpace(record.SessionID)
 	record.UserID = strings.TrimSpace(record.UserID)
 	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.RunID = strings.TrimSpace(record.RunID)
-	record.APIUsageRaw = nil
-	record.APIUsageRawPath = ""
-	record.APIUsageHistory = nil
-	record.APIUsagePaths = nil
+	record.APIUsageRaw = privacy.SanitizeMap(record.APIUsageRaw)
+	record.APIUsageRawPath = privacy.SanitizeText(record.APIUsageRawPath)
+	record.APIUsageHistory = sanitizeUsageHistory(record.APIUsageHistory)
+	record.APIUsagePaths = sanitizeUsagePaths(record.APIUsagePaths)
 	record.Source = privacy.SanitizeText(record.Source)
 	record.Transport = strings.ToLower(strings.TrimSpace(record.Transport))
+	record.ServiceTier = strings.ToLower(strings.TrimSpace(record.ServiceTier))
+	if record.EstimatedCostUSD < 0 {
+		record.EstimatedCostUSD = 0
+	}
 	return record
 }

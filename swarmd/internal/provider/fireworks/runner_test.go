@@ -131,6 +131,57 @@ func TestBuildChatCompletionRequestMapsThinkingToReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestResolveServingTierUsesProviderNativeFireworksSemantics(t *testing.T) {
+	cfg := ServingConfig{
+		SupportedTiers: []string{"standard", "priority", "fast"},
+		DefaultTier:    "standard",
+		Tiers: map[string]ServingTier{
+			"standard": {Tier: "standard"},
+			"priority": {Tier: "priority", ProviderParameter: "service_tier", ProviderValue: "priority"},
+			"fast":     {Tier: "fast", ProviderParameter: "model", ProviderValue: "accounts/fireworks/routers/glm-5p1-fast"},
+		},
+	}
+
+	standard := ResolveServingTier(provideriface.Request{SessionID: "s1", Model: "accounts/fireworks/models/glm-5p1"}, cfg)
+	if standard.ModelID != "accounts/fireworks/models/glm-5p1" || standard.ServiceTier != "" || standard.EffectiveTier != "standard" {
+		t.Fatalf("standard resolution = %+v", standard)
+	}
+	priority := ResolveServingTier(provideriface.Request{SessionID: "s1", Model: "accounts/fireworks/models/glm-5p1", ServiceTier: "priority"}, cfg)
+	if priority.ModelID != "accounts/fireworks/models/glm-5p1" || priority.ServiceTier != "priority" || priority.EffectiveTier != "priority" {
+		t.Fatalf("priority resolution = %+v", priority)
+	}
+	fast := ResolveServingTier(provideriface.Request{SessionID: "s1", Model: "accounts/fireworks/models/glm-5p1", ServiceTier: "fast"}, cfg)
+	if fast.ModelID != "accounts/fireworks/routers/glm-5p1-fast" || fast.ServiceTier != "" || fast.EffectiveTier != "fast" {
+		t.Fatalf("fast resolution = %+v", fast)
+	}
+	if fast.SessionAffinity == "" {
+		t.Fatalf("fast session affinity was empty")
+	}
+}
+
+func TestParseUsageCapturesCachedTokensAndCost(t *testing.T) {
+	usage := parseUsage(&chatCompletionUsage{
+		PromptTokens:        1000,
+		CompletionTokens:    200,
+		TotalTokens:         1200,
+		PromptTokensDetails: &chatPromptTokensDetails{CachedTokens: 300},
+	})
+	serving := requestServingResolution{EffectiveTier: "priority", ModelID: "accounts/fireworks/models/glm-5p1", ServingTier: ServingTier{Tier: "priority", Pricing: ServingTierPricing{UncachedInputPerMillion: 2.1, CachedInputPerMillion: 0.39, OutputPerMillion: 6.6}}}
+	annotateUsage(&usage, serving)
+	if usage.InputTokens != 1000 || usage.CacheReadTokens != 300 || usage.OutputTokens != 200 || usage.TotalTokens != 1200 {
+		t.Fatalf("usage = %+v", usage)
+	}
+	if usage.APIUsageRaw["uncached_prompt_tokens"] != int64(700) {
+		t.Fatalf("uncached prompt tokens raw = %#v", usage.APIUsageRaw["uncached_prompt_tokens"])
+	}
+	if usage.APIUsageRaw["service_tier"] != "priority" || usage.APIUsageRaw["provider_model"] != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("usage annotations = %#v", usage.APIUsageRaw)
+	}
+	if usage.APIUsageRaw["estimated_cost_usd"] == nil {
+		t.Fatalf("estimated cost missing from usage raw: %#v", usage.APIUsageRaw)
+	}
+}
+
 func TestParseChatCompletionResponseExtractsReasoningContent(t *testing.T) {
 	response := parseChatCompletionResponse(chatCompletionResponse{
 		ID:    "chatcmpl-test",

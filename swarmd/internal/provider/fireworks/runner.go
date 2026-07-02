@@ -50,22 +50,30 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	if modelID == "" {
 		return provideriface.Response{}, errors.New("model is required")
 	}
+	serving := ResolveServingTier(req, ServingConfigFromCatalog(req.ModelCatalog))
 	record, err := r.activeCredential(ctx)
 	if err != nil {
 		return provideriface.Response{}, err
 	}
 	payload := buildChatCompletionRequest(req)
+	applyServingResolutionToPayload(&payload, serving)
 	fireworksDebugEvent("request", map[string]any{
-		"transport":  "sync",
-		"session_id": req.SessionID,
-		"model":      modelID,
-		"payload":    fireworksDebugJSONValue(payload),
+		"transport":        "sync",
+		"session_id":       req.SessionID,
+		"model":            modelID,
+		"effective_model":  serving.ModelID,
+		"requested_tier":   serving.RequestedTier,
+		"effective_tier":   serving.EffectiveTier,
+		"service_tier":     serving.ServiceTier,
+		"session_affinity": serving.SessionAffinity != "",
+		"payload":          fireworksDebugJSONValue(payload),
 	})
-	decoded, err := r.client.CreateChatCompletion(ctx, record.APIKey, payload)
+	decoded, err := r.client.CreateChatCompletion(ctx, record.APIKey, payload, requestOptions{SessionAffinity: serving.SessionAffinity})
 	if err != nil {
 		return provideriface.Response{}, err
 	}
 	result := parseChatCompletionResponse(decoded)
+	annotateUsage(&result.Usage, serving)
 	fireworksDebugEvent("response", map[string]any{
 		"transport":  "sync",
 		"session_id": req.SessionID,
@@ -90,16 +98,23 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	if modelID == "" {
 		return provideriface.Response{}, errors.New("model is required")
 	}
+	serving := ResolveServingTier(req, ServingConfigFromCatalog(req.ModelCatalog))
 	record, err := r.activeCredential(ctx)
 	if err != nil {
 		return provideriface.Response{}, err
 	}
 	payload := buildChatCompletionRequest(req)
+	applyServingResolutionToPayload(&payload, serving)
 	fireworksDebugEvent("request", map[string]any{
-		"transport":  "stream",
-		"session_id": req.SessionID,
-		"model":      modelID,
-		"payload":    fireworksDebugJSONValue(payload),
+		"transport":        "stream",
+		"session_id":       req.SessionID,
+		"model":            modelID,
+		"effective_model":  serving.ModelID,
+		"requested_tier":   serving.RequestedTier,
+		"effective_tier":   serving.EffectiveTier,
+		"service_tier":     serving.ServiceTier,
+		"session_affinity": serving.SessionAffinity != "",
+		"payload":          fireworksDebugJSONValue(payload),
 	})
 	reasoningByKey := make(map[string]string, 4)
 	decoded, err := r.client.CreateChatCompletionStream(ctx, record.APIKey, payload, func(chunk chatCompletionChunk) error {
@@ -124,11 +139,12 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 			}
 		}
 		return nil
-	})
+	}, requestOptions{SessionAffinity: serving.SessionAffinity})
 	if err != nil {
 		return provideriface.Response{}, err
 	}
 	result := parseChatCompletionResponse(decoded)
+	annotateUsage(&result.Usage, serving)
 	fireworksDebugEvent("response", map[string]any{
 		"transport":  "stream",
 		"session_id": req.SessionID,
@@ -186,6 +202,21 @@ func buildChatCompletionRequest(req provideriface.Request) chatCompletionRequest
 		}
 	}
 	return out
+}
+
+func applyServingResolutionToPayload(payload *chatCompletionRequest, serving requestServingResolution) {
+	if payload == nil {
+		return
+	}
+	if strings.TrimSpace(serving.ModelID) != "" {
+		payload.Model = strings.TrimSpace(serving.ModelID)
+	}
+	if strings.TrimSpace(serving.ServiceTier) != "" {
+		// Fireworks Standard omits service_tier. Priority uses service_tier=priority
+		// on the normal model ID. Fast uses the provider-published router model ID
+		// from the Swarm snapshot and intentionally does not also request Priority.
+		payload.ServiceTier = strings.TrimSpace(serving.ServiceTier)
+	}
 }
 
 func buildChatCompletionMessages(req provideriface.Request) []map[string]any {
@@ -435,21 +466,73 @@ func parseUsage(usage *chatCompletionUsage) provideriface.TokenUsage {
 	if usage == nil {
 		return provideriface.TokenUsage{}
 	}
+	inputTokens := firstPositiveInt64(usage.PromptTokens, usage.InputTokens)
+	outputTokens := firstPositiveInt64(usage.CompletionTokens, usage.OutputTokens)
+	totalTokens := usage.TotalTokens
+	if totalTokens <= 0 && (inputTokens > 0 || outputTokens > 0) {
+		totalTokens = inputTokens + outputTokens
+	}
+	cachedTokens := int64(0)
+	if usage.PromptTokensDetails != nil {
+		cachedTokens = usage.PromptTokensDetails.CachedTokens
+	}
+	if cachedTokens <= 0 && usage.InputTokenDetails != nil {
+		cachedTokens = usage.InputTokenDetails.CachedTokens
+	}
+	if cachedTokens < 0 {
+		cachedTokens = 0
+	}
+	if cachedTokens > inputTokens && inputTokens > 0 {
+		cachedTokens = inputTokens
+	}
 	raw := map[string]any{
-		"prompt_tokens":     usage.PromptTokens,
-		"completion_tokens": usage.CompletionTokens,
-		"total_tokens":      usage.TotalTokens,
+		"prompt_tokens":          usage.PromptTokens,
+		"completion_tokens":      usage.CompletionTokens,
+		"total_tokens":           usage.TotalTokens,
+		"input_tokens":           usage.InputTokens,
+		"output_tokens":          usage.OutputTokens,
+		"cached_prompt_tokens":   cachedTokens,
+		"uncached_prompt_tokens": inputTokens - cachedTokens,
 	}
 	return provideriface.TokenUsage{
-		InputTokens:     usage.PromptTokens,
-		OutputTokens:    usage.CompletionTokens,
-		TotalTokens:     usage.TotalTokens,
+		InputTokens:     inputTokens,
+		OutputTokens:    outputTokens,
+		CacheReadTokens: cachedTokens,
+		TotalTokens:     totalTokens,
 		Source:          "fireworks_api_usage",
 		APIUsageRaw:     cloneMap(raw),
 		APIUsageRawPath: "usage",
 		APIUsageHistory: []map[string]any{cloneMap(raw)},
 		APIUsagePaths:   []string{"usage"},
 	}
+}
+
+func firstPositiveInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func annotateUsage(usage *provideriface.TokenUsage, serving requestServingResolution) {
+	if usage == nil || strings.TrimSpace(usage.Source) == "" {
+		return
+	}
+	if usage.APIUsageRaw == nil {
+		usage.APIUsageRaw = map[string]any{}
+	}
+	if strings.TrimSpace(serving.EffectiveTier) != "" {
+		usage.APIUsageRaw["service_tier"] = strings.TrimSpace(serving.EffectiveTier)
+	}
+	if strings.TrimSpace(serving.ModelID) != "" {
+		usage.APIUsageRaw["provider_model"] = strings.TrimSpace(serving.ModelID)
+	}
+	if cost := EstimateCostUSD(*usage, serving.ServingTier); cost > 0 {
+		usage.APIUsageRaw["estimated_cost_usd"] = cost
+	}
+	usage.APIUsageHistory = []map[string]any{cloneMap(usage.APIUsageRaw)}
 }
 
 func extractTextContent(content any) string {

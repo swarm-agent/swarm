@@ -1662,6 +1662,16 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	if usage.Source != "" {
 		summary.Source = usage.Source
 	}
+	if usage.ServiceTier != "" {
+		summary.ServiceTier = usage.ServiceTier
+	}
+	summary.EstimatedCostUSD += usage.EstimatedCostUSD
+	if hadPrevious {
+		summary.EstimatedCostUSD -= previous.EstimatedCostUSD
+		if summary.EstimatedCostUSD < 0 {
+			summary.EstimatedCostUSD = 0
+		}
+	}
 	summary.LastTransport = usage.Transport
 	if usage.ConnectedViaWS != nil {
 		summary.LastConnectedViaWS = boolPointer(*usage.ConnectedViaWS)

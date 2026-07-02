@@ -206,15 +206,33 @@ func normalizeRuntimePreference(pref pebblestore.ModelPreference) pebblestore.Mo
 	pref.Provider = normalizeProviderID(pref.Provider)
 	pref.Model = strings.TrimSpace(pref.Model)
 	pref.Thinking = normalizeThinkingForProvider(pref.Provider, pref.Thinking)
-	pref.ServiceTier = codexruntime.NormalizeServiceTier(pref.ServiceTier)
+	pref.ServiceTier = normalizeServiceTierForProvider(pref.Provider, pref.ServiceTier)
 	pref.ContextMode = codexruntime.NormalizeContextMode(pref.ContextMode)
-	if !supportsCodexFastRuntime(pref.Provider, pref.Model) {
+	if pref.Provider == "codex" && !supportsCodexFastRuntime(pref.Provider, pref.Model) {
 		pref.ServiceTier = ""
 	}
 	if !supportsCodexContextRuntime(pref.Provider, pref.Model) {
 		pref.ContextMode = ""
 	}
 	return pref
+}
+
+func normalizeServiceTierForProvider(providerID, serviceTier string) string {
+	providerID = normalizeProviderID(providerID)
+	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
+	switch providerID {
+	case "codex":
+		return codexruntime.NormalizeServiceTier(serviceTier)
+	case "fireworks":
+		switch serviceTier {
+		case "priority", "fast":
+			return serviceTier
+		default:
+			return ""
+		}
+	default:
+		return ""
+	}
 }
 
 func supportsCodexFastRuntime(provider, modelName string) bool {

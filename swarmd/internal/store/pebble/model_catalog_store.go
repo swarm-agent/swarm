@@ -28,6 +28,7 @@ type ModelCatalogRecord struct {
 	ExpiresAt             int64           `json:"expires_at"`
 	Pricing               json.RawMessage `json:"pricing,omitempty"`
 	Thinking              json.RawMessage `json:"thinking,omitempty"`
+	ProviderSpecific      json.RawMessage `json:"provider_specific,omitempty"`
 }
 
 type ModelCatalogMeta struct {

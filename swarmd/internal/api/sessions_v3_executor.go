@@ -623,6 +623,7 @@ type sessionV3ResolvedRuntime struct {
 	AgentProfile  pebblestore.AgentProfile
 	Preference    pebblestore.ModelPreference
 	ContextWindow int
+	ModelCatalog  any
 	Scope         tool.WorkspaceScope
 	Instructions  string
 	Tools         []provideriface.ToolDefinition
@@ -1099,6 +1100,7 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequest(job sessionV3ExecutorJo
 		ServiceTier:       strings.TrimSpace(pref.ServiceTier),
 		ContextMode:       strings.TrimSpace(pref.ContextMode),
 		ContextWindow:     resolved.ContextWindow,
+		ModelCatalog:      resolved.ModelCatalog,
 		ParallelToolCalls: true,
 		WorkspacePath:     strings.TrimSpace(resolved.Scope.PrimaryPath),
 	}
@@ -2003,6 +2005,16 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if strings.TrimSpace(pref.Provider) == "" || strings.TrimSpace(pref.Model) == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 provider/model is empty")
 	}
+	var catalogRecord any
+	if e.server.model != nil {
+		lookup, lookupErr := e.server.model.GetCatalog(pref.Provider, pref.Model)
+		if lookupErr != nil {
+			return sessionV3ResolvedRuntime{}, lookupErr
+		}
+		if lookup.Found {
+			catalogRecord = lookup.Record
+		}
+	}
 	scope, err := e.resolveSessionV3WorkspaceScope(session, job.Principal)
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
@@ -2022,7 +2034,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if len(tools) > 0 {
 		toolChoice = "auto"
 	}
-	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
+	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, ModelCatalog: catalogRecord, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
 }
 
 func (e *sessionV3Executor) resolveSessionV3WorkspaceScope(session pebblestore.SessionSnapshot, principal identity.Principal) (tool.WorkspaceScope, error) {
@@ -2773,13 +2785,29 @@ func applySessionV3AgentPreferenceOverrides(base pebblestore.ModelPreference, ag
 		base.Thinking = thinkingOverride
 	}
 	base.Thinking = normalizeSessionV3ThinkingWithProvider(base.Provider, base.Thinking)
-	if !strings.EqualFold(strings.TrimSpace(base.Provider), "codex") || !sessionV3SupportsServiceTier(base.Model) {
+	switch strings.ToLower(strings.TrimSpace(base.Provider)) {
+	case "codex":
+		if !sessionV3SupportsServiceTier(base.Model) {
+			base.ServiceTier = ""
+		}
+	case "fireworks":
+		base.ServiceTier = normalizeSessionV3FireworksServiceTier(base.ServiceTier)
+	default:
 		base.ServiceTier = ""
 	}
 	if !strings.EqualFold(strings.TrimSpace(base.Provider), "codex") || !strings.EqualFold(strings.TrimSpace(base.Model), "gpt-5.4") {
 		base.ContextMode = ""
 	}
 	return base
+}
+
+func normalizeSessionV3FireworksServiceTier(serviceTier string) string {
+	switch strings.ToLower(strings.TrimSpace(serviceTier)) {
+	case "priority", "fast":
+		return strings.ToLower(strings.TrimSpace(serviceTier))
+	default:
+		return ""
+	}
 }
 
 func sessionV3SupportsServiceTier(model string) bool {

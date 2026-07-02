@@ -31,6 +31,7 @@ type chatCompletionRequest struct {
 	ToolChoice        any                  `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool                `json:"parallel_tool_calls,omitempty"`
 	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
+	ServiceTier       string               `json:"service_tier,omitempty"`
 	Stream            bool                 `json:"stream,omitempty"`
 }
 
@@ -104,9 +105,31 @@ type chatCompletionChunk struct {
 }
 
 type chatCompletionUsage struct {
-	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
-	CompletionTokens int64 `json:"completion_tokens,omitempty"`
-	TotalTokens      int64 `json:"total_tokens,omitempty"`
+	PromptTokens        int64                    `json:"prompt_tokens,omitempty"`
+	CompletionTokens    int64                    `json:"completion_tokens,omitempty"`
+	TotalTokens         int64                    `json:"total_tokens,omitempty"`
+	PromptTokensDetails *chatPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	InputTokens         int64                    `json:"input_tokens,omitempty"`
+	OutputTokens        int64                    `json:"output_tokens,omitempty"`
+	InputTokenDetails   *chatPromptTokensDetails `json:"input_tokens_details,omitempty"`
+}
+
+type chatPromptTokensDetails struct {
+	CachedTokens int64 `json:"cached_tokens,omitempty"`
+}
+
+type requestOptions struct {
+	SessionAffinity string
+}
+
+func requestHeaders(options ...requestOptions) map[string]string {
+	headers := make(map[string]string, 1)
+	for _, option := range options {
+		if affinity := strings.TrimSpace(option.SessionAffinity); affinity != "" {
+			headers["x-session-affinity"] = affinity
+		}
+	}
+	return headers
 }
 
 func NewClient() *Client {
@@ -135,7 +158,7 @@ func (c *Client) VerifyAPIKey(ctx context.Context, apiKey string) (string, error
 	return "Fireworks API key verified via /v1/accounts", nil
 }
 
-func (c *Client) CreateChatCompletion(ctx context.Context, apiKey string, payload chatCompletionRequest) (chatCompletionResponse, error) {
+func (c *Client) CreateChatCompletion(ctx context.Context, apiKey string, payload chatCompletionRequest, options ...requestOptions) (chatCompletionResponse, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		return chatCompletionResponse{}, errors.New("fireworks auth is not configured")
@@ -144,7 +167,7 @@ func (c *Client) CreateChatCompletion(ctx context.Context, apiKey string, payloa
 	if err != nil {
 		return chatCompletionResponse{}, fmt.Errorf("marshal fireworks request: %w", err)
 	}
-	body, status, err := c.do(ctx, http.MethodPost, chatURL, apiKey, raw)
+	body, status, err := c.do(ctx, http.MethodPost, chatURL, apiKey, raw, requestHeaders(options...))
 	if err != nil {
 		return chatCompletionResponse{}, err
 	}
@@ -158,7 +181,7 @@ func (c *Client) CreateChatCompletion(ctx context.Context, apiKey string, payloa
 	return decoded, nil
 }
 
-func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, payload chatCompletionRequest, onChunk func(chatCompletionChunk) error) (chatCompletionResponse, error) {
+func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, payload chatCompletionRequest, onChunk func(chatCompletionChunk) error, options ...requestOptions) (chatCompletionResponse, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		return chatCompletionResponse{}, errors.New("fireworks auth is not configured")
@@ -179,6 +202,9 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	for key, value := range requestHeaders(options...) {
+		req.Header.Set(key, value)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return chatCompletionResponse{}, err
@@ -208,7 +234,7 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 	return state.response(), nil
 }
 
-func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte) ([]byte, int, error) {
+func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte, extraHeaders ...map[string]string) ([]byte, int, error) {
 	client := c.httpClient
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Minute}
@@ -224,6 +250,11 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for _, headers := range extraHeaders {
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
 	}
 	resp, err := client.Do(req)
 	if err != nil {

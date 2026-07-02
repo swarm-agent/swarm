@@ -1043,9 +1043,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if providerID == "" {
 		return RunResult{}, errors.New("resolved model provider is empty")
 	}
-	serviceTier := ""
-	if providerID == "codex" {
-		serviceTier = codexruntime.NormalizeServiceTier(resolvedPreference.Preference.ServiceTier)
+	serviceTier := resolvedServiceTierForProvider(providerID, resolvedPreference.Preference.ServiceTier)
+	var catalogRecord *pebblestore.ModelCatalogRecord
+	if lookup, err := modelCatalogLookup(s.model, providerID, resolvedPreference.Preference.Model); err != nil {
+		return RunResult{}, err
+	} else if lookup != nil {
+		catalogRecord = lookup
 	}
 	if s.providers == nil {
 		return RunResult{}, errors.New("provider registry is not configured")
@@ -1713,6 +1716,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			ServiceTier:       serviceTier,
 			ContextMode:       resolvedPreference.Preference.ContextMode,
 			ContextWindow:     resolvedPreference.ContextWindow,
+			ModelCatalog:      catalogRecordValue(catalogRecord),
 			ParallelToolCalls: true,
 			WorkspacePath:     workspaceCtx.WorkspacePath,
 			ToolInvoker: s.newProviderToolInvoker(providerToolInvokerConfig{

@@ -20,6 +20,7 @@ type Request struct {
 	ServiceTier       string
 	ContextMode       string
 	ContextWindow     int
+	ModelCatalog      any
 	ParallelToolCalls bool
 	WorkspacePath     string
 	ToolInvoker       ToolInvoker
@@ -68,6 +69,8 @@ type TokenUsage struct {
 	TotalTokens      int64            `json:"total_tokens,omitempty"`
 	CacheReadTokens  int64            `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int64            `json:"cache_write_tokens,omitempty"`
+	ServiceTier      string           `json:"service_tier,omitempty"`
+	EstimatedCostUSD float64          `json:"estimated_cost_usd,omitempty"`
 	Source           string           `json:"source,omitempty"`
 	Transport        string           `json:"transport,omitempty"`
 	ConnectedViaWS   *bool            `json:"connected_via_websocket,omitempty"`

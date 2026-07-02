@@ -7,6 +7,37 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestRecordTurnUsageFireworksPreservesTierAndCost(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-usage-fireworks-cost.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	svc := NewService(pebblestore.NewSessionStore(store), events)
+	session, _, err := svc.CreateSessionWithOptions(CreateSessionOptions{Title: "Fireworks usage", WorkspacePath: t.TempDir(), WorkspaceName: "workspace", Mode: "auto", Preference: &pebblestore.ModelPreference{Provider: "fireworks", Model: "glm-5p1", Thinking: "high", ServiceTier: "priority"}})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	turn, summary, _, err := svc.RecordTurnUsage(session.ID, pebblestore.SessionTurnUsageSnapshot{RunID: "run-fireworks", Provider: "fireworks", Model: "glm-5p1", Source: "fireworks_api_usage", ContextWindow: 1000, InputTokens: 100, CacheReadTokens: 40, OutputTokens: 10, TotalTokens: 110, ServiceTier: "priority", EstimatedCostUSD: 0.000123, APIUsageRaw: map[string]any{"estimated_cost_usd": 0.000123, "service_tier": "priority"}, APIUsageRawPath: "usage", APIUsageHistory: []map[string]any{{"estimated_cost_usd": 0.000123}}, APIUsagePaths: []string{"usage"}})
+	if err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+	if turn.ServiceTier != "priority" || turn.EstimatedCostUSD != 0.000123 || turn.CacheReadTokens != 40 {
+		t.Fatalf("turn usage = %+v", turn)
+	}
+	if summary.ServiceTier != "priority" || summary.EstimatedCostUSD != 0.000123 || summary.CacheReadTokens != 40 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if turn.APIUsageRaw["estimated_cost_usd"] == nil || len(turn.APIUsageHistory) != 1 {
+		t.Fatalf("raw usage not preserved: raw=%#v history=%#v", turn.APIUsageRaw, turn.APIUsageHistory)
+	}
+}
+
 func TestRecordTurnUsageCodexRemainingUsesLatestProviderSnapshot(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-usage-codex-remaining.pebble"))
 	if err != nil {

@@ -594,6 +594,7 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 			ExpiresAt:             expiresAt,
 			Pricing:               cloneRawJSON(model.Pricing),
 			Thinking:              cloneRawJSON(model.Thinking),
+			ProviderSpecific:      cloneProviderSpecificRawJSON(model.ProviderSpecific),
 		}
 		records = append(records, record)
 	}
@@ -795,6 +796,17 @@ func cloneRawJSON(raw json.RawMessage) json.RawMessage {
 		return nil
 	}
 	return append(json.RawMessage(nil), trimmed...)
+}
+
+func cloneProviderSpecificRawJSON(value any) json.RawMessage {
+	if value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	return cloneRawJSON(raw)
 }
 
 func firstPositiveInt(values ...*int) int {

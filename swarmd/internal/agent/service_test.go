@@ -392,6 +392,15 @@ func TestMemoryRemainsProtectedFromDelete(t *testing.T) {
 	}
 }
 
+func TestNormalizeModelServiceTierKeepsPriorityDistinctFromFast(t *testing.T) {
+	if got := pebblestore.NormalizeModelServiceTier("priority"); got != "priority" {
+		t.Fatalf("NormalizeModelServiceTier(priority) = %q, want priority", got)
+	}
+	if got := pebblestore.NormalizeModelServiceTier("fast"); got != "fast" {
+		t.Fatalf("NormalizeModelServiceTier(fast) = %q, want fast", got)
+	}
+}
+
 func TestUpsertClearsExplicitSplitModelFields(t *testing.T) {
 	svc, _ := newTestService(t)
 	enabled := true
@@ -404,10 +413,10 @@ func TestUpsertClearsExplicitSplitModelFields(t *testing.T) {
 		PlanModel:          "gpt-5.4",
 		PlanThinking:       "high",
 		PlanServiceTier:    "fast",
-		AutoProvider:       "codex",
-		AutoModel:          "gpt-5.5",
+		AutoProvider:       "fireworks",
+		AutoModel:          "glm-5p1",
 		AutoThinking:       "medium",
-		AutoServiceTier:    "fast",
+		AutoServiceTier:    "priority",
 		Prompt:             "Probe model settings.",
 		RuntimeMode:        pebblestore.AgentRuntimeModeRead,
 		ToolContract:       &pebblestore.AgentToolContract{Preset: "read_only"},
