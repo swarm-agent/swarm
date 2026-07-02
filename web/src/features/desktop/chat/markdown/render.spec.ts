@@ -109,3 +109,14 @@ test('MarkdownRenderer still supports underscore emphasis outside identifiers', 
   assert.match(html, /<em>\s*<span>intentional emphasis<\/span>\s*<\/em>/)
   assert.match(html, /words_with_underscores/)
 })
+
+
+test('MarkdownRenderer preserves exact needs-review identifier text', () => {
+  const content = 'Note: I also verified mark_needs_review renders intact as plain text with the markdown renderer.'
+
+  const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content }))
+
+  assert.match(html, /mark_needs_review/)
+  assert.doesNotMatch(html, /mark_neds_review/)
+  assert.doesNotMatch(html, /<em>/)
+})

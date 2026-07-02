@@ -320,6 +320,14 @@ func formatToolCompletedOutput(call tool.Call, result tool.Result) string {
 	return summarizeToolOutput(name, result.Output, maxToolPreviewChars, 2)
 }
 
+// PrepareToolOutputForModel converts a stored tool result into the bounded payload
+// that is safe to replay to a provider on a future turn. Full raw tool output may
+// be stored for UI/debug history, but provider input must always go through this
+// path so large logs are not re-ingested on every subsequent user message.
+func PrepareToolOutputForModel(call tool.Call, result tool.Result) string {
+	return prepareToolOutputForModel(call, result)
+}
+
 func prepareToolOutputForModel(call tool.Call, result tool.Result) string {
 	output := strings.TrimSpace(result.Output)
 	errorText := strings.TrimSpace(result.Error)

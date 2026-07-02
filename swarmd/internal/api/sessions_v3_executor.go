@@ -2555,10 +2555,17 @@ func sessionsV3ProviderToolRecordInputItems(record sessionV3ProviderToolResultRe
 	if metadata := cloneSessionsV3Metadata(record.Metadata); len(metadata) > 0 {
 		callInput["metadata"] = metadata
 	}
-	output := strings.TrimSpace(firstNonEmpty(record.Output, record.CompletedOutput, record.Error))
+	call := tool.Call{CallID: callID, Name: name, Arguments: arguments}
+	result := tool.Result{
+		CallID:     callID,
+		Name:       name,
+		Output:     strings.TrimSpace(firstNonEmpty(record.Output, record.CompletedOutput)),
+		Error:      strings.TrimSpace(record.Error),
+		DurationMS: record.DurationMS,
+	}
 	return []map[string]any{
 		callInput,
-		{"type": "function_call_output", "call_id": callID, "output": output},
+		{"type": "function_call_output", "call_id": callID, "output": runruntime.PrepareToolOutputForModel(call, result)},
 	}
 }
 
@@ -2601,7 +2608,7 @@ func sessionsV3ProviderToolResultInputItems(calls []provideriface.FunctionCall, 
 		}
 		output := strings.TrimSpace(result.TextForModel)
 		if output == "" {
-			output = strings.TrimSpace(firstNonEmpty(result.Output, result.Error))
+			output = runruntime.PrepareToolOutputForModel(tool.Call{CallID: callID, Name: name, Arguments: arguments}, tool.Result{CallID: callID, Name: name, Output: strings.TrimSpace(result.Output), Error: strings.TrimSpace(result.Error), DurationMS: result.DurationMS})
 		}
 		out = append(out, callInput, map[string]any{"type": "function_call_output", "call_id": callID, "output": output})
 	}
