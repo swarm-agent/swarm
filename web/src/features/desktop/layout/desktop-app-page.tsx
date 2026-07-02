@@ -59,7 +59,7 @@ import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectRenderedSe
 import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
-import { fetchAndApplyDesktopV3PlanSnapshot, saveDesktopV3SessionPlan } from '../state/desktop-v3-session-api'
+import { fetchAndApplyDesktopV3PlanSnapshot } from '../state/desktop-v3-session-api'
 import { archiveDesktopV3Sessions, jumpDesktopPlanToRevisionCheckpoint, restartDesktopPlanFromRevision, restoreDesktopPlanRevision, startDesktopPlanAutomatic, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned } from '../session-v3/api'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
@@ -2893,28 +2893,6 @@ export function DesktopAppPage() {
     }
   }, [planModal?.sessionId, planModalPlan?.id])
 
-  const handleSavePlanModal = useCallback(async (planText: string, document?: Record<string, unknown>) => {
-    const sessionId = planModal?.sessionId.trim() ?? ''
-    if (!sessionId) return
-    setPlanModalSaving(true)
-    setPlanModalError(null)
-    try {
-      await saveDesktopV3SessionPlan(sessionId, {
-        id: planModalPlan?.id,
-        title: planModalPlan?.title || 'Current Plan',
-        plan: planText,
-        document,
-        status: planModalPlan?.status || undefined,
-        approvalState: planModalPlan?.approvalState || undefined,
-      })
-    } catch (error) {
-      setPlanModalError(error instanceof Error ? error.message : String(error))
-      throw error
-    } finally {
-      setPlanModalSaving(false)
-    }
-  }, [planModal?.sessionId, planModalPlan?.approvalState, planModalPlan?.id, planModalPlan?.status, planModalPlan?.title])
-
   const handleApproveStartPlanModal = useCallback(async (input: { executionGranularity: 'checkpointed' | 'run_through'; continueAutomatically: boolean; continuationPolicy: 'automatic' | 'review_each_checkpoint' }) => {
     const sessionId = planModal?.sessionId.trim() ?? ''
     if (!sessionId || !planModalPlan?.id) return
@@ -3807,7 +3785,6 @@ export function DesktopAppPage() {
           if (!open) setPlanModal(null)
         }}
         onCopy={handleCopyPlanText}
-        onSave={handleSavePlanModal}
         onRestoreRevision={handleRestorePlanRevisionModal}
         onApproveStart={handleApproveStartPlanModal}
       />

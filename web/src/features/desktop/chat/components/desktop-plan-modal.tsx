@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   Brain,
@@ -11,10 +11,8 @@ import {
   Copy,
   FileText,
   ListTodo,
-  Pencil,
   PlayCircle,
   RotateCcw,
-  Save,
   ShieldCheck,
   Target,
   type LucideIcon,
@@ -23,11 +21,9 @@ import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/d
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import { Select } from '../../../../components/ui/select'
-import { Textarea } from '../../../../components/ui/textarea'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
 import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanExecutionPolicy, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
-import { structuredPlanDocumentToWire } from './structured-plan-document'
 
 interface DesktopPlanModalProps {
   open: boolean
@@ -39,7 +35,6 @@ interface DesktopPlanModalProps {
   onOpenChange: (open: boolean) => void
   executing?: boolean
   onCopy: (text: string) => Promise<boolean>
-  onSave: (planText: string, document?: Record<string, unknown>) => Promise<void>
   onRestoreRevision: (revision: DesktopSessionPlanRevisionRecord, input?: DesktopPlanRecoveryInput) => Promise<void>
   onApproveStart?: (input: { executionGranularity: 'checkpointed' | 'run_through'; continueAutomatically: boolean; continuationPolicy: 'automatic' | 'review_each_checkpoint' }) => Promise<void>
 }
@@ -327,6 +322,54 @@ function planExecutionSelectionFromPolicy(policy: DesktopSessionPlanExecutionPol
   }
 }
 
+type PlanApprovalExecutionChoice = 'checkpointed_automatic' | 'run_through' | 'checkpointed_manual'
+
+const planApprovalExecutionChoices: Array<{
+  id: PlanApprovalExecutionChoice
+  title: string
+  description: string
+  detail: string
+}> = [
+  {
+    id: 'checkpointed_automatic',
+    title: 'Automatic mode',
+    description: 'Run checkpoints automatically until completion or until review, blocker, or failure stops execution.',
+    detail: 'Default: preserves checkpoint boundaries and continues automatically.',
+  },
+  {
+    id: 'run_through',
+    title: 'Single run',
+    description: 'Run the approved plan as one fresh-context execution.',
+    detail: 'Disabled for automatic checkpoint plans; those must keep checkpoint boundaries.',
+  },
+  {
+    id: 'checkpointed_manual',
+    title: 'Manual checkpoint review',
+    description: 'Run one checkpoint at a time and pause for your review between checkpoints.',
+    detail: 'Use when you want to review every checkpoint before continuing.',
+  },
+]
+
+function approvalChoiceFromSelection(executionGranularity: 'checkpointed' | 'run_through', continueAutomatically: boolean): PlanApprovalExecutionChoice {
+  if (executionGranularity === 'run_through') return 'run_through'
+  return continueAutomatically ? 'checkpointed_automatic' : 'checkpointed_manual'
+}
+
+function approvalSelectionFromChoice(choice: PlanApprovalExecutionChoice): {
+  executionGranularity: 'checkpointed' | 'run_through'
+  continueAutomatically: boolean
+} {
+  if (choice === 'run_through') return { executionGranularity: 'run_through', continueAutomatically: true }
+  if (choice === 'checkpointed_manual') return { executionGranularity: 'checkpointed', continueAutomatically: false }
+  return { executionGranularity: 'checkpointed', continueAutomatically: true }
+}
+
+function disablesSingleRunApproval(policy: DesktopSessionPlanExecutionPolicy | null | undefined): boolean {
+  const mode = (policy?.mode ?? '').trim().toLowerCase()
+  const shape = (policy?.shape ?? '').trim().toLowerCase()
+  return mode === 'automatic' && (shape === '' || shape === 'checkpointed')
+}
+
 function PlanDetails({ document }: { document: DesktopSessionPlanDocument }) {
   const validationFiles = document.info.validationStrategy.trim() !== '' || document.info.relevantFiles.length > 0
   const hasDetails = Boolean(
@@ -607,48 +650,29 @@ function PlanRevisionHistory({
   historyLoading: boolean
   onSelect: (key: string) => void
 }) {
+  const selectedRevision = revisions.find((revision) => revision.key === selectedRevisionKey) ?? null
+  const selectedLabel = selectedRevision ? revisionOptionLabel(selectedRevision) : 'Current plan · Live structured document'
   return (
     <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <label className="grid min-w-0 flex-1 gap-1.5 text-sm text-[var(--app-text)]">
           <SectionEyebrow>Revision history</SectionEyebrow>
-          <p className="mt-1 text-sm text-[var(--app-text-muted)]">Select a whole-plan snapshot to inspect, restore, or restart from a checkpoint.</p>
-        </div>
-        {historyLoading ? <span className="text-xs text-[var(--app-text-muted)]">Loading…</span> : null}
+          <Select
+            value={selectedRevisionKey}
+            onChange={(event) => onSelect(event.target.value)}
+            disabled={historyLoading && revisions.length === 0}
+          >
+            <option value="current">Current plan · Live structured document</option>
+            {revisions.map((revision) => (
+              <option key={revision.key} value={revision.key}>{revisionOptionLabel(revision)} · {formatTimestamp(revision.createdAt || revision.updatedAt) || 'No timestamp'}</option>
+            ))}
+          </Select>
+        </label>
+        {historyLoading ? <span className="pb-2 text-xs text-[var(--app-text-muted)]">Loading…</span> : null}
       </div>
-      <div className="mt-3 grid gap-2">
-        <button
-          type="button"
-          onClick={() => onSelect('current')}
-          className={cn('rounded-xl border px-3 py-2 text-left text-sm transition', selectedRevisionKey === 'current' ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]')}
-        >
-          <span className="font-semibold">Current plan</span>
-          <span className="ml-2 text-xs text-[var(--app-text-muted)]">Live structured document</span>
-        </button>
-        {revisions.length > 0 ? (
-          <div className="grid max-h-48 gap-2 overflow-y-auto pr-1">
-            {revisions.map((revision) => {
-              const timestamp = formatTimestamp(revision.createdAt || revision.updatedAt)
-              const selected = selectedRevisionKey === revision.key
-              return (
-                <button
-                  key={revision.key}
-                  type="button"
-                  onClick={() => onSelect(revision.key)}
-                  className={cn('rounded-xl border px-3 py-2 text-left transition', selected ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]')}
-                >
-                  <span className="block truncate text-sm font-semibold text-[var(--app-text)]">{revisionOptionLabel(revision)}</span>
-                  <span className="mt-0.5 block truncate text-xs text-[var(--app-text-muted)]">
-                    {timestamp || 'No timestamp'} · status {displayValue(revision.status)} · approval {displayValue(revision.approvalState)}
-                  </span>
-                </button>
-              )
-            })}
-          </div>
-        ) : !historyLoading ? (
-          <p className="rounded-xl border border-dashed border-[var(--app-border)] px-3 py-2 text-sm text-[var(--app-text-muted)]">No prior plan definition revisions yet.</p>
-        ) : null}
-      </div>
+      <p className="mt-2 truncate text-xs text-[var(--app-text-muted)]" title={selectedLabel}>
+        {revisions.length > 0 || selectedRevision ? selectedLabel : 'No prior plan definition revisions yet.'}
+      </p>
     </section>
   )
 }
@@ -723,7 +747,9 @@ function PlanRecoveryControls({
   if (!viewingRevision || !selectedRevision || !document) return null
   const selectedCheckpoint = document.checkpoints.find((checkpoint) => checkpoint.id === checkpointId) ?? document.checkpoints[0]
   const effectiveCheckpointId = selectedCheckpoint?.id || ''
-  const effectiveContinueAutomatically = executionGranularity === 'run_through' ? true : continueAutomatically
+  const singleRunDisabled = disablesSingleRunApproval(document.executionPolicy)
+  const effectiveExecutionGranularity = singleRunDisabled && executionGranularity === 'run_through' ? 'checkpointed' : executionGranularity
+  const effectiveContinueAutomatically = effectiveExecutionGranularity === 'run_through' ? true : continueAutomatically
   const continuationPolicy: 'automatic' | 'review_each_checkpoint' = effectiveContinueAutomatically ? 'automatic' : 'review_each_checkpoint'
   const disabled = saving || executing
   return (
@@ -750,13 +776,13 @@ function PlanRecoveryControls({
         </label>
         <label className="grid gap-1.5 text-sm text-[var(--app-text)]">
           <span className="font-medium">Execution mode</span>
-          <Select value={executionGranularity} onChange={(event) => onExecutionGranularityChange(event.target.value === 'run_through' ? 'run_through' : 'checkpointed')} disabled={disabled}>
+          <Select value={effectiveExecutionGranularity} onChange={(event) => onExecutionGranularityChange(event.target.value === 'run_through' ? 'run_through' : 'checkpointed')} disabled={disabled}>
             <option value="checkpointed">{displayExecutionShape('checkpointed')}</option>
-            <option value="run_through">{displayExecutionShape('run_through')}</option>
+            <option value="run_through" disabled={singleRunDisabled}>{displayExecutionShape('run_through')}</option>
           </Select>
-          <span className="text-xs text-[var(--app-text-muted)]">Stored with the restored revision so recovery starts with the chosen backend policy.</span>
+          <span className="text-xs text-[var(--app-text-muted)]">Stored with the restored revision so recovery starts with the chosen backend policy. Single run is disabled for automatic checkpoint plans.</span>
         </label>
-        {executionGranularity === 'checkpointed' ? (
+        {effectiveExecutionGranularity === 'checkpointed' ? (
           <label className="flex items-start gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)] lg:col-span-2">
             <input type="checkbox" className="mt-1" checked={continueAutomatically} onChange={(event) => onContinueAutomaticallyChange(event.target.checked)} disabled={disabled} />
             <span className="grid gap-1">
@@ -775,7 +801,7 @@ function PlanRecoveryControls({
           type="button"
           variant="primary"
           size="sm"
-          onClick={() => onRestore({ checkpointId: effectiveCheckpointId, executionGranularity, continuationPolicy, continueAutomatically: effectiveContinueAutomatically, restart: true, start: true })}
+          onClick={() => onRestore({ checkpointId: effectiveCheckpointId, executionGranularity: effectiveExecutionGranularity, continuationPolicy, continueAutomatically: effectiveContinueAutomatically, restart: true, start: true })}
           disabled={disabled || !effectiveCheckpointId}
         >
           <PlayCircle className={cn('size-4', saving || executing ? 'animate-pulse' : '')} />
@@ -785,7 +811,7 @@ function PlanRecoveryControls({
           type="button"
           variant="outline"
           size="sm"
-          onClick={() => onRestore({ checkpointId: effectiveCheckpointId, executionGranularity, continuationPolicy, continueAutomatically: effectiveContinueAutomatically, restart: true, start: true, skipPrior: true })}
+          onClick={() => onRestore({ checkpointId: effectiveCheckpointId, executionGranularity: effectiveExecutionGranularity, continuationPolicy, continueAutomatically: effectiveContinueAutomatically, restart: true, start: true, skipPrior: true })}
           disabled={disabled || !effectiveCheckpointId}
         >
           Jump to selected checkpoint
@@ -795,7 +821,7 @@ function PlanRecoveryControls({
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => onRestore({ checkpointId: document.checkpoints[document.checkpoints.length - 1]?.id, executionGranularity, continuationPolicy, continueAutomatically: effectiveContinueAutomatically, restart: true, start: true, skipPrior: true })}
+            onClick={() => onRestore({ checkpointId: document.checkpoints[document.checkpoints.length - 1]?.id, executionGranularity: effectiveExecutionGranularity, continuationPolicy, continueAutomatically: effectiveContinueAutomatically, restart: true, start: true, skipPrior: true })}
             disabled={disabled || !document.checkpoints[document.checkpoints.length - 1]?.id}
           >
             Jump to final checkpoint
@@ -816,33 +842,37 @@ export function DesktopPlanModal({
   error,
   onOpenChange,
   onCopy,
-  onSave,
   onRestoreRevision,
   onApproveStart,
 }: DesktopPlanModalProps) {
-  const [draft, setDraft] = useState('')
-  const [documentDraft, setDocumentDraft] = useState('')
-  const [documentDraftError, setDocumentDraftError] = useState<string | null>(null)
-  const [editing, setEditing] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const [selectedRevisionKey, setSelectedRevisionKey] = useState('current')
   const [executionGranularity, setExecutionGranularity] = useState<'checkpointed' | 'run_through'>('checkpointed')
   const [continueAutomatically, setContinueAutomatically] = useState(true)
+  const modalWasOpenRef = useRef(false)
+  const syncedPlanIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (!open) {
+      modalWasOpenRef.current = false
+      syncedPlanIdRef.current = null
       return
     }
-    setDraft(plan?.plan ?? '')
-    setDocumentDraft(plan?.document ? JSON.stringify(structuredPlanDocumentToWire(plan.document), null, 2) : '')
-    setDocumentDraftError(null)
-    setEditing(false)
-    setCopyState('idle')
-    setSelectedRevisionKey('current')
-    const executionSelection = planExecutionSelectionFromPolicy(plan?.document?.executionPolicy)
-    setExecutionGranularity(executionSelection.executionGranularity)
-    setContinueAutomatically(executionSelection.continueAutomatically)
-  }, [open, plan?.id, plan?.updatedAt, plan?.plan, plan?.document])
+
+    const planId = plan?.id ?? ''
+    const opening = !modalWasOpenRef.current
+    const planChanged = syncedPlanIdRef.current !== null && syncedPlanIdRef.current !== planId
+    modalWasOpenRef.current = true
+    syncedPlanIdRef.current = planId
+
+    if (opening || planChanged) {
+      setCopyState('idle')
+      setSelectedRevisionKey('current')
+      const executionSelection = planExecutionSelectionFromPolicy(plan?.document?.executionPolicy)
+      setExecutionGranularity(executionSelection.executionGranularity)
+      setContinueAutomatically(executionSelection.continueAutomatically)
+    }
+  }, [open, plan?.id, plan?.document])
 
   useEscapeToClose(open, () => onOpenChange(false))
 
@@ -864,33 +894,11 @@ export function DesktopPlanModal({
 
   const viewingRevision = selectedRevision !== null
   const selectedDocument = viewingRevision ? selectedRevision.document : (plan?.document ?? null)
-  const preview = viewingRevision ? selectedRevision.plan : (draft.trim() !== '' ? draft : (plan?.plan ?? ''))
-  const currentDocumentWire = plan?.document ? JSON.stringify(structuredPlanDocumentToWire(plan.document), null, 2) : ''
-  const dirty = draft !== (plan?.plan ?? '') || documentDraft !== currentDocumentWire
+  const preview = viewingRevision ? selectedRevision.plan : (plan?.plan ?? '')
 
   const handleCopy = async () => {
     const ok = await onCopy(selectedPlanCopyText(selectedDocument, preview))
     setCopyState(ok ? 'copied' : 'error')
-  }
-
-  const handleSave = async () => {
-    setDocumentDraftError(null)
-    let parsedDocument: Record<string, unknown> | undefined
-    if (documentDraft.trim()) {
-      try {
-        const parsed = JSON.parse(documentDraft) as unknown
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          throw new Error('Structured document must be a JSON object.')
-        }
-        parsedDocument = parsed as Record<string, unknown>
-      } catch (error) {
-        setDocumentDraftError(error instanceof Error ? error.message : 'Structured document JSON is invalid.')
-        return
-      }
-    }
-    await onSave(draft, parsedDocument)
-    setEditing(false)
-    setSelectedRevisionKey('current')
   }
 
   const handleRestoreRevision = async (input: DesktopPlanRecoveryInput = {}) => {
@@ -898,28 +906,22 @@ export function DesktopPlanModal({
       return
     }
     await onRestoreRevision(selectedRevision, input)
-    setEditing(false)
     setSelectedRevisionKey('current')
   }
 
-  const handleCancelEdit = () => {
-    setDraft(plan?.plan ?? '')
-    setDocumentDraft(currentDocumentWire)
-    setDocumentDraftError(null)
-    setEditing(false)
-  }
-
-  const effectiveContinueAutomatically = executionGranularity === 'run_through' ? true : continueAutomatically
+  const singleRunApprovalDisabled = disablesSingleRunApproval(selectedDocument?.executionPolicy)
+  const approvalChoice = approvalChoiceFromSelection(
+    singleRunApprovalDisabled && executionGranularity === 'run_through' ? 'checkpointed' : executionGranularity,
+    continueAutomatically,
+  )
+  const approvalSelection = approvalSelectionFromChoice(approvalChoice)
+  const effectiveContinueAutomatically = approvalSelection.executionGranularity === 'run_through' ? true : approvalSelection.continueAutomatically
   const effectiveContinuationPolicy: 'automatic' | 'review_each_checkpoint' = effectiveContinueAutomatically ? 'automatic' : 'review_each_checkpoint'
-  const executionChoiceLabel = executionGranularity === 'run_through'
-    ? 'Execute as one run'
-    : effectiveContinueAutomatically
-      ? 'Execute checkpoint by checkpoint automatically'
-      : 'Execute checkpoint by checkpoint with review pauses'
+  const canApproveStart = Boolean(onApproveStart && plan?.document && !viewingRevision)
 
   const handleApproveStart = async () => {
-    if (!onApproveStart || editing || viewingRevision) return
-    await onApproveStart({ executionGranularity, continueAutomatically: effectiveContinueAutomatically, continuationPolicy: effectiveContinuationPolicy })
+    if (!onApproveStart || viewingRevision) return
+    await onApproveStart({ executionGranularity: approvalSelection.executionGranularity, continueAutomatically: effectiveContinueAutomatically, continuationPolicy: effectiveContinuationPolicy })
   }
 
   return (
@@ -931,8 +933,8 @@ export function DesktopPlanModal({
             <h2 className="truncate text-xl font-semibold tracking-tight text-[var(--app-text)]">{title}</h2>
           </div>
           <div className="flex min-w-0 shrink-0 flex-nowrap items-center justify-end gap-2 overflow-x-auto whitespace-nowrap">
-            {!editing && !viewingRevision && plan?.document ? (
-              <Button type="button" variant="primary" size="sm" onClick={() => void handleApproveStart()} disabled={!onApproveStart || saving || executing}>
+            {canApproveStart ? (
+              <Button type="button" variant="primary" size="sm" onClick={() => void handleApproveStart()} disabled={saving || executing}>
                 <PlayCircle className={cn('size-4', executing ? 'animate-pulse' : '')} />
                 {executing ? 'Starting…' : 'Approve & Start'}
               </Button>
@@ -947,82 +949,17 @@ export function DesktopPlanModal({
               )}
               {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy'}
             </Button>
-            {editing ? (
-              <>
-                <Button type="button" variant="secondary" size="sm" onClick={handleCancelEdit} disabled={saving}>
-                  Cancel
-                </Button>
-                <Button type="button" variant="primary" size="sm" onClick={() => void handleSave()} disabled={saving || !dirty}>
-                  <Save className={cn('size-4', saving ? 'animate-pulse' : '')} />
-                  {saving ? 'Saving…' : 'Save plan'}
-                </Button>
-              </>
-            ) : (
-              <Button
-                type="button"
-                variant="primary"
-                size="sm"
-                onClick={() => {
-                  setSelectedRevisionKey('current')
-                  setEditing(true)
-                }}
-              >
-                <Pencil className="size-4" />
-                Edit plan
-              </Button>
-            )}
             <ModalCloseButton onClick={() => onOpenChange(false)} aria-label="Close current plan dialog" />
           </div>
         </div>
 
         <div className="min-h-0 overflow-y-auto px-6 py-5">
-          {editing ? (
-            <section className="grid gap-3">
-              {plan?.document ? (
-                <>
-                  <label className="grid gap-2">
-                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Structured plan document</span>
-                    <Textarea
-                      value={documentDraft}
-                      onChange={(event) => {
-                        setDocumentDraft(event.target.value)
-                        setDocumentDraftError(null)
-                      }}
-                      placeholder="Edit structured plan info and checkpoints as JSON…"
-                      className="min-h-[420px] w-full resize-y bg-[var(--app-bg-alt)] font-mono text-sm leading-6"
-                    />
-                  </label>
-                  {documentDraftError ? (
-                    <p className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">{documentDraftError}</p>
-                  ) : null}
-                  <p className="text-xs text-[var(--app-text-muted)]">
-                    This edits the canonical structured plan document: base info plus checkpoint objects. Saving records one revision.
-                  </p>
-                </>
-              ) : (
-                <>
-                  <Textarea
-                    value={draft}
-                    onChange={(event) => setDraft(event.target.value)}
-                    placeholder="Write or paste the current session plan…"
-                    className="min-h-[420px] w-full resize-y bg-[var(--app-bg-alt)] font-mono text-sm leading-6"
-                  />
-                  <p className="text-xs text-[var(--app-text-muted)]">
-                    No structured document exists yet; saving this display text records a new revision.
-                  </p>
-                </>
-              )}
-            </section>
-          ) : (
-            <div className="grid gap-4">
+          <div className="grid gap-4">
               <PlanRevisionHistory
                 revisions={revisions}
                 selectedRevisionKey={selectedRevisionKey}
                 historyLoading={historyLoading}
-                onSelect={(key) => {
-                  setEditing(false)
-                  setSelectedRevisionKey(key)
-                }}
+                onSelect={setSelectedRevisionKey}
               />
               {viewingRevision && selectedRevision ? <PlanRevisionSummary revision={selectedRevision} /> : null}
               <PlanRecoveryControls
@@ -1040,46 +977,51 @@ export function DesktopPlanModal({
               {!viewingRevision && selectedDocument ? (
                 <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
                   <SectionEyebrow>Execution on approval</SectionEyebrow>
-                  <div className="mt-3 grid gap-3">
-                    <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
-                      <span className="font-semibold">Selected: {executionChoiceLabel}.</span>{' '}
-                      Approval will send <code className="rounded bg-[var(--app-bg-alt)] px-1 py-0.5">execution_granularity={executionGranularity}</code>{' '}
-                      and <code className="rounded bg-[var(--app-bg-alt)] px-1 py-0.5">continuation_policy={effectiveContinuationPolicy}</code>.
-                    </div>
-                    <label className="grid gap-1.5 text-sm text-[var(--app-text)]">
-                      <span className="font-medium">Execution style</span>
-                      <Select
-                        value={executionGranularity}
-                        onChange={(event) => setExecutionGranularity(event.target.value === 'checkpointed' ? 'checkpointed' : 'run_through')}
-                        disabled={executing}
-                      >
-                        <option value="checkpointed">Execute checkpoint by checkpoint</option>
-                        <option value="run_through">Execute as one run</option>
-                      </Select>
-                      <span className="text-xs text-[var(--app-text-muted)]">
-                        {executionGranularity === 'run_through'
-                          ? 'Runs the approved plan as a single fresh-context execution.'
-                          : 'Runs each checkpoint separately with fresh context.'}
-                      </span>
-                    </label>
-                    {executionGranularity === 'checkpointed' ? (
-                      <label className="grid gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
-                        <span className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={continueAutomatically}
-                            onChange={(event) => setContinueAutomatically(event.target.checked)}
-                            disabled={executing}
-                          />
-                          Continue automatically after each completed checkpoint
-                        </span>
-                        <span className="pl-6 text-xs text-[var(--app-text-muted)]">
-                          {continueAutomatically
-                            ? 'Swarm starts the next checkpoint automatically after successful completion, and still stops for review requests, blockers, failures, or final completion.'
-                            : 'If unchecked, Swarm pauses for your review before starting the next checkpoint.'}
-                        </span>
-                      </label>
-                    ) : null}
+                  <p className="mt-1 text-sm text-[var(--app-text-muted)]">
+                    Choose how approval starts execution. Single run is disabled for automatic checkpoint plans because they must preserve checkpoint boundaries.
+                  </p>
+                  <div className="mt-3 grid gap-3 md:grid-cols-3" role="radiogroup" aria-label="Execution on approval">
+                    {planApprovalExecutionChoices.map((choice) => {
+                      const selected = approvalChoice === choice.id
+                      const choiceDisabled = executing || (choice.id === 'run_through' && singleRunApprovalDisabled)
+                      return (
+                        <button
+                          key={choice.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          disabled={choiceDisabled}
+                          onClick={() => {
+                            if (choiceDisabled) return
+                            const selection = approvalSelectionFromChoice(choice.id)
+                            setExecutionGranularity(selection.executionGranularity)
+                            setContinueAutomatically(selection.continueAutomatically)
+                          }}
+                          className={cn(
+                            'grid min-h-[132px] gap-2 rounded-2xl border px-4 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]',
+                            selected
+                              ? 'border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] shadow-[0_12px_28px_rgba(0,0,0,0.12)]'
+                              : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-active)]',
+                            choiceDisabled ? 'cursor-not-allowed opacity-50 hover:border-[var(--app-border)]' : 'cursor-pointer',
+                          )}
+                        >
+                          <span className="flex items-start justify-between gap-3">
+                            <span className="text-sm font-semibold text-[var(--app-text)]">{choice.title}</span>
+                            <span
+                              className={cn(
+                                'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-full border',
+                                selected ? 'border-[var(--app-primary)] bg-[var(--app-primary)] text-[var(--app-primary-contrast)]' : 'border-[var(--app-border-strong)]',
+                              )}
+                              aria-hidden="true"
+                            >
+                              {selected ? <Check className="size-3" /> : null}
+                            </span>
+                          </span>
+                          <span className="text-xs leading-5 text-[var(--app-text)]">{choice.description}</span>
+                          <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">{choice.detail}</span>
+                        </button>
+                      )
+                    })}
                   </div>
                 </section>
               ) : null}
@@ -1091,13 +1033,12 @@ export function DesktopPlanModal({
                     <ChatMarkdown content={preview} className="text-base leading-7" />
                   ) : (
                     <p className="text-sm text-[var(--app-text-muted)]">
-                      No active plan yet. Use Edit plan to create one for this session.
+                      No active plan is available for this session.
                     </p>
                   )}
                 </section>
               )}
             </div>
-          )}
 
           {error ? (
             <div className="mt-4 rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-sm text-[var(--app-danger)]">

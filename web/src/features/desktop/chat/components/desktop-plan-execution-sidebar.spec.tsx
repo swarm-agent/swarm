@@ -6,6 +6,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { DesktopPlanExecutionSidebar } from './desktop-plan-execution-sidebar'
 import type { DesktopPlanExecutionSidebarActionInput } from './desktop-plan-execution-sidebar'
+import { DesktopPlanModal, type DesktopPlanRecoveryInput } from './desktop-plan-modal'
+import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 import type { DesktopPlanExecutionView } from '../../state/desktop-v3-cache-selectors'
 
 type HostElement = ReactElement<{
@@ -47,6 +49,93 @@ function findSidebarButton(element: ReactElement, label: string): HostElement {
   const button = collectHostElements(element).find((candidate) => candidate.type === 'button' && textContent(candidate.props.children).replace(/\s+/g, ' ').trim() === label)
   assert.ok(button, `expected ${label} button`)
   return button
+}
+
+function planRecord(): DesktopSessionPlanRecord {
+  const checkpoint = {
+    id: 'cp-1',
+    title: 'Build UI',
+    status: 'pending',
+    objective: '',
+    tasks: [],
+    acceptanceCriteria: [],
+    notes: '',
+    report: '',
+    result: '',
+    changedFiles: [],
+    validation: [],
+    attemptId: '',
+    runId: '',
+    sessionId: '',
+    startedAt: 0,
+    completedAt: 0,
+    review: null,
+    attempts: [],
+    order: 1,
+  }
+  return {
+    id: 'plan-1',
+    title: 'Plan',
+    plan: '# Plan',
+    status: 'draft',
+    approvalState: 'pending',
+    updatedAt: 1,
+    document: {
+      id: 'plan-1',
+      title: 'Plan',
+      status: 'draft',
+      schemaVersion: '',
+      revisionId: '',
+      info: { goal: 'Ship plan modal', scope: '', context: '', decisions: [], constraints: [], assumptions: [], openQuestions: [], relevantFiles: [], successCriteria: [], validationStrategy: '' },
+      executionPolicy: { mode: 'automatic', shape: 'checkpointed', followupCheckpointPolicy: '' },
+      executionState: null,
+      checkpoints: [checkpoint],
+      originalCheckpoints: [],
+      activeCheckpointId: 'cp-1',
+      renderedText: '',
+      displayText: '',
+    },
+  }
+}
+
+function planRevision(overrides: Partial<DesktopSessionPlanRevisionRecord> = {}): DesktopSessionPlanRevisionRecord {
+  const base = planRecord()
+  return {
+    ...base,
+    key: 'revision-1',
+    createdAt: 2,
+    priorTitle: '',
+    priorPlan: '',
+    diffLines: [],
+    updateSummary: 'Initial plan',
+    updateScope: '',
+    updateKind: 'definition',
+    revisionKind: 'definition',
+    restoredFromVersion: 0,
+    version: 1,
+    parentRevision: 0,
+    checkpoint: false,
+    ...overrides,
+  }
+}
+
+function renderPlanModal(props: Partial<React.ComponentProps<typeof DesktopPlanModal>> = {}): string {
+  return renderToStaticMarkup(
+    <DesktopPlanModal
+      open
+      plan={planRecord()}
+      revisions={[]}
+      historyLoading={false}
+      saving={false}
+      executing={false}
+      error={null}
+      onOpenChange={() => undefined}
+      onCopy={async () => true}
+      onRestoreRevision={async () => undefined}
+      onApproveStart={async () => undefined}
+      {...props}
+    />,
+  )
 }
 
 function view(overrides: Partial<DesktopPlanExecutionView> = {}): DesktopPlanExecutionView {
@@ -304,4 +393,33 @@ test('non-final review action dispatches checkpoint acceptance to start the next
   button.props.onClick?.()
 
   assert.deepEqual(actions, [{ action: 'accept_checkpoint', checkpointId: 'cp-1' }])
+})
+
+test('plan modal revision history renders as a compact dropdown and removes editing affordances', () => {
+  const markup = renderPlanModal({ revisions: [planRevision()] })
+
+  assert.match(markup, /Revision history/)
+  assert.match(markup, /<select/)
+  assert.match(markup, /Current plan · Live structured document/)
+  assert.match(markup, /Revision 1 · Plan version/)
+  assert.doesNotMatch(markup, /Edit plan/)
+  assert.doesNotMatch(markup, /Save plan/)
+  assert.doesNotMatch(markup, /<textarea/)
+})
+
+test('plan modal approval controls mirror plan approval choices and disable single run for automatic checkpoint plans', () => {
+  const markup = renderPlanModal()
+
+  const automaticIndex = markup.indexOf('Automatic mode')
+  const singleRunButtonIndex = markup.indexOf('>Single run</span>')
+  const manualIndex = markup.indexOf('Manual checkpoint review')
+  assert(automaticIndex >= 0, 'expected automatic choice')
+  assert(singleRunButtonIndex > automaticIndex, 'expected single run after automatic')
+  assert(manualIndex > singleRunButtonIndex, 'expected manual checkpoint review after single run')
+  assert.match(markup, /role="radiogroup"/)
+  assert.match(markup, /role="radio"/)
+  assert.match(markup, /Single run is disabled for automatic checkpoint plans/)
+  assert.match(markup, /disabled=""[^>]*><span class="flex items-start justify-between gap-3"><span class="text-sm font-semibold text-\[var\(--app-text\)\]">Single run/)
+  assert.doesNotMatch(markup, /Execution style/)
+  assert.doesNotMatch(markup, /type="checkbox"/)
 })
