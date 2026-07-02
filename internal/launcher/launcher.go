@@ -2036,9 +2036,6 @@ func Rebuild(profile Profile, includeWeb, restartSystemd bool) error {
 			return err
 		}
 	}
-	if err := SyncDevContainerImages(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-rebuild"), true); err != nil {
-		return err
-	}
 	if _, err := InstallLaunchers(profile.Root); err != nil {
 		return err
 	}
