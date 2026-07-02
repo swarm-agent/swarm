@@ -2934,7 +2934,6 @@ export function DesktopAppPage() {
         setMobileSidebarOpen(false)
         return
       case 'open-workspace-launcher':
-        setSwarmMenu({ open: false })
         setFlowMenuOpen(false)
         setMobileSidebarOpen(true)
         void navigate({ to: '/' })
