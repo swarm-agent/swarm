@@ -560,20 +560,6 @@ func TestSessionsV2LocalContainerValidatesRuntimePrincipalScope(t *testing.T) {
 	assertNoPrimaryCreateResidue(t, server, routeStore)
 }
 
-func TestSessionsV2LocalContainerPlacementRequiresAuthorityContainerID(t *testing.T) {
-	err := validateLocalContainerSessionV2Placement("container-swarm", "host-swarm-id", pebblestore.TopologyRuntimePlacementRecord{
-		RuntimeSwarmID:       "container-swarm",
-		AccountScopeID:       testPrincipal().AccountScopeID,
-		AuthorityHostSwarmID: "host-swarm-id",
-		RuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
-		PlacementGeneration:  1,
-		State:                pebblestore.TopologyRuntimePlacementStateActive,
-	})
-	if err == nil || !strings.Contains(err.Error(), "authority container id is required") {
-		t.Fatalf("err = %v, want authority container id rejection", err)
-	}
-}
-
 func TestSessionsV2LocalContainerValidatesLivePlacement(t *testing.T) {
 	cases := []struct {
 		name       string

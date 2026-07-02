@@ -130,7 +130,7 @@ func installDeployAttachStaleRouteTestStores(t *testing.T, server *Server) (*peb
 	routeStore := pebblestore.NewSessionRouteStore(store)
 	topologyStore := pebblestore.NewTopologyStore(store)
 	server.SetSessionRouteStore(routeStore)
-	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil))
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil))
 	route := pebblestore.SessionRouteRecord{
 		SessionID:       "session-stale",
 		UserID:          testPrincipal().UserID,

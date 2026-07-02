@@ -17,8 +17,7 @@ import (
 )
 
 const (
-	sessionsV2EndpointPrimary        = "primary"
-	sessionsV2EndpointLocalContainer = "local_container"
+	sessionsV2EndpointPrimary = "primary"
 
 	runtimeSessionOpenHTTPTimeout = 30 * time.Second
 )
@@ -71,16 +70,12 @@ func (s *Server) handleSessionsV2Primary(w http.ResponseWriter, r *http.Request)
 	s.handleSessionsV2Create(w, r, sessionsV2EndpointPrimary)
 }
 
-func (s *Server) handleSessionsV2LocalContainers(w http.ResponseWriter, r *http.Request) {
-	s.handleSessionsV2Create(w, r, sessionsV2EndpointLocalContainer)
-}
-
 func (s *Server) handleSessionsV2Create(w http.ResponseWriter, r *http.Request, endpointClass string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
 	}
-	if s.sessions == nil || s.topology == nil || (endpointClass == sessionsV2EndpointLocalContainer && s.sessions.Store() == nil) {
+	if s.sessions == nil || s.topology == nil {
 		writeSessionsV2Error(w, errors.New("sessions v2 service is not configured"))
 		return
 	}
@@ -92,15 +87,6 @@ func (s *Server) handleSessionsV2Create(w http.ResponseWriter, r *http.Request, 
 	req, err := decodeSessionsV2CreateRequestStrict(r)
 	if err != nil {
 		writeSessionsV2Error(w, err)
-		return
-	}
-	if endpointClass == sessionsV2EndpointLocalContainer {
-		resp, err := s.createSessionsV2LocalContainer(r, principal, req)
-		if err != nil {
-			writeSessionsV2Error(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	execution, err := s.buildSessionsV2Execution(r, principal, req, endpointClass)
@@ -129,72 +115,6 @@ func (s *Server) handleSessionsV2Create(w http.ResponseWriter, r *http.Request, 
 		"session_execution": persistedExecution,
 		"warning":           strings.TrimSpace(strings.Join([]string{warning, modeWarning}, " ")),
 	})
-}
-
-func (s *Server) createSessionsV2LocalContainer(r *http.Request, principal identity.Principal, req sessionruntime.SessionsV2CreateRequest) (map[string]any, error) {
-	if strings.TrimSpace(req.WorkspacePath) != "" {
-		return nil, sessionV2BadRequest("local-container sessions v2 must not include workspace_path")
-	}
-	if strings.TrimSpace(req.WorkspaceBindingID) == "" {
-		return nil, sessionV2BadRequest("local-container sessions v2 workspace_binding_id is required")
-	}
-	if strings.TrimSpace(req.WorktreeMode) != "" && !strings.EqualFold(strings.TrimSpace(req.WorktreeMode), "off") {
-		return nil, sessionV2BadRequest("local-container sessions v2 worktree settings are not supported before the dedicated worktree checkpoint")
-	}
-	if req.WorktreeUseCurrentBranch != nil {
-		return nil, sessionV2BadRequest("local-container sessions v2 worktree settings are not supported before the dedicated worktree checkpoint")
-	}
-	execution, err := s.buildSessionsV2Execution(r, principal, req, sessionsV2EndpointLocalContainer)
-	if err != nil {
-		return nil, err
-	}
-	execution = sessionruntime.NormalizeSessionExecutionV2ForCreate(execution)
-	if execution.ExecutionClass != sessionruntime.SessionExecutionClassLocalContainer {
-		return nil, sessionV2InvalidClass("local-container sessions v2 requires local_container execution class")
-	}
-	if strings.TrimSpace(execution.SessionID) == "" {
-		execution.SessionID = sessionruntime.NewSessionID()
-	}
-	if err := sessionruntime.ValidateSessionExecutionV2(execution); err != nil {
-		return nil, err
-	}
-	frozenExecution := sessionruntime.SessionExecutionV2RecordFromExecution(principal, execution)
-	openReq := runtimeSessionOpenRequestFromFrozenExecution(frozenExecution, req)
-	bindingSnapshot, bindingOK, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, frozenExecution.WorkspaceBindingID)
-	if err != nil {
-		return nil, err
-	}
-	if !bindingOK {
-		return nil, sessionV2AuthorityNotFound("local-container sessions v2 workspace binding %q was not found", frozenExecution.WorkspaceBindingID)
-	}
-	openReq.BindingAuthoritySnapshot = &bindingSnapshot
-	openResp, err := s.dispatchRuntimeSessionV2Open(r, principal, execution, openReq)
-	if err != nil {
-		return nil, err
-	}
-	if !openResp.OK {
-		return nil, sessionV2StaleAuthority("runtime session open failed")
-	}
-	if err := validateRuntimeSessionV2OpenResponse(openReq, openResp); err != nil {
-		return nil, err
-	}
-	session, event, err := s.persistPrimarySideRuntimeSessionOpen(principal, req, frozenExecution, openResp)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.ingestRuntimeSessionV2InitialMirror(openReq, openResp); err != nil {
-		return nil, err
-	}
-	if event != nil && s.hub != nil {
-		s.hub.Publish(*event)
-	}
-	return map[string]any{
-		"ok":                    true,
-		"session":               session,
-		"session_execution":     runtimeSessionsV2ExecutionFromRecord(frozenExecution),
-		"runtime_open_response": openResp,
-		"warning":               "",
-	}, nil
 }
 
 func runtimeSessionOpenRequestFromFrozenExecution(execution pebblestore.SessionExecutionV2Record, req sessionruntime.SessionsV2CreateRequest) sessionruntime.RuntimeSessionOpenRequest {
@@ -1137,14 +1057,6 @@ func (s *Server) buildSessionsV2Execution(r *http.Request, principal identity.Pr
 			return sessionruntime.SessionExecution{}, err
 		}
 		return sessionsV2ExecutionFromBinding(sessionruntime.SessionExecutionClassPrimary, placement, binding), nil
-	case sessionsV2EndpointLocalContainer:
-		if err := validateLocalContainerSessionV2Placement(req.SwarmID, primarySwarmID, placement); err != nil {
-			return sessionruntime.SessionExecution{}, err
-		}
-		if err := validateLocalContainerSessionV2Binding(principal, req.WorkspaceBindingID, req.SwarmID, primarySwarmID, placement, binding); err != nil {
-			return sessionruntime.SessionExecution{}, err
-		}
-		return sessionsV2ExecutionFromBinding(sessionruntime.SessionExecutionClassLocalContainer, placement, binding), nil
 	default:
 		return sessionruntime.SessionExecution{}, sessionV2InvalidClass("unsupported sessions v2 endpoint class %q", endpointClass)
 	}
@@ -1208,28 +1120,6 @@ func validatePrimarySessionV2Placement(swarmID string, placement pebblestore.Top
 	return nil
 }
 
-func validateLocalContainerSessionV2Placement(swarmID, primarySwarmID string, placement pebblestore.TopologyRuntimePlacementRecord) error {
-	if strings.TrimSpace(placement.State) != pebblestore.TopologyRuntimePlacementStateActive {
-		return sessionV2StaleAuthority("local-container sessions v2 runtime placement is not active")
-	}
-	if strings.TrimSpace(placement.RuntimeSwarmID) != swarmID {
-		return sessionV2StaleAuthority("local-container sessions v2 runtime placement does not match selected runtime")
-	}
-	if strings.TrimSpace(placement.RuntimeKind) != pebblestore.TopologyRuntimeKindContainer {
-		return sessionV2InvalidClass("local-container sessions v2 runtime placement kind must be container")
-	}
-	if strings.TrimSpace(placement.AuthorityHostSwarmID) != primarySwarmID {
-		return sessionV2InvalidClass("local-container sessions v2 authority host must be the primary runtime")
-	}
-	if strings.TrimSpace(placement.AuthorityContainerID) == "" {
-		return sessionV2StaleAuthority("local-container sessions v2 authority container id is required")
-	}
-	if placement.PlacementGeneration <= 0 {
-		return sessionV2StaleAuthority("local-container sessions v2 runtime placement generation is required")
-	}
-	return nil
-}
-
 func validatePrimarySessionV2Binding(principal identity.Principal, bindingID, swarmID string, placement pebblestore.TopologyRuntimePlacementRecord, binding pebblestore.TopologyWorkspaceBindingRecord) error {
 	if err := validateCommonSessionV2Binding(principal, bindingID, placement, binding); err != nil {
 		return err
@@ -1242,22 +1132,6 @@ func validatePrimarySessionV2Binding(principal identity.Principal, bindingID, sw
 	}
 	if strings.TrimSpace(binding.DestinationContainerID) != "" {
 		return sessionV2InvalidClass("primary sessions v2 workspace binding destination container id must be empty")
-	}
-	return nil
-}
-
-func validateLocalContainerSessionV2Binding(principal identity.Principal, bindingID, swarmID, primarySwarmID string, placement pebblestore.TopologyRuntimePlacementRecord, binding pebblestore.TopologyWorkspaceBindingRecord) error {
-	if err := validateCommonSessionV2Binding(principal, bindingID, placement, binding); err != nil {
-		return err
-	}
-	if strings.TrimSpace(binding.DestinationRuntimeSwarmID) != swarmID || strings.TrimSpace(binding.DestinationAuthorityHostSwarmID) != primarySwarmID {
-		return sessionV2StaleAuthority("local-container sessions v2 workspace binding does not match selected primary authority")
-	}
-	if strings.TrimSpace(binding.DestinationRuntimeKind) != pebblestore.TopologyRuntimeKindContainer {
-		return sessionV2InvalidClass("local-container sessions v2 workspace binding destination runtime kind must be container")
-	}
-	if strings.TrimSpace(binding.DestinationContainerID) != strings.TrimSpace(placement.AuthorityContainerID) {
-		return sessionV2StaleAuthority("local-container sessions v2 workspace binding destination container id does not match placement")
 	}
 	return nil
 }

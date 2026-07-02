@@ -17,7 +17,6 @@ import (
 
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/identity"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	"swarm/packages/swarmd/internal/workspace"
@@ -425,8 +424,8 @@ func (s *Server) materializeManagedHostReplicationWorkspaces(ctx context.Context
 	return remotePaths, nil
 }
 
-func rewriteReplicationMountsForTargetHost(mounts []localcontainers.Mount, remotePaths map[string]string) []localcontainers.Mount {
-	out := make([]localcontainers.Mount, 0, len(mounts))
+func rewriteReplicationMountsForTargetHost(mounts []pebblestore.ContainerMount, remotePaths map[string]string) []pebblestore.ContainerMount {
+	out := make([]pebblestore.ContainerMount, 0, len(mounts))
 	for _, mount := range mounts {
 		next := mount
 		if remotePath := strings.TrimSpace(remotePaths[mount.WorkspacePath]); remotePath != "" {
@@ -870,11 +869,11 @@ func (s *Server) replicateWorkspaceCatalogForPrincipal(principal identity.Princi
 	return out, nil
 }
 
-func buildReplicationPlan(workspaces []workspace.NormalizedReplicationWorkspace, workspaceCatalog map[string]replicateWorkspaceCatalogEntry, syncConfig workspace.NormalizedReplicationSync) ([]localcontainers.Mount, map[string]string, []deployruntime.ContainerWorkspaceBootstrap) {
+func buildReplicationPlan(workspaces []workspace.NormalizedReplicationWorkspace, workspaceCatalog map[string]replicateWorkspaceCatalogEntry, syncConfig workspace.NormalizedReplicationSync) ([]pebblestore.ContainerMount, map[string]string, []deployruntime.ContainerWorkspaceBootstrap) {
 	if len(workspaces) == 0 {
 		return nil, nil, nil
 	}
-	mounts := make([]localcontainers.Mount, 0, len(workspaces)*2)
+	mounts := make([]pebblestore.ContainerMount, 0, len(workspaces)*2)
 	childPaths := make(map[string]string, len(workspaces))
 	bootstraps := make([]deployruntime.ContainerWorkspaceBootstrap, 0, len(workspaces))
 	selectedWorkspaceTargets := assignReplicationWorkspaceTargets(workspaces, workspaceCatalog)
@@ -895,7 +894,7 @@ func buildReplicationPlan(workspaces []workspace.NormalizedReplicationWorkspace,
 		if !item.Writable {
 			mode = pebblestore.ContainerMountModeReadOnly
 		}
-		mounts = append(mounts, localcontainers.Mount{
+		mounts = append(mounts, pebblestore.ContainerMount{
 			SourcePath:    item.SourceWorkspacePath,
 			TargetPath:    targetPath,
 			Mode:          mode,
@@ -916,7 +915,7 @@ func buildReplicationPlan(workspaces []workspace.NormalizedReplicationWorkspace,
 			if directoryTarget == "" {
 				directoryTarget = nextReplicationDirectoryTargetPath(name, directory, dirIndex, usedTargets)
 			}
-			mounts = append(mounts, localcontainers.Mount{
+			mounts = append(mounts, pebblestore.ContainerMount{
 				SourcePath:    directory,
 				TargetPath:    directoryTarget,
 				Mode:          mode,

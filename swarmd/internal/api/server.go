@@ -28,7 +28,6 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/notification"
@@ -107,7 +106,6 @@ type Server struct {
 	todos                       *todo.Service
 	swarm                       swarmService
 	containerProfiles           containerProfileService
-	localContainers             localContainerService
 	deployContainers            deployContainerService
 	remoteDeploys               remoteDeployService
 	remotePairingPending        map[string]swarmRemotePairingPendingRequest
@@ -189,26 +187,12 @@ type containerProfileService interface {
 	DeleteProfileForAccount(ctx context.Context, accountScopeID, profileID string) (containerprofiles.DeleteResult, error)
 }
 
-type localContainerService interface {
-	RuntimeStatus(ctx context.Context) (localcontainers.RuntimeStatus, error)
-	List(ctx context.Context) ([]localcontainers.Container, error)
-	ListForAccount(ctx context.Context, accountScopeID string) ([]localcontainers.Container, error)
-	Create(ctx context.Context, input localcontainers.CreateInput) (localcontainers.Container, error)
-	Act(ctx context.Context, input localcontainers.ActionInput) (localcontainers.Container, error)
-	BulkDelete(ctx context.Context, containerIDs []string) (localcontainers.DeleteResult, error)
-	PruneMissing(ctx context.Context) (localcontainers.DeleteResult, error)
-	UpdatePlan(ctx context.Context, input localcontainers.UpdatePlanInput) (localcontainers.UpdatePlan, error)
-	RunUpdateJob(ctx context.Context, input localcontainers.UpdateJobInput) (localcontainers.UpdateJobResult, error)
-	SetHostCallbackURL(runtimeName, baseURL string)
-	HostCallbackURL(runtimeName string) (string, bool)
-}
-
 type deployContainerService interface {
 	RuntimeStatus(ctx context.Context) (deployruntime.ContainerRuntimeStatus, error)
 	List(ctx context.Context) ([]deployruntime.ContainerDeployment, error)
 	Create(ctx context.Context, input deployruntime.ContainerCreateInput) (deployruntime.ContainerDeployment, error)
 	Act(ctx context.Context, input deployruntime.ContainerActionInput) (deployruntime.ContainerDeployment, error)
-	Delete(ctx context.Context, deploymentIDs []string) (localcontainers.DeleteResult, error)
+	Delete(ctx context.Context, deploymentIDs []string) (deployruntime.DeleteResult, error)
 	ChildAttachState(ctx context.Context, input deployruntime.ContainerAttachStatusInput) (swarmruntime.LocalState, error)
 	AttachRequest(ctx context.Context, input deployruntime.ContainerAttachRequestInput) (deployruntime.ContainerAttachState, error)
 	AttachStatus(ctx context.Context, input deployruntime.ContainerAttachStatusInput) (deployruntime.ContainerAttachState, error)
@@ -227,7 +211,7 @@ type remoteDeployService interface {
 	Get(ctx context.Context, sessionID string, refresh bool) (remotedeploy.Session, error)
 	Create(ctx context.Context, input remotedeploy.CreateSessionInput) (remotedeploy.Session, error)
 	UpdateSettings(ctx context.Context, input remotedeploy.UpdateSettingsInput) (remotedeploy.Session, error)
-	Delete(ctx context.Context, input remotedeploy.DeleteSessionInput) (localcontainers.DeleteResult, error)
+	Delete(ctx context.Context, input remotedeploy.DeleteSessionInput) (deployruntime.DeleteResult, error)
 	Start(ctx context.Context, input remotedeploy.StartSessionInput) (remotedeploy.Session, error)
 	RunUpdateJob(ctx context.Context, input remotedeploy.UpdateJobInput) (remotedeploy.UpdateJobResult, error)
 	Approve(ctx context.Context, input remotedeploy.ApproveSessionInput) (remotedeploy.Session, error)
@@ -489,13 +473,6 @@ func (s *Server) SetContainerProfileService(containerProfileSvc containerProfile
 		return
 	}
 	s.containerProfiles = containerProfileSvc
-}
-
-func (s *Server) SetLocalContainerService(localContainerSvc localContainerService) {
-	if s == nil {
-		return
-	}
-	s.localContainers = localContainerSvc
 }
 
 func (s *Server) SetDeployContainerService(deployContainerSvc deployContainerService) {

@@ -25,7 +25,6 @@ import (
 	auth "swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -138,7 +137,7 @@ type ContainerCreateInput struct {
 	Name               string
 	Runtime            string
 	Image              string
-	Mounts             []localcontainers.Mount
+	Mounts             []pebblestore.ContainerMount
 	WorkspaceBootstrap []ContainerWorkspaceBootstrap
 	ContainerPackages  ContainerPackageManifest
 	GroupID            string
@@ -354,7 +353,6 @@ type ContainerWorkspaceBootstrap = pebblestore.DeployContainerWorkspaceBootstrap
 
 type Service struct {
 	store                        *pebblestore.DeployContainerStore
-	containers                   *localcontainers.Service
 	swarms                       *swarmruntime.Service
 	swarmStore                   *pebblestore.SwarmStore
 	allowStartupConfigBootstrap  bool
@@ -377,7 +375,7 @@ type Service struct {
 	agentSnapshotHash            string
 }
 
-func NewService(store *pebblestore.DeployContainerStore, containers *localcontainers.Service, swarms *swarmruntime.Service, swarmStore *pebblestore.SwarmStore, authSvc *auth.Service, agentSvc *agentruntime.Service, workspaceSvc *workspaceruntime.Service, startupPath string, extras ...any) *Service {
+func NewService(store *pebblestore.DeployContainerStore, swarms *swarmruntime.Service, swarmStore *pebblestore.SwarmStore, authSvc *auth.Service, agentSvc *agentruntime.Service, workspaceSvc *workspaceruntime.Service, startupPath string, extras ...any) *Service {
 	var discoverySvc *discovery.Service
 	var permissionSvc *permission.Service
 	var modelSvc *modelruntime.Service
@@ -402,7 +400,6 @@ func NewService(store *pebblestore.DeployContainerStore, containers *localcontai
 	}
 	return &Service{
 		store:                       store,
-		containers:                  containers,
 		swarms:                      swarms,
 		swarmStore:                  swarmStore,
 		swarmNodeStore:              swarmNodeStore,
@@ -508,19 +505,7 @@ func (s *Service) localTransportMountArgs() []string {
 }
 
 func (s *Service) RuntimeStatus(ctx context.Context) (ContainerRuntimeStatus, error) {
-	if s == nil || s.containers == nil {
-		return ContainerRuntimeStatus{}, fmt.Errorf("deploy container service is not configured")
-	}
-	status, err := s.containers.RuntimeStatus(ctx)
-	if err != nil {
-		return ContainerRuntimeStatus{}, err
-	}
-	return ContainerRuntimeStatus{
-		Recommended: status.Recommended,
-		Available:   append([]string(nil), status.Available...),
-		Warning:     status.Warning,
-		PathID:      PathContainerRuntime,
-	}, nil
+	return ContainerRuntimeStatus{}, fmt.Errorf("deploy container runtime is no longer supported")
 }
 
 func (s *Service) List(ctx context.Context) ([]ContainerDeployment, error) {
@@ -542,183 +527,10 @@ func (s *Service) List(ctx context.Context) ([]ContainerDeployment, error) {
 }
 
 func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (ContainerDeployment, error) {
-	if s == nil || s.store == nil || s.containers == nil || s.swarms == nil || s.swarmStore == nil {
+	if s == nil || s.store == nil || s.swarms == nil || s.swarmStore == nil {
 		return ContainerDeployment{}, fmt.Errorf("deploy container service is not configured")
 	}
-	principal, ok := principalFromContext(ctx)
-	if !ok {
-		return ContainerDeployment{}, identity.ErrPrincipalRequired
-	}
-	startupCfg, hostState, err := s.resolveBootstrapContext()
-	if err != nil {
-		return ContainerDeployment{}, err
-	}
-	bootstrapSecret, err := generateSecretToken(24)
-	if err != nil {
-		return ContainerDeployment{}, err
-	}
-	runtimeName := strings.TrimSpace(input.Runtime)
-	runtimeStatus, err := s.containers.RuntimeStatus(ctx)
-	if err != nil {
-		return ContainerDeployment{}, err
-	}
-	if runtimeName == "" {
-		runtimeName = strings.TrimSpace(runtimeStatus.Recommended)
-	}
-	localTransportSocketPath := s.configuredChildLocalTransportSocketPath()
-	hostRuntimeHost, hostAPIBaseURL, hostDesktopURL, hostDrivenAttach, err := resolveLocalContainerBootstrapTargets(startupCfg, hostState, runtimeName, localTransportSocketPath)
-	if err != nil {
-		return ContainerDeployment{}, err
-	}
-	log.Printf("deploy create bootstrap resolved runtime=%q host_runtime_host=%q host_api_base_url=%q host_desktop_url=%q host_driven=%t", strings.TrimSpace(runtimeName), hostRuntimeHost, hostAPIBaseURL, hostDesktopURL, hostDrivenAttach)
-	hostPort, err := s.containers.ResolveCreateHostPort(hostAPIBaseURL, 0)
-	if err != nil {
-		return ContainerDeployment{}, err
-	}
-	group, err := s.resolveTargetGroupForCreate(hostState, input)
-	if err != nil {
-		return ContainerDeployment{}, err
-	}
-	groupID := strings.TrimSpace(group.ID)
-	groupName := ""
-	groupNetworkName := ""
-	if groupID != "" {
-		groupName = firstNonEmpty(group.Name, groupID)
-		groupNetworkName = firstNonEmpty(group.NetworkName, swarmruntime.SuggestedGroupNetworkName(groupName, groupID))
-	} else if strings.TrimSpace(input.GroupNetworkName) != "" {
-		groupNetworkName = strings.TrimSpace(input.GroupNetworkName)
-	}
-	deploymentID := firstNonEmpty(strings.TrimSpace(input.DeploymentID), suggestedDeploymentID(input.Name))
-	syncConfig := workspaceruntime.NormalizeReplicationSync(workspaceruntime.ReplicationSyncInput{
-		Enabled: input.SyncEnabled,
-		Mode:    input.SyncMode,
-		Modules: input.SyncModules,
-	})
-	syncEnabled := syncConfig.Enabled
-	syncVaultPassword := strings.TrimSpace(input.SyncVaultPassword)
-	if syncEnabled {
-		if err := s.requireManagedSyncVaultPassword(syncVaultPassword); err != nil {
-			return ContainerDeployment{}, err
-		}
-	}
-	syncMode := ""
-	syncModules := []string(nil)
-	syncOwnerSwarmID := ""
-	syncCredentialURL := ""
-	syncAgentURL := ""
-	if syncEnabled {
-		syncMode = syncConfig.Mode
-		syncModules = append([]string(nil), syncConfig.Modules...)
-		syncOwnerSwarmID = strings.TrimSpace(hostState.Node.SwarmID)
-		if workspaceruntime.ReplicationSyncModuleEnabled(syncModules, workspaceruntime.ReplicationSyncModuleCredentials) {
-			syncCredentialURL = buildDeploymentSyncCredentialURL(hostAPIBaseURL)
-		}
-		if workspaceruntime.ReplicationSyncModuleEnabled(syncModules, workspaceruntime.ReplicationSyncModuleAgents) || workspaceruntime.ReplicationSyncModuleEnabled(syncModules, workspaceruntime.ReplicationSyncModuleCustomTools) {
-			syncAgentURL = buildDeploymentSyncAgentURL(hostAPIBaseURL)
-		}
-	}
-	extraRunArgs := []string(nil)
-	if localTransportSocketPath != "" {
-		extraRunArgs = s.localTransportMountArgs()
-	}
-	runtimeMount := localcontainers.CurrentRuntimeMount()
-	containerCreateInput := localcontainers.CreateInput{
-		Name:              input.Name,
-		Runtime:           input.Runtime,
-		NetworkName:       groupNetworkName,
-		HostAPIBaseURL:    hostAPIBaseURL,
-		HostPort:          hostPort,
-		Image:             input.Image,
-		ContainerPackages: localcontainers.ContainerPackageManifest(mapContainerPackageManifest(input.ContainerPackages)),
-		Mounts:            input.Mounts,
-		ExtraRunArgs:      extraRunArgs,
-		RuntimeMount:      runtimeMount,
-		Env: buildChildContainerEnv(containerBootstrapEnvInput{
-			HostState:                hostState,
-			ChildName:                strings.TrimSpace(input.Name),
-			DeploymentID:             deploymentID,
-			BootstrapSecret:          bootstrapSecret,
-			HostAPIBaseURL:           hostAPIBaseURL,
-			HostDesktopURL:           hostDesktopURL,
-			LocalTransportSocketPath: localTransportSocketPath,
-			ChildAdvertiseHost:       hostRuntimeHost,
-			ChildAdvertisePort:       hostPort,
-			HostDriven:               hostDrivenAttach,
-			SyncEnabled:              syncEnabled,
-			SyncMode:                 syncMode,
-			SyncModules:              append([]string(nil), syncModules...),
-			SyncOwnerSwarmID:         syncOwnerSwarmID,
-			SyncCredentialURL:        syncCredentialURL,
-			SyncAgentURL:             syncAgentURL,
-			BypassPermissions:        input.BypassPermissions,
-		}),
-	}
-	containerCreateInput.UserID = principal.UserID
-	containerCreateInput.AccountScopeID = principal.AccountScopeID
-	container, createErr := s.containers.Create(ctx, containerCreateInput)
-	if createErr != nil && !createResultCanBePersisted(container) {
-		return ContainerDeployment{}, createErr
-	}
-	log.Printf("deploy create launched runtime=%q deployment_id=%q group_id=%q group_network_name=%q host_port=%d create_err=%v", strings.TrimSpace(input.Runtime), deploymentID, groupID, groupNetworkName, hostPort, createErr)
-	resolvedRuntimeName := firstNonEmpty(container.Runtime, strings.TrimSpace(input.Runtime), runtimeStatus.Recommended)
-	if deploymentID == "" {
-		deploymentID = strings.TrimSpace(container.ID)
-	}
-	now := time.Now()
-	record := pebblestore.DeployContainerRecord{
-		ID:                 firstNonEmpty(deploymentID, container.ID),
-		Kind:               "container",
-		Name:               createResultDisplayName(input, container),
-		Status:             normalizeDeploymentStatus(container.Status),
-		Runtime:            resolvedRuntimeName,
-		GroupNetworkName:   groupNetworkName,
-		ContainerName:      container.ContainerName,
-		ContainerID:        container.ContainerID,
-		HostAPIBaseURL:     container.HostAPIBaseURL,
-		HostBackendURL:     hostAPIBaseURL,
-		HostDesktopURL:     hostDesktopURL,
-		BackendHostPort:    container.HostPort,
-		DesktopHostPort:    container.HostPort + 1,
-		Image:              container.Image,
-		SyncEnabled:        syncEnabled,
-		SyncMode:           syncMode,
-		SyncModules:        append([]string(nil), syncModules...),
-		SyncOwnerSwarmID:   syncOwnerSwarmID,
-		SyncCredentialURL:  syncCredentialURL,
-		SyncAgentURL:       syncAgentURL,
-		GroupID:            groupID,
-		GroupName:          groupName,
-		WorkspaceBootstrap: append([]pebblestore.DeployContainerWorkspaceBootstrap(nil), input.WorkspaceBootstrap...),
-		ContainerPackages:  mapContainerPackageManifest(input.ContainerPackages),
-		AttachStatus:       "launching",
-		BootstrapSecret:    bootstrapSecret,
-		BootstrapExpiresAt: now.Add(10 * time.Minute).UnixMilli(),
-
-		BootstrapSecretSent: true,
-		BypassPermissions:   input.BypassPermissions,
-		AlwaysOn:            input.AlwaysOn,
-		LastAttachError:     strings.TrimSpace(container.Warning),
-		CreatedAt:           container.CreatedAt,
-		UpdatedAt:           container.UpdatedAt,
-	}
-	saved, saveErr := s.persistRecordForContext(ctx, record)
-	if saveErr != nil {
-		return ContainerDeployment{}, saveErr
-	}
-	if err := s.syncCanonicalDeploymentState(saved); err != nil {
-		return ContainerDeployment{}, err
-	}
-	if syncEnabled && syncVaultPassword != "" {
-		s.rememberPendingSyncVaultPassword(saved.ID, syncVaultPassword, saved.BootstrapExpiresAt)
-	}
-	if createErr == nil && hostDrivenAttach {
-		attached, attachErr := s.completeHostDrivenLocalAttach(ctx, startupCfg, hostState, saved, syncVaultPassword)
-		if attachErr != nil {
-			log.Printf("deploy host-driven local attach failed deployment_id=%q err=%v", attached.ID, attachErr)
-		}
-		return mapContainerRecord(attached), nil
-	}
-	return mapContainerRecord(saved), createErr
+	return ContainerDeployment{}, fmt.Errorf("deploy container creation is no longer supported")
 }
 
 func (s *Service) requireManagedSyncVaultPassword(syncVaultPassword string) error {
@@ -815,72 +627,31 @@ func (s *Service) ReconcilePermissionSync(ctx context.Context) error {
 }
 
 func (s *Service) Act(ctx context.Context, input ContainerActionInput) (ContainerDeployment, error) {
-	if s == nil || s.store == nil || s.containers == nil {
+	if s == nil || s.store == nil {
 		return ContainerDeployment{}, fmt.Errorf("deploy container service is not configured")
 	}
-	record, ok, getErr := s.getRecordForContext(ctx, input.ID)
-	if getErr != nil {
-		return ContainerDeployment{}, getErr
-	}
-	if !ok {
-		return ContainerDeployment{}, fmt.Errorf("deploy container not found")
-	}
-	ctx = s.contextWithRecordPrincipal(ctx, record)
-	container, err := s.containers.Act(ctx, localcontainers.ActionInput{ID: input.ID, Action: input.Action})
-	if err != nil {
-		return ContainerDeployment{}, err
-	}
-	record.Status = normalizeDeploymentStatus(container.Status)
-	record.Runtime = container.Runtime
-	record.ContainerName = container.ContainerName
-	record.ContainerID = container.ContainerID
-	record.HostAPIBaseURL = container.HostAPIBaseURL
-	record.BackendHostPort = container.HostPort
-	record.DesktopHostPort = container.HostPort + 1
-	record.Image = container.Image
-	record.LastAttachError = strings.TrimSpace(container.Warning)
-	if record.Status == "running" && record.AttachStatus == "" {
-		record.AttachStatus = "launching"
-	}
-	saved, saveErr := s.persistRecordForContext(ctx, record)
-	if saveErr != nil {
-		return ContainerDeployment{}, saveErr
-	}
-	if err := s.syncCanonicalDeploymentState(saved); err != nil {
-		return ContainerDeployment{}, err
-	}
-	if strings.EqualFold(strings.TrimSpace(input.Action), "start") {
-		if strings.TrimSpace(saved.ChildBackendURL) != "" {
-			if err := s.waitForChildReady(ctx, saved.ChildBackendURL, 20*time.Second); err != nil {
-				return mapContainerRecord(saved), err
-			}
-		}
-		if err := s.unlockManagedLocalChildVaultIfNeeded(ctx, saved); err != nil {
-			return mapContainerRecord(saved), err
-		}
-	}
-	return mapContainerRecord(saved), nil
+	return ContainerDeployment{}, fmt.Errorf("deploy container actions are no longer supported")
 }
 
-func (s *Service) Delete(ctx context.Context, deploymentIDs []string) (localcontainers.DeleteResult, error) {
+func (s *Service) Delete(ctx context.Context, deploymentIDs []string) (DeleteResult, error) {
 	return s.deleteDeployments(ctx, deploymentIDs)
 }
 
-func (s *Service) DeleteManagedHostForAccount(ctx context.Context, accountScopeID, managedSwarmID string) (localcontainers.DeleteResult, error) {
+func (s *Service) DeleteManagedHostForAccount(ctx context.Context, accountScopeID, managedSwarmID string) (DeleteResult, error) {
 	if s == nil || s.store == nil {
-		return localcontainers.DeleteResult{}, fmt.Errorf("deploy container service is not configured")
+		return DeleteResult{}, fmt.Errorf("deploy container service is not configured")
 	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {
-		return localcontainers.DeleteResult{}, fmt.Errorf("account scope id is required")
+		return DeleteResult{}, fmt.Errorf("account scope id is required")
 	}
 	managedSwarmID = strings.TrimSpace(managedSwarmID)
 	if managedSwarmID == "" {
-		return localcontainers.DeleteResult{}, fmt.Errorf("managed swarm id is required")
+		return DeleteResult{}, fmt.Errorf("managed swarm id is required")
 	}
 	records, err := s.store.ListForAccount(accountScopeID, 100000)
 	if err != nil {
-		return localcontainers.DeleteResult{}, err
+		return DeleteResult{}, err
 	}
 	ids := make([]string, 0, len(records))
 	for _, record := range records {
@@ -889,7 +660,7 @@ func (s *Service) DeleteManagedHostForAccount(ctx context.Context, accountScopeI
 		}
 	}
 	if len(ids) == 0 {
-		return localcontainers.DeleteResult{}, nil
+		return DeleteResult{}, nil
 	}
 	return s.deleteDeployments(ctx, ids)
 }
@@ -949,16 +720,16 @@ func (s *Service) MirrorDeployment(ctx context.Context, deployment ContainerDepl
 	return mapContainerRecord(saved), nil
 }
 
-func (s *Service) deleteDeployments(ctx context.Context, deploymentIDs []string) (localcontainers.DeleteResult, error) {
+func (s *Service) deleteDeployments(ctx context.Context, deploymentIDs []string) (DeleteResult, error) {
 	if s == nil || s.store == nil {
-		return localcontainers.DeleteResult{}, fmt.Errorf("deploy container service is not configured")
+		return DeleteResult{}, fmt.Errorf("deploy container service is not configured")
 	}
 	ids := normalizeDeploymentDeleteIDs(deploymentIDs)
 	if len(ids) == 0 {
-		return localcontainers.DeleteResult{}, errors.New("at least one deploy container id is required")
+		return DeleteResult{}, errors.New("at least one deploy container id is required")
 	}
 
-	items := make([]localcontainers.DeleteItemResult, len(ids))
+	items := make([]DeleteItemResult, len(ids))
 	var wg sync.WaitGroup
 	for i, deploymentID := range ids {
 		wg.Add(1)
@@ -969,9 +740,9 @@ func (s *Service) deleteDeployments(ctx context.Context, deploymentIDs []string)
 	}
 	wg.Wait()
 
-	result := localcontainers.DeleteResult{
+	result := DeleteResult{
 		Deleted: make([]string, 0, len(items)),
-		Items:   make([]localcontainers.DeleteItemResult, 0, len(items)),
+		Items:   make([]DeleteItemResult, 0, len(items)),
 	}
 	for _, item := range items {
 		result.Items = append(result.Items, item)
@@ -1068,16 +839,16 @@ func (s *Service) AttachRequest(ctx context.Context, input ContainerAttachReques
 	return mapAttachState(saved), nil
 }
 
-func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) localcontainers.DeleteItemResult {
+func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) DeleteItemResult {
 	record, ok, err := s.getRecordForContext(ctx, deploymentID)
 	if err != nil {
-		return localcontainers.DeleteItemResult{ID: strings.TrimSpace(deploymentID), Error: err.Error()}
+		return DeleteItemResult{ID: strings.TrimSpace(deploymentID), Error: err.Error()}
 	}
 	if !ok {
-		return localcontainers.DeleteItemResult{ID: strings.TrimSpace(deploymentID), Error: "deploy container not found"}
+		return DeleteItemResult{ID: strings.TrimSpace(deploymentID), Error: "deploy container not found"}
 	}
 
-	item := localcontainers.DeleteItemResult{
+	item := DeleteItemResult{
 		ID:               record.ID,
 		Name:             record.Name,
 		ContainerName:    record.ContainerName,
@@ -1100,19 +871,8 @@ func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) loc
 		}
 	}
 
-	if s.deploymentBelongsToLocalHost(record) {
-		if record.Runtime != "" && record.ContainerName != "" {
-			if err := localcontainers.RemoveRuntimeContainer(ctx, record.Runtime, record.ContainerName); err != nil && !localcontainers.IsMissingRuntimeContainerError(err) {
-				item.Error = err.Error()
-				return item
-			}
-		}
-		if s.containers != nil {
-			if _, err := s.containers.RemoveStoredRecordForDeployment(record); err != nil {
-				item.Error = err.Error()
-				return item
-			}
-		}
+	if s.deploymentBelongsToLocalHost(record) && record.Runtime != "" && record.ContainerName != "" {
+		log.Printf("deploy container runtime removal skipped for legacy local deployment_id=%q container=%q: local-container runtime support has been removed", record.ID, record.ContainerName)
 	}
 	principal, ok := principalFromContext(ctx)
 	if !ok {
@@ -2226,102 +1986,10 @@ func (s *Service) RunLocalDeploymentReconciliationLoop(ctx context.Context) {
 }
 
 func (s *Service) ReconcileLocalDeployments(ctx context.Context) error {
-	if s == nil || s.store == nil || s.containers == nil {
+	if s == nil || s.store == nil {
 		return fmt.Errorf("deploy container service is not configured")
 	}
-	cfg, err := s.loadStartupConfig()
-	if err != nil {
-		return err
-	}
-	if cfg.Child {
-		return nil
-	}
-	records, err := s.store.List(500)
-	if err != nil {
-		return err
-	}
-	localRecords, err := s.containers.List(ctx)
-	if err != nil {
-		return err
-	}
-	localByID := make(map[string]localcontainers.Container, len(localRecords))
-	localByName := make(map[string]localcontainers.Container, len(localRecords))
-	for _, local := range localRecords {
-		if id := strings.TrimSpace(local.ID); id != "" {
-			localByID[id] = local
-		}
-		if name := strings.TrimSpace(local.ContainerName); name != "" {
-			localByName[name] = local
-		}
-	}
-	var errs []error
-	for _, record := range records {
-		if strings.TrimSpace(record.ID) == "" || strings.TrimSpace(record.Runtime) == "" || strings.TrimSpace(record.ContainerName) == "" {
-			continue
-		}
-		if strings.TrimSpace(record.AttachStatus) != "attached" {
-			continue
-		}
-		runtimeChanged := false
-		if local, ok := localByID[strings.TrimSpace(record.ID)]; ok {
-			record, runtimeChanged = applyLocalContainerRuntimeState(record, local)
-		} else if local, ok := localByName[strings.TrimSpace(record.ContainerName)]; ok {
-			record, runtimeChanged = applyLocalContainerRuntimeState(record, local)
-		}
-		if runtimeChanged && record.AlwaysOn && !record.SyncEnabled && strings.TrimSpace(record.Status) == "running" {
-			if _, err := s.persistRecord(record); err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", record.ID, err))
-				continue
-			}
-		}
-		if err := s.reconcileLocalDeployment(ctx, record); err != nil {
-			log.Printf("deploy local reconciliation failed deployment_id=%q container=%q err=%v", record.ID, record.ContainerName, err)
-			errs = append(errs, fmt.Errorf("%s: %w", record.ID, err))
-		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
 	return nil
-}
-
-func applyLocalContainerRuntimeState(record pebblestore.DeployContainerRecord, container localcontainers.Container) (pebblestore.DeployContainerRecord, bool) {
-	updated := false
-	if status := normalizeDeploymentStatus(container.Status); status != "" && status != record.Status {
-		record.Status = status
-		updated = true
-	}
-	if runtimeName := strings.TrimSpace(container.Runtime); runtimeName != "" && runtimeName != record.Runtime {
-		record.Runtime = runtimeName
-		updated = true
-	}
-	if containerName := strings.TrimSpace(container.ContainerName); containerName != "" && containerName != record.ContainerName {
-		record.ContainerName = containerName
-		updated = true
-	}
-	if containerID := strings.TrimSpace(container.ContainerID); containerID != "" && containerID != record.ContainerID {
-		record.ContainerID = containerID
-		updated = true
-	}
-	if hostAPIBaseURL := strings.TrimSpace(container.HostAPIBaseURL); hostAPIBaseURL != "" && hostAPIBaseURL != record.HostAPIBaseURL {
-		record.HostAPIBaseURL = hostAPIBaseURL
-		updated = true
-	}
-	if container.HostPort > 0 && container.HostPort != record.BackendHostPort {
-		record.BackendHostPort = container.HostPort
-		record.DesktopHostPort = container.HostPort + 1
-		updated = true
-	}
-	if image := strings.TrimSpace(container.Image); image != "" && image != record.Image {
-		record.Image = image
-		updated = true
-	}
-	warning := strings.TrimSpace(container.Warning)
-	if warning != record.LastAttachError {
-		record.LastAttachError = warning
-		updated = true
-	}
-	return record, updated
 }
 
 func (s *Service) reconcileLocalDeployment(ctx context.Context, record pebblestore.DeployContainerRecord) error {
@@ -2682,8 +2350,16 @@ func buildChildContainerEnv(input containerBootstrapEnvInput) []string {
 	return appendInheritedChildDebugEnv(env)
 }
 
+func hostnameFromBaseURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Hostname())
+}
+
 func appendInheritedChildDebugEnv(env []string) []string {
-	return localcontainers.AppendInheritedChildDebugEnv(env)
+	return appendInheritedChildDebugEnv(env)
 }
 
 func mapContainerPackageManifest(input ContainerPackageManifest) pebblestore.ContainerPackageManifestRecord {
@@ -2825,13 +2501,13 @@ func normalizeDeploymentStatus(value string) string {
 	}
 }
 
-func createResultCanBePersisted(container localcontainers.Container) bool {
+func createResultCanBePersisted(container Container) bool {
 	return strings.TrimSpace(container.ID) != "" ||
 		strings.TrimSpace(container.Name) != "" ||
 		strings.TrimSpace(container.ContainerName) != ""
 }
 
-func createResultDisplayName(input ContainerCreateInput, container localcontainers.Container) string {
+func createResultDisplayName(input ContainerCreateInput, container Container) string {
 	return firstNonEmpty(container.Name, strings.TrimSpace(input.Name))
 }
 
@@ -2923,7 +2599,7 @@ func resolveLocalContainerBootstrapTargets(cfg startupconfig.FileConfig, state s
 		if cfg.DesktopPort >= 1 && cfg.DesktopPort <= 65535 {
 			desktopURL = runtimeHTTPURL(startupconfig.DefaultHost, cfg.DesktopPort)
 		}
-		return localcontainers.HostnameFromBaseURL(apiBaseURL), apiBaseURL, desktopURL, true, nil
+		return hostnameFromBaseURL(apiBaseURL), apiBaseURL, desktopURL, true, nil
 	}
 	hostRuntimeHost, hostAPIBaseURL, hostDesktopURL, err := resolveContainerReachableHostEndpoints(cfg, state, runtimeName)
 	if err != nil {

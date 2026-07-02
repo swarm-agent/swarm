@@ -28,7 +28,7 @@ func newAccountPairingTestService(t *testing.T) (*Service, *pebblestore.Store, *
 	swarmStore := pebblestore.NewSwarmStore(store)
 	identitySvc := identity.NewService(pebblestore.NewIdentityStore(store))
 	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), events, nil)
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc, identitySvc)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc, identitySvc)
 	return deploySvc, store, swarmStore
 }
 

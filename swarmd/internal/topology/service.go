@@ -12,35 +12,32 @@ import (
 const SnapshotVersion = pebblestore.TopologySnapshotVersion
 
 type Service struct {
-	topologyStore   *pebblestore.TopologyStore
-	swarmStore      *pebblestore.SwarmStore
-	swarmNodes      *pebblestore.SwarmNodeStore
-	localContainers *pebblestore.SwarmLocalContainerStore
-	deployments     *pebblestore.DeployContainerStore
-	remoteDeploys   *pebblestore.RemoteDeploySessionStore
-	sessionRoutes   *pebblestore.SessionRouteStore
-	workspaceStore  *pebblestore.WorkspaceStore
+	topologyStore  *pebblestore.TopologyStore
+	swarmStore     *pebblestore.SwarmStore
+	swarmNodes     *pebblestore.SwarmNodeStore
+	deployments    *pebblestore.DeployContainerStore
+	remoteDeploys  *pebblestore.RemoteDeploySessionStore
+	sessionRoutes  *pebblestore.SessionRouteStore
+	workspaceStore *pebblestore.WorkspaceStore
 }
 
 func NewService(
 	topologyStore *pebblestore.TopologyStore,
 	swarmStore *pebblestore.SwarmStore,
 	swarmNodes *pebblestore.SwarmNodeStore,
-	localContainers *pebblestore.SwarmLocalContainerStore,
 	deployments *pebblestore.DeployContainerStore,
 	remoteDeploys *pebblestore.RemoteDeploySessionStore,
 	sessionRoutes *pebblestore.SessionRouteStore,
 	workspaceStore *pebblestore.WorkspaceStore,
 ) *Service {
 	return &Service{
-		topologyStore:   topologyStore,
-		swarmStore:      swarmStore,
-		swarmNodes:      swarmNodes,
-		localContainers: localContainers,
-		deployments:     deployments,
-		remoteDeploys:   remoteDeploys,
-		sessionRoutes:   sessionRoutes,
-		workspaceStore:  workspaceStore,
+		topologyStore:  topologyStore,
+		swarmStore:     swarmStore,
+		swarmNodes:     swarmNodes,
+		deployments:    deployments,
+		remoteDeploys:  remoteDeploys,
+		sessionRoutes:  sessionRoutes,
+		workspaceStore: workspaceStore,
 	}
 }
 
@@ -638,36 +635,6 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 				ObservedSources: []string{"swarm_node"},
 				CreatedAt:       node.CreatedAt,
 				UpdatedAt:       node.UpdatedAt,
-			})
-		}
-	}
-
-	if s.localContainers != nil {
-		localContainers, err := s.localContainers.List(100000)
-		if err != nil {
-			return pebblestore.TopologySnapshot{}, err
-		}
-		for _, container := range localContainers {
-			hostSwarmID := firstNonEmpty(localSwarmID, "local")
-			runtimeContainerRef := firstNonEmpty(container.ContainerID, container.ContainerName, container.ID)
-			hostContainerID := canonicalHostContainerID(hostSwarmID, runtimeContainerRef)
-			mergeHostContainer(hostContainerMap, pebblestore.TopologyHostContainerRecord{
-				HostContainerID:     hostContainerID,
-				HostSwarmID:         hostSwarmID,
-				RuntimeContainerRef: runtimeContainerRef,
-				Name:                firstNonEmpty(container.Name, container.ContainerName, container.ID),
-				ContainerName:       firstNonEmpty(container.ContainerName, container.ID),
-				ContainerID:         container.ContainerID,
-				Runtime:             container.Runtime,
-				Image:               container.Image,
-				Status:              container.Status,
-				HostAPIBaseURL:      container.HostAPIBaseURL,
-				HostPort:            container.HostPort,
-				RuntimePort:         container.RuntimePort,
-				Mounts:              container.Mounts,
-				ObservedSources:     []string{"swarm_local_container"},
-				CreatedAt:           container.CreatedAt,
-				UpdatedAt:           container.UpdatedAt,
 			})
 		}
 	}

@@ -127,7 +127,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/reload", Hint: "Reload home state from swarmd"},
 		{Command: "/rebuild", Hint: "Rebuild the active lane, then exit swarmtui"},
 		{Command: "/sessions", Hint: "Open recent sessions modal"},
-		{Command: "/swarm", Hint: "Show swarm dashboard, pairing state, and approvals", QuickTips: []string{"/swarm status", "/swarm pending", "/swarm approve <id>", "/swarm reject <id>", "/swarm role master", "/swarm set <name>"}},
+		{Command: "/swarm", Hint: "Set the primary swarm display name", QuickTips: []string{"/swarm set <name>", "/swarm name <name>", "/swarm role master"}},
 		{Command: "/update", Hint: updateHint, QuickTips: updateQuickTips},
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
 		{Command: "/thinking", Hint: "Use /thinking on, /thinking off, or /thinking status", QuickTips: []string{"/thinking on", "/thinking off", "/thinking status"}},
@@ -300,8 +300,6 @@ type App struct {
 
 	devUpdateRequested     bool
 	releaseUpdateRequested bool
-
-	pendingLocalContainerUpdate *localContainerUpdateConfirmation
 
 	sessionWorksetPagination tuiSessionWorksetPagination
 }
@@ -2215,7 +2213,7 @@ func (a *App) showHelp() {
 		"/themes edit <id> <slot> <#RRGGBB>",
 		"/themes delete <id>",
 		"/header [on|off|toggle|status]   (chat header visibility)",
-		"/swarm [status|pending|approve <id>|reject <id>|set <name>|<name>]   (show dashboard, review pending children, or change device identity)",
+		"/swarm [set <name>|name <name>|<name>]   (change primary swarm display name)",
 		updateHelpLine(a.startupDevMode()),
 		"/thinking [on|off|toggle|status]   (show or hide reasoning/thinking tags)",
 		"/mouse [on|off|toggle|status]   (mouse click capture)",
@@ -4077,10 +4075,6 @@ func (a *App) consumeHomeActions() {
 		}
 		if action, ok := a.home.PopVaultModalAction(); ok {
 			a.handleVaultModalAction(action)
-			processed = true
-		}
-		if action, ok := a.home.PopSwarmModalAction(); ok {
-			a.handleSwarmModalAction(action)
 			processed = true
 		}
 		if action, ok := a.home.PopWorkspaceModalAction(); ok {

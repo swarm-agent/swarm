@@ -36,7 +36,7 @@ func TestSwarmTopologySnapshotUsesSeededCanonicalSnapshot(t *testing.T) {
 		t.Fatalf("put migration status: %v", err)
 	}
 
-	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil)
+	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil)
 	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologySvc)
 
@@ -114,7 +114,7 @@ func TestSwarmTopologyRuntimeOwnerUsesSeededCanonicalAttachment(t *testing.T) {
 		t.Fatalf("put migration status: %v", err)
 	}
 
-	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil)
+	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil)
 	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologySvc)
 

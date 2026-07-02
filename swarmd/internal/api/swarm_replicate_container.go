@@ -9,7 +9,6 @@ import (
 
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/identity"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -568,11 +567,11 @@ func (s *Server) handleSwarmManagedHostContainerDelete(w http.ResponseWriter, r 
 		return
 	}
 	var response struct {
-		OK     bool                         `json:"ok"`
-		Result localcontainers.DeleteResult `json:"result"`
-		Error  string                       `json:"error"`
+		OK     bool                       `json:"ok"`
+		Result deployruntime.DeleteResult `json:"result"`
+		Error  string                     `json:"error"`
 	}
-	if err := s.postPeerJSONToSwarmTarget(r.Context(), target, "/v1/swarm/containers/local/delete", map[string]any{"ids": canonicalDeleteIDs}, &response); err != nil {
+	if err := s.postPeerJSONToSwarmTarget(r.Context(), target, "/v1/deploy/container/delete", map[string]any{"ids": canonicalDeleteIDs}, &response); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "result": response.Result, "error": err.Error()})
 		return
 	}

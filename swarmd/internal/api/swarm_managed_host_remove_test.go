@@ -10,7 +10,6 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
-	"swarm/packages/swarmd/internal/localcontainers"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
@@ -289,8 +288,8 @@ func (f fakeManagedHostRemoveDeployService) Act(context.Context, deployruntime.C
 	return deployruntime.ContainerDeployment{}, nil
 }
 
-func (f fakeManagedHostRemoveDeployService) Delete(context.Context, []string) (localcontainers.DeleteResult, error) {
-	return localcontainers.DeleteResult{}, nil
+func (f fakeManagedHostRemoveDeployService) Delete(context.Context, []string) (deployruntime.DeleteResult, error) {
+	return deployruntime.DeleteResult{}, nil
 }
 
 func (f fakeManagedHostRemoveDeployService) ChildAttachState(context.Context, deployruntime.ContainerAttachStatusInput) (swarmruntime.LocalState, error) {
@@ -331,8 +330,8 @@ func (f fakeManagedHostRemoveDeployService) UnlockManagedLocalChildVaults(contex
 	return nil
 }
 
-func (f *fakeManagedHostRemoveDeployService) DeleteManagedHostForAccount(_ context.Context, accountScopeID, managedSwarmID string) (localcontainers.DeleteResult, error) {
+func (f *fakeManagedHostRemoveDeployService) DeleteManagedHostForAccount(_ context.Context, accountScopeID, managedSwarmID string) (deployruntime.DeleteResult, error) {
 	f.deletedAccountScopeID = accountScopeID
 	f.deletedManagedSwarmID = managedSwarmID
-	return localcontainers.DeleteResult{Count: 1, Deleted: []string{"deploy-a"}}, nil
+	return deployruntime.DeleteResult{Count: 1, Deleted: []string{"deploy-a"}}, nil
 }

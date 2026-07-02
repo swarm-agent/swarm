@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode, ChangeEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Box, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, GitBranch, Home, LayoutGrid, Link2, LoaderCircle, Menu, MoreVertical, Pause, Pin, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, GitBranch, Home, LayoutGrid, Link2, LoaderCircle, Menu, MoreVertical, Pause, Pin, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -32,11 +32,9 @@ import {
 } from '../../workspaces/todos/types'
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
-import { saveLocalContainerUpdateWarningDismissal } from '../settings/swarm/mutations/save-local-container-update-warning-dismissal'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
-import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
-import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
-import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
+import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { fetchSwarmTargets, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { approveRemoteSwarmPairing, type RemoteSwarmPendingPairing } from '../onboarding/api'
 import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from '../swarm/components/managed-host-link-request-modal'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
@@ -47,7 +45,7 @@ import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDes
 import type { DesktopSlashCommand } from '../chat/services/slash-commands'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
-import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type DesktopUpdateJob, type LocalContainerUpdatePlan } from '../update/api'
+import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate, type DesktopUpdateJob } from '../update/api'
 import { fetchFlows, flowsQueryKey, setFlowEnabled, type FlowSummaryRecord } from '../settings/flows/api'
 import { FlowsSettingsPage } from '../settings/flows/components/flows-settings-page'
 import {
@@ -89,7 +87,7 @@ const UPDATE_PROGRESS_STEP_TITLES = [
   'Sync managed checkouts',
   'Rebuild/apply Swarm',
   'Restart/reconnect backends',
-  'Verify/update containers',
+  'Verify update',
 ] as const
 const MANAGED_DEV_UPDATE_PHASES = ['inspect', 'sync', 'rebuild', 'reconnect', 'verify'] as const
 
@@ -161,17 +159,6 @@ interface DesktopToastState {
 
 interface StoredDesktopToastState extends DesktopToastState {
   createdAt: number
-}
-
-interface SwarmTargetMenuState {
-  open: boolean
-}
-
-interface LocalContainerUpdateConfirmState {
-  plan: LocalContainerUpdatePlan
-  remoteSessions: RemoteDeploySession[]
-  managedHostCount: number
-  pendingDismiss: boolean
 }
 
 interface DesktopV3CompactingSessionState {
@@ -850,39 +837,6 @@ function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): Work
   }
 }
 
-function formatLocalContainerUpdateTarget(plan: LocalContainerUpdatePlan): string {
-  const target = plan.target ?? {}
-  if (plan.dev_mode) {
-    const postRebuildFingerprint = target.post_rebuild_fingerprint?.trim()
-    const fingerprint = postRebuildFingerprint || target.fingerprint?.trim()
-    return fingerprint ? `Target dev image fingerprint: ${fingerprint.slice(0, 12)}` : 'Target dev image fingerprint unavailable'
-  }
-  const version = target.version?.trim()
-  const digest = target.digest_ref?.trim()
-  if (version && digest) {
-    return `Target ${version} (${digest})`
-  }
-  if (version) {
-    return `Target ${version}`
-  }
-  if (digest) {
-    return `Target ${digest}`
-  }
-  return 'Target version unavailable'
-}
-
-function localContainerUpdateAffected(plan: LocalContainerUpdatePlan): boolean {
-  return (plan.summary?.affected ?? 0) > 0 || (plan.summary?.needs_update ?? 0) > 0 || (plan.summary?.unknown ?? 0) > 0 || (plan.summary?.errors ?? 0) > 0
-}
-
-function remoteDeployUpdateSessionCount(sessions: RemoteDeploySession[]): number {
-  return sessions.filter((session) => session.status?.trim().toLowerCase() === 'attached' && Boolean(session.ssh_session_target?.trim())).length
-}
-
-function managedHostUpdateTargetCount(targets: SwarmTarget[]): number {
-  return targets.filter((target) => target.selectable && target.relationship?.trim().toLowerCase() === 'managed' && target.kind !== 'self').length
-}
-
 function updateJobMessage(job: DesktopUpdateJob | null): string {
   const message = job?.error?.trim() || job?.message?.trim()
   if (message) {
@@ -985,43 +939,6 @@ function loadSidebarWorkspaceLayout(): Record<string, SidebarWorkspaceLayout> {
   }
 }
 
-function swarmKindDotClass(kind: SwarmTarget['kind'] | undefined, online = true): string {
-  if (!online) {
-    return 'bg-[var(--app-warning)]'
-  }
-  if (kind === 'remote' || kind === 'mirrored') {
-    return 'bg-[var(--app-info)]'
-  }
-  return 'bg-[var(--app-success)]'
-}
-
-function swarmHostDisplayName(hostSwarmID: string | undefined, targets: SwarmTarget[]): string {
-  const normalizedHostSwarmID = hostSwarmID?.trim() ?? ''
-  if (!normalizedHostSwarmID) {
-    return ''
-  }
-  const host = targets.find((target) => target.swarm_id.trim() === normalizedHostSwarmID)
-  return host?.name?.trim() || normalizedHostSwarmID
-}
-
-function swarmTargetPrimaryLabel(target: SwarmTarget): string {
-  return target.name?.trim() || target.swarm_id?.trim() || 'Swarm'
-}
-
-function swarmTargetSecondaryLabel(target: SwarmTarget, targets: SwarmTarget[]): string {
-  if (target.kind === 'mirrored') {
-    const source = swarmHostDisplayName(target.host_swarm_id, targets)
-    return source || 'managed host'
-  }
-  return `${swarmKindLabel(target)} · ${swarmTargetStatusLabel(target)}`
-}
-
-function swarmTargetTitle(target: SwarmTarget, targets: SwarmTarget[]): string {
-  const secondary = swarmTargetSecondaryLabel(target, targets)
-  const openURL = swarmTargetOpenURL(target)
-  return `${secondary}${!target.current && target.online && openURL ? ' · open in new window' : ''}`
-}
-
 function swarmRoleLabel(target: Pick<SwarmTarget, 'role'> | null | undefined): string {
   const role = target?.role?.trim().toLowerCase() || ''
   switch (role) {
@@ -1036,50 +953,6 @@ function swarmRoleLabel(target: Pick<SwarmTarget, 'role'> | null | undefined): s
     default:
       return role ? role.replace(/_/g, ' ') : 'Swarm'
   }
-}
-
-function swarmKindLabel(target: SwarmTarget): string {
-  if (target.kind === 'self') {
-    return swarmRoleLabel(target)
-  }
-  if (target.kind === 'host' || target.relationship?.trim().toLowerCase() === 'managed') {
-    return 'host'
-  }
-  return target.kind === 'remote' ? 'remote' : 'local'
-}
-
-function swarmTargetStatusLabel(target: SwarmTarget): string {
-  if (target.current) {
-    return 'active here'
-  }
-  if (target.online) {
-    return 'online'
-  }
-  const status = target.attach_status?.trim()
-  if (!status || status === 'attached') {
-    return 'offline'
-  }
-  return status
-}
-
-function swarmTargetOpenURL(target: SwarmTarget): string {
-  const raw = target.desktop_url?.trim() || target.backend_url?.trim() || ''
-  if (!raw) {
-    return ''
-  }
-  try {
-    const parsed = new URL(raw)
-    if (parsed.hostname.includes('.ts.net')) {
-      parsed.port = ''
-      parsed.pathname = ''
-      parsed.search = ''
-      parsed.hash = ''
-      return parsed.toString().replace(/\/$/, '')
-    }
-  } catch {
-    return raw
-  }
-  return raw
 }
 
 function flowAgentLabel(record: FlowSummaryRecord): string {
@@ -2184,7 +2057,6 @@ export function DesktopAppPage() {
   const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
-  const [swarmMenu, setSwarmMenu] = useState<SwarmTargetMenuState>({ open: false })
   const [editingSidebarSwarmName, setEditingSidebarSwarmName] = useState(false)
   const [sidebarSwarmNameDraft, setSidebarSwarmNameDraft] = useState('')
   const [sidebarSwarmNameSaving, setSidebarSwarmNameSaving] = useState(false)
@@ -2202,7 +2074,6 @@ export function DesktopAppPage() {
   const [worktreeSessionCreating, setWorktreeSessionCreating] = useState(false)
   const [worktreeSessionError, setWorktreeSessionError] = useState<string | null>(null)
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
-  const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
   const [sidebarWorkspaceControlPath, setSidebarWorkspaceControlPath] = useState('')
@@ -2353,7 +2224,6 @@ export function DesktopAppPage() {
   })
 
   const updateStatus = updateStatusQuery.data ?? null
-  const effectiveUISettings = uiSettings ?? uiSettingsQuery.data ?? null
   const updateAvailable = updateStatus?.update_available === true
   const updateDevMode = updateStatus?.dev_mode === true
   const updateActionEnabled = updateAvailable || updateDevMode
@@ -2382,27 +2252,6 @@ export function DesktopAppPage() {
   const sidebarSwarmNameDirty = sidebarSwarmNameDraft.trim() !== swarmName.trim()
   const currentSwarmRoleLabel = swarmRoleLabel(currentSwarmTarget)
   const masterWorkspaceName = selectedWorkspace?.workspaceName ?? routeWorkspace?.workspaceName ?? fallbackWorkspaceNameFromPath(selectedWorkspacePath ?? '')
-  const sortedSwarmTargets = useMemo(() => [...swarmTargets]
-    .sort((left, right) => {
-      if (left.current !== right.current) {
-        return left.current ? -1 : 1
-      }
-      if (left.online !== right.online) {
-        return left.online ? -1 : 1
-      }
-      return left.name.localeCompare(right.name)
-    }), [swarmTargets])
-  const selfSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => target.kind === 'self' || target.current), [sortedSwarmTargets])
-  const localSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => target.kind === 'local' && !target.current), [sortedSwarmTargets])
-  const remoteSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => (target.kind === 'remote' || target.kind === 'host' || target.kind === 'mirrored') && !target.current), [sortedSwarmTargets])
-  const swarmTargetCounts = useMemo(() => {
-    const local = selfSwarmTargets.length + localSwarmTargets.length
-    const remote = remoteSwarmTargets.length
-    const offline = sortedSwarmTargets.filter((target) => !target.online && !target.current).length
-    return { local, remote, offline }
-  }, [localSwarmTargets.length, remoteSwarmTargets, selfSwarmTargets.length, sortedSwarmTargets])
-  const swarmTargetSummary = `${swarmTargetCounts.local} local · ${swarmTargetCounts.remote} host/remote${swarmTargetCounts.offline > 0 ? ` · ${swarmTargetCounts.offline} offline` : ''}`
-  const swarmTargetCountLabel = `${swarmTargets.length} ${swarmTargets.length === 1 ? 'swarm' : 'swarms'}`
   const activePairingRequests = useMemo(() => activePendingPairings(pendingPairingRequests), [pendingPairingRequests])
   const pairingRequestCount = activePairingRequests.length
   const pairingRequestAttentionVisible = pairingRequestCount > 0
@@ -2447,8 +2296,6 @@ export function DesktopAppPage() {
       .join('|'),
     [swarmTargets],
   )
-  const [swarmSwitchError, setSwarmSwitchError] = useState<string | null>(null)
-
   useEffect(() => {
     if (!editingSidebarSwarmName) {
       setSidebarSwarmNameDraft(swarmName)
@@ -2569,36 +2416,6 @@ export function DesktopAppPage() {
       setSidebarSwarmNameSaving(false)
     }
   }, [queryClient, sidebarSwarmNameDirty, sidebarSwarmNameDraft])
-
-  const handleSelectSwarmTarget = useCallback(async (target: SwarmTarget) => {
-    setSwarmSwitchError(null)
-    if (target.current || target.kind === 'self') {
-      try {
-        await selectSwarmTarget(target.swarm_id)
-        await queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to return to master'
-        setSwarmSwitchError(message)
-      } finally {
-        setSwarmMenu({ open: false })
-      }
-      return
-    }
-
-    const openURL = swarmTargetOpenURL(target)
-    if (!target.online) {
-      setSwarmSwitchError(`${target.name || 'This swarm'} is offline.`)
-      setSwarmMenu({ open: false })
-      void queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
-      return
-    }
-    if (!openURL) {
-      setSwarmSwitchError(`${target.name || 'This swarm'} does not have a desktop URL yet.`)
-      return
-    }
-    window.open(openURL, '_blank', 'noopener,noreferrer')
-    setSwarmMenu({ open: false })
-  }, [queryClient])
 
   const mutateTodoState = useCallback(async <T,>(workspacePath: string, action: () => Promise<T>): Promise<T> => {
     const normalizedPath = workspacePath.trim()
@@ -3207,11 +3024,6 @@ export function DesktopAppPage() {
   }, [flowBusyID, queryClient])
 
 
-
-  const handleOpenSwarmDashboard = useCallback(() => {
-    handleOpenSettingsTab('swarm')
-  }, [handleOpenSettingsTab])
-
   const runDesktopUpdate = useCallback(async () => {
     setUpdateRunning(true)
     setUpdateProgress({ open: true, job: null, startedAt: Date.now() })
@@ -3264,7 +3076,7 @@ export function DesktopAppPage() {
   }, [updateDevMode])
 
   const handleDesktopUpdate = useCallback(async () => {
-    if (updateRunning || localContainerUpdateConfirm) {
+    if (updateRunning) {
       return
     }
     setUpdateError(null)
@@ -3295,60 +3107,8 @@ export function DesktopAppPage() {
       setUpdateError(message)
       return
     }
-    let settings = effectiveUISettings
-    if (!settings) {
-      try {
-        settings = await uiSettingsQuery.refetch().then((result) => result.data ?? null)
-      } catch {
-        settings = null
-      }
-    }
-    try {
-      const remoteSessions = await fetchRemoteDeploySessions()
-      const remoteUpdateCount = remoteDeployUpdateSessionCount(remoteSessions)
-      const managedHostCount = status.dev_mode ? managedHostUpdateTargetCount(swarmTargetsQuery.data?.targets ?? []) : 0
-      const warningDismissed = localContainerUpdateWarningDismissed(settings)
-      if (!warningDismissed || remoteUpdateCount > 0 || managedHostCount > 0) {
-        const plan = await fetchLocalContainerUpdatePlan({ devMode: status.dev_mode, targetVersion: status.latest_version, postRebuildCheck: status.dev_mode })
-        if ((!warningDismissed && localContainerUpdateAffected(plan)) || remoteUpdateCount > 0 || managedHostCount > 0) {
-          setLocalContainerUpdateConfirm({ plan, remoteSessions, managedHostCount, pendingDismiss: false })
-          return
-        }
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to check container images before update'
-      setUpdateError(message)
-      return
-    }
     await runDesktopUpdate()
-  }, [effectiveUISettings, localContainerUpdateConfirm, runDesktopUpdate, swarmTargetsQuery.data?.targets, uiSettingsQuery, updateRunning, updateStatus, updateStatusError, updateStatusQuery])
-
-  const handleConfirmLocalContainerUpdate = useCallback(async () => {
-    const confirmState = localContainerUpdateConfirm
-    if (!confirmState || updateRunning) {
-      return
-    }
-    if (confirmState.pendingDismiss) {
-      try {
-        const saved = await saveLocalContainerUpdateWarningDismissal(true)
-        setUISettings(saved)
-        queryClient.setQueryData(uiSettingsQueryKey(), saved)
-        queryClient.setQueryData(['ui-settings', 'swarm'], normalizeSwarmSettings(saved))
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to save container image update warning setting'
-        setUpdateError(message)
-        return
-      }
-    }
-    setLocalContainerUpdateConfirm(null)
-    setUpdateError(null)
-    await runDesktopUpdate()
-  }, [localContainerUpdateConfirm, queryClient, runDesktopUpdate, updateRunning])
-
-  const handleCancelLocalContainerUpdate = useCallback(() => {
-    setLocalContainerUpdateConfirm(null)
-    setUpdateError(null)
-  }, [])
+  }, [runDesktopUpdate, updateRunning, updateStatus, updateStatusError, updateStatusQuery])
 
   const handleCloseUpdateProgress = useCallback(() => {
     if (updateRunning) {
@@ -3356,10 +3116,6 @@ export function DesktopAppPage() {
     }
     setUpdateProgress((current) => ({ ...current, open: false }))
   }, [updateRunning])
-
-  const handleToggleLocalContainerUpdateDismissal = useCallback((checked: boolean) => {
-    setLocalContainerUpdateConfirm((current) => current ? { ...current, pendingDismiss: checked } : current)
-  }, [])
 
   const handleOpenMobileSidebar = useCallback(() => {
     setSidebarCollapsed(false)
@@ -3437,18 +3193,12 @@ export function DesktopAppPage() {
   }, [mergedSidebarWorkspaceEntries])
 
   const handleToggleFlowMenu = useCallback(() => {
-    setSwarmMenu({ open: false })
     setFlowMenuOpen((open) => !open)
   }, [])
 
   useEffect(() => {
     setMobileSidebarOpen(false)
   }, [routeSessionId, routeWorkspaceSlug])
-
-  const openSwarmMenu = useCallback(() => {
-    setFlowMenuOpen(false)
-    setSwarmMenu((current) => ({ open: !current.open }))
-  }, [])
 
   const handleCompactingSessionChange = useCallback((sessionId: string, startedAt: number | null) => {
     const normalizedSessionId = sessionId.trim()
@@ -3470,9 +3220,6 @@ export function DesktopAppPage() {
           </Button>
           <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => void navigate({ to: '/' })} aria-label="Back to launcher">
             <Home size={24} className="shrink-0" />
-          </Button>
-          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={handleOpenSwarmDashboard} aria-label="Open swarm dashboard">
-            <Settings size={24} className="shrink-0" />
           </Button>
           {pairingRequestAttentionVisible ? (
             <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0 text-[var(--app-primary)]" onClick={handleOpenPairingRequests} aria-label="Open link requests" title={`${pairingRequestCount} pending link request${pairingRequestCount === 1 ? '' : 's'}`}>
@@ -3597,106 +3344,6 @@ export function DesktopAppPage() {
 
             <div className="border-b border-[var(--app-border)] bg-[var(--app-surface)] px-[9px] py-2">
               <div className="grid gap-0.5 text-[11px] text-[var(--app-text-subtle)]">
-                  <div>
-                    <div
-                      className={cn(
-                        'grid min-h-[30px] w-full grid-cols-[minmax(0,1fr)_28px] items-center rounded-md text-[var(--app-text-muted)]',
-                        swarmMenu.open && 'bg-[var(--app-surface-active)] text-[var(--app-text)]',
-                      )}
-                    >
-                      {routeWorkspaceSlug ? (
-                        <Link
-                          to="/$workspaceSlug/settings"
-                          params={{ workspaceSlug: routeWorkspaceSlug }}
-                          search={{ tab: 'swarm' }}
-                          className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                          onClick={() => {
-                            setQuickSettingsTab(null)
-                            setMobileSidebarOpen(false)
-                          }}
-                          aria-label="Open swarm settings"
-                          title={swarmTargetSummary}
-                        >
-                          <Box size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                          <span className="min-w-0 truncate">{swarmTargetCountLabel}</span>
-                        </Link>
-                      ) : (
-                        <Link
-                          to="/settings"
-                          search={{ tab: 'swarm' }}
-                          className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                          onClick={() => {
-                            setQuickSettingsTab(null)
-                            setMobileSidebarOpen(false)
-                          }}
-                          aria-label="Open swarm settings"
-                          title={swarmTargetSummary}
-                        >
-                          <Box size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                          <span className="min-w-0 truncate">{swarmTargetCountLabel}</span>
-                        </Link>
-                      )}
-                      <button
-                        type="button"
-                        className="grid min-h-[30px] place-items-center rounded-r-md hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                        onClick={openSwarmMenu}
-                        aria-expanded={swarmMenu.open}
-                        aria-label={`${swarmMenu.open ? 'Collapse' : 'Expand'} swarm list`}
-                        title={`${swarmMenu.open ? 'Collapse' : 'Expand'} swarms`}
-                      >
-                        <ChevronDown size={13} strokeWidth={1.8} className={cn('transition-transform', swarmMenu.open && 'rotate-180')} />
-                      </button>
-                    </div>
-                    {swarmMenu.open ? (
-                      <div className="py-1 pl-5">
-                        {swarmTargets.length === 0 ? (
-                          <div className="px-2 py-1.5 text-[11px] text-[var(--app-text-subtle)]">No swarms.</div>
-                        ) : swarmTargets.map((target) => {
-                          const openURL = swarmTargetOpenURL(target)
-                          const statusLabel = swarmTargetStatusLabel(target)
-                          const secondaryLabel = swarmTargetSecondaryLabel(target, swarmTargets)
-                          return (
-                            <button
-                              key={target.swarm_id}
-                              type="button"
-                              onClick={() => { void handleSelectSwarmTarget(target) }}
-                              className={cn(
-                                SIDEBAR_ACTION_ROW_CLASS,
-                                'min-h-[30px] w-full px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
-                                target.current && 'bg-[var(--app-surface-active)] text-[var(--app-text)] shadow-[inset_2px_0_0_var(--app-success)]',
-                                !target.online && !target.current && 'opacity-65',
-                              )}
-                              title={swarmTargetTitle(target, swarmTargets)}
-                            >
-                              <span className="flex min-w-0 items-start gap-2">
-                                <span className={cn('mt-[6px] h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
-                                <span className="grid min-w-0 gap-0.5">
-                                  <span className="truncate">{swarmTargetPrimaryLabel(target)}</span>
-                                  {target.kind === 'mirrored' ? (
-                                    <span className="truncate text-[10px] leading-tight text-[var(--app-text-subtle)]">{secondaryLabel}</span>
-                                  ) : null}
-                                </span>
-                                {!target.current && target.online && openURL ? <ExternalLink size={11} strokeWidth={1.8} className="mt-[2px] shrink-0 opacity-70" /> : null}
-                              </span>
-                              <span className="shrink-0 truncate text-right text-[10px] text-[var(--app-text-subtle)]">
-                                {target.kind === 'mirrored' ? statusLabel : secondaryLabel}
-                              </span>
-                            </button>
-                          )
-                        })}
-                        {swarmSwitchError ? <div className="mx-1 mt-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[10px] text-[var(--app-warning)]">{swarmSwitchError}</div> : null}
-                        <button
-                          type="button"
-                          className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                          onClick={handleOpenSwarmDashboard}
-                        >
-                          <Plus size={14} className="shrink-0" />
-                          Add / manage swarms
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-
                   <div>
                     <div
                       className={cn(
@@ -3988,22 +3635,11 @@ export function DesktopAppPage() {
     </>
   )
 
-  const localContainerConfirmPlan = localContainerUpdateConfirm?.plan ?? null
-  const remoteContainerUpdateCount = localContainerUpdateConfirm ? remoteDeployUpdateSessionCount(localContainerUpdateConfirm.remoteSessions) : 0
-  const managedHostUpdateCount = localContainerUpdateConfirm?.managedHostCount ?? 0
-  const localContainerConfirmSummary = localContainerConfirmPlan?.summary ?? null
   const updateProgressJob = updateProgress.job
   const updateProgressMessage = updateJobMessage(updateProgressJob)
   const updateProgressStep = updateProgressStepIndex(updateProgressJob)
   const updateProgressFailed = updateProgressJob?.status === 'failed'
   const updateProgressCompleted = updateProgressJob?.status === 'completed'
-  const localContainerAffectedCount = localContainerConfirmSummary
-    ? Math.max(
-      localContainerConfirmSummary.affected ?? 0,
-      (localContainerConfirmSummary.needs_update ?? 0) + (localContainerConfirmSummary.unknown ?? 0) + (localContainerConfirmSummary.errors ?? 0),
-    )
-    : 0
-
   return (
     <div
       className="absolute inset-0 flex h-full min-h-0 w-full overflow-hidden bg-[var(--app-surface)] p-0 text-[var(--app-text)]"
@@ -4326,65 +3962,6 @@ export function DesktopAppPage() {
             </div>
             <div className="mt-5 flex justify-end gap-3">
               <Button variant="ghost" onClick={handleCloseUpdateProgress} disabled={updateRunning}>Close</Button>
-            </div>
-          </Card>
-        </div>
-      ) : null}
-
-      {localContainerConfirmPlan ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-[var(--app-backdrop)] px-4" aria-modal="true" role="dialog">
-          <Card className="w-full max-w-lg border-[var(--app-warning-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
-            <div className="text-lg font-semibold">Update container images too?</div>
-            <p className="mt-3 text-sm text-[var(--app-text-muted)]">
-              {localContainerConfirmPlan.contract?.warning_copy || 'This will also update local and remote container images.'}
-            </p>
-            <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4 text-sm">
-              <div className="font-medium">
-                {localContainerAffectedCount > 0
-                  ? `${localContainerAffectedCount} local container${localContainerAffectedCount === 1 ? '' : 's'} may need attention.`
-                  : 'No local containers need attention.'}
-              </div>
-              {remoteContainerUpdateCount > 0 ? (
-                <div className="mt-1 text-sm text-[var(--app-text)]">{remoteContainerUpdateCount} remote SSH session{remoteContainerUpdateCount === 1 ? '' : 's'} will be checked.</div>
-              ) : null}
-              {managedHostUpdateCount > 0 ? (
-                <div className="mt-2 rounded-lg border border-[var(--app-warning-border)] bg-[color-mix(in_srgb,var(--app-warning)_12%,transparent)] p-3 text-sm text-[var(--app-text)]">
-                  Dev update will hard-reset and clean {managedHostUpdateCount} managed host dev checkout{managedHostUpdateCount === 1 ? '' : 's'} before rebuilding them.
-                </div>
-              ) : null}
-              <div className="mt-2 text-xs text-[var(--app-text-muted)]">
-                {formatLocalContainerUpdateTarget(localContainerConfirmPlan)}
-              </div>
-              {localContainerConfirmSummary ? (
-                <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-[var(--app-text-muted)]">
-                  <div>Total: {localContainerConfirmSummary.total}</div>
-                  <div>Needs update: {localContainerConfirmSummary.needs_update}</div>
-                  <div>Already current: {localContainerConfirmSummary.already_current}</div>
-                  <div>Unknown/errors: {(localContainerConfirmSummary.unknown ?? 0) + (localContainerConfirmSummary.errors ?? 0)}</div>
-                </div>
-              ) : null}
-            </div>
-            <p className="mt-3 text-xs text-[var(--app-text-muted)]">
-              {localContainerConfirmPlan.contract?.failure_semantics || 'Swarm update succeeds independently; local or remote container update failures are reported as resumable follow-up work.'}
-            </p>
-            {remoteContainerUpdateCount === 0 && managedHostUpdateCount === 0 ? (
-              <label className="mt-4 flex items-center gap-2 text-sm text-[var(--app-text-muted)]">
-                <input
-                  type="checkbox"
-                  checked={localContainerUpdateConfirm?.pendingDismiss ?? false}
-                  onChange={(event) => {
-                      const dismissed = event.target.checked
-                      handleToggleLocalContainerUpdateDismissal(dismissed)
-                    }}
-                />
-                <span>Don&apos;t show this again for local-only container image warnings</span>
-              </label>
-            ) : null}
-            <div className="mt-6 flex justify-end gap-3">
-              <Button variant="ghost" onClick={handleCancelLocalContainerUpdate} disabled={updateRunning}>Cancel</Button>
-              <Button onClick={() => { void handleConfirmLocalContainerUpdate() }} disabled={updateRunning}>
-                Continue update
-              </Button>
             </div>
           </Card>
         </div>

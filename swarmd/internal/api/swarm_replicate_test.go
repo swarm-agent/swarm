@@ -14,7 +14,6 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/identity"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	"swarm/packages/swarmd/internal/security"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
@@ -546,7 +545,7 @@ func TestBuildReplicationPlanUsesStandaloneWorkspaceTargetForLinkedDirectory(t *
 	if bootstrap[0].Directories[0].SourcePath != child || bootstrap[0].Directories[0].TargetPath != childPaths[child] {
 		t.Fatalf("parent linked child = %+v, want %s at %s", bootstrap[0].Directories[0], child, childPaths[child])
 	}
-	var linkedMount localcontainers.Mount
+	var linkedMount pebblestore.ContainerMount
 	for _, mount := range mounts {
 		if mount.SourcePath == child && mount.WorkspacePath == parent {
 			linkedMount = mount
@@ -586,7 +585,7 @@ func newReplicateTestHandler(t *testing.T) (*Server, *fakeReplicateDeployService
 
 	server := NewServer(nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	topologyStore := pebblestore.NewTopologyStore(store)
-	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil))
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil))
 	server.SetSwarmStore(pebblestore.NewSwarmStore(store))
 
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
@@ -744,8 +743,8 @@ func (f *fakeReplicateDeployService) Act(_ context.Context, input deployruntime.
 	return deployruntime.ContainerDeployment{ID: input.ID, Name: input.ID, Status: input.Action, ContainerName: input.ID}, nil
 }
 
-func (f *fakeReplicateDeployService) Delete(context.Context, []string) (localcontainers.DeleteResult, error) {
-	return localcontainers.DeleteResult{}, nil
+func (f *fakeReplicateDeployService) Delete(context.Context, []string) (deployruntime.DeleteResult, error) {
+	return deployruntime.DeleteResult{}, nil
 }
 
 func (f *fakeReplicateDeployService) UpdateSettings(_ context.Context, input deployruntime.ContainerSettingsUpdateInput) (deployruntime.ContainerDeployment, error) {
@@ -775,7 +774,7 @@ func TestSwarmManagedHostContainerDeleteResolvesCanonicalHostContainerIDs(t *tes
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 			return
 		}
-		if r.URL.Path != "/v1/swarm/containers/local/delete" {
+		if r.URL.Path != "/v1/deploy/container/delete" {
 			t.Fatalf("managed host path = %q", r.URL.Path)
 		}
 		var payload struct {
@@ -785,7 +784,7 @@ func TestSwarmManagedHostContainerDeleteResolvesCanonicalHostContainerIDs(t *tes
 			t.Fatalf("decode delete payload: %v", err)
 		}
 		fakeDeploy.lastManagedHostCanonicalIDs = append([]string(nil), payload.IDs...)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": localcontainers.DeleteResult{Deleted: payload.IDs, Count: len(payload.IDs)}})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": deployruntime.DeleteResult{Deleted: payload.IDs, Count: len(payload.IDs)}})
 	}))
 	t.Cleanup(managedHost.Close)
 	setReplicateFakeSwarmState(server, swarmStateWithManagedPeer(managedHost.URL, "host-to-managed-token"))
@@ -795,7 +794,7 @@ func TestSwarmManagedHostContainerDeleteResolvesCanonicalHostContainerIDs(t *tes
 	}
 	defer func() { _ = topologyBackingStore.Close() }()
 	topologyStore := pebblestore.NewTopologyStore(topologyBackingStore)
-	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil)
+	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologySvc)
 	if err := topologySvc.UpsertHostContainer(pebblestore.TopologyHostContainerRecord{
 		HostContainerID:     "managed-swarm-1:ctr-123",
@@ -855,8 +854,8 @@ func TestManagedHostTopologyWritesAreAccountOwned(t *testing.T) {
 		t.Fatalf("open deploy store: %v", err)
 	}
 	defer func() { _ = store.Close() }()
-	server.SetDeployContainerService(deployruntime.NewService(pebblestore.NewDeployContainerStore(store), nil, nil, nil, nil, nil, nil, filepath.Join(testDir, "swarm.conf"), topologyStore))
-	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil))
+	server.SetDeployContainerService(deployruntime.NewService(pebblestore.NewDeployContainerStore(store), nil, nil, nil, nil, nil, filepath.Join(testDir, "swarm.conf"), topologyStore))
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil))
 
 	deployment, err := server.mirrorManagedHostDeployment(identity.ContextWithPrincipal(context.Background(), testPrincipal()), deployruntime.ContainerDeployment{
 		ID:                 "deployment-1",
@@ -952,7 +951,7 @@ func TestSwarmManagedHostContainerDeleteResolvesDeploymentIDToManagedLocalIdenti
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 			return
 		}
-		if r.URL.Path != "/v1/swarm/containers/local/delete" {
+		if r.URL.Path != "/v1/deploy/container/delete" {
 			t.Fatalf("managed host path = %q", r.URL.Path)
 		}
 		var payload struct {
@@ -962,7 +961,7 @@ func TestSwarmManagedHostContainerDeleteResolvesDeploymentIDToManagedLocalIdenti
 			t.Fatalf("decode delete payload: %v", err)
 		}
 		fakeDeploy.lastManagedHostCanonicalIDs = append([]string(nil), payload.IDs...)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": localcontainers.DeleteResult{Deleted: payload.IDs, Count: len(payload.IDs)}})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": deployruntime.DeleteResult{Deleted: payload.IDs, Count: len(payload.IDs)}})
 	}))
 	t.Cleanup(managedHost.Close)
 	setReplicateFakeSwarmState(server, swarmStateWithManagedPeer(managedHost.URL, "host-to-managed-token"))
@@ -972,7 +971,7 @@ func TestSwarmManagedHostContainerDeleteResolvesDeploymentIDToManagedLocalIdenti
 	}
 	defer func() { _ = topologyBackingStore.Close() }()
 	topologyStore := pebblestore.NewTopologyStore(topologyBackingStore)
-	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil)
+	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologySvc)
 	if err := topologySvc.UpsertHostContainer(pebblestore.TopologyHostContainerRecord{
 		HostContainerID:     "managed-swarm-1:ctr-123",

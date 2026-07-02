@@ -13,7 +13,7 @@ import (
 
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/identity"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const syncManagedVaultKeyHeader = "X-Swarm-Sync-Managed-Vault-Key"
@@ -42,7 +42,7 @@ type deployContainerCreatePayload struct {
 	AlwaysOn           bool                                        `json:"always_on,omitempty"`
 	WorkspaceBootstrap []deployruntime.ContainerWorkspaceBootstrap `json:"workspace_bootstrap,omitempty"`
 	ContainerPackages  deployruntime.ContainerPackageManifest      `json:"container_packages,omitempty"`
-	Mounts             []localcontainers.Mount                     `json:"mounts"`
+	Mounts             []pebblestore.ContainerMount                `json:"mounts"`
 }
 
 type deployContainerSettingsPayload struct {
@@ -189,7 +189,7 @@ func (s *Server) handleDeployContainerDeleteRequest(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
-	var result localcontainers.DeleteResult
+	var result deployruntime.DeleteResult
 	deployments, listErr := s.deployContainers.List(ctx)
 	if listErr != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerDelete, "result": result, "error": listErr.Error()})

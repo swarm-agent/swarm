@@ -16,7 +16,6 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/flow"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -571,7 +570,7 @@ func newFlowPeerTestServer(t *testing.T) (*Server, *pebblestore.FlowStore) {
 	server := NewServer(nil, agentSvc, modelSvc, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(eventLog))
 	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	server.SetSwarmNodeStore(pebblestore.NewSwarmNodeStore(store))
-	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, server.swarmNodes, nil, nil, nil, nil, pebblestore.NewWorkspaceStore(store)))
+	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, server.swarmNodes, nil, nil, nil, pebblestore.NewWorkspaceStore(store)))
 	seedFlowDefaultSelfWorkspaceBinding(t, server)
 	flows := pebblestore.NewFlowStore(store)
 	server.SetFlowStore(flows)
@@ -664,8 +663,8 @@ func (f *fakeFlowDeployService) Act(context.Context, deployruntime.ContainerActi
 	return deployruntime.ContainerDeployment{}, nil
 }
 
-func (f *fakeFlowDeployService) Delete(context.Context, []string) (localcontainers.DeleteResult, error) {
-	return localcontainers.DeleteResult{}, nil
+func (f *fakeFlowDeployService) Delete(context.Context, []string) (deployruntime.DeleteResult, error) {
+	return deployruntime.DeleteResult{}, nil
 }
 
 func (f *fakeFlowDeployService) ChildAttachState(context.Context, deployruntime.ContainerAttachStatusInput) (swarmruntime.LocalState, error) {

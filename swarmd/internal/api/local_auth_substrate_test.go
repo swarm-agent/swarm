@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -16,7 +15,6 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/security"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -161,38 +159,6 @@ func TestMainHandlerUpdateStatusAllowsLoopbackWithoutAttachToken(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("loopback update status without attach token = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-}
-
-func TestMainHandlerUpdateLocalContainersRequiresProductSessionAndAcceptsPostRebuildCheck(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-	server.localContainers = fakeLocalContainerUpdatePlanner{plan: localcontainers.UpdatePlan{
-		PathID:  localcontainers.PathContainerUpdatePlan,
-		Mode:    "dev",
-		DevMode: true,
-		Target: localcontainers.UpdatePlanTarget{
-			ImageRef:               "localhost/swarm-container-mvp:latest",
-			Fingerprint:            "before",
-			PostRebuildImageRef:    "localhost/swarm-container-mvp:latest",
-			PostRebuildFingerprint: "after",
-		},
-	}}
-
-	issued, err := server.identitySessions.IssueForCurrentSelection()
-	if err != nil {
-		t.Fatalf("issue identity session: %v", err)
-	}
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:5555/v1/update/local-containers?dev_mode=true&post_rebuild_check=true", nil)
-	req.RemoteAddr = "127.0.0.1:43210"
-	req.Header.Set("X-Swarm-Token", issued.Token)
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("local container update plan = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "post_rebuild_fingerprint") {
-		t.Fatalf("expected post rebuild fingerprint in response: %s", rec.Body.String())
 	}
 }
 
@@ -433,54 +399,6 @@ func setLocalAuthTestStartupConfig(t *testing.T, server *Server, mutate func(*st
 		t.Fatalf("write startup config: %v", err)
 	}
 }
-
-type fakeLocalContainerUpdatePlanner struct {
-	plan localcontainers.UpdatePlan
-}
-
-func (f fakeLocalContainerUpdatePlanner) RuntimeStatus(context.Context) (localcontainers.RuntimeStatus, error) {
-	return localcontainers.RuntimeStatus{}, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) List(context.Context) ([]localcontainers.Container, error) {
-	return nil, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) ListForAccount(context.Context, string) ([]localcontainers.Container, error) {
-	return nil, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) Create(context.Context, localcontainers.CreateInput) (localcontainers.Container, error) {
-	return localcontainers.Container{}, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) Act(context.Context, localcontainers.ActionInput) (localcontainers.Container, error) {
-	return localcontainers.Container{}, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) BulkDelete(context.Context, []string) (localcontainers.DeleteResult, error) {
-	return localcontainers.DeleteResult{}, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) PruneMissing(context.Context) (localcontainers.DeleteResult, error) {
-	return localcontainers.DeleteResult{}, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) UpdatePlan(ctx context.Context, input localcontainers.UpdatePlanInput) (localcontainers.UpdatePlan, error) {
-	plan := f.plan
-	if input.PostRebuildCheck && plan.Target.PostRebuildFingerprint == "" {
-		plan.Target.PostRebuildFingerprint = "checked"
-	}
-	return plan, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) RunUpdateJob(context.Context, localcontainers.UpdateJobInput) (localcontainers.UpdateJobResult, error) {
-	return localcontainers.UpdateJobResult{}, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) SetHostCallbackURL(string, string) {}
-
-func (f fakeLocalContainerUpdatePlanner) HostCallbackURL(string) (string, bool) { return "", false }
 
 func newStaticUpdateService(t *testing.T, updateAvailable bool) *update.Service {
 	t.Helper()

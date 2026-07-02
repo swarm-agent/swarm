@@ -11,7 +11,6 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
-	"swarm/packages/swarmd/internal/localcontainers"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
@@ -360,8 +359,8 @@ func (f fakeManagedHostInitialSyncDeployService) Act(context.Context, deployrunt
 	return deployruntime.ContainerDeployment{}, nil
 }
 
-func (f fakeManagedHostInitialSyncDeployService) Delete(context.Context, []string) (localcontainers.DeleteResult, error) {
-	return localcontainers.DeleteResult{}, nil
+func (f fakeManagedHostInitialSyncDeployService) Delete(context.Context, []string) (deployruntime.DeleteResult, error) {
+	return deployruntime.DeleteResult{}, nil
 }
 
 func (f fakeManagedHostInitialSyncDeployService) ChildAttachState(context.Context, deployruntime.ContainerAttachStatusInput) (swarmruntime.LocalState, error) {

@@ -25,10 +25,8 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 	originalWebNeedsRebuild := devFrontendAssetsNeedRebuildForUpdate
 	originalBuildWeb := buildAndInstallWebAssetsForUpdate
 	originalSyncContainers := syncDevContainerImagesWithFingerprintForUpdate
-	originalWriteRebuildStatus := writeLocalContainerUpdateRebuildStatusForUpdate
 	originalInstallLaunchers := installLaunchersForUpdate
 	originalEnsureUnit := ensureSystemdServiceUnitForUpdate
-	originalRunLocalContainers := runDevLocalContainerUpdateJobAfterRestartForUpdate
 	originalRunRemoteContainers := runDevRemoteDeployUpdateJobAfterRestartForUpdate
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
@@ -44,10 +42,8 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 		devFrontendAssetsNeedRebuildForUpdate = originalWebNeedsRebuild
 		buildAndInstallWebAssetsForUpdate = originalBuildWeb
 		syncDevContainerImagesWithFingerprintForUpdate = originalSyncContainers
-		writeLocalContainerUpdateRebuildStatusForUpdate = originalWriteRebuildStatus
 		installLaunchersForUpdate = originalInstallLaunchers
 		ensureSystemdServiceUnitForUpdate = originalEnsureUnit
-		runDevLocalContainerUpdateJobAfterRestartForUpdate = originalRunLocalContainers
 		runDevRemoteDeployUpdateJobAfterRestartForUpdate = originalRunRemoteContainers
 	}()
 
@@ -104,10 +100,6 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 		calls = append(calls, "sync-container-images")
 		return nil
 	}
-	writeLocalContainerUpdateRebuildStatusForUpdate = func(Profile, string, string, string, string) error {
-		calls = append(calls, "write-rebuild-status")
-		return nil
-	}
 	installLaunchersForUpdate = func(string) (InstallReport, error) {
 		calls = append(calls, "install-launchers")
 		return InstallReport{}, nil
@@ -125,10 +117,6 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 	}
 	startBackendForUpdate = func(Profile, StartBackendOptions) error {
 		t.Fatalf("direct backend start should not run for systemd restart plan")
-		return nil
-	}
-	runDevLocalContainerUpdateJobAfterRestartForUpdate = func(Profile) error {
-		calls = append(calls, "local-container-update")
 		return nil
 	}
 	runDevRemoteDeployUpdateJobAfterRestartForUpdate = func(Profile) error {
@@ -149,7 +137,7 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 	if !(installIndex < ensureIndex && ensureIndex < restartIndex) {
 		t.Fatalf("systemd unit reconciliation order wrong: calls=%v", calls)
 	}
-	want := []string{"preflight", "managed-dev", "resolve-lifecycle", "service-active", "stop", "build-swarmd", "build-tools", "build-tui", "web-check", "sync-container-images", "write-rebuild-status", "install-launchers", "ensure-unit", "restart-systemd", "local-container-update", "remote-container-update"}
+	want := []string{"preflight", "managed-dev", "resolve-lifecycle", "service-active", "stop", "build-swarmd", "build-tools", "build-tui", "web-check", "sync-container-images", "install-launchers", "ensure-unit", "restart-systemd", "remote-container-update"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %v, want %v", calls, want)
 	}
@@ -199,10 +187,8 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 	originalWebNeedsRebuild := devFrontendAssetsNeedRebuildForUpdate
 	originalBuildWeb := buildAndInstallWebAssetsForUpdate
 	originalSyncContainers := syncDevContainerImagesWithFingerprintForUpdate
-	originalWriteRebuildStatus := writeLocalContainerUpdateRebuildStatusForUpdate
 	originalInstallLaunchers := installLaunchersForUpdate
 	originalEnsureUnit := ensureSystemdServiceUnitForUpdate
-	originalRunLocalContainers := runDevLocalContainerUpdateJobAfterRestartForUpdate
 	originalRunRemoteContainers := runDevRemoteDeployUpdateJobAfterRestartForUpdate
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
@@ -218,10 +204,8 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 		devFrontendAssetsNeedRebuildForUpdate = originalWebNeedsRebuild
 		buildAndInstallWebAssetsForUpdate = originalBuildWeb
 		syncDevContainerImagesWithFingerprintForUpdate = originalSyncContainers
-		writeLocalContainerUpdateRebuildStatusForUpdate = originalWriteRebuildStatus
 		installLaunchersForUpdate = originalInstallLaunchers
 		ensureSystemdServiceUnitForUpdate = originalEnsureUnit
-		runDevLocalContainerUpdateJobAfterRestartForUpdate = originalRunLocalContainers
 		runDevRemoteDeployUpdateJobAfterRestartForUpdate = originalRunRemoteContainers
 	}()
 
@@ -240,7 +224,6 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 	devFrontendAssetsNeedRebuildForUpdate = func(Profile) (bool, error) { return false, nil }
 	buildAndInstallWebAssetsForUpdate = func(Profile) error { return nil }
 	syncDevContainerImagesWithFingerprintForUpdate = func(Profile, string, bool, string) error { return nil }
-	writeLocalContainerUpdateRebuildStatusForUpdate = func(Profile, string, string, string, string) error { return nil }
 	installLaunchersForUpdate = func(string) (InstallReport, error) { return InstallReport{}, nil }
 	ensureSystemdServiceUnitForUpdate = func() error { return errors.New("unit denied") }
 	restartSystemdServiceForUpdate = func(systemdServiceScope, string, bool) error {
@@ -249,10 +232,6 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 	}
 	startBackendForUpdate = func(Profile, StartBackendOptions) error {
 		t.Fatalf("direct backend start should not run after unit reconciliation failure")
-		return nil
-	}
-	runDevLocalContainerUpdateJobAfterRestartForUpdate = func(Profile) error {
-		t.Fatalf("post-restart local container update should not run after unit reconciliation failure")
 		return nil
 	}
 	runDevRemoteDeployUpdateJobAfterRestartForUpdate = func(Profile) error {

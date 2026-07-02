@@ -15,7 +15,7 @@ func TestRemoteDeploySyncCreatesContainerRuntimePlacement(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	topologyStore := pebblestore.NewTopologyStore(store)
-	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store, topologyStore), nil, pebblestore.NewSwarmStore(store, topologyStore), nil, nil, nil, "", "", topologyStore)
+	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store, topologyStore), nil, pebblestore.NewSwarmStore(store, topologyStore), nil, nil, "", "", topologyStore)
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:           "session-1",
 		Name:         "remote child",

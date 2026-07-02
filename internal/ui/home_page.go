@@ -96,7 +96,6 @@ type HomePage struct {
 	pressedTopAction          string
 	pressedTopFrames          int
 	commandOverlay            []string
-	swarmModal                swarmModalState
 	swarmName                 string
 	swarmNotificationCount    int
 	alertsModal               alertsModalState
@@ -114,7 +113,6 @@ type HomePage struct {
 	pendingWorktreesAction    *WorktreesModalAction
 	mcpModal                  mcpModalState
 	pendingMCPAction          *MCPModalAction
-	pendingSwarmAction        *SwarmModalAction
 	modelsModal               modelsModalState
 	modelsModalTargets        []clickTarget
 	pendingModelsAction       *ModelsModalAction
@@ -260,10 +258,6 @@ func (p *HomePage) HandleKey(ev *tcell.EventKey) {
 	}
 	if p.sessionsModal.Visible {
 		p.handleSessionsModalKey(ev)
-		return
-	}
-	if p.swarmModal.Visible {
-		p.handleSwarmModalKey(ev)
 		return
 	}
 	if p.vaultModal.Visible {
@@ -752,7 +746,6 @@ func (p *HomePage) Draw(s tcell.Screen) {
 		p.drawCommandPalette(s, inputRect, variant, bottomBarH)
 	}
 	p.drawAuthModal(s)
-	p.drawSwarmModal(s)
 	p.drawVaultModal(s)
 	p.drawAuthDefaultsInfoModal(s)
 	p.drawWorkspaceModal(s)

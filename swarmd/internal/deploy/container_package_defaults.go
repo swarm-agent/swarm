@@ -1,10 +1,8 @@
 package deploy
 
-import localcontainers "swarm/packages/swarmd/internal/localcontainers"
-
 const (
-	DefaultContainerPackageBaseImage      = localcontainers.SupportedPackageBaseImage
-	DefaultContainerPackagePackageManager = localcontainers.DefaultPackageManager
+	DefaultContainerPackageBaseImage      = "docker.io/ubuntu:26.04"
+	DefaultContainerPackagePackageManager = "apt"
 )
 
 func ContainerPackageDefaults() ContainerPackageManifest {

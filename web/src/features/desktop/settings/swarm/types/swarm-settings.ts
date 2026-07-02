@@ -17,10 +17,6 @@ export interface UISwarmSettingsWire {
   remote_ssh_targets?: string[]
 }
 
-export interface UIUpdateSettingsWire {
-  local_container_warning_dismissed?: boolean
-}
-
 export interface UIToolImageSettingsWire {
   default_model?: string
 }
@@ -52,7 +48,6 @@ export interface UISettingsWire {
   chat?: UIChatSettingsWire
   swarming?: UISwarmingSettingsWire
   swarm?: UISwarmSettingsWire
-  updates?: UIUpdateSettingsWire
   tools?: UIToolSettingsWire
   updated_at?: number
 }
@@ -163,20 +158,6 @@ export function withThinkingTagsEnabled(current: UISettingsWire, enabled: boolea
     chat: {
       ...(current.chat ?? {}),
       thinking_tags: enabled,
-    },
-  }
-}
-
-export function localContainerUpdateWarningDismissed(payload?: UISettingsWire | null): boolean {
-  return payload?.updates?.local_container_warning_dismissed === true
-}
-
-export function withLocalContainerUpdateWarningDismissed(current: UISettingsWire, dismissed: boolean): UISettingsWire {
-  return {
-    ...current,
-    updates: {
-      ...(current.updates ?? {}),
-      local_container_warning_dismissed: dismissed,
     },
   }
 }

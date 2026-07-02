@@ -10,7 +10,6 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/identity"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -41,13 +40,13 @@ func TestPendingSyncVaultPasswordRetainedUntilExpiry(t *testing.T) {
 }
 
 func TestCreateResultCanBePersistedRejectsEmptyContainer(t *testing.T) {
-	if createResultCanBePersisted(localcontainers.Container{}) {
+	if createResultCanBePersisted(Container{}) {
 		t.Fatalf("createResultCanBePersisted(empty) = true, want false")
 	}
 }
 
 func TestCreateResultCanBePersistedAcceptsRecordedContainer(t *testing.T) {
-	container := localcontainers.Container{
+	container := Container{
 		Name:          "child-swarm",
 		ContainerName: "child-swarm",
 	}
@@ -57,7 +56,7 @@ func TestCreateResultCanBePersistedAcceptsRecordedContainer(t *testing.T) {
 }
 
 func TestCreateResultDisplayNameFallsBackToInputName(t *testing.T) {
-	got := createResultDisplayName(ContainerCreateInput{Name: "child-swarm"}, localcontainers.Container{})
+	got := createResultDisplayName(ContainerCreateInput{Name: "child-swarm"}, Container{})
 	if got != "child-swarm" {
 		t.Fatalf("createResultDisplayName() = %q, want child-swarm", got)
 	}

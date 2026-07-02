@@ -22,7 +22,6 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
@@ -203,7 +202,6 @@ type swarmManagedPairingRouting struct {
 	TransportMode        string                       `json:"transport_mode,omitempty"`
 	RepresentAsLocal     bool                         `json:"represent_as_local"`
 	ContainerScope       string                       `json:"container_scope"`
-	ProxyPathPrefix      string                       `json:"proxy_path_prefix,omitempty"`
 	RendezvousTransports []onboardingTransportPayload `json:"rendezvous_transports,omitempty"`
 }
 
@@ -921,7 +919,7 @@ func (s *Server) handleSwarmManagedHostRemove(w http.ResponseWriter, r *http.Req
 	}
 	if s.deployContainers != nil {
 		cleanupSvc, ok := s.deployContainers.(interface {
-			DeleteManagedHostForAccount(context.Context, string, string) (localcontainers.DeleteResult, error)
+			DeleteManagedHostForAccount(context.Context, string, string) (deployruntime.DeleteResult, error)
 		})
 		if !ok {
 			writeError(w, http.StatusInternalServerError, errors.New("deploy container service does not support managed host cleanup"))
@@ -1123,7 +1121,6 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 		TransportMode:        pending.TransportMode,
 		RepresentAsLocal:     false,
 		ContainerScope:       "managed_host_local",
-		ProxyPathPrefix:      "/v1/swarm/containers/local",
 		RendezvousTransports: append([]onboardingTransportPayload(nil), pending.ManagedRendezvousTransports...),
 	}
 	principal, ok := PrincipalFromRequest(r)

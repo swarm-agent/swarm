@@ -30,7 +30,6 @@ import (
 	"swarm/packages/swarmd/internal/appstorage"
 	authruntime "swarm/packages/swarmd/internal/auth"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
@@ -45,6 +44,9 @@ const (
 	PathSessionApprove              = "deploy.remote.approve.v1"
 	PathSessionChildStatus          = "deploy.remote.child_status.v1"
 	PathSessionPreflight            = "deploy.remote.preflight.v1"
+	ProductionImagePrefix           = "ghcr.io/swarm-agent/swarm"
+	OfficialSourceRepository        = "https://github.com/swarm-agent/swarm"
+	OfficialImageContract           = "swarm.container.v1"
 	remoteImageNamePrefix           = "localhost/swarm-remote-child"
 	remoteContainerPrefix           = "swarm-remote-child"
 	remoteImagePrefixEnv            = "SWARM_REMOTE_DEPLOY_IMAGE_PREFIX"
@@ -64,9 +66,104 @@ const (
 	remoteSystemRuntimeRoot         = "/run/swarmd"
 	remoteSystemLogsRoot            = "/var/log/swarmd"
 	remoteDeploySystemDir           = "remote-deploy"
+	productionMetadataURLTmpl       = "https://github.com/swarm-agent/swarm/releases/download/%s/container-image-info.txt"
 )
 
 var remoteSSHCommandRunner = runSSHCommand
+
+var productionImageMetadataClient = http.DefaultClient
+
+type ProductionImageMetadata struct {
+	ImageRef       string
+	ImageDigestRef string
+	Version        string
+	Commit         string
+	SourceRevision string
+	ImageSizeBytes int64
+}
+
+func productionImageMetadataURL(version string) string {
+	return fmt.Sprintf(productionMetadataURLTmpl, url.PathEscape(strings.TrimSpace(version)))
+}
+
+func isDevVersionString(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "" || strings.EqualFold(value, "dev") || strings.HasPrefix(value, "dev-") || strings.Contains(value, "+dev")
+}
+
+func fetchProductionImageMetadata(ctx context.Context) (ProductionImageMetadata, error) {
+	version := strings.TrimSpace(buildinfo.DisplayVersion())
+	if isDevVersionString(version) {
+		return ProductionImageMetadata{}, fmt.Errorf("production container image requires an installed release version, got %q", version)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, productionImageMetadataURL(version), nil)
+	if err != nil {
+		return ProductionImageMetadata{}, err
+	}
+	client := productionImageMetadataClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return ProductionImageMetadata{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, response.Body)
+		return ProductionImageMetadata{}, fmt.Errorf("release image metadata returned HTTP %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64*1024))
+	if err != nil {
+		return ProductionImageMetadata{}, err
+	}
+	fields := parseProductionImageMetadata(string(body))
+	metadata := ProductionImageMetadata{
+		ImageRef:       strings.TrimSpace(fields["image_ref"]),
+		ImageDigestRef: strings.TrimSpace(fields["image_digest_ref"]),
+		Version:        strings.TrimSpace(fields["version"]),
+		Commit:         strings.TrimSpace(fields["commit"]),
+		SourceRevision: strings.TrimSpace(fields["source_revision"]),
+	}
+	if rawSize := strings.TrimSpace(fields["image_size_bytes"]); rawSize != "" {
+		imageSize, err := strconv.ParseInt(rawSize, 10, 64)
+		if err != nil || imageSize < 0 {
+			return ProductionImageMetadata{}, fmt.Errorf("release image metadata image_size_bytes is invalid: %q", rawSize)
+		}
+		metadata.ImageSizeBytes = imageSize
+	}
+	if metadata.Version != version {
+		return ProductionImageMetadata{}, fmt.Errorf("release image metadata version mismatch: %q, expected %q", metadata.Version, version)
+	}
+	expectedRef := ProductionImagePrefix + ":" + version
+	if metadata.ImageRef != expectedRef {
+		return ProductionImageMetadata{}, fmt.Errorf("release image metadata image_ref mismatch: %q, expected %q", metadata.ImageRef, expectedRef)
+	}
+	if !strings.HasPrefix(metadata.ImageDigestRef, ProductionImagePrefix+"@sha256:") {
+		return ProductionImageMetadata{}, fmt.Errorf("release image metadata missing official image digest for %q", ProductionImagePrefix)
+	}
+	return metadata, nil
+}
+
+func parseProductionImageMetadata(text string) map[string]string {
+	out := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = strings.TrimSpace(value)
+	}
+	return out
+}
 
 type ContainerPackageSelection struct {
 	Name   string `json:"name"`
@@ -285,7 +382,6 @@ type Service struct {
 	topology    *pebblestore.TopologyStore
 	swarms      *swarmruntime.Service
 	swarmStore  *pebblestore.SwarmStore
-	containers  *localcontainers.Service
 	auth        *authruntime.Service
 	workspace   *workspaceruntime.Service
 	startupPath string
@@ -359,13 +455,12 @@ type remotePairingFinalizeRequest struct {
 	RendezvousTransports []remotePairingTransport `json:"rendezvous_transports,omitempty"`
 }
 
-func NewService(store *pebblestore.RemoteDeploySessionStore, nodeStore *pebblestore.SwarmNodeStore, swarms *swarmruntime.Service, swarmStore *pebblestore.SwarmStore, containers *localcontainers.Service, authSvc *authruntime.Service, workspaceSvc *workspaceruntime.Service, startupPath, startupCWD string, extras ...any) *Service {
+func NewService(store *pebblestore.RemoteDeploySessionStore, nodeStore *pebblestore.SwarmNodeStore, swarms *swarmruntime.Service, swarmStore *pebblestore.SwarmStore, authSvc *authruntime.Service, workspaceSvc *workspaceruntime.Service, startupPath, startupCWD string, extras ...any) *Service {
 	service := &Service{
 		store:       store,
 		nodeStore:   nodeStore,
 		swarms:      swarms,
 		swarmStore:  swarmStore,
-		containers:  containers,
 		auth:        authSvc,
 		workspace:   workspaceSvc,
 		startupPath: strings.TrimSpace(startupPath),
@@ -410,10 +505,10 @@ func resolveRemoteImagePrefix(mode string) (string, error) {
 	switch normalizeRemoteImageDeliveryMode(mode) {
 	case remoteImageDeliveryRegistry:
 		prefix := strings.TrimRight(strings.TrimSpace(os.Getenv(remoteImagePrefixEnv)), "/")
-		if prefix != "" && prefix != localcontainers.ProductionImagePrefix {
-			return "", fmt.Errorf("Remote preflight failed on the master.\n\nWhat failed\n- Published remote image download now uses the verified GHCR app image %s, but %s is set to %s.\n\nWhat to do\n- Unset %s or set it to %s.\n- Then rerun preflight.", localcontainers.ProductionImagePrefix, remoteImagePrefixEnv, prefix, remoteImagePrefixEnv, localcontainers.ProductionImagePrefix)
+		if prefix != "" && prefix != ProductionImagePrefix {
+			return "", fmt.Errorf("Remote preflight failed on the master.\n\nWhat failed\n- Published remote image download now uses the verified GHCR app image %s, but %s is set to %s.\n\nWhat to do\n- Unset %s or set it to %s.\n- Then rerun preflight.", ProductionImagePrefix, remoteImagePrefixEnv, prefix, remoteImagePrefixEnv, ProductionImagePrefix)
 		}
-		return localcontainers.ProductionImagePrefix, nil
+		return ProductionImagePrefix, nil
 	default:
 		return remoteImageNamePrefix, nil
 	}
@@ -678,19 +773,19 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 	return mapSession(saved), nil
 }
 
-func (s *Service) Delete(ctx context.Context, input DeleteSessionInput) (localcontainers.DeleteResult, error) {
+func (s *Service) Delete(ctx context.Context, input DeleteSessionInput) (deployruntime.DeleteResult, error) {
 	if s == nil || s.store == nil {
-		return localcontainers.DeleteResult{}, fmt.Errorf("remote deploy service is not configured")
+		return deployruntime.DeleteResult{}, fmt.Errorf("remote deploy service is not configured")
 	}
 	sessionIDs := normalizeRemoteSessionDeleteIDs(input.SessionIDs)
 	childSwarmIDs := normalizeRemoteSessionDeleteIDs(input.ChildSwarmIDs)
 	if len(sessionIDs) == 0 && len(childSwarmIDs) == 0 {
-		return localcontainers.DeleteResult{}, errors.New("at least one remote session id or child swarm id is required")
+		return deployruntime.DeleteResult{}, errors.New("at least one remote session id or child swarm id is required")
 	}
 
 	records, err := s.store.List(500)
 	if err != nil {
-		return localcontainers.DeleteResult{}, err
+		return deployruntime.DeleteResult{}, err
 	}
 	recordsByID := make(map[string]pebblestore.RemoteDeploySessionRecord, len(records))
 	recordsByChildSwarmID := make(map[string][]pebblestore.RemoteDeploySessionRecord)
@@ -702,19 +797,19 @@ func (s *Service) Delete(ctx context.Context, input DeleteSessionInput) (localco
 		}
 	}
 
-	items := make([]localcontainers.DeleteItemResult, 0, len(sessionIDs)+len(childSwarmIDs))
+	items := make([]deployruntime.DeleteItemResult, 0, len(sessionIDs)+len(childSwarmIDs))
 	deletedSessions := make(map[string]struct{}, len(sessionIDs))
 
 	for _, sessionID := range sessionIDs {
 		record, ok := recordsByID[sessionID]
 		if !ok {
-			items = append(items, localcontainers.DeleteItemResult{
+			items = append(items, deployruntime.DeleteItemResult{
 				ID:    sessionID,
 				Error: "remote deploy session not found",
 			})
 			continue
 		}
-		item := localcontainers.DeleteItemResult{
+		item := deployruntime.DeleteItemResult{
 			ID:               record.ID,
 			Name:             firstNonEmpty(record.ChildName, record.Name, record.ID),
 			ContainerName:    record.SSHSessionTarget,
@@ -746,7 +841,7 @@ func (s *Service) Delete(ctx context.Context, input DeleteSessionInput) (localco
 	}
 
 	for _, childSwarmID := range childSwarmIDs {
-		item := localcontainers.DeleteItemResult{
+		item := deployruntime.DeleteItemResult{
 			ID:                childSwarmID,
 			Name:              childSwarmID,
 			ChildSwarmID:      childSwarmID,
@@ -795,9 +890,9 @@ func (s *Service) Delete(ctx context.Context, input DeleteSessionInput) (localco
 		items = append(items, item)
 	}
 
-	result := localcontainers.DeleteResult{
+	result := deployruntime.DeleteResult{
 		Deleted: make([]string, 0, len(items)),
-		Items:   make([]localcontainers.DeleteItemResult, 0, len(items)),
+		Items:   make([]deployruntime.DeleteItemResult, 0, len(items)),
 	}
 	for _, item := range items {
 		result.Items = append(result.Items, item)
@@ -1286,9 +1381,9 @@ func remoteUpdateRecordUsesProductionImage(record pebblestore.RemoteDeploySessio
 	}
 	imageRef := strings.TrimSpace(record.ImageRef)
 	imagePrefix := strings.TrimRight(strings.TrimSpace(record.ImagePrefix), "/")
-	return strings.HasPrefix(imageRef, localcontainers.ProductionImagePrefix+"@sha256:") ||
-		strings.HasPrefix(imageRef, localcontainers.ProductionImagePrefix+":") ||
-		imagePrefix == localcontainers.ProductionImagePrefix
+	return strings.HasPrefix(imageRef, ProductionImagePrefix+"@sha256:") ||
+		strings.HasPrefix(imageRef, ProductionImagePrefix+":") ||
+		imagePrefix == ProductionImagePrefix
 }
 
 func remoteRuntimeArtifactCacheKey(record pebblestore.RemoteDeploySessionRecord) string {
@@ -2619,21 +2714,6 @@ func (s *Service) loadStartupConfig() (startupconfig.FileConfig, error) {
 
 func (s *Service) detectBuilderRuntime(ctx context.Context, preferredRuntime string) (string, error) {
 	preferredRuntime = normalizeRemoteDeployRuntime(preferredRuntime)
-	if s.containers != nil {
-		status, err := s.containers.RuntimeStatus(ctx)
-		if err == nil {
-			if preferredRuntime != "" {
-				for _, available := range status.Available {
-					if normalizeRemoteDeployRuntime(available) == preferredRuntime {
-						return preferredRuntime, nil
-					}
-				}
-			}
-			if strings.TrimSpace(status.Recommended) != "" {
-				return strings.TrimSpace(status.Recommended), nil
-			}
-		}
-	}
 	candidates := []string{"podman", "docker"}
 	if preferredRuntime != "" {
 		candidates = append([]string{preferredRuntime}, candidates...)
@@ -3352,7 +3432,7 @@ func formatByteCount(bytes int64) string {
 	return fmt.Sprintf("%.1f %s", value, units[unit])
 }
 
-func (s *Service) cleanupRemoteChildState(record pebblestore.RemoteDeploySessionRecord, item *localcontainers.DeleteItemResult) error {
+func (s *Service) cleanupRemoteChildState(record pebblestore.RemoteDeploySessionRecord, item *deployruntime.DeleteItemResult) error {
 	childSwarmIDs, err := s.canonicalChildSwarmIDs(record)
 	if err != nil {
 		return err
@@ -3708,7 +3788,7 @@ func remoteDevReplacementScript(record pebblestore.RemoteDeploySessionRecord, ru
 		useArchiveImage = "1"
 	}
 	imageVerification := ""
-	if strings.HasPrefix(strings.TrimSpace(runtimeArtifact.ImageRef), localcontainers.ProductionImagePrefix+"@sha256:") {
+	if strings.HasPrefix(strings.TrimSpace(runtimeArtifact.ImageRef), ProductionImagePrefix+"@sha256:") {
 		imageVerification = remoteProductionImageVerificationScript()
 	}
 	mountTargets := []string{}
@@ -4608,7 +4688,7 @@ func validateTarGzArchive(path string) error {
 }
 
 func prepareRemoteProductionRegistryArtifact(ctx context.Context) (remoteRuntimeArtifact, error) {
-	metadata, err := localcontainers.FetchProductionImageMetadata(ctx)
+	metadata, err := fetchProductionImageMetadata(ctx)
 	if err != nil {
 		return remoteRuntimeArtifact{}, fmt.Errorf("fetch production swarm image metadata: %w", err)
 	}
@@ -4617,7 +4697,7 @@ func prepareRemoteProductionRegistryArtifact(ctx context.Context) (remoteRuntime
 		return remoteRuntimeArtifact{}, fmt.Errorf("release image metadata missing image digest ref")
 	}
 	return remoteRuntimeArtifact{
-		Signature:         strings.TrimPrefix(imageRef, localcontainers.ProductionImagePrefix+"@"),
+		Signature:         strings.TrimPrefix(imageRef, ProductionImagePrefix+"@"),
 		ImageRef:          imageRef,
 		RequiredDiskBytes: metadata.ImageSizeBytes,
 	}, nil
@@ -4633,9 +4713,9 @@ func remoteProductionImageLabelChecks() []struct {
 		label    string
 		expected string
 	}{
-		{label: "org.opencontainers.image.source", expected: localcontainers.OfficialSourceRepository},
+		{label: "org.opencontainers.image.source", expected: OfficialSourceRepository},
 		{label: "org.opencontainers.image.version", expected: expectedVersion},
-		{label: "swarmagent.image.contract", expected: localcontainers.OfficialImageContract},
+		{label: "swarmagent.image.contract", expected: OfficialImageContract},
 		{label: "swarmagent.image.role", expected: "app"},
 		{label: "swarmagent.version", expected: expectedVersion},
 	}
@@ -5157,7 +5237,7 @@ func remotePayloadIncludedBytes(payloads []pebblestore.RemoteDeployPayloadRecord
 func remotePreflightRequiredDiskBytes(ctx context.Context, imageDeliveryMode string, payloads []pebblestore.RemoteDeployPayloadRecord) (int64, error) {
 	var imageBytes int64
 	if normalizeRemoteImageDeliveryMode(imageDeliveryMode) == remoteImageDeliveryRegistry {
-		metadata, err := localcontainers.FetchProductionImageMetadata(ctx)
+		metadata, err := fetchProductionImageMetadata(ctx)
 		if err != nil {
 			return 0, fmt.Errorf("fetch production swarm image metadata for disk preflight: %w", err)
 		}
@@ -5481,7 +5561,7 @@ func remoteInstallerScript(record pebblestore.RemoteDeploySessionRecord) string 
 	imageVerification := ""
 	if remoteImageUsesArchive(record.ImageRef) {
 		useArchiveImage = "1"
-	} else if strings.HasPrefix(strings.TrimSpace(record.ImageRef), localcontainers.ProductionImagePrefix+"@sha256:") {
+	} else if strings.HasPrefix(strings.TrimSpace(record.ImageRef), ProductionImagePrefix+"@sha256:") {
 		imageVerification = remoteProductionImageVerificationScript()
 	}
 	containerName := remoteContainerNameForSession(record.ID)

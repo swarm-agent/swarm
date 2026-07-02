@@ -28,7 +28,6 @@ type AppConfig struct {
 	UI       UIConfig
 	Swarming SwarmingConfig
 	Swarm    SwarmConfig
-	Updates  UpdateConfig
 	Startup  StartupConfig
 }
 
@@ -80,10 +79,6 @@ type SwarmConfig struct {
 	Name             string
 	Role             string
 	RemoteSSHTargets []string
-}
-
-type UpdateConfig struct {
-	LocalContainerWarningDismissed bool
 }
 
 type CustomThemeConfig struct {
@@ -257,12 +252,6 @@ func saveSwarmNameSetting(api *client.API, name string) error {
 	})
 }
 
-func saveUpdateWarningDismissedSetting(api *client.API, dismissed bool) error {
-	return updateUISettings(api, func(settings *client.UISettings) {
-		settings.Updates.LocalContainerWarningDismissed = dismissed
-	})
-}
-
 func appConfigFromUISettings(settings client.UISettings) AppConfig {
 	cfg := defaultAppConfig()
 
@@ -305,7 +294,6 @@ func appConfigFromUISettings(settings client.UISettings) AppConfig {
 	cfg.Swarm.Name = emptyFallback(strings.TrimSpace(settings.Swarm.Name), defaultSwarmName)
 	cfg.Swarm.RemoteSSHTargets = append([]string(nil), settings.Swarm.RemoteSSHTargets...)
 	cfg.Swarm.Role = bootstrapRoleMaster
-	cfg.Updates.LocalContainerWarningDismissed = settings.Updates.LocalContainerWarningDismissed
 	return cfg
 }
 
@@ -343,9 +331,6 @@ func uiSettingsFromAppConfig(cfg AppConfig) client.UISettings {
 		Swarm: client.UISwarmSettings{
 			Name:             emptyFallback(strings.TrimSpace(cfg.Swarm.Name), defaultSwarmName),
 			RemoteSSHTargets: append([]string(nil), cfg.Swarm.RemoteSSHTargets...),
-		},
-		Updates: client.UIUpdateSettings{
-			LocalContainerWarningDismissed: cfg.Updates.LocalContainerWarningDismissed,
 		},
 	}
 	for _, item := range cfg.UI.CustomThemes {

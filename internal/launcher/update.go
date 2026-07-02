@@ -39,28 +39,26 @@ const (
 )
 
 var (
-	stopBackendForUpdate                               = StopBackend
-	applyReleaseUpdateForUpdate                        = ApplyReleaseUpdate
-	startBackendForUpdate                              = StartBackend
-	runTUIWithExtraEnvForUpdate                        = RunTUIWithExtraEnv
-	resolveLifecycleManagerForUpdate                   = resolveLifecycleManager
-	serviceActiveForUpdate                             = serviceActiveForScope
-	stopSystemdServiceForUpdate                        = stopSystemdService
-	restartSystemdServiceForUpdate                     = restartSystemdService
-	runManagedDevHostUpdatePhaseForUpdate              = runManagedDevHostUpdatePhase
-	preflightDevUpdateForUpdate                        = PreflightDevUpdate
-	buildSwarmdBinariesForUpdate                       = BuildSwarmdBinaries
-	forceBuildToolBinariesForUpdate                    = ForceBuildToolBinaries
-	buildSwarmTUIForUpdate                             = BuildSwarmTUI
-	devFrontendAssetsNeedRebuildForUpdate              = DevFrontendAssetsNeedRebuild
-	buildAndInstallWebAssetsForUpdate                  = BuildAndInstallWebAssets
-	syncDevContainerImagesWithFingerprintForUpdate     = SyncDevContainerImagesWithFingerprint
-	writeLocalContainerUpdateRebuildStatusForUpdate    = writeLocalContainerUpdateRebuildStatus
-	installLaunchersForUpdate                          = InstallLaunchers
-	ensureSystemdServiceUnitForUpdate                  = EnsureSystemdServiceUnit
-	runDevLocalContainerUpdateJobAfterRestartForUpdate = runDevLocalContainerUpdateJobAfterRestart
-	runDevRemoteDeployUpdateJobAfterRestartForUpdate   = runDevRemoteDeployUpdateJobAfterRestart
-	rollbackPendingUpdateAndRestartForUpdate           = rollbackPendingUpdateAndRestart
+	stopBackendForUpdate                             = StopBackend
+	applyReleaseUpdateForUpdate                      = ApplyReleaseUpdate
+	startBackendForUpdate                            = StartBackend
+	runTUIWithExtraEnvForUpdate                      = RunTUIWithExtraEnv
+	resolveLifecycleManagerForUpdate                 = resolveLifecycleManager
+	serviceActiveForUpdate                           = serviceActiveForScope
+	stopSystemdServiceForUpdate                      = stopSystemdService
+	restartSystemdServiceForUpdate                   = restartSystemdService
+	runManagedDevHostUpdatePhaseForUpdate            = runManagedDevHostUpdatePhase
+	preflightDevUpdateForUpdate                      = PreflightDevUpdate
+	buildSwarmdBinariesForUpdate                     = BuildSwarmdBinaries
+	forceBuildToolBinariesForUpdate                  = ForceBuildToolBinaries
+	buildSwarmTUIForUpdate                           = BuildSwarmTUI
+	devFrontendAssetsNeedRebuildForUpdate            = DevFrontendAssetsNeedRebuild
+	buildAndInstallWebAssetsForUpdate                = BuildAndInstallWebAssets
+	syncDevContainerImagesWithFingerprintForUpdate   = SyncDevContainerImagesWithFingerprint
+	installLaunchersForUpdate                        = InstallLaunchers
+	ensureSystemdServiceUnitForUpdate                = EnsureSystemdServiceUnit
+	runDevRemoteDeployUpdateJobAfterRestartForUpdate = runDevRemoteDeployUpdateJobAfterRestart
+	rollbackPendingUpdateAndRestartForUpdate         = rollbackPendingUpdateAndRestart
 )
 
 type runtimeBootStatus struct {
@@ -86,10 +84,8 @@ type updateRestartPlan struct {
 	blockedErr    error
 }
 
-type postUpdateContainerImageOutcome struct {
-	LocalResult  client.LocalContainerUpdateJobResult
+type postUpdateRemoteSessionOutcome struct {
 	RemoteResult client.RemoteDeployUpdateJobResult
-	LocalErr     error
 	RemoteErr    error
 }
 
@@ -266,11 +262,8 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
 		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, err)
 	}
-	if err := writeLocalContainerUpdateRebuildStatus(profile, "release", result.Version, "", ""); err != nil {
-		return err
-	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Updating local and remote container images.", "")
-	outcome := runReleaseContainerImageUpdateJobsAfterRestart(profile, result.Version)
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Updating remote SSH sessions.", "")
+	outcome := runReleaseRemoteSessionUpdateJobAfterRestart(profile)
 	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusCompleted, releaseUpdateCompletedMessage(result.Version, outcome), "")
 	jobTerminalStatusWritten = true
 	return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, map[string]string{
@@ -278,22 +271,21 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	})
 }
 
-func runReleaseContainerImageUpdateJobsAfterRestart(profile Profile, targetVersion string) postUpdateContainerImageOutcome {
-	var outcome postUpdateContainerImageOutcome
-	outcome.LocalResult, outcome.LocalErr = runReleaseLocalContainerUpdateJobAfterRestart(profile, targetVersion)
+func runReleaseRemoteSessionUpdateJobAfterRestart(profile Profile) postUpdateRemoteSessionOutcome {
+	var outcome postUpdateRemoteSessionOutcome
 	outcome.RemoteResult, outcome.RemoteErr = runReleaseRemoteDeployUpdateJobAfterRestart(profile)
 	return outcome
 }
 
-func releaseUpdateCompletedMessage(version string, outcome postUpdateContainerImageOutcome) string {
+func releaseUpdateCompletedMessage(version string, outcome postUpdateRemoteSessionOutcome) string {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		version = "new release"
 	}
-	if outcome.LocalErr != nil || outcome.RemoteErr != nil || outcome.LocalResult.Summary.Failed > 0 || outcome.RemoteResult.Summary.Failed > 0 {
-		return fmt.Sprintf("Updated to %s. Container image update needs attention.", version)
+	if outcome.RemoteErr != nil || outcome.RemoteResult.Summary.Failed > 0 {
+		return fmt.Sprintf("Updated to %s. Remote SSH update needs attention.", version)
 	}
-	return fmt.Sprintf("Updated to %s. Local and remote container image updates completed.", version)
+	return fmt.Sprintf("Updated to %s. Remote SSH updates completed.", version)
 }
 
 func writeLauncherUpdateJobStatus(profile Profile, kind, status, message, errorMessage string) error {
@@ -328,15 +320,6 @@ func writeLauncherUpdateJobStatus(profile Profile, kind, status, message, errorM
 		next.CompletedAtUnix = now
 	}
 	return localupdate.WriteUpdateJobStatus(profile.DataDir, next)
-}
-
-func writeLocalContainerUpdateRebuildStatus(profile Profile, mode, version, imageRef, fingerprint string) error {
-	return localupdate.WriteRebuildStatus(profile.DataDir, localupdate.RebuildStatus{
-		Mode:        mode,
-		Version:     version,
-		ImageRef:    imageRef,
-		Fingerprint: fingerprint,
-	})
 }
 
 func firstNonEmptyString(values ...string) string {

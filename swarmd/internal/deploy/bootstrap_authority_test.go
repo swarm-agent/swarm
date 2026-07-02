@@ -24,7 +24,7 @@ func TestFinalizeChildAttachSeedsExplicitContainerAuthority(t *testing.T) {
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, nil, workspaceSvc, filepath.Join(t.TempDir(), "swarm.conf"), topologyStore)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, nil, nil, workspaceSvc, filepath.Join(t.TempDir(), "swarm.conf"), topologyStore)
 
 	principal := testPrincipal()
 	ctx := identity.ContextWithPrincipal(context.Background(), principal)
@@ -144,7 +144,7 @@ func TestFinalizeChildAttachMissingSourceWorkspaceAuthorityFailsClosed(t *testin
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, nil, workspaceSvc, filepath.Join(t.TempDir(), "swarm.conf"), topologyStore)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, nil, nil, workspaceSvc, filepath.Join(t.TempDir(), "swarm.conf"), topologyStore)
 	principal := testPrincipal()
 	runtimeWorkspacePath := filepath.Join(t.TempDir(), "runtime-workspace")
 	if err := os.MkdirAll(runtimeWorkspacePath, 0o755); err != nil {
@@ -182,7 +182,7 @@ func TestFinalizeChildAttachMissingContainerAuthorityFailsClosed(t *testing.T) {
 
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), topologyStore)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), topologyStore)
 	principal := testPrincipal()
 	err = deploySvc.finalizeChildAttach(identity.ContextWithPrincipal(context.Background(), principal), startupconfig.FileConfig{BypassPermissions: true, DeployContainer: startupconfig.DeployContainerBootstrap{Enabled: true, HostDriven: true}}, swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "child-swarm"}}, ContainerAttachState{HostSwarmID: "host-swarm", ChildSwarmID: "child-swarm"}, ContainerAttachFinalizeInput{UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, HostSwarmID: "host-swarm"})
 	if err == nil {

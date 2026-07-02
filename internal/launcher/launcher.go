@@ -1699,9 +1699,6 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	if err := syncDevContainerImagesWithFingerprintForUpdate(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-update-dev"), true, fingerprint); err != nil {
 		return err
 	}
-	if err := writeLocalContainerUpdateRebuildStatusForUpdate(profile, "dev", "", devmode.DefaultContainerImageRef, fingerprint); err != nil {
-		return err
-	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Installing Swarm launchers.", "")
 	if _, err := installLaunchersForUpdate(profile.Root); err != nil {
 		return err
@@ -1722,14 +1719,11 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 		return err
 	}
 	markManagedDevHostPhase(profile, managedDevPhaseVerify, updateJobStatusCompleted, "Primary restart completed; verify managed host session routing from the desktop.", "")
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Updating local and remote container images.", "")
-	if err := runDevLocalContainerUpdateJobAfterRestartForUpdate(profile); err != nil {
-		return err
-	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Updating remote SSH sessions.", "")
 	if err := runDevRemoteDeployUpdateJobAfterRestartForUpdate(profile); err != nil {
 		return err
 	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusCompleted, "Dev rebuild completed. Local and remote container image updates completed.", "")
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusCompleted, "Dev rebuild completed. Remote SSH updates completed.", "")
 	jobTerminalStatusWritten = true
 	fmt.Fprintln(os.Stdout, "Local dev rebuild completed. Restarting Swarm...")
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {

@@ -313,7 +313,7 @@ func TestCreateRejectsLANWireGuardRemoteDeploy(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write startup config: %v", err)
 	}
-	service := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarms, swarmStore, nil, nil, nil, startupPath, t.TempDir())
+	service := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarms, swarmStore, nil, nil, startupPath, t.TempDir())
 	state, err := swarms.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Remote Deploy Test Host", Role: "master"})
 	if err != nil {
 		t.Fatalf("ensure local state: %v", err)
@@ -789,7 +789,7 @@ func TestEnsurePendingInviteRestoresMissingHostInvite(t *testing.T) {
 		t.Fatalf("write startup config: %v", err)
 	}
 
-	service := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarms, swarmStore, nil, nil, nil, startupPath, t.TempDir())
+	service := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarms, swarmStore, nil, nil, startupPath, t.TempDir())
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:                 "remote-test-1",
 		Name:               "remote-test-1",
@@ -849,7 +849,7 @@ func TestReconcileAlwaysOnRemoteSessionsRestartsStoppedRemoteContainer(t *testin
 		t.Fatalf("open pebble store: %v", err)
 	}
 	defer store.Close()
-	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), nil, nil, nil, nil, nil, "", "")
+	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), nil, nil, nil, nil, "", "")
 	record, err := svc.store.Put(pebblestore.RemoteDeploySessionRecord{
 		ID:               "remote-always-on-1",
 		Name:             "remote-always-on-1",
@@ -917,7 +917,7 @@ func TestReconcileAlwaysOnRemoteSessionsReportsUnreachableSSHHost(t *testing.T) 
 		t.Fatalf("open pebble store: %v", err)
 	}
 	defer store.Close()
-	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), nil, nil, nil, nil, nil, "", "")
+	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), nil, nil, nil, nil, "", "")
 	record, err := svc.store.Put(pebblestore.RemoteDeploySessionRecord{
 		ID:               "remote-always-on-2",
 		Name:             "remote-always-on-2",

@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 
-	gorillaws "github.com/gorilla/websocket"
 	"swarm/packages/swarmd/internal/identity"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -34,8 +32,6 @@ func validatePrimarySessionV2DispatchAuthority(authority sessionV2Authority) err
 	switch strings.TrimSpace(authority.Execution.ExecutionClass) {
 	case sessionruntime.SessionExecutionClassPrimary:
 		return nil
-	case sessionruntime.SessionExecutionClassLocalContainer:
-		return sessionV2InvalidClass("sessions v2 local-container lifecycle dispatch must use native runtime dispatch")
 	default:
 		return sessionV2InvalidClass("sessions v2 execution class %q is not supported", authority.Execution.ExecutionClass)
 	}
@@ -47,7 +43,7 @@ func isMutatingSessionsV2LifecycleRequest(method, subpath string) bool {
 		return false
 	case "messages", "metadata", "mode", "preference", "codex", "plans/active", "plans":
 		return method == http.MethodPost
-	case "permissions/resolve_all", "run", "run/stop/primary", "run/stop/local-container":
+	case "permissions/resolve_all", "run", "run/stop/primary":
 		return method == http.MethodPost
 	case "run/stream":
 		return false
@@ -85,22 +81,6 @@ func isMutatingSessionsV2LifecycleHTTPRequest(r *http.Request, subpath string) b
 		return true
 	default:
 		return false
-	}
-}
-
-func localContainerRuntimeLifecycleAction(subpath string) (string, bool) {
-	switch subpath {
-	case "":
-		return "", true
-	case "messages", "metadata", "mode", "preference", "codex", "plans/active", "plans", "permissions", "permissions/resolve_all", "usage", "run", "run/stream":
-		return subpath, true
-	case "run/stop/local-container":
-		return "run/stop", true
-	default:
-		if strings.HasPrefix(subpath, "plans/") || strings.HasPrefix(subpath, "permissions/") && strings.HasSuffix(subpath, "/resolve") {
-			return subpath, true
-		}
-		return "", false
 	}
 }
 
@@ -159,10 +139,6 @@ func (s *Server) handlePrimarySessionV2ByID(w http.ResponseWriter, r *http.Reque
 		writeSessionsV2Error(w, errors.New("sessions v2 service is not configured"))
 		return
 	}
-	if s.handleLocalContainerSessionV2LifecycleIfNeeded(w, r, sessionID, subpath) {
-		return
-	}
-
 	switch subpath {
 	case "":
 		s.handlePrimarySessionV2Get(w, r, sessionID)
@@ -189,12 +165,7 @@ func (s *Server) handlePrimarySessionV2ByID(w http.ResponseWriter, r *http.Reque
 	case "run":
 		s.handlePrimarySessionV2Run(w, r, sessionID)
 	case "run/stop/primary":
-		if s.handleLocalContainerSessionV2LifecycleIfNeeded(w, r, sessionID, subpath) {
-			return
-		}
 		s.handlePrimarySessionV2RunStopPrimary(w, r, sessionID)
-	case "run/stop/local-container":
-		s.handlePrimarySessionV2RunStopLocalContainer(w, r, sessionID)
 	case "run/stream":
 		s.handlePrimarySessionV2RunStream(w, r, sessionID)
 	default:
@@ -236,7 +207,7 @@ func parsePrimarySessionV2LifecyclePath(path string) (string, string, bool) {
 
 func isReservedPrimarySessionV2LifecycleID(sessionID string) bool {
 	switch strings.TrimSpace(sessionID) {
-	case "primary", "local-containers", "local_container":
+	case "primary":
 		return true
 	default:
 		return false
@@ -254,48 +225,6 @@ func (s *Server) requirePrimarySessionV2DispatchAuthority(r *http.Request, sessi
 	return authority, nil
 }
 
-func (s *Server) handleLocalContainerSessionV2LifecycleIfNeeded(w http.ResponseWriter, r *http.Request, sessionID, subpath string) bool {
-	if strings.TrimSpace(subpath) == "run/stop/local-container" {
-		return false
-	}
-	if strings.TrimSpace(subpath) == "run/stop/primary" {
-		authority, err := s.requireSessionV2Authority(r, sessionID, isMutatingSessionsV2LifecycleHTTPRequest(r, subpath))
-		if err != nil {
-			writeSessionsV2Error(w, err)
-			return true
-		}
-		if strings.TrimSpace(authority.Execution.ExecutionClass) == sessionruntime.SessionExecutionClassLocalContainer {
-			if !methodAllowedForSessionsV2LifecycleSubpath(r.Method, subpath) {
-				methodNotAllowed(w)
-				return true
-			}
-			writeSessionsV2Error(w, sessionV2InvalidClass("sessions v2 local-container lifecycle dispatch must use native runtime dispatch"))
-			return true
-		}
-		return false
-	}
-	action, supported := localContainerRuntimeLifecycleAction(subpath)
-	if !supported {
-		return false
-	}
-	authority, err := s.requireSessionV2Authority(r, sessionID, isMutatingSessionsV2LifecycleHTTPRequest(r, subpath))
-	if err != nil {
-		writeSessionsV2Error(w, err)
-		return true
-	}
-	if strings.TrimSpace(authority.Execution.ExecutionClass) != sessionruntime.SessionExecutionClassLocalContainer {
-		return false
-	}
-	if !methodAllowedForSessionsV2LifecycleSubpath(r.Method, subpath) {
-		methodNotAllowed(w)
-		return true
-	}
-	if err := s.dispatchLocalContainerSessionV2Lifecycle(w, r, authority, action); err != nil {
-		writeSessionsV2Error(w, err)
-	}
-	return true
-}
-
 func methodAllowedForSessionsV2LifecycleSubpath(method, subpath string) bool {
 	switch subpath {
 	case "":
@@ -304,7 +233,7 @@ func methodAllowedForSessionsV2LifecycleSubpath(method, subpath string) bool {
 		return method == http.MethodGet || method == http.MethodPost
 	case "permissions", "usage":
 		return method == http.MethodGet
-	case "permissions/resolve_all", "run", "run/stop/primary", "run/stop/local-container":
+	case "permissions/resolve_all", "run", "run/stop/primary":
 		return method == http.MethodPost
 	case "run/stream":
 		return method == http.MethodGet || method == http.MethodPost
@@ -317,227 +246,6 @@ func methodAllowedForSessionsV2LifecycleSubpath(method, subpath string) bool {
 		}
 		return false
 	}
-}
-
-func (s *Server) dispatchLocalContainerSessionV2Lifecycle(w http.ResponseWriter, r *http.Request, authority sessionV2Authority, action string) error {
-	if s == nil {
-		return errors.New("sessions v2 service is not configured")
-	}
-	localNode, localOK, err := s.swarmLocalNode()
-	if err != nil {
-		return err
-	}
-	localSwarmID := strings.TrimSpace(localNode.SwarmID)
-	if localOK && strings.EqualFold(localSwarmID, strings.TrimSpace(authority.Execution.RuntimeSwarmID)) {
-		s.dispatchLocalRuntimeSessionV2Lifecycle(w, r, authority, action)
-		return nil
-	}
-	return s.dispatchRemoteRuntimeSessionV2Lifecycle(w, r, authority, action)
-}
-
-func (s *Server) dispatchLocalRuntimeSessionV2Lifecycle(w http.ResponseWriter, r *http.Request, authority sessionV2Authority, action string) {
-	sessionID := strings.TrimSpace(authority.Execution.SessionID)
-	principal := authority.Principal
-	principal.SessionID = sessionID
-	ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, principal)
-	ctx = identity.ContextWithPrincipal(ctx, principal)
-	cloned := r.Clone(ctx)
-	path := runtimeSessionsV2Prefix + sessionID
-	if strings.TrimSpace(action) != "" {
-		path += "/" + strings.Trim(strings.TrimSpace(action), "/")
-	}
-	cloned.URL.Path = path
-	cloned.URL.RawPath = ""
-	cloned.URL.RawQuery = r.URL.RawQuery
-	cloned.RequestURI = ""
-	s.handleRuntimeSessionsV2ByID(w, cloned)
-}
-
-func (s *Server) dispatchLocalContainerSessionV2RunStop(r *http.Request, authority sessionV2Authority, req sessionruntime.RuntimeSessionStopRequest) (sessionruntime.RuntimeSessionStopResponse, error) {
-	if s == nil {
-		return sessionruntime.RuntimeSessionStopResponse{}, errors.New("sessions v2 service is not configured")
-	}
-	localNode, localOK, err := s.swarmLocalNode()
-	if err != nil {
-		return sessionruntime.RuntimeSessionStopResponse{}, err
-	}
-	localSwarmID := strings.TrimSpace(localNode.SwarmID)
-	var resp sessionruntime.RuntimeSessionStopResponse
-	if localOK && strings.EqualFold(localSwarmID, strings.TrimSpace(authority.Execution.RuntimeSwarmID)) {
-		principal := authority.Principal
-		principal.SessionID = strings.TrimSpace(authority.Execution.SessionID)
-		resp, err = s.stopRuntimeSessionV2Run(authority.Execution.SessionID, principal, req)
-	} else {
-		resp, err = s.dispatchRemoteRuntimeSessionV2RunStop(r, authority, req)
-	}
-	if err != nil {
-		return sessionruntime.RuntimeSessionStopResponse{}, err
-	}
-	if resp.MirrorBatch == nil {
-		return resp, nil
-	}
-	accepted, err := s.ingestRuntimeSessionV2MirrorBatch(authority.Execution, *resp.MirrorBatch, runtimeSessionV2MirrorIngestionOptions{})
-	if err != nil {
-		return sessionruntime.RuntimeSessionStopResponse{}, err
-	}
-	resp.MirrorAccepted = accepted
-	resp.MirrorStatus = "accepted"
-	resp.MirrorBatch = nil
-	return resp, nil
-}
-
-func (s *Server) dispatchRemoteRuntimeSessionV2RunStop(r *http.Request, authority sessionV2Authority, req sessionruntime.RuntimeSessionStopRequest) (sessionruntime.RuntimeSessionStopResponse, error) {
-	if s.swarm == nil {
-		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", authority.Execution.RuntimeSwarmID)
-	}
-	localNode, localOK, err := s.swarmLocalNode()
-	if err != nil {
-		return sessionruntime.RuntimeSessionStopResponse{}, err
-	}
-	localSwarmID := strings.TrimSpace(localNode.SwarmID)
-	if !localOK || localSwarmID == "" {
-		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", authority.Execution.RuntimeSwarmID)
-	}
-	conn, ok := s.ResolveAuthorityConnection(authority.Principal.AccountScopeID, authority.Execution.RuntimeSwarmID)
-	if !ok || strings.TrimSpace(conn.endpoint()) == "" {
-		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2AuthorityNotFound("runtime session authority connection for %q was not found", authority.Execution.RuntimeSwarmID)
-	}
-	if strings.EqualFold(conn.TransportKind, authorityConnectionTransportLocal) {
-		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2StaleAuthority("runtime session authority connection for %q resolved local transport for non-local runtime", authority.Execution.RuntimeSwarmID)
-	}
-	peerToken, ok, err := s.swarm.OutgoingPeerAuthToken(strings.TrimSpace(authority.Execution.RuntimeSwarmID))
-	if err != nil {
-		return sessionruntime.RuntimeSessionStopResponse{}, err
-	}
-	if !ok || strings.TrimSpace(peerToken) == "" {
-		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", authority.Execution.RuntimeSwarmID)
-	}
-	endpoint := strings.TrimRight(conn.endpoint(), "/") + runtimeSessionsV2Prefix + strings.TrimSpace(authority.Execution.SessionID) + "/run/stop"
-	client := &http.Client{Timeout: runtimeSessionOpenHTTPTimeout}
-	var resp sessionruntime.RuntimeSessionStopResponse
-	headers := map[string]string{peerAuthSwarmIDHeader: localSwarmID, peerAuthTokenHeader: peerToken}
-	if err := remoteSwarmJSONRequestWithClientAndHeaders(http.MethodPost, endpoint, req, &resp, client, headers); err != nil {
-		return sessionruntime.RuntimeSessionStopResponse{}, sessionV2StaleAuthority("runtime session stop failed: %v", err)
-	}
-	return resp, nil
-}
-
-func (s *Server) dispatchRemoteRuntimeSessionV2Lifecycle(w http.ResponseWriter, r *http.Request, authority sessionV2Authority, action string) error {
-	if s.swarm == nil {
-		return sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", authority.Execution.RuntimeSwarmID)
-	}
-	localNode, localOK, err := s.swarmLocalNode()
-	if err != nil {
-		return err
-	}
-	localSwarmID := strings.TrimSpace(localNode.SwarmID)
-	if !localOK || localSwarmID == "" {
-		return sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", authority.Execution.RuntimeSwarmID)
-	}
-	conn, ok := s.ResolveAuthorityConnection(authority.Principal.AccountScopeID, authority.Execution.RuntimeSwarmID)
-	if !ok || strings.TrimSpace(conn.endpoint()) == "" {
-		return sessionV2AuthorityNotFound("runtime session authority connection for %q was not found", authority.Execution.RuntimeSwarmID)
-	}
-	if strings.EqualFold(conn.TransportKind, authorityConnectionTransportLocal) {
-		return sessionV2StaleAuthority("runtime session authority connection for %q resolved local transport for non-local runtime", authority.Execution.RuntimeSwarmID)
-	}
-	peerToken, ok, err := s.swarm.OutgoingPeerAuthToken(strings.TrimSpace(authority.Execution.RuntimeSwarmID))
-	if err != nil {
-		return err
-	}
-	if !ok || strings.TrimSpace(peerToken) == "" {
-		return sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", authority.Execution.RuntimeSwarmID)
-	}
-
-	endpoint := strings.TrimRight(conn.endpoint(), "/") + runtimeSessionsV2Prefix + strings.TrimSpace(authority.Execution.SessionID)
-	if strings.TrimSpace(action) != "" {
-		endpoint += "/" + strings.Trim(strings.TrimSpace(action), "/")
-	}
-	if r.URL != nil && r.URL.RawQuery != "" {
-		endpoint += "?" + r.URL.RawQuery
-	}
-	if strings.Trim(strings.TrimSpace(action), "/") == "run/stream" && r.Method == http.MethodGet && isWebsocketUpgradeRequest(r) {
-		return s.dispatchRemoteRuntimeSessionV2RunStreamWebsocket(w, r, authority, endpoint, localSwarmID, peerToken)
-	}
-	forwardReq, err := http.NewRequestWithContext(r.Context(), r.Method, endpoint, r.Body)
-	if err != nil {
-		return err
-	}
-	forwardReq.Header.Set("Accept", "application/json")
-	if contentType := strings.TrimSpace(r.Header.Get("Content-Type")); contentType != "" {
-		forwardReq.Header.Set("Content-Type", contentType)
-	}
-	forwardReq.Header.Set(peerAuthSwarmIDHeader, localSwarmID)
-	forwardReq.Header.Set(peerAuthTokenHeader, peerToken)
-	resp, err := (&http.Client{Timeout: runtimeSessionOpenHTTPTimeout}).Do(forwardReq)
-	if err != nil {
-		return sessionV2StaleAuthority("runtime session lifecycle dispatch failed: %v", err)
-	}
-	defer resp.Body.Close()
-	for key, values := range resp.Header {
-		if strings.EqualFold(key, "Content-Length") {
-			continue
-		}
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
-	return nil
-}
-
-func (s *Server) dispatchRemoteRuntimeSessionV2RunStreamWebsocket(w http.ResponseWriter, r *http.Request, authority sessionV2Authority, endpoint, localSwarmID, peerToken string) error {
-	wsEndpoint, err := websocketEndpointForBackend(endpoint)
-	if err != nil {
-		return err
-	}
-	downstream, err := transportws.Accept(w, r)
-	if err != nil {
-		return err
-	}
-	defer downstream.Close()
-	raw, err := downstream.ReadText()
-	if err != nil {
-		log.Printf("sessions v2 local-container run stream initial read failed session_id=%s remote_addr=%s err=%v", authority.Execution.SessionID, strings.TrimSpace(r.RemoteAddr), err)
-		return nil
-	}
-	inbound, err := decodePrimarySessionV2RunStreamInbound(raw)
-	if err != nil {
-		s.sendRunStreamControl(downstream, runStreamControlMessage{Type: "error", OK: false, SessionID: authority.Execution.SessionID, Error: err.Error()})
-		return nil
-	}
-	switch inbound.Type {
-	case "run.start", "start":
-		if _, err := s.requireSessionV2Authority(r, authority.Execution.SessionID, true); err != nil {
-			s.sendRunStreamControl(downstream, runStreamControlMessage{Type: "error", OK: false, SessionID: authority.Execution.SessionID, Error: err.Error()})
-			return nil
-		}
-		if err := validatePrimarySessionV2RunRequest(inbound.RunRequest); err != nil {
-			s.sendRunStreamControl(downstream, runStreamControlMessage{Type: "error", OK: false, SessionID: authority.Execution.SessionID, Error: err.Error()})
-			return nil
-		}
-	case "run.stop", "stop":
-		if _, err := s.requireSessionV2Authority(r, authority.Execution.SessionID, true); err != nil {
-			s.sendRunStreamControl(downstream, runStreamControlMessage{Type: "error", OK: false, SessionID: authority.Execution.SessionID, Error: err.Error()})
-			return nil
-		}
-	}
-	headers := cloneHeaderForUpstreamWebsocket(r.Header)
-	headers.Set(peerAuthSwarmIDHeader, strings.TrimSpace(localSwarmID))
-	headers.Set(peerAuthTokenHeader, strings.TrimSpace(peerToken))
-	upstream, resp, err := gorillaws.DefaultDialer.DialContext(r.Context(), wsEndpoint, headers)
-	if err != nil {
-		s.sendRunStreamControl(downstream, runStreamControlMessage{Type: "error", OK: false, SessionID: authority.Execution.SessionID, Error: summarizeWebsocketDialError(err, resp).Error()})
-		return nil
-	}
-	defer upstream.Close()
-	if err := upstream.WriteMessage(gorillaws.TextMessage, raw); err != nil {
-		s.sendRunStreamControl(downstream, runStreamControlMessage{Type: "error", OK: false, SessionID: authority.Execution.SessionID, Error: err.Error()})
-		return nil
-	}
-	bridgeWebsocketText(downstream, upstream)
-	return nil
 }
 
 func (s *Server) requireSessionV2Authority(r *http.Request, sessionID string, mutating bool) (sessionV2Authority, error) {
@@ -593,8 +301,6 @@ func (s *Server) requireSessionV2Authority(r *http.Request, sessionID string, mu
 	switch strings.TrimSpace(execution.ExecutionClass) {
 	case sessionruntime.SessionExecutionClassPrimary:
 		return s.validatePrimarySessionV2Authority(authority)
-	case sessionruntime.SessionExecutionClassLocalContainer:
-		return s.validateLocalContainerSessionV2Authority(authority)
 	default:
 		return sessionV2Authority{}, sessionV2InvalidClass("sessions v2 execution class %q is not supported", execution.ExecutionClass)
 	}
@@ -646,51 +352,6 @@ func (s *Server) validatePrimarySessionV2Authority(authority sessionV2Authority)
 	}
 	if strings.TrimSpace(binding.DestinationRuntimeKind) != pebblestore.TopologyRuntimeKindHost || strings.TrimSpace(binding.DestinationContainerID) != "" {
 		return sessionV2Authority{}, sessionV2InvalidClass("sessions v2 workspace binding destination must be host runtime")
-	}
-	authority.Binding = &binding
-	return authority, nil
-}
-
-func (s *Server) validateLocalContainerSessionV2Authority(authority sessionV2Authority) (sessionV2Authority, error) {
-	execution := authority.Execution
-	placement := authority.Placement
-
-	localNode, localOK, err := s.swarmLocalNode()
-	if err != nil {
-		return sessionV2Authority{}, err
-	}
-	localSwarmID := strings.TrimSpace(localNode.SwarmID)
-	if !localOK || localSwarmID == "" {
-		return sessionV2Authority{}, sessionV2AuthorityNotFound("sessions v2 primary local node identity is required")
-	}
-	if strings.TrimSpace(execution.AuthorityHostSwarmID) != localSwarmID {
-		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 local-container execution is not owned by this primary runtime")
-	}
-	if strings.TrimSpace(execution.RuntimeKind) != pebblestore.TopologyRuntimeKindContainer || strings.TrimSpace(execution.AuthorityContainerID) == "" {
-		return sessionV2Authority{}, sessionV2InvalidClass("sessions v2 local-container execution must target container runtime authority")
-	}
-	if strings.TrimSpace(placement.RuntimeKind) != strings.TrimSpace(execution.RuntimeKind) || strings.TrimSpace(placement.AuthorityHostSwarmID) != strings.TrimSpace(execution.AuthorityHostSwarmID) || strings.TrimSpace(placement.AuthorityContainerID) != strings.TrimSpace(execution.AuthorityContainerID) {
-		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 runtime placement authority mismatch")
-	}
-	if strings.TrimSpace(placement.RuntimeKind) != pebblestore.TopologyRuntimeKindContainer || strings.TrimSpace(placement.AuthorityHostSwarmID) != localSwarmID || strings.TrimSpace(placement.AuthorityContainerID) == "" {
-		return sessionV2Authority{}, sessionV2InvalidClass("sessions v2 local-container placement must be container authority owned by this primary runtime")
-	}
-	if strings.TrimSpace(execution.WorkspaceBindingID) == "" || strings.TrimSpace(execution.SourceWorkspaceID) == "" || execution.SourceWorkspaceGeneration <= 0 || execution.PlacementGeneration <= 0 || execution.BindingGeneration <= 0 {
-		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 execution authority identity is incomplete")
-	}
-
-	binding, err := s.requireSessionV2WorkspaceBinding(authority)
-	if err != nil {
-		return sessionV2Authority{}, err
-	}
-	if strings.TrimSpace(binding.DestinationRuntimeSwarmID) != strings.TrimSpace(execution.RuntimeSwarmID) || strings.TrimSpace(binding.DestinationAuthorityHostSwarmID) != localSwarmID {
-		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 local-container workspace binding destination mismatch")
-	}
-	if strings.TrimSpace(binding.DestinationRuntimeKind) != pebblestore.TopologyRuntimeKindContainer || strings.TrimSpace(binding.DestinationContainerID) != strings.TrimSpace(execution.AuthorityContainerID) {
-		return sessionV2Authority{}, sessionV2InvalidClass("sessions v2 local-container workspace binding destination must match container authority")
-	}
-	if strings.TrimSpace(binding.DestinationWorkspacePath) == "" || strings.TrimSpace(execution.RuntimeWorkspacePath) == "" {
-		return sessionV2Authority{}, sessionV2StaleAuthority("sessions v2 local-container runtime workspace identity is incomplete")
 	}
 	authority.Binding = &binding
 	return authority, nil
@@ -1372,33 +1033,6 @@ func (s *Server) handlePrimarySessionV2Run(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.handleNativeSessionV2Run(w, r, sessionID, authority.Principal)
-}
-
-func (s *Server) handlePrimarySessionV2RunStopLocalContainer(w http.ResponseWriter, r *http.Request, sessionID string) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-	authority, err := s.requireSessionV2Authority(r, sessionID, true)
-	if err != nil {
-		writeSessionsV2Error(w, err)
-		return
-	}
-	if strings.TrimSpace(authority.Execution.ExecutionClass) != sessionruntime.SessionExecutionClassLocalContainer {
-		writeSessionsV2Error(w, sessionV2InvalidClass("local-container stop requires local_container execution class"))
-		return
-	}
-	var req sessionruntime.RuntimeSessionStopRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeSessionsV2Error(w, sessionV2BadRequest("invalid local-container stop request: %v", err))
-		return
-	}
-	resp, err := s.dispatchLocalContainerSessionV2RunStop(r, authority, req)
-	if err != nil {
-		writeSessionsV2Error(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handlePrimarySessionV2RunStopPrimary(w http.ResponseWriter, r *http.Request, sessionID string) {

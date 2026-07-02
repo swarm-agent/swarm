@@ -4,7 +4,6 @@ import test from 'node:test'
 import { saveDefaultNewSessionMode } from './save-default-new-session-mode'
 import { saveThinkingTagsSetting } from './save-thinking-tags-setting'
 import { saveSwarmSettings } from './save-swarm-settings'
-import { saveLocalContainerUpdateWarningDismissal } from './save-local-container-update-warning-dismissal'
 import { saveDefaultWorkspaceRoute } from './save-default-workspace-route'
 
 function installFetchMock(handler: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>) {
@@ -125,27 +124,6 @@ test('saveDefaultWorkspaceRoute preserves existing chat fields and writes server
         default_new_session_mode: 'plan',
         default_workspace_routes: { '/repo': 'swarm:child:/repo' },
       },
-    })
-  } finally {
-    restore()
-  }
-})
-
-test('saveLocalContainerUpdateWarningDismissal sends only updates patch', async () => {
-  let capturedBody = ''
-  const restore = installFetchMock(async (_input, init) => {
-    capturedBody = String(init?.body ?? '')
-    return new Response(JSON.stringify({ updates: { local_container_warning_dismissed: true } }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  })
-
-  try {
-    const response = await saveLocalContainerUpdateWarningDismissal(true)
-    assert.equal(response.updates?.local_container_warning_dismissed, true)
-    assert.deepEqual(JSON.parse(capturedBody), {
-      updates: { local_container_warning_dismissed: true },
     })
   } finally {
     restore()

@@ -119,7 +119,7 @@ func TestTopologyRuntimeTargetSelectableWithoutBackendWhenAuthorityConnectionExi
 	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, "account-1", pebblestore.TopologyRuntimeRecord{SwarmID: "managed-container", AccountScopeID: "account-1", UserID: "user-1", Name: "Managed Container", Relationship: "child", OwnerHostSwarmID: "managed-host", OwnerHostContainerID: "container-1", Status: "attached"}); err != nil {
 		t.Fatalf("upsert container: %v", err)
 	}
-	server := &Server{topology: topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil), authorityConnections: newAuthorityConnectionRegistry()}
+	server := &Server{topology: topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil), authorityConnections: newAuthorityConnectionRegistry()}
 	if err := server.RegisterAuthorityConnection(AuthorityConnection{AccountScopeID: "account-1", AuthorityHostSwarmID: "managed-host", TransportKind: authorityConnectionTransportHTTP, TransportRef: "http://managed.example.test"}); err != nil {
 		t.Fatalf("register authority: %v", err)
 	}

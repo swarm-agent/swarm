@@ -231,7 +231,7 @@ func newMirrorTestServer(t *testing.T) (*Server, func()) {
 	server := NewServer(nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, nil, events, stream.NewHub(events))
 	server.SetStartupConfigPath(startupPath)
 	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
-	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, workspaceStore))
+	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, workspaceStore))
 	server.SetSwarmNodeStore(pebblestore.NewSwarmNodeStore(store))
 	server.SetSwarmDesktopTargetSelectionStore(pebblestore.NewSwarmDesktopTargetSelectionStore(store))
 	server.SetSwarmService(fakeReplicateSwarmService{

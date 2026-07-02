@@ -34,7 +34,7 @@ func newPermissionSyncTestService(t *testing.T) (*Service, *pebblestore.DeployCo
 		t.Fatalf("put local node: %v", err)
 	}
 	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), nil, nil)
-	deploySvc := NewService(deploymentStore, nil, nil, swarmStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), permSvc)
+	deploySvc := NewService(deploymentStore, nil, swarmStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), permSvc)
 	return deploySvc, deploymentStore, permSvc
 }
 
@@ -111,7 +111,7 @@ func TestPushManagedSyncToLocalChildrenFailsBeforeHTTPWhenPeerAuthMissing(t *tes
 	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "host-swarm", Name: "Host", Role: "master"}); err != nil {
 		t.Fatalf("put local node: %v", err)
 	}
-	deploySvc := NewService(deploymentStore, nil, nil, swarmStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), permission.NewService(pebblestore.NewPermissionStore(store), nil, nil))
+	deploySvc := NewService(deploymentStore, nil, swarmStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), permission.NewService(pebblestore.NewPermissionStore(store), nil, nil))
 
 	childHit := false
 	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -217,7 +217,7 @@ func TestPushManagedSyncToLocalChildrenPushesAgentsAndCredentials(t *testing.T) 
 	if _, err := swarmStore.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{SwarmID: "child-swarm", Name: "Child", Relationship: swarmruntime.RelationshipChild, OutgoingPeerAuthToken: "host-to-child-token"}); err != nil {
 		t.Fatalf("put trusted peer: %v", err)
 	}
-	deploySvc := NewService(deploymentStore, nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), nil, permSvc)
+	deploySvc := NewService(deploymentStore, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), nil, permSvc)
 
 	agentApplyCount := 0
 	credentialApplyCount := 0
@@ -327,7 +327,7 @@ func TestSyncManagedCredentialsOnceIgnoresStaleManagedConfigWhenDBUnpaired(t *te
 	if err := startupconfig.Write(cfg); err != nil {
 		t.Fatalf("write startup config: %v", err)
 	}
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authruntime.NewService(pebblestore.NewAuthStore(store), nil), nil, nil, startupPath)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, authruntime.NewService(pebblestore.NewAuthStore(store), nil), nil, nil, startupPath)
 
 	if err := deploySvc.SyncManagedCredentialsOnce(context.Background()); err != nil {
 		t.Fatalf("SyncManagedCredentialsOnce() error = %v", err)
@@ -360,7 +360,7 @@ func TestApplyManagedCredentialBundleUsesPersistedPairingAccountWhenRequestHasNo
 	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "fireworks", AccountScopeID: testPrincipal().AccountScopeID, Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
 		t.Fatalf("upsert host credential: %v", err)
 	}
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, authSvc, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
 	if _, err := swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{PairingState: "paired", ParentSwarmID: "host-swarm", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID}); err != nil {
 		t.Fatalf("put pairing: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestApplyManagedCredentialBundleUsesPersistedPairingAccountWhenContextHasBo
 	if err != nil {
 		t.Fatalf("export credentials: %v", err)
 	}
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, authSvc, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
 	if _, err := swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{PairingState: "paired", ParentSwarmID: "host-swarm", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID}); err != nil {
 		t.Fatalf("put pairing: %v", err)
 	}
@@ -479,7 +479,7 @@ func TestFinalizeAttachFromHostUsesInputPrincipalForHostDrivenSync(t *testing.T)
 		t.Fatalf("put local node: %v", err)
 	}
 	swarmSvc := swarmruntime.NewService(swarmStore, events, nil)
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmSvc, swarmStore, authSvc, nil, nil, startupPath)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), swarmSvc, swarmStore, authSvc, nil, nil, startupPath)
 	err = deploySvc.FinalizeAttachFromHost(context.Background(), ContainerAttachFinalizeInput{
 		DeploymentID:             "deployment-1",
 		BootstrapSecret:          "bootstrap-secret",
@@ -531,7 +531,7 @@ func TestApplyManagedCredentialBundleRejectsBundleAccountMismatch(t *testing.T) 
 	if err != nil {
 		t.Fatalf("export credentials: %v", err)
 	}
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, authSvc, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
 	if _, err := swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{PairingState: "paired", ParentSwarmID: "host-swarm", UserID: "local-user", AccountScopeID: "local-account"}); err != nil {
 		t.Fatalf("put pairing: %v", err)
 	}
@@ -574,7 +574,7 @@ func TestPushManagedSyncToManagedHostsPushesAgentsAndCredentials(t *testing.T) {
 	if _, err := permSvc.UpsertRuleForAccount(testPrincipal().AccountScopeID, permission.PolicyRule{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "read"}); err != nil {
 		t.Fatalf("upsert permission rule: %v", err)
 	}
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), permSvc, swarmNodeStore)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), permSvc, swarmNodeStore)
 
 	agentApplyCount := 0
 	credentialApplyCount := 0
@@ -677,7 +677,7 @@ func TestReconcilePermissionSyncPushesManagedHosts(t *testing.T) {
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
 	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), nil, nil)
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), permSvc, swarmNodeStore)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), permSvc, swarmNodeStore)
 
 	permissionApplyCount := 0
 	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -728,7 +728,7 @@ func TestPushManagedSyncToManagedHostsRequiresAck(t *testing.T) {
 	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "openrouter", AccountScopeID: testPrincipal().AccountScopeID, Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
 		t.Fatalf("upsert credential: %v", err)
 	}
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), swarmNodeStore)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), swarmNodeStore)
 
 	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "not applied"})
@@ -780,7 +780,7 @@ func TestManagedHostAgentPermissionAndModelSyncAreAccountScoped(t *testing.T) {
 	if _, err := permSvc.UpsertRuleForAccount("account-b", permission.PolicyRule{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionDeny, Tool: "bash"}); err != nil {
 		t.Fatalf("upsert other account permission: %v", err)
 	}
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc, permSvc)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, nil, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc, permSvc)
 
 	agentBundle, err := deploySvc.SyncManagedHostAgentBundle(testPrincipalContext(), ContainerSyncCredentialRequestInput{})
 	if err != nil {
@@ -842,7 +842,7 @@ func TestDeployContainerRuntimeSyncAppliesAgentsAndModelDefaultsToPairedAccount(
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
 	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), events, nil)
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, nil, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc)
 
 	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -916,7 +916,7 @@ func TestApplyManagedHostInitialSyncBundleAppliesSyncedStateToLinkedAccountOnly(
 	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), events, nil)
 	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), nil, nil)
 	identitySvc := identity.NewService(pebblestore.NewIdentityStore(store))
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc, permSvc, identitySvc)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, nil, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc, permSvc, identitySvc)
 
 	bundle := ManagedHostInitialSyncBundle{
 		UserID:              testPrincipal().UserID,
@@ -1002,7 +1002,7 @@ func TestSyncManagedHostCredentialBundleIncludesUserAndAccount(t *testing.T) {
 	}
 	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), events, nil)
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc)
 
 	bundle, err := deploySvc.ManagedHostInitialSyncBundle(testPrincipalContext(), "https://manager.example", "managed-swarm")
 	if err != nil {
@@ -1032,7 +1032,7 @@ func TestApplyManagedHostInitialSyncBundleMaterializesLinkedIdentityIdempotently
 	identitySvc := identity.NewService(identityStore)
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
 	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), events, nil)
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc, identitySvc)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, nil, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), modelSvc, identitySvc)
 
 	bundle := ManagedHostInitialSyncBundle{UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, SyncModules: []string{workspaceruntime.ReplicationSyncModuleAgents}}
 	if _, err := deploySvc.ApplyManagedHostInitialSyncBundle(context.Background(), "manager-swarm", bundle); err != nil {
@@ -1088,7 +1088,7 @@ func TestApplyManagedHostInitialSyncBundleRequiresIdentityEnvelope(t *testing.T)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	swarmStore := pebblestore.NewSwarmStore(store)
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
 
 	_, err = deploySvc.ApplyManagedHostInitialSyncBundle(context.Background(), "manager-swarm", ManagedHostInitialSyncBundle{AccountScopeID: testPrincipal().AccountScopeID})
 	if err == nil {
@@ -1123,7 +1123,7 @@ func TestApplyManagedHostInitialSyncBundleRejectsIdentityMismatchAndPreservesPai
 	if _, err := swarmStore.PutLocalPairing(original); err != nil {
 		t.Fatalf("put pairing: %v", err)
 	}
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, swarmStore, authSvc, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
 
 	_, err = deploySvc.ApplyManagedHostInitialSyncBundle(context.Background(), "manager-swarm", ManagedHostInitialSyncBundle{
 		UserID:         testPrincipal().UserID,

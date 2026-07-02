@@ -81,7 +81,6 @@ func TestPrimaryLifecycleMethodsUseV2SessionPaths(t *testing.T) {
 			return err
 		}},
 		{"stop primary run", http.MethodPost, "/v2/sessions/session-1/run/stop/primary", func(api *API) error { return api.StopPrimarySessionRun(ctx, sessionID, "run-1", "primary-swarm") }},
-		{"stop local-container run", http.MethodPost, "/v2/sessions/session-1/run/stop/local-container", func(api *API) error { return api.StopLocalContainerSessionRun(ctx, sessionID, "run-1") }},
 		{"background run", http.MethodPost, "/v2/sessions/session-1/run/stream", func(api *API) error {
 			_, err := api.StartBackgroundSessionRun(ctx, sessionID, "prompt", "swarm", "", RunSessionOptions{})
 			return err
@@ -134,7 +133,6 @@ func TestStopSessionRunChoosesEndpointFromSessionExecution(t *testing.T) {
 		wantPath       string
 	}{
 		{name: "primary", executionClass: "primary", runtimeSwarmID: "primary-swarm", wantPath: "/v2/sessions/session-1/run/stop/primary"},
-		{name: "local-container", executionClass: "local_container", runtimeSwarmID: "container-swarm", wantPath: "/v2/sessions/session-1/run/stop/local-container"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			paths := []string{}
@@ -351,11 +349,6 @@ func writeLifecycleTestResponse(t *testing.T, w http.ResponseWriter, r *http.Req
 	case "/v2/sessions/" + sessionID + "/run/stop/primary":
 		if r.Method != http.MethodPost {
 			t.Fatalf("primary stop method = %s, want POST", r.Method)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": sessionID, "run_id": "run-1", "status": "stop_requested"})
-	case "/v2/sessions/" + sessionID + "/run/stop/local-container":
-		if r.Method != http.MethodPost {
-			t.Fatalf("local-container stop method = %s, want POST", r.Method)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "session_id": sessionID, "run_id": "run-1", "status": "stop_requested"})
 	case "/v2/sessions/" + sessionID + "/run/stream":

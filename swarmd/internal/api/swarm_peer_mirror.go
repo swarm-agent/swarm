@@ -322,26 +322,6 @@ func (s *Server) refreshLocalMirrorProjections(ctx context.Context) error {
 			}
 		}
 	}
-	if s.localContainers != nil {
-		containers, err := s.localContainers.List(ctx)
-		if err != nil {
-			return err
-		}
-		currentIDs := map[string]struct{}{}
-		for _, item := range containers {
-			id := strings.TrimSpace(item.ID)
-			if id == "" {
-				continue
-			}
-			currentIDs[id] = struct{}{}
-			if _, _, err := s.swarmMirror.UpsertLocalResource(mirrorResourceContainer, id, item); err != nil {
-				return err
-			}
-		}
-		if err := s.deleteMissingLocalMirrorResources(mirrorResourceContainer, currentIDs); err != nil {
-			return err
-		}
-	}
 	if s.deployContainers != nil {
 		deployments, err := s.deployContainers.List(ctx)
 		if err != nil {

@@ -56,16 +56,6 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     action: { kind: 'open-settings', tab: 'auth' },
   },
   {
-    id: 'swarm',
-    command: '/swarm',
-    aliases: [],
-    hint: 'Open the Swarm dashboard',
-    actionLabel: 'Open Swarm dashboard',
-    tips: ['/swarm', 'Manage local and attached swarms', 'Inspect swarm status from settings'],
-    state: 'ready',
-    action: { kind: 'open-settings', tab: 'swarm' },
-  },
-  {
     id: 'vault',
     command: '/vault',
     aliases: [],

@@ -104,58 +104,6 @@ type UpdateApplyPlan struct {
 	ComparisonSource string `json:"comparison_source,omitempty"`
 }
 
-type LocalContainerUpdatePlan struct {
-	PathID        string                       `json:"path_id"`
-	Mode          string                       `json:"mode"`
-	DevMode       bool                         `json:"dev_mode"`
-	Target        LocalContainerUpdateTarget   `json:"target"`
-	Summary       LocalContainerUpdateSummary  `json:"summary"`
-	Containers    []LocalContainerUpdateItem   `json:"containers"`
-	Contract      LocalContainerUpdateContract `json:"contract"`
-	Error         string                       `json:"error,omitempty"`
-	CheckedAtUnix int64                        `json:"checked_at_unix_ms,omitempty"`
-}
-
-type LocalContainerUpdateJobResult struct {
-	PathID          string                         `json:"path_id"`
-	Mode            string                         `json:"mode"`
-	DevMode         bool                           `json:"dev_mode"`
-	Target          LocalContainerUpdateTarget     `json:"target"`
-	Summary         LocalContainerUpdateJobSummary `json:"summary"`
-	Items           []LocalContainerUpdateJobItem  `json:"items"`
-	CheckedAtUnix   int64                          `json:"checked_at_unix_ms,omitempty"`
-	StartedAtUnix   int64                          `json:"started_at_unix_ms,omitempty"`
-	UpdatedAtUnix   int64                          `json:"updated_at_unix_ms,omitempty"`
-	CompletedAtUnix int64                          `json:"completed_at_unix_ms,omitempty"`
-}
-
-type LocalContainerUpdateJobSummary struct {
-	Total          int `json:"total"`
-	Replaced       int `json:"replaced"`
-	Skipped        int `json:"skipped"`
-	Failed         int `json:"failed"`
-	AlreadyCurrent int `json:"already_current"`
-	Unknown        int `json:"unknown"`
-}
-
-type LocalContainerUpdateJobItem struct {
-	ID                  string                   `json:"id"`
-	Name                string                   `json:"name,omitempty"`
-	ContainerName       string                   `json:"container_name,omitempty"`
-	Runtime             string                   `json:"runtime,omitempty"`
-	PreviousContainerID string                   `json:"previous_container_id,omitempty"`
-	ContainerID         string                   `json:"container_id,omitempty"`
-	PreviousImageRef    string                   `json:"previous_image_ref,omitempty"`
-	TargetImageRef      string                   `json:"target_image_ref,omitempty"`
-	TargetFingerprint   string                   `json:"target_fingerprint,omitempty"`
-	Status              string                   `json:"status,omitempty"`
-	State               string                   `json:"state"`
-	Reason              string                   `json:"reason,omitempty"`
-	Warning             string                   `json:"warning,omitempty"`
-	Error               string                   `json:"error,omitempty"`
-	Plan                LocalContainerUpdateItem `json:"plan,omitempty"`
-}
-
 type RemoteDeployUpdateJobResult struct {
 	PathID          string                       `json:"path_id"`
 	Mode            string                       `json:"mode"`
@@ -197,53 +145,6 @@ type RemoteDeploySession struct {
 	ImageRef         string `json:"image_ref,omitempty"`
 	LastProgress     string `json:"last_progress,omitempty"`
 	LastError        string `json:"last_error,omitempty"`
-}
-
-type LocalContainerUpdateTarget struct {
-	ImageRef               string `json:"image_ref,omitempty"`
-	DigestRef              string `json:"digest_ref,omitempty"`
-	Version                string `json:"version,omitempty"`
-	Fingerprint            string `json:"fingerprint,omitempty"`
-	PostRebuildImageRef    string `json:"post_rebuild_image_ref,omitempty"`
-	PostRebuildFingerprint string `json:"post_rebuild_fingerprint,omitempty"`
-	Commit                 string `json:"commit,omitempty"`
-}
-
-type LocalContainerUpdateSummary struct {
-	Total          int `json:"total"`
-	Affected       int `json:"affected"`
-	AlreadyCurrent int `json:"already_current"`
-	NeedsUpdate    int `json:"needs_update"`
-	Unknown        int `json:"unknown"`
-	Errors         int `json:"errors"`
-}
-
-type LocalContainerUpdateContract struct {
-	WarningCopy      string `json:"warning_copy"`
-	DismissalScope   string `json:"dismissal_scope"`
-	FailureSemantics string `json:"failure_semantics"`
-	Replacement      string `json:"replacement"`
-}
-
-type LocalContainerUpdateItem struct {
-	ID                 string            `json:"id"`
-	Name               string            `json:"name"`
-	ContainerName      string            `json:"container_name"`
-	Runtime            string            `json:"runtime"`
-	Status             string            `json:"status,omitempty"`
-	ContainerID        string            `json:"container_id,omitempty"`
-	StoredImageRef     string            `json:"stored_image_ref,omitempty"`
-	CurrentImageRef    string            `json:"current_image_ref,omitempty"`
-	CurrentDigestRef   string            `json:"current_digest_ref,omitempty"`
-	CurrentFingerprint string            `json:"current_fingerprint,omitempty"`
-	TargetImageRef     string            `json:"target_image_ref,omitempty"`
-	TargetDigestRef    string            `json:"target_digest_ref,omitempty"`
-	TargetVersion      string            `json:"target_version,omitempty"`
-	TargetFingerprint  string            `json:"target_fingerprint,omitempty"`
-	State              string            `json:"state"`
-	Reason             string            `json:"reason,omitempty"`
-	Error              string            `json:"error,omitempty"`
-	Labels             map[string]string `json:"labels,omitempty"`
 }
 
 type CodexStatus struct {
@@ -1282,17 +1183,12 @@ type UISwarmSettings struct {
 	RemoteSSHTargets []string `json:"remote_ssh_targets,omitempty"`
 }
 
-type UIUpdateSettings struct {
-	LocalContainerWarningDismissed bool `json:"local_container_warning_dismissed,omitempty"`
-}
-
 type UISettings struct {
 	Theme     UIThemeSettings    `json:"theme,omitempty"`
 	Input     UIInputSettings    `json:"input,omitempty"`
 	Chat      UIChatSettings     `json:"chat,omitempty"`
 	Swarming  UISwarmingSettings `json:"swarming,omitempty"`
 	Swarm     UISwarmSettings    `json:"swarm,omitempty"`
-	Updates   UIUpdateSettings   `json:"updates,omitempty"`
 	UpdatedAt int64              `json:"updated_at"`
 }
 
@@ -1716,32 +1612,6 @@ func (c *API) ApplyUpdate(ctx context.Context) (UpdateApplyPlan, error) {
 	var plan UpdateApplyPlan
 	if err := c.postJSON(ctx, "/v1/update/apply", map[string]any{}, &plan, true); err != nil {
 		return UpdateApplyPlan{}, err
-	}
-	return plan, nil
-}
-
-func (c *API) GetLocalContainerUpdatePlan(ctx context.Context, devMode *bool, targetVersion string) (LocalContainerUpdatePlan, error) {
-	return c.GetLocalContainerUpdatePlanWithPostRebuild(ctx, devMode, targetVersion, false)
-}
-
-func (c *API) GetLocalContainerUpdatePlanWithPostRebuild(ctx context.Context, devMode *bool, targetVersion string, postRebuildCheck bool) (LocalContainerUpdatePlan, error) {
-	path := "/v1/update/local-containers"
-	query := url.Values{}
-	if devMode != nil {
-		query.Set("dev_mode", strconv.FormatBool(*devMode))
-	}
-	if strings.TrimSpace(targetVersion) != "" {
-		query.Set("target_version", strings.TrimSpace(targetVersion))
-	}
-	if postRebuildCheck {
-		query.Set("post_rebuild_check", "true")
-	}
-	if encoded := query.Encode(); encoded != "" {
-		path += "?" + encoded
-	}
-	var plan LocalContainerUpdatePlan
-	if err := c.getJSON(ctx, path, &plan, true); err != nil {
-		return LocalContainerUpdatePlan{}, err
 	}
 	return plan, nil
 }
@@ -3392,13 +3262,13 @@ func sessionCreateEndpoint(options SessionCreateOptions) (string, error) {
 	targetRelationship := strings.ToLower(strings.TrimSpace(options.TargetRelationship))
 
 	if executionClass == "local_container" || executionClass == "local-container" {
-		return "/v2/sessions/local-containers", nil
+		return "", errors.New("sessions v2 local-container create endpoint has been retired")
 	}
 	if executionClass == "primary" {
 		return "/v2/sessions/primary", nil
 	}
 	if targetKind == "container" || targetKind == "local_container" || targetKind == "local-container" {
-		return "/v2/sessions/local-containers", nil
+		return "", errors.New("sessions v2 local-container create endpoint has been retired")
 	}
 	if targetRelationship == "child" && targetKind != "" && targetKind != "remote" && targetKind != "managed_host" {
 		return "", fmt.Errorf("unsupported sessions v2 create target kind %q for child route", strings.TrimSpace(options.TargetKind))
@@ -4048,7 +3918,7 @@ func (c *API) StopSessionRun(ctx context.Context, sessionID, runID string) error
 			}
 			return c.StopPrimarySessionRun(ctx, sessionID, runID, targetSwarmID)
 		case "local_container":
-			return c.StopLocalContainerSessionRun(ctx, sessionID, runID)
+			return errors.New("sessions v2 local-container stop endpoint has been retired")
 		}
 	}
 	return errors.New("session execution class is not available for stop")
@@ -4072,22 +3942,6 @@ func (c *API) StopSessionV3Run(ctx context.Context, sessionID, runID, targetSwar
 		body["reason"] = reason
 	}
 	return c.postJSON(ctx, sessionV3PrimaryPath(sessionID, "run/stop"), body, nil, true)
-}
-
-func (c *API) StopLocalContainerSessionRun(ctx context.Context, sessionID, runID string) error {
-	sessionID = strings.TrimSpace(sessionID)
-	runID = strings.TrimSpace(runID)
-	if sessionID == "" {
-		return errors.New("session id is required")
-	}
-	if runID == "" {
-		return errors.New("run id is required")
-	}
-	path := sessionV2LifecyclePath(sessionID, "run/stop/local-container")
-	return c.postJSON(ctx, path, map[string]any{
-		"type":   "run.stop",
-		"run_id": runID,
-	}, nil, true)
 }
 
 func (c *API) StopPrimarySessionRun(ctx context.Context, sessionID, runID, targetSwarmID string) error {

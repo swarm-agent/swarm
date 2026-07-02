@@ -10,7 +10,6 @@ import { PermissionsSettingsPage } from '../permissions/components/permissions-s
 import { ThemesSettingsPage } from '../themes/components/themes-settings-page'
 import { VaultSettingsPage } from '../vault/components/vault-settings-page'
 import { WorktreeSettingsPage } from '../worktrees/components/worktree-settings-page'
-import { DesktopSwarmDashboard } from '../../swarm/desktop-swarm-dashboard'
 import { cn } from '../../../../lib/cn'
 import { normalizeSettingsTabID, type SettingsTabID } from '../types/settings-tabs'
 
@@ -19,7 +18,6 @@ const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }
   { id: 'agents', label: 'Agents', icon: Bot },
   { id: 'auth', label: 'Auth', icon: Key },
   { id: 'permissions', label: 'Permissions', icon: Shield },
-  { id: 'swarm', label: 'Swarm', icon: Shield },
   { id: 'themes', label: 'Themes', icon: Palette },
   { id: 'vault', label: 'Vault', icon: Shield },
   { id: 'worktrees', label: 'Worktrees', icon: GitBranch },
@@ -136,7 +134,6 @@ export function DesktopSettingsPage() {
             {activeTab === 'agents' ? <AgentsSettingsPage key={agentsPageKey} /> : null}
             {activeTab === 'auth' ? <AuthSettingsPage /> : null}
             {activeTab === 'permissions' ? <PermissionsSettingsPage /> : null}
-            {activeTab === 'swarm' ? <DesktopSwarmDashboard /> : null}
             {activeTab === 'themes' ? <ThemesSettingsPage /> : null}
             {activeTab === 'vault' ? <VaultSettingsPage /> : null}
             {activeTab === 'worktrees' ? <WorktreeSettingsPage /> : null}

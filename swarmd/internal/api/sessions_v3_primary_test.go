@@ -3582,7 +3582,7 @@ func newSessionsV3PrimaryAPITestServer(t *testing.T, storePath string) (*Server,
 	routeStore := pebblestore.NewSessionRouteStore(store)
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
-	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore, nil, nil, nil, nil, routeStore, pebblestore.NewWorkspaceStore(store)))
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore, nil, nil, nil, routeStore, pebblestore.NewWorkspaceStore(store)))
 	server.SetSessionRouteStore(routeStore)
 	server.SetSwarmStore(swarmStore)
 	server.v3SessionExecutor = nil

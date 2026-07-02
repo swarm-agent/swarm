@@ -19,7 +19,6 @@ import (
 	"swarm-refactor/swarmtui/pkg/localupdate"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/identity"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/update"
 )
@@ -111,55 +110,6 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 	plan, err := s.update.Apply(identity.ContextWithPrincipal(r.Context(), principal))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, plan)
-}
-
-func (s *Server) handleUpdateLocalContainers(w http.ResponseWriter, r *http.Request) {
-	if s.localContainers == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("local container service not configured"))
-		return
-	}
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
-	input := localcontainers.UpdatePlanInput{}
-	if devModeRaw := strings.TrimSpace(r.URL.Query().Get("dev_mode")); devModeRaw != "" {
-		switch strings.ToLower(devModeRaw) {
-		case "1", "true", "yes", "dev":
-			value := true
-			input.DevMode = &value
-		case "0", "false", "no", "release", "prod", "production":
-			value := false
-			input.DevMode = &value
-		default:
-			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid dev_mode %q", devModeRaw))
-			return
-		}
-	}
-	if postRebuildRaw := strings.TrimSpace(r.URL.Query().Get("post_rebuild_check")); postRebuildRaw != "" {
-		switch strings.ToLower(postRebuildRaw) {
-		case "1", "true", "yes":
-			input.PostRebuildCheck = true
-		case "0", "false", "no":
-			input.PostRebuildCheck = false
-		default:
-			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid post_rebuild_check %q", postRebuildRaw))
-			return
-		}
-	}
-	input.TargetVersion = strings.TrimSpace(r.URL.Query().Get("target_version"))
-	principal, ok := PrincipalFromRequest(r)
-	if !ok {
-		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
-		return
-	}
-	ctx := identity.ContextWithPrincipal(r.Context(), principal)
-	plan, err := s.localContainers.UpdatePlan(ctx, input)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, plan)

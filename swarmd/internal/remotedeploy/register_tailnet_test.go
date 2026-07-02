@@ -103,7 +103,7 @@ func TestTryRegisterTailscaleRemoteNodeWritesNodeRegistry(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ensure host state: %v", err)
 	}
-	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarmSvc, swarmStore, nil, nil, nil, "", "")
+	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarmSvc, swarmStore, nil, nil, "", "")
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:               "remote-child-1",
 		Name:             "Remote Child",
@@ -195,7 +195,7 @@ func TestRefreshRemoteSessionStateRegistersTailscaleEndpointWithoutEnrollment(t 
 	if _, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{SwarmID: "host-swarm", Name: "Host", Role: "master"}); err != nil {
 		t.Fatalf("ensure host state: %v", err)
 	}
-	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarmSvc, swarmStore, nil, nil, nil, "", "")
+	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarmSvc, swarmStore, nil, nil, "", "")
 	oldRunner := remoteSSHCommandRunner
 	remoteSSHCommandRunner = func(context.Context, string, string) (string, error) {
 		return "", nil
@@ -287,7 +287,7 @@ func TestRefreshRemoteSessionStateDoesNotResyncPendingEnrollmentAfterTailscaleRe
 		t.Fatalf("submit enrollment for invite %q: %v", invite.ID, err)
 	}
 
-	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarmSvc, swarmStore, nil, nil, nil, "", "")
+	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarmSvc, swarmStore, nil, nil, "", "")
 	oldRunner := remoteSSHCommandRunner
 	remoteSSHCommandRunner = func(context.Context, string, string) (string, error) {
 		return "", nil

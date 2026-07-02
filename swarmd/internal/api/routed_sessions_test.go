@@ -17,7 +17,6 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/identity"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
@@ -256,8 +255,6 @@ func createManagedHostContainerRouteSyncFixture(t *testing.T, primary *Server, c
 	}))
 	t.Cleanup(childHTTP.Close)
 
-	ctx := identity.ContextWithPrincipal(context.Background(), testPrincipal())
-
 	managedStore, err := pebblestore.Open(filepath.Join(t.TempDir(), "managed.pebble"))
 	if err != nil {
 		t.Fatalf("open managed store: %v", err)
@@ -270,9 +267,6 @@ func createManagedHostContainerRouteSyncFixture(t *testing.T, primary *Server, c
 	managed := &Server{startupConfigPath: filepath.Join(t.TempDir(), "managed.conf")}
 	managed.SetSwarmStore(managedSwarmStore)
 	managed.SetSwarmService(fakeRoutedSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm", Name: "managed", Role: "managed"}}, token: "peer-token"})
-	managed.SetLocalContainerService(&recordingLocalContainerService{containersByAccount: map[string][]localcontainers.Container{
-		testPrincipal().AccountScopeID: {{ID: "managed-container-swarm", Name: "managed container", Status: "running", HostAPIBaseURL: childHTTP.URL}},
-	}})
 	managedMux := http.NewServeMux()
 	managedMux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -344,13 +338,6 @@ func createManagedHostContainerRouteSyncFixture(t *testing.T, primary *Server, c
 		t.Fatalf("upsert workspace binding: %v", err)
 	}
 
-	createContainerReq := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/swarm/containers/local/create?swarm_id=managed-swarm", bytes.NewBufferString(`{"name":"managed-container-swarm","runtime":"docker","host_api_base_url":"`+childHTTP.URL+`","image":"swarm-child:test"}`))
-	createContainerReq.Header.Set("Content-Type", "application/json")
-	createContainerRec := httptest.NewRecorder()
-	primary.Handler().ServeHTTP(createContainerRec, withTestPrincipal(createContainerReq))
-	if createContainerRec.Code != http.StatusOK {
-		t.Fatalf("container create status = %d, want %d, body=%s", createContainerRec.Code, http.StatusOK, createContainerRec.Body.String())
-	}
 }
 
 func TestRoutedSessionTargetDoesNotRetireRoutesOnLookupWhenReplacementChildExists(t *testing.T) {
@@ -2914,7 +2901,7 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	runSvc := runruntime.NewService(sessionSvc, modelSvc, nil, tool.NewRuntime(1), permissionSvc, agentSvc, nil, nil)
 	server = NewServer(nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, nil, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
 	server.v3SessionExecutor = nil
-	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore, nil, nil, nil, nil, routeStore, pebblestore.NewWorkspaceStore(store)))
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore, nil, nil, nil, routeStore, pebblestore.NewWorkspaceStore(store)))
 	server.SetSessionRouteStore(routeStore)
 	server.SetSwarmNodeStore(nodeStore)
 	server.SetSwarmStore(swarmStore)
@@ -3042,8 +3029,8 @@ func (f *fakeRemoteDeployService) UpdateSettings(_ context.Context, input remote
 	return remotedeploy.Session{}, nil
 }
 
-func (f *fakeRemoteDeployService) Delete(_ context.Context, input remotedeploy.DeleteSessionInput) (localcontainers.DeleteResult, error) {
-	return localcontainers.DeleteResult{}, nil
+func (f *fakeRemoteDeployService) Delete(_ context.Context, input remotedeploy.DeleteSessionInput) (deployruntime.DeleteResult, error) {
+	return deployruntime.DeleteResult{}, nil
 }
 
 func (f *fakeRemoteDeployService) Start(_ context.Context, input remotedeploy.StartSessionInput) (remotedeploy.Session, error) {

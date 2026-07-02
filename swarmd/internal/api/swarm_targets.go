@@ -14,7 +14,6 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/identity"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -225,10 +224,6 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 	if !principalOK || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
 		return nil, nil, identity.ErrPrincipalRequired
 	}
-	localContainerTargets, err := s.listLocalContainerTargetsForAccount(r, principal.AccountScopeID)
-	if err != nil {
-		return nil, nil, err
-	}
 	deployments, err := s.listDeployContainerTargetsForAccount(r, principal.AccountScopeID)
 	if err != nil {
 		return nil, nil, err
@@ -251,7 +246,7 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		}
 	}
 
-	targets := make([]swarmTarget, 0, len(nodeTargets)+len(trustedPeerTargets)+len(localContainerTargets)+len(deployments)+len(remoteDeployments)+len(mirroredTargets)+1)
+	targets := make([]swarmTarget, 0, len(nodeTargets)+len(trustedPeerTargets)+len(deployments)+len(remoteDeployments)+len(mirroredTargets)+1)
 	targets = append(targets, swarmTarget{
 		SwarmID:      localSwarmID,
 		Name:         firstNonEmpty(strings.TrimSpace(state.Node.Name), strings.TrimSpace(cfg.SwarmName), "Local"),
@@ -291,17 +286,6 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		s.applyCachedSwarmTargetHealth(&node)
 		targets = append(targets, node)
 		markSwarmTargetSeen(seenTargets, node)
-	}
-	for _, localContainer := range localContainerTargets {
-		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, localContainer.SwarmID) {
-			continue
-		}
-		if swarmTargetSeen(seenTargets, localContainer) {
-			continue
-		}
-		s.applyCachedSwarmTargetHealth(&localContainer)
-		targets = append(targets, localContainer)
-		markSwarmTargetSeen(seenTargets, localContainer)
 	}
 	for _, deployment := range deployments {
 		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, deployment.SwarmID) {
@@ -442,33 +426,6 @@ func (s *Server) listSwarmNodeTargets() ([]swarmTarget, error) {
 	out := make([]swarmTarget, 0, len(items))
 	for _, item := range items {
 		target, ok := mapSwarmNodeTarget(item)
-		if !ok {
-			continue
-		}
-		out = append(out, target)
-	}
-	return out, nil
-}
-
-func (s *Server) listLocalContainerTargetsForAccount(r *http.Request, accountScopeID string) ([]swarmTarget, error) {
-	accountScopeID = strings.TrimSpace(accountScopeID)
-	if accountScopeID == "" {
-		return nil, identity.ErrPrincipalRequired
-	}
-	if s.localContainers == nil {
-		return nil, nil
-	}
-	ctx := context.Background()
-	if r != nil {
-		ctx = r.Context()
-	}
-	items, err := s.localContainers.ListForAccount(ctx, accountScopeID)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]swarmTarget, 0, len(items))
-	for _, item := range items {
-		target, ok := mapLocalContainerTarget(item)
 		if !ok {
 			continue
 		}
@@ -923,28 +880,6 @@ func (s *Server) resolveMirroredTargetRouteForAccount(accountScopeID string, tar
 	}
 }
 
-func mapLocalContainerTarget(item localcontainers.Container) (swarmTarget, bool) {
-	swarmID := strings.TrimSpace(item.ID)
-	if swarmID == "" {
-		return swarmTarget{}, false
-	}
-	status := strings.TrimSpace(item.Status)
-	online := !strings.EqualFold(status, "stopped") && strings.TrimSpace(item.HostAPIBaseURL) != ""
-	return swarmTarget{
-		SwarmID:      swarmID,
-		Name:         firstNonEmpty(strings.TrimSpace(item.Name), strings.TrimSpace(item.ContainerName), swarmID),
-		Role:         "child",
-		Relationship: swarmruntime.RelationshipChild,
-		Kind:         "local-container",
-		AttachStatus: status,
-		Online:       online,
-		Selectable:   online,
-		BackendURL:   strings.TrimSpace(item.HostAPIBaseURL),
-		DesktopURL:   strings.TrimSpace(item.HostAPIBaseURL),
-		LastError:    strings.TrimSpace(item.Warning),
-	}, true
-}
-
 func mapDeployContainerTarget(item deployruntime.ContainerDeployment) (swarmTarget, bool) {
 	swarmID := strings.TrimSpace(item.ChildSwarmID)
 	if swarmID == "" {
@@ -1011,7 +946,7 @@ func topologyServiceFromServer(s *Server) topologyRuntimeLister {
 }
 
 func listRemoteDeployTargetsForTopology(r *http.Request, accountScopeID string, topologyStore *pebblestore.TopologyStore) ([]swarmTarget, error) {
-	return listRemoteDeployTargetsForAccount(&Server{topology: topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil)}, r, accountScopeID)
+	return listRemoteDeployTargetsForAccount(&Server{topology: topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil)}, r, accountScopeID)
 }
 
 func mapTopologyRuntimeTarget(item pebblestore.TopologyRuntimeRecord) (swarmTarget, bool) {

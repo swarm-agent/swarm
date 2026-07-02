@@ -20,7 +20,7 @@ func TestSwarmTopologyWorkspaceBindingsSupportsIdentityQueries(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	topologyStore := pebblestore.NewTopologyStore(store)
-	topologyService := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil)
+	topologyService := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil)
 	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologyService)
 

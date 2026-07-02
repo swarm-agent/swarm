@@ -271,7 +271,7 @@ func newManagedGitSyncTestServer(t *testing.T) *Server {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	server := NewServer(nil, nil, nil, nil, nil, workspace.NewService(pebblestore.NewWorkspaceStore(store)), nil, nil, nil, nil, nil, nil, nil)
-	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, nil))
+	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil))
 	server.SetSwarmNodeStore(pebblestore.NewSwarmNodeStore(store))
 	server.SetSwarmStore(pebblestore.NewSwarmStore(store))
 	server.SetSwarmService(fakeRoutedSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"}}, token: "peer-token"})

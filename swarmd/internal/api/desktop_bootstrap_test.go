@@ -576,7 +576,7 @@ func newWorkspaceOverviewTopologyTestServer(t *testing.T) (*Server, string, *peb
 	}
 	server := NewServer(nil, nil, nil, workspaceOverviewNoopRunService{}, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
-	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, workspaceStore))
+	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, workspaceStore))
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
 	cfg.SwarmName = "host-swarm"

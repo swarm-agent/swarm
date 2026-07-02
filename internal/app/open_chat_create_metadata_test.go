@@ -226,7 +226,7 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 				"messages":   []any{},
 				"events":     []any{},
 			})
-		case r.Method == http.MethodPost && (r.URL.Path == "/v2/sessions/primary" || r.URL.Path == "/v2/sessions/local-containers"):
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/sessions/primary":
 			captured.path = r.URL.Path
 			if r.URL.RawQuery != "" {
 				t.Fatalf("unexpected query on create request: %q", r.URL.RawQuery)
@@ -244,12 +244,6 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 			if value, _ := captured.body["mode"].(string); strings.TrimSpace(value) != "" {
 				mode = value
 			}
-			executionClass := "primary"
-			runtimeKind := "host"
-			if r.URL.Path == "/v2/sessions/local-containers" {
-				executionClass = "local_container"
-				runtimeKind = "container"
-			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok": true,
 				"session": map[string]any{
@@ -262,9 +256,9 @@ func captureOpenChatSessionCreateRequestWithWorktreeSettings(t *testing.T, route
 				},
 				"session_execution": map[string]any{
 					"session_id":              "session-1",
-					"execution_class":         executionClass,
+					"execution_class":         "primary",
 					"runtime_swarm_id":        captured.bodyString("swarm_id"),
-					"runtime_kind":            runtimeKind,
+					"runtime_kind":            "host",
 					"authority_host_swarm_id": captured.bodyString("swarm_id"),
 					"workspace_binding_id":    captured.bodyString("workspace_binding_id"),
 				},
