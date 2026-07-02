@@ -2,7 +2,6 @@ import type { DesktopPermissionRecord } from '../../types/realtime'
 import {
   parseAgentChangePermission,
   parseManageTodosPermission,
-  parseManageFlowPermission,
   parseExitPlanPermission,
   parsePlanUpdatePermission,
   buildPlanUpdateDiffPreview,
@@ -258,51 +257,6 @@ function testManageTodosKindAndPayloadParsing(): void {
   assert(payload.body.includes('`#tasks`'), 'expected tags in body')
 }
 
-function testManageFlowKindAndPayloadParsing(): void {
-  const permission = makePermission({
-    toolName: 'manage-flow',
-    requirement: 'flow_change',
-    toolArguments: JSON.stringify({
-      action: 'create',
-      flow_id: 'daily-report',
-      change: {
-        operation: 'create',
-        approval_summary: 'create flow "Daily report" using agent "memory" on daily 09:00 UTC',
-        after: {
-          flow_id: 'daily-report',
-          name: 'Daily report',
-          agent: { profile_name: 'memory', profile_mode: 'background' },
-          workspace: { workspace_path: '/workspace/demo' },
-          schedule: { cadence: 'daily', time: '09:00', timezone: 'UTC' },
-          catch_up_policy: { mode: 'once' },
-          intent: { prompt: 'Summarize the repo daily.' },
-        },
-      },
-      approved_arguments: {
-        action: 'create',
-        flow_id: 'daily-report',
-        confirm: true,
-        content: {
-          name: 'Daily report',
-          agent: { profile_name: 'memory', profile_mode: 'background' },
-          workspace: { workspace_path: '/workspace/demo' },
-          schedule: { cadence: 'daily', time: '09:00', timezone: 'UTC' },
-          catch_up_policy: { mode: 'once' },
-          intent: { prompt: 'Summarize the repo daily.' },
-        },
-      },
-    }),
-  })
-  assert(permissionKind(permission) === 'manage-flow', 'expected manage-flow permission kind')
-  assert(permissionRequiresApproval(permission, 'auto') === true, 'expected manage-flow approval requirement')
-  const payload = parseManageFlowPermission(permission)
-  assert(payload.title === 'Create Flow', 'expected manage-flow title')
-  assert(payload.flowId === 'daily-report', 'expected parsed flow id')
-  assert(payload.flowName === 'Daily report', 'expected parsed flow name')
-  assert(payload.content.name === 'Daily report', 'expected approved content to drive editable form')
-  assert(payload.summary.includes('Daily report'), 'expected readable flow summary')
-}
-
 function testTypedPlanLifecycleKindAndPayloadParsing(): void {
   const followup = makePermission({
     toolName: 'plan_manage',
@@ -529,7 +483,6 @@ function main(): void {
   testTaskLaunchKindAndApproval()
   testTaskLaunchPayloadParsing()
   testManageTodosKindAndPayloadParsing()
-  testManageFlowKindAndPayloadParsing()
   testTypedPlanLifecycleKindAndPayloadParsing()
   testPlanUpdateKindAndPayloadParsing()
   testPlanUpdateParsesStructuredDocument()

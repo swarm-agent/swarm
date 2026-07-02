@@ -51,17 +51,6 @@ type taskLaunchManifest struct {
 	Launches            []taskLaunchManifestRow        `json:"launches,omitempty"`
 }
 
-type manageFlowPermissionPayload struct {
-	PathID            string         `json:"path_id,omitempty"`
-	Tool              string         `json:"tool,omitempty"`
-	Action            string         `json:"action,omitempty"`
-	FlowID            string         `json:"flow_id,omitempty"`
-	Name              string         `json:"name,omitempty"`
-	ApprovalSummary   string         `json:"approval_summary,omitempty"`
-	ApprovedArguments map[string]any `json:"approved_arguments,omitempty"`
-	Preview           map[string]any `json:"preview,omitempty"`
-}
-
 type planManagePermissionPayload struct {
 	PathID                   string         `json:"path_id,omitempty"`
 	Title                    string         `json:"title,omitempty"`
@@ -577,12 +566,6 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 		return marshalPayload(payload)
 	case "manage_worktree":
 		return arguments, nil
-	case "manage_flow":
-		payload, err := s.buildManageFlowPermissionPayload(sessionID, call)
-		if err != nil {
-			return "", err
-		}
-		return marshalPayload(payload)
 	case "manage_todos":
 		payload, err := s.buildManageTodosPermissionPayload(sessionID, call)
 		if err != nil {
@@ -777,61 +760,6 @@ func normalizeExitPlanModeExecutionRecommendation(args map[string]any, document 
 		result.ContinueAutomatically = true
 	}
 	return result, nil
-}
-
-func (s *Service) buildManageFlowPermissionPayload(sessionID string, call tool.Call) (manageFlowPermissionPayload, error) {
-	arguments := strings.TrimSpace(call.Arguments)
-	if arguments == "" {
-		arguments = "{}"
-	}
-	var args map[string]any
-	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return manageFlowPermissionPayload{}, fmt.Errorf("manage-flow arguments invalid: %w", err)
-	}
-	action := strings.ToLower(strings.TrimSpace(mapString(args, "action")))
-	if action == "" {
-		action = "inspect"
-	}
-	flowID := strings.TrimSpace(firstNonEmptyString(mapString(args, "flow_id"), mapString(args, "id"), mapString(args, "name")))
-	payload := manageFlowPermissionPayload{PathID: "permission.manage_flow.v1", Tool: "manage-flow", Action: action, FlowID: flowID, Name: strings.TrimSpace(mapString(args, "name")), ApprovedArguments: cloneGenericMap(args)}
-	if payload.ApprovedArguments == nil {
-		payload.ApprovedArguments = map[string]any{}
-	}
-	payload.ApprovedArguments["confirm"] = true
-	session, ok, err := s.sessions.GetSession(sessionID)
-	if err != nil {
-		return manageFlowPermissionPayload{}, err
-	}
-	if !ok {
-		return manageFlowPermissionPayload{}, fmt.Errorf("session %q not found", sessionID)
-	}
-	previewScope := buildPermissionWorkspaceScope(session)
-	previewArgs := cloneGenericMap(args)
-	if previewArgs == nil {
-		previewArgs = map[string]any{"action": action}
-	}
-	delete(previewArgs, "confirm")
-	raw, err := json.Marshal(previewArgs)
-	if err == nil && s.tools != nil {
-		if previewOutput, previewErr := s.tools.ExecuteForWorkspaceScopeWithRuntime(context.Background(), previewScope, tool.Call{Name: call.Name, Arguments: string(raw)}); previewErr == nil {
-			var preview map[string]any
-			if json.Unmarshal([]byte(strings.TrimSpace(previewOutput)), &preview) == nil {
-				payload.Preview = preview
-				if summary := strings.TrimSpace(mapString(preview, "summary")); summary != "" {
-					payload.ApprovalSummary = summary
-				}
-				if change, ok := preview["change"].(map[string]any); ok {
-					if summary := strings.TrimSpace(mapString(change, "approval_summary")); summary != "" {
-						payload.ApprovalSummary = summary
-					}
-				}
-			}
-		}
-	}
-	if payload.ApprovalSummary == "" {
-		payload.ApprovalSummary = fmt.Sprintf("%s flow %s", action, firstNonEmptyString(payload.Name, payload.FlowID, "(new flow)"))
-	}
-	return payload, nil
 }
 
 func (s *Service) buildManageTodosPermissionPayload(sessionID string, call tool.Call) (map[string]any, error) {

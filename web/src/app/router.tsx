@@ -10,10 +10,8 @@ const IntegrationsPage = lazyRouteComponent(() => import('../features/desktop/in
 const SwarmToolsPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/swarm-tools-page'), 'SwarmToolsPage')
 const VideoToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/video-tool-page'), 'VideoToolPage')
 const ImageToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/image-tool-page'), 'ImageToolPage')
-const FlowRedirectRoute = lazyRouteComponent(() => import('./flow-redirect-route'), 'FlowRedirectRoute')
-
-const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'flow'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'flow'])
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools'])
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
   const parts = pathname.split('/').map((part) => decodeURIComponent(part).trim()).filter(Boolean)
@@ -67,17 +65,6 @@ function validateWorkspaceSessionParams(params: Record<string, unknown>): { work
   const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
   const sessionId = typeof params.sessionId === 'string' ? params.sessionId.trim() : ''
   return { workspaceSlug, sessionId }
-}
-
-function validateFlowParams(params: Record<string, unknown>): { flowId: string } {
-  const flowId = typeof params.flowId === 'string' ? params.flowId.trim() : ''
-  return { flowId }
-}
-
-function validateWorkspaceFlowParams(params: Record<string, unknown>): { workspaceSlug: string; flowId: string } {
-  const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
-  const flowId = typeof params.flowId === 'string' ? params.flowId.trim() : ''
-  return { workspaceSlug, flowId }
 }
 
 function validateSettingsSearch(search: Record<string, unknown>): { tab?: string } {
@@ -156,19 +143,6 @@ const imageToolSessionRoute = createRoute({
   component: ImageToolPage,
 })
 
-const flowRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/flow',
-  component: FlowRedirectRoute,
-})
-
-const flowDetailRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/flow/$flowId',
-  parseParams: validateFlowParams,
-  component: FlowRedirectRoute,
-})
-
 const workspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug',
@@ -196,20 +170,6 @@ const workspaceSettingsRoute = createRoute({
   parseParams: validateWorkspaceParams,
   validateSearch: validateSettingsSearch,
   component: DesktopSettingsPage,
-})
-
-const workspaceFlowRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/$workspaceSlug/flow',
-  parseParams: validateWorkspaceParams,
-  component: DesktopAppPage,
-})
-
-const workspaceFlowDetailRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/$workspaceSlug/flow/$flowId',
-  parseParams: validateWorkspaceFlowParams,
-  component: DesktopAppPage,
 })
 
 const workspaceToolsRoute = createRoute({
@@ -249,13 +209,9 @@ const routeTree = rootRoute.addChildren([
   videoToolRoute,
   imageToolRoute,
   imageToolSessionRoute,
-  flowRoute,
-  flowDetailRoute,
   workspaceRoute,
   workspaceSessionRoute,
   workspaceSettingsRoute,
-  workspaceFlowRoute,
-  workspaceFlowDetailRoute,
   workspaceToolsRoute,
   workspaceVideoToolRoute,
   workspaceImageToolRoute,

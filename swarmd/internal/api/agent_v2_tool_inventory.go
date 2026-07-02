@@ -113,8 +113,6 @@ func agentToolCanonicalName(name string) string {
 		return "manage_worktree"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
-	case "manage-flow", "manage_flow":
-		return "manage_flow"
 	case "manage-image", "manage_image":
 		return "manage_image"
 	default:
@@ -130,7 +128,7 @@ func agentToolGroup(name string) string {
 		return "write"
 	case "task", "ask_user", "exit_plan_mode", "plan_manage", "skill_use":
 		return "control"
-	case "manage_agent", "manage_skill", "manage_todos", "manage_flow", "manage_worktree", "manage_theme", "manage_integrations", "manage_image":
+	case "manage_agent", "manage_skill", "manage_todos", "manage_worktree", "manage_theme", "manage_integrations", "manage_image":
 		return "management"
 	default:
 		return "other"

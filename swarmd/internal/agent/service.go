@@ -263,7 +263,6 @@ func defaultSwarmToolContract() *pebblestore.AgentToolContract {
 			"skill_use":           {Enabled: pebblestore.BoolPtr(true)},
 			"manage_skill":        {Enabled: pebblestore.BoolPtr(true)},
 			"manage_agent":        {Enabled: pebblestore.BoolPtr(true)},
-			"manage_flow":         {Enabled: pebblestore.BoolPtr(true)},
 			"manage_integrations": {Enabled: pebblestore.BoolPtr(true)},
 			"manage_image":        {Enabled: pebblestore.BoolPtr(true)},
 			"manage_theme":        {Enabled: pebblestore.BoolPtr(true)},

@@ -221,13 +221,6 @@ func permissionPrimaryRequestSummary(toolName string, payload map[string]any) st
 			return "task " + description
 		}
 		return "task"
-	case "manage_flow":
-		action := strings.TrimSpace(jsonString(payload, "action"))
-		flowID := strings.TrimSpace(firstNonEmptyString(jsonString(payload, "flow_id"), jsonString(payload, "id"), jsonString(payload, "name")))
-		if flowID == "" {
-			return "manage-flow " + firstNonEmptyString(action, "change")
-		}
-		return "manage-flow " + firstNonEmptyString(action, "change") + " " + flowID
 	case "plan_manage":
 		action := planManageActionDisplay(jsonString(payload, "action"))
 		if action == "" {
@@ -235,7 +228,7 @@ func permissionPrimaryRequestSummary(toolName string, payload map[string]any) st
 		}
 		plan := jsonObject(payload, "plan")
 		title := strings.TrimSpace(jsonString(plan, "title"))
-		planID := strings.TrimSpace(firstNonEmptyString(jsonString(plan, "id"), jsonString(payload, "plan_id"), jsonString(payload, "active_plan_id")))
+		planID := strings.TrimSpace(firstNonEmptyStringUI(jsonString(plan, "id"), jsonString(payload, "plan_id"), jsonString(payload, "active_plan_id")))
 		switch {
 		case title != "":
 			return "plan " + action + " " + title
@@ -370,8 +363,6 @@ func permissionPreferredArgumentKeys(toolName string) []string {
 		return []string{"action", "owner_kind", "operations", "text", "id", "done", "priority", "group", "tags", "in_progress", "ordered_ids", "workspace_path"}
 	case "plan_manage":
 		return []string{"action", "title", "plan_id", "id", "plan", "status", "approval_state", "update_summary", "update_scope", "operation", "section", "old_text", "new_text", "checklist_item", "checked"}
-	case "manage_flow":
-		return []string{"action", "flow_id", "name", "approval_summary", "change", "approved_arguments", "preview", "content"}
 	default:
 		return nil
 	}
@@ -643,8 +634,6 @@ func normalizePermissionToolName(raw string) string {
 		return "manage_todos"
 	case "planmanage":
 		return "plan_manage"
-	case "manageflow":
-		return "manage_flow"
 	case "managetheme":
 		return "manage_theme"
 	}
@@ -665,8 +654,6 @@ func permissionDisplayToolName(raw string) string {
 		return "manage_todos"
 	case "plan_manage":
 		return "plan"
-	case "manage_flow":
-		return "manage-flow"
 	case "manage_theme":
 		return "manage-theme"
 	default:

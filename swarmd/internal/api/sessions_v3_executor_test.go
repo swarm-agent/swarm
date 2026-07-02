@@ -58,7 +58,6 @@ func TestResolveSessionV3ProviderToolsCanonicalizesDefinitionNames(t *testing.T)
 			{Type: "function", Name: "ask-user"},
 			{Type: "function", Name: "bash"},
 			{Type: "function", Name: "manage-agent"},
-			{Type: "function", Name: "manage-flow"},
 			{Type: "function", Name: "manage-skill"},
 			{Type: "function", Name: "manage-worktree"},
 			{Type: "function", Name: "skill-use"},
@@ -67,7 +66,6 @@ func TestResolveSessionV3ProviderToolsCanonicalizesDefinitionNames(t *testing.T)
 			"ask_user":        {Enabled: true},
 			"bash":            {Enabled: true},
 			"manage_agent":    {Enabled: true},
-			"manage_flow":     {Enabled: true},
 			"manage_skill":    {Enabled: true},
 			"manage_worktree": {Enabled: true},
 			"skill_use":       {Enabled: true},
@@ -85,7 +83,7 @@ func TestResolveSessionV3ProviderToolsCanonicalizesDefinitionNames(t *testing.T)
 		names = append(names, definition.Name)
 	}
 	sort.Strings(names)
-	expected := []string{"ask-user", "bash", "manage-agent", "manage-flow", "manage-skill", "manage-worktree", "skill-use"}
+	expected := []string{"ask-user", "bash", "manage-agent", "manage-skill", "manage-worktree", "skill-use"}
 	if !reflect.DeepEqual(names, expected) {
 		t.Fatalf("provider tool names mismatch\n got: %v\nwant: %v", names, expected)
 	}

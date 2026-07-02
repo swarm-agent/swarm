@@ -91,11 +91,6 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(peerWorkspaceTransferPrefix, s.handlePeerWorkspaceTransfer)
 }
 
-func (s *Server) registerFlowRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/v3/flows", s.handleFlowsV3)
-	mux.HandleFunc("/v3/flows/", s.handleFlowsV3)
-}
-
 func (s *Server) registerDeployRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/deploy/container/runtime", s.handleDeployContainerRuntime)
 	mux.HandleFunc("/v1/deploy/container", s.handleDeployContainers)
@@ -237,8 +232,6 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) registerPeerRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/v1/swarm/peer/flows/apply", s.handlePeerFlowApply)
-	mux.HandleFunc("/v1/swarm/peer/flows/report", s.handlePeerFlowReport)
 	mux.HandleFunc("/v1/swarm/peer/sessions/open", s.handlePeerSessionOpen)
 	mux.HandleFunc("/v1/swarm/peer/sessions/append_message", s.handlePeerSessionAppendMessage)
 	mux.HandleFunc("/v1/swarm/peer/sessions/mode", s.handlePeerSessionMode)
@@ -282,8 +275,6 @@ func (s *Server) registerLocalTransportRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/deploy/container/managed/model-defaults/apply", s.handleDeployContainerManagedModelDefaultsApply)
 	mux.HandleFunc("/v1/deploy/container/managed/skills/apply", s.handleDeployContainerManagedSkillsApply)
 	mux.HandleFunc("/v1/deploy/container/workspaces/bootstrap", s.handleDeployContainerWorkspaceBootstrap)
-	mux.HandleFunc("/v1/swarm/peer/flows/apply", s.handlePeerFlowApply)
-	mux.HandleFunc("/v1/swarm/peer/flows/report", s.handlePeerFlowReport)
 	mux.HandleFunc("/v1/swarm/peer/sessions/open", s.handlePeerSessionOpen)
 	mux.HandleFunc("/v1/swarm/peer/sessions/append_message", s.handlePeerSessionAppendMessage)
 	mux.HandleFunc("/v1/swarm/peer/sessions/mode", s.handlePeerSessionMode)

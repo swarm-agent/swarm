@@ -270,7 +270,6 @@ const READ_ONLY_TOOL_NAMES = new Set([
   "agentic_search",
   "list",
   "manage_agent",
-  "manage_flow",
   "manage_image",
   "manage_integrations",
   "manage_skill",

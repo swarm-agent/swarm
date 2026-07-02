@@ -143,7 +143,19 @@ func TestSwarmTargetsForRequestPrefersRegistryNodes(t *testing.T) {
 }
 
 func TestSwarmTargetsForRequestKeepsMirroredTargetsSharingHostLocalBackend(t *testing.T) {
-	server, _ := newFlowPeerTestServer(t)
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm-targets-mirror.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	server := &Server{
+		startupConfigPath: filepath.Join(t.TempDir(), "swarm.conf"),
+		swarm: fakeRoutedSwarmService{state: swarmruntime.LocalState{
+			Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "managed", Role: "master"},
+		}},
+		swarmMirror: pebblestore.NewSwarmMirrorStore(store),
+	}
 	targetBytes, err := json.Marshal(swarmTarget{
 		SwarmID:      "managed-child-new",
 		Name:         "managed child new",

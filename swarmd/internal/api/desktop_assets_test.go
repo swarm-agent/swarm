@@ -134,7 +134,7 @@ func TestShouldServeDesktopAssetLeavesAPIRoutesToAPIHandler(t *testing.T) {
 		{name: "app route", path: "/swarm-go/settings", want: true},
 		{name: "v1 api", path: "/v1/auth/desktop/session", want: false},
 		{name: "v2 api", path: "/v2/agents", want: false},
-		{name: "v3 api", path: "/v3/flows", want: false},
+		{name: "v3 api", path: "/v3/sessions", want: false},
 		{name: "websocket", path: "/ws", want: false},
 		{name: "health", path: "/healthz", want: false},
 	}

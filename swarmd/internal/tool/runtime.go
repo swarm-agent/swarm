@@ -155,8 +155,6 @@ type Runtime struct {
 	imageGen          manageImageService
 	imageThreads      manageImageThreadService
 	integrations      manageIntegrationService
-	flows             manageFlowService
-	flowWorkspace     manageFlowWorkspaceService
 }
 
 type ExaRuntimeConfig struct {
@@ -925,29 +923,6 @@ func (r *Runtime) Definitions() []Definition {
 		},
 		{
 			Type:        "function",
-			Name:        "manage-flow",
-			Description: "Inspect and manage Flows: user-configured background tasks run by saved agents on schedules; call inspect first once the user states a flow request; inspect/list include compact available_agents for choosing a saved agent without also calling manage-agent; supports inspect/list/get/history/status/create/update/delete, and mutating actions return approval-ready previews unless confirm=true",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"action":  map[string]any{"type": "string", "description": "Action: inspect|list|get|history|status|create|update|delete"},
-					"flow_id": map[string]any{"type": "string", "description": "Flow id for get/update/delete/history/status"},
-					"id":      map[string]any{"type": "string", "description": "Alias for flow_id"},
-					"name":    map[string]any{"type": "string", "description": "Flow display name; used for create/update and id generation"},
-					"limit":   map[string]any{"type": "integer", "description": "Maximum records to return for list/history/status"},
-					"confirm": map[string]any{"type": "boolean", "description": "Set true after approval to apply create/update/delete"},
-					"content": map[string]any{
-						"type":                 "object",
-						"description":          "Flow payload for create/update. Include name, enabled, target, agent, workspace, schedule, catch_up_policy, and intent.",
-						"additionalProperties": true,
-					},
-				},
-				"required":             []string{"action"},
-				"additionalProperties": false,
-			},
-		},
-		{
-			Type:        "function",
 			Name:        "manage-integrations",
 			Description: "Inspect and manage Integration Pack drafts through the sanctioned integration management path; supports inspect/list/get/create/update/delete for packs, versions, tools, adapters, prompt fragments, and workspaces. Execution, validation, publish, assignment runtime, and host routing are not active yet. Adapter output never includes raw credential reference values.",
 			Parameters: map[string]any{
@@ -1407,8 +1382,6 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageAgent(scope, args)
 	case "manage-integrations", "manage_integrations":
 		return r.executeManageIntegrations(scope, args)
-	case "manage-flow", "manage_flow":
-		return r.executeManageFlow(scope, args)
 	case "manage-image", "manage_image":
 		return r.executeManageImage(ctx, scope, args, onProgress)
 	case "manage-theme", "manage_theme":
@@ -8361,8 +8334,6 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_worktree"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
-	case "manage-flow", "manage_flow":
-		return "manage_flow"
 	case "manage-image", "manage_image":
 		return "manage_image"
 	default:

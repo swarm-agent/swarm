@@ -1395,16 +1395,6 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 	}
 }
 
-func ShouldApproveManageFlowMutation(toolArguments string) bool {
-	action := manageAction(toolArguments)
-	switch action {
-	case "create", "update", "delete", "remove":
-		return true
-	default:
-		return false
-	}
-}
-
 func ShouldApproveManageAgentMutation(toolArguments string) bool {
 	action := manageAction(toolArguments)
 	switch action {

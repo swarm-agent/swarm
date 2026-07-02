@@ -382,11 +382,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	if err := permissionSvc.RepairSummaryPendingIndex("", ""); err != nil {
 		log.Printf("warning: repair permission summary pending index: %v", err)
 	}
-	flowStore := pebblestore.NewFlowStore(store)
-	toolRuntime.SetManageFlowServices(flowStore, workspaceSvc)
-	if err := reconcileFlowRunsFromLifecycles(flowStore, sessionSvc); err != nil {
-		log.Printf("warning: reconcile flow runs: %v", err)
-	}
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 
@@ -405,7 +400,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetSwarmNodeStore(swarmNodeStore)
 	apiServer.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	apiServer.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))
-	apiServer.SetFlowStore(flowStore)
 	apiServer.SetVideoThreadStore(pebblestore.NewVideoThreadStore(store))
 	imageThreadStore := pebblestore.NewImageThreadStore(store)
 	imageGenSvc := imagegen.NewService(codexClient, authStore, imageThreadStore)
@@ -696,11 +690,6 @@ func (d *Daemon) Run() error {
 				d.requestStop("peer-transport-serve-error")
 			}
 		}()
-	}
-	if d.apiServer != nil {
-		go d.apiServer.StartFlowScheduler(d.bgCtx)
-		go d.apiServer.StartFlowOutboxDeliveryLoop(d.bgCtx)
-		go d.apiServer.StartFlowReportDeliveryLoop(d.bgCtx)
 	}
 	if d.deployContainers != nil {
 		go func() {

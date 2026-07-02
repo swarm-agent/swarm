@@ -114,7 +114,6 @@ type Server struct {
 	topology                    *topologyruntime.Service
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
 	sessionRoutes               *pebblestore.SessionRouteStore
-	flows                       *pebblestore.FlowStore
 	videoThreads                *pebblestore.VideoThreadStore
 	imageThreads                *pebblestore.ImageThreadStore
 	imageGen                    *imagegen.Service
@@ -595,7 +594,6 @@ func (s *Server) apiMux() *http.ServeMux {
 	s.registerAuthVaultRoutes(mux)
 	s.registerOnboardingRoutes(mux)
 	s.registerSwarmRoutes(mux)
-	s.registerFlowRoutes(mux)
 	s.registerDeployRoutes(mux)
 	s.registerAgentRoutes(mux)
 	s.registerProviderRoutes(mux)
@@ -2645,18 +2643,6 @@ func (s *Server) enrichSessionSummariesForList(sessions []pebblestore.SessionSna
 			defer wg.Done()
 			for index := range jobs {
 				session := sessions[index]
-				if flowRouteDiagMetadataMarksFlow(session.Metadata) {
-					flowRouteDiagLog("sessions_list_flow_session",
-						"session_id", session.ID,
-						"flow_id", flowRouteDiagMetadataValue(session.Metadata, "flow_id"),
-						"workspace_path", session.WorkspacePath,
-						"metadata_target_swarm_id", flowRouteDiagMetadataValue(session.Metadata, "target_swarm_id"),
-						"metadata_swarm_target_swarm_id", flowRouteDiagMetadataValue(session.Metadata, "swarm_target_swarm_id"),
-						"metadata_routed_child_swarm_id", flowRouteDiagMetadataValue(session.Metadata, sessionruntime.HostedSessionMetadataChildSwarmID),
-						"metadata_target_kind", flowRouteDiagMetadataValue(session.Metadata, "target_kind"),
-						"metadata_target_name", flowRouteDiagMetadataValue(session.Metadata, "target_name"),
-					)
-				}
 				pendingPermissionCount := 0
 				if s.perm != nil {
 					count, err := s.perm.PendingCount(session.ID)
@@ -3746,7 +3732,7 @@ func (s *Server) localCanonicalSessionForRoutedFetch(sessionID string) (pebblest
 	if err != nil || !ok {
 		return pebblestore.SessionSnapshot{}, ok, err
 	}
-	if !sessionHasCanonicalFlowMirrorMetadata(session.Metadata) && !sessionHasControllerOwnedRoutedMirrorMetadata(session.Metadata) {
+	if !sessionHasControllerOwnedRoutedMirrorMetadata(session.Metadata) {
 		return pebblestore.SessionSnapshot{}, false, nil
 	}
 	if route, ok, routeErr := s.sessionRoutes.Get(sessionID); routeErr != nil {
@@ -3761,19 +3747,6 @@ func (s *Server) localCanonicalSessionForRoutedFetch(sessionID string) (pebblest
 		}
 	}
 	return session, true, nil
-}
-
-func sessionHasCanonicalFlowMirrorMetadata(metadata map[string]any) bool {
-	if len(metadata) == 0 {
-		return false
-	}
-	return strings.TrimSpace(fmt.Sprint(metadata["flow_id"])) != "" &&
-		strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["source"])), "flow") &&
-		strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["lineage_kind"])), "flow") &&
-		strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["owner_transport"])), "flow_scheduler") &&
-		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath])) != "" &&
-		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath])) != "" &&
-		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataChildSwarmID])) != ""
 }
 
 func sessionHasControllerOwnedRoutedMirrorMetadata(metadata map[string]any) bool {

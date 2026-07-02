@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/flowdiaglog"
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 func flowRouteDiagLog(stage string, fields ...any) {
@@ -25,35 +24,4 @@ func flowRouteDiagLog(stage string, fields ...any) {
 	message := fmt.Sprintf("flow_route_diag stage=%q %s", stage, strings.Join(parts, " "))
 	log.Print(message)
 	flowdiaglog.Append(message)
-}
-
-func flowRouteDiagMetadataValue(metadata map[string]any, key string) string {
-	if len(metadata) == 0 {
-		return ""
-	}
-	value, ok := metadata[key]
-	if !ok || value == nil {
-		return ""
-	}
-	if text, ok := value.(string); ok {
-		return strings.TrimSpace(text)
-	}
-	return strings.TrimSpace(fmt.Sprint(value))
-}
-
-func flowRouteDiagMetadataMarksFlow(metadata map[string]any) bool {
-	if len(metadata) == 0 {
-		return false
-	}
-	return strings.EqualFold(flowRouteDiagMetadataValue(metadata, "source"), "flow") ||
-		strings.EqualFold(flowRouteDiagMetadataValue(metadata, "lineage_kind"), "flow") ||
-		strings.EqualFold(flowRouteDiagMetadataValue(metadata, "owner_transport"), "flow_scheduler") ||
-		flowRouteDiagMetadataValue(metadata, "flow_id") != ""
-}
-
-func flowRouteDiagSessionMetadataValue(session *pebblestore.SessionSnapshot, key string) string {
-	if session == nil {
-		return ""
-	}
-	return flowRouteDiagMetadataValue(session.Metadata, key)
 }

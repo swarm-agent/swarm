@@ -64,7 +64,6 @@ filter_allowed() {
     -e '^swarmd/internal/localcontainers/service\.go:.*(workspaceruntime|/workspaces)' \
     -e '^swarmd/internal/worktree/service\.go:.*(workspaceruntime|migrateLegacyConfig|MigrateLegacyGlobalConfig)' \
     -e '^swarmd/internal/tool/runtime\.go:.*workspaceruntime' \
-    -e '^swarmd/internal/tool/runtime_manage_flow\.go:.*workspaceruntime' \
     -e '^swarmd/internal/run/service\.go:.*workspaceruntime' \
     -e '^internal/launcher/managed_dev_update\.go:.*(/v1/swarm/topology/workspace-bindings|source_workspace_path)' \
     -e '^swarmd/internal/store/pebble/(keys|auth_store|auth_vault|worktree_store)\.go:.*(legacy|migrat|Migrate)' \

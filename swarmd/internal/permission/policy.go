@@ -466,8 +466,6 @@ func normalizePolicyToolName(name string) string {
 		return "manage_theme"
 	case "manageimage":
 		return "manage_image"
-	case "manageflow":
-		return "manage_flow"
 	default:
 		return name
 	}
@@ -665,11 +663,6 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		return PolicyDecisionAsk
 	case "manage_agent":
 		if ShouldApproveManageAgentMutation(toolArguments) {
-			return PolicyDecisionAsk
-		}
-		return PolicyDecisionAllow
-	case "manage_flow":
-		if ShouldApproveManageFlowMutation(toolArguments) {
 			return PolicyDecisionAsk
 		}
 		return PolicyDecisionAllow
