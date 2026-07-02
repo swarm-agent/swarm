@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
-import { ChevronsUp, LoaderCircle, Mic, Minimize2, NotepadText, Send, Settings2, Square } from 'lucide-react'
+import { ChevronsUp, Lightbulb, LoaderCircle, Mic, Minimize2, NotepadText, Send, Settings2, Square, Zap } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
@@ -127,6 +127,7 @@ export interface DesktopV3AgenticComposerProps {
   agents: AgentProfileRecord[]
   modelOptions: ModelOptionRecord[]
   selectedModelKey: string
+  selectedServiceTier?: string
   agentSettingsOpenSignal?: number
   modelPickerDisabled?: boolean
   modelPickerDisabledReason?: string
@@ -139,7 +140,7 @@ export interface DesktopV3AgenticComposerProps {
   thinkingTagsEnabled?: boolean
   onThinkingTagsToggle?: (enabled: boolean) => void
   thinkingTagsBusy?: boolean
-  fast: 'on' | 'off'
+  fast: 'on' | 'off' | 'priority'
   contextLabel?: string
   contextTooltip?: string
   onCompact?: (draft: string) => void | Promise<void>
@@ -175,6 +176,7 @@ export function DesktopV3AgenticComposer({
   agents,
   modelOptions,
   selectedModelKey,
+  selectedServiceTier = '',
   agentSettingsOpenSignal = 0,
   modelPickerDisabled = false,
   modelPickerDisabledReason = '',
@@ -511,9 +513,9 @@ export function DesktopV3AgenticComposer({
     </button>
   )
 
-  const selectedAgentRuntimeMode = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent)?.runtimeMode || ''
-  const runtimeSummary = selectedAgentRuntimeMode ? ` · ${selectedAgentRuntimeMode.replace('_', ' ')}` : ''
-  const settingsSummary = `${mode}${runtimeSummary} · ${selectedModel?.label || 'Model'} · ${normalizedThinking}${fastSupported ? ` · fast ${fast}` : ''}`
+  const modelSummary = selectedModel?.label || selectedModel?.model || 'Model'
+  const fastLabel = fast === 'priority' ? 'priority' : fast
+  const settingsSummary = `${modelSummary} · 💡 ${normalizedThinking}${fastSupported && fast !== 'off' ? ` · ⚡ ${fastLabel}` : ''}`
 
   function handleModeToggle() {
     if (!onModeSelect) return
@@ -588,7 +590,7 @@ export function DesktopV3AgenticComposer({
                     <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">{executionLabel}</span>
                   </span>
                 ) : null}
-                {showModePicker ? <AgentModelControl currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} selectedModel={selectedModel} modelOptions={modelOptions} modelLocked={modelPickerLocked} modelLockNotice={modelPickerReason} triggerDetail={modelControlDetail || `${selectedModel?.label || selectedModel?.model || 'Model'} · thinking ${normalizedThinking}${fastSupported ? ` · fast ${fast}` : ''}`} openSignal={effectiveAgentSettingsSignal} onOpenAgentSettings={onOpenAgentSettings} onConfirmAgentSettings={onConfirmAgentSettings} busy={agentModelControlBusy} /> : null}
+                {showModePicker ? <AgentModelControl currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} selectedModel={selectedModel} selectedServiceTier={selectedServiceTier} modelOptions={modelOptions} modelLocked={modelPickerLocked} modelLockNotice={modelPickerReason} triggerDetail={modelControlDetail || settingsSummary} openSignal={effectiveAgentSettingsSignal} onOpenAgentSettings={onOpenAgentSettings} onConfirmAgentSettings={onConfirmAgentSettings} busy={agentModelControlBusy} /> : null}
                 {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? (
                   <button type="button" onClick={() => onThinkingTagsToggle(!thinkingTagsEnabled)} disabled={thinkingTagsBusy} className="inline-flex h-6 items-center rounded-full border border-[var(--app-border)] px-2 text-[10px] font-semibold text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-60">
                     tags {thinkingTagsEnabled ? 'on' : 'off'}
@@ -625,7 +627,13 @@ export function DesktopV3AgenticComposer({
                     <Settings2 size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
                     <span className="flex min-w-0 flex-col leading-tight">
                       <span className="truncate text-[11px] font-medium text-[var(--app-text)] sm:text-[12px]">{currentAgent}</span>
-                      <span className="truncate text-[10px] text-[var(--app-text-muted)]">{settingsSummary}</span>
+                      <span className="flex min-w-0 items-center gap-1 truncate text-[10px] text-[var(--app-text-muted)]">
+                        <span className="truncate">{modelSummary}</span>
+                        <Lightbulb size={10} className="shrink-0" />
+                        <span>{normalizedThinking}</span>
+                        {fastSupported && fast !== 'off' ? <Zap size={10} className="shrink-0" /> : null}
+                        {fastSupported && fast !== 'off' ? <span>{fastLabel}</span> : null}
+                      </span>
                     </span>
                   </button>
                 </div>

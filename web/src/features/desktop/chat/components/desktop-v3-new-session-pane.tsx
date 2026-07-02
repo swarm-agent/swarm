@@ -2,15 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
-import { draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { draftModelQueryKey, draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
 import { formatContextWindow, effectiveContextWindow } from '../services/model-options'
 import { preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
-import type { AgentStateRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
+import type { AgentStateRecord, ModelOptionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
 import { updateAgentProfile } from '../queries/agent-preference-mutations'
-import type { AgentModelControlConfirmInput } from './agent-model-control'
+import { updateDraftModelPreference } from '../queries/chat-queries'
+import type { AgentModelControlConfirmInput, ModelDraft } from './agent-model-control'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
 import type { DesktopSlashCommand } from '../services/slash-commands'
@@ -48,15 +49,33 @@ function preferenceFromResolved(resolved: ResolvedSessionPreference | undefined)
   }
 }
 
-function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | 'off' {
-  return preference.serviceTier.trim().toLowerCase() === 'fast' ? 'on' : 'off'
+function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | 'off' | 'priority' {
+  const serviceTier = preference.serviceTier.trim().toLowerCase()
+  if (serviceTier === 'fast') return 'on'
+  return serviceTier === 'priority' ? 'priority' : 'off'
 }
 
-function modelControlDetail(input: { locked: boolean; customized: boolean; mode: DesktopSessionMode; modelLabel: string; thinking: string; fast: 'on' | 'off' }): string {
+function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; fast: 'on' | 'off' | 'priority' }): string {
   const prefix = input.locked
     ? input.customized ? 'Agent default' : 'Resolved default'
     : 'Your default'
-  return `${prefix} · ${input.mode} · ${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'} · fast ${input.fast}`
+  return `${prefix} · ${input.modelLabel || 'Model'} · 💡 ${input.thinking || 'off'}${input.fast !== 'off' ? ` · ⚡ ${input.fast}` : ''}`
+}
+
+function preferenceFromDefaultPatch(patch: ModelDraft, modelOptions: ModelOptionRecord[]): SessionPreferenceRecord {
+  const provider = patch.provider.trim()
+  const model = patch.model.trim()
+  const matchingOption = modelOptions.find((option) => option.provider === provider && option.model === model && option.contextMode.trim() === '')
+    ?? modelOptions.find((option) => option.provider === provider && option.model === model)
+    ?? null
+  return {
+    provider,
+    model,
+    thinking: patch.thinking.trim() || 'off',
+    serviceTier: patch.serviceTier.trim(),
+    contextMode: matchingOption?.contextMode ?? '',
+    updatedAt: Date.now(),
+  }
 }
 
 function preferenceForRequest(preference: SessionPreferenceRecord): DesktopV3NewSessionPreference {
@@ -287,12 +306,23 @@ export function DesktopV3NewSessionPane({
     setAgentModelSaving(true)
     setStartError(null)
     try {
+      if (input.defaultPreferencePatch) {
+        const nextPreference = preferenceFromDefaultPatch(input.defaultPreferencePatch, modelOptions)
+        const updated = await updateDraftModelPreference(nextPreference)
+        queryClient.setQueryData(draftModelQueryKey(), updated)
+        preferenceManuallyChangedRef.current = false
+        unlockedPreferenceRef.current = nextPreference
+        setPreference(nextPreference)
+      }
       await updateAgentProfile(input.profile, input.patch)
       const agentStateResult = await queryClient.fetchQuery(agentStateQueryOptions())
       const refreshedLock = resolveDesktopV3AgentModelLock(agentStateResult.profiles, input.agentName, mode)
-      const nextPreference = refreshedLock.locked
-        ? preferenceFromAgentModelLock(refreshedLock, preference, modelOptions)
+      const basePreference = input.defaultPreferencePatch
+        ? preferenceFromDefaultPatch(input.defaultPreferencePatch, modelOptions)
         : preference
+      const nextPreference = refreshedLock.locked
+        ? preferenceFromAgentModelLock(refreshedLock, basePreference, modelOptions)
+        : basePreference
       if (refreshedLock.locked) {
         unlockedPreferenceRef.current = nextPreference
         setPreference(nextPreference)
@@ -436,10 +466,11 @@ export function DesktopV3NewSessionPane({
         agents={agentState.profiles}
         modelOptions={modelOptions}
         selectedModelKey={selectedModelKey}
+        selectedServiceTier={preference.serviceTier}
         modelPickerDisabled={selectedAgentModelLock.locked}
         modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
         modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
-        modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, mode, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, fast: fastToggleFromPreference(preference) })}
+        modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, fast: fastToggleFromPreference(preference) })}
         onOpenAgentSettings={handleOpenAgentSettings}
         onConfirmAgentSettings={handleConfirmAgentSettings}
         agentModelControlBusy={agentModelSaving}

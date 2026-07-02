@@ -24,6 +24,7 @@ export type AgentModelControlConfirmInput = {
   agentName: string
   profile: AgentProfileRecord
   patch: AgentModelControlProfilePatch
+  defaultPreferencePatch?: ModelDraft
 }
 
 interface AgentModelControlProps {
@@ -32,6 +33,7 @@ interface AgentModelControlProps {
   agents: AgentProfileRecord[]
   mode: DesktopSessionMode
   selectedModel: ModelOptionRecord | null
+  selectedServiceTier?: string
   modelOptions: ModelOptionRecord[]
   modelLocked?: boolean
   modelLockNotice?: string
@@ -50,7 +52,7 @@ const FAST_OPTIONS = [
 ]
 
 type DraftMode = 'default' | 'single' | 'split'
-type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string }
+export type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string }
 
 function agentMode(profile: AgentProfileRecord): string {
   return (profile.mode || 'primary').trim().toLowerCase()
@@ -93,17 +95,17 @@ function selectedDraftMode(profile: AgentProfileRecord | null): DraftMode {
   return 'default'
 }
 
-function defaultDraftFromModel(model: ModelOptionRecord | null): ModelDraft {
+function defaultDraftFromModel(model: ModelOptionRecord | null, serviceTier = ''): ModelDraft {
   return {
     provider: model?.provider ?? '',
     model: model?.model ?? '',
     thinking: model?.thinking || 'off',
-    serviceTier: '',
+    serviceTier: supportsCodexFastMode(model?.provider ?? '', model?.model ?? '') ? serviceTier.trim() : '',
   }
 }
 
-function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedModel: ModelOptionRecord | null): ModelDraft {
-  const fallback = defaultDraftFromModel(selectedModel)
+function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedModel: ModelOptionRecord | null, selectedServiceTier = ''): ModelDraft {
+  const fallback = defaultDraftFromModel(selectedModel, selectedServiceTier)
   return {
     provider: profile?.provider.trim() || fallback.provider,
     model: profile?.model.trim() || fallback.model,
@@ -112,8 +114,8 @@ function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedMode
   }
 }
 
-function splitDraftFromProfile(profile: AgentProfileRecord | null, prefix: 'plan' | 'auto', selectedModel: ModelOptionRecord | null): ModelDraft {
-  const fallback = defaultDraftFromModel(selectedModel)
+function splitDraftFromProfile(profile: AgentProfileRecord | null, prefix: 'plan' | 'auto', selectedModel: ModelOptionRecord | null, selectedServiceTier = ''): ModelDraft {
+  const fallback = defaultDraftFromModel(selectedModel, selectedServiceTier)
   if (prefix === 'plan') {
     return {
       provider: profile?.planProvider.trim() || fallback.provider,
@@ -198,6 +200,7 @@ export function AgentModelControl({
   agents,
   mode,
   selectedModel,
+  selectedServiceTier = '',
   modelOptions,
   modelLocked = false,
   modelLockNotice = '',
@@ -215,9 +218,9 @@ export function AgentModelControl({
   const [draftAgentName, setDraftAgentName] = useState(activeProfile?.name ?? selectedPrimaryAgent)
   const draftProfile = selectableAgents.find((agent) => agent.name === draftAgentName) ?? activeProfile
   const [draftMode, setDraftMode] = useState<DraftMode>(() => selectedDraftMode(activeProfile))
-  const [singleDraft, setSingleDraft] = useState<ModelDraft>(() => singleDraftFromProfile(activeProfile, selectedModel))
-  const [planDraft, setPlanDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'plan', selectedModel))
-  const [autoDraft, setAutoDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'auto', selectedModel))
+  const [singleDraft, setSingleDraft] = useState<ModelDraft>(() => singleDraftFromProfile(activeProfile, selectedModel, selectedServiceTier))
+  const [planDraft, setPlanDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'plan', selectedModel, selectedServiceTier))
+  const [autoDraft, setAutoDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'auto', selectedModel, selectedServiceTier))
   const providers = useMemo(() => providerOptions(modelOptions), [modelOptions])
   const agentSections = useMemo(() => {
     const sections = [
@@ -244,18 +247,18 @@ export function AgentModelControl({
     const profile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? activeProfile
     setDraftAgentName(profile?.name ?? selectedPrimaryAgent)
     setDraftMode(selectedDraftMode(profile))
-    setSingleDraft(singleDraftFromProfile(profile, selectedModel))
-    setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel))
-    setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel))
+    setSingleDraft(singleDraftFromProfile(profile, selectedModel, selectedServiceTier))
+    setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier))
+    setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier))
     setError(null)
-  }, [activeProfile, open, selectableAgents, selectedModel, selectedPrimaryAgent])
+  }, [activeProfile, open, selectableAgents, selectedModel, selectedPrimaryAgent, selectedServiceTier])
 
   function chooseAgent(profile: AgentProfileRecord) {
     setDraftAgentName(profile.name)
     setDraftMode(selectedDraftMode(profile))
-    setSingleDraft(singleDraftFromProfile(profile, selectedModel))
-    setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel))
-    setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel))
+    setSingleDraft(singleDraftFromProfile(profile, selectedModel, selectedServiceTier))
+    setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier))
+    setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier))
     setError(null)
   }
 
@@ -277,6 +280,19 @@ export function AgentModelControl({
     const profile = draftProfile
     if (!profile || saving || busy) return
     const patch = buildPatch(draftMode, singleDraft, planDraft, autoDraft)
+    const defaultPreferencePatch = draftMode === 'default'
+      ? {
+        ...singleDraft,
+        provider: singleDraft.provider.trim(),
+        model: singleDraft.model.trim(),
+        thinking: normalizeThinking(singleDraft.thinking),
+        serviceTier: supportsCodexFastMode(singleDraft.provider, singleDraft.model) ? singleDraft.serviceTier.trim() : '',
+      }
+      : undefined
+    if (draftMode === 'default' && (!defaultPreferencePatch?.provider || !defaultPreferencePatch.model || !defaultPreferencePatch.thinking)) {
+      setError('Choose provider, model, and thinking for your default model settings.')
+      return
+    }
     if (draftMode === 'single' && (!patch.provider || !patch.model || !patch.thinking)) {
       setError('Choose provider, model, and thinking for the single-model lock.')
       return
@@ -288,7 +304,7 @@ export function AgentModelControl({
     setSaving(true)
     setError(null)
     try {
-      await onConfirmAgentSettings?.({ agentName: profile.name, profile, patch })
+      await onConfirmAgentSettings?.({ agentName: profile.name, profile, patch, defaultPreferencePatch })
       setOpen(false)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -351,7 +367,7 @@ export function AgentModelControl({
             <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
               <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                <ModeButton selected={draftMode === 'default'} title="Default" description={'In the default state, you can freely change your settings and new chats will continue with your settings for agents with "Default" settings.'} onClick={() => setDraftMode('default')} />
+                <ModeButton selected={draftMode === 'default'} title="Default" description="Show your current defaults here. Editing them changes the defaults used by future default-mode agents and conversations." onClick={() => { setDraftMode('default'); setSingleDraft(defaultDraftFromModel(selectedModel, selectedServiceTier)) }} />
                 <ModeButton selected={draftMode === 'single'} title="Single" description="Lock this agent to one model." onClick={() => setDraftMode('single')} />
                 <ModeButton selected={draftMode === 'split'} title="Split" description="Use separate plan and auto models." onClick={() => setDraftMode('split')} />
               </div>
@@ -373,9 +389,9 @@ export function AgentModelControl({
             ) : (
               <div className="mt-4 grid gap-3">
                 <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-sm text-[var(--app-text-muted)]">
-                  This agent is currently using your resolved defaults. The fields below show those defaults; changing one will customize this agent with a single model lock.
+                  This agent is using your defaults. The fields below show those defaults; changing them updates your future default model settings instead of locking this agent.
                 </div>
-                <ModelDraftEditor title="Resolved default model" draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => { setDraftMode('single'); selectProvider('single', provider) }} onModelChange={(model) => { setDraftMode('single'); selectModel('single', model) }} onThinkingChange={(thinking) => { setDraftMode('single'); setSingleDraft((current) => ({ ...current, thinking })) }} onServiceTierChange={(serviceTier) => { setDraftMode('single'); setSingleDraft((current) => ({ ...current, serviceTier })) }} showFast />
+                <ModelDraftEditor title="Default model settings" draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showFast />
               </div>
             )}
             {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}

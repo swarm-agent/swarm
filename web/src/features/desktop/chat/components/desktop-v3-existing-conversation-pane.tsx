@@ -23,8 +23,10 @@ import type { DesktopSlashCommand } from '../services/slash-commands'
 import {
   sessionV3AgentSettingsMutationResponse,
   sessionV3ModeSettingsMutationResponse,
+  sessionV3PreferenceSettingsMutationResponse,
   updateSessionV3Agent,
   updateSessionV3Mode,
+  updateSessionV3Preference,
   stopSessionV3Run,
 } from '../../session-v3/api'
 import {
@@ -127,8 +129,10 @@ function formatDesktopV3ContextTooltip(contextWindow: number, usage: NormalizedU
   return 'Context window unavailable'
 }
 
-function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | 'off' {
-  return preference.serviceTier.trim().toLowerCase() === 'fast' ? 'on' : 'off'
+function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | 'off' | 'priority' {
+  const serviceTier = preference.serviceTier.trim().toLowerCase()
+  if (serviceTier === 'fast') return 'on'
+  return serviceTier === 'priority' ? 'priority' : 'off'
 }
 
 function preferencesEqual(left: SessionPreferenceRecord, right: SessionPreferenceRecord): boolean {
@@ -245,11 +249,11 @@ function permissionSavedRuleEqual(left: DesktopPermissionRecord['savedRule'], ri
     && left.updatedAt === right.updatedAt
 }
 
-function modelControlDetail(input: { locked: boolean; customized: boolean; mode: DesktopSessionMode; modelLabel: string; thinking: string; fast: 'on' | 'off' }): string {
+function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; fast: 'on' | 'off' | 'priority' }): string {
   const prefix = input.locked
     ? input.customized ? 'Agent default' : 'Resolved default'
     : 'Session default'
-  return `${prefix} · ${input.mode} · ${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'} · fast ${input.fast}`
+  return `${prefix} · ${input.modelLabel || 'Model'} · 💡 ${input.thinking || 'off'}${input.fast !== 'off' ? ` · ⚡ ${input.fast}` : ''}`
 }
 
 function formatSettingsChangeSummary(input: {
@@ -808,12 +812,35 @@ export function DesktopV3ExistingConversationPane({
     setAgentModelSaving(true)
     setSendError(null)
     try {
+      if (input.defaultPreferencePatch) {
+        const preferenceResponse = await updateSessionV3Preference(normalizedSessionId, {
+          provider: input.defaultPreferencePatch.provider,
+          model: input.defaultPreferencePatch.model,
+          thinking: input.defaultPreferencePatch.thinking,
+          serviceTier: input.defaultPreferencePatch.serviceTier,
+        })
+        const settingsResponse = sessionV3PreferenceSettingsMutationResponse(preferenceResponse, normalizedSessionId)
+        dispatchDesktopV3Cache({ type: 'mutation.sessionSettingsResult', raw: settingsResponse })
+        const updatedPreference = (settingsResponse.preference ?? preference) as SessionPreferenceRecord
+        setPreference(updatedPreference)
+        unlockedPreferenceRef.current = updatedPreference
+        localSettingsDirtyRef.current.preference = true
+      }
       await updateAgentProfile(input.profile, input.patch)
       const agentStateResult = await queryClient.fetchQuery(agentStateQueryOptions())
       const refreshedLock = resolveDesktopV3AgentModelLock(agentStateResult.profiles, input.agentName, mode)
-      const nextPreference = refreshedLock.locked
-        ? preferenceFromAgentModelLock(refreshedLock, preference, modelOptions)
+      const basePreference = input.defaultPreferencePatch
+        ? {
+          ...preference,
+          provider: input.defaultPreferencePatch.provider,
+          model: input.defaultPreferencePatch.model,
+          thinking: input.defaultPreferencePatch.thinking,
+          serviceTier: input.defaultPreferencePatch.serviceTier,
+        }
         : preference
+      const nextPreference = refreshedLock.locked
+        ? preferenceFromAgentModelLock(refreshedLock, basePreference, modelOptions)
+        : basePreference
       if (refreshedLock.locked) {
         setPreference(nextPreference)
         unlockedPreferenceRef.current = nextPreference
@@ -1131,10 +1158,11 @@ export function DesktopV3ExistingConversationPane({
             agents={agentState.profiles}
             modelOptions={modelOptions}
             selectedModelKey={selectedModelKey}
+            selectedServiceTier={preference.serviceTier}
             modelPickerDisabled={selectedAgentModelLock.locked}
             modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
             modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
-            modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, mode, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, fast: fastToggleFromPreference(preference) })}
+            modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, fast: fastToggleFromPreference(preference) })}
             onOpenAgentSettings={handleOpenAgentSettings}
             onConfirmAgentSettings={handleConfirmAgentSettings}
             agentModelControlBusy={agentModelSaving}
