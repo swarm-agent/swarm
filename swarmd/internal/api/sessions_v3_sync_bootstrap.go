@@ -881,10 +881,11 @@ func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.Sess
 	agentPref := sessionsV3AgentPresetPreference(profile)
 	if pebblestore.AgentModelMode(profile) == "split" && strings.TrimSpace(profile.PlanProvider) != "" && strings.TrimSpace(profile.PlanModel) != "" {
 		agentPref = pebblestore.ModelPreference{
-			Provider:  strings.ToLower(strings.TrimSpace(profile.PlanProvider)),
-			Model:     strings.TrimSpace(profile.PlanModel),
-			Thinking:  normalizeSessionV3ThinkingWithProvider(profile.PlanProvider, profile.PlanThinking),
-			UpdatedAt: profile.UpdatedAt,
+			Provider:    strings.ToLower(strings.TrimSpace(profile.PlanProvider)),
+			Model:       strings.TrimSpace(profile.PlanModel),
+			Thinking:    normalizeSessionV3ThinkingWithProvider(profile.PlanProvider, profile.PlanThinking),
+			ServiceTier: strings.TrimSpace(profile.PlanServiceTier),
+			UpdatedAt:   profile.UpdatedAt,
 		}
 	}
 	if strings.TrimSpace(agentPref.Provider) == "" || strings.TrimSpace(agentPref.Model) == "" {

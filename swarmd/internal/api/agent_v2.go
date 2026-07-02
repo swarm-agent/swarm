@@ -470,9 +470,11 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			PlanProvider        string                                  `json:"plan_provider"`
 			PlanModel           string                                  `json:"plan_model"`
 			PlanThinking        string                                  `json:"plan_thinking"`
+			PlanServiceTier     string                                  `json:"plan_service_tier"`
 			AutoProvider        string                                  `json:"auto_provider"`
 			AutoModel           string                                  `json:"auto_model"`
 			AutoThinking        string                                  `json:"auto_thinking"`
+			AutoServiceTier     string                                  `json:"auto_service_tier"`
 			Prompt              string                                  `json:"prompt"`
 			RuntimeMode         string                                  `json:"runtime_mode"`
 			ExecutionSetting    string                                  `json:"execution_setting"`
@@ -521,9 +523,11 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			PlanProvider:        req.PlanProvider,
 			PlanModel:           req.PlanModel,
 			PlanThinking:        req.PlanThinking,
+			PlanServiceTier:     req.PlanServiceTier,
 			AutoProvider:        req.AutoProvider,
 			AutoModel:           req.AutoModel,
 			AutoThinking:        req.AutoThinking,
+			AutoServiceTier:     req.AutoServiceTier,
 			Prompt:              req.Prompt,
 			RuntimeMode:         req.RuntimeMode,
 			ExecutionSetting:    req.ExecutionSetting,

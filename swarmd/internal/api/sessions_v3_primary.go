@@ -1795,10 +1795,11 @@ func sessionsV3AgentPresetPreference(profile pebblestore.AgentProfile) pebblesto
 		return pebblestore.ModelPreference{}
 	}
 	return pebblestore.ModelPreference{
-		Provider:  provider,
-		Model:     model,
-		Thinking:  normalizeSessionV3ThinkingWithProvider(provider, profile.Thinking),
-		UpdatedAt: profile.UpdatedAt,
+		Provider:    provider,
+		Model:       model,
+		Thinking:    normalizeSessionV3ThinkingWithProvider(provider, profile.Thinking),
+		ServiceTier: strings.TrimSpace(profile.AutoServiceTier),
+		UpdatedAt:   profile.UpdatedAt,
 	}
 }
 

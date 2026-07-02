@@ -2760,6 +2760,7 @@ func applySessionV3AgentPreferenceOverrides(base pebblestore.ModelPreference, ag
 			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.AutoProvider))
 			modelOverride = strings.TrimSpace(agentProfile.AutoModel)
 			thinkingOverride = strings.TrimSpace(agentProfile.AutoThinking)
+			base.ServiceTier = strings.TrimSpace(agentProfile.AutoServiceTier)
 		}
 	}
 	if providerOverride != "" && modelOverride != "" {

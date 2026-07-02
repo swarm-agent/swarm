@@ -223,9 +223,11 @@ export interface AgentProfileRecord {
   planProvider: string;
   planModel: string;
   planThinking: string;
+  planServiceTier: string;
   autoProvider: string;
   autoModel: string;
   autoThinking: string;
+  autoServiceTier: string;
   prompt: string;
   runtimeMode: "plan_auto" | "read" | "readwrite" | "";
   executionSetting: "read" | "readwrite" | "";

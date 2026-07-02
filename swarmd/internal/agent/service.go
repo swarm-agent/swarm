@@ -97,9 +97,11 @@ type UpsertInput struct {
 	PlanProvider        string                         `json:"plan_provider"`
 	PlanModel           string                         `json:"plan_model"`
 	PlanThinking        string                         `json:"plan_thinking"`
+	PlanServiceTier     string                         `json:"plan_service_tier"`
 	AutoProvider        string                         `json:"auto_provider"`
 	AutoModel           string                         `json:"auto_model"`
 	AutoThinking        string                         `json:"auto_thinking"`
+	AutoServiceTier     string                         `json:"auto_service_tier"`
 	Prompt              string                         `json:"prompt"`
 	RuntimeMode         string                         `json:"runtime_mode"`
 	ExecutionSetting    string                         `json:"execution_setting"`
@@ -1091,6 +1093,9 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		if strings.TrimSpace(input.PlanThinking) == "" {
 			profile.PlanThinking = existing.PlanThinking
 		}
+		if strings.TrimSpace(input.PlanServiceTier) == "" {
+			profile.PlanServiceTier = existing.PlanServiceTier
+		}
 		if strings.TrimSpace(input.AutoProvider) == "" {
 			profile.AutoProvider = existing.AutoProvider
 		}
@@ -1099,6 +1104,9 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		}
 		if strings.TrimSpace(input.AutoThinking) == "" {
 			profile.AutoThinking = existing.AutoThinking
+		}
+		if strings.TrimSpace(input.AutoServiceTier) == "" {
+			profile.AutoServiceTier = existing.AutoServiceTier
 		}
 		if strings.TrimSpace(profile.Prompt) == "" {
 			profile.Prompt = existing.Prompt
@@ -2084,9 +2092,11 @@ func normalizeUpsertInput(input UpsertInput) (pebblestore.AgentProfile, error) {
 		PlanProvider:        strings.ToLower(strings.TrimSpace(input.PlanProvider)),
 		PlanModel:           strings.TrimSpace(input.PlanModel),
 		PlanThinking:        strings.ToLower(strings.TrimSpace(input.PlanThinking)),
+		PlanServiceTier:     pebblestore.NormalizeModelServiceTier(input.PlanServiceTier),
 		AutoProvider:        strings.ToLower(strings.TrimSpace(input.AutoProvider)),
 		AutoModel:           strings.TrimSpace(input.AutoModel),
 		AutoThinking:        strings.ToLower(strings.TrimSpace(input.AutoThinking)),
+		AutoServiceTier:     pebblestore.NormalizeModelServiceTier(input.AutoServiceTier),
 		Prompt:              strings.TrimSpace(input.Prompt),
 		RuntimeMode:         runtimeMode,
 		ExecutionSetting:    executionSetting,

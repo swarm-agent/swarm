@@ -29,6 +29,7 @@ import {
   CUSTOM_AGENT_TOOL_PRESET_ID,
   agentToolPresetByID,
 } from "../../../chat/services/agent-tool-presets";
+import { supportsCodexFastMode } from "../../../chat/services/model-options";
 
 interface AgentFormState {
   name: string;
@@ -41,9 +42,11 @@ interface AgentFormState {
   planProvider: string;
   planModel: string;
   planThinking: string;
+  planServiceTier: string;
   autoProvider: string;
   autoModel: string;
   autoThinking: string;
+  autoServiceTier: string;
   prompt: string;
   runtimeMode: "plan_auto" | "read" | "readwrite" | "";
   executionSetting: "read" | "readwrite" | "";
@@ -102,6 +105,12 @@ const THINKING_OPTIONS = [
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
   { value: "xhigh", label: "X-High" },
+];
+
+const FAST_OPTIONS = [
+  { value: "", label: "Default" },
+  { value: "fast", label: "On" },
+  { value: "off", label: "Off" },
 ];
 
 const UTILITY_THINKING_OPTIONS = [
@@ -461,9 +470,11 @@ function emptyAgentForm(): AgentFormState {
     planProvider: "",
     planModel: "",
     planThinking: "",
+    planServiceTier: "",
     autoProvider: "",
     autoModel: "",
     autoThinking: "",
+    autoServiceTier: "",
     prompt: "",
     runtimeMode: "readwrite",
     executionSetting: "readwrite",
@@ -554,6 +565,219 @@ function modelOptionKey(provider: string, model: string, contextMode = ""): stri
   return `${provider}:${model}:${contextMode.trim().toLowerCase()}`;
 }
 
+type AgentSplitFieldPrefix = "plan" | "auto";
+
+type AgentSplitModelSectionProps = {
+  title: string;
+  description: string;
+  prefix: AgentSplitFieldPrefix;
+  form: AgentFormState;
+  providerOptions: string[];
+  modelOptions: ModelOptionRecord[];
+  selectedProfile: AgentProfileRecord | null;
+  currentDefaultModelLabel: string;
+  busy: boolean;
+  setForm: (updater: (current: AgentFormState) => AgentFormState) => void;
+};
+
+function splitFieldValue(form: AgentFormState, prefix: AgentSplitFieldPrefix, field: "provider" | "model" | "thinking" | "serviceTier"): string {
+  if (prefix === "plan") {
+    switch (field) {
+      case "provider":
+        return form.planProvider;
+      case "model":
+        return form.planModel;
+      case "thinking":
+        return form.planThinking;
+      case "serviceTier":
+        return form.planServiceTier;
+    }
+  }
+  switch (field) {
+    case "provider":
+      return form.autoProvider;
+    case "model":
+      return form.autoModel;
+    case "thinking":
+      return form.autoThinking;
+    case "serviceTier":
+      return form.autoServiceTier;
+  }
+}
+
+function withSplitFieldValue(
+  form: AgentFormState,
+  prefix: AgentSplitFieldPrefix,
+  field: "provider" | "model" | "thinking" | "serviceTier",
+  value: string,
+): AgentFormState {
+  if (prefix === "plan") {
+    switch (field) {
+      case "provider":
+        return { ...form, planProvider: value, planModel: value === form.planProvider ? form.planModel : "", planServiceTier: value === form.planProvider ? form.planServiceTier : "" };
+      case "model":
+        return { ...form, planModel: value, planServiceTier: supportsCodexFastMode(form.planProvider, value) ? form.planServiceTier : "" };
+      case "thinking":
+        return { ...form, planThinking: value };
+      case "serviceTier":
+        return { ...form, planServiceTier: value };
+    }
+  }
+  switch (field) {
+    case "provider":
+      return { ...form, autoProvider: value, autoModel: value === form.autoProvider ? form.autoModel : "", autoServiceTier: value === form.autoProvider ? form.autoServiceTier : "" };
+    case "model":
+      return { ...form, autoModel: value, autoServiceTier: supportsCodexFastMode(form.autoProvider, value) ? form.autoServiceTier : "" };
+    case "thinking":
+      return { ...form, autoThinking: value };
+    case "serviceTier":
+      return { ...form, autoServiceTier: value };
+  }
+}
+
+function splitModelChoices(
+  provider: string,
+  modelOptions: ModelOptionRecord[],
+  selectedProfile: AgentProfileRecord | null,
+  prefix: AgentSplitFieldPrefix,
+): string[] {
+  const trimmedProvider = provider.trim();
+  if (!trimmedProvider) {
+    return [];
+  }
+  const values = new Set<string>();
+  for (const option of modelOptions) {
+    if (option.provider === trimmedProvider && option.model.trim() !== "") {
+      values.add(option.model.trim());
+    }
+  }
+  if (selectedProfile) {
+    const savedProvider = prefix === "plan" ? selectedProfile.planProvider : selectedProfile.autoProvider;
+    const savedModel = prefix === "plan" ? selectedProfile.planModel : selectedProfile.autoModel;
+    if (savedProvider === trimmedProvider && savedModel.trim() !== "") {
+      values.add(savedModel.trim());
+    }
+  }
+  return Array.from(values).sort((left, right) => left.localeCompare(right));
+}
+
+function SplitModelSection({
+  title,
+  description,
+  prefix,
+  form,
+  providerOptions,
+  modelOptions,
+  selectedProfile,
+  currentDefaultModelLabel,
+  busy,
+  setForm,
+}: AgentSplitModelSectionProps) {
+  const provider = splitFieldValue(form, prefix, "provider");
+  const model = splitFieldValue(form, prefix, "model");
+  const thinking = splitFieldValue(form, prefix, "thinking");
+  const serviceTier = splitFieldValue(form, prefix, "serviceTier");
+  const modelChoices = splitModelChoices(provider, modelOptions, selectedProfile, prefix);
+  const fastSupported = supportsCodexFastMode(provider, model);
+
+  return (
+    <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+      <div className="mb-4">
+        <div className="text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">{title}</div>
+        <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{description}</p>
+      </div>
+      <div className="space-y-3">
+        <div className="flex items-center gap-3">
+          <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Provider</label>
+          <div className="relative min-w-0 flex-1">
+            <select
+              value={provider}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                const nextProvider = event.target.value;
+                setForm((current) => withSplitFieldValue(current, prefix, "provider", nextProvider));
+              }}
+              disabled={busy}
+              className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+            >
+              <option value="">Default</option>
+              {providerOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Model</label>
+          <div className="relative min-w-0 flex-1">
+            <select
+              value={model}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                setForm((current) => withSplitFieldValue(current, prefix, "model", event.target.value));
+              }}
+              disabled={busy || !provider.trim()}
+              className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+            >
+              <option value="">Default</option>
+              {modelChoices.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Thinking</label>
+          <div className="relative min-w-0 flex-1">
+            <select
+              value={thinking}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                setForm((current) => withSplitFieldValue(current, prefix, "thinking", event.target.value));
+              }}
+              disabled={busy}
+              className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+            >
+              {THINKING_OPTIONS.map((option) => (
+                <option key={option.label} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Fast</label>
+          <div className="relative min-w-0 flex-1">
+            <select
+              value={fastSupported ? serviceTier : ""}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                setForm((current) => withSplitFieldValue(current, prefix, "serviceTier", event.target.value));
+              }}
+              disabled={busy || !fastSupported}
+              className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+            >
+              {FAST_OPTIONS.map((option) => (
+                <option key={option.label} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+          </div>
+        </div>
+      </div>
+      <p className="mt-3 text-xs leading-5 text-[var(--app-text-muted)]">
+        Default means this {title.toLowerCase()} uses your current default chat model ({currentDefaultModelLabel}) and stays switchable in chat. Choose a provider/model here to lock this mode to that preset. Fast is available for supported Codex models.
+      </p>
+    </div>
+  );
+}
+
 function legacyToolScopeTools(
   profile: AgentProfileRecord,
 ): Record<string, AgentToolContractToolRecord> {
@@ -590,9 +814,11 @@ function profileToForm(
     planProvider: profile.planProvider,
     planModel: profile.planModel,
     planThinking: profile.planThinking,
+    planServiceTier: profile.planServiceTier,
     autoProvider: profile.autoProvider,
     autoModel: profile.autoModel,
     autoThinking: profile.autoThinking,
+    autoServiceTier: profile.autoServiceTier,
     prompt: profile.prompt,
     runtimeMode: profile.exitPlanModeEnabled ? "plan_auto" : profile.runtimeMode,
     executionSetting: profile.exitPlanModeEnabled ? "" : profile.executionSetting,
@@ -654,9 +880,11 @@ async function upsertAgent(input: AgentFormState): Promise<string> {
         plan_provider: input.planProvider,
         plan_model: input.planModel,
         plan_thinking: input.planThinking,
+        plan_service_tier: input.planServiceTier,
         auto_provider: input.autoProvider,
         auto_model: input.autoModel,
         auto_thinking: input.autoThinking,
+        auto_service_tier: input.autoServiceTier,
         prompt: input.prompt,
         runtime_mode: resolvedExecutionMode,
         execution_setting:
@@ -2111,139 +2339,141 @@ export function AgentsSettingsPage() {
                 </div>
               </div>
 
-              <div className="flex items-center border-b border-[var(--app-border)] px-4 py-3">
-                <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                  Provider
-                </label>
-                <div className="relative w-full">
-                  <select
-                    value={form.provider}
-                    onChange={(event: ChangeEvent<HTMLSelectElement>) => {
-                      const provider = event.target.value;
-                      setForm((current) => ({
-                        ...current,
-                        provider,
-                        model:
-                          provider === current.provider ? current.model : "",
-                      }));
-                    }}
-                    disabled={busy}
-                    className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
-                  >
-                    <option value="">Default</option>
-                    {providerOptions.map((provider) => (
-                      <option key={provider} value={provider}>
-                        {provider}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown
-                    size={14}
-                    className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
-                  />
-                </div>
-              </div>
-
-              <div className="border-b border-[var(--app-border)] px-4 py-3">
-                <div className="flex items-center">
-                  <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                    Model
-                  </label>
-                <div className="relative w-full">
-                  <select
-                    value={form.model}
-                    onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                      setForm((current) => ({
-                        ...current,
-                        model: event.target.value,
-                      }))
-                    }
-                    disabled={busy || !form.provider.trim()}
-                    className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
-                  >
-                    <option value="">Default</option>
-                    {modelChoices.map((model) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown
-                    size={14}
-                    className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
-                  />
-                </div>
-                </div>
-                <p className="mt-2 pl-[25%] text-xs leading-5 text-[var(--app-text-muted)]">
-                  Default means this agent uses your current default chat model ({currentDefaultModelLabel}) and stays switchable in chat. Choose a provider/model here to lock the agent to that preset.
-                </p>
-              </div>
-
-              <div className="flex items-center px-4 py-3">
-                <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                  Thinking
-                </label>
-                <div className="relative w-full">
-                  <select
-                    value={form.thinking}
-                    onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                      setForm((current) => ({
-                        ...current,
-                        thinking: event.target.value,
-                      }))
-                    }
-                    disabled={busy}
-                    className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
-                  >
-                    {THINKING_OPTIONS.map((option) => (
-                      <option key={option.label} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown
-                    size={14}
-                    className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
-                  />
-                </div>
-              </div>
-
               {form.modelMode === "split" ? (
-                <div className="border-t border-[var(--app-border)] px-4 py-3 text-sm text-[var(--app-text)]">
-                  <div className="mb-3 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Plan/auto split</div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <label className="space-y-1">
-                      <span className="text-xs text-[var(--app-text-muted)]">Plan provider</span>
-                      <input value={form.planProvider} onChange={(event) => setForm((current) => ({ ...current, planProvider: event.target.value }))} disabled={busy} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs text-[var(--app-text-muted)]">Plan model</span>
-                      <input value={form.planModel} onChange={(event) => setForm((current) => ({ ...current, planModel: event.target.value }))} disabled={busy} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs text-[var(--app-text-muted)]">Auto provider</span>
-                      <input value={form.autoProvider} onChange={(event) => setForm((current) => ({ ...current, autoProvider: event.target.value }))} disabled={busy} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs text-[var(--app-text-muted)]">Auto model</span>
-                      <input value={form.autoModel} onChange={(event) => setForm((current) => ({ ...current, autoModel: event.target.value }))} disabled={busy} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs text-[var(--app-text-muted)]">Plan thinking</span>
-                      <select value={form.planThinking} onChange={(event) => setForm((current) => ({ ...current, planThinking: event.target.value }))} disabled={busy} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5">
-                        {THINKING_OPTIONS.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}
-                      </select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs text-[var(--app-text-muted)]">Auto thinking</span>
-                      <select value={form.autoThinking} onChange={(event) => setForm((current) => ({ ...current, autoThinking: event.target.value }))} disabled={busy} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5">
-                        {THINKING_OPTIONS.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}
-                      </select>
-                    </label>
+                <div className="border-b border-[var(--app-border)] px-4 py-4 text-sm text-[var(--app-text)]">
+                  <div className="mb-4">
+                    <div className="text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Plan/auto split</div>
+                    <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
+                      Plan mode runs on the plan model. Exiting plan mode continues on the auto model. Leave either provider/model on Default to inherit the current chat default.
+                    </p>
                   </div>
-                  <p className="mt-2 text-xs text-[var(--app-text-muted)]">Plan mode runs on the plan model. Exiting plan mode continues on the auto model.</p>
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <SplitModelSection
+                      title="Plan"
+                      description="Used while the agent is drafting a plan or waiting for plan approval."
+                      prefix="plan"
+                      form={form}
+                      providerOptions={providerOptions}
+                      modelOptions={modelOptions}
+                      selectedProfile={selectedProfile}
+                      currentDefaultModelLabel={currentDefaultModelLabel}
+                      busy={busy}
+                      setForm={setForm}
+                    />
+                    <SplitModelSection
+                      title="Auto"
+                      description="Used after plan approval and for direct auto execution."
+                      prefix="auto"
+                      form={form}
+                      providerOptions={providerOptions}
+                      modelOptions={modelOptions}
+                      selectedProfile={selectedProfile}
+                      currentDefaultModelLabel={currentDefaultModelLabel}
+                      busy={busy}
+                      setForm={setForm}
+                    />
+                  </div>
                 </div>
-              ) : null}
+              ) : (
+                <>
+                  <div className="flex items-center border-b border-[var(--app-border)] px-4 py-3">
+                    <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                      Provider
+                    </label>
+                    <div className="relative w-full">
+                      <select
+                        value={form.provider}
+                        onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                          const provider = event.target.value;
+                          setForm((current) => ({
+                            ...current,
+                            provider,
+                            model:
+                              provider === current.provider ? current.model : "",
+                          }));
+                        }}
+                        disabled={busy}
+                        className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                      >
+                        <option value="">Default</option>
+                        {providerOptions.map((provider) => (
+                          <option key={provider} value={provider}>
+                            {provider}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown
+                        size={14}
+                        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="border-b border-[var(--app-border)] px-4 py-3">
+                    <div className="flex items-center">
+                      <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                        Model
+                      </label>
+                      <div className="relative w-full">
+                        <select
+                          value={form.model}
+                          onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                            setForm((current) => ({
+                              ...current,
+                              model: event.target.value,
+                            }))
+                          }
+                          disabled={busy || !form.provider.trim()}
+                          className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                        >
+                          <option value="">Default</option>
+                          {modelChoices.map((model) => (
+                            <option key={model} value={model}>
+                              {model}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown
+                          size={14}
+                          className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
+                        />
+                      </div>
+                    </div>
+                    <p className="mt-2 pl-[25%] text-xs leading-5 text-[var(--app-text-muted)]">
+                      Default means this agent uses your current default chat model ({currentDefaultModelLabel}) and stays switchable in chat. Choose a provider/model here to lock the agent to that preset.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center px-4 py-3">
+                    <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                      Thinking
+                    </label>
+                    <div className="relative w-full">
+                      <select
+                        value={form.thinking}
+                        onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                          setForm((current) => ({
+                            ...current,
+                            thinking: event.target.value,
+                          }))
+                        }
+                        disabled={busy}
+                        className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                      >
+                        {THINKING_OPTIONS.map((option) => (
+                          <option key={option.label} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown
+                        size={14}
+                        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
 
               <div className="flex items-start border-t border-[var(--app-border)] px-4 py-3">
                 <label className="w-1/4 shrink-0 pt-2 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">

@@ -49,9 +49,11 @@ type AgentProfile struct {
 	PlanProvider        string             `json:"plan_provider,omitempty"`
 	PlanModel           string             `json:"plan_model,omitempty"`
 	PlanThinking        string             `json:"plan_thinking,omitempty"`
+	PlanServiceTier     string             `json:"plan_service_tier,omitempty"`
 	AutoProvider        string             `json:"auto_provider,omitempty"`
 	AutoModel           string             `json:"auto_model,omitempty"`
 	AutoThinking        string             `json:"auto_thinking,omitempty"`
+	AutoServiceTier     string             `json:"auto_service_tier,omitempty"`
 	Prompt              string             `json:"prompt"`
 	RuntimeMode         string             `json:"runtime_mode,omitempty"`
 	ExecutionSetting    string             `json:"execution_setting,omitempty"`
@@ -113,6 +115,15 @@ func NormalizeAgentModelMode(value string) string {
 		return ""
 	case "split", "plan_auto", "plan-auto", "plan_auto_split", "plan-auto-split":
 		return "split"
+	default:
+		return ""
+	}
+}
+
+func NormalizeModelServiceTier(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "fast", "flex":
+		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return ""
 	}
@@ -352,9 +363,11 @@ func NormalizeAgentProfile(profile AgentProfile) AgentProfile {
 	profile.PlanProvider = strings.ToLower(strings.TrimSpace(profile.PlanProvider))
 	profile.PlanModel = strings.TrimSpace(profile.PlanModel)
 	profile.PlanThinking = strings.ToLower(strings.TrimSpace(profile.PlanThinking))
+	profile.PlanServiceTier = NormalizeModelServiceTier(profile.PlanServiceTier)
 	profile.AutoProvider = strings.ToLower(strings.TrimSpace(profile.AutoProvider))
 	profile.AutoModel = strings.TrimSpace(profile.AutoModel)
 	profile.AutoThinking = strings.ToLower(strings.TrimSpace(profile.AutoThinking))
+	profile.AutoServiceTier = NormalizeModelServiceTier(profile.AutoServiceTier)
 	profile.Prompt = strings.TrimSpace(profile.Prompt)
 	profile.RuntimeMode = NormalizeAgentRuntimeMode(profile.RuntimeMode)
 	profile.ExecutionSetting = NormalizeAgentExecutionSetting(profile.ExecutionSetting)
