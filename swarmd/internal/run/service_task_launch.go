@@ -1170,7 +1170,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	} else {
 		for key, value := range args {
 			switch key {
-			case "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically", "change_request", "user_request", "request", "prompt", "checkpoint_title", "tasks", "acceptance_criteria", "source_message_id", "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
+			case "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically", "change_request", "user_request", "request", "prompt", "checkpoint_title", "tasks", "acceptance_criteria", "source_message_id", "base_revision", "replace_from_checkpoint_id", "amend_future_checkpoints", "override_stale", "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
 				payload.ApprovedArguments[key] = value
 			case "checkpoint":
 				if _, isBool := value.(bool); !isBool {
@@ -1192,6 +1192,9 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	case "request_plan_revision":
 		payload.PathID = "tool.plan-revision-request.v1"
 		payload.UpdateKind = "request_plan_revision"
+	case "amend_plan":
+		payload.PathID = "tool.plan-amendment.v1"
+		payload.UpdateKind = "plan_amendment"
 	case "request_new_plan":
 		payload.PathID = "tool.plan-new-request.v1"
 		payload.UpdateKind = "request_new_plan"

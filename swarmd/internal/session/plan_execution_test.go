@@ -66,6 +66,11 @@ func TestPlanExecutionSummaryAndOutcomeDecisionAreDeterministic(t *testing.T) {
 		t.Fatalf("next checkpoint = %#v summary=%#v ok=%v", checkpoint, summary, ok)
 	}
 
+	// Simulate a user flipping the sidebar policy while this checkpoint run is still
+	// using stale automatic-mode prompt context. The backend document policy must be
+	// authoritative when the terminal checkpoint outcome is applied.
+	doc.ExecutionPolicy.Mode = PlanExecutionPolicyModeReviewEachCheckpoint
+
 	decision, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{
 		CheckpointID:    "cp-1",
 		Outcome:         PlanCheckpointStatusCompleted,
@@ -82,14 +87,38 @@ func TestPlanExecutionSummaryAndOutcomeDecisionAreDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply outcome: %v", err)
 	}
-	if !decision.AutoAdvanceAllowed || decision.NextCheckpointID != "cp-2" || decision.PlanComplete || doc.ActiveCheckpointID != "cp-2" {
+	if !decision.ReviewRequired || decision.AutoAdvanceAllowed || decision.NextCheckpointID != "" || decision.StopReason != PlanCheckpointStatusNeedsReview || doc.ActiveCheckpointID != "cp-1" {
 		t.Fatalf("decision = %#v active=%q", decision, doc.ActiveCheckpointID)
 	}
 	if doc.Checkpoints[0].Status != PlanCheckpointStatusCompleted || doc.Checkpoints[0].AttemptID != "attempt-1" || len(doc.Checkpoints[0].Attempts) != 1 {
 		t.Fatalf("checkpoint runtime metadata = %#v", doc.Checkpoints[0])
 	}
-	if doc.ExecutionState.LastCheckpointID != "cp-1" || doc.ExecutionState.LastOutcome != PlanCheckpointStatusCompleted || doc.ExecutionState.ParentSessionID != "parent-session" {
+	if doc.Checkpoints[0].Review == nil || doc.Checkpoints[0].Review.Status != PlanCheckpointReviewStatusPending {
+		t.Fatalf("review metadata = %#v", doc.Checkpoints[0].Review)
+	}
+	if doc.ExecutionState.LastCheckpointID != "cp-1" || doc.ExecutionState.LastOutcome != PlanCheckpointStatusCompleted || doc.ExecutionState.ParentSessionID != "parent-session" || doc.ExecutionState.Status != PlanExecutionStateWaitingReview {
 		t.Fatalf("execution state = %#v", doc.ExecutionState)
+	}
+}
+
+func TestPlanCheckpointOutcomeAutomaticUsesStoredPolicyForNextCheckpoint(t *testing.T) {
+	doc, err := NormalizePlanDocumentForSave("plan-exec", "Execution Plan", &pebblestore.SessionPlanDocument{
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: PlanCheckpointStatusInProgress}, {ID: "cp-2", Status: PlanCheckpointStatusPending}},
+		ActiveCheckpointID: "cp-1",
+	}, nil)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	decision, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{CheckpointID: "cp-1", Outcome: PlanCheckpointStatusCompleted})
+	if err != nil {
+		t.Fatalf("apply automatic outcome: %v", err)
+	}
+	if !decision.AutoAdvanceAllowed || decision.ReviewRequired || decision.NextCheckpointID != "cp-2" || doc.ActiveCheckpointID != "cp-2" {
+		t.Fatalf("automatic decision = %#v active=%q", decision, doc.ActiveCheckpointID)
+	}
+	if doc.Checkpoints[0].Review != nil {
+		t.Fatalf("automatic completion should not create checkpoint review: %#v", doc.Checkpoints[0].Review)
 	}
 }
 

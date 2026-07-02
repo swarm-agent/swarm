@@ -380,6 +380,7 @@ export interface DesktopSessionPlanDocument {
   executionPolicy: DesktopSessionPlanExecutionPolicy | null;
   executionState: DesktopSessionPlanExecutionState | null;
   checkpoints: DesktopSessionPlanCheckpoint[];
+  originalCheckpoints: DesktopSessionPlanCheckpoint[];
   activeCheckpointId: string;
   renderedText: string;
   displayText: string;
@@ -404,6 +405,8 @@ export interface DesktopSessionPlanRevisionRecord extends DesktopSessionPlanReco
   updateSummary: string;
   updateScope: string;
   updateKind: string;
+  revisionKind: string;
+  restoredFromVersion: number;
   version: number;
   parentRevision: number;
   checkpoint: boolean;

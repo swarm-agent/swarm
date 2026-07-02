@@ -104,7 +104,9 @@ func ApplyPlanAcceptanceExecutionPolicy(doc *pebblestore.SessionPlanDocument, op
 	doc.ExecutionPolicy = policy
 	resetPlanExecutionRuntimeForAcceptance(doc)
 	if policy.Shape == PlanExecutionShapeSingleRun {
-		normalizePlanDocumentSingleRunCheckpointForAcceptance(doc)
+		normalizePlanDocumentSingleRunExecutionCheckpointForAcceptance(doc)
+	} else if policy.Shape == PlanExecutionShapeCheckpointed {
+		restoreOriginalCheckpointsForCheckpointedExecution(doc)
 	}
 	normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
 	for i := range doc.Checkpoints {
@@ -112,6 +114,14 @@ func ApplyPlanAcceptanceExecutionPolicy(doc *pebblestore.SessionPlanDocument, op
 	}
 	doc.ActiveCheckpointID = defaultActiveCheckpointID(doc.Checkpoints)
 	return doc.ExecutionPolicy, nil
+}
+
+func restoreOriginalCheckpointsForCheckpointedExecution(doc *pebblestore.SessionPlanDocument) {
+	if doc == nil || len(doc.OriginalCheckpoints) == 0 {
+		return
+	}
+	doc.Checkpoints = clonePlanDocumentCheckpointSlice(doc.OriginalCheckpoints)
+	doc.OriginalCheckpoints = nil
 }
 
 func normalizePlanAcceptanceGranularity(value string) (string, error) {
@@ -147,9 +157,18 @@ func resetPlanExecutionRuntimeForAcceptance(doc *pebblestore.SessionPlanDocument
 	}
 }
 
-func normalizePlanDocumentSingleRunCheckpointForAcceptance(doc *pebblestore.SessionPlanDocument) {
+func normalizePlanDocumentSingleRunExecutionCheckpointForAcceptance(doc *pebblestore.SessionPlanDocument) {
 	if doc == nil {
 		return
+	}
+	if len(doc.OriginalCheckpoints) == 0 {
+		doc.OriginalCheckpoints = clonePlanDocumentCheckpointSlice(doc.Checkpoints)
+		for i := range doc.OriginalCheckpoints {
+			resetPlanCheckpointRuntimeForFreshStart(&doc.OriginalCheckpoints[i])
+			if doc.OriginalCheckpoints[i].Order == 0 {
+				doc.OriginalCheckpoints[i].Order = i + 1
+			}
+		}
 	}
 	if len(doc.Checkpoints) == 0 {
 		doc.Checkpoints = []pebblestore.SessionPlanCheckpoint{{
@@ -161,11 +180,8 @@ func normalizePlanDocumentSingleRunCheckpointForAcceptance(doc *pebblestore.Sess
 		}}
 		return
 	}
-	if len(doc.Checkpoints) == 1 {
+	if len(doc.Checkpoints) == 1 && strings.TrimSpace(doc.Checkpoints[0].ID) == "plan-run" {
 		checkpoint := doc.Checkpoints[0]
-		if strings.TrimSpace(checkpoint.ID) == "" {
-			checkpoint.ID = "plan-run"
-		}
 		if strings.TrimSpace(checkpoint.Title) == "" {
 			checkpoint.Title = "Run approved plan"
 		}
@@ -179,10 +195,10 @@ func normalizePlanDocumentSingleRunCheckpointForAcceptance(doc *pebblestore.Sess
 		ID:        "plan-run",
 		Title:     "Run approved plan",
 		Status:    PlanCheckpointStatusPending,
-		Objective: "Complete the approved plan end to end. Original checkpoint boundaries are reference material for this single execution run.",
+		Objective: "Complete the approved plan end to end. Original checkpoint boundaries are preserved separately on this structured plan.",
 		Order:     1,
 	}
-	for _, checkpoint := range doc.Checkpoints {
+	for _, checkpoint := range doc.OriginalCheckpoints {
 		label := strings.TrimSpace(checkpoint.Title)
 		if label == "" {
 			label = strings.TrimSpace(checkpoint.ID)

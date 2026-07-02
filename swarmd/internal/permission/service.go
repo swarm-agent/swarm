@@ -453,7 +453,7 @@ func (s *Service) authorizeDynamicToolAction(input AuthorizationInput, sessionID
 		}
 		result, err := s.createPendingAuthorization(input, sessionID, requirement, reason, "dynamic_action_policy", "ask plan follow-up request")
 		return result, true, err
-	case "request_plan_revision", "request_new_plan":
+	case "request_plan_revision", "amend_plan", "request_new_plan":
 		result, err := s.createPendingAuthorization(input, sessionID, requirement, "typed plan lifecycle request requires approval", "dynamic_action_policy", "ask plan lifecycle request")
 		return result, true, err
 	default:
@@ -1457,6 +1457,8 @@ func PlanManageLifecycleRequirement(toolArguments string) string {
 		return "plan_followup_request"
 	case "request_plan_revision":
 		return "plan_revision_request"
+	case "amend_plan":
+		return "plan_revision_request"
 	case "request_new_plan":
 		return "plan_new_request"
 	case "save":
@@ -1509,6 +1511,8 @@ func normalizePlanManageAction(action string, op string, payload map[string]any)
 		return "request_followup_checkpoint"
 	case "request-plan-revision", "request_plan_revision", "plan-revision", "plan_revision":
 		return "request_plan_revision"
+	case "amend-plan", "amend_plan", "plan-amendment", "plan_amendment", "amend-future-checkpoints", "amend_future_checkpoints":
+		return "amend_plan"
 	case "request-new-plan", "request_new_plan", "new-plan-proposal", "new_plan_proposal":
 		return "request_new_plan"
 	case "upsert", "set", "write-active", "write_active":

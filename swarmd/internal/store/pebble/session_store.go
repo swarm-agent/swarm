@@ -114,42 +114,45 @@ type SessionCodexConfig struct {
 }
 
 type SessionPlanSnapshot struct {
-	ID             string               `json:"id"`
-	SessionID      string               `json:"session_id"`
-	UserID         string               `json:"user_id,omitempty"`
-	AccountScopeID string               `json:"account_scope_id,omitempty"`
-	Title          string               `json:"title"`
-	Plan           string               `json:"plan"`
-	Document       *SessionPlanDocument `json:"document,omitempty"`
-	Status         string               `json:"status"`
-	ApprovalState  string               `json:"approval_state"`
-	Active         bool                 `json:"active"`
-	CreatedAt      int64                `json:"created_at"`
-	UpdatedAt      int64                `json:"updated_at"`
-	PriorTitle     string               `json:"prior_title,omitempty"`
-	PriorPlan      string               `json:"prior_plan,omitempty"`
-	DiffLines      []string             `json:"diff_lines,omitempty"`
-	UpdateSummary  string               `json:"update_summary,omitempty"`
-	UpdateScope    string               `json:"update_scope,omitempty"`
-	UpdateKind     string               `json:"update_kind,omitempty"`
-	Version        int                  `json:"version,omitempty"`
-	ParentRevision int                  `json:"parent_revision,omitempty"`
-	Checkpoint     bool                 `json:"checkpoint,omitempty"`
+	ID                  string               `json:"id"`
+	SessionID           string               `json:"session_id"`
+	UserID              string               `json:"user_id,omitempty"`
+	AccountScopeID      string               `json:"account_scope_id,omitempty"`
+	Title               string               `json:"title"`
+	Plan                string               `json:"plan"`
+	Document            *SessionPlanDocument `json:"document,omitempty"`
+	Status              string               `json:"status"`
+	ApprovalState       string               `json:"approval_state"`
+	Active              bool                 `json:"active"`
+	CreatedAt           int64                `json:"created_at"`
+	UpdatedAt           int64                `json:"updated_at"`
+	PriorTitle          string               `json:"prior_title,omitempty"`
+	PriorPlan           string               `json:"prior_plan,omitempty"`
+	DiffLines           []string             `json:"diff_lines,omitempty"`
+	UpdateSummary       string               `json:"update_summary,omitempty"`
+	UpdateScope         string               `json:"update_scope,omitempty"`
+	UpdateKind          string               `json:"update_kind,omitempty"`
+	RevisionKind        string               `json:"revision_kind,omitempty"`
+	RestoredFromVersion int                  `json:"restored_from_version,omitempty"`
+	Version             int                  `json:"version,omitempty"`
+	ParentRevision      int                  `json:"parent_revision,omitempty"`
+	Checkpoint          bool                 `json:"checkpoint,omitempty"`
 }
 
 type SessionPlanDocument struct {
-	ID                 string                     `json:"id"`
-	Title              string                     `json:"title"`
-	Status             string                     `json:"status,omitempty"`
-	SchemaVersion      string                     `json:"schema_version,omitempty"`
-	RevisionID         string                     `json:"revision_id,omitempty"`
-	Info               SessionPlanInfo            `json:"info,omitempty"`
-	ExecutionPolicy    SessionPlanExecutionPolicy `json:"execution_policy,omitempty"`
-	ExecutionState     *SessionPlanExecutionState `json:"execution_state,omitempty"`
-	Checkpoints        []SessionPlanCheckpoint    `json:"checkpoints,omitempty"`
-	ActiveCheckpointID string                     `json:"active_checkpoint_id,omitempty"`
-	RenderedText       string                     `json:"rendered_text,omitempty"`
-	DisplayText        string                     `json:"display_text,omitempty"`
+	ID                  string                     `json:"id"`
+	Title               string                     `json:"title"`
+	Status              string                     `json:"status,omitempty"`
+	SchemaVersion       string                     `json:"schema_version,omitempty"`
+	RevisionID          string                     `json:"revision_id,omitempty"`
+	Info                SessionPlanInfo            `json:"info,omitempty"`
+	ExecutionPolicy     SessionPlanExecutionPolicy `json:"execution_policy,omitempty"`
+	ExecutionState      *SessionPlanExecutionState `json:"execution_state,omitempty"`
+	Checkpoints         []SessionPlanCheckpoint    `json:"checkpoints,omitempty"`
+	OriginalCheckpoints []SessionPlanCheckpoint    `json:"original_checkpoints,omitempty"`
+	ActiveCheckpointID  string                     `json:"active_checkpoint_id,omitempty"`
+	RenderedText        string                     `json:"rendered_text,omitempty"`
+	DisplayText         string                     `json:"display_text,omitempty"`
 }
 
 // SessionPlanExecutionPolicy is plan-level policy. It is intentionally stored
@@ -1365,6 +1368,20 @@ func (s *SessionStore) putPlanWithArchivedRevision(plan SessionPlanSnapshot, arc
 func (s *SessionStore) GetPlan(sessionID, planID string) (SessionPlanSnapshot, bool, error) {
 	var plan SessionPlanSnapshot
 	ok, err := s.store.GetJSON(KeySessionPlan(sessionID, planID), &plan)
+	if err != nil {
+		return SessionPlanSnapshot{}, false, err
+	}
+	if !ok {
+		return SessionPlanSnapshot{}, false, nil
+	}
+	plan.UserID = strings.TrimSpace(plan.UserID)
+	plan.AccountScopeID = strings.TrimSpace(plan.AccountScopeID)
+	return plan, true, nil
+}
+
+func (s *SessionStore) GetPlanRevision(sessionID, planID string, version int) (SessionPlanSnapshot, bool, error) {
+	var plan SessionPlanSnapshot
+	ok, err := s.store.GetJSON(KeySessionPlanRevision(sessionID, planID, version), &plan)
 	if err != nil {
 		return SessionPlanSnapshot{}, false, err
 	}

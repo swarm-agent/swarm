@@ -54,7 +54,7 @@ export async function fetchAndApplyDesktopV3PlanSnapshot(
   let planRevisions: DesktopSessionPlanRevisionRecord[] = []
   if (options.includeHistory !== false && activePlan?.id) {
     const history = await requestJson<PlanHistoryResponseWire>(
-      `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/plans/${encodeURIComponent(activePlan.id)}/history?limit=100`,
+      `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/plans/${encodeURIComponent(activePlan.id)}/history?limit=100&revision_kind=definition`,
       { signal: options.signal },
     )
     planRevisions = normalizeDesktopSessionPlanRevisions(history.revisions)

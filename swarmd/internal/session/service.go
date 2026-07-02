@@ -1786,11 +1786,13 @@ func (s *Service) ListTurnUsage(sessionID string, limit int) ([]pebblestore.Sess
 }
 
 type PlanSaveMetadata struct {
-	UpdateSummary string
-	UpdateScope   string
-	UpdateKind    string
-	Checkpoint    bool
-	Document      *pebblestore.SessionPlanDocument
+	UpdateSummary       string
+	UpdateScope         string
+	UpdateKind          string
+	RevisionKind        string
+	RestoredFromVersion int
+	Checkpoint          bool
+	Document            *pebblestore.SessionPlanDocument
 }
 
 type PlanPatchOptions struct {
@@ -1809,6 +1811,49 @@ func (s *Service) SavePlan(sessionID, planID, title, plan, status, approvalState
 	return s.SavePlanWithMetadata(sessionID, planID, title, plan, status, approvalState, activate, PlanSaveMetadata{})
 }
 
+const (
+	PlanRevisionKindDefinition = "definition"
+	PlanRevisionKindExecution  = "execution"
+)
+
+func classifyPlanRevisionKind(metadata PlanSaveMetadata) string {
+	kind := strings.ToLower(strings.TrimSpace(metadata.RevisionKind))
+	switch kind {
+	case PlanRevisionKindDefinition, "plan", "plan_definition", "whole_plan", "whole-plan":
+		return PlanRevisionKindDefinition
+	case PlanRevisionKindExecution, "checkpoint", "checkpoint_execution", "progress", "runtime", "snapshot":
+		return PlanRevisionKindExecution
+	}
+	if metadata.Checkpoint {
+		return PlanRevisionKindExecution
+	}
+	updateKind := strings.ToLower(strings.TrimSpace(metadata.UpdateKind))
+	if updateKind == "" {
+		return PlanRevisionKindDefinition
+	}
+	if isExecutionPlanUpdateKind(updateKind) {
+		return PlanRevisionKindExecution
+	}
+	return PlanRevisionKindDefinition
+}
+
+func classifyPlanDocumentPatchRevisionKind(patch PlanDocumentPatch) string {
+	operations := patch.Operations
+	if len(operations) == 0 {
+		operations = []PlanDocumentPatchOperation{{Operation: patch.Operation}}
+	}
+	for _, operation := range operations {
+		if isExecutionPlanUpdateKind(strings.ToLower(strings.TrimSpace(operation.Operation))) {
+			return PlanRevisionKindExecution
+		}
+	}
+	return PlanRevisionKindDefinition
+}
+
+func isExecutionPlanUpdateKind(updateKind string) bool {
+	return strings.Contains(updateKind, "checkpoint") || strings.Contains(updateKind, "execution") || strings.HasPrefix(updateKind, "start_") || strings.HasPrefix(updateKind, "continue_") || strings.HasPrefix(updateKind, "mark_") || strings.HasPrefix(updateKind, "accept_checkpoint") || updateKind == "pause_plan_run" || updateKind == "stop_plan_run" || updateKind == "resume_automatic" || updateKind == "resume_checkpointed"
+}
+
 func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, approvalState string, activate bool, metadata PlanSaveMetadata) (pebblestore.SessionPlanSnapshot, *pebblestore.EventEnvelope, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	planID = strings.TrimSpace(planID)
@@ -1819,6 +1864,7 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 	metadata.UpdateSummary = strings.TrimSpace(metadata.UpdateSummary)
 	metadata.UpdateScope = strings.TrimSpace(metadata.UpdateScope)
 	metadata.UpdateKind = strings.TrimSpace(metadata.UpdateKind)
+	metadata.RevisionKind = classifyPlanRevisionKind(metadata)
 
 	if sessionID == "" {
 		return pebblestore.SessionPlanSnapshot{}, nil, errors.New("session id is required")
@@ -1859,22 +1905,24 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 		return pebblestore.SessionPlanSnapshot{}, nil, err
 	}
 	record := pebblestore.SessionPlanSnapshot{
-		ID:             planID,
-		SessionID:      sessionID,
-		UserID:         session.UserID,
-		AccountScopeID: session.AccountScopeID,
-		Title:          title,
-		Plan:           plan,
-		Status:         status,
-		ApprovalState:  approvalState,
-		Active:         false,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		UpdateSummary:  metadata.UpdateSummary,
-		UpdateScope:    metadata.UpdateScope,
-		UpdateKind:     metadata.UpdateKind,
-		Checkpoint:     metadata.Checkpoint,
-		Version:        1,
+		ID:                  planID,
+		SessionID:           sessionID,
+		UserID:              session.UserID,
+		AccountScopeID:      session.AccountScopeID,
+		Title:               title,
+		Plan:                plan,
+		Status:              status,
+		ApprovalState:       approvalState,
+		Active:              false,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		UpdateSummary:       metadata.UpdateSummary,
+		UpdateScope:         metadata.UpdateScope,
+		UpdateKind:          metadata.UpdateKind,
+		RevisionKind:        metadata.RevisionKind,
+		RestoredFromVersion: metadata.RestoredFromVersion,
+		Checkpoint:          metadata.Checkpoint,
+		Version:             1,
 	}
 	if found {
 		if plan == "" && metadata.Document != nil {
@@ -1934,22 +1982,24 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 	}
 
 	payload, err := json.Marshal(map[string]any{
-		"session_id":      sessionID,
-		"plan_id":         planID,
-		"title":           record.Title,
-		"status":          record.Status,
-		"approval_state":  record.ApprovalState,
-		"activate":        activate,
-		"has_active_plan": activate,
-		"active_plan":     record,
-		"updated_at":      now,
-		"updated":         found,
-		"version":         record.Version,
-		"parent_revision": record.ParentRevision,
-		"update_summary":  record.UpdateSummary,
-		"update_scope":    record.UpdateScope,
-		"update_kind":     record.UpdateKind,
-		"checkpoint":      record.Checkpoint,
+		"session_id":            sessionID,
+		"plan_id":               planID,
+		"title":                 record.Title,
+		"status":                record.Status,
+		"approval_state":        record.ApprovalState,
+		"activate":              activate,
+		"has_active_plan":       activate,
+		"active_plan":           record,
+		"updated_at":            now,
+		"updated":               found,
+		"version":               record.Version,
+		"parent_revision":       record.ParentRevision,
+		"update_summary":        record.UpdateSummary,
+		"update_scope":          record.UpdateScope,
+		"update_kind":           record.UpdateKind,
+		"revision_kind":         record.RevisionKind,
+		"restored_from_version": record.RestoredFromVersion,
+		"checkpoint":            record.Checkpoint,
 	})
 	if err != nil {
 		return pebblestore.SessionPlanSnapshot{}, nil, err
@@ -2020,6 +2070,9 @@ func (s *Service) PatchPlan(sessionID string, options PlanPatchOptions) (pebbles
 	}
 	metadata := options.Metadata
 	if options.DocumentPatch != nil {
+		if metadata.RevisionKind == "" {
+			metadata.RevisionKind = classifyPlanDocumentPatchRevisionKind(*options.DocumentPatch)
+		}
 		document, err := ApplyPlanDocumentPatch(planID, title, existing.Document, *options.DocumentPatch)
 		if err != nil {
 			return pebblestore.SessionPlanSnapshot{}, nil, err
@@ -2061,6 +2114,10 @@ func (s *Service) ListPlans(sessionID string, limit int) ([]pebblestore.SessionP
 }
 
 func (s *Service) ListPlanRevisions(sessionID, planID string, limit int) ([]pebblestore.SessionPlanSnapshot, error) {
+	return s.ListPlanRevisionsByKind(sessionID, planID, limit, "")
+}
+
+func (s *Service) ListPlanRevisionsByKind(sessionID, planID string, limit int, revisionKind string) ([]pebblestore.SessionPlanSnapshot, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	planID = strings.TrimSpace(planID)
 	if sessionID == "" {
@@ -2074,7 +2131,41 @@ func (s *Service) ListPlanRevisions(sessionID, planID string, limit int) ([]pebb
 	} else if !ok {
 		return nil, fmt.Errorf("session %q not found", sessionID)
 	}
-	return s.store.ListPlanRevisions(sessionID, planID, limit)
+	revisions, err := s.store.ListPlanRevisions(sessionID, planID, limit)
+	if err != nil || strings.TrimSpace(revisionKind) == "" {
+		return revisions, err
+	}
+	want := strings.ToLower(strings.TrimSpace(revisionKind))
+	out := make([]pebblestore.SessionPlanSnapshot, 0, len(revisions))
+	for _, revision := range revisions {
+		if revision.RevisionKind == "" {
+			revision.RevisionKind = classifyPlanRevisionKind(PlanSaveMetadata{UpdateKind: revision.UpdateKind, Checkpoint: revision.Checkpoint})
+		}
+		if strings.EqualFold(revision.RevisionKind, want) {
+			out = append(out, revision)
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) GetPlanRevision(sessionID, planID string, version int) (pebblestore.SessionPlanSnapshot, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	planID = strings.TrimSpace(planID)
+	if sessionID == "" {
+		return pebblestore.SessionPlanSnapshot{}, false, errors.New("session id is required")
+	}
+	if planID == "" {
+		return pebblestore.SessionPlanSnapshot{}, false, errors.New("plan id is required")
+	}
+	if version <= 0 {
+		return pebblestore.SessionPlanSnapshot{}, false, errors.New("plan revision version is required")
+	}
+	if _, ok, err := s.store.GetSession(sessionID); err != nil {
+		return pebblestore.SessionPlanSnapshot{}, false, err
+	} else if !ok {
+		return pebblestore.SessionPlanSnapshot{}, false, fmt.Errorf("session %q not found", sessionID)
+	}
+	return s.store.GetPlanRevision(sessionID, planID, version)
 }
 
 func (s *Service) GetPlan(sessionID, planID string) (pebblestore.SessionPlanSnapshot, bool, error) {

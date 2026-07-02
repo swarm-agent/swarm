@@ -45,6 +45,12 @@ func NormalizePlanDocumentForSave(planID, title string, incoming, existing *pebb
 			doc.Checkpoints[i].Order = i + 1
 		}
 	}
+	for i := range doc.OriginalCheckpoints {
+		trimPlanCheckpoint(&doc.OriginalCheckpoints[i])
+		if doc.OriginalCheckpoints[i].Order == 0 {
+			doc.OriginalCheckpoints[i].Order = i + 1
+		}
+	}
 	normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
 	normalizePlanExecutionState(doc.ExecutionState)
 	if doc.ActiveCheckpointID == "" && doc.ExecutionPolicy.Shape == PlanExecutionShapeCheckpointed {
@@ -751,26 +757,35 @@ func clonePlanDocument(doc *pebblestore.SessionPlanDocument) *pebblestore.Sessio
 		state := *doc.ExecutionState
 		clone.ExecutionState = &state
 	}
-	clone.Checkpoints = make([]pebblestore.SessionPlanCheckpoint, len(doc.Checkpoints))
-	for i := range doc.Checkpoints {
-		clone.Checkpoints[i] = doc.Checkpoints[i]
-		clone.Checkpoints[i].Tasks = cloneStringSlice(doc.Checkpoints[i].Tasks)
-		clone.Checkpoints[i].AcceptanceCriteria = cloneStringSlice(doc.Checkpoints[i].AcceptanceCriteria)
-		clone.Checkpoints[i].SourceMessageID = strings.TrimSpace(doc.Checkpoints[i].SourceMessageID)
-		clone.Checkpoints[i].ChangedFiles = cloneStringSlice(doc.Checkpoints[i].ChangedFiles)
-		clone.Checkpoints[i].Validation = cloneStringSlice(doc.Checkpoints[i].Validation)
-		if doc.Checkpoints[i].Review != nil {
-			review := *doc.Checkpoints[i].Review
-			clone.Checkpoints[i].Review = &review
+	clone.Checkpoints = clonePlanDocumentCheckpointSlice(doc.Checkpoints)
+	clone.OriginalCheckpoints = clonePlanDocumentCheckpointSlice(doc.OriginalCheckpoints)
+	return &clone
+}
+
+func clonePlanDocumentCheckpointSlice(checkpoints []pebblestore.SessionPlanCheckpoint) []pebblestore.SessionPlanCheckpoint {
+	if checkpoints == nil {
+		return nil
+	}
+	clone := make([]pebblestore.SessionPlanCheckpoint, len(checkpoints))
+	for i := range checkpoints {
+		clone[i] = checkpoints[i]
+		clone[i].Tasks = cloneStringSlice(checkpoints[i].Tasks)
+		clone[i].AcceptanceCriteria = cloneStringSlice(checkpoints[i].AcceptanceCriteria)
+		clone[i].SourceMessageID = strings.TrimSpace(checkpoints[i].SourceMessageID)
+		clone[i].ChangedFiles = cloneStringSlice(checkpoints[i].ChangedFiles)
+		clone[i].Validation = cloneStringSlice(checkpoints[i].Validation)
+		if checkpoints[i].Review != nil {
+			review := *checkpoints[i].Review
+			clone[i].Review = &review
 		}
-		clone.Checkpoints[i].Attempts = make([]pebblestore.SessionPlanCheckpointAttempt, len(doc.Checkpoints[i].Attempts))
-		for j := range doc.Checkpoints[i].Attempts {
-			clone.Checkpoints[i].Attempts[j] = doc.Checkpoints[i].Attempts[j]
-			clone.Checkpoints[i].Attempts[j].ChangedFiles = cloneStringSlice(doc.Checkpoints[i].Attempts[j].ChangedFiles)
-			clone.Checkpoints[i].Attempts[j].Validation = cloneStringSlice(doc.Checkpoints[i].Attempts[j].Validation)
+		clone[i].Attempts = make([]pebblestore.SessionPlanCheckpointAttempt, len(checkpoints[i].Attempts))
+		for j := range checkpoints[i].Attempts {
+			clone[i].Attempts[j] = checkpoints[i].Attempts[j]
+			clone[i].Attempts[j].ChangedFiles = cloneStringSlice(checkpoints[i].Attempts[j].ChangedFiles)
+			clone[i].Attempts[j].Validation = cloneStringSlice(checkpoints[i].Attempts[j].Validation)
 		}
 	}
-	return &clone
+	return clone
 }
 
 func cloneStringSlice(in []string) []string {

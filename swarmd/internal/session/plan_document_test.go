@@ -205,6 +205,68 @@ func TestSetActivePlanDoesNotCreateRevisionOrMutateDocument(t *testing.T) {
 	}
 }
 
+func TestPlanRevisionHistoryCanFilterDefinitionAndExecutionSnapshots(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	first, _, err := svc.SavePlanWithMetadata(sessionID, "plan-one", "One Plan", "# Plan", "approved", "approved", true, PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Info:            pebblestore.SessionPlanInfo{Goal: "initial goal"},
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Model", Status: PlanCheckpointStatusInProgress},
+			{ID: "cp-2", Title: "API", Status: PlanCheckpointStatusCompleted},
+		},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save initial plan: %v", err)
+	}
+	if first.RevisionKind != PlanRevisionKindDefinition {
+		t.Fatalf("initial revision kind = %q", first.RevisionKind)
+	}
+
+	definition, _, err := svc.PatchPlan(sessionID, PlanPatchOptions{
+		PlanID:        first.ID,
+		DocumentPatch: &PlanDocumentPatch{Operation: "update_info", Info: &pebblestore.SessionPlanInfo{Goal: "definition update"}},
+		Metadata:      PlanSaveMetadata{UpdateSummary: "update goal", UpdateScope: "plan info", UpdateKind: "document_patch"},
+	})
+	if err != nil {
+		t.Fatalf("save definition revision: %v", err)
+	}
+	execution, _, err := svc.PatchPlan(sessionID, PlanPatchOptions{
+		PlanID:        first.ID,
+		DocumentPatch: &PlanDocumentPatch{Operation: "checkpoint_outcome", CheckpointID: "cp-1", Status: PlanCheckpointStatusCompleted, Report: "model done"},
+		Metadata:      PlanSaveMetadata{UpdateSummary: "complete cp-1", UpdateScope: "cp-1"},
+	})
+	if err != nil {
+		t.Fatalf("save execution revision: %v", err)
+	}
+	if definition.RevisionKind != PlanRevisionKindDefinition || execution.RevisionKind != PlanRevisionKindExecution {
+		t.Fatalf("revision kinds definition=%q execution=%q", definition.RevisionKind, execution.RevisionKind)
+	}
+
+	definitionRevisions, err := svc.ListPlanRevisionsByKind(sessionID, first.ID, 10, PlanRevisionKindDefinition)
+	if err != nil {
+		t.Fatalf("list definition revisions: %v", err)
+	}
+	if len(definitionRevisions) != 2 {
+		t.Fatalf("definition revision count = %d, want 2: %#v", len(definitionRevisions), definitionRevisions)
+	}
+	for _, revision := range definitionRevisions {
+		if revision.RevisionKind != PlanRevisionKindDefinition {
+			t.Fatalf("definition history included non-definition revision: %#v", revision)
+		}
+	}
+	executionRevisions, err := svc.ListPlanRevisionsByKind(sessionID, first.ID, 10, PlanRevisionKindExecution)
+	if err != nil {
+		t.Fatalf("list execution revisions: %v", err)
+	}
+	if len(executionRevisions) != 1 || executionRevisions[0].Version != execution.Version {
+		t.Fatalf("execution revisions = %#v, want checkpoint execution snapshot", executionRevisions)
+	}
+}
+
 func TestApplyPlanDocumentPatchBatchCreatesOneRevision(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()

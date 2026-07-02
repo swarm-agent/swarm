@@ -16,6 +16,8 @@ export interface DesktopSessionPlanWire {
   update_summary?: string
   update_scope?: string
   update_kind?: string
+  revision_kind?: string
+  restored_from_version?: number
   parent_revision?: number
   checkpoint?: boolean
 }
@@ -49,6 +51,8 @@ export function normalizeDesktopSessionPlanRevisions(revisions: unknown): Deskto
       updateSummary: String(revisionRecord.update_summary ?? '').trim(),
       updateScope: String(revisionRecord.update_scope ?? '').trim(),
       updateKind: String(revisionRecord.update_kind ?? '').trim(),
+      revisionKind: String(revisionRecord.revision_kind ?? '').trim(),
+      restoredFromVersion: numberValue(revisionRecord.restored_from_version),
       version,
       parentRevision: numberValue(revisionRecord.parent_revision),
       checkpoint: Boolean(revisionRecord.checkpoint),
@@ -62,36 +66,7 @@ function normalizeDesktopSessionPlanDocument(value: unknown): DesktopSessionPlan
     return null
   }
   const infoRecord = objectValue(record.info) ?? {}
-  const checkpoints = (Array.isArray(record.checkpoints) ? record.checkpoints : [])
-    .map((entry, index): DesktopSessionPlanCheckpoint | null => {
-      const checkpoint = objectValue(entry)
-      if (!checkpoint) {
-        return null
-      }
-      return {
-        id: stringValue(checkpoint, 'id'),
-        title: stringValue(checkpoint, 'title'),
-        status: stringValue(checkpoint, 'status'),
-        objective: stringValue(checkpoint, 'objective'),
-        tasks: stringArrayValue(checkpoint, 'tasks'),
-        acceptanceCriteria: stringArrayValue(checkpoint, 'acceptanceCriteria', 'acceptance_criteria'),
-        notes: stringValue(checkpoint, 'notes'),
-        report: stringValue(checkpoint, 'report'),
-        result: stringValue(checkpoint, 'result'),
-        changedFiles: stringArrayValue(checkpoint, 'changedFiles', 'changed_files'),
-        validation: stringArrayValue(checkpoint, 'validation'),
-        attemptId: stringValue(checkpoint, 'attemptId', 'attempt_id'),
-        runId: stringValue(checkpoint, 'runId', 'run_id'),
-        sessionId: stringValue(checkpoint, 'sessionId', 'session_id'),
-        startedAt: numberValue(checkpoint.startedAt ?? checkpoint.started_at),
-        completedAt: numberValue(checkpoint.completedAt ?? checkpoint.completed_at),
-        review: normalizeDesktopSessionPlanCheckpointReview(checkpoint.review),
-        attempts: normalizeDesktopSessionPlanCheckpointAttempts(checkpoint.attempts),
-        order: numberValue(checkpoint.order) || index + 1,
-      }
-    })
-    .filter((entry): entry is DesktopSessionPlanCheckpoint => entry !== null)
-    .sort((left, right) => left.order - right.order)
+  const checkpoints = normalizeDesktopSessionPlanCheckpoints(record.checkpoints)
 
   const info: DesktopSessionPlanInfo = {
     goal: stringValue(infoRecord, 'goal'),
@@ -116,6 +91,7 @@ function normalizeDesktopSessionPlanDocument(value: unknown): DesktopSessionPlan
     executionPolicy: normalizeDesktopSessionPlanExecutionPolicy(record.executionPolicy ?? record.execution_policy),
     executionState: normalizeDesktopSessionPlanExecutionState(record.executionState ?? record.execution_state),
     checkpoints,
+    originalCheckpoints: normalizeDesktopSessionPlanCheckpoints(record.originalCheckpoints ?? record.original_checkpoints),
     activeCheckpointId: stringValue(record, 'activeCheckpointId', 'active_checkpoint_id'),
     renderedText: rawStringValue(record, 'renderedText', 'rendered_text'),
     displayText: rawStringValue(record, 'displayText', 'display_text'),
@@ -181,6 +157,39 @@ function normalizeDesktopSessionPlanExecutionState(value: unknown): DesktopSessi
     completedAt: numberValue(record.completedAt ?? record.completed_at),
   }
   return state.status || state.activeAttemptId || state.currentRunId || state.lastCheckpointId ? state : null
+}
+
+function normalizeDesktopSessionPlanCheckpoints(value: unknown): DesktopSessionPlanCheckpoint[] {
+  return (Array.isArray(value) ? value : [])
+    .map((entry, index): DesktopSessionPlanCheckpoint | null => {
+      const checkpoint = objectValue(entry)
+      if (!checkpoint) {
+        return null
+      }
+      return {
+        id: stringValue(checkpoint, 'id'),
+        title: stringValue(checkpoint, 'title'),
+        status: stringValue(checkpoint, 'status'),
+        objective: stringValue(checkpoint, 'objective'),
+        tasks: stringArrayValue(checkpoint, 'tasks'),
+        acceptanceCriteria: stringArrayValue(checkpoint, 'acceptanceCriteria', 'acceptance_criteria'),
+        notes: stringValue(checkpoint, 'notes'),
+        report: stringValue(checkpoint, 'report'),
+        result: stringValue(checkpoint, 'result'),
+        changedFiles: stringArrayValue(checkpoint, 'changedFiles', 'changed_files'),
+        validation: stringArrayValue(checkpoint, 'validation'),
+        attemptId: stringValue(checkpoint, 'attemptId', 'attempt_id'),
+        runId: stringValue(checkpoint, 'runId', 'run_id'),
+        sessionId: stringValue(checkpoint, 'sessionId', 'session_id'),
+        startedAt: numberValue(checkpoint.startedAt ?? checkpoint.started_at),
+        completedAt: numberValue(checkpoint.completedAt ?? checkpoint.completed_at),
+        review: normalizeDesktopSessionPlanCheckpointReview(checkpoint.review),
+        attempts: normalizeDesktopSessionPlanCheckpointAttempts(checkpoint.attempts),
+        order: numberValue(checkpoint.order) || index + 1,
+      }
+    })
+    .filter((entry): entry is DesktopSessionPlanCheckpoint => entry !== null)
+    .sort((left, right) => left.order - right.order)
 }
 
 function normalizeDesktopSessionPlanCheckpointReview(value: unknown): DesktopSessionPlanCheckpoint['review'] {

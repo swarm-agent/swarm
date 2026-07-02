@@ -15,7 +15,7 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-const autoModePlanManageSaveSnippet = `{"action":"save","document":{"info":{"goal":"..."},"checkpoints":[{"id":"cp-1","title":"...","status":"pending"}]},"update_summary":"what changed","update_scope":"phase or section"}`
+const autoModePlanManageAmendSnippet = `{"action":"amend_plan","base_revision":3,"update_summary":"what changed","replace_from_checkpoint_id":"cp-3","document":{"info":{"goal":"..."},"checkpoints":[{"id":"cp-1","title":"done","status":"completed"},{"id":"cp-3","title":"revised future work","status":"pending"}]}}`
 
 func masterHarnessPrompt(workspacePath string) string {
 	return masterHarnessPromptWithScope(tool.WorkspaceScope{
@@ -105,7 +105,7 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- When you provide long commands, config snippets, file contents, or any text the user is likely to copy, wrap that exact payload in <copy>...</copy> tags. Use an optional label attribute like <copy label=\"restart command\">...</copy> when it helps the UI preview.",
 		"- Keep copy-tag payloads exact and free of explanatory prose; put context before or after the tagged block. Multiple <copy> blocks are allowed in one response.",
 		"- In plan mode, once the plan is actionable, submit it with exit_plan_mode for approval so the session can leave plan mode and continue execution; include the final structured document (info and checkpoints) directly in that exit_plan_mode call instead of doing a separate last-minute plan_manage save first.",
-		fmt.Sprintf("- In auto mode, never call exit_plan_mode. To update the active plan instead, use plan_manage with exactly: %s", autoModePlanManageSaveSnippet),
+		fmt.Sprintf("- In auto mode, never call exit_plan_mode. To amend an active approved/running plan, use plan_manage amend_plan with base_revision and future-checkpoint scope, for example: %s", autoModePlanManageAmendSnippet),
 		"Harness tool usage examples:",
 		"- search (content/symbol lookup): {\"query\":\"modeCapabilityInstructions\",\"path\":\"swarmd/internal/run\",\"include\":\"*.go\",\"content_mode\":\"literal\"}",
 		"- search (multi-query content lookup): {\"queries\":[\"modeCapabilityInstructions\",\"exit_plan_mode\"],\"path\":\"swarmd/internal/run\",\"include\":\"*.go\"}",
@@ -122,7 +122,7 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- Do not use manage_todos for agent execution checklists or checkpoint progress; use terminal plan_manage checkpoint actions instead. Use update_checkpoint only for meaningful intermediate state, not routine checkpoint completion notes.",
 		"- plan_manage terminal checkpoint example: {\"action\":\"complete_checkpoint\",\"checkpoint_id\":\"cp-1\",\"report\":\"Implemented requested change\",\"changed_files\":[\"path/to/file\"],\"validation\":[\"not run; not requested\"],\"result\":\"done\"}",
 		"- plan_manage follow-up checkpoint example: {\"action\":\"request_followup_checkpoint\",\"change_request\":\"exact user feedback text\"}; use request_plan_revision for broader approved-plan rewrites and request_new_plan for a separate new plan proposal.",
-		fmt.Sprintf("- plan_manage (update active plan without switching modes): %s", autoModePlanManageSaveSnippet),
+		fmt.Sprintf("- plan_manage active-plan amendment example: %s", autoModePlanManageAmendSnippet),
 		"- plan_manage modular document patches: update_info and update_checkpoint merge only provided fields and preserve omitted fields; use replace_info/set_info or replace_checkpoint/set_checkpoint only when intentionally replacing a whole object.",
 		"- exit_plan_mode (submit final structured plan document for approval and exit plan mode; include plan_id when reusing an active plan): {\"title\":\"Plan: tighten harness prompt\",\"plan_id\":\"plan_123\",\"document\":{\"info\":{\"goal\":\"Tighten harness prompt\",\"relevant_files\":[\"swarmd/internal/run/service.go\"]},\"checkpoints\":[{\"id\":\"cp-1\",\"title\":\"Update prompt\",\"status\":\"pending\",\"tasks\":[\"Update master prompt\"]}]}}",
 		strings.Join(workspaceScopeLines, "\n"),
@@ -522,7 +522,7 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 	}
 	if exitPlanModeEnabled {
 		lines = append(lines,
-			fmt.Sprintf("- exit_plan_mode is available for this agent, but still requires explicit approval and only succeeds from session plan mode. Never call it from auto; to revise the active plan in auto, use plan_manage with exactly: %s", autoModePlanManageSaveSnippet),
+			fmt.Sprintf("- exit_plan_mode is available for this agent, but still requires explicit approval and only succeeds from session plan mode. Never call it from auto; to revise an active approved/running plan in auto, use plan_manage amend_plan with base_revision and future-checkpoint scope, for example: %s", autoModePlanManageAmendSnippet),
 			"- plan_manage is available in both plan and auto to inspect or update saved plans; it does not change session mode.",
 		)
 	} else {
@@ -549,7 +549,7 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 		)
 		if currentMode == sessionruntime.ModeAuto && exitPlanModeEnabled {
 			lines = append(lines,
-				fmt.Sprintf("If an active plan exists, use plan_manage get-active/save to inspect or revise it without switching modes. Do not call exit_plan_mode from auto; it only applies when leaving plan mode. To update the active plan instead, use plan_manage with exactly: %s", autoModePlanManageSaveSnippet),
+				fmt.Sprintf("If an active plan exists, use plan_manage get-active to inspect it and amend_plan/request_followup_checkpoint/request_plan_revision/request_new_plan to revise it without switching modes. Do not call exit_plan_mode from auto; it only applies when leaving plan mode. For active whole-plan amendments, use plan_manage amend_plan with base_revision and future-checkpoint scope, for example: %s", autoModePlanManageAmendSnippet),
 			)
 		}
 		if !exitPlanModeEnabled && hasExecutionSetting {

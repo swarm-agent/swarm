@@ -11,6 +11,7 @@ import {
   resumeDesktopPlanAutomatic,
   resumeDesktopPlanCheckpointed,
   rewindDesktopPlanCheckpoint,
+  jumpDesktopPlanToRevisionCheckpoint,
   startDesktopPlanAutomatic,
   startDesktopPlanCheckpoint,
   startDesktopPlanCheckpointed,
@@ -237,6 +238,45 @@ test('current-run lifecycle controls call dedicated endpoints without run stream
       body: { plan_id: 'plan-1' },
     },
   ])
+})
+
+test('sidebar policy switch endpoints persist policy without requiring a checkpoint start payload', async () => {
+  const calls: Array<{ url: string; body: unknown }> = []
+  globalThis.fetch = jsonFetch(calls, { ok: true, plan_id: 'plan-1', transition: 'resume_checkpointed' })
+
+  try {
+    await resumeDesktopPlanAutomatic('session-1')
+    await resumeDesktopPlanCheckpointed('session-1')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.deepEqual(calls, [
+    {
+      url: '/v3/sessions/session-1/plan-mode/runs/current/resume-automatic',
+      body: {},
+    },
+    {
+      url: '/v3/sessions/session-1/plan-mode/runs/current/resume-checkpointed',
+      body: {},
+    },
+  ])
+})
+
+test('jumpDesktopPlanToRevisionCheckpoint calls the explicit jump lifecycle endpoint with skip_prior', async () => {
+  const calls: Array<{ url: string; body: unknown }> = []
+  globalThis.fetch = jsonFetch(calls, { ok: true, plan_id: 'plan-1', transition: 'jump_to_checkpoint' })
+
+  try {
+    await jumpDesktopPlanToRevisionCheckpoint('session-1', { planId: 'plan-1', version: 3, checkpointId: 'cp-9' })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.deepEqual(calls, [{
+    url: '/v3/sessions/session-1/plan-mode/lifecycle/jump-to-checkpoint',
+    body: { plan_id: 'plan-1', version: 3, checkpoint_id: 'cp-9', restart: true, start: true, skip_prior: true },
+  }])
 })
 
 test('checkpoint start reset controls call dedicated endpoints without run stream chaining', async () => {

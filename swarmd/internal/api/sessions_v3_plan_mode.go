@@ -89,11 +89,39 @@ type sessionsV3PlanLifecycleProposalRequest struct {
 	Reason   string                           `json:"reason,omitempty"`
 }
 
+type sessionsV3PlanLifecycleAmendRequest struct {
+	PlanID                  string                           `json:"plan_id,omitempty"`
+	Title                   string                           `json:"title,omitempty"`
+	Plan                    string                           `json:"plan,omitempty"`
+	Document                *pebblestore.SessionPlanDocument `json:"document,omitempty"`
+	BaseRevision            int                              `json:"base_revision,omitempty"`
+	UpdateSummary           string                           `json:"update_summary,omitempty"`
+	Summary                 string                           `json:"summary,omitempty"`
+	ReplaceFromCheckpointID string                           `json:"replace_from_checkpoint_id,omitempty"`
+	CheckpointID            string                           `json:"checkpoint_id,omitempty"`
+	AmendFutureCheckpoints  bool                             `json:"amend_future_checkpoints,omitempty"`
+	OverrideStale           bool                             `json:"override_stale,omitempty"`
+}
+
 type sessionsV3PlanLifecycleFollowupPolicyRequest struct {
 	PlanID                   string `json:"plan_id,omitempty"`
 	FollowupCheckpointPolicy string `json:"followup_checkpoint_policy,omitempty"`
 	Policy                   string `json:"policy,omitempty"`
 	Reason                   string `json:"reason,omitempty"`
+}
+
+type sessionsV3PlanLifecycleRestoreRevisionRequest struct {
+	PlanID                   string `json:"plan_id,omitempty"`
+	Version                  int    `json:"version,omitempty"`
+	RevisionVersion          int    `json:"revision_version,omitempty"`
+	CheckpointID             string `json:"checkpoint_id,omitempty"`
+	ExecutionGranularity     string `json:"execution_granularity,omitempty"`
+	ContinuationPolicy       string `json:"continuation_policy,omitempty"`
+	ContinueAutomatically    *bool  `json:"continue_automatically,omitempty"`
+	Restart                  bool   `json:"restart,omitempty"`
+	Start                    bool   `json:"start,omitempty"`
+	SkipPrior                bool   `json:"skip_prior,omitempty"`
+	SuppressLifecycleMessage bool   `json:"suppress_lifecycle_message,omitempty"`
 }
 
 type sessionsV3PlanModeRunStart struct {
@@ -133,12 +161,20 @@ func (s *Server) handleSessionV3PrimaryPlanMode(w http.ResponseWriter, r *http.R
 		s.handleSessionV3PrimaryPlanModeRequestPlanRevision(w, r, principal, sessionID)
 		return
 	}
+	if tail == "lifecycle/amend-plan" {
+		s.handleSessionV3PrimaryPlanModeAmendPlan(w, r, principal, sessionID)
+		return
+	}
 	if tail == "lifecycle/request-new-plan" {
 		s.handleSessionV3PrimaryPlanModeRequestNewPlan(w, r, principal, sessionID)
 		return
 	}
 	if tail == "lifecycle/followup-policy" {
 		s.handleSessionV3PrimaryPlanModeSetFollowupPolicy(w, r, principal, sessionID)
+		return
+	}
+	if tail == "lifecycle/restore-revision" || tail == "lifecycle/restart-from-revision" || tail == "lifecycle/jump-to-checkpoint" {
+		s.handleSessionV3PrimaryPlanModeRestoreRevision(w, r, principal, sessionID, tail == "lifecycle/restart-from-revision", tail == "lifecycle/jump-to-checkpoint")
 		return
 	}
 	if strings.HasPrefix(tail, "plans/") {
@@ -345,6 +381,73 @@ func (s *Server) handleSessionV3PrimaryPlanModeRequestPlanRevision(w http.Respon
 
 func (s *Server) handleSessionV3PrimaryPlanModeRequestNewPlan(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
 	s.handleSessionV3PrimaryPlanModeProposal(w, r, principal, sessionID, "request_new_plan", s.planLifecycle.RequestNewPlan)
+}
+
+func (s *Server) handleSessionV3PrimaryPlanModeAmendPlan(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if !s.prepareSessionsV3PlanModeLifecycle(w, r, principal, sessionID) {
+		return
+	}
+	var req sessionsV3PlanLifecycleAmendRequest
+	if err := decodeSessionsV3PlanModeRequest(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.planLifecycle.AmendPlan(sessionruntime.PlanLifecycleAmendmentInput{SessionID: sessionID, PlanID: req.PlanID, Title: req.Title, Plan: req.Plan, Document: req.Document, BaseRevision: req.BaseRevision, UpdateSummary: firstNonEmptyString(req.UpdateSummary, req.Summary), ReplaceFromCheckpointID: firstNonEmptyString(req.ReplaceFromCheckpointID, req.CheckpointID), AmendFutureCheckpoints: req.AmendFutureCheckpoints, OverrideStale: req.OverrideStale})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.finishSessionsV3PlanModeLifecycle(w, principal, sessionID, "amend_plan", result, nil)
+}
+
+func (s *Server) handleSessionV3PrimaryPlanModeRestoreRevision(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string, restartPath bool, jumpPath bool) {
+	if !s.prepareSessionsV3PlanModeLifecycle(w, r, principal, sessionID) {
+		return
+	}
+	var req sessionsV3PlanLifecycleRestoreRevisionRequest
+	if err := decodeSessionsV3PlanModeRequest(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	version := req.Version
+	if version <= 0 {
+		version = req.RevisionVersion
+	}
+	start := req.Start || restartPath || jumpPath
+	skipPrior := req.SkipPrior || jumpPath
+	input := sessionruntime.PlanLifecycleRevisionRestoreInput{SessionID: sessionID, PlanID: req.PlanID, Version: version, CheckpointID: req.CheckpointID, ExecutionGranularity: req.ExecutionGranularity, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically, Restart: req.Restart || restartPath || jumpPath, Start: start, SkipPrior: skipPrior}
+	if start {
+		if status, err := s.preflightSessionsV3PlanModeFreshRun(sessionID); err != nil {
+			writeError(w, status, err)
+			return
+		}
+		runInput := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, req.CheckpointID)
+		input.RunID = runInput.RunID
+		input.RunSessionID = runInput.RunSessionID
+		input.ParentSessionID = runInput.ParentSessionID
+		input.StartedAt = runInput.StartedAt
+	}
+	transition := "restore_revision"
+	if jumpPath || skipPrior {
+		transition = "jump_to_checkpoint"
+	} else if restartPath || start {
+		transition = "restart_from_revision"
+	}
+	result, err := s.planLifecycle.RestorePlanRevision(input)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var runStart *sessionsV3PlanModeRunStart
+	if start {
+		var status int
+		runStart, status, err = s.startSessionsV3PlanModeRun(principal, sessionID, transition, result, req.SuppressLifecycleMessage)
+		if err != nil {
+			writeError(w, status, err)
+			return
+		}
+	}
+	s.finishSessionsV3PlanModeLifecycle(w, principal, sessionID, transition, result, runStart)
 }
 
 func (s *Server) handleSessionV3PrimaryPlanModeSetFollowupPolicy(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
@@ -649,7 +752,7 @@ func (s *Server) finishSessionsV3PlanModeLifecycle(w http.ResponseWriter, princi
 	if transition == "request_followup_checkpoint" && result.Plan.Document != nil {
 		policyEffective = s.resolveSessionsV3FollowupCheckpointPolicy(result)
 	}
-	approvalRequired := transition == "request_plan_revision" || transition == "request_new_plan" || (transition == "request_followup_checkpoint" && policyEffective == sessionruntime.PlanFollowupCheckpointPolicyRequireApproval)
+	approvalRequired := transition == "request_plan_revision" || transition == "amend_plan" || transition == "request_new_plan" || (transition == "request_followup_checkpoint" && policyEffective == sessionruntime.PlanFollowupCheckpointPolicyRequireApproval)
 	runQueued := false
 	if runStart != nil {
 		runQueued = runStart.Queued

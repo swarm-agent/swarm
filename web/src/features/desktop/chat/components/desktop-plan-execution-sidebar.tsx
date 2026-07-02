@@ -6,6 +6,7 @@ import type { DesktopPlanExecutionView } from '../../state/desktop-v3-cache-sele
 type DesktopPlanExecutionSidebarAction =
   | 'accept_checkpoint'
   | 'resume_automatic'
+  | 'resume_checkpointed'
   | 'archive_plan'
 
 export interface DesktopPlanExecutionSidebarActionInput {
@@ -180,6 +181,8 @@ function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecuti
   const checkpointId = view.activeCheckpointId || view.activeCheckpoint?.id || ''
   const automatic = view.policyMode === 'automatic'
   const acceptBusy = busyAction === actionBusyKey('accept_checkpoint', checkpointId)
+  const automaticBusy = busyAction === actionBusyKey('resume_automatic')
+  const checkpointedBusy = busyAction === actionBusyKey('resume_checkpointed')
   const archiveBusy = busyAction === actionBusyKey('archive_plan')
   const checkpoints = view.plan.document?.checkpoints ?? []
   const activeIndex = view.activeCheckpoint
@@ -207,10 +210,31 @@ function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecuti
           <div className="text-sm font-semibold text-[var(--app-text)]">{singleRun ? 'Continue normally' : 'Automatic mode on'}</div>
           <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
             {singleRun
-              ? 'Execution will continue as one plan run until it completes or stops for review, a blocker, or a failure.'
-              : 'Execution will continue automatically through checkpoint, pause the chat at any time to change agent settings and continue'}
+              ? 'Execution will continue as one plan run until it completes or stops for review, a blocker, or a failure. To restart or recover a run-through plan, open /plan and restore a plan revision.'
+              : 'Backend policy is automatic. The next completed checkpoint starts the following checkpoint unless it stops for review, a blocker, or a failure.'}
           </p>
         </div>
+        {!singleRun ? (
+          <div className="mt-3 grid gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className={cn('rounded-lg', checkpointedBusy ? 'animate-pulse' : '')}
+              onClick={() => void onAction?.({ action: 'resume_checkpointed' })}
+              disabled={!onAction || checkpointedBusy}
+            >
+              Switch to checkpoint-by-checkpoint
+            </Button>
+            <p className="px-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
+              Saves the backend policy immediately, even during a run, so the next checkpoint completion pauses for review.
+            </p>
+          </div>
+        ) : (
+          <p className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
+            Run-through recovery is managed from /plan revision restore, not sidebar checkpoint controls.
+          </p>
+        )}
         <div className="mt-3 grid gap-1.5">
           <Button
             type="button"
@@ -236,9 +260,27 @@ function ActionsCard({ view, busyAction, canStop, onAction }: DesktopPlanExecuti
       <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
         <div className="text-sm font-medium text-[var(--app-text)]">Review Mode</div>
         <p className="mt-0.5 text-xs leading-5 text-[var(--app-text-muted)]">
-          You can keep chatting and ask the AI to continue work or add checkpoints. Accept and archive the completed plan when you’re done.
+          Backend policy is checkpoint-by-checkpoint. The next completed checkpoint pauses for review unless you switch back to automatic.
         </p>
       </div>
+
+      {!isSingleRunView(view) && !view.blocked && !view.failed && !view.completed ? (
+        <div className="mt-3 grid gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className={cn('rounded-lg', automaticBusy ? 'animate-pulse' : '')}
+            onClick={() => void onAction?.({ action: 'resume_automatic' })}
+            disabled={!onAction || automaticBusy}
+          >
+            Switch to automatic
+          </Button>
+          <p className="px-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
+            Saves the backend policy immediately, even during a run, so the next checkpoint completion can auto-start the following checkpoint.
+          </p>
+        </div>
+      ) : null}
 
       <div className="mt-3 grid gap-2">
         <div className="grid gap-1.5">

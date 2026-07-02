@@ -40,7 +40,7 @@ import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFr
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { createDesktopV3CreateOnlySessionOperation, startDesktopV3CreateOnlySession } from '../session-v3/new-session-flow'
-import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
+import { DesktopPlanModal, type DesktopPlanRecoveryInput } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import type { DesktopSlashCommand } from '../chat/services/slash-commands'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
@@ -60,7 +60,7 @@ import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { fetchAndApplyDesktopV3PlanSnapshot, saveDesktopV3SessionPlan } from '../state/desktop-v3-session-api'
-import { archiveDesktopV3Sessions, startDesktopPlanAutomatic, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
+import { archiveDesktopV3Sessions, jumpDesktopPlanToRevisionCheckpoint, restartDesktopPlanFromRevision, restoreDesktopPlanRevision, startDesktopPlanAutomatic, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned } from '../session-v3/api'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
@@ -2859,6 +2859,40 @@ export function DesktopAppPage() {
     }
   }, [])
 
+  const handleRestorePlanRevisionModal = useCallback(async (revision: DesktopSessionPlanRevisionRecord, input: DesktopPlanRecoveryInput = {}) => {
+    const sessionId = planModal?.sessionId.trim() ?? ''
+    if (!sessionId || !planModalPlan?.id) return
+    setPlanModalSaving(true)
+    setPlanModalError(null)
+    try {
+      const payload = {
+        planId: planModalPlan.id,
+        version: revision.version,
+        checkpointId: input.checkpointId,
+        executionGranularity: input.executionGranularity,
+        continuationPolicy: input.continuationPolicy,
+        continueAutomatically: input.continueAutomatically,
+        restart: input.restart,
+        start: input.start,
+        skipPrior: input.skipPrior,
+      }
+      if (input.skipPrior) {
+        await jumpDesktopPlanToRevisionCheckpoint(sessionId, payload)
+      } else if (input.start || input.restart || input.checkpointId) {
+        await restartDesktopPlanFromRevision(sessionId, payload)
+      } else {
+        await restoreDesktopPlanRevision(sessionId, payload)
+      }
+      await fetchAndApplyDesktopV3PlanSnapshot(sessionId)
+      if (input.start) setPlanModal(null)
+    } catch (error) {
+      setPlanModalError(error instanceof Error ? error.message : String(error))
+      throw error
+    } finally {
+      setPlanModalSaving(false)
+    }
+  }, [planModal?.sessionId, planModalPlan?.id])
+
   const handleSavePlanModal = useCallback(async (planText: string, document?: Record<string, unknown>) => {
     const sessionId = planModal?.sessionId.trim() ?? ''
     if (!sessionId) return
@@ -3774,6 +3808,7 @@ export function DesktopAppPage() {
         }}
         onCopy={handleCopyPlanText}
         onSave={handleSavePlanModal}
+        onRestoreRevision={handleRestorePlanRevisionModal}
         onApproveStart={handleApproveStartPlanModal}
       />
 

@@ -75,6 +75,19 @@ export interface DesktopPlanCheckpointAcceptInput {
   reviewedAt?: number
 }
 
+export interface DesktopPlanRestoreRevisionInput {
+  planId?: string
+  version: number
+  checkpointId?: string
+  executionGranularity?: DesktopPlanExecutionGranularity
+  continuationPolicy?: DesktopPlanContinuationPolicy
+  continueAutomatically?: boolean
+  restart?: boolean
+  start?: boolean
+  skipPrior?: boolean
+  suppressLifecycleMessage?: boolean
+}
+
 export async function enterDesktopPlanMode(sessionId: string, input: DesktopPlanEnterInput = {}): Promise<DesktopPlanLifecycleResponse> {
   return postDesktopPlanLifecycle(sessionId, 'enter', {
     reason: trimmed(input.reason),
@@ -185,6 +198,18 @@ export async function rewindDesktopPlanCheckpoint(sessionId: string, checkpointI
   })
 }
 
+export async function restoreDesktopPlanRevision(sessionId: string, input: DesktopPlanRestoreRevisionInput): Promise<DesktopPlanLifecycleResponse> {
+  return postDesktopPlanLifecycle(sessionId, 'lifecycle/restore-revision', restoreRevisionPayload(input))
+}
+
+export async function restartDesktopPlanFromRevision(sessionId: string, input: DesktopPlanRestoreRevisionInput): Promise<DesktopPlanLifecycleResponse> {
+  return postDesktopPlanLifecycle(sessionId, 'lifecycle/restart-from-revision', restoreRevisionPayload(input, { restart: true, start: true }))
+}
+
+export async function jumpDesktopPlanToRevisionCheckpoint(sessionId: string, input: DesktopPlanRestoreRevisionInput): Promise<DesktopPlanLifecycleResponse> {
+  return postDesktopPlanLifecycle(sessionId, 'lifecycle/jump-to-checkpoint', restoreRevisionPayload(input, { restart: true, start: true, skipPrior: true }))
+}
+
 export async function archiveDesktopV3Sessions(sessionIds: string[]): Promise<DesktopSessionArchiveResponse> {
   const normalizedIds = sessionIds.map((sessionId) => sessionId.trim()).filter(Boolean)
   if (normalizedIds.length === 0) throw new Error('Archive request requires at least one session_id')
@@ -198,6 +223,21 @@ export async function archiveDesktopV3Sessions(sessionIds: string[]): Promise<De
     raw: response,
   })
   return response
+}
+
+function restoreRevisionPayload(input: DesktopPlanRestoreRevisionInput, defaults: { restart?: boolean; start?: boolean; skipPrior?: boolean } = {}): Record<string, unknown> {
+  return {
+    plan_id: trimmed(input.planId),
+    version: input.version,
+    checkpoint_id: trimmed(input.checkpointId),
+    execution_granularity: input.executionGranularity,
+    continuation_policy: input.continuationPolicy,
+    continue_automatically: input.continueAutomatically,
+    restart: input.restart ?? defaults.restart,
+    start: input.start ?? defaults.start,
+    skip_prior: input.skipPrior ?? defaults.skipPrior,
+    suppress_lifecycle_message: input.suppressLifecycleMessage || undefined,
+  }
 }
 
 async function postDesktopPlanLifecycle(sessionId: string, path: string, body: Record<string, unknown> = {}): Promise<DesktopPlanLifecycleResponse> {

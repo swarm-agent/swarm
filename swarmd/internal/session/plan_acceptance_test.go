@@ -115,6 +115,64 @@ func TestApplyPlanAcceptanceExecutionPolicyOverridesAIRuntimeState(t *testing.T)
 	}
 }
 
+func TestApplyPlanAcceptanceExecutionPolicyPreservesOriginalCheckpointsForSingleRun(t *testing.T) {
+	doc := &pebblestore.SessionPlanDocument{
+		ID:    "plan-single-preserve",
+		Title: "Plan Single Preserve",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "First", Status: PlanCheckpointStatusPending, Objective: "Do first", Tasks: []string{"task one"}, AcceptanceCriteria: []string{"first done"}, Order: 1},
+			{ID: "cp-2", Title: "Second", Status: PlanCheckpointStatusPending, Objective: "Do second", Tasks: []string{"task two"}, AcceptanceCriteria: []string{"second done"}, Order: 2},
+		},
+	}
+
+	policy, err := ApplyPlanAcceptanceExecutionPolicy(doc, PlanAcceptanceExecutionOptions{ExecutionGranularity: "run_through"})
+	if err != nil {
+		t.Fatalf("apply single-run acceptance policy: %v", err)
+	}
+	if policy.Shape != PlanExecutionShapeSingleRun || doc.ActiveCheckpointID != "plan-run" {
+		t.Fatalf("single-run policy/active = %#v active %q", policy, doc.ActiveCheckpointID)
+	}
+	if len(doc.Checkpoints) != 1 || doc.Checkpoints[0].ID != "plan-run" {
+		t.Fatalf("execution checkpoints = %#v, want one plan-run checkpoint", doc.Checkpoints)
+	}
+	if len(doc.OriginalCheckpoints) != 2 || doc.OriginalCheckpoints[0].ID != "cp-1" || doc.OriginalCheckpoints[1].ID != "cp-2" {
+		t.Fatalf("original checkpoints were not preserved: %#v", doc.OriginalCheckpoints)
+	}
+	if doc.OriginalCheckpoints[0].Objective != "Do first" || doc.OriginalCheckpoints[1].Tasks[0] != "task two" {
+		t.Fatalf("original checkpoint content was not preserved: %#v", doc.OriginalCheckpoints)
+	}
+}
+
+func TestApplyPlanAcceptanceExecutionPolicyRestoresOriginalCheckpointsForCheckpointedRecovery(t *testing.T) {
+	doc := &pebblestore.SessionPlanDocument{
+		ID:    "plan-checkpointed-recovery",
+		Title: "Plan Checkpointed Recovery",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode:  PlanExecutionPolicyModeAutomatic,
+			Shape: PlanExecutionShapeSingleRun,
+		},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "plan-run", Status: PlanCheckpointStatusInProgress, AttemptID: "attempt-1"}},
+		OriginalCheckpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "First", Status: PlanCheckpointStatusPending, Objective: "Do first", Order: 1},
+			{ID: "cp-2", Title: "Second", Status: PlanCheckpointStatusPending, Objective: "Do second", Order: 2},
+		},
+	}
+
+	policy, err := ApplyPlanAcceptanceExecutionPolicy(doc, PlanAcceptanceExecutionOptions{ExecutionGranularity: "checkpointed"})
+	if err != nil {
+		t.Fatalf("apply checkpointed recovery policy: %v", err)
+	}
+	if policy.Shape != PlanExecutionShapeCheckpointed || doc.ActiveCheckpointID != "cp-1" {
+		t.Fatalf("checkpointed policy/active = %#v active %q", policy, doc.ActiveCheckpointID)
+	}
+	if len(doc.Checkpoints) != 2 || doc.Checkpoints[0].ID != "cp-1" || doc.Checkpoints[1].ID != "cp-2" {
+		t.Fatalf("checkpointed recovery did not restore original checkpoints: %#v", doc.Checkpoints)
+	}
+	if len(doc.OriginalCheckpoints) != 0 {
+		t.Fatalf("original checkpoint shadow should be cleared after checkpointed recovery: %#v", doc.OriginalCheckpoints)
+	}
+}
+
 func TestFinalCheckpointCompletionWaitsForPlanReview(t *testing.T) {
 	doc, err := NormalizePlanDocumentForSave("plan-final", "Final Plan", &pebblestore.SessionPlanDocument{
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeReviewEachCheckpoint, Shape: PlanExecutionShapeCheckpointed},

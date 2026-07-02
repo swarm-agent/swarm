@@ -41,6 +41,7 @@ import {
   acceptAndContinueDesktopPlanCheckpoint,
   archiveDesktopV3Sessions,
   resumeDesktopPlanAutomatic,
+  resumeDesktopPlanCheckpointed,
 } from '../../session-v3/plan-execution-api'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../../state/desktop-v3-session-api'
 import { resolveSessionPermission, sendSessionMessage, updateDraftModelPreference } from '../queries/chat-queries'
@@ -1027,11 +1028,12 @@ export function DesktopV3ExistingConversationPane({
   }
 
   async function handlePlanExecutionAction(input: DesktopPlanExecutionSidebarActionInput) {
-    if (!normalizedSessionId || planExecutionBusyAction || currentRun) return
+    const policySwitch = input.action === 'resume_automatic' || input.action === 'resume_checkpointed'
+    if (!normalizedSessionId || planExecutionBusyAction || (currentRun && !policySwitch)) return
     const busyKey = `${input.action}:${input.checkpointId ?? ''}`
     setPlanExecutionBusyAction(busyKey)
     setSendError(null)
-    if (input.action !== 'resume_automatic') scrollToBottom('smooth')
+    if (!policySwitch) scrollToBottom('smooth')
     try {
       await persistVisibleSettings()
       switch (input.action) {
@@ -1050,6 +1052,9 @@ export function DesktopV3ExistingConversationPane({
           break
         case 'resume_automatic':
           await resumeDesktopPlanAutomatic(normalizedSessionId)
+          break
+        case 'resume_checkpointed':
+          await resumeDesktopPlanCheckpointed(normalizedSessionId)
           break
       }
     } catch (error) {

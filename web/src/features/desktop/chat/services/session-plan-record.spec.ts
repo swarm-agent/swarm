@@ -69,3 +69,25 @@ test('normalizeDesktopSessionPlan preserves execution policy state review attemp
   assert.equal(checkpoint?.attempts[0]?.parentSessionId, 'parent-session')
   assert.deepEqual(checkpoint?.attempts[0]?.changedFiles, ['web/src/features/desktop/chat/services/session-plan-record.ts'])
 })
+
+test('normalizeDesktopSessionPlan preserves original checkpoints for single-run plan display', () => {
+  const plan = normalizeDesktopSessionPlan({
+    id: 'plan-1',
+    title: 'Single run plan',
+    document: {
+      id: 'plan-1',
+      title: 'Single run plan',
+      execution_policy: { mode: 'automatic', shape: 'single_run' },
+      checkpoints: [{ id: 'plan-run', title: 'Run approved plan', status: 'in_progress', order: 1 }],
+      original_checkpoints: [
+        { id: 'cp-1', title: 'Design', status: 'pending', objective: 'Design it', order: 1 },
+        { id: 'cp-2', title: 'Build', status: 'pending', tasks: ['Implement it'], order: 2 },
+      ],
+    },
+  })
+
+  assert.equal(plan.document?.checkpoints[0]?.id, 'plan-run')
+  assert.equal(plan.document?.originalCheckpoints.length, 2)
+  assert.equal(plan.document?.originalCheckpoints[0]?.id, 'cp-1')
+  assert.equal(plan.document?.originalCheckpoints[1]?.tasks[0], 'Implement it')
+})

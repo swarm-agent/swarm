@@ -1641,6 +1641,8 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 		action = "request_followup_checkpoint"
 	case "request-plan-revision", "request_plan_revision", "plan-revision", "plan_revision":
 		action = "request_plan_revision"
+	case "amend-plan", "amend_plan", "plan-amendment", "plan_amendment", "amend-future-checkpoints", "amend_future_checkpoints":
+		action = "amend_plan"
 	case "request-new-plan", "request_new_plan", "new-plan-proposal", "new_plan_proposal":
 		action = "request_new_plan"
 	case "restart-checkpoint", "restart_checkpoint", "retry-checkpoint", "retry_checkpoint", "restart-checkpoint-from-zero", "restart_checkpoint_from_zero":
@@ -1655,7 +1657,7 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 	}
 
 	switch action {
-	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "request_followup_checkpoint", "request_plan_revision", "request_new_plan":
+	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "request_followup_checkpoint", "request_plan_revision", "amend_plan", "request_new_plan":
 		return s.executePlanLifecycleControlAction(sessionID, action, args, applySessionMutation)
 	case "list":
 		limit := mapInt(args, "limit")
@@ -1707,7 +1709,11 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 		if limit > 500 {
 			limit = 500
 		}
-		revisions, err := s.sessions.ListPlanRevisions(sessionID, planID, limit)
+		revisionKind := strings.TrimSpace(firstNonEmptyString(mapString(args, "revision_kind"), mapString(args, "kind")))
+		if revisionKind == "" {
+			revisionKind = sessionruntime.PlanRevisionKindDefinition
+		}
+		revisions, err := s.sessions.ListPlanRevisionsByKind(sessionID, planID, limit, revisionKind)
 		if err != nil {
 			return "", err
 		}
@@ -1720,6 +1726,7 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 			"action":            "history",
 			"status":            "ok",
 			"plan_id":           planID,
+			"revision_kind":     revisionKind,
 			"count":             len(items),
 			"revisions":         items,
 			"path_id":           "tool.plan-manage.v3",
@@ -1837,6 +1844,7 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 		updateSummary := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_summary"), mapString(args, "summary")))
 		updateScope := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_scope"), mapString(args, "scope")))
 		updateKind := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_kind"), mapString(args, "kind")))
+		revisionKind := strings.TrimSpace(mapString(args, "revision_kind"))
 		checkpoint := mapBool(args, "checkpoint")
 		document, err := planDocumentFromArgs(args)
 		if err != nil {
@@ -1869,7 +1877,7 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 		if _, hasActivate := args["activate"]; hasActivate {
 			activate = mapBool(args, "activate")
 		}
-		plan, event, err := s.sessions.SavePlanWithMetadata(sessionID, planID, title, planBody, status, approvalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint, Document: document})
+		plan, event, err := s.sessions.SavePlanWithMetadata(sessionID, planID, title, planBody, status, approvalState, activate, sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, RevisionKind: revisionKind, Checkpoint: checkpoint, Document: document})
 		if err != nil {
 			return "", err
 		}
@@ -1905,6 +1913,7 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 		updateSummary := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_summary"), mapString(args, "summary")))
 		updateScope := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_scope"), mapString(args, "scope")))
 		updateKind := strings.TrimSpace(firstNonEmptyString(mapString(args, "update_kind"), mapString(args, "kind")))
+		revisionKind := strings.TrimSpace(mapString(args, "revision_kind"))
 		checkpoint := mapBool(args, "checkpoint")
 		document, err := planDocumentFromArgs(args)
 		if err != nil {
@@ -1922,7 +1931,7 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 			value := mapBool(args, "activate")
 			activate = &value
 		}
-		plan, event, err := s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: title, Status: status, ApprovalState: approvalState, Activate: activate, Patch: patch, Document: document, DocumentPatch: documentPatch, Metadata: sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, Checkpoint: checkpoint}})
+		plan, event, err := s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{PlanID: planID, Title: title, Status: status, ApprovalState: approvalState, Activate: activate, Patch: patch, Document: document, DocumentPatch: documentPatch, Metadata: sessionruntime.PlanSaveMetadata{UpdateSummary: updateSummary, UpdateScope: updateScope, UpdateKind: updateKind, RevisionKind: revisionKind, Checkpoint: checkpoint}})
 		if err != nil {
 			return "", err
 		}
@@ -2188,6 +2197,8 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		result, err = lifecycle.RequestFollowupCheckpoint(input)
 	case "request_plan_revision":
 		result, err = lifecycle.RequestPlanRevision(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, Reason: strings.TrimSpace(firstNonEmptyString(mapString(args, "reason"), mapString(args, "update_summary"), mapString(args, "summary")))})
+	case "amend_plan":
+		result, err = lifecycle.AmendPlan(sessionruntime.PlanLifecycleAmendmentInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, BaseRevision: mapInt(args, "base_revision"), UpdateSummary: strings.TrimSpace(firstNonEmptyString(mapString(args, "update_summary"), mapString(args, "summary"), mapString(args, "reason"))), ReplaceFromCheckpointID: strings.TrimSpace(firstNonEmptyString(mapString(args, "replace_from_checkpoint_id"), mapString(args, "checkpoint_id"))), AmendFutureCheckpoints: mapBool(args, "amend_future_checkpoints"), OverrideStale: mapBool(args, "override_stale")})
 	case "request_new_plan":
 		result, err = lifecycle.RequestNewPlan(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, Reason: strings.TrimSpace(firstNonEmptyString(mapString(args, "reason"), mapString(args, "update_summary"), mapString(args, "summary")))})
 	default:

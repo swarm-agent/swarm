@@ -123,6 +123,7 @@ type sessionsV3PlanUpsertRequest struct {
 	UpdateScope   string                            `json:"update_scope"`
 	Scope         string                            `json:"scope"`
 	UpdateKind    string                            `json:"update_kind"`
+	RevisionKind  string                            `json:"revision_kind"`
 	Checkpoint    bool                              `json:"checkpoint"`
 	Activate      *bool                             `json:"activate"`
 }
@@ -1255,7 +1256,7 @@ func (s *Server) handleSessionV3PrimaryPlans(w http.ResponseWriter, r *http.Requ
 	if updateScope == "" {
 		updateScope = strings.TrimSpace(req.Scope)
 	}
-	metadata := sessionruntime.PlanSaveMetadata{UpdateSummary: req.UpdateSummary, UpdateScope: updateScope, UpdateKind: req.UpdateKind, Checkpoint: req.Checkpoint, Document: req.Document}
+	metadata := sessionruntime.PlanSaveMetadata{UpdateSummary: req.UpdateSummary, UpdateScope: updateScope, UpdateKind: req.UpdateKind, RevisionKind: req.RevisionKind, Checkpoint: req.Checkpoint, Document: req.Document}
 	var plan pebblestore.SessionPlanSnapshot
 	var event *pebblestore.EventEnvelope
 	var err error
@@ -1311,12 +1312,16 @@ func (s *Server) handleSessionV3PrimaryPlanByID(w http.ResponseWriter, r *http.R
 		if !ok {
 			return
 		}
-		revisions, err := s.sessions.ListPlanRevisions(sessionID, planID, limit)
+		revisionKind := strings.ToLower(strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("revision_kind"), r.URL.Query().Get("kind"))))
+		if revisionKind == "" {
+			revisionKind = sessionruntime.PlanRevisionKindDefinition
+		}
+		revisions, err := s.sessions.ListPlanRevisionsByKind(sessionID, planID, limit, revisionKind)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan_id": planID, "count": len(revisions), "revisions": revisions})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan_id": planID, "revision_kind": revisionKind, "count": len(revisions), "revisions": revisions})
 		return
 	}
 	planID := strings.TrimSpace(tail)

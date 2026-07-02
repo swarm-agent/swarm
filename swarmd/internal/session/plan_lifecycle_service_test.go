@@ -7,6 +7,160 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestPlanLifecycleAmendPlanReplacesFutureCheckpointsAndPreservesCompletedState(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	plan := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:  PlanExecutionPolicyModeAutomatic,
+		Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "Done", Status: PlanCheckpointStatusCompleted, Report: "keep report", ChangedFiles: []string{"kept.go"}},
+		{ID: "cp-2", Title: "Future two", Status: PlanCheckpointStatusPending},
+		{ID: "cp-3", Title: "Future three", Status: PlanCheckpointStatusPending},
+	})
+	proposed := clonePlanLifecycleDocument(plan.Document)
+	proposed.Info.Goal = "amended goal"
+	proposed.Checkpoints = []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "Done", Status: PlanCheckpointStatusCompleted},
+		{ID: "cp-2", Title: "Replacement two", Status: PlanCheckpointStatusPending, Report: "must reset"},
+		{ID: "cp-4", Title: "Replacement four", Status: PlanCheckpointStatusPending},
+	}
+
+	result, err := NewPlanLifecycleService(svc).AmendPlan(PlanLifecycleAmendmentInput{
+		SessionID:               sessionID,
+		PlanID:                  plan.ID,
+		Document:                proposed,
+		BaseRevision:            plan.Version,
+		UpdateSummary:           "Replace future checkpoints",
+		ReplaceFromCheckpointID: "cp-2",
+	})
+	if err != nil {
+		t.Fatalf("amend plan: %v", err)
+	}
+	if result.Plan.RevisionKind != PlanRevisionKindDefinition || result.Plan.UpdateKind != "plan_amendment" || result.Plan.Checkpoint {
+		t.Fatalf("revision metadata = kind %q update %q checkpoint %v", result.Plan.RevisionKind, result.Plan.UpdateKind, result.Plan.Checkpoint)
+	}
+	if result.Plan.Version != plan.Version+1 || result.Plan.ParentRevision != plan.Version {
+		t.Fatalf("revision linkage = v%d parent %d", result.Plan.Version, result.Plan.ParentRevision)
+	}
+	if got := checkpointIDs(result.Plan.Document.Checkpoints); strings.Join(got, ",") != "cp-1,cp-2,cp-4" {
+		t.Fatalf("checkpoint order = %v", got)
+	}
+	kept := result.Plan.Document.Checkpoints[0]
+	if kept.Report != "keep report" || len(kept.ChangedFiles) != 1 || kept.ChangedFiles[0] != "kept.go" {
+		t.Fatalf("completed checkpoint state was not preserved: %#v", kept)
+	}
+	replaced := result.Plan.Document.Checkpoints[1]
+	if replaced.Title != "Replacement two" || replaced.Report != "" || replaced.Status != PlanCheckpointStatusPending {
+		t.Fatalf("future replacement not reset/preserved as pending: %#v", replaced)
+	}
+	if result.Plan.Document.ActiveCheckpointID != "cp-2" || result.Plan.Document.Info.Goal != "amended goal" {
+		t.Fatalf("active/goal = %q/%q", result.Plan.Document.ActiveCheckpointID, result.Plan.Document.Info.Goal)
+	}
+}
+
+func TestPlanLifecycleAmendPlanRejectsStaleBaseRevision(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	plan := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:  PlanExecutionPolicyModeAutomatic,
+		Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "One", Status: PlanCheckpointStatusPending}})
+	proposed := clonePlanLifecycleDocument(plan.Document)
+
+	_, err := NewPlanLifecycleService(svc).AmendPlan(PlanLifecycleAmendmentInput{
+		SessionID:               sessionID,
+		PlanID:                  plan.ID,
+		Document:                proposed,
+		BaseRevision:            plan.Version - 1,
+		UpdateSummary:           "Stale amendment",
+		ReplaceFromCheckpointID: "cp-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("stale amendment error = %v", err)
+	}
+}
+
+func TestPlanLifecycleAmendPlanPreservesCurrentInProgressCheckpoint(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	plan := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:  PlanExecutionPolicyModeAutomatic,
+		Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "Current", Status: PlanCheckpointStatusInProgress, AttemptID: "cp-1:attempt-1", RunID: "run-current", SessionID: sessionID},
+		{ID: "cp-2", Title: "Future", Status: PlanCheckpointStatusPending},
+	})
+	current := clonePlanLifecycleDocument(plan.Document)
+	current.ActiveCheckpointID = "cp-1"
+	current.ExecutionState = &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateInProgress, ActiveAttemptID: "cp-1:attempt-1", CurrentRunID: "run-current", CurrentSessionID: sessionID, ParentSessionID: sessionID}
+	plan, _, err := svc.SavePlanWithMetadata(sessionID, plan.ID, plan.Title, plan.Plan, plan.Status, plan.ApprovalState, true, PlanSaveMetadata{UpdateSummary: "start current", UpdateKind: "start_checkpoint", RevisionKind: PlanRevisionKindExecution, Checkpoint: true, Document: current})
+	if err != nil {
+		t.Fatalf("save in-progress plan: %v", err)
+	}
+	proposed := clonePlanLifecycleDocument(plan.Document)
+	proposed.Checkpoints = []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "Current", Status: PlanCheckpointStatusInProgress},
+		{ID: "cp-2", Title: "Replacement future", Status: PlanCheckpointStatusPending},
+		{ID: "cp-3", Title: "New future", Status: PlanCheckpointStatusPending},
+	}
+
+	result, err := NewPlanLifecycleService(svc).AmendPlan(PlanLifecycleAmendmentInput{
+		SessionID:               sessionID,
+		PlanID:                  plan.ID,
+		Document:                proposed,
+		BaseRevision:            plan.Version,
+		UpdateSummary:           "Replace future after current",
+		ReplaceFromCheckpointID: "cp-2",
+	})
+	if err != nil {
+		t.Fatalf("amend after current: %v", err)
+	}
+	currentCheckpoint := result.Plan.Document.Checkpoints[0]
+	if result.Plan.Document.ExecutionState == nil || result.Plan.Document.ExecutionState.Status != PlanExecutionStateInProgress || result.Plan.Document.ExecutionState.CurrentRunID != "run-current" {
+		t.Fatalf("current execution state was not preserved: %#v", result.Plan.Document.ExecutionState)
+	}
+	if result.Plan.Document.ActiveCheckpointID != "cp-1" || currentCheckpoint.Status != PlanCheckpointStatusInProgress || currentCheckpoint.RunID != "run-current" || currentCheckpoint.AttemptID != "cp-1:attempt-1" {
+		t.Fatalf("current checkpoint was not preserved: active=%q checkpoint=%#v", result.Plan.Document.ActiveCheckpointID, currentCheckpoint)
+	}
+	if got := checkpointIDs(result.Plan.Document.Checkpoints); strings.Join(got, ",") != "cp-1,cp-2,cp-3" {
+		t.Fatalf("checkpoint order = %v", got)
+	}
+}
+
+func TestPlanLifecycleAmendPlanRejectsCompletedCheckpointReplacement(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	plan := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:  PlanExecutionPolicyModeAutomatic,
+		Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "Done", Status: PlanCheckpointStatusCompleted},
+		{ID: "cp-2", Title: "Future", Status: PlanCheckpointStatusPending},
+	})
+	proposed := clonePlanLifecycleDocument(plan.Document)
+
+	_, err := NewPlanLifecycleService(svc).AmendPlan(PlanLifecycleAmendmentInput{
+		SessionID:               sessionID,
+		PlanID:                  plan.ID,
+		Document:                proposed,
+		BaseRevision:            plan.Version,
+		UpdateSummary:           "Bad replacement",
+		ReplaceFromCheckpointID: "cp-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "protected status") {
+		t.Fatalf("completed replacement error = %v", err)
+	}
+}
+
 func TestPlanLifecycleRequestFollowupCheckpointGlobalAutoStartPreparesFreshRun(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()
@@ -561,6 +715,121 @@ func TestPlanLifecycleRequestFollowupCheckpointRequiresResolvedApprovalByDefault
 	_, err := NewPlanLifecycleService(svc).RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: plan.ID, ChangeRequest: "Add one more thing."})
 	if err == nil || !strings.Contains(err.Error(), "requires user approval") {
 		t.Fatalf("error = %v, want approval requirement", err)
+	}
+}
+
+func TestPlanLifecycleRestorePlanRevisionCreatesCurrentRevisionWithMetadata(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	original := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:  PlanExecutionPolicyModeAutomatic,
+		Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "Original one", Status: PlanCheckpointStatusPending},
+		{ID: "cp-2", Title: "Original two", Status: PlanCheckpointStatusPending},
+	})
+	changedDoc := clonePlanLifecycleDocument(original.Document)
+	changedDoc.Checkpoints = []pebblestore.SessionPlanCheckpoint{{ID: "changed", Title: "Changed checkpoint", Status: PlanCheckpointStatusPending}}
+	changedDoc.ActiveCheckpointID = "changed"
+	changed, _, err := svc.SavePlanWithMetadata(sessionID, original.ID, original.Title, original.Plan, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: "whole plan edit", UpdateScope: "plan", UpdateKind: "test_definition_update", RevisionKind: PlanRevisionKindDefinition, Document: changedDoc})
+	if err != nil {
+		t.Fatalf("save changed plan: %v", err)
+	}
+	if changed.Version != original.Version+1 {
+		t.Fatalf("changed version = %d, want %d", changed.Version, original.Version+1)
+	}
+
+	result, err := NewPlanLifecycleService(svc).RestorePlanRevision(PlanLifecycleRevisionRestoreInput{SessionID: sessionID, PlanID: original.ID, Version: original.Version})
+	if err != nil {
+		t.Fatalf("restore revision: %v", err)
+	}
+	if result.Plan.Version != changed.Version+1 || result.Plan.ParentRevision != changed.Version {
+		t.Fatalf("restored revision linkage = v%d parent %d, want v%d parent %d", result.Plan.Version, result.Plan.ParentRevision, changed.Version+1, changed.Version)
+	}
+	if result.Plan.RestoredFromVersion != original.Version || result.Plan.UpdateKind != "restore_revision" || result.Plan.RevisionKind != PlanRevisionKindDefinition {
+		t.Fatalf("restore metadata = kind %q revision_kind %q restored_from %d", result.Plan.UpdateKind, result.Plan.RevisionKind, result.Plan.RestoredFromVersion)
+	}
+	if got := checkpointIDs(result.Plan.Document.Checkpoints); strings.Join(got, ",") != "cp-1,cp-2" {
+		t.Fatalf("restored checkpoints = %v", got)
+	}
+	if result.Plan.Document.ActiveCheckpointID != "cp-1" || result.Plan.Document.Checkpoints[0].Status != PlanCheckpointStatusPending {
+		t.Fatalf("restore-only should reset execution to first pending checkpoint: %#v", result.Plan.Document)
+	}
+	revisions, err := svc.ListPlanRevisions(sessionID, original.ID, 10)
+	if err != nil {
+		t.Fatalf("list revisions: %v", err)
+	}
+	if len(revisions) < 3 || revisions[0].Version != result.Plan.Version || revisions[1].Version != changed.Version || revisions[2].Version != original.Version {
+		t.Fatalf("restore history not retained newest-first: %#v", revisions)
+	}
+}
+
+func TestPlanLifecycleRestartFromFirstRevisionPreparesFreshCheckpointRun(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	original := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:  PlanExecutionPolicyModeAutomatic,
+		Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "Original one", Status: PlanCheckpointStatusPending},
+		{ID: "cp-2", Title: "Original two", Status: PlanCheckpointStatusPending},
+	})
+	changedDoc := clonePlanLifecycleDocument(original.Document)
+	changedDoc.Checkpoints = []pebblestore.SessionPlanCheckpoint{{ID: "changed", Title: "Changed checkpoint", Status: PlanCheckpointStatusPending}}
+	changedDoc.ActiveCheckpointID = "changed"
+	if _, _, err := svc.SavePlanWithMetadata(sessionID, original.ID, original.Title, original.Plan, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: "whole plan edit", UpdateScope: "plan", UpdateKind: "test_definition_update", RevisionKind: PlanRevisionKindDefinition, Document: changedDoc}); err != nil {
+		t.Fatalf("save changed plan: %v", err)
+	}
+
+	result, err := NewPlanLifecycleService(svc).RestorePlanRevision(PlanLifecycleRevisionRestoreInput{SessionID: sessionID, PlanID: original.ID, Version: original.Version, CheckpointID: "cp-2", Start: true, SkipPrior: true, RunID: "run-restore-1", RunSessionID: sessionID, ParentSessionID: sessionID, StartedAt: 1234})
+	if err != nil {
+		t.Fatalf("restart from revision: %v", err)
+	}
+	if result.Action != "jump_to_checkpoint" || result.CheckpointID != "cp-2" || result.AttemptID != "cp-2:attempt-1" {
+		t.Fatalf("jump result action/checkpoint/attempt = %q/%q/%q", result.Action, result.CheckpointID, result.AttemptID)
+	}
+	if result.Plan.RestoredFromVersion != original.Version || result.Plan.RevisionKind != PlanRevisionKindDefinition {
+		t.Fatalf("restart restore metadata = restored_from %d revision_kind %q", result.Plan.RestoredFromVersion, result.Plan.RevisionKind)
+	}
+	first := result.Plan.Document.Checkpoints[0]
+	second := result.Plan.Document.Checkpoints[1]
+	if first.Status != PlanCheckpointStatusCompleted || first.Review == nil || first.Review.Result != "user_skipped_to_checkpoint" {
+		t.Fatalf("prior checkpoint should be explicitly skipped by user jump: %#v", first)
+	}
+	if second.Status != PlanCheckpointStatusInProgress || second.RunID != "run-restore-1" || second.AttemptID != "cp-2:attempt-1" {
+		t.Fatalf("selected checkpoint should be freshly in progress: %#v", second)
+	}
+}
+
+func TestPlanLifecycleRestartFromRevisionRequiresExplicitSkipPriorForJump(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	original := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:  PlanExecutionPolicyModeAutomatic,
+		Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-1", Title: "Original one", Status: PlanCheckpointStatusPending},
+		{ID: "cp-2", Title: "Original two", Status: PlanCheckpointStatusPending},
+	})
+
+	_, err := NewPlanLifecycleService(svc).RestorePlanRevision(PlanLifecycleRevisionRestoreInput{SessionID: sessionID, PlanID: original.ID, Version: original.Version, CheckpointID: "cp-2", Start: true, RunID: "run-restore-1", RunSessionID: sessionID, ParentSessionID: sessionID, StartedAt: 1234})
+	if err == nil || !strings.Contains(err.Error(), "skip_prior=true") {
+		t.Fatalf("restart without explicit skip_prior error = %v, want skip_prior requirement", err)
 	}
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
   Brain,
@@ -40,7 +40,18 @@ interface DesktopPlanModalProps {
   executing?: boolean
   onCopy: (text: string) => Promise<boolean>
   onSave: (planText: string, document?: Record<string, unknown>) => Promise<void>
+  onRestoreRevision: (revision: DesktopSessionPlanRevisionRecord, input?: DesktopPlanRecoveryInput) => Promise<void>
   onApproveStart?: (input: { executionGranularity: 'checkpointed' | 'run_through'; continueAutomatically: boolean; continuationPolicy: 'automatic' | 'review_each_checkpoint' }) => Promise<void>
+}
+
+export interface DesktopPlanRecoveryInput {
+  checkpointId?: string
+  executionGranularity?: 'checkpointed' | 'run_through'
+  continuationPolicy?: 'automatic' | 'review_each_checkpoint'
+  continueAutomatically?: boolean
+  restart?: boolean
+  start?: boolean
+  skipPrior?: boolean
 }
 
 function useEscapeToClose(open: boolean, onClose: () => void) {
@@ -66,9 +77,200 @@ function revisionLabel(revision: DesktopSessionPlanRevisionRecord): string {
   return 'Revision'
 }
 
+function revisionKindLabel(revision: DesktopSessionPlanRevisionRecord): string {
+  if (revision.revisionKind === 'execution' || revision.checkpoint) {
+    return 'Execution snapshot'
+  }
+  return 'Plan version'
+}
+
 function revisionOptionLabel(revision: DesktopSessionPlanRevisionRecord): string {
-  const summary = revision.updateSummary || revision.updateKind || revision.updateScope || 'Plan snapshot'
-  return `${revisionLabel(revision)} — ${summary}`
+  const restored = revision.restoredFromVersion > 0 ? `Restored from revision ${revision.restoredFromVersion}` : ''
+  const summary = restored || revision.updateSummary || revision.updateKind || revision.updateScope || 'Plan snapshot'
+  return `${revisionLabel(revision)} · ${revisionKindLabel(revision)} — ${summary}`
+}
+
+function formatTimestamp(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return ''
+  try {
+    return new Date(value).toLocaleString()
+  } catch {
+    return ''
+  }
+}
+
+function displayValue(value: string): string {
+  return value.trim() || 'Not set'
+}
+
+function displayExecutionMode(mode: 'automatic' | 'review_each_checkpoint'): string {
+  return mode === 'automatic' ? 'Automatic' : 'Review each checkpoint'
+}
+
+function displayExecutionShape(shape: 'checkpointed' | 'run_through'): string {
+  return shape === 'run_through' ? 'Run through as one execution' : 'Checkpoint by checkpoint'
+}
+
+function firstNonBlankText(...values: Array<string | null | undefined>): string {
+  for (const value of values) {
+    const normalized = (value ?? '').trim()
+    if (normalized) return normalized
+  }
+  return ''
+}
+
+function appendTextSection(lines: string[], title: string, value: string) {
+  const normalized = value.trim()
+  if (!normalized) return
+  lines.push('', `## ${title}`, '', normalized)
+}
+
+function appendBulletSection(lines: string[], title: string, values: string[]) {
+  const normalized = values.map((value) => value.trim()).filter(Boolean)
+  if (normalized.length === 0) return
+  lines.push('', `## ${title}`, '')
+  normalized.forEach((value) => lines.push(`- ${value}`))
+}
+
+function appendFieldList(lines: string[], title: string, fields: Array<[string, string | number | undefined]>) {
+  const normalized = fields
+    .map(([label, value]): [string, string] => [label, typeof value === 'number' ? (value > 0 ? String(value) : '') : (value ?? '').trim()])
+    .filter(([, value]) => value !== '')
+  if (normalized.length === 0) return
+  lines.push('', `## ${title}`, '')
+  normalized.forEach(([label, value]) => lines.push(`- ${label}: ${value}`))
+}
+
+export function structuredPlanCopyText(document: DesktopSessionPlanDocument): string {
+  const lines: string[] = [`# ${firstNonBlankText(document.title, document.id, 'Plan')}`]
+  const identityFields: Array<[string, string]> = [
+    ['Plan ID', document.id],
+    ['Status', document.status],
+    ['Schema version', document.schemaVersion],
+    ['Revision', document.revisionId],
+    ['Active checkpoint', document.activeCheckpointId],
+  ]
+  const presentIdentityFields = identityFields.filter(([, value]) => value.trim() !== '')
+  if (presentIdentityFields.length > 0) {
+    lines.push('')
+    presentIdentityFields.forEach(([label, value]) => lines.push(`- ${label}: ${value}`))
+  }
+
+  appendTextSection(lines, 'Goal', document.info.goal)
+  appendTextSection(lines, 'Scope', document.info.scope)
+  appendTextSection(lines, 'Context', document.info.context)
+  appendBulletSection(lines, 'Decisions', document.info.decisions)
+  appendBulletSection(lines, 'Success criteria', document.info.successCriteria)
+  appendBulletSection(lines, 'Constraints', document.info.constraints)
+  appendBulletSection(lines, 'Assumptions', document.info.assumptions)
+  appendBulletSection(lines, 'Open questions', document.info.openQuestions)
+  appendBulletSection(lines, 'Relevant files', document.info.relevantFiles)
+  appendTextSection(lines, 'Validation strategy', document.info.validationStrategy)
+  appendFieldList(lines, 'Execution policy', [
+    ['Mode', document.executionPolicy?.mode],
+    ['Shape', document.executionPolicy?.shape],
+    ['Follow-up checkpoint policy', document.executionPolicy?.followupCheckpointPolicy],
+  ])
+  appendFieldList(lines, 'Execution state', [
+    ['Status', document.executionState?.status],
+    ['Active attempt', document.executionState?.activeAttemptId],
+    ['Current run', document.executionState?.currentRunId],
+    ['Current session', document.executionState?.currentSessionId],
+    ['Parent session', document.executionState?.parentSessionId],
+    ['Last checkpoint', document.executionState?.lastCheckpointId],
+    ['Last attempt', document.executionState?.lastAttemptId],
+    ['Last outcome', document.executionState?.lastOutcome],
+    ['Started at', document.executionState?.startedAt],
+    ['Updated at', document.executionState?.updatedAt],
+    ['Completed at', document.executionState?.completedAt],
+  ])
+
+  if (document.originalCheckpoints.length > 0) {
+    lines.push('', '## Original checkpoint plan')
+    document.originalCheckpoints.forEach((checkpoint, index) => {
+      lines.push('', `### ${index + 1}. ${firstNonBlankText(checkpoint.title, checkpoint.id, 'Checkpoint')}`)
+      const fields: Array<[string, string | number]> = [
+        ['ID', checkpoint.id],
+        ['Status', checkpoint.status],
+        ['Objective', checkpoint.objective],
+        ['Notes', checkpoint.notes],
+        ['Report', checkpoint.report],
+        ['Result', checkpoint.result],
+      ]
+      fields
+        .map(([label, value]): [string, string] => [label, typeof value === 'number' ? (value > 0 ? String(value) : '') : value.trim()])
+        .filter(([, value]) => value !== '')
+        .forEach(([label, value]) => lines.push(`- ${label}: ${value}`))
+      if (checkpoint.tasks.length > 0) {
+        lines.push('- Tasks:')
+        checkpoint.tasks.forEach((task) => lines.push(`  - ${task}`))
+      }
+      if (checkpoint.acceptanceCriteria.length > 0) {
+        lines.push('- Acceptance criteria:')
+        checkpoint.acceptanceCriteria.forEach((criterion) => lines.push(`  - ${criterion}`))
+      }
+    })
+  }
+
+  if (document.checkpoints.length > 0) {
+    lines.push('', document.originalCheckpoints.length > 0 ? '## Execution checkpoints' : '## Checkpoints')
+    document.checkpoints.forEach((checkpoint, index) => {
+      lines.push('', `### ${index + 1}. ${firstNonBlankText(checkpoint.title, checkpoint.id, 'Checkpoint')}`)
+      const fields: Array<[string, string | number]> = [
+        ['ID', checkpoint.id],
+        ['Status', checkpoint.status],
+        ['Objective', checkpoint.objective],
+        ['Attempt', checkpoint.attemptId],
+        ['Run', checkpoint.runId],
+        ['Session', checkpoint.sessionId],
+        ['Started at', checkpoint.startedAt],
+        ['Completed at', checkpoint.completedAt],
+        ['Notes', checkpoint.notes],
+        ['Report', checkpoint.report],
+        ['Result', checkpoint.result],
+      ]
+      fields
+        .map(([label, value]): [string, string] => [label, typeof value === 'number' ? (value > 0 ? String(value) : '') : value.trim()])
+        .filter(([, value]) => value !== '')
+        .forEach(([label, value]) => lines.push(`- ${label}: ${value}`))
+      if (checkpoint.tasks.length > 0) {
+        lines.push('- Tasks:')
+        checkpoint.tasks.forEach((task) => lines.push(`  - ${task}`))
+      }
+      if (checkpoint.acceptanceCriteria.length > 0) {
+        lines.push('- Acceptance criteria:')
+        checkpoint.acceptanceCriteria.forEach((criterion) => lines.push(`  - ${criterion}`))
+      }
+      if (checkpoint.changedFiles.length > 0) {
+        lines.push('- Changed files:')
+        checkpoint.changedFiles.forEach((file) => lines.push(`  - ${file}`))
+      }
+      if (checkpoint.validation.length > 0) {
+        lines.push('- Validation:')
+        checkpoint.validation.forEach((entry) => lines.push(`  - ${entry}`))
+      }
+      if (checkpoint.review) {
+        appendFieldList(lines, 'Review', [
+          ['Status', checkpoint.review.status],
+          ['Reviewer', checkpoint.review.reviewerId],
+          ['Reviewer type', checkpoint.review.reviewerType],
+          ['Result', checkpoint.review.result],
+          ['Notes', checkpoint.review.notes],
+          ['Reviewed at', checkpoint.review.reviewedAt],
+        ])
+      }
+    })
+  }
+
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+export function selectedPlanCopyText(document: DesktopSessionPlanDocument | null, markdownFallback: string): string {
+  if (document) {
+    const structuredText = structuredPlanCopyText(document)
+    if (structuredText) return structuredText
+  }
+  return markdownFallback
 }
 
 function SectionEyebrow({ children, className }: { children: string; className?: string }) {
@@ -313,7 +515,7 @@ function CheckpointRow({
   )
 }
 
-function CheckpointList({ document }: { document: DesktopSessionPlanDocument }) {
+function CheckpointList({ document, checkpoints = document.checkpoints, title = 'Checkpoints', description }: { document: DesktopSessionPlanDocument; checkpoints?: DesktopSessionPlanCheckpoint[]; title?: string; description?: string }) {
   const activeID = document.activeCheckpointId.trim()
   const activeLabel = activeID || 'none'
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set())
@@ -326,15 +528,15 @@ function CheckpointList({ document }: { document: DesktopSessionPlanDocument }) 
     <section className="min-w-0 content-start">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <SectionEyebrow>Checkpoints</SectionEyebrow>
+          <SectionEyebrow>{title}</SectionEyebrow>
           <div className="mt-1 text-sm text-[var(--app-text-muted)]">
-            {document.checkpoints.length} step{document.checkpoints.length === 1 ? '' : 's'} · {activeLabel} active
+            {description || `${checkpoints.length} step${checkpoints.length === 1 ? '' : 's'} · ${activeLabel} active`}
           </div>
         </div>
       </div>
-      {document.checkpoints.length > 0 ? (
+      {checkpoints.length > 0 ? (
         <div className="mt-4">
-          {document.checkpoints.map((checkpoint, index) => {
+          {checkpoints.map((checkpoint, index) => {
             const active = activeID !== '' && checkpoint.id === activeID
             const rowId = checkpoint.id || `${checkpoint.order}:${checkpoint.title}`
             return (
@@ -371,14 +573,236 @@ function PlanModalDocumentView({ document, emptyText }: { document: DesktopSessi
     return <section className="rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-5 text-sm text-[var(--app-text-muted)]">{emptyText}</section>
   }
   return (
-    <div className="grid min-h-0 grid-cols-1 gap-6 min-[901px]:grid-cols-[minmax(380px,0.85fr)_minmax(520px,1.15fr)] min-[901px]:gap-0">
-      <div className="min-w-0 min-[901px]:pr-6">
-        <PlanDetails document={document} />
-      </div>
-      <div className="min-w-0 border-t border-[var(--app-border)] pt-6 min-[901px]:border-l min-[901px]:border-t-0 min-[901px]:pl-6 min-[901px]:pt-0">
-        <CheckpointList document={document} />
+    <div className="grid min-h-0 gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-5">
+      <PlanDetails document={document} />
+      {document.originalCheckpoints.length > 0 ? (
+        <div className="border-t border-[var(--app-border)] pt-5">
+          <CheckpointList
+            document={document}
+            checkpoints={document.originalCheckpoints}
+            title="Original checkpoint plan"
+            description="Preserved approved checkpoint boundaries before single-run execution."
+          />
+        </div>
+      ) : null}
+      <div className="border-t border-[var(--app-border)] pt-5">
+        <CheckpointList
+          document={document}
+          title={document.originalCheckpoints.length > 0 ? 'Execution checkpoint' : 'Checkpoints'}
+          description={document.originalCheckpoints.length > 0 ? 'Single-run execution state; the original checkpoint plan above remains preserved for /plan.' : undefined}
+        />
       </div>
     </div>
+  )
+}
+
+function PlanRevisionHistory({
+  revisions,
+  selectedRevisionKey,
+  historyLoading,
+  onSelect,
+}: {
+  revisions: DesktopSessionPlanRevisionRecord[]
+  selectedRevisionKey: string
+  historyLoading: boolean
+  onSelect: (key: string) => void
+}) {
+  return (
+    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <SectionEyebrow>Revision history</SectionEyebrow>
+          <p className="mt-1 text-sm text-[var(--app-text-muted)]">Select a whole-plan snapshot to inspect, restore, or restart from a checkpoint.</p>
+        </div>
+        {historyLoading ? <span className="text-xs text-[var(--app-text-muted)]">Loading…</span> : null}
+      </div>
+      <div className="mt-3 grid gap-2">
+        <button
+          type="button"
+          onClick={() => onSelect('current')}
+          className={cn('rounded-xl border px-3 py-2 text-left text-sm transition', selectedRevisionKey === 'current' ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]')}
+        >
+          <span className="font-semibold">Current plan</span>
+          <span className="ml-2 text-xs text-[var(--app-text-muted)]">Live structured document</span>
+        </button>
+        {revisions.length > 0 ? (
+          <div className="grid max-h-48 gap-2 overflow-y-auto pr-1">
+            {revisions.map((revision) => {
+              const timestamp = formatTimestamp(revision.createdAt || revision.updatedAt)
+              const selected = selectedRevisionKey === revision.key
+              return (
+                <button
+                  key={revision.key}
+                  type="button"
+                  onClick={() => onSelect(revision.key)}
+                  className={cn('rounded-xl border px-3 py-2 text-left transition', selected ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]')}
+                >
+                  <span className="block truncate text-sm font-semibold text-[var(--app-text)]">{revisionOptionLabel(revision)}</span>
+                  <span className="mt-0.5 block truncate text-xs text-[var(--app-text-muted)]">
+                    {timestamp || 'No timestamp'} · status {displayValue(revision.status)} · approval {displayValue(revision.approvalState)}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        ) : !historyLoading ? (
+          <p className="rounded-xl border border-dashed border-[var(--app-border)] px-3 py-2 text-sm text-[var(--app-text-muted)]">No prior plan definition revisions yet.</p>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
+function PlanRevisionSummary({ revision }: { revision: DesktopSessionPlanRevisionRecord }) {
+  const timestamp = formatTimestamp(revision.createdAt || revision.updatedAt)
+  return (
+    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <SectionEyebrow>Whole-plan snapshot</SectionEyebrow>
+          <h3 className="mt-1 text-base font-semibold text-[var(--app-text)]">{revisionLabel(revision)}</h3>
+          <p className="mt-1 text-sm text-[var(--app-text-muted)]">
+            {revisionKindLabel(revision)} · {revision.updateSummary || revision.updateKind || 'Plan definition snapshot'}
+          </p>
+        </div>
+        <div className="grid gap-1 text-right text-xs text-[var(--app-text-muted)]">
+          {timestamp ? <span>{timestamp}</span> : null}
+          {revision.parentRevision > 0 ? <span>Parent revision {revision.parentRevision}</span> : null}
+          {revision.restoredFromVersion > 0 ? <span>Restored from revision {revision.restoredFromVersion}</span> : null}
+        </div>
+      </div>
+      <dl className="mt-4 grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
+          <dt className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Status</dt>
+          <dd className="mt-1 text-[var(--app-text)]">{displayValue(revision.status)}</dd>
+        </div>
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
+          <dt className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Approval</dt>
+          <dd className="mt-1 text-[var(--app-text)]">{displayValue(revision.approvalState)}</dd>
+        </div>
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
+          <dt className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Scope</dt>
+          <dd className="mt-1 text-[var(--app-text)]">{displayValue(revision.updateScope)}</dd>
+        </div>
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
+          <dt className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Kind</dt>
+          <dd className="mt-1 text-[var(--app-text)]">{displayValue(revision.updateKind)}</dd>
+        </div>
+      </dl>
+    </section>
+  )
+}
+
+function PlanRecoveryControls({
+  document,
+  viewingRevision,
+  selectedRevision,
+  saving,
+  executing,
+  executionGranularity,
+  continueAutomatically,
+  onExecutionGranularityChange,
+  onContinueAutomaticallyChange,
+  onRestore,
+}: {
+  document: DesktopSessionPlanDocument | null
+  viewingRevision: boolean
+  selectedRevision: DesktopSessionPlanRevisionRecord | null
+  saving: boolean
+  executing: boolean
+  executionGranularity: 'checkpointed' | 'run_through'
+  continueAutomatically: boolean
+  onExecutionGranularityChange: (value: 'checkpointed' | 'run_through') => void
+  onContinueAutomaticallyChange: (value: boolean) => void
+  onRestore: (input: DesktopPlanRecoveryInput) => void
+}) {
+  const [checkpointId, setCheckpointId] = useState('')
+  useEffect(() => {
+    setCheckpointId(document?.activeCheckpointId || document?.checkpoints[0]?.id || '')
+  }, [document?.id, document?.revisionId, document?.activeCheckpointId])
+  if (!viewingRevision || !selectedRevision || !document) return null
+  const selectedCheckpoint = document.checkpoints.find((checkpoint) => checkpoint.id === checkpointId) ?? document.checkpoints[0]
+  const effectiveCheckpointId = selectedCheckpoint?.id || ''
+  const effectiveContinueAutomatically = executionGranularity === 'run_through' ? true : continueAutomatically
+  const continuationPolicy: 'automatic' | 'review_each_checkpoint' = effectiveContinueAutomatically ? 'automatic' : 'review_each_checkpoint'
+  const disabled = saving || executing
+  return (
+    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <SectionEyebrow>Recovery controls</SectionEyebrow>
+          <p className="mt-1 text-sm text-[var(--app-text-muted)]">
+            Restore this full snapshot, restart from a checkpoint, or jump to a later checkpoint with prior steps recorded as skipped.
+          </p>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+        <label className="grid gap-1.5 text-sm text-[var(--app-text)]">
+          <span className="font-medium">Checkpoint</span>
+          <Select value={effectiveCheckpointId} onChange={(event) => setCheckpointId(event.target.value)} disabled={disabled || document.checkpoints.length === 0}>
+            {document.checkpoints.map((checkpoint, index) => (
+              <option key={checkpoint.id || `${index}:${checkpoint.title}`} value={checkpoint.id}>
+                {index + 1}. {checkpoint.title || checkpoint.id || 'Untitled checkpoint'} · {formatStatusLabel(checkpoint.status, checkpoint.id === document.activeCheckpointId)}
+              </option>
+            ))}
+          </Select>
+          <span className="text-xs text-[var(--app-text-muted)]">Restart uses this checkpoint. Jump marks earlier incomplete checkpoints skipped by the backend restore lifecycle.</span>
+        </label>
+        <label className="grid gap-1.5 text-sm text-[var(--app-text)]">
+          <span className="font-medium">Execution mode</span>
+          <Select value={executionGranularity} onChange={(event) => onExecutionGranularityChange(event.target.value === 'run_through' ? 'run_through' : 'checkpointed')} disabled={disabled}>
+            <option value="checkpointed">{displayExecutionShape('checkpointed')}</option>
+            <option value="run_through">{displayExecutionShape('run_through')}</option>
+          </Select>
+          <span className="text-xs text-[var(--app-text-muted)]">Stored with the restored revision so recovery starts with the chosen backend policy.</span>
+        </label>
+        {executionGranularity === 'checkpointed' ? (
+          <label className="flex items-start gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)] lg:col-span-2">
+            <input type="checkbox" className="mt-1" checked={continueAutomatically} onChange={(event) => onContinueAutomaticallyChange(event.target.checked)} disabled={disabled} />
+            <span className="grid gap-1">
+              <span className="font-medium">{displayExecutionMode(continuationPolicy)}</span>
+              <span className="text-xs text-[var(--app-text-muted)]">Automatic continues after successful checkpoints; review mode pauses after each checkpoint.</span>
+            </span>
+          </label>
+        ) : null}
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button type="button" variant="secondary" size="sm" onClick={() => onRestore({})} disabled={disabled}>
+          <RotateCcw className={cn('size-4', saving ? 'animate-pulse' : '')} />
+          Restore snapshot
+        </Button>
+        <Button
+          type="button"
+          variant="primary"
+          size="sm"
+          onClick={() => onRestore({ checkpointId: effectiveCheckpointId, executionGranularity, continuationPolicy, continueAutomatically: effectiveContinueAutomatically, restart: true, start: true })}
+          disabled={disabled || !effectiveCheckpointId}
+        >
+          <PlayCircle className={cn('size-4', saving || executing ? 'animate-pulse' : '')} />
+          Restore & start checkpoint
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => onRestore({ checkpointId: effectiveCheckpointId, executionGranularity, continuationPolicy, continueAutomatically: effectiveContinueAutomatically, restart: true, start: true, skipPrior: true })}
+          disabled={disabled || !effectiveCheckpointId}
+        >
+          Jump to selected checkpoint
+        </Button>
+        {document.checkpoints.length > 0 ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onRestore({ checkpointId: document.checkpoints[document.checkpoints.length - 1]?.id, executionGranularity, continuationPolicy, continueAutomatically: effectiveContinueAutomatically, restart: true, start: true, skipPrior: true })}
+            disabled={disabled || !document.checkpoints[document.checkpoints.length - 1]?.id}
+          >
+            Jump to final checkpoint
+          </Button>
+        ) : null}
+      </div>
+    </section>
   )
 }
 
@@ -386,13 +810,14 @@ export function DesktopPlanModal({
   open,
   plan,
   revisions,
-  historyLoading: _historyLoading,
+  historyLoading,
   saving,
   executing = false,
   error,
   onOpenChange,
   onCopy,
   onSave,
+  onRestoreRevision,
   onApproveStart,
 }: DesktopPlanModalProps) {
   const [draft, setDraft] = useState('')
@@ -403,8 +828,6 @@ export function DesktopPlanModal({
   const [selectedRevisionKey, setSelectedRevisionKey] = useState('current')
   const [executionGranularity, setExecutionGranularity] = useState<'checkpointed' | 'run_through'>('checkpointed')
   const [continueAutomatically, setContinueAutomatically] = useState(true)
-  const [revisionSelectWidth, setRevisionSelectWidth] = useState<number | undefined>(undefined)
-  const revisionSelectSizerRef = useRef<HTMLSpanElement | null>(null)
 
   useEffect(() => {
     if (!open) {
@@ -435,22 +858,6 @@ export function DesktopPlanModal({
     return revisions.find((revision) => revision.key === selectedRevisionKey) ?? null
   }, [revisions, selectedRevisionKey])
 
-  const selectedRevisionLabel = selectedRevision ? revisionOptionLabel(selectedRevision) : 'Current revision'
-
-  useLayoutEffect(() => {
-    if (!open) {
-      return
-    }
-    const sizer = revisionSelectSizerRef.current
-    if (!sizer) {
-      return
-    }
-    const textWidth = Math.ceil(sizer.getBoundingClientRect().width)
-    const selectChromeWidth = 54
-    const maxWidth = 360
-    setRevisionSelectWidth(Math.min(textWidth + selectChromeWidth, maxWidth))
-  }, [open, selectedRevisionLabel])
-
   if (!open) {
     return null
   }
@@ -462,7 +869,7 @@ export function DesktopPlanModal({
   const dirty = draft !== (plan?.plan ?? '') || documentDraft !== currentDocumentWire
 
   const handleCopy = async () => {
-    const ok = await onCopy(preview)
+    const ok = await onCopy(selectedPlanCopyText(selectedDocument, preview))
     setCopyState(ok ? 'copied' : 'error')
   }
 
@@ -486,13 +893,11 @@ export function DesktopPlanModal({
     setSelectedRevisionKey('current')
   }
 
-  const handleRestoreRevision = async () => {
+  const handleRestoreRevision = async (input: DesktopPlanRecoveryInput = {}) => {
     if (!selectedRevision) {
       return
     }
-    setDraft(selectedRevision.plan)
-    const revisionDocument = selectedRevision.document ? structuredPlanDocumentToWire(selectedRevision.document) : undefined
-    await onSave(selectedRevision.plan, revisionDocument)
+    await onRestoreRevision(selectedRevision, input)
     setEditing(false)
     setSelectedRevisionKey('current')
   }
@@ -526,37 +931,6 @@ export function DesktopPlanModal({
             <h2 className="truncate text-xl font-semibold tracking-tight text-[var(--app-text)]">{title}</h2>
           </div>
           <div className="flex min-w-0 shrink-0 flex-nowrap items-center justify-end gap-2 overflow-x-auto whitespace-nowrap">
-            <span
-              ref={revisionSelectSizerRef}
-              aria-hidden="true"
-              className="pointer-events-none absolute -z-10 whitespace-pre text-sm opacity-0"
-            >
-              {selectedRevisionLabel}
-            </span>
-            <Select
-              value={selectedRevisionKey}
-              onChange={(event) => {
-                setEditing(false)
-                setSelectedRevisionKey(event.target.value)
-              }}
-              className="h-9 min-h-9 max-w-[360px] shrink-0 rounded-lg bg-[var(--app-surface)] py-1.5 pl-3 pr-10 text-sm"
-              style={revisionSelectWidth ? { width: `${revisionSelectWidth}px` } : undefined}
-              aria-label="Select plan revision"
-              disabled={editing}
-            >
-              <option value="current">Current revision</option>
-              {revisions.map((revision) => (
-                <option key={revision.key} value={revision.key}>
-                  {revisionOptionLabel(revision)}
-                </option>
-              ))}
-            </Select>
-            {viewingRevision ? (
-              <Button type="button" variant="primary" size="sm" onClick={() => void handleRestoreRevision()} disabled={saving || editing || executing}>
-                <RotateCcw className={cn('size-4', saving ? 'animate-pulse' : '')} />
-                {saving ? 'Activating…' : 'Activate revision'}
-              </Button>
-            ) : null}
             {!editing && !viewingRevision && plan?.document ? (
               <Button type="button" variant="primary" size="sm" onClick={() => void handleApproveStart()} disabled={!onApproveStart || saving || executing}>
                 <PlayCircle className={cn('size-4', executing ? 'animate-pulse' : '')} />
@@ -641,6 +1015,28 @@ export function DesktopPlanModal({
             </section>
           ) : (
             <div className="grid gap-4">
+              <PlanRevisionHistory
+                revisions={revisions}
+                selectedRevisionKey={selectedRevisionKey}
+                historyLoading={historyLoading}
+                onSelect={(key) => {
+                  setEditing(false)
+                  setSelectedRevisionKey(key)
+                }}
+              />
+              {viewingRevision && selectedRevision ? <PlanRevisionSummary revision={selectedRevision} /> : null}
+              <PlanRecoveryControls
+                document={selectedDocument}
+                viewingRevision={viewingRevision}
+                selectedRevision={selectedRevision}
+                saving={saving}
+                executing={executing}
+                executionGranularity={executionGranularity}
+                continueAutomatically={continueAutomatically}
+                onExecutionGranularityChange={setExecutionGranularity}
+                onContinueAutomaticallyChange={setContinueAutomatically}
+                onRestore={(input) => void handleRestoreRevision(input)}
+              />
               {!viewingRevision && selectedDocument ? (
                 <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
                   <SectionEyebrow>Execution on approval</SectionEyebrow>

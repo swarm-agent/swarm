@@ -416,6 +416,7 @@ interface SessionPlanDocumentWire {
   execution_policy?: SessionPlanExecutionPolicyWire | null;
   execution_state?: SessionPlanExecutionStateWire | null;
   checkpoints?: SessionPlanCheckpointWire[] | null;
+  original_checkpoints?: SessionPlanCheckpointWire[] | null;
   active_checkpoint_id?: string;
   rendered_text?: string;
   display_text?: string;
@@ -436,6 +437,8 @@ interface SessionPlanWire {
   update_summary?: string;
   update_scope?: string;
   update_kind?: string;
+  revision_kind?: string;
+  restored_from_version?: number;
   version?: number;
   parent_revision?: number;
   checkpoint?: boolean;
@@ -703,29 +706,8 @@ function mapSessionPlanDocument(
     },
     executionPolicy: mapSessionPlanExecutionPolicy(document.execution_policy),
     executionState: mapSessionPlanExecutionState(document.execution_state),
-    checkpoints: Array.isArray(document.checkpoints)
-      ? document.checkpoints.map((checkpoint, index) => ({
-          id: String(checkpoint?.id ?? "").trim(),
-          title: String(checkpoint?.title ?? "").trim(),
-          status: String(checkpoint?.status ?? "").trim(),
-          objective: String(checkpoint?.objective ?? "").trim(),
-          tasks: mapStringArray(checkpoint?.tasks),
-          acceptanceCriteria: mapStringArray(checkpoint?.acceptance_criteria),
-          notes: String(checkpoint?.notes ?? "").trim(),
-          report: String(checkpoint?.report ?? "").trim(),
-          result: String(checkpoint?.result ?? "").trim(),
-          changedFiles: mapStringArray(checkpoint?.changed_files),
-          validation: mapStringArray(checkpoint?.validation),
-          attemptId: String(checkpoint?.attempt_id ?? "").trim(),
-          runId: String(checkpoint?.run_id ?? "").trim(),
-          sessionId: String(checkpoint?.session_id ?? "").trim(),
-          startedAt: typeof checkpoint?.started_at === "number" ? checkpoint.started_at : 0,
-          completedAt: typeof checkpoint?.completed_at === "number" ? checkpoint.completed_at : 0,
-          review: mapSessionPlanCheckpointReview(checkpoint?.review),
-          attempts: mapSessionPlanCheckpointAttempts(checkpoint?.attempts),
-          order: typeof checkpoint?.order === "number" ? checkpoint.order : index + 1,
-        }))
-      : [],
+    checkpoints: mapSessionPlanCheckpoints(document.checkpoints),
+    originalCheckpoints: mapSessionPlanCheckpoints(document.original_checkpoints),
     activeCheckpointId: String(document.active_checkpoint_id ?? "").trim(),
     renderedText: String(document.rendered_text ?? ""),
     displayText: String(document.display_text ?? ""),
@@ -745,6 +727,32 @@ export function mapDesktopSessionPlan(
     approvalState: String(plan?.approval_state ?? "").trim(),
     updatedAt: typeof plan?.updated_at === "number" ? plan.updated_at : 0,
   };
+}
+
+function mapSessionPlanCheckpoints(checkpoints: SessionPlanCheckpointWire[] | null | undefined): DesktopSessionPlanCheckpoint[] {
+  return Array.isArray(checkpoints)
+    ? checkpoints.map((checkpoint, index) => ({
+        id: String(checkpoint?.id ?? "").trim(),
+        title: String(checkpoint?.title ?? "").trim(),
+        status: String(checkpoint?.status ?? "").trim(),
+        objective: String(checkpoint?.objective ?? "").trim(),
+        tasks: mapStringArray(checkpoint?.tasks),
+        acceptanceCriteria: mapStringArray(checkpoint?.acceptance_criteria),
+        notes: String(checkpoint?.notes ?? "").trim(),
+        report: String(checkpoint?.report ?? "").trim(),
+        result: String(checkpoint?.result ?? "").trim(),
+        changedFiles: mapStringArray(checkpoint?.changed_files),
+        validation: mapStringArray(checkpoint?.validation),
+        attemptId: String(checkpoint?.attempt_id ?? "").trim(),
+        runId: String(checkpoint?.run_id ?? "").trim(),
+        sessionId: String(checkpoint?.session_id ?? "").trim(),
+        startedAt: typeof checkpoint?.started_at === "number" ? checkpoint.started_at : 0,
+        completedAt: typeof checkpoint?.completed_at === "number" ? checkpoint.completed_at : 0,
+        review: mapSessionPlanCheckpointReview(checkpoint?.review),
+        attempts: mapSessionPlanCheckpointAttempts(checkpoint?.attempts),
+        order: typeof checkpoint?.order === "number" ? checkpoint.order : index + 1,
+      }))
+    : [];
 }
 
 function mapSessionPlanExecutionPolicy(policy: SessionPlanExecutionPolicyWire | null | undefined): DesktopSessionPlanDocument['executionPolicy'] {
@@ -826,6 +834,9 @@ export function mapDesktopSessionPlanRevision(
     updateSummary: String(plan?.update_summary ?? "").trim(),
     updateScope: String(plan?.update_scope ?? "").trim(),
     updateKind: String(plan?.update_kind ?? "").trim(),
+    revisionKind: String(plan?.revision_kind ?? "").trim(),
+    restoredFromVersion:
+      typeof plan?.restored_from_version === "number" ? plan.restored_from_version : 0,
     version,
     parentRevision:
       typeof plan?.parent_revision === "number" ? plan.parent_revision : 0,
