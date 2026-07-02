@@ -117,7 +117,7 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	requestedWorktreeMode, err := validateSessionsV3CreateWorktreeRequest(req.WorktreeMode, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName)
+	requestedWorktreeMode, err := validateSessionsV3CreateWorktreeRequest(req.WorktreeMode, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName, "")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

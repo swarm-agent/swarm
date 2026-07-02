@@ -58,6 +58,7 @@ export interface CreateDesktopV3NewSessionOperationInput {
     useCurrentBranch?: boolean
     baseBranch?: string
     branchName?: string
+    existingPath?: string
   }
 }
 
@@ -139,6 +140,7 @@ export function createDesktopV3CreateOnlySessionOperation(
       worktree_use_current_branch: input.worktree?.useCurrentBranch,
       worktree_base_branch: input.worktree?.baseBranch,
       worktree_branch_name: input.worktree?.branchName,
+      worktree_existing_path: input.worktree?.existingPath,
     },
   }
 }

@@ -337,7 +337,7 @@ func (s *Service) ListManagedForPrincipal(principal identity.Principal, workspac
 		managed = append(managed, ManagedWorktree{
 			Path:        path,
 			WorkspaceID: filepath.Base(path),
-			Branch:      entry.Branch,
+			Branch:      normalizeGitWorktreeBranch(entry.Branch),
 			Detached:    entry.Detached,
 			Exists:      pathExists(path),
 			Managed:     true,
@@ -589,6 +589,12 @@ type gitWorktreeListEntry struct {
 	Path     string
 	Branch   string
 	Detached bool
+}
+
+func normalizeGitWorktreeBranch(branch string) string {
+	branch = strings.TrimSpace(branch)
+	branch = strings.TrimPrefix(branch, "refs/heads/")
+	return strings.TrimSpace(branch)
 }
 
 func parseWorktreeList(output string) []gitWorktreeListEntry {

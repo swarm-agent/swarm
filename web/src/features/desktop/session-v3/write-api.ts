@@ -34,6 +34,7 @@ export interface DesktopV3CreateSessionRequest {
   worktree_use_current_branch?: boolean
   worktree_base_branch?: string
   worktree_branch_name?: string
+  worktree_existing_path?: string
 }
 
 export interface DesktopV3AppendMessageRequest {

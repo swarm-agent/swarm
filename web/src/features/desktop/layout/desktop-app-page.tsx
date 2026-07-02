@@ -173,12 +173,19 @@ interface GitPanelState {
   workspaceName: string
 }
 
+interface ManagedWorktreeOption {
+  path: string
+  branch: string
+  workspaceID: string
+}
+
 interface WorktreeSessionModalState {
   workspacePath: string
   workspaceName: string
   workspaceSlug: string
   routeOptions: DesktopChatRoute[]
   branchPrefix: string
+  managedWorktrees: ManagedWorktreeOption[]
   settingsLoading: boolean
 }
 
@@ -581,9 +588,19 @@ interface WorktreeSettingsWire {
   updated_at?: number
 }
 
+interface ManagedWorktreeWire {
+  path?: string
+  workspace_id?: string
+  branch?: string
+  detached?: boolean
+  exists?: boolean
+  managed?: boolean
+}
+
 interface WorktreeSettingsResponseWire {
   ok?: boolean
   worktrees?: WorktreeSettingsWire
+  managed?: ManagedWorktreeWire[]
 }
 
 function normalizeWorktreeBranchPrefix(value: string | undefined): string {
@@ -595,7 +612,11 @@ function normalizeWorktreeBranchPrefix(value: string | undefined): string {
   return trimmed
 }
 
-async function fetchWorktreeBranchPrefix(workspacePath: string): Promise<string> {
+function normalizeManagedWorktreeBranch(value: string | undefined): string {
+  return (value ?? '').trim().replace(/^refs\/heads\//, '')
+}
+
+async function fetchWorktreeSessionSettings(workspacePath: string): Promise<{ branchPrefix: string; managedWorktrees: ManagedWorktreeOption[] }> {
   const params = new URLSearchParams()
   const normalizedWorkspacePath = workspacePath.trim()
   if (normalizedWorkspacePath) params.set('workspace_path', normalizedWorkspacePath)
@@ -604,7 +625,19 @@ async function fetchWorktreeBranchPrefix(workspacePath: string): Promise<string>
   if (!branchPrefix) {
     throw new Error('Worktree settings did not return a branch prefix')
   }
-  return branchPrefix
+  const managedWorktrees = (response.managed ?? [])
+    .map((item) => ({
+      path: item.path?.trim() ?? '',
+      branch: normalizeManagedWorktreeBranch(item.branch),
+      workspaceID: item.workspace_id?.trim() ?? '',
+      exists: item.exists === true,
+      managed: item.managed === true,
+      detached: item.detached === true,
+    }))
+    .filter((item) => item.path && item.branch && item.exists && item.managed && !item.detached)
+    .sort((left, right) => left.branch.localeCompare(right.branch))
+    .map(({ path, branch, workspaceID }) => ({ path, branch, workspaceID }))
+  return { branchPrefix, managedWorktrees }
 }
 
 function normalizeWorktreeBranchSuffix(value: string): string {
@@ -617,17 +650,20 @@ function composeWorktreeBranchName(prefix: string, suffix: string): string {
   return normalizedSuffix ? `${normalizedPrefix}/${normalizedSuffix}` : normalizedPrefix
 }
 
-function WorktreeSessionModal({ state, title, branch, busy, error, onTitleChange, onBranchChange, onSubmit, onClose }: {
+function WorktreeSessionModal({ state, title, branch, selectedExistingPath, busy, error, onTitleChange, onBranchChange, onSelectedExistingPathChange, onSubmit, onClose }: {
   state: WorktreeSessionModalState | null
   title: string
   branch: string
+  selectedExistingPath: string
   busy: boolean
   error: string | null
   onTitleChange: (value: string) => void
   onBranchChange: (value: string) => void
+  onSelectedExistingPathChange: (value: string) => void
   onSubmit: () => void
   onClose: () => void
 }) {
+  const reusingExistingWorktree = Boolean(selectedExistingPath.trim())
   if (!state) return null
   return (
     <Dialog>
@@ -661,26 +697,43 @@ function WorktreeSessionModal({ state, title, branch, busy, error, onTitleChange
             />
           </label>
           <label className="grid gap-1.5 text-xs text-[var(--app-text-muted)]">
-            <span>Branch suffix:</span>
-            <div className="flex h-10 overflow-hidden border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-sm focus-within:border-[var(--app-border-strong)]">
-              <span className="flex shrink-0 items-center border-r border-[var(--app-border)] bg-[var(--app-bg)] px-3 font-mono text-[var(--app-text-muted)]">
-                {state.settingsLoading ? 'Loading…' : `${state.branchPrefix}/`}
-              </span>
-              <input
-                name="branch"
-                className="min-w-0 flex-1 bg-transparent px-3 text-[var(--app-text)] outline-none"
-                value={branch}
-                onChange={(event) => onBranchChange(event.target.value)}
-                disabled={busy || state.settingsLoading || !state.branchPrefix.trim()}
-                autoComplete="off"
-              />
-            </div>
-            <span className="text-[11px] text-[var(--app-text-subtle)]">Prefix comes from Worktree settings. Change it in Settings → Worktrees.</span>
+            <span>Reuse existing worktree:</span>
+            <select
+              className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-border-strong)]"
+              value={selectedExistingPath}
+              onChange={(event) => onSelectedExistingPathChange(event.target.value)}
+              disabled={busy || state.settingsLoading || state.managedWorktrees.length === 0}
+            >
+              <option value="">Create a new worktree branch…</option>
+              {state.managedWorktrees.map((item) => (
+                <option key={item.path} value={item.path}>{item.branch}</option>
+              ))}
+            </select>
+            <span className="text-[11px] text-[var(--app-text-subtle)]">Select a previous managed worktree to start a new conversation in it without creating or overwriting a branch.</span>
           </label>
+          {!reusingExistingWorktree ? (
+            <label className="grid gap-1.5 text-xs text-[var(--app-text-muted)]">
+              <span>Branch suffix:</span>
+              <div className="flex h-10 overflow-hidden border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-sm focus-within:border-[var(--app-border-strong)]">
+                <span className="flex shrink-0 items-center border-r border-[var(--app-border)] bg-[var(--app-bg)] px-3 font-mono text-[var(--app-text-muted)]">
+                  {state.settingsLoading ? 'Loading…' : `${state.branchPrefix}/`}
+                </span>
+                <input
+                  name="branch"
+                  className="min-w-0 flex-1 bg-transparent px-3 text-[var(--app-text)] outline-none"
+                  value={branch}
+                  onChange={(event) => onBranchChange(event.target.value)}
+                  disabled={busy || state.settingsLoading || !state.branchPrefix.trim()}
+                  autoComplete="off"
+                />
+              </div>
+              <span className="text-[11px] text-[var(--app-text-subtle)]">Prefix comes from Worktree settings. Change it in Settings → Worktrees.</span>
+            </label>
+          ) : null}
           {error ? <div className="border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning)]">{error}</div> : null}
           <div className="flex justify-end gap-3">
             <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
-            <Button type="submit" disabled={busy || state.settingsLoading || !state.branchPrefix.trim() || !title.trim() || !normalizeWorktreeBranchSuffix(branch)}>
+            <Button type="submit" disabled={busy || state.settingsLoading || !state.branchPrefix.trim() || !title.trim() || (!reusingExistingWorktree && !normalizeWorktreeBranchSuffix(branch))}>
               {busy ? 'Creating…' : 'Create session'}
             </Button>
           </div>
@@ -1981,6 +2034,7 @@ export function DesktopAppPage() {
   const [worktreeSessionModal, setWorktreeSessionModal] = useState<WorktreeSessionModalState | null>(null)
   const [worktreeSessionTitle, setWorktreeSessionTitle] = useState('')
   const [worktreeSessionBranch, setWorktreeSessionBranch] = useState('')
+  const [worktreeSessionExistingPath, setWorktreeSessionExistingPath] = useState('')
   const [worktreeSessionCreating, setWorktreeSessionCreating] = useState(false)
   const [worktreeSessionError, setWorktreeSessionError] = useState<string | null>(null)
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
@@ -2629,15 +2683,17 @@ export function DesktopAppPage() {
       workspaceSlug: input.workspaceSlug,
       routeOptions: input.routeOptions,
       branchPrefix: '',
+      managedWorktrees: [],
       settingsLoading: true,
     })
     setWorktreeSessionTitle('')
     setWorktreeSessionBranch('')
+    setWorktreeSessionExistingPath('')
     setWorktreeSessionError(null)
-    void fetchWorktreeBranchPrefix(workspacePath)
-      .then((branchPrefix) => {
+    void fetchWorktreeSessionSettings(workspacePath)
+      .then(({ branchPrefix, managedWorktrees }) => {
         setWorktreeSessionModal((current) => current?.workspacePath === workspacePath
-          ? { ...current, branchPrefix, settingsLoading: false }
+          ? { ...current, branchPrefix, managedWorktrees, settingsLoading: false }
           : current)
       })
       .catch((error) => {
@@ -2657,9 +2713,11 @@ export function DesktopAppPage() {
   const handleCreateWorktreeSession = useCallback(async () => {
     if (!worktreeSessionModal || worktreeSessionCreating) return
     const title = worktreeSessionTitle.trim()
+    const existingPath = worktreeSessionExistingPath.trim()
+    const existingWorktree = existingPath ? worktreeSessionModal.managedWorktrees.find((item) => item.path === existingPath) ?? null : null
     const branchSuffix = normalizeWorktreeBranchSuffix(worktreeSessionBranch)
     const branchPrefix = normalizeWorktreeBranchPrefix(worktreeSessionModal.branchPrefix)
-    const branch = composeWorktreeBranchName(branchPrefix, branchSuffix)
+    const branch = existingWorktree?.branch ?? composeWorktreeBranchName(branchPrefix, branchSuffix)
     if (worktreeSessionModal.settingsLoading) {
       setWorktreeSessionError('Worktree settings are still loading.')
       return
@@ -2672,7 +2730,11 @@ export function DesktopAppPage() {
       setWorktreeSessionError('Title is required.')
       return
     }
-    if (!branchSuffix) {
+    if (existingPath && !existingWorktree) {
+      setWorktreeSessionError('Selected worktree is no longer available.')
+      return
+    }
+    if (!existingWorktree && !branchSuffix) {
       setWorktreeSessionError('Branch suffix is required.')
       return
     }
@@ -2708,7 +2770,7 @@ export function DesktopAppPage() {
           source: 'desktop-v3',
           workspace_path: worktreeSessionModal.workspacePath,
         },
-        worktree: { mode: 'on', branchName: branch },
+        worktree: { mode: 'on', branchName: branch, existingPath: existingWorktree?.path },
       })
       await startDesktopV3CreateOnlySession({
         operation,
@@ -2727,7 +2789,7 @@ export function DesktopAppPage() {
     } finally {
       setWorktreeSessionCreating(false)
     }
-  }, [agentStateQuery.data?.activePrimary, draftPreferenceQuery.data?.preference, navigate, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionModal, worktreeSessionTitle])
+  }, [agentStateQuery.data?.activePrimary, draftPreferenceQuery.data?.preference, navigate, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionExistingPath, worktreeSessionModal, worktreeSessionTitle])
 
   const openPlanModalForSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
@@ -3650,10 +3712,12 @@ export function DesktopAppPage() {
         state={worktreeSessionModal}
         title={worktreeSessionTitle}
         branch={worktreeSessionBranch}
+        selectedExistingPath={worktreeSessionExistingPath}
         busy={worktreeSessionCreating}
         error={worktreeSessionError}
         onTitleChange={setWorktreeSessionTitle}
         onBranchChange={setWorktreeSessionBranch}
+        onSelectedExistingPathChange={setWorktreeSessionExistingPath}
         onSubmit={() => { void handleCreateWorktreeSession() }}
         onClose={closeWorktreeSessionModal}
       />

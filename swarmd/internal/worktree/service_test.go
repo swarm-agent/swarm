@@ -114,6 +114,9 @@ func TestParseWorktreeListAndManagedPathFilter(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("entry count = %d, want 2", len(entries))
 	}
+	if got := normalizeGitWorktreeBranch(entries[1].Branch); got != "agent/abc123" {
+		t.Fatalf("normalized branch = %q, want agent/abc123", got)
+	}
 	if !pathWithinRoot(root, entries[1].Path) {
 		t.Fatalf("expected managed path under root: %q in %q", entries[1].Path, root)
 	}

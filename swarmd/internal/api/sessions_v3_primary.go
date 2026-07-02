@@ -51,6 +51,7 @@ type sessionsV3CreateRequest struct {
 	WorktreeUseCurrentBranch *bool                       `json:"worktree_use_current_branch,omitempty"`
 	WorktreeBaseBranch       string                      `json:"worktree_base_branch,omitempty"`
 	WorktreeBranchName       string                      `json:"worktree_branch_name,omitempty"`
+	WorktreeExistingPath     string                      `json:"worktree_existing_path,omitempty"`
 	Metadata                 map[string]any              `json:"metadata,omitempty"`
 }
 
@@ -305,7 +306,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	requestedWorktreeMode, err := validateSessionsV3CreateWorktreeRequest(req.WorktreeMode, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName)
+	requestedWorktreeMode, err := validateSessionsV3CreateWorktreeRequest(req.WorktreeMode, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName, req.WorktreeExistingPath)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -355,7 +356,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if requestedWorktreeMode == runruntime.RunWorktreeModeOn {
-		allocation, err := s.allocateSessionsV3CreateWorktree(principal, workspacePath, sessionID, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName)
+		allocation, err := s.resolveSessionsV3CreateWorktree(principal, workspacePath, sessionID, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName, req.WorktreeExistingPath)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -2246,20 +2247,26 @@ func (s *Server) resolveSessionsV3PrimaryBinding(principal identity.Principal, r
 	}, nil
 }
 
-func validateSessionsV3CreateWorktreeRequest(rawMode string, useCurrentBranch *bool, baseBranch, branchName string) (string, error) {
+func validateSessionsV3CreateWorktreeRequest(rawMode string, useCurrentBranch *bool, baseBranch, branchName, existingPath string) (string, error) {
 	mode := runruntime.NormalizeRunWorktreeMode(rawMode)
 	if strings.TrimSpace(rawMode) != "" && mode == "" {
 		return "", fmt.Errorf("unsupported worktree_mode %q", strings.TrimSpace(rawMode))
 	}
 	switch mode {
 	case "", runruntime.RunWorktreeModeInherit, runruntime.RunWorktreeModeOff:
-		if useCurrentBranch != nil || strings.TrimSpace(baseBranch) != "" || strings.TrimSpace(branchName) != "" {
+		if useCurrentBranch != nil || strings.TrimSpace(baseBranch) != "" || strings.TrimSpace(branchName) != "" || strings.TrimSpace(existingPath) != "" {
 			return "", errors.New("worktree fields are only allowed when worktree_mode is on")
 		}
 		return mode, nil
 	case runruntime.RunWorktreeModeOn:
 		if strings.TrimSpace(branchName) == "" {
 			return "", errors.New("worktree_branch_name is required when worktree_mode is on")
+		}
+		if strings.TrimSpace(existingPath) != "" {
+			if useCurrentBranch != nil || strings.TrimSpace(baseBranch) != "" {
+				return "", errors.New("worktree base fields are not allowed when reusing an existing worktree")
+			}
+			return mode, nil
 		}
 		if useCurrentBranch != nil {
 			if *useCurrentBranch && strings.TrimSpace(baseBranch) != "" {
@@ -2311,6 +2318,13 @@ func (s *Server) handleSessionsV3CreateReplay(w http.ResponseWriter, principal i
 	return true
 }
 
+func (s *Server) resolveSessionsV3CreateWorktree(principal identity.Principal, workspacePath, sessionID string, requestedUseCurrentBranch *bool, requestedBaseBranch, requestedBranchName, requestedExistingPath string) (worktreeruntime.Allocation, error) {
+	if strings.TrimSpace(requestedExistingPath) != "" {
+		return s.reuseSessionsV3CreateWorktree(principal, workspacePath, requestedBranchName, requestedExistingPath)
+	}
+	return s.allocateSessionsV3CreateWorktree(principal, workspacePath, sessionID, requestedUseCurrentBranch, requestedBaseBranch, requestedBranchName)
+}
+
 func (s *Server) allocateSessionsV3CreateWorktree(principal identity.Principal, workspacePath, sessionID string, requestedUseCurrentBranch *bool, requestedBaseBranch, requestedBranchName string) (worktreeruntime.Allocation, error) {
 	if s == nil || s.worktrees == nil {
 		return worktreeruntime.Allocation{}, errors.New("worktree_mode on requires worktree service")
@@ -2323,8 +2337,8 @@ func (s *Server) allocateSessionsV3CreateWorktree(principal identity.Principal, 
 	if err != nil {
 		return worktreeruntime.Allocation{}, fmt.Errorf("realize sessions v3 worktree: %w", err)
 	}
-	if strings.TrimSpace(allocation.WorkspacePath) == "" || strings.TrimSpace(allocation.BaseBranch) == "" || strings.TrimSpace(allocation.BranchName) == "" || strings.TrimSpace(allocation.WorkspaceID) == "" {
-		return worktreeruntime.Allocation{}, errors.New("worktree_mode on did not allocate complete worktree facts")
+	if strings.TrimSpace(allocation.WorkspacePath) == "" || strings.TrimSpace(allocation.BranchName) == "" || strings.TrimSpace(allocation.WorkspaceID) == "" {
+		return worktreeruntime.Allocation{}, errors.New("worktree_mode on did not resolve complete worktree facts")
 	}
 	expectedWorkspaceID, err := worktreeruntime.WorkspaceIdentityForRequestedBranch(strings.TrimSpace(requestedBranchName))
 	if err != nil {
@@ -2334,6 +2348,54 @@ func (s *Server) allocateSessionsV3CreateWorktree(principal identity.Principal, 
 		return worktreeruntime.Allocation{}, errors.New("worktree_mode on allocation workspace identity mismatch")
 	}
 	return allocation, nil
+}
+
+func (s *Server) reuseSessionsV3CreateWorktree(principal identity.Principal, workspacePath, requestedBranchName, requestedExistingPath string) (worktreeruntime.Allocation, error) {
+	if s == nil || s.worktrees == nil {
+		return worktreeruntime.Allocation{}, errors.New("worktree_mode on requires worktree service")
+	}
+	branchName := strings.TrimSpace(requestedBranchName)
+	if branchName == "" {
+		return worktreeruntime.Allocation{}, errors.New("worktree_branch_name is required when reusing an existing worktree")
+	}
+	existingPath := filepath.Clean(strings.TrimSpace(requestedExistingPath))
+	if existingPath == "." || existingPath == "" {
+		return worktreeruntime.Allocation{}, errors.New("worktree_existing_path is required when reusing an existing worktree")
+	}
+	managed, err := s.worktrees.ListManagedForPrincipal(principal, workspacePath)
+	if err != nil {
+		return worktreeruntime.Allocation{}, fmt.Errorf("list managed worktrees: %w", err)
+	}
+	for _, entry := range managed {
+		entryPath := filepath.Clean(strings.TrimSpace(entry.Path))
+		if entryPath == "." || entryPath == "" || entryPath != existingPath {
+			continue
+		}
+		if !entry.Managed || !entry.Exists {
+			return worktreeruntime.Allocation{}, errors.New("selected worktree is not an existing managed worktree")
+		}
+		if entry.Detached {
+			return worktreeruntime.Allocation{}, errors.New("selected worktree is detached and cannot be reused by branch")
+		}
+		if strings.TrimSpace(entry.Branch) != branchName {
+			return worktreeruntime.Allocation{}, errors.New("selected worktree branch does not match requested worktree_branch_name")
+		}
+		workspaceID := strings.TrimSpace(entry.WorkspaceID)
+		if workspaceID == "" {
+			var workspaceIDErr error
+			workspaceID, workspaceIDErr = worktreeruntime.WorkspaceIdentityForRequestedBranch(branchName)
+			if workspaceIDErr != nil {
+				return worktreeruntime.Allocation{}, workspaceIDErr
+			}
+		}
+		return worktreeruntime.Allocation{
+			WorkspacePath: entryPath,
+			BaseBranch:    "",
+			BranchName:    branchName,
+			WorkspaceID:   workspaceID,
+		}, nil
+	}
+	return worktreeruntime.Allocation{}, errors.New("selected worktree was not found in managed worktrees")
 }
 
 func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, workspacePath, workspaceName, title string, metadata map[string]any) (string, error) {
@@ -2352,6 +2414,7 @@ func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, 
 		WorktreeUseCurrentBranch *bool                       `json:"worktree_use_current_branch,omitempty"`
 		WorktreeBaseBranch       string                      `json:"worktree_base_branch,omitempty"`
 		WorktreeBranchName       string                      `json:"worktree_branch_name,omitempty"`
+		WorktreeExistingPath     string                      `json:"worktree_existing_path,omitempty"`
 		Metadata                 map[string]any              `json:"metadata,omitempty"`
 	}{
 		Operation:                sessionruntime.SessionMutationCreateSession,
@@ -2368,6 +2431,7 @@ func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, 
 		WorktreeUseCurrentBranch: req.WorktreeUseCurrentBranch,
 		WorktreeBaseBranch:       strings.TrimSpace(req.WorktreeBaseBranch),
 		WorktreeBranchName:       strings.TrimSpace(req.WorktreeBranchName),
+		WorktreeExistingPath:     strings.TrimSpace(req.WorktreeExistingPath),
 		Metadata:                 cloneSessionsV3Metadata(metadata),
 	}
 	raw, err := json.Marshal(canonical)
