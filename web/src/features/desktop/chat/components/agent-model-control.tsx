@@ -34,6 +34,7 @@ interface AgentModelControlProps {
   mode: DesktopSessionMode
   selectedModel: ModelOptionRecord | null
   selectedServiceTier?: string
+  selectedThinking?: string
   modelOptions: ModelOptionRecord[]
   modelLocked?: boolean
   modelLockNotice?: string
@@ -104,17 +105,17 @@ function modelSupportsFast(provider: string, model: string, modelOptions: ModelO
   return supportsCodexFastMode(provider, model, option?.serviceTiers ?? [])
 }
 
-function defaultDraftFromModel(model: ModelOptionRecord | null, serviceTier = ''): ModelDraft {
+function defaultDraftFromModel(model: ModelOptionRecord | null, serviceTier = '', selectedThinking = ''): ModelDraft {
   return {
     provider: model?.provider ?? '',
     model: model?.model ?? '',
-    thinking: model?.thinking || 'off',
+    thinking: selectedThinking.trim() || model?.thinking || 'off',
     serviceTier: supportsCodexFastMode(model?.provider ?? '', model?.model ?? '', model?.serviceTiers ?? []) ? normalizeFastServiceTier(serviceTier) : '',
   }
 }
 
-function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedModel: ModelOptionRecord | null, selectedServiceTier = ''): ModelDraft {
-  const fallback = defaultDraftFromModel(selectedModel, selectedServiceTier)
+function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedModel: ModelOptionRecord | null, selectedServiceTier = '', selectedThinking = ''): ModelDraft {
+  const fallback = defaultDraftFromModel(selectedModel, selectedServiceTier, selectedThinking)
   return {
     provider: profile?.provider.trim() || fallback.provider,
     model: profile?.model.trim() || fallback.model,
@@ -123,8 +124,8 @@ function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedMode
   }
 }
 
-function splitDraftFromProfile(profile: AgentProfileRecord | null, prefix: 'plan' | 'auto', selectedModel: ModelOptionRecord | null, selectedServiceTier = ''): ModelDraft {
-  const fallback = defaultDraftFromModel(selectedModel, selectedServiceTier)
+function splitDraftFromProfile(profile: AgentProfileRecord | null, prefix: 'plan' | 'auto', selectedModel: ModelOptionRecord | null, selectedServiceTier = '', selectedThinking = ''): ModelDraft {
+  const fallback = defaultDraftFromModel(selectedModel, selectedServiceTier, selectedThinking)
   if (prefix === 'plan') {
     return {
       provider: profile?.planProvider.trim() || fallback.provider,
@@ -210,6 +211,7 @@ export function AgentModelControl({
   mode,
   selectedModel,
   selectedServiceTier = '',
+  selectedThinking = '',
   modelOptions,
   modelLocked = false,
   modelLockNotice = '',
@@ -227,9 +229,9 @@ export function AgentModelControl({
   const [draftAgentName, setDraftAgentName] = useState(activeProfile?.name ?? selectedPrimaryAgent)
   const draftProfile = selectableAgents.find((agent) => agent.name === draftAgentName) ?? activeProfile
   const [draftMode, setDraftMode] = useState<DraftMode>(() => selectedDraftMode(activeProfile))
-  const [singleDraft, setSingleDraft] = useState<ModelDraft>(() => singleDraftFromProfile(activeProfile, selectedModel, selectedServiceTier))
-  const [planDraft, setPlanDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'plan', selectedModel, selectedServiceTier))
-  const [autoDraft, setAutoDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'auto', selectedModel, selectedServiceTier))
+  const [singleDraft, setSingleDraft] = useState<ModelDraft>(() => singleDraftFromProfile(activeProfile, selectedModel, selectedServiceTier, selectedThinking))
+  const [planDraft, setPlanDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'plan', selectedModel, selectedServiceTier, selectedThinking))
+  const [autoDraft, setAutoDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'auto', selectedModel, selectedServiceTier, selectedThinking))
   const providers = useMemo(() => providerOptions(modelOptions), [modelOptions])
   const agentSections = useMemo(() => {
     const sections = [
@@ -256,18 +258,18 @@ export function AgentModelControl({
     const profile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? activeProfile
     setDraftAgentName(profile?.name ?? selectedPrimaryAgent)
     setDraftMode(selectedDraftMode(profile))
-    setSingleDraft(singleDraftFromProfile(profile, selectedModel, selectedServiceTier))
-    setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier))
-    setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier))
+    setSingleDraft(singleDraftFromProfile(profile, selectedModel, selectedServiceTier, selectedThinking))
+    setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier, selectedThinking))
+    setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier, selectedThinking))
     setError(null)
-  }, [activeProfile, open, selectableAgents, selectedModel, selectedPrimaryAgent, selectedServiceTier])
+  }, [activeProfile, open, selectableAgents, selectedModel, selectedPrimaryAgent, selectedServiceTier, selectedThinking])
 
   function chooseAgent(profile: AgentProfileRecord) {
     setDraftAgentName(profile.name)
     setDraftMode(selectedDraftMode(profile))
-    setSingleDraft(singleDraftFromProfile(profile, selectedModel, selectedServiceTier))
-    setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier))
-    setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier))
+    setSingleDraft(singleDraftFromProfile(profile, selectedModel, selectedServiceTier, selectedThinking))
+    setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier, selectedThinking))
+    setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier, selectedThinking))
     setError(null)
   }
 
@@ -376,7 +378,7 @@ export function AgentModelControl({
             <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
               <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                <ModeButton selected={draftMode === 'default'} title="Default" description="Show your current defaults here. Editing them changes the defaults used by future default-mode agents and conversations." onClick={() => { setDraftMode('default'); setSingleDraft(defaultDraftFromModel(selectedModel, selectedServiceTier)) }} />
+                <ModeButton selected={draftMode === 'default'} title="Default" description="Show your current defaults here. Editing them changes the defaults used by future default-mode agents and conversations." onClick={() => { setDraftMode('default'); setSingleDraft(defaultDraftFromModel(selectedModel, selectedServiceTier, selectedThinking)) }} />
                 <ModeButton selected={draftMode === 'single'} title="Single" description="Lock this agent to one model." onClick={() => setDraftMode('single')} />
                 <ModeButton selected={draftMode === 'split'} title="Split" description="Use separate plan and auto models." onClick={() => setDraftMode('split')} />
               </div>

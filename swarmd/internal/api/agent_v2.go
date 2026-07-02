@@ -485,14 +485,14 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			Model               *string                                 `json:"model"`
 			Thinking            *string                                 `json:"thinking"`
 			ModelMode           string                                  `json:"model_mode"`
-			PlanProvider        string                                  `json:"plan_provider"`
-			PlanModel           string                                  `json:"plan_model"`
-			PlanThinking        string                                  `json:"plan_thinking"`
-			PlanServiceTier     string                                  `json:"plan_service_tier"`
-			AutoProvider        string                                  `json:"auto_provider"`
-			AutoModel           string                                  `json:"auto_model"`
-			AutoThinking        string                                  `json:"auto_thinking"`
-			AutoServiceTier     string                                  `json:"auto_service_tier"`
+			PlanProvider        *string                                 `json:"plan_provider"`
+			PlanModel           *string                                 `json:"plan_model"`
+			PlanThinking        *string                                 `json:"plan_thinking"`
+			PlanServiceTier     *string                                 `json:"plan_service_tier"`
+			AutoProvider        *string                                 `json:"auto_provider"`
+			AutoModel           *string                                 `json:"auto_model"`
+			AutoThinking        *string                                 `json:"auto_thinking"`
+			AutoServiceTier     *string                                 `json:"auto_service_tier"`
 			Prompt              string                                  `json:"prompt"`
 			RuntimeMode         string                                  `json:"runtime_mode"`
 			ExecutionSetting    string                                  `json:"execution_setting"`
@@ -518,6 +518,38 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 		if req.Thinking != nil {
 			thinking = *req.Thinking
 		}
+		planProvider := ""
+		if req.PlanProvider != nil {
+			planProvider = *req.PlanProvider
+		}
+		planModel := ""
+		if req.PlanModel != nil {
+			planModel = *req.PlanModel
+		}
+		planThinking := ""
+		if req.PlanThinking != nil {
+			planThinking = *req.PlanThinking
+		}
+		planServiceTier := ""
+		if req.PlanServiceTier != nil {
+			planServiceTier = *req.PlanServiceTier
+		}
+		autoProvider := ""
+		if req.AutoProvider != nil {
+			autoProvider = *req.AutoProvider
+		}
+		autoModel := ""
+		if req.AutoModel != nil {
+			autoModel = *req.AutoModel
+		}
+		autoThinking := ""
+		if req.AutoThinking != nil {
+			autoThinking = *req.AutoThinking
+		}
+		autoServiceTier := ""
+		if req.AutoServiceTier != nil {
+			autoServiceTier = *req.AutoServiceTier
+		}
 		storedCustomTools := make([]pebblestore.AgentCustomToolDefinition, 0, len(req.CustomTools))
 		for _, definition := range req.CustomTools {
 			stored, err := s.agents.PutCustomToolForAccount(principal.AccountScopeID, definition)
@@ -538,14 +570,22 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			ModelSet:            req.Model != nil,
 			ThinkingSet:         req.Thinking != nil,
 			ModelMode:           req.ModelMode,
-			PlanProvider:        req.PlanProvider,
-			PlanModel:           req.PlanModel,
-			PlanThinking:        req.PlanThinking,
-			PlanServiceTier:     req.PlanServiceTier,
-			AutoProvider:        req.AutoProvider,
-			AutoModel:           req.AutoModel,
-			AutoThinking:        req.AutoThinking,
-			AutoServiceTier:     req.AutoServiceTier,
+			PlanProvider:        planProvider,
+			PlanModel:           planModel,
+			PlanThinking:        planThinking,
+			PlanServiceTier:     planServiceTier,
+			PlanProviderSet:     req.PlanProvider != nil,
+			PlanModelSet:        req.PlanModel != nil,
+			PlanThinkingSet:     req.PlanThinking != nil,
+			PlanServiceTierSet:  req.PlanServiceTier != nil,
+			AutoProvider:        autoProvider,
+			AutoModel:           autoModel,
+			AutoThinking:        autoThinking,
+			AutoServiceTier:     autoServiceTier,
+			AutoProviderSet:     req.AutoProvider != nil,
+			AutoModelSet:        req.AutoModel != nil,
+			AutoThinkingSet:     req.AutoThinking != nil,
+			AutoServiceTierSet:  req.AutoServiceTier != nil,
 			Prompt:              req.Prompt,
 			RuntimeMode:         req.RuntimeMode,
 			ExecutionSetting:    req.ExecutionSetting,

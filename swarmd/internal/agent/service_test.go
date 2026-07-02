@@ -391,3 +391,77 @@ func TestMemoryRemainsProtectedFromDelete(t *testing.T) {
 		t.Fatalf("Delete(memory) error = %v, want protected", err)
 	}
 }
+
+func TestUpsertClearsExplicitSplitModelFields(t *testing.T) {
+	svc, _ := newTestService(t)
+	enabled := true
+	if _, _, _, err := svc.Upsert(UpsertInput{
+		Name:               "model-probe",
+		Mode:               ModeSubagent,
+		Description:        "model probe",
+		ModelMode:          "split",
+		PlanProvider:       "codex",
+		PlanModel:          "gpt-5.4",
+		PlanThinking:       "high",
+		PlanServiceTier:    "fast",
+		AutoProvider:       "codex",
+		AutoModel:          "gpt-5.5",
+		AutoThinking:       "medium",
+		AutoServiceTier:    "fast",
+		Prompt:             "Probe model settings.",
+		RuntimeMode:        pebblestore.AgentRuntimeModeRead,
+		ToolContract:       &pebblestore.AgentToolContract{Preset: "read_only"},
+		Enabled:            &enabled,
+		PlanProviderSet:    true,
+		PlanModelSet:       true,
+		PlanThinkingSet:    true,
+		PlanServiceTierSet: true,
+		AutoProviderSet:    true,
+		AutoModelSet:       true,
+		AutoThinkingSet:    true,
+		AutoServiceTierSet: true,
+	}); err != nil {
+		t.Fatalf("create split profile: %v", err)
+	}
+
+	updated, _, _, err := svc.Upsert(UpsertInput{
+		Name:               "model-probe",
+		Mode:               ModeSubagent,
+		Provider:           "codex",
+		Model:              "gpt-5.4",
+		Thinking:           "low",
+		ModelMode:          "single",
+		PlanProvider:       "",
+		PlanModel:          "",
+		PlanThinking:       "",
+		PlanServiceTier:    "",
+		AutoProvider:       "",
+		AutoModel:          "",
+		AutoThinking:       "",
+		AutoServiceTier:    "",
+		Prompt:             "Probe model settings.",
+		RuntimeMode:        pebblestore.AgentRuntimeModeRead,
+		ToolContract:       &pebblestore.AgentToolContract{Preset: "read_only"},
+		Enabled:            &enabled,
+		ProviderSet:        true,
+		ModelSet:           true,
+		ThinkingSet:        true,
+		PlanProviderSet:    true,
+		PlanModelSet:       true,
+		PlanThinkingSet:    true,
+		PlanServiceTierSet: true,
+		AutoProviderSet:    true,
+		AutoModelSet:       true,
+		AutoThinkingSet:    true,
+		AutoServiceTierSet: true,
+	})
+	if err != nil {
+		t.Fatalf("update to single profile: %v", err)
+	}
+	if updated.ModelMode != "" || updated.PlanProvider != "" || updated.PlanModel != "" || updated.PlanThinking != "" || updated.PlanServiceTier != "" || updated.AutoProvider != "" || updated.AutoModel != "" || updated.AutoThinking != "" || updated.AutoServiceTier != "" {
+		t.Fatalf("split fields were not cleared: %+v", updated)
+	}
+	if updated.Provider != "codex" || updated.Model != "gpt-5.4" || updated.Thinking != "low" {
+		t.Fatalf("single model fields = provider=%q model=%q thinking=%q, want codex/gpt-5.4/low", updated.Provider, updated.Model, updated.Thinking)
+	}
+}

@@ -93,6 +93,14 @@ type UpsertInput struct {
 	ProviderSet         bool                           `json:"-"`
 	ModelSet            bool                           `json:"-"`
 	ThinkingSet         bool                           `json:"-"`
+	PlanProviderSet     bool                           `json:"-"`
+	PlanModelSet        bool                           `json:"-"`
+	PlanThinkingSet     bool                           `json:"-"`
+	PlanServiceTierSet  bool                           `json:"-"`
+	AutoProviderSet     bool                           `json:"-"`
+	AutoModelSet        bool                           `json:"-"`
+	AutoThinkingSet     bool                           `json:"-"`
+	AutoServiceTierSet  bool                           `json:"-"`
 	ModelMode           string                         `json:"model_mode"`
 	PlanProvider        string                         `json:"plan_provider"`
 	PlanModel           string                         `json:"plan_model"`
@@ -1084,28 +1092,28 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		if strings.TrimSpace(input.ModelMode) == "" {
 			profile.ModelMode = existing.ModelMode
 		}
-		if strings.TrimSpace(input.PlanProvider) == "" {
+		if !stringFieldProvided(input.PlanProviderSet, input.PlanProvider) {
 			profile.PlanProvider = existing.PlanProvider
 		}
-		if strings.TrimSpace(input.PlanModel) == "" {
+		if !stringFieldProvided(input.PlanModelSet, input.PlanModel) {
 			profile.PlanModel = existing.PlanModel
 		}
-		if strings.TrimSpace(input.PlanThinking) == "" {
+		if !stringFieldProvided(input.PlanThinkingSet, input.PlanThinking) {
 			profile.PlanThinking = existing.PlanThinking
 		}
-		if strings.TrimSpace(input.PlanServiceTier) == "" {
+		if !stringFieldProvided(input.PlanServiceTierSet, input.PlanServiceTier) {
 			profile.PlanServiceTier = existing.PlanServiceTier
 		}
-		if strings.TrimSpace(input.AutoProvider) == "" {
+		if !stringFieldProvided(input.AutoProviderSet, input.AutoProvider) {
 			profile.AutoProvider = existing.AutoProvider
 		}
-		if strings.TrimSpace(input.AutoModel) == "" {
+		if !stringFieldProvided(input.AutoModelSet, input.AutoModel) {
 			profile.AutoModel = existing.AutoModel
 		}
-		if strings.TrimSpace(input.AutoThinking) == "" {
+		if !stringFieldProvided(input.AutoThinkingSet, input.AutoThinking) {
 			profile.AutoThinking = existing.AutoThinking
 		}
-		if strings.TrimSpace(input.AutoServiceTier) == "" {
+		if !stringFieldProvided(input.AutoServiceTierSet, input.AutoServiceTier) {
 			profile.AutoServiceTier = existing.AutoServiceTier
 		}
 		if strings.TrimSpace(profile.Prompt) == "" {

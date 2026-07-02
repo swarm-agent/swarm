@@ -248,7 +248,7 @@ function agentProfile(overrides: Partial<AgentProfileRecord>): AgentProfileRecor
 
 test('Desktop V3 agent model lock is derived synchronously from loaded agent profiles', () => {
   const locked = resolveDesktopV3AgentModelLock([
-    agentProfile({ name: 'swarm', provider: 'codex', model: 'gpt-5.4', thinking: 'high' }),
+    agentProfile({ name: 'swarm', provider: 'codex', model: 'gpt-5.4', thinking: 'high', autoServiceTier: 'fast' }),
     agentProfile({ name: 'default-agent', provider: '', model: '', thinking: '' }),
   ], 'swarm')
 
@@ -256,6 +256,7 @@ test('Desktop V3 agent model lock is derived synchronously from loaded agent pro
   assert.equal(locked.provider, 'codex')
   assert.equal(locked.model, 'gpt-5.4')
   assert.equal(locked.thinking, 'high')
+  assert.equal(locked.serviceTier, 'fast')
   assert.match(locked.disabledReason, /set the model to Default in Settings → Agents/)
 
   const unlocked = resolveDesktopV3AgentModelLock([

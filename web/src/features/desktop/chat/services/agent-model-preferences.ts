@@ -53,7 +53,7 @@ export function resolveDesktopV3AgentModelLock(
         provider: profile?.provider.trim() ?? '',
         model: profile?.model.trim() ?? '',
         thinking: profile?.thinking.trim() ?? '',
-        serviceTier: '',
+        serviceTier: profile?.autoServiceTier.trim() ?? '',
       }
   const locked = Boolean(preference.provider && preference.model)
   const modeLabel = profile?.modelMode === 'split' ? `${normalizedMode} ` : ''
