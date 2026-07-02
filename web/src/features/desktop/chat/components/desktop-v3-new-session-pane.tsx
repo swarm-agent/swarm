@@ -55,7 +55,7 @@ function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | '
 }
 
 function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; fast: 'on' | 'off' }): string {
-  return `${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'}${input.fast !== 'off' ? ' · fast on' : ''}`
+  return `${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'} · fast ${input.fast}`
 }
 
 function preferenceFromDefaultPatch(patch: ModelDraft, modelOptions: ModelOptionRecord[]): SessionPreferenceRecord {

@@ -249,7 +249,7 @@ function permissionSavedRuleEqual(left: DesktopPermissionRecord['savedRule'], ri
 }
 
 function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; fast: 'on' | 'off' }): string {
-  return `${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'}${input.fast !== 'off' ? ' · fast on' : ''}`
+  return `${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'} · fast ${input.fast}`
 }
 
 function formatSettingsChangeSummary(input: {

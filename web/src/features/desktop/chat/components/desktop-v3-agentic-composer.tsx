@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
-import { ChevronsUp, Lightbulb, LoaderCircle, Mic, Minimize2, NotepadText, Send, Settings2, Square, Zap } from 'lucide-react'
+import { ChevronsUp, Lightbulb, LoaderCircle, Mic, Minimize2, NotepadText, Send, Settings2, Square, Zap, ZapOff } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
@@ -514,7 +514,7 @@ export function DesktopV3AgenticComposer({
   )
 
   const modelSummary = selectedModel?.label || selectedModel?.model || 'Model'
-  const settingsSummary = `${modelSummary} · thinking ${normalizedThinking}${fastSupported && fast !== 'off' ? ' · fast on' : ''}`
+  const settingsSummary = `${modelSummary} · thinking ${normalizedThinking}${fastSupported ? ` · fast ${fast}` : ''}`
 
   function handleModeToggle() {
     if (!onModeSelect) return
@@ -630,8 +630,8 @@ export function DesktopV3AgenticComposer({
                         <span className="truncate">{modelSummary}</span>
                         <Lightbulb size={10} className="shrink-0" />
                         <span>{normalizedThinking}</span>
-                        {fastSupported && fast !== 'off' ? <Zap size={10} className="shrink-0" /> : null}
-                        {fastSupported && fast !== 'off' ? <span>fast on</span> : null}
+                        {fastSupported ? (fast !== 'off' ? <Zap size={10} className="shrink-0" /> : <ZapOff size={10} className="shrink-0" />) : null}
+                        {fastSupported ? <span>{fast}</span> : null}
                       </span>
                     </span>
                   </button>

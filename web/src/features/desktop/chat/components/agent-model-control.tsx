@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Bot, Check, ChevronDown, ExternalLink, GitBranch, Lock } from 'lucide-react'
+import { Bot, Check, ChevronDown, ExternalLink, GitBranch, Lightbulb, Lock, Zap, ZapOff } from 'lucide-react'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { displayModelName, formatModelPricing, supportsCodexFastMode } from '../services/model-options'
@@ -248,6 +248,10 @@ export function AgentModelControl({
   const selectedModelLabel = selectedModel
     ? `${selectedModel.provider}/${displayModelName(selectedModel.provider, selectedModel.model, selectedModel.contextMode)}`
     : 'Default model'
+  const normalizedSelectedThinking = selectedThinking.trim() || selectedModel?.thinking || 'off'
+  const selectedFastSupported = selectedModel ? supportsCodexFastMode(selectedModel.provider, selectedModel.model, selectedModel.serviceTiers) : false
+  const selectedFast = normalizeFastServiceTier(selectedServiceTier) ? 'on' : 'off'
+  const SelectedFastIcon = selectedFast === 'off' ? ZapOff : Zap
 
   useEffect(() => {
     if (openSignal > 0) setOpen(true)
@@ -430,7 +434,17 @@ export function AgentModelControl({
       >
         <Bot size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
         <span className="max-w-[110px] truncate text-[var(--app-text)]">{currentAgent || selectedPrimaryAgent || 'Agent'}</span>
-        <span className="hidden min-w-0 max-w-[260px] truncate text-[var(--app-text-muted)] min-[1120px]:inline">{triggerDetail || modelBehaviorLabel(activeProfile)}</span>
+        <span className="hidden min-w-0 max-w-[260px] items-center gap-1 truncate text-[var(--app-text-muted)] min-[1120px]:inline-flex">
+          {selectedModel ? (
+            <>
+              <span className="truncate">{selectedModelLabel}</span>
+              <Lightbulb size={12} className="shrink-0 text-[var(--app-text-subtle)]" />
+              <span>{normalizedSelectedThinking}</span>
+              {selectedFastSupported ? <SelectedFastIcon size={12} className="shrink-0 text-[var(--app-text-subtle)]" /> : null}
+              {selectedFastSupported ? <span>{selectedFast}</span> : null}
+            </>
+          ) : (triggerDetail || modelBehaviorLabel(activeProfile))}
+        </span>
         <ChevronDown size={12} className="shrink-0" />
       </button>
       {modal}
