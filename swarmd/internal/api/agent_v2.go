@@ -169,13 +169,22 @@ func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
 	profiles := make([]compactAgentProfileForDesktop, 0, len(state.Profiles))
 	for _, profile := range state.Profiles {
 		profiles = append(profiles, compactAgentProfileForDesktop{
-			Name:        profile.Name,
-			Mode:        profile.Mode,
-			Provider:    profile.Provider,
-			Model:       profile.Model,
-			Thinking:    profile.Thinking,
-			RuntimeMode: pebblestore.AgentProfileRuntimeMode(profile),
-			Enabled:     profile.Enabled,
+			Name:            profile.Name,
+			Mode:            profile.Mode,
+			Provider:        profile.Provider,
+			Model:           profile.Model,
+			Thinking:        profile.Thinking,
+			ModelMode:       profile.ModelMode,
+			PlanProvider:    profile.PlanProvider,
+			PlanModel:       profile.PlanModel,
+			PlanThinking:    profile.PlanThinking,
+			PlanServiceTier: profile.PlanServiceTier,
+			AutoProvider:    profile.AutoProvider,
+			AutoModel:       profile.AutoModel,
+			AutoThinking:    profile.AutoThinking,
+			AutoServiceTier: profile.AutoServiceTier,
+			RuntimeMode:     pebblestore.AgentProfileRuntimeMode(profile),
+			Enabled:         profile.Enabled,
 		})
 	}
 	return map[string]any{
@@ -187,13 +196,22 @@ func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
 }
 
 type compactAgentProfileForDesktop struct {
-	Name        string `json:"name"`
-	Mode        string `json:"mode"`
-	Provider    string `json:"provider"`
-	Model       string `json:"model"`
-	Thinking    string `json:"thinking"`
-	RuntimeMode string `json:"runtime_mode,omitempty"`
-	Enabled     bool   `json:"enabled"`
+	Name            string `json:"name"`
+	Mode            string `json:"mode"`
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	Thinking        string `json:"thinking"`
+	ModelMode       string `json:"model_mode,omitempty"`
+	PlanProvider    string `json:"plan_provider,omitempty"`
+	PlanModel       string `json:"plan_model,omitempty"`
+	PlanThinking    string `json:"plan_thinking,omitempty"`
+	PlanServiceTier string `json:"plan_service_tier,omitempty"`
+	AutoProvider    string `json:"auto_provider,omitempty"`
+	AutoModel       string `json:"auto_model,omitempty"`
+	AutoThinking    string `json:"auto_thinking,omitempty"`
+	AutoServiceTier string `json:"auto_service_tier,omitempty"`
+	RuntimeMode     string `json:"runtime_mode,omitempty"`
+	Enabled         bool   `json:"enabled"`
 }
 
 func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Request) {
