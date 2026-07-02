@@ -2755,6 +2755,13 @@ func applySessionV3AgentPreferenceOverrides(base pebblestore.ModelPreference, ag
 	providerOverride := strings.ToLower(strings.TrimSpace(agentProfile.Provider))
 	modelOverride := strings.TrimSpace(agentProfile.Model)
 	thinkingOverride := strings.TrimSpace(agentProfile.Thinking)
+	if pebblestore.AgentModelMode(agentProfile) == "split" {
+		if strings.EqualFold(strings.TrimSpace(base.Provider), strings.TrimSpace(agentProfile.PlanProvider)) && strings.EqualFold(strings.TrimSpace(base.Model), strings.TrimSpace(agentProfile.PlanModel)) {
+			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.AutoProvider))
+			modelOverride = strings.TrimSpace(agentProfile.AutoModel)
+			thinkingOverride = strings.TrimSpace(agentProfile.AutoThinking)
+		}
+	}
 	if providerOverride != "" && modelOverride != "" {
 		base.Provider = providerOverride
 		base.Model = modelOverride

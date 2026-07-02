@@ -219,6 +219,13 @@ export interface AgentProfileRecord {
   provider: string;
   model: string;
   thinking: string;
+  modelMode: "single" | "split";
+  planProvider: string;
+  planModel: string;
+  planThinking: string;
+  autoProvider: string;
+  autoModel: string;
+  autoThinking: string;
   prompt: string;
   runtimeMode: "plan_auto" | "read" | "readwrite" | "";
   executionSetting: "read" | "readwrite" | "";

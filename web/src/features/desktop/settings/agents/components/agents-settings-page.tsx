@@ -37,6 +37,13 @@ interface AgentFormState {
   provider: string;
   model: string;
   thinking: string;
+  modelMode: "single" | "split";
+  planProvider: string;
+  planModel: string;
+  planThinking: string;
+  autoProvider: string;
+  autoModel: string;
+  autoThinking: string;
   prompt: string;
   runtimeMode: "plan_auto" | "read" | "readwrite" | "";
   executionSetting: "read" | "readwrite" | "";
@@ -450,6 +457,13 @@ function emptyAgentForm(): AgentFormState {
     provider: "",
     model: "",
     thinking: "",
+    modelMode: "single",
+    planProvider: "",
+    planModel: "",
+    planThinking: "",
+    autoProvider: "",
+    autoModel: "",
+    autoThinking: "",
     prompt: "",
     runtimeMode: "readwrite",
     executionSetting: "readwrite",
@@ -470,6 +484,15 @@ function agentProviderModelSummary(
   profile: AgentProfileRecord,
   fallback = "Default model",
 ): string {
+  if (profile.modelMode === "split") {
+    const planProvider = profile.planProvider.trim();
+    const planModel = profile.planModel.trim();
+    const autoProvider = profile.autoProvider.trim();
+    const autoModel = profile.autoModel.trim();
+    if (planProvider && planModel && autoProvider && autoModel) {
+      return `Plan ${planProvider}/${planModel} → Auto ${autoProvider}/${autoModel}`;
+    }
+  }
   const provider = profile.provider.trim();
   const model = profile.model.trim();
   if (provider && model) {
@@ -563,6 +586,13 @@ function profileToForm(
     provider: profile.provider,
     model: profile.model,
     thinking: profile.thinking,
+    modelMode: profile.modelMode,
+    planProvider: profile.planProvider,
+    planModel: profile.planModel,
+    planThinking: profile.planThinking,
+    autoProvider: profile.autoProvider,
+    autoModel: profile.autoModel,
+    autoThinking: profile.autoThinking,
     prompt: profile.prompt,
     runtimeMode: profile.exitPlanModeEnabled ? "plan_auto" : profile.runtimeMode,
     executionSetting: profile.exitPlanModeEnabled ? "" : profile.executionSetting,
@@ -617,9 +647,16 @@ async function upsertAgent(input: AgentFormState): Promise<string> {
       body: JSON.stringify({
         mode: input.mode,
         description: input.description.trim(),
-        provider: input.provider,
-        model: input.model,
-        thinking: input.thinking,
+        provider: input.modelMode === "split" ? "" : input.provider,
+        model: input.modelMode === "split" ? "" : input.model,
+        thinking: input.modelMode === "split" ? "" : input.thinking,
+        model_mode: input.modelMode === "split" ? "split" : "single",
+        plan_provider: input.planProvider,
+        plan_model: input.planModel,
+        plan_thinking: input.planThinking,
+        auto_provider: input.autoProvider,
+        auto_model: input.autoModel,
+        auto_thinking: input.autoThinking,
         prompt: input.prompt,
         runtime_mode: resolvedExecutionMode,
         execution_setting:
@@ -2052,6 +2089,30 @@ export function AgentsSettingsPage() {
 
               <div className="flex items-center border-b border-[var(--app-border)] px-4 py-3">
                 <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                  Model mode
+                </label>
+                <div className="relative w-full">
+                  <select
+                    value={form.modelMode}
+                    onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                      const modelMode = event.target.value === "split" ? "split" : "single";
+                      setForm((current) => ({ ...current, modelMode }));
+                    }}
+                    disabled={busy}
+                    className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                  >
+                    <option value="single">Single model (default or selected)</option>
+                    <option value="split">Split plan/auto models</option>
+                  </select>
+                  <ChevronDown
+                    size={14}
+                    className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center border-b border-[var(--app-border)] px-4 py-3">
+                <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
                   Provider
                 </label>
                 <div className="relative w-full">
@@ -2146,6 +2207,43 @@ export function AgentsSettingsPage() {
                   />
                 </div>
               </div>
+
+              {form.modelMode === "split" ? (
+                <div className="border-t border-[var(--app-border)] px-4 py-3 text-sm text-[var(--app-text)]">
+                  <div className="mb-3 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Plan/auto split</div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="space-y-1">
+                      <span className="text-xs text-[var(--app-text-muted)]">Plan provider</span>
+                      <input value={form.planProvider} onChange={(event) => setForm((current) => ({ ...current, planProvider: event.target.value }))} disabled={busy} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs text-[var(--app-text-muted)]">Plan model</span>
+                      <input value={form.planModel} onChange={(event) => setForm((current) => ({ ...current, planModel: event.target.value }))} disabled={busy} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs text-[var(--app-text-muted)]">Auto provider</span>
+                      <input value={form.autoProvider} onChange={(event) => setForm((current) => ({ ...current, autoProvider: event.target.value }))} disabled={busy} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs text-[var(--app-text-muted)]">Auto model</span>
+                      <input value={form.autoModel} onChange={(event) => setForm((current) => ({ ...current, autoModel: event.target.value }))} disabled={busy} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs text-[var(--app-text-muted)]">Plan thinking</span>
+                      <select value={form.planThinking} onChange={(event) => setForm((current) => ({ ...current, planThinking: event.target.value }))} disabled={busy} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5">
+                        {THINKING_OPTIONS.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}
+                      </select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs text-[var(--app-text-muted)]">Auto thinking</span>
+                      <select value={form.autoThinking} onChange={(event) => setForm((current) => ({ ...current, autoThinking: event.target.value }))} disabled={busy} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5">
+                        {THINKING_OPTIONS.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                  <p className="mt-2 text-xs text-[var(--app-text-muted)]">Plan mode runs on the plan model. Exiting plan mode continues on the auto model.</p>
+                </div>
+              ) : null}
 
               <div className="flex items-start border-t border-[var(--app-border)] px-4 py-3">
                 <label className="w-1/4 shrink-0 pt-2 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">

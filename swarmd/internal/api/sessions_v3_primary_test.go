@@ -5110,7 +5110,7 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 4 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "tool" || messages[3].Role != "assistant" || messages[3].Content != "checkpoint completed in auto" {
+	if len(messages) != 5 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "tool" || messages[3].Role != "system" || messages[4].Role != "assistant" || messages[4].Content != "checkpoint completed in auto" {
 		t.Fatalf("messages after exit plan restart = %+v", messages)
 	}
 	if !strings.Contains(messages[1].Content, "run_checkpoint_with_fresh_context") {
@@ -5118,6 +5118,12 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	}
 	if !strings.Contains(messages[2].Content, "complete_checkpoint") {
 		t.Fatalf("checkpoint completion tool message = %+v", messages[2])
+	}
+	if messages[3].Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || messages[3].Metadata["kind"] != "plan_execution_break" || messages[3].Metadata["action"] != "complete_checkpoint" || messages[3].Metadata["next_action"] != "await_review" {
+		t.Fatalf("checkpoint lifecycle message metadata = %+v", messages[3])
+	}
+	if !strings.Contains(messages[3].Content, "All checkpoints complete; review required") || !strings.Contains(messages[3].Content, "Next: all checkpoints are complete; waiting for user review.") {
+		t.Fatalf("checkpoint lifecycle message content = %q", messages[3].Content)
 	}
 	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 40)
 	if err != nil {
@@ -5139,10 +5145,10 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if err != nil || !ok || activePlan.Document == nil {
 		t.Fatalf("get active plan after checkpoint run: ok=%t err=%v plan=%#v", ok, err, activePlan)
 	}
-	if activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateCompleted {
+	if activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateWaitingReview || activePlan.Document.Checkpoints[0].Review == nil || activePlan.Document.Checkpoints[0].Review.Status != sessionruntime.PlanCheckpointReviewStatusPending {
 		t.Fatalf("active plan after checkpoint run = %#v", activePlan.Document)
 	}
-	assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, sessionruntime.PlanExecutionStateCompleted)
+	assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, sessionruntime.PlanExecutionStateWaitingReview)
 }
 
 func TestSessionsV3ExecutorFinalizesReviewCheckpointAfterProviderManagedPlanComplete(t *testing.T) {

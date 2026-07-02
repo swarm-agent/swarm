@@ -45,6 +45,13 @@ type AgentProfile struct {
 	Provider            string             `json:"provider"`
 	Model               string             `json:"model"`
 	Thinking            string             `json:"thinking"`
+	ModelMode           string             `json:"model_mode,omitempty"`
+	PlanProvider        string             `json:"plan_provider,omitempty"`
+	PlanModel           string             `json:"plan_model,omitempty"`
+	PlanThinking        string             `json:"plan_thinking,omitempty"`
+	AutoProvider        string             `json:"auto_provider,omitempty"`
+	AutoModel           string             `json:"auto_model,omitempty"`
+	AutoThinking        string             `json:"auto_thinking,omitempty"`
 	Prompt              string             `json:"prompt"`
 	RuntimeMode         string             `json:"runtime_mode,omitempty"`
 	ExecutionSetting    string             `json:"execution_setting,omitempty"`
@@ -98,6 +105,25 @@ func NormalizeAgentExecutionSetting(value string) string {
 	default:
 		return ""
 	}
+}
+
+func NormalizeAgentModelMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "single", "single_model", "single-model", "default":
+		return ""
+	case "split", "plan_auto", "plan-auto", "plan_auto_split", "plan-auto-split":
+		return "split"
+	default:
+		return ""
+	}
+}
+
+func AgentModelMode(profile AgentProfile) string {
+	mode := NormalizeAgentModelMode(profile.ModelMode)
+	if mode == "" {
+		return "single"
+	}
+	return mode
 }
 
 func CloneAgentToolScope(scope *AgentToolScope) *AgentToolScope {
@@ -322,6 +348,13 @@ func NormalizeAgentProfile(profile AgentProfile) AgentProfile {
 	profile.Provider = strings.ToLower(strings.TrimSpace(profile.Provider))
 	profile.Model = strings.TrimSpace(profile.Model)
 	profile.Thinking = strings.ToLower(strings.TrimSpace(profile.Thinking))
+	profile.ModelMode = NormalizeAgentModelMode(profile.ModelMode)
+	profile.PlanProvider = strings.ToLower(strings.TrimSpace(profile.PlanProvider))
+	profile.PlanModel = strings.TrimSpace(profile.PlanModel)
+	profile.PlanThinking = strings.ToLower(strings.TrimSpace(profile.PlanThinking))
+	profile.AutoProvider = strings.ToLower(strings.TrimSpace(profile.AutoProvider))
+	profile.AutoModel = strings.TrimSpace(profile.AutoModel)
+	profile.AutoThinking = strings.ToLower(strings.TrimSpace(profile.AutoThinking))
 	profile.Prompt = strings.TrimSpace(profile.Prompt)
 	profile.RuntimeMode = NormalizeAgentRuntimeMode(profile.RuntimeMode)
 	profile.ExecutionSetting = NormalizeAgentExecutionSetting(profile.ExecutionSetting)

@@ -93,6 +93,13 @@ type UpsertInput struct {
 	ProviderSet         bool                           `json:"-"`
 	ModelSet            bool                           `json:"-"`
 	ThinkingSet         bool                           `json:"-"`
+	ModelMode           string                         `json:"model_mode"`
+	PlanProvider        string                         `json:"plan_provider"`
+	PlanModel           string                         `json:"plan_model"`
+	PlanThinking        string                         `json:"plan_thinking"`
+	AutoProvider        string                         `json:"auto_provider"`
+	AutoModel           string                         `json:"auto_model"`
+	AutoThinking        string                         `json:"auto_thinking"`
 	Prompt              string                         `json:"prompt"`
 	RuntimeMode         string                         `json:"runtime_mode"`
 	ExecutionSetting    string                         `json:"execution_setting"`
@@ -1072,6 +1079,27 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		if !stringFieldProvided(input.ThinkingSet, input.Thinking) {
 			profile.Thinking = existing.Thinking
 		}
+		if strings.TrimSpace(input.ModelMode) == "" {
+			profile.ModelMode = existing.ModelMode
+		}
+		if strings.TrimSpace(input.PlanProvider) == "" {
+			profile.PlanProvider = existing.PlanProvider
+		}
+		if strings.TrimSpace(input.PlanModel) == "" {
+			profile.PlanModel = existing.PlanModel
+		}
+		if strings.TrimSpace(input.PlanThinking) == "" {
+			profile.PlanThinking = existing.PlanThinking
+		}
+		if strings.TrimSpace(input.AutoProvider) == "" {
+			profile.AutoProvider = existing.AutoProvider
+		}
+		if strings.TrimSpace(input.AutoModel) == "" {
+			profile.AutoModel = existing.AutoModel
+		}
+		if strings.TrimSpace(input.AutoThinking) == "" {
+			profile.AutoThinking = existing.AutoThinking
+		}
 		if strings.TrimSpace(profile.Prompt) == "" {
 			profile.Prompt = existing.Prompt
 		}
@@ -1094,10 +1122,12 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 	if profile.Name == "swarm" {
 		profile.Mode = ModePrimary
 		profile.Enabled = true
-		profile.ExitPlanModeEnabled = pebblestore.BoolPtr(true)
+		if pebblestore.NormalizeAgentRuntimeMode(input.RuntimeMode) != pebblestore.AgentRuntimeModeRead && pebblestore.NormalizeAgentRuntimeMode(input.RuntimeMode) != pebblestore.AgentRuntimeModeReadWrite {
+			profile.ExitPlanModeEnabled = pebblestore.BoolPtr(true)
+		}
 	}
 	if profile.Mode == ModePrimary {
-		if profile.Name == "swarm" {
+		if profile.Name == "swarm" && pebblestore.AgentModelMode(profile) == "split" {
 			profile.Provider = ""
 			profile.Model = ""
 			profile.Thinking = ""
@@ -2050,6 +2080,13 @@ func normalizeUpsertInput(input UpsertInput) (pebblestore.AgentProfile, error) {
 		Provider:            strings.ToLower(strings.TrimSpace(input.Provider)),
 		Model:               strings.TrimSpace(input.Model),
 		Thinking:            strings.ToLower(strings.TrimSpace(input.Thinking)),
+		ModelMode:           pebblestore.NormalizeAgentModelMode(input.ModelMode),
+		PlanProvider:        strings.ToLower(strings.TrimSpace(input.PlanProvider)),
+		PlanModel:           strings.TrimSpace(input.PlanModel),
+		PlanThinking:        strings.ToLower(strings.TrimSpace(input.PlanThinking)),
+		AutoProvider:        strings.ToLower(strings.TrimSpace(input.AutoProvider)),
+		AutoModel:           strings.TrimSpace(input.AutoModel),
+		AutoThinking:        strings.ToLower(strings.TrimSpace(input.AutoThinking)),
 		Prompt:              strings.TrimSpace(input.Prompt),
 		RuntimeMode:         runtimeMode,
 		ExecutionSetting:    executionSetting,
