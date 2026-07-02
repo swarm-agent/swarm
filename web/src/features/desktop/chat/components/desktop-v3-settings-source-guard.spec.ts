@@ -14,7 +14,8 @@ test('Desktop V3 existing composer stages agent/model setup and persists profile
   assert.match(source, /function buildDesktopV3ExistingSettingsSnapshot\([\s\S]*metadataString\(input\.metadata, 'agent_name'\)[\s\S]*metadataString\(input\.metadata, 'resolved_agent_name'\)/)
   assert.match(source, /initializedSettingsSessionRef\.current !== normalizedSessionId/)
   assert.match(source, /await updateAgentProfile\(input\.profile, input\.patch\)/)
-  assert.match(source, /await queryClient\.fetchQuery\(agentStateQueryOptions\(\)\)/)
+  assert.match(source, /await queryClient\.fetchQuery\(\{[\s\S]*\.\.\.agentStateQueryOptions\(\),[\s\S]*staleTime: 0,[\s\S]*\}\)/)
+  assert.match(source, /queryClient\.setQueryData\(agentStateQueryOptions\(\)\.queryKey, agentStateResult\)/)
   assert.match(source, /if \(input\.agentName\.trim\(\) && input\.agentName\.trim\(\) !== currentAgent\)[\s\S]*await updateSessionV3Agent\(normalizedSessionId, input\.agentName\.trim\(\)\)/)
   assert.doesNotMatch(source, /updateSessionV3Preference/)
   assert.match(source, /handleModeSelect\(nextMode: DesktopSessionMode\)[\s\S]*localSettingsDirtyRef\.current\.mode = true[\s\S]*setMode\(nextMode\)/)
@@ -33,6 +34,6 @@ test('Desktop V3 existing composer stages agent/model setup and persists profile
   assert.doesNotMatch(composerSource, /onFastChange/)
 
   assert.match(controlSource, /setDraftAgentName\(profile\.name\)/)
-  assert.match(controlSource, /await onConfirmAgentSettings\?\.\(\{ agentName: profile\.name, profile, patch \}\)/)
+  assert.match(controlSource, /await onConfirmAgentSettings\?\.\(\{ agentName: profile\.name, profile, patch, defaultPreferencePatch \}\)/)
   assert.doesNotMatch(controlSource, /onAgentSelect\(profile\.name\)/)
 })

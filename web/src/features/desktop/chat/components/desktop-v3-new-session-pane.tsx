@@ -56,10 +56,7 @@ function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | '
 }
 
 function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; fast: 'on' | 'off' | 'priority' }): string {
-  const prefix = input.locked
-    ? input.customized ? 'Agent default' : 'Resolved default'
-    : 'Your default'
-  return `${prefix} · ${input.modelLabel || 'Model'} · 💡 ${input.thinking || 'off'}${input.fast !== 'off' ? ` · ⚡ ${input.fast}` : ''}`
+  return `${input.modelLabel || 'Model'} · 💡 ${input.thinking || 'off'}${input.fast !== 'off' ? ` · ⚡ ${input.fast}` : ''}`
 }
 
 function preferenceFromDefaultPatch(patch: ModelDraft, modelOptions: ModelOptionRecord[]): SessionPreferenceRecord {
@@ -315,7 +312,11 @@ export function DesktopV3NewSessionPane({
         setPreference(nextPreference)
       }
       await updateAgentProfile(input.profile, input.patch)
-      const agentStateResult = await queryClient.fetchQuery(agentStateQueryOptions())
+      const agentStateResult = await queryClient.fetchQuery({
+        ...agentStateQueryOptions(),
+        staleTime: 0,
+      })
+      queryClient.setQueryData(agentStateQueryOptions().queryKey, agentStateResult)
       const refreshedLock = resolveDesktopV3AgentModelLock(agentStateResult.profiles, input.agentName, mode)
       const basePreference = input.defaultPreferencePatch
         ? preferenceFromDefaultPatch(input.defaultPreferencePatch, modelOptions)

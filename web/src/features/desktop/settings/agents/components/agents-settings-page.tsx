@@ -1549,7 +1549,8 @@ export function AgentsSettingsPage() {
 
   const applyAgentState = (nextState: AgentStateRecord) => {
     queryClient.setQueryData(agentStateQueryKey, nextState);
-    void queryClient.invalidateQueries({ queryKey: agentStateSummaryQueryKey });
+    queryClient.setQueryData(agentStateSummaryQueryKey, nextState);
+    void queryClient.invalidateQueries({ queryKey: agentStateSummaryQueryKey, refetchType: "inactive" });
     return nextState;
   };
 
