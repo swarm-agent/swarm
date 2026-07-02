@@ -946,6 +946,17 @@ export function DesktopV3ExistingConversationPane({
     }
   }
 
+  async function handleConfirmSettings() {
+    if (!normalizedSessionId || sending || compacting || restartingWithSettings) return
+    setSendError(null)
+    try {
+      await persistVisibleSettings()
+    } catch (error) {
+      if (mountedRef.current) setSendError(error instanceof Error ? error.message : String(error))
+      throw error
+    }
+  }
+
   async function handleSubmit() {
     if (!normalizedSessionId || sending || compacting) return
 
@@ -1231,6 +1242,7 @@ export function DesktopV3ExistingConversationPane({
             onOpenAgentSettings={handleOpenAgentSettings}
             onUseSingleAgentModel={(agent) => { void handleUseSingleAgentModel(agent) }}
             onUseDefaultAgentModel={(agent) => { void handleUseDefaultAgentModel(agent) }}
+            onConfirmSettings={handleConfirmSettings}
             agentModelControlBusy={agentModelSaving}
             thinking={preference.thinking}
             onThinkingChange={handleThinkingChange}

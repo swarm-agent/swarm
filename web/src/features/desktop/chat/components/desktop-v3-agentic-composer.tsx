@@ -146,6 +146,7 @@ export interface DesktopV3AgenticComposerProps {
   onOpenAgentSettings?: () => void
   onUseSingleAgentModel?: (agent: AgentProfileRecord) => void | Promise<void>
   onUseDefaultAgentModel?: (agent: AgentProfileRecord) => void | Promise<void>
+  onConfirmSettings?: () => void | Promise<void>
   agentModelControlBusy?: boolean
   thinking: string
   onThinkingChange: (value: string) => void
@@ -203,6 +204,7 @@ export function DesktopV3AgenticComposer({
   onOpenAgentSettings,
   onUseSingleAgentModel,
   onUseDefaultAgentModel,
+  onConfirmSettings,
   agentModelControlBusy = false,
   thinking,
   onThinkingChange,
@@ -566,14 +568,6 @@ export function DesktopV3AgenticComposer({
       <div className="mx-auto grid w-full min-w-0 max-w-[70rem] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 focus-within:pb-[calc(1rem+var(--app-safe-area-bottom))] sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5">
         {error ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]" role="alert">{error}</div> : null}
         {dictationError ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning-text)]">{dictationError}</div> : null}
-        {modelLockNotice ? (
-          <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text-muted)]">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span>{modelLockNotice}</span>
-              {onOpenAgentSettings ? <Button type="button" variant="ghost" onClick={onOpenAgentSettings}>Settings → Agents</Button> : null}
-            </div>
-          </div>
-        ) : null}
         {mentionPaletteIsActive ? (
           <DesktopMentionPanel matches={mentionPaletteMatches} selectedIndex={mentionSelectionIndex} onHover={setMentionSelectionIndex} onSelect={handleMentionInsert} />
         ) : slashPalette.active ? (
@@ -581,7 +575,7 @@ export function DesktopV3AgenticComposer({
         ) : null}
         {mobileSettingsOpen ? (
           <div ref={mobileSettingsRef} className="flex w-full flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)] min-[1000px]:hidden">
-            <AgentModelControl currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} selectedModel={selectedModel} modelLocked={modelPickerLocked} modelLockNotice={modelPickerReason} onAgentSelect={onAgentSelect} onModeSelect={onModeChange} onOpenModelPicker={() => setInternalModelPickerSignal((value) => value + 1)} onOpenAgentSettings={onOpenAgentSettings} onUseSingleModel={onUseSingleAgentModel} onUseDefaultModel={onUseDefaultAgentModel} allowModeChange={showModePicker} busy={agentModelControlBusy} dropdownAlign="left" />
+            <AgentModelControl currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} selectedModel={selectedModel} modelLocked={modelPickerLocked} modelLockNotice={modelPickerReason} onAgentSelect={onAgentSelect} onModeSelect={onModeChange} onOpenModelPicker={() => setInternalModelPickerSignal((value) => value + 1)} onOpenAgentSettings={onOpenAgentSettings} onUseSingleModel={onUseSingleAgentModel} onUseDefaultModel={onUseDefaultAgentModel} onConfirmSettings={onConfirmSettings} allowModeChange={showModePicker} busy={agentModelControlBusy} dropdownAlign="left" />
             <ModelPicker options={modelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={onModelSelect} openSignal={effectiveModelPickerSignal} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
             <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={onThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={onThinkingTagsToggle} tagsBusy={thinkingTagsBusy} disabled={modelPickerLocked} disabledReason={modelPickerReason} />
             {fastSupported ? <ThinkingPicker value={fast} options={FAST_ON_OFF_OPTIONS} onSelect={(value) => onFastChange(normalizeFastToggle(value))} label="Fast" disabled={modelPickerLocked} disabledReason={modelPickerReason} /> : null}
@@ -644,7 +638,7 @@ export function DesktopV3AgenticComposer({
           <div className="min-w-0 overflow-hidden border-t border-[var(--app-border)] px-4 py-2 text-[11px]">
             <div className="hidden min-w-0 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {showModePicker ? <AgentModelControl currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} selectedModel={selectedModel} modelLocked={modelPickerLocked} modelLockNotice={modelPickerReason} onAgentSelect={onAgentSelect} onModeSelect={onModeChange} onOpenModelPicker={() => setInternalModelPickerSignal((value) => value + 1)} onOpenAgentSettings={onOpenAgentSettings} onUseSingleModel={onUseSingleAgentModel} onUseDefaultModel={onUseDefaultAgentModel} busy={agentModelControlBusy} /> : executionLabel ? (
+                {showModePicker ? <AgentModelControl currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} selectedModel={selectedModel} modelLocked={modelPickerLocked} modelLockNotice={modelPickerReason} onAgentSelect={onAgentSelect} onModeSelect={onModeChange} onOpenModelPicker={() => setInternalModelPickerSignal((value) => value + 1)} onOpenAgentSettings={onOpenAgentSettings} onUseSingleModel={onUseSingleAgentModel} onUseDefaultModel={onUseDefaultAgentModel} onConfirmSettings={onConfirmSettings} busy={agentModelControlBusy} /> : executionLabel ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
                     <span className="text-[var(--app-text-subtle)]">Execution:</span>
                     <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">{executionLabel}</span>

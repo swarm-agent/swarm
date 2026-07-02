@@ -19,6 +19,7 @@ interface AgentModelControlProps {
   onOpenAgentSettings?: () => void
   onUseSingleModel?: (agent: AgentProfileRecord) => void | Promise<void>
   onUseDefaultModel?: (agent: AgentProfileRecord) => void | Promise<void>
+  onConfirmSettings?: () => void | Promise<void>
   allowModeChange?: boolean
   busy?: boolean
   dropdownAlign?: 'left' | 'right'
@@ -42,6 +43,15 @@ function runtimeLabel(profile: AgentProfileRecord | null): string {
     case 'read': return 'read-only'
     case 'readwrite': return 'auto-capable'
     default: return 'runtime default'
+  }
+}
+
+function agentModeLabel(profile: AgentProfileRecord): string {
+  switch (agentMode(profile)) {
+    case 'primary': return 'Primary'
+    case 'subagent': return 'Subagent'
+    case 'background': return 'Background'
+    default: return profile.mode || 'Agent'
   }
 }
 
@@ -75,17 +85,29 @@ export function AgentModelControl({
   onOpenAgentSettings,
   onUseSingleModel,
   onUseDefaultModel,
+  onConfirmSettings,
   allowModeChange = true,
   busy = false,
-  dropdownAlign = 'right',
+  dropdownAlign = 'left',
 }: AgentModelControlProps) {
   const [open, setOpen] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
   const [position, setPosition] = useState<{ top?: number; bottom?: number; left?: number; right?: number; width: number; maxHeight: number } | null>(null)
   const selectableAgents = useMemo(() => agents.filter((agent) => agent.enabled !== false), [agents])
   const selectedProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? null
-  const primaryAgents = selectableAgents.filter((agent) => agentMode(agent) === 'primary')
+  const agentSections = useMemo(() => {
+    const sections = [
+      { label: 'Primary agents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'primary') },
+      { label: 'Subagents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'subagent') },
+      { label: 'Other agents', profiles: selectableAgents.filter((agent) => {
+        const mode = agentMode(agent)
+        return mode !== 'primary' && mode !== 'subagent'
+      }) },
+    ]
+    return sections.filter((section) => section.profiles.length > 0)
+  }, [selectableAgents])
   const pricingLabel = selectedModel ? formatModelPricing(selectedModel.pricing) : ''
   const modelLabel = selectedModel
     ? `${selectedModel.provider}/${displayModelName(selectedModel.provider, selectedModel.model, selectedModel.contextMode)}`
@@ -100,7 +122,7 @@ export function AgentModelControl({
     const viewportWidth = window.innerWidth
     const viewportHeight = window.visualViewport?.height ?? window.innerHeight
     const mobile = viewportWidth < MOBILE_DROPDOWN_BREAKPOINT
-    const width = mobile ? viewportWidth - DROPDOWN_VIEWPORT_GUTTER * 2 : Math.min(560, viewportWidth - DROPDOWN_VIEWPORT_GUTTER * 2)
+    const width = mobile ? viewportWidth - DROPDOWN_VIEWPORT_GUTTER * 2 : Math.min(640, viewportWidth - DROPDOWN_VIEWPORT_GUTTER * 2)
     const maxHeight = mobile ? Math.max(220, viewportHeight - rect.bottom - DROPDOWN_VIEWPORT_GUTTER * 2) : Math.max(260, Math.min(520, rect.top - DROPDOWN_VIEWPORT_GUTTER * 2))
     if (mobile) {
       setPosition({ top: Math.min(rect.bottom + DROPDOWN_VIEWPORT_GUTTER, viewportHeight - 180), left: DROPDOWN_VIEWPORT_GUTTER, width, maxHeight })
@@ -153,6 +175,17 @@ export function AgentModelControl({
   const openModels = () => {
     setOpen(false)
     onOpenModelPicker()
+  }
+
+  const confirmSettings = async () => {
+    if (busy || confirming) return
+    setConfirming(true)
+    try {
+      await onConfirmSettings?.()
+      setOpen(false)
+    } finally {
+      setConfirming(false)
+    }
   }
 
   const dropdown = open && position ? createPortal(
@@ -209,23 +242,28 @@ export function AgentModelControl({
             </div>
           </div>
 
-          <div className="grid min-h-0 flex-1 gap-0 min-[701px]:grid-cols-[220px_minmax(0,1fr)]">
+          <div className="grid min-h-0 flex-1 gap-0 min-[701px]:grid-cols-[240px_minmax(0,1fr)]">
             <div className="min-h-0 border-b border-[var(--app-border)] min-[701px]:border-b-0 min-[701px]:border-r">
-              <div className="border-b border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Primary agents</div>
+              <div className="border-b border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agents</div>
               <div className="max-h-56 overflow-y-auto py-1 min-[701px]:max-h-[340px]">
-                {primaryAgents.map((profile) => {
-                  const selected = profile.name === selectedPrimaryAgent
-                  return (
-                    <button key={profile.name} type="button" onClick={() => chooseAgent(profile.name)} className={`flex w-full items-start gap-2 px-3 py-2.5 text-left text-sm transition ${selected ? 'bg-[var(--app-surface-subtle)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
-                      {selected ? <Check size={14} className="mt-0.5 shrink-0 text-[var(--app-primary)]" /> : <span className="mt-0.5 w-[14px] shrink-0" />}
-                      <Bot size={14} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate font-medium">{agentLabel(profile)}</span>
-                        <span className="mt-0.5 block truncate text-[11px] text-[var(--app-text-subtle)]">{modelBehaviorLabel(profile)}</span>
-                      </span>
-                    </button>
-                  )
-                })}
+                {agentSections.map((section, sectionIndex) => (
+                  <div key={section.label} className={sectionIndex === 0 ? '' : 'mt-1 border-t border-[var(--app-border)] pt-1'}>
+                    <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{section.label}</div>
+                    {section.profiles.map((profile) => {
+                      const selected = profile.name === selectedPrimaryAgent
+                      return (
+                        <button key={profile.name} type="button" onClick={() => chooseAgent(profile.name)} className={`flex w-full items-start gap-2 px-3 py-2.5 text-left text-sm transition ${selected ? 'bg-[var(--app-surface-subtle)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
+                          {selected ? <Check size={14} className="mt-0.5 shrink-0 text-[var(--app-primary)]" /> : <span className="mt-0.5 w-[14px] shrink-0" />}
+                          <Bot size={14} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">{agentLabel(profile)}</span>
+                            <span className="mt-0.5 block truncate text-[11px] text-[var(--app-text-subtle)]">{modelBehaviorLabel(profile)} · {agentModeLabel(profile)}</span>
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -286,6 +324,16 @@ export function AgentModelControl({
               )}
             </div>
           </div>
+          {onConfirmSettings ? (
+            <div className="flex items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3">
+              <button type="button" onClick={() => setOpen(false)} className="rounded-full border border-[var(--app-border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+                Cancel
+              </button>
+              <button type="button" disabled={busy || confirming} onClick={() => { void confirmSettings() }} className="rounded-full bg-[var(--app-primary)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-60">
+                {confirming ? 'Saving…' : 'Confirm changes'}
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>,
