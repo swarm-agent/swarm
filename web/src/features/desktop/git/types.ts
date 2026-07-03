@@ -41,6 +41,11 @@ export interface GitSnapshot {
   modified_count: number
   untracked_count: number
   conflict_count: number
+  additions?: number
+  deletions?: number
+  committed_file_count?: number
+  committed_additions?: number
+  committed_deletions?: number
   files: GitFileStatus[]
   remotes?: GitRemote[]
   recent_commits?: GitCommit[]
@@ -50,6 +55,11 @@ export interface GitSnapshot {
 
 export interface GitStatusResponse {
   ok: boolean
+  status: GitSnapshot
+}
+
+export interface GitStatusRealtimePayload {
+  workspace_path: string
   status: GitSnapshot
 }
 

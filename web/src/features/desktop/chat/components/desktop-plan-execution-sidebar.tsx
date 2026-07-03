@@ -3,6 +3,7 @@ import { cn } from "../../../../lib/cn";
 import { Button } from "../../../../components/ui/button";
 import type { DesktopSessionPlanCheckpoint } from "../types/chat";
 import type { DesktopPlanExecutionView } from "../../state/desktop-v3-cache-selectors";
+import type { GitFileStatus, GitSnapshot } from "../../git/types";
 type DesktopPlanExecutionSidebarAction =
   | "accept_checkpoint"
   | "resolve_blocked_checkpoint"
@@ -18,6 +19,7 @@ export interface DesktopPlanExecutionSidebarActionInput {
 
 interface DesktopPlanExecutionSidebarProps {
   view: DesktopPlanExecutionView | null;
+  gitSnapshot?: GitSnapshot | null;
   busyAction?: string | null;
   canStop?: boolean;
   onAction?: (
@@ -129,6 +131,35 @@ function isSingleRunView(view: DesktopPlanExecutionView): boolean {
       .trim()
       .toLowerCase() === "single_run"
   );
+}
+
+function finiteChangeCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, value)
+    : 0;
+}
+
+function gitFileStatusLabel(file: GitFileStatus): string {
+  if (file.conflict) return "conflict";
+  if (file.untracked) return "untracked";
+  const labels: string[] = [];
+  if (file.staged) labels.push("staged");
+  if (file.modified) labels.push("modified");
+  return labels.join(" + ") || file.kind || "changed";
+}
+
+function gitFileStatusBadge(file: GitFileStatus): string {
+  if (file.conflict) return "UU";
+  if (file.untracked) return "??";
+  const xy = (file.xy || "").replace(/\./g, "").trim();
+  if (xy) return xy.slice(0, 3).toUpperCase();
+  if (file.staged) return "S";
+  if (file.modified) return "M";
+  return (file.kind || "chg").slice(0, 3).toUpperCase();
+}
+
+function gitFilePathLabel(file: GitFileStatus): string {
+  return file.orig_path ? `${file.orig_path} → ${file.path}` : file.path;
 }
 
 function StatusBadge({ label, tone }: { label: string; tone: Tone }) {
@@ -300,6 +331,95 @@ function ActiveCheckpointCard({
       >
         Open full plan
       </Button>
+    </section>
+  );
+}
+
+function FilesChangedCard({ snapshot }: { snapshot?: GitSnapshot | null }) {
+  const files = snapshot?.files ?? [];
+  const fileCount = finiteChangeCount(snapshot?.committed_file_count) || files.length;
+  const additions =
+    finiteChangeCount(snapshot?.additions) ||
+    finiteChangeCount(snapshot?.committed_additions);
+  const deletions =
+    finiteChangeCount(snapshot?.deletions) ||
+    finiteChangeCount(snapshot?.committed_deletions);
+  const hasGit = snapshot?.has_git === true;
+  const clean =
+    hasGit &&
+    files.length === 0 &&
+    fileCount === 0 &&
+    additions === 0 &&
+    deletions === 0;
+
+  return (
+    <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.14)]">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+          Files Changed
+        </div>
+        <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold tabular-nums">
+          <span className="text-[var(--app-text-muted)]">
+            {fileCount} {fileCount === 1 ? "file" : "files"}
+          </span>
+          <span className="text-[var(--app-success)]">+{additions}</span>
+          <span className="text-[var(--app-danger)]">-{deletions}</span>
+        </div>
+      </div>
+      <div className="mt-3 max-h-44 min-w-0 overflow-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)]">
+        {!snapshot ? (
+          <div className="px-3 py-4 text-xs leading-5 text-[var(--app-text-muted)]">
+            Waiting for git status…
+          </div>
+        ) : !hasGit ? (
+          <div className="px-3 py-4 text-xs leading-5 text-[var(--app-text-muted)]">
+            No git repository detected.
+          </div>
+        ) : clean ? (
+          <div className="px-3 py-4 text-xs leading-5 text-[var(--app-text-muted)]">
+            Clean working tree.
+          </div>
+        ) : files.length === 0 ? (
+          <div className="px-3 py-4 text-xs leading-5 text-[var(--app-text-muted)]">
+            No changed file list available.
+          </div>
+        ) : (
+          files.map((file) => {
+            const label = gitFileStatusLabel(file);
+            const path = gitFilePathLabel(file);
+            return (
+              <div
+                key={`${file.kind}:${file.path}:${file.orig_path ?? ""}`}
+                className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-2 border-b border-[var(--app-border)] px-3 py-2 text-xs last:border-b-0"
+              >
+                <span
+                  className={cn(
+                    "rounded-md border px-1.5 py-px font-mono text-[9px] font-semibold uppercase leading-4 tracking-[0.04em]",
+                    toneBadgeClass(
+                      file.conflict
+                        ? "danger"
+                        : file.untracked
+                          ? "warning"
+                          : file.staged
+                            ? "primary"
+                            : "muted",
+                    ),
+                  )}
+                  title={label}
+                >
+                  {gitFileStatusBadge(file)}
+                </span>
+                <span
+                  className="min-w-0 truncate font-mono text-[var(--app-text)]"
+                  title={path}
+                >
+                  {path}
+                </span>
+              </div>
+            );
+          })
+        )}
+      </div>
     </section>
   );
 }
@@ -585,6 +705,7 @@ function ActionsCard({
 export const DesktopPlanExecutionSidebar = memo(
   function DesktopPlanExecutionSidebar({
     view,
+    gitSnapshot = null,
     busyAction,
     canStop = false,
     onAction,
@@ -632,6 +753,7 @@ export const DesktopPlanExecutionSidebar = memo(
             onAction={onAction}
             onEditPlan={onEditPlan}
           />
+          <FilesChangedCard snapshot={gitSnapshot} />
         </div>
       </aside>
     );

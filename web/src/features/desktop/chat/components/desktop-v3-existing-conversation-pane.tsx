@@ -130,6 +130,7 @@ import {
   DesktopPlanExecutionSidebar,
   type DesktopPlanExecutionSidebarActionInput,
 } from "./desktop-plan-execution-sidebar";
+import type { GitSnapshot } from "../../git/types";
 
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
@@ -1160,6 +1161,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   messagesLoaded: boolean;
   metadata?: Record<string, unknown>;
   session?: DesktopSessionRecord | null;
+  gitSnapshot?: GitSnapshot | null;
   loadedMessageCount?: number;
   routeOptions?: DesktopChatRoute[];
   onOpenChats?: () => void;
@@ -1199,6 +1201,7 @@ export function DesktopV3ExistingConversationPane({
   messagesLoaded,
   metadata,
   session,
+  gitSnapshot = null,
   loadedMessageCount,
   routeOptions = [],
   onOpenChats,
@@ -2316,6 +2319,7 @@ export function DesktopV3ExistingConversationPane({
 
         <DesktopPlanExecutionSidebar
           view={planExecutionView}
+          gitSnapshot={gitSnapshot}
           busyAction={planExecutionBusyAction}
           canStop={Boolean(currentRun)}
           onAction={stablePlanExecutionAction}
