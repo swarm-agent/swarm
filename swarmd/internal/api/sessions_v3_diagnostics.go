@@ -230,10 +230,10 @@ func (e *sessionV3Executor) recordSessionV3ProviderAPIDiagnostic(job sessionV3Ex
 		return
 	}
 	stage := "session.diagnostic.provider.api"
-	if event.Stage != "" {
-		stage += "." + strings.NewReplacer(" ", "_", "/", "_", ":", "_", ".", "_").Replace(event.Stage)
+	if eventStage := strings.TrimSpace(event.Stage); eventStage != "" {
+		stage += "." + strings.NewReplacer(" ", "_", "/", "_", ":", "_", "-", "_").Replace(eventStage)
 	}
-	sequence := fmt.Sprintf("%s-%s-%s-%d", event.Provider, event.Operation, event.Stage, event.RecordedAt)
+	sequence := fmt.Sprintf("provider-api-%s-%s-%s-%d-%d", strings.TrimSpace(event.Provider), strings.TrimSpace(event.Operation), strings.TrimSpace(event.Stage), event.RecordedAt, time.Now().UnixNano())
 	if _, err := e.server.appendSessionV3Diagnostic(sessionV3DiagnosticInput{
 		SessionID:      job.SessionID,
 		UserID:         job.Principal.UserID,
@@ -242,14 +242,11 @@ func (e *sessionV3Executor) recordSessionV3ProviderAPIDiagnostic(job sessionV3Ex
 		Stage:          stage,
 		Source:         "backend.provider.api",
 		SequenceLabel:  sequence,
-		Payload: map[string]any{
-			"provider_api_diagnostics": true,
-			"wire":                     event,
-		},
-		NowUnixMs: event.RecordedAt,
-		Force:     true,
+		Payload:        event,
+		NowUnixMs:      event.RecordedAt,
+		Force:          true,
 	}); err != nil {
-		log.Printf("warning: failed to record provider api diagnostic session=%q run=%q provider=%q operation=%q stage=%q: %v", job.SessionID, job.RunID, event.Provider, event.Operation, event.Stage, err)
+		log.Printf("warning: failed to record provider api diagnostic session=%q run=%q provider=%q stage=%q: %v", job.SessionID, job.RunID, event.Provider, event.Stage, err)
 	}
 }
 

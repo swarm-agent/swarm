@@ -149,7 +149,7 @@ func (a *Adapter) VerifyCredential(ctx context.Context, credential provideriface
 	providerdiagnostics.LogRequest("exa", "verify.search", req, body)
 	resp, err := client.Do(req)
 	if err != nil {
-		providerdiagnostics.LogError("exa", "verify.search", err)
+		providerdiagnostics.LogErrorContext(ctx, "exa", "verify.search", err)
 		return provideriface.AuthVerification{
 			Connected: false,
 			Method:    "api",
@@ -160,7 +160,7 @@ func (a *Adapter) VerifyCredential(ctx context.Context, credential provideriface
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
 	providerdiagnostics.LogResponse("exa", "verify.search", resp, raw)
 	if err != nil {
-		providerdiagnostics.LogError("exa", "verify.search", err)
+		providerdiagnostics.LogErrorContext(ctx, "exa", "verify.search", err)
 		return provideriface.AuthVerification{
 			Connected: false,
 			Method:    "api",

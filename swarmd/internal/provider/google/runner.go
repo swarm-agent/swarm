@@ -167,7 +167,7 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	providerdiagnostics.LogRequest("google", "generateContent", httpReq, raw)
 	resp, err := r.httpClient.Do(httpReq)
 	if err != nil {
-		providerdiagnostics.LogError("google", "generateContent", err)
+		providerdiagnostics.LogErrorContext(ctx, "google", "generateContent", err)
 		return provideriface.Response{}, sanitizeGoogleError("google generateContent request failed", err)
 	}
 	defer resp.Body.Close()
@@ -175,7 +175,7 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	providerdiagnostics.LogResponse("google", "generateContent", resp, body)
 	if err != nil {
-		providerdiagnostics.LogError("google", "generateContent", err)
+		providerdiagnostics.LogErrorContext(ctx, "google", "generateContent", err)
 		return provideriface.Response{}, sanitizeGoogleError("read google generateContent response", err)
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
@@ -225,7 +225,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	providerdiagnostics.LogRequest("google", "streamGenerateContent", httpReq, raw)
 	resp, err := r.httpClient.Do(httpReq)
 	if err != nil {
-		providerdiagnostics.LogError("google", "streamGenerateContent", err)
+		providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", err)
 		return provideriface.Response{}, sanitizeGoogleError("google streamGenerateContent request failed", err)
 	}
 	defer resp.Body.Close()
@@ -234,7 +234,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, body)
 		if readErr != nil {
-			providerdiagnostics.LogError("google", "streamGenerateContent", readErr)
+			providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", readErr)
 			return provideriface.Response{}, sanitizeGoogleError("read google streamGenerateContent error response", readErr)
 		}
 		return provideriface.Response{}, googleStatusError("google streamGenerateContent failed", resp.StatusCode, body)
@@ -243,10 +243,10 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, nil)
 	accumulator := newGoogleStreamAccumulator(modelID)
 	if err := parseGoogleEventStream(resp.Body, func(payload string) error {
-		providerdiagnostics.LogStreamChunk("google", "streamGenerateContent", []byte(payload))
+		providerdiagnostics.LogStreamChunkContext(ctx, "google", "streamGenerateContent", []byte(payload))
 		return accumulator.applyPayload(payload, onEvent)
 	}); err != nil {
-		providerdiagnostics.LogError("google", "streamGenerateContent", err)
+		providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", err)
 		return provideriface.Response{}, sanitizeGoogleError("decode google stream response", err)
 	}
 	return accumulator.response(), nil

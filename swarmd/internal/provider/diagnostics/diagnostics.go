@@ -273,12 +273,12 @@ func sanitizeBytes(body []byte) string {
 	return privacy.SanitizeText(string(body))
 }
 
+func clean(value string) string {
+	return privacy.SanitizeText(strings.TrimSpace(value))
+}
+
 func record(ctx context.Context, event Event) {
 	if recorder := recorderFromContext(ctx); recorder != nil {
 		recorder(ctx, event)
 	}
-}
-
-func clean(value string) string {
-	return privacy.SanitizeText(strings.TrimSpace(value))
 }

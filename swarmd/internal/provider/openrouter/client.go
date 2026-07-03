@@ -193,7 +193,7 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 	providerdiagnostics.LogRequest("openrouter", "chat.completions.stream", req, raw)
 	resp, err := client.Do(req)
 	if err != nil {
-		providerdiagnostics.LogError("openrouter", "chat.completions.stream", err)
+		providerdiagnostics.LogErrorContext(ctx, "openrouter", "chat.completions.stream", err)
 		return chatCompletionResponse{}, err
 	}
 	defer resp.Body.Close()
@@ -201,7 +201,7 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		providerdiagnostics.LogResponse("openrouter", "chat.completions.stream", resp, body)
 		if readErr != nil {
-			providerdiagnostics.LogError("openrouter", "chat.completions.stream", readErr)
+			providerdiagnostics.LogErrorContext(ctx, "openrouter", "chat.completions.stream", readErr)
 			return chatCompletionResponse{}, readErr
 		}
 		return chatCompletionResponse{}, fmt.Errorf("openrouter chat completions stream failed status=%d: %s", resp.StatusCode, apiErrorMessage(body))
@@ -209,7 +209,7 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 	providerdiagnostics.LogResponse("openrouter", "chat.completions.stream", resp, nil)
 	state := newOpenRouterStreamState()
 	if err := parseOpenRouterEventStream(resp.Body, func(payload string) error {
-		providerdiagnostics.LogStreamChunk("openrouter", "chat.completions.stream", []byte(payload))
+		providerdiagnostics.LogStreamChunkContext(ctx, "openrouter", "chat.completions.stream", []byte(payload))
 		var chunk chatCompletionChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			return fmt.Errorf("decode openrouter stream chunk: %w", err)
@@ -223,7 +223,7 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 		}
 		return nil
 	}); err != nil {
-		providerdiagnostics.LogError("openrouter", "chat.completions.stream", err)
+		providerdiagnostics.LogErrorContext(ctx, "openrouter", "chat.completions.stream", err)
 		return chatCompletionResponse{}, err
 	}
 	response := state.response()
@@ -259,14 +259,14 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 	providerdiagnostics.LogRequest("openrouter", operation, req, body)
 	resp, err := client.Do(req)
 	if err != nil {
-		providerdiagnostics.LogError("openrouter", operation, err)
+		providerdiagnostics.LogErrorContext(ctx, "openrouter", operation, err)
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	providerdiagnostics.LogResponse("openrouter", operation, resp, raw)
 	if err != nil {
-		providerdiagnostics.LogError("openrouter", operation, err)
+		providerdiagnostics.LogErrorContext(ctx, "openrouter", operation, err)
 		return nil, resp.StatusCode, err
 	}
 	return raw, resp.StatusCode, nil
