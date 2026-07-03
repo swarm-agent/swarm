@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { Bot, Check, ChevronDown, Cpu, ExternalLink, GitBranch, Lightbulb, Lock, Zap, ZapOff } from 'lucide-react'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
-import { displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, supportsCodexFastMode } from '../services/model-options'
+import { displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, normalizeModelServiceTier, supportsModelServiceTier } from '../services/model-options'
 
 export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
   | 'modelMode'
@@ -46,11 +46,6 @@ interface AgentModelControlProps {
 }
 
 const THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
-const FAST_OPTIONS = [
-  { label: 'Off', value: '' },
-  { label: 'On', value: 'fast' },
-]
-
 type DraftMode = 'default' | 'single' | 'split'
 export type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string }
 
@@ -95,14 +90,28 @@ function selectedDraftMode(profile: AgentProfileRecord | null): DraftMode {
   return 'default'
 }
 
-function normalizeFastServiceTier(value: string): string {
-  const normalized = value.trim().toLowerCase()
-  return normalized === 'fast' || normalized === 'priority' ? 'fast' : ''
+function modelOptionFor(provider: string, model: string, modelOptions: ModelOptionRecord[]): ModelOptionRecord | null {
+  return modelOptions.find((candidate) => candidate.provider === provider && candidate.model === model) ?? null
 }
 
-function modelSupportsFast(provider: string, model: string, modelOptions: ModelOptionRecord[]): boolean {
-  const option = modelOptions.find((candidate) => candidate.provider === provider && candidate.model === model)
-  return supportsCodexFastMode(provider, model, option?.serviceTiers ?? [])
+function normalizeDraftServiceTier(provider: string, value: string): string {
+  return normalizeModelServiceTier(provider, value)
+}
+
+function modelSupportsServiceTier(provider: string, model: string, modelOptions: ModelOptionRecord[], tier = ''): boolean {
+  const option = modelOptionFor(provider, model, modelOptions)
+  return supportsModelServiceTier(provider, model, option?.serviceTiers ?? [], tier)
+}
+
+function serviceTierOptionsForDraft(draft: ModelDraft, modelOptions: ModelOptionRecord[]) {
+  const option = modelOptionFor(draft.provider, draft.model, modelOptions)
+  return modelServiceTierOptions(draft.provider, draft.model, option?.serviceTiers ?? [])
+}
+
+function serviceTierLabel(provider: string, model: string, modelOptions: ModelOptionRecord[], value: string): string {
+  const normalized = normalizeDraftServiceTier(provider, value)
+  const options = serviceTierOptionsForDraft({ provider, model, thinking: '', serviceTier: normalized }, modelOptions)
+  return options.find((option) => option.value === normalized)?.label ?? (normalized || 'Off / standard')
 }
 
 function defaultDraftFromModel(model: ModelOptionRecord | null, serviceTier = '', selectedThinking = ''): ModelDraft {
@@ -110,35 +119,38 @@ function defaultDraftFromModel(model: ModelOptionRecord | null, serviceTier = ''
     provider: model?.provider ?? '',
     model: model?.model ?? '',
     thinking: selectedThinking.trim() || model?.thinking || 'off',
-    serviceTier: supportsCodexFastMode(model?.provider ?? '', model?.model ?? '', model?.serviceTiers ?? []) ? normalizeFastServiceTier(serviceTier) : '',
+    serviceTier: supportsModelServiceTier(model?.provider ?? '', model?.model ?? '', model?.serviceTiers ?? []) ? normalizeDraftServiceTier(model?.provider ?? '', serviceTier) : '',
   }
 }
 
 function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedModel: ModelOptionRecord | null, selectedServiceTier = '', selectedThinking = ''): ModelDraft {
   const fallback = defaultDraftFromModel(selectedModel, selectedServiceTier, selectedThinking)
+  const provider = profile?.provider.trim() || fallback.provider
   return {
-    provider: profile?.provider.trim() || fallback.provider,
+    provider,
     model: profile?.model.trim() || fallback.model,
     thinking: profile?.thinking.trim() || fallback.thinking,
-    serviceTier: normalizeFastServiceTier(profile?.autoServiceTier ?? ''),
+    serviceTier: normalizeDraftServiceTier(provider, profile?.autoServiceTier ?? ''),
   }
 }
 
 function splitDraftFromProfile(profile: AgentProfileRecord | null, prefix: 'plan' | 'auto', selectedModel: ModelOptionRecord | null, selectedServiceTier = '', selectedThinking = ''): ModelDraft {
   const fallback = defaultDraftFromModel(selectedModel, selectedServiceTier, selectedThinking)
   if (prefix === 'plan') {
+    const provider = profile?.planProvider.trim() || fallback.provider
     return {
-      provider: profile?.planProvider.trim() || fallback.provider,
+      provider,
       model: profile?.planModel.trim() || fallback.model,
       thinking: profile?.planThinking.trim() || fallback.thinking,
-      serviceTier: normalizeFastServiceTier(profile?.planServiceTier ?? ''),
+      serviceTier: normalizeDraftServiceTier(provider, profile?.planServiceTier ?? ''),
     }
   }
+  const provider = profile?.autoProvider.trim() || fallback.provider
   return {
-    provider: profile?.autoProvider.trim() || fallback.provider,
+    provider,
     model: profile?.autoModel.trim() || fallback.model,
     thinking: profile?.autoThinking.trim() || fallback.thinking,
-    serviceTier: normalizeFastServiceTier(profile?.autoServiceTier ?? ''),
+    serviceTier: normalizeDraftServiceTier(provider, profile?.autoServiceTier ?? ''),
   }
 }
 
@@ -194,7 +206,7 @@ function buildPatch(mode: DraftMode, single: ModelDraft, plan: ModelDraft, auto:
       autoProvider: '',
       autoModel: '',
       autoThinking: '',
-      autoServiceTier: modelSupportsFast(single.provider, single.model, modelOptions) ? normalizeFastServiceTier(single.serviceTier) : '',
+      autoServiceTier: modelSupportsServiceTier(single.provider, single.model, modelOptions, single.serviceTier) ? normalizeDraftServiceTier(single.provider, single.serviceTier) : '',
     }
   }
   return {
@@ -205,11 +217,11 @@ function buildPatch(mode: DraftMode, single: ModelDraft, plan: ModelDraft, auto:
     planProvider: plan.provider.trim(),
     planModel: plan.model.trim(),
     planThinking: normalizeThinking(plan.thinking),
-    planServiceTier: modelSupportsFast(plan.provider, plan.model, modelOptions) ? normalizeFastServiceTier(plan.serviceTier) : '',
+    planServiceTier: modelSupportsServiceTier(plan.provider, plan.model, modelOptions, plan.serviceTier) ? normalizeDraftServiceTier(plan.provider, plan.serviceTier) : '',
     autoProvider: auto.provider.trim(),
     autoModel: auto.model.trim(),
     autoThinking: normalizeThinking(auto.thinking),
-    autoServiceTier: modelSupportsFast(auto.provider, auto.model, modelOptions) ? normalizeFastServiceTier(auto.serviceTier) : '',
+    autoServiceTier: modelSupportsServiceTier(auto.provider, auto.model, modelOptions, auto.serviceTier) ? normalizeDraftServiceTier(auto.provider, auto.serviceTier) : '',
   }
 }
 
@@ -258,9 +270,10 @@ export function AgentModelControl({
     ? `${selectedModel.provider}/${displayModelName(selectedModel.provider, selectedModel.model, selectedModel.contextMode)}`
     : 'Default model'
   const normalizedSelectedThinking = selectedThinking.trim() || selectedModel?.thinking || 'off'
-  const selectedFastSupported = selectedModel ? supportsCodexFastMode(selectedModel.provider, selectedModel.model, selectedModel.serviceTiers) : false
-  const selectedFast = normalizeFastServiceTier(selectedServiceTier) ? 'on' : 'off'
-  const SelectedFastIcon = selectedFast === 'off' ? ZapOff : Zap
+  const selectedServiceTierSupported = selectedModel ? supportsModelServiceTier(selectedModel.provider, selectedModel.model, selectedModel.serviceTiers) : false
+  const normalizedSelectedServiceTier = normalizeDraftServiceTier(selectedModel?.provider ?? '', selectedServiceTier)
+  const selectedServiceTierLabel = normalizedSelectedServiceTier ? serviceTierLabel(selectedModel?.provider ?? '', selectedModel?.model ?? '', modelOptions, normalizedSelectedServiceTier) : 'standard'
+  const SelectedServiceTierIcon = normalizedSelectedServiceTier ? Zap : ZapOff
 
   useEffect(() => {
     if (openSignal > 0) setOpen(true)
@@ -294,7 +307,7 @@ export function AgentModelControl({
   }
 
   function selectModel(target: 'single' | 'plan' | 'auto', model: string) {
-    const update = (current: ModelDraft): ModelDraft => ({ ...current, model, serviceTier: modelSupportsFast(current.provider, model, modelOptions) ? current.serviceTier : '' })
+    const update = (current: ModelDraft): ModelDraft => ({ ...current, model, serviceTier: modelSupportsServiceTier(current.provider, model, modelOptions, current.serviceTier) ? current.serviceTier : '' })
     if (target === 'single') setSingleDraft(update)
     else if (target === 'plan') setPlanDraft(update)
     else setAutoDraft(update)
@@ -310,7 +323,7 @@ export function AgentModelControl({
         provider: singleDraft.provider.trim(),
         model: singleDraft.model.trim(),
         thinking: normalizeThinking(singleDraft.thinking),
-        serviceTier: modelSupportsFast(singleDraft.provider, singleDraft.model, modelOptions) ? normalizeFastServiceTier(singleDraft.serviceTier) : '',
+        serviceTier: modelSupportsServiceTier(singleDraft.provider, singleDraft.model, modelOptions, singleDraft.serviceTier) ? normalizeDraftServiceTier(singleDraft.provider, singleDraft.serviceTier) : '',
       }
       : undefined
     if (draftMode === 'default' && (!defaultPreferencePatch?.provider || !defaultPreferencePatch.model || !defaultPreferencePatch.thinking)) {
@@ -449,8 +462,8 @@ export function AgentModelControl({
               <span className="truncate">{selectedModelLabel}</span>
               <Lightbulb size={12} className="shrink-0 text-[var(--app-text-subtle)]" />
               <span>{normalizedSelectedThinking}</span>
-              {selectedFastSupported ? <SelectedFastIcon size={12} className="shrink-0 text-[var(--app-text-subtle)]" /> : null}
-              {selectedFastSupported ? <span>{selectedFast}</span> : null}
+              {selectedServiceTierSupported ? <SelectedServiceTierIcon size={12} className="shrink-0 text-[var(--app-text-subtle)]" /> : null}
+              {selectedServiceTierSupported ? <span>{selectedServiceTierLabel}</span> : null}
             </>
           ) : (triggerDetail || modelBehaviorLabel(activeProfile))}
         </span>
@@ -503,7 +516,9 @@ function ModelDraftEditor({
 }) {
   const choices = modelChoices(draft.provider, modelOptions)
   const selectedOption = choices.find((option) => option.model === draft.model) ?? null
-  const fastSupported = modelSupportsFast(draft.provider, draft.model, modelOptions)
+  const serviceTierOptions = serviceTierOptionsForDraft(draft, modelOptions)
+  const serviceTierSupported = serviceTierOptions.length > 1
+  const normalizedServiceTier = serviceTierSupported ? normalizeDraftServiceTier(draft.provider, draft.serviceTier) : ''
   return (
     <div className="mt-4 rounded-xl border border-[var(--app-border)] p-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]"><GitBranch size={14} />{title}</div>
@@ -511,7 +526,7 @@ function ModelDraftEditor({
         <SelectField label="Provider" value={draft.provider} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider, value: provider }))} placeholder="Choose provider" />
         <ModelSelectField label="Model" value={draft.model} onChange={onModelChange} options={choices} placeholder="Choose model" disabled={!draft.provider.trim()} />
         <SelectField label="Thinking" value={normalizeThinking(draft.thinking)} onChange={onThinkingChange} options={THINKING_OPTIONS.map((option) => ({ label: option, value: option }))} />
-        {showFast ? <SelectField label="Fast" value={fastSupported ? normalizeFastServiceTier(draft.serviceTier) : ''} onChange={(value) => onServiceTierChange?.(normalizeFastServiceTier(value))} options={FAST_OPTIONS} disabled={!fastSupported} /> : null}
+        {showFast ? <SelectField label="Service tier" value={normalizedServiceTier} onChange={(value) => onServiceTierChange?.(normalizeDraftServiceTier(draft.provider, value))} options={serviceTierOptions} disabled={!serviceTierSupported} /> : null}
       </div>
       {selectedOption ? <ModelInfoPanel option={selectedOption} /> : null}
     </div>

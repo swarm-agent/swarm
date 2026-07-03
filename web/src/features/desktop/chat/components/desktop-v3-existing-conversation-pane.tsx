@@ -129,9 +129,8 @@ function formatDesktopV3ContextTooltip(contextWindow: number, usage: NormalizedU
   return 'Context window unavailable'
 }
 
-function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | 'off' {
-  const serviceTier = preference.serviceTier.trim().toLowerCase()
-  return serviceTier === 'fast' || serviceTier === 'priority' ? 'on' : 'off'
+function serviceTierFromPreference(preference: SessionPreferenceRecord): string {
+  return preference.serviceTier.trim().toLowerCase() || 'standard'
 }
 
 function preferencesEqual(left: SessionPreferenceRecord, right: SessionPreferenceRecord): boolean {
@@ -248,8 +247,8 @@ function permissionSavedRuleEqual(left: DesktopPermissionRecord['savedRule'], ri
     && left.updatedAt === right.updatedAt
 }
 
-function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; fast: 'on' | 'off' }): string {
-  return `${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'} · fast ${input.fast}`
+function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; serviceTier: string }): string {
+  return `${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'} · tier ${input.serviceTier}`
 }
 
 function formatSettingsChangeSummary(input: {
@@ -264,11 +263,11 @@ function formatSettingsChangeSummary(input: {
   if (!preferencesEqual(input.previous.preference, input.next.preference)) {
     const previousThinking = input.previous.preference.thinking || 'off'
     const nextThinking = input.next.preference.thinking || 'off'
-    const previousFast = fastToggleFromPreference(input.previous.preference)
-    const nextFast = fastToggleFromPreference(input.next.preference)
+    const previousServiceTier = serviceTierFromPreference(input.previous.preference)
+    const nextServiceTier = serviceTierFromPreference(input.next.preference)
     changes.push(`model ${input.previousModelLabel || 'default'} → ${input.nextModelLabel || 'default'}`)
     if (previousThinking !== nextThinking) changes.push(`thinking ${previousThinking} → ${nextThinking}`)
-    if (previousFast !== nextFast) changes.push(`fast ${previousFast} → ${nextFast}`)
+    if (previousServiceTier !== nextServiceTier) changes.push(`tier ${previousServiceTier} → ${nextServiceTier}`)
   }
   return changes.join('; ')
 }
@@ -1162,7 +1161,7 @@ export function DesktopV3ExistingConversationPane({
             modelPickerDisabled={selectedAgentModelLock.locked}
             modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
             modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
-            modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, fast: fastToggleFromPreference(preference) })}
+            modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, serviceTier: serviceTierFromPreference(preference) })}
             onOpenAgentSettings={handleOpenAgentSettings}
             onConfirmAgentSettings={handleConfirmAgentSettings}
             agentModelControlBusy={agentModelSaving}
@@ -1170,8 +1169,7 @@ export function DesktopV3ExistingConversationPane({
             thinkingTagsEnabled={thinkingTagsEnabled}
             onThinkingTagsToggle={(enabled) => { void handleThinkingTagsToggle(enabled) }}
             thinkingTagsBusy={thinkingTagsSaving}
-            fast={fastToggleFromPreference(preference)}
-            contextLabel={contextLabel}
+                contextLabel={contextLabel}
             contextTooltip={contextTooltip}
             compactDisabled={compacting || sending || Boolean(currentRun)}
             settingsActionLabel={showRestartSettingsAction ? 'Restart loop with new settings?' : ''}

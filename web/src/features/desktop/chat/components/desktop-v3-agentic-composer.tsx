@@ -4,7 +4,7 @@ import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
-import { supportsCodexFastMode } from '../services/model-options'
+import { modelServiceTierOptions, normalizeModelServiceTier, supportsModelServiceTier } from '../services/model-options'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
 import {
   chatMentionCandidates,
@@ -140,7 +140,6 @@ export interface DesktopV3AgenticComposerProps {
   thinkingTagsEnabled?: boolean
   onThinkingTagsToggle?: (enabled: boolean) => void
   thinkingTagsBusy?: boolean
-  fast: 'on' | 'off'
   contextLabel?: string
   contextTooltip?: string
   onCompact?: (draft: string) => void | Promise<void>
@@ -189,7 +188,6 @@ export function DesktopV3AgenticComposer({
   thinkingTagsEnabled,
   onThinkingTagsToggle,
   thinkingTagsBusy = false,
-  fast,
   contextLabel,
   contextTooltip,
   onCompact,
@@ -237,7 +235,11 @@ export function DesktopV3AgenticComposer({
   const modelPickerLocked = modelPickerDisabled || Boolean(modelLockNotice.trim())
   const modelPickerReason = modelPickerDisabledReason || modelLockNotice
   const normalizedThinking = normalizeThinking(thinking)
-  const fastSupported = selectedModel ? supportsCodexFastMode(selectedModel.provider, selectedModel.model, selectedModel.serviceTiers) : false
+  const serviceTierSupported = selectedModel ? supportsModelServiceTier(selectedModel.provider, selectedModel.model, selectedModel.serviceTiers) : false
+  const normalizedServiceTier = selectedModel ? normalizeModelServiceTier(selectedModel.provider, selectedServiceTier) : ''
+  const selectedServiceTierLabel = selectedModel && normalizedServiceTier
+    ? (modelServiceTierOptions(selectedModel.provider, selectedModel.model, selectedModel.serviceTiers).find((option) => option.value === normalizedServiceTier)?.label ?? normalizedServiceTier)
+    : 'standard'
   const ModeIcon = mode === 'plan' ? NotepadText : ChevronsUp
   const effectiveAgentSettingsSignal = agentSettingsOpenSignal + internalAgentSettingsSignal
   const dictationComposer = dictationEnabled
@@ -514,7 +516,7 @@ export function DesktopV3AgenticComposer({
   )
 
   const modelSummary = selectedModel?.label || selectedModel?.model || 'Model'
-  const settingsSummary = `${modelSummary} · thinking ${normalizedThinking}${fastSupported ? ` · fast ${fast}` : ''}`
+  const settingsSummary = `${modelSummary} · thinking ${normalizedThinking}${serviceTierSupported ? ` · tier ${selectedServiceTierLabel}` : ''}`
 
   function handleModeToggle() {
     if (!onModeSelect) return
@@ -630,8 +632,8 @@ export function DesktopV3AgenticComposer({
                         <span className="truncate">{modelSummary}</span>
                         <Lightbulb size={10} className="shrink-0" />
                         <span>{normalizedThinking}</span>
-                        {fastSupported ? (fast !== 'off' ? <Zap size={10} className="shrink-0" /> : <ZapOff size={10} className="shrink-0" />) : null}
-                        {fastSupported ? <span>{fast}</span> : null}
+                        {serviceTierSupported ? (normalizedServiceTier ? <Zap size={10} className="shrink-0" /> : <ZapOff size={10} className="shrink-0" />) : null}
+                        {serviceTierSupported ? <span>{selectedServiceTierLabel}</span> : null}
                       </span>
                     </span>
                   </button>

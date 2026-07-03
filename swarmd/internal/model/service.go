@@ -117,7 +117,7 @@ func (s *Service) SetPreferenceForAccount(accountScopeID, userID, provider, mode
 	serviceTier := ""
 	contextMode := ""
 	if len(codexRuntime) > 0 {
-		serviceTier = codexruntime.NormalizeServiceTier(codexRuntime[0])
+		serviceTier = normalizeServiceTierForProvider(provider, codexRuntime[0])
 	}
 	if len(codexRuntime) > 1 {
 		contextMode = codexruntime.NormalizeContextMode(codexRuntime[1])
@@ -133,7 +133,7 @@ func (s *Service) SetPreferenceForAccount(accountScopeID, userID, provider, mode
 		return ResolvedPreference{}, nil, fmt.Errorf("invalid thinking level %q", thinking)
 	}
 	thinking = normalizeThinkingForProvider(provider, thinking)
-	if !supportsCodexFastRuntime(provider, modelName) {
+	if !s.supportsServiceTierRuntime(provider, modelName, serviceTier) {
 		serviceTier = ""
 	}
 	if !supportsCodexContextRuntime(provider, modelName) {
@@ -232,6 +232,37 @@ func normalizeServiceTierForProvider(providerID, serviceTier string) string {
 		}
 	default:
 		return ""
+	}
+}
+
+func (s *Service) supportsServiceTierRuntime(provider, modelName, serviceTier string) bool {
+	provider = normalizeProviderID(provider)
+	serviceTier = normalizeServiceTierForProvider(provider, serviceTier)
+	if serviceTier == "" {
+		return true
+	}
+	switch provider {
+	case "codex":
+		return supportsCodexFastRuntime(provider, modelName)
+	case "fireworks":
+		if serviceTier != "priority" && serviceTier != "fast" {
+			return false
+		}
+		if s == nil || s.catalog == nil {
+			return true
+		}
+		lookup, err := s.catalog.Get(provider, modelName)
+		if err != nil || !lookup.Found {
+			return true
+		}
+		for _, supported := range lookup.Record.ServiceTiers {
+			if strings.EqualFold(strings.TrimSpace(supported), serviceTier) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
 	}
 }
 

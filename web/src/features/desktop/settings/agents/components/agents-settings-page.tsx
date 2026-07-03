@@ -29,7 +29,7 @@ import {
   CUSTOM_AGENT_TOOL_PRESET_ID,
   agentToolPresetByID,
 } from "../../../chat/services/agent-tool-presets";
-import { supportsCodexFastMode } from "../../../chat/services/model-options";
+import { modelServiceTierOptions, normalizeModelServiceTier, supportsModelServiceTier } from "../../../chat/services/model-options";
 
 interface AgentFormState {
   name: string;
@@ -107,12 +107,6 @@ const THINKING_OPTIONS = [
   { value: "xhigh", label: "X-High" },
 ];
 
-const FAST_OPTIONS = [
-  { value: "", label: "Default" },
-  { value: "fast", label: "On" },
-  { value: "priority", label: "Priority" },
-  { value: "off", label: "Off" },
-];
 
 const UTILITY_THINKING_OPTIONS = [
   { value: "off", label: "Off" },
@@ -566,6 +560,20 @@ function modelOptionKey(provider: string, model: string, contextMode = ""): stri
   return `${provider}:${model}:${contextMode.trim().toLowerCase()}`;
 }
 
+function modelOptionFor(provider: string, model: string, modelOptions: ModelOptionRecord[]): ModelOptionRecord | null {
+  return modelOptions.find((option) => option.provider === provider && option.model === model) ?? null;
+}
+
+function serviceTierOptionsForModel(provider: string, model: string, modelOptions: ModelOptionRecord[]) {
+  const option = modelOptionFor(provider, model, modelOptions);
+  return modelServiceTierOptions(provider, model, option?.serviceTiers ?? []);
+}
+
+function modelSupportsServiceTierSetting(provider: string, model: string, modelOptions: ModelOptionRecord[], tier = ""): boolean {
+  const option = modelOptionFor(provider, model, modelOptions);
+  return supportsModelServiceTier(provider, model, option?.serviceTiers ?? [], tier);
+}
+
 type AgentSplitFieldPrefix = "plan" | "auto";
 
 type AgentSplitModelSectionProps = {
@@ -611,13 +619,14 @@ function withSplitFieldValue(
   prefix: AgentSplitFieldPrefix,
   field: "provider" | "model" | "thinking" | "serviceTier",
   value: string,
+  modelOptions: ModelOptionRecord[],
 ): AgentFormState {
   if (prefix === "plan") {
     switch (field) {
       case "provider":
         return { ...form, planProvider: value, planModel: value === form.planProvider ? form.planModel : "", planServiceTier: value === form.planProvider ? form.planServiceTier : "" };
       case "model":
-        return { ...form, planModel: value, planServiceTier: supportsCodexFastMode(form.planProvider, value) ? form.planServiceTier : "" };
+        return { ...form, planModel: value, planServiceTier: modelSupportsServiceTierSetting(form.planProvider, value, modelOptions, form.planServiceTier) ? form.planServiceTier : "" };
       case "thinking":
         return { ...form, planThinking: value };
       case "serviceTier":
@@ -628,7 +637,7 @@ function withSplitFieldValue(
     case "provider":
       return { ...form, autoProvider: value, autoModel: value === form.autoProvider ? form.autoModel : "", autoServiceTier: value === form.autoProvider ? form.autoServiceTier : "" };
     case "model":
-      return { ...form, autoModel: value, autoServiceTier: supportsCodexFastMode(form.autoProvider, value) ? form.autoServiceTier : "" };
+      return { ...form, autoModel: value, autoServiceTier: modelSupportsServiceTierSetting(form.autoProvider, value, modelOptions, form.autoServiceTier) ? form.autoServiceTier : "" };
     case "thinking":
       return { ...form, autoThinking: value };
     case "serviceTier":
@@ -679,7 +688,9 @@ function SplitModelSection({
   const thinking = splitFieldValue(form, prefix, "thinking");
   const serviceTier = splitFieldValue(form, prefix, "serviceTier");
   const modelChoices = splitModelChoices(provider, modelOptions, selectedProfile, prefix);
-  const fastSupported = supportsCodexFastMode(provider, model);
+  const serviceTierOptions = serviceTierOptionsForModel(provider, model, modelOptions);
+  const serviceTierSupported = serviceTierOptions.length > 1;
+  const normalizedServiceTier = serviceTierSupported ? normalizeModelServiceTier(provider, serviceTier) : "";
 
   return (
     <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
@@ -695,7 +706,7 @@ function SplitModelSection({
               value={provider}
               onChange={(event: ChangeEvent<HTMLSelectElement>) => {
                 const nextProvider = event.target.value;
-                setForm((current) => withSplitFieldValue(current, prefix, "provider", nextProvider));
+                setForm((current) => withSplitFieldValue(current, prefix, "provider", nextProvider, modelOptions));
               }}
               disabled={busy}
               className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
@@ -716,7 +727,7 @@ function SplitModelSection({
             <select
               value={model}
               onChange={(event: ChangeEvent<HTMLSelectElement>) => {
-                setForm((current) => withSplitFieldValue(current, prefix, "model", event.target.value));
+                setForm((current) => withSplitFieldValue(current, prefix, "model", event.target.value, modelOptions));
               }}
               disabled={busy || !provider.trim()}
               className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
@@ -737,7 +748,7 @@ function SplitModelSection({
             <select
               value={thinking}
               onChange={(event: ChangeEvent<HTMLSelectElement>) => {
-                setForm((current) => withSplitFieldValue(current, prefix, "thinking", event.target.value));
+                setForm((current) => withSplitFieldValue(current, prefix, "thinking", event.target.value, modelOptions));
               }}
               disabled={busy}
               className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
@@ -752,17 +763,17 @@ function SplitModelSection({
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Fast</label>
+          <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Service tier</label>
           <div className="relative min-w-0 flex-1">
             <select
-              value={fastSupported ? serviceTier : ""}
+              value={normalizedServiceTier}
               onChange={(event: ChangeEvent<HTMLSelectElement>) => {
-                setForm((current) => withSplitFieldValue(current, prefix, "serviceTier", event.target.value));
+                setForm((current) => withSplitFieldValue(current, prefix, "serviceTier", event.target.value, modelOptions));
               }}
-              disabled={busy || !fastSupported}
+              disabled={busy || !serviceTierSupported}
               className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
             >
-              {FAST_OPTIONS.map((option) => (
+              {serviceTierOptions.map((option) => (
                 <option key={option.label} value={option.value}>
                   {option.label}
                 </option>
@@ -773,7 +784,7 @@ function SplitModelSection({
         </div>
       </div>
       <p className="mt-3 text-xs leading-5 text-[var(--app-text-muted)]">
-        Split mode requires explicit provider/model choices for both Plan and Auto. Choose a provider/model here to lock this mode to that preset. Fast is available for supported Codex models. Current default chat model: {currentDefaultModelLabel}.
+        Split mode requires explicit provider/model choices for both Plan and Auto. Choose a provider/model here to lock this mode to that preset. Service tier options are provider-specific. Current default chat model: {currentDefaultModelLabel}.
       </p>
     </div>
   );
@@ -1543,6 +1554,10 @@ export function AgentsSettingsPage() {
       setForm((current) => ({ ...current, model: "" }));
     }
   }, [form.model, form.provider, modelChoices]);
+
+  const singleServiceTierOptions = serviceTierOptionsForModel(form.provider, form.model, modelOptions);
+  const singleServiceTierSupported = singleServiceTierOptions.length > 1;
+  const normalizedSingleServiceTier = singleServiceTierSupported ? normalizeModelServiceTier(form.provider, form.autoServiceTier) : "";
 
   const agentStateQueryKey = agentSettingsStateQueryOptions().queryKey;
   const agentStateSummaryQueryKey = agentStateQueryOptions().queryKey;
@@ -2445,7 +2460,7 @@ export function AgentsSettingsPage() {
                             setForm((current) => ({
                               ...current,
                               model: event.target.value,
-                              autoServiceTier: supportsCodexFastMode(current.provider, event.target.value)
+                              autoServiceTier: modelSupportsServiceTierSetting(current.provider, event.target.value, modelOptions, current.autoServiceTier)
                                 ? current.autoServiceTier
                                 : "",
                             }))
@@ -2502,21 +2517,21 @@ export function AgentsSettingsPage() {
 
                   <div className="flex items-center px-4 py-3">
                     <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                      Fast
+                      Service tier
                     </label>
                     <div className="relative w-full">
                       <select
-                        value={supportsCodexFastMode(form.provider, form.model) ? form.autoServiceTier : ""}
+                        value={normalizedSingleServiceTier}
                         onChange={(event: ChangeEvent<HTMLSelectElement>) =>
                           setForm((current) => ({
                             ...current,
                             autoServiceTier: event.target.value,
                           }))
                         }
-                        disabled={busy || !supportsCodexFastMode(form.provider, form.model)}
+                        disabled={busy || !singleServiceTierSupported}
                         className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                       >
-                        {FAST_OPTIONS.map((option) => (
+                        {singleServiceTierOptions.map((option) => (
                           <option key={option.label} value={option.value}>
                             {option.label}
                           </option>

@@ -49,13 +49,12 @@ function preferenceFromResolved(resolved: ResolvedSessionPreference | undefined)
   }
 }
 
-function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | 'off' {
-  const serviceTier = preference.serviceTier.trim().toLowerCase()
-  return serviceTier === 'fast' || serviceTier === 'priority' ? 'on' : 'off'
+function serviceTierFromPreference(preference: SessionPreferenceRecord): string {
+  return preference.serviceTier.trim().toLowerCase() || 'standard'
 }
 
-function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; fast: 'on' | 'off' }): string {
-  return `${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'} · fast ${input.fast}`
+function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; serviceTier: string }): string {
+  return `${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'} · tier ${input.serviceTier}`
 }
 
 function preferenceFromDefaultPatch(patch: ModelDraft, modelOptions: ModelOptionRecord[]): SessionPreferenceRecord {
@@ -470,7 +469,7 @@ export function DesktopV3NewSessionPane({
         modelPickerDisabled={selectedAgentModelLock.locked}
         modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
         modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
-        modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, fast: fastToggleFromPreference(preference) })}
+        modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, serviceTier: serviceTierFromPreference(preference) })}
         onOpenAgentSettings={handleOpenAgentSettings}
         onConfirmAgentSettings={handleConfirmAgentSettings}
         agentModelControlBusy={agentModelSaving}
@@ -478,7 +477,6 @@ export function DesktopV3NewSessionPane({
         thinkingTagsEnabled={thinkingTagsEnabled}
         onThinkingTagsToggle={(enabled) => { void handleThinkingTagsToggle(enabled) }}
         thinkingTagsBusy={thinkingTagsSaving}
-        fast={fastToggleFromPreference(preference)}
         contextLabel={contextLabel}
         compactDisabled
         onSlashCommand={onSlashCommand}
