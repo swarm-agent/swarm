@@ -2500,6 +2500,117 @@ test('reasoning completion commits one reasoning message and renders once', () =
   assert.equal(rendered.filter((item) => item.type === 'message' && item.message.role === 'reasoning').length, 1)
 })
 
+test('hydrate replays durable reasoning events and commits thinking message after refresh', () => {
+  const state = bootstrappedState()
+  const toolMessage: MessageSnapshot = {
+    id: 'msg-refresh-tool',
+    session_id: sessionA.id,
+    global_seq: 6,
+    role: 'tool',
+    content: JSON.stringify({
+      path_id: 'run.tool-history.v2',
+      run_id: 'run-live',
+      call_id: 'call-refresh',
+      tool_instance_id: 'tool-refresh',
+      tool: 'search',
+      output: '{"summary":"done"}',
+    }),
+    metadata: {
+      run_id: 'run-live',
+      call_id: 'call-refresh',
+      tool_instance_id: 'tool-refresh',
+    },
+    created_at: 65,
+  }
+  const assistantAfterReasoning: MessageSnapshot = {
+    ...messageA2,
+    id: 'msg-refresh-assistant-after-reasoning',
+    global_seq: 8,
+    content: 'answer after thinking',
+    created_at: 80,
+  }
+  const reasoningEvents: V3SessionEvent[] = [
+    {
+      id: 'evt-refresh-reasoning-start',
+      session_id: sessionA.id,
+      seq: 5,
+      event_type: 'session.reasoning.started',
+      payload: {
+        run_id: 'run-live',
+        step: 1,
+        step_id: 'step-1',
+        reasoning_id: 'reasoning-1',
+        reasoning_key: 'summary-1',
+        recorded_at: 50,
+      },
+      ts_unix_ms: 50,
+    },
+    {
+      id: 'evt-refresh-reasoning-delta',
+      session_id: sessionA.id,
+      seq: 6,
+      event_type: 'session.reasoning.delta',
+      payload: {
+        run_id: 'run-live',
+        step: 1,
+        step_id: 'step-1',
+        reasoning_id: 'reasoning-1',
+        reasoning_key: 'summary-1',
+        delta: 'thinking after refresh',
+        recorded_at: 60,
+      },
+      ts_unix_ms: 60,
+    },
+    {
+      id: 'evt-refresh-reasoning-complete',
+      session_id: sessionA.id,
+      seq: 7,
+      event_type: 'session.reasoning.completed',
+      payload: {
+        run_id: 'run-live',
+        step: 1,
+        step_id: 'step-1',
+        reasoning_id: 'reasoning-1',
+        reasoning_key: 'summary-1',
+        summary: 'thinking after refresh',
+        recorded_at: 70,
+      },
+      ts_unix_ms: 70,
+    },
+  ]
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    snapshot_endpoint_cursor: 'cursor-refresh-reasoning',
+    sessions_by_id: { [sessionA.id]: { ...sessionA, message_count: 4, last_message_at: 80 } },
+    projections_by_session: { [sessionA.id]: { ...projectionA, last_event_seq: 7, projection_high_watermark_seq: 7, updated_at: 70 } },
+    messages_by_session: { [sessionA.id]: [messageA1, messageA2, toolMessage, assistantAfterReasoning] },
+    events_by_session: { [sessionA.id]: reasoningEvents },
+    run_intents_by_session: { [sessionA.id]: [{ ...runIntentA, run_id: 'run-live', status: 'completed', event_seq: 7 }] },
+    session_order: [sessionA.id],
+    sync_scope: {
+      surface: 'desktop',
+      stream_kind: 'v3.sync.snapshot',
+      selector_filter_hash: 'session-a-reasoning-hash',
+      resource_set: 'messages,events,run_intents',
+    },
+    scope_id: 'session-a-reasoning-hash:messages,events,run_intents',
+    selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+  }), [sessionA.id])
+
+  const reasoningMessages = state.messagesBySession[sessionA.id].items.filter((message) => message.role === 'reasoning')
+  assert.equal(reasoningMessages.length, 1)
+  assert.equal(reasoningMessages[0].content, 'thinking after refresh')
+  assert.equal(reasoningMessages[0].global_seq, 7)
+  assert.equal(state.liveRunsBySession[sessionA.id]?.['run-live'], undefined)
+  const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+  assert.deepEqual(
+    rendered.filter((item) => item.type === 'message').map((item) => item.type === 'message' ? `${item.message.role}:${item.message.global_seq}` : ''),
+    ['user:1', 'assistant:2', 'tool:6', 'reasoning:7', 'assistant:8'],
+  )
+  assert.equal(rendered.filter((item) => item.type === 'live-reasoning').length, 0)
+})
+
+
 test('tool and thinking committed messages render without live duplicates', () => {
   const state = bootstrappedState()
   applyRealtimeFrame(state, { frame: deltaFrame('session.tool.started', { call_id: 'call-1', tool_instance_id: 'tool-instance-1', tool_name: 'search' }, 5, 'cursor-tool-start') })

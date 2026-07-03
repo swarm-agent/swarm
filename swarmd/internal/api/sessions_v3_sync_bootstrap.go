@@ -242,10 +242,12 @@ func sessionsV3SelectedSessionHydrateRequest(sessionID string) sessionsV3SyncHyd
 		History: sessionsV3WorksetHistory{
 			Mode:                  pebblestore.V3SyncSnapshotHistoryModeTail,
 			MaxMessagesPerSession: sessionsV3WorksetMaxResourcePageSize,
+			MaxEventsPerSession:   sessionsV3WorksetMaxResourcePageSize,
 			ManifestPolicy:        "manifest",
 		},
 		Resources: sessionsV3WorksetResources{
 			Messages:        true,
+			Events:          true,
 			RunIntents:      true,
 			CurrentRunState: true,
 			SessionView:     true,
@@ -262,6 +264,15 @@ func sessionsV3SelectedSessionHydrateCursorScope(principal identity.Principal, s
 		return v3SyncCursorScope{}, err
 	}
 	return v3SyncCursorScopeForSnapshot(options.Principal, options.Surface, "v3.sync.snapshot", selector, resources), nil
+}
+
+func sessionsV3SelectedSessionHydrateResources(sessionID string) ([]string, error) {
+	req := sessionsV3SelectedSessionHydrateRequest(sessionID)
+	_, _, resources, err := sessionsV3SyncHydrateOptions(identity.Principal{}, req)
+	if err != nil {
+		return nil, err
+	}
+	return resources, nil
 }
 
 func canonicalV3SyncSessionIDs(sessionIDs []string) []string {

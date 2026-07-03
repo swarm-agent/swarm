@@ -59,7 +59,7 @@ export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
 
 export const DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES: SyncResources = {
   messages: true,
-  events: false,
+  events: true,
   run_intents: true,
   current_run_state: true,
   session_view: true,
@@ -79,6 +79,7 @@ export function buildDesktopV3SelectedSessionHydrateInput(sessionId: string): De
     history: {
       mode: 'tail',
       max_messages_per_session: DESKTOP_STARTUP_MESSAGE_LIMIT,
+      max_events_per_session: DESKTOP_STARTUP_MESSAGE_LIMIT,
       manifest_policy: 'manifest',
     },
     resources: { ...DESKTOP_V3_INITIAL_HYDRATE_DEFAULT_RESOURCES },

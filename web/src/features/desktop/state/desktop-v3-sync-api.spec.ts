@@ -73,9 +73,11 @@ test('buildDesktopV3SelectedSessionHydrateInput requests one selected session ta
     {
       mode: 'tail',
       max_messages_per_session: DESKTOP_STARTUP_MESSAGE_LIMIT,
+      max_events_per_session: DESKTOP_STARTUP_MESSAGE_LIMIT,
       manifest_policy: 'manifest',
     },
   )
+  assert.equal(input.resources.events, true)
   assert.equal(input.resources.session_view, true)
   assert.equal(input.resources.active_plan, true)
 })
@@ -113,11 +115,12 @@ test('postDesktopV3SyncHydrate posts exact selected-session bounded tail payload
     history: {
       mode: 'tail',
       max_messages_per_session: DESKTOP_STARTUP_MESSAGE_LIMIT,
+      max_events_per_session: DESKTOP_STARTUP_MESSAGE_LIMIT,
       manifest_policy: 'manifest',
     },
     resources: {
       messages: true,
-      events: false,
+      events: true,
       run_intents: true,
       current_run_state: true,
       session_view: true,

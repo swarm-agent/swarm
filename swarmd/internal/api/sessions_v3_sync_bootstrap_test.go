@@ -74,6 +74,32 @@ func TestSessionsV3SyncBootstrapReturnsCanonicalSnapshotScopeAndReplayInstructio
 	}
 }
 
+func TestSessionsV3SelectedSessionHydrateResourcesIncludeEvents(t *testing.T) {
+	req := sessionsV3SelectedSessionHydrateRequest(" session-a ")
+	if req.SessionIDs[0] != "session-a" {
+		t.Fatalf("selected hydrate did not trim session id: %+v", req.SessionIDs)
+	}
+	if !req.Resources.Messages || !req.Resources.Events || !req.Resources.RunIntents || !req.Resources.CurrentRunState || !req.Resources.SessionView || !req.Resources.ActivePlan {
+		t.Fatalf("selected hydrate resources missing durable reconstruction data: %+v", req.Resources)
+	}
+	if req.History.Mode != pebblestore.V3SyncSnapshotHistoryModeTail || req.History.MaxMessagesPerSession <= 0 || req.History.MaxEventsPerSession <= 0 || req.History.ManifestPolicy != "manifest" {
+		t.Fatalf("selected hydrate history missing bounded message/event tail: %+v", req.History)
+	}
+	resources, err := sessionsV3SelectedSessionHydrateResources("session-a")
+	if err != nil {
+		t.Fatalf("resolve selected hydrate resources: %v", err)
+	}
+	resourceSet := map[string]bool{}
+	for _, resource := range resources {
+		resourceSet[resource] = true
+	}
+	for _, want := range []string{"messages", "events", "run_intents", "current_run_state", "session_view", "active_plan"} {
+		if !resourceSet[want] {
+			t.Fatalf("selected hydrate resource set %v missing %s", resources, want)
+		}
+	}
+}
+
 func TestSessionsV3SyncBootstrapMetadataOnlyDoesNotEmitPerSessionMessageKeys(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-metadata-only", "Sync Bootstrap Metadata Only", "/workspace/metadata-only")

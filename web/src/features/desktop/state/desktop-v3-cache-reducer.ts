@@ -498,8 +498,9 @@ function applyHydrateAuthoritativeResources(
       if (!hasOwn(snapshot.events_by_session, sessionId)) continue
       if (!hydrateResponseCanApplyHistory(state, sessionId)) continue
       const incoming = snapshot.events_by_session?.[sessionId] ?? []
+      replayDurableEventsForSession(state, sessionId, incoming)
       if (hydrateProjectionIsFresh(snapshot, sessionId, preHydrateProjections)) {
-        state.eventsBySession[sessionId] = sortEvents(dedupeEventsByIdentity(incoming))
+        replaceEventsForSession(state, sessionId, incoming)
       } else {
         mergeEventsForSession(state, sessionId, incoming)
       }
@@ -1261,6 +1262,7 @@ export function upsertRunIntent(
   liveRun.status = normalizeLiveRunStatus(runIntent.status)
   liveRuns[runIntent.run_id] = liveRun
   state.liveRunsBySession[sessionId] = liveRuns
+  cleanupTerminalLiveRunIfCanonicalized(state, sessionId, runIntent.run_id, runIntent.status)
 }
 
 export function applyTombstone(
@@ -1938,15 +1940,23 @@ function applyTombstonesBySession(state: DesktopV3CacheState, tombstonesBySessio
 function applyEventsBySessionFromSnapshot(state: DesktopV3CacheState, eventsBySession: Record<string, V3SessionEvent[]> | undefined): void {
   if (!eventsBySession) return
   for (const [sessionId, events] of Object.entries(eventsBySession)) {
-    state.eventsBySession[sessionId] = sortEvents(dedupeEventsByIdentity(events))
+    replayDurableEventsForSession(state, sessionId, events)
+    replaceEventsForSession(state, sessionId, events)
   }
 }
 
 function mergeEventsBySessionFromSnapshot(state: DesktopV3CacheState, eventsBySession: Record<string, V3SessionEvent[]> | undefined): void {
   if (!eventsBySession) return
   for (const [sessionId, events] of Object.entries(eventsBySession)) {
-    if (events.length > 0) mergeEventsForSession(state, sessionId, events)
+    if (events.length > 0) {
+      replayDurableEventsForSession(state, sessionId, events)
+      mergeEventsForSession(state, sessionId, events)
+    }
   }
+}
+
+function replaceEventsForSession(state: DesktopV3CacheState, sessionId: string, incoming: V3SessionEvent[]): void {
+  state.eventsBySession[sessionId] = sortEvents(dedupeEventsByIdentity(incoming))
 }
 
 function mergeEventsForSession(state: DesktopV3CacheState, sessionId: string, incoming: V3SessionEvent[]): void {
@@ -1954,6 +1964,42 @@ function mergeEventsForSession(state: DesktopV3CacheState, sessionId: string, in
     ...(state.eventsBySession[sessionId] ?? []),
     ...incoming,
   ]))
+}
+
+function replayDurableEventsForSession(state: DesktopV3CacheState, sessionId: string, incoming: V3SessionEvent[]): void {
+  for (const event of sortEvents(dedupeEventsByIdentity(incoming))) {
+    if (!shouldReplayDurableHydratedEvent(event.event_type)) continue
+    applyCacheEvent(state, cacheEventFromDurableSessionEvent(sessionId, event))
+  }
+}
+
+function shouldReplayDurableHydratedEvent(eventType: string): boolean {
+  switch (eventType) {
+    case 'session.reasoning.started':
+    case 'session.reasoning.delta':
+    case 'session.reasoning.completed':
+    case 'session.reasoning.failed':
+    case 'session.reasoning.error':
+      return true
+    default:
+      return false
+  }
+}
+
+function cacheEventFromDurableSessionEvent(sessionId: string, event: V3SessionEvent): CacheEvent {
+  return {
+    source: 'sync-stream',
+    sessionId: event.session_id || sessionId,
+    eventType: event.event_type,
+    sessionEvent: event,
+    projection: {
+      session_id: event.session_id || sessionId,
+      last_event_seq: event.seq,
+      projection_high_watermark_seq: event.seq,
+      updated_at: event.ts_unix_ms,
+    },
+    payload: decodeSessionEventPayload(event),
+  }
 }
 
 function dedupeEventsByIdentity(events: V3SessionEvent[]): V3SessionEvent[] {
