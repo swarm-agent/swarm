@@ -511,6 +511,8 @@ func buildRequestPayload(req Request) ([]byte, error) {
 		body["parallel_tool_calls"] = req.ParallelToolCalls
 	}
 	switch NormalizeServiceTier(req.ServiceTier) {
+	case ServiceTierPriority:
+		body["service_tier"] = ServiceTierPriority
 	case ServiceTierFast:
 		body["service_tier"] = ServiceTierPriority
 	case ServiceTierFlex:

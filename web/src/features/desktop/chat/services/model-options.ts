@@ -53,9 +53,7 @@ export function normalizeModelServiceTier(provider: string, serviceTier: string)
   const normalizedProvider = normalizeProviderID(provider)
   const normalizedTier = serviceTier.trim().toLowerCase()
   if (normalizedProvider === 'codex') {
-    if (normalizedTier === 'fast' || normalizedTier === 'priority') return 'fast'
-    if (normalizedTier === 'flex') return 'flex'
-    return ''
+    return normalizedTier === 'priority' || normalizedTier === 'fast' || normalizedTier === 'flex' ? normalizedTier : ''
   }
   if (normalizedProvider === 'fireworks') {
     return normalizedTier === 'priority' || normalizedTier === 'fast' ? normalizedTier : ''
@@ -67,13 +65,13 @@ export function supportsCodexFastMode(provider: string, _model: string, serviceT
   return normalizeProviderID(provider) === 'codex' && normalizedServiceTiers(serviceTiers).includes('fast')
 }
 
-export function supportsModelServiceTier(provider: string, model: string, serviceTiers: string[] = [], requestedTier = ''): boolean {
+export function supportsModelServiceTier(provider: string, _model: string, serviceTiers: string[] = [], requestedTier = ''): boolean {
   const normalizedProvider = normalizeProviderID(provider)
   const tiers = normalizedServiceTiers(serviceTiers)
   const normalizedRequested = normalizeModelServiceTier(provider, requestedTier)
   if (normalizedProvider === 'codex') {
-    if (normalizedRequested === 'flex') return tiers.includes('flex')
-    return supportsCodexFastMode(provider, model, serviceTiers)
+    if (normalizedRequested) return tiers.includes(normalizedRequested)
+    return tiers.includes('priority') || tiers.includes('fast') || tiers.includes('flex')
   }
   if (normalizedProvider === 'fireworks') {
     if (normalizedRequested) return tiers.includes(normalizedRequested)
@@ -82,12 +80,13 @@ export function supportsModelServiceTier(provider: string, model: string, servic
   return false
 }
 
-export function modelServiceTierOptions(provider: string, model: string, serviceTiers: string[] = []): ModelServiceTierOption[] {
+export function modelServiceTierOptions(provider: string, _model: string, serviceTiers: string[] = []): ModelServiceTierOption[] {
   const normalizedProvider = normalizeProviderID(provider)
   const tiers = normalizedServiceTiers(serviceTiers)
   const options: ModelServiceTierOption[] = [{ label: 'Off / standard', value: '' }]
   if (normalizedProvider === 'codex') {
-    if (supportsCodexFastMode(provider, model, serviceTiers)) options.push({ label: 'Fast', value: 'fast' })
+    if (tiers.includes('priority')) options.push({ label: 'Priority', value: 'priority' })
+    if (tiers.includes('fast')) options.push({ label: 'Fast', value: 'fast' })
     if (tiers.includes('flex')) options.push({ label: 'Flex', value: 'flex' })
     return options
   }
@@ -99,8 +98,8 @@ export function modelServiceTierOptions(provider: string, model: string, service
   return options
 }
 
-export function codexFastEnabled(provider: string, model: string, serviceTier: string, serviceTiers: string[] = []): boolean {
-  return supportsCodexFastMode(provider, model, serviceTiers) && normalizeModelServiceTier(provider, serviceTier) === 'fast'
+export function codexFastEnabled(provider: string, _model: string, serviceTier: string, serviceTiers: string[] = []): boolean {
+  return supportsCodexFastMode(provider, _model, serviceTiers) && normalizeModelServiceTier(provider, serviceTier) === 'fast'
 }
 
 export function supportsCodex1MMode(provider: string, model: string): boolean {

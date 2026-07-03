@@ -14,7 +14,9 @@ const (
 
 func NormalizeServiceTier(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case ServiceTierFast, ServiceTierPriority:
+	case ServiceTierPriority:
+		return ServiceTierPriority
+	case ServiceTierFast:
 		return ServiceTierFast
 	case ServiceTierFlex:
 		return ServiceTierFlex

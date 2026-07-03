@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -398,6 +399,12 @@ func TestNormalizeModelServiceTierKeepsPriorityDistinctFromFast(t *testing.T) {
 	}
 	if got := pebblestore.NormalizeModelServiceTier("fast"); got != "fast" {
 		t.Fatalf("NormalizeModelServiceTier(fast) = %q, want fast", got)
+	}
+	if got := codexruntime.NormalizeServiceTier("priority"); got != "priority" {
+		t.Fatalf("codex NormalizeServiceTier(priority) = %q, want priority", got)
+	}
+	if got := codexruntime.NormalizeServiceTier("fast"); got != "fast" {
+		t.Fatalf("codex NormalizeServiceTier(fast) = %q, want fast", got)
 	}
 }
 

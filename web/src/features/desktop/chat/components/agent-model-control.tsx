@@ -118,12 +118,17 @@ function serviceTierLabel(provider: string, model: string, modelOptions: ModelOp
   return options.find((option) => option.value === normalized)?.label ?? (normalized || 'Off / standard')
 }
 
-function defaultDraftFromModel(model: ModelOptionRecord | null, serviceTier = '', selectedThinking = ''): ModelDraft {
+function defaultDraftFromModel(model: ModelOptionRecord | null, selectedServiceTier = '', selectedThinking = ''): ModelDraft {
+  const provider = model?.provider ?? ''
+  const modelID = model?.model ?? ''
+  const requestedServiceTier = normalizeDraftServiceTier(provider, selectedServiceTier)
+  const fallbackServiceTier = normalizeDraftServiceTier(provider, model?.defaultServiceTier ?? '')
+  const resolvedServiceTier = requestedServiceTier || fallbackServiceTier
   return {
-    provider: model?.provider ?? '',
-    model: model?.model ?? '',
+    provider,
+    model: modelID,
     thinking: selectedThinking.trim() || model?.thinking || 'off',
-    serviceTier: supportsModelServiceTier(model?.provider ?? '', model?.model ?? '', model?.serviceTiers ?? []) ? normalizeDraftServiceTier(model?.provider ?? '', serviceTier) : '',
+    serviceTier: modelSupportsServiceTier(provider, modelID, model ? [model] : [], resolvedServiceTier) ? resolvedServiceTier : '',
   }
 }
 
