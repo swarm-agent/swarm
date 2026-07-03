@@ -129,6 +129,13 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       return applyBootstrapSnapshot(state, action.snapshot)
     case 'hydrate.apply':
       return applyHydrateSnapshot(state, action.snapshot, action.requestedSessionIds)
+    case 'messages.prependHistoryResult':
+      prependHistoricalMessagesForSession(state, action.sessionId, action.messages, {
+        sourceMessageCount: action.sourceMessageCount,
+        knownFull: action.knownFull,
+      })
+      enforceHydratedTranscriptRetention(state)
+      return state
     case 'syncStream.applyBatch':
       return applySyncStreamBatch(state, action)
     case 'reconnect.applySnapshot':
@@ -268,6 +275,7 @@ function touchSessionTranscript(state: DesktopV3CacheState, sessionId: string | 
     sourceMessageCount: list.sourceMessageCount,
     sourceLastMessageAt: list.sourceLastMessageAt,
     sourceProjectionHighWatermarkSeq: list.sourceProjectionHighWatermarkSeq,
+    oldestLoadedSeq: list.oldestLoadedSeq,
     hydratedAt: list.hydratedAt,
     tailHydratedAt: list.tailHydratedAt,
     lastAccessedAt: Date.now(),
@@ -448,12 +456,21 @@ export function applyHydrate(
   applyTombstonesBySession(state, snapshot.tombstones_by_session)
   applyHydrateAuthoritativeResources(state, snapshot, requested, preHydrateProjections)
 
+  const sidebarScopeId = state.desktopSidebarBootstrap.scopeId
   for (const sessionId of requested) {
     const record = state.sessionsById[sessionId]
     if (record?.kind === 'full'
       && hydrateResponseCompletesSession(snapshot, sessionId)
       && hydrateResponseCanApplyHistory(state, sessionId)) {
       record.needsHydrate = false
+    }
+    if (sidebarScopeId && record?.kind === 'full' && !state.tombstonesBySession[sessionId]) {
+      state.sessionOrderByScope[sidebarScopeId] = prependUnique(state.sessionOrderByScope[sidebarScopeId] ?? [], sessionId)
+      const workset = state.worksetsById[sidebarScopeId]
+      if (workset) {
+        workset.sessionIds = prependUnique(workset.sessionIds ?? [], sessionId)
+        workset.inactiveSessionIds = (workset.inactiveSessionIds ?? []).filter((id) => id !== sessionId)
+      }
     }
   }
 
@@ -832,6 +849,17 @@ export function applyMessageMutationResult(
     upsertCommittedMessage(state, raw.session_id || message.session_id, message)
   }
   const sessionId = raw.session_id || message?.session_id || runIntent?.session_id || ''
+  if (sessionId && raw.session) {
+    state.sessionsById[sessionId] = {
+      kind: 'full',
+      session: raw.session,
+      needsHydrate: false,
+    }
+    delete state.tombstonesBySession[sessionId]
+  }
+  if (sessionId && raw.projection) {
+    state.projectionsBySession[sessionId] = raw.projection
+  }
   applyUsageSummaryFromUnknown(state, sessionId, raw.usage_summary)
   applyUsageSummaryFromUnknown(state, sessionId, recordValue(raw.mutation)?.usage_summary)
   delete state.pendingUserByClientRequestId[clientRequestId]
@@ -1390,6 +1418,7 @@ export function upsertCommittedMessage(
       list.sourceProjectionHighWatermarkSeq ?? 0,
       state.projectionsBySession[sessionId]?.projection_high_watermark_seq ?? 0,
     ),
+    oldestLoadedSeq: minPositiveSeq(nextItems),
     hydratedAt: list.hydratedAt,
     tailHydratedAt: list.tailHydratedAt,
     source: 'network',
@@ -1644,6 +1673,7 @@ function replaceMessagesForSession(
     sourceMessageCount: session?.message_count,
     sourceLastMessageAt: session?.last_message_at,
     sourceProjectionHighWatermarkSeq: state.projectionsBySession[sessionId]?.projection_high_watermark_seq,
+    oldestLoadedSeq: minPositiveSeq(messages),
     hydratedAt: Date.now(),
     tailHydratedAt: Date.now(),
     lastAccessedAt: Date.now(),
@@ -1665,6 +1695,7 @@ function mergeHistoricalMessagesForSession(
     sourceMessageCount: Math.max(existing?.sourceMessageCount ?? 0, incoming.length, mergedItems.length),
     sourceLastMessageAt: Math.max(existing?.sourceLastMessageAt ?? 0, ...incoming.map((message) => message.created_at)),
     sourceProjectionHighWatermarkSeq: existing?.sourceProjectionHighWatermarkSeq,
+    oldestLoadedSeq: minPositiveSeq(mergedItems),
     hydratedAt: Math.max(existing?.hydratedAt ?? 0, Date.now()),
     tailHydratedAt: existing?.tailHydratedAt,
     lastAccessedAt: Date.now(),
@@ -1685,6 +1716,33 @@ function mergeMessagesBySessionFromSnapshot(
   }
 }
 
+function prependHistoricalMessagesForSession(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  incoming: MessageSnapshot[],
+  options: { sourceMessageCount?: number; knownFull?: boolean } = {},
+): void {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) return
+  const existing = state.messagesBySession[normalizedSessionId]
+  const mergedItems = [...incoming, ...(existing?.items ?? [])]
+  const merged = buildMessageListCache(mergedItems, {
+    knownTail: existing?.knownTail,
+    knownFull: options.knownFull || existing?.knownFull,
+    sourceMessageCount: Math.max(options.sourceMessageCount ?? 0, existing?.sourceMessageCount ?? 0, incoming.length, mergedItems.length),
+    sourceLastMessageAt: Math.max(existing?.sourceLastMessageAt ?? 0, ...incoming.map((message) => message.created_at)),
+    sourceProjectionHighWatermarkSeq: existing?.sourceProjectionHighWatermarkSeq,
+    oldestLoadedSeq: minPositiveSeq(mergedItems),
+    hydratedAt: Math.max(existing?.hydratedAt ?? 0, Date.now()),
+    tailHydratedAt: existing?.tailHydratedAt,
+    lastAccessedAt: Date.now(),
+    source: 'network',
+  })
+  delete state.evictedTranscriptsBySession?.[normalizedSessionId]
+  state.messagesBySession[normalizedSessionId] = merged
+  removeCommittedPendingForSession(state, normalizedSessionId, incoming)
+}
+
 interface BuildMessageListCacheOptions {
   knownTail?: MessageListCache['knownTail']
   knownFull?: boolean
@@ -1693,8 +1751,17 @@ interface BuildMessageListCacheOptions {
   sourceProjectionHighWatermarkSeq?: number
   hydratedAt?: number
   tailHydratedAt?: number
+  oldestLoadedSeq?: number
   lastAccessedAt?: number
   source?: MessageListCache['source']
+}
+
+function minPositiveSeq(messages: MessageSnapshot[]): number {
+  return messages.reduce((min, message) => {
+    const seq = Number.isSafeInteger(message.global_seq) && message.global_seq > 0 ? message.global_seq : 0
+    if (seq <= 0) return min
+    return min === 0 ? seq : Math.min(min, seq)
+  }, 0)
 }
 
 export function buildMessageListCache(messages: MessageSnapshot[], options: BuildMessageListCacheOptions = {}): MessageListCache {
@@ -1736,6 +1803,8 @@ export function buildMessageListCache(messages: MessageSnapshot[], options: Buil
     sourceMessageCount: options.sourceMessageCount,
     sourceLastMessageAt: options.sourceLastMessageAt,
     sourceProjectionHighWatermarkSeq: options.sourceProjectionHighWatermarkSeq,
+    oldestLoadedSeq: options.oldestLoadedSeq ?? minPositiveSeq(items),
+    loadedCount: items.length,
     hydratedAt: options.hydratedAt,
     tailHydratedAt: options.tailHydratedAt,
     lastAccessedAt: options.lastAccessedAt,

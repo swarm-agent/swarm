@@ -1184,6 +1184,62 @@ func TestSessionsV3SyncBootstrapOmitsRemovedAllSessionResourceMaps(t *testing.T)
 	}
 }
 
+func TestSessionsV3SyncHydrateReturnsArchivedRequestedSessionBody(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-hydrate-archived-open", "Sync Hydrate Archived Open", "/workspace/cp4-hydrate-archived")
+	appendSessionsV3PrimaryMessageForWorksetTest(t, server, created.ID, "archived hydrate message")
+	archiveReq := httptest.NewRequest(http.MethodPost, "/v3/sessions:archive", strings.NewReader(`{"session_ids":["`+created.ID+`"]}`))
+	archiveReq.Header.Set("Content-Type", "application/json")
+	archiveRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(archiveRec, withTestPrincipal(archiveReq))
+	if archiveRec.Code != http.StatusOK {
+		t.Fatalf("archive status=%d body=%s", archiveRec.Code, archiveRec.Body.String())
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"surface":     "desktop",
+		"session_ids": []string{created.ID},
+		"history":     map[string]any{"mode": "tail", "max_messages_per_session": 200, "max_events_per_session": 200},
+		"resources":   map[string]any{"messages": true, "events": true, "session_view": true, "run_intents": true, "current_run_state": true, "active_plan": true},
+	})
+	if err != nil {
+		t.Fatalf("marshal hydrate body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, V3SyncHydratePath, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hydrate archived status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		SessionsByID        map[string]pebblestore.SessionSnapshot    `json:"sessions_by_id"`
+		MessagesBySession   map[string][]pebblestore.MessageSnapshot  `json:"messages_by_session"`
+		TombstonesBySession map[string]pebblestore.V3SessionTombstone `json:"tombstones_by_session"`
+		SessionViewsByID    map[string]sessionsV3SessionView          `json:"session_views_by_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode hydrate archived: %v", err)
+	}
+	if payload.SessionsByID[created.ID].ID != created.ID {
+		t.Fatalf("hydrate archived missing session body: %+v", payload.SessionsByID)
+	}
+	if len(payload.MessagesBySession[created.ID]) != 1 || payload.MessagesBySession[created.ID][0].Content != "archived hydrate message" {
+		t.Fatalf("hydrate archived messages invalid: %+v", payload.MessagesBySession[created.ID])
+	}
+	view, ok := payload.SessionViewsByID[created.ID]
+	if !ok {
+		t.Fatalf("hydrate archived missing session view: %+v", payload.SessionViewsByID)
+	}
+	if view.HasActivePlan == nil || *view.HasActivePlan || view.ActivePlan != nil {
+		t.Fatalf("hydrate archived active plan marker invalid: %+v", view)
+	}
+	tombstone := payload.TombstonesBySession[created.ID]
+	if !tombstone.Archived || tombstone.Deleted || tombstone.Kind != "archived" || tombstone.Session.ID != created.ID {
+		t.Fatalf("hydrate archived tombstone invalid: %+v", tombstone)
+	}
+}
+
 func TestSessionsV3SyncHydrateReturnsDeletedRequestedSessionTombstone(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-hydrate-tombstone", "Sync Hydrate Tombstone", "/workspace/cp4-hydrate-tombstone")

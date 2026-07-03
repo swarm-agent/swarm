@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowDown, CheckCircle2, Loader2, LoaderCircle, XCircle } from 'lucide-react'
@@ -9,7 +9,7 @@ import { selectDesktopPlanExecutionView, type DesktopPlanExecutionView, type Ren
 import type { DesktopV3CacheState, LiveRunOverlay, MessageSnapshot, PendingUserMessage } from '../../state/desktop-v3-cache-types'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import type { DesktopPermissionRecord, DesktopSessionRecord } from '../../types/realtime'
-import type { StructuredToolMessage, ToolMessageState, AgentProfileRecord, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
+import type { StructuredToolMessage, ToolMessageState, AgentProfileRecord, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord, ChatMessageRecord } from '../types/chat'
 import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
 import { agentStateQueryOptions, draftModelQueryKey, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
@@ -44,7 +44,7 @@ import {
   resumeDesktopPlanCheckpointed,
 } from '../../session-v3/plan-execution-api'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../../state/desktop-v3-session-api'
-import { resolveSessionPermission, sendSessionMessage, updateDraftModelPreference } from '../queries/chat-queries'
+import { fetchSessionMessages, resolveSessionPermission, sendSessionMessage, updateDraftModelPreference } from '../queries/chat-queries'
 import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
 import { permissionRequiresApproval } from '../../permissions/services/permission-payload'
 import { DesktopPlanExecutionSidebar, type DesktopPlanExecutionSidebarActionInput } from './desktop-plan-execution-sidebar'
@@ -343,6 +343,7 @@ type DesktopV3RenderItem =
 type DesktopV3ScrollBehavior = 'auto' | 'smooth'
 
 const DESKTOP_V3_BOTTOM_BUFFER_PX = 140
+const DESKTOP_V3_HISTORY_AUTOLOAD_TOP_PX = 320
 
 function desktopV3BottomDistance(element: HTMLElement): number {
   return Math.max(0, element.scrollHeight - element.scrollTop - element.clientHeight)
@@ -353,9 +354,11 @@ function useDesktopV3StickyBottomScroll(options: { resetKey: string; itemCount: 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const autoFollowRef = useRef(true)
+  const suppressAutoFollowOnceRef = useRef(false)
   const smoothFollowUntilRef = useRef(0)
   const frameRef = useRef<number | null>(null)
   const lastScrollHeightRef = useRef(0)
+  const preserveTopAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null)
   const [isAtBottom, setIsAtBottom] = useState(true)
   const [hasUnseenLatest, setHasUnseenLatest] = useState(false)
 
@@ -389,13 +392,28 @@ function useDesktopV3StickyBottomScroll(options: { resetKey: string; itemCount: 
     element.scrollTop = element.scrollHeight
   }, [])
 
+  const preserveScrollPositionForPrepend = useCallback(() => {
+    const element = scrollContainerRef.current
+    if (!element) return
+    preserveTopAnchorRef.current = {
+      scrollHeight: element.scrollHeight,
+      scrollTop: element.scrollTop,
+    }
+    suppressAutoFollowOnceRef.current = true
+    autoFollowRef.current = false
+  }, [])
+
   const scheduleAutoFollow = useCallback((scheduleOptions: { forceUnseen?: boolean } = {}) => {
     const element = scrollContainerRef.current
     const nextScrollHeight = element?.scrollHeight ?? 0
     const contentAdvanced = scheduleOptions.forceUnseen || nextScrollHeight > lastScrollHeightRef.current + 1
     lastScrollHeightRef.current = nextScrollHeight
+    if (suppressAutoFollowOnceRef.current) {
+      suppressAutoFollowOnceRef.current = false
+      return
+    }
     if (!autoFollowRef.current) {
-      if (contentAdvanced) setHasUnseenLatest(true)
+      if (contentAdvanced && !preserveTopAnchorRef.current) setHasUnseenLatest(true)
       return
     }
     if (frameRef.current !== null) return
@@ -419,11 +437,24 @@ function useDesktopV3StickyBottomScroll(options: { resetKey: string; itemCount: 
 
   useEffect(() => {
     autoFollowRef.current = true
+    preserveTopAnchorRef.current = null
+    suppressAutoFollowOnceRef.current = false
     lastScrollHeightRef.current = scrollContainerRef.current?.scrollHeight ?? 0
     setIsAtBottom(true)
     setHasUnseenLatest(false)
     scrollToBottom('auto')
   }, [options.resetKey, scrollToBottom])
+
+  useLayoutEffect(() => {
+    const anchor = preserveTopAnchorRef.current
+    const element = scrollContainerRef.current
+    if (!anchor || !element) return
+    const nextScrollTop = element.scrollTop + Math.max(0, element.scrollHeight - anchor.scrollHeight)
+    element.scrollTop = Math.max(0, nextScrollTop)
+    lastScrollHeightRef.current = element.scrollHeight
+    preserveTopAnchorRef.current = null
+    setPinnedStateFromElement(element)
+  }, [options.itemCount, setPinnedStateFromElement])
 
   useEffect(() => {
     scheduleAutoFollow({ forceUnseen: true })
@@ -454,6 +485,7 @@ function useDesktopV3StickyBottomScroll(options: { resetKey: string; itemCount: 
     isAtBottom,
     hasUnseenLatest,
     scrollToBottom,
+    preserveScrollPositionForPrepend,
   }
 }
 
@@ -622,6 +654,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   messagesLoaded: boolean
   metadata?: Record<string, unknown>
   session?: DesktopSessionRecord | null
+  loadedMessageCount?: number
   routeOptions?: DesktopChatRoute[]
   onOpenChats?: () => void
   onNewSession?: () => void
@@ -651,6 +684,7 @@ export function DesktopV3ExistingConversationPane({
   messagesLoaded,
   metadata,
   session,
+  loadedMessageCount,
   routeOptions = [],
   onOpenChats,
   onNewSession,
@@ -716,6 +750,11 @@ export function DesktopV3ExistingConversationPane({
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
   const [restartingWithSettings, setRestartingWithSettings] = useState(false)
   const [planExecutionBusyAction, setPlanExecutionBusyAction] = useState<string | null>(null)
+  const [loadingOlderHistory, setLoadingOlderHistory] = useState(false)
+  const [olderHistoryError, setOlderHistoryError] = useState<string | null>(null)
+  const [olderHistoryAutoActive, setOlderHistoryAutoActive] = useState(false)
+  const loadingOlderHistoryRef = useRef(false)
+  const previousHistoryScrollTopRef = useRef<number | null>(null)
   const [mode, setMode] = useState<DesktopSessionMode>(settingsBaseline.mode)
   const [selectedAgent, setSelectedAgent] = useState(settingsBaseline.agent)
   const [preference, setPreference] = useState<SessionPreferenceRecord>(settingsBaseline.preference)
@@ -776,6 +815,10 @@ export function DesktopV3ExistingConversationPane({
     : ''
   const showRestartSettingsAction = Boolean(currentRun && visibleSettingsChanged)
   const renderItems = useMemo(() => buildDesktopV3ConversationRenderItems(renderedMessages), [renderedMessages])
+  const loadedCommittedCount = loadedMessageCount ?? renderedMessages.committed.length
+  const totalMessageCount = Math.max(session?.messageCount ?? cacheSession?.message_count ?? loadedCommittedCount, loadedCommittedCount)
+  const oldestLoadedSeq = renderedMessages.committed.reduce((min, message) => min === 0 ? message.global_seq : Math.min(min, message.global_seq), 0)
+  const hasPartialHistory = messagesLoaded && loadedCommittedCount > 0 && totalMessageCount > loadedCommittedCount
   const showConversationLoading = initialHydrateStatus === 'loading' && !messagesLoaded && !hasMessages && !hasStoredOperation
   const showPlanExecutionSidebar = Boolean(planExecutionView?.plan.document)
   const {
@@ -784,6 +827,7 @@ export function DesktopV3ExistingConversationPane({
     isAtBottom,
     hasUnseenLatest,
     scrollToBottom,
+    preserveScrollPositionForPrepend,
   } = useDesktopV3StickyBottomScroll({ resetKey: normalizedSessionId, itemCount: renderItems.length })
   const hasRunningReasoning = renderedMessages.liveRuns.some((run) => {
     if (run.reasoning?.state === 'running') return true
@@ -943,6 +987,79 @@ export function DesktopV3ExistingConversationPane({
       await persistDraftModelDefault(preference)
     }
   }
+
+  const handleLoadOlderHistory = useCallback(async () => {
+    if (!normalizedSessionId || loadingOlderHistoryRef.current || !hasPartialHistory || oldestLoadedSeq <= 0) return false
+    loadingOlderHistoryRef.current = true
+    setLoadingOlderHistory(true)
+    setOlderHistoryError(null)
+    try {
+      const result = await fetchSessionMessages(normalizedSessionId, undefined, 0, {
+        sessionApi: 'v3',
+        beforeSeq: oldestLoadedSeq,
+        limit: 200,
+      })
+      const incomingMessages = result.messages.map(chatMessageToMessageSnapshot)
+      if (incomingMessages.length === 0 && result.hasMoreOlder) {
+        throw new Error('Older history page returned no messages. Try refreshing the conversation.')
+      }
+      preserveScrollPositionForPrepend()
+      dispatchDesktopV3Cache({
+        type: 'messages.prependHistoryResult',
+        sessionId: normalizedSessionId,
+        messages: incomingMessages,
+        sourceMessageCount: totalMessageCount,
+        knownFull: !result.hasMoreOlder,
+      })
+      if (!result.hasMoreOlder) setOlderHistoryAutoActive(false)
+      return result.hasMoreOlder
+    } catch (error) {
+      if (mountedRef.current) {
+        setOlderHistoryError(error instanceof Error ? error.message : String(error))
+        setOlderHistoryAutoActive(false)
+      }
+      return false
+    } finally {
+      loadingOlderHistoryRef.current = false
+      if (mountedRef.current) setLoadingOlderHistory(false)
+    }
+  }, [hasPartialHistory, normalizedSessionId, oldestLoadedSeq, preserveScrollPositionForPrepend, totalMessageCount])
+
+  useEffect(() => {
+    setOlderHistoryAutoActive(false)
+    setOlderHistoryError(null)
+    loadingOlderHistoryRef.current = false
+    previousHistoryScrollTopRef.current = null
+  }, [normalizedSessionId])
+
+  useEffect(() => {
+    if (!hasPartialHistory) {
+      setOlderHistoryAutoActive(false)
+    }
+  }, [hasPartialHistory])
+
+  useEffect(() => {
+    const element = scrollContainerRef.current
+    if (!element) return
+    previousHistoryScrollTopRef.current = element.scrollTop
+    const handleHistoryAutoloadScroll = () => {
+      const currentScrollTop = element.scrollTop
+      const previousScrollTop = previousHistoryScrollTopRef.current ?? currentScrollTop
+      previousHistoryScrollTopRef.current = currentScrollTop
+      const scrollingUp = currentScrollTop < previousScrollTop - 1
+      if (!scrollingUp || currentScrollTop > DESKTOP_V3_HISTORY_AUTOLOAD_TOP_PX) return
+      if (!hasPartialHistory || oldestLoadedSeq <= 0) return
+      setOlderHistoryError(null)
+      setOlderHistoryAutoActive(true)
+    }
+    element.addEventListener('scroll', handleHistoryAutoloadScroll, { passive: true })
+    return () => element.removeEventListener('scroll', handleHistoryAutoloadScroll)
+  }, [hasPartialHistory, oldestLoadedSeq, scrollContainerRef])
+
+  useEffect(() => {
+    if (!olderHistoryAutoActive || !hasPartialHistory || olderHistoryError || loadingOlderHistory || oldestLoadedSeq <= 0) return
+    void handleLoadOlderHistory()
+  }, [handleLoadOlderHistory, hasPartialHistory, loadingOlderHistory, olderHistoryAutoActive, olderHistoryError, oldestLoadedSeq])
 
   async function handleSubmit() {
     if (!normalizedSessionId || sending || compacting) return
@@ -1428,6 +1545,18 @@ function DesktopV3LiveToolCall({ tool }: { tool: LiveRunOverlay['toolCallsByCall
   })
   if (parsed && tool.timelineSeq) parsed.timelineSeq = tool.timelineSeq
   return <DesktopV3ToolMessage content="" toolMessage={parsed} />
+}
+
+function chatMessageToMessageSnapshot(message: ChatMessageRecord): MessageSnapshot {
+  return {
+    id: message.id,
+    session_id: message.sessionId,
+    global_seq: message.globalSeq,
+    role: message.role,
+    content: message.content,
+    metadata: message.metadata,
+    created_at: message.createdAt,
+  }
 }
 
 function DesktopV3ConversationLoadingSpinner() {

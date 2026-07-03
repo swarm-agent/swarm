@@ -137,7 +137,8 @@ export async function continueDesktopV3Conversation(
   }
 
   const state = flowDeps.getSnapshot()
-  if (state.tombstonesBySession[sessionId]) {
+  const tombstone = state.tombstonesBySession[sessionId]
+  if (tombstone && (tombstone.kind !== 'archived' || tombstone.archived !== true || tombstone.deleted === true)) {
     throw new Error(`Desktop V3 session ${sessionId} is deleted`)
   }
 

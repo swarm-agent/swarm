@@ -502,6 +502,8 @@ export interface SessionMutationResult {
 export interface SessionMessageMutationResponse {
   ok: true
   session_id: string
+  session?: SessionSnapshot | null
+  projection?: V3SessionProjection
   message: unknown
   run_intent: V3SessionRunIntent | null
   current_run_state?: V3SessionRunState | null
@@ -606,6 +608,8 @@ export interface MessageListCache {
     cursor: string
   }
   knownFull?: boolean
+  oldestLoadedSeq?: number
+  loadedCount?: number
   sourceMessageCount?: number
   sourceLastMessageAt?: number
   sourceProjectionHighWatermarkSeq?: number
@@ -815,6 +819,7 @@ export type DesktopV3CacheAction =
   | { type: 'session.select'; sessionId?: string }
   | { type: 'snapshot.apply'; source: 'bootstrap'; scopeId: string; snapshot: SyncSnapshotResponse }
   | { type: 'hydrate.apply'; source: 'hydrate'; scopeId: string; requestedSessionIds: string[]; snapshot: SyncSnapshotResponse }
+  | { type: 'messages.prependHistoryResult'; sessionId: string; messages: MessageSnapshot[]; sourceMessageCount?: number; knownFull?: boolean }
   | { type: 'syncStream.applyBatch'; scopeId: string; endpointCursor: string; events: CacheEvent[]; hasMore: boolean; replayInstructions: SyncReplayInstructions }
   | { type: 'reconnect.applySnapshot'; snapshot: SessionsReconnectResponse }
   | { type: 'realtime.storeResume'; streamPath: '/v3/realtime/stream'; resume: RealtimeMessage }

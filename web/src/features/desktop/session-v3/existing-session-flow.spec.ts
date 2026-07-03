@@ -162,6 +162,44 @@ test('continueDesktopV3Conversation appends message through canonical mutation a
 })
 
 
+test('continueDesktopV3Conversation allows archived sessions so append can reactivate them', async () => {
+  const operation = createDesktopV3ExistingMessageOperation({
+    sessionId: 'session-archived',
+    prompt: 'continue',
+  })
+  const state = createEmptyDesktopV3CacheState()
+  state.tombstonesBySession['session-archived'] = {
+    session_id: 'session-archived',
+    account_scope_id: 'acct',
+    user_id: 'user',
+    kind: 'archived',
+    archived: true,
+    deleted: false,
+    updated_at: 1,
+  }
+  let appended = false
+  const restore = setDesktopV3ExistingSessionFlowDepsForTests({
+    getSnapshot: () => state,
+    requireControllerReady: async () => ({
+      ensureSessionConnected: async () => undefined,
+      start: async () => undefined,
+      stop: () => undefined,
+    }),
+    dispatch: () => undefined,
+    postAppendMessage: async () => {
+      appended = true
+      return makeMessageResponse(operation)
+    },
+  })
+
+  try {
+    await continueDesktopV3Conversation(operation)
+    assert.equal(appended, true)
+  } finally {
+    restore()
+  }
+})
+
 test('continueDesktopV3Conversation rejects deleted sessions before append', async () => {
   const operation = createDesktopV3ExistingMessageOperation({
     sessionId: 'session-deleted',

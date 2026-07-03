@@ -492,6 +492,29 @@ test('metadata-only bootstrap preserves existing transcripts when messages_by_se
   assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), ['msg-a-1', 'msg-a-2'])
 })
 
+test('older history page prepends messages without losing tail provenance', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.messagesBySession[sessionA.id] = buildMessageListCache([messageA2], {
+    knownTail: { newestSeq: 2 },
+    sourceMessageCount: 2,
+    tailHydratedAt: 777,
+    source: 'network',
+  })
+
+  desktopV3CacheReducer(state, {
+    type: 'messages.prependHistoryResult',
+    sessionId: sessionA.id,
+    messages: [messageA1],
+    sourceMessageCount: sessionA.message_count,
+    knownFull: true,
+  })
+
+  assert.deepEqual(state.messagesBySession[sessionA.id].items.map((message) => message.id), ['msg-a-1', 'msg-a-2'])
+  assert.equal(state.messagesBySession[sessionA.id].oldestLoadedSeq, 1)
+  assert.equal(state.messagesBySession[sessionA.id].knownFull, true)
+  assert.equal(state.messagesBySession[sessionA.id].tailHydratedAt, 777)
+})
+
 test('message event upsert increments stale source count once and preserves hydration timestamp', () => {
   const state = createEmptyDesktopV3CacheState()
   state.sessionsById[sessionA.id] = {
@@ -546,6 +569,29 @@ test('transcript tail readiness requires hydrate provenance, not only matching m
   })
 
   assert.equal(isDesktopV3SessionTailReady(state, sessionA.id), true)
+})
+
+test('archived tombstones do not block hydrated transcript readiness', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.tombstonesBySession[sessionA.id] = {
+    session_id: sessionA.id,
+    kind: 'archived',
+    archived: true,
+    deleted: false,
+    session: sessionA,
+  }
+  state.messagesBySession[sessionA.id] = buildMessageListCache([messageA1, messageA2], {
+    sourceMessageCount: sessionA.message_count,
+    sourceLastMessageAt: sessionA.last_message_at,
+    tailHydratedAt: 777,
+    source: 'network',
+  })
+
+  assert.equal(isDesktopV3SessionTailReady(state, sessionA.id), true)
+
+  state.tombstonesBySession[sessionA.id] = { session_id: sessionA.id, deleted: true }
+  assert.equal(isDesktopV3SessionTailReady(state, sessionA.id), false)
 })
 
 

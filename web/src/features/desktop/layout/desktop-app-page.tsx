@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode, ChangeEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, GitBranch, Home, LayoutGrid, LoaderCircle, Menu, MoreVertical, Pin, Plus, RefreshCcw, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, GitBranch, Home, LayoutGrid, LoaderCircle, Menu, MoreVertical, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -62,6 +62,8 @@ import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 import { clearNotifications, updateNotification } from '../notifications/api'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
+import { SearchChatsModal } from '../session-search/search-chats-modal'
+import type { DesktopSessionSearchItem } from '../session-search/session-search-api'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
@@ -2009,6 +2011,7 @@ export function DesktopAppPage() {
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [notificationActionError, setNotificationActionError] = useState<string | null>(null)
+  const [searchModalOpen, setSearchModalOpen] = useState(false)
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
   const [gitPanel, setGitPanel] = useState<GitPanelState | null>(null)
   const [planModal, setPlanModal] = useState<PlanModalState | null>(null)
@@ -2407,6 +2410,9 @@ export function DesktopAppPage() {
   const selectedDesktopV3MessagesLoaded = useDesktopV3CacheSelector((state) => (
     routeSessionId ? isDesktopV3SessionTailReady(state, routeSessionId) : false
   ))
+  const selectedDesktopV3LoadedMessageCount = useDesktopV3CacheSelector((state) => (
+    routeSessionId ? (state.messagesBySession[routeSessionId]?.items.length ?? 0) : 0
+  ))
   const desktopSidebarRows = useDesktopV3CacheSelector(selectDesktopSidebarRows, desktopV3SidebarRowsEqual)
   const desktopStateSessions = useMemo<DesktopSessionRecord[]>(
     () => desktopSidebarRows.map(desktopSessionRecordFromV3SidebarRow),
@@ -2508,6 +2514,20 @@ export function DesktopAppPage() {
       })
     }
   }, [routeSessionId, routeSessionId, selectedWorkspacePath])
+
+  const handleOpenSearchResult = useCallback((item: DesktopSessionSearchItem) => {
+    const sessionId = item.id.trim()
+    if (!sessionId) return
+    const workspacePath = item.workspace_path?.trim() ?? ''
+    const workspaceSlug = workspacePath
+      ? workspaceSlugByPath.get(workspacePath) ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: item.workspace_name || 'Workspace' })
+      : ''
+    if (!workspaceSlug) return
+    setSearchModalOpen(false)
+    setMobileSidebarOpen(false)
+    void selectAndHydrateDesktopV3Session(sessionId)
+    void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } })
+  }, [navigate, workspaceSlugByPath])
 
   useEffect(() => {
     if (!routeWorkspaceSlug || routeSessionId || !routeWorkspace?.path) {
@@ -3249,6 +3269,19 @@ export function DesktopAppPage() {
             <div className="border-b border-[var(--app-border)] bg-[var(--app-surface)] px-[9px] py-2">
               <div className="grid gap-0.5 text-[11px] text-[var(--app-text-subtle)]">
                   <div className="grid gap-0.5 pt-1">
+                    <button
+                      type="button"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
+                      onClick={() => {
+                        setSearchModalOpen(true)
+                        setMobileSidebarOpen(false)
+                      }}
+                      aria-label="Open Search Chats"
+                      title="Search Chats"
+                    >
+                      <Search size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 truncate">Search Chats</span>
+                    </button>
                     <Link
                       to="/tools"
                       className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
@@ -3441,6 +3474,7 @@ export function DesktopAppPage() {
             initialHydrateStatus={desktopInitialHydrate.status}
             renderedMessages={selectedDesktopV3Messages}
             messagesLoaded={selectedDesktopV3MessagesLoaded}
+            loadedMessageCount={selectedDesktopV3LoadedMessageCount}
             session={sessionById.get(routeSessionId) ?? null}
             routeOptions={sessionById.get(routeSessionId) ? buildDesktopChatRouteOptions({
               hostSwarmName: swarmName,
@@ -3498,6 +3532,12 @@ export function DesktopAppPage() {
         tab={quickSettingsTab}
         onClose={() => setQuickSettingsTab(null)}
         onOpenFullSettings={handleOpenSettingsTab}
+      />
+
+      <SearchChatsModal
+        open={searchModalOpen}
+        onOpenChange={setSearchModalOpen}
+        onOpenSession={handleOpenSearchResult}
       />
 
       <DesktopNotificationsModal

@@ -403,6 +403,18 @@ test('fetchSessionMessages loads V3 message history from Sessions API v3 only an
   })
 })
 
+test('fetchSessionMessages loads older V3 history pages with before_seq and explicit limit', async () => {
+  const { fetchSessionMessages } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    const result = await fetchSessionMessages('session-v3', undefined, 0, { sessionApi: 'v3', beforeSeq: 3, limit: 200 })
+
+    assert.deepEqual(result.messages.map((message) => message.globalSeq), [3, 4])
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-v3/messages?limit=200&before_seq=3'])
+    assertNoV1OrV2SessionDataCalls(calls)
+  })
+})
+
 test('Desktop V3 permission resolve uses Sessions API v3 only', async () => {
   const { resolveSessionPermission } = await import('./chat-queries')
 

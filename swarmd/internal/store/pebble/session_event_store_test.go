@@ -525,6 +525,61 @@ func TestArchiveSessionCreatesTombstoneEventAndRealtimeOutbox(t *testing.T) {
 	}
 }
 
+func TestApplyV3SessionMutationAppendMessageReactivatesArchivedSession(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-reactivate")
+	if err := sessions.ArchiveSession("session-reactivate"); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	if _, ok, err := sessions.GetSession("session-reactivate"); err != nil || ok {
+		t.Fatalf("archived session visible before append ok=%v err=%v", ok, err)
+	}
+
+	result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-reactivate",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "message-reactivate",
+		RequestHash:    "hash-message-reactivate",
+		Kind:           V3SessionMutationAppendMessage,
+		Message:        &MessageSnapshot{Role: "user", Content: "reactivate archived chat"},
+		NowUnixMs:      2000,
+	})
+	if err != nil {
+		t.Fatalf("append archived message: %v", err)
+	}
+	if result.Session == nil || result.Session.ID != "session-reactivate" || result.Session.MessageCount != 1 {
+		t.Fatalf("append result session = %+v", result.Session)
+	}
+	if result.Event.EventType != "session.reactivated" {
+		t.Fatalf("event type = %q, want session.reactivated", result.Event.EventType)
+	}
+	loaded, ok, err := sessions.GetSession("session-reactivate")
+	if err != nil || !ok {
+		t.Fatalf("reactivated session visible ok=%v err=%v", ok, err)
+	}
+	if loaded.MessageCount != 1 || loaded.LastMessageAt != 2000 {
+		t.Fatalf("reactivated session = %+v", loaded)
+	}
+	tombstones, err := sessions.ListV3SessionTombstonesForAccount("account-1", 10)
+	if err != nil {
+		t.Fatalf("list tombstones: %v", err)
+	}
+	for _, tombstone := range tombstones {
+		if tombstone.SessionID == "session-reactivate" {
+			t.Fatalf("reactivated session still has tombstone: %+v", tombstone)
+		}
+	}
+	search, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "account-1", UserID: "user-1", Global: true, Query: "reactivate", Limit: 50})
+	if err != nil {
+		t.Fatalf("search reactivated: %v", err)
+	}
+	if len(search.Items) != 1 || search.Items[0].ID != "session-reactivate" || search.Items[0].Archived {
+		t.Fatalf("reactivated search items = %+v", search.Items)
+	}
+}
+
 func TestArchiveSessionsBatchCreatesOrderedTombstonesEventsAndOutbox(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

@@ -434,7 +434,8 @@ export function isDesktopV3SessionTailReady(
 ): boolean {
   const normalized = sessionId.trim()
   if (!normalized) return false
-  if (state.tombstonesBySession[normalized]) return false
+  const tombstone = state.tombstonesBySession[normalized]
+  if (tombstone && !isArchivedTombstone(tombstone)) return false
 
   const record = state.sessionsById[normalized]
   const messages = state.messagesBySession[normalized]

@@ -275,6 +275,9 @@ func (s *SessionStore) CreateSession(session SessionSnapshot) error {
 	if err := replaceSessionRecentIndexInBatch(batch, nil, &session); err != nil {
 		return err
 	}
+	if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, nil); err != nil {
+		return err
+	}
 	return batch.Commit(pebble.Sync)
 }
 
@@ -320,6 +323,9 @@ func (s *SessionStore) CreateSessionWithExecutionV2(session SessionSnapshot, exe
 		}
 	}
 	if err := replaceSessionRecentIndexInBatch(batch, nil, &session); err != nil {
+		return err
+	}
+	if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, nil); err != nil {
 		return err
 	}
 	if err := batch.Set([]byte(KeySessionExecutionV2(session.ID)), execPayload, nil); err != nil {
@@ -380,6 +386,9 @@ func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
 		}
 	}
 	if err := replaceSessionRecentIndexInBatch(batch, previous, &session); err != nil {
+		return err
+	}
+	if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, nil); err != nil {
 		return err
 	}
 	return batch.Commit(pebble.Sync)
@@ -514,6 +523,13 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 			if err := setV3SessionTombstoneInBatch(batch, tombstone); err != nil {
 				return err
 			}
+			if kind == "archived" {
+				if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, existing, true, nil); err != nil {
+					return err
+				}
+			} else if err := removeV3SessionSearchIndexInBatch(batch, s.store.db, sessionID); err != nil {
+				return err
+			}
 		}
 		if err := batch.Delete([]byte(KeySession(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 			return err
@@ -614,6 +630,58 @@ func setV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTombst
 		}
 	}
 	return nil
+}
+
+func removeV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTombstone) error {
+	tombstone = normalizeV3SessionTombstone(tombstone)
+	if tombstone.SessionID == "" {
+		return nil
+	}
+	deleteKey := func(key string) error {
+		if strings.TrimSpace(key) == "" {
+			return nil
+		}
+		if err := batch.Delete([]byte(key), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+		return nil
+	}
+	if err := deleteKey(KeyV3SessionTombstone(tombstone.SessionID)); err != nil {
+		return err
+	}
+	if tombstone.AccountScopeID != "" {
+		if err := deleteKey(KeyV3SessionTombstoneByAccount(tombstone.AccountScopeID, tombstone.SessionID)); err != nil {
+			return err
+		}
+	}
+	if tombstone.AccountScopeID != "" && tombstone.UserID != "" {
+		if err := deleteKey(KeyV3SessionTombstoneByAccountUser(tombstone.AccountScopeID, tombstone.UserID, tombstone.UpdatedAt, tombstone.SessionID)); err != nil {
+			return err
+		}
+		if tombstone.WorkspacePath != "" {
+			workspacePath := tombstone.WorkspacePath
+			if normalized, err := normalizeSessionPath(workspacePath); err == nil {
+				workspacePath = normalized
+			}
+			if err := deleteKey(KeyV3SessionTombstoneByAccountUserWorkspace(tombstone.AccountScopeID, tombstone.UserID, workspacePath, tombstone.UpdatedAt, tombstone.SessionID)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *SessionStore) GetV3SessionTombstone(sessionID string) (V3SessionTombstone, bool, error) {
+	return getV3SessionTombstoneFromReader(s.store.db, sessionID)
+}
+
+func getV3SessionTombstoneFromReader(reader pebble.Reader, sessionID string) (V3SessionTombstone, bool, error) {
+	var tombstone V3SessionTombstone
+	ok, err := getJSONFromReader(reader, KeyV3SessionTombstone(strings.TrimSpace(sessionID)), &tombstone)
+	if err != nil || !ok {
+		return V3SessionTombstone{}, ok, err
+	}
+	return normalizeV3SessionTombstone(tombstone), true, nil
 }
 
 func (s *SessionStore) ListV3SessionTombstonesForAccount(accountScopeID string, limit int) ([]V3SessionTombstone, error) {

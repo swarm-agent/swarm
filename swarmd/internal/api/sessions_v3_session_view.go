@@ -13,7 +13,7 @@ func (s *Server) sessionsV3SyncActivePlanViews(snapshot pebblestore.V3SyncSnapsh
 	for _, sessionID := range snapshot.SessionOrder {
 		hasActive := false
 		view := sessionsV3SessionView{HasActivePlan: &hasActive}
-		if plan, ok, err := s.sessions.GetActivePlan(sessionID); err != nil {
+		if plan, ok, err := s.sessionsV3SyncActivePlanForSession(sessionID); err != nil {
 			return nil, err
 		} else if ok {
 			hasActive = true
@@ -65,7 +65,7 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 		pendingPermissions = permissions
 	}
 	var usageSummary *pebblestore.SessionUsageSummary
-	if summary, hasSummary, err := s.sessions.GetUsageSummary(session.ID); err != nil {
+	if summary, hasSummary, err := s.sessions.Store().GetUsageSummary(session.ID); err != nil {
 		return sessionsV3SessionView{}, err
 	} else if hasSummary {
 		usageSummary = &summary
@@ -101,7 +101,7 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 	if includeActivePlan {
 		hasActive := false
 		hasActivePlan = &hasActive
-		if plan, ok, err := s.sessions.GetActivePlan(session.ID); err != nil {
+		if plan, ok, err := s.sessionsV3SyncActivePlanForSession(session.ID); err != nil {
 			return sessionsV3SessionView{}, err
 		} else if ok {
 			hasActive = true
@@ -127,4 +127,24 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 		HasActivePlan:      hasActivePlan,
 		ActivePlan:         activePlan,
 	}, nil
+}
+
+func (s *Server) sessionsV3SyncActivePlanForSession(sessionID string) (pebblestore.SessionPlanSnapshot, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return pebblestore.SessionPlanSnapshot{}, false, errors.New("session id is required")
+	}
+	if s == nil || s.sessions == nil || s.sessions.Store() == nil {
+		return pebblestore.SessionPlanSnapshot{}, false, errors.New("sessions v3 service is not configured")
+	}
+	active, ok, err := s.sessions.Store().GetActivePlan(sessionID)
+	if err != nil || !ok {
+		return pebblestore.SessionPlanSnapshot{}, ok, err
+	}
+	plan, found, err := s.sessions.Store().GetPlan(sessionID, active.PlanID)
+	if err != nil || !found {
+		return pebblestore.SessionPlanSnapshot{}, found, err
+	}
+	plan.Active = true
+	return plan, true, nil
 }

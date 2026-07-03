@@ -1072,8 +1072,13 @@ func (s *Server) v3RealtimePrimeSubscriptionAtEndpointCursor(conn *transportws.C
 		_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, SessionID: sessionID, ErrorCode: "auth_scope_mismatch", Error: err.Error()})
 		return 0, false
 	} else if !found {
-		_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, SessionID: sessionID, ErrorCode: "auth_scope_mismatch", Error: "session not found"})
-		return 0, false
+		if _, archivedFound, archiveErr := s.requireArchivedSessionV3Access(principal, sessionID); archiveErr != nil {
+			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, SessionID: sessionID, ErrorCode: "auth_scope_mismatch", Error: archiveErr.Error()})
+			return 0, false
+		} else if !archivedFound {
+			_ = s.sendV3RealtimeMessage(conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindAuthDenied, SessionID: sessionID, ErrorCode: "auth_scope_mismatch", Error: "session not found"})
+			return 0, false
+		}
 	}
 	lastSeq := uint64(0)
 	if record, ok, err := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID, endpointSeq); err != nil {

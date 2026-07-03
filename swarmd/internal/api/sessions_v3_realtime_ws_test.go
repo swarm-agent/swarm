@@ -20,6 +20,48 @@ import (
 	transportws "swarm/packages/swarmd/internal/transport/ws"
 )
 
+func TestV3RealtimeArchivedSessionSubscriptionAllowsReactivationSendPath(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	createdResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-archived-open", "create-realtime-archived-open")
+	created := *createdResult.Session
+
+	archiveReq := httptest.NewRequest(http.MethodPost, "/v3/sessions:archive", strings.NewReader(`{"session_ids":["`+created.ID+`"]}`))
+	archiveReq.Header.Set("Content-Type", "application/json")
+	archiveRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(archiveRec, withTestPrincipal(archiveReq))
+	if archiveRec.Code != http.StatusOK {
+		t.Fatalf("archive status = %d body=%s", archiveRec.Code, archiveRec.Body.String())
+	}
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.ID, SubscriptionID: "sub-archived-open", EndpointCursor: signedV3RealtimeCursorForTest(t, server, createdResult.RealtimeOutbox.EndpointSeq)})
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayStart, created.ID, 0)
+	archiveEvent := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, archiveEvent, V3RealtimeKindEvent, created.ID, createdResult.Event.Seq+1)
+	if archiveEvent.EventType != "session.archived" {
+		t.Fatalf("archived replay event = %+v", archiveEvent)
+	}
+	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.ID, createdResult.Event.Seq+1)
+
+	messagesReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID+"/messages?tail=true&limit=200", nil)
+	messagesRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(messagesRec, withTestPrincipal(messagesReq))
+	if messagesRec.Code != http.StatusOK {
+		t.Fatalf("list archived messages status = %d body=%s", messagesRec.Code, messagesRec.Body.String())
+	}
+
+	messageReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/messages", strings.NewReader(`{"client_request_id":"reactivate-realtime-archived","message_id":"reactivate-realtime-archived-message","run_id":"reactivate-realtime-archived-run","role":"user","content":"reactivate archived realtime session"}`))
+	messageReq.Header.Set("Content-Type", "application/json")
+	messageRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(messageRec, withTestPrincipal(messageReq))
+	if messageRec.Code != http.StatusOK {
+		t.Fatalf("append archived message status = %d body=%s", messageRec.Code, messageRec.Body.String())
+	}
+}
+
 func TestV3RealtimePublishesCommittedOutboxEventAndReplaysAfterReconnect(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	createdResult := createV3RealtimeTestSessionResult(t, server, "session-realtime-a", "create-realtime-a")

@@ -461,6 +461,16 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	var archivedTombstone V3SessionTombstone
+	archivedReactivation := false
+	if input.Kind == V3SessionMutationAppendMessage && input.Message != nil {
+		if tombstone, ok, err := s.GetV3SessionTombstone(input.SessionID); err != nil {
+			return V3SessionMutationResult{}, err
+		} else if ok && tombstone.Archived && !tombstone.Deleted {
+			archivedTombstone = tombstone
+			archivedReactivation = true
+		}
+	}
 	if input.ExpectedLastEventSeq != nil && currentSeq != *input.ExpectedLastEventSeq {
 		return V3SessionMutationResult{}, &V3ProjectionConflictError{
 			SessionID: input.SessionID,
@@ -527,6 +537,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if event.ID == "" {
 		event.ID = fmt.Sprintf("v3evt_%s_%020d", input.SessionID, seq)
+	}
+	if archivedReactivation {
+		event.EventType = "session.reactivated"
 	}
 	projection := V3SessionProjection{SessionID: input.SessionID, LastEventSeq: seq, ProjectionHighWatermarkSeq: seq, UpdatedAt: now}
 	storedResult := V3SessionMutationStoredResult{
@@ -629,6 +642,18 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if sessionProvided || messageProvided {
 		if err := s.setSessionInBatch(batch, session); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if archivedReactivation {
+			if err := removeV3SessionTombstoneInBatch(batch, archivedTombstone); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+		var extraMessages []MessageSnapshot
+		if messageProvided {
+			extraMessages = []MessageSnapshot{message}
+		}
+		if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, extraMessages); err != nil {
 			return V3SessionMutationResult{}, err
 		}
 	}
@@ -1961,6 +1986,14 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 		session, ok, err := s.GetSession(input.SessionID)
 		if err != nil {
 			return SessionSnapshot{}, false, err
+		}
+		if !ok {
+			if tombstone, tombstoneOK, tombstoneErr := s.GetV3SessionTombstone(input.SessionID); tombstoneErr != nil {
+				return SessionSnapshot{}, false, tombstoneErr
+			} else if tombstoneOK && tombstone.Archived && !tombstone.Deleted && tombstone.Session.ID != "" {
+				session = tombstone.Session
+				ok = true
+			}
 		}
 		if !ok {
 			return SessionSnapshot{}, false, fmt.Errorf("session %q not found", input.SessionID)

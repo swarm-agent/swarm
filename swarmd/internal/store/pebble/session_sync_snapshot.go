@@ -423,6 +423,18 @@ func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, option
 		if err != nil {
 			return nil, V3SyncSnapshotPagination{}, err
 		}
+		if !ok {
+			var tombstone V3SessionTombstone
+			if tombstoneOK, tombstoneErr := getJSONFromReader(reader, KeyV3SessionTombstone(id), &tombstone); tombstoneErr != nil {
+				return nil, V3SyncSnapshotPagination{}, tombstoneErr
+			} else if tombstoneOK {
+				tombstone = normalizeV3SessionTombstone(tombstone)
+				if tombstone.Archived && !tombstone.Deleted && strings.TrimSpace(tombstone.Session.ID) != "" && v3SyncSnapshotTombstoneVisibleForSelector(tombstone, options) {
+					session = tombstone.Session
+					ok = true
+				}
+			}
+		}
 		if !ok || !v3SyncSnapshotSessionVisible(session, options.AccountScopeID, options.UserID, "") {
 			continue
 		}
@@ -946,6 +958,9 @@ func (s *SessionStore) addV3SyncSnapshotHistory(reader pebble.Reader, options V3
 }
 
 func (s *SessionStore) addV3SyncSnapshotMessages(reader pebble.Reader, options V3SyncSnapshotOptions, session SessionSnapshot, result *V3SyncSnapshotResult) error {
+	if tombstone, ok := result.TombstonesBySession[session.ID]; ok && tombstone.Archived && !tombstone.Deleted && tombstone.Session.ID != "" {
+		session = tombstone.Session
+	}
 	limit, capped := v3SyncSnapshotResourceLimit(options.History.Mode, options.History.MaxMessagesPerSession, session.MessageCount)
 	if limit == 0 && session.MessageCount > 0 {
 		return s.handleV3SyncSnapshotResourceOmission(options, session.ID, "messages", V3SyncSnapshotOmissionRequiresManifest, fmt.Sprintf("%s:messages:1", session.ID), nil, result)

@@ -603,7 +603,7 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		if !ok {
 			return
 		}
-		if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
+		if found, err := s.authorizeReadableSessionV3Access(principal, sessionID); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		} else if !found {
@@ -672,6 +672,12 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
 	if !found {
+		session, found, err = s.requireArchivedSessionV3Access(principal, sessionID)
+		if err != nil {
+			return sessionruntime.SessionMutationResult{}, nil, err
+		}
+	}
+	if !found {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("session not found")
 	}
 	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
@@ -730,7 +736,7 @@ func (s *Server) handleSessionV3PrimaryEvents(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
+	if found, err := s.authorizeReadableSessionV3Access(principal, sessionID); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	} else if !found {
@@ -1618,11 +1624,39 @@ func (s *Server) authorizeSessionsV3PrimarySession(principal identity.Principal,
 	return ok, err
 }
 
+func (s *Server) authorizeReadableSessionV3Access(principal identity.Principal, sessionID string) (bool, error) {
+	_, ok, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil || ok {
+		return ok, err
+	}
+	_, ok, err = s.requireArchivedSessionV3Access(principal, sessionID)
+	return ok, err
+}
+
 func (s *Server) requireSessionV3Access(principal identity.Principal, sessionID string) (pebblestore.SessionSnapshot, bool, error) {
 	session, ok, err := s.sessions.GetSession(sessionID)
 	if err != nil || !ok {
 		return pebblestore.SessionSnapshot{}, ok, err
 	}
+	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return pebblestore.SessionSnapshot{}, false, nil
+	}
+	if strings.TrimSpace(session.UserID) == "" || strings.TrimSpace(session.UserID) != strings.TrimSpace(principal.UserID) {
+		return pebblestore.SessionSnapshot{}, false, nil
+	}
+	return session, true, nil
+}
+
+func (s *Server) requireArchivedSessionV3Access(principal identity.Principal, sessionID string) (pebblestore.SessionSnapshot, bool, error) {
+	store := s.sessions.Store()
+	if store == nil {
+		return pebblestore.SessionSnapshot{}, false, errors.New("session store is not configured")
+	}
+	tombstone, ok, err := store.GetV3SessionTombstone(sessionID)
+	if err != nil || !ok || !tombstone.Archived || tombstone.Deleted || tombstone.Session.ID == "" {
+		return pebblestore.SessionSnapshot{}, false, err
+	}
+	session := tombstone.Session
 	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
 		return pebblestore.SessionSnapshot{}, false, nil
 	}
@@ -1829,6 +1863,8 @@ func sessionV3MessageMutationResponse(sessionID string, result sessionruntime.Se
 	return map[string]any{
 		"ok":                true,
 		"session_id":        sessionID,
+		"session":           result.Session,
+		"projection":        result.Projection,
 		"message":           result.Message,
 		"run_intent":        result.RunIntent,
 		"current_run_state": currentRunState,
