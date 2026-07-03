@@ -782,11 +782,11 @@ function ExitPlanCheckpointList({ document }: { document: StructuredPlanDocument
 
 function ExitPlanDocumentView({ document }: { document: StructuredPlanDocument }) {
   return (
-    <div className="grid min-h-0 grid-cols-1 gap-6 min-[901px]:grid-cols-[minmax(380px,0.85fr)_minmax(520px,1.15fr)] min-[901px]:gap-0">
-      <div className="min-w-0 min-[901px]:pr-6">
+    <div className="flex min-h-0 flex-col gap-6">
+      <div className="min-w-0">
         <ExitPlanDetails document={document} />
       </div>
-      <div className="min-w-0 border-t border-[var(--app-border)] pt-6 min-[901px]:border-l min-[901px]:border-t-0 min-[901px]:pl-6 min-[901px]:pt-0">
+      <div className="min-w-0 border-t border-[var(--app-border)] pt-6">
         <ExitPlanCheckpointList document={document} />
       </div>
     </div>
