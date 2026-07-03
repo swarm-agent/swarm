@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"swarm/packages/swarmd/internal/identity"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -239,6 +241,9 @@ func anthropicClientOptions(apiKey string) []option.RequestOption {
 	return []option.RequestOption{
 		option.WithAPIKey(apiKey),
 		option.WithHeaderAdd("anthropic-beta", string(promptCachingBeta)),
+		option.WithMiddleware(func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+			return providerdiagnostics.RoundTrip("anthropic", "messages", next, req)
+		}),
 	}
 }
 

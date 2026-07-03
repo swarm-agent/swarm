@@ -24,6 +24,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/privacy"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -438,14 +439,18 @@ func (c *Client) refreshOAuth(ctx context.Context, refreshToken string) (oauthTo
 		return oauthTokens{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	providerdiagnostics.LogRequest("codex", "oauth.refresh", httpReq, []byte(values.Encode()))
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		providerdiagnostics.LogError("codex", "oauth.refresh", err)
 		return oauthTokens{}, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	providerdiagnostics.LogResponse("codex", "oauth.refresh", resp, body)
 	if err != nil {
+		providerdiagnostics.LogError("codex", "oauth.refresh", err)
 		return oauthTokens{}, err
 	}
 	if resp.StatusCode >= 400 {
@@ -768,14 +773,18 @@ func (c *Client) sendOpenAIResponses(ctx context.Context, record pebblestore.Cod
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set(userAgentHeader, defaultCodexTransportUserAgent)
 
+	providerdiagnostics.LogRequest("codex", "responses.http", httpReq, payload)
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		providerdiagnostics.LogError("codex", "responses.http", err)
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCodexResponseBodyBytes))
+	providerdiagnostics.LogResponse("codex", "responses.http", resp, body)
 	if err != nil {
+		providerdiagnostics.LogError("codex", "responses.http", err)
 		return nil, resp.StatusCode, err
 	}
 	if resp.StatusCode >= 400 {
@@ -984,6 +993,7 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 		return nil
 	}
+	providerdiagnostics.LogWebsocketRequest("codex", "responses.websocket", wsURL, headers, websocketPayload)
 	if err := writeMessage(conn, websocketPayload); err != nil {
 		if ctxErr := contextErr(ctx); ctxErr != nil {
 			if session != nil {
@@ -1051,6 +1061,7 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 
 		payloadText := string(message)
+		providerdiagnostics.LogWebsocketResponse("codex", "responses.websocket", message)
 		var decoded map[string]any
 		if err := json.Unmarshal(message, &decoded); err != nil {
 			codexThinkingDebugEvent("event.decode_error", map[string]any{

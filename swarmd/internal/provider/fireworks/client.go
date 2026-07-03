@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 )
 
 const (
@@ -205,20 +207,26 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 	for key, value := range requestHeaders(options...) {
 		req.Header.Set(key, value)
 	}
+	providerdiagnostics.LogRequest("fireworks", "chat.completions.stream", req, raw)
 	resp, err := client.Do(req)
 	if err != nil {
+		providerdiagnostics.LogError("fireworks", "chat.completions.stream", err)
 		return chatCompletionResponse{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		providerdiagnostics.LogResponse("fireworks", "chat.completions.stream", resp, body)
 		if readErr != nil {
+			providerdiagnostics.LogError("fireworks", "chat.completions.stream", readErr)
 			return chatCompletionResponse{}, readErr
 		}
 		return chatCompletionResponse{}, fmt.Errorf("fireworks chat completions stream failed status=%d: %s", resp.StatusCode, apiErrorMessage(body))
 	}
 	state := newFireworksStreamState()
+	providerdiagnostics.LogResponse("fireworks", "chat.completions.stream", resp, nil)
 	if err := parseFireworksEventStream(resp.Body, func(payload string) error {
+		providerdiagnostics.LogStreamChunk("fireworks", "chat.completions.stream", []byte(payload))
 		var chunk chatCompletionChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			return fmt.Errorf("decode fireworks stream chunk: %w", err)
@@ -229,6 +237,7 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 		}
 		return nil
 	}); err != nil {
+		providerdiagnostics.LogError("fireworks", "chat.completions.stream", err)
 		return chatCompletionResponse{}, err
 	}
 	return state.response(), nil
@@ -256,13 +265,23 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 			req.Header.Set(key, value)
 		}
 	}
+	operation := "api"
+	if strings.EqualFold(method, http.MethodPost) && strings.Contains(url, "/chat/completions") {
+		operation = "chat.completions"
+	} else if strings.EqualFold(method, http.MethodGet) && strings.Contains(url, "/accounts") {
+		operation = "verify.accounts"
+	}
+	providerdiagnostics.LogRequest("fireworks", operation, req, body)
 	resp, err := client.Do(req)
 	if err != nil {
+		providerdiagnostics.LogError("fireworks", operation, err)
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	providerdiagnostics.LogResponse("fireworks", operation, resp, raw)
 	if err != nil {
+		providerdiagnostics.LogError("fireworks", operation, err)
 		return nil, resp.StatusCode, err
 	}
 	return raw, resp.StatusCode, nil

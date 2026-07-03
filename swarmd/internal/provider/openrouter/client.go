@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 )
 
 const (
@@ -188,20 +190,26 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	providerdiagnostics.LogRequest("openrouter", "chat.completions.stream", req, raw)
 	resp, err := client.Do(req)
 	if err != nil {
+		providerdiagnostics.LogError("openrouter", "chat.completions.stream", err)
 		return chatCompletionResponse{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		providerdiagnostics.LogResponse("openrouter", "chat.completions.stream", resp, body)
 		if readErr != nil {
+			providerdiagnostics.LogError("openrouter", "chat.completions.stream", readErr)
 			return chatCompletionResponse{}, readErr
 		}
 		return chatCompletionResponse{}, fmt.Errorf("openrouter chat completions stream failed status=%d: %s", resp.StatusCode, apiErrorMessage(body))
 	}
+	providerdiagnostics.LogResponse("openrouter", "chat.completions.stream", resp, nil)
 	state := newOpenRouterStreamState()
 	if err := parseOpenRouterEventStream(resp.Body, func(payload string) error {
+		providerdiagnostics.LogStreamChunk("openrouter", "chat.completions.stream", []byte(payload))
 		var chunk chatCompletionChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			return fmt.Errorf("decode openrouter stream chunk: %w", err)
@@ -215,6 +223,7 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 		}
 		return nil
 	}); err != nil {
+		providerdiagnostics.LogError("openrouter", "chat.completions.stream", err)
 		return chatCompletionResponse{}, err
 	}
 	response := state.response()
@@ -241,13 +250,23 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	operation := "api"
+	if strings.EqualFold(method, http.MethodPost) && strings.Contains(url, "/chat/completions") {
+		operation = "chat.completions"
+	} else if strings.EqualFold(method, http.MethodGet) && strings.Contains(url, "/key") {
+		operation = "verify.key"
+	}
+	providerdiagnostics.LogRequest("openrouter", operation, req, body)
 	resp, err := client.Do(req)
 	if err != nil {
+		providerdiagnostics.LogError("openrouter", operation, err)
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	providerdiagnostics.LogResponse("openrouter", operation, resp, raw)
 	if err != nil {
+		providerdiagnostics.LogError("openrouter", operation, err)
 		return nil, resp.StatusCode, err
 	}
 	return raw, resp.StatusCode, nil

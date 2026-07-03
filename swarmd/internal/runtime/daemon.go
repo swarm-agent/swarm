@@ -36,6 +36,7 @@ import (
 	"swarm/packages/swarmd/internal/provider/anthropic"
 	"swarm/packages/swarmd/internal/provider/codex"
 	"swarm/packages/swarmd/internal/provider/copilot"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	exaprovider "swarm/packages/swarmd/internal/provider/exa"
 	"swarm/packages/swarmd/internal/provider/fireworks"
 	"swarm/packages/swarmd/internal/provider/google"
@@ -266,6 +267,11 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("load startup config: %w", startupCfgErr)
+	}
+	if startupCfg.ProviderAPIDiagnostics {
+		if err := os.Setenv(providerdiagnostics.EnvName, providerdiagnostics.BoolEnvValue(true)); err != nil {
+			return nil, fmt.Errorf("enable provider api diagnostics: %w", err)
+		}
 	}
 	updateSvc := update.NewService(strings.TrimSpace(os.Getenv("SWARM_LANE")), startupCfg.DevMode)
 	if err := seedUISwarmName(cfg.ConfigPath, uiSettingsSvc); err != nil {

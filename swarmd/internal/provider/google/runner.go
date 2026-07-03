@@ -16,6 +16,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/privacy"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -163,14 +164,18 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set(googleAPIKeyHeader, auth.APIKey)
 
+	providerdiagnostics.LogRequest("google", "generateContent", httpReq, raw)
 	resp, err := r.httpClient.Do(httpReq)
 	if err != nil {
+		providerdiagnostics.LogError("google", "generateContent", err)
 		return provideriface.Response{}, sanitizeGoogleError("google generateContent request failed", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	providerdiagnostics.LogResponse("google", "generateContent", resp, body)
 	if err != nil {
+		providerdiagnostics.LogError("google", "generateContent", err)
 		return provideriface.Response{}, sanitizeGoogleError("read google generateContent response", err)
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
@@ -217,24 +222,31 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	httpReq.URL.RawQuery = query.Encode()
 	httpReq.Header.Set(googleAPIKeyHeader, auth.APIKey)
 
+	providerdiagnostics.LogRequest("google", "streamGenerateContent", httpReq, raw)
 	resp, err := r.httpClient.Do(httpReq)
 	if err != nil {
+		providerdiagnostics.LogError("google", "streamGenerateContent", err)
 		return provideriface.Response{}, sanitizeGoogleError("google streamGenerateContent request failed", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, body)
 		if readErr != nil {
+			providerdiagnostics.LogError("google", "streamGenerateContent", readErr)
 			return provideriface.Response{}, sanitizeGoogleError("read google streamGenerateContent error response", readErr)
 		}
 		return provideriface.Response{}, googleStatusError("google streamGenerateContent failed", resp.StatusCode, body)
 	}
 
+	providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, nil)
 	accumulator := newGoogleStreamAccumulator(modelID)
 	if err := parseGoogleEventStream(resp.Body, func(payload string) error {
+		providerdiagnostics.LogStreamChunk("google", "streamGenerateContent", []byte(payload))
 		return accumulator.applyPayload(payload, onEvent)
 	}); err != nil {
+		providerdiagnostics.LogError("google", "streamGenerateContent", err)
 		return provideriface.Response{}, sanitizeGoogleError("decode google stream response", err)
 	}
 	return accumulator.response(), nil

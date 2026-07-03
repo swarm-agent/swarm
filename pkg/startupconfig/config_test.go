@@ -18,6 +18,22 @@ func TestV3DiagnosticsConfigParsesAndFormats(t *testing.T) {
 	}
 }
 
+func TestProviderAPIDiagnosticsConfigParsesAndFormats(t *testing.T) {
+	cfg, _, err := parseEntries("provider_api_diagnostics = true\n", Default(t.TempDir()+"/swarm.conf"))
+	if err != nil {
+		t.Fatalf("parseEntries: %v", err)
+	}
+	if !cfg.ProviderAPIDiagnostics {
+		t.Fatalf("ProviderAPIDiagnostics = false, want true")
+	}
+	if cfg.V3Diagnostics {
+		t.Fatalf("V3Diagnostics = true, want false")
+	}
+	if !containsLine(Format(cfg), "provider_api_diagnostics = true") {
+		t.Fatalf("formatted config missing provider_api_diagnostics = true")
+	}
+}
+
 func TestScrubManagedLinkStateClearsManagedFields(t *testing.T) {
 	cfg := Default(t.TempDir() + "/swarm.conf")
 	cfg.Child = true
