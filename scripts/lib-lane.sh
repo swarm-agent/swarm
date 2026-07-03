@@ -268,7 +268,6 @@ desktop_port = 5555
 bypass_permissions = false
 retain_tool_output_history = false
 v3_diagnostics = false
-provider_api_diagnostics = false
 swarm_name =
 desktop_onboarding_complete = true
 child = false
@@ -487,15 +486,6 @@ EOF
 # Persist verbose V3 diagnostic events, including provider request/error diagnostics.
 # Enable temporarily while debugging failed sessions; diagnostics may contain request context.
 v3_diagnostics = false
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key provider_api_diagnostics; then
-    cat >>"${config_path}" <<'EOF'
-
-# Log sanitized outbound provider API request and response payloads to daemon logs.
-# This is separate from v3_diagnostics and omits/redacts API keys and auth headers.
-provider_api_diagnostics = false
 EOF
   fi
 
@@ -730,7 +720,6 @@ swarm_startup_config_validate() {
       valid["bypass_permissions"] = 1
       valid["retain_tool_output_history"] = 1
       valid["v3_diagnostics"] = 1
-      valid["provider_api_diagnostics"] = 1
       valid["swarm_name"] = 1
       valid["desktop_onboarding_complete"] = 1
       valid["child"] = 1
@@ -860,9 +849,6 @@ swarm_startup_config_validate() {
       }
       if (!("v3_diagnostics" in seen)) {
         fail(sprintf("invalid startup config %s: missing v3_diagnostics", config_path))
-      }
-      if (!("provider_api_diagnostics" in seen)) {
-        fail(sprintf("invalid startup config %s: missing provider_api_diagnostics", config_path))
       }
       if (!("swarm_name" in seen)) {
         fail(sprintf("invalid startup config %s: missing swarm_name", config_path))
@@ -1002,9 +988,6 @@ swarm_startup_config_validate() {
       if (values["v3_diagnostics"] != "true" && values["v3_diagnostics"] != "false") {
         fail(sprintf("invalid startup config %s: v3_diagnostics must be true or false", config_path))
       }
-      if (values["provider_api_diagnostics"] != "true" && values["provider_api_diagnostics"] != "false") {
-        fail(sprintf("invalid startup config %s: provider_api_diagnostics must be true or false", config_path))
-      }
       if (values["desktop_onboarding_complete"] != "true" && values["desktop_onboarding_complete"] != "false") {
         fail(sprintf("invalid startup config %s: desktop_onboarding_complete must be true or false", config_path))
       }
@@ -1132,16 +1115,6 @@ swarm_startup_v3_diagnostics() {
   fi
 }
 
-swarm_startup_provider_api_diagnostics() {
-  local value
-  value="$(swarm_startup_config_value provider_api_diagnostics)" || return 1
-  if [[ "${value}" == "true" ]]; then
-    printf "1\n"
-  else
-    printf "0\n"
-  fi
-}
-
 swarm_startup_dev_mode() {
   local value
   value="$(swarm_startup_config_value dev_mode)" || return 1
@@ -1251,7 +1224,6 @@ swarm_lane_export_profile() {
   local dev_root
   local bypass_permissions
   local v3_diagnostics
-  local provider_api_diagnostics
   local desktop_port
 
   local daemon_config_root
@@ -1269,7 +1241,6 @@ swarm_lane_export_profile() {
   dev_root="$(swarm_startup_dev_root)" || return 1
   bypass_permissions="$(swarm_startup_bypass_permissions)" || return 1
   v3_diagnostics="$(swarm_startup_v3_diagnostics)" || return 1
-  provider_api_diagnostics="$(swarm_startup_provider_api_diagnostics)" || return 1
   desktop_port="$(swarm_lane_desktop_port "${lane}")" || return 1
 
   export SWARM_LANE="${lane}"
@@ -1281,7 +1252,6 @@ swarm_lane_export_profile() {
   export SWARM_DEV_ROOT="${dev_root}"
   export SWARM_BYPASS_PERMISSIONS="${bypass_permissions}"
   export SWARM_V3_DIAGNOSTICS="${v3_diagnostics}"
-  export SWARM_PROVIDER_API_DIAGNOSTICS="${provider_api_diagnostics}"
 
   export SWARMD_LISTEN="${listen}"
   export SWARMD_URL="http://${listen}"
