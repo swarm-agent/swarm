@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -26,10 +27,11 @@ type sessionV3DiagnosticInput struct {
 	SequenceLabel  string
 	Payload        any
 	NowUnixMs      int64
+	Force          bool
 }
 
 func (s *Server) appendSessionV3Diagnostic(input sessionV3DiagnosticInput) (sessionruntime.SessionMutationResult, error) {
-	if !sessionV3DiagnosticsEnabled() {
+	if !input.Force && !sessionV3DiagnosticsEnabled() {
 		return sessionruntime.SessionMutationResult{}, nil
 	}
 	if s == nil || s.sessions == nil {
@@ -221,6 +223,34 @@ func sessionV3StoreDiagnosticSequence(prefix, kind, requestID string, discrimina
 	label := strings.NewReplacer(".", "_", "/", "_", " ", "_", ":", "_").Replace(strings.TrimSpace(kind))
 	requestID = strings.NewReplacer(".", "_", "/", "_", " ", "_", ":", "_").Replace(strings.TrimSpace(requestID))
 	return fmt.Sprintf("%s-%s-%s-%d", strings.TrimSpace(prefix), label, requestID, discriminator)
+}
+
+func (e *sessionV3Executor) recordSessionV3ProviderAPIDiagnostic(job sessionV3ExecutorJob, event providerdiagnostics.Event) {
+	if e == nil || e.server == nil {
+		return
+	}
+	stage := "session.diagnostic.provider.api"
+	if event.Stage != "" {
+		stage += "." + strings.NewReplacer(" ", "_", "/", "_", ":", "_", ".", "_").Replace(event.Stage)
+	}
+	sequence := fmt.Sprintf("%s-%s-%s-%d", event.Provider, event.Operation, event.Stage, event.RecordedAt)
+	if _, err := e.server.appendSessionV3Diagnostic(sessionV3DiagnosticInput{
+		SessionID:      job.SessionID,
+		UserID:         job.Principal.UserID,
+		AccountScopeID: job.Principal.AccountScopeID,
+		RunID:          job.RunID,
+		Stage:          stage,
+		Source:         "backend.provider.api",
+		SequenceLabel:  sequence,
+		Payload: map[string]any{
+			"provider_api_diagnostics": true,
+			"wire":                     event,
+		},
+		NowUnixMs: event.RecordedAt,
+		Force:     true,
+	}); err != nil {
+		log.Printf("warning: failed to record provider api diagnostic session=%q run=%q provider=%q operation=%q stage=%q: %v", job.SessionID, job.RunID, event.Provider, event.Operation, event.Stage, err)
+	}
 }
 
 func (e *sessionV3Executor) recordSessionV3Diagnostic(job sessionV3ExecutorJob, stage, source, sequenceLabel string, payload any) {

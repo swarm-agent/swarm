@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	codexruntime "swarm/packages/swarmd/internal/provider/codex"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	runruntime "swarm/packages/swarmd/internal/run"
 
@@ -1014,6 +1015,9 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		return sessionV3AssistantResponse{}, err
 	}
 	ctx = identity.ContextWithPrincipal(ctx, job.Principal)
+	ctx = providerdiagnostics.ContextWithRecorder(ctx, func(_ context.Context, event providerdiagnostics.Event) {
+		e.recordSessionV3ProviderAPIDiagnostic(job, event)
+	})
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
 	var sink *sessionV3DurableProgressSink

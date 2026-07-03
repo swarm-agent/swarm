@@ -2,17 +2,55 @@ package diagnostics
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/privacy"
 )
 
 const EnvName = "SWARM_PROVIDER_API_DIAGNOSTICS"
+
+type Event struct {
+	Provider   string         `json:"provider"`
+	Operation  string         `json:"operation"`
+	Stage      string         `json:"stage"`
+	Method     string         `json:"method,omitempty"`
+	URL        string         `json:"url,omitempty"`
+	StatusCode int            `json:"status_code,omitempty"`
+	Headers    string         `json:"headers,omitempty"`
+	Body       string         `json:"body,omitempty"`
+	Error      string         `json:"error,omitempty"`
+	RecordedAt int64          `json:"recorded_at"`
+	Extra      map[string]any `json:"extra,omitempty"`
+}
+
+type Recorder func(context.Context, Event)
+
+type recorderContextKey struct{}
+
+func ContextWithRecorder(ctx context.Context, recorder Recorder) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if recorder == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, recorderContextKey{}, recorder)
+}
+
+func recorderFromContext(ctx context.Context) Recorder {
+	if ctx == nil {
+		return nil
+	}
+	recorder, _ := ctx.Value(recorderContextKey{}).(Recorder)
+	return recorder
+}
 
 func Enabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvName))) {
@@ -34,46 +72,82 @@ func LogRequest(provider, operation string, req *http.Request, body []byte) {
 	if !Enabled() || req == nil {
 		return
 	}
-	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=request method=%q url=%q headers=%q body=%q", clean(provider), clean(operation), req.Method, sanitizeURL(req), sanitizeHeaders(req.Header), sanitizeBytes(body))
+	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "request", Method: req.Method, URL: sanitizeURL(req), Headers: sanitizeHeaders(req.Header), Body: sanitizeBytes(body), RecordedAt: time.Now().UnixMilli()}
+	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=request method=%q url=%q headers=%q body=%q", event.Provider, event.Operation, event.Method, event.URL, event.Headers, event.Body)
+	record(req.Context(), event)
 }
 
 func LogResponse(provider, operation string, resp *http.Response, body []byte) {
 	if !Enabled() || resp == nil {
 		return
 	}
-	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=response status=%d headers=%q body=%q", clean(provider), clean(operation), resp.StatusCode, sanitizeHeaders(resp.Header), sanitizeBytes(body))
+	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "response", StatusCode: resp.StatusCode, Headers: sanitizeHeaders(resp.Header), Body: sanitizeBytes(body), RecordedAt: time.Now().UnixMilli()}
+	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=response status=%d headers=%q body=%q", event.Provider, event.Operation, event.StatusCode, event.Headers, event.Body)
+	ctx := context.Background()
+	if resp.Request != nil {
+		ctx = resp.Request.Context()
+	}
+	record(ctx, event)
 }
 
 func LogError(provider, operation string, err error) {
+	LogErrorContext(context.Background(), provider, operation, err)
+}
+
+func LogErrorContext(ctx context.Context, provider, operation string, err error) {
 	if !Enabled() || err == nil {
 		return
 	}
-	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=error error=%q", clean(provider), clean(operation), privacy.SanitizeText(err.Error()))
+	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "error", Error: privacy.SanitizeText(err.Error()), RecordedAt: time.Now().UnixMilli()}
+	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=error error=%q", event.Provider, event.Operation, event.Error)
+	record(ctx, event)
 }
 
 func LogStreamChunk(provider, operation string, chunk []byte) {
+	LogStreamChunkContext(context.Background(), provider, operation, chunk)
+}
+
+func LogStreamChunkContext(ctx context.Context, provider, operation string, chunk []byte) {
 	if !Enabled() || len(chunk) == 0 {
 		return
 	}
-	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=stream_chunk body=%q", clean(provider), clean(operation), sanitizeBytes(chunk))
+	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "stream_chunk", Body: sanitizeBytes(chunk), RecordedAt: time.Now().UnixMilli()}
+	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=stream_chunk body=%q", event.Provider, event.Operation, event.Body)
+	record(ctx, event)
 }
 
 func LogWebsocketRequest(provider, operation string, url string, headers http.Header, body []byte) {
+	LogWebsocketRequestContext(context.Background(), provider, operation, url, headers, body)
+}
+
+func LogWebsocketRequestContext(ctx context.Context, provider, operation string, url string, headers http.Header, body []byte) {
 	if !Enabled() {
 		return
 	}
-	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=websocket_request url=%q headers=%q body=%q", clean(provider), clean(operation), privacy.SanitizeText(strings.TrimSpace(url)), sanitizeHeaders(headers), sanitizeBytes(body))
+	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "websocket_request", URL: privacy.SanitizeText(strings.TrimSpace(url)), Headers: sanitizeHeaders(headers), Body: sanitizeBytes(body), RecordedAt: time.Now().UnixMilli()}
+	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=websocket_request url=%q headers=%q body=%q", event.Provider, event.Operation, event.URL, event.Headers, event.Body)
+	record(ctx, event)
 }
 
 func LogWebsocketResponse(provider, operation string, body []byte) {
+	LogWebsocketResponseContext(context.Background(), provider, operation, body)
+}
+
+func LogWebsocketResponseContext(ctx context.Context, provider, operation string, body []byte) {
 	if !Enabled() || len(body) == 0 {
 		return
 	}
-	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=websocket_response body=%q", clean(provider), clean(operation), sanitizeBytes(body))
+	event := Event{Provider: clean(provider), Operation: clean(operation), Stage: "websocket_response", Body: sanitizeBytes(body), RecordedAt: time.Now().UnixMilli()}
+	log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=websocket_response body=%q", event.Provider, event.Operation, event.Body)
+	record(ctx, event)
 }
 
 func LogWebsocketError(provider, operation string, err error) {
 	LogError(provider, operation, err)
+}
+
+func LogWebsocketErrorContext(ctx context.Context, provider, operation string, err error) {
+	LogErrorContext(ctx, provider, operation, err)
 }
 
 func RoundTrip(provider, operation string, next func(*http.Request) (*http.Response, error), req *http.Request) (*http.Response, error) {
@@ -85,13 +159,13 @@ func RoundTrip(provider, operation string, next func(*http.Request) (*http.Respo
 	}
 	body, restoreErr := readAndRestoreRequestBody(req)
 	if restoreErr != nil {
-		LogError(provider, operation, restoreErr)
+		LogErrorContext(req.Context(), provider, operation, restoreErr)
 		return nil, restoreErr
 	}
 	LogRequest(provider, operation, req, body)
 	resp, err := next(req)
 	if err != nil {
-		LogError(provider, operation, err)
+		LogErrorContext(req.Context(), provider, operation, err)
 		return resp, err
 	}
 	if resp == nil || resp.Body == nil {
@@ -99,11 +173,12 @@ func RoundTrip(provider, operation string, next func(*http.Request) (*http.Respo
 		return resp, nil
 	}
 	LogResponse(provider, operation, resp, nil)
-	resp.Body = &loggingReadCloser{provider: provider, operation: operation, rc: resp.Body}
+	resp.Body = &loggingReadCloser{ctx: req.Context(), provider: provider, operation: operation, rc: resp.Body}
 	return resp, nil
 }
 
 type loggingReadCloser struct {
+	ctx       context.Context
 	provider  string
 	operation string
 	rc        io.ReadCloser
@@ -115,10 +190,10 @@ func (r *loggingReadCloser) Read(p []byte) (int, error) {
 	}
 	n, err := r.rc.Read(p)
 	if n > 0 {
-		LogStreamChunk(r.provider, r.operation, p[:n])
+		LogStreamChunkContext(r.ctx, r.provider, r.operation, p[:n])
 	}
 	if err != nil && err != io.EOF {
-		LogError(r.provider, r.operation, err)
+		LogErrorContext(r.ctx, r.provider, r.operation, err)
 	}
 	return n, err
 }
@@ -129,7 +204,7 @@ func (r *loggingReadCloser) Close() error {
 	}
 	err := r.rc.Close()
 	if err != nil {
-		LogError(r.provider, r.operation, err)
+		LogErrorContext(r.ctx, r.provider, r.operation, err)
 	}
 	return err
 }
@@ -196,6 +271,12 @@ func sanitizeBytes(body []byte) string {
 		return ""
 	}
 	return privacy.SanitizeText(string(body))
+}
+
+func record(ctx context.Context, event Event) {
+	if recorder := recorderFromContext(ctx); recorder != nil {
+		recorder(ctx, event)
+	}
 }
 
 func clean(value string) string {

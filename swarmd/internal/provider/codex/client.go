@@ -993,7 +993,7 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 		return nil
 	}
-	providerdiagnostics.LogWebsocketRequest("codex", "responses.websocket", wsURL, headers, websocketPayload)
+	providerdiagnostics.LogWebsocketRequestContext(ctx, "codex", "responses.websocket", wsURL, headers, websocketPayload)
 	if err := writeMessage(conn, websocketPayload); err != nil {
 		if ctxErr := contextErr(ctx); ctxErr != nil {
 			if session != nil {
@@ -1061,7 +1061,7 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 
 		payloadText := string(message)
-		providerdiagnostics.LogWebsocketResponse("codex", "responses.websocket", message)
+		providerdiagnostics.LogWebsocketResponseContext(ctx, "codex", "responses.websocket", message)
 		var decoded map[string]any
 		if err := json.Unmarshal(message, &decoded); err != nil {
 			codexThinkingDebugEvent("event.decode_error", map[string]any{
