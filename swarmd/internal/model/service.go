@@ -241,29 +241,19 @@ func (s *Service) supportsServiceTierRuntime(provider, modelName, serviceTier st
 	if serviceTier == "" {
 		return true
 	}
-	switch provider {
-	case "codex":
-		return supportsCodexFastRuntime(provider, modelName)
-	case "fireworks":
-		if serviceTier != "priority" && serviceTier != "fast" {
-			return false
-		}
-		if s == nil || s.catalog == nil {
-			return true
-		}
-		lookup, err := s.catalog.Get(provider, modelName)
-		if err != nil || !lookup.Found {
-			return true
-		}
-		for _, supported := range lookup.Record.ServiceTiers {
-			if strings.EqualFold(strings.TrimSpace(supported), serviceTier) {
-				return true
-			}
-		}
-		return false
-	default:
+	if s == nil || s.catalog == nil {
 		return false
 	}
+	lookup, err := s.catalog.Get(provider, modelName)
+	if err != nil || !lookup.Found {
+		return false
+	}
+	for _, supported := range lookup.Record.ServiceTiers {
+		if normalizeServiceTierForProvider(provider, supported) == serviceTier {
+			return true
+		}
+	}
+	return false
 }
 
 func supportsCodexFastRuntime(provider, modelName string) bool {

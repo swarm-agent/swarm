@@ -15,6 +15,7 @@ import {
   resetAgentDefaults,
   restoreAgentDefaults,
 } from "../../../../desktop/chat/queries/chat-queries";
+import { refreshAgentModelMutationCaches } from "../../../chat/queries/agent-preference-mutations";
 import type {
   AgentProfileRecord,
   AgentStateRecord,
@@ -572,6 +573,45 @@ function serviceTierOptionsForModel(provider: string, model: string, modelOption
 function modelSupportsServiceTierSetting(provider: string, model: string, modelOptions: ModelOptionRecord[], tier = ""): boolean {
   const option = modelOptionFor(provider, model, modelOptions);
   return supportsModelServiceTier(provider, model, option?.serviceTiers ?? [], tier);
+}
+
+function normalizedSingleServiceTier(form: AgentFormState, modelOptions: ModelOptionRecord[]): string {
+  return modelSupportsServiceTierSetting(form.provider, form.model, modelOptions, form.autoServiceTier)
+    ? normalizeModelServiceTier(form.provider, form.autoServiceTier)
+    : "";
+}
+
+function normalizedSplitServiceTier(form: AgentFormState, prefix: AgentSplitFieldPrefix, modelOptions: ModelOptionRecord[]): string {
+  const provider = splitFieldValue(form, prefix, "provider");
+  const model = splitFieldValue(form, prefix, "model");
+  const serviceTier = splitFieldValue(form, prefix, "serviceTier");
+  return modelSupportsServiceTierSetting(provider, model, modelOptions, serviceTier)
+    ? normalizeModelServiceTier(provider, serviceTier)
+    : "";
+}
+
+function normalizeAgentModelFields(form: AgentFormState, modelOptions: ModelOptionRecord[]): AgentFormState {
+  if (form.modelMode === "split") {
+    return {
+      ...form,
+      provider: "",
+      model: "",
+      thinking: "",
+      planServiceTier: normalizedSplitServiceTier(form, "plan", modelOptions),
+      autoServiceTier: normalizedSplitServiceTier(form, "auto", modelOptions),
+    };
+  }
+  return {
+    ...form,
+    planProvider: "",
+    planModel: "",
+    planThinking: "",
+    planServiceTier: "",
+    autoProvider: "",
+    autoModel: "",
+    autoThinking: "",
+    autoServiceTier: normalizedSingleServiceTier(form, modelOptions),
+  };
 }
 
 type AgentSplitFieldPrefix = "plan" | "auto";
@@ -1557,7 +1597,7 @@ export function AgentsSettingsPage() {
 
   const singleServiceTierOptions = serviceTierOptionsForModel(form.provider, form.model, modelOptions);
   const singleServiceTierSupported = singleServiceTierOptions.length > 1;
-  const normalizedSingleServiceTier = singleServiceTierSupported ? normalizeModelServiceTier(form.provider, form.autoServiceTier) : "";
+  const currentSingleServiceTier = singleServiceTierSupported ? normalizeModelServiceTier(form.provider, form.autoServiceTier) : "";
 
   const agentStateQueryKey = agentSettingsStateQueryOptions().queryKey;
   const agentStateSummaryQueryKey = agentStateQueryOptions().queryKey;
@@ -1570,10 +1610,7 @@ export function AgentsSettingsPage() {
   };
 
   const refreshAgents = async () => {
-    const nextState = await queryClient.fetchQuery({
-      ...agentSettingsStateQueryOptions(),
-      staleTime: 0,
-    });
+    const nextState = await refreshAgentModelMutationCaches(queryClient);
     return applyAgentState(nextState);
   };
 
@@ -1692,17 +1729,23 @@ export function AgentsSettingsPage() {
     setError(null);
     setStatus(null);
     try {
-      const savedName = await upsertAgent({
+      const savedName = await upsertAgent(normalizeAgentModelFields({
         ...form,
         name: trimmedName,
         description: form.description.trim(),
         provider: form.provider.trim(),
         model: form.provider.trim() ? form.model.trim() : "",
         thinking: form.thinking.trim(),
+        planProvider: form.planProvider.trim(),
+        planModel: form.planProvider.trim() ? form.planModel.trim() : "",
+        planThinking: form.planThinking.trim(),
+        autoProvider: form.autoProvider.trim(),
+        autoModel: form.autoProvider.trim() ? form.autoModel.trim() : "",
+        autoThinking: form.autoThinking.trim(),
         runtimeMode: displayedRuntimeMode,
         executionSetting: displayedRuntimeMode === "plan_auto" ? "" : displayedRuntimeMode,
         prompt: newPrompt,
-      });
+      }, modelOptions));
       await refreshAgents();
       setSelectedKey(savedName || trimmedName);
       setForm((current) => ({ ...current, prompt: newPrompt }));
@@ -1740,16 +1783,22 @@ export function AgentsSettingsPage() {
     setError(null);
     setStatus(null);
     try {
-      const savedName = await upsertAgent({
+      const savedName = await upsertAgent(normalizeAgentModelFields({
         ...form,
         name: trimmedName,
         description: form.description.trim(),
         provider: form.provider.trim(),
         model: form.provider.trim() ? form.model.trim() : "",
         thinking: form.thinking.trim(),
+        planProvider: form.planProvider.trim(),
+        planModel: form.planProvider.trim() ? form.planModel.trim() : "",
+        planThinking: form.planThinking.trim(),
+        autoProvider: form.autoProvider.trim(),
+        autoModel: form.autoProvider.trim() ? form.autoModel.trim() : "",
+        autoThinking: form.autoThinking.trim(),
         runtimeMode: displayedRuntimeMode,
         executionSetting: displayedRuntimeMode === "plan_auto" ? "" : displayedRuntimeMode,
-      });
+      }, modelOptions));
       await refreshAgents();
       setSelectedKey(savedName || trimmedName);
       setStatus(`Saved agent ${savedName || trimmedName}.`);
@@ -2521,7 +2570,7 @@ export function AgentsSettingsPage() {
                     </label>
                     <div className="relative w-full">
                       <select
-                        value={normalizedSingleServiceTier}
+                        value={currentSingleServiceTier}
                         onChange={(event: ChangeEvent<HTMLSelectElement>) =>
                           setForm((current) => ({
                             ...current,

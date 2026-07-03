@@ -20,11 +20,15 @@ export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
   | 'autoServiceTier'
 >>
 
+export type AgentModelControlAction =
+  | { kind: 'default'; agentPatch: AgentModelControlProfilePatch; defaultPreference: ModelDraft }
+  | { kind: 'single'; agentPatch: AgentModelControlProfilePatch }
+  | { kind: 'split'; agentPatch: AgentModelControlProfilePatch }
+
 export type AgentModelControlConfirmInput = {
   agentName: string
   profile: AgentProfileRecord
-  patch: AgentModelControlProfilePatch
-  defaultPreferencePatch?: ModelDraft
+  action: AgentModelControlAction
 }
 
 interface AgentModelControlProps {
@@ -316,32 +320,38 @@ export function AgentModelControl({
   async function confirm() {
     const profile = draftProfile
     if (!profile || saving || busy) return
-    const patch = buildPatch(draftMode, singleDraft, planDraft, autoDraft, modelOptions)
-    const defaultPreferencePatch = draftMode === 'default'
+    const agentPatch = buildPatch(draftMode, singleDraft, planDraft, autoDraft, modelOptions)
+    const action: AgentModelControlAction = draftMode === 'default'
       ? {
-        ...singleDraft,
-        provider: singleDraft.provider.trim(),
-        model: singleDraft.model.trim(),
-        thinking: normalizeThinking(singleDraft.thinking),
-        serviceTier: modelSupportsServiceTier(singleDraft.provider, singleDraft.model, modelOptions, singleDraft.serviceTier) ? normalizeDraftServiceTier(singleDraft.provider, singleDraft.serviceTier) : '',
+        kind: 'default',
+        agentPatch,
+        defaultPreference: {
+          ...singleDraft,
+          provider: singleDraft.provider.trim(),
+          model: singleDraft.model.trim(),
+          thinking: normalizeThinking(singleDraft.thinking),
+          serviceTier: modelSupportsServiceTier(singleDraft.provider, singleDraft.model, modelOptions, singleDraft.serviceTier) ? normalizeDraftServiceTier(singleDraft.provider, singleDraft.serviceTier) : '',
+        },
       }
-      : undefined
-    if (draftMode === 'default' && (!defaultPreferencePatch?.provider || !defaultPreferencePatch.model || !defaultPreferencePatch.thinking)) {
+      : draftMode === 'single'
+        ? { kind: 'single', agentPatch }
+        : { kind: 'split', agentPatch }
+    if (action.kind === 'default' && (!action.defaultPreference.provider || !action.defaultPreference.model || !action.defaultPreference.thinking)) {
       setError('Choose provider, model, and thinking for your default model settings.')
       return
     }
-    if (draftMode === 'single' && (!patch.provider || !patch.model || !patch.thinking)) {
+    if (action.kind === 'single' && (!action.agentPatch.provider || !action.agentPatch.model || !action.agentPatch.thinking)) {
       setError('Choose provider, model, and thinking for the single-model lock.')
       return
     }
-    if (draftMode === 'split' && (!patch.planProvider || !patch.planModel || !patch.planThinking || !patch.autoProvider || !patch.autoModel || !patch.autoThinking)) {
+    if (action.kind === 'split' && (!action.agentPatch.planProvider || !action.agentPatch.planModel || !action.agentPatch.planThinking || !action.agentPatch.autoProvider || !action.agentPatch.autoModel || !action.agentPatch.autoThinking)) {
       setError('Choose provider, model, and thinking for both plan and auto split settings.')
       return
     }
     setSaving(true)
     setError(null)
     try {
-      await onConfirmAgentSettings?.({ agentName: profile.name, profile, patch, defaultPreferencePatch })
+      await onConfirmAgentSettings?.({ agentName: profile.name, profile, action })
       setOpen(false)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -417,18 +427,18 @@ export function AgentModelControl({
             </div>
 
             {draftMode === 'single' ? (
-              <ModelDraftEditor title="Single model" draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showFast />
+              <ModelDraftEditor title="Single model" draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
             ) : draftMode === 'split' ? (
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                <ModelDraftEditor title="Plan model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showFast />
-                <ModelDraftEditor title="Auto model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showFast />
+                <ModelDraftEditor title="Plan model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
+                <ModelDraftEditor title="Auto model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
               </div>
             ) : (
               <div className="mt-4 grid gap-3">
                 <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-sm text-[var(--app-text-muted)]">
                   This agent is using your defaults. The fields below show those defaults; changing them updates your future default model settings instead of locking this agent.
                 </div>
-                <ModelDraftEditor title="Default model settings" draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showFast />
+                <ModelDraftEditor title="Default model settings" draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
               </div>
             )}
             {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
@@ -498,7 +508,7 @@ function ModelDraftEditor({
   draft,
   providers,
   modelOptions,
-  showFast = false,
+  showServiceTier = false,
   onProviderChange,
   onModelChange,
   onThinkingChange,
@@ -508,7 +518,7 @@ function ModelDraftEditor({
   draft: ModelDraft
   providers: string[]
   modelOptions: ModelOptionRecord[]
-  showFast?: boolean
+  showServiceTier?: boolean
   onProviderChange: (provider: string) => void
   onModelChange: (model: string) => void
   onThinkingChange: (thinking: string) => void
@@ -526,7 +536,7 @@ function ModelDraftEditor({
         <SelectField label="Provider" value={draft.provider} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider, value: provider }))} placeholder="Choose provider" />
         <ModelSelectField label="Model" value={draft.model} onChange={onModelChange} options={choices} placeholder="Choose model" disabled={!draft.provider.trim()} />
         <SelectField label="Thinking" value={normalizeThinking(draft.thinking)} onChange={onThinkingChange} options={THINKING_OPTIONS.map((option) => ({ label: option, value: option }))} />
-        {showFast ? <SelectField label="Service tier" value={normalizedServiceTier} onChange={(value) => onServiceTierChange?.(normalizeDraftServiceTier(draft.provider, value))} options={serviceTierOptions} disabled={!serviceTierSupported} /> : null}
+        {showServiceTier ? <SelectField label="Service tier" value={normalizedServiceTier} onChange={(value) => onServiceTierChange?.(normalizeDraftServiceTier(draft.provider, value))} options={serviceTierOptions} disabled={!serviceTierSupported} /> : null}
       </div>
       {selectedOption ? <ModelInfoPanel option={selectedOption} /> : null}
     </div>

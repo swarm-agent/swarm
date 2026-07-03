@@ -1,5 +1,7 @@
+import type { QueryClient } from '@tanstack/react-query'
 import { requestJson } from '../../../../app/api'
-import type { AgentProfileRecord } from '../types/chat'
+import { agentSettingsStateQueryOptions, agentStateQueryOptions, draftModelQueryKey } from '../../../queries/query-options'
+import type { AgentProfileRecord, AgentStateRecord } from '../types/chat'
 import type { AgentModelControlProfilePatch } from '../components/agent-model-control'
 
 function runtimeModeForAgent(profile: AgentProfileRecord): 'plan_auto' | 'read' | 'readwrite' {
@@ -41,13 +43,49 @@ function agentPayload(profile: AgentProfileRecord, patch: Partial<AgentProfileRe
   }
 }
 
+export async function refreshAgentModelMutationCaches(queryClient: QueryClient): Promise<AgentStateRecord> {
+  const [agentStateResult, agentSettingsStateResult] = await Promise.all([
+    queryClient.fetchQuery({
+      ...agentStateQueryOptions(),
+      staleTime: 0,
+    }),
+    queryClient.fetchQuery({
+      ...agentSettingsStateQueryOptions(),
+      staleTime: 0,
+    }),
+  ])
+  queryClient.setQueryData(agentStateQueryOptions().queryKey, agentStateResult)
+  queryClient.setQueryData(agentSettingsStateQueryOptions().queryKey, agentSettingsStateResult)
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: draftModelQueryKey(), refetchType: 'inactive' }),
+    queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey, refetchType: 'inactive' }),
+    queryClient.invalidateQueries({ queryKey: agentSettingsStateQueryOptions().queryKey, refetchType: 'inactive' }),
+  ])
+  return agentSettingsStateResult
+}
+
 export async function updateAgentProfile(profile: AgentProfileRecord, patch: AgentModelControlProfilePatch): Promise<void> {
+  const normalizedMode = patch.modelMode ?? profile.modelMode
+  const nextPatch: AgentModelControlProfilePatch = normalizedMode === 'split'
+    ? {
+      ...patch,
+      provider: '',
+      model: '',
+      thinking: '',
+    }
+    : {
+      ...patch,
+      planProvider: '',
+      planModel: '',
+      planThinking: '',
+      planServiceTier: '',
+    }
   await requestJson(
     `/v2/agents/${encodeURIComponent(profile.name.trim())}`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(agentPayload(profile, patch)),
+      body: JSON.stringify(agentPayload(profile, nextPatch)),
     },
   )
 }
@@ -61,6 +99,10 @@ export async function switchAgentToSingleModel(profile: AgentProfileRecord): Pro
     provider,
     model,
     thinking,
+    planProvider: '',
+    planModel: '',
+    planThinking: '',
+    planServiceTier: '',
   })
 }
 
@@ -70,5 +112,13 @@ export async function switchAgentToDefaultModel(profile: AgentProfileRecord): Pr
     provider: '',
     model: '',
     thinking: '',
+    planProvider: '',
+    planModel: '',
+    planThinking: '',
+    planServiceTier: '',
+    autoProvider: '',
+    autoModel: '',
+    autoThinking: '',
+    autoServiceTier: '',
   })
 }

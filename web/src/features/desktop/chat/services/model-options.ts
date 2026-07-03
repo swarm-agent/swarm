@@ -63,11 +63,8 @@ export function normalizeModelServiceTier(provider: string, serviceTier: string)
   return ''
 }
 
-export function supportsCodexFastMode(provider: string, model: string, serviceTiers: string[] = []): boolean {
-  if (normalizeProviderID(provider) !== 'codex') return false
-  if (normalizedServiceTiers(serviceTiers).includes('fast')) return true
-  const normalizedModel = model.trim().toLowerCase()
-  return normalizedModel === 'gpt-5.4' || normalizedModel === 'gpt-5.5'
+export function supportsCodexFastMode(provider: string, _model: string, serviceTiers: string[] = []): boolean {
+  return normalizeProviderID(provider) === 'codex' && normalizedServiceTiers(serviceTiers).includes('fast')
 }
 
 export function supportsModelServiceTier(provider: string, model: string, serviceTiers: string[] = [], requestedTier = ''): boolean {
@@ -102,8 +99,8 @@ export function modelServiceTierOptions(provider: string, model: string, service
   return options
 }
 
-export function codexFastEnabled(provider: string, model: string, serviceTier: string): boolean {
-  return supportsCodexFastMode(provider, model) && normalizeModelServiceTier(provider, serviceTier) === 'fast'
+export function codexFastEnabled(provider: string, model: string, serviceTier: string, serviceTiers: string[] = []): boolean {
+  return supportsCodexFastMode(provider, model, serviceTiers) && normalizeModelServiceTier(provider, serviceTier) === 'fast'
 }
 
 export function supportsCodex1MMode(provider: string, model: string): boolean {

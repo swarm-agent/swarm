@@ -1154,6 +1154,7 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
+	profile = normalizeAgentModelSelection(profile)
 	if err := requireAgentToolContract(profile); err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
@@ -1618,6 +1619,7 @@ func (s *Service) previewUpsertForAccount(accountScopeID string, input UpsertInp
 		return PreviewUpsertResult{}, err
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
+	profile = normalizeAgentModelSelection(profile)
 	if err := requireAgentToolContract(profile); err != nil {
 		return PreviewUpsertResult{}, err
 	}
@@ -2124,6 +2126,34 @@ func stringFieldProvided(explicit bool, value string) bool {
 		return true
 	}
 	return strings.TrimSpace(value) != ""
+}
+
+func normalizeAgentModelSelection(profile pebblestore.AgentProfile) pebblestore.AgentProfile {
+	if pebblestore.AgentModelMode(profile) == "split" {
+		profile.Provider = ""
+		profile.Model = ""
+		profile.Thinking = ""
+		if strings.TrimSpace(profile.PlanProvider) == "" || strings.TrimSpace(profile.PlanModel) == "" {
+			profile.PlanServiceTier = ""
+		}
+		if strings.TrimSpace(profile.AutoProvider) == "" || strings.TrimSpace(profile.AutoModel) == "" {
+			profile.AutoServiceTier = ""
+		}
+		return profile
+	}
+
+	profile.ModelMode = ""
+	profile.PlanProvider = ""
+	profile.PlanModel = ""
+	profile.PlanThinking = ""
+	profile.PlanServiceTier = ""
+	profile.AutoProvider = ""
+	profile.AutoModel = ""
+	profile.AutoThinking = ""
+	if strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
+		profile.AutoServiceTier = ""
+	}
+	return profile
 }
 
 func (s *Service) requireAccountScopeID(accountScopeID string) (string, error) {

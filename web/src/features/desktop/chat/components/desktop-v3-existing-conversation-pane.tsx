@@ -11,11 +11,11 @@ import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../../state/d
 import type { DesktopPermissionRecord, DesktopSessionRecord } from '../../types/realtime'
 import type { StructuredToolMessage, ToolMessageState, AgentStateRecord, SessionPreferenceRecord } from '../types/chat'
 import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
-import { agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { draftModelQueryKey, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { formatContextWindow, effectiveContextWindow } from '../services/model-options'
-import { preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
+import { preferenceFromAgentModelLock, preferenceFromModelDraft, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
 import { buildDesktopV3RunStatusModel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
@@ -44,8 +44,8 @@ import {
   resumeDesktopPlanAutomatic,
 } from '../../session-v3/plan-execution-api'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../../state/desktop-v3-session-api'
-import { resolveSessionPermission, sendSessionMessage } from '../queries/chat-queries'
-import { updateAgentProfile } from '../queries/agent-preference-mutations'
+import { resolveSessionPermission, sendSessionMessage, updateDraftModelPreference } from '../queries/chat-queries'
+import { refreshAgentModelMutationCaches, updateAgentProfile } from '../queries/agent-preference-mutations'
 import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
 import { permissionRequiresApproval } from '../../permissions/services/permission-payload'
@@ -807,42 +807,32 @@ export function DesktopV3ExistingConversationPane({
     setAgentModelSaving(true)
     setSendError(null)
     try {
-      if (input.defaultPreferencePatch) {
-        const preferenceResponse = await updateSessionV3Preference(normalizedSessionId, {
-          provider: input.defaultPreferencePatch.provider,
-          model: input.defaultPreferencePatch.model,
-          thinking: input.defaultPreferencePatch.thinking,
-          serviceTier: input.defaultPreferencePatch.serviceTier,
-        })
-        const settingsResponse = sessionV3PreferenceSettingsMutationResponse(preferenceResponse, normalizedSessionId)
-        dispatchDesktopV3Cache({ type: 'mutation.sessionSettingsResult', raw: settingsResponse })
-        const updatedPreference = (settingsResponse.preference ?? preference) as SessionPreferenceRecord
-        setPreference(updatedPreference)
-        unlockedPreferenceRef.current = updatedPreference
-        localSettingsDirtyRef.current.preference = true
+      const action = input.action
+      let basePreference = preference
+      if (action.kind === 'default') {
+        basePreference = preferenceFromModelDraft(action.defaultPreference, modelOptions)
+        const updatedDefault = await updateDraftModelPreference(basePreference)
+        queryClient.setQueryData(draftModelQueryKey(), updatedDefault)
       }
-      await updateAgentProfile(input.profile, input.patch)
-      const agentStateResult = await queryClient.fetchQuery({
-        ...agentStateQueryOptions(),
-        staleTime: 0,
-      })
-      queryClient.setQueryData(agentStateQueryOptions().queryKey, agentStateResult)
+      await updateAgentProfile(input.profile, action.agentPatch)
+      const agentStateResult = await refreshAgentModelMutationCaches(queryClient)
       const refreshedLock = resolveDesktopV3AgentModelLock(agentStateResult.profiles, input.agentName, mode)
-      const basePreference = input.defaultPreferencePatch
-        ? {
-          ...preference,
-          provider: input.defaultPreferencePatch.provider,
-          model: input.defaultPreferencePatch.model,
-          thinking: input.defaultPreferencePatch.thinking,
-          serviceTier: input.defaultPreferencePatch.serviceTier,
-        }
-        : preference
       const nextPreference = refreshedLock.locked
         ? preferenceFromAgentModelLock(refreshedLock, basePreference, modelOptions)
         : basePreference
-      if (refreshedLock.locked) {
-        setPreference(nextPreference)
-        unlockedPreferenceRef.current = nextPreference
+      if (action.kind === 'default' || refreshedLock.locked || !preferencesEqual(nextPreference, preference)) {
+        const preferenceResponse = await updateSessionV3Preference(normalizedSessionId, {
+          provider: nextPreference.provider,
+          model: nextPreference.model,
+          thinking: nextPreference.thinking,
+          serviceTier: nextPreference.serviceTier,
+          contextMode: nextPreference.contextMode,
+        })
+        const settingsResponse = sessionV3PreferenceSettingsMutationResponse(preferenceResponse, normalizedSessionId)
+        dispatchDesktopV3Cache({ type: 'mutation.sessionSettingsResult', raw: settingsResponse })
+        const updatedPreference = normalizePreference(settingsResponse.preference ?? nextPreference)
+        setPreference(updatedPreference)
+        unlockedPreferenceRef.current = updatedPreference
       }
       const currentAgent = settingsBaseline.agent.trim()
       if (input.agentName.trim() && input.agentName.trim() !== currentAgent) {
@@ -851,6 +841,7 @@ export function DesktopV3ExistingConversationPane({
           type: 'mutation.sessionSettingsResult',
           raw: sessionV3AgentSettingsMutationResponse(agentResponse, normalizedSessionId),
         })
+        setSelectedAgent(input.agentName.trim())
       }
       localSettingsDirtyRef.current = { agent: false, mode: false, preference: false }
     } catch (error) {

@@ -73,6 +73,25 @@ export function resolveDesktopV3AgentModelLock(
   }
 }
 
+export function preferenceFromModelDraft(
+  draft: { provider: string; model: string; thinking: string; serviceTier: string },
+  modelOptions: ModelOptionRecord[],
+): SessionPreferenceRecord {
+  const provider = draft.provider.trim()
+  const model = draft.model.trim()
+  const matchingOption = modelOptions.find((option) => option.provider === provider && option.model === model && option.contextMode.trim() === '')
+    ?? modelOptions.find((option) => option.provider === provider && option.model === model)
+    ?? null
+  return {
+    provider,
+    model,
+    thinking: draft.thinking.trim() || 'off',
+    serviceTier: draft.serviceTier.trim(),
+    contextMode: matchingOption?.contextMode ?? '',
+    updatedAt: Date.now(),
+  }
+}
+
 export function preferenceFromAgentModelLock(
   lock: AgentModelLockState,
   current: SessionPreferenceRecord,

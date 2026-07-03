@@ -7,11 +7,11 @@ import { normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled, type Desk
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
 import { formatContextWindow, effectiveContextWindow } from '../services/model-options'
-import { preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
-import type { AgentStateRecord, ModelOptionRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
-import { updateAgentProfile } from '../queries/agent-preference-mutations'
+import { preferenceFromAgentModelLock, preferenceFromModelDraft, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
+import type { AgentStateRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
+import { refreshAgentModelMutationCaches, updateAgentProfile } from '../queries/agent-preference-mutations'
 import { updateDraftModelPreference } from '../queries/chat-queries'
-import type { AgentModelControlConfirmInput, ModelDraft } from './agent-model-control'
+import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
 import type { DesktopSlashCommand } from '../services/slash-commands'
@@ -55,22 +55,6 @@ function serviceTierFromPreference(preference: SessionPreferenceRecord): string 
 
 function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; serviceTier: string }): string {
   return `${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'} · tier ${input.serviceTier}`
-}
-
-function preferenceFromDefaultPatch(patch: ModelDraft, modelOptions: ModelOptionRecord[]): SessionPreferenceRecord {
-  const provider = patch.provider.trim()
-  const model = patch.model.trim()
-  const matchingOption = modelOptions.find((option) => option.provider === provider && option.model === model && option.contextMode.trim() === '')
-    ?? modelOptions.find((option) => option.provider === provider && option.model === model)
-    ?? null
-  return {
-    provider,
-    model,
-    thinking: patch.thinking.trim() || 'off',
-    serviceTier: patch.serviceTier.trim(),
-    contextMode: matchingOption?.contextMode ?? '',
-    updatedAt: Date.now(),
-  }
 }
 
 function preferenceForRequest(preference: SessionPreferenceRecord): DesktopV3NewSessionPreference {
@@ -301,31 +285,21 @@ export function DesktopV3NewSessionPane({
     setAgentModelSaving(true)
     setStartError(null)
     try {
-      if (input.defaultPreferencePatch) {
-        const nextPreference = preferenceFromDefaultPatch(input.defaultPreferencePatch, modelOptions)
-        const updated = await updateDraftModelPreference(nextPreference)
+      const action = input.action
+      let basePreference = preference
+      if (action.kind === 'default') {
+        basePreference = preferenceFromModelDraft(action.defaultPreference, modelOptions)
+        const updated = await updateDraftModelPreference(basePreference)
         queryClient.setQueryData(draftModelQueryKey(), updated)
-        preferenceManuallyChangedRef.current = false
-        unlockedPreferenceRef.current = nextPreference
-        setPreference(nextPreference)
       }
-      await updateAgentProfile(input.profile, input.patch)
-      const agentStateResult = await queryClient.fetchQuery({
-        ...agentStateQueryOptions(),
-        staleTime: 0,
-      })
-      queryClient.setQueryData(agentStateQueryOptions().queryKey, agentStateResult)
+      await updateAgentProfile(input.profile, action.agentPatch)
+      const agentStateResult = await refreshAgentModelMutationCaches(queryClient)
       const refreshedLock = resolveDesktopV3AgentModelLock(agentStateResult.profiles, input.agentName, mode)
-      const basePreference = input.defaultPreferencePatch
-        ? preferenceFromDefaultPatch(input.defaultPreferencePatch, modelOptions)
-        : preference
       const nextPreference = refreshedLock.locked
         ? preferenceFromAgentModelLock(refreshedLock, basePreference, modelOptions)
         : basePreference
-      if (refreshedLock.locked) {
-        unlockedPreferenceRef.current = nextPreference
-        setPreference(nextPreference)
-      }
+      unlockedPreferenceRef.current = nextPreference
+      setPreference(nextPreference)
       agentManuallySelectedRef.current = true
       preferenceManuallyChangedRef.current = false
       setSelectedAgent(input.agentName)
