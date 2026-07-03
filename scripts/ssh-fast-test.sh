@@ -254,12 +254,6 @@ BEGIN {
   keys[++n] = "swarm_role"; repl["swarm_role"] = "swarm_role ="
   keys[++n] = "parent_swarm_id"; repl["parent_swarm_id"] = "parent_swarm_id ="
   keys[++n] = "pairing_state"; repl["pairing_state"] = "pairing_state ="
-  keys[++n] = "managed_host_sync_mode"; repl["managed_host_sync_mode"] = "managed_host_sync_mode ="
-  keys[++n] = "managed_host_sync_modules"; repl["managed_host_sync_modules"] = "managed_host_sync_modules ="
-  keys[++n] = "managed_host_sync_owner_swarm_id"; repl["managed_host_sync_owner_swarm_id"] = "managed_host_sync_owner_swarm_id ="
-  keys[++n] = "managed_host_sync_host_api_base_url"; repl["managed_host_sync_host_api_base_url"] = "managed_host_sync_host_api_base_url ="
-  keys[++n] = "managed_host_sync_credential_url"; repl["managed_host_sync_credential_url"] = "managed_host_sync_credential_url ="
-  keys[++n] = "managed_host_sync_agent_url"; repl["managed_host_sync_agent_url"] = "managed_host_sync_agent_url ="
 }
 {
   line = $0

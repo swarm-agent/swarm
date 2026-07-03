@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode, ChangeEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, GitBranch, Home, LayoutGrid, Link2, LoaderCircle, Menu, MoreVertical, Pin, Plus, RefreshCcw, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, GitBranch, Home, LayoutGrid, LoaderCircle, Menu, MoreVertical, Pin, Plus, RefreshCcw, Settings, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -35,8 +35,6 @@ import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
 import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { fetchSwarmTargets, type SwarmTarget } from '../swarm/api/swarm-targets'
-import { approveRemoteSwarmPairing, type RemoteSwarmPendingPairing } from '../onboarding/api'
-import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from '../swarm/components/managed-host-link-request-modal'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { createDesktopV3CreateOnlySessionOperation, startDesktopV3CreateOnlySession } from '../session-v3/new-session-flow'
@@ -83,13 +81,11 @@ const SIDEBAR_ACTION_BUTTON_CLASS = `${SIDEBAR_ACTION_BOX_CLASS} text-[var(--app
 const PWA_DEBUG_QUERY_PARAM = 'pwaDebug'
 const UPDATE_PROGRESS_STEP_TITLES = [
   'Start update helper',
-  'Inspect managed hosts',
-  'Sync managed checkouts',
+  'Check prerequisites',
   'Rebuild/apply Swarm',
-  'Restart/reconnect backends',
+  'Restart/reconnect backend',
   'Verify update',
 ] as const
-const MANAGED_DEV_UPDATE_PHASES = ['inspect', 'sync', 'rebuild', 'reconnect', 'verify'] as const
 
 function SidebarActionRail({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn(SIDEBAR_ACTION_RAIL_CLASS, className)}>{children}</div>
@@ -943,19 +939,13 @@ function updateProgressStepIndex(job: DesktopUpdateJob | null): number {
     return UPDATE_PROGRESS_STEP_TITLES.length
   }
   if (message.includes('container image') || message.includes('container images') || message.includes('local and remote') || message.includes('verify')) {
-    return 5
-  }
-  if (message.includes('restart') || message.includes('reconnect')) {
     return 4
   }
-  if (message.includes('rebuild') || message.includes('build') || message.includes('applying') || message.includes('installing') || message.includes('staging') || message.includes('fingerprint')) {
+  if (message.includes('restart') || message.includes('reconnect')) {
     return 3
   }
-  if (message.includes('syncing') || message.includes('sync')) {
+  if (message.includes('rebuild') || message.includes('build') || message.includes('applying') || message.includes('installing') || message.includes('staging') || message.includes('fingerprint')) {
     return 2
-  }
-  if (message.includes('inspect') || message.includes('checking managed')) {
-    return 1
   }
   return status === 'running' ? 1 : 0
 }
@@ -994,7 +984,7 @@ function swarmRoleLabel(target: Pick<SwarmTarget, 'role'> | null | undefined): s
   const role = target?.role?.trim().toLowerCase() || ''
   switch (role) {
     case 'managed':
-      return 'Managed Host'
+      return 'Remote Host'
     case 'child':
       return 'Child'
     case 'controller':
@@ -2017,15 +2007,8 @@ export function DesktopAppPage() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
-  const [pairingRequestsOpen, setPairingRequestsOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [notificationActionError, setNotificationActionError] = useState<string | null>(null)
-  const [pendingPairingRequests, setPendingPairingRequests] = useState<RemoteSwarmPendingPairing[]>([])
-  const [pairingDecisionBusyID, setPairingDecisionBusyID] = useState<string | null>(null)
-  const [pairingConfirmations, setPairingConfirmations] = useState<Record<string, boolean>>({})
-  const [pairingRequestError, setPairingRequestError] = useState<string | null>(null)
-  const [pairingRequestStatus, setPairingRequestStatus] = useState<string | null>(null)
-  const [pairingReplicationTarget, setPairingReplicationTarget] = useState<SwarmTarget | null>(null)
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
   const [gitPanel, setGitPanel] = useState<GitPanelState | null>(null)
   const [planModal, setPlanModal] = useState<PlanModalState | null>(null)
@@ -2225,28 +2208,21 @@ export function DesktopAppPage() {
   const sidebarSwarmNameDirty = sidebarSwarmNameDraft.trim() !== swarmName.trim()
   const currentSwarmRoleLabel = swarmRoleLabel(currentSwarmTarget)
   const masterWorkspaceName = selectedWorkspace?.workspaceName ?? routeWorkspace?.workspaceName ?? fallbackWorkspaceNameFromPath(selectedWorkspacePath ?? '')
-  const activePairingRequests = useMemo(() => activePendingPairings(pendingPairingRequests), [pendingPairingRequests])
-  const pairingRequestCount = activePairingRequests.length
-  const pairingRequestAttentionVisible = pairingRequestCount > 0
   const notificationItems = useDesktopV3CacheSelector(selectOrderedNotifications)
   const notificationSummary = useDesktopV3CacheSelector(selectNotificationSummary)
   const notificationUnreadCount = Math.max(0, notificationSummary.unreadCount)
   const notificationAttentionVisible = true
-  const headerActionCount = 2 + (pairingRequestAttentionVisible ? 1 : 0) + (notificationAttentionVisible ? 1 : 0) + (updateAttentionVisible ? 1 : 0)
-  const headerActionRowClass = headerActionCount === 5
-    ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_136px] items-center gap-2.5 min-h-7 pr-4'
-    : headerActionCount === 4
-      ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_108px] items-center gap-2.5 min-h-7 pr-4'
-      : headerActionCount === 3
-        ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_80px] items-center gap-2.5 min-h-7 pr-4'
-        : cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')
-  const headerActionRailClass = headerActionCount === 5
-    ? '!w-[136px] !grid-cols-5'
-    : headerActionCount === 4
-      ? '!w-[108px] !grid-cols-4'
-      : headerActionCount === 3
-        ? '!w-[80px] !grid-cols-3'
-        : undefined
+  const headerActionCount = 2 + (notificationAttentionVisible ? 1 : 0) + (updateAttentionVisible ? 1 : 0)
+  const headerActionRowClass = headerActionCount === 4
+    ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_108px] items-center gap-2.5 min-h-7 pr-4'
+    : headerActionCount === 3
+      ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_80px] items-center gap-2.5 min-h-7 pr-4'
+      : cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')
+  const headerActionRailClass = headerActionCount === 4
+    ? '!w-[108px] !grid-cols-[24px_24px_24px_24px]'
+    : headerActionCount === 3
+      ? '!w-[80px] !grid-cols-[24px_24px_24px]'
+      : undefined
   const swarmTopologySignature = useMemo(
     () => swarmTargets
       .map((target) => [
@@ -2277,11 +2253,6 @@ export function DesktopAppPage() {
     }
     void queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
   }, [queryClient, swarmTopologySignature])
-
-  const handleOpenPairingRequests = useCallback(() => {
-    setPairingRequestsOpen(true)
-    setPairingRequestStatus(null)
-  }, [])
 
   const handleOpenNotifications = useCallback(() => {
     setNotificationsOpen(true)
@@ -2322,46 +2293,6 @@ export function DesktopAppPage() {
       await clearNotifications()
     }, 'Failed to clear notifications')
   ), [mutateNotificationState])
-
-  const handlePairingDecision = useCallback(async (request: RemoteSwarmPendingPairing, approve: boolean) => {
-    const requestID = request.request_id.trim()
-    if (!requestID) {
-      setPairingRequestError('Pairing request id is missing.')
-      return
-    }
-    setPairingDecisionBusyID(requestID)
-    setPairingRequestError(null)
-    setPairingRequestStatus(null)
-    try {
-      const result = await approveRemoteSwarmPairing({
-        requestID,
-        approve,
-        confirmed: approve ? pairingConfirmations[requestID] === true : undefined,
-        reason: approve ? undefined : 'Rejected from Link request modal',
-      })
-      setPendingPairingRequests((items) => items.filter((item) => item.request_id !== requestID))
-      setPairingConfirmations((current) => {
-        const next = { ...current }
-        delete next[requestID]
-        return next
-      })
-      if (approve) {
-        const target = managedHostTargetFromPairingResult({ request, result })
-        if (target) {
-          setPairingReplicationTarget(target)
-          setPairingRequestsOpen(true)
-        }
-      } else {
-        setPairingReplicationTarget(null)
-      }
-      setPairingRequestStatus(approve ? `Approved ${request.managed_name || request.managed_swarm_id || 'Managed Host'}. Workspace link/import review is ready.` : `Rejected link request ${requestID}.`)
-      void queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
-    } catch (error) {
-      setPairingRequestError(error instanceof Error ? error.message : 'Failed to update link request')
-    } finally {
-      setPairingDecisionBusyID(null)
-    }
-  }, [pairingConfirmations, queryClient])
 
   const closeTodoModal = useCallback(() => {
     setTodoModal(null)
@@ -3190,12 +3121,6 @@ export function DesktopAppPage() {
           <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => void navigate({ to: '/' })} aria-label="Back to launcher">
             <Home size={24} className="shrink-0" />
           </Button>
-          {pairingRequestAttentionVisible ? (
-            <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0 text-[var(--app-primary)]" onClick={handleOpenPairingRequests} aria-label="Open link requests" title={`${pairingRequestCount} pending link request${pairingRequestCount === 1 ? '' : 's'}`}>
-              <Link2 size={24} className="shrink-0" />
-              <span aria-hidden="true" className="absolute right-2 top-2 grid h-4 min-w-4 place-items-center rounded-full bg-[var(--app-warning)] px-1 text-[9px] font-semibold text-[var(--app-background)]">{pairingRequestCount}</span>
-            </Button>
-          ) : null}
           {notificationAttentionVisible ? (
             <Button variant="ghost" className={cn('relative h-12 w-12 min-w-12 p-0', notificationUnreadCount > 0 && 'text-[var(--app-primary)]')} onClick={handleOpenNotifications} aria-label="Open notifications" title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}>
               <Bell size={24} className="shrink-0" />
@@ -3272,18 +3197,6 @@ export function DesktopAppPage() {
                     </div>
                   </div>
                   <SidebarActionRail className={headerActionRailClass}>
-                    {pairingRequestAttentionVisible ? (
-                      <button
-                        type="button"
-                        className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'relative text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] hover:text-[var(--app-primary-hover)]')}
-                        onClick={handleOpenPairingRequests}
-                        aria-label="Open link requests"
-                        title={`${pairingRequestCount} pending link request${pairingRequestCount === 1 ? '' : 's'}`}
-                      >
-                        <Link2 size={14} strokeWidth={1.8} className="shrink-0" />
-                        <span aria-hidden="true" className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-warning)] shadow-[0_0_8px_var(--app-warning)]" />
-                      </button>
-                    ) : null}
                     {notificationAttentionVisible ? (
                       <button
                         type="button"
@@ -3756,31 +3669,6 @@ export function DesktopAppPage() {
             <div className={cn('mt-4 rounded-xl border p-4 text-sm', updateProgressFailed ? 'border-[var(--app-error)] bg-[color-mix(in_srgb,var(--app-error)_10%,transparent)] text-[var(--app-error)]' : 'border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-text)]')}>
               {updateProgressMessage}
             </div>
-            {updateProgressJob?.hosts?.length ? (
-              <div className="mt-4 space-y-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3 text-sm">
-                <div className="font-medium">Managed host phases</div>
-                {updateProgressJob.hosts.map((host) => (
-                  <div key={host.host_id || host.name} className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="font-medium">{host.name || host.host_id || 'managed host'}</span>
-                      <span className={cn('text-xs uppercase tracking-wide', host.status === 'failed' ? 'text-[var(--app-error)]' : host.status === 'completed' ? 'text-[var(--app-success)]' : 'text-[var(--app-text-muted)]')}>{host.status || 'running'}</span>
-                    </div>
-                    <div className="mt-2 grid grid-cols-5 gap-1 text-[11px]">
-                      {MANAGED_DEV_UPDATE_PHASES.map((phaseName) => {
-                        const phase = host.phases?.find((entry) => entry.name === phaseName)
-                        const phaseStatus = phase?.status ?? 'pending'
-                        return (
-                          <div key={phaseName} className={cn('rounded border px-2 py-1 text-center capitalize', phaseStatus === 'failed' ? 'border-[var(--app-error)] text-[var(--app-error)]' : phaseStatus === 'completed' ? 'border-[var(--app-success)] text-[var(--app-success)]' : phaseStatus === 'running' ? 'border-[var(--app-primary)] text-[var(--app-primary)]' : 'border-[var(--app-border)] text-[var(--app-text-muted)]')}>
-                            {phaseName}
-                          </div>
-                        )
-                      })}
-                    </div>
-                    {(host.error || host.message) ? <div className="mt-2 text-xs text-[var(--app-text-muted)]">{host.error || host.message}</div> : null}
-                  </div>
-                ))}
-              </div>
-            ) : null}
             <ol className="mt-4 space-y-3">
               {UPDATE_PROGRESS_STEP_TITLES.map((title, index) => {
                 const done = updateProgressCompleted || index < updateProgressStep
@@ -3835,30 +3723,6 @@ export function DesktopAppPage() {
         error={gitPanel ? (gitRealtimeErrors[gitPanel.workspacePath] ?? (gitPanel.workspacePath === selectedGitWorkspacePath && gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : null)) : null}
         onRefresh={() => { if (gitPanel) void queryClient.invalidateQueries({ queryKey: gitStatusQueryKey(gitPanel.workspacePath) }) }}
         onClose={closeGitPanel}
-      />
-      <ManagedHostLinkRequestModal
-        open={pairingRequestsOpen}
-        requests={activePairingRequests}
-        busyID={pairingDecisionBusyID}
-        confirmations={pairingConfirmations}
-        error={pairingRequestError}
-        status={pairingRequestStatus}
-        now={sidebarNow}
-        linkReviewTarget={pairingReplicationTarget}
-        onOpenChange={setPairingRequestsOpen}
-        onConfirmationChange={(requestID, confirmed) => setPairingConfirmations((current) => ({ ...current, [requestID]: confirmed }))}
-        onDecision={(request, approve) => { void handlePairingDecision(request, approve) }}
-        onLinkReviewComplete={async (message: string) => {
-          setPairingReplicationTarget(null)
-          setPairingRequestError(null)
-          setPairingRequestStatus(message)
-          await queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
-        }}
-        onLinkReviewSkip={(message: string) => {
-          setPairingReplicationTarget(null)
-          setPairingRequestError(null)
-          setPairingRequestStatus(message)
-        }}
       />
       {pwaDebugEnabled ? <PwaLayoutDebugOverlay /> : null}
 

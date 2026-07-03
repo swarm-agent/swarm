@@ -116,7 +116,6 @@ function requestBody(call: { init?: RequestInit } | undefined): Record<string, u
 function assertNoV1OrV2SessionCalls(calls: Array<{ input: RequestInfo | URL; init?: RequestInit }>) {
   const urls = calls.map((entry) => String(entry.input))
   assert.equal(urls.some((url) => url.startsWith('/v1/sessions')), false, `unexpected v1 session call: ${urls.join(', ')}`)
-  assert.equal(urls.some((url) => url.startsWith('/v1/swarm/managed-hosts/sessions')), false, `unexpected managed-host session call: ${urls.join(', ')}`)
   assert.equal(urls.some((url) => url.startsWith('/v2/sessions')), false, `unexpected v2 session call: ${urls.join(', ')}`)
 }
 

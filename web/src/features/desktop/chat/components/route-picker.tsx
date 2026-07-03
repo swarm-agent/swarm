@@ -19,21 +19,17 @@ const VIEWPORT_GUTTER = 8
 const MIN_DROPDOWN_WIDTH = 260
 const MAX_DROPDOWN_WIDTH = 360
 
-function routeKind(route: DesktopChatRoute): 'primary' | 'managed' | 'remote' | 'local' {
+function routeKind(route: DesktopChatRoute): 'primary' | 'remote' | 'local' {
   const targetKind = route.targetKind.trim().toLowerCase()
-  const targetRelationship = route.targetRelationship.trim().toLowerCase()
   if (!route.swarmId || isPrimaryDesktopChatRoute(route)) {
     return 'primary'
-  }
-  if (targetRelationship === 'managed') {
-    return 'managed'
   }
   return targetKind === 'remote' || targetKind === 'mirrored' ? 'remote' : 'local'
 }
 
 function RouteIcon({ route, className }: { route: DesktopChatRoute; className?: string }) {
   const kind = routeKind(route)
-  const Icon = kind === 'primary' || kind === 'managed' ? Monitor : kind === 'remote' ? Server : Container
+  const Icon = kind === 'primary' ? Monitor : kind === 'remote' ? Server : Container
   return <Icon size={14} className={className} />
 }
 
@@ -41,9 +37,6 @@ export function routeCaption(route: DesktopChatRoute): string {
   const kind = routeKind(route)
   if (kind === 'primary') {
     return 'Primary host'
-  }
-  if (kind === 'managed') {
-    return 'Managed host'
   }
   if (kind === 'remote') {
     const hostName = route.hostSwarmName.trim() || route.hostSwarmId.trim()
@@ -58,29 +51,9 @@ interface RouteGroup {
   routes: DesktopChatRoute[]
 }
 
-function managedHostGroupKey(route: DesktopChatRoute): string {
-  return route.hostSwarmId.trim() || route.swarmId?.trim() || route.hostSwarmName.trim() || 'managed-host'
-}
-
 export function groupDesktopChatRoutes(routes: DesktopChatRoute[]): RouteGroup[] {
   const primary: DesktopChatRoute[] = []
-  const managedGroups: RouteGroup[] = []
-  const managedByHost = new Map<string, RouteGroup>()
-
-  function ensureManagedGroup(route: DesktopChatRoute): RouteGroup {
-    const hostKey = managedHostGroupKey(route)
-    let group = managedByHost.get(hostKey)
-    if (!group) {
-      group = {
-        key: `managed:${hostKey}`,
-        label: 'Managed host',
-        routes: [],
-      }
-      managedByHost.set(hostKey, group)
-      managedGroups.push(group)
-    }
-    return group
-  }
+  const remote: DesktopChatRoute[] = []
 
   for (const route of routes) {
     const kind = routeKind(route)
@@ -88,17 +61,12 @@ export function groupDesktopChatRoutes(routes: DesktopChatRoute[]): RouteGroup[]
       primary.push(route)
       continue
     }
-    const group = ensureManagedGroup(route)
-    if (kind === 'managed') {
-      group.routes.unshift(route)
-      continue
-    }
-    group.routes.push(route)
+    remote.push(route)
   }
 
   return [
     { key: 'primary', label: 'Primary', routes: primary },
-    ...managedGroups,
+    { key: 'remote', label: 'Remote', routes: remote },
   ].filter((group) => group.routes.length > 0)
 }
 

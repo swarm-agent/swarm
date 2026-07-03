@@ -316,7 +316,6 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		server.desktopLocalSessions.server = server
 	}
 	if permissionSvc, ok := permSvc.(*permission.Service); ok {
-		permissionSvc.SetHostedSync(NewManagedHostPermissionControlClient(server))
 		permissionSvc.SetSummaryRealtimePublisher(server.publishPermissionSummaryV3Realtime)
 	}
 	if notificationSvc, ok := notificationSvc.(*notification.Service); ok {
@@ -2842,10 +2841,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		if r.Method == http.MethodPost && s.isManagedHostMirroredSession(sessionID) {
-			s.handleManagedHostSessionCanonicalMessage(w, r, sessionID)
-			return
-		}
 		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
 			return
 		}
@@ -3489,10 +3484,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := s.routeMirroredPermissionToManagedHost(r.Context(), sessionID, record, savedRule); err != nil {
-			writeError(w, http.StatusBadGateway, err)
-			return
-		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":         true,
 			"session_id": sessionID,
@@ -3614,10 +3605,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		}
 		principal, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
 		if !ok {
-			return
-		}
-		if s.isManagedHostMirroredSession(sessionID) {
-			s.handleManagedHostSessionCanonicalRun(w, r, sessionID)
 			return
 		}
 		if s.proxyRoutedSessionRequest(w, r, sessionID) {
@@ -4516,7 +4503,7 @@ func isAuthExemptRequest(r *http.Request, loopback, trustedNetwork bool) bool {
 		return r.Method == http.MethodPost && (loopback || isTailscaleIP(remoteRequestIP(r)))
 	case "/v1/swarm/remote-pairing/request":
 		return r.Method == http.MethodPost && (loopback || isTailscaleIP(remoteRequestIP(r)))
-	case "/v1/swarm/remote-pairing/finalize", "/v1/swarm/managed-host/remove":
+	case "/v1/swarm/remote-pairing/finalize":
 		return false
 	case "/v1/deploy/container/attach/child-state", "/v1/deploy/container/attach/request", "/v1/deploy/container/attach/approve", "/v1/deploy/container/attach/finalize", "/v1/deploy/container/pairing/account-bind", "/v1/deploy/container/sync/credentials", "/v1/deploy/container/sync/agents", "/v1/deploy/container/sync/skills", "/v1/deploy/container/sync/permissions", "/v1/deploy/container/sync/model-defaults", "/v1/deploy/container/managed/credentials/apply", "/v1/deploy/container/managed/agents/apply", "/v1/deploy/container/managed/model-defaults/apply", "/v1/deploy/container/managed/skills/apply", "/v1/permissions/managed/apply", "/v1/permissions/bypass", "/v1/deploy/container/workspaces/bootstrap", "/v1/deploy/remote/session/sync/credentials":
 		return trustedNetwork && r.Method == http.MethodPost

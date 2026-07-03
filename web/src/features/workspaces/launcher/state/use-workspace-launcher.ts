@@ -11,7 +11,6 @@ import { deleteWorkspace as deleteWorkspaceAPI } from '../mutations/delete-works
 import { selectWorkspace } from '../mutations/select-workspace'
 import { setWorkspaceTheme as setWorkspaceThemeAPI } from '../mutations/set-workspace-theme'
 import { setWorkspaceWorktrees } from '../mutations/set-workspace-worktrees'
-import { removeWorkspaceManagedLink as removeWorkspaceManagedLinkAPI, upsertWorkspaceManagedLink as upsertWorkspaceManagedLinkAPI } from '../mutations/manage-workspace-managed-link'
 import { sortDiscoveredWorkspaces, dedupeDiscoveredAgainstWorkspaces } from '../services/discovery-ordering'
 import { syncWorkspaceOverviewWorktreeState } from '../services/workspace-overview-cache'
 import { browseWorkspacePath } from '../queries/browse-workspace-path'
@@ -31,15 +30,6 @@ interface SaveWorkspaceInput {
   makeCurrent: boolean
   linkedDirectory?: string
   linkedDirectories?: string[]
-}
-
-interface UpsertWorkspaceManagedLinkInput {
-  workspacePath: string
-  targetSwarmID: string
-  destinationRoot?: string
-  destinationPath?: string
-  workspaceName?: string
-  provision?: boolean
 }
 
 interface UseWorkspaceLauncherOptions {
@@ -66,8 +56,6 @@ interface UseWorkspaceLauncherState {
   useFolderTemporarily: (path: string) => Promise<WorkspaceResolution>
   deleteWorkspace: (path: string) => Promise<void>
   unlinkWorkspaceDirectory: (workspacePath: string, directoryPath: string) => Promise<void>
-  upsertWorkspaceManagedLink: (input: UpsertWorkspaceManagedLinkInput) => Promise<void>
-  removeWorkspaceManagedLink: (workspacePath: string, bindingID: string) => Promise<void>
   setWorktreeEnabled: (path: string, enabled: boolean) => Promise<void>
   saveWorkspace: (input: SaveWorkspaceInput) => Promise<void>
   createFolder: (parentPath: string, name: string) => Promise<string>
@@ -538,46 +526,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     }
   }, [refresh])
 
-  const upsertWorkspaceManagedLink = useCallback(async (input: UpsertWorkspaceManagedLinkInput) => {
-    const trimmedWorkspacePath = input.workspacePath.trim()
-    if (trimmedWorkspacePath === '' || input.targetSwarmID.trim() === '') {
-      return
-    }
-    setSavingPath(trimmedWorkspacePath)
-    setActionError(null)
-    try {
-      await upsertWorkspaceManagedLinkAPI({
-        ...input,
-        workspacePath: trimmedWorkspacePath,
-      })
-      await refresh()
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to save managed host link')
-      throw err
-    } finally {
-      setSavingPath(null)
-    }
-  }, [refresh])
-
-  const removeWorkspaceManagedLink = useCallback(async (workspacePath: string, bindingID: string) => {
-    const trimmedWorkspacePath = workspacePath.trim()
-    const trimmedBindingID = bindingID.trim()
-    if (trimmedWorkspacePath === '' || trimmedBindingID === '') {
-      return
-    }
-    setSavingPath(trimmedWorkspacePath)
-    setActionError(null)
-    try {
-      await removeWorkspaceManagedLinkAPI({ workspacePath: trimmedWorkspacePath, bindingID: trimmedBindingID })
-      await refresh()
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to remove managed host link')
-      throw err
-    } finally {
-      setSavingPath(null)
-    }
-  }, [refresh])
-
   const updateWorkspaceWorktreeEnabled = useCallback(async (path: string, enabled: boolean) => {
     const trimmedPath = path.trim()
     if (trimmedPath === '') {
@@ -695,8 +643,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     useFolderTemporarily,
     deleteWorkspace,
     unlinkWorkspaceDirectory: removeWorkspaceDirectory,
-    upsertWorkspaceManagedLink,
-    removeWorkspaceManagedLink,
     setWorktreeEnabled: updateWorkspaceWorktreeEnabled,
     saveWorkspace: persistWorkspace,
     createFolder,

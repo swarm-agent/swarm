@@ -53,34 +53,6 @@ func (s *Server) handleGitCommit(w http.ResponseWriter, r *http.Request) {
 	s.writeGitCommitResponse(w, r, req, principal)
 }
 
-func (s *Server) handleManagedHostWorkspaceGitCommit(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-	var req workspaceGitCommitRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	targetSwarmID := strings.TrimSpace(r.URL.Query().Get("swarm_id"))
-	if targetSwarmID == "" {
-		writeError(w, http.StatusBadRequest, errors.New("swarm_id is required"))
-		return
-	}
-	target, _, _, status, err := s.resolveManagedHostSessionTarget(requestWithSwarmTargetQuery(r, targetSwarmID), targetSwarmID)
-	if err != nil {
-		writeError(w, status, err)
-		return
-	}
-	var peerResp workspaceGitCommitResponse
-	if err := s.postPeerJSONToSwarmTarget(r.Context(), *target, peerManagedHostWorkspaceGitCommitPath, req, &peerResp); err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, peerResp)
-}
-
 func (s *Server) writeGitCommitResponse(w http.ResponseWriter, r *http.Request, req workspaceGitCommitRequest, principal identity.Principal) {
 	if sessionID := strings.TrimSpace(r.URL.Query().Get("session_id")); sessionID != "" {
 		if err := s.enforceSessionBindingWriteAccess(principal, sessionID, "git commit"); err != nil {

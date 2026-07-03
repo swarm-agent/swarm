@@ -1672,10 +1672,8 @@ const SESSION_CREATE_FORBIDDEN_METADATA_KEYS = new Set([
 const SESSION_CREATE_FORBIDDEN_METADATA_PREFIXES = [
   'swarm_route_',
   'swarm_routed_',
-  'swarm_managed_',
   'swarm_v2_',
   'hosted_session',
-  'managed_host',
 ]
 
 const SESSION_CREATE_FORBIDDEN_METADATA_PARTS = [

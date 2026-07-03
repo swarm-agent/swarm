@@ -21,7 +21,6 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
-	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
@@ -150,26 +149,6 @@ type swarmRemotePairingApprovalResponse struct {
 	Enrollment  swarmruntime.Enrollment     `json:"enrollment,omitempty"`
 	TrustedPeer *swarmruntime.TrustedPeer   `json:"trusted_peer,omitempty"`
 	Routing     *swarmManagedPairingRouting `json:"routing,omitempty"`
-}
-
-type swarmManagedHostRemoveRequest struct {
-	ManagedSwarmID string                       `json:"managed_swarm_id,omitempty"`
-	ManagerSwarmID string                       `json:"manager_swarm_id,omitempty"`
-	Reason         string                       `json:"reason,omitempty"`
-	Endpoint       string                       `json:"endpoint,omitempty"`
-	TransportMode  string                       `json:"transport_mode,omitempty"`
-	Rendezvous     []onboardingTransportPayload `json:"rendezvous_transports,omitempty"`
-	Propagate      bool                         `json:"propagate,omitempty"`
-}
-
-type swarmManagedHostRemoveResponse struct {
-	OK            bool                                 `json:"ok"`
-	Role          string                               `json:"role"`
-	LocalRemoved  bool                                 `json:"local_removed"`
-	RemoteRemoved bool                                 `json:"remote_removed,omitempty"`
-	RemoteError   string                               `json:"remote_error,omitempty"`
-	Pairing       swarmruntime.PairingState            `json:"pairing,omitempty"`
-	Cleanup       swarmruntime.RemoveManagedPeerResult `json:"cleanup,omitempty"`
 }
 
 type swarmRemotePairingPendingItem struct {
@@ -805,194 +784,6 @@ func (s *Server) handleSwarmRemotePairingFinalize(w http.ResponseWriter, r *http
 	})
 }
 
-func (s *Server) handleSwarmManagedHostRemove(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-	if s.swarm == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("swarm service is not configured"))
-		return
-	}
-	cfg, err := s.loadStartupConfig()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	state, err := s.currentSwarmState(cfg)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	var req swarmManagedHostRemoveRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	localSwarmID := strings.TrimSpace(state.Node.SwarmID)
-	localLinkState := dbBackedLocalManagedLinkState(state)
-	response := swarmManagedHostRemoveResponse{OK: true, Role: localLinkState.Role}
-
-	directedLocalManagedCleanup := strings.TrimSpace(req.ManagerSwarmID) != "" && (strings.TrimSpace(req.ManagedSwarmID) == "" || strings.EqualFold(strings.TrimSpace(req.ManagedSwarmID), localSwarmID))
-	if localLinkState.Managed || directedLocalManagedCleanup {
-		managerSwarmID := firstNonEmpty(strings.TrimSpace(req.ManagerSwarmID), localLinkState.ManagerSwarmID)
-		managerTransports := req.Rendezvous
-		if len(managerTransports) == 0 {
-			managerTransports = swarmTransportsToOnboarding(state.Pairing.RendezvousTransports)
-		}
-		managerEndpoint := firstNonEmpty(strings.TrimSpace(req.Endpoint), normalizeRemoteSwarmEndpoint(firstTransportForKind(managerTransports, startupconfig.NetworkModeTailscale)))
-		if managerSwarmID != "" && managerEndpoint != "" {
-			if token, ok, err := s.swarm.OutgoingPeerAuthToken(managerSwarmID); err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			} else if ok && token != "" {
-				var remote swarmManagedHostRemoveResponse
-				if err := postRemoteSwarmJSONWithTransportFallbackAndHeaders(managerEndpoint, "/v1/swarm/managed-host/remove", managerTransports, swarmManagedHostRemoveRequest{
-					ManagedSwarmID: localSwarmID,
-					ManagerSwarmID: managerSwarmID,
-					Reason:         firstNonEmpty(strings.TrimSpace(req.Reason), "Managed Host removed itself"),
-					Propagate:      false,
-				}, &remote, map[string]string{peerAuthSwarmIDHeader: localSwarmID, peerAuthTokenHeader: token}); err != nil {
-					response.RemoteError = err.Error()
-				} else {
-					response.RemoteRemoved = remote.LocalRemoved || remote.Cleanup.ManagedSwarmID != ""
-				}
-			}
-		}
-		if err := s.swarm.DetachToStandalone(localSwarmID); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		cfg = startupconfig.ScrubManagedLinkState(cfg)
-		cfg.PairingState = startupconfig.PairingStateUnpaired
-		if err := startupconfig.Write(cfg); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		response.LocalRemoved = true
-		response.Pairing = swarmruntime.PairingState{PairingState: startupconfig.PairingStateUnpaired, LastUpdatedByRole: bootstrapRoleMaster}
-		writeJSON(w, http.StatusOK, response)
-		return
-	}
-
-	managedSwarmID := strings.TrimSpace(req.ManagedSwarmID)
-	if managedSwarmID == "" {
-		writeError(w, http.StatusBadRequest, errors.New("managed swarm id is required"))
-		return
-	}
-	principal, ok := PrincipalFromRequest(r)
-	if !ok {
-		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
-		return
-	}
-	ctx := identity.ContextWithPrincipal(r.Context(), principal)
-	owned, err := s.managedHostBelongsToAccount(ctx, principal.AccountScopeID, managedSwarmID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if !owned {
-		writeError(w, http.StatusForbidden, fmt.Errorf("managed host is not owned by account"))
-		return
-	}
-	managedEndpoint := normalizeRemoteSwarmEndpoint(strings.TrimSpace(req.Endpoint))
-	managedTransports := req.Rendezvous
-	var peerAuthToken string
-	for _, peer := range state.TrustedPeers {
-		if strings.EqualFold(strings.TrimSpace(peer.SwarmID), managedSwarmID) {
-			if len(managedTransports) == 0 {
-				managedTransports = swarmTransportsToOnboarding(peer.RendezvousTransports)
-			}
-			if managedEndpoint == "" {
-				managedEndpoint = normalizeRemoteSwarmEndpoint(firstNonEmpty(firstTransportForKind(managedTransports, startupconfig.NetworkModeTailscale), firstTransportForKind(managedTransports, strings.TrimSpace(peer.TransportMode))))
-			}
-			break
-		}
-	}
-	if req.Propagate {
-		if token, ok, err := s.swarm.OutgoingPeerAuthToken(managedSwarmID); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		} else if ok {
-			peerAuthToken = token
-		}
-	}
-	if s.deployContainers != nil {
-		cleanupSvc, ok := s.deployContainers.(interface {
-			DeleteManagedHostForAccount(context.Context, string, string) (deployruntime.DeleteResult, error)
-		})
-		if !ok {
-			writeError(w, http.StatusInternalServerError, errors.New("deploy container service does not support managed host cleanup"))
-			return
-		}
-		if _, err := cleanupSvc.DeleteManagedHostForAccount(ctx, principal.AccountScopeID, managedSwarmID); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-	}
-	if s.swarmDesktopTargetSelection != nil {
-		if _, err := s.swarmDesktopTargetSelection.ClearForAccountIfSwarmID(principal.AccountScopeID, managedSwarmID); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-	}
-	cleanup, err := s.swarm.RemoveManagedPeer(swarmruntime.RemoveManagedPeerInput{ManagedSwarmID: managedSwarmID})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	response.LocalRemoved = true
-	response.Cleanup = cleanup
-	if req.Propagate {
-		switch {
-		case managedEndpoint == "":
-			response.RemoteError = "managed host endpoint is missing; remote cleanup was not attempted"
-		case peerAuthToken == "":
-			response.RemoteError = "managed host peer auth token is missing; remote cleanup was not attempted"
-		default:
-			var remote swarmManagedHostRemoveResponse
-			if err := postRemoteSwarmJSONWithTransportFallbackAndHeaders(managedEndpoint, "/v1/swarm/managed-host/remove", managedTransports, swarmManagedHostRemoveRequest{
-				ManagedSwarmID: managedSwarmID,
-				ManagerSwarmID: localSwarmID,
-				Reason:         firstNonEmpty(strings.TrimSpace(req.Reason), "Manager removed Managed Host"),
-				Propagate:      false,
-			}, &remote, map[string]string{peerAuthSwarmIDHeader: localSwarmID, peerAuthTokenHeader: peerAuthToken}); err != nil {
-				response.RemoteError = err.Error()
-			} else {
-				response.RemoteRemoved = remote.LocalRemoved
-			}
-		}
-	}
-	writeJSON(w, http.StatusOK, response)
-}
-
-func (s *Server) managedHostBelongsToAccount(ctx context.Context, accountScopeID, managedSwarmID string) (bool, error) {
-	accountScopeID = strings.TrimSpace(accountScopeID)
-	managedSwarmID = strings.TrimSpace(managedSwarmID)
-	if accountScopeID == "" {
-		return false, identity.ErrPrincipalRequired
-	}
-	if managedSwarmID == "" {
-		return false, errors.New("managed swarm id is required")
-	}
-	if s == nil || s.deployContainers == nil {
-		return false, errors.New("deploy container service is not configured")
-	}
-	deployments, err := s.deployContainers.List(ctx)
-	if err != nil {
-		return false, err
-	}
-	for _, deployment := range deployments {
-		if strings.TrimSpace(deployment.AccountScopeID) != "" && strings.TrimSpace(deployment.AccountScopeID) != accountScopeID {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(deployment.ChildSwarmID), managedSwarmID) || strings.EqualFold(strings.TrimSpace(deployment.SyncOwnerSwarmID), managedSwarmID) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 func (s *Server) handleSwarmRemotePairingPending(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -1045,17 +836,12 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 		return
 	}
 	if !req.Approve {
-		cleanupErr := cleanupRejectedRemoteSwarmPairing(pending, strings.TrimSpace(req.Reason))
-		if cleanupErr != nil {
-			log.Printf("managed pairing rejection cleanup failed request_id=%s manager_swarm_id=%s managed_swarm_id=%s err=%v", requestID, pending.ManagerSwarmID, pending.ManagedSwarmID, cleanupErr)
-		}
 		delete(s.remotePairingPending, requestID)
 		_ = s.publishSwarmPairingEvent("swarm.managed_pairing.rejected", pending.ManagedSwarmID, map[string]any{
 			"request_id":       pending.ID,
 			"manager_swarm_id": pending.ManagerSwarmID,
 			"managed_swarm_id": pending.ManagedSwarmID,
 			"reason":           strings.TrimSpace(req.Reason),
-			"cleanup_error":    errorString(cleanupErr),
 		})
 		writeJSON(w, http.StatusOK, swarmRemotePairingApprovalResponse{OK: true, Status: startupconfig.PairingStateRejected, RequestID: requestID})
 		return
@@ -1158,39 +944,6 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 		"enrollment_id":    strings.TrimSpace(enrollment.ID),
 	})
 	writeJSON(w, http.StatusOK, swarmRemotePairingApprovalResponse{OK: true, Status: startupconfig.PairingStatePaired, RequestID: requestID, Invite: invite, Pairing: pairing, Enrollment: enrollment, Routing: &routing})
-}
-
-func cleanupRejectedRemoteSwarmPairing(pending swarmRemotePairingPendingRequest, reason string) error {
-	managerSwarmID := strings.TrimSpace(pending.ManagerSwarmID)
-	managedSwarmID := strings.TrimSpace(pending.ManagedSwarmID)
-	managedEndpoint := normalizeRemoteSwarmEndpoint(pending.ManagedEndpoint)
-	managerToManagedPeerToken := strings.TrimSpace(pending.ManagerToManagedPeerToken)
-	if managerSwarmID == "" {
-		return errors.New("manager swarm id is required")
-	}
-	if managedSwarmID == "" {
-		return errors.New("managed swarm id is required")
-	}
-	if managedEndpoint == "" {
-		return errors.New("managed endpoint is required")
-	}
-	if managerToManagedPeerToken == "" {
-		return errors.New("manager-to-managed peer auth token is required")
-	}
-	var response swarmManagedHostRemoveResponse
-	return postRemoteSwarmJSONWithTransportFallbackAndHeaders(managedEndpoint, "/v1/swarm/managed-host/remove", pending.ManagedRendezvousTransports, swarmManagedHostRemoveRequest{
-		ManagedSwarmID: managedSwarmID,
-		ManagerSwarmID: managerSwarmID,
-		Reason:         firstNonEmpty(strings.TrimSpace(reason), "Managed Host link request rejected"),
-		Propagate:      false,
-	}, &response, map[string]string{peerAuthSwarmIDHeader: managerSwarmID, peerAuthTokenHeader: managerToManagedPeerToken})
-}
-
-func errorString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 func finalizeApprovedRemoteSwarmPairing(pending swarmRemotePairingPendingRequest, initialSync deployruntime.ManagedHostInitialSyncBundle) error {

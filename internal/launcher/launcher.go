@@ -1648,10 +1648,6 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	if err := preflightDevUpdateForUpdate(profile); err != nil {
 		return err
 	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Checking managed host dev sync requirements.", "")
-	if err := runManagedDevHostUpdatePhaseForUpdate(profile); err != nil {
-		return err
-	}
 	restartPlan, err := resolveUpdateRestartPlan(profile)
 	if err != nil {
 		return err
@@ -1710,7 +1706,6 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 		}
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Restarting Swarm backend.", "")
-	markManagedDevHostPhase(profile, managedDevPhaseReconnect, updateJobStatusCompleted, "Primary backend restarted; managed hosts should reconnect after their remote rebuilds.", "")
 	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.blockedErr == nil && restartPlan.systemdScope != "" && restartPlan.systemdUnit != "" {
 		if err := restartSystemdServiceForUpdate(restartPlan.systemdScope, restartPlan.systemdUnit, restartPlan.systemdActive); err != nil {
 			return err
@@ -1718,7 +1713,6 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	} else if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
 		return err
 	}
-	markManagedDevHostPhase(profile, managedDevPhaseVerify, updateJobStatusCompleted, "Primary restart completed; verify managed host session routing from the desktop.", "")
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Updating remote SSH sessions.", "")
 	if err := runDevRemoteDeployUpdateJobAfterRestartForUpdate(profile); err != nil {
 		return err

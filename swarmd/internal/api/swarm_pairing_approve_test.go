@@ -184,70 +184,14 @@ func TestSwarmRemotePairingApproveRejectsInitialSyncIdentityMismatch(t *testing.
 	}
 }
 
-func TestSwarmRemotePairingApproveRejectsAndCleansManagedBootstrapPeer(t *testing.T) {
-	manager := newLocalAuthTestServer(t)
-	requestID := "pair-reject-cleanup"
-	var cleanupSeen bool
-	managedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/swarm/managed-host/remove" {
-			t.Fatalf("unexpected managed cleanup path %s", r.URL.Path)
-		}
-		if r.Header.Get(peerAuthSwarmIDHeader) != "manager-swarm-1" || r.Header.Get(peerAuthTokenHeader) != "manager-to-managed-token" {
-			t.Fatalf("cleanup peer auth headers = %q/%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
-		}
-		var req swarmManagedHostRemoveRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode cleanup request: %v", err)
-		}
-		if req.ManagerSwarmID != "manager-swarm-1" || req.ManagedSwarmID != "managed-swarm-1" || req.Propagate {
-			t.Fatalf("cleanup payload = %+v", req)
-		}
-		cleanupSeen = true
-		writeJSON(w, http.StatusOK, swarmManagedHostRemoveResponse{OK: true, Role: startupconfig.SwarmRoleManaged, LocalRemoved: true})
-	}))
-	defer managedServer.Close()
-	manager.remotePairingPending[requestID] = swarmRemotePairingPendingRequest{
-		ID:                        requestID,
-		ManagerSwarmID:            "manager-swarm-1",
-		ManagedSwarmID:            "managed-swarm-1",
-		ManagedEndpoint:           managedServer.URL,
-		ManagerToManagedPeerToken: "manager-to-managed-token",
-		CreatedAt:                 time.Now(),
-	}
-
-	rec := postRemotePairingJSONWithDesktopSession(t, manager, "/v1/swarm/remote-pairing/approve", map[string]any{
-		"request_id": requestID,
-		"approve":    false,
-		"reason":     "not this host",
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("reject status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if !cleanupSeen {
-		t.Fatalf("reject did not call managed cleanup")
-	}
-	if _, ok := manager.remotePairingPending[requestID]; ok {
-		t.Fatalf("rejected pending request was not cleared")
-	}
-	var response swarmRemotePairingApprovalResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode reject response: %v", err)
-	}
-	if !response.OK || response.Status != startupconfig.PairingStateRejected {
-		t.Fatalf("reject response = %+v", response)
-	}
-}
-
 func TestSwarmRemotePairingApproveRejectDoesNotFailWhenCleanupUnavailable(t *testing.T) {
 	manager := newLocalAuthTestServer(t)
 	requestID := "pair-reject-cleanup-unreachable"
 	manager.remotePairingPending[requestID] = swarmRemotePairingPendingRequest{
-		ID:                        requestID,
-		ManagerSwarmID:            "manager-swarm-1",
-		ManagedSwarmID:            "managed-swarm-1",
-		ManagedEndpoint:           "http://127.0.0.1:1",
-		ManagerToManagedPeerToken: "manager-to-managed-token",
-		CreatedAt:                 time.Now(),
+		ID:             requestID,
+		ManagerSwarmID: "manager-swarm-1",
+		ManagedSwarmID: "managed-swarm-1",
+		CreatedAt:      time.Now(),
 	}
 
 	rec := postRemotePairingJSONWithDesktopSession(t, manager, "/v1/swarm/remote-pairing/approve", map[string]any{

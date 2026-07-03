@@ -21,7 +21,7 @@ function route(overrides: Partial<WorkspaceOverviewTopologyRoute> = {}): Workspa
     runtimeSwarmId: 'target-swarm',
     runtimeSwarmName: 'Target Name',
     runtimeKind: 'host',
-    runtimeRelationship: 'managed',
+    runtimeRelationship: 'remote',
     authorityHostSwarmId: 'host-swarm',
     hostSwarmId: 'host-swarm',
     hostWorkspacePath: '/source',
@@ -40,7 +40,7 @@ function route(overrides: Partial<WorkspaceOverviewTopologyRoute> = {}): Workspa
 function target(overrides: Partial<SwarmTarget> = {}): SwarmTarget {
   return {
     swarm_id: 'target-swarm',
-    name: 'Managed Laptop',
+    name: 'Remote Laptop',
     role: '',
     relationship: '',
     kind: 'host',
@@ -51,10 +51,10 @@ function target(overrides: Partial<SwarmTarget> = {}): SwarmTarget {
   }
 }
 
-function testManagedHostTopologyRouteIsVisibleFromTopologyBinding(): void {
-  const managedRoute = route({ runtimeSwarmName: 'Laptop' })
-  assertEqual(workspaceRouteTargetType(managedRoute, null), 'Managed Host', 'topology workspace bindings should be labeled as Managed Host')
-  assertEqual(workspaceRoutePlacementLabel(managedRoute, null), 'Laptop (Managed Host)', 'topology placement label should lead with the route name')
+function testRemoteHostTopologyRouteIsVisibleFromTopologyBinding(): void {
+  const remoteRoute = route({ runtimeSwarmName: 'Laptop' })
+  assertEqual(workspaceRouteTargetType(remoteRoute, null), 'Remote Host', 'topology workspace bindings should be labeled as Remote Host')
+  assertEqual(workspaceRoutePlacementLabel(remoteRoute, null), 'Laptop (Remote Host)', 'topology placement label should lead with the route name')
 }
 
 function testRuntimePathCanProvideVisibleRouteName(): void {
@@ -67,22 +67,22 @@ function testNonTopologyRoutesAreRemovedFromVisibleLinks(): void {
   assertEqual(String(links.length), '0', 'non-topology routes must not render as visible placement links')
 }
 
-function testManagedRelationshipMapsToManagedHost(): void {
-  const managedTarget = target({ kind: 'host', relationship: 'managed', role: 'managed' })
-  assertEqual(workspaceRouteTargetType(route(), managedTarget), 'Managed Host', 'managed relationship should map to Managed Host')
+function testRemoteRelationshipMapsToRemoteHost(): void {
+  const remoteTarget = target({ kind: 'host', relationship: 'remote', role: 'remote' })
+  assertEqual(workspaceRouteTargetType(route(), remoteTarget), 'Remote Host', 'remote relationship should map to Remote Host')
 }
 
 function testTopologyRoutesRenderWithoutTargetRecord(): void {
   const links = workspacePlacementLinks([route({ runtimeRelationship: '', runtimeKind: '' })], [])
   assertEqual(String(links.length), '1', 'topology workspace bindings should render even when the target list is unavailable')
-  assertEqual(links[0]?.targetType ?? '', 'Managed Host', 'target-less topology workspace binding should still be a Managed Host route')
+  assertEqual(links[0]?.targetType ?? '', 'Remote Host', 'target-less topology workspace binding should still be a Remote Host route')
 }
 
 function main(): void {
-  testManagedHostTopologyRouteIsVisibleFromTopologyBinding()
+  testRemoteHostTopologyRouteIsVisibleFromTopologyBinding()
   testRuntimePathCanProvideVisibleRouteName()
   testNonTopologyRoutesAreRemovedFromVisibleLinks()
-  testManagedRelationshipMapsToManagedHost()
+  testRemoteRelationshipMapsToRemoteHost()
   testTopologyRoutesRenderWithoutTargetRecord()
   console.log('workspace-placement tests passed')
 }

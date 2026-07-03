@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, Grid2X2, Home, List, MoreHorizontal, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
@@ -8,8 +7,7 @@ import { Badge } from '../../../components/ui/badge'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
 import { WorkspaceStatus } from '../launcher/components/workspace-status'
 import { WorkspaceFolderTree } from '../launcher/components/workspace-folder-tree'
-import { WorkspaceEditorModal, type WorkspaceEditorAvailableDirectory, type WorkspaceEditorManagedLinkDraft } from '../launcher/components/workspace-editor-modal'
-import { fetchSwarmTargets } from '../../desktop/swarm/api/swarm-targets'
+import { WorkspaceEditorModal, type WorkspaceEditorAvailableDirectory } from '../launcher/components/workspace-editor-modal'
 import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../launcher/services/workspace-route'
 import { formatWorkspaceDirectories, formatWorkspacePath } from '../launcher/services/workspace-format'
 import type { WorkspaceBrowseResult, WorkspaceDiscoverEntry, WorkspaceEntry } from '../launcher/types/workspace'
@@ -23,7 +21,6 @@ interface WorkspaceModalState {
   workspacePathEditable: boolean
   sourcePaths: string[]
   themeId: string
-  pendingManagedLinks: WorkspaceEditorManagedLinkDraft[]
 }
 
 function fallbackWorkspaceNameFromPath(path: string): string {
@@ -562,8 +559,6 @@ export function WorkspaceHomePage() {
     useFolderTemporarily,
     deleteWorkspace,
     unlinkWorkspaceDirectory,
-    upsertWorkspaceManagedLink,
-    removeWorkspaceManagedLink,
     saveWorkspace,
     createFolder,
     moveWorkspaceToIndex,
@@ -572,12 +567,6 @@ export function WorkspaceHomePage() {
   } = useWorkspaceLauncher()
 
   const navigate = useNavigate()
-  const swarmTargetsQuery = useQuery({
-    queryKey: ['workspace-launcher-swarm-targets'],
-    queryFn: fetchSwarmTargets,
-    staleTime: 30_000,
-  })
-  const availableSwarmTargets = swarmTargetsQuery.data?.targets ?? []
   const [modalState, setModalState] = useState<WorkspaceModalState | null>(null)
   const [draftName, setDraftName] = useState('')
   const [workspaceNameTouched, setWorkspaceNameTouched] = useState(false)
@@ -665,7 +654,6 @@ export function WorkspaceHomePage() {
       workspacePathEditable: true,
       sourcePaths,
       themeId: 'inherit',
-      pendingManagedLinks: [],
     })
     setDraftName(initialName)
     setWorkspaceNameTouched(false)
@@ -684,7 +672,6 @@ export function WorkspaceHomePage() {
       workspacePathEditable: false,
       sourcePaths: workspace.directories,
       themeId: workspace.themeId || 'inherit',
-      pendingManagedLinks: [],
     })
     setDraftName(workspace.workspaceName)
     setWorkspaceNameTouched(false)
@@ -777,54 +764,6 @@ export function WorkspaceHomePage() {
     setModalState((current) => (current ? { ...current, themeId: nextThemeId } : current))
   }
 
-  const addManagedLink = (targetSwarmID: string, destinationPath: string) => {
-    if (!modalState) {
-      return
-    }
-    if (modalState.mode === 'create') {
-      setModalState((current) => {
-        if (!current) return current
-        const next = { targetSwarmID, destinationPath }
-        const existing = current.pendingManagedLinks.filter((link) => link.targetSwarmID !== targetSwarmID)
-        return { ...current, pendingManagedLinks: [...existing, next] }
-      })
-      return
-    }
-    void (async () => {
-      try {
-        await upsertWorkspaceManagedLink({
-          workspacePath: modalState.workspacePath,
-          targetSwarmID,
-          destinationPath,
-          workspaceName: draftName,
-          provision: true,
-        })
-      } catch (err) {
-        setModalError(err instanceof Error ? err.message : 'Failed to add managed host link')
-      }
-    })()
-  }
-
-  const removePendingManagedLink = (targetSwarmID: string, destinationPath: string) => {
-    setModalState((current) => current ? {
-      ...current,
-      pendingManagedLinks: current.pendingManagedLinks.filter((link) => link.targetSwarmID !== targetSwarmID || link.destinationPath !== destinationPath),
-    } : current)
-  }
-
-  const removeManagedLink = (linkID: string) => {
-    if (!modalState) {
-      return
-    }
-    void (async () => {
-      try {
-        await removeWorkspaceManagedLink(modalState.workspacePath, linkID)
-      } catch (err) {
-        setModalError(err instanceof Error ? err.message : 'Failed to remove managed host link')
-      }
-    })()
-  }
-
   const openMobileExplorer = (mode: Exclude<ExplorerDrawerMode, null>) => {
     setExplorerDrawerMode(mode)
     const startPath = mode === 'browse' ? (browser?.resolvedPath || browser?.homePath || '') : (modalState?.workspacePath || browser?.resolvedPath || browser?.homePath || '')
@@ -912,15 +851,6 @@ export function WorkspaceHomePage() {
         makeCurrent: modalState.mode === 'edit' ? Boolean(editingWorkspace?.active || currentWorkspacePath === workspacePath) : false,
         linkedDirectories,
       })
-      for (const link of modalState.pendingManagedLinks) {
-        await upsertWorkspaceManagedLink({
-          workspacePath,
-          targetSwarmID: link.targetSwarmID,
-          destinationPath: link.destinationPath,
-          workspaceName: draftName,
-          provision: true,
-        })
-      }
       closeModal()
     } catch (err) {
       setModalError(err instanceof Error ? err.message : 'Failed to save workspace')
@@ -1145,9 +1075,7 @@ export function WorkspaceHomePage() {
         themeId={modalState?.themeId ?? 'inherit'}
         linkedDirectories={modalState?.sourcePaths.filter((path) => !isSamePath(path, modalState.workspacePath)) ?? []}
         availableDirectories={modalAvailableDirectories}
-        pendingManagedLinks={modalState?.pendingManagedLinks ?? []}
         workspaces={workspaces}
-        availableSwarmTargets={availableSwarmTargets}
         browser={browser}
         browserLoading={browserLoading}
         browserError={browserError}
@@ -1171,9 +1099,6 @@ export function WorkspaceHomePage() {
         onAddLinkedDirectory={addLinkedDirectory}
         onAddLinkedDirectories={addLinkedDirectories}
         onRemoveLinkedDirectory={removeLinkedDirectory}
-        onAddManagedLink={addManagedLink}
-        onRemoveManagedLink={removeManagedLink}
-        onRemovePendingManagedLink={removePendingManagedLink}
         onClose={closeModal}
         onSubmit={() => {
           void submitModal()

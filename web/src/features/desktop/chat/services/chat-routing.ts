@@ -89,10 +89,10 @@ export function buildDesktopChatRouteOptions(input: {
     }
     seen.add(id)
     const targetRelationship = topologyRoute.runtimeRelationship.trim().toLowerCase()
-    const runtimeKind = topologyRoute.runtimeKind.trim()
-    const targetKind = targetRelationship === 'managed'
-      ? 'host'
-      : runtimeKind
+    if (targetRelationship === 'managed') {
+      continue
+    }
+    const targetKind = topologyRoute.runtimeKind.trim()
     const hostSwarmName = topologyRoute.hostSwarmName.trim()
     const label = topologyRoute.runtimeSwarmName.trim() || swarmId
     options.push({
@@ -244,15 +244,6 @@ export function resolveDesktopChatRouteFromSession(
   return matchedRoute ?? metadataRoute ?? fallback ?? routeOptions[0] ?? null
 }
 
-export function isManagedHostDesktopChatRoute(route: DesktopChatRoute | null | undefined): boolean {
-  const swarmId = route?.swarmId?.trim() ?? ''
-  if (!swarmId) {
-    return false
-  }
-  const relationship = route?.targetRelationship?.trim().toLowerCase() ?? ''
-  return relationship === 'managed'
-}
-
 export function isPrimaryDesktopChatRoute(route: DesktopChatRoute | null | undefined): boolean {
   const swarmId = route?.swarmId?.trim() ?? ''
   if (!swarmId) {
@@ -299,9 +290,6 @@ export function getDesktopSessionCreateTarget(route: DesktopChatRoute | null | u
   const relationship = normalizedRouteLabel(route?.targetRelationship)
   const targetKind = normalizedRouteLabel(route?.targetKind)
 
-  if (relationship === 'managed') {
-    return { sessionApi: null, endpoint: null, unsupportedReason: 'Desktop sessions only support the primary self V3 target.' }
-  }
   if (!swarmId) {
     return { sessionApi: null, endpoint: null, unsupportedReason: 'Sessions API create requires a selected swarm_id.' }
   }

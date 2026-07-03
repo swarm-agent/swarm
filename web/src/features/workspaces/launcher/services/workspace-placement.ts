@@ -49,13 +49,13 @@ export function workspaceRouteTargetType(route: WorkspaceOverviewTopologyRoute, 
   const relationship = normalizeTargetValue(target?.relationship || route.runtimeRelationship)
   const role = normalizeTargetValue(target?.role)
   const kind = workspaceRouteKind(route, target)
-  if (relationship === 'managed' || role === 'managed' || kind === 'host') {
-    return 'Managed Host'
-  }
   if (target?.deployment_id?.trim() || route.containerId.trim() || kind === 'local' || kind === 'container') {
     return 'Container'
   }
-  return 'Managed Host'
+  if (relationship === 'remote' || role === 'remote' || kind === 'remote' || kind === 'host') {
+    return 'Remote Host'
+  }
+  return 'Remote Host'
 }
 
 export function workspaceRoutePlacementLabel(route: WorkspaceOverviewTopologyRoute, target: SwarmTarget | null): string {
