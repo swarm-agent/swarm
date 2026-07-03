@@ -208,9 +208,6 @@ func normalizeRuntimePreference(pref pebblestore.ModelPreference) pebblestore.Mo
 	pref.Thinking = normalizeThinkingForProvider(pref.Provider, pref.Thinking)
 	pref.ServiceTier = normalizeServiceTierForProvider(pref.Provider, pref.ServiceTier)
 	pref.ContextMode = codexruntime.NormalizeContextMode(pref.ContextMode)
-	if pref.Provider == "codex" && !supportsCodexFastRuntime(pref.Provider, pref.Model) {
-		pref.ServiceTier = ""
-	}
 	if !supportsCodexContextRuntime(pref.Provider, pref.Model) {
 		pref.ContextMode = ""
 	}
@@ -248,16 +245,21 @@ func (s *Service) supportsServiceTierRuntime(provider, modelName, serviceTier st
 	if err != nil || !lookup.Found {
 		return false
 	}
-	for _, supported := range lookup.Record.ServiceTiers {
+	return serviceTierListedForModel(provider, serviceTier, lookup.Record.ServiceTiers)
+}
+
+func serviceTierListedForModel(provider, serviceTier string, supportedTiers []string) bool {
+	provider = normalizeProviderID(provider)
+	serviceTier = normalizeServiceTierForProvider(provider, serviceTier)
+	if serviceTier == "" {
+		return true
+	}
+	for _, supported := range supportedTiers {
 		if normalizeServiceTierForProvider(provider, supported) == serviceTier {
 			return true
 		}
 	}
 	return false
-}
-
-func supportsCodexFastRuntime(provider, modelName string) bool {
-	return strings.EqualFold(provider, "codex") && (strings.EqualFold(modelName, "gpt-5.4") || strings.EqualFold(modelName, "gpt-5.5"))
 }
 
 func supportsCodexContextRuntime(provider, modelName string) bool {
@@ -487,6 +489,9 @@ func (s *Service) resolvePreference(pref pebblestore.ModelPreference) (ResolvedP
 		out.CatalogSource = lookup.Record.Source
 		out.CatalogFetched = lookup.Record.FetchedAt
 		out.CatalogExpires = lookup.Record.ExpiresAt
+	}
+	if out.Preference.ServiceTier != "" && (!lookup.Found || !serviceTierListedForModel(out.Preference.Provider, out.Preference.ServiceTier, lookup.Record.ServiceTiers)) {
+		out.Preference.ServiceTier = ""
 	}
 	meta, ok, err := s.catalog.Meta()
 	if err != nil {
