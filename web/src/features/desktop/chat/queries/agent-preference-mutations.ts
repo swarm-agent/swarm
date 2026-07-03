@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { requestJson } from '../../../../app/api'
-import { agentSettingsStateQueryOptions, agentStateQueryOptions, draftModelQueryKey } from '../../../queries/query-options'
+import { agentSettingsStateQueryOptions, agentStateQueryOptions, draftModelQueryKey, draftModelQueryOptions } from '../../../queries/query-options'
 import type { AgentProfileRecord, AgentStateRecord } from '../types/chat'
 import type { AgentModelControlProfilePatch } from '../components/agent-model-control'
 
@@ -44,7 +44,11 @@ function agentPayload(profile: AgentProfileRecord, patch: Partial<AgentProfileRe
 }
 
 export async function refreshAgentModelMutationCaches(queryClient: QueryClient): Promise<AgentStateRecord> {
-  const [agentStateResult, agentSettingsStateResult] = await Promise.all([
+  const [draftModelResult, agentStateResult, agentSettingsStateResult] = await Promise.all([
+    queryClient.fetchQuery({
+      ...draftModelQueryOptions(),
+      staleTime: 0,
+    }),
     queryClient.fetchQuery({
       ...agentStateQueryOptions(),
       staleTime: 0,
@@ -54,6 +58,7 @@ export async function refreshAgentModelMutationCaches(queryClient: QueryClient):
       staleTime: 0,
     }),
   ])
+  queryClient.setQueryData(draftModelQueryKey(), draftModelResult)
   queryClient.setQueryData(agentStateQueryOptions().queryKey, agentStateResult)
   queryClient.setQueryData(agentSettingsStateQueryOptions().queryKey, agentSettingsStateResult)
   await Promise.all([
