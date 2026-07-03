@@ -319,6 +319,9 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		permissionSvc.SetHostedSync(NewManagedHostPermissionControlClient(server))
 		permissionSvc.SetSummaryRealtimePublisher(server.publishPermissionSummaryV3Realtime)
 	}
+	if notificationSvc, ok := notificationSvc.(*notification.Service); ok {
+		notificationSvc.SetRealtimePublisher(server.publishNotificationV3Realtime)
+	}
 	if sessionSvc != nil {
 		server.v3SessionExecutor = newSessionV3Executor(server)
 		server.planLifecycle = sessionruntime.NewPlanLifecycleService(sessionSvc)

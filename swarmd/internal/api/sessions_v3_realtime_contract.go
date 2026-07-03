@@ -28,6 +28,7 @@ const (
 	V3RealtimeKindWorksetSessionDiscovered = "workset.session.discovered"
 	V3RealtimeKindWorksetSessionUpdated    = "workset.session.updated"
 	V3RealtimeKindWorksetSessionRemoved    = "workset.session.removed"
+	V3RealtimeKindNotificationResource     = "notification.resource.updated"
 	V3RealtimeKindAuthDenied               = "auth.denied"
 	V3RealtimeKindSlowConsumer             = "slow_consumer.reconnect_required"
 	V3RealtimeKindLivePatch                = "live.patch"
@@ -86,6 +87,8 @@ type V3RealtimeMessage struct {
 	HasActivePlan              *bool                                  `json:"has_active_plan,omitempty"`
 	ActivePlan                 *pebblestore.SessionPlanSnapshot       `json:"active_plan,omitempty"`
 	PermissionSummary          *sessionsV3PermissionSummary           `json:"permission_summary,omitempty"`
+	Notification               *pebblestore.NotificationRecord        `json:"notification,omitempty"`
+	NotificationSummary        *pebblestore.NotificationSummary       `json:"notification_summary,omitempty"`
 	ErrorCode                  string                                 `json:"error_code,omitempty"`
 	Error                      string                                 `json:"error,omitempty"`
 	Reason                     string                                 `json:"reason,omitempty"`
@@ -168,6 +171,8 @@ func ValidateV3RealtimeSchemaMessage(message V3RealtimeMessage) error {
 		return validateV3RealtimeEventMessage(message)
 	case V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved:
 		return validateV3RealtimeWorksetSessionMessage(message)
+	case V3RealtimeKindNotificationResource:
+		return validateV3RealtimeNotificationResourceMessage(message)
 	case V3RealtimeKindReplayStart:
 		return validateV3RealtimeSessionCursorMessage(message)
 	case V3RealtimeKindReplayDone, V3RealtimeKindHighWater:
@@ -296,6 +301,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 		V3RealtimeKindWorksetSessionDiscovered,
 		V3RealtimeKindWorksetSessionUpdated,
 		V3RealtimeKindWorksetSessionRemoved,
+		V3RealtimeKindNotificationResource,
 		V3RealtimeKindAuthDenied,
 		V3RealtimeKindSlowConsumer:
 		return nil
@@ -306,7 +312,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 
 func v3RealtimeKindAllowed(kind string) bool {
 	switch kind {
-	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
+	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindNotificationResource, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
 		return true
 	default:
 		return false
@@ -432,6 +438,22 @@ func validateV3RealtimeWorksetSessionMessage(message V3RealtimeMessage) error {
 	}
 	if strings.TrimSpace(message.EventType) == "" {
 		return fmt.Errorf("v3 realtime %s requires event_type", message.Kind)
+	}
+	return nil
+}
+
+func validateV3RealtimeNotificationResourceMessage(message V3RealtimeMessage) error {
+	if strings.TrimSpace(message.EndpointCursor) == "" {
+		return errors.New("v3 realtime notification.resource.updated requires endpoint_cursor")
+	}
+	if message.Rev == 0 {
+		return errors.New("v3 realtime notification.resource.updated requires rev")
+	}
+	if message.Rev != message.PrevRev+1 {
+		return errors.New("v3 realtime notification.resource.updated requires continuous rev/prevRev")
+	}
+	if message.Notification == nil && message.NotificationSummary == nil {
+		return errors.New("v3 realtime notification.resource.updated requires notification or notification_summary")
 	}
 	return nil
 }

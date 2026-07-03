@@ -49,7 +49,7 @@ function makeState(): DesktopStoreState {
     notifications: [],
     notificationCenter: {
       items: [],
-      summary: { swarmID: '', totalCount: 0, unreadCount: 0, activeCount: 0, updatedAt: 0 },
+      summary: { accountScopeID: null, swarmID: '', totalCount: 0, unreadCount: 0, activeCount: 0, updatedAt: 0 },
       loading: false,
       hydrated: false,
     },

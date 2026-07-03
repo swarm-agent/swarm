@@ -23,6 +23,7 @@ type Service struct {
 	events               *pebblestore.EventLog
 	publish              func(pebblestore.EventEnvelope)
 	localSwarmIDResolver func() string
+	realtimePublisher    func(RealtimeEvent)
 	mu                   sync.Mutex
 	counter              atomic.Uint64
 }
@@ -68,8 +69,27 @@ type ClearResult struct {
 	Deleted int    `json:"deleted"`
 }
 
+type RealtimeEvent struct {
+	EventType      string
+	AccountScopeID string
+	SwarmID        string
+	Notification   *pebblestore.NotificationRecord
+	Summary        *pebblestore.NotificationSummary
+	Deleted        int
+	RecordedAt     int64
+}
+
 func NewService(store *pebblestore.NotificationStore, events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) *Service {
 	return &Service{store: store, events: events, publish: publish}
+}
+
+func (s *Service) SetRealtimePublisher(publish func(RealtimeEvent)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.realtimePublisher = publish
 }
 
 func (s *Service) SetLocalSwarmIDResolver(resolver func() string) {
@@ -235,6 +255,7 @@ func (s *Service) UpsertPermissionNotification(input PermissionUpsertInput) (peb
 		eventType = EventNotificationUpdated
 	}
 	_, _ = s.emitLocked("swarm:notifications", eventType, record.ID, map[string]any{"notification": record, "summary": summary})
+	s.publishRealtimeLocked(RealtimeEvent{EventType: eventType, AccountScopeID: record.AccountScopeID, SwarmID: record.SwarmID, Notification: &record, Summary: &summary, RecordedAt: record.UpdatedAt})
 	return record, true, nil
 }
 
@@ -323,6 +344,7 @@ func (s *Service) UpsertSystemNotificationForAccount(accountScopeID string, reco
 		eventType = EventNotificationUpdated
 	}
 	_, _ = s.emitLocked("swarm:notifications", eventType, record.ID, map[string]any{"notification": record, "summary": summary})
+	s.publishRealtimeLocked(RealtimeEvent{EventType: eventType, AccountScopeID: record.AccountScopeID, SwarmID: record.SwarmID, Notification: &record, Summary: &summary, RecordedAt: record.UpdatedAt})
 	return record, true, nil
 }
 
@@ -358,6 +380,7 @@ func (s *Service) ClearNotificationsForAccount(accountScopeID, swarmID string) (
 		"deleted":  deleted,
 		"summary":  summary,
 	})
+	s.publishRealtimeLocked(RealtimeEvent{EventType: EventNotificationsCleared, AccountScopeID: accountScopeID, SwarmID: swarmID, Summary: &summary, Deleted: deleted, RecordedAt: now})
 	return ClearResult{SwarmID: swarmID, Deleted: deleted}, nil
 }
 
@@ -428,6 +451,7 @@ func (s *Service) UpdateNotificationForAccount(accountScopeID string, input Upda
 		return pebblestore.NotificationRecord{}, false, err
 	}
 	_, _ = s.emitLocked("swarm:notifications", EventNotificationUpdated, updated.ID, map[string]any{"notification": updated, "summary": summary})
+	s.publishRealtimeLocked(RealtimeEvent{EventType: EventNotificationUpdated, AccountScopeID: updated.AccountScopeID, SwarmID: updated.SwarmID, Notification: &updated, Summary: &summary, RecordedAt: updated.UpdatedAt})
 	return updated, true, nil
 }
 
@@ -455,6 +479,13 @@ func (s *Service) refreshSummaryForAccountLocked(accountScopeID, swarmID string,
 		return pebblestore.NotificationSummary{}, err
 	}
 	return summary, nil
+}
+
+func (s *Service) publishRealtimeLocked(event RealtimeEvent) {
+	if s == nil || s.realtimePublisher == nil {
+		return
+	}
+	s.realtimePublisher(event)
 }
 
 func (s *Service) emitLocked(streamID, eventType, entityID string, payload any) (*pebblestore.EventEnvelope, error) {

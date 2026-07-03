@@ -535,6 +535,13 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 	if !s.v3RealtimePrincipalCanSee(principal, record) {
 		return advanced, true, false
 	}
+	if strings.TrimSpace(record.Event.EventType) == v3NotificationResourceEventType {
+		if !s.sendV3RealtimeNotificationResourceFrame(conn, principal, record, worksets, scope) {
+			return advanced, false, false
+		}
+		advanced.LastSentEndpointSeq = record.EndpointSeq
+		return advanced, true, true
+	}
 
 	subscription, subscribed := advanced.Subscriptions[record.SessionID]
 	removeAutoSubscriptionAfterDelivery := false
@@ -775,7 +782,7 @@ func canonicalV3RealtimeWorksetSelector(selector V3RealtimeWorksetSelector) (V3R
 
 func v3RealtimeWorksetResourceAllowed(resource string) bool {
 	switch strings.TrimSpace(resource) {
-	case "sessions", "projections", "events", "messages", "run_intents", "current_run_state", "permission_summaries", "active_plan", "plan_revisions", "membership", "tombstones":
+	case "sessions", "projections", "events", "messages", "run_intents", "current_run_state", "permission_summaries", "notifications", "notification_summary", "active_plan", "plan_revisions", "membership", "tombstones":
 		return true
 	default:
 		return false
@@ -896,6 +903,8 @@ func v3RealtimeWorksetIncludesRecordResource(workset v3RealtimeWorksetSubscripti
 	switch strings.TrimSpace(record.Event.EventType) {
 	case "permission.summary.updated":
 		return v3RealtimeWorksetIncludesResource(workset, "permission_summaries")
+	case v3NotificationResourceEventType:
+		return v3RealtimeWorksetIncludesResource(workset, "notifications") || v3RealtimeWorksetIncludesResource(workset, "notification_summary")
 	default:
 		return true
 	}
@@ -1114,6 +1123,9 @@ func v3RealtimeRecordVisibleToPrincipal(principal identity.Principal, record ses
 	if strings.TrimSpace(record.AccountScopeID) == "" || strings.TrimSpace(record.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
 		return false
 	}
+	if strings.TrimSpace(record.Event.EventType) == v3NotificationResourceEventType {
+		return true
+	}
 	if strings.TrimSpace(record.UserID) == "" || strings.TrimSpace(record.UserID) != strings.TrimSpace(principal.UserID) {
 		return false
 	}
@@ -1122,6 +1134,45 @@ func v3RealtimeRecordVisibleToPrincipal(principal identity.Principal, record ses
 
 func (s *Server) v3RealtimePrincipalCanSee(principal identity.Principal, record sessionruntime.RealtimeOutboxRecord) bool {
 	return v3RealtimeRecordVisibleToPrincipal(principal, record)
+}
+
+func (s *Server) sendV3RealtimeNotificationResourceFrame(conn *transportws.Conn, principal identity.Principal, record sessionruntime.RealtimeOutboxRecord, worksets map[string]v3RealtimeWorksetSubscription, scope v3SyncCursorScope) bool {
+	payload, ok := sessionsV3NotificationResourcePayloadFromRecord(record)
+	if !ok || strings.TrimSpace(payload.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return true
+	}
+	includeNotifications := false
+	includeSummary := false
+	for _, workset := range orderedV3RealtimeWorksets(worksets) {
+		includeNotifications = includeNotifications || v3RealtimeWorksetIncludesResource(workset, "notifications")
+		includeSummary = includeSummary || v3RealtimeWorksetIncludesResource(workset, "notification_summary")
+	}
+	if !includeNotifications && !includeSummary {
+		return true
+	}
+	cursor, err := s.signV3SyncEndpointCursor(scope, record.EndpointSeq)
+	if err != nil {
+		_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError("", "cursor_sign_failed", err.Error(), record.EndpointSeq-1, record.EndpointSeq))
+		return false
+	}
+	message := V3RealtimeMessage{
+		Protocol:        V3RealtimeProtocol,
+		ProtocolVersion: V3RealtimeProtocolVersion,
+		Kind:            V3RealtimeKindNotificationResource,
+		EndpointCursor:  cursor,
+		Rev:             record.EndpointSeq,
+		PrevRev:         record.EndpointSeq - 1,
+		EventType:       record.Event.EventType,
+	}
+	if includeNotifications && payload.Notification != nil {
+		notification := *payload.Notification
+		message.Notification = &notification
+	}
+	if payload.Summary != nil && (includeSummary || payload.Notification == nil) {
+		summary := *payload.Summary
+		message.NotificationSummary = &summary
+	}
+	return s.sendV3RealtimeMessage(conn, message) == nil
 }
 
 func (s *Server) sendV3RealtimeOutboxEvent(conn *transportws.Conn, record sessionruntime.RealtimeOutboxRecord, scope v3SyncCursorScope) bool {

@@ -53,6 +53,8 @@ export const DESKTOP_V3_BOOTSTRAP_DEFAULT_INPUT: DesktopV3BootstrapInput = {
     active_plan: true,
     plan_revisions: false,
     permission_summaries: true,
+    notifications: true,
+    notification_summary: true,
   },
   include_active: true,
 }

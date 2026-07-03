@@ -12,7 +12,7 @@ import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-worksp
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { agentStateQueryOptions, draftModelQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
-import type { DesktopSessionRecord } from '../types/realtime'
+import type { DesktopNotificationCenterRecord, DesktopSessionRecord } from '../types/realtime'
 import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
@@ -53,7 +53,7 @@ import {
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
-import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
+import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
@@ -61,6 +61,8 @@ import { fetchAndApplyDesktopV3PlanSnapshot } from '../state/desktop-v3-session-
 import { archiveDesktopV3Sessions, jumpDesktopPlanToRevisionCheckpoint, restartDesktopPlanFromRevision, restoreDesktopPlanRevision, startDesktopPlanAutomatic, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned } from '../session-v3/api'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
+import { clearNotifications, updateNotification } from '../notifications/api'
+import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
@@ -245,6 +247,16 @@ function desktopV3RenderedMessagesEqual(left: RenderedSessionMessages, right: Re
     && runIntentArrayEqual(left.runIntents, right.runIntents)
     && runIntentEqual(left.currentRunIntent, right.currentRunIntent)
     && runIntentEqual(left.latestRunIntent, right.latestRunIntent)
+}
+
+function desktopV3ConnectionStateFromRealtimeStatus(
+  hydrateStatus: 'idle' | 'loading' | 'cached' | 'ready' | 'error',
+  notificationCount: number,
+): 'idle' | 'connecting' | 'open' | 'error' {
+  if (hydrateStatus === 'loading' && notificationCount === 0) return 'connecting'
+  if (hydrateStatus === 'error') return 'error'
+  if (hydrateStatus === 'ready' || hydrateStatus === 'cached') return 'open'
+  return 'idle'
 }
 
 function pendingUserMessagesEqual(left: RenderedSessionMessages['pendingUser'], right: RenderedSessionMessages['pendingUser']): boolean {
@@ -2006,6 +2018,8 @@ export function DesktopAppPage() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [pairingRequestsOpen, setPairingRequestsOpen] = useState(false)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [notificationActionError, setNotificationActionError] = useState<string | null>(null)
   const [pendingPairingRequests, setPendingPairingRequests] = useState<RemoteSwarmPendingPairing[]>([])
   const [pairingDecisionBusyID, setPairingDecisionBusyID] = useState<string | null>(null)
   const [pairingConfirmations, setPairingConfirmations] = useState<Record<string, boolean>>({})
@@ -2214,17 +2228,25 @@ export function DesktopAppPage() {
   const activePairingRequests = useMemo(() => activePendingPairings(pendingPairingRequests), [pendingPairingRequests])
   const pairingRequestCount = activePairingRequests.length
   const pairingRequestAttentionVisible = pairingRequestCount > 0
-  const headerActionCount = 2 + (pairingRequestAttentionVisible ? 1 : 0) + (updateAttentionVisible ? 1 : 0)
-  const headerActionRowClass = headerActionCount === 4
-    ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_108px] items-center gap-2.5 min-h-7 pr-4'
-    : headerActionCount === 3
-      ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_80px] items-center gap-2.5 min-h-7 pr-4'
-      : cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')
-  const headerActionRailClass = headerActionCount === 4
-    ? '!w-[108px] !grid-cols-[24px_24px_24px_24px]'
-    : headerActionCount === 3
-      ? '!w-[80px] !grid-cols-[24px_24px_24px]'
-      : undefined
+  const notificationItems = useDesktopV3CacheSelector(selectOrderedNotifications)
+  const notificationSummary = useDesktopV3CacheSelector(selectNotificationSummary)
+  const notificationUnreadCount = Math.max(0, notificationSummary.unreadCount)
+  const notificationAttentionVisible = true
+  const headerActionCount = 2 + (pairingRequestAttentionVisible ? 1 : 0) + (notificationAttentionVisible ? 1 : 0) + (updateAttentionVisible ? 1 : 0)
+  const headerActionRowClass = headerActionCount === 5
+    ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_136px] items-center gap-2.5 min-h-7 pr-4'
+    : headerActionCount === 4
+      ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_108px] items-center gap-2.5 min-h-7 pr-4'
+      : headerActionCount === 3
+        ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_80px] items-center gap-2.5 min-h-7 pr-4'
+        : cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')
+  const headerActionRailClass = headerActionCount === 5
+    ? '!w-[136px] !grid-cols-5'
+    : headerActionCount === 4
+      ? '!w-[108px] !grid-cols-4'
+      : headerActionCount === 3
+        ? '!w-[80px] !grid-cols-3'
+        : undefined
   const swarmTopologySignature = useMemo(
     () => swarmTargets
       .map((target) => [
@@ -2260,6 +2282,46 @@ export function DesktopAppPage() {
     setPairingRequestsOpen(true)
     setPairingRequestStatus(null)
   }, [])
+
+  const handleOpenNotifications = useCallback(() => {
+    setNotificationsOpen(true)
+    setNotificationActionError(null)
+  }, [])
+
+  const mutateNotificationState = useCallback(async (action: () => Promise<void>, fallbackMessage: string): Promise<void> => {
+    setNotificationActionError(null)
+    try {
+      await action()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : fallbackMessage
+      setNotificationActionError(message)
+      setDesktopToast({ message, tone: 'error' })
+    }
+  }, [])
+
+  const handleMarkNotificationRead = useCallback((record: DesktopNotificationCenterRecord) => (
+    mutateNotificationState(async () => {
+      await updateNotification(record.id, { read: true })
+    }, 'Failed to mark notification read')
+  ), [mutateNotificationState])
+
+  const handleAcknowledgeNotification = useCallback((record: DesktopNotificationCenterRecord) => (
+    mutateNotificationState(async () => {
+      await updateNotification(record.id, { acked: true })
+    }, 'Failed to acknowledge notification')
+  ), [mutateNotificationState])
+
+  const handleMuteNotification = useCallback((record: DesktopNotificationCenterRecord) => (
+    mutateNotificationState(async () => {
+      await updateNotification(record.id, { muted: true })
+    }, 'Failed to mute notification')
+  ), [mutateNotificationState])
+
+  const handleClearNotifications = useCallback(() => (
+    mutateNotificationState(async () => {
+      await clearNotifications()
+    }, 'Failed to clear notifications')
+  ), [mutateNotificationState])
 
   const handlePairingDecision = useCallback(async (request: RemoteSwarmPendingPairing, approve: boolean) => {
     const requestID = request.request_id.trim()
@@ -3134,6 +3196,12 @@ export function DesktopAppPage() {
               <span aria-hidden="true" className="absolute right-2 top-2 grid h-4 min-w-4 place-items-center rounded-full bg-[var(--app-warning)] px-1 text-[9px] font-semibold text-[var(--app-background)]">{pairingRequestCount}</span>
             </Button>
           ) : null}
+          {notificationAttentionVisible ? (
+            <Button variant="ghost" className={cn('relative h-12 w-12 min-w-12 p-0', notificationUnreadCount > 0 && 'text-[var(--app-primary)]')} onClick={handleOpenNotifications} aria-label="Open notifications" title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}>
+              <Bell size={24} className="shrink-0" />
+              {notificationUnreadCount > 0 ? <span aria-hidden="true" className="absolute right-2 top-2 grid h-4 min-w-4 place-items-center rounded-full bg-[var(--app-primary)] px-1 text-[9px] font-semibold text-[var(--app-background)]">{notificationUnreadCount > 99 ? '99+' : notificationUnreadCount}</span> : null}
+            </Button>
+          ) : null}
           {updateAttentionVisible ? (
             <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label={updateActionLabel} title={updateActionTitle} disabled={updateRunning || !updateActionEnabled}>
               <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateActionEnabled && 'text-[var(--app-primary)]', updateError && 'text-[var(--app-error)]')} />
@@ -3214,6 +3282,22 @@ export function DesktopAppPage() {
                       >
                         <Link2 size={14} strokeWidth={1.8} className="shrink-0" />
                         <span aria-hidden="true" className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-warning)] shadow-[0_0_8px_var(--app-warning)]" />
+                      </button>
+                    ) : null}
+                    {notificationAttentionVisible ? (
+                      <button
+                        type="button"
+                        className={cn(
+                          SIDEBAR_ACTION_BUTTON_CLASS,
+                          'relative text-[var(--app-text-subtle)]',
+                          notificationUnreadCount > 0 && 'text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] hover:text-[var(--app-primary-hover)]',
+                        )}
+                        onClick={handleOpenNotifications}
+                        aria-label="Open notifications"
+                        title={notificationUnreadCount > 0 ? `${notificationUnreadCount} unread notification${notificationUnreadCount === 1 ? '' : 's'}` : 'Notifications'}
+                      >
+                        <Bell size={14} strokeWidth={1.8} className="shrink-0" />
+                        {notificationUnreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 grid h-3 min-w-3 place-items-center rounded-full bg-[var(--app-primary)] px-0.5 text-[7px] font-semibold leading-none text-[var(--app-background)]">{notificationUnreadCount > 9 ? '9+' : notificationUnreadCount}</span> : null}
                       </button>
                     ) : null}
                     {updateAttentionVisible ? (
@@ -3502,6 +3586,29 @@ export function DesktopAppPage() {
         onClose={() => setQuickSettingsTab(null)}
         onOpenFullSettings={handleOpenSettingsTab}
       />
+
+      <DesktopNotificationsModal
+        open={notificationsOpen}
+        onOpenChange={(open) => {
+          setNotificationsOpen(open)
+          if (open) setNotificationActionError(null)
+        }}
+        notifications={notificationItems}
+        summary={notificationSummary}
+        loading={false}
+        connectionState={desktopV3ConnectionStateFromRealtimeStatus(desktopInitialHydrate.status, notificationItems.length)}
+        onMarkRead={handleMarkNotificationRead}
+        onAcknowledge={handleAcknowledgeNotification}
+        onMute={handleMuteNotification}
+        onClearAll={handleClearNotifications}
+      />
+      {notificationsOpen && notificationActionError ? (
+        <div className="pointer-events-none absolute left-1/2 top-6 z-[90] w-[min(520px,calc(100vw-32px))] -translate-x-1/2" role="alert">
+          <Card className="border-[var(--app-error)] bg-[color-mix(in_srgb,var(--app-error)_12%,var(--app-surface))] p-3 text-sm text-[var(--app-error)] shadow-2xl">
+            {notificationActionError}
+          </Card>
+        </div>
+      ) : null}
 
       <DesktopPlanModal
         open={Boolean(planModal)}

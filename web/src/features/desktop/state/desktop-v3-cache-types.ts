@@ -1,4 +1,4 @@
-import type { DesktopPermissionRecord } from '../types/realtime'
+import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 
@@ -38,6 +38,8 @@ export interface SyncResources {
   active_plan?: boolean
   plan_revisions?: boolean
   permission_summaries?: boolean
+  notifications?: boolean
+  notification_summary?: boolean
 }
 
 export interface KnownSessionState {
@@ -207,6 +209,69 @@ export interface DesktopPermissionSummaryWire {
   updatedAt?: unknown
 }
 
+export interface DesktopNotificationWire {
+  account_scope_id?: unknown
+  accountScopeID?: unknown
+  id?: unknown
+  swarm_id?: unknown
+  swarmID?: unknown
+  origin_swarm_id?: unknown
+  originSwarmID?: unknown
+  session_id?: unknown
+  sessionId?: unknown
+  run_id?: unknown
+  runId?: unknown
+  category?: unknown
+  severity?: unknown
+  title?: unknown
+  body?: unknown
+  status?: unknown
+  source_event_type?: unknown
+  sourceEventType?: unknown
+  permission_id?: unknown
+  permissionId?: unknown
+  tool_name?: unknown
+  toolName?: unknown
+  requirement?: unknown
+  session_title?: unknown
+  sessionTitle?: unknown
+  session_label?: unknown
+  sessionLabel?: unknown
+  workspace_path?: unknown
+  workspacePath?: unknown
+  workspace_name?: unknown
+  workspaceName?: unknown
+  origin_label?: unknown
+  originLabel?: unknown
+  action_url?: unknown
+  actionURL?: unknown
+  read_at?: unknown
+  readAt?: unknown
+  acked_at?: unknown
+  ackedAt?: unknown
+  muted_at?: unknown
+  mutedAt?: unknown
+  created_at?: unknown
+  createdAt?: unknown
+  updated_at?: unknown
+  updatedAt?: unknown
+}
+
+export interface DesktopNotificationSummaryWire {
+  account_scope_id?: unknown
+  accountScopeID?: unknown
+  swarm_id?: unknown
+  swarmID?: unknown
+  total_count?: unknown
+  totalCount?: unknown
+  unread_count?: unknown
+  unreadCount?: unknown
+  active_count?: unknown
+  activeCount?: unknown
+  updated_at?: unknown
+  updatedAt?: unknown
+}
+
 export interface SyncSnapshotResponse {
   ok: true
   rev: number
@@ -218,6 +283,8 @@ export interface SyncSnapshotResponse {
   run_intents_by_session?: Record<string, V3SessionRunIntent[]>
   current_run_state_by_session?: Record<string, V3SessionRunState>
   permission_summaries_by_session?: Record<string, DesktopPermissionSummaryWire>
+  notifications?: DesktopNotificationWire[]
+  notification_summary?: DesktopNotificationSummaryWire
   active_session_ids?: string[]
   session_views_by_id?: Record<string, DesktopV3SessionView>
   realtime?: V3RealtimeBootstrap
@@ -240,6 +307,8 @@ export interface SyncStreamEvent {
   event_type: string
   event: V3SessionEvent
   projection: V3SessionProjection
+  notification?: DesktopNotificationWire
+  notification_summary?: DesktopNotificationSummaryWire
 }
 
 export interface SyncStreamResponse {
@@ -292,6 +361,8 @@ export interface SessionsReconnectResponse {
   current_run_intent_by_session?: Record<string, V3SessionRunIntent>
   current_run_state_by_session?: Record<string, V3SessionRunState>
   permission_summaries_by_session?: Record<string, DesktopPermissionSummaryWire>
+  notifications?: DesktopNotificationWire[]
+  notification_summary?: DesktopNotificationSummaryWire
   active_session_ids?: string[]
   session_views_by_id?: Record<string, DesktopV3SessionView>
   subscriptions: ReconnectSubscription[]
@@ -339,6 +410,7 @@ export type RealtimeKind =
   | 'auth.denied'
   | 'slow_consumer.reconnect_required'
   | 'live.patch'
+  | 'notification.resource.updated'
 
 export interface RealtimeMessage {
   protocol?: 'v3.realtime' | string
@@ -361,6 +433,8 @@ export interface RealtimeMessage {
   has_active_plan?: boolean
   active_plan?: unknown | null
   permission_summary?: DesktopPermissionSummaryWire
+  notification?: DesktopNotificationWire
+  notification_summary?: DesktopNotificationSummaryWire
   workset_subscription_id?: string
   auto_subscribed?: boolean
   projection?: V3SessionProjection
@@ -387,6 +461,8 @@ export interface SessionEventPayload {
   tombstone?: V3SessionTombstone
   permission?: unknown
   permission_summary?: unknown
+  notification?: unknown
+  notification_summary?: unknown
   summary?: unknown
   has_active_plan?: boolean
   active_plan?: unknown | null
@@ -707,6 +783,8 @@ export interface DesktopV3CacheState {
   planRevisionsBySession: Record<string, unknown[]>
   permissionsBySession: Record<string, DesktopPermissionRecord[]>
   permissionSummaryBySessionId: Record<string, DesktopPermissionSummary>
+  notificationsById: Record<string, DesktopNotificationCenterRecord>
+  notificationSummary: DesktopNotificationSummary
   usageBySession: Record<string, unknown>
   preferencesBySession: Record<string, unknown>
   agentModelPolicyBySession: Record<string, unknown>
@@ -725,6 +803,8 @@ export interface CacheEvent {
   sessionEvent?: V3SessionEvent
   projection?: V3SessionProjection
   payload: SessionEventPayload
+  notification?: DesktopNotificationWire
+  notificationSummary?: DesktopNotificationSummaryWire
 }
 
 export type DesktopV3CacheAction =
@@ -739,6 +819,7 @@ export type DesktopV3CacheAction =
   | { type: 'reconnect.applySnapshot'; snapshot: SessionsReconnectResponse }
   | { type: 'realtime.storeResume'; streamPath: '/v3/realtime/stream'; resume: RealtimeMessage }
   | { type: 'realtime.applyEvent'; event: CacheEvent; endpointCursor?: string; durabilityCommitted?: boolean }
+  | { type: 'realtime.applyNotificationResource'; frame: RealtimeMessage }
   | { type: 'realtime.applyLivePatchBatch'; patches: SessionV3RealtimeLivePatchWire[] }
   | { type: 'permission.resolveResult'; sessionId: string; permissionId: string; permission: DesktopPermissionRecord | null }
   | { type: 'planSnapshot.apply'; sessionId: string; hasActivePlan: boolean; activePlan: DesktopSessionPlanRecord | null; planRevisions: DesktopSessionPlanRevisionRecord[] }

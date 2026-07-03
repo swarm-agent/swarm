@@ -109,6 +109,7 @@ export type DesktopStateAction =
   | { type: 'connection/status'; status: DesktopStateStatus; error?: string | null }
 
 const EMPTY_NOTIFICATION_SUMMARY: DesktopNotificationSummary = {
+  accountScopeID: null,
   swarmID: '',
   totalCount: 0,
   unreadCount: 0,

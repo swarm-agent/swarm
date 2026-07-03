@@ -1,5 +1,5 @@
 import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord } from '../chat/types/chat'
-import type { DesktopPermissionRecord } from '../types/realtime'
+import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 
@@ -82,6 +82,26 @@ export interface DesktopV3HydratedTranscriptDiagnostics {
   retainedBackgroundHydratedSessionCount: number
   inFlightHydrateSessionCount: number
   evictedTranscriptCount: number
+}
+
+export function selectOrderedNotifications(state: DesktopV3CacheState): DesktopNotificationCenterRecord[] {
+  return Object.values(state.notificationsById).map(cloneNotification).sort((left, right) => {
+    if (left.updatedAt !== right.updatedAt) return right.updatedAt - left.updatedAt
+    if (left.createdAt !== right.createdAt) return right.createdAt - left.createdAt
+    return left.id.localeCompare(right.id)
+  })
+}
+
+export function selectNotificationSummary(state: DesktopV3CacheState): DesktopNotificationSummary {
+  return { ...state.notificationSummary }
+}
+
+export function selectUnreadNotificationCount(state: DesktopV3CacheState): number {
+  return Math.max(0, state.notificationSummary.unreadCount)
+}
+
+export function selectActiveNotificationCount(state: DesktopV3CacheState): number {
+  return Math.max(0, state.notificationSummary.activeCount)
 }
 
 export function selectScopeEndpointCursor(state: DesktopV3CacheState, scopeId: string): string | undefined {
@@ -473,6 +493,10 @@ function clonePendingPermissions(permissions: DesktopPermissionRecord[] | undefi
 
 function clonePermissionSummary(summary: DesktopPermissionSummary | undefined): DesktopPermissionSummary | undefined {
   return summary ? { ...summary } : undefined
+}
+
+function cloneNotification(notification: DesktopNotificationCenterRecord): DesktopNotificationCenterRecord {
+  return { ...notification }
 }
 
 function cloneLiveRun(run: LiveRunOverlay): LiveRunOverlay {

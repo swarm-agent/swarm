@@ -50,7 +50,7 @@ Sync scope identity:
 - Clients persist opaque cursors per exact scope. Clients must not parse cursor numbers, compare cursor numbers, or reuse a cursor across scopes.
 
 Response semantics:
-- Canonical sync responses include session projections, session membership/order, active/inactive session state, tombstones/archive/delete/hidden state, current and historical run intents as requested, messages, events, resources, plans, and replay instructions.
+- Canonical sync responses include session projections, session membership/order, active/inactive session state, tombstones/archive/delete/hidden state, current and historical run intents as requested, messages, events, desktop resources including notifications and notification summary, resources, plans, and replay instructions.
 - endpointSeq is a global durable outbox scan watermark. Delivered filtered frames may skip endpointSeq values. Per-session event Seq remains the contiguous session event invariant.
 
 Deployment assumption:
@@ -98,6 +98,8 @@ var V3SyncRequiredResponseSemantics = []string{
 	"messages",
 	"events",
 	"resources",
+	"notifications",
+	"notification_summary",
 	"plans",
 	"replay_instructions",
 }

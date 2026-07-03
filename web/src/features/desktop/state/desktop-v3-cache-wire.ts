@@ -82,6 +82,9 @@ export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAc
     case 'event':
       return [{ type: 'realtime.applyEvent', event: normalizeRealtimeEventFrame(frame), endpointCursor: frame.endpoint_cursor }]
 
+    case 'notification.resource.updated':
+      return [{ type: 'realtime.applyNotificationResource', frame }]
+
     case 'workset.session.discovered':
       return [{ type: 'realtime.worksetSessionDiscovered', frame }]
 
@@ -141,6 +144,8 @@ export function normalizeSyncStreamEvent(raw: SyncStreamEvent): CacheEvent {
     sessionEvent: raw.event,
     projection: raw.projection,
     payload: decodeSessionEventPayload(raw.event),
+    notification: raw.notification,
+    notificationSummary: raw.notification_summary,
   }
 }
 
@@ -155,6 +160,8 @@ export function normalizeRealtimeEventFrame(frame: RealtimeMessage): CacheEvent 
     sessionEvent: event,
     projection: frame.projection,
     payload: event ? decodeSessionEventPayload(event) : {},
+    notification: frame.notification,
+    notificationSummary: frame.notification_summary,
   }
 }
 

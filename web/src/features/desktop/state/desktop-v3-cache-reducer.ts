@@ -1,5 +1,7 @@
 import type {
   CacheEvent,
+  DesktopNotificationSummaryWire,
+  DesktopNotificationWire,
   DesktopPermissionSummary,
   DesktopV3CacheAction,
   DesktopV3CacheState,
@@ -26,7 +28,7 @@ import type {
   SessionSnapshot,
   MessageMutationConflictResponse,
 } from './desktop-v3-cache-types'
-import type { DesktopPermissionRecord } from '../types/realtime'
+import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPendingPermissions, normalizeDesktopPermissionSummary, normalizeDesktopPermissionSummaries, safeString } from '../permissions/services/desktop-permission-normalization'
 import { normalizeDesktopSessionPlan } from '../chat/services/session-plan-record'
@@ -36,6 +38,14 @@ export const DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS = 5
 
 const ACTIVE_RUN_INTENT_STATUSES = new Set(['pending_executor', 'running', 'dispatch_blocked'])
 const TERMINAL_RUN_INTENT_STATUSES = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'expired'])
+const EMPTY_NOTIFICATION_SUMMARY: DesktopNotificationSummary = {
+  accountScopeID: null,
+  swarmID: '',
+  totalCount: 0,
+  unreadCount: 0,
+  activeCount: 0,
+  updatedAt: 0,
+}
 const utf8Encoder = new TextEncoder()
 
 
@@ -77,6 +87,8 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     planRevisionsBySession: {},
     permissionsBySession: {},
     permissionSummaryBySessionId: {},
+    notificationsById: {},
+    notificationSummary: { ...EMPTY_NOTIFICATION_SUMMARY },
     usageBySession: {},
     preferencesBySession: {},
     agentModelPolicyBySession: {},
@@ -130,6 +142,12 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       applyCacheEvent(state, action.event)
       if (action.endpointCursor) {
         state.realtime.endpointCursor = action.endpointCursor
+      }
+      return state
+    case 'realtime.applyNotificationResource':
+      applyNotificationResourceFrame(state, action.frame)
+      if (action.frame.endpoint_cursor) {
+        state.realtime.endpointCursor = action.frame.endpoint_cursor
       }
       return state
     case 'realtime.applyLivePatchBatch':
@@ -359,6 +377,7 @@ export function applySnapshot(
     replaceRunIntentsBySession(state, snapshot.run_intents_by_session, authoritativeRunIntentSessionIds)
   }
   mergeSnapshotResources(state, snapshot, snapshot.scope_id)
+  applyNotificationsFromSyncSnapshot(state, snapshot)
   applyPermissionSummariesFromSyncSnapshot(state, snapshot)
   if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'messages')) {
     applyMessagesBySessionFromSnapshot(state, snapshot.messages_by_session)
@@ -509,6 +528,7 @@ function applyHydrateAuthoritativeResources(
 
   enforceHydratedTranscriptRetention(state)
   applyPermissionSummariesFromSyncSnapshot(state, snapshot, requested)
+  applyNotificationsFromSyncSnapshot(state, snapshot)
   applySessionViewsFromSyncSnapshot(state, snapshot, requested)
 
   if (syncResourceSetContains(resourceSet, 'run_intents')) {
@@ -630,6 +650,12 @@ export function applyReconnectSnapshot(
       ...Object.keys(state.permissionSummaryBySessionId ?? {}),
     ]))
   }
+  if (resources.has('notifications') || resources.has('notification_summary')) {
+    applyNotificationsFromResourcePayload(state, raw.notifications, raw.notification_summary, {
+      replaceNotifications: resources.has('notifications'),
+      replaceSummary: resources.has('notification_summary'),
+    })
+  }
   if (resources.has('active_plan')) {
     applySessionViews(state, raw.session_views_by_id, authoritativeSessionIds, { clearMissing: false })
   }
@@ -687,6 +713,11 @@ export function applyRealtimeFrame(
 
     case 'event':
       applyCacheEvent(state, normalizeRealtimeEventFrame(frame))
+      state.realtime.endpointCursor = frame.endpoint_cursor
+      return state
+
+    case 'notification.resource.updated':
+      applyNotificationResourceFrame(state, frame)
       state.realtime.endpointCursor = frame.endpoint_cursor
       return state
 
@@ -1016,6 +1047,7 @@ export function applyCacheEvent(
 
   applyPermissionSummaryEvent(state, event)
   applyPermissionEvent(state, event)
+  applyNotificationResourceEvent(state, event)
 
   if (payload.tombstone || eventType === 'session.deleted') {
     applyTombstone(state, sessionId, payload.tombstone)
@@ -1079,6 +1111,136 @@ function applyPermissionEvent(state: DesktopV3CacheState, event: CacheEvent): vo
   }
   const identity = desktopPermissionIdentity(event.payload.permission, event.sessionId)
   if (identity) removePermissionRecord(state, identity.sessionId, identity.id)
+}
+
+function applyNotificationResourceEvent(state: DesktopV3CacheState, event: CacheEvent): void {
+  if (event.eventType !== 'notification.resource.updated' && !event.notification && !event.notificationSummary) return
+  applyNotificationsFromResourcePayload(
+    state,
+    event.notification ? [event.notification] : notificationWireFromPayload(event.payload),
+    event.notificationSummary ?? notificationSummaryWireFromPayload(event.payload),
+    { replaceNotifications: false, replaceSummary: Boolean(event.notificationSummary ?? notificationSummaryWireFromPayload(event.payload)) },
+  )
+
+  const payloadEventType = stringField(recordValue(event.payload)?.event_type)
+  const deleted = numberValue(recordValue(event.payload)?.deleted)
+  if (payloadEventType === 'notification.cleared' || (deleted > 0 && !event.notification)) {
+    state.notificationsById = {}
+  }
+}
+
+function applyNotificationResourceFrame(state: DesktopV3CacheState, frame: RealtimeMessage): void {
+  const eventPayload: SessionEventPayload = frame.event ? decodeSessionEventPayload(frame.event) : {}
+  applyNotificationsFromResourcePayload(
+    state,
+    frame.notification ? [frame.notification] : notificationWireFromPayload(eventPayload),
+    frame.notification_summary ?? notificationSummaryWireFromPayload(eventPayload),
+    { replaceNotifications: false, replaceSummary: Boolean(frame.notification_summary ?? notificationSummaryWireFromPayload(eventPayload)) },
+  )
+
+  const payloadEventType = stringField(recordValue(eventPayload)?.event_type)
+  const deleted = numberValue(recordValue(eventPayload)?.deleted)
+  if (payloadEventType === 'notification.cleared' || (deleted > 0 && !frame.notification)) {
+    state.notificationsById = {}
+  }
+}
+
+function applyNotificationsFromSyncSnapshot(state: DesktopV3CacheState, snapshot: SyncSnapshotResponse): void {
+  const resourceSet = snapshot.sync_scope.resource_set
+  if (!syncResourceSetContains(resourceSet, 'notifications') && !syncResourceSetContains(resourceSet, 'notification_summary')) return
+  applyNotificationsFromResourcePayload(state, snapshot.notifications, snapshot.notification_summary, {
+    replaceNotifications: syncResourceSetContains(resourceSet, 'notifications'),
+    replaceSummary: syncResourceSetContains(resourceSet, 'notification_summary'),
+  })
+}
+
+function applyNotificationsFromResourcePayload(
+  state: DesktopV3CacheState,
+  notifications: DesktopNotificationWire[] | undefined,
+  summary: DesktopNotificationSummaryWire | undefined,
+  options: { replaceNotifications: boolean; replaceSummary: boolean },
+): void {
+  if (options.replaceNotifications) {
+    state.notificationsById = {}
+  }
+  for (const raw of notifications ?? []) {
+    const notification = normalizeDesktopNotification(raw)
+    if (notification) upsertNotificationRecord(state, notification)
+  }
+  if (options.replaceSummary) {
+    state.notificationSummary = normalizeDesktopNotificationSummary(summary) ?? { ...EMPTY_NOTIFICATION_SUMMARY }
+  }
+}
+
+function notificationWireFromPayload(payload: SessionEventPayload): DesktopNotificationWire[] | undefined {
+  const notification = recordValue(payload.notification)
+  return notification ? [notification as DesktopNotificationWire] : undefined
+}
+
+function notificationSummaryWireFromPayload(payload: SessionEventPayload): DesktopNotificationSummaryWire | undefined {
+  return (recordValue(payload.notification_summary) ?? recordValue(payload.summary)) as DesktopNotificationSummaryWire | undefined
+}
+
+function upsertNotificationRecord(state: DesktopV3CacheState, notification: DesktopNotificationCenterRecord): void {
+  const existing = state.notificationsById[notification.id]
+  if (existing && existing.updatedAt > notification.updatedAt) return
+  state.notificationsById[notification.id] = notification
+}
+
+function normalizeDesktopNotification(raw: DesktopNotificationWire | undefined): DesktopNotificationCenterRecord | undefined {
+  if (!raw) return undefined
+  const id = stringField(raw.id)
+  const swarmID = stringField(raw.swarmID) || stringField(raw.swarm_id)
+  if (!id || !swarmID) return undefined
+  return {
+    id,
+    accountScopeID: nullableString(raw.accountScopeID ?? raw.account_scope_id),
+    swarmID,
+    originSwarmID: nullableString(raw.originSwarmID ?? raw.origin_swarm_id),
+    sessionId: nullableString(raw.sessionId ?? raw.session_id),
+    runId: nullableString(raw.runId ?? raw.run_id),
+    category: stringField(raw.category) || 'system',
+    severity: stringField(raw.severity) || 'info',
+    title: stringField(raw.title) || 'Notification',
+    body: stringField(raw.body) || '',
+    status: stringField(raw.status) || 'active',
+    sourceEventType: nullableString(raw.sourceEventType ?? raw.source_event_type),
+    permissionId: nullableString(raw.permissionId ?? raw.permission_id),
+    toolName: nullableString(raw.toolName ?? raw.tool_name),
+    requirement: nullableString(raw.requirement),
+    sessionTitle: nullableString(raw.sessionTitle ?? raw.session_title),
+    sessionLabel: nullableString(raw.sessionLabel ?? raw.session_label),
+    workspacePath: nullableString(raw.workspacePath ?? raw.workspace_path),
+    workspaceName: nullableString(raw.workspaceName ?? raw.workspace_name),
+    originLabel: nullableString(raw.originLabel ?? raw.origin_label),
+    actionURL: nullableString(raw.actionURL ?? raw.action_url),
+    readAt: nullableNumber(raw.readAt ?? raw.read_at),
+    ackedAt: nullableNumber(raw.ackedAt ?? raw.acked_at),
+    mutedAt: nullableNumber(raw.mutedAt ?? raw.muted_at),
+    createdAt: numberValue(raw.createdAt ?? raw.created_at),
+    updatedAt: numberValue(raw.updatedAt ?? raw.updated_at),
+  }
+}
+
+function normalizeDesktopNotificationSummary(raw: DesktopNotificationSummaryWire | undefined): DesktopNotificationSummary | undefined {
+  if (!raw) return undefined
+  return {
+    accountScopeID: nullableString(raw.accountScopeID ?? raw.account_scope_id),
+    swarmID: stringField(raw.swarmID) || stringField(raw.swarm_id) || '',
+    totalCount: numberValue(raw.totalCount ?? raw.total_count),
+    unreadCount: numberValue(raw.unreadCount ?? raw.unread_count),
+    activeCount: numberValue(raw.activeCount ?? raw.active_count),
+    updatedAt: numberValue(raw.updatedAt ?? raw.updated_at),
+  }
+}
+
+function nullableString(value: unknown): string | null {
+  return stringField(value) ?? null
+}
+
+function nullableNumber(value: unknown): number | null {
+  const number = finiteNumberValue(value)
+  return number === undefined ? null : number
 }
 
 function applyPermissionSummary(

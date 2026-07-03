@@ -202,6 +202,7 @@ export interface DesktopNotificationRecord {
 
 export interface DesktopNotificationCenterRecord {
   id: string
+  accountScopeID: string | null
   swarmID: string
   originSwarmID: string | null
   sessionId: string | null
@@ -229,6 +230,7 @@ export interface DesktopNotificationCenterRecord {
 }
 
 export interface DesktopNotificationSummary {
+  accountScopeID: string | null
   swarmID: string
   totalCount: number
   unreadCount: number

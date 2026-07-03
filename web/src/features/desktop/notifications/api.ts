@@ -1,4 +1,7 @@
 import { requestJson } from '../../../app/api'
+import { bootstrapResponseToAction } from '../state/desktop-v3-cache-wire'
+import { dispatchDesktopV3Cache } from '../state/desktop-v3-cache-store'
+import { postDesktopV3SyncBootstrap } from '../state/desktop-v3-sync-api'
 import type {
   DurableNotificationRecord,
   NotificationClearResponse,
@@ -7,6 +10,19 @@ import type {
   NotificationsListResponse,
   NotificationUpdateResponse,
 } from './types'
+
+export async function refreshDesktopV3NotificationState(): Promise<void> {
+  const snapshot = await postDesktopV3SyncBootstrap()
+  dispatchDesktopV3Cache(bootstrapResponseToAction(snapshot))
+}
+
+async function reconcileDesktopV3NotificationState(): Promise<void> {
+  try {
+    await refreshDesktopV3NotificationState()
+  } catch (error) {
+    console.error('[desktop-v3] failed to reconcile notification state', error)
+  }
+}
 
 export async function fetchNotifications(limit = 200): Promise<DurableNotificationRecord[]> {
   const response = await requestJson<NotificationsListResponse>(`/v1/notifications?limit=${encodeURIComponent(String(limit))}`)
@@ -28,6 +44,7 @@ export async function clearNotifications(): Promise<NotificationClearResponse['r
   const response = await requestJson<NotificationClearResponse>('/v1/notifications/clear', {
     method: 'POST',
   })
+  await reconcileDesktopV3NotificationState()
   return response.result ?? { swarm_id: '', deleted: 0 }
 }
 
@@ -47,5 +64,6 @@ export async function updateNotification(id: string, input: {
   if (!response.notification) {
     throw new Error('Notification update response was missing notification payload')
   }
+  await reconcileDesktopV3NotificationState()
   return { notification: response.notification, summary: response.summary }
 }

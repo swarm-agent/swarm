@@ -8,6 +8,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	transportws "swarm/packages/swarmd/internal/transport/ws"
 )
 
@@ -36,10 +37,12 @@ type sessionsV3SyncStreamResponse struct {
 }
 
 type sessionsV3SyncStreamEvent struct {
-	SessionID  string                           `json:"session_id"`
-	EventType  string                           `json:"event_type"`
-	Event      sessionruntime.SessionEvent      `json:"event"`
-	Projection sessionruntime.SessionProjection `json:"projection"`
+	SessionID           string                           `json:"session_id"`
+	EventType           string                           `json:"event_type"`
+	Event               sessionruntime.SessionEvent      `json:"event"`
+	Projection          sessionruntime.SessionProjection `json:"projection"`
+	Notification        *pebblestore.NotificationRecord  `json:"notification,omitempty"`
+	NotificationSummary *pebblestore.NotificationSummary `json:"notification_summary,omitempty"`
 }
 
 func newSessionsV3SyncStreamEvent(record sessionruntime.RealtimeOutboxRecord) sessionsV3SyncStreamEvent {
@@ -51,6 +54,23 @@ func newSessionsV3SyncStreamEvent(record sessionruntime.RealtimeOutboxRecord) se
 		Event:      event,
 		Projection: record.Projection,
 	}
+}
+
+func sessionsV3SyncStreamNotificationEvent(record sessionruntime.RealtimeOutboxRecord, resources sessionsV3WorksetResources) (sessionsV3SyncStreamEvent, bool) {
+	payload, ok := sessionsV3NotificationResourcePayloadFromRecord(record)
+	if !ok {
+		return sessionsV3SyncStreamEvent{}, false
+	}
+	event := newSessionsV3SyncStreamEvent(record)
+	if resources.Notifications && payload.Notification != nil {
+		notification := *payload.Notification
+		event.Notification = &notification
+	}
+	if payload.Summary != nil && (resources.NotificationSummary || payload.Notification == nil) {
+		summary := *payload.Summary
+		event.NotificationSummary = &summary
+	}
+	return event, event.Notification != nil || event.NotificationSummary != nil
 }
 
 func sanitizeV3SyncStreamEventPayload(eventType string, raw json.RawMessage) json.RawMessage {
@@ -209,6 +229,12 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 		advanced = record.EndpointSeq
 		expectedEndpointSeq = record.EndpointSeq + 1
 		if !v3RealtimeRecordVisibleToPrincipal(principal, record) {
+			continue
+		}
+		if strings.TrimSpace(record.Event.EventType) == v3NotificationResourceEventType {
+			if event, ok := sessionsV3SyncStreamNotificationEvent(record, req.Resources); ok {
+				visible = append(visible, event)
+			}
 			continue
 		}
 		matches, err := s.sessionsV3SyncOutboxRecordMatchesSelector(principal, record, selector)

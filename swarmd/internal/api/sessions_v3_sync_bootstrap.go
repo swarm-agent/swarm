@@ -483,6 +483,8 @@ type sessionsV3SyncSnapshotResponseBody struct {
 	RunIntentsBySession          map[string][]pebblestore.V3SessionRunIntent              `json:"run_intents_by_session"`
 	CurrentRunStateBySession     map[string]pebblestore.V3SessionRunState                 `json:"current_run_state_by_session,omitempty"`
 	PermissionSummariesBySession map[string]sessionsV3PermissionSummary                   `json:"permission_summaries_by_session,omitempty"`
+	Notifications                []pebblestore.NotificationRecord                         `json:"notifications,omitempty"`
+	NotificationSummary          *pebblestore.NotificationSummary                         `json:"notification_summary,omitempty"`
 	ActiveSessionIDs             []string                                                 `json:"active_session_ids,omitempty"`
 	SessionViewsByID             map[string]sessionsV3SessionView                         `json:"session_views_by_id,omitempty"`
 	Realtime                     *sessionsV3RealtimeBootstrap                             `json:"realtime,omitempty"`
@@ -736,6 +738,8 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		RunIntentsBySession:          snapshot.RunIntentsBySession,
 		CurrentRunStateBySession:     snapshot.CurrentRunStateBySession,
 		PermissionSummariesBySession: nil,
+		Notifications:                nil,
+		NotificationSummary:          nil,
 		ActiveSessionIDs:             snapshot.ActiveSessionIDs,
 		SessionViewsByID:             nil,
 		HistoryManifestsBySession:    snapshot.HistoryManifestsBySession,
@@ -764,6 +768,14 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 	}
 	if permissionSummaries != nil {
 		response.PermissionSummariesBySession = sessionsV3PermissionSummariesVisibleInSnapshot(permissionSummaries, snapshot.SessionsByID)
+	}
+	if sessionsV3SyncResourcesInclude(resources, "notifications") || sessionsV3SyncResourcesInclude(resources, "notification_summary") {
+		notifications, summary, err := s.sessionsV3NotificationResources(options.Principal, sessionsV3SyncResourcesInclude(resources, "notifications"), sessionsV3SyncResourcesInclude(resources, "notification_summary"))
+		if err != nil {
+			return sessionsV3SyncSnapshotResponseBody{}, err
+		}
+		response.Notifications = notifications
+		response.NotificationSummary = summary
 	}
 	if options.Snapshot.IncludeSessionView {
 		if len(snapshot.SessionOrder) > sessionsV3SyncHydrateMaxSessionViews {
@@ -1063,6 +1075,31 @@ func sessionsV3PermissionSummariesVisibleInSnapshot(summaries map[string]session
 	return out
 }
 
+func (s *Server) sessionsV3NotificationResources(principal identity.Principal, includeNotifications, includeSummary bool) ([]pebblestore.NotificationRecord, *pebblestore.NotificationSummary, error) {
+	if s == nil || s.notifications == nil {
+		return nil, nil, nil
+	}
+	svc := notificationServiceForAccount(s.notifications, principal.AccountScopeID)
+	swarmID := svc.LocalSwarmID()
+	var records []pebblestore.NotificationRecord
+	if includeNotifications {
+		var err error
+		records, err = svc.ListNotifications(swarmID, sessionsV3WorksetMaxResourcePageSize)
+		if err != nil {
+			return nil, nil, err
+		}
+		records = s.enrichNotificationRecords(records)
+	}
+	if !includeSummary {
+		return records, nil, nil
+	}
+	summary, err := svc.Summary(swarmID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return records, &summary, nil
+}
+
 func sessionsV3SyncResourcesInclude(resources []string, target string) bool {
 	target = strings.TrimSpace(target)
 	if target == "" {
@@ -1120,6 +1157,12 @@ func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history ses
 	}
 	if resources.PermissionSummaries {
 		out = append(out, "permission_summaries")
+	}
+	if resources.Notifications {
+		out = append(out, "notifications")
+	}
+	if resources.NotificationSummary {
+		out = append(out, "notification_summary")
 	}
 	if resources.ActivePlan {
 		out = append(out, "active_plan")
