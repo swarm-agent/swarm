@@ -134,12 +134,13 @@ function defaultDraftFromModel(model: ModelOptionRecord | null, selectedServiceT
 
 function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedModel: ModelOptionRecord | null, selectedServiceTier = '', selectedThinking = ''): ModelDraft {
   const fallback = defaultDraftFromModel(selectedModel, selectedServiceTier, selectedThinking)
-  const provider = profile?.provider.trim() || fallback.provider
+  const hasExplicitSingleModel = Boolean(profile?.provider.trim() || profile?.model.trim())
+  const provider = hasExplicitSingleModel ? profile?.provider.trim() || fallback.provider : fallback.provider
   return {
     provider,
-    model: profile?.model.trim() || fallback.model,
-    thinking: profile?.thinking.trim() || fallback.thinking,
-    serviceTier: normalizeDraftServiceTier(provider, profile?.autoServiceTier ?? ''),
+    model: hasExplicitSingleModel ? profile?.model.trim() || fallback.model : fallback.model,
+    thinking: hasExplicitSingleModel ? profile?.thinking.trim() || fallback.thinking : fallback.thinking,
+    serviceTier: hasExplicitSingleModel ? normalizeDraftServiceTier(provider, profile?.autoServiceTier ?? '') : fallback.serviceTier,
   }
 }
 
