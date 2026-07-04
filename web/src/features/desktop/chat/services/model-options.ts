@@ -66,7 +66,13 @@ export function supportsCodexFastMode(provider: string, _model: string, serviceT
   return normalizeProviderID(provider) === 'codex' && normalizedServiceTiers(serviceTiers).includes('fast')
 }
 
-export function supportsModelServiceTier(provider: string, _model: string, serviceTiers: string[] = [], requestedTier = ''): boolean {
+function isFireworksFastModelID(model: string): boolean {
+  const trimmedModel = model.trim().toLowerCase()
+  if (trimmedModel === '') return false
+  return trimmedModel.startsWith(FIREWORKS_ROUTER_PREFIX) || trimmedModel.endsWith('-fast')
+}
+
+export function supportsModelServiceTier(provider: string, model: string, serviceTiers: string[] = [], requestedTier = ''): boolean {
   const normalizedProvider = normalizeProviderID(provider)
   const tiers = normalizedServiceTiers(serviceTiers)
   const normalizedRequested = normalizeModelServiceTier(provider, requestedTier)
@@ -75,13 +81,14 @@ export function supportsModelServiceTier(provider: string, _model: string, servi
     return tiers.includes('priority') || tiers.includes('fast') || tiers.includes('flex')
   }
   if (normalizedProvider === 'fireworks') {
+    if (isFireworksFastModelID(model)) return false
     if (normalizedRequested) return tiers.includes(normalizedRequested)
     return tiers.includes('priority')
   }
   return false
 }
 
-export function modelServiceTierOptions(provider: string, _model: string, serviceTiers: string[] = []): ModelServiceTierOption[] {
+export function modelServiceTierOptions(provider: string, model: string, serviceTiers: string[] = []): ModelServiceTierOption[] {
   const normalizedProvider = normalizeProviderID(provider)
   const tiers = normalizedServiceTiers(serviceTiers)
   const options: ModelServiceTierOption[] = [{ label: 'Off / standard', value: '' }]
@@ -92,7 +99,7 @@ export function modelServiceTierOptions(provider: string, _model: string, servic
     return options
   }
   if (normalizedProvider === 'fireworks') {
-    if (tiers.includes('priority')) options.push({ label: 'Priority', value: 'priority' })
+    if (!isFireworksFastModelID(model) && tiers.includes('priority')) options.push({ label: 'Priority', value: 'priority' })
     return options
   }
   return options

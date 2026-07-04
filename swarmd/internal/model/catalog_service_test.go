@@ -38,7 +38,7 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 				"model_id":"deepseek-v4-pro",
 				"capabilities":{"supports_reasoning":true},
 				"limits":{"context_window_tokens":1048576,"max_output_tokens":null},
-				"provider_specific":{"fireworks":{"resource_name":"accounts/fireworks/models/deepseek-v4-pro","serving":{"supported_tiers":["standard","priority","fast"],"default_tier":"standard","fast":{"tier":"fast","provider_parameter":"model","provider_value":"accounts/fireworks/routers/deepseek-v4-pro-turbo"}}}}
+				"provider_specific":{"fireworks":{"resource_name":"accounts/fireworks/models/deepseek-v4-pro","serving":{"supported_tiers":["standard","priority","fast"],"default_tier":"standard","fast":{"tier":"fast","provider_parameter":"model","provider_value":"accounts/fireworks/routers/deepseek-v4-pro-fast"}}}}
 			}
 		]
 	}`)
@@ -78,7 +78,7 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 		t.Fatalf("record count with Fireworks fast router = %d, want 3", len(records))
 	}
 	fast := records[2]
-	if fast.Provider != "fireworks" || fast.Model != "accounts/fireworks/routers/deepseek-v4-pro-turbo" {
+	if fast.Provider != "fireworks" || fast.Model != "deepseek-v4-pro-fast" {
 		t.Fatalf("fireworks fast record id = %q/%q", fast.Provider, fast.Model)
 	}
 	if len(fireworks.ServiceTiers) != 2 || fireworks.ServiceTiers[0] != "standard" || fireworks.ServiceTiers[1] != "priority" {
@@ -86,6 +86,44 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 	}
 	if len(fast.ServiceTiers) != 1 || fast.ServiceTiers[0] != "standard" {
 		t.Fatalf("fireworks fast service tiers = %#v, want standard only", fast.ServiceTiers)
+	}
+	if fast.DisplayName != "deepseek-v4-pro Fast" {
+		t.Fatalf("fireworks fast display name = %q, want deepseek-v4-pro Fast", fast.DisplayName)
+	}
+}
+
+func TestListNormalizesCachedFireworksFastRouterRecords(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "catalog.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	catalog := NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	legacy := pebblestore.ModelCatalogRecord{
+		Provider:         "fireworks",
+		Model:            "accounts/fireworks/routers/kimi-k2p6-turbo",
+		ServiceTiers:     []string{"standard", "priority"},
+		ProviderSpecific: []byte(`{"fireworks":{"resource_name":"accounts/fireworks/models/kimi-k2p6","serving":{"supported_tiers":["standard","priority","fast"],"default_tier":"standard","priority":{"tier":"priority","provider_parameter":"service_tier","provider_value":"priority"},"fast":{"tier":"fast","provider_parameter":"model","provider_value":"accounts/fireworks/routers/kimi-k2p6-turbo"}}}}`),
+	}
+	if err := catalog.store.SetRecord(legacy); err != nil {
+		t.Fatalf("set legacy catalog record: %v", err)
+	}
+	lookup, err := catalog.Get("fireworks", "kimi-k2p6-fast")
+	if err != nil {
+		t.Fatalf("lookup normalized fast record: %v", err)
+	}
+	if !lookup.Found || lookup.Record.Model != "kimi-k2p6-fast" {
+		t.Fatalf("lookup normalized model = found %v record %+v", lookup.Found, lookup.Record)
+	}
+	records, err := catalog.List("fireworks", 100)
+	if err != nil {
+		t.Fatalf("list catalog: %v", err)
+	}
+	if len(records) != 1 || records[0].Model != "kimi-k2p6-fast" {
+		t.Fatalf("listed records = %+v, want kimi-k2p6-fast", records)
+	}
+	if len(records[0].ServiceTiers) != 1 || records[0].ServiceTiers[0] != "standard" {
+		t.Fatalf("normalized fast service tiers = %#v, want standard only", records[0].ServiceTiers)
 	}
 }
 

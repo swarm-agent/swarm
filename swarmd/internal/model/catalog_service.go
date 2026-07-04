@@ -227,9 +227,16 @@ func (s *CatalogService) Get(providerID, modelID string) (CatalogLookup, error) 
 			return CatalogLookup{}, err
 		}
 	}
+	if !ok && normalizedProvider == "fireworks" {
+		record, ok, err = s.findNormalizedFireworksRecord(normalizedModel)
+		if err != nil {
+			return CatalogLookup{}, err
+		}
+	}
 	if !ok {
 		return CatalogLookup{Found: false}, nil
 	}
+	record = normalizeCatalogRecord(normalizedProvider, record)
 
 	stale := record.ExpiresAt > 0 && record.ExpiresAt < s.now().UnixMilli()
 	return CatalogLookup{
@@ -251,7 +258,62 @@ func (s *CatalogService) List(providerID string, limit int) ([]pebblestore.Model
 	if err != nil {
 		return nil, err
 	}
-	return records, nil
+	seen := make(map[string]struct{}, len(records))
+	out := make([]pebblestore.ModelCatalogRecord, 0, len(records))
+	for _, record := range records {
+		record = normalizeCatalogRecord(providerID, record)
+		key := record.Provider + "\x00" + record.Model
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, record)
+	}
+	return out, nil
+}
+
+func (s *CatalogService) findNormalizedFireworksRecord(modelID string) (pebblestore.ModelCatalogRecord, bool, error) {
+	records, err := s.store.ListProvider("fireworks", 1000)
+	if err != nil {
+		return pebblestore.ModelCatalogRecord{}, false, err
+	}
+	modelID = canonicalCatalogModelID("fireworks", modelID)
+	for _, record := range records {
+		normalized := normalizeCatalogRecord("fireworks", record)
+		if canonicalCatalogModelID("fireworks", normalized.Model) == modelID {
+			return normalized, true, nil
+		}
+	}
+	return pebblestore.ModelCatalogRecord{}, false, nil
+}
+
+func normalizeCatalogRecord(providerID string, record pebblestore.ModelCatalogRecord) pebblestore.ModelCatalogRecord {
+	providerID = canonicalCatalogProviderID(providerID)
+	if providerID != "fireworks" {
+		return record
+	}
+	var decoded map[string]swarmSnapshotProviderSpecific
+	if len(record.ProviderSpecific) == 0 || json.Unmarshal(record.ProviderSpecific, &decoded) != nil {
+		return record
+	}
+	providerSpecific, ok := decoded["fireworks"]
+	if !ok {
+		return record
+	}
+	baseModelID := canonicalCatalogModelID("fireworks", firstNonEmpty(providerSpecific.ResourceName, record.Model))
+	fastID := fireworksFastModelID(providerSpecific, baseModelID)
+	if fastID == "" {
+		return record
+	}
+	recordModelID := canonicalCatalogModelID("fireworks", record.Model)
+	if recordModelID != fastID && recordModelID != canonicalCatalogModelID("fireworks", fireworksFastProviderValue(providerSpecific)) {
+		return record
+	}
+	record.Provider = "fireworks"
+	record.Model = fastID
+	record.ServiceTiers = []string{"standard"}
+	record.DefaultServiceTier = ""
+	return record
 }
 
 func (s *CatalogService) Meta() (pebblestore.ModelCatalogMeta, bool, error) {
@@ -589,6 +651,7 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 
 		reasoning := model.Capabilities.SupportsReasoning != nil && *model.Capabilities.SupportsReasoning
 		for _, recordModelID := range catalogRecordModelIDs(model, providerID, modelID) {
+			recordModelID = canonicalCatalogModelID(providerID, recordModelID)
 			key := providerID + "\x00" + recordModelID
 			if _, ok := seen[key]; ok {
 				continue
@@ -660,12 +723,13 @@ func modelServingTiers(model swarmSnapshotModel, providerID, recordModelID strin
 }
 
 func catalogRecordModelIDs(model swarmSnapshotModel, providerID, modelID string) []string {
-	ids := []string{modelID}
+	baseID := canonicalCatalogModelID(providerID, modelID)
+	ids := []string{baseID}
 	if providerID != "fireworks" {
 		return ids
 	}
-	fastID := fireworksFastProviderValue(model.ProviderSpecific[providerID])
-	if fastID == "" || fastID == modelID {
+	fastID := fireworksFastModelID(model.ProviderSpecific[providerID], baseID)
+	if fastID == "" || fastID == baseID {
 		return ids
 	}
 	return append(ids, fastID)
@@ -685,6 +749,25 @@ func fireworksFastProviderValue(providerSpecific swarmSnapshotProviderSpecific) 
 	return ""
 }
 
+func fireworksFastModelID(providerSpecific swarmSnapshotProviderSpecific, baseModelID string) string {
+	providerValue := strings.TrimSpace(fireworksFastProviderValue(providerSpecific))
+	if providerValue == "" {
+		return ""
+	}
+	suffix := strings.TrimSpace(strings.TrimPrefix(providerValue, "accounts/fireworks/routers/"))
+	if suffix == "" || strings.Contains(suffix, "/") {
+		return providerValue
+	}
+	if strings.HasSuffix(strings.ToLower(suffix), "-fast") {
+		return suffix
+	}
+	base := canonicalCatalogModelID("fireworks", baseModelID)
+	if base != "" {
+		return base + "-fast"
+	}
+	return suffix + "-fast"
+}
+
 func valueOfRawTier(tier *swarmSnapshotRawTier) swarmSnapshotRawTier {
 	if tier == nil {
 		return swarmSnapshotRawTier{}
@@ -697,7 +780,9 @@ func isFireworksFastCatalogModel(model swarmSnapshotModel, recordModelID string)
 	if providerID != "fireworks" {
 		return false
 	}
-	return strings.TrimSpace(recordModelID) != "" && recordModelID == fireworksFastProviderValue(model.ProviderSpecific[providerID])
+	baseModelID := canonicalCatalogModelID(providerID, model.ModelID)
+	fastID := fireworksFastModelID(model.ProviderSpecific[providerID], baseModelID)
+	return strings.TrimSpace(recordModelID) != "" && canonicalCatalogModelID(providerID, recordModelID) == fastID
 }
 
 func catalogModelPricing(model swarmSnapshotModel, providerID, recordModelID string) json.RawMessage {
@@ -983,7 +1068,7 @@ func canonicalCatalogModelID(providerID, modelID string) string {
 		return modelID
 	}
 	lower := strings.ToLower(modelID)
-	for _, prefix := range []string{"accounts/fireworks/models/", "fireworks/"} {
+	for _, prefix := range []string{"accounts/fireworks/models/", "accounts/fireworks/routers/", "fireworks/"} {
 		if strings.HasPrefix(lower, prefix) {
 			suffix := strings.TrimSpace(modelID[len(prefix):])
 			if suffix != "" && !strings.Contains(suffix, "/") {

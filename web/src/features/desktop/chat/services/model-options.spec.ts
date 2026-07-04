@@ -15,8 +15,9 @@ test('displayModelName leaves non-Fireworks model ids unchanged', () => {
   assert.equal(displayModelName('codex', 'gpt-5.4', ''), 'gpt-5.4')
 })
 
-test('displayModelName strips Fireworks router prefix for fast models', () => {
-  assert.equal(displayModelName('fireworks', 'accounts/fireworks/routers/kimi-k2p6-turbo', ''), 'kimi-k2p6-turbo')
+test('displayModelName keeps Fireworks fast model suffix', () => {
+  assert.equal(displayModelName('fireworks', 'kimi-k2p6-fast', ''), 'kimi-k2p6-fast')
+  assert.equal(displayModelName('fireworks', 'accounts/fireworks/routers/kimi-k2p6-fast', ''), 'kimi-k2p6-fast')
 })
 
 test('Fireworks service tier options only expose priority from catalog tiers', () => {
@@ -25,7 +26,7 @@ test('Fireworks service tier options only expose priority from catalog tiers', (
     { label: 'Priority', value: 'priority' },
   ])
   assert.equal(supportsModelServiceTier('fireworks', 'accounts/fireworks/models/kimi-k2p6', ['standard', 'priority'], 'priority'), true)
-  assert.equal(supportsModelServiceTier('fireworks', 'accounts/fireworks/routers/kimi-k2p6-turbo', ['standard'], 'priority'), false)
+  assert.equal(supportsModelServiceTier('fireworks', 'kimi-k2p6-fast', ['standard'], 'priority'), false)
   assert.equal(normalizeModelServiceTier('fireworks', 'fast'), '')
 })
 

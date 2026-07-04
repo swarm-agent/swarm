@@ -111,7 +111,7 @@ func TestResolvePreferenceClearsPriorityForFireworksFastRouter(t *testing.T) {
 
 	if err := service.catalog.store.SetRecord(pebblestore.ModelCatalogRecord{
 		Provider:     "fireworks",
-		Model:        "accounts/fireworks/routers/kimi-k2p6-turbo",
+		Model:        "kimi-k2p6-fast",
 		ServiceTiers: []string{"standard"},
 	}); err != nil {
 		t.Fatalf("set catalog record: %v", err)
@@ -119,7 +119,7 @@ func TestResolvePreferenceClearsPriorityForFireworksFastRouter(t *testing.T) {
 
 	resolved, err := service.ResolvePreference(pebblestore.ModelPreference{
 		Provider:    "fireworks",
-		Model:       "accounts/fireworks/routers/kimi-k2p6-turbo",
+		Model:       "kimi-k2p6-fast",
 		Thinking:    "high",
 		ServiceTier: "priority",
 	})

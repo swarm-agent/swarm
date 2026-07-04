@@ -165,11 +165,11 @@ func TestResolveServingTierNormalizesBareFireworksModelWithoutCatalog(t *testing
 func TestServingConfigFromFastRouterCatalogKeepsRouterModelStandardOnly(t *testing.T) {
 	catalog := pebblestore.ModelCatalogRecord{
 		Provider:         "fireworks",
-		Model:            "accounts/fireworks/routers/kimi-k2p6-turbo",
-		ProviderSpecific: []byte(`{"fireworks":{"resource_name":"accounts/fireworks/models/kimi-k2p6","serving":{"supported_tiers":["standard","priority","fast"],"default_tier":"standard","priority":{"tier":"priority","provider_parameter":"service_tier","provider_value":"priority"},"fast":{"tier":"fast","provider_parameter":"model","provider_value":"accounts/fireworks/routers/kimi-k2p6-turbo"}}}}`),
+		Model:            "kimi-k2p6-fast",
+		ProviderSpecific: []byte(`{"fireworks":{"resource_name":"accounts/fireworks/models/kimi-k2p6","serving":{"supported_tiers":["standard","priority","fast"],"default_tier":"standard","priority":{"tier":"priority","provider_parameter":"service_tier","provider_value":"priority"},"fast":{"tier":"fast","provider_parameter":"model","provider_value":"accounts/fireworks/routers/kimi-k2p6-fast"}}}}`),
 	}
-	serving := ResolveServingTier(provideriface.Request{Model: "accounts/fireworks/routers/kimi-k2p6-turbo", ServiceTier: "priority", ModelCatalog: catalog}, ServingConfigFromCatalog(catalog))
-	if serving.ModelID != "accounts/fireworks/routers/kimi-k2p6-turbo" || serving.ServiceTier != "" || serving.EffectiveTier != "standard" {
+	serving := ResolveServingTier(provideriface.Request{Model: "kimi-k2p6-fast", ServiceTier: "priority", ModelCatalog: catalog}, ServingConfigFromCatalog(catalog))
+	if serving.ModelID != "accounts/fireworks/routers/kimi-k2p6-fast" || serving.ServiceTier != "" || serving.EffectiveTier != "standard" {
 		t.Fatalf("fast router catalog resolution = %+v", serving)
 	}
 }

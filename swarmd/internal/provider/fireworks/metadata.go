@@ -101,7 +101,7 @@ func ServingConfigFromCatalog(record any) ServingConfig {
 	if strings.TrimSpace(catalog.DefaultServiceTier) != "" {
 		cfg.DefaultTier = strings.ToLower(strings.TrimSpace(catalog.DefaultServiceTier))
 	}
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(catalog.Model)), "accounts/fireworks/routers/") {
+	if isFireworksFastCatalogModel(catalog.Model, cfg) {
 		cfg.SupportedTiers = []string{ServiceTierStandard}
 		cfg.DefaultTier = ServiceTierStandard
 	}
@@ -110,8 +110,8 @@ func ServingConfigFromCatalog(record any) ServingConfig {
 
 func servingConfigFromRaw(raw rawServing, resourceName, catalogModel string) ServingConfig {
 	modelID := normalizeFireworksModelResourceName(resourceName)
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(catalogModel)), "accounts/fireworks/routers/") {
-		modelID = normalizeFireworksModelResourceName(catalogModel)
+	if normalizedCatalogModel := normalizeFireworksModelResourceName(catalogModel); isFireworksFastCatalogModel(catalogModel, ServingConfig{ModelID: modelID, Tiers: map[string]ServingTier{"fast": {ProviderValue: normalizedCatalogModel}}}) {
+		modelID = normalizedCatalogModel
 	}
 	out := ServingConfig{
 		ModelID:        modelID,
@@ -213,6 +213,15 @@ func ResolveServingTier(req provideriface.Request, cfg ServingConfig) requestSer
 	return resolution
 }
 
+func isFireworksFastCatalogModel(modelID string, _ ServingConfig) bool {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return false
+	}
+	lower := strings.ToLower(modelID)
+	return strings.HasPrefix(lower, "accounts/fireworks/routers/") || strings.HasSuffix(lower, "-fast")
+}
+
 func normalizeFireworksModelResourceName(modelID string) string {
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
@@ -227,6 +236,9 @@ func normalizeFireworksModelResourceName(modelID string) string {
 		if suffix != "" && !strings.Contains(suffix, "/") {
 			return "accounts/fireworks/models/" + suffix
 		}
+	}
+	if strings.HasSuffix(lower, "-fast") {
+		return "accounts/fireworks/routers/" + modelID
 	}
 	if !strings.Contains(modelID, "/") {
 		return "accounts/fireworks/models/" + modelID
