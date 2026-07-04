@@ -1339,6 +1339,11 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				return sessionV3ProviderLoopResult{}, err
 			}
 			resolved = refreshed
+			refreshedRunner, err := e.sessionV3ProviderRunner(resolved)
+			if err != nil {
+				return sessionV3ProviderLoopResult{}, err
+			}
+			runner = refreshedRunner
 			input, err = e.sessionV3ProviderRestartInput(ctx, job, resolved, strings.TrimSpace(firstNonEmpty(toolResults[len(toolResults)-1].Output, sessionsV3LatestFunctionCallOutput(input), toolResults[len(toolResults)-1].TextForModel)))
 			if err != nil {
 				return sessionV3ProviderLoopResult{}, err

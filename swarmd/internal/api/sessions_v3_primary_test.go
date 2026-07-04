@@ -5033,6 +5033,9 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	workspace := t.TempDir()
 	runner := &sessionsV3RecordingProviderRunner{}
 	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if runner.callCount != 1 {
+			return provideriface.Response{}, fmt.Errorf("plan provider called after exit_plan_mode restart with model=%q thinking=%q", req.Model, req.Thinking)
+		}
 		if req.Model != "plan-model" || req.Thinking != "low" {
 			return provideriface.Response{}, fmt.Errorf("initial provider request model=%q thinking=%q, want plan-model/low", req.Model, req.Thinking)
 		}
@@ -5044,14 +5047,7 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 		}
 		document := map[string]any{"info": map[string]any{"goal": "continue in auto"}, "checkpoints": []map[string]any{{"id": "cp-1", "title": "continue", "status": "pending"}}}
 		args := mustSessionsV3TestJSON(t, map[string]any{"title": "Plan: continue", "document": document})
-		result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-exit-plan", Name: "exit_plan_mode", Arguments: args})
-		if err != nil {
-			return provideriface.Response{}, err
-		}
-		if !result.RestartTurn {
-			return provideriface.Response{}, fmt.Errorf("exit_plan_mode result did not request turn restart: %+v", result)
-		}
-		return provideriface.Response{RestartTurn: true}, nil
+		return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-exit-plan", Name: "exit_plan_mode", Arguments: args}}}, nil
 	}
 	autoRunner := &sessionsV3RecordingProviderRunner{id: "auto-provider"}
 	autoRunner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
