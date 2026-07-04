@@ -207,6 +207,22 @@ func TestEnsureBootDefaultsSeedsPinnedSnapshotOffline(t *testing.T) {
 	if !lookup.Found || lookup.Record.ContextWindow <= 0 || !lookup.Record.Reasoning {
 		t.Fatalf("expected pinned codex record with context/reasoning, got %+v", lookup)
 	}
+
+	for _, modelID := range []string{"glm-5p2", "glm-5p2-fast"} {
+		lookup, err := catalog.Get("fireworks", modelID)
+		if err != nil {
+			t.Fatalf("catalog lookup for %s: %v", modelID, err)
+		}
+		if !lookup.Found {
+			t.Fatalf("expected pinned Fireworks %s record", modelID)
+		}
+		if !stringSlicesEqual(lookup.Record.ThinkingOptions, []string{"off", "high", "xhigh"}) || lookup.Record.DefaultThinking != "xhigh" {
+			t.Fatalf("Fireworks %s thinking metadata = %#v/%q, want off/high/xhigh default xhigh", modelID, lookup.Record.ThinkingOptions, lookup.Record.DefaultThinking)
+		}
+		if len(lookup.Record.ThinkingMappings) != 3 || lookup.Record.ThinkingMappings[2].SwarmSetting != "xhigh" || lookup.Record.ThinkingMappings[2].ProviderValue != "max" || lookup.Record.ThinkingMappings[2].EffectiveProviderValue != "max" {
+			t.Fatalf("Fireworks %s thinking mappings = %+v, want xhigh mapped to provider max", modelID, lookup.Record.ThinkingMappings)
+		}
+	}
 }
 
 func TestRefreshUsesSnapshotVersionAndSkipsUnchangedSnapshot(t *testing.T) {
