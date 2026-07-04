@@ -979,9 +979,9 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if providerID == "" || modelName == "" {
 		return sessionV3AssistantResponse{}, errors.New("resolved v3 provider/model is empty")
 	}
-	runner, ok := e.server.providers.GetRunner(providerID)
-	if !ok {
-		return sessionV3AssistantResponse{}, fmt.Errorf("provider %q is configured but not runnable yet", providerID)
+	runner, err := e.sessionV3ProviderRunner(resolved)
+	if err != nil {
+		return sessionV3AssistantResponse{}, err
 	}
 	messages, err := e.sessionV3ProviderContextMessages(job)
 	if err != nil {
@@ -1091,6 +1091,21 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		"assistant_response": assistant,
 	})
 	return assistant, nil
+}
+
+func (e *sessionV3Executor) sessionV3ProviderRunner(resolved sessionV3ResolvedRuntime) (provideriface.Runner, error) {
+	if e == nil || e.server == nil || e.server.providers == nil {
+		return nil, errors.New("provider registry is not configured")
+	}
+	providerID := strings.ToLower(strings.TrimSpace(resolved.Preference.Provider))
+	if providerID == "" {
+		return nil, errors.New("resolved v3 provider/model is empty")
+	}
+	runner, ok := e.server.providers.GetRunner(providerID)
+	if !ok {
+		return nil, fmt.Errorf("provider %q is configured but not runnable yet", providerID)
+	}
+	return runner, nil
 }
 
 func (e *sessionV3Executor) sessionV3ProviderBaseRequest(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, input []map[string]any) (provideriface.Request, error) {
@@ -1223,6 +1238,11 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 					return sessionV3ProviderLoopResult{}, err
 				}
 				resolved = refreshed
+				refreshedRunner, err := e.sessionV3ProviderRunner(resolved)
+				if err != nil {
+					return sessionV3ProviderLoopResult{}, err
+				}
+				runner = refreshedRunner
 				if terminal, ok := e.sessionV3LatestTerminalPlanToolPayload(job); ok {
 					input = e.sessionV3ProviderContinuationInput(job)
 					if len(input) == 0 {

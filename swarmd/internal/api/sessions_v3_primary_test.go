@@ -5033,60 +5033,58 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	workspace := t.TempDir()
 	runner := &sessionsV3RecordingProviderRunner{}
 	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
-		switch runner.callCount {
-		case 1:
-			if req.Model != "plan-model" || req.Thinking != "low" {
-				return provideriface.Response{}, fmt.Errorf("initial provider request model=%q thinking=%q, want plan-model/low", req.Model, req.Thinking)
-			}
-			if req.ToolInvoker == nil {
-				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
-			}
-			if !strings.Contains(req.Instructions, "Current session mode: plan.") {
-				return provideriface.Response{}, fmt.Errorf("initial instructions did not use plan mode:\n%s", req.Instructions)
-			}
-			document := map[string]any{"info": map[string]any{"goal": "continue in auto"}, "checkpoints": []map[string]any{{"id": "cp-1", "title": "continue", "status": "pending"}}}
-			args := mustSessionsV3TestJSON(t, map[string]any{"title": "Plan: continue", "document": document})
-			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-exit-plan", Name: "exit_plan_mode", Arguments: args})
-			if err != nil {
-				return provideriface.Response{}, err
-			}
-			if !result.RestartTurn {
-				return provideriface.Response{}, fmt.Errorf("exit_plan_mode result did not request turn restart: %+v", result)
-			}
-			return provideriface.Response{RestartTurn: true}, nil
-		case 2:
-			if req.Model != "auto-model" || req.Thinking != "high" {
-				return provideriface.Response{}, fmt.Errorf("checkpoint continuation model=%q thinking=%q, want auto-model/high", req.Model, req.Thinking)
-			}
-			if !strings.Contains(req.Instructions, "Current session mode: auto.") {
-				return provideriface.Response{}, fmt.Errorf("checkpoint continuation instructions did not refresh to auto mode:\n%s", req.Instructions)
-			}
-			if !sessionsV3ProviderInputContainsContentText(req.Input, "[checkpoint-run] Deterministic checkpoint execution context.") || !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: cp-1.") {
-				return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint input = %+v, want fresh checkpoint context", req.Input)
-			}
-			if req.ToolInvoker == nil {
-				return provideriface.Response{}, fmt.Errorf("missing refreshed provider-managed tool invoker")
-			}
-			completeArgs := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "checkpoint complete", "result": "done"})
-			completeResult, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-checkpoint", Name: "plan_manage", Arguments: completeArgs})
-			if err != nil {
-				return provideriface.Response{}, err
-			}
-			if completeResult.Error != "" {
-				return provideriface.Response{}, fmt.Errorf("complete checkpoint after exit_plan_mode failed: %+v", completeResult)
-			}
-			return provideriface.Response{Text: "checkpoint completed in auto"}, nil
-		default:
-			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		if req.Model != "plan-model" || req.Thinking != "low" {
+			return provideriface.Response{}, fmt.Errorf("initial provider request model=%q thinking=%q, want plan-model/low", req.Model, req.Thinking)
 		}
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+		}
+		if !strings.Contains(req.Instructions, "Current session mode: plan.") {
+			return provideriface.Response{}, fmt.Errorf("initial instructions did not use plan mode:\n%s", req.Instructions)
+		}
+		document := map[string]any{"info": map[string]any{"goal": "continue in auto"}, "checkpoints": []map[string]any{{"id": "cp-1", "title": "continue", "status": "pending"}}}
+		args := mustSessionsV3TestJSON(t, map[string]any{"title": "Plan: continue", "document": document})
+		result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-exit-plan", Name: "exit_plan_mode", Arguments: args})
+		if err != nil {
+			return provideriface.Response{}, err
+		}
+		if !result.RestartTurn {
+			return provideriface.Response{}, fmt.Errorf("exit_plan_mode result did not request turn restart: %+v", result)
+		}
+		return provideriface.Response{RestartTurn: true}, nil
+	}
+	autoRunner := &sessionsV3RecordingProviderRunner{id: "auto-provider"}
+	autoRunner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.TrimSpace(req.Model) != "auto-model" || strings.TrimSpace(req.Thinking) != "high" {
+			return provideriface.Response{}, fmt.Errorf("checkpoint continuation model=%q thinking=%q, want auto-model/high", req.Model, req.Thinking)
+		}
+		if !strings.Contains(req.Instructions, "Current session mode: auto.") {
+			return provideriface.Response{}, fmt.Errorf("checkpoint continuation instructions did not refresh to auto mode:\n%s", req.Instructions)
+		}
+		if !sessionsV3ProviderInputContainsContentText(req.Input, "[checkpoint-run] Deterministic checkpoint execution context.") || !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: cp-1.") {
+			return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint input = %+v, want fresh checkpoint context", req.Input)
+		}
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, fmt.Errorf("missing refreshed provider-managed tool invoker")
+		}
+		completeArgs := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "checkpoint complete", "result": "done"})
+		completeResult, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-checkpoint", Name: "plan_manage", Arguments: completeArgs})
+		if err != nil {
+			return provideriface.Response{}, err
+		}
+		if completeResult.Error != "" {
+			return provideriface.Response{}, fmt.Errorf("complete checkpoint after exit_plan_mode failed: %+v", completeResult)
+		}
+		return provideriface.Response{Text: "checkpoint completed in auto"}, nil
 	}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
+	providers.RegisterRunner(autoRunner)
 	server.providers = providers
 	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
 	server.runner = runSvc
 	server.SetBypassPermissions(true)
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ModelMode: "split", PlanProvider: "test-provider", PlanModel: "plan-model", PlanThinking: "low", AutoProvider: "test-provider", AutoModel: "auto-model", AutoThinking: "high", ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"exit_plan_mode": {Enabled: pebblestore.BoolPtr(true)}, "write": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ModelMode: "split", PlanProvider: "test-provider", PlanModel: "plan-model", PlanThinking: "low", AutoProvider: "auto-provider", AutoModel: "auto-model", AutoThinking: "high", ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"exit_plan_mode": {Enabled: pebblestore.BoolPtr(true)}, "write": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
 		t.Fatalf("upsert exit-plan swarm agent: %v", err)
 	}
 	exec := newSessionV3Executor(server)
@@ -5094,11 +5092,26 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	server.v3SessionExecutor = exec
 
 	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-exit-plan-restart-create", "provider exit plan restart", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "plan-model", Thinking: "low"})
-	updated, _, err := sessionSvc.SetMode(created.ID, sessionruntime.ModePlan)
-	if err != nil {
-		t.Fatalf("set session plan mode: %v", err)
+	settingsBody := `{"client_request_id":"provider-exit-plan-restart-mode","mode":"plan"}`
+	settingsReq := httptest.NewRequest(http.MethodPatch, "/v3/sessions/"+created.ID+"/settings", bytes.NewBufferString(settingsBody))
+	settingsReq.Header.Set("Content-Type", "application/json")
+	settingsRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(settingsRec, withTestPrincipal(settingsReq))
+	if settingsRec.Code != http.StatusOK {
+		t.Fatalf("set session plan mode status=%d want=%d body=%s", settingsRec.Code, http.StatusOK, settingsRec.Body.String())
+	}
+	updated, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get session after plan mode update: ok=%t err=%v", ok, err)
 	}
 	created = updated
+	profile, err := sessionV3AgentProfileFromMetadata(created.Metadata)
+	if err != nil {
+		t.Fatalf("decode stored agent profile after plan mode update: %v", err)
+	}
+	if profile.ModelMode != "split" || profile.PlanModel != "plan-model" || profile.AutoProvider != "auto-provider" || profile.AutoModel != "auto-model" {
+		t.Fatalf("stored agent profile after plan mode update = %+v", profile)
+	}
 	if created.Mode != sessionruntime.ModePlan {
 		t.Fatalf("created session mode = %q, want plan", created.Mode)
 	}
@@ -5161,8 +5174,14 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if !seenAutoPreference || !seenAutoPolicy {
 		t.Fatalf("session.mode.updated payload did not include auto model preference/policy: seenPreference=%t seenPolicy=%t events=%+v", seenAutoPreference, seenAutoPolicy, events)
 	}
-	if runner.callCount != 2 {
-		t.Fatalf("provider call count = %d, want exit plan plus checkpoint continuation", runner.callCount)
+	if runner.callCount != 1 {
+		t.Fatalf("plan provider call count = %d, want exit plan only", runner.callCount)
+	}
+	if autoRunner.callCount != 1 {
+		t.Fatalf("auto provider call count = %d, want checkpoint continuation after provider switch", autoRunner.callCount)
+	}
+	if autoRunner.lastRequest.Model != "auto-model" || autoRunner.lastRequest.Thinking != "high" {
+		t.Fatalf("auto provider request model=%q thinking=%q, want auto-model/high", autoRunner.lastRequest.Model, autoRunner.lastRequest.Thinking)
 	}
 	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
 	if err != nil || !ok || activePlan.Document == nil {
