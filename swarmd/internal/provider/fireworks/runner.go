@@ -177,7 +177,7 @@ func buildChatCompletionRequest(req provideriface.Request) chatCompletionRequest
 	out := chatCompletionRequest{
 		Model:           strings.TrimSpace(req.Model),
 		Messages:        buildChatCompletionMessages(req),
-		ReasoningEffort: fireworksReasoningEffort(req.Thinking),
+		ReasoningEffort: fireworksReasoningEffortForRequest(req),
 	}
 	if len(req.Tools) > 0 {
 		out.Tools = make([]chatCompletionTool, 0, len(req.Tools))
@@ -388,13 +388,22 @@ func schemaString(value any) string {
 	}
 }
 
-func fireworksReasoningEffort(thinking string) string {
-	switch strings.ToLower(strings.TrimSpace(thinking)) {
-	case "low", "medium", "high":
-		return strings.ToLower(strings.TrimSpace(thinking))
-	default:
+func fireworksReasoningEffortForRequest(req provideriface.Request) string {
+	thinking := strings.ToLower(strings.TrimSpace(req.Thinking))
+	if thinking == "" {
 		return ""
 	}
+	catalog, ok := req.ModelCatalog.(pebblestore.ModelCatalogRecord)
+	if !ok {
+		return ""
+	}
+	for _, mapping := range catalog.ThinkingMappings {
+		if !strings.EqualFold(strings.TrimSpace(mapping.SwarmSetting), thinking) {
+			continue
+		}
+		return strings.TrimSpace(firstNonEmpty(mapping.EffectiveProviderValue, mapping.ProviderValue))
+	}
+	return ""
 }
 
 func fireworksReasoningKey(index int) string {

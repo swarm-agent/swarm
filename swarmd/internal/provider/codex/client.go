@@ -162,17 +162,18 @@ type ToolDefinition struct {
 }
 
 type Request struct {
-	SessionID         string
-	Model             string
-	Thinking          string
-	Instructions      string
-	Input             []map[string]any
-	Tools             []ToolDefinition
-	ToolChoice        string
-	ServiceTier       string
-	ContextMode       string
-	ContextWindow     int
-	ParallelToolCalls bool
+	SessionID              string
+	Model                  string
+	Thinking               string
+	ReasoningProviderValue string
+	Instructions           string
+	Input                  []map[string]any
+	Tools                  []ToolDefinition
+	ToolChoice             string
+	ServiceTier            string
+	ContextMode            string
+	ContextWindow          int
+	ParallelToolCalls      bool
 }
 
 type FunctionCall struct {
@@ -515,15 +516,10 @@ func buildRequestPayload(req Request) ([]byte, error) {
 		body["tool_choice"] = toolChoice
 		body["parallel_tool_calls"] = req.ParallelToolCalls
 	}
-	switch NormalizeServiceTier(req.ServiceTier) {
-	case ServiceTierPriority:
-		body["service_tier"] = ServiceTierPriority
-	case ServiceTierFast:
-		body["service_tier"] = ServiceTierPriority
-	case ServiceTierFlex:
-		body["service_tier"] = ServiceTierFlex
+	if serviceTier := strings.TrimSpace(req.ServiceTier); serviceTier != "" {
+		body["service_tier"] = serviceTier
 	}
-	if reasoning := reasoningPayload(req.Thinking); len(reasoning) > 0 {
+	if reasoning := reasoningPayloadForRequest(req); len(reasoning) > 0 {
 		body["reasoning"] = reasoning
 		body["include"] = []string{includeReasoningEncryptedContentPath}
 	}
@@ -671,22 +667,12 @@ func isCodexRequestInputEmptyValue(value any) bool {
 	}
 }
 
-func reasoningPayload(thinking string) map[string]any {
-	thinking = strings.ToLower(strings.TrimSpace(thinking))
-	switch thinking {
-	case "", "off":
+func reasoningPayloadForRequest(req Request) map[string]any {
+	providerValue := strings.ToLower(strings.TrimSpace(req.ReasoningProviderValue))
+	if providerValue == "" || providerValue == "none" {
 		return nil
-	case "low":
-		return map[string]any{"effort": "low", "summary": "auto"}
-	case "medium":
-		return map[string]any{"effort": "medium", "summary": "auto"}
-	case "high":
-		return map[string]any{"effort": "high", "summary": "auto"}
-	case "xhigh":
-		return map[string]any{"effort": "xhigh", "summary": "auto"}
-	default:
-		return map[string]any{"effort": "medium", "summary": "auto"}
 	}
+	return map[string]any{"effort": providerValue, "summary": "auto"}
 }
 
 func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, payload []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {

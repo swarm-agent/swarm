@@ -302,6 +302,29 @@ export interface ModelPricingRecord {
   [key: string]: unknown;
 }
 
+export interface ModelThinkingMappingRecord {
+  swarm_setting: string;
+  provider_parameter?: string;
+  provider_value?: string;
+  effective_provider_value?: string;
+  behavior?: string;
+}
+
+export interface ModelServiceTierMappingRecord {
+  tier: string;
+  swarm_setting?: string;
+  provider_parameter?: string;
+  provider_value?: string;
+  request_model_path?: string;
+}
+
+export interface ModelContextModeRecord {
+  mode: string;
+  label?: string;
+  context_window?: number;
+  default?: boolean;
+}
+
 export interface ModelOptionRecord {
   key: string;
   provider: string;
@@ -309,11 +332,17 @@ export interface ModelOptionRecord {
   contextMode: string;
   label: string;
   thinking: string;
+  thinkingOptions: string[];
+  defaultThinking: string;
+  thinkingProviderParameter: string;
+  thinkingMappings: ModelThinkingMappingRecord[];
   favorite: boolean;
   contextWindow: number;
   pricing: ModelPricingRecord | null;
   serviceTiers: string[];
   defaultServiceTier: string;
+  serviceTierMappings: ModelServiceTierMappingRecord[];
+  contextModes: ModelContextModeRecord[];
 }
 
 export interface DesktopSessionPlanInfo {

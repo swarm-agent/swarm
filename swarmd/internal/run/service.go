@@ -22,7 +22,6 @@ import (
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/privacy"
-	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -3557,11 +3556,6 @@ func compactedActivePlanText(activePlan *pebblestore.SessionPlanSnapshot) string
 }
 
 func (s *Service) resolveMemoryCompactionLimits(providerID, modelName, contextMode string, contextWindow, maxOutputTokens int) (int, int) {
-	providerID = strings.ToLower(strings.TrimSpace(providerID))
-	modelName = strings.TrimSpace(modelName)
-	if providerID == "codex" {
-		contextWindow = codexruntime.EffectiveContextWindow(modelName, contextMode, contextWindow)
-	}
 	if contextWindow < 0 {
 		contextWindow = 0
 	}

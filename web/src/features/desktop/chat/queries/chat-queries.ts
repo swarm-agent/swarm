@@ -17,8 +17,11 @@ import type {
   AgentToolContractRuntimeRecord,
   ResolvedAgentToolContractRecord,
   ChatMessageRecord,
+  ModelContextModeRecord,
   ModelOptionRecord,
   ModelPricingRecord,
+  ModelServiceTierMappingRecord,
+  ModelThinkingMappingRecord,
   ProviderDefaultsPreviewRecord,
   ResolvedSessionPreference,
   DesktopSessionPlanCheckpoint,
@@ -39,7 +42,6 @@ import {
 import {
   modelAllowedByProviderPreset,
   sortModelOptions,
-  supportsCodex1MMode,
 } from "../services/model-options";
 import { parseStructuredToolMessage } from "../services/tool-message";
 import { normalizeDesktopPermission } from "../../permissions/services/desktop-permission-normalization";
@@ -613,13 +615,42 @@ interface FavoritesResponseWire {
   records?: FavoriteRecordWire[];
 }
 
+interface ModelThinkingMappingWire {
+  swarm_setting?: string;
+  provider_parameter?: string;
+  provider_value?: string;
+  effective_provider_value?: string;
+  behavior?: string;
+}
+
+interface ModelServiceTierMappingWire {
+  tier?: string;
+  swarm_setting?: string;
+  provider_parameter?: string;
+  provider_value?: string;
+  request_model_path?: string;
+}
+
+interface ModelContextModeWire {
+  mode?: string;
+  label?: string;
+  context_window?: number;
+  default?: boolean;
+}
+
 interface ModelCatalogRecordWire {
   provider?: string;
   model?: string;
   context_window?: number;
   pricing?: ModelPricingRecord | null;
+  thinking_options?: string[] | null;
+  default_thinking?: string | null;
+  thinking_provider_parameter?: string | null;
+  thinking_mappings?: ModelThinkingMappingWire[] | null;
   service_tiers?: string[] | null;
   default_service_tier?: string | null;
+  service_tier_mappings?: ModelServiceTierMappingWire[] | null;
+  context_modes?: ModelContextModeWire[] | null;
 }
 
 interface CatalogResponseWire {
@@ -2033,6 +2064,68 @@ function normalizeServiceTiers(value: unknown): string[] {
   return out;
 }
 
+function normalizeThinkingMappings(value: unknown): ModelThinkingMappingRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const raw = item as ModelThinkingMappingWire;
+      const swarmSetting = String(raw.swarm_setting ?? "").trim().toLowerCase();
+      if (!swarmSetting) return null;
+      const out: ModelThinkingMappingRecord = { swarm_setting: swarmSetting };
+      const providerParameter = String(raw.provider_parameter ?? "").trim();
+      const providerValue = String(raw.provider_value ?? "").trim();
+      const effectiveProviderValue = String(raw.effective_provider_value ?? "").trim();
+      const behavior = String(raw.behavior ?? "").trim();
+      if (providerParameter) out.provider_parameter = providerParameter;
+      if (providerValue) out.provider_value = providerValue;
+      if (effectiveProviderValue) out.effective_provider_value = effectiveProviderValue;
+      if (behavior) out.behavior = behavior;
+      return out;
+    })
+    .filter((item): item is ModelThinkingMappingRecord => Boolean(item));
+}
+
+function normalizeServiceTierMappings(value: unknown): ModelServiceTierMappingRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const raw = item as ModelServiceTierMappingWire;
+      const tier = String(raw.tier ?? "").trim().toLowerCase();
+      if (!tier) return null;
+      const out: ModelServiceTierMappingRecord = { tier };
+      const swarmSetting = String(raw.swarm_setting ?? "").trim().toLowerCase();
+      const providerParameter = String(raw.provider_parameter ?? "").trim();
+      const providerValue = String(raw.provider_value ?? "").trim();
+      const requestModelPath = String(raw.request_model_path ?? "").trim();
+      if (swarmSetting) out.swarm_setting = swarmSetting;
+      if (providerParameter) out.provider_parameter = providerParameter;
+      if (providerValue) out.provider_value = providerValue;
+      if (requestModelPath) out.request_model_path = requestModelPath;
+      return out;
+    })
+    .filter((item): item is ModelServiceTierMappingRecord => Boolean(item));
+}
+
+function normalizeContextModes(value: unknown): ModelContextModeRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const raw = item as ModelContextModeWire;
+      const mode = String(raw.mode ?? "").trim().toLowerCase();
+      if (!mode) return null;
+      const out: ModelContextModeRecord = { mode };
+      const label = String(raw.label ?? "").trim();
+      if (label) out.label = label;
+      if (typeof raw.context_window === "number") out.context_window = raw.context_window;
+      if (raw.default === true) out.default = true;
+      return out;
+    })
+    .filter((item): item is ModelContextModeRecord => Boolean(item));
+}
+
 export async function fetchModelOptions(
   signal?: AbortSignal,
 ): Promise<ModelOptionRecord[]> {
@@ -2097,6 +2190,12 @@ export async function fetchModelOptions(
         pricing: null,
         serviceTiers: [],
         defaultServiceTier: "",
+        serviceTierMappings: [],
+        contextModes: [],
+        thinkingOptions: [],
+        defaultThinking: "",
+        thinkingProviderParameter: "",
+        thinkingMappings: [],
       });
     }
   }
@@ -2125,6 +2224,12 @@ export async function fetchModelOptions(
           pricing: normalizeModelPricing(record.pricing),
           serviceTiers: normalizeServiceTiers(record.service_tiers),
           defaultServiceTier: String(record.default_service_tier ?? "").trim().toLowerCase(),
+          serviceTierMappings: normalizeServiceTierMappings(record.service_tier_mappings),
+          contextModes: normalizeContextModes(record.context_modes),
+          thinkingOptions: normalizeServiceTiers(record.thinking_options),
+          defaultThinking: String(record.default_thinking ?? "").trim().toLowerCase(),
+          thinkingProviderParameter: String(record.thinking_provider_parameter ?? "").trim(),
+          thinkingMappings: normalizeThinkingMappings(record.thinking_mappings),
         });
         continue;
       }
@@ -2137,24 +2242,38 @@ export async function fetchModelOptions(
         pricing: normalizeModelPricing(record.pricing) ?? current.pricing,
         serviceTiers: normalizeServiceTiers(record.service_tiers),
         defaultServiceTier: String(record.default_service_tier ?? "").trim().toLowerCase(),
+        serviceTierMappings: normalizeServiceTierMappings(record.service_tier_mappings),
+        contextModes: normalizeContextModes(record.context_modes),
+        thinkingOptions: normalizeServiceTiers(record.thinking_options),
+        defaultThinking: String(record.default_thinking ?? "").trim().toLowerCase(),
+        thinkingProviderParameter: String(record.thinking_provider_parameter ?? "").trim(),
+        thinkingMappings: normalizeThinkingMappings(record.thinking_mappings),
       });
     }
   }
 
   for (const option of Array.from(options.values())) {
-    if (!supportsCodex1MMode(option.provider, option.model)) {
-      continue;
+    for (const mode of option.contextModes) {
+      if (mode.default) {
+        continue;
+      }
+      const contextMode = mode.mode.trim().toLowerCase();
+      if (!contextMode) {
+        continue;
+      }
+      const key = modelOptionKey(option.provider, option.model, contextMode);
+      if (options.has(key)) {
+        continue;
+      }
+      options.set(key, {
+        ...option,
+        key,
+        contextMode,
+        contextWindow: typeof mode.context_window === "number" && mode.context_window > 0
+          ? mode.context_window
+          : option.contextWindow,
+      });
     }
-    const contextMode = "1m";
-    const key = modelOptionKey(option.provider, option.model, contextMode);
-    if (options.has(key)) {
-      continue;
-    }
-    options.set(key, {
-      ...option,
-      key,
-      contextMode,
-    });
   }
 
   return sortModelOptions(Array.from(options.values()));

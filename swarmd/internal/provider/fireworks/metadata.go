@@ -18,6 +18,7 @@ type ServingTier struct {
 	Tier              string
 	ProviderParameter string
 	ProviderValue     string
+	RequestModelPath  string
 	Pricing           ServingTierPricing
 }
 
@@ -44,8 +45,9 @@ type requestServingResolution struct {
 }
 
 type rawProviderSpecific map[string]struct {
-	ResourceName string     `json:"resource_name"`
-	Serving      rawServing `json:"serving"`
+	ResourceName     string     `json:"resource_name"`
+	RequestModelPath string     `json:"request_model_path"`
+	Serving          rawServing `json:"serving"`
 }
 
 type rawServing struct {
@@ -61,6 +63,7 @@ type rawTier struct {
 	Tier              string      `json:"tier"`
 	ProviderParameter string      `json:"provider_parameter"`
 	ProviderValue     string      `json:"provider_value"`
+	RequestModelPath  string      `json:"request_model_path"`
 	Pricing           *rawPricing `json:"pricing"`
 }
 
@@ -94,25 +97,18 @@ func ServingConfigFromCatalog(record any) ServingConfig {
 	if !ok {
 		return ServingConfig{}
 	}
-	cfg := servingConfigFromRaw(provider.Serving, provider.ResourceName, catalog.Model)
+	cfg := servingConfigFromRaw(provider.Serving, firstNonEmpty(provider.RequestModelPath, provider.ResourceName), catalog.Model)
 	if len(catalog.ServiceTiers) > 0 {
 		cfg.SupportedTiers = normalizeServingTiers(catalog.ServiceTiers)
 	}
 	if strings.TrimSpace(catalog.DefaultServiceTier) != "" {
 		cfg.DefaultTier = strings.ToLower(strings.TrimSpace(catalog.DefaultServiceTier))
 	}
-	if isFireworksFastCatalogModel(catalog.Model, cfg) {
-		cfg.SupportedTiers = []string{ServiceTierStandard}
-		cfg.DefaultTier = ServiceTierStandard
-	}
 	return cfg
 }
 
 func servingConfigFromRaw(raw rawServing, resourceName, catalogModel string) ServingConfig {
 	modelID := normalizeFireworksModelResourceName(resourceName)
-	if normalizedCatalogModel := normalizeFireworksModelResourceName(catalogModel); isFireworksFastCatalogModel(catalogModel, ServingConfig{ModelID: modelID, Tiers: map[string]ServingTier{"fast": {ProviderValue: normalizedCatalogModel}}}) {
-		modelID = normalizedCatalogModel
-	}
 	out := ServingConfig{
 		ModelID:        modelID,
 		SupportedTiers: normalizeServingTiers(raw.SupportedTiers),
@@ -153,6 +149,7 @@ func (c *ServingConfig) add(raw *rawTier) {
 		Tier:              tierID,
 		ProviderParameter: strings.ToLower(strings.TrimSpace(raw.ProviderParameter)),
 		ProviderValue:     strings.TrimSpace(raw.ProviderValue),
+		RequestModelPath:  strings.TrimSpace(raw.RequestModelPath),
 	}
 	if raw.Pricing != nil {
 		entry.Pricing = ServingTierPricing{
@@ -201,25 +198,14 @@ func ResolveServingTier(req provideriface.Request, cfg ServingConfig) requestSer
 	}
 	if tier, ok := cfg.Tiers[resolution.EffectiveTier]; ok {
 		resolution.ServingTier = tier
-		switch tier.ProviderParameter {
-		case "service_tier":
+		if strings.TrimSpace(tier.RequestModelPath) != "" {
+			resolution.ModelID = normalizeFireworksModelResourceName(tier.RequestModelPath)
+		}
+		if tier.ProviderParameter == "service_tier" {
 			resolution.ServiceTier = strings.TrimSpace(tier.ProviderValue)
-		case "model":
-			if strings.TrimSpace(tier.ProviderValue) != "" {
-				resolution.ModelID = normalizeFireworksModelResourceName(tier.ProviderValue)
-			}
 		}
 	}
 	return resolution
-}
-
-func isFireworksFastCatalogModel(modelID string, _ ServingConfig) bool {
-	modelID = strings.TrimSpace(modelID)
-	if modelID == "" {
-		return false
-	}
-	lower := strings.ToLower(modelID)
-	return strings.HasPrefix(lower, "accounts/fireworks/routers/") || strings.HasSuffix(lower, "-fast")
 }
 
 func normalizeFireworksModelResourceName(modelID string) string {
@@ -236,9 +222,6 @@ func normalizeFireworksModelResourceName(modelID string) string {
 		if suffix != "" && !strings.Contains(suffix, "/") {
 			return "accounts/fireworks/models/" + suffix
 		}
-	}
-	if strings.HasSuffix(lower, "-fast") {
-		return "accounts/fireworks/routers/" + modelID
 	}
 	if !strings.Contains(modelID, "/") {
 		return "accounts/fireworks/models/" + modelID
@@ -261,6 +244,15 @@ func servingTierSupported(cfg ServingConfig, tier string) bool {
 		}
 	}
 	return false
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func stableSessionAffinity(sessionID string) string {

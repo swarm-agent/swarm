@@ -20,14 +20,17 @@ test('displayModelName keeps Fireworks fast model suffix', () => {
   assert.equal(displayModelName('fireworks', 'accounts/fireworks/routers/kimi-k2p6-fast', ''), 'kimi-k2p6-fast')
 })
 
-test('Fireworks service tier options only expose priority from catalog tiers', () => {
-  assert.deepEqual(modelServiceTierOptions('fireworks', 'accounts/fireworks/models/kimi-k2p6', ['standard', 'priority', 'fast']), [
+test('Fireworks service tier options come directly from catalog tiers', () => {
+  assert.deepEqual(modelServiceTierOptions('fireworks', 'accounts/fireworks/models/kimi-k2p6', ['standard', 'priority']), [
     { label: 'Off / standard', value: '' },
     { label: 'Priority', value: 'priority' },
   ])
+  assert.deepEqual(modelServiceTierOptions('fireworks', 'kimi-k2p6-fast', ['standard']), [
+    { label: 'Off / standard', value: '' },
+  ])
   assert.equal(supportsModelServiceTier('fireworks', 'accounts/fireworks/models/kimi-k2p6', ['standard', 'priority'], 'priority'), true)
   assert.equal(supportsModelServiceTier('fireworks', 'kimi-k2p6-fast', ['standard'], 'priority'), false)
-  assert.equal(normalizeModelServiceTier('fireworks', 'fast'), '')
+  assert.equal(normalizeModelServiceTier('fireworks', 'fast'), 'fast')
 })
 
 test('Codex service tier options come from catalog tiers and keep priority distinct from fast', () => {

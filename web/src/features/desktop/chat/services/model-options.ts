@@ -1,11 +1,11 @@
 import type { ModelOptionRecord, ModelPricingRecord } from '../types/chat'
 
-const CODEX_CONTEXT_MODE_1M = '1m'
-const CODEX_GPT54_DEFAULT_CONTEXT_WINDOW = 272_000
-const CODEX_GPT54_1M_CONTEXT_WINDOW = 1_050_000
-const CODEX_GPT55_DEFAULT_CONTEXT_WINDOW = 272_000
-const FIREWORKS_MODEL_PREFIX = 'accounts/fireworks/models/'
-const FIREWORKS_ROUTER_PREFIX = 'accounts/fireworks/routers/'
+const FALLBACK_SERVICE_TIER_LABELS: Record<string, string> = {
+  priority: 'Priority',
+  fast: 'Fast',
+  flex: 'Flex',
+  batch: 'Batch',
+}
 
 const MODEL_PRESETS_BY_PROVIDER: Record<string, string[]> = {
   codex: [
@@ -47,74 +47,49 @@ function modelPresetListForProvider(provider: string): string[] {
 export type ModelServiceTierOption = { label: string; value: string }
 
 function normalizedServiceTiers(serviceTiers: string[] = []): string[] {
-  return serviceTiers.map((tier) => tier.trim().toLowerCase()).filter(Boolean)
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const tier of serviceTiers) {
+    const normalized = tier.trim().toLowerCase()
+    if (!normalized || normalized === 'standard' || normalized === 'off' || seen.has(normalized)) continue
+    seen.add(normalized)
+    out.push(normalized)
+  }
+  return out
+}
+
+function tierLabel(tier: string): string {
+  return FALLBACK_SERVICE_TIER_LABELS[tier] ?? tier.replace(/(^|[-_\s])([a-z])/g, (_match, prefix: string, char: string) => `${prefix}${char.toUpperCase()}`)
 }
 
 export function normalizeModelServiceTier(provider: string, serviceTier: string): string {
   const normalizedProvider = normalizeProviderID(provider)
   const normalizedTier = serviceTier.trim().toLowerCase()
-  if (normalizedProvider === 'codex') {
-    return normalizedTier === 'priority' || normalizedTier === 'fast' || normalizedTier === 'flex' ? normalizedTier : ''
-  }
-  if (normalizedProvider === 'fireworks') {
-    return normalizedTier === 'priority' ? normalizedTier : ''
+  if (normalizedProvider === 'codex' || normalizedProvider === 'fireworks') {
+    return normalizedTier && normalizedTier !== 'standard' && normalizedTier !== 'off' ? normalizedTier : ''
   }
   return ''
 }
 
-export function supportsCodexFastMode(provider: string, _model: string, serviceTiers: string[] = []): boolean {
-  return normalizeProviderID(provider) === 'codex' && normalizedServiceTiers(serviceTiers).includes('fast')
-}
-
-function isFireworksFastModelID(model: string): boolean {
-  const trimmedModel = model.trim().toLowerCase()
-  if (trimmedModel === '') return false
-  return trimmedModel.startsWith(FIREWORKS_ROUTER_PREFIX) || trimmedModel.endsWith('-fast')
-}
-
-export function supportsModelServiceTier(provider: string, model: string, serviceTiers: string[] = [], requestedTier = ''): boolean {
-  const normalizedProvider = normalizeProviderID(provider)
+export function supportsModelServiceTier(provider: string, _model: string, serviceTiers: string[] = [], requestedTier = ''): boolean {
   const tiers = normalizedServiceTiers(serviceTiers)
   const normalizedRequested = normalizeModelServiceTier(provider, requestedTier)
-  if (normalizedProvider === 'codex') {
-    if (normalizedRequested) return tiers.includes(normalizedRequested)
-    return tiers.includes('priority') || tiers.includes('fast') || tiers.includes('flex')
-  }
-  if (normalizedProvider === 'fireworks') {
-    if (isFireworksFastModelID(model)) return false
-    if (normalizedRequested) return tiers.includes(normalizedRequested)
-    return tiers.includes('priority')
-  }
-  return false
+  if (normalizedRequested) return tiers.includes(normalizedRequested)
+  return normalizeProviderID(provider) === 'codex' || normalizeProviderID(provider) === 'fireworks'
+    ? tiers.length > 0
+    : false
 }
 
-export function modelServiceTierOptions(provider: string, model: string, serviceTiers: string[] = []): ModelServiceTierOption[] {
-  const normalizedProvider = normalizeProviderID(provider)
+export function modelServiceTierOptions(_provider: string, _model: string, serviceTiers: string[] = []): ModelServiceTierOption[] {
   const tiers = normalizedServiceTiers(serviceTiers)
-  const options: ModelServiceTierOption[] = [{ label: 'Off / standard', value: '' }]
-  if (normalizedProvider === 'codex') {
-    if (tiers.includes('priority')) options.push({ label: 'Priority', value: 'priority' })
-    if (tiers.includes('fast')) options.push({ label: 'Fast', value: 'fast' })
-    if (tiers.includes('flex')) options.push({ label: 'Flex', value: 'flex' })
-    return options
-  }
-  if (normalizedProvider === 'fireworks') {
-    if (!isFireworksFastModelID(model) && tiers.includes('priority')) options.push({ label: 'Priority', value: 'priority' })
-    return options
-  }
-  return options
+  return [
+    { label: 'Off / standard', value: '' },
+    ...tiers.map((tier) => ({ label: tierLabel(tier), value: tier })),
+  ]
 }
 
 export function codexFastEnabled(provider: string, _model: string, serviceTier: string, serviceTiers: string[] = []): boolean {
-  return supportsCodexFastMode(provider, _model, serviceTiers) && normalizeModelServiceTier(provider, serviceTier) === 'fast'
-}
-
-export function supportsCodex1MMode(provider: string, model: string): boolean {
-  return normalizeProviderID(provider) === 'codex' && model.trim().toLowerCase() === 'gpt-5.4'
-}
-
-export function codex1MEnabled(provider: string, model: string, contextMode: string): boolean {
-  return supportsCodex1MMode(provider, model) && contextMode.trim().toLowerCase() === CODEX_CONTEXT_MODE_1M
+  return normalizeProviderID(provider) === 'codex' && normalizedServiceTiers(serviceTiers).includes('fast') && normalizeModelServiceTier(provider, serviceTier) === 'fast'
 }
 
 export function displayModelName(provider: string, model: string, contextMode: string): string {
@@ -126,26 +101,20 @@ export function displayModelName(provider: string, model: string, contextMode: s
   let displayName = trimmedModel
   if (normalizedProvider === 'fireworks') {
     const lowerModel = trimmedModel.toLowerCase()
-    if (lowerModel.startsWith(FIREWORKS_MODEL_PREFIX)) {
-      displayName = trimmedModel.slice(FIREWORKS_MODEL_PREFIX.length).trim()
-    } else if (lowerModel.startsWith(FIREWORKS_ROUTER_PREFIX)) {
-      displayName = trimmedModel.slice(FIREWORKS_ROUTER_PREFIX.length).trim()
+    const modelPrefix = 'accounts/fireworks/models/'
+    const routerPrefix = 'accounts/fireworks/routers/'
+    if (lowerModel.startsWith(modelPrefix)) {
+      displayName = trimmedModel.slice(modelPrefix.length).trim()
+    } else if (lowerModel.startsWith(routerPrefix)) {
+      displayName = trimmedModel.slice(routerPrefix.length).trim()
     }
   }
-  return codex1MEnabled(provider, trimmedModel, contextMode) ? `${displayName} (1m)` : displayName
+  const mode = contextMode.trim().toLowerCase()
+  return mode ? `${displayName} (${mode})` : displayName
 }
 
-export function effectiveContextWindow(provider: string, model: string, contextMode: string, fallback: number): number {
-  const normalizedModel = model.trim().toLowerCase()
-  if (normalizeProviderID(provider) === 'codex' && normalizedModel === 'gpt-5.5') {
-    return CODEX_GPT55_DEFAULT_CONTEXT_WINDOW
-  }
-  if (!supportsCodex1MMode(provider, model)) {
-    return fallback
-  }
-  return codex1MEnabled(provider, model, contextMode)
-    ? CODEX_GPT54_1M_CONTEXT_WINDOW
-    : (fallback > 0 ? fallback : CODEX_GPT54_DEFAULT_CONTEXT_WINDOW)
+export function effectiveContextWindow(_provider: string, _model: string, _contextMode: string, fallback: number): number {
+  return fallback
 }
 
 export function modelAllowedByProviderPreset(provider: string, model: string): boolean {

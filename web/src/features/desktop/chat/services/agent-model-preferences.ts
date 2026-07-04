@@ -73,6 +73,16 @@ export function resolveDesktopV3AgentModelLock(
   }
 }
 
+function defaultThinkingForModelOption(option: ModelOptionRecord | null): string {
+  const options = option?.thinkingOptions?.map((item) => item.trim().toLowerCase()).filter(Boolean) ?? []
+  const declared = option?.defaultThinking?.trim().toLowerCase() ?? ''
+  if (declared && (options.length === 0 || options.includes(declared))) return declared
+  const favorite = option?.thinking?.trim().toLowerCase() ?? ''
+  if (favorite && (options.length === 0 || options.includes(favorite))) return favorite
+  if (options.includes('off')) return 'off'
+  return options[0] ?? 'off'
+}
+
 export function preferenceFromModelDraft(
   draft: { provider: string; model: string; thinking: string; serviceTier: string },
   modelOptions: ModelOptionRecord[],
@@ -85,7 +95,7 @@ export function preferenceFromModelDraft(
   return {
     provider,
     model,
-    thinking: draft.thinking.trim() || 'off',
+    thinking: draft.thinking.trim() || defaultThinkingForModelOption(matchingOption),
     serviceTier: draft.serviceTier.trim(),
     contextMode: matchingOption?.contextMode ?? '',
     updatedAt: Date.now(),
@@ -103,7 +113,7 @@ export function preferenceFromAgentModelLock(
     ...current,
     provider: lock.provider,
     model: lock.model,
-    thinking: lock.thinking || current.thinking || matchingOption?.thinking || '',
+    thinking: lock.thinking || current.thinking || defaultThinkingForModelOption(matchingOption),
     serviceTier: lock.serviceTier,
     contextMode: matchingOption?.contextMode ?? '',
   }

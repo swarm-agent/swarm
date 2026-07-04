@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -111,16 +110,12 @@ func normalizeUsageSource(source string) string {
 func resolvedServiceTierForProvider(providerID, serviceTier string) string {
 	providerID = strings.ToLower(strings.TrimSpace(providerID))
 	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
+	if serviceTier == "" || serviceTier == "standard" || serviceTier == "off" {
+		return ""
+	}
 	switch providerID {
-	case "codex":
-		return codexruntime.NormalizeServiceTier(serviceTier)
-	case "fireworks":
-		switch serviceTier {
-		case "priority", "fast":
-			return serviceTier
-		default:
-			return ""
-		}
+	case "codex", "fireworks":
+		return serviceTier
 	default:
 		return ""
 	}

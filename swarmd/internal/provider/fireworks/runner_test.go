@@ -119,16 +119,40 @@ func TestBuildChatCompletionRequestMapsThinkingToReasoningEffort(t *testing.T) {
 		Model:    "test-model",
 		Thinking: "high",
 	})
-	if req.ReasoningEffort != "high" {
-		t.Fatalf("reasoning_effort = %q, want high", req.ReasoningEffort)
+	if req.ReasoningEffort != "" {
+		t.Fatalf("reasoning_effort = %q, want omitted without snapshot mapping", req.ReasoningEffort)
 	}
 
 	req = buildChatCompletionRequest(provideriface.Request{
-		Model:    "test-model",
+		Model:    "glm-5p2",
 		Thinking: "xhigh",
+		ModelCatalog: pebblestore.ModelCatalogRecord{
+			Provider: "fireworks",
+			Model:    "glm-5p2",
+			ThinkingMappings: []pebblestore.ModelCatalogThinkingMapping{
+				{SwarmSetting: "off", ProviderValue: "none", EffectiveProviderValue: "none"},
+				{SwarmSetting: "high", ProviderValue: "high", EffectiveProviderValue: "high"},
+				{SwarmSetting: "xhigh", ProviderValue: "max", EffectiveProviderValue: "max"},
+			},
+		},
 	})
-	if req.ReasoningEffort != "" {
-		t.Fatalf("reasoning_effort = %q, want omitted for unsupported level", req.ReasoningEffort)
+	if req.ReasoningEffort != "max" {
+		t.Fatalf("snapshot reasoning_effort = %q, want max", req.ReasoningEffort)
+	}
+
+	req = buildChatCompletionRequest(provideriface.Request{
+		Model:    "glm-5p2",
+		Thinking: "off",
+		ModelCatalog: pebblestore.ModelCatalogRecord{
+			Provider: "fireworks",
+			Model:    "glm-5p2",
+			ThinkingMappings: []pebblestore.ModelCatalogThinkingMapping{
+				{SwarmSetting: "off", ProviderValue: "none", EffectiveProviderValue: "none"},
+			},
+		},
+	})
+	if req.ReasoningEffort != "none" {
+		t.Fatalf("snapshot disabled reasoning_effort = %q, want none", req.ReasoningEffort)
 	}
 }
 
@@ -164,9 +188,11 @@ func TestResolveServingTierNormalizesBareFireworksModelWithoutCatalog(t *testing
 
 func TestServingConfigFromFastRouterCatalogKeepsRouterModelStandardOnly(t *testing.T) {
 	catalog := pebblestore.ModelCatalogRecord{
-		Provider:         "fireworks",
-		Model:            "kimi-k2p6-fast",
-		ProviderSpecific: []byte(`{"fireworks":{"resource_name":"accounts/fireworks/models/kimi-k2p6","serving":{"supported_tiers":["standard","priority","fast"],"default_tier":"standard","priority":{"tier":"priority","provider_parameter":"service_tier","provider_value":"priority"},"fast":{"tier":"fast","provider_parameter":"model","provider_value":"accounts/fireworks/routers/kimi-k2p6-fast"}}}}`),
+		Provider:           "fireworks",
+		Model:              "kimi-k2p6-fast",
+		ServiceTiers:       []string{"standard"},
+		DefaultServiceTier: "standard",
+		ProviderSpecific:   []byte(`{"fireworks":{"resource_name":"accounts/fireworks/routers/kimi-k2p6-fast","serving":{"supported_tiers":["standard"],"default_tier":"standard","standard":{"tier":"standard","provider_parameter":null,"provider_value":null,"request_model_path":"accounts/fireworks/routers/kimi-k2p6-fast"},"priority":null,"fast":null}}}`),
 	}
 	serving := ResolveServingTier(provideriface.Request{Model: "kimi-k2p6-fast", ServiceTier: "priority", ModelCatalog: catalog}, ServingConfigFromCatalog(catalog))
 	if serving.ModelID != "accounts/fireworks/routers/kimi-k2p6-fast" || serving.ServiceTier != "" || serving.EffectiveTier != "standard" {
@@ -179,9 +205,9 @@ func TestResolveServingTierUsesProviderNativeFireworksSemantics(t *testing.T) {
 		SupportedTiers: []string{"standard", "priority", "fast"},
 		DefaultTier:    "standard",
 		Tiers: map[string]ServingTier{
-			"standard": {Tier: "standard"},
-			"priority": {Tier: "priority", ProviderParameter: "service_tier", ProviderValue: "priority"},
-			"fast":     {Tier: "fast", ProviderParameter: "model", ProviderValue: "accounts/fireworks/routers/glm-5p1-fast"},
+			"standard": {Tier: "standard", RequestModelPath: "accounts/fireworks/models/glm-5p1"},
+			"priority": {Tier: "priority", ProviderParameter: "service_tier", ProviderValue: "priority", RequestModelPath: "accounts/fireworks/models/glm-5p1"},
+			"fast":     {Tier: "fast", RequestModelPath: "accounts/fireworks/routers/glm-5p1-fast"},
 		},
 	}
 

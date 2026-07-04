@@ -2,10 +2,10 @@
   "schema_version": "2026-06-09.1",
   "api_version": "v1",
   "snapshot_schema_version": "2026-07-01.1",
-  "snapshot_id": "swarm-models-v1-65e0cd0c2881c2fa",
-  "snapshot_version": "65e0cd0c2881c2fa",
-  "generated_at": "2026-07-03T11:09:02.538Z",
-  "model_count": 542,
+  "snapshot_id": "swarm-models-v1-80ff8781773b87c0",
+  "snapshot_version": "80ff8781773b87c0",
+  "generated_at": "2026-07-04T07:56:24.921Z",
+  "model_count": 546,
   "provider_count": 7,
   "hydrated_provider_count": 6,
   "definitions": {
@@ -110,7 +110,7 @@
         "serving_paths": "https://docs.fireworks.ai/serverless/serving-paths",
         "app_model_pages": "https://fireworks.ai/models/fireworks"
       },
-      "notes": "Fireworks uses provider-native serving path names. Standard is the default path with no service_tier parameter. Priority is selected with service_tier=priority for supported models. Fast is selected by switching to a provider-published router model ID such as accounts/fireworks/routers/kimi-k2p6-fast; it is not the same as Priority."
+      "notes": "Fireworks uses provider-native serving path names. Standard is the default base model path with no service_tier parameter. Priority is selected with service_tier=priority on supported base model paths. Fast is represented as separate provider-published router model entries such as accounts/fireworks/routers/kimi-k2p6-fast; it is not the same as Priority."
     },
     "google": {
       "serving_tiers": {
@@ -144,7 +144,7 @@
             "multiplier_min": 1.75,
             "multiplier_max": 2,
             "discount_percent": null,
-            "notes": "Google documents Priority inference as 75\u2013100% more than Standard."
+            "notes": "Google documents Priority inference as 75–100% more than Standard."
           },
           "latency": "Seconds",
           "reliability": "High, non-sheddable; overflow can gracefully downgrade to Standard.",
@@ -164,7 +164,7 @@
             "discount_percent": 50,
             "notes": "Google documents Flex inference as 50% of Standard API pricing."
           },
-          "latency": "Minutes, with a 1\u201315 minute target",
+          "latency": "Minutes, with a 1–15 minute target",
           "reliability": "Best-effort, sheddable; clients must handle 429/503 and retries.",
           "notes": "Flex uses the same service_tier parameter with value flex for latency-tolerant synchronous work."
         },
@@ -435,7 +435,7 @@
       "display_name": "Fireworks AI",
       "catalog_status": "source_identified",
       "auth_required_for_hydration": true,
-      "model_count": 14,
+      "model_count": 18,
       "sources": [
         {
           "source_id": "fireworks_serverless_models_api",
@@ -612,7 +612,7 @@
       "provider_id": "fireworks",
       "provider_display_name": "Fireworks AI",
       "source_url": "https://fireworks.ai/models?modelTypes=Serverless",
-      "model_count": 14,
+      "model_count": 18,
       "path": "/v1/models/fireworks.json"
     },
     {
@@ -6058,7 +6058,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-03T11:09:02.538Z",
+          "fetched_at": "2026-07-04T07:56:24.921Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -6262,7 +6262,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-03T11:09:02.538Z"
+      "updated_at": "2026-07-04T07:56:24.921Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -6445,7 +6445,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-03T11:09:02.538Z",
+          "fetched_at": "2026-07-04T07:56:24.921Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -6692,7 +6692,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-03T11:09:02.538Z"
+      "updated_at": "2026-07-04T07:56:24.921Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -6874,7 +6874,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-03T11:09:02.538Z",
+          "fetched_at": "2026-07-04T07:56:24.921Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -7114,7 +7114,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-03T11:09:02.538Z"
+      "updated_at": "2026-07-04T07:56:24.921Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -7297,7 +7297,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-03T11:09:02.538Z",
+          "fetched_at": "2026-07-04T07:56:24.921Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -7567,7 +7567,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-03T11:09:02.538Z"
+      "updated_at": "2026-07-04T07:56:24.921Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -7855,6 +7855,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/deepseek-v4-flash",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.14,
                 "cached_input_price_per_million_tokens": 0.028,
@@ -7870,7 +7871,7 @@
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "DeepSeek-V4-Flash serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "DeepSeek-V4-Flash serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
           "reasoning_effort": {
             "control_kind": "effort",
@@ -7955,7 +7956,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/deepseek-v4-flash"
         }
       },
       "swarm": {
@@ -8269,6 +8271,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/deepseek-v4-pro",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 1.74,
                 "cached_input_price_per_million_tokens": 0.145,
@@ -8280,12 +8283,13 @@
               "tier": "priority",
               "provider_parameter": "service_tier",
               "provider_value": "priority",
+              "request_model_path": "accounts/fireworks/models/deepseek-v4-pro",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 2.61,
                 "cached_input_price_per_million_tokens": 0.218,
                 "output_price_per_million_tokens": 5.22
               },
-              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
+              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
             },
             "fast": null,
             "pricing_unit": "USD_per_1m_tokens",
@@ -8294,7 +8298,7 @@
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "DeepSeek-V4-Pro serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "DeepSeek-V4-Pro serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
           "reasoning_effort": {
             "control_kind": "effort",
@@ -8383,7 +8387,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/deepseek-v4-pro"
         }
       },
       "swarm": {
@@ -8459,28 +8464,59 @@
         "supports_parallel_tool_calls": true,
         "supports_structured_outputs": null,
         "supports_json_mode": null,
-        "supports_reasoning": null,
+        "supports_reasoning": true,
         "supports_embeddings": false,
         "supports_batch": null,
         "supports_fine_tuning": true,
         "supports_caching": null
       },
       "thinking": {
-        "supported": null,
-        "control_kind": "unknown",
-        "supported_swarm_settings": [],
-        "default_swarm_setting": null,
-        "provider_parameter": null,
-        "provider_supported_values": [],
-        "provider_default_value": null,
-        "can_disable": null,
-        "supports_budget_tokens": null,
-        "supports_effort_levels": null,
-        "supports_reasoning_content": null,
-        "swarm_setting_mappings": [],
-        "unsupported_swarm_settings": [],
-        "source_ids": [],
-        "notes": null
+        "supported": true,
+        "control_kind": "binary",
+        "supported_swarm_settings": [
+          "off",
+          "medium"
+        ],
+        "default_swarm_setting": "medium",
+        "provider_parameter": "reasoning_effort",
+        "provider_supported_values": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          false,
+          true
+        ],
+        "provider_default_value": "medium",
+        "can_disable": true,
+        "supports_budget_tokens": false,
+        "supports_effort_levels": false,
+        "supports_reasoning_content": true,
+        "swarm_setting_mappings": [
+          {
+            "swarm_setting": "off",
+            "provider_value": "none",
+            "effective_provider_value": "none",
+            "behavior": "disabled",
+            "notes": "Disables reasoning."
+          },
+          {
+            "swarm_setting": "medium",
+            "provider_value": "medium",
+            "effective_provider_value": "medium",
+            "behavior": "enabled",
+            "notes": "Enables reasoning; Fireworks docs describe this model family as binary on/off."
+          }
+        ],
+        "unsupported_swarm_settings": [
+          "low",
+          "high",
+          "xhigh"
+        ],
+        "source_ids": [
+          "fireworks_chat_completions_reasoning_docs"
+        ],
+        "notes": "GLM 4.5/4.6/4.7/5.1 has binary on/off reasoning and defaults on. Effort levels and integers have no additional effect, so Swarm exposes off and medium only."
       },
       "limits": {
         "context_window_tokens": 202752,
@@ -8504,6 +8540,7 @@
         "supported_parameters": [
           "max_tokens",
           "parallel_tool_calls",
+          "reasoning_effort",
           "service_tier",
           "stream",
           "temperature",
@@ -8648,8 +8685,7 @@
             "supported": true,
             "supported_tiers": [
               "standard",
-              "priority",
-              "fast"
+              "priority"
             ],
             "default_tier": "standard",
             "provider_parameter": "service_tier",
@@ -8657,6 +8693,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/glm-5p1",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 1.4,
                 "cached_input_price_per_million_tokens": 0.26,
@@ -8668,33 +8705,54 @@
               "tier": "priority",
               "provider_parameter": "service_tier",
               "provider_value": "priority",
+              "request_model_path": "accounts/fireworks/models/glm-5p1",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 2.1,
                 "cached_input_price_per_million_tokens": 0.39,
                 "output_price_per_million_tokens": 6.6
               },
-              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
+              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
             },
-            "fast": {
-              "tier": "fast",
-              "provider_parameter": "model",
-              "provider_value": "accounts/fireworks/routers/glm-5p1-fast",
-              "pricing": {
-                "uncached_input_price_per_million_tokens": 2.8,
-                "cached_input_price_per_million_tokens": 0.52,
-                "output_price_per_million_tokens": 8.8
-              },
-              "notes": "Fireworks Fast serving is selected by changing the request model ID to this Fast router path; it is not selected with service_tier=priority."
-            },
+            "fast": null,
             "pricing_unit": "USD_per_1m_tokens",
             "source_ids": [
               "fireworks_serverless_pricing_docs",
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "GLM 5.1 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "GLM 5.1 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
-          "reasoning_effort": null,
+          "reasoning_effort": {
+            "control_kind": "binary",
+            "supported_swarm_settings": [
+              "off",
+              "medium"
+            ],
+            "default_swarm_setting": "medium",
+            "provider_parameter": "reasoning_effort",
+            "provider_supported_values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              false,
+              true
+            ],
+            "provider_default_value": "medium",
+            "can_disable": true,
+            "supports_budget_tokens": false,
+            "supports_effort_levels": false,
+            "supports_reasoning_content": true,
+            "unsupported_swarm_settings": [
+              "low",
+              "high",
+              "xhigh"
+            ],
+            "source_ids": [
+              "fireworks_chat_completions_reasoning_docs"
+            ],
+            "note": "GLM 4.5/4.6/4.7/5.1 has binary on/off reasoning and defaults on. Effort levels and integers have no additional effect, so Swarm exposes off and medium only."
+          },
           "model_library": {
             "source_url": "https://fireworks.ai/models/fireworks/glm-5p1",
             "fetched_at": "2026-07-03T11:05:04.925Z",
@@ -8753,7 +8811,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/glm-5p1"
         }
       },
       "swarm": {
@@ -8776,6 +8835,414 @@
         },
         "reviewed_at": null,
         "notes": "Fireworks entry hydrated from the current Fireworks model library. Context/input limits are scraped from the model library; provider-native Standard/Priority/Fast serving metadata is documented in provider_specific.fireworks.serving."
+      },
+      "updated_at": "2026-07-03T11:05:04.925Z"
+    },
+    {
+      "schema_version": "2026-06-09.1",
+      "catalog_id": "fireworks/glm-5p1-fast",
+      "provider_id": "fireworks",
+      "provider_display_name": "Fireworks AI",
+      "model_id": "glm-5p1-fast",
+      "display_name": "GLM 5.1 Fast",
+      "description": "GLM-5.1 is Z.ai's next-generation flagship model built for agentic engineering, with stronger coding capabilities and sustained performance over long-horizon tasks with hundreds of iteration rounds. It's a 754B-parameter MoE model",
+      "family": "glm",
+      "external_ids": {
+        "provider_canonical_slug": "accounts/fireworks/routers/glm-5p1-fast",
+        "hugging_face_id": "zai-org/GLM-5.1-FP8",
+        "upstream_model_id": "accounts/fireworks/models/glm-5p1"
+      },
+      "lifecycle": {
+        "created_at": "2026-03-27T00:00:00.000Z",
+        "created_at_unix_seconds": 1774569600,
+        "release_date": null,
+        "knowledge_cutoff": null,
+        "deprecation_date": null,
+        "expiration_date": null
+      },
+      "availability_status": "available",
+      "architecture": {
+        "source_modality": "text->text",
+        "tokenizer": null,
+        "instruct_type": null,
+        "parameter_count": 743000000000,
+        "active_parameter_count": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "supports_text_input": true,
+        "supports_text_output": true,
+        "supports_image_input": false,
+        "supports_image_output": false,
+        "supports_audio_input": false,
+        "supports_audio_output": false,
+        "supports_voice": false,
+        "supports_tools": true,
+        "supports_parallel_tool_calls": true,
+        "supports_structured_outputs": null,
+        "supports_json_mode": null,
+        "supports_reasoning": true,
+        "supports_embeddings": false,
+        "supports_batch": null,
+        "supports_fine_tuning": true,
+        "supports_caching": null
+      },
+      "thinking": {
+        "supported": true,
+        "control_kind": "binary",
+        "supported_swarm_settings": [
+          "off",
+          "medium"
+        ],
+        "default_swarm_setting": "medium",
+        "provider_parameter": "reasoning_effort",
+        "provider_supported_values": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          false,
+          true
+        ],
+        "provider_default_value": "medium",
+        "can_disable": true,
+        "supports_budget_tokens": false,
+        "supports_effort_levels": false,
+        "supports_reasoning_content": true,
+        "swarm_setting_mappings": [
+          {
+            "swarm_setting": "off",
+            "provider_value": "none",
+            "effective_provider_value": "none",
+            "behavior": "disabled",
+            "notes": "Disables reasoning."
+          },
+          {
+            "swarm_setting": "medium",
+            "provider_value": "medium",
+            "effective_provider_value": "medium",
+            "behavior": "enabled",
+            "notes": "Enables reasoning; Fireworks docs describe this model family as binary on/off."
+          }
+        ],
+        "unsupported_swarm_settings": [
+          "low",
+          "high",
+          "xhigh"
+        ],
+        "source_ids": [
+          "fireworks_chat_completions_reasoning_docs"
+        ],
+        "notes": "GLM 4.5/4.6/4.7/5.1 has binary on/off reasoning and defaults on. Effort levels and integers have no additional effect, so Swarm exposes off and medium only."
+      },
+      "limits": {
+        "context_window_tokens": 202752,
+        "max_input_tokens": 202752,
+        "max_output_tokens": null,
+        "max_reasoning_tokens": null
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_price_per_million_tokens": 2.8,
+        "output_price_per_million_tokens": 8.8,
+        "cached_input_price_per_million_tokens": 0.52,
+        "reasoning_price_per_million_tokens": null,
+        "image_input_price": null,
+        "image_output_price": null,
+        "audio_input_price": null,
+        "audio_output_price": null,
+        "is_free": null
+      },
+      "parameters": {
+        "supported_parameters": [
+          "max_tokens",
+          "parallel_tool_calls",
+          "reasoning_effort",
+          "stream",
+          "temperature",
+          "tool_choice",
+          "tools",
+          "top_k",
+          "top_p"
+        ],
+        "default_parameters": {},
+        "supported_voices": null
+      },
+      "routing": {
+        "routed_through_provider_id": "fireworks",
+        "upstream_provider_ids": [
+          "fireworks"
+        ],
+        "top_provider_context_window_tokens": 202752,
+        "top_provider_max_output_tokens": null,
+        "top_provider_is_moderated": null,
+        "per_request_limits": null
+      },
+      "links": {
+        "details_url": "https://fireworks.ai/models/fireworks/glm-5p1",
+        "docs_url": "https://docs.fireworks.ai/models/overview",
+        "pricing_url": "https://docs.fireworks.ai/serverless/pricing",
+        "endpoint_url": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue"
+      },
+      "sources": [
+        {
+          "source_id": "fireworks_serverless_models_api",
+          "source_url": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue",
+          "source_kind": "official_api",
+          "fetched_at": "2026-07-03T11:05:04.925Z",
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "architecture",
+            "availability_status",
+            "capabilities",
+            "catalog_id",
+            "description",
+            "display_name",
+            "external_ids",
+            "lifecycle",
+            "limits",
+            "links",
+            "modalities",
+            "model_id",
+            "parameters",
+            "provider_id",
+            "provider_specific.fireworks",
+            "routing"
+          ]
+        },
+        {
+          "source_id": "fireworks_model_library",
+          "source_url": "https://fireworks.ai/models",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "model_library_metadata",
+            "pricing",
+            "serverless_availability",
+            "serverless_lifecycle"
+          ]
+        },
+        {
+          "source_id": "fireworks_chat_completions_reasoning_docs",
+          "source_url": "https://docs.fireworks.ai/api-reference/post-chatcompletions",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "capabilities.supports_reasoning",
+            "parameters.supported_parameters",
+            "provider_specific.fireworks.reasoning_effort",
+            "thinking"
+          ]
+        },
+        {
+          "source_id": "fireworks_serverless_pricing_docs",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "pricing",
+            "provider_specific.fireworks.serving",
+            "provider_specific.fireworks.serving.fast.pricing",
+            "provider_specific.fireworks.serving.priority.pricing",
+            "provider_specific.fireworks.serving.standard.pricing"
+          ]
+        },
+        {
+          "source_id": "fireworks_serverless_serving_paths_docs",
+          "source_url": "https://docs.fireworks.ai/serverless/serving-paths",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "pricing",
+            "provider_specific.fireworks.serving",
+            "provider_specific.fireworks.serving.fast.pricing",
+            "provider_specific.fireworks.serving.priority.pricing",
+            "provider_specific.fireworks.serving.standard.pricing"
+          ]
+        },
+        {
+          "source_id": "fireworks_app_model_pages",
+          "source_url": "https://fireworks.ai/models/fireworks/glm-5p1",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "limits.context_window_tokens",
+            "limits.max_input_tokens",
+            "limits.max_output_tokens",
+            "pricing",
+            "provider_specific.fireworks.serving"
+          ]
+        }
+      ],
+      "provider_specific": {
+        "fireworks": {
+          "resource_name": "accounts/fireworks/routers/glm-5p1-fast",
+          "account_id": "fireworks",
+          "kind": "BASE_MODEL",
+          "state": "READY",
+          "public": true,
+          "supports_serverless": true,
+          "supports_lora": true,
+          "use_hf_apply_chat_template": null,
+          "serving": {
+            "supported": true,
+            "supported_tiers": [
+              "standard"
+            ],
+            "default_tier": "standard",
+            "provider_parameter": null,
+            "standard": {
+              "tier": "standard",
+              "provider_parameter": null,
+              "provider_value": null,
+              "request_model_path": "accounts/fireworks/routers/glm-5p1-fast",
+              "pricing": {
+                "uncached_input_price_per_million_tokens": 2.8,
+                "cached_input_price_per_million_tokens": 0.52,
+                "output_price_per_million_tokens": 8.8
+              },
+              "notes": "Fireworks Standard serving; default path when service_tier is omitted."
+            },
+            "priority": null,
+            "fast": null,
+            "pricing_unit": "USD_per_1m_tokens",
+            "source_ids": [
+              "fireworks_serverless_pricing_docs",
+              "fireworks_serverless_serving_paths_docs",
+              "fireworks_app_model_pages"
+            ],
+            "notes": "GLM 5.1 Fast serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
+          },
+          "reasoning_effort": {
+            "control_kind": "binary",
+            "supported_swarm_settings": [
+              "off",
+              "medium"
+            ],
+            "default_swarm_setting": "medium",
+            "provider_parameter": "reasoning_effort",
+            "provider_supported_values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              false,
+              true
+            ],
+            "provider_default_value": "medium",
+            "can_disable": true,
+            "supports_budget_tokens": false,
+            "supports_effort_levels": false,
+            "supports_reasoning_content": true,
+            "unsupported_swarm_settings": [
+              "low",
+              "high",
+              "xhigh"
+            ],
+            "source_ids": [
+              "fireworks_chat_completions_reasoning_docs"
+            ],
+            "note": "GLM 4.5/4.6/4.7/5.1 has binary on/off reasoning and defaults on. Effort levels and integers have no additional effect, so Swarm exposes off and medium only."
+          },
+          "model_library": {
+            "source_url": "https://fireworks.ai/models/fireworks/glm-5p1",
+            "fetched_at": "2026-07-03T11:05:04.925Z",
+            "list_url": "https://fireworks.ai/models?modelTypes=Serverless",
+            "list_tags": [
+              "LLM"
+            ],
+            "provider_name": "Z.ai",
+            "supports_reranking": false,
+            "standard_pricing_from_detail_page": {
+              "uncached_input_price_per_million_tokens": 1.4,
+              "cached_input_price_per_million_tokens": 0.26,
+              "output_price_per_million_tokens": 4.4
+            }
+          },
+          "serverless_serving": {
+            "priority_supported": false,
+            "fast_router_id": null,
+            "standard_pricing": {
+              "uncached_input_price_per_million_tokens": 2.8,
+              "cached_input_price_per_million_tokens": 0.52,
+              "output_price_per_million_tokens": 8.8
+            },
+            "priority_pricing": null,
+            "fast_pricing": null,
+            "pricing_source_label": "GLM 5.1",
+            "fast_pricing_source_label": "GLM 5.1 Fast",
+            "standard_request_model_path": "accounts/fireworks/routers/glm-5p1-fast",
+            "priority_request_model_path": null,
+            "fast_request_model_path": null
+          },
+          "base_model_details": {
+            "parameterCount": "743000000000",
+            "moe": true,
+            "modelType": "glm"
+          },
+          "conversation_config": null,
+          "default_sampling_params": null,
+          "training_context_length": null,
+          "default_draft_model": null,
+          "default_draft_token_count": null,
+          "imported_from": "zai-org/GLM-5.1-FP8",
+          "cluster": null,
+          "calibrated": false,
+          "tuning": {
+            "tunable": true,
+            "supervised_lora_tunable": null,
+            "supervised_full_parameter_tunable": null,
+            "rl_tunable": null,
+            "rl_lora_tunable": null,
+            "rl_full_parameter_tunable": null
+          },
+          "pricing_enrichment_status": "fireworks_model_library_scrape",
+          "note": "Fireworks Fast router entry. Use this full request_model_path as the model value; do not send service_tier=priority for this entry.",
+          "request_model_path": "accounts/fireworks/routers/glm-5p1-fast",
+          "base_model_resource_name": "accounts/fireworks/models/glm-5p1",
+          "base_model_id": "glm-5p1"
+        }
+      },
+      "swarm": {
+        "routing_roles": [],
+        "labels": {
+          "best_for_coding": null,
+          "best_for_reasoning": null,
+          "best_for_fast_chat": true,
+          "best_for_vision": false,
+          "best_for_voice": false,
+          "best_for_image_generation": false,
+          "best_for_low_cost": null
+        },
+        "measurements": {
+          "time_to_first_token_ms": null,
+          "output_tokens_per_second": null,
+          "reliability_score": null,
+          "sample_count": null,
+          "measured_at": null
+        },
+        "reviewed_at": null,
+        "notes": "Fireworks Fast router model for GLM 5.1. Use provider_specific.fireworks.request_model_path as the request model path."
       },
       "updated_at": "2026-07-03T11:05:04.925Z"
     },
@@ -8829,28 +9296,68 @@
         "supports_parallel_tool_calls": true,
         "supports_structured_outputs": null,
         "supports_json_mode": null,
-        "supports_reasoning": null,
+        "supports_reasoning": true,
         "supports_embeddings": false,
         "supports_batch": null,
         "supports_fine_tuning": true,
         "supports_caching": null
       },
       "thinking": {
-        "supported": null,
-        "control_kind": "unknown",
-        "supported_swarm_settings": [],
-        "default_swarm_setting": null,
-        "provider_parameter": null,
-        "provider_supported_values": [],
-        "provider_default_value": null,
-        "can_disable": null,
-        "supports_budget_tokens": null,
-        "supports_effort_levels": null,
-        "supports_reasoning_content": null,
-        "swarm_setting_mappings": [],
-        "unsupported_swarm_settings": [],
-        "source_ids": [],
-        "notes": null
+        "supported": true,
+        "control_kind": "effort",
+        "supported_swarm_settings": [
+          "off",
+          "high",
+          "xhigh"
+        ],
+        "default_swarm_setting": "xhigh",
+        "provider_parameter": "reasoning_effort",
+        "provider_supported_values": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          false,
+          true
+        ],
+        "provider_default_value": "max",
+        "can_disable": true,
+        "supports_budget_tokens": false,
+        "supports_effort_levels": true,
+        "supports_reasoning_content": true,
+        "swarm_setting_mappings": [
+          {
+            "swarm_setting": "off",
+            "provider_value": "none",
+            "effective_provider_value": "none",
+            "behavior": "disabled",
+            "notes": "Disables thinking."
+          },
+          {
+            "swarm_setting": "high",
+            "provider_value": "high",
+            "effective_provider_value": "high",
+            "behavior": "effort",
+            "notes": "Selects the Fireworks High reasoning tier."
+          },
+          {
+            "swarm_setting": "xhigh",
+            "provider_value": "max",
+            "effective_provider_value": "max",
+            "behavior": "effort",
+            "notes": "Selects the Fireworks Max reasoning tier; Fireworks also accepts xhigh for this tier."
+          }
+        ],
+        "unsupported_swarm_settings": [
+          "low",
+          "medium"
+        ],
+        "source_ids": [
+          "fireworks_chat_completions_reasoning_docs"
+        ],
+        "notes": "GLM 5.2 has two reasoning tiers. Fireworks collapses low/medium to high, maps max/xhigh to Max, defaults to Max when omitted, and supports none/false to disable thinking."
       },
       "limits": {
         "context_window_tokens": 1048576,
@@ -8874,6 +9381,7 @@
         "supported_parameters": [
           "max_tokens",
           "parallel_tool_calls",
+          "reasoning_effort",
           "service_tier",
           "stream",
           "temperature",
@@ -9018,8 +9526,7 @@
             "supported": true,
             "supported_tiers": [
               "standard",
-              "priority",
-              "fast"
+              "priority"
             ],
             "default_tier": "standard",
             "provider_parameter": "service_tier",
@@ -9027,6 +9534,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/glm-5p2",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 1.4,
                 "cached_input_price_per_million_tokens": 0.14,
@@ -9038,33 +9546,56 @@
               "tier": "priority",
               "provider_parameter": "service_tier",
               "provider_value": "priority",
+              "request_model_path": "accounts/fireworks/models/glm-5p2",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 1.75,
                 "cached_input_price_per_million_tokens": 0.18,
                 "output_price_per_million_tokens": 5.5
               },
-              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
+              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
             },
-            "fast": {
-              "tier": "fast",
-              "provider_parameter": "model",
-              "provider_value": "accounts/fireworks/routers/glm-5p2-fast",
-              "pricing": {
-                "uncached_input_price_per_million_tokens": 2.1,
-                "cached_input_price_per_million_tokens": 0.21,
-                "output_price_per_million_tokens": 6.6
-              },
-              "notes": "Fireworks Fast serving is selected by changing the request model ID to this Fast router path; it is not selected with service_tier=priority."
-            },
+            "fast": null,
             "pricing_unit": "USD_per_1m_tokens",
             "source_ids": [
               "fireworks_serverless_pricing_docs",
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "GLM 5.2 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "GLM 5.2 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
-          "reasoning_effort": null,
+          "reasoning_effort": {
+            "control_kind": "effort",
+            "supported_swarm_settings": [
+              "off",
+              "high",
+              "xhigh"
+            ],
+            "default_swarm_setting": "xhigh",
+            "provider_parameter": "reasoning_effort",
+            "provider_supported_values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              false,
+              true
+            ],
+            "provider_default_value": "max",
+            "can_disable": true,
+            "supports_budget_tokens": false,
+            "supports_effort_levels": true,
+            "supports_reasoning_content": true,
+            "unsupported_swarm_settings": [
+              "low",
+              "medium"
+            ],
+            "source_ids": [
+              "fireworks_chat_completions_reasoning_docs"
+            ],
+            "note": "GLM 5.2 has two reasoning tiers. Fireworks collapses low/medium to high, maps max/xhigh to Max, defaults to Max when omitted, and supports none/false to disable thinking."
+          },
           "model_library": {
             "source_url": "https://fireworks.ai/models/fireworks/glm-5p2",
             "fetched_at": "2026-07-03T11:05:04.925Z",
@@ -9123,7 +9654,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/glm-5p2"
         }
       },
       "swarm": {
@@ -9146,6 +9678,425 @@
         },
         "reviewed_at": null,
         "notes": "Fireworks entry hydrated from the current Fireworks model library. Context/input limits are scraped from the model library; provider-native Standard/Priority/Fast serving metadata is documented in provider_specific.fireworks.serving."
+      },
+      "updated_at": "2026-07-03T11:05:04.925Z"
+    },
+    {
+      "schema_version": "2026-06-09.1",
+      "catalog_id": "fireworks/glm-5p2-fast",
+      "provider_id": "fireworks",
+      "provider_display_name": "Fireworks AI",
+      "model_id": "glm-5p2-fast",
+      "display_name": "GLM 5.2 Fast",
+      "description": "GLM-5.2 introduces a robust 1M-token context and advanced, multi-effort coding capabilities to significantly enhance performance on long-horizon tasks. Its new IndexShare architecture and improved MTP layer simultaneously boost efficiency by reducing per-token FLOPs and increasing speculative decoding lengths.",
+      "family": "glm",
+      "external_ids": {
+        "provider_canonical_slug": "accounts/fireworks/routers/glm-5p2-fast",
+        "hugging_face_id": "zai-org/GLM-5.2",
+        "upstream_model_id": "accounts/fireworks/models/glm-5p2"
+      },
+      "lifecycle": {
+        "created_at": "2026-06-16T00:00:00.000Z",
+        "created_at_unix_seconds": 1781568000,
+        "release_date": null,
+        "knowledge_cutoff": null,
+        "deprecation_date": null,
+        "expiration_date": null
+      },
+      "availability_status": "available",
+      "architecture": {
+        "source_modality": "text->text",
+        "tokenizer": null,
+        "instruct_type": null,
+        "parameter_count": 743000000000,
+        "active_parameter_count": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "supports_text_input": true,
+        "supports_text_output": true,
+        "supports_image_input": false,
+        "supports_image_output": false,
+        "supports_audio_input": false,
+        "supports_audio_output": false,
+        "supports_voice": false,
+        "supports_tools": true,
+        "supports_parallel_tool_calls": true,
+        "supports_structured_outputs": null,
+        "supports_json_mode": null,
+        "supports_reasoning": true,
+        "supports_embeddings": false,
+        "supports_batch": null,
+        "supports_fine_tuning": true,
+        "supports_caching": null
+      },
+      "thinking": {
+        "supported": true,
+        "control_kind": "effort",
+        "supported_swarm_settings": [
+          "off",
+          "high",
+          "xhigh"
+        ],
+        "default_swarm_setting": "xhigh",
+        "provider_parameter": "reasoning_effort",
+        "provider_supported_values": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          false,
+          true
+        ],
+        "provider_default_value": "max",
+        "can_disable": true,
+        "supports_budget_tokens": false,
+        "supports_effort_levels": true,
+        "supports_reasoning_content": true,
+        "swarm_setting_mappings": [
+          {
+            "swarm_setting": "off",
+            "provider_value": "none",
+            "effective_provider_value": "none",
+            "behavior": "disabled",
+            "notes": "Disables thinking."
+          },
+          {
+            "swarm_setting": "high",
+            "provider_value": "high",
+            "effective_provider_value": "high",
+            "behavior": "effort",
+            "notes": "Selects the Fireworks High reasoning tier."
+          },
+          {
+            "swarm_setting": "xhigh",
+            "provider_value": "max",
+            "effective_provider_value": "max",
+            "behavior": "effort",
+            "notes": "Selects the Fireworks Max reasoning tier; Fireworks also accepts xhigh for this tier."
+          }
+        ],
+        "unsupported_swarm_settings": [
+          "low",
+          "medium"
+        ],
+        "source_ids": [
+          "fireworks_chat_completions_reasoning_docs"
+        ],
+        "notes": "GLM 5.2 has two reasoning tiers. Fireworks collapses low/medium to high, maps max/xhigh to Max, defaults to Max when omitted, and supports none/false to disable thinking."
+      },
+      "limits": {
+        "context_window_tokens": 1048576,
+        "max_input_tokens": 1048576,
+        "max_output_tokens": null,
+        "max_reasoning_tokens": null
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_price_per_million_tokens": 2.1,
+        "output_price_per_million_tokens": 6.6,
+        "cached_input_price_per_million_tokens": 0.21,
+        "reasoning_price_per_million_tokens": null,
+        "image_input_price": null,
+        "image_output_price": null,
+        "audio_input_price": null,
+        "audio_output_price": null,
+        "is_free": null
+      },
+      "parameters": {
+        "supported_parameters": [
+          "max_tokens",
+          "parallel_tool_calls",
+          "reasoning_effort",
+          "stream",
+          "temperature",
+          "tool_choice",
+          "tools",
+          "top_k",
+          "top_p"
+        ],
+        "default_parameters": {},
+        "supported_voices": null
+      },
+      "routing": {
+        "routed_through_provider_id": "fireworks",
+        "upstream_provider_ids": [
+          "fireworks"
+        ],
+        "top_provider_context_window_tokens": 1048576,
+        "top_provider_max_output_tokens": null,
+        "top_provider_is_moderated": null,
+        "per_request_limits": null
+      },
+      "links": {
+        "details_url": "https://fireworks.ai/models/fireworks/glm-5p2",
+        "docs_url": "https://docs.fireworks.ai/models/overview",
+        "pricing_url": "https://docs.fireworks.ai/serverless/pricing",
+        "endpoint_url": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue"
+      },
+      "sources": [
+        {
+          "source_id": "fireworks_serverless_models_api",
+          "source_url": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue",
+          "source_kind": "official_api",
+          "fetched_at": "2026-07-03T11:05:04.925Z",
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "architecture",
+            "availability_status",
+            "capabilities",
+            "catalog_id",
+            "description",
+            "display_name",
+            "external_ids",
+            "lifecycle",
+            "limits",
+            "links",
+            "modalities",
+            "model_id",
+            "parameters",
+            "provider_id",
+            "provider_specific.fireworks",
+            "routing"
+          ]
+        },
+        {
+          "source_id": "fireworks_model_library",
+          "source_url": "https://fireworks.ai/models",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "model_library_metadata",
+            "pricing",
+            "serverless_availability",
+            "serverless_lifecycle"
+          ]
+        },
+        {
+          "source_id": "fireworks_chat_completions_reasoning_docs",
+          "source_url": "https://docs.fireworks.ai/api-reference/post-chatcompletions",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "capabilities.supports_reasoning",
+            "parameters.supported_parameters",
+            "provider_specific.fireworks.reasoning_effort",
+            "thinking"
+          ]
+        },
+        {
+          "source_id": "fireworks_serverless_pricing_docs",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "pricing",
+            "provider_specific.fireworks.serving",
+            "provider_specific.fireworks.serving.fast.pricing",
+            "provider_specific.fireworks.serving.priority.pricing",
+            "provider_specific.fireworks.serving.standard.pricing"
+          ]
+        },
+        {
+          "source_id": "fireworks_serverless_serving_paths_docs",
+          "source_url": "https://docs.fireworks.ai/serverless/serving-paths",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "pricing",
+            "provider_specific.fireworks.serving",
+            "provider_specific.fireworks.serving.fast.pricing",
+            "provider_specific.fireworks.serving.priority.pricing",
+            "provider_specific.fireworks.serving.standard.pricing"
+          ]
+        },
+        {
+          "source_id": "fireworks_app_model_pages",
+          "source_url": "https://fireworks.ai/models/fireworks/glm-5p2",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "limits.context_window_tokens",
+            "limits.max_input_tokens",
+            "limits.max_output_tokens",
+            "pricing",
+            "provider_specific.fireworks.serving"
+          ]
+        }
+      ],
+      "provider_specific": {
+        "fireworks": {
+          "resource_name": "accounts/fireworks/routers/glm-5p2-fast",
+          "account_id": "fireworks",
+          "kind": "BASE_MODEL",
+          "state": "READY",
+          "public": true,
+          "supports_serverless": true,
+          "supports_lora": true,
+          "use_hf_apply_chat_template": null,
+          "serving": {
+            "supported": true,
+            "supported_tiers": [
+              "standard"
+            ],
+            "default_tier": "standard",
+            "provider_parameter": null,
+            "standard": {
+              "tier": "standard",
+              "provider_parameter": null,
+              "provider_value": null,
+              "request_model_path": "accounts/fireworks/routers/glm-5p2-fast",
+              "pricing": {
+                "uncached_input_price_per_million_tokens": 2.1,
+                "cached_input_price_per_million_tokens": 0.21,
+                "output_price_per_million_tokens": 6.6
+              },
+              "notes": "Fireworks Standard serving; default path when service_tier is omitted."
+            },
+            "priority": null,
+            "fast": null,
+            "pricing_unit": "USD_per_1m_tokens",
+            "source_ids": [
+              "fireworks_serverless_pricing_docs",
+              "fireworks_serverless_serving_paths_docs",
+              "fireworks_app_model_pages"
+            ],
+            "notes": "GLM 5.2 Fast serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
+          },
+          "reasoning_effort": {
+            "control_kind": "effort",
+            "supported_swarm_settings": [
+              "off",
+              "high",
+              "xhigh"
+            ],
+            "default_swarm_setting": "xhigh",
+            "provider_parameter": "reasoning_effort",
+            "provider_supported_values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              false,
+              true
+            ],
+            "provider_default_value": "max",
+            "can_disable": true,
+            "supports_budget_tokens": false,
+            "supports_effort_levels": true,
+            "supports_reasoning_content": true,
+            "unsupported_swarm_settings": [
+              "low",
+              "medium"
+            ],
+            "source_ids": [
+              "fireworks_chat_completions_reasoning_docs"
+            ],
+            "note": "GLM 5.2 has two reasoning tiers. Fireworks collapses low/medium to high, maps max/xhigh to Max, defaults to Max when omitted, and supports none/false to disable thinking."
+          },
+          "model_library": {
+            "source_url": "https://fireworks.ai/models/fireworks/glm-5p2",
+            "fetched_at": "2026-07-03T11:05:04.925Z",
+            "list_url": "https://fireworks.ai/models?modelTypes=Serverless",
+            "list_tags": [
+              "LLM"
+            ],
+            "provider_name": "Z.ai",
+            "supports_reranking": false,
+            "standard_pricing_from_detail_page": {
+              "uncached_input_price_per_million_tokens": 1.4,
+              "cached_input_price_per_million_tokens": 0.14,
+              "output_price_per_million_tokens": 4.4
+            }
+          },
+          "serverless_serving": {
+            "priority_supported": false,
+            "fast_router_id": null,
+            "standard_pricing": {
+              "uncached_input_price_per_million_tokens": 2.1,
+              "cached_input_price_per_million_tokens": 0.21,
+              "output_price_per_million_tokens": 6.6
+            },
+            "priority_pricing": null,
+            "fast_pricing": null,
+            "pricing_source_label": "GLM 5.2",
+            "fast_pricing_source_label": "GLM 5.2 Fast",
+            "standard_request_model_path": "accounts/fireworks/routers/glm-5p2-fast",
+            "priority_request_model_path": null,
+            "fast_request_model_path": null
+          },
+          "base_model_details": {
+            "parameterCount": "743000000000",
+            "moe": true,
+            "modelType": "glm"
+          },
+          "conversation_config": null,
+          "default_sampling_params": null,
+          "training_context_length": null,
+          "default_draft_model": null,
+          "default_draft_token_count": null,
+          "imported_from": "zai-org/GLM-5.2",
+          "cluster": null,
+          "calibrated": false,
+          "tuning": {
+            "tunable": true,
+            "supervised_lora_tunable": null,
+            "supervised_full_parameter_tunable": null,
+            "rl_tunable": null,
+            "rl_lora_tunable": null,
+            "rl_full_parameter_tunable": null
+          },
+          "pricing_enrichment_status": "fireworks_model_library_scrape",
+          "note": "Fireworks Fast router entry. Use this full request_model_path as the model value; do not send service_tier=priority for this entry.",
+          "request_model_path": "accounts/fireworks/routers/glm-5p2-fast",
+          "base_model_resource_name": "accounts/fireworks/models/glm-5p2",
+          "base_model_id": "glm-5p2"
+        }
+      },
+      "swarm": {
+        "routing_roles": [],
+        "labels": {
+          "best_for_coding": null,
+          "best_for_reasoning": null,
+          "best_for_fast_chat": true,
+          "best_for_vision": false,
+          "best_for_voice": false,
+          "best_for_image_generation": false,
+          "best_for_low_cost": null
+        },
+        "measurements": {
+          "time_to_first_token_ms": null,
+          "output_tokens_per_second": null,
+          "reliability_score": null,
+          "sample_count": null,
+          "measured_at": null
+        },
+        "reviewed_at": null,
+        "notes": "Fireworks Fast router model for GLM 5.2. Use provider_specific.fireworks.request_model_path as the request model path."
       },
       "updated_at": "2026-07-03T11:05:04.925Z"
     },
@@ -9432,6 +10383,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/gpt-oss-120b",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.15,
                 "cached_input_price_per_million_tokens": 0.015,
@@ -9443,12 +10395,13 @@
               "tier": "priority",
               "provider_parameter": "service_tier",
               "provider_value": "priority",
+              "request_model_path": "accounts/fireworks/models/gpt-oss-120b",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.18,
                 "cached_input_price_per_million_tokens": 0.018,
                 "output_price_per_million_tokens": 0.72
               },
-              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
+              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
             },
             "fast": null,
             "pricing_unit": "USD_per_1m_tokens",
@@ -9457,7 +10410,7 @@
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "OpenAI gpt-oss-120b serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "OpenAI gpt-oss-120b serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
           "reasoning_effort": {
             "control_kind": "effort",
@@ -9541,7 +10494,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/gpt-oss-120b"
         }
       },
       "swarm": {
@@ -9845,6 +10799,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/gpt-oss-20b",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.07,
                 "cached_input_price_per_million_tokens": 0.035,
@@ -9860,7 +10815,7 @@
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "OpenAI gpt-oss-20b serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "OpenAI gpt-oss-20b serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
           "reasoning_effort": {
             "control_kind": "effort",
@@ -9940,7 +10895,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/gpt-oss-20b"
         }
       },
       "swarm": {
@@ -10206,8 +11162,7 @@
             "supported": true,
             "supported_tiers": [
               "standard",
-              "priority",
-              "fast"
+              "priority"
             ],
             "default_tier": "standard",
             "provider_parameter": "service_tier",
@@ -10215,6 +11170,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/kimi-k2p6",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.95,
                 "cached_input_price_per_million_tokens": 0.16,
@@ -10226,31 +11182,22 @@
               "tier": "priority",
               "provider_parameter": "service_tier",
               "provider_value": "priority",
+              "request_model_path": "accounts/fireworks/models/kimi-k2p6",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 1.5,
                 "cached_input_price_per_million_tokens": 0.22,
                 "output_price_per_million_tokens": 6
               },
-              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
+              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
             },
-            "fast": {
-              "tier": "fast",
-              "provider_parameter": "model",
-              "provider_value": "accounts/fireworks/routers/kimi-k2p6-fast",
-              "pricing": {
-                "uncached_input_price_per_million_tokens": 2,
-                "cached_input_price_per_million_tokens": 0.3,
-                "output_price_per_million_tokens": 8
-              },
-              "notes": "Fireworks Fast serving is selected by changing the request model ID to this Fast router path; it is not selected with service_tier=priority."
-            },
+            "fast": null,
             "pricing_unit": "USD_per_1m_tokens",
             "source_ids": [
               "fireworks_serverless_pricing_docs",
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "Kimi K2.6 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "Kimi K2.6 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
           "reasoning_effort": null,
           "model_library": {
@@ -10311,7 +11258,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/kimi-k2p6"
         }
       },
       "swarm": {
@@ -10334,6 +11282,353 @@
         },
         "reviewed_at": null,
         "notes": "Fireworks entry hydrated from the current Fireworks model library. Context/input limits are scraped from the model library; provider-native Standard/Priority/Fast serving metadata is documented in provider_specific.fireworks.serving."
+      },
+      "updated_at": "2026-07-03T11:05:04.925Z"
+    },
+    {
+      "schema_version": "2026-06-09.1",
+      "catalog_id": "fireworks/kimi-k2p6-fast",
+      "provider_id": "fireworks",
+      "provider_display_name": "Fireworks AI",
+      "model_id": "kimi-k2p6-fast",
+      "display_name": "Kimi K2.6 Fast",
+      "description": "Kimi K2.6 is an open-source, native multimodal agentic model that advances practical capabilities in long-horizon coding, coding-driven design, proactive autonomous execution, and swarm-based task orchestration.",
+      "family": "kimi",
+      "external_ids": {
+        "provider_canonical_slug": "accounts/fireworks/routers/kimi-k2p6-fast",
+        "hugging_face_id": "moonshotai/Kimi-K2.6",
+        "upstream_model_id": "accounts/fireworks/models/kimi-k2p6"
+      },
+      "lifecycle": {
+        "created_at": "2026-04-17T00:00:00.000Z",
+        "created_at_unix_seconds": 1776384000,
+        "release_date": null,
+        "knowledge_cutoff": null,
+        "deprecation_date": null,
+        "expiration_date": null
+      },
+      "availability_status": "available",
+      "architecture": {
+        "source_modality": "multimodal->text",
+        "tokenizer": null,
+        "instruct_type": null,
+        "parameter_count": 1020000000000,
+        "active_parameter_count": null
+      },
+      "modalities": {
+        "input": [
+          "image",
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "supports_text_input": true,
+        "supports_text_output": true,
+        "supports_image_input": true,
+        "supports_image_output": false,
+        "supports_audio_input": false,
+        "supports_audio_output": false,
+        "supports_voice": false,
+        "supports_tools": true,
+        "supports_parallel_tool_calls": true,
+        "supports_structured_outputs": null,
+        "supports_json_mode": null,
+        "supports_reasoning": null,
+        "supports_embeddings": false,
+        "supports_batch": null,
+        "supports_fine_tuning": true,
+        "supports_caching": null
+      },
+      "thinking": {
+        "supported": null,
+        "control_kind": "unknown",
+        "supported_swarm_settings": [],
+        "default_swarm_setting": null,
+        "provider_parameter": null,
+        "provider_supported_values": [],
+        "provider_default_value": null,
+        "can_disable": null,
+        "supports_budget_tokens": null,
+        "supports_effort_levels": null,
+        "supports_reasoning_content": null,
+        "swarm_setting_mappings": [],
+        "unsupported_swarm_settings": [],
+        "source_ids": [],
+        "notes": null
+      },
+      "limits": {
+        "context_window_tokens": 262144,
+        "max_input_tokens": 262144,
+        "max_output_tokens": null,
+        "max_reasoning_tokens": null
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_price_per_million_tokens": 2,
+        "output_price_per_million_tokens": 8,
+        "cached_input_price_per_million_tokens": 0.3,
+        "reasoning_price_per_million_tokens": null,
+        "image_input_price": null,
+        "image_output_price": null,
+        "audio_input_price": null,
+        "audio_output_price": null,
+        "is_free": null
+      },
+      "parameters": {
+        "supported_parameters": [
+          "max_tokens",
+          "parallel_tool_calls",
+          "stream",
+          "temperature",
+          "tool_choice",
+          "tools",
+          "top_k",
+          "top_p"
+        ],
+        "default_parameters": {},
+        "supported_voices": null
+      },
+      "routing": {
+        "routed_through_provider_id": "fireworks",
+        "upstream_provider_ids": [
+          "fireworks"
+        ],
+        "top_provider_context_window_tokens": 262144,
+        "top_provider_max_output_tokens": null,
+        "top_provider_is_moderated": null,
+        "per_request_limits": null
+      },
+      "links": {
+        "details_url": "https://fireworks.ai/models/fireworks/kimi-k2p6",
+        "docs_url": "https://docs.fireworks.ai/models/overview",
+        "pricing_url": "https://docs.fireworks.ai/serverless/pricing",
+        "endpoint_url": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue"
+      },
+      "sources": [
+        {
+          "source_id": "fireworks_serverless_models_api",
+          "source_url": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue",
+          "source_kind": "official_api",
+          "fetched_at": "2026-07-03T11:05:04.925Z",
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "architecture",
+            "availability_status",
+            "capabilities",
+            "catalog_id",
+            "description",
+            "display_name",
+            "external_ids",
+            "lifecycle",
+            "limits",
+            "links",
+            "modalities",
+            "model_id",
+            "parameters",
+            "provider_id",
+            "provider_specific.fireworks",
+            "routing"
+          ]
+        },
+        {
+          "source_id": "fireworks_model_library",
+          "source_url": "https://fireworks.ai/models",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "model_library_metadata",
+            "pricing",
+            "serverless_availability",
+            "serverless_lifecycle"
+          ]
+        },
+        {
+          "source_id": "fireworks_chat_completions_reasoning_docs",
+          "source_url": "https://docs.fireworks.ai/api-reference/post-chatcompletions",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "capabilities.supports_reasoning",
+            "parameters.supported_parameters",
+            "provider_specific.fireworks.reasoning_effort",
+            "thinking"
+          ]
+        },
+        {
+          "source_id": "fireworks_serverless_pricing_docs",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "pricing",
+            "provider_specific.fireworks.serving",
+            "provider_specific.fireworks.serving.fast.pricing",
+            "provider_specific.fireworks.serving.priority.pricing",
+            "provider_specific.fireworks.serving.standard.pricing"
+          ]
+        },
+        {
+          "source_id": "fireworks_serverless_serving_paths_docs",
+          "source_url": "https://docs.fireworks.ai/serverless/serving-paths",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "pricing",
+            "provider_specific.fireworks.serving",
+            "provider_specific.fireworks.serving.fast.pricing",
+            "provider_specific.fireworks.serving.priority.pricing",
+            "provider_specific.fireworks.serving.standard.pricing"
+          ]
+        },
+        {
+          "source_id": "fireworks_app_model_pages",
+          "source_url": "https://fireworks.ai/models/fireworks/kimi-k2p6",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "limits.context_window_tokens",
+            "limits.max_input_tokens",
+            "limits.max_output_tokens",
+            "pricing",
+            "provider_specific.fireworks.serving"
+          ]
+        }
+      ],
+      "provider_specific": {
+        "fireworks": {
+          "resource_name": "accounts/fireworks/routers/kimi-k2p6-fast",
+          "account_id": "fireworks",
+          "kind": "BASE_MODEL",
+          "state": "READY",
+          "public": true,
+          "supports_serverless": true,
+          "supports_lora": true,
+          "use_hf_apply_chat_template": null,
+          "serving": {
+            "supported": true,
+            "supported_tiers": [
+              "standard"
+            ],
+            "default_tier": "standard",
+            "provider_parameter": null,
+            "standard": {
+              "tier": "standard",
+              "provider_parameter": null,
+              "provider_value": null,
+              "request_model_path": "accounts/fireworks/routers/kimi-k2p6-fast",
+              "pricing": {
+                "uncached_input_price_per_million_tokens": 2,
+                "cached_input_price_per_million_tokens": 0.3,
+                "output_price_per_million_tokens": 8
+              },
+              "notes": "Fireworks Standard serving; default path when service_tier is omitted."
+            },
+            "priority": null,
+            "fast": null,
+            "pricing_unit": "USD_per_1m_tokens",
+            "source_ids": [
+              "fireworks_serverless_pricing_docs",
+              "fireworks_serverless_serving_paths_docs",
+              "fireworks_app_model_pages"
+            ],
+            "notes": "Kimi K2.6 Fast serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
+          },
+          "reasoning_effort": null,
+          "model_library": {
+            "source_url": "https://fireworks.ai/models/fireworks/kimi-k2p6",
+            "fetched_at": "2026-07-03T11:05:04.925Z",
+            "list_url": "https://fireworks.ai/models?modelTypes=Serverless",
+            "list_tags": [
+              "Vision"
+            ],
+            "provider_name": "Moonshot AI",
+            "supports_reranking": false,
+            "standard_pricing_from_detail_page": {
+              "uncached_input_price_per_million_tokens": 0.95,
+              "cached_input_price_per_million_tokens": 0.16,
+              "output_price_per_million_tokens": 4
+            }
+          },
+          "serverless_serving": {
+            "priority_supported": false,
+            "fast_router_id": null,
+            "standard_pricing": {
+              "uncached_input_price_per_million_tokens": 2,
+              "cached_input_price_per_million_tokens": 0.3,
+              "output_price_per_million_tokens": 8
+            },
+            "priority_pricing": null,
+            "fast_pricing": null,
+            "pricing_source_label": "Kimi K2.6",
+            "fast_pricing_source_label": "Kimi K2.6 Fast",
+            "standard_request_model_path": "accounts/fireworks/routers/kimi-k2p6-fast",
+            "priority_request_model_path": null,
+            "fast_request_model_path": null
+          },
+          "base_model_details": {
+            "parameterCount": "1020000000000",
+            "moe": true,
+            "modelType": "kimi"
+          },
+          "conversation_config": null,
+          "default_sampling_params": null,
+          "training_context_length": null,
+          "default_draft_model": null,
+          "default_draft_token_count": null,
+          "imported_from": "moonshotai/Kimi-K2.6",
+          "cluster": null,
+          "calibrated": false,
+          "tuning": {
+            "tunable": true,
+            "supervised_lora_tunable": null,
+            "supervised_full_parameter_tunable": null,
+            "rl_tunable": null,
+            "rl_lora_tunable": null,
+            "rl_full_parameter_tunable": null
+          },
+          "pricing_enrichment_status": "fireworks_model_library_scrape",
+          "note": "Fireworks Fast router entry. Use this full request_model_path as the model value; do not send service_tier=priority for this entry.",
+          "request_model_path": "accounts/fireworks/routers/kimi-k2p6-fast",
+          "base_model_resource_name": "accounts/fireworks/models/kimi-k2p6",
+          "base_model_id": "kimi-k2p6"
+        }
+      },
+      "swarm": {
+        "routing_roles": [],
+        "labels": {
+          "best_for_coding": null,
+          "best_for_reasoning": null,
+          "best_for_fast_chat": true,
+          "best_for_vision": true,
+          "best_for_voice": false,
+          "best_for_image_generation": false,
+          "best_for_low_cost": null
+        },
+        "measurements": {
+          "time_to_first_token_ms": null,
+          "output_tokens_per_second": null,
+          "reliability_score": null,
+          "sample_count": null,
+          "measured_at": null
+        },
+        "reviewed_at": null,
+        "notes": "Fireworks Fast router model for Kimi K2.6. Use provider_specific.fireworks.request_model_path as the request model path."
       },
       "updated_at": "2026-07-03T11:05:04.925Z"
     },
@@ -10577,8 +11872,7 @@
             "supported": true,
             "supported_tiers": [
               "standard",
-              "priority",
-              "fast"
+              "priority"
             ],
             "default_tier": "standard",
             "provider_parameter": "service_tier",
@@ -10586,6 +11880,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/kimi-k2p7-code",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.95,
                 "cached_input_price_per_million_tokens": 0.19,
@@ -10597,31 +11892,22 @@
               "tier": "priority",
               "provider_parameter": "service_tier",
               "provider_value": "priority",
+              "request_model_path": "accounts/fireworks/models/kimi-k2p7-code",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 1.425,
                 "cached_input_price_per_million_tokens": 0.285,
                 "output_price_per_million_tokens": 6
               },
-              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
+              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
             },
-            "fast": {
-              "tier": "fast",
-              "provider_parameter": "model",
-              "provider_value": "accounts/fireworks/routers/kimi-k2p7-code-fast",
-              "pricing": {
-                "uncached_input_price_per_million_tokens": 1.9,
-                "cached_input_price_per_million_tokens": 0.38,
-                "output_price_per_million_tokens": 8
-              },
-              "notes": "Fireworks Fast serving is selected by changing the request model ID to this Fast router path; it is not selected with service_tier=priority."
-            },
+            "fast": null,
             "pricing_unit": "USD_per_1m_tokens",
             "source_ids": [
               "fireworks_serverless_pricing_docs",
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "Kimi K2.7 Code serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "Kimi K2.7 Code serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
           "reasoning_effort": null,
           "model_library": {
@@ -10682,7 +11968,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/kimi-k2p7-code"
         }
       },
       "swarm": {
@@ -10705,6 +11992,353 @@
         },
         "reviewed_at": null,
         "notes": "Fireworks entry hydrated from the current Fireworks model library. Context/input limits are scraped from the model library; provider-native Standard/Priority/Fast serving metadata is documented in provider_specific.fireworks.serving."
+      },
+      "updated_at": "2026-07-03T11:05:04.925Z"
+    },
+    {
+      "schema_version": "2026-06-09.1",
+      "catalog_id": "fireworks/kimi-k2p7-code-fast",
+      "provider_id": "fireworks",
+      "provider_display_name": "Fireworks AI",
+      "model_id": "kimi-k2p7-code-fast",
+      "display_name": "Kimi K2.7 Code Fast",
+      "description": "Kimi K2.7 Code is a coding-focused agentic model built upon Kimi K2.6. With substantial improvements on real-world long-horizon coding tasks, it strengthens end-to-end task completion across complex software engineering workflows while improving token efficiency, reducing thinking-token usage by approximately 30% compared with Kimi K2.6.",
+      "family": "kimi",
+      "external_ids": {
+        "provider_canonical_slug": "accounts/fireworks/routers/kimi-k2p7-code-fast",
+        "hugging_face_id": "moonshotai/Kimi-K2.7-Code",
+        "upstream_model_id": "accounts/fireworks/models/kimi-k2p7-code"
+      },
+      "lifecycle": {
+        "created_at": "2026-06-12T00:00:00.000Z",
+        "created_at_unix_seconds": 1781222400,
+        "release_date": null,
+        "knowledge_cutoff": null,
+        "deprecation_date": null,
+        "expiration_date": null
+      },
+      "availability_status": "available",
+      "architecture": {
+        "source_modality": "multimodal->text",
+        "tokenizer": null,
+        "instruct_type": null,
+        "parameter_count": 1020000000000,
+        "active_parameter_count": null
+      },
+      "modalities": {
+        "input": [
+          "image",
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "supports_text_input": true,
+        "supports_text_output": true,
+        "supports_image_input": true,
+        "supports_image_output": false,
+        "supports_audio_input": false,
+        "supports_audio_output": false,
+        "supports_voice": false,
+        "supports_tools": true,
+        "supports_parallel_tool_calls": true,
+        "supports_structured_outputs": null,
+        "supports_json_mode": null,
+        "supports_reasoning": null,
+        "supports_embeddings": false,
+        "supports_batch": null,
+        "supports_fine_tuning": true,
+        "supports_caching": null
+      },
+      "thinking": {
+        "supported": null,
+        "control_kind": "unknown",
+        "supported_swarm_settings": [],
+        "default_swarm_setting": null,
+        "provider_parameter": null,
+        "provider_supported_values": [],
+        "provider_default_value": null,
+        "can_disable": null,
+        "supports_budget_tokens": null,
+        "supports_effort_levels": null,
+        "supports_reasoning_content": null,
+        "swarm_setting_mappings": [],
+        "unsupported_swarm_settings": [],
+        "source_ids": [],
+        "notes": null
+      },
+      "limits": {
+        "context_window_tokens": 262144,
+        "max_input_tokens": 262144,
+        "max_output_tokens": null,
+        "max_reasoning_tokens": null
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_price_per_million_tokens": 1.9,
+        "output_price_per_million_tokens": 8,
+        "cached_input_price_per_million_tokens": 0.38,
+        "reasoning_price_per_million_tokens": null,
+        "image_input_price": null,
+        "image_output_price": null,
+        "audio_input_price": null,
+        "audio_output_price": null,
+        "is_free": null
+      },
+      "parameters": {
+        "supported_parameters": [
+          "max_tokens",
+          "parallel_tool_calls",
+          "stream",
+          "temperature",
+          "tool_choice",
+          "tools",
+          "top_k",
+          "top_p"
+        ],
+        "default_parameters": {},
+        "supported_voices": null
+      },
+      "routing": {
+        "routed_through_provider_id": "fireworks",
+        "upstream_provider_ids": [
+          "fireworks"
+        ],
+        "top_provider_context_window_tokens": 262144,
+        "top_provider_max_output_tokens": null,
+        "top_provider_is_moderated": null,
+        "per_request_limits": null
+      },
+      "links": {
+        "details_url": "https://fireworks.ai/models/fireworks/kimi-k2p7-code",
+        "docs_url": "https://docs.fireworks.ai/models/overview",
+        "pricing_url": "https://docs.fireworks.ai/serverless/pricing",
+        "endpoint_url": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue"
+      },
+      "sources": [
+        {
+          "source_id": "fireworks_serverless_models_api",
+          "source_url": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue",
+          "source_kind": "official_api",
+          "fetched_at": "2026-07-03T11:05:04.925Z",
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "architecture",
+            "availability_status",
+            "capabilities",
+            "catalog_id",
+            "description",
+            "display_name",
+            "external_ids",
+            "lifecycle",
+            "limits",
+            "links",
+            "modalities",
+            "model_id",
+            "parameters",
+            "provider_id",
+            "provider_specific.fireworks",
+            "routing"
+          ]
+        },
+        {
+          "source_id": "fireworks_model_library",
+          "source_url": "https://fireworks.ai/models",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "model_library_metadata",
+            "pricing",
+            "serverless_availability",
+            "serverless_lifecycle"
+          ]
+        },
+        {
+          "source_id": "fireworks_chat_completions_reasoning_docs",
+          "source_url": "https://docs.fireworks.ai/api-reference/post-chatcompletions",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "capabilities.supports_reasoning",
+            "parameters.supported_parameters",
+            "provider_specific.fireworks.reasoning_effort",
+            "thinking"
+          ]
+        },
+        {
+          "source_id": "fireworks_serverless_pricing_docs",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "pricing",
+            "provider_specific.fireworks.serving",
+            "provider_specific.fireworks.serving.fast.pricing",
+            "provider_specific.fireworks.serving.priority.pricing",
+            "provider_specific.fireworks.serving.standard.pricing"
+          ]
+        },
+        {
+          "source_id": "fireworks_serverless_serving_paths_docs",
+          "source_url": "https://docs.fireworks.ai/serverless/serving-paths",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "pricing",
+            "provider_specific.fireworks.serving",
+            "provider_specific.fireworks.serving.fast.pricing",
+            "provider_specific.fireworks.serving.priority.pricing",
+            "provider_specific.fireworks.serving.standard.pricing"
+          ]
+        },
+        {
+          "source_id": "fireworks_app_model_pages",
+          "source_url": "https://fireworks.ai/models/fireworks/kimi-k2p7-code",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "limits.context_window_tokens",
+            "limits.max_input_tokens",
+            "limits.max_output_tokens",
+            "pricing",
+            "provider_specific.fireworks.serving"
+          ]
+        }
+      ],
+      "provider_specific": {
+        "fireworks": {
+          "resource_name": "accounts/fireworks/routers/kimi-k2p7-code-fast",
+          "account_id": "fireworks",
+          "kind": "BASE_MODEL",
+          "state": "READY",
+          "public": true,
+          "supports_serverless": true,
+          "supports_lora": true,
+          "use_hf_apply_chat_template": null,
+          "serving": {
+            "supported": true,
+            "supported_tiers": [
+              "standard"
+            ],
+            "default_tier": "standard",
+            "provider_parameter": null,
+            "standard": {
+              "tier": "standard",
+              "provider_parameter": null,
+              "provider_value": null,
+              "request_model_path": "accounts/fireworks/routers/kimi-k2p7-code-fast",
+              "pricing": {
+                "uncached_input_price_per_million_tokens": 1.9,
+                "cached_input_price_per_million_tokens": 0.38,
+                "output_price_per_million_tokens": 8
+              },
+              "notes": "Fireworks Standard serving; default path when service_tier is omitted."
+            },
+            "priority": null,
+            "fast": null,
+            "pricing_unit": "USD_per_1m_tokens",
+            "source_ids": [
+              "fireworks_serverless_pricing_docs",
+              "fireworks_serverless_serving_paths_docs",
+              "fireworks_app_model_pages"
+            ],
+            "notes": "Kimi K2.7 Code Fast serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
+          },
+          "reasoning_effort": null,
+          "model_library": {
+            "source_url": "https://fireworks.ai/models/fireworks/kimi-k2p7-code",
+            "fetched_at": "2026-07-03T11:05:04.925Z",
+            "list_url": "https://fireworks.ai/models?modelTypes=Serverless",
+            "list_tags": [
+              "Vision"
+            ],
+            "provider_name": "Moonshot AI",
+            "supports_reranking": false,
+            "standard_pricing_from_detail_page": {
+              "uncached_input_price_per_million_tokens": 0.95,
+              "cached_input_price_per_million_tokens": 0.19,
+              "output_price_per_million_tokens": 4
+            }
+          },
+          "serverless_serving": {
+            "priority_supported": false,
+            "fast_router_id": null,
+            "standard_pricing": {
+              "uncached_input_price_per_million_tokens": 1.9,
+              "cached_input_price_per_million_tokens": 0.38,
+              "output_price_per_million_tokens": 8
+            },
+            "priority_pricing": null,
+            "fast_pricing": null,
+            "pricing_source_label": "Kimi K2.7 Code",
+            "fast_pricing_source_label": "Kimi K2.7 Code Fast",
+            "standard_request_model_path": "accounts/fireworks/routers/kimi-k2p7-code-fast",
+            "priority_request_model_path": null,
+            "fast_request_model_path": null
+          },
+          "base_model_details": {
+            "parameterCount": "1020000000000",
+            "moe": true,
+            "modelType": "kimi"
+          },
+          "conversation_config": null,
+          "default_sampling_params": null,
+          "training_context_length": null,
+          "default_draft_model": null,
+          "default_draft_token_count": null,
+          "imported_from": "moonshotai/Kimi-K2.7-Code",
+          "cluster": null,
+          "calibrated": false,
+          "tuning": {
+            "tunable": true,
+            "supervised_lora_tunable": null,
+            "supervised_full_parameter_tunable": null,
+            "rl_tunable": null,
+            "rl_lora_tunable": null,
+            "rl_full_parameter_tunable": null
+          },
+          "pricing_enrichment_status": "fireworks_model_library_scrape",
+          "note": "Fireworks Fast router entry. Use this full request_model_path as the model value; do not send service_tier=priority for this entry.",
+          "request_model_path": "accounts/fireworks/routers/kimi-k2p7-code-fast",
+          "base_model_resource_name": "accounts/fireworks/models/kimi-k2p7-code",
+          "base_model_id": "kimi-k2p7-code"
+        }
+      },
+      "swarm": {
+        "routing_roles": [],
+        "labels": {
+          "best_for_coding": null,
+          "best_for_reasoning": null,
+          "best_for_fast_chat": true,
+          "best_for_vision": true,
+          "best_for_voice": false,
+          "best_for_image_generation": false,
+          "best_for_low_cost": null
+        },
+        "measurements": {
+          "time_to_first_token_ms": null,
+          "output_tokens_per_second": null,
+          "reliability_score": null,
+          "sample_count": null,
+          "measured_at": null
+        },
+        "reviewed_at": null,
+        "notes": "Fireworks Fast router model for Kimi K2.7 Code. Use provider_specific.fireworks.request_model_path as the request model path."
       },
       "updated_at": "2026-07-03T11:05:04.925Z"
     },
@@ -10991,6 +12625,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/minimax-m2p7",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.3,
                 "cached_input_price_per_million_tokens": 0.06,
@@ -11002,12 +12637,13 @@
               "tier": "priority",
               "provider_parameter": "service_tier",
               "provider_value": "priority",
+              "request_model_path": "accounts/fireworks/models/minimax-m2p7",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.45,
                 "cached_input_price_per_million_tokens": 0.09,
                 "output_price_per_million_tokens": 1.8
               },
-              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
+              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
             },
             "fast": null,
             "pricing_unit": "USD_per_1m_tokens",
@@ -11016,7 +12652,7 @@
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "MiniMax M2.7 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "MiniMax M2.7 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
           "reasoning_effort": {
             "control_kind": "effort",
@@ -11100,7 +12736,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/minimax-m2p7"
         }
       },
       "swarm": {
@@ -11374,6 +13011,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/minimax-m3",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.3,
                 "cached_input_price_per_million_tokens": 0.06,
@@ -11385,12 +13023,13 @@
               "tier": "priority",
               "provider_parameter": "service_tier",
               "provider_value": "priority",
+              "request_model_path": "accounts/fireworks/models/minimax-m3",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.45,
                 "cached_input_price_per_million_tokens": 0.09,
                 "output_price_per_million_tokens": 1.8
               },
-              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
+              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
             },
             "fast": null,
             "pricing_unit": "USD_per_1m_tokens",
@@ -11399,7 +13038,7 @@
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "Minimax M3 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "Minimax M3 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
           "reasoning_effort": null,
           "model_library": {
@@ -11456,7 +13095,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/minimax-m3"
         }
       },
       "swarm": {
@@ -11727,6 +13367,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.6,
                 "cached_input_price_per_million_tokens": 0.12,
@@ -11742,7 +13383,7 @@
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "NVIDIA Nemotron 3 Ultra NVFP4 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "NVIDIA Nemotron 3 Ultra NVFP4 serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
           "reasoning_effort": null,
           "model_library": {
@@ -11795,7 +13436,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/nemotron-3-ultra-nvfp4"
         }
       },
       "swarm": {
@@ -12063,6 +13705,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/qwen3-embedding-8b",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.1,
                 "cached_input_price_per_million_tokens": null,
@@ -12078,7 +13721,7 @@
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "Qwen3 Embedding 8B serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "Qwen3 Embedding 8B serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
           "reasoning_effort": null,
           "model_library": {
@@ -12127,7 +13770,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/qwen3-embedding-8b"
         }
       },
       "swarm": {
@@ -12395,6 +14039,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/qwen3-reranker-8b",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.2,
                 "cached_input_price_per_million_tokens": null,
@@ -12410,7 +14055,7 @@
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "Qwen3 Reranker 8B serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "Qwen3 Reranker 8B serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
           "reasoning_effort": null,
           "model_library": {
@@ -12459,7 +14104,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/qwen3-reranker-8b"
         }
       },
       "swarm": {
@@ -12777,6 +14423,7 @@
               "tier": "standard",
               "provider_parameter": null,
               "provider_value": null,
+              "request_model_path": "accounts/fireworks/models/qwen3p7-plus",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 0.4,
                 "cached_input_price_per_million_tokens": 0.08,
@@ -12792,7 +14439,7 @@
               "fireworks_serverless_serving_paths_docs",
               "fireworks_app_model_pages"
             ],
-            "notes": "Qwen3.7 Plus serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast is only present when Fireworks publishes a Fast router ID."
+            "notes": "Qwen3.7 Plus serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
           },
           "reasoning_effort": {
             "control_kind": "effort",
@@ -12874,7 +14521,8 @@
             "rl_full_parameter_tunable": null
           },
           "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs."
+          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority/Fast serving support and pricing are from Fireworks serverless pricing and serving-path docs.",
+          "request_model_path": "accounts/fireworks/models/qwen3p7-plus"
         }
       },
       "swarm": {
@@ -16215,7 +17863,7 @@
                   "multiplier_min": 1.75,
                   "multiplier_max": 2,
                   "discount_percent": null,
-                  "notes": "Google documents Priority inference as 75\u2013100% more than Standard."
+                  "notes": "Google documents Priority inference as 75–100% more than Standard."
                 },
                 "latency": "Seconds",
                 "reliability": "High, non-sheddable; overflow can gracefully downgrade to Standard.",
@@ -16235,7 +17883,7 @@
                   "discount_percent": 50,
                   "notes": "Google documents Flex inference as 50% of Standard API pricing."
                 },
-                "latency": "Minutes, with a 1\u201315 minute target",
+                "latency": "Minutes, with a 1–15 minute target",
                 "reliability": "Best-effort, sheddable; clients must handle 429/503 and retries.",
                 "notes": "Flex uses the same service_tier parameter with value flex for latency-tolerant synchronous work."
               },
@@ -16608,7 +18256,7 @@
                   "multiplier_min": 1.75,
                   "multiplier_max": 2,
                   "discount_percent": null,
-                  "notes": "Google documents Priority inference as 75\u2013100% more than Standard."
+                  "notes": "Google documents Priority inference as 75–100% more than Standard."
                 },
                 "latency": "Seconds",
                 "reliability": "High, non-sheddable; overflow can gracefully downgrade to Standard.",
@@ -16954,7 +18602,7 @@
                   "multiplier_min": 1.75,
                   "multiplier_max": 2,
                   "discount_percent": null,
-                  "notes": "Google documents Priority inference as 75\u2013100% more than Standard."
+                  "notes": "Google documents Priority inference as 75–100% more than Standard."
                 },
                 "latency": "Seconds",
                 "reliability": "High, non-sheddable; overflow can gracefully downgrade to Standard.",
@@ -16974,7 +18622,7 @@
                   "discount_percent": 50,
                   "notes": "Google documents Flex inference as 50% of Standard API pricing."
                 },
-                "latency": "Minutes, with a 1\u201315 minute target",
+                "latency": "Minutes, with a 1–15 minute target",
                 "reliability": "Best-effort, sheddable; clients must handle 429/503 and retries.",
                 "notes": "Flex uses the same service_tier parameter with value flex for latency-tolerant synchronous work."
               },
@@ -18658,7 +20306,7 @@
                   "multiplier_min": 1.75,
                   "multiplier_max": 2,
                   "discount_percent": null,
-                  "notes": "Google documents Priority inference as 75\u2013100% more than Standard."
+                  "notes": "Google documents Priority inference as 75–100% more than Standard."
                 },
                 "latency": "Seconds",
                 "reliability": "High, non-sheddable; overflow can gracefully downgrade to Standard.",
@@ -18678,7 +20326,7 @@
                   "discount_percent": 50,
                   "notes": "Google documents Flex inference as 50% of Standard API pricing."
                 },
-                "latency": "Minutes, with a 1\u201315 minute target",
+                "latency": "Minutes, with a 1–15 minute target",
                 "reliability": "Best-effort, sheddable; clients must handle 429/503 and retries.",
                 "notes": "Flex uses the same service_tier parameter with value flex for latency-tolerant synchronous work."
               },
@@ -19347,7 +20995,7 @@
                   "multiplier_min": 1.75,
                   "multiplier_max": 2,
                   "discount_percent": null,
-                  "notes": "Google documents Priority inference as 75\u2013100% more than Standard."
+                  "notes": "Google documents Priority inference as 75–100% more than Standard."
                 },
                 "latency": "Seconds",
                 "reliability": "High, non-sheddable; overflow can gracefully downgrade to Standard.",
@@ -19367,7 +21015,7 @@
                   "discount_percent": 50,
                   "notes": "Google documents Flex inference as 50% of Standard API pricing."
                 },
-                "latency": "Minutes, with a 1\u201315 minute target",
+                "latency": "Minutes, with a 1–15 minute target",
                 "reliability": "Best-effort, sheddable; clients must handle 429/503 and retries.",
                 "notes": "Flex uses the same service_tier parameter with value flex for latency-tolerant synchronous work."
               },
@@ -20068,7 +21716,7 @@
                   "multiplier_min": 1.75,
                   "multiplier_max": 2,
                   "discount_percent": null,
-                  "notes": "Google documents Priority inference as 75\u2013100% more than Standard."
+                  "notes": "Google documents Priority inference as 75–100% more than Standard."
                 },
                 "latency": "Seconds",
                 "reliability": "High, non-sheddable; overflow can gracefully downgrade to Standard.",
@@ -21361,7 +23009,7 @@
                   "multiplier_min": 1.75,
                   "multiplier_max": 2,
                   "discount_percent": null,
-                  "notes": "Google documents Priority inference as 75\u2013100% more than Standard."
+                  "notes": "Google documents Priority inference as 75–100% more than Standard."
                 },
                 "latency": "Seconds",
                 "reliability": "High, non-sheddable; overflow can gracefully downgrade to Standard.",
@@ -21381,7 +23029,7 @@
                   "discount_percent": 50,
                   "notes": "Google documents Flex inference as 50% of Standard API pricing."
                 },
-                "latency": "Minutes, with a 1\u201315 minute target",
+                "latency": "Minutes, with a 1–15 minute target",
                 "reliability": "Best-effort, sheddable; clients must handle 429/503 and retries.",
                 "notes": "Flex uses the same service_tier parameter with value flex for latency-tolerant synchronous work."
               },
@@ -22738,7 +24386,7 @@
                   "multiplier_min": 1.75,
                   "multiplier_max": 2,
                   "discount_percent": null,
-                  "notes": "Google documents Priority inference as 75\u2013100% more than Standard."
+                  "notes": "Google documents Priority inference as 75–100% more than Standard."
                 },
                 "latency": "Seconds",
                 "reliability": "High, non-sheddable; overflow can gracefully downgrade to Standard.",
@@ -22758,7 +24406,7 @@
                   "discount_percent": 50,
                   "notes": "Google documents Flex inference as 50% of Standard API pricing."
                 },
-                "latency": "Minutes, with a 1\u201315 minute target",
+                "latency": "Minutes, with a 1–15 minute target",
                 "reliability": "Best-effort, sheddable; clients must handle 429/503 and retries.",
                 "notes": "Flex uses the same service_tier parameter with value flex for latency-tolerant synchronous work."
               },
@@ -23499,7 +25147,7 @@
                   "multiplier_min": 1.75,
                   "multiplier_max": 2,
                   "discount_percent": null,
-                  "notes": "Google documents Priority inference as 75\u2013100% more than Standard."
+                  "notes": "Google documents Priority inference as 75–100% more than Standard."
                 },
                 "latency": "Seconds",
                 "reliability": "High, non-sheddable; overflow can gracefully downgrade to Standard.",
@@ -23519,7 +25167,7 @@
                   "discount_percent": 50,
                   "notes": "Google documents Flex inference as 50% of Standard API pricing."
                 },
-                "latency": "Minutes, with a 1\u201315 minute target",
+                "latency": "Minutes, with a 1–15 minute target",
                 "reliability": "Best-effort, sheddable; clients must handle 429/503 and retries.",
                 "notes": "Flex uses the same service_tier parameter with value flex for latency-tolerant synchronous work."
               },
@@ -66000,7 +67648,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "aion-labs/aion-rp-llama-3.1-8b",
       "display_name": "AionLabs: Aion-RP 1.0 (8B)",
-      "description": "Aion-RP-Llama-3.1-8B ranks the highest in the character evaluation portion of the RPBench-Auto benchmark, a roleplaying-specific variant of Arena-Hard-Auto, where LLMs evaluate each other\u2019s responses. It is a fine-tuned base model...",
+      "description": "Aion-RP-Llama-3.1-8B ranks the highest in the character evaluation portion of the RPBench-Auto benchmark, a roleplaying-specific variant of Arena-Hard-Auto, where LLMs evaluate each other’s responses. It is a fine-tuned base model...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "aion-labs/aion-rp-llama-3.1-8b",
@@ -67663,7 +69311,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "amazon/nova-premier-v1",
       "display_name": "Amazon: Nova Premier 1.0",
-      "description": "Amazon Nova Premier is the most capable of Amazon\u2019s multimodal models for complex reasoning tasks and for use as the best teacher for distilling custom models.",
+      "description": "Amazon Nova Premier is the most capable of Amazon’s multimodal models for complex reasoning tasks and for use as the best teacher for distilling custom models.",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "amazon/nova-premier-v1",
@@ -69264,7 +70912,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "anthropic/claude-haiku-4.5",
       "display_name": "Anthropic: Claude Haiku 4.5",
-      "description": "Claude Haiku 4.5 is Anthropic\u2019s fastest and most efficient model, delivering near-frontier intelligence at a fraction of the cost and latency of larger Claude models. Matching Claude Sonnet 4\u2019s performance...",
+      "description": "Claude Haiku 4.5 is Anthropic’s fastest and most efficient model, delivering near-frontier intelligence at a fraction of the cost and latency of larger Claude models. Matching Claude Sonnet 4’s performance...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "anthropic/claude-4.5-haiku-20251001",
@@ -69661,7 +71309,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "anthropic/claude-opus-4",
       "display_name": "Anthropic: Claude Opus 4",
-      "description": "Claude Opus 4 is benchmarked as the world\u2019s best coding model, at time of release, bringing sustained performance on complex, long-running tasks and agent workflows. It sets new benchmarks in...",
+      "description": "Claude Opus 4 is benchmarked as the world’s best coding model, at time of release, bringing sustained performance on complex, long-running tasks and agent workflows. It sets new benchmarks in...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "anthropic/claude-4-opus-20250522",
@@ -70055,7 +71703,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "anthropic/claude-opus-4.1",
       "display_name": "Anthropic: Claude Opus 4.1",
-      "description": "Claude Opus 4.1 is an updated version of Anthropic\u2019s flagship model, offering improved performance in coding, reasoning, and agentic tasks. It achieves 74.5% on SWE-bench Verified and shows notable gains...",
+      "description": "Claude Opus 4.1 is an updated version of Anthropic’s flagship model, offering improved performance in coding, reasoning, and agentic tasks. It achieves 74.5% on SWE-bench Verified and shows notable gains...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "anthropic/claude-4.1-opus-20250805",
@@ -70452,7 +72100,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "anthropic/claude-opus-4.5",
       "display_name": "Anthropic: Claude Opus 4.5",
-      "description": "Claude Opus 4.5 is Anthropic\u2019s frontier reasoning model optimized for complex software engineering, agentic workflows, and long-horizon computer use. It offers strong multimodal capabilities, competitive performance across real-world coding and...",
+      "description": "Claude Opus 4.5 is Anthropic’s frontier reasoning model optimized for complex software engineering, agentic workflows, and long-horizon computer use. It offers strong multimodal capabilities, competitive performance across real-world coding and...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "anthropic/claude-4.5-opus-20251124",
@@ -70849,7 +72497,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "anthropic/claude-opus-4.6",
       "display_name": "Anthropic: Claude Opus 4.6",
-      "description": "Opus 4.6 is Anthropic\u2019s strongest model for coding and long-running professional tasks. It is built for agents that operate across entire workflows rather than single prompts, making it especially effective...",
+      "description": "Opus 4.6 is Anthropic’s strongest model for coding and long-running professional tasks. It is built for agents that operate across entire workflows rather than single prompts, making it especially effective...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "anthropic/claude-4.6-opus-20260205",
@@ -73223,7 +74871,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "anthropic/claude-sonnet-4.5",
       "display_name": "Anthropic: Claude Sonnet 4.5",
-      "description": "Claude Sonnet 4.5 is Anthropic\u2019s most advanced Sonnet model to date, optimized for real-world agents and coding workflows. It delivers state-of-the-art performance on coding benchmarks such as SWE-bench Verified, with...",
+      "description": "Claude Sonnet 4.5 is Anthropic’s most advanced Sonnet model to date, optimized for real-world agents and coding workflows. It delivers state-of-the-art performance on coding benchmarks such as SWE-bench Verified, with...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "anthropic/claude-4.5-sonnet-20250929",
@@ -74415,7 +76063,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "arcee-ai/coder-large",
       "display_name": "Arcee AI: Coder Large",
-      "description": "Coder\u2011Large is a 32 B\u2011parameter offspring of Qwen 2.5\u2011Instruct that has been further trained on permissively\u2011licensed GitHub, CodeSearchNet and synthetic bug\u2011fix corpora. It supports a 32k context window, enabling multi\u2011file...",
+      "description": "Coder‑Large is a 32 B‑parameter offspring of Qwen 2.5‑Instruct that has been further trained on permissively‑licensed GitHub, CodeSearchNet and synthetic bug‑fix corpora. It supports a 32k context window, enabling multi‑file...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "arcee-ai/coder-large",
@@ -75490,7 +77138,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "arcee-ai/virtuoso-large",
       "display_name": "Arcee AI: Virtuoso Large",
-      "description": "Virtuoso\u2011Large is Arcee's top\u2011tier general\u2011purpose LLM at 72 B parameters, tuned to tackle cross\u2011domain reasoning, creative writing and enterprise QA. Unlike many 70 B peers, it retains the 128 k...",
+      "description": "Virtuoso‑Large is Arcee's top‑tier general‑purpose LLM at 72 B parameters, tuned to tackle cross‑domain reasoning, creative writing and enterprise QA. Unlike many 70 B peers, it retains the 128 k...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "arcee-ai/virtuoso-large",
@@ -75791,7 +77439,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "baidu/ernie-4.5-vl-424b-a47b",
       "display_name": "Baidu: ERNIE 4.5 VL 424B A47B ",
-      "description": "ERNIE-4.5-VL-424B-A47B is a multimodal Mixture-of-Experts (MoE) model from Baidu\u2019s ERNIE 4.5 series, featuring 424B total parameters with 47B active per token. It is trained jointly on text and image data...",
+      "description": "ERNIE-4.5-VL-424B-A47B is a multimodal Mixture-of-Experts (MoE) model from Baidu’s ERNIE 4.5 series, featuring 424B total parameters with 47B active per token. It is trained jointly on text and image data...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "baidu/ernie-4.5-vl-424b-a47b",
@@ -76955,7 +78603,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "bytedance-seed/seed-2.0-lite",
       "display_name": "ByteDance Seed: Seed-2.0-Lite",
-      "description": "Seed-2.0-Lite is a versatile, cost\u2011efficient enterprise workhorse that delivers strong multimodal and agent capabilities while offering noticeably lower latency, making it a practical default choice for most production workloads across...",
+      "description": "Seed-2.0-Lite is a versatile, cost‑efficient enterprise workhorse that delivers strong multimodal and agent capabilities while offering noticeably lower latency, making it a practical default choice for most production workloads across...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "bytedance-seed/seed-2.0-lite-20260309",
@@ -78043,7 +79691,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
       "display_name": "Venice: Uncensored (free)",
-      "description": "Venice Uncensored Dolphin Mistral 24B Venice Edition is a fine-tuned variant of Mistral-Small-24B-Instruct-2501, developed by dphn.ai in collaboration with Venice.ai. This model is designed as an \u201cuncensored\u201d instruct-tuned LLM, preserving...",
+      "description": "Venice Uncensored Dolphin Mistral 24B Venice Edition is a fine-tuned variant of Mistral-Small-24B-Instruct-2501, developed by dphn.ai in collaboration with Venice.ai. This model is designed as an “uncensored” instruct-tuned LLM, preserving...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "venice/uncensored",
@@ -86017,7 +87665,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "google/gemini-2.5-pro",
       "display_name": "Google: Gemini 2.5 Pro",
-      "description": "Gemini 2.5 Pro is Google\u2019s state-of-the-art AI model designed for advanced reasoning, coding, mathematics, and scientific tasks. It employs \u201cthinking\u201d capabilities, enabling it to reason through responses with enhanced accuracy...",
+      "description": "Gemini 2.5 Pro is Google’s state-of-the-art AI model designed for advanced reasoning, coding, mathematics, and scientific tasks. It employs “thinking” capabilities, enabling it to reason through responses with enhanced accuracy...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "google/gemini-2.5-pro",
@@ -86417,7 +88065,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "google/gemini-2.5-pro-preview",
       "display_name": "Google: Gemini 2.5 Pro Preview 06-05",
-      "description": "Gemini 2.5 Pro is Google\u2019s state-of-the-art AI model designed for advanced reasoning, coding, mathematics, and scientific tasks. It employs \u201cthinking\u201d capabilities, enabling it to reason through responses with enhanced accuracy...",
+      "description": "Gemini 2.5 Pro is Google’s state-of-the-art AI model designed for advanced reasoning, coding, mathematics, and scientific tasks. It employs “thinking” capabilities, enabling it to reason through responses with enhanced accuracy...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "google/gemini-2.5-pro-preview-06-05",
@@ -86811,7 +88459,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "google/gemini-2.5-pro-preview-05-06",
       "display_name": "Google: Gemini 2.5 Pro Preview 05-06",
-      "description": "Gemini 2.5 Pro is Google\u2019s state-of-the-art AI model designed for advanced reasoning, coding, mathematics, and scientific tasks. It employs \u201cthinking\u201d capabilities, enabling it to reason through responses with enhanced accuracy...",
+      "description": "Gemini 2.5 Pro is Google’s state-of-the-art AI model designed for advanced reasoning, coding, mathematics, and scientific tasks. It employs “thinking” capabilities, enabling it to reason through responses with enhanced accuracy...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "google/gemini-2.5-pro-preview-03-25",
@@ -87614,7 +89262,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "google/gemini-3-pro-image",
       "display_name": "Google: Nano Banana Pro (Gemini 3 Pro Image)",
-      "description": "Nano Banana Pro is Google\u2019s most advanced image-generation and editing model, built on Gemini 3 Pro. It extends the original Nano Banana with significantly improved multimodal reasoning, real-world grounding, and...",
+      "description": "Nano Banana Pro is Google’s most advanced image-generation and editing model, built on Gemini 3 Pro. It extends the original Nano Banana with significantly improved multimodal reasoning, real-world grounding, and...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "google/gemini-3-pro-image-20260528",
@@ -88006,7 +89654,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "google/gemini-3-pro-image-preview",
       "display_name": "Google: Nano Banana Pro (Gemini 3 Pro Image Preview)",
-      "description": "Nano Banana Pro is Google\u2019s most advanced image-generation and editing model, built on Gemini 3 Pro. It extends the original Nano Banana with significantly improved multimodal reasoning, real-world grounding, and...",
+      "description": "Nano Banana Pro is Google’s most advanced image-generation and editing model, built on Gemini 3 Pro. It extends the original Nano Banana with significantly improved multimodal reasoning, real-world grounding, and...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "google/gemini-3-pro-image-preview-20251120",
@@ -88400,7 +90048,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "google/gemini-3.1-flash-image",
       "display_name": "Google: Nano Banana 2 (Gemini 3.1 Flash Image)",
-      "description": "Gemini 3.1 Flash Image, a.k.a. \"Nano Banana 2,\" is Google\u2019s latest state of the art image generation and editing model, delivering Pro-level visual quality at Flash speed. It combines advanced...",
+      "description": "Gemini 3.1 Flash Image, a.k.a. \"Nano Banana 2,\" is Google’s latest state of the art image generation and editing model, delivering Pro-level visual quality at Flash speed. It combines advanced...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "google/gemini-3.1-flash-image-20260528",
@@ -88784,7 +90432,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "google/gemini-3.1-flash-image-preview",
       "display_name": "Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview)",
-      "description": "Gemini 3.1 Flash Image Preview, a.k.a. \"Nano Banana 2,\" is Google\u2019s latest state of the art image generation and editing model, delivering Pro-level visual quality at Flash speed. It combines...",
+      "description": "Gemini 3.1 Flash Image Preview, a.k.a. \"Nano Banana 2,\" is Google’s latest state of the art image generation and editing model, delivering Pro-level visual quality at Flash speed. It combines...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "google/gemini-3.1-flash-image-preview-20260226",
@@ -89175,7 +90823,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "google/gemini-3.1-flash-lite",
       "display_name": "Google: Gemini 3.1 Flash Lite",
-      "description": "Gemini 3.1 Flash Lite is Google\u2019s GA high-efficiency multimodal model optimized for low-latency, high-volume workloads. It supports text, image, video, audio, and PDF inputs, and is designed for lightweight agentic...",
+      "description": "Gemini 3.1 Flash Lite is Google’s GA high-efficiency multimodal model optimized for low-latency, high-volume workloads. It supports text, image, video, audio, and PDF inputs, and is designed for lightweight agentic...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "google/gemini-3.1-flash-lite-20260507",
@@ -90364,7 +92012,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "google/gemini-3.1-pro-preview",
       "display_name": "Google: Gemini 3.1 Pro Preview",
-      "description": "Gemini 3.1 Pro Preview is Google\u2019s frontier reasoning model, delivering enhanced software engineering performance, improved agentic reliability, and more efficient token usage across complex workflows. Building on the multimodal foundation...",
+      "description": "Gemini 3.1 Pro Preview is Google’s frontier reasoning model, delivering enhanced software engineering performance, improved agentic reliability, and more efficient token usage across complex workflows. Building on the multimodal foundation...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "google/gemini-3.1-pro-preview-20260219",
@@ -92790,7 +94438,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "google/gemma-3n-e4b-it",
       "display_name": "Google: Gemma 3n 4B",
-      "description": "Gemma 3n E4B-it is optimized for efficient execution on mobile and low-resource devices, such as phones, laptops, and tablets. It supports multimodal inputs\u2014including text, visual data, and audio\u2014enabling diverse tasks...",
+      "description": "Gemma 3n E4B-it is optimized for efficient execution on mobile and low-resource devices, such as phones, laptops, and tablets. It supports multimodal inputs—including text, visual data, and audio—enabling diverse tasks...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "google/gemma-3n-e4b-it",
@@ -93091,7 +94739,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "google/gemma-4-26b-a4b-it",
       "display_name": "Google: Gemma 4 26B A4B ",
-      "description": "Gemma 4 26B A4B IT is an instruction-tuned Mixture-of-Experts (MoE) model from Google DeepMind. Despite 25.2B total parameters, only 3.8B activate per token during inference \u2014 delivering near-31B quality at...",
+      "description": "Gemma 4 26B A4B IT is an instruction-tuned Mixture-of-Experts (MoE) model from Google DeepMind. Despite 25.2B total parameters, only 3.8B activate per token during inference — delivering near-31B quality at...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "google/gemma-4-26b-a4b-it-20260403",
@@ -93489,7 +95137,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "google/gemma-4-26b-a4b-it:free",
       "display_name": "Google: Gemma 4 26B A4B  (free)",
-      "description": "Gemma 4 26B A4B IT is an instruction-tuned Mixture-of-Experts (MoE) model from Google DeepMind. Despite 25.2B total parameters, only 3.8B activate per token during inference \u2014 delivering near-31B quality at...",
+      "description": "Gemma 4 26B A4B IT is an instruction-tuned Mixture-of-Experts (MoE) model from Google DeepMind. Despite 25.2B total parameters, only 3.8B activate per token during inference — delivering near-31B quality at...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "google/gemma-4-26b-a4b-it-20260403",
@@ -96602,7 +98250,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "inclusionai/ling-2.6-1t",
       "display_name": "inclusionAI: Ling-2.6-1T",
-      "description": "Ling-2.6-1T is an instant (instruct) model from inclusionAI and the company\u2019s trillion-parameter flagship, designed for real-world agents that require fast execution and high efficiency at scale. It uses a \u201cfast...",
+      "description": "Ling-2.6-1T is an instant (instruct) model from inclusionAI and the company’s trillion-parameter flagship, designed for real-world agents that require fast execution and high efficiency at scale. It uses a “fast...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "inclusionai/ling-2.6-1t-20260423",
@@ -98205,7 +99853,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "kwaipilot/kat-coder-pro-v2",
       "display_name": "Kwaipilot: KAT-Coder-Pro V2",
-      "description": "KAT-Coder-Pro V2 is the latest high-performance model in KwaiKAT\u2019s KAT-Coder series, designed for complex enterprise-grade software engineering and SaaS integration. It builds on the agentic coding strengths of earlier versions,...",
+      "description": "KAT-Coder-Pro V2 is the latest high-performance model in KwaiKAT’s KAT-Coder series, designed for complex enterprise-grade software engineering and SaaS integration. It builds on the agentic coding strengths of earlier versions,...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "kwaipilot/kat-coder-pro-v2-20260327",
@@ -99130,7 +100778,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "liquid/lfm-2.5-1.2b-thinking:free",
       "display_name": "LiquidAI: LFM2.5-1.2B-Thinking (free)",
-      "description": "LFM2.5-1.2B-Thinking is a lightweight reasoning-focused model optimized for agentic tasks, data extraction, and RAG\u2014while still running comfortably on edge devices. It supports long context (up to 32K tokens) and is...",
+      "description": "LFM2.5-1.2B-Thinking is a lightweight reasoning-focused model optimized for agentic tasks, data extraction, and RAG—while still running comfortably on edge devices. It supports long context (up to 32K tokens) and is...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "liquid/lfm-2.5-1.2b-thinking-20260120",
@@ -109176,7 +110824,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "mistralai/mistral-large-2512",
       "display_name": "Mistral: Mistral Large 3 2512",
-      "description": "Mistral Large 3 2512 is Mistral\u2019s most capable model to date, featuring a sparse mixture-of-experts architecture with 41B active parameters (675B total), and released under the Apache 2.0 license.",
+      "description": "Mistral Large 3 2512 is Mistral’s most capable model to date, featuring a sparse mixture-of-experts architecture with 41B active parameters (675B total), and released under the Apache 2.0 license.",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "mistralai/mistral-large-2512",
@@ -109485,7 +111133,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "mistralai/mistral-medium-3",
       "display_name": "Mistral: Mistral Medium 3",
-      "description": "Mistral Medium 3 is a high-performance enterprise-grade language model designed to deliver frontier-level capabilities at significantly reduced operational cost. It balances state-of-the-art reasoning and multimodal performance with 8\u00d7 lower cost...",
+      "description": "Mistral Medium 3 is a high-performance enterprise-grade language model designed to deliver frontier-level capabilities at significantly reduced operational cost. It balances state-of-the-art reasoning and multimodal performance with 8× lower cost...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "mistralai/mistral-medium-3",
@@ -113641,7 +115289,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "moonshotai/kimi-k2-thinking",
       "display_name": "MoonshotAI: Kimi K2 Thinking",
-      "description": "Kimi K2 Thinking is Moonshot AI\u2019s most advanced open reasoning model to date, extending the K2 series into agentic, long-horizon reasoning. Built on the trillion-parameter Mixture-of-Experts (MoE) architecture introduced in...",
+      "description": "Kimi K2 Thinking is Moonshot AI’s most advanced open reasoning model to date, extending the K2 series into agentic, long-horizon reasoning. Built on the trillion-parameter Mixture-of-Experts (MoE) architecture introduced in...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "moonshotai/kimi-k2-thinking-20251106",
@@ -117884,7 +119532,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
       "display_name": "NVIDIA: Llama 3.3 Nemotron Super 49B V1.5",
-      "description": "Llama-3.3-Nemotron-Super-49B-v1.5 is a 49B-parameter, English-centric reasoning/chat model derived from Meta\u2019s Llama-3.3-70B-Instruct with a 128K context. It\u2019s post-trained for agentic workflows (RAG, tool calling) via SFT across math, code, science, and...",
+      "description": "Llama-3.3-Nemotron-Super-49B-v1.5 is a 49B-parameter, English-centric reasoning/chat model derived from Meta’s Llama-3.3-70B-Instruct with a 128K context. It’s post-trained for agentic workflows (RAG, tool calling) via SFT across math, code, science, and...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
@@ -119055,7 +120703,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
       "display_name": "NVIDIA: Nemotron 3 Nano Omni (free)",
-      "description": "NVIDIA Nemotron\u2122 3 Nano Omni is a 30B-A3B open multimodal model designed to function as a perception and context sub-agent in enterprise agent systems. It accepts text, image, video, and...",
+      "description": "NVIDIA Nemotron™ 3 Nano Omni is a 30B-A3B open multimodal model designed to function as a perception and context sub-agent in enterprise agent systems. It accepts text, image, video, and...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning-20260428",
@@ -121400,7 +123048,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "nvidia/nemotron-nano-12b-v2-vl:free",
       "display_name": "NVIDIA: Nemotron Nano 12B 2 VL (free)",
-      "description": "NVIDIA Nemotron Nano 2 VL is a 12-billion-parameter open multimodal reasoning model designed for video understanding and document intelligence. It introduces a hybrid Transformer-Mamba architecture, combining transformer-level accuracy with Mamba\u2019s...",
+      "description": "NVIDIA Nemotron Nano 2 VL is a 12-billion-parameter open multimodal reasoning model designed for video understanding and document intelligence. It introduces a hybrid Transformer-Mamba architecture, combining transformer-level accuracy with Mamba’s...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "nvidia/nemotron-nano-12b-v2-vl",
@@ -124903,7 +126551,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "openai/gpt-4.1-nano",
       "display_name": "OpenAI: GPT-4.1 Nano",
-      "description": "For tasks that demand low latency, GPT\u20114.1 nano is the fastest and cheapest model in the GPT-4.1 series. It delivers exceptional performance at a small size with its 1 million...",
+      "description": "For tasks that demand low latency, GPT‑4.1 nano is the fastest and cheapest model in the GPT-4.1 series. It delivers exceptional performance at a small size with its 1 million...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "openai/gpt-4.1-nano-2025-04-14",
@@ -126135,7 +127783,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "openai/gpt-4o-2024-11-20",
       "display_name": "OpenAI: GPT-4o (2024-11-20)",
-      "description": "The 2024-11-20 version of GPT-4o offers a leveled-up creative writing ability with more natural, engaging, and tailored writing to improve relevance & readability. It\u2019s also better at working with uploaded...",
+      "description": "The 2024-11-20 version of GPT-4o offers a leveled-up creative writing ability with more natural, engaging, and tailored writing to improve relevance & readability. It’s also better at working with uploaded...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "openai/gpt-4o-2024-11-20",
@@ -127651,7 +129299,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "openai/gpt-5",
       "display_name": "OpenAI: GPT-5",
-      "description": "GPT-5 is OpenAI\u2019s most advanced model, offering major improvements in reasoning, code quality, and user experience. It is optimized for complex tasks that require step-by-step reasoning, instruction following, and accuracy...",
+      "description": "GPT-5 is OpenAI’s most advanced model, offering major improvements in reasoning, code quality, and user experience. It is optimized for complex tasks that require step-by-step reasoning, instruction following, and accuracy...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "openai/gpt-5-2025-08-07",
@@ -130310,7 +131958,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "openai/gpt-5-pro",
       "display_name": "OpenAI: GPT-5 Pro",
-      "description": "GPT-5 Pro is OpenAI\u2019s most advanced model, offering major improvements in reasoning, code quality, and user experience. It is optimized for complex tasks that require step-by-step reasoning, instruction following, and...",
+      "description": "GPT-5 Pro is OpenAI’s most advanced model, offering major improvements in reasoning, code quality, and user experience. It is optimized for complex tasks that require step-by-step reasoning, instruction following, and...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "openai/gpt-5-pro-2025-10-06",
@@ -131091,7 +132739,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "openai/gpt-5.1-chat",
       "display_name": "OpenAI: GPT-5.1 Chat",
-      "description": "GPT-5.1 Chat (AKA Instant is the fast, lightweight member of the 5.1 family, optimized for low-latency chat while retaining strong general intelligence. It uses adaptive reasoning to selectively \u201cthink\u201d on...",
+      "description": "GPT-5.1 Chat (AKA Instant is the fast, lightweight member of the 5.1 family, optimized for low-latency chat while retaining strong general intelligence. It uses adaptive reasoning to selectively “think” on...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "openai/gpt-5.1-chat-20251113",
@@ -131788,7 +133436,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "openai/gpt-5.1-codex-max",
       "display_name": "OpenAI: GPT-5.1-Codex-Max",
-      "description": "GPT-5.1-Codex-Max is OpenAI\u2019s latest agentic coding model, designed for long-running, high-context software development tasks. It is based on an updated version of the 5.1 reasoning stack and trained on agentic...",
+      "description": "GPT-5.1-Codex-Max is OpenAI’s latest agentic coding model, designed for long-running, high-context software development tasks. It is based on an updated version of the 5.1 reasoning stack and trained on agentic...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "openai/gpt-5.1-codex-max-20251204",
@@ -132963,7 +134611,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "openai/gpt-5.2-chat",
       "display_name": "OpenAI: GPT-5.2 Chat",
-      "description": "GPT-5.2 Chat (AKA Instant) is the fast, lightweight member of the 5.2 family, optimized for low-latency chat while retaining strong general intelligence. It uses adaptive reasoning to selectively \u201cthink\u201d on...",
+      "description": "GPT-5.2 Chat (AKA Instant) is the fast, lightweight member of the 5.2 family, optimized for low-latency chat while retaining strong general intelligence. It uses adaptive reasoning to selectively “think” on...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "openai/gpt-5.2-chat-20251211",
@@ -133657,7 +135305,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "openai/gpt-5.2-pro",
       "display_name": "OpenAI: GPT-5.2 Pro",
-      "description": "GPT-5.2 Pro is OpenAI\u2019s most advanced model, offering major improvements in agentic coding and long context performance over GPT-5 Pro. It is optimized for complex tasks that require step-by-step reasoning,...",
+      "description": "GPT-5.2 Pro is OpenAI’s most advanced model, offering major improvements in agentic coding and long context performance over GPT-5 Pro. It is optimized for complex tasks that require step-by-step reasoning,...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "openai/gpt-5.2-pro-20251211",
@@ -134354,7 +136002,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "openai/gpt-5.3-codex",
       "display_name": "OpenAI: GPT-5.3-Codex",
-      "description": "GPT-5.3-Codex is OpenAI\u2019s most advanced agentic coding model, combining the frontier software engineering performance of GPT-5.2-Codex with the broader reasoning and professional knowledge capabilities of GPT-5.2. It achieves state-of-the-art results...",
+      "description": "GPT-5.3-Codex is OpenAI’s most advanced agentic coding model, combining the frontier software engineering performance of GPT-5.2-Codex with the broader reasoning and professional knowledge capabilities of GPT-5.2. It achieves state-of-the-art results...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "openai/gpt-5.3-codex-20260224",
@@ -134747,7 +136395,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "openai/gpt-5.4",
       "display_name": "OpenAI: GPT-5.4",
-      "description": "GPT-5.4 is OpenAI\u2019s latest frontier model, unifying the Codex and GPT lines into a single system. It features a 1M+ token context window (922K input, 128K output) with support for...",
+      "description": "GPT-5.4 is OpenAI’s latest frontier model, unifying the Codex and GPT lines into a single system. It features a 1M+ token context window (922K input, 128K output) with support for...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "openai/gpt-5.4-20260305",
@@ -136716,7 +138364,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "openai/gpt-5.5",
       "display_name": "OpenAI: GPT-5.5",
-      "description": "GPT-5.5 is OpenAI\u2019s frontier model designed for complex professional workloads, building on GPT-5.4 with stronger reasoning, higher reliability, and improved token efficiency on hard tasks. It features a 1M+ token...",
+      "description": "GPT-5.5 is OpenAI’s frontier model designed for complex professional workloads, building on GPT-5.4 with stronger reasoning, higher reliability, and improved token efficiency on hard tasks. It features a 1M+ token...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "openai/gpt-5.5-20260423",
@@ -137109,7 +138757,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "openai/gpt-5.5-pro",
       "display_name": "OpenAI: GPT-5.5 Pro",
-      "description": "GPT-5.5 Pro is OpenAI\u2019s high-capability model optimized for deep reasoning and accuracy on complex, high-stakes workloads. It features a 1M+ token context window (922K input, 128K output) with support for...",
+      "description": "GPT-5.5 Pro is OpenAI’s high-capability model optimized for deep reasoning and accuracy on complex, high-stakes workloads. It features a 1M+ token context window (922K input, 128K output) with support for...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "openai/gpt-5.5-pro-20260423",
@@ -143504,7 +145152,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "openai/o4-mini-deep-research",
       "display_name": "OpenAI: o4 Mini Deep Research",
-      "description": "o4-mini-deep-research is OpenAI's faster, more affordable deep research model\u2014ideal for tackling complex, multi-step research tasks.\n\nNote: This model always uses the 'web_search' tool which adds additional cost.",
+      "description": "o4-mini-deep-research is OpenAI's faster, more affordable deep research model—ideal for tackling complex, multi-step research tasks.\n\nNote: This model always uses the 'web_search' tool which adds additional cost.",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "openai/o4-mini-deep-research-2025-06-26",
@@ -146369,7 +148017,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "perplexity/sonar",
       "display_name": "Perplexity: Sonar",
-      "description": "Sonar is lightweight, affordable, fast, and simple to use \u2014 now featuring citations and the ability to customize sources. It is designed for companies seeking to integrate lightweight question-and-answer features...",
+      "description": "Sonar is lightweight, affordable, fast, and simple to use — now featuring citations and the ability to customize sources. It is designed for companies seeking to integrate lightweight question-and-answer features...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "perplexity/sonar",
@@ -154809,7 +156457,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "qwen/qwen3-30b-a3b-thinking-2507",
       "display_name": "Qwen: Qwen3 30B A3B Thinking 2507",
-      "description": "Qwen3-30B-A3B-Thinking-2507 is a 30B parameter Mixture-of-Experts reasoning model optimized for complex tasks requiring extended multi-step thinking. The model is designed specifically for \u201cthinking mode,\u201d where internal reasoning traces are separated...",
+      "description": "Qwen3-30B-A3B-Thinking-2507 is a 30B parameter Mixture-of-Experts reasoning model optimized for complex tasks requiring extended multi-step thinking. The model is designed specifically for “thinking mode,” where internal reasoning traces are separated...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "qwen/qwen3-30b-a3b-thinking-2507",
@@ -158491,7 +160139,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "qwen/qwen3-next-80b-a3b-instruct",
       "display_name": "Qwen: Qwen3 Next 80B A3B Instruct",
-      "description": "Qwen3-Next-80B-A3B-Instruct is an instruction-tuned chat model in the Qwen3-Next series optimized for fast, stable responses without \u201cthinking\u201d traces. It targets complex tasks across reasoning, code generation, knowledge QA, and multilingual...",
+      "description": "Qwen3-Next-80B-A3B-Instruct is an instruction-tuned chat model in the Qwen3-Next series optimized for fast, stable responses without “thinking” traces. It targets complex tasks across reasoning, code generation, knowledge QA, and multilingual...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "qwen/qwen3-next-80b-a3b-instruct-2509",
@@ -158797,7 +160445,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "qwen/qwen3-next-80b-a3b-instruct:free",
       "display_name": "Qwen: Qwen3 Next 80B A3B Instruct (free)",
-      "description": "Qwen3-Next-80B-A3B-Instruct is an instruction-tuned chat model in the Qwen3-Next series optimized for fast, stable responses without \u201cthinking\u201d traces. It targets complex tasks across reasoning, code generation, knowledge QA, and multilingual...",
+      "description": "Qwen3-Next-80B-A3B-Instruct is an instruction-tuned chat model in the Qwen3-Next series optimized for fast, stable responses without “thinking” traces. It targets complex tasks across reasoning, code generation, knowledge QA, and multilingual...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "qwen/qwen3-next-80b-a3b-instruct-2509",
@@ -159097,7 +160745,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "qwen/qwen3-next-80b-a3b-thinking",
       "display_name": "Qwen: Qwen3 Next 80B A3B Thinking",
-      "description": "Qwen3-Next-80B-A3B-Thinking is a reasoning-first chat model in the Qwen3-Next line that outputs structured \u201cthinking\u201d traces by default. It\u2019s designed for hard multi-step problems; math proofs, code synthesis/debugging, logic, and agentic...",
+      "description": "Qwen3-Next-80B-A3B-Thinking is a reasoning-first chat model in the Qwen3-Next line that outputs structured “thinking” traces by default. It’s designed for hard multi-step problems; math proofs, code synthesis/debugging, logic, and agentic...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "qwen/qwen3-next-80b-a3b-thinking-2509",
@@ -165095,7 +166743,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "qwen/qwen3.6-27b",
       "display_name": "Qwen: Qwen3.6 27B",
-      "description": "Qwen3.6 27B is a dense 27-billion-parameter language model from the Qwen Team at Alibaba, released in April 2026. It features hybrid multimodal capabilities \u2014 accepting text, image, and video inputs...",
+      "description": "Qwen3.6 27B is a dense 27-billion-parameter language model from the Qwen Team at Alibaba, released in April 2026. It features hybrid multimodal capabilities — accepting text, image, and video inputs...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "qwen/qwen3.6-27b-20260422",
@@ -175283,7 +176931,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "x-ai/grok-4.20-multi-agent",
       "display_name": "xAI: Grok 4.20 Multi-Agent",
-      "description": "Grok 4.20 Multi-Agent is a variant of xAI\u2019s Grok 4.20 designed for collaborative, agent-based workflows. Multiple agents operate in parallel to conduct deep research, coordinate tool use, and synthesize information...",
+      "description": "Grok 4.20 Multi-Agent is a variant of xAI’s Grok 4.20 designed for collaborative, agent-based workflows. Multiple agents operate in parallel to conduct deep research, coordinate tool use, and synthesize information...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "x-ai/grok-4.20-multi-agent-20260309",
@@ -176076,7 +177724,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "x-ai/grok-build-0.1",
       "display_name": "xAI: Grok Build 0.1",
-      "description": "Grok Build 0.1 is xAI\u2019s fast coding model trained specifically for agentic software engineering workflows. It supports text and image inputs with text output, and is optimized for interactive coding...",
+      "description": "Grok Build 0.1 is xAI’s fast coding model trained specifically for agentic software engineering workflows. It supports text and image inputs with text output, and is optimized for interactive coding...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "x-ai/grok-build-0.1-20260520",
@@ -176876,7 +178524,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "xiaomi/mimo-v2.5-pro",
       "display_name": "Xiaomi: MiMo-V2.5-Pro",
-      "description": "MiMo-V2.5-Pro is Xiaomi\u2019s flagship model, delivering strong performance in general agentic capabilities, complex software engineering, and long-horizon tasks, with top rankings on benchmarks such as ClawEval, GDPVal, and SWE-bench Pro....",
+      "description": "MiMo-V2.5-Pro is Xiaomi’s flagship model, delivering strong performance in general agentic capabilities, complex software engineering, and long-horizon tasks, with top rankings on benchmarks such as ClawEval, GDPVal, and SWE-bench Pro....",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "xiaomi/mimo-v2.5-pro-20260422",
@@ -179230,7 +180878,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "z-ai/glm-4.7",
       "display_name": "Z.ai: GLM 4.7",
-      "description": "GLM-4.7 is Z.ai\u2019s latest flagship model, featuring upgrades in two key areas: enhanced programming capabilities and more stable multi-step reasoning/execution. It demonstrates significant improvements in executing complex agent tasks while...",
+      "description": "GLM-4.7 is Z.ai’s latest flagship model, featuring upgrades in two key areas: enhanced programming capabilities and more stable multi-step reasoning/execution. It demonstrates significant improvements in executing complex agent tasks while...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "z-ai/glm-4.7-20251222",
@@ -180020,7 +181668,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "z-ai/glm-5",
       "display_name": "Z.ai: GLM 5",
-      "description": "GLM-5 is Z.ai\u2019s flagship open-source foundation model engineered for complex systems design and long-horizon agent workflows. Built for expert developers, it delivers production-grade performance on large-scale programming tasks, rivaling leading...",
+      "description": "GLM-5 is Z.ai’s flagship open-source foundation model engineered for complex systems design and long-horizon agent workflows. Built for expert developers, it delivers production-grade performance on large-scale programming tasks, rivaling leading...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "z-ai/glm-5-20260211",
@@ -181608,7 +183256,7 @@
       "provider_display_name": "OpenRouter",
       "model_id": "z-ai/glm-5v-turbo",
       "display_name": "Z.ai: GLM 5V Turbo",
-      "description": "GLM-5V-Turbo is Z.ai\u2019s first native multimodal agent foundation model, built for vision-based coding and agent-driven tasks. It natively handles image, video, and text inputs, excels at long-horizon planning, complex coding,...",
+      "description": "GLM-5V-Turbo is Z.ai’s first native multimodal agent foundation model, built for vision-based coding and agent-driven tasks. It natively handles image, video, and text inputs, excels at long-horizon planning, complex coding,...",
       "family": null,
       "external_ids": {
         "provider_canonical_slug": "z-ai/glm-5v-turbo-20260401",

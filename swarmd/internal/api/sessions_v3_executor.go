@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+
 	"regexp"
 	"strconv"
 	"strings"
+	modelruntime "swarm/packages/swarmd/internal/model"
 
 	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
@@ -2175,11 +2177,10 @@ func sessionsV3ProviderToolParameters(parameters map[string]any) map[string]any 
 func (e *sessionV3Executor) resolveSessionV3ProviderPreference(pref pebblestore.ModelPreference) (pebblestore.ModelPreference, int, error) {
 	pref = normalizeSessionsV3ModelPreference(pref)
 	if e == nil || e.server == nil || e.server.model == nil {
+		pref.ServiceTier = modelruntime.NormalizeServiceTierForProvider(pref.Provider, pref.ServiceTier)
 		if pref.Provider == "codex" {
-			pref.ServiceTier = codexruntime.NormalizeServiceTier(pref.ServiceTier)
 			pref.ContextMode = codexruntime.NormalizeContextMode(pref.ContextMode)
 		} else {
-			pref.ServiceTier = ""
 			pref.ContextMode = ""
 		}
 		return pref, 0, nil

@@ -49,7 +49,7 @@ interface AgentModelControlProps {
   busy?: boolean
 }
 
-const THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
+const FALLBACK_THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
 type DraftMode = 'default' | 'single' | 'split'
 export type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string }
 
@@ -127,7 +127,7 @@ function defaultDraftFromModel(model: ModelOptionRecord | null, selectedServiceT
   return {
     provider,
     model: modelID,
-    thinking: selectedThinking.trim() || model?.thinking || 'off',
+    thinking: selectedThinking.trim() || defaultThinkingForOption(model),
     serviceTier: modelSupportsServiceTier(provider, modelID, model ? [model] : [], resolvedServiceTier) ? resolvedServiceTier : '',
   }
 }
@@ -183,7 +183,37 @@ function modelContextLabel(option: ModelOptionRecord): string {
 }
 
 function normalizeThinking(value: string): string {
-  return value.trim() || 'off'
+  return value.trim().toLowerCase() || 'off'
+}
+
+function thinkingOptionsForOption(option: ModelOptionRecord | null): string[] {
+  const seen = new Set<string>()
+  const source = option?.thinkingOptions?.length ? option.thinkingOptions : FALLBACK_THINKING_OPTIONS
+  const out: string[] = []
+  for (const item of source) {
+    const normalized = normalizeThinking(item)
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    out.push(normalized)
+  }
+  return out.length > 0 ? out : FALLBACK_THINKING_OPTIONS
+}
+
+function defaultThinkingForOption(option: ModelOptionRecord | null): string {
+  const options = thinkingOptionsForOption(option)
+  const declaredDefault = normalizeThinking(option?.defaultThinking ?? '')
+  if (options.includes(declaredDefault)) return declaredDefault
+  const favoriteDefault = normalizeThinking(option?.thinking ?? '')
+  if (options.includes(favoriteDefault)) return favoriteDefault
+  if (options.includes('off')) return 'off'
+  return options[0] ?? 'off'
+}
+
+function normalizeDraftThinking(provider: string, model: string, modelOptions: ModelOptionRecord[], value: string): string {
+  const option = modelOptionFor(provider, model, modelOptions)
+  const options = thinkingOptionsForOption(option)
+  const normalized = normalizeThinking(value)
+  return options.includes(normalized) ? normalized : defaultThinkingForOption(option)
 }
 
 function buildPatch(mode: DraftMode, single: ModelDraft, plan: ModelDraft, auto: ModelDraft, modelOptions: ModelOptionRecord[]): AgentModelControlProfilePatch {
@@ -208,7 +238,7 @@ function buildPatch(mode: DraftMode, single: ModelDraft, plan: ModelDraft, auto:
       modelMode: 'single',
       provider: single.provider.trim(),
       model: single.model.trim(),
-      thinking: normalizeThinking(single.thinking),
+      thinking: normalizeDraftThinking(single.provider, single.model, modelOptions, single.thinking),
       planProvider: '',
       planModel: '',
       planThinking: '',
@@ -226,11 +256,11 @@ function buildPatch(mode: DraftMode, single: ModelDraft, plan: ModelDraft, auto:
     thinking: '',
     planProvider: plan.provider.trim(),
     planModel: plan.model.trim(),
-    planThinking: normalizeThinking(plan.thinking),
+    planThinking: normalizeDraftThinking(plan.provider, plan.model, modelOptions, plan.thinking),
     planServiceTier: modelSupportsServiceTier(plan.provider, plan.model, modelOptions, plan.serviceTier) ? normalizeDraftServiceTier(plan.provider, plan.serviceTier) : '',
     autoProvider: auto.provider.trim(),
     autoModel: auto.model.trim(),
-    autoThinking: normalizeThinking(auto.thinking),
+    autoThinking: normalizeDraftThinking(auto.provider, auto.model, modelOptions, auto.thinking),
     autoServiceTier: modelSupportsServiceTier(auto.provider, auto.model, modelOptions, auto.serviceTier) ? normalizeDraftServiceTier(auto.provider, auto.serviceTier) : '',
   }
 }
@@ -279,7 +309,7 @@ export function AgentModelControl({
   const selectedModelLabel = selectedModel
     ? `${selectedModel.provider}/${displayModelName(selectedModel.provider, selectedModel.model, selectedModel.contextMode)}`
     : 'Default model'
-  const normalizedSelectedThinking = selectedThinking.trim() || selectedModel?.thinking || 'off'
+  const normalizedSelectedThinking = selectedThinking.trim() || defaultThinkingForOption(selectedModel)
   const selectedServiceTierSupported = selectedModel ? supportsModelServiceTier(selectedModel.provider, selectedModel.model, selectedModel.serviceTiers) : false
   const normalizedSelectedServiceTier = normalizeDraftServiceTier(selectedModel?.provider ?? '', selectedServiceTier)
   const selectedServiceTierLabel = normalizedSelectedServiceTier ? serviceTierLabel(selectedModel?.provider ?? '', selectedModel?.model ?? '', modelOptions, normalizedSelectedServiceTier) : 'standard'
@@ -335,7 +365,7 @@ export function AgentModelControl({
           ...singleDraft,
           provider: singleDraft.provider.trim(),
           model: singleDraft.model.trim(),
-          thinking: normalizeThinking(singleDraft.thinking),
+          thinking: normalizeDraftThinking(singleDraft.provider, singleDraft.model, modelOptions, singleDraft.thinking),
           serviceTier: modelSupportsServiceTier(singleDraft.provider, singleDraft.model, modelOptions, singleDraft.serviceTier) ? normalizeDraftServiceTier(singleDraft.provider, singleDraft.serviceTier) : '',
         },
       }
@@ -535,13 +565,15 @@ function ModelDraftEditor({
   const serviceTierOptions = serviceTierOptionsForDraft(draft, modelOptions)
   const serviceTierSupported = serviceTierOptions.length > 1
   const normalizedServiceTier = serviceTierSupported ? normalizeDraftServiceTier(draft.provider, draft.serviceTier) : ''
+  const thinkingOptions = thinkingOptionsForOption(selectedOption)
+  const normalizedThinking = thinkingOptions.includes(normalizeThinking(draft.thinking)) ? normalizeThinking(draft.thinking) : defaultThinkingForOption(selectedOption)
   return (
     <div className="mt-4 rounded-xl border border-[var(--app-border)] p-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]"><GitBranch size={14} />{title}</div>
       <div className="grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)]">
         <SelectField label="Provider" value={draft.provider} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider, value: provider }))} placeholder="Choose provider" />
         <ModelSelectField label="Model" value={draft.model} onChange={onModelChange} options={choices} placeholder="Choose model" disabled={!draft.provider.trim()} />
-        <SelectField label="Thinking" value={normalizeThinking(draft.thinking)} onChange={onThinkingChange} options={THINKING_OPTIONS.map((option) => ({ label: option, value: option }))} />
+        <SelectField label="Thinking" value={normalizedThinking} onChange={onThinkingChange} options={thinkingOptions.map((option) => ({ label: option, value: option }))} />
         {showServiceTier ? <SelectField label="Service tier" value={normalizedServiceTier} onChange={(value) => onServiceTierChange?.(normalizeDraftServiceTier(draft.provider, value))} options={serviceTierOptions} disabled={!serviceTierSupported} /> : null}
       </div>
       {selectedOption ? <ModelInfoPanel option={selectedOption} /> : null}

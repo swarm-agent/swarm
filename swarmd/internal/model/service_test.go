@@ -105,6 +105,82 @@ func TestResolvePreferenceFindsFireworksCatalogByResourceName(t *testing.T) {
 	}
 }
 
+func TestResolvePreferenceRejectsUnsupportedFireworksGLMThinking(t *testing.T) {
+	service, store := newTestModelService(t)
+	defer store.Close()
+
+	if err := service.catalog.store.SetRecord(pebblestore.ModelCatalogRecord{
+		Provider:        "fireworks",
+		Model:           "glm-5p2",
+		ThinkingOptions: []string{"off", "high", "xhigh"},
+		DefaultThinking: "xhigh",
+	}); err != nil {
+		t.Fatalf("set catalog record: %v", err)
+	}
+
+	resolved, err := service.ResolvePreference(pebblestore.ModelPreference{
+		Provider: "fireworks",
+		Model:    "glm-5p2",
+		Thinking: "medium",
+	})
+	if err != nil {
+		t.Fatalf("ResolvePreference returned error: %v", err)
+	}
+	if resolved.Preference.Thinking != "xhigh" {
+		t.Fatalf("resolved unsupported thinking = %q, want default xhigh", resolved.Preference.Thinking)
+	}
+}
+
+func TestResolvePreferenceRejectsUnsupportedFireworksGLM51Thinking(t *testing.T) {
+	service, store := newTestModelService(t)
+	defer store.Close()
+
+	if err := service.catalog.store.SetRecord(pebblestore.ModelCatalogRecord{
+		Provider:        "fireworks",
+		Model:           "glm-5p1",
+		ThinkingOptions: []string{"off", "medium"},
+		DefaultThinking: "medium",
+	}); err != nil {
+		t.Fatalf("set catalog record: %v", err)
+	}
+
+	resolved, err := service.ResolvePreference(pebblestore.ModelPreference{
+		Provider: "fireworks",
+		Model:    "glm-5p1",
+		Thinking: "high",
+	})
+	if err != nil {
+		t.Fatalf("ResolvePreference returned error: %v", err)
+	}
+	if resolved.Preference.Thinking != "medium" {
+		t.Fatalf("resolved unsupported thinking = %q, want default medium", resolved.Preference.Thinking)
+	}
+}
+
+func TestResolvePreferenceUsesSnapshotContextMode(t *testing.T) {
+	service, store := newTestModelService(t)
+	defer store.Close()
+
+	if err := service.catalog.store.SetRecord(pebblestore.ModelCatalogRecord{
+		Provider:      "codex",
+		Model:         "gpt-5.4",
+		ContextWindow: 272000,
+		ContextModes: []pebblestore.ModelCatalogContextMode{
+			{Mode: "1m", ContextWindow: 1000000},
+		},
+	}); err != nil {
+		t.Fatalf("set catalog record: %v", err)
+	}
+
+	resolved, _, err := service.SetPreferenceForAccount("account-a", "user-a", "codex", "gpt-5.4", "medium", "", "1m")
+	if err != nil {
+		t.Fatalf("SetPreferenceForAccount returned error: %v", err)
+	}
+	if resolved.Preference.ContextMode != "1m" || resolved.ContextWindow != 1000000 {
+		t.Fatalf("resolved context = mode %q window %d, want 1m/1000000", resolved.Preference.ContextMode, resolved.ContextWindow)
+	}
+}
+
 func TestResolvePreferenceClearsPriorityForFireworksFastRouter(t *testing.T) {
 	service, store := newTestModelService(t)
 	defer store.Close()

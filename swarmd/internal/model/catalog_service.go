@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -110,18 +109,44 @@ type swarmSnapshotModel struct {
 		ContextWindowTokens *int `json:"context_window_tokens"`
 		MaxOutputTokens     *int `json:"max_output_tokens"`
 	} `json:"limits"`
-	Pricing          json.RawMessage                          `json:"pricing"`
-	Thinking         json.RawMessage                          `json:"thinking"`
-	ProviderSpecific map[string]swarmSnapshotProviderSpecific `json:"provider_specific"`
+	Pricing          json.RawMessage `json:"pricing"`
+	Thinking         json.RawMessage `json:"thinking"`
+	ProviderSpecific json.RawMessage `json:"provider_specific"`
 	Routing          struct {
 		TopProviderContextWindowTokens *int `json:"top_provider_context_window_tokens"`
 		TopProviderMaxOutputTokens     *int `json:"top_provider_max_output_tokens"`
 	} `json:"routing"`
 }
 
+type swarmSnapshotThinking struct {
+	Supported              *bool                          `json:"supported"`
+	SupportedSwarmSettings []string                       `json:"supported_swarm_settings"`
+	DefaultSwarmSetting    string                         `json:"default_swarm_setting"`
+	ProviderParameter      string                         `json:"provider_parameter"`
+	SwarmSettingMappings   []swarmSnapshotThinkingMapping `json:"swarm_setting_mappings"`
+}
+
+type swarmSnapshotThinkingMapping struct {
+	SwarmSetting           string `json:"swarm_setting"`
+	ProviderValue          any    `json:"provider_value"`
+	EffectiveProviderValue any    `json:"effective_provider_value"`
+	Behavior               string `json:"behavior"`
+}
+
+type swarmSnapshotContextMode struct {
+	Mode          string `json:"mode"`
+	Label         string `json:"label"`
+	ContextWindow int    `json:"context_window"`
+	Default       bool   `json:"default"`
+}
+
 type swarmSnapshotProviderSpecific struct {
-	ResourceName string `json:"resource_name"`
-	Serving      struct {
+	ResourceName     string                     `json:"resource_name"`
+	RequestModelPath string                     `json:"request_model_path"`
+	ContextWindow    int                        `json:"context_window"`
+	MaxContextWindow int                        `json:"max_context_window"`
+	ContextModes     []swarmSnapshotContextMode `json:"context_modes"`
+	Serving          struct {
 		SupportedTiers []string                        `json:"supported_tiers"`
 		DefaultTier    string                          `json:"default_tier"`
 		Standard       *swarmSnapshotRawTier           `json:"standard"`
@@ -133,8 +158,10 @@ type swarmSnapshotProviderSpecific struct {
 
 type swarmSnapshotRawTier struct {
 	Tier              string          `json:"tier"`
+	SwarmSetting      string          `json:"swarm_setting"`
 	ProviderParameter string          `json:"provider_parameter"`
 	ProviderValue     string          `json:"provider_value"`
+	RequestModelPath  string          `json:"request_model_path"`
 	Pricing           json.RawMessage `json:"pricing,omitempty"`
 }
 
@@ -180,9 +207,6 @@ func (s *CatalogService) EnsureBootDefaults() error {
 
 	nowMs := s.now().UnixMilli()
 	defaultContextWindow := 200000
-	if providerID == "codex" && strings.EqualFold(modelID, "gpt-5.5") {
-		defaultContextWindow = codexruntime.EffectiveContextWindow(modelID, "", 0)
-	}
 	defaultRecord := pebblestore.ModelCatalogRecord{
 		Provider:        providerID,
 		Model:           modelID,
@@ -227,16 +251,9 @@ func (s *CatalogService) Get(providerID, modelID string) (CatalogLookup, error) 
 			return CatalogLookup{}, err
 		}
 	}
-	if !ok && normalizedProvider == "fireworks" {
-		record, ok, err = s.findNormalizedFireworksRecord(normalizedModel)
-		if err != nil {
-			return CatalogLookup{}, err
-		}
-	}
 	if !ok {
 		return CatalogLookup{Found: false}, nil
 	}
-	record = normalizeCatalogRecord(normalizedProvider, record)
 
 	stale := record.ExpiresAt > 0 && record.ExpiresAt < s.now().UnixMilli()
 	return CatalogLookup{
@@ -254,66 +271,7 @@ func (s *CatalogService) List(providerID string, limit int) ([]pebblestore.Model
 	if limit <= 0 {
 		limit = 1000
 	}
-	records, err := s.store.ListProvider(providerID, limit)
-	if err != nil {
-		return nil, err
-	}
-	seen := make(map[string]struct{}, len(records))
-	out := make([]pebblestore.ModelCatalogRecord, 0, len(records))
-	for _, record := range records {
-		record = normalizeCatalogRecord(providerID, record)
-		key := record.Provider + "\x00" + record.Model
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, record)
-	}
-	return out, nil
-}
-
-func (s *CatalogService) findNormalizedFireworksRecord(modelID string) (pebblestore.ModelCatalogRecord, bool, error) {
-	records, err := s.store.ListProvider("fireworks", 1000)
-	if err != nil {
-		return pebblestore.ModelCatalogRecord{}, false, err
-	}
-	modelID = canonicalCatalogModelID("fireworks", modelID)
-	for _, record := range records {
-		normalized := normalizeCatalogRecord("fireworks", record)
-		if canonicalCatalogModelID("fireworks", normalized.Model) == modelID {
-			return normalized, true, nil
-		}
-	}
-	return pebblestore.ModelCatalogRecord{}, false, nil
-}
-
-func normalizeCatalogRecord(providerID string, record pebblestore.ModelCatalogRecord) pebblestore.ModelCatalogRecord {
-	providerID = canonicalCatalogProviderID(providerID)
-	if providerID != "fireworks" {
-		return record
-	}
-	var decoded map[string]swarmSnapshotProviderSpecific
-	if len(record.ProviderSpecific) == 0 || json.Unmarshal(record.ProviderSpecific, &decoded) != nil {
-		return record
-	}
-	providerSpecific, ok := decoded["fireworks"]
-	if !ok {
-		return record
-	}
-	baseModelID := canonicalCatalogModelID("fireworks", firstNonEmpty(providerSpecific.ResourceName, record.Model))
-	fastID := fireworksFastModelID(providerSpecific, baseModelID)
-	if fastID == "" {
-		return record
-	}
-	recordModelID := canonicalCatalogModelID("fireworks", record.Model)
-	if recordModelID != fastID && recordModelID != canonicalCatalogModelID("fireworks", fireworksFastProviderValue(providerSpecific)) {
-		return record
-	}
-	record.Provider = "fireworks"
-	record.Model = fastID
-	record.ServiceTiers = []string{"standard"}
-	record.DefaultServiceTier = ""
-	return record
+	return s.store.ListProvider(providerID, limit)
 }
 
 func (s *CatalogService) Meta() (pebblestore.ModelCatalogMeta, bool, error) {
@@ -643,71 +601,206 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 		if providerID == "" || modelID == "" {
 			continue
 		}
-		contextWindow := firstPositiveInt(model.Limits.ContextWindowTokens, model.Routing.TopProviderContextWindowTokens)
+		contextWindow := modelDefaultContextWindow(model.ProviderSpecific, providerID, firstPositiveInt(model.Limits.ContextWindowTokens, model.Routing.TopProviderContextWindowTokens))
 		if contextWindow <= 0 {
 			continue
 		}
-		maxOutputTokens := firstPositiveInt(model.Limits.MaxOutputTokens, model.Routing.TopProviderMaxOutputTokens)
-
-		reasoning := model.Capabilities.SupportsReasoning != nil && *model.Capabilities.SupportsReasoning
-		for _, recordModelID := range catalogRecordModelIDs(model, providerID, modelID) {
-			recordModelID = canonicalCatalogModelID(providerID, recordModelID)
-			key := providerID + "\x00" + recordModelID
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-
-			serviceTiers, defaultServiceTier := modelServingTiers(model, providerID, recordModelID)
-			pricing := cloneRawJSON(model.Pricing)
-			if tierPricing := catalogModelPricing(model, providerID, recordModelID); len(tierPricing) > 0 {
-				pricing = tierPricing
-			}
-			record := pebblestore.ModelCatalogRecord{
-				Provider:              providerID,
-				ProviderDisplayName:   strings.TrimSpace(model.ProviderDisplayName),
-				Model:                 recordModelID,
-				DisplayName:           displayNameForCatalogModel(model, modelID, recordModelID),
-				CatalogID:             catalogIDForCatalogModel(model, modelID, recordModelID),
-				ContextWindow:         codexruntime.EffectiveContextWindow(recordModelID, "", contextWindow),
-				MaxOutputTokens:       maxOutputTokens,
-				Reasoning:             reasoning,
-				ServiceTiers:          serviceTiers,
-				DefaultServiceTier:    defaultServiceTier,
-				Source:                source,
-				SourceSnapshotID:      snapshot.SnapshotID,
-				SourceSnapshotVersion: snapshot.SnapshotVersion,
-				SourceGeneratedAt:     snapshot.GeneratedAt,
-				ETag:                  etag,
-				FetchedAt:             nowMs,
-				ExpiresAt:             expiresAt,
-				Pricing:               pricing,
-				Thinking:              cloneRawJSON(model.Thinking),
-				ProviderSpecific:      cloneProviderSpecificRawJSON(model.ProviderSpecific),
-			}
-			records = append(records, record)
+		key := providerID + "\x00" + modelID
+		if _, ok := seen[key]; ok {
+			return nil, swarmSnapshotVersion{}, fmt.Errorf("Swarm model snapshot contains duplicate model record %q/%q", providerID, modelID)
 		}
+		seen[key] = struct{}{}
+
+		maxOutputTokens := firstPositiveInt(model.Limits.MaxOutputTokens, model.Routing.TopProviderMaxOutputTokens)
+		reasoning := model.Capabilities.SupportsReasoning != nil && *model.Capabilities.SupportsReasoning
+		serviceTiers, defaultServiceTier := modelServingTiers(model.ProviderSpecific, providerID)
+		thinkingOptions, defaultThinking, thinkingProviderParameter, thinkingMappings := modelThinkingMetadata(model.Thinking)
+		record := pebblestore.ModelCatalogRecord{
+			Provider:                  providerID,
+			ProviderDisplayName:       strings.TrimSpace(model.ProviderDisplayName),
+			Model:                     modelID,
+			DisplayName:               strings.TrimSpace(model.DisplayName),
+			CatalogID:                 strings.TrimSpace(model.CatalogID),
+			ContextWindow:             contextWindow,
+			MaxOutputTokens:           maxOutputTokens,
+			Reasoning:                 reasoning,
+			ThinkingOptions:           thinkingOptions,
+			DefaultThinking:           defaultThinking,
+			ThinkingProviderParameter: thinkingProviderParameter,
+			ThinkingMappings:          thinkingMappings,
+			ServiceTiers:              serviceTiers,
+			DefaultServiceTier:        defaultServiceTier,
+			ServiceTierMappings:       modelServiceTierMappings(model.ProviderSpecific, providerID),
+			ContextModes:              modelContextModes(model.ProviderSpecific, providerID, contextWindow),
+			Source:                    source,
+			SourceSnapshotID:          snapshot.SnapshotID,
+			SourceSnapshotVersion:     snapshot.SnapshotVersion,
+			SourceGeneratedAt:         snapshot.GeneratedAt,
+			ETag:                      etag,
+			FetchedAt:                 nowMs,
+			ExpiresAt:                 expiresAt,
+			Pricing:                   cloneRawJSON(model.Pricing),
+			Thinking:                  cloneRawJSON(model.Thinking),
+			ProviderSpecific:          cloneRawJSON(model.ProviderSpecific),
+		}
+		records = append(records, record)
 	}
 	return records, version, nil
 }
 
-func modelServingTiers(model swarmSnapshotModel, providerID, recordModelID string) ([]string, string) {
-	providerSpecific, ok := model.ProviderSpecific[providerID]
+func modelDefaultContextWindow(providerSpecificRaw json.RawMessage, providerID string, fallback int) int {
+	providerSpecific, ok := snapshotProviderSpecificFor(providerSpecificRaw, providerID)
+	if ok && providerSpecific.ContextWindow > 0 {
+		return providerSpecific.ContextWindow
+	}
+	return fallback
+}
+
+func modelServingTiers(providerSpecificRaw json.RawMessage, providerID string) ([]string, string) {
+	providerSpecific, ok := snapshotProviderSpecificFor(providerSpecificRaw, providerID)
 	if !ok {
 		return nil, ""
 	}
-	seen := make(map[string]struct{}, len(providerSpecific.Serving.SupportedTiers))
-	out := make([]string, 0, len(providerSpecific.Serving.SupportedTiers))
-	for _, tier := range providerSpecific.Serving.SupportedTiers {
-		normalized := strings.ToLower(strings.TrimSpace(tier))
-		if normalized == "" {
+	out := normalizeCatalogStringList(providerSpecific.Serving.SupportedTiers)
+	defaultTier := strings.ToLower(strings.TrimSpace(providerSpecific.Serving.DefaultTier))
+	return out, defaultTier
+}
+
+func modelThinkingMetadata(thinkingRaw json.RawMessage) ([]string, string, string, []pebblestore.ModelCatalogThinkingMapping) {
+	if len(bytes.TrimSpace(thinkingRaw)) == 0 {
+		return nil, "", "", nil
+	}
+	var thinking swarmSnapshotThinking
+	if err := json.Unmarshal(thinkingRaw, &thinking); err != nil {
+		return nil, "", "", nil
+	}
+	options := normalizeCatalogStringList(thinking.SupportedSwarmSettings)
+	defaultThinking := strings.ToLower(strings.TrimSpace(thinking.DefaultSwarmSetting))
+	providerParameter := strings.TrimSpace(thinking.ProviderParameter)
+	mappings := make([]pebblestore.ModelCatalogThinkingMapping, 0, len(thinking.SwarmSettingMappings))
+	for _, mapping := range thinking.SwarmSettingMappings {
+		swarmSetting := strings.ToLower(strings.TrimSpace(mapping.SwarmSetting))
+		if swarmSetting == "" {
 			continue
 		}
-		if providerID == "fireworks" {
-			isFastModel := isFireworksFastCatalogModel(model, recordModelID)
-			if normalized == "fast" || (isFastModel && normalized == "priority") {
-				continue
-			}
+		mappings = append(mappings, pebblestore.ModelCatalogThinkingMapping{
+			SwarmSetting:           swarmSetting,
+			ProviderParameter:      providerParameter,
+			ProviderValue:          snapshotScalarString(mapping.ProviderValue),
+			EffectiveProviderValue: snapshotScalarString(mapping.EffectiveProviderValue),
+			Behavior:               strings.TrimSpace(mapping.Behavior),
+		})
+	}
+	if len(options) == 0 && len(mappings) > 0 {
+		options = make([]string, 0, len(mappings))
+		for _, mapping := range mappings {
+			options = append(options, mapping.SwarmSetting)
+		}
+	}
+	return options, defaultThinking, providerParameter, mappings
+}
+
+func modelServiceTierMappings(providerSpecificRaw json.RawMessage, providerID string) []pebblestore.ModelCatalogServiceTierMapping {
+	providerSpecific, ok := snapshotProviderSpecificFor(providerSpecificRaw, providerID)
+	if !ok {
+		return nil
+	}
+	rawByTier := make(map[string]swarmSnapshotRawTier)
+	addRawTier := func(key string, raw *swarmSnapshotRawTier) {
+		if raw == nil {
+			return
+		}
+		copy := *raw
+		if strings.TrimSpace(copy.Tier) == "" {
+			copy.Tier = key
+		}
+		tier := strings.ToLower(strings.TrimSpace(copy.Tier))
+		if tier == "" {
+			return
+		}
+		rawByTier[tier] = copy
+	}
+	addRawTier("standard", providerSpecific.Serving.Standard)
+	addRawTier("priority", providerSpecific.Serving.Priority)
+	addRawTier("fast", providerSpecific.Serving.Fast)
+	for key, raw := range providerSpecific.Serving.Tiers {
+		copy := raw
+		addRawTier(key, &copy)
+	}
+
+	order := normalizeCatalogStringList(providerSpecific.Serving.SupportedTiers)
+	for tier := range rawByTier {
+		if !stringInSlice(order, tier) {
+			order = append(order, tier)
+		}
+	}
+	mappings := make([]pebblestore.ModelCatalogServiceTierMapping, 0, len(order))
+	for _, tier := range order {
+		raw, ok := rawByTier[tier]
+		if !ok {
+			mappings = append(mappings, pebblestore.ModelCatalogServiceTierMapping{Tier: tier})
+			continue
+		}
+		mappings = append(mappings, pebblestore.ModelCatalogServiceTierMapping{
+			Tier:              tier,
+			SwarmSetting:      strings.ToLower(strings.TrimSpace(raw.SwarmSetting)),
+			ProviderParameter: strings.TrimSpace(raw.ProviderParameter),
+			ProviderValue:     strings.TrimSpace(raw.ProviderValue),
+			RequestModelPath:  firstNonEmpty(raw.RequestModelPath, providerSpecific.RequestModelPath),
+		})
+	}
+	return mappings
+}
+
+func modelContextModes(providerSpecificRaw json.RawMessage, providerID string, defaultContextWindow int) []pebblestore.ModelCatalogContextMode {
+	providerSpecific, ok := snapshotProviderSpecificFor(providerSpecificRaw, providerID)
+	if !ok {
+		return nil
+	}
+	out := make([]pebblestore.ModelCatalogContextMode, 0, len(providerSpecific.ContextModes)+1)
+	for _, mode := range providerSpecific.ContextModes {
+		modeID := strings.ToLower(strings.TrimSpace(mode.Mode))
+		if modeID == "" {
+			continue
+		}
+		contextWindow := mode.ContextWindow
+		if contextWindow <= 0 && mode.Default {
+			contextWindow = defaultContextWindow
+		}
+		out = append(out, pebblestore.ModelCatalogContextMode{
+			Mode:          modeID,
+			Label:         strings.TrimSpace(mode.Label),
+			ContextWindow: contextWindow,
+			Default:       mode.Default,
+		})
+	}
+	if providerSpecific.MaxContextWindow > 0 && providerSpecific.MaxContextWindow != defaultContextWindow && !catalogContextModeExists(out, "1m") {
+		out = append(out, pebblestore.ModelCatalogContextMode{
+			Mode:          "1m",
+			Label:         "1M context",
+			ContextWindow: providerSpecific.MaxContextWindow,
+		})
+	}
+	return out
+}
+
+func catalogContextModeExists(modes []pebblestore.ModelCatalogContextMode, modeID string) bool {
+	modeID = strings.ToLower(strings.TrimSpace(modeID))
+	for _, mode := range modes {
+		if strings.ToLower(strings.TrimSpace(mode.Mode)) == modeID {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeCatalogStringList(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "" {
+			continue
 		}
 		if _, exists := seen[normalized]; exists {
 			continue
@@ -715,135 +808,48 @@ func modelServingTiers(model swarmSnapshotModel, providerID, recordModelID strin
 		seen[normalized] = struct{}{}
 		out = append(out, normalized)
 	}
-	defaultTier := strings.ToLower(strings.TrimSpace(providerSpecific.Serving.DefaultTier))
-	if providerID == "fireworks" && isFireworksFastCatalogModel(model, recordModelID) {
-		defaultTier = ""
-	}
-	return out, defaultTier
+	return out
 }
 
-func catalogRecordModelIDs(model swarmSnapshotModel, providerID, modelID string) []string {
-	baseID := canonicalCatalogModelID(providerID, modelID)
-	ids := []string{baseID}
-	if providerID != "fireworks" {
-		return ids
-	}
-	fastID := fireworksFastModelID(model.ProviderSpecific[providerID], baseID)
-	if fastID == "" || fastID == baseID {
-		return ids
-	}
-	return append(ids, fastID)
-}
-
-func fireworksFastProviderValue(providerSpecific swarmSnapshotProviderSpecific) string {
-	for _, tier := range []swarmSnapshotRawTier{valueOfRawTier(providerSpecific.Serving.Fast)} {
-		if strings.EqualFold(strings.TrimSpace(tier.ProviderParameter), "model") && strings.TrimSpace(tier.ProviderValue) != "" {
-			return strings.TrimSpace(tier.ProviderValue)
+func stringInSlice(values []string, value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, candidate := range values {
+		if strings.EqualFold(candidate, value) {
+			return true
 		}
 	}
-	for _, tier := range providerSpecific.Serving.Tiers {
-		if strings.EqualFold(strings.TrimSpace(tier.Tier), "fast") && strings.EqualFold(strings.TrimSpace(tier.ProviderParameter), "model") && strings.TrimSpace(tier.ProviderValue) != "" {
-			return strings.TrimSpace(tier.ProviderValue)
-		}
-	}
-	return ""
+	return false
 }
 
-func fireworksFastModelID(providerSpecific swarmSnapshotProviderSpecific, baseModelID string) string {
-	providerValue := strings.TrimSpace(fireworksFastProviderValue(providerSpecific))
-	if providerValue == "" {
+func snapshotScalarString(value any) string {
+	switch typed := value.(type) {
+	case nil:
 		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
 	}
-	suffix := strings.TrimSpace(strings.TrimPrefix(providerValue, "accounts/fireworks/routers/"))
-	if suffix == "" || strings.Contains(suffix, "/") {
-		return providerValue
-	}
-	if strings.HasSuffix(strings.ToLower(suffix), "-fast") {
-		return suffix
-	}
-	base := canonicalCatalogModelID("fireworks", baseModelID)
-	if base != "" {
-		return base + "-fast"
-	}
-	return suffix + "-fast"
 }
 
-func valueOfRawTier(tier *swarmSnapshotRawTier) swarmSnapshotRawTier {
-	if tier == nil {
-		return swarmSnapshotRawTier{}
+func snapshotProviderSpecificFor(providerSpecificRaw json.RawMessage, providerID string) (swarmSnapshotProviderSpecific, bool) {
+	if len(bytes.TrimSpace(providerSpecificRaw)) == 0 {
+		return swarmSnapshotProviderSpecific{}, false
 	}
-	return *tier
-}
-
-func isFireworksFastCatalogModel(model swarmSnapshotModel, recordModelID string) bool {
-	providerID := canonicalCatalogProviderID(model.ProviderID)
-	if providerID != "fireworks" {
-		return false
+	var decoded map[string]swarmSnapshotProviderSpecific
+	if err := json.Unmarshal(providerSpecificRaw, &decoded); err != nil {
+		return swarmSnapshotProviderSpecific{}, false
 	}
-	baseModelID := canonicalCatalogModelID(providerID, model.ModelID)
-	fastID := fireworksFastModelID(model.ProviderSpecific[providerID], baseModelID)
-	return strings.TrimSpace(recordModelID) != "" && canonicalCatalogModelID(providerID, recordModelID) == fastID
-}
-
-func catalogModelPricing(model swarmSnapshotModel, providerID, recordModelID string) json.RawMessage {
-	if providerID != "fireworks" {
-		return nil
+	providerID = canonicalCatalogProviderID(providerID)
+	if providerSpecific, ok := decoded[providerID]; ok {
+		return providerSpecific, true
 	}
-	providerSpecific := model.ProviderSpecific[providerID]
-	if isFireworksFastCatalogModel(model, recordModelID) {
-		if pricing := providerSpecific.Serving.Fast; pricing != nil && len(pricing.Pricing) > 0 {
-			return cloneRawJSON(pricing.Pricing)
+	for key, providerSpecific := range decoded {
+		if canonicalCatalogProviderID(key) == providerID {
+			return providerSpecific, true
 		}
 	}
-	baseModelID := strings.TrimSpace(model.ModelID)
-	if recordModelID == baseModelID || canonicalCatalogModelID(providerID, recordModelID) == baseModelID {
-		if pricing := providerSpecific.Serving.Standard; pricing != nil && len(pricing.Pricing) > 0 {
-			return cloneRawJSON(pricing.Pricing)
-		}
-	}
-	return nil
-}
-
-func displayNameForCatalogModel(model swarmSnapshotModel, baseModelID, recordModelID string) string {
-	displayName := strings.TrimSpace(model.DisplayName)
-	if !isFireworksFastCatalogModel(model, recordModelID) {
-		return displayName
-	}
-	base := strings.TrimSpace(baseModelID)
-	if base == "" {
-		base = strings.TrimSpace(model.ModelID)
-	}
-	if base == "" {
-		base = strings.TrimSpace(recordModelID)
-	}
-	if displayName == "" || displayName == base {
-		return base + " Fast"
-	}
-	if strings.Contains(strings.ToLower(displayName), "fast") {
-		return displayName
-	}
-	return displayName + " Fast"
-}
-
-func catalogIDForCatalogModel(model swarmSnapshotModel, baseModelID, recordModelID string) string {
-	catalogID := strings.TrimSpace(model.CatalogID)
-	if !isFireworksFastCatalogModel(model, recordModelID) {
-		return catalogID
-	}
-	if catalogID != "" && !strings.Contains(strings.ToLower(catalogID), "fast") {
-		return catalogID + ":fast"
-	}
-	if catalogID != "" {
-		return catalogID
-	}
-	base := strings.TrimSpace(baseModelID)
-	if base == "" {
-		base = strings.TrimSpace(model.ModelID)
-	}
-	if base == "" {
-		base = strings.TrimSpace(recordModelID)
-	}
-	return "fireworks/" + base + ":fast"
+	return swarmSnapshotProviderSpecific{}, false
 }
 
 func (snapshot swarmSnapshot) version() swarmSnapshotVersion {
@@ -1020,17 +1026,6 @@ func cloneRawJSON(raw json.RawMessage) json.RawMessage {
 		return nil
 	}
 	return append(json.RawMessage(nil), trimmed...)
-}
-
-func cloneProviderSpecificRawJSON(value any) json.RawMessage {
-	if value == nil {
-		return nil
-	}
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return nil
-	}
-	return cloneRawJSON(raw)
 }
 
 func firstPositiveInt(values ...*int) int {
