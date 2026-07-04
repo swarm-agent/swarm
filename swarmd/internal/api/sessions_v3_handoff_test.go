@@ -17,6 +17,7 @@ func TestSessionV3ProviderHandoffPacketBoundsLongTranscript(t *testing.T) {
 	messages = append(messages, pebblestore.MessageSnapshot{Role: "tool", Content: `{"path_id":"run.v3.provider-tool-result.v1","type":"tool.completed","tool_name":"read","call_id":"call_read","arguments":"{\"path\":\"file.go\"}","completed_output":"` + strings.Repeat("tool-output-", 80) + `"}`})
 	messages = append(messages, pebblestore.MessageSnapshot{Role: "user", Content: "Recent user request"})
 	messages = append(messages, pebblestore.MessageSnapshot{Role: "assistant", Content: "Recent assistant answer"})
+	messages = append(messages, pebblestore.MessageSnapshot{Role: "user", Content: "RECENT-HUGE-SENTINEL-" + strings.Repeat("y", 1000)})
 
 	exec := &sessionV3Executor{}
 	packet, err := exec.sessionV3ProviderHandoffPacket(sessionV3ExecutorJob{}, sessionV3ResolvedRuntime{Preference: pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5"}}, messages, provideriface.Request{BoundaryReason: "provider_model_runtime_handoff", PreviousProviderLineageID: "old-lineage", ProviderLineageID: "new-lineage", ContextBranchID: "branch"}, sessionV3ProviderHandoffCaps{TailMessages: 6, ToolOutputChars: 40, TotalChars: 6000})
@@ -26,7 +27,10 @@ func TestSessionV3ProviderHandoffPacketBoundsLongTranscript(t *testing.T) {
 	if strings.Contains(packet, "OLD-HUGE-TRANSCRIPT") {
 		t.Fatalf("handoff packet replayed old transcript: %s", packet)
 	}
-	for _, want := range []string{"[provider-handoff]", "Important compacted facts", "Recent user request", "Recent assistant answer", "read call_id=call_read", "[truncated"} {
+	if strings.Contains(packet, strings.Repeat("y", 500)) {
+		t.Fatalf("handoff packet replayed unbounded recent visible message: %s", packet)
+	}
+	for _, want := range []string{"[provider-handoff]", "Important compacted facts", "Recent user request", "Recent assistant answer", "RECENT-HUGE-SENTINEL", "read call_id=call_read", "[truncated"} {
 		if !strings.Contains(packet, want) {
 			t.Fatalf("handoff packet missing %q:\n%s", want, packet)
 		}

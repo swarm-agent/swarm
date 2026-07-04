@@ -1396,7 +1396,7 @@ func (e *sessionV3Executor) sessionV3ProviderHandoffPacket(job sessionV3Executor
 		for _, message := range visible {
 			role := strings.ToLower(strings.TrimSpace(message.Role))
 			appendLine("--- " + role + " ---")
-			appendLine(strings.TrimSpace(message.Content))
+			appendLine(sessionV3TruncateForHandoff(message.Content, caps.ToolOutputChars))
 		}
 	}
 	packet := strings.TrimSpace(b.String())

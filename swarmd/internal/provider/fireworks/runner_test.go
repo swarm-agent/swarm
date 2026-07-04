@@ -329,3 +329,14 @@ func TestFireworksStreamStateAccumulatesReasoningContent(t *testing.T) {
 		t.Fatalf("text = %q, want done", response.Text)
 	}
 }
+
+func TestCreateChatCompletionStreamRequestsUsage(t *testing.T) {
+	payload := chatCompletionRequest{Model: "accounts/fireworks/models/kimi-k2p6"}
+	ensureChatCompletionStreamOptions(&payload)
+	if !payload.Stream {
+		t.Fatalf("stream = false, want true")
+	}
+	if payload.StreamOptions == nil || !payload.StreamOptions.IncludeUsage {
+		t.Fatalf("stream options = %+v, want include_usage", payload.StreamOptions)
+	}
+}

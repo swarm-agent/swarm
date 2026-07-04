@@ -27,14 +27,19 @@ type Client struct {
 }
 
 type chatCompletionRequest struct {
-	Model             string               `json:"model"`
-	Messages          []map[string]any     `json:"messages"`
-	Tools             []chatCompletionTool `json:"tools,omitempty"`
-	ToolChoice        any                  `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool                `json:"parallel_tool_calls,omitempty"`
-	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
-	ServiceTier       string               `json:"service_tier,omitempty"`
-	Stream            bool                 `json:"stream,omitempty"`
+	Model             string                       `json:"model"`
+	Messages          []map[string]any             `json:"messages"`
+	Tools             []chatCompletionTool         `json:"tools,omitempty"`
+	ToolChoice        any                          `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool                        `json:"parallel_tool_calls,omitempty"`
+	ReasoningEffort   string                       `json:"reasoning_effort,omitempty"`
+	ServiceTier       string                       `json:"service_tier,omitempty"`
+	Stream            bool                         `json:"stream,omitempty"`
+	StreamOptions     *chatCompletionStreamOptions `json:"stream_options,omitempty"`
+}
+
+type chatCompletionStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type chatCompletionTool struct {
@@ -142,6 +147,16 @@ func NewClient() *Client {
 	return &Client{httpClient: &http.Client{Timeout: 10 * time.Minute}}
 }
 
+func ensureChatCompletionStreamOptions(payload *chatCompletionRequest) {
+	if payload == nil {
+		return
+	}
+	payload.Stream = true
+	if payload.StreamOptions == nil {
+		payload.StreamOptions = &chatCompletionStreamOptions{IncludeUsage: true}
+	}
+}
+
 func (c *Client) VerifyAPIKey(ctx context.Context, apiKey string) (string, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
@@ -192,7 +207,7 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 	if apiKey == "" {
 		return chatCompletionResponse{}, errors.New("fireworks auth is not configured")
 	}
-	payload.Stream = true
+	ensureChatCompletionStreamOptions(&payload)
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return chatCompletionResponse{}, fmt.Errorf("marshal fireworks stream request: %w", err)
