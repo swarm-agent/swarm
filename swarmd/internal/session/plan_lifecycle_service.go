@@ -63,12 +63,13 @@ type PlanLifecycleFollowupCheckpointInput struct {
 }
 
 type PlanLifecycleProposalInput struct {
-	SessionID string
-	PlanID    string
-	Title     string
-	Plan      string
-	Document  *pebblestore.SessionPlanDocument
-	Reason    string
+	SessionID         string
+	PlanID            string
+	Title             string
+	Plan              string
+	Document          *pebblestore.SessionPlanDocument
+	Reason            string
+	ApprovalConfirmed bool
 }
 
 type PlanLifecycleAmendmentInput struct {
@@ -519,8 +520,35 @@ func (s *PlanLifecycleService) RequestNewPlan(input PlanLifecycleProposalInput) 
 	if err != nil {
 		return PlanLifecycleResult{}, err
 	}
+
+	planID := strings.TrimSpace(input.PlanID)
+	var target pebblestore.SessionPlanSnapshot
+	replacing := false
+	if planID != "" {
+		var ok bool
+		if strings.EqualFold(planID, "active") {
+			target, ok, err = s.sessions.GetActivePlan(session.ID)
+			if err != nil {
+				return PlanLifecycleResult{}, err
+			}
+			if !ok {
+				return PlanLifecycleResult{}, errors.New("request_new_plan replacement requires an active plan")
+			}
+			planID = strings.TrimSpace(target.ID)
+		} else {
+			target, ok, err = s.sessions.GetPlan(session.ID, planID)
+			if err != nil {
+				return PlanLifecycleResult{}, err
+			}
+			if !ok {
+				return PlanLifecycleResult{}, fmt.Errorf("request_new_plan replacement target plan %q was not found", planID)
+			}
+		}
+		replacing = true
+	}
+
 	doc := clonePlanLifecycleDocument(input.Document)
-	title := strings.TrimSpace(firstNonBlank(input.Title, planLifecycleDocumentTitle(doc), "New plan proposal"))
+	title := strings.TrimSpace(firstNonBlank(input.Title, planLifecycleDocumentTitle(doc), target.Title, "New plan proposal"))
 	planText := strings.TrimSpace(input.Plan)
 	if planText == "" && doc != nil {
 		planText = strings.TrimSpace(firstNonBlank(doc.DisplayText, doc.RenderedText))
@@ -530,8 +558,31 @@ func (s *PlanLifecycleService) RequestNewPlan(input PlanLifecycleProposalInput) 
 	}
 	if doc != nil {
 		doc.Title = title
-		doc.Status = "pending_approval"
+		if replacing && input.ApprovalConfirmed {
+			doc.ID = planID
+			doc.Status = "approved"
+			resetPlanExecutionRuntimeForAcceptance(doc)
+			normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
+			if doc.ExecutionPolicy.Shape == PlanExecutionShapeCheckpointed {
+				doc.ActiveCheckpointID = defaultActiveCheckpointID(doc.Checkpoints)
+			}
+		} else {
+			doc.ID = ""
+			doc.Status = "pending_approval"
+		}
 	}
+	if replacing && input.ApprovalConfirmed && doc == nil {
+		return PlanLifecycleResult{}, errors.New("request_new_plan replacement approval requires a structured document")
+	}
+
+	if replacing && input.ApprovalConfirmed {
+		saved, event, err := s.sessions.SavePlanWithMetadata(session.ID, planID, title, planText, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: firstNonBlank(strings.TrimSpace(input.Reason), "Replacement plan approved and activated"), UpdateScope: "plan", UpdateKind: "request_new_plan", RevisionKind: PlanRevisionKindDefinition, Document: doc})
+		if err != nil {
+			return PlanLifecycleResult{}, err
+		}
+		return PlanLifecycleResult{Session: session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), Action: "request_new_plan", Message: "replacement plan approved and activated"}, nil
+	}
+
 	saved, event, err := s.sessions.SavePlanWithMetadata(session.ID, "", title, planText, "pending_approval", "pending", false, PlanSaveMetadata{UpdateSummary: firstNonBlank(strings.TrimSpace(input.Reason), "New plan proposal pending approval"), UpdateScope: "plan", UpdateKind: "request_new_plan", Document: doc})
 	if err != nil {
 		return PlanLifecycleResult{}, err

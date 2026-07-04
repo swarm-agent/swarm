@@ -161,6 +161,105 @@ func TestPlanLifecycleAmendPlanRejectsCompletedCheckpointReplacement(t *testing.
 	}
 }
 
+func TestPlanLifecycleRequestNewPlanReplacementApprovesActivePlanAndAllowsFollowup(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	original := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:  PlanExecutionPolicyModeAutomatic,
+		Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{{ID: "cp-old", Title: "Old", Status: PlanCheckpointStatusCompleted}})
+	replacementDoc := &pebblestore.SessionPlanDocument{
+		ID:    "wrong-id-should-be-replaced",
+		Title: "Replacement Plan",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode:  PlanExecutionPolicyModeAutomatic,
+			Shape: PlanExecutionShapeCheckpointed,
+		},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-new", Title: "New", Status: PlanCheckpointStatusPending}},
+	}
+
+	result, err := NewPlanLifecycleService(svc).RequestNewPlan(PlanLifecycleProposalInput{
+		SessionID:         sessionID,
+		PlanID:            original.ID,
+		Title:             "Replacement Plan",
+		Plan:              "# Replacement Plan",
+		Document:          replacementDoc,
+		Reason:            "Replace current plan",
+		ApprovalConfirmed: true,
+	})
+	if err != nil {
+		t.Fatalf("request replacement plan: %v", err)
+	}
+	if result.Plan.ID != original.ID || !result.Plan.Active || result.Plan.Status != "approved" || result.Plan.ApprovalState != "approved" {
+		t.Fatalf("replacement plan state = id %q active %v status %q approval %q", result.Plan.ID, result.Plan.Active, result.Plan.Status, result.Plan.ApprovalState)
+	}
+	if result.Plan.Document == nil || result.Plan.Document.ID != original.ID || result.Plan.Document.Status != "approved" || result.Plan.Document.ActiveCheckpointID != "cp-new" {
+		t.Fatalf("replacement document = %#v", result.Plan.Document)
+	}
+	active, ok, err := svc.GetActivePlan(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get active: ok=%v err=%v", ok, err)
+	}
+	if active.ID != original.ID || active.Title != "Replacement Plan" || active.ApprovalState != "approved" {
+		t.Fatalf("active replacement = %#v", active)
+	}
+
+	followup, err := NewPlanLifecycleService(svc).RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{
+		SessionID:         sessionID,
+		PlanID:            original.ID,
+		ChangeRequest:     "Add a follow-up after replacement.",
+		ApprovalConfirmed: true,
+	})
+	if err != nil {
+		t.Fatalf("request follow-up after replacement: %v", err)
+	}
+	if got := checkpointIDs(followup.Plan.Document.Checkpoints); strings.Join(got, ",") != "followup-1,cp-new" {
+		t.Fatalf("follow-up checkpoint order = %v", got)
+	}
+}
+
+func TestPlanLifecycleRequestNewPlanWithoutPlanIDKeepsSeparateProposalInactive(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	original := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:  PlanExecutionPolicyModeAutomatic,
+		Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{{ID: "cp-old", Title: "Old", Status: PlanCheckpointStatusCompleted}})
+
+	proposal, err := NewPlanLifecycleService(svc).RequestNewPlan(PlanLifecycleProposalInput{
+		SessionID: sessionID,
+		Title:     "Separate Proposal",
+		Plan:      "# Separate Proposal",
+		Document: &pebblestore.SessionPlanDocument{
+			Title:       "Separate Proposal",
+			Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-proposed", Title: "Proposed", Status: PlanCheckpointStatusPending}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("request separate new plan: %v", err)
+	}
+	if proposal.Plan.ID == original.ID || proposal.Plan.Active || proposal.Plan.Status != "pending_approval" || proposal.Plan.ApprovalState != "pending" {
+		t.Fatalf("separate proposal state = %#v", proposal.Plan)
+	}
+	active, ok, err := svc.GetActivePlan(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get active: ok=%v err=%v", ok, err)
+	}
+	if active.ID != original.ID || active.Title != original.Title || active.ApprovalState != "approved" {
+		t.Fatalf("active plan should remain original, got %#v", active)
+	}
+}
+
 func TestPlanLifecycleRequestFollowupCheckpointGlobalAutoStartPreparesFreshRun(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()

@@ -2121,7 +2121,7 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 	case "amend_plan":
 		result, err = lifecycle.AmendPlan(sessionruntime.PlanLifecycleAmendmentInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, BaseRevision: mapInt(args, "base_revision"), UpdateSummary: strings.TrimSpace(firstNonEmptyString(mapString(args, "update_summary"), mapString(args, "summary"), mapString(args, "reason"))), ReplaceFromCheckpointID: strings.TrimSpace(firstNonEmptyString(mapString(args, "replace_from_checkpoint_id"), mapString(args, "checkpoint_id"))), AmendFutureCheckpoints: mapBool(args, "amend_future_checkpoints"), OverrideStale: mapBool(args, "override_stale")})
 	case "request_new_plan":
-		result, err = lifecycle.RequestNewPlan(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, Reason: strings.TrimSpace(firstNonEmptyString(mapString(args, "reason"), mapString(args, "update_summary"), mapString(args, "summary")))})
+		result, err = lifecycle.RequestNewPlan(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, Reason: strings.TrimSpace(firstNonEmptyString(mapString(args, "reason"), mapString(args, "update_summary"), mapString(args, "summary"))), ApprovalConfirmed: mapBool(args, "approval_confirmed")})
 	default:
 		return "", fmt.Errorf("plan execution action %q is not supported", action)
 	}
@@ -2141,7 +2141,9 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		"summary":           result.Message,
 		"details_truncated": false,
 	}
-	if result.Summary.PlanComplete {
+	if !strings.EqualFold(strings.TrimSpace(result.Plan.ApprovalState), "approved") {
+		payload["next_action"] = "await_approval"
+	} else if result.Summary.PlanComplete {
 		payload["next_action"] = "plan_complete"
 	} else if result.Summary.ReviewRequired {
 		payload["next_action"] = "await_review"

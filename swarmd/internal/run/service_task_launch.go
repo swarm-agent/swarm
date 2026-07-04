@@ -1110,7 +1110,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	if changeRequest != "" {
 		payload.ApprovedArguments["change_request"] = changeRequest
 	}
-	if action == "request_followup_checkpoint" {
+	if action == "request_followup_checkpoint" || action == "request_new_plan" {
 		payload.ApprovedArguments["approval_confirmed"] = true
 	}
 	switch action {

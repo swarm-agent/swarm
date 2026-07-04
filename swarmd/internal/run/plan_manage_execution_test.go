@@ -385,6 +385,111 @@ func TestExecutePlanManageApproveAndStartAppliesExecutionPolicy(t *testing.T) {
 	}
 }
 
+func TestExecutePlanManageRequestNewPlanReplacementApprovesActivePlan(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	originalDoc := &pebblestore.SessionPlanDocument{
+		Title: "Original Plan",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode:  sessionruntime.PlanExecutionPolicyModeAutomatic,
+			Shape: sessionruntime.PlanExecutionShapeCheckpointed,
+		},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-old", Title: "Old", Status: sessionruntime.PlanCheckpointStatusCompleted}},
+	}
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-replace", "Original Plan", "# Original", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: originalDoc})
+	if err != nil {
+		t.Fatalf("save original plan: %v", err)
+	}
+	replacement := &pebblestore.SessionPlanDocument{
+		Title: "Replacement Plan",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode:  sessionruntime.PlanExecutionPolicyModeAutomatic,
+			Shape: sessionruntime.PlanExecutionShapeCheckpointed,
+		},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-new", Title: "New", Status: sessionruntime.PlanCheckpointStatusPending}},
+	}
+	replacementRaw, err := json.Marshal(replacement)
+	if err != nil {
+		t.Fatalf("marshal replacement: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"request_new_plan","plan_id":"plan-replace","title":"Replacement Plan","plan":"# Replacement Plan","approval_confirmed":true,"document":`+string(replacementRaw)+`}`, "")
+	if err != nil {
+		t.Fatalf("request replacement plan: %v output=%s", err, raw)
+	}
+	var payload struct {
+		Action     string `json:"action"`
+		NextAction string `json:"next_action"`
+		Plan       struct {
+			ID            string                           `json:"id"`
+			Status        string                           `json:"status"`
+			ApprovalState string                           `json:"approval_state"`
+			Active        bool                             `json:"active"`
+			Document      *pebblestore.SessionPlanDocument `json:"document"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode request_new_plan payload: %v", err)
+	}
+	if payload.Action != "request_new_plan" || payload.NextAction != "run_checkpoint_with_fresh_context" {
+		t.Fatalf("replacement request should approve active replacement and be runnable: raw=%s", raw)
+	}
+	if payload.Plan.ID != "plan-replace" || !payload.Plan.Active || payload.Plan.Status != "approved" || payload.Plan.ApprovalState != "approved" {
+		t.Fatalf("replacement plan state = %#v", payload.Plan)
+	}
+	if payload.Plan.Document == nil || payload.Plan.Document.ID != "plan-replace" || payload.Plan.Document.Status != "approved" || payload.Plan.Document.ActiveCheckpointID != "cp-new" {
+		t.Fatalf("replacement document = %#v", payload.Plan.Document)
+	}
+
+	followupRaw, err := runSvc.executePlanManageTool(sessionID, `{"action":"request_followup_checkpoint","plan_id":"plan-replace","change_request":"Add follow-up.","approval_confirmed":true}`, "")
+	if err != nil {
+		t.Fatalf("request follow-up after replacement: %v output=%s", err, followupRaw)
+	}
+}
+
+func TestExecutePlanManageRequestNewPlanSeparateProposalAwaitsApproval(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-original", "Original Plan", "# Original", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Title:       "Original Plan",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-old", Title: "Old", Status: sessionruntime.PlanCheckpointStatusCompleted}},
+	}})
+	if err != nil {
+		t.Fatalf("save original plan: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"request_new_plan","title":"Separate Proposal","plan":"# Separate Proposal","document":{"title":"Separate Proposal","checkpoints":[{"id":"cp-proposed","title":"Proposed","status":"pending"}]}}`, "")
+	if err != nil {
+		t.Fatalf("request separate proposal: %v output=%s", err, raw)
+	}
+	var payload struct {
+		NextAction string `json:"next_action"`
+		Plan       struct {
+			ID            string `json:"id"`
+			Status        string `json:"status"`
+			ApprovalState string `json:"approval_state"`
+			Active        bool   `json:"active"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode separate proposal payload: %v", err)
+	}
+	if payload.NextAction != "await_approval" || payload.Plan.Active || payload.Plan.Status != "pending_approval" || payload.Plan.ApprovalState != "pending" {
+		t.Fatalf("separate proposal payload = %#v raw=%s", payload, raw)
+	}
+	active, ok, err := sessionSvc.GetActivePlan(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get active: ok=%v err=%v", ok, err)
+	}
+	if active.ID != "plan-original" || active.ApprovalState != "approved" {
+		t.Fatalf("active plan should remain original, got %#v", active)
+	}
+}
+
 func TestExecutePlanManageFinalCheckpointAwaitsReview(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
