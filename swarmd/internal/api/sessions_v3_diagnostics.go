@@ -291,21 +291,66 @@ func sessionV3DiagnosticErrorString(err error) string {
 }
 
 func sessionV3ProviderRequestDiagnostic(req provideriface.Request) map[string]any {
+	inputCount, inputCharCount := sessionV3ProviderInputDiagnosticShape(req.Input)
+	toolsCount := len(req.Tools)
 	return map[string]any{
-		"session_id":           req.SessionID,
-		"model":                req.Model,
-		"thinking":             req.Thinking,
-		"instructions":         req.Instructions,
-		"input":                req.Input,
-		"tools":                req.Tools,
-		"tool_choice":          req.ToolChoice,
-		"service_tier":         req.ServiceTier,
-		"context_mode":         req.ContextMode,
-		"context_window":       req.ContextWindow,
-		"parallel_tool_calls":  req.ParallelToolCalls,
-		"workspace_path":       req.WorkspacePath,
-		"tool_invoker_present": req.ToolInvoker != nil,
+		"session_id":                        req.SessionID,
+		"provider_lineage_id":               req.ProviderLineageID,
+		"context_branch_id":                 req.ContextBranchID,
+		"provider_cache_key_present":        strings.TrimSpace(req.ProviderCacheKey) != "",
+		"session_affinity_key_present":      strings.TrimSpace(req.SessionAffinityKey) != "",
+		"boundary_reason":                   req.BoundaryReason,
+		"previous_provider_lineage_id":      req.PreviousProviderLineageID,
+		"previous_provider":                 req.PreviousProviderID,
+		"previous_model":                    req.PreviousModel,
+		"new_provider":                      req.NewProviderID,
+		"new_model":                         req.NewModel,
+		"handoff_summary_message_id":        req.HandoffSummaryMessageID,
+		"handoff_summary_global_seq":        req.HandoffSummaryGlobalSeq,
+		"provider_lineage_start_message_id": req.ProviderLineageStartMessageID,
+		"provider_lineage_start_run_id":     req.ProviderLineageStartRunID,
+		"provider_lineage_start_global_seq": req.ProviderLineageStartGlobalSeq,
+		"native_continuation_allowed":       req.NativeContinuationAllowed,
+		"force_fresh_provider_context":      req.ForceFreshProviderContext,
+		"model":                             req.Model,
+		"thinking":                          req.Thinking,
+		"instructions_present":              strings.TrimSpace(req.Instructions) != "",
+		"input_items":                       inputCount,
+		"input_text_chars":                  inputCharCount,
+		"tools_count":                       toolsCount,
+		"tool_choice":                       req.ToolChoice,
+		"service_tier":                      req.ServiceTier,
+		"context_mode":                      req.ContextMode,
+		"context_window":                    req.ContextWindow,
+		"parallel_tool_calls":               req.ParallelToolCalls,
+		"workspace_path_present":            strings.TrimSpace(req.WorkspacePath) != "",
+		"tool_invoker_present":              req.ToolInvoker != nil,
 	}
+}
+
+func sessionV3ProviderInputDiagnosticShape(input []map[string]any) (int, int) {
+	chars := 0
+	var walk func(any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case string:
+			chars += len([]rune(typed))
+		case []map[string]any:
+			for _, child := range typed {
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		case map[string]any:
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(input)
+	return len(input), chars
 }
 
 func sessionV3ProviderStreamEventDiagnostic(event provideriface.StreamEvent, step, index int) map[string]any {

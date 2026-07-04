@@ -121,14 +121,18 @@ type chatPromptTokensDetails struct {
 }
 
 type requestOptions struct {
-	SessionAffinity string
+	SessionAffinity         string
+	PromptCacheIsolationKey string
 }
 
 func requestHeaders(options ...requestOptions) map[string]string {
-	headers := make(map[string]string, 1)
+	headers := make(map[string]string, 2)
 	for _, option := range options {
 		if affinity := strings.TrimSpace(option.SessionAffinity); affinity != "" {
 			headers["x-session-affinity"] = affinity
+		}
+		if isolationKey := strings.TrimSpace(option.PromptCacheIsolationKey); isolationKey != "" {
+			headers["x-prompt-cache-isolation-key"] = isolationKey
 		}
 	}
 	return headers

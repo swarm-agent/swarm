@@ -211,20 +211,58 @@ func TestResolveServingTierUsesProviderNativeFireworksSemantics(t *testing.T) {
 		},
 	}
 
-	standard := ResolveServingTier(provideriface.Request{SessionID: "s1", Model: "accounts/fireworks/models/glm-5p1"}, cfg)
+	standard := ResolveServingTier(provideriface.Request{SessionID: "s1", SessionAffinityKey: "lineage-1", Model: "accounts/fireworks/models/glm-5p1"}, cfg)
 	if standard.ModelID != "accounts/fireworks/models/glm-5p1" || standard.ServiceTier != "" || standard.EffectiveTier != "standard" {
 		t.Fatalf("standard resolution = %+v", standard)
 	}
-	priority := ResolveServingTier(provideriface.Request{SessionID: "s1", Model: "accounts/fireworks/models/glm-5p1", ServiceTier: "priority"}, cfg)
+	priority := ResolveServingTier(provideriface.Request{SessionID: "s1", SessionAffinityKey: "lineage-1", Model: "accounts/fireworks/models/glm-5p1", ServiceTier: "priority"}, cfg)
 	if priority.ModelID != "accounts/fireworks/models/glm-5p1" || priority.ServiceTier != "priority" || priority.EffectiveTier != "priority" {
 		t.Fatalf("priority resolution = %+v", priority)
 	}
-	fast := ResolveServingTier(provideriface.Request{SessionID: "s1", Model: "accounts/fireworks/models/glm-5p1", ServiceTier: "fast"}, cfg)
+	fast := ResolveServingTier(provideriface.Request{SessionID: "s1", SessionAffinityKey: "lineage-1", Model: "accounts/fireworks/models/glm-5p1", ServiceTier: "fast"}, cfg)
 	if fast.ModelID != "accounts/fireworks/routers/glm-5p1-fast" || fast.ServiceTier != "" || fast.EffectiveTier != "fast" {
 		t.Fatalf("fast resolution = %+v", fast)
 	}
 	if fast.SessionAffinity == "" {
 		t.Fatalf("fast session affinity was empty")
+	}
+	if fast.SessionAffinity == stableSessionAffinity("s1") {
+		t.Fatalf("fast session affinity used raw durable session id: %q", fast.SessionAffinity)
+	}
+}
+
+func TestResolveServingTierUsesLineageScopedCacheKeys(t *testing.T) {
+	first := ResolveServingTier(provideriface.Request{SessionID: "durable-session", SessionAffinityKey: "lineage-a", Model: "accounts/fireworks/models/glm-5p1"}, ServingConfig{})
+	second := ResolveServingTier(provideriface.Request{SessionID: "durable-session", SessionAffinityKey: "lineage-b", Model: "accounts/fireworks/models/glm-5p1"}, ServingConfig{})
+	if first.SessionAffinity == "" || first.PromptCacheIsolationKey == "" {
+		t.Fatalf("lineage scoped keys missing: %+v", first)
+	}
+	if first.SessionAffinity != first.PromptCacheIsolationKey {
+		t.Fatalf("session affinity and prompt cache isolation differ within lineage: %+v", first)
+	}
+	if first.SessionAffinity == second.SessionAffinity || first.PromptCacheIsolationKey == second.PromptCacheIsolationKey {
+		t.Fatalf("different lineages reused cache keys: first=%+v second=%+v", first, second)
+	}
+	if first.SessionAffinity == stableSessionAffinity("durable-session") {
+		t.Fatalf("session affinity used raw durable session id: %q", first.SessionAffinity)
+	}
+	stable := ResolveServingTier(provideriface.Request{SessionID: "durable-session", SessionAffinityKey: "lineage-a", Model: "accounts/fireworks/models/glm-5p1"}, ServingConfig{})
+	if stable.SessionAffinity != first.SessionAffinity || stable.PromptCacheIsolationKey != first.PromptCacheIsolationKey {
+		t.Fatalf("same lineage did not keep stable cache keys: first=%+v stable=%+v", first, stable)
+	}
+	checkpoint := ResolveServingTier(provideriface.Request{SessionID: "durable-session", SessionAffinityKey: "checkpoint-lineage", Model: "accounts/fireworks/models/glm-5p1"}, ServingConfig{})
+	if checkpoint.SessionAffinity == first.SessionAffinity || checkpoint.PromptCacheIsolationKey == first.PromptCacheIsolationKey {
+		t.Fatalf("checkpoint boundary reused previous lineage cache keys: first=%+v checkpoint=%+v", first, checkpoint)
+	}
+}
+
+func TestRequestHeadersIncludesPromptCacheIsolationKey(t *testing.T) {
+	headers := requestHeaders(requestOptions{SessionAffinity: "affinity-lineage", PromptCacheIsolationKey: "cache-lineage"})
+	if got := headers["x-session-affinity"]; got != "affinity-lineage" {
+		t.Fatalf("x-session-affinity = %q, want affinity-lineage", got)
+	}
+	if got := headers["x-prompt-cache-isolation-key"]; got != "cache-lineage" {
+		t.Fatalf("x-prompt-cache-isolation-key = %q, want cache-lineage", got)
 	}
 }
 

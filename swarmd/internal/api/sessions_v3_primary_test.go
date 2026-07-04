@@ -5548,6 +5548,18 @@ func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T
 	if runner.callCount != 2 {
 		t.Fatalf("provider call count = %d, want restart plus continuation", runner.callCount)
 	}
+	if len(runner.requests) != 2 {
+		t.Fatalf("recorded provider requests = %d, want 2", len(runner.requests))
+	}
+	if runner.requests[0].ProviderLineageID == "" || runner.requests[0].ProviderLineageID != runner.requests[1].ProviderLineageID {
+		t.Fatalf("restart-after-tool should remain inside one provider lineage: first=%+v second=%+v", runner.requests[0], runner.requests[1])
+	}
+	if runner.requests[0].ProviderCacheKey != runner.requests[1].ProviderCacheKey || runner.requests[0].SessionAffinityKey != runner.requests[1].SessionAffinityKey {
+		t.Fatalf("restart-after-tool changed lineage cache/affinity: first=%+v second=%+v", runner.requests[0], runner.requests[1])
+	}
+	if runner.requests[1].BoundaryReason != "restart_after_tool" || runner.requests[1].NativeContinuationAllowed || !runner.requests[1].ForceFreshProviderContext {
+		t.Fatalf("restart-after-tool did not force a fresh provider context while preserving lineage key: %+v", runner.requests[1])
+	}
 }
 
 func TestSessionsV3RuntimeInstructionsUseLegacyWorkspaceAndRuleContext(t *testing.T) {
@@ -5767,6 +5779,113 @@ func postSessionsV3CompactTestRequest(t *testing.T, server *Server, sessionID, c
 		t.Fatalf("compact response missing run intent: %s", rec.Body.String())
 	}
 	waitForSessionsV3SpecificRunIntentStatus(t, server.sessions, sessionID, resp.RunIntent.RunID, sessionruntime.RunIntentCompleted)
+}
+
+func TestSessionsV3ProviderLineageMetadataPersistsAcrossModelHandoff(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{text: "assistant answer"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "lineage-meta-create", "lineage metadata", pebblestore.ModelPreference{Provider: "test-provider", Model: "model-a", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "lineage-meta-message-1", "first turn")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	appendSessionsV3PrimaryTestUserMessage(t, server, created.ID, "lineage-meta-old-huge", "OLD-HUGE-TRANSCRIPT-"+strings.Repeat("x", 4000))
+	appendSessionsV3PrimaryTestSystemMessage(t, server, created.ID, "lineage-meta-summary", "[context-compact] index=2 origin=test\n\nCompacted recap:\nFirst turn summary.")
+	prefReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/preference", bytes.NewBufferString(`{"provider":"test-provider","model":"model-b","thinking":"medium"}`))
+	prefReq.Header.Set("Content-Type", "application/json")
+	prefRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prefRec, withTestPrincipal(prefReq))
+	if prefRec.Code != http.StatusOK {
+		t.Fatalf("preference status = %d, want %d, body=%s", prefRec.Code, http.StatusOK, prefRec.Body.String())
+	}
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "lineage-meta-message-2", "second turn")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 6)
+
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	var firstAssistant, summary, secondAssistant *pebblestore.MessageSnapshot
+	for i := range messages {
+		message := &messages[i]
+		if strings.EqualFold(message.Role, "system") && strings.HasPrefix(strings.TrimSpace(message.Content), "[context-compact]") {
+			summary = message
+		}
+		if !strings.EqualFold(message.Role, "assistant") {
+			continue
+		}
+		if firstAssistant == nil {
+			firstAssistant = message
+		} else {
+			secondAssistant = message
+		}
+	}
+	if firstAssistant == nil || summary == nil || secondAssistant == nil {
+		t.Fatalf("expected first assistant, summary, second assistant in messages: %+v", messages)
+	}
+	firstLineage := sessionV3MetadataString(firstAssistant.Metadata, "provider_lineage_id")
+	secondLineage := sessionV3MetadataString(secondAssistant.Metadata, "provider_lineage_id")
+	if firstLineage == "" || secondLineage == "" || firstLineage == secondLineage {
+		t.Fatalf("lineage IDs first=%q second=%q", firstLineage, secondLineage)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "previous_provider_lineage_id"); got != firstLineage {
+		t.Fatalf("previous lineage = %q, want %q metadata=%+v", got, firstLineage, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "previous_provider"); got != "test-provider" {
+		t.Fatalf("previous provider = %q metadata=%+v", got, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "previous_model"); got != "model-a" {
+		t.Fatalf("previous model = %q metadata=%+v", got, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "new_provider"); got != "test-provider" {
+		t.Fatalf("new provider = %q metadata=%+v", got, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "new_model"); got != "model-b" {
+		t.Fatalf("new model = %q metadata=%+v", got, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "handoff_summary_message_id"); got != strings.TrimSpace(summary.ID) {
+		t.Fatalf("handoff summary id = %q, want %q metadata=%+v", got, summary.ID, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "provider_lineage_start_message_id"); got != "" {
+		t.Fatalf("new lineage start message should be empty before first persisted response, got %q", got)
+	}
+	if runner.lastRequest.SessionID != created.ID {
+		t.Fatalf("durable session changed across provider handoff: got %q want %q", runner.lastRequest.SessionID, created.ID)
+	}
+	if runner.lastRequest.ProviderLineageID != secondLineage || runner.lastRequest.PreviousProviderLineageID != firstLineage {
+		t.Fatalf("request lineage first=%q second=%q request=%+v", firstLineage, secondLineage, runner.lastRequest)
+	}
+	if runner.lastRequest.BoundaryReason != "provider_model_runtime_handoff" || runner.lastRequest.NativeContinuationAllowed || !runner.lastRequest.ForceFreshProviderContext {
+		t.Fatalf("handoff request boundary flags = %+v", runner.lastRequest)
+	}
+	if runner.lastRequest.ProviderCacheKey == created.ID || runner.lastRequest.SessionAffinityKey == created.ID || !strings.Contains(runner.lastRequest.ProviderCacheKey, secondLineage) || !strings.Contains(runner.lastRequest.SessionAffinityKey, secondLineage) {
+		t.Fatalf("handoff request reused durable session/cache identity: cache=%q affinity=%q session=%q lineage=%q", runner.lastRequest.ProviderCacheKey, runner.lastRequest.SessionAffinityKey, created.ID, secondLineage)
+	}
+	for _, want := range []string{"[provider-handoff]", "First turn summary", "second turn"} {
+		if !sessionsV3ProviderInputContainsContentText(runner.lastRequest.Input, want) {
+			t.Fatalf("handoff input missing %q: %+v", want, runner.lastRequest.Input)
+		}
+	}
+	for _, forbidden := range []string{"OLD-HUGE-TRANSCRIPT", "first turn"} {
+		if sessionsV3ProviderInputContainsContentText(runner.lastRequest.Input, forbidden) {
+			t.Fatalf("handoff input replayed forbidden transcript %q: %+v", forbidden, runner.lastRequest.Input)
+		}
+	}
+
+	diagnostic := sessionV3ProviderRequestDiagnostic(runner.lastRequest)
+	for _, forbidden := range []string{"provider_cache_key", "session_affinity_key", "instructions", "input", "tools", "workspace_path"} {
+		if _, ok := diagnostic[forbidden]; ok {
+			t.Fatalf("diagnostic includes unsafe payload field %q: %+v", forbidden, diagnostic)
+		}
+	}
+	if diagnostic["provider_cache_key_present"] != true || diagnostic["session_affinity_key_present"] != true || diagnostic["boundary_reason"] == "" {
+		t.Fatalf("diagnostic missing auditable lineage shape: %+v", diagnostic)
+	}
 }
 
 func TestSessionsV3ProviderToolPersistenceUsesApplySessionMutationOnly(t *testing.T) {

@@ -68,7 +68,7 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 		"session_affinity": serving.SessionAffinity != "",
 		"payload":          fireworksDebugJSONValue(payload),
 	})
-	decoded, err := r.client.CreateChatCompletion(ctx, record.APIKey, payload, requestOptions{SessionAffinity: serving.SessionAffinity})
+	decoded, err := r.client.CreateChatCompletion(ctx, record.APIKey, payload, requestOptions{SessionAffinity: serving.SessionAffinity, PromptCacheIsolationKey: serving.PromptCacheIsolationKey})
 	if err != nil {
 		return provideriface.Response{}, err
 	}
@@ -139,7 +139,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 			}
 		}
 		return nil
-	}, requestOptions{SessionAffinity: serving.SessionAffinity})
+	}, requestOptions{SessionAffinity: serving.SessionAffinity, PromptCacheIsolationKey: serving.PromptCacheIsolationKey})
 	if err != nil {
 		return provideriface.Response{}, err
 	}

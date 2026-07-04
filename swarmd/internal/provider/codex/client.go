@@ -73,6 +73,26 @@ type startedWebsocketStreamError struct {
 	cause error
 }
 
+type forceFreshProviderContextKey struct{}
+
+func contextWithForceFreshProviderContext(ctx context.Context, force bool) context.Context {
+	if !force {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, forceFreshProviderContextKey{}, true)
+}
+
+func forceFreshProviderContextFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(forceFreshProviderContextKey{}).(bool)
+	return value
+}
+
 type cachedWebsocketSession struct {
 	mu             sync.Mutex
 	conn           *websocket.Conn
@@ -162,18 +182,35 @@ type ToolDefinition struct {
 }
 
 type Request struct {
-	SessionID              string
-	Model                  string
-	Thinking               string
-	ReasoningProviderValue string
-	Instructions           string
-	Input                  []map[string]any
-	Tools                  []ToolDefinition
-	ToolChoice             string
-	ServiceTier            string
-	ContextMode            string
-	ContextWindow          int
-	ParallelToolCalls      bool
+	SessionID                     string
+	ProviderLineageID             string
+	ContextBranchID               string
+	ProviderCacheKey              string
+	SessionAffinityKey            string
+	BoundaryReason                string
+	PreviousProviderLineageID     string
+	PreviousProviderID            string
+	PreviousModel                 string
+	NewProviderID                 string
+	NewModel                      string
+	HandoffSummaryMessageID       string
+	HandoffSummaryGlobalSeq       uint64
+	ProviderLineageStartMessageID string
+	ProviderLineageStartRunID     string
+	ProviderLineageStartGlobalSeq uint64
+	NativeContinuationAllowed     bool
+	ForceFreshProviderContext     bool
+	Model                         string
+	Thinking                      string
+	ReasoningProviderValue        string
+	Instructions                  string
+	Input                         []map[string]any
+	Tools                         []ToolDefinition
+	ToolChoice                    string
+	ServiceTier                   string
+	ContextMode                   string
+	ContextWindow                 int
+	ParallelToolCalls             bool
 }
 
 type FunctionCall struct {
@@ -341,11 +378,12 @@ func (c *Client) createResponse(ctx context.Context, req Request, onEvent func(S
 		return Response{}, err
 	}
 
-	payload, err := buildRequestPayload(req)
+	payload, forceFreshProviderContext, err := buildRequestPayloadWithOptions(req)
 	if err != nil {
 		return Response{}, err
 	}
 
+	ctx = contextWithForceFreshProviderContext(ctx, forceFreshProviderContext)
 	decoded, statusCode, err := c.send(ctx, record, payload, onEvent)
 	if err != nil {
 		return Response{}, err
@@ -484,12 +522,17 @@ type oauthTokens struct {
 }
 
 func buildRequestPayload(req Request) ([]byte, error) {
+	payload, _, err := buildRequestPayloadWithOptions(req)
+	return payload, err
+}
+
+func buildRequestPayloadWithOptions(req Request) ([]byte, bool, error) {
 	modelID := strings.TrimSpace(req.Model)
 	if modelID == "" {
-		return nil, errors.New("model is required")
+		return nil, false, errors.New("model is required")
 	}
 	if len(req.Input) == 0 {
-		return nil, errors.New("input messages are required")
+		return nil, false, errors.New("input messages are required")
 	}
 
 	body := map[string]any{
@@ -501,8 +544,8 @@ func buildRequestPayload(req Request) ([]byte, error) {
 			"verbosity": defaultCodexTextVerbosity,
 		},
 	}
-	if sessionID := codexPromptCacheKey(req.SessionID); sessionID != "" {
-		body["prompt_cache_key"] = sessionID
+	if cacheKey := codexPromptCacheKey(firstNonEmpty(req.ProviderCacheKey, req.ProviderLineageID)); cacheKey != "" {
+		body["prompt_cache_key"] = cacheKey
 	}
 	if strings.TrimSpace(req.Instructions) != "" {
 		body["instructions"] = strings.TrimSpace(req.Instructions)
@@ -523,7 +566,11 @@ func buildRequestPayload(req Request) ([]byte, error) {
 		body["reasoning"] = reasoning
 		body["include"] = []string{includeReasoningEncryptedContentPath}
 	}
-	return json.Marshal(body)
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, false, err
+	}
+	return payload, req.ForceFreshProviderContext || !req.NativeContinuationAllowed, nil
 }
 
 func codexPromptCacheKey(sessionID string) string {
@@ -923,15 +970,19 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 	if err != nil {
 		return nil, 0, err
 	}
-	sessionID := extractSessionIDFromDecodedPayload(requestPayload)
+	cacheKey := extractSessionIDFromDecodedPayload(requestPayload)
+	freshContext := forceFreshProviderContextFromContext(ctx)
 	headers := buildCodexTransportHeaders(record, payload)
-	session := c.cachedWebsocketSession(sessionID)
+	session := c.cachedWebsocketSession(cacheKey)
 	if session != nil {
 		session.mu.Lock()
 		defer session.mu.Unlock()
 	}
 	conn := (*websocket.Conn)(nil)
 	if session != nil {
+		if freshContext {
+			closeCachedWebsocketSessionLocked(session)
+		}
 		conn = session.conn
 	}
 	if conn == nil {
@@ -955,7 +1006,7 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 	}
 
 	sendPayload := cloneMapAny(requestPayload)
-	if session != nil {
+	if session != nil && !freshContext {
 		sendPayload = prepareIncrementalWebsocketRequest(sendPayload, session.lastPayload, session.lastResponseID, session.lastOutput)
 	}
 	websocketPayload, err := buildCodexWebsocketPayload(sendPayload)

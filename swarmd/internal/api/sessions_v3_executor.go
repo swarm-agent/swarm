@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 
 	"regexp"
 	"strconv"
@@ -45,6 +46,9 @@ const (
 	sessionV3TitleGenerationTimeout           = 20 * time.Second
 	sessionV3TitleFinalWordsMin               = 5
 	sessionV3TitleFinalWordsMax               = 6
+	sessionV3HandoffDefaultTailMessages       = 24
+	sessionV3HandoffDefaultToolOutputChars    = 1200
+	sessionV3HandoffDefaultTotalChars         = 60000
 )
 
 var sessionV3TitleWordPattern = regexp.MustCompile(`\b[\p{L}\p{N}][\p{L}\p{N}'-]*\b`)
@@ -634,19 +638,36 @@ type sessionV3ResolvedRuntime struct {
 }
 
 type sessionV3AssistantResponse struct {
-	Content             string
-	AgentName           string
-	ResolvedAgentName   string
-	ExecutorKind        string
-	ProviderID          string
-	Model               string
-	ProviderResponseID  string
-	StopReason          string
-	Usage               provideriface.TokenUsage
-	ProviderOutputItems []any
-	StreamID            string
-	StreamStep          int
-	StreamOffsetEnd     uint64
+	Content                       string
+	AgentName                     string
+	ResolvedAgentName             string
+	ExecutorKind                  string
+	ProviderID                    string
+	Model                         string
+	ProviderLineageID             string
+	ContextBranchID               string
+	ProviderCacheKey              string
+	SessionAffinityKey            string
+	BoundaryReason                string
+	PreviousProviderLineageID     string
+	PreviousProviderID            string
+	PreviousModel                 string
+	NewProviderID                 string
+	NewModel                      string
+	HandoffSummaryMessageID       string
+	HandoffSummaryGlobalSeq       uint64
+	ProviderLineageStartMessageID string
+	ProviderLineageStartRunID     string
+	ProviderLineageStartGlobalSeq uint64
+	NativeContinuationAllowed     bool
+	ForceFreshProviderContext     bool
+	ProviderResponseID            string
+	StopReason                    string
+	Usage                         provideriface.TokenUsage
+	ProviderOutputItems           []any
+	StreamID                      string
+	StreamStep                    int
+	StreamOffsetEnd               uint64
 }
 
 func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
@@ -669,6 +690,53 @@ func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
 	if model := strings.TrimSpace(r.Model); model != "" {
 		metadata["model"] = model
 	}
+	if lineageID := strings.TrimSpace(r.ProviderLineageID); lineageID != "" {
+		metadata["provider_lineage_id"] = lineageID
+	}
+	if branchID := strings.TrimSpace(r.ContextBranchID); branchID != "" {
+		metadata["context_branch_id"] = branchID
+	}
+	if cacheKey := strings.TrimSpace(r.ProviderCacheKey); cacheKey != "" {
+		metadata["provider_cache_key"] = cacheKey
+	}
+	if affinityKey := strings.TrimSpace(r.SessionAffinityKey); affinityKey != "" {
+		metadata["session_affinity_key"] = affinityKey
+	}
+	if boundaryReason := strings.TrimSpace(r.BoundaryReason); boundaryReason != "" {
+		metadata["boundary_reason"] = boundaryReason
+	}
+	if previousLineageID := strings.TrimSpace(r.PreviousProviderLineageID); previousLineageID != "" {
+		metadata["previous_provider_lineage_id"] = previousLineageID
+	}
+	if previousProvider := strings.TrimSpace(r.PreviousProviderID); previousProvider != "" {
+		metadata["previous_provider"] = previousProvider
+	}
+	if previousModel := strings.TrimSpace(r.PreviousModel); previousModel != "" {
+		metadata["previous_model"] = previousModel
+	}
+	if newProvider := strings.TrimSpace(r.NewProviderID); newProvider != "" {
+		metadata["new_provider"] = newProvider
+	}
+	if newModel := strings.TrimSpace(r.NewModel); newModel != "" {
+		metadata["new_model"] = newModel
+	}
+	if summaryID := strings.TrimSpace(r.HandoffSummaryMessageID); summaryID != "" {
+		metadata["handoff_summary_message_id"] = summaryID
+	}
+	if r.HandoffSummaryGlobalSeq != 0 {
+		metadata["handoff_summary_global_seq"] = r.HandoffSummaryGlobalSeq
+	}
+	if startMessageID := strings.TrimSpace(r.ProviderLineageStartMessageID); startMessageID != "" {
+		metadata["provider_lineage_start_message_id"] = startMessageID
+	}
+	if startRunID := strings.TrimSpace(r.ProviderLineageStartRunID); startRunID != "" {
+		metadata["provider_lineage_start_run_id"] = startRunID
+	}
+	if r.ProviderLineageStartGlobalSeq != 0 {
+		metadata["provider_lineage_start_global_seq"] = r.ProviderLineageStartGlobalSeq
+	}
+	metadata["native_continuation_allowed"] = r.NativeContinuationAllowed
+	metadata["force_fresh_provider_context"] = r.ForceFreshProviderContext
 	if responseID := strings.TrimSpace(r.ProviderResponseID); responseID != "" {
 		metadata["provider_response_id"] = responseID
 	}
@@ -910,16 +978,24 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 		"No markdown, no quotes, no explanations, no trailing punctuation.",
 		"Stage: final.",
 	}, "\n"))
+	providerLineageID := provideriface.ShortProviderLineageKey("session_title", session.ID, providerID, modelName, instructions)
 	req := provideriface.Request{
-		SessionID:     session.ID,
-		Model:         modelName,
-		Thinking:      normalizeSessionV3ThinkingWithProvider(providerID, preference.Thinking),
-		Instructions:  instructions,
-		Input:         []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "Conversation summary:\n" + truncateSessionV3TitleRunes(promptContext, sessionV3TitlePromptPreviewRunes)}}}},
-		ToolChoice:    "none",
-		ServiceTier:   strings.TrimSpace(preference.ServiceTier),
-		ContextMode:   strings.TrimSpace(preference.ContextMode),
-		WorkspacePath: strings.TrimSpace(session.WorkspacePath),
+		SessionID:                 session.ID,
+		ProviderLineageID:         providerLineageID,
+		ContextBranchID:           provideriface.ShortProviderLineageKey("session", session.ID, session.Mode),
+		ProviderCacheKey:          sessionV3ProviderScopedKey("cache", providerLineageID),
+		SessionAffinityKey:        sessionV3ProviderScopedKey("affinity", providerLineageID),
+		BoundaryReason:            "session_title",
+		NativeContinuationAllowed: false,
+		ForceFreshProviderContext: true,
+		Model:                     modelName,
+		Thinking:                  normalizeSessionV3ThinkingWithProvider(providerID, preference.Thinking),
+		Instructions:              instructions,
+		Input:                     []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "Conversation summary:\n" + truncateSessionV3TitleRunes(promptContext, sessionV3TitlePromptPreviewRunes)}}}},
+		ToolChoice:                "none",
+		ServiceTier:               strings.TrimSpace(preference.ServiceTier),
+		ContextMode:               strings.TrimSpace(preference.ContextMode),
+		WorkspacePath:             strings.TrimSpace(session.WorkspacePath),
 	}
 	bgCtx := context.Background()
 	if principal.Valid() {
@@ -988,6 +1064,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		return sessionV3AssistantResponse{}, err
 	}
 	input := sessionsV3ProviderInput(messages)
+	checkpointRestartInput := false
 	if !forceCommittedContext && (strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "") {
 		checkpointInput, ok, checkpointErr := e.sessionV3ProviderCheckpointRestartInput(ctx, job, resolved, "")
 		if checkpointErr != nil {
@@ -995,6 +1072,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		}
 		if ok {
 			input = checkpointInput
+			checkpointRestartInput = true
 		}
 	}
 	if len(input) == 0 {
@@ -1003,6 +1081,26 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	baseReq, err := e.sessionV3ProviderBaseRequest(job, resolved, input)
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
+	}
+	if checkpointRestartInput {
+		baseReq.BoundaryReason = sessionV3ProviderBoundaryReasonWithOverride(baseReq.BoundaryReason, "checkpoint_fresh_context")
+		baseReq.NativeContinuationAllowed = false
+		baseReq.ForceFreshProviderContext = true
+	} else if sessionV3ProviderRequiresBoundedHandoff(baseReq) {
+		handoffInput, handoffErr := e.sessionV3ProviderHandoffInput(job, resolved, messages, baseReq)
+		if handoffErr != nil {
+			return sessionV3AssistantResponse{}, handoffErr
+		}
+		if len(handoffInput) == 0 {
+			return sessionV3AssistantResponse{}, errors.New("v3 provider handoff input is empty")
+		}
+		baseReq.Input = handoffInput
+	} else {
+		input = sessionsV3ProviderInputForLineage(messages, baseReq.ProviderLineageID)
+		if len(input) == 0 {
+			return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")
+		}
+		baseReq.Input = append([]map[string]any(nil), input...)
 	}
 	e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.request", "backend.provider", "request", map[string]any{
 		"provider": providerID,
@@ -1068,19 +1166,36 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	}
 	agentName := strings.TrimSpace(resolved.AgentProfile.Name)
 	assistant := sessionV3AssistantResponse{
-		Content:             content,
-		AgentName:           agentName,
-		ResolvedAgentName:   agentName,
-		ExecutorKind:        "v3_provider",
-		ProviderID:          providerRunnerID,
-		Model:               model,
-		ProviderResponseID:  strings.TrimSpace(response.ID),
-		StopReason:          strings.TrimSpace(response.StopReason),
-		Usage:               response.Usage,
-		ProviderOutputItems: sessionV3ProviderNativeOutputItems(providerRunnerID, response.Raw),
-		StreamID:            loopResult.FinalStreamID,
-		StreamStep:          loopResult.FinalStep,
-		StreamOffsetEnd:     loopResult.FinalOffsetEnd,
+		Content:                       content,
+		AgentName:                     agentName,
+		ResolvedAgentName:             agentName,
+		ExecutorKind:                  "v3_provider",
+		ProviderID:                    providerRunnerID,
+		Model:                         model,
+		ProviderResponseID:            strings.TrimSpace(response.ID),
+		StopReason:                    strings.TrimSpace(response.StopReason),
+		Usage:                         response.Usage,
+		ProviderLineageID:             baseReq.ProviderLineageID,
+		ContextBranchID:               baseReq.ContextBranchID,
+		ProviderCacheKey:              baseReq.ProviderCacheKey,
+		SessionAffinityKey:            baseReq.SessionAffinityKey,
+		BoundaryReason:                baseReq.BoundaryReason,
+		PreviousProviderLineageID:     baseReq.PreviousProviderLineageID,
+		PreviousProviderID:            baseReq.PreviousProviderID,
+		PreviousModel:                 baseReq.PreviousModel,
+		NewProviderID:                 baseReq.NewProviderID,
+		NewModel:                      baseReq.NewModel,
+		HandoffSummaryMessageID:       baseReq.HandoffSummaryMessageID,
+		HandoffSummaryGlobalSeq:       baseReq.HandoffSummaryGlobalSeq,
+		ProviderLineageStartMessageID: baseReq.ProviderLineageStartMessageID,
+		ProviderLineageStartRunID:     baseReq.ProviderLineageStartRunID,
+		ProviderLineageStartGlobalSeq: baseReq.ProviderLineageStartGlobalSeq,
+		NativeContinuationAllowed:     baseReq.NativeContinuationAllowed,
+		ForceFreshProviderContext:     baseReq.ForceFreshProviderContext,
+		ProviderOutputItems:           sessionV3ProviderNativeOutputItems(providerRunnerID, response.Raw),
+		StreamID:                      loopResult.FinalStreamID,
+		StreamStep:                    loopResult.FinalStep,
+		StreamOffsetEnd:               loopResult.FinalOffsetEnd,
 	}
 	if err := validateSessionV3AssistantStreamCompletion(content, assistant.StreamOffsetEnd); err != nil {
 		return sessionV3AssistantResponse{}, err
@@ -1110,20 +1225,58 @@ func (e *sessionV3Executor) sessionV3ProviderRunner(resolved sessionV3ResolvedRu
 
 func (e *sessionV3Executor) sessionV3ProviderBaseRequest(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, input []map[string]any) (provideriface.Request, error) {
 	pref := resolved.Preference
+	providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
+	model := strings.TrimSpace(pref.Model)
+	contextBranchID := sessionV3ProviderContextBranchID(job, resolved)
+	previousLineage := e.sessionV3ProviderLineageSnapshot(job, "")
+	previousLineageID := previousLineage.ProviderLineageID
+	lineageID := provideriface.ShortProviderLineageKey(
+		job.SessionID,
+		contextBranchID,
+		providerID,
+		model,
+		resolved.Instructions,
+		sessionV3ProviderToolsLineageHash(resolved.Tools),
+		strings.TrimSpace(resolved.Session.Mode),
+		strings.TrimSpace(resolved.AgentProfile.Name),
+		strings.TrimSpace(resolved.AgentProfile.Mode),
+		strings.TrimSpace(resolved.AgentProfile.RuntimeMode),
+		strings.TrimSpace(resolved.AgentProfile.ExecutionSetting),
+		strings.TrimSpace(pref.ServiceTier),
+		strings.TrimSpace(pref.ContextMode),
+	)
+	lineageStart := e.sessionV3ProviderLineageSnapshot(job, lineageID)
 	baseReq := provideriface.Request{
-		SessionID:         job.SessionID,
-		Model:             strings.TrimSpace(pref.Model),
-		Thinking:          strings.TrimSpace(pref.Thinking),
-		Instructions:      resolved.Instructions,
-		Input:             append([]map[string]any(nil), input...),
-		Tools:             resolved.Tools,
-		ToolChoice:        resolved.ToolChoice,
-		ServiceTier:       strings.TrimSpace(pref.ServiceTier),
-		ContextMode:       strings.TrimSpace(pref.ContextMode),
-		ContextWindow:     resolved.ContextWindow,
-		ModelCatalog:      resolved.ModelCatalog,
-		ParallelToolCalls: true,
-		WorkspacePath:     strings.TrimSpace(resolved.Scope.PrimaryPath),
+		SessionID:                     job.SessionID,
+		ProviderLineageID:             lineageID,
+		ContextBranchID:               contextBranchID,
+		ProviderCacheKey:              sessionV3ProviderScopedKey("cache", lineageID),
+		SessionAffinityKey:            sessionV3ProviderScopedKey("affinity", lineageID),
+		BoundaryReason:                sessionV3ProviderBoundaryReason(job, previousLineageID, lineageID),
+		PreviousProviderLineageID:     previousLineageID,
+		PreviousProviderID:            previousLineage.ProviderID,
+		PreviousModel:                 previousLineage.Model,
+		NewProviderID:                 providerID,
+		NewModel:                      model,
+		HandoffSummaryMessageID:       firstNonEmptyString(lineageStart.HandoffSummaryMessageID, previousLineage.HandoffSummaryMessageID),
+		HandoffSummaryGlobalSeq:       firstNonZeroUint64(lineageStart.HandoffSummaryGlobalSeq, previousLineage.HandoffSummaryGlobalSeq),
+		ProviderLineageStartMessageID: lineageStart.StartMessageID,
+		ProviderLineageStartRunID:     lineageStart.StartRunID,
+		ProviderLineageStartGlobalSeq: lineageStart.StartGlobalSeq,
+		NativeContinuationAllowed:     sessionV3ProviderNativeContinuationAllowed(previousLineageID, lineageID),
+		ForceFreshProviderContext:     sessionV3ProviderForceFreshContext(job, previousLineageID, lineageID),
+		Model:                         model,
+		Thinking:                      strings.TrimSpace(pref.Thinking),
+		Instructions:                  resolved.Instructions,
+		Input:                         append([]map[string]any(nil), input...),
+		Tools:                         resolved.Tools,
+		ToolChoice:                    resolved.ToolChoice,
+		ServiceTier:                   strings.TrimSpace(pref.ServiceTier),
+		ContextMode:                   strings.TrimSpace(pref.ContextMode),
+		ContextWindow:                 resolved.ContextWindow,
+		ModelCatalog:                  resolved.ModelCatalog,
+		ParallelToolCalls:             true,
+		WorkspacePath:                 strings.TrimSpace(resolved.Scope.PrimaryPath),
 	}
 	if baseReq.Model == "" {
 		return provideriface.Request{}, errors.New("resolved v3 provider/model is empty")
@@ -1138,6 +1291,399 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequest(job sessionV3ExecutorJo
 		baseReq.ToolChoice = "none"
 	}
 	return baseReq, nil
+}
+
+type sessionV3ProviderHandoffCaps struct {
+	TailMessages    int
+	ToolOutputChars int
+	TotalChars      int
+}
+
+func sessionV3ProviderRequiresBoundedHandoff(req provideriface.Request) bool {
+	previousLineageID := strings.TrimSpace(req.PreviousProviderLineageID)
+	lineageID := strings.TrimSpace(req.ProviderLineageID)
+	if previousLineageID == "" || lineageID == "" || previousLineageID == lineageID {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(req.BoundaryReason), "provider_model_runtime_handoff") {
+		return true
+	}
+	return req.ForceFreshProviderContext && !req.NativeContinuationAllowed
+}
+
+func sessionV3ProviderHandoffCapsFromEnv() sessionV3ProviderHandoffCaps {
+	return sessionV3ProviderHandoffCaps{
+		TailMessages:    sessionV3EnvInt("SWARM_V3_HANDOFF_TAIL_MESSAGES", sessionV3HandoffDefaultTailMessages),
+		ToolOutputChars: sessionV3EnvInt("SWARM_V3_HANDOFF_TOOL_OUTPUT_CHARS", sessionV3HandoffDefaultToolOutputChars),
+		TotalChars:      sessionV3EnvInt("SWARM_V3_HANDOFF_TOTAL_CHARS", sessionV3HandoffDefaultTotalChars),
+	}
+}
+
+func sessionV3EnvInt(name string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func (e *sessionV3Executor) sessionV3ProviderHandoffInput(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, messages []pebblestore.MessageSnapshot, req provideriface.Request) ([]map[string]any, error) {
+	caps := sessionV3ProviderHandoffCapsFromEnv()
+	packet, err := e.sessionV3ProviderHandoffPacket(job, resolved, messages, req, caps)
+	if err != nil {
+		return nil, err
+	}
+	return []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": packet}}}}, nil
+}
+
+func (e *sessionV3Executor) sessionV3ProviderHandoffPacket(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, messages []pebblestore.MessageSnapshot, req provideriface.Request, caps sessionV3ProviderHandoffCaps) (string, error) {
+	if caps.TailMessages <= 0 {
+		caps.TailMessages = sessionV3HandoffDefaultTailMessages
+	}
+	if caps.ToolOutputChars <= 0 {
+		caps.ToolOutputChars = sessionV3HandoffDefaultToolOutputChars
+	}
+	if caps.TotalChars <= 0 {
+		caps.TotalChars = sessionV3HandoffDefaultTotalChars
+	}
+	var b strings.Builder
+	appendLine := func(line string) {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(strings.TrimRight(line, " \t"))
+	}
+	appendLine("[provider-handoff] Bounded context packet for a provider/model/runtime boundary.")
+	appendLine("Do not assume provider-native continuation or cache state from earlier lineage. Current system/developer instructions and tool definitions are supplied separately in this provider request.")
+	appendLine("")
+	appendLine("Boundary:")
+	appendLine("- reason: " + strings.TrimSpace(req.BoundaryReason))
+	appendLine("- previous_provider_lineage_id: " + strings.TrimSpace(req.PreviousProviderLineageID))
+	appendLine("- provider_lineage_id: " + strings.TrimSpace(req.ProviderLineageID))
+	appendLine("- context_branch_id: " + strings.TrimSpace(req.ContextBranchID))
+	appendLine("- target_provider: " + strings.TrimSpace(resolved.Preference.Provider))
+	appendLine("- target_model: " + strings.TrimSpace(resolved.Preference.Model))
+	appendLine("")
+	appendLine("Handoff summary:")
+	if summary := sessionV3LatestHandoffSummary(messages); summary != "" {
+		appendLine(summary)
+	} else {
+		appendLine(fmt.Sprintf("No compacted summary is available. Durable session contains %d fetched messages; this packet intentionally includes only a bounded visible tail and summarized tool calls.", len(messages)))
+	}
+	appendLine("")
+	e.appendSessionV3ProviderHandoffPlanState(&b, job)
+	handoffTailMessages := runruntime.TrimMessagesToLatestCompactionCheckpoint(messages)
+	appendLine("")
+	appendLine(fmt.Sprintf("Recent tool call summaries (latest %d tool messages; outputs capped at %d chars each):", caps.TailMessages, caps.ToolOutputChars))
+	toolLines := sessionV3HandoffToolSummaries(handoffTailMessages, caps.TailMessages, caps.ToolOutputChars)
+	if len(toolLines) == 0 {
+		appendLine("- none")
+	} else {
+		for _, line := range toolLines {
+			appendLine(line)
+		}
+	}
+	appendLine("")
+	appendLine(fmt.Sprintf("Visible conversation tail as Desktop sees it (latest %d user/assistant messages):", caps.TailMessages))
+	visible := sessionV3HandoffVisibleTail(handoffTailMessages, caps.TailMessages)
+	if len(visible) == 0 {
+		appendLine("- none")
+	} else {
+		for _, message := range visible {
+			role := strings.ToLower(strings.TrimSpace(message.Role))
+			appendLine("--- " + role + " ---")
+			appendLine(strings.TrimSpace(message.Content))
+		}
+	}
+	packet := strings.TrimSpace(b.String())
+	if len([]rune(packet)) > caps.TotalChars {
+		return "", fmt.Errorf("bounded provider handoff packet exceeds safety cap: %d chars > %d; compact the session before provider/model handoff", len([]rune(packet)), caps.TotalChars)
+	}
+	return packet, nil
+}
+
+func (e *sessionV3Executor) appendSessionV3ProviderHandoffPlanState(b *strings.Builder, job sessionV3ExecutorJob) {
+	if b == nil {
+		return
+	}
+	write := func(line string) {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(strings.TrimRight(line, " \t"))
+	}
+	write("Active plan/checkpoint state:")
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		write("- unavailable")
+		return
+	}
+	plan, ok, err := e.server.sessions.GetActivePlan(job.SessionID)
+	if err != nil || !ok || plan.Document == nil {
+		write("- none")
+		return
+	}
+	doc := plan.Document
+	if title := strings.TrimSpace(firstNonEmptyString(doc.Title, plan.Title)); title != "" {
+		write("- plan: " + title)
+	}
+	if goal := strings.TrimSpace(doc.Info.Goal); goal != "" {
+		write("- goal: " + goal)
+	}
+	if len(doc.Info.RelevantFiles) > 0 {
+		write("- relevant_files: " + strings.Join(trimStrings(doc.Info.RelevantFiles), ", "))
+	}
+	checkpointID := strings.TrimSpace(firstNonEmptyString(job.CheckpointID, doc.ActiveCheckpointID))
+	for _, checkpoint := range doc.Checkpoints {
+		if checkpointID != "" && strings.TrimSpace(checkpoint.ID) != checkpointID {
+			continue
+		}
+		write("- checkpoint_id: " + strings.TrimSpace(checkpoint.ID))
+		if title := strings.TrimSpace(checkpoint.Title); title != "" {
+			write("- checkpoint_title: " + title)
+		}
+		if status := strings.TrimSpace(checkpoint.Status); status != "" {
+			write("- checkpoint_status: " + status)
+		}
+		if len(checkpoint.ChangedFiles) > 0 {
+			write("- changed_files: " + strings.Join(trimStrings(checkpoint.ChangedFiles), ", "))
+		}
+		if len(checkpoint.Validation) > 0 {
+			write("- validation: " + strings.Join(trimStrings(checkpoint.Validation), "; "))
+		}
+		break
+	}
+}
+
+func sessionV3LatestHandoffSummary(messages []pebblestore.MessageSnapshot) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		if !strings.EqualFold(strings.TrimSpace(message.Role), "system") {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if strings.HasPrefix(content, "[context-compact]") {
+			return content
+		}
+	}
+	return ""
+}
+
+func sessionV3HandoffVisibleTail(messages []pebblestore.MessageSnapshot, limit int) []pebblestore.MessageSnapshot {
+	if limit <= 0 {
+		limit = sessionV3HandoffDefaultTailMessages
+	}
+	out := make([]pebblestore.MessageSnapshot, 0, limit)
+	for i := len(messages) - 1; i >= 0 && len(out) < limit; i-- {
+		role := strings.ToLower(strings.TrimSpace(messages[i].Role))
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		if strings.TrimSpace(messages[i].Content) == "" {
+			continue
+		}
+		out = append(out, messages[i])
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+func sessionV3HandoffToolSummaries(messages []pebblestore.MessageSnapshot, limit int, outputLimit int) []string {
+	if limit <= 0 {
+		limit = sessionV3HandoffDefaultTailMessages
+	}
+	if outputLimit <= 0 {
+		outputLimit = sessionV3HandoffDefaultToolOutputChars
+	}
+	out := make([]string, 0, limit)
+	for i := len(messages) - 1; i >= 0 && len(out) < limit; i-- {
+		message := messages[i]
+		if !strings.EqualFold(strings.TrimSpace(message.Role), "tool") {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		if record, ok := sessionsV3DecodeProviderToolResultRecord(content); ok {
+			status := "ok"
+			if strings.TrimSpace(record.Error) != "" {
+				status = "error"
+			}
+			output := strings.TrimSpace(firstNonEmpty(record.CompletedOutput, record.Output, record.Error))
+			line := fmt.Sprintf("- %s call_id=%s status=%s args=%s output=%s", strings.TrimSpace(record.ToolName), strings.TrimSpace(record.CallID), status, strings.TrimSpace(record.Arguments), sessionV3TruncateForHandoff(output, outputLimit))
+			out = append(out, line)
+			continue
+		}
+		out = append(out, "- unstructured_tool_message output="+sessionV3TruncateForHandoff(content, outputLimit))
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+func sessionV3TruncateForHandoff(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + fmt.Sprintf("… [truncated %d chars]", len(runes)-limit)
+}
+
+func sessionV3ProviderContextBranchID(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime) string {
+	if checkpointID := strings.TrimSpace(job.CheckpointID); checkpointID != "" {
+		return provideriface.ShortProviderLineageKey("checkpoint", strings.TrimSpace(job.PlanID), checkpointID, strings.TrimSpace(job.AttemptID), strings.TrimSpace(job.ParentSessionID), strings.TrimSpace(job.SessionID))
+	}
+	return provideriface.ShortProviderLineageKey("session", strings.TrimSpace(job.SessionID), strings.TrimSpace(resolved.Session.Mode))
+}
+
+type sessionV3ProviderLineageSnapshot struct {
+	ProviderLineageID       string
+	ProviderID              string
+	Model                   string
+	MessageID               string
+	RunID                   string
+	GlobalSeq               uint64
+	StartMessageID          string
+	StartRunID              string
+	StartGlobalSeq          uint64
+	HandoffSummaryMessageID string
+	HandoffSummaryGlobalSeq uint64
+}
+
+func (e *sessionV3Executor) sessionV3ProviderLineageSnapshot(job sessionV3ExecutorJob, lineageID string) sessionV3ProviderLineageSnapshot {
+	snapshot := sessionV3ProviderLineageSnapshot{}
+	if e == nil || e.server == nil || e.server.sessions == nil || strings.TrimSpace(job.SessionID) == "" {
+		return snapshot
+	}
+	session, ok, err := e.server.sessions.GetSession(job.SessionID)
+	if err != nil || !ok {
+		return snapshot
+	}
+	limit := session.MessageCount + 8
+	if limit < 64 {
+		limit = 64
+	}
+	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, limit)
+	if err != nil {
+		return snapshot
+	}
+	lineageID = strings.TrimSpace(lineageID)
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		if snapshot.HandoffSummaryMessageID == "" && strings.EqualFold(strings.TrimSpace(message.Role), "system") && strings.HasPrefix(strings.TrimSpace(message.Content), "[context-compact]") {
+			snapshot.HandoffSummaryMessageID = strings.TrimSpace(message.ID)
+			snapshot.HandoffSummaryGlobalSeq = message.GlobalSeq
+		}
+		messageLineageID := sessionV3MetadataString(message.Metadata, "provider_lineage_id")
+		if messageLineageID == "" {
+			continue
+		}
+		if lineageID != "" && messageLineageID != lineageID {
+			continue
+		}
+		if snapshot.ProviderLineageID == "" {
+			snapshot.ProviderLineageID = messageLineageID
+			snapshot.ProviderID = sessionV3MetadataString(message.Metadata, "provider")
+			snapshot.Model = sessionV3MetadataString(message.Metadata, "model")
+			snapshot.MessageID = strings.TrimSpace(message.ID)
+			snapshot.RunID = sessionV3MetadataString(message.Metadata, "run_id")
+			snapshot.GlobalSeq = message.GlobalSeq
+		}
+		snapshot.StartMessageID = strings.TrimSpace(message.ID)
+		snapshot.StartRunID = sessionV3MetadataString(message.Metadata, "run_id")
+		snapshot.StartGlobalSeq = message.GlobalSeq
+	}
+	return snapshot
+}
+
+func sessionV3ProviderBoundaryReason(job sessionV3ExecutorJob, previousLineageID, lineageID string) string {
+	if strings.TrimSpace(job.CheckpointID) != "" {
+		return "checkpoint_fresh_context"
+	}
+	if previousLineageID != "" && lineageID != "" && previousLineageID != lineageID {
+		return "provider_model_runtime_handoff"
+	}
+	return "session_turn"
+}
+
+func sessionV3ProviderNativeContinuationAllowed(previousLineageID, lineageID string) bool {
+	previousLineageID = strings.TrimSpace(previousLineageID)
+	lineageID = strings.TrimSpace(lineageID)
+	return previousLineageID != "" && lineageID != "" && previousLineageID == lineageID
+}
+
+func sessionV3ProviderForceFreshContext(job sessionV3ExecutorJob, previousLineageID, lineageID string) bool {
+	if strings.TrimSpace(job.CheckpointID) != "" {
+		return true
+	}
+	return !sessionV3ProviderNativeContinuationAllowed(previousLineageID, lineageID)
+}
+
+func sessionV3ProviderBoundaryReasonWithOverride(current, override string) string {
+	current = strings.TrimSpace(current)
+	override = strings.TrimSpace(override)
+	if override == "" {
+		return current
+	}
+	if current == "" || current == "session_turn" {
+		return override
+	}
+	if strings.Contains(current, override) {
+		return current
+	}
+	return current + "+" + override
+}
+
+func sessionV3ProviderScopedKey(prefix, lineageID string) string {
+	lineageID = strings.TrimSpace(lineageID)
+	if lineageID == "" {
+		return ""
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return lineageID
+	}
+	return prefix + "-" + lineageID
+}
+
+func firstNonZeroUint64(values ...uint64) uint64 {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func sessionV3ProviderToolsLineageHash(tools []provideriface.ToolDefinition) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	projection := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		projection = append(projection, map[string]any{
+			"type":        strings.TrimSpace(tool.Type),
+			"name":        strings.TrimSpace(tool.Name),
+			"description": strings.TrimSpace(tool.Description),
+			"parameters":  tool.Parameters,
+		})
+	}
+	raw, err := json.Marshal(projection)
+	if err != nil {
+		return provideriface.ShortProviderLineageKey(fmt.Sprint(projection))
+	}
+	return provideriface.ShortProviderLineageKey(string(raw))
 }
 
 type sessionV3ProviderLoopResult struct {
@@ -1284,18 +1830,35 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if strings.TrimSpace(stepText) != "" {
 			agentName := strings.TrimSpace(resolved.AgentProfile.Name)
 			segment := sessionV3AssistantResponse{
-				Content:            stepText,
-				AgentName:          agentName,
-				ResolvedAgentName:  agentName,
-				ExecutorKind:       "v3_provider",
-				ProviderID:         strings.TrimSpace(runner.ID()),
-				Model:              strings.TrimSpace(firstNonEmpty(response.Model, baseReq.Model)),
-				ProviderResponseID: strings.TrimSpace(response.ID),
-				StopReason:         strings.TrimSpace(response.StopReason),
-				Usage:              response.Usage,
-				StreamID:           streamState.StreamID(),
-				StreamStep:         streamState.Step(),
-				StreamOffsetEnd:    streamState.OffsetEnd(),
+				Content:                       stepText,
+				AgentName:                     agentName,
+				ResolvedAgentName:             agentName,
+				ExecutorKind:                  "v3_provider",
+				ProviderID:                    strings.TrimSpace(runner.ID()),
+				Model:                         strings.TrimSpace(firstNonEmpty(response.Model, baseReq.Model)),
+				ProviderLineageID:             baseReq.ProviderLineageID,
+				ContextBranchID:               baseReq.ContextBranchID,
+				ProviderCacheKey:              baseReq.ProviderCacheKey,
+				SessionAffinityKey:            baseReq.SessionAffinityKey,
+				BoundaryReason:                baseReq.BoundaryReason,
+				PreviousProviderLineageID:     baseReq.PreviousProviderLineageID,
+				PreviousProviderID:            baseReq.PreviousProviderID,
+				PreviousModel:                 baseReq.PreviousModel,
+				NewProviderID:                 baseReq.NewProviderID,
+				NewModel:                      baseReq.NewModel,
+				HandoffSummaryMessageID:       baseReq.HandoffSummaryMessageID,
+				HandoffSummaryGlobalSeq:       baseReq.HandoffSummaryGlobalSeq,
+				ProviderLineageStartMessageID: baseReq.ProviderLineageStartMessageID,
+				ProviderLineageStartRunID:     baseReq.ProviderLineageStartRunID,
+				ProviderLineageStartGlobalSeq: baseReq.ProviderLineageStartGlobalSeq,
+				NativeContinuationAllowed:     baseReq.NativeContinuationAllowed,
+				ForceFreshProviderContext:     baseReq.ForceFreshProviderContext,
+				ProviderResponseID:            strings.TrimSpace(response.ID),
+				StopReason:                    strings.TrimSpace(response.StopReason),
+				Usage:                         response.Usage,
+				StreamID:                      streamState.StreamID(),
+				StreamStep:                    streamState.Step(),
+				StreamOffsetEnd:               streamState.OffsetEnd(),
 			}
 			if segment.ProviderID == "" {
 				segment.ProviderID = strings.TrimSpace(resolved.Preference.Provider)
@@ -1355,6 +1918,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			if err != nil {
 				return sessionV3ProviderLoopResult{}, err
 			}
+			baseReq.BoundaryReason = sessionV3ProviderBoundaryReasonWithOverride(baseReq.BoundaryReason, "restart_after_tool")
+			baseReq.NativeContinuationAllowed = false
+			baseReq.ForceFreshProviderContext = true
 		}
 	}
 }
@@ -2232,6 +2798,20 @@ func (e *sessionV3Executor) resolveSessionV3ProviderPreference(pref pebblestore.
 }
 
 func sessionsV3ProviderInput(messages []pebblestore.MessageSnapshot) []map[string]any {
+	return sessionsV3ProviderInputWithOptions(messages, sessionsV3ProviderInputOptions{})
+}
+
+type sessionsV3ProviderInputOptions struct {
+	LineageID string
+	Bounded   bool
+}
+
+func sessionsV3ProviderInputForLineage(messages []pebblestore.MessageSnapshot, lineageID string) []map[string]any {
+	return sessionsV3ProviderInputWithOptions(messages, sessionsV3ProviderInputOptions{LineageID: lineageID, Bounded: true})
+}
+
+func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, options sessionsV3ProviderInputOptions) []map[string]any {
+	messages = sessionsV3MessagesForProviderLineage(messages, options.LineageID, options.Bounded)
 	input := make([]map[string]any, 0, len(messages))
 	for _, message := range messages {
 		content := strings.TrimSpace(message.Content)
@@ -2258,6 +2838,31 @@ func sessionsV3ProviderInput(messages []pebblestore.MessageSnapshot) []map[strin
 		}
 	}
 	return input
+}
+
+func sessionsV3MessagesForProviderLineage(messages []pebblestore.MessageSnapshot, lineageID string, bounded bool) []pebblestore.MessageSnapshot {
+	if !bounded || strings.TrimSpace(lineageID) == "" || len(messages) == 0 {
+		return messages
+	}
+	boundary := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		messageLineageID := sessionV3MetadataString(messages[i].Metadata, "provider_lineage_id")
+		if messageLineageID == "" {
+			continue
+		}
+		if messageLineageID == lineageID {
+			break
+		}
+		boundary = i + 1
+		break
+	}
+	if boundary <= 0 {
+		return messages
+	}
+	if boundary >= len(messages) {
+		return messages[len(messages)-1:]
+	}
+	return messages[boundary:]
 }
 
 func sessionsV3ProviderAssistantInputItem(content string) map[string]any {

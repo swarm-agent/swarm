@@ -31,6 +31,7 @@ type chatCompletionRequest struct {
 	Tools             []chatCompletionTool `json:"tools,omitempty"`
 	ToolChoice        any                  `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool                `json:"parallel_tool_calls,omitempty"`
+	SessionID         string               `json:"session_id,omitempty"`
 	Stream            bool                 `json:"stream,omitempty"`
 }
 

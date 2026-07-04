@@ -119,8 +119,9 @@ func (r *Runner) activeCredential(ctx context.Context) (pebblestore.AuthCredenti
 
 func buildChatCompletionRequest(req provideriface.Request) chatCompletionRequest {
 	out := chatCompletionRequest{
-		Model:    strings.TrimSpace(req.Model),
-		Messages: buildChatCompletionMessages(req),
+		Model:     strings.TrimSpace(req.Model),
+		Messages:  buildChatCompletionMessages(req),
+		SessionID: openRouterSessionID(req),
 	}
 	if len(req.Tools) > 0 {
 		out.Tools = make([]chatCompletionTool, 0, len(req.Tools))
@@ -145,6 +146,23 @@ func buildChatCompletionRequest(req provideriface.Request) chatCompletionRequest
 		}
 	}
 	return out
+}
+
+func openRouterSessionID(req provideriface.Request) string {
+	key := strings.TrimSpace(firstNonEmpty(req.SessionAffinityKey, req.ProviderCacheKey, req.ProviderLineageID))
+	if key == "" {
+		return ""
+	}
+	return "swarm-lineage-" + key
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func buildChatCompletionMessages(req provideriface.Request) []map[string]any {

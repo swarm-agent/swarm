@@ -36,12 +36,13 @@ type ServingConfig struct {
 }
 
 type requestServingResolution struct {
-	ModelID         string
-	ServiceTier     string
-	RequestedTier   string
-	EffectiveTier   string
-	ServingTier     ServingTier
-	SessionAffinity string
+	ModelID                 string
+	ServiceTier             string
+	RequestedTier           string
+	EffectiveTier           string
+	ServingTier             ServingTier
+	SessionAffinity         string
+	PromptCacheIsolationKey string
 }
 
 type rawProviderSpecific map[string]struct {
@@ -184,11 +185,13 @@ func ResolveServingTier(req provideriface.Request, cfg ServingConfig) requestSer
 		modelID = normalizeFireworksModelResourceName(cfg.ModelID)
 	}
 	requestedTier := NormalizeServiceTier(req.ServiceTier)
+	lineageKey := stableSessionAffinity(req.EffectiveSessionAffinityKey())
 	resolution := requestServingResolution{
-		ModelID:         modelID,
-		RequestedTier:   requestedTier,
-		EffectiveTier:   ServiceTierStandard,
-		SessionAffinity: stableSessionAffinity(req.SessionID),
+		ModelID:                 modelID,
+		RequestedTier:           requestedTier,
+		EffectiveTier:           ServiceTierStandard,
+		SessionAffinity:         lineageKey,
+		PromptCacheIsolationKey: lineageKey,
 	}
 	if cfg.DefaultTier != "" {
 		resolution.EffectiveTier = cfg.DefaultTier
@@ -260,7 +263,7 @@ func stableSessionAffinity(sessionID string) string {
 	if sessionID == "" {
 		return ""
 	}
-	return "swarm-session-" + sessionID
+	return "swarm-lineage-" + sessionID
 }
 
 func EstimateCostUSD(usage provideriface.TokenUsage, tier ServingTier) float64 {

@@ -155,6 +155,18 @@ func TestRunTurnCheckpointContextSendsFreshProviderInput(t *testing.T) {
 	if !strings.Contains(text, "Fresh provider input") || !strings.Contains(text, "cp-1") {
 		t.Fatalf("provider input missing plan/checkpoint payload: %s", text)
 	}
+	if runner.requests[0].SessionID != sessionID {
+		t.Fatalf("durable session id = %q, want %q", runner.requests[0].SessionID, sessionID)
+	}
+	if runner.requests[0].ProviderLineageID == "" || runner.requests[0].ProviderCacheKey == "" || runner.requests[0].SessionAffinityKey == "" {
+		t.Fatalf("checkpoint request missing lineage/cache keys: %+v", runner.requests[0])
+	}
+	if runner.requests[0].ProviderCacheKey == sessionID || runner.requests[0].SessionAffinityKey == sessionID {
+		t.Fatalf("checkpoint request reused raw session id for provider cache/affinity: %+v", runner.requests[0])
+	}
+	if runner.requests[0].BoundaryReason != "checkpoint_fresh_context" || runner.requests[0].NativeContinuationAllowed || !runner.requests[0].ForceFreshProviderContext {
+		t.Fatalf("checkpoint request did not force fresh provider context: %+v", runner.requests[0])
+	}
 }
 
 type checkpointPromptCaptureRunner struct {
