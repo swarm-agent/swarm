@@ -3055,6 +3055,114 @@ func TestSessionsV3PrimaryPlanModeStartCheckpointPreflightIsPrimaryOnlyAndAtomic
 	}
 }
 
+func TestSessionsV3PrimaryNextMessageUsesActiveFollowupCheckpointFreshContext(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{text: "checkpoint answer"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "followup-fresh-create", "followup fresh", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	doc := &pebblestore.SessionPlanDocument{
+		ID:                 "plan-followup-fresh",
+		Title:              "Plan followup fresh",
+		Status:             "approved",
+		ActiveCheckpointID: "cp-2",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode:  sessionruntime.PlanExecutionPolicyModeAutomatic,
+			Shape: sessionruntime.PlanExecutionShapeCheckpointed,
+		},
+		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateIdle, LastCheckpointID: "cp-1"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Done", Status: sessionruntime.PlanCheckpointStatusCompleted, Order: 1, Result: "done"},
+			{ID: "cp-2", Title: "Follow-up", Status: sessionruntime.PlanCheckpointStatusPending, Objective: "Use checkpoint context", Tasks: []string{"Use checkpoint context"}, Order: 2},
+		},
+	}
+	if _, _, err := sessionSvc.SavePlanWithMetadata(created.ID, doc.ID, doc.Title, "# Plan", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: doc}); err != nil {
+		t.Fatalf("save approved follow-up plan: %v", err)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "followup-fresh-message", "continue from the follow-up")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain")
+	}
+
+	runner.mu.Lock()
+	request := runner.lastRequest
+	runner.mu.Unlock()
+	if len(request.Input) == 0 {
+		t.Fatalf("provider input is empty")
+	}
+	inputRaw, err := json.Marshal(request.Input)
+	if err != nil {
+		t.Fatalf("marshal provider input: %v", err)
+	}
+	input := string(inputRaw)
+	if strings.Contains(input, "continue from the follow-up") {
+		t.Fatalf("provider input used raw parent transcript instead of checkpoint fresh context: %s", input)
+	}
+	for _, required := range []string{"Deterministic checkpoint execution context", "Execute exactly one checkpoint: cp-2", "Use checkpoint context"} {
+		if !strings.Contains(input, required) {
+			t.Fatalf("provider input missing checkpoint fresh-context marker %q: %s", required, input)
+		}
+	}
+}
+
+func TestSessionsV3PrimaryNextMessageWithoutActiveCheckpointSplitUsesTranscriptContext(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{text: "normal answer"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "completed-checkpoint-create", "completed checkpoint", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	doc := &pebblestore.SessionPlanDocument{
+		ID:                 "plan-completed-checkpoint",
+		Title:              "Plan completed checkpoint",
+		Status:             "approved",
+		ActiveCheckpointID: "cp-1",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode:  sessionruntime.PlanExecutionPolicyModeAutomatic,
+			Shape: sessionruntime.PlanExecutionShapeCheckpointed,
+		},
+		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateCompleted, LastCheckpointID: "cp-1"},
+		Checkpoints:    []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Done", Status: sessionruntime.PlanCheckpointStatusCompleted, Order: 1}},
+	}
+	if _, _, err := sessionSvc.SavePlanWithMetadata(created.ID, doc.ID, doc.Title, "# Plan", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: doc}); err != nil {
+		t.Fatalf("save completed plan: %v", err)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "completed-checkpoint-message", "normal transcript message")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatalf("server did not drain")
+	}
+
+	runner.mu.Lock()
+	request := runner.lastRequest
+	runner.mu.Unlock()
+	if len(request.Input) == 0 {
+		t.Fatalf("provider input is empty")
+	}
+	inputRaw, err := json.Marshal(request.Input)
+	if err != nil {
+		t.Fatalf("marshal provider input: %v", err)
+	}
+	input := string(inputRaw)
+	if !strings.Contains(input, "normal transcript message") {
+		t.Fatalf("provider input did not use normal transcript context: %s", input)
+	}
+	if strings.Contains(input, "Deterministic checkpoint execution context") || strings.Contains(input, "Execute exactly one checkpoint") {
+		t.Fatalf("normal transcript context unexpectedly used checkpoint fresh context: %s", input)
+	}
+}
+
 func TestSessionsV3PrimaryStreamHandlerDoesNotUseV2RunStreamOrRuntime(t *testing.T) {
 	body, err := os.ReadFile("sessions_v3_stream_ws.go")
 	if err != nil {

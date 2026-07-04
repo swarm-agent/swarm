@@ -723,8 +723,95 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	var enqueueJob *sessionV3ExecutorJob
 	if !result.Replayed && result.RunIntent != nil && result.RunIntent.Status == sessionruntime.RunIntentPendingExecutor && s.v3SessionExecutor != nil {
 		enqueueJob = &sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: result.RunIntent.RunID}
+		if checkpointJob, ok, err := s.sessionsV3ActiveCheckpointMessageRunJob(principal, sessionID, result.RunIntent.RunID); err != nil {
+			return result, nil, err
+		} else if ok {
+			enqueueJob = &checkpointJob
+		}
 	}
 	return result, enqueueJob, nil
+}
+
+func (s *Server) sessionsV3ActiveCheckpointMessageRunJob(principal identity.Principal, sessionID, runID string) (sessionV3ExecutorJob, bool, error) {
+	job := sessionV3ExecutorJob{Principal: principal, SessionID: strings.TrimSpace(sessionID), RunID: strings.TrimSpace(runID)}
+	if s == nil || s.sessions == nil || job.SessionID == "" || job.RunID == "" {
+		return job, false, nil
+	}
+	plan, ok, err := s.sessions.GetActivePlan(job.SessionID)
+	if err != nil {
+		return job, false, err
+	}
+	if !ok || strings.TrimSpace(plan.ID) == "" || plan.Document == nil {
+		return job, false, nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(plan.Status), "approved") || !strings.EqualFold(strings.TrimSpace(plan.ApprovalState), "approved") {
+		return job, false, nil
+	}
+	doc := plan.Document
+	if !strings.EqualFold(strings.TrimSpace(doc.ExecutionPolicy.Shape), sessionruntime.PlanExecutionShapeCheckpointed) {
+		return job, false, nil
+	}
+	if doc.ExecutionState == nil || strings.TrimSpace(doc.ExecutionState.LastCheckpointID) == "" {
+		return job, false, nil
+	}
+	stateStatus := strings.TrimSpace(doc.ExecutionState.Status)
+	if stateStatus != "" && stateStatus != sessionruntime.PlanExecutionStateIdle && stateStatus != sessionruntime.PlanExecutionStateInProgress {
+		return job, false, nil
+	}
+	checkpointID := strings.TrimSpace(doc.ActiveCheckpointID)
+	if checkpointID == "" {
+		return job, false, nil
+	}
+	checkpoint, ok := sessionV3PlanDocumentCheckpointByID(doc, checkpointID)
+	if !ok {
+		return job, false, nil
+	}
+	switch strings.TrimSpace(checkpoint.Status) {
+	case sessionruntime.PlanCheckpointStatusPending, sessionruntime.PlanCheckpointStatusInProgress:
+	default:
+		return job, false, nil
+	}
+	if checkpoint.RunID != "" && checkpoint.RunID != job.RunID {
+		return job, false, nil
+	}
+	if checkpoint.SessionID != "" && checkpoint.SessionID != job.SessionID {
+		return job, false, nil
+	}
+	if activeRun, ok, err := s.sessions.GetSessionActiveRunIntent(job.SessionID); err != nil {
+		return job, false, err
+	} else if ok && strings.TrimSpace(activeRun.RunID) != "" && strings.TrimSpace(activeRun.RunID) != job.RunID {
+		switch strings.TrimSpace(activeRun.Status) {
+		case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning:
+			return job, false, nil
+		}
+	}
+	job.PlanID = strings.TrimSpace(plan.ID)
+	job.CheckpointID = checkpointID
+	job.AttemptID = strings.TrimSpace(checkpoint.AttemptID)
+	if job.AttemptID == "" && doc.ExecutionState != nil {
+		job.AttemptID = strings.TrimSpace(doc.ExecutionState.ActiveAttemptID)
+	}
+	job.ParentSessionID = job.SessionID
+	if doc.ExecutionState != nil && strings.TrimSpace(doc.ExecutionState.ParentSessionID) != "" {
+		job.ParentSessionID = strings.TrimSpace(doc.ExecutionState.ParentSessionID)
+	}
+	return job, true, nil
+}
+
+func sessionV3PlanDocumentCheckpointByID(doc *pebblestore.SessionPlanDocument, checkpointID string) (pebblestore.SessionPlanCheckpoint, bool) {
+	if doc == nil {
+		return pebblestore.SessionPlanCheckpoint{}, false
+	}
+	checkpointID = strings.TrimSpace(checkpointID)
+	if checkpointID == "" {
+		return pebblestore.SessionPlanCheckpoint{}, false
+	}
+	for _, checkpoint := range doc.Checkpoints {
+		if strings.TrimSpace(checkpoint.ID) == checkpointID {
+			return checkpoint, true
+		}
+	}
+	return pebblestore.SessionPlanCheckpoint{}, false
 }
 
 func (s *Server) handleSessionV3PrimaryEvents(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
