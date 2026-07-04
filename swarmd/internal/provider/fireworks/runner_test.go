@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 func TestSanitizeFireworksToolParametersDropsNilRequired(t *testing.T) {
@@ -128,6 +129,48 @@ func TestBuildChatCompletionRequestMapsThinkingToReasoningEffort(t *testing.T) {
 	})
 	if req.ReasoningEffort != "" {
 		t.Fatalf("reasoning_effort = %q, want omitted for unsupported level", req.ReasoningEffort)
+	}
+}
+
+func TestApplyServingResolutionUsesFireworksResourceNameAndPriorityTier(t *testing.T) {
+	payload := buildChatCompletionRequest(provideriface.Request{Model: "glm-5p2"})
+	serving := ResolveServingTier(provideriface.Request{Model: "glm-5p2", ServiceTier: "priority"}, ServingConfig{
+		ModelID:        "accounts/fireworks/models/glm-5p2",
+		SupportedTiers: []string{"standard", "priority"},
+		DefaultTier:    "standard",
+		Tiers: map[string]ServingTier{
+			"priority": {Tier: "priority", ProviderParameter: "service_tier", ProviderValue: "priority"},
+		},
+	})
+	applyServingResolutionToPayload(&payload, serving)
+
+	if payload.Model != "accounts/fireworks/models/glm-5p2" {
+		t.Fatalf("model = %q, want Fireworks resource name", payload.Model)
+	}
+	if payload.ServiceTier != "priority" {
+		t.Fatalf("service_tier = %q, want priority", payload.ServiceTier)
+	}
+}
+
+func TestResolveServingTierNormalizesBareFireworksModelWithoutCatalog(t *testing.T) {
+	serving := ResolveServingTier(provideriface.Request{Model: "glm-5p2", ServiceTier: "priority"}, ServingConfig{})
+	if serving.ModelID != "accounts/fireworks/models/glm-5p2" {
+		t.Fatalf("model = %q, want Fireworks resource name", serving.ModelID)
+	}
+	if serving.ServiceTier != "" || serving.EffectiveTier != "standard" {
+		t.Fatalf("priority without catalog resolution = %+v", serving)
+	}
+}
+
+func TestServingConfigFromFastRouterCatalogKeepsRouterModelStandardOnly(t *testing.T) {
+	catalog := pebblestore.ModelCatalogRecord{
+		Provider:         "fireworks",
+		Model:            "accounts/fireworks/routers/kimi-k2p6-turbo",
+		ProviderSpecific: []byte(`{"fireworks":{"resource_name":"accounts/fireworks/models/kimi-k2p6","serving":{"supported_tiers":["standard","priority","fast"],"default_tier":"standard","priority":{"tier":"priority","provider_parameter":"service_tier","provider_value":"priority"},"fast":{"tier":"fast","provider_parameter":"model","provider_value":"accounts/fireworks/routers/kimi-k2p6-turbo"}}}}`),
+	}
+	serving := ResolveServingTier(provideriface.Request{Model: "accounts/fireworks/routers/kimi-k2p6-turbo", ServiceTier: "priority", ModelCatalog: catalog}, ServingConfigFromCatalog(catalog))
+	if serving.ModelID != "accounts/fireworks/routers/kimi-k2p6-turbo" || serving.ServiceTier != "" || serving.EffectiveTier != "standard" {
+		t.Fatalf("fast router catalog resolution = %+v", serving)
 	}
 }
 

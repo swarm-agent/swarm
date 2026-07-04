@@ -78,3 +78,55 @@ func TestResolvePreferenceClearsUnsupportedCatalogServiceTier(t *testing.T) {
 		t.Fatalf("resolved unsupported service tier = %q, want empty", resolved.Preference.ServiceTier)
 	}
 }
+
+func TestResolvePreferenceFindsFireworksCatalogByResourceName(t *testing.T) {
+	service, store := newTestModelService(t)
+	defer store.Close()
+
+	if err := service.catalog.store.SetRecord(pebblestore.ModelCatalogRecord{
+		Provider:     "fireworks",
+		Model:        "glm-5p2",
+		ServiceTiers: []string{"standard", "priority"},
+	}); err != nil {
+		t.Fatalf("set catalog record: %v", err)
+	}
+
+	resolved, err := service.ResolvePreference(pebblestore.ModelPreference{
+		Provider:    "fireworks",
+		Model:       "accounts/fireworks/models/glm-5p2",
+		Thinking:    "high",
+		ServiceTier: "priority",
+	})
+	if err != nil {
+		t.Fatalf("ResolvePreference returned error: %v", err)
+	}
+	if resolved.Preference.ServiceTier != "priority" {
+		t.Fatalf("resolved service tier = %q, want priority", resolved.Preference.ServiceTier)
+	}
+}
+
+func TestResolvePreferenceClearsPriorityForFireworksFastRouter(t *testing.T) {
+	service, store := newTestModelService(t)
+	defer store.Close()
+
+	if err := service.catalog.store.SetRecord(pebblestore.ModelCatalogRecord{
+		Provider:     "fireworks",
+		Model:        "accounts/fireworks/routers/kimi-k2p6-turbo",
+		ServiceTiers: []string{"standard"},
+	}); err != nil {
+		t.Fatalf("set catalog record: %v", err)
+	}
+
+	resolved, err := service.ResolvePreference(pebblestore.ModelPreference{
+		Provider:    "fireworks",
+		Model:       "accounts/fireworks/routers/kimi-k2p6-turbo",
+		Thinking:    "high",
+		ServiceTier: "priority",
+	})
+	if err != nil {
+		t.Fatalf("ResolvePreference returned error: %v", err)
+	}
+	if resolved.Preference.ServiceTier != "" {
+		t.Fatalf("resolved service tier = %q, want empty for fast router", resolved.Preference.ServiceTier)
+	}
+}

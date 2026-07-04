@@ -30,7 +30,7 @@ import {
   CUSTOM_AGENT_TOOL_PRESET_ID,
   agentToolPresetByID,
 } from "../../../chat/services/agent-tool-presets";
-import { modelServiceTierOptions, normalizeModelServiceTier, supportsModelServiceTier } from "../../../chat/services/model-options";
+import { displayModelName, modelServiceTierOptions, normalizeModelServiceTier, supportsModelServiceTier } from "../../../chat/services/model-options";
 
 interface AgentFormState {
   name: string;
@@ -1314,7 +1314,7 @@ function UtilityAISettingsModal({
                           </span>
                           <span className="min-w-0 flex-1">
                             <span className="block truncate font-medium text-[var(--app-text)]">
-                              {option.model}
+                              {displayModelName(option.provider, option.model, "")}
                             </span>
                             <span className="mt-1 block truncate text-[11px] text-[var(--app-text-subtle)]">
                               {option.label || `${option.provider}/${option.model}`}

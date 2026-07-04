@@ -110,18 +110,32 @@ type swarmSnapshotModel struct {
 		ContextWindowTokens *int `json:"context_window_tokens"`
 		MaxOutputTokens     *int `json:"max_output_tokens"`
 	} `json:"limits"`
-	Pricing          json.RawMessage `json:"pricing"`
-	Thinking         json.RawMessage `json:"thinking"`
-	ProviderSpecific map[string]struct {
-		Serving struct {
-			SupportedTiers []string `json:"supported_tiers"`
-			DefaultTier    string   `json:"default_tier"`
-		} `json:"serving"`
-	} `json:"provider_specific"`
-	Routing struct {
+	Pricing          json.RawMessage                          `json:"pricing"`
+	Thinking         json.RawMessage                          `json:"thinking"`
+	ProviderSpecific map[string]swarmSnapshotProviderSpecific `json:"provider_specific"`
+	Routing          struct {
 		TopProviderContextWindowTokens *int `json:"top_provider_context_window_tokens"`
 		TopProviderMaxOutputTokens     *int `json:"top_provider_max_output_tokens"`
 	} `json:"routing"`
+}
+
+type swarmSnapshotProviderSpecific struct {
+	ResourceName string `json:"resource_name"`
+	Serving      struct {
+		SupportedTiers []string                        `json:"supported_tiers"`
+		DefaultTier    string                          `json:"default_tier"`
+		Standard       *swarmSnapshotRawTier           `json:"standard"`
+		Priority       *swarmSnapshotRawTier           `json:"priority"`
+		Fast           *swarmSnapshotRawTier           `json:"fast"`
+		Tiers          map[string]swarmSnapshotRawTier `json:"tiers"`
+	} `json:"serving"`
+}
+
+type swarmSnapshotRawTier struct {
+	Tier              string          `json:"tier"`
+	ProviderParameter string          `json:"provider_parameter"`
+	ProviderValue     string          `json:"provider_value"`
+	Pricing           json.RawMessage `json:"pricing,omitempty"`
 }
 
 type catalogVersionFetch struct {
@@ -202,10 +216,16 @@ func (s *CatalogService) seedPinnedSnapshotIfNeeded() error {
 
 func (s *CatalogService) Get(providerID, modelID string) (CatalogLookup, error) {
 	normalizedProvider := canonicalCatalogProviderID(providerID)
-	normalizedModel := strings.TrimSpace(modelID)
+	normalizedModel := canonicalCatalogModelID(normalizedProvider, modelID)
 	record, ok, err := s.store.GetRecord(normalizedProvider, normalizedModel)
 	if err != nil {
 		return CatalogLookup{}, err
+	}
+	if !ok && normalizedModel != strings.TrimSpace(modelID) {
+		record, ok, err = s.store.GetRecord(normalizedProvider, strings.TrimSpace(modelID))
+		if err != nil {
+			return CatalogLookup{}, err
+		}
 	}
 	if !ok {
 		return CatalogLookup{Found: false}, nil
@@ -566,42 +586,49 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 			continue
 		}
 		maxOutputTokens := firstPositiveInt(model.Limits.MaxOutputTokens, model.Routing.TopProviderMaxOutputTokens)
-		key := providerID + "\x00" + modelID
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
 
 		reasoning := model.Capabilities.SupportsReasoning != nil && *model.Capabilities.SupportsReasoning
-		serviceTiers, defaultServiceTier := modelServingTiers(model, providerID)
-		record := pebblestore.ModelCatalogRecord{
-			Provider:              providerID,
-			ProviderDisplayName:   strings.TrimSpace(model.ProviderDisplayName),
-			Model:                 modelID,
-			DisplayName:           strings.TrimSpace(model.DisplayName),
-			CatalogID:             strings.TrimSpace(model.CatalogID),
-			ContextWindow:         codexruntime.EffectiveContextWindow(modelID, "", contextWindow),
-			MaxOutputTokens:       maxOutputTokens,
-			Reasoning:             reasoning,
-			ServiceTiers:          serviceTiers,
-			DefaultServiceTier:    defaultServiceTier,
-			Source:                source,
-			SourceSnapshotID:      snapshot.SnapshotID,
-			SourceSnapshotVersion: snapshot.SnapshotVersion,
-			SourceGeneratedAt:     snapshot.GeneratedAt,
-			ETag:                  etag,
-			FetchedAt:             nowMs,
-			ExpiresAt:             expiresAt,
-			Pricing:               cloneRawJSON(model.Pricing),
-			Thinking:              cloneRawJSON(model.Thinking),
-			ProviderSpecific:      cloneProviderSpecificRawJSON(model.ProviderSpecific),
+		for _, recordModelID := range catalogRecordModelIDs(model, providerID, modelID) {
+			key := providerID + "\x00" + recordModelID
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+
+			serviceTiers, defaultServiceTier := modelServingTiers(model, providerID, recordModelID)
+			pricing := cloneRawJSON(model.Pricing)
+			if tierPricing := catalogModelPricing(model, providerID, recordModelID); len(tierPricing) > 0 {
+				pricing = tierPricing
+			}
+			record := pebblestore.ModelCatalogRecord{
+				Provider:              providerID,
+				ProviderDisplayName:   strings.TrimSpace(model.ProviderDisplayName),
+				Model:                 recordModelID,
+				DisplayName:           displayNameForCatalogModel(model, modelID, recordModelID),
+				CatalogID:             catalogIDForCatalogModel(model, modelID, recordModelID),
+				ContextWindow:         codexruntime.EffectiveContextWindow(recordModelID, "", contextWindow),
+				MaxOutputTokens:       maxOutputTokens,
+				Reasoning:             reasoning,
+				ServiceTiers:          serviceTiers,
+				DefaultServiceTier:    defaultServiceTier,
+				Source:                source,
+				SourceSnapshotID:      snapshot.SnapshotID,
+				SourceSnapshotVersion: snapshot.SnapshotVersion,
+				SourceGeneratedAt:     snapshot.GeneratedAt,
+				ETag:                  etag,
+				FetchedAt:             nowMs,
+				ExpiresAt:             expiresAt,
+				Pricing:               pricing,
+				Thinking:              cloneRawJSON(model.Thinking),
+				ProviderSpecific:      cloneProviderSpecificRawJSON(model.ProviderSpecific),
+			}
+			records = append(records, record)
 		}
-		records = append(records, record)
 	}
 	return records, version, nil
 }
 
-func modelServingTiers(model swarmSnapshotModel, providerID string) ([]string, string) {
+func modelServingTiers(model swarmSnapshotModel, providerID, recordModelID string) ([]string, string) {
 	providerSpecific, ok := model.ProviderSpecific[providerID]
 	if !ok {
 		return nil, ""
@@ -613,13 +640,125 @@ func modelServingTiers(model swarmSnapshotModel, providerID string) ([]string, s
 		if normalized == "" {
 			continue
 		}
+		if providerID == "fireworks" {
+			isFastModel := isFireworksFastCatalogModel(model, recordModelID)
+			if normalized == "fast" || (isFastModel && normalized == "priority") {
+				continue
+			}
+		}
 		if _, exists := seen[normalized]; exists {
 			continue
 		}
 		seen[normalized] = struct{}{}
 		out = append(out, normalized)
 	}
-	return out, strings.ToLower(strings.TrimSpace(providerSpecific.Serving.DefaultTier))
+	defaultTier := strings.ToLower(strings.TrimSpace(providerSpecific.Serving.DefaultTier))
+	if providerID == "fireworks" && isFireworksFastCatalogModel(model, recordModelID) {
+		defaultTier = ""
+	}
+	return out, defaultTier
+}
+
+func catalogRecordModelIDs(model swarmSnapshotModel, providerID, modelID string) []string {
+	ids := []string{modelID}
+	if providerID != "fireworks" {
+		return ids
+	}
+	fastID := fireworksFastProviderValue(model.ProviderSpecific[providerID])
+	if fastID == "" || fastID == modelID {
+		return ids
+	}
+	return append(ids, fastID)
+}
+
+func fireworksFastProviderValue(providerSpecific swarmSnapshotProviderSpecific) string {
+	for _, tier := range []swarmSnapshotRawTier{valueOfRawTier(providerSpecific.Serving.Fast)} {
+		if strings.EqualFold(strings.TrimSpace(tier.ProviderParameter), "model") && strings.TrimSpace(tier.ProviderValue) != "" {
+			return strings.TrimSpace(tier.ProviderValue)
+		}
+	}
+	for _, tier := range providerSpecific.Serving.Tiers {
+		if strings.EqualFold(strings.TrimSpace(tier.Tier), "fast") && strings.EqualFold(strings.TrimSpace(tier.ProviderParameter), "model") && strings.TrimSpace(tier.ProviderValue) != "" {
+			return strings.TrimSpace(tier.ProviderValue)
+		}
+	}
+	return ""
+}
+
+func valueOfRawTier(tier *swarmSnapshotRawTier) swarmSnapshotRawTier {
+	if tier == nil {
+		return swarmSnapshotRawTier{}
+	}
+	return *tier
+}
+
+func isFireworksFastCatalogModel(model swarmSnapshotModel, recordModelID string) bool {
+	providerID := canonicalCatalogProviderID(model.ProviderID)
+	if providerID != "fireworks" {
+		return false
+	}
+	return strings.TrimSpace(recordModelID) != "" && recordModelID == fireworksFastProviderValue(model.ProviderSpecific[providerID])
+}
+
+func catalogModelPricing(model swarmSnapshotModel, providerID, recordModelID string) json.RawMessage {
+	if providerID != "fireworks" {
+		return nil
+	}
+	providerSpecific := model.ProviderSpecific[providerID]
+	if isFireworksFastCatalogModel(model, recordModelID) {
+		if pricing := providerSpecific.Serving.Fast; pricing != nil && len(pricing.Pricing) > 0 {
+			return cloneRawJSON(pricing.Pricing)
+		}
+	}
+	baseModelID := strings.TrimSpace(model.ModelID)
+	if recordModelID == baseModelID || canonicalCatalogModelID(providerID, recordModelID) == baseModelID {
+		if pricing := providerSpecific.Serving.Standard; pricing != nil && len(pricing.Pricing) > 0 {
+			return cloneRawJSON(pricing.Pricing)
+		}
+	}
+	return nil
+}
+
+func displayNameForCatalogModel(model swarmSnapshotModel, baseModelID, recordModelID string) string {
+	displayName := strings.TrimSpace(model.DisplayName)
+	if !isFireworksFastCatalogModel(model, recordModelID) {
+		return displayName
+	}
+	base := strings.TrimSpace(baseModelID)
+	if base == "" {
+		base = strings.TrimSpace(model.ModelID)
+	}
+	if base == "" {
+		base = strings.TrimSpace(recordModelID)
+	}
+	if displayName == "" || displayName == base {
+		return base + " Fast"
+	}
+	if strings.Contains(strings.ToLower(displayName), "fast") {
+		return displayName
+	}
+	return displayName + " Fast"
+}
+
+func catalogIDForCatalogModel(model swarmSnapshotModel, baseModelID, recordModelID string) string {
+	catalogID := strings.TrimSpace(model.CatalogID)
+	if !isFireworksFastCatalogModel(model, recordModelID) {
+		return catalogID
+	}
+	if catalogID != "" && !strings.Contains(strings.ToLower(catalogID), "fast") {
+		return catalogID + ":fast"
+	}
+	if catalogID != "" {
+		return catalogID
+	}
+	base := strings.TrimSpace(baseModelID)
+	if base == "" {
+		base = strings.TrimSpace(model.ModelID)
+	}
+	if base == "" {
+		base = strings.TrimSpace(recordModelID)
+	}
+	return "fireworks/" + base + ":fast"
 }
 
 func (snapshot swarmSnapshot) version() swarmSnapshotVersion {
@@ -836,4 +975,21 @@ func canonicalCatalogProviderID(providerID string) string {
 		return canonicalID
 	}
 	return providerID
+}
+
+func canonicalCatalogModelID(providerID, modelID string) string {
+	modelID = strings.TrimSpace(modelID)
+	if !strings.EqualFold(canonicalCatalogProviderID(providerID), "fireworks") {
+		return modelID
+	}
+	lower := strings.ToLower(modelID)
+	for _, prefix := range []string{"accounts/fireworks/models/", "fireworks/"} {
+		if strings.HasPrefix(lower, prefix) {
+			suffix := strings.TrimSpace(modelID[len(prefix):])
+			if suffix != "" && !strings.Contains(suffix, "/") {
+				return suffix
+			}
+		}
+	}
+	return modelID
 }

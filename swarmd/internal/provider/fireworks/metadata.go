@@ -28,6 +28,7 @@ type ServingTierPricing struct {
 }
 
 type ServingConfig struct {
+	ModelID        string
 	SupportedTiers []string
 	DefaultTier    string
 	Tiers          map[string]ServingTier
@@ -43,7 +44,8 @@ type requestServingResolution struct {
 }
 
 type rawProviderSpecific map[string]struct {
-	Serving rawServing `json:"serving"`
+	ResourceName string     `json:"resource_name"`
+	Serving      rawServing `json:"serving"`
 }
 
 type rawServing struct {
@@ -92,11 +94,27 @@ func ServingConfigFromCatalog(record any) ServingConfig {
 	if !ok {
 		return ServingConfig{}
 	}
-	return servingConfigFromRaw(provider.Serving)
+	cfg := servingConfigFromRaw(provider.Serving, provider.ResourceName, catalog.Model)
+	if len(catalog.ServiceTiers) > 0 {
+		cfg.SupportedTiers = normalizeServingTiers(catalog.ServiceTiers)
+	}
+	if strings.TrimSpace(catalog.DefaultServiceTier) != "" {
+		cfg.DefaultTier = strings.ToLower(strings.TrimSpace(catalog.DefaultServiceTier))
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(catalog.Model)), "accounts/fireworks/routers/") {
+		cfg.SupportedTiers = []string{ServiceTierStandard}
+		cfg.DefaultTier = ServiceTierStandard
+	}
+	return cfg
 }
 
-func servingConfigFromRaw(raw rawServing) ServingConfig {
+func servingConfigFromRaw(raw rawServing, resourceName, catalogModel string) ServingConfig {
+	modelID := normalizeFireworksModelResourceName(resourceName)
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(catalogModel)), "accounts/fireworks/routers/") {
+		modelID = normalizeFireworksModelResourceName(catalogModel)
+	}
 	out := ServingConfig{
+		ModelID:        modelID,
 		SupportedTiers: normalizeServingTiers(raw.SupportedTiers),
 		DefaultTier:    strings.ToLower(strings.TrimSpace(raw.DefaultTier)),
 		Tiers:          make(map[string]ServingTier),
@@ -164,7 +182,10 @@ func normalizeServingTiers(values []string) []string {
 }
 
 func ResolveServingTier(req provideriface.Request, cfg ServingConfig) requestServingResolution {
-	modelID := strings.TrimSpace(req.Model)
+	modelID := normalizeFireworksModelResourceName(req.Model)
+	if strings.TrimSpace(cfg.ModelID) != "" {
+		modelID = normalizeFireworksModelResourceName(cfg.ModelID)
+	}
 	requestedTier := NormalizeServiceTier(req.ServiceTier)
 	resolution := requestServingResolution{
 		ModelID:         modelID,
@@ -185,11 +206,32 @@ func ResolveServingTier(req provideriface.Request, cfg ServingConfig) requestSer
 			resolution.ServiceTier = strings.TrimSpace(tier.ProviderValue)
 		case "model":
 			if strings.TrimSpace(tier.ProviderValue) != "" {
-				resolution.ModelID = strings.TrimSpace(tier.ProviderValue)
+				resolution.ModelID = normalizeFireworksModelResourceName(tier.ProviderValue)
 			}
 		}
 	}
 	return resolution
+}
+
+func normalizeFireworksModelResourceName(modelID string) string {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return ""
+	}
+	lower := strings.ToLower(modelID)
+	if strings.HasPrefix(lower, "accounts/fireworks/models/") || strings.HasPrefix(lower, "accounts/fireworks/routers/") {
+		return modelID
+	}
+	if strings.HasPrefix(lower, "fireworks/") {
+		suffix := strings.TrimSpace(modelID[len("fireworks/"):])
+		if suffix != "" && !strings.Contains(suffix, "/") {
+			return "accounts/fireworks/models/" + suffix
+		}
+	}
+	if !strings.Contains(modelID, "/") {
+		return "accounts/fireworks/models/" + modelID
+	}
+	return modelID
 }
 
 func servingTierSupported(cfg ServingConfig, tier string) bool {

@@ -15,14 +15,18 @@ test('displayModelName leaves non-Fireworks model ids unchanged', () => {
   assert.equal(displayModelName('codex', 'gpt-5.4', ''), 'gpt-5.4')
 })
 
-test('Fireworks service tier options preserve standard, priority, and fast from catalog tiers', () => {
-  assert.deepEqual(modelServiceTierOptions('fireworks', 'accounts/fireworks/models/kimi-k2p6', ['priority', 'fast']), [
+test('displayModelName strips Fireworks router prefix for fast models', () => {
+  assert.equal(displayModelName('fireworks', 'accounts/fireworks/routers/kimi-k2p6-turbo', ''), 'kimi-k2p6-turbo')
+})
+
+test('Fireworks service tier options only expose priority from catalog tiers', () => {
+  assert.deepEqual(modelServiceTierOptions('fireworks', 'accounts/fireworks/models/kimi-k2p6', ['standard', 'priority', 'fast']), [
     { label: 'Off / standard', value: '' },
     { label: 'Priority', value: 'priority' },
-    { label: 'Fast', value: 'fast' },
   ])
-  assert.equal(supportsModelServiceTier('fireworks', 'accounts/fireworks/models/kimi-k2p6', ['priority', 'fast'], 'priority'), true)
-  assert.equal(supportsModelServiceTier('fireworks', 'accounts/fireworks/models/kimi-k2p6', ['priority'], 'fast'), false)
+  assert.equal(supportsModelServiceTier('fireworks', 'accounts/fireworks/models/kimi-k2p6', ['standard', 'priority'], 'priority'), true)
+  assert.equal(supportsModelServiceTier('fireworks', 'accounts/fireworks/routers/kimi-k2p6-turbo', ['standard'], 'priority'), false)
+  assert.equal(normalizeModelServiceTier('fireworks', 'fast'), '')
 })
 
 test('Codex service tier options come from catalog tiers and keep priority distinct from fast', () => {

@@ -110,7 +110,7 @@
         "serving_paths": "https://docs.fireworks.ai/serverless/serving-paths",
         "app_model_pages": "https://fireworks.ai/models/fireworks"
       },
-      "notes": "Fireworks uses provider-native serving path names. Standard is the default path with no service_tier parameter. Priority is selected with service_tier=priority for supported models. Fast is selected by switching to a provider-published router model ID such as accounts/fireworks/routers/kimi-k2p6-fast; it is not the same as Priority."
+      "notes": "Fireworks uses provider-native serving path names. Standard is the default path with no service_tier parameter. Priority is selected with service_tier=priority for supported models. Fast is selected by switching to a provider-published router model ID such as accounts/fireworks/routers/kimi-k2p6-turbo; it is not the same as Priority."
     },
     "google": {
       "serving_tiers": {
@@ -10236,7 +10236,7 @@
             "fast": {
               "tier": "fast",
               "provider_parameter": "model",
-              "provider_value": "accounts/fireworks/routers/kimi-k2p6-fast",
+              "provider_value": "accounts/fireworks/routers/kimi-k2p6-turbo",
               "pricing": {
                 "uncached_input_price_per_million_tokens": 2,
                 "cached_input_price_per_million_tokens": 0.3,
@@ -10270,7 +10270,7 @@
           },
           "serverless_serving": {
             "priority_supported": true,
-            "fast_router_id": "accounts/fireworks/routers/kimi-k2p6-fast",
+            "fast_router_id": "accounts/fireworks/routers/kimi-k2p6-turbo",
             "standard_pricing": {
               "uncached_input_price_per_million_tokens": 0.95,
               "cached_input_price_per_million_tokens": 0.16,

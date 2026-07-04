@@ -37,7 +37,8 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 				"provider_id":"fireworks-ai",
 				"model_id":"deepseek-v4-pro",
 				"capabilities":{"supports_reasoning":true},
-				"limits":{"context_window_tokens":1048576,"max_output_tokens":null}
+				"limits":{"context_window_tokens":1048576,"max_output_tokens":null},
+				"provider_specific":{"fireworks":{"resource_name":"accounts/fireworks/models/deepseek-v4-pro","serving":{"supported_tiers":["standard","priority","fast"],"default_tier":"standard","fast":{"tier":"fast","provider_parameter":"model","provider_value":"accounts/fireworks/routers/deepseek-v4-pro-turbo"}}}}
 			}
 		]
 	}`)
@@ -49,8 +50,8 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 	if snapshot.SnapshotID != "snapshot-test" || snapshot.SnapshotVersion != "v-test" {
 		t.Fatalf("snapshot metadata = %q/%q", snapshot.SnapshotID, snapshot.SnapshotVersion)
 	}
-	if len(records) != 2 {
-		t.Fatalf("record count = %d, want 2", len(records))
+	if len(records) != 3 {
+		t.Fatalf("record count = %d, want 3", len(records))
 	}
 	codex := records[0]
 	if codex.Provider != "codex" || codex.Model != "gpt-5.4" {
@@ -72,6 +73,19 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 	}
 	if fireworks.ContextWindow != 1048576 || fireworks.MaxOutputTokens != 0 {
 		t.Fatalf("fireworks limits = context %d max %d", fireworks.ContextWindow, fireworks.MaxOutputTokens)
+	}
+	if len(records) != 3 {
+		t.Fatalf("record count with Fireworks fast router = %d, want 3", len(records))
+	}
+	fast := records[2]
+	if fast.Provider != "fireworks" || fast.Model != "accounts/fireworks/routers/deepseek-v4-pro-turbo" {
+		t.Fatalf("fireworks fast record id = %q/%q", fast.Provider, fast.Model)
+	}
+	if len(fireworks.ServiceTiers) != 2 || fireworks.ServiceTiers[0] != "standard" || fireworks.ServiceTiers[1] != "priority" {
+		t.Fatalf("fireworks base service tiers = %#v, want standard/priority", fireworks.ServiceTiers)
+	}
+	if len(fast.ServiceTiers) != 1 || fast.ServiceTiers[0] != "standard" {
+		t.Fatalf("fireworks fast service tiers = %#v, want standard only", fast.ServiceTiers)
 	}
 }
 

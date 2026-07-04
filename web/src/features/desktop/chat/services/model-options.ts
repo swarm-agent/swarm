@@ -5,6 +5,7 @@ const CODEX_GPT54_DEFAULT_CONTEXT_WINDOW = 272_000
 const CODEX_GPT54_1M_CONTEXT_WINDOW = 1_050_000
 const CODEX_GPT55_DEFAULT_CONTEXT_WINDOW = 272_000
 const FIREWORKS_MODEL_PREFIX = 'accounts/fireworks/models/'
+const FIREWORKS_ROUTER_PREFIX = 'accounts/fireworks/routers/'
 
 const MODEL_PRESETS_BY_PROVIDER: Record<string, string[]> = {
   codex: [
@@ -56,7 +57,7 @@ export function normalizeModelServiceTier(provider: string, serviceTier: string)
     return normalizedTier === 'priority' || normalizedTier === 'fast' || normalizedTier === 'flex' ? normalizedTier : ''
   }
   if (normalizedProvider === 'fireworks') {
-    return normalizedTier === 'priority' || normalizedTier === 'fast' ? normalizedTier : ''
+    return normalizedTier === 'priority' ? normalizedTier : ''
   }
   return ''
 }
@@ -75,7 +76,7 @@ export function supportsModelServiceTier(provider: string, _model: string, servi
   }
   if (normalizedProvider === 'fireworks') {
     if (normalizedRequested) return tiers.includes(normalizedRequested)
-    return tiers.includes('priority') || tiers.includes('fast')
+    return tiers.includes('priority')
   }
   return false
 }
@@ -92,7 +93,6 @@ export function modelServiceTierOptions(provider: string, _model: string, servic
   }
   if (normalizedProvider === 'fireworks') {
     if (tiers.includes('priority')) options.push({ label: 'Priority', value: 'priority' })
-    if (tiers.includes('fast')) options.push({ label: 'Fast', value: 'fast' })
     return options
   }
   return options
@@ -117,8 +117,13 @@ export function displayModelName(provider: string, model: string, contextMode: s
   }
   const normalizedProvider = normalizeProviderID(provider)
   let displayName = trimmedModel
-  if (normalizedProvider === 'fireworks' && trimmedModel.toLowerCase().startsWith(FIREWORKS_MODEL_PREFIX)) {
-    displayName = trimmedModel.slice(FIREWORKS_MODEL_PREFIX.length).trim()
+  if (normalizedProvider === 'fireworks') {
+    const lowerModel = trimmedModel.toLowerCase()
+    if (lowerModel.startsWith(FIREWORKS_MODEL_PREFIX)) {
+      displayName = trimmedModel.slice(FIREWORKS_MODEL_PREFIX.length).trim()
+    } else if (lowerModel.startsWith(FIREWORKS_ROUTER_PREFIX)) {
+      displayName = trimmedModel.slice(FIREWORKS_ROUTER_PREFIX.length).trim()
+    }
   }
   return codex1MEnabled(provider, trimmedModel, contextMode) ? `${displayName} (1m)` : displayName
 }
