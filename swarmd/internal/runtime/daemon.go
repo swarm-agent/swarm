@@ -268,6 +268,15 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("load startup config: %w", startupCfgErr)
 	}
+	if startupCfg.V3Diagnostics {
+		if err := os.Setenv("SWARM_V3_DIAGNOSTICS", "1"); err != nil {
+			return nil, fmt.Errorf("enable v3 diagnostics: %w", err)
+		}
+	} else {
+		if err := os.Setenv("SWARM_V3_DIAGNOSTICS", "0"); err != nil {
+			return nil, fmt.Errorf("disable v3 diagnostics: %w", err)
+		}
+	}
 	if startupCfg.ProviderAPIDiagnostics {
 		if err := os.Setenv(providerdiagnostics.EnvName, providerdiagnostics.BoolEnvValue(true)); err != nil {
 			return nil, fmt.Errorf("enable provider api diagnostics: %w", err)

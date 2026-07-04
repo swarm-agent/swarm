@@ -139,9 +139,28 @@ func defaultInstructions(workspacePath string) string {
 }
 
 func applyAgentPreferenceOverrides(base pebblestore.ModelPreference, agentProfile pebblestore.AgentProfile) pebblestore.ModelPreference {
+	return applyAgentPreferenceOverridesForMode(base, agentProfile, sessionruntime.ModeAuto)
+}
+
+func applyAgentPreferenceOverridesForMode(base pebblestore.ModelPreference, agentProfile pebblestore.AgentProfile, mode string) pebblestore.ModelPreference {
 	providerOverride := strings.ToLower(strings.TrimSpace(agentProfile.Provider))
 	modelOverride := strings.TrimSpace(agentProfile.Model)
 	thinkingOverride := normalizeThinkingLevel(agentProfile.Thinking)
+
+	if pebblestore.AgentModelMode(agentProfile) == "split" {
+		mode = sessionruntime.NormalizeMode(mode)
+		if mode == sessionruntime.ModePlan {
+			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.PlanProvider))
+			modelOverride = strings.TrimSpace(agentProfile.PlanModel)
+			thinkingOverride = normalizeThinkingLevel(agentProfile.PlanThinking)
+			base.ServiceTier = strings.TrimSpace(agentProfile.PlanServiceTier)
+		} else if mode == sessionruntime.ModeAuto {
+			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.AutoProvider))
+			modelOverride = strings.TrimSpace(agentProfile.AutoModel)
+			thinkingOverride = normalizeThinkingLevel(agentProfile.AutoThinking)
+			base.ServiceTier = strings.TrimSpace(agentProfile.AutoServiceTier)
+		}
+	}
 
 	switch {
 	case providerOverride != "" && modelOverride != "":

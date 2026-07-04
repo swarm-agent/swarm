@@ -887,7 +887,7 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 		}
 		memoryProfile = resolved
 	}
-	preference, _, err := e.resolveSessionV3ProviderPreference(applySessionV3AgentPreferenceOverrides(session.Preference, memoryProfile))
+	preference, _, err := e.resolveSessionV3ProviderPreference(applySessionV3AgentPreferenceOverridesForMode(session.Preference, memoryProfile, session.Mode))
 	if err != nil {
 		return "", err
 	}
@@ -2004,7 +2004,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if _, _, err := compiler.CompileStoredV3AgentToolContract(session.AccountScopeID, agentProfile); err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
-	pref, contextWindow, err := e.resolveSessionV3ProviderPreference(applySessionV3AgentPreferenceOverrides(session.Preference, agentProfile))
+	pref, contextWindow, err := e.resolveSessionV3ProviderPreference(applySessionV3AgentPreferenceOverridesForMode(session.Preference, agentProfile, session.Mode))
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
@@ -2015,9 +2015,10 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if e.server.model != nil {
 		lookup, lookupErr := e.server.model.GetCatalog(pref.Provider, pref.Model)
 		if lookupErr != nil {
-			return sessionV3ResolvedRuntime{}, lookupErr
-		}
-		if lookup.Found {
+			if !strings.Contains(lookupErr.Error(), "model catalog is not configured") {
+				return sessionV3ResolvedRuntime{}, lookupErr
+			}
+		} else if lookup.Found {
 			catalogRecord = lookup.Record
 		}
 	}
@@ -2187,7 +2188,13 @@ func (e *sessionV3Executor) resolveSessionV3ProviderPreference(pref pebblestore.
 	}
 	resolved, err := e.server.model.ResolvePreference(pref)
 	if err != nil {
-		return pebblestore.ModelPreference{}, 0, fmt.Errorf("resolve v3 provider preference: %w", err)
+		pref.ServiceTier = modelruntime.NormalizeServiceTierForProvider(pref.Provider, pref.ServiceTier)
+		if pref.Provider == "codex" {
+			pref.ContextMode = codexruntime.NormalizeContextMode(pref.ContextMode)
+		} else {
+			pref.ContextMode = ""
+		}
+		return pref, 0, nil
 	}
 	resolvedPref := normalizeSessionsV3ModelPreference(resolved.Preference)
 	if resolvedPref.Provider == "" && pref.Provider != "" {
@@ -2769,11 +2776,21 @@ func buildSessionV3TitleConversation(messages []pebblestore.MessageSnapshot) str
 }
 
 func applySessionV3AgentPreferenceOverrides(base pebblestore.ModelPreference, agentProfile pebblestore.AgentProfile) pebblestore.ModelPreference {
+	return applySessionV3AgentPreferenceOverridesForMode(base, agentProfile, sessionruntime.ModeAuto)
+}
+
+func applySessionV3AgentPreferenceOverridesForMode(base pebblestore.ModelPreference, agentProfile pebblestore.AgentProfile, mode string) pebblestore.ModelPreference {
 	providerOverride := strings.ToLower(strings.TrimSpace(agentProfile.Provider))
 	modelOverride := strings.TrimSpace(agentProfile.Model)
 	thinkingOverride := strings.TrimSpace(agentProfile.Thinking)
 	if pebblestore.AgentModelMode(agentProfile) == "split" {
-		if strings.EqualFold(strings.TrimSpace(base.Provider), strings.TrimSpace(agentProfile.PlanProvider)) && strings.EqualFold(strings.TrimSpace(base.Model), strings.TrimSpace(agentProfile.PlanModel)) {
+		mode = sessionruntime.NormalizeMode(mode)
+		if mode == sessionruntime.ModePlan {
+			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.PlanProvider))
+			modelOverride = strings.TrimSpace(agentProfile.PlanModel)
+			thinkingOverride = strings.TrimSpace(agentProfile.PlanThinking)
+			base.ServiceTier = strings.TrimSpace(agentProfile.PlanServiceTier)
+		} else if mode == sessionruntime.ModeAuto {
 			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.AutoProvider))
 			modelOverride = strings.TrimSpace(agentProfile.AutoModel)
 			thinkingOverride = strings.TrimSpace(agentProfile.AutoThinking)

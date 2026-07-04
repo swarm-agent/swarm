@@ -1545,13 +1545,63 @@ func (s *Service) persistPlanLifecycleResult(result sessionruntime.PlanLifecycle
 		return fmt.Errorf("publish plan saved: %w", err)
 	}
 	if applySessionMutation != nil {
-		if err := s.persistModeUpdatedV3Mutation(result, applySessionMutation); err != nil {
+		preference, contextWindow, maxOutputTokens, agentModelPolicy, err := s.resolvePlanLifecycleModePreference(result)
+		if err != nil {
+			return fmt.Errorf("resolve mode preference: %w", err)
+		}
+		if err := s.persistModeUpdatedV3MutationWithPreference(result, preference, contextWindow, maxOutputTokens, agentModelPolicy, applySessionMutation); err != nil {
 			return fmt.Errorf("publish mode updated: %w", err)
 		}
 	} else if result.ModeEvent != nil {
 		s.publishEventEnvelope(*result.ModeEvent)
 	}
 	return nil
+}
+
+func (s *Service) resolvePlanLifecycleModePreference(result sessionruntime.PlanLifecycleResult) (pebblestore.ModelPreference, int, int, map[string]any, error) {
+	if s == nil || s.model == nil {
+		return pebblestore.ModelPreference{}, 0, 0, nil, nil
+	}
+	profile, err := sessionV3AgentProfileFromMetadataMap(result.Session.Metadata)
+	if err != nil {
+		return pebblestore.ModelPreference{}, 0, 0, nil, nil
+	}
+	preference := applyAgentPreferenceOverridesForMode(result.Session.Preference, profile, result.Session.Mode)
+	resolved, err := s.model.ResolvePreference(preference)
+	if err != nil {
+		resolved.Preference = preference
+	}
+	policy := map[string]any{
+		"agent_name":          strings.TrimSpace(profile.Name),
+		"resolved_agent_name": strings.TrimSpace(profile.Name),
+		"source":              "default",
+		"locked":              false,
+		"preference":          resolved.Preference,
+		"context_window":      resolved.ContextWindow,
+		"max_output_tokens":   resolved.MaxOutputTokens,
+	}
+	if pebblestore.AgentModelMode(profile) == "split" {
+		policy["source"] = "agent_auto_preset"
+		policy["locked"] = true
+		policy["reason"] = "Session exited plan mode; active model switched to the configured auto model."
+	}
+	return resolved.Preference, resolved.ContextWindow, resolved.MaxOutputTokens, policy, nil
+}
+
+func sessionV3AgentProfileFromMetadataMap(metadata map[string]any) (pebblestore.AgentProfile, error) {
+	raw, ok := metadata["agent_profile"]
+	if !ok || raw == nil {
+		return pebblestore.AgentProfile{}, errors.New("session metadata is missing agent_profile")
+	}
+	body, err := json.Marshal(raw)
+	if err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	var profile pebblestore.AgentProfile
+	if err := json.Unmarshal(body, &profile); err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	return profile, nil
 }
 
 func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
