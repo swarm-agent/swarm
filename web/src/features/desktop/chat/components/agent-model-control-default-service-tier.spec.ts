@@ -14,3 +14,15 @@ assert.match(
   /serviceTier: hasExplicitSingleModel \? normalizeDraftServiceTier\(provider, profile\?\.autoServiceTier \?\? ''\) : fallback\.serviceTier/,
   'default-mode draft must preserve the resolved default service tier instead of reading the cleared agent autoServiceTier field',
 )
+
+assert.match(
+  source,
+  /import \{ defaultModelThinking, displayModelName,[^}]*modelThinkingOptions,[^}]*normalizeModelThinking,[^}]*\} from '..\/services\/model-options'/,
+  'agent model control must use the shared catalog-driven thinking option helpers',
+)
+
+assert.doesNotMatch(
+  source,
+  /const FALLBACK_THINKING_OPTIONS = \['off', 'low', 'medium', 'high', 'xhigh'\]/,
+  'agent model control must not keep its own low/medium thinking fallback that bypasses catalog thinking_options',
+)

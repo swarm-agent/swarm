@@ -1,5 +1,6 @@
 import { normalizeSessionMode, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import type { AgentProfileRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
+import { defaultModelThinking } from './model-options'
 
 export type AgentModelLockState = {
   profile: AgentProfileRecord | null
@@ -74,13 +75,7 @@ export function resolveDesktopV3AgentModelLock(
 }
 
 function defaultThinkingForModelOption(option: ModelOptionRecord | null): string {
-  const options = option?.thinkingOptions?.map((item) => item.trim().toLowerCase()).filter(Boolean) ?? []
-  const declared = option?.defaultThinking?.trim().toLowerCase() ?? ''
-  if (declared && (options.length === 0 || options.includes(declared))) return declared
-  const favorite = option?.thinking?.trim().toLowerCase() ?? ''
-  if (favorite && (options.length === 0 || options.includes(favorite))) return favorite
-  if (options.includes('off')) return 'off'
-  return options[0] ?? 'off'
+  return defaultModelThinking(option)
 }
 
 export function preferenceFromModelDraft(

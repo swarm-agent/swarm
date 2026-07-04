@@ -7,6 +7,8 @@ const FALLBACK_SERVICE_TIER_LABELS: Record<string, string> = {
   batch: 'Batch',
 }
 
+const FALLBACK_THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
+
 const MODEL_PRESETS_BY_PROVIDER: Record<string, string[]> = {
   codex: [
     'gpt-5.5',
@@ -38,6 +40,33 @@ export function normalizeProviderID(value: string): string {
     default:
       return value.trim().toLowerCase()
   }
+}
+
+export function normalizeModelThinking(value: string): string {
+  return value.trim().toLowerCase() || 'off'
+}
+
+export function modelThinkingOptions(option: Pick<ModelOptionRecord, 'thinkingOptions'> | null | undefined): string[] {
+  const seen = new Set<string>()
+  const source = option?.thinkingOptions?.length ? option.thinkingOptions : FALLBACK_THINKING_OPTIONS
+  const out: string[] = []
+  for (const item of source) {
+    const normalized = normalizeModelThinking(item)
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    out.push(normalized)
+  }
+  return out.length > 0 ? out : FALLBACK_THINKING_OPTIONS
+}
+
+export function defaultModelThinking(option: Pick<ModelOptionRecord, 'thinkingOptions' | 'defaultThinking' | 'thinking'> | null | undefined): string {
+  const options = modelThinkingOptions(option)
+  const declaredDefault = normalizeModelThinking(option?.defaultThinking ?? '')
+  if (options.includes(declaredDefault)) return declaredDefault
+  const favoriteDefault = normalizeModelThinking(option?.thinking ?? '')
+  if (options.includes(favoriteDefault)) return favoriteDefault
+  if (options.includes('off')) return 'off'
+  return options[0] ?? 'off'
 }
 
 function modelPresetListForProvider(provider: string): string[] {

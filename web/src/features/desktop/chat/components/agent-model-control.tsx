@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { Bot, Check, ChevronDown, Cpu, ExternalLink, GitBranch, Lightbulb, Lock, Zap, ZapOff } from 'lucide-react'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
-import { displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, normalizeModelServiceTier, supportsModelServiceTier } from '../services/model-options'
+import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 
 export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
   | 'modelMode'
@@ -49,7 +49,6 @@ interface AgentModelControlProps {
   busy?: boolean
 }
 
-const FALLBACK_THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
 type DraftMode = 'default' | 'single' | 'split'
 export type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string }
 
@@ -183,30 +182,15 @@ function modelContextLabel(option: ModelOptionRecord): string {
 }
 
 function normalizeThinking(value: string): string {
-  return value.trim().toLowerCase() || 'off'
+  return normalizeModelThinking(value)
 }
 
 function thinkingOptionsForOption(option: ModelOptionRecord | null): string[] {
-  const seen = new Set<string>()
-  const source = option?.thinkingOptions?.length ? option.thinkingOptions : FALLBACK_THINKING_OPTIONS
-  const out: string[] = []
-  for (const item of source) {
-    const normalized = normalizeThinking(item)
-    if (!normalized || seen.has(normalized)) continue
-    seen.add(normalized)
-    out.push(normalized)
-  }
-  return out.length > 0 ? out : FALLBACK_THINKING_OPTIONS
+  return modelThinkingOptions(option)
 }
 
 function defaultThinkingForOption(option: ModelOptionRecord | null): string {
-  const options = thinkingOptionsForOption(option)
-  const declaredDefault = normalizeThinking(option?.defaultThinking ?? '')
-  if (options.includes(declaredDefault)) return declaredDefault
-  const favoriteDefault = normalizeThinking(option?.thinking ?? '')
-  if (options.includes(favoriteDefault)) return favoriteDefault
-  if (options.includes('off')) return 'off'
-  return options[0] ?? 'off'
+  return defaultModelThinking(option)
 }
 
 function normalizeDraftThinking(provider: string, model: string, modelOptions: ModelOptionRecord[], value: string): string {

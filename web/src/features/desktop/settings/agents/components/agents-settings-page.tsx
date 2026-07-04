@@ -30,7 +30,7 @@ import {
   CUSTOM_AGENT_TOOL_PRESET_ID,
   agentToolPresetByID,
 } from "../../../chat/services/agent-tool-presets";
-import { displayModelName, modelServiceTierOptions, normalizeModelServiceTier, supportsModelServiceTier } from "../../../chat/services/model-options";
+import { defaultModelThinking, displayModelName, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from "../../../chat/services/model-options";
 
 interface AgentFormState {
   name: string;
@@ -100,14 +100,34 @@ function displayListLabel(values: string[], fallback: string): string {
 }
 
 const NEW_AGENT_KEY = "__new__";
-const THINKING_OPTIONS = [
-  { value: "", label: "Default" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "xhigh", label: "X-High" },
-];
+const FALLBACK_AGENT_THINKING_OPTIONS = ["low", "medium", "high", "xhigh"];
 
+function thinkingOptionLabel(value: string): string {
+  if (value === "") return "Default";
+  if (value === "xhigh") return "X-High";
+  return value.replace(/(^|[-_\s])([a-z])/g, (_match, prefix: string, char: string) => `${prefix}${char.toUpperCase()}`);
+}
+
+function thinkingSelectOptionsForModel(provider: string, model: string, modelOptions: ModelOptionRecord[], includeDefault = true) {
+  const option = modelOptionFor(provider, model, modelOptions);
+  const source = option ? modelThinkingOptions(option) : FALLBACK_AGENT_THINKING_OPTIONS;
+  const values = source.filter((value) => value !== "off");
+  const normalized = values.length > 0 ? values : FALLBACK_AGENT_THINKING_OPTIONS;
+  return [
+    ...(includeDefault ? [{ value: "", label: "Default" }] : []),
+    ...normalized.map((value) => ({ value, label: thinkingOptionLabel(value) })),
+  ];
+}
+
+function normalizeThinkingForModel(provider: string, model: string, modelOptions: ModelOptionRecord[], value: string): string {
+  const normalized = normalizeModelThinking(value);
+  const option = modelOptionFor(provider, model, modelOptions);
+  if (!option) return normalized === "off" ? "" : normalized;
+  const options = modelThinkingOptions(option);
+  if (options.includes(normalized)) return normalized;
+  const fallback = defaultModelThinking(option);
+  return fallback === "off" ? "" : fallback;
+}
 
 const UTILITY_THINKING_OPTIONS = [
   { value: "off", label: "Off" },
@@ -666,7 +686,12 @@ function withSplitFieldValue(
       case "provider":
         return { ...form, planProvider: value, planModel: value === form.planProvider ? form.planModel : "", planServiceTier: value === form.planProvider ? form.planServiceTier : "" };
       case "model":
-        return { ...form, planModel: value, planServiceTier: modelSupportsServiceTierSetting(form.planProvider, value, modelOptions, form.planServiceTier) ? form.planServiceTier : "" };
+        return {
+          ...form,
+          planModel: value,
+          planThinking: normalizeThinkingForModel(form.planProvider, value, modelOptions, form.planThinking),
+          planServiceTier: modelSupportsServiceTierSetting(form.planProvider, value, modelOptions, form.planServiceTier) ? form.planServiceTier : "",
+        };
       case "thinking":
         return { ...form, planThinking: value };
       case "serviceTier":
@@ -677,7 +702,12 @@ function withSplitFieldValue(
     case "provider":
       return { ...form, autoProvider: value, autoModel: value === form.autoProvider ? form.autoModel : "", autoServiceTier: value === form.autoProvider ? form.autoServiceTier : "" };
     case "model":
-      return { ...form, autoModel: value, autoServiceTier: modelSupportsServiceTierSetting(form.autoProvider, value, modelOptions, form.autoServiceTier) ? form.autoServiceTier : "" };
+      return {
+        ...form,
+        autoModel: value,
+        autoThinking: normalizeThinkingForModel(form.autoProvider, value, modelOptions, form.autoThinking),
+        autoServiceTier: modelSupportsServiceTierSetting(form.autoProvider, value, modelOptions, form.autoServiceTier) ? form.autoServiceTier : "",
+      };
     case "thinking":
       return { ...form, autoThinking: value };
     case "serviceTier":
@@ -731,6 +761,8 @@ function SplitModelSection({
   const serviceTierOptions = serviceTierOptionsForModel(provider, model, modelOptions);
   const serviceTierSupported = serviceTierOptions.length > 1;
   const normalizedServiceTier = serviceTierSupported ? normalizeModelServiceTier(provider, serviceTier) : "";
+  const thinkingOptions = thinkingSelectOptionsForModel(provider, model, modelOptions);
+  const normalizedThinking = thinkingOptions.some((option) => option.value === thinking) ? thinking : normalizeThinkingForModel(provider, model, modelOptions, thinking);
 
   return (
     <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
@@ -786,14 +818,14 @@ function SplitModelSection({
           <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Thinking</label>
           <div className="relative min-w-0 flex-1">
             <select
-              value={thinking}
+              value={normalizedThinking}
               onChange={(event: ChangeEvent<HTMLSelectElement>) => {
                 setForm((current) => withSplitFieldValue(current, prefix, "thinking", event.target.value, modelOptions));
               }}
               disabled={busy}
               className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
             >
-              {THINKING_OPTIONS.map((option) => (
+              {thinkingOptions.map((option) => (
                 <option key={option.label} value={option.value}>
                   {option.label}
                 </option>
@@ -1598,6 +1630,8 @@ export function AgentsSettingsPage() {
   const singleServiceTierOptions = serviceTierOptionsForModel(form.provider, form.model, modelOptions);
   const singleServiceTierSupported = singleServiceTierOptions.length > 1;
   const currentSingleServiceTier = singleServiceTierSupported ? normalizeModelServiceTier(form.provider, form.autoServiceTier) : "";
+  const singleThinkingOptions = thinkingSelectOptionsForModel(form.provider, form.model, modelOptions);
+  const currentSingleThinking = singleThinkingOptions.some((option) => option.value === form.thinking) ? form.thinking : normalizeThinkingForModel(form.provider, form.model, modelOptions, form.thinking);
 
   const agentStateQueryKey = agentSettingsStateQueryOptions().queryKey;
   const agentStateSummaryQueryKey = agentStateQueryOptions().queryKey;
@@ -2509,6 +2543,7 @@ export function AgentsSettingsPage() {
                             setForm((current) => ({
                               ...current,
                               model: event.target.value,
+                              thinking: normalizeThinkingForModel(current.provider, event.target.value, modelOptions, current.thinking),
                               autoServiceTier: modelSupportsServiceTierSetting(current.provider, event.target.value, modelOptions, current.autoServiceTier)
                                 ? current.autoServiceTier
                                 : "",
@@ -2541,7 +2576,7 @@ export function AgentsSettingsPage() {
                     </label>
                     <div className="relative w-full">
                       <select
-                        value={form.thinking}
+                        value={currentSingleThinking}
                         onChange={(event: ChangeEvent<HTMLSelectElement>) =>
                           setForm((current) => ({
                             ...current,
@@ -2551,7 +2586,7 @@ export function AgentsSettingsPage() {
                         disabled={busy}
                         className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                       >
-                        {THINKING_OPTIONS.map((option) => (
+                        {singleThinkingOptions.map((option) => (
                           <option key={option.label} value={option.value}>
                             {option.label}
                           </option>

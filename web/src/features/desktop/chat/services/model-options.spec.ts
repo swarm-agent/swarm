@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { displayModelName, modelServiceTierOptions, normalizeModelServiceTier, supportsModelServiceTier } from './model-options'
+import { defaultModelThinking, displayModelName, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, supportsModelServiceTier } from './model-options'
 
 test('displayModelName strips Fireworks account model prefix', () => {
   assert.equal(displayModelName('fireworks', 'accounts/fireworks/models/kimi-k2p6', ''), 'kimi-k2p6')
@@ -47,4 +47,16 @@ test('Codex service tier options come from catalog tiers and keep priority disti
   assert.equal(supportsModelServiceTier('codex', 'gpt-5.5', ['fast'], 'fast'), true)
   assert.equal(supportsModelServiceTier('codex', 'gpt-5.5', ['flex'], 'flex'), true)
   assert.equal(supportsModelServiceTier('codex', 'gpt-5.5', [], 'fast'), false)
+})
+
+test('GLM 5.2 thinking options come directly from catalog metadata', () => {
+  const glm52 = {
+    thinkingOptions: ['off', 'high', 'xhigh'],
+    defaultThinking: 'xhigh',
+    thinking: '',
+  }
+  assert.deepEqual(modelThinkingOptions(glm52), ['off', 'high', 'xhigh'])
+  assert.equal(defaultModelThinking(glm52), 'xhigh')
+  assert.equal(modelThinkingOptions(glm52).includes('low'), false)
+  assert.equal(modelThinkingOptions(glm52).includes('medium'), false)
 })
