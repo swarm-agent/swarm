@@ -274,7 +274,7 @@ function formatSettingsChangeSummary(input: {
 
 type DesktopV3RenderItem =
   | { type: 'plan-break'; message: MessageSnapshot; headline: string; details: string[]; timelineSeq?: number }
-  | { type: 'message'; message: MessageSnapshot; timelineSeq?: number }
+  | { type: 'message'; message: MessageSnapshot; timelineSeq?: number; renderKey?: string }
   | { type: 'pending-user'; message: PendingUserMessage; timelineSeq?: number }
   | { type: 'live-assistant'; id: string; content: string; timelineSeq?: number }
   | { type: 'live-reasoning'; id: string; text: string; summary: string; state: NonNullable<LiveRunOverlay['reasoning']>['state']; startedAt: number | null; completedAt?: number | null; timelineSeq?: number }
@@ -413,6 +413,25 @@ function renderItemTimelineSeq(item: DesktopV3RenderItem): number {
   }
 }
 
+function committedToolRenderKey(message: MessageSnapshot): string {
+  const toolMessage = parseStructuredToolMessage(message.content)
+  const identity = toolMessage?.toolInstanceId || toolMessage?.callId || ''
+  return identity ? `live-tool:${identity}` : ''
+}
+
+export function desktopV3RenderItemKey(item: DesktopV3RenderItem): string {
+  switch (item.type) {
+    case 'plan-break':
+      return item.message.id
+    case 'message':
+      return item.renderKey || item.message.id
+    case 'pending-user':
+      return item.message.clientRequestId
+    default:
+      return item.id
+  }
+}
+
 export function orderDesktopV3LiveRenderItems(items: DesktopV3RenderItem[]): DesktopV3RenderItem[] {
   return items
     .map((item, index) => ({ item, index, seq: renderItemTimelineSeq(item) }))
@@ -534,7 +553,7 @@ export function buildDesktopV3ConversationRenderItems(renderedMessages: Rendered
     ...committedMessages.map((message) => (
       isDesktopV3PlanExecutionBreakMessage(message)
         ? buildDesktopV3PlanExecutionBreakItem(message)
-        : { type: 'message' as const, message, timelineSeq: message.global_seq }
+        : { type: 'message' as const, message, timelineSeq: message.global_seq, renderKey: committedToolRenderKey(message) || undefined }
     )),
     ...renderedMessages.pendingUser.map((message) => ({ type: 'pending-user' as const, message, timelineSeq: message.createdAt })),
   ]
@@ -1089,7 +1108,7 @@ export function DesktopV3ExistingConversationPane({
       )}>
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-            <div ref={scrollContainerRef} className="h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable]">
+            <div ref={scrollContainerRef} className="h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable]" data-testid="desktop-chat-scroller">
               <div ref={contentRef} className="mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 px-8 sm:px-12">
                 {showConversationLoading ? (
                   <DesktopV3ConversationLoadingSpinner />
@@ -1103,15 +1122,24 @@ export function DesktopV3ExistingConversationPane({
                 {messagesLoaded && !hasMessages ? (
                   <DesktopV3ChatInlineState title="Empty conversation" description="Send a message to continue this session." />
                 ) : null}
-                {renderItems.map((item, index) => (
-                  <DesktopV3RenderItemView
-                    key={item.type === 'message' || item.type === 'plan-break' ? item.message.id : item.type === 'pending-user' ? item.message.clientRequestId : item.id}
-                    item={item}
-                    thinkingTagsEnabled={thinkingTagsEnabled}
-                    timerNow={timerNow}
-                    index={index}
-                  />
-                ))}
+                {renderItems.map((item, index) => {
+                  const itemKey = desktopV3RenderItemKey(item)
+                  return (
+                    <div
+                      key={itemKey}
+                      data-testid="desktop-chat-row"
+                      data-render-item-type={item.type}
+                      data-render-item-key={itemKey}
+                    >
+                      <DesktopV3RenderItemView
+                        item={item}
+                        thinkingTagsEnabled={thinkingTagsEnabled}
+                        timerNow={timerNow}
+                        index={index}
+                      />
+                    </div>
+                  )
+                })}
                 <div aria-hidden="true" />
               </div>
             </div>

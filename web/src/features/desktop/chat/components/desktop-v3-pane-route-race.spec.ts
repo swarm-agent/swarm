@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   buildDesktopV3ConversationRenderItems,
   buildDesktopV3LiveRunRenderItems,
+  desktopV3RenderItemKey,
   isDesktopV3PlanExecutionBreakMessage,
   completeDesktopV3ExistingMessage,
   resolveDesktopV3StopRunRequest,
@@ -178,6 +179,51 @@ test('Desktop V3 plan lifecycle messages render as conversation breaks', () => {
     assert.equal(items[0].headline, 'Checkpoint started')
     assert.equal(items[0].details.includes('Checkpoint: cp-1 Build UI'), true)
   }
+})
+
+
+test('Desktop V3 committed tool message reuses matching live tool render key', () => {
+  const liveItems = buildDesktopV3LiveRunRenderItems({
+    sessionId: 'session-a',
+    runId: 'run-a',
+    status: 'running',
+    toolCallsByCallId: {
+      'call-1': {
+        callId: 'call-1',
+        toolInstanceId: 'tool-instance-1',
+        toolName: 'search',
+        outputText: '{"summary":"done"}',
+        status: 'completed',
+        updatedAt: 40,
+        timelineSeq: 4,
+      },
+    },
+    lastEventSeqSeen: 4,
+  })
+  const committedItems = buildDesktopV3ConversationRenderItems({
+    committed: [{
+      id: 'msg-tool-1',
+      session_id: 'session-a',
+      global_seq: 5,
+      role: 'tool',
+      content: JSON.stringify({
+        path_id: 'run.tool-history.v2',
+        run_id: 'run-a',
+        call_id: 'call-1',
+        tool_instance_id: 'tool-instance-1',
+        tool: 'search',
+        output: '{"summary":"done"}',
+      }),
+      created_at: 50,
+    }],
+    pendingUser: [],
+    liveRuns: [],
+    runIntents: [],
+  })
+
+  assert.equal(liveItems[0]?.type, 'live-tool')
+  assert.equal(committedItems[0]?.type, 'message')
+  assert.equal(desktopV3RenderItemKey(committedItems[0]), desktopV3RenderItemKey(liveItems[0]))
 })
 
 

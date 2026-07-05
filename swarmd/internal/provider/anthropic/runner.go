@@ -221,8 +221,11 @@ func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (a
 		System:    system,
 		Tools:     tools,
 	}
-	if thinking := anthropicThinkingConfig(req.Thinking); thinking != nil {
+	if thinking, effort := anthropicThinkingConfig(modelName, req.Thinking); thinking != nil {
 		params.Thinking = *thinking
+		if effort != "" {
+			params.OutputConfig = anthropicapi.OutputConfigParam{Effort: effort}
+		}
 	}
 	if toolChoice := anthropicToolChoice(req.ToolChoice, req.ParallelToolCalls); toolChoice != nil {
 		params.ToolChoice = *toolChoice
@@ -432,25 +435,56 @@ func buildAnthropicContentBlocksFromMaps(items []map[string]any) ([]anthropicapi
 	return blocks, nil
 }
 
-func anthropicThinkingConfig(level string) *anthropicapi.ThinkingConfigParamUnion {
-	switch strings.ToLower(strings.TrimSpace(level)) {
+func anthropicThinkingConfig(modelName, level string) (*anthropicapi.ThinkingConfigParamUnion, anthropicapi.OutputConfigEffort) {
+	level = strings.ToLower(strings.TrimSpace(level))
+	switch level {
 	case "off":
 		cfg := anthropicapi.ThinkingConfigParamUnion{OfDisabled: &anthropicapi.ThinkingConfigDisabledParam{}}
-		return &cfg
-	case "low":
-		cfg := anthropicapi.ThinkingConfigParamOfEnabled(1024)
-		return &cfg
-	case "medium":
-		cfg := anthropicapi.ThinkingConfigParamOfEnabled(4096)
-		return &cfg
-	case "high":
-		cfg := anthropicapi.ThinkingConfigParamOfEnabled(8192)
-		return &cfg
-	case "xhigh":
-		cfg := anthropicapi.ThinkingConfigParamOfEnabled(16384)
-		return &cfg
+		return &cfg, ""
+	case "low", "medium", "high", "xhigh":
+		if anthropicModelUsesAdaptiveThinking(modelName) {
+			cfg := anthropicapi.ThinkingConfigParamUnion{OfAdaptive: &anthropicapi.ThinkingConfigAdaptiveParam{Display: anthropicapi.ThinkingConfigAdaptiveDisplaySummarized}}
+			return &cfg, anthropicOutputEffort(level)
+		}
+		cfg := anthropicapi.ThinkingConfigParamOfEnabled(anthropicThinkingBudgetTokens(level))
+		return &cfg, ""
 	default:
-		return nil
+		return nil, ""
+	}
+}
+
+func anthropicModelUsesAdaptiveThinking(modelName string) bool {
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	return strings.Contains(modelName, "claude-sonnet-5") || strings.Contains(modelName, "claude-opus-5") || strings.Contains(modelName, "claude-haiku-5")
+}
+
+func anthropicThinkingBudgetTokens(level string) int64 {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "low":
+		return 1024
+	case "medium":
+		return 4096
+	case "high":
+		return 8192
+	case "xhigh":
+		return 16384
+	default:
+		return 4096
+	}
+}
+
+func anthropicOutputEffort(level string) anthropicapi.OutputConfigEffort {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "low":
+		return anthropicapi.OutputConfigEffortLow
+	case "medium":
+		return anthropicapi.OutputConfigEffortMedium
+	case "high":
+		return anthropicapi.OutputConfigEffortHigh
+	case "xhigh":
+		return anthropicapi.OutputConfigEffortXhigh
+	default:
+		return ""
 	}
 }
 

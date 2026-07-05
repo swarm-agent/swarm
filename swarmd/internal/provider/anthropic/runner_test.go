@@ -99,6 +99,32 @@ func TestSanitizeAnthropicToolSchemaMovesUnsupportedConstraintsToDescription(t *
 	assertContains(t, encoded, `minItems: 2`)
 }
 
+func TestAnthropicThinkingConfigUsesAdaptiveForClaudeSonnet5(t *testing.T) {
+	cfg, effort := anthropicThinkingConfig("claude-sonnet-5", "medium")
+	if cfg == nil || cfg.OfAdaptive == nil {
+		t.Fatalf("expected adaptive thinking config for claude-sonnet-5, got %#v", cfg)
+	}
+	if cfg.OfEnabled != nil {
+		t.Fatalf("claude-sonnet-5 must not use enabled thinking: %#v", cfg.OfEnabled)
+	}
+	if effort != anthropicapi.OutputConfigEffortMedium {
+		t.Fatalf("effort = %q, want medium", effort)
+	}
+}
+
+func TestAnthropicThinkingConfigKeepsBudgetForLegacyModels(t *testing.T) {
+	cfg, effort := anthropicThinkingConfig("claude-sonnet-4-5", "medium")
+	if cfg == nil || cfg.OfEnabled == nil {
+		t.Fatalf("expected enabled thinking config for legacy sonnet, got %#v", cfg)
+	}
+	if got := cfg.OfEnabled.BudgetTokens; got != 4096 {
+		t.Fatalf("budget tokens = %d, want 4096", got)
+	}
+	if effort != "" {
+		t.Fatalf("effort = %q, want empty", effort)
+	}
+}
+
 func TestBuildRequestPlacesPromptCacheControlsAtOfficialBreakpoints(t *testing.T) {
 	tools, _, err := buildAnthropicTools([]provideriface.ToolDefinition{
 		{Name: "read", Description: "Read", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},

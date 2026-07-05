@@ -15,6 +15,7 @@ import (
 	"strings"
 	modelruntime "swarm/packages/swarmd/internal/model"
 
+	"swarm/packages/swarmd/internal/privacy"
 	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -386,6 +387,9 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 			}
 			if err != nil {
 				classification := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{Err: err})
+				if classification.Status == sessionruntime.RunIntentFailed && classification.EventType == "session.run.failed" {
+					_, _ = e.recordRunFailureSystemMessage(job, classification.Reason)
+				}
 				_, _ = e.recordRunStatus(job, classification.Status, classification.Reason, classification.EventType)
 			}
 		}
@@ -398,10 +402,62 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	}
 	if _, err := e.completeRun(job, response); err != nil {
 		if !e.isRunCanceled(job) {
+			_, _ = e.recordRunFailureSystemMessage(job, err.Error())
 			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
 		}
 		return
 	}
+}
+
+func (e *sessionV3Executor) recordRunFailureSystemMessage(job sessionV3ExecutorJob, reason string) (sessionruntime.SessionMutationResult, error) {
+	if e == nil || e.server == nil {
+		return sessionruntime.SessionMutationResult{}, errors.New("v3 executor is not configured")
+	}
+	content := sessionV3RunFailureSystemMessage(reason)
+	if strings.TrimSpace(content) == "" {
+		return sessionruntime.SessionMutationResult{}, nil
+	}
+	now := time.Now().UnixMilli()
+	message := pebblestore.MessageSnapshot{
+		ID:        sessionV3RunFailureMessageID(job.SessionID, job.RunID),
+		Role:      "system",
+		Content:   content,
+		CreatedAt: now,
+		Metadata: map[string]any{
+			"source":       "backend.executor",
+			"message_kind": "run_failure",
+			"run_id":       strings.TrimSpace(job.RunID),
+			"synthetic":    true,
+			"visible":      true,
+		},
+	}
+	sanitizedReason := strings.TrimSpace(privacy.SanitizeText(reason))
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentFailed, sanitizedReason, "session.message.appended", content)
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	clientRequestID := sessionV3ExecutorClientRequestID("session.run.failure_message", job.RunID)
+	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       job.SessionID,
+		UserID:          job.Principal.UserID,
+		AccountScopeID:  job.Principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       "session.message.appended",
+		Message:         &message,
+		NowUnixMs:       now,
+	})
+}
+
+func sessionV3RunFailureSystemMessage(reason string) string {
+	reason = strings.TrimSpace(privacy.SanitizeText(reason))
+	if reason == "" {
+		return "[run-failed] The assistant run failed before it could return a response."
+	}
+	return "[run-failed] The assistant run failed before it could return a response.\n\n" + reason
 }
 
 func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, reason, eventType string) (sessionruntime.SessionMutationResult, error) {
@@ -409,16 +465,17 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 		return sessionruntime.SessionMutationResult{}, errors.New("v3 executor is not configured")
 	}
 	now := time.Now().UnixMilli()
+	sanitizedReason := strings.TrimSpace(privacy.SanitizeText(reason))
 	intent := pebblestore.V3SessionRunIntent{
 		SessionID:      job.SessionID,
 		UserID:         job.Principal.UserID,
 		AccountScopeID: job.Principal.AccountScopeID,
 		RunID:          job.RunID,
 		Status:         status,
-		BlockedReason:  strings.TrimSpace(reason),
+		BlockedReason:  sanitizedReason,
 		UpdatedAt:      now,
 	}
-	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, status, reason, eventType, "")
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, status, sanitizedReason, eventType, "")
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
@@ -3860,6 +3917,11 @@ func sessionV3ReasoningEventClientRequestID(eventType, runID string, step int, r
 func sessionV3AssistantMessageID(sessionID, runID string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00assistant"))
 	return "v3msg_assistant_" + hex.EncodeToString(sum[:16])
+}
+
+func sessionV3RunFailureMessageID(sessionID, runID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00run_failure"))
+	return "v3msg_system_failure_" + hex.EncodeToString(sum[:16])
 }
 
 func sessionV3AssistantSegmentMessageID(sessionID, runID string, step int) string {
