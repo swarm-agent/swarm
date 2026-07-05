@@ -1461,7 +1461,7 @@ function DesktopV3CommittedMessage({ message, thinkingTagsEnabled, timerNow }: {
 function DesktopV3UserMessage({ content, pendingLabel }: { content: string; pendingLabel?: string }) {
   return (
     <div className="flex justify-end pr-0">
-      <div className="max-w-[70%] rounded-3xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
+      <div className="max-w-[70%] rounded-xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
         <div className="whitespace-pre-wrap break-words">{content}</div>
         {pendingLabel ? <div className="mt-1 text-right text-[10px] uppercase tracking-[0.12em] opacity-70">{pendingLabel}</div> : null}
       </div>

@@ -2005,7 +2005,7 @@ export function DesktopAppPage() {
   const routeWorkspaceSlug = (workspaceSessionMatch ? workspaceSessionMatch.workspaceSlug : workspaceMatch ? workspaceMatch.workspaceSlug : '').trim()
   const routeSessionId = (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
-  const { workspaces, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
+  const { workspaces, currentWorkspacePath, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
@@ -2473,6 +2473,16 @@ export function DesktopAppPage() {
     ? workspaceSlugByPath.get(topWorkspacePath) ?? workspaceRouteSlugBase({ path: topWorkspacePath, workspaceName: topWorkspaceLabel })
     : routeWorkspaceSlug
   const topWorkspaceOptions = useMemo(() => mergedSidebarWorkspaceEntries, [mergedSidebarWorkspaceEntries])
+  const defaultNewChatWorkspace = useMemo(() => {
+    const defaultPath = currentWorkspacePath?.trim() || ''
+    if (defaultPath) {
+      return mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === defaultPath)
+        ?? buildTemporaryWorkspaceEntry(defaultPath, fallbackWorkspaceNameFromPath(defaultPath))
+    }
+    return topWorkspace
+  }, [currentWorkspacePath, mergedSidebarWorkspaceEntries, topWorkspace])
+  const defaultNewChatWorkspacePath = defaultNewChatWorkspace?.path || ''
+  const defaultNewChatWorkspaceLabel = defaultNewChatWorkspace?.workspaceName?.trim() || 'Default Workspace'
   const globalSessionWorkspaceSlug = useCallback((session: DesktopSessionRecord): string => {
     const workspacePath = desktopSidebarWorkspacePathForSession(session, workspacePathByBindingId)
       || selectedWorkspacePath
@@ -3269,6 +3279,22 @@ export function DesktopAppPage() {
             <div className="border-b border-[var(--app-border)] bg-[var(--app-surface)] px-[9px] py-2">
               <div className="grid gap-0.5 text-[11px] text-[var(--app-text-subtle)]">
                   <div className="grid gap-0.5 pt-1">
+                    <button
+                      type="button"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => {
+                        if (defaultNewChatWorkspacePath) {
+                          handleStartNewSessionInWorkspace(defaultNewChatWorkspacePath, defaultNewChatWorkspaceLabel)
+                        }
+                        setMobileSidebarOpen(false)
+                      }}
+                      disabled={!defaultNewChatWorkspacePath}
+                      aria-label={`New chat in ${defaultNewChatWorkspaceLabel}`}
+                      title={`New chat in ${defaultNewChatWorkspaceLabel}`}
+                    >
+                      <Plus size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 truncate">New Chat</span>
+                    </button>
                     <button
                       type="button"
                       className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
