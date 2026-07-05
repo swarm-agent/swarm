@@ -1,5 +1,3 @@
-import { LoaderCircle } from 'lucide-react'
-import { cn } from '../../../../lib/cn'
 import type { LiveRunOverlay, V3SessionRunIntent } from '../../state/desktop-v3-cache-types'
 
 export type DesktopV3RunStatusKind = 'starting' | 'active' | 'paused' | 'completed' | 'failed' | 'stopped' | 'interrupted' | 'expired'
@@ -203,7 +201,6 @@ export function DesktopV3RunStatusPill({ model, now }: { model: DesktopV3RunStat
   const runTimer = formatDesktopV3CurrentRunTimer(model, now)
   const totalTimer = formatDesktopV3RunTimer(model, now)
   const showTotalTimer = Boolean(totalTimer && totalTimer !== runTimer && duration(model.cumulativeDurationMs) !== undefined)
-  const spinning = model.kind === 'starting' || model.kind === 'active'
   const title = [
     model.label,
     runTimer ? `Loop timer: ${runTimer}` : '',
@@ -212,21 +209,17 @@ export function DesktopV3RunStatusPill({ model, now }: { model: DesktopV3RunStat
   ].filter(Boolean).join(' · ')
   return (
     <div
-      className="inline-flex h-9 max-w-[15rem] shrink-0 items-center gap-1.5 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[11px] font-medium text-[var(--app-text-muted)] shadow-sm sm:max-w-none sm:gap-2 sm:px-3"
+      className="inline-flex h-8 max-w-[15rem] shrink-0 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-transparent px-2.5 text-[11px] font-medium text-[var(--app-text-muted)] sm:max-w-none sm:gap-2 sm:px-3"
       aria-live="polite"
       data-testid="desktop-v3-run-status-pill"
       title={title || model.label}
     >
-      {spinning ? <LoaderCircle size={12} className="shrink-0 animate-spin text-[var(--app-primary)]" /> : <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', model.kind === 'paused' ? 'bg-[var(--app-warning)]' : 'bg-[var(--app-text-subtle)]')} />}
       <span className="truncate">{model.label}</span>
       {runTimer ? (
-        <>
-          <span className="shrink-0 text-[var(--app-text-subtle)]">·</span>
-          <span className="shrink-0 tabular-nums text-[var(--app-text)]">
-            {runTimer}
-            {showTotalTimer ? <span className="text-[var(--app-text-subtle)]"> ({totalTimer})</span> : null}
-          </span>
-        </>
+        <span className="shrink-0 tabular-nums text-[var(--app-text)]">
+          {runTimer}
+          {showTotalTimer ? <span className="text-[var(--app-text-subtle)]"> ({totalTimer})</span> : null}
+        </span>
       ) : null}
     </div>
   )
