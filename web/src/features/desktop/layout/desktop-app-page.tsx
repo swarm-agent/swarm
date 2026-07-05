@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode, ChangeEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, GitBranch, Home, LayoutGrid, LoaderCircle, Menu, MoreVertical, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Home, LayoutGrid, LoaderCircle, Menu, MoreVertical, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -3312,6 +3312,16 @@ export function DesktopAppPage() {
                       <Plus size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                       <span className="min-w-0 truncate">New Chat</span>
                     </button>
+                    <Link
+                      to="/"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
+                      onClick={() => setMobileSidebarOpen(false)}
+                      aria-label="Open workspaces"
+                      title="Workspaces"
+                    >
+                      <Folder size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 truncate">Workspaces</span>
+                    </Link>
                     <button
                       type="button"
                       className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
