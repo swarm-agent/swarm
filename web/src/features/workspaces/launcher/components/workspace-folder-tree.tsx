@@ -112,7 +112,7 @@ export function WorkspaceFolderTree({
             <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--app-text)]">Explorer</h2>
             <p className="mt-1 truncate text-xs text-[var(--app-text-muted)]">Navigate folders and add workspaces.</p>
           </div>
-          <span className="rounded-full bg-[var(--app-surface-subtle)] px-2 py-0.5 text-[11px] text-[var(--app-text-subtle)]">{browser?.entries.length ?? 0}</span>
+          <span className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-[color-mix(in_oklab,var(--app-border)_52%,transparent)] bg-[var(--app-surface-subtle)] text-[11px] font-medium tabular-nums text-[var(--app-text-subtle)]">{browser?.entries.length ?? 0}</span>
         </div>
 
         <div className="overflow-hidden rounded-lg border border-[color-mix(in_oklab,var(--app-border)_38%,transparent)] bg-[color-mix(in_oklab,var(--app-bg)_34%,transparent)] shadow-sm shadow-black/5">

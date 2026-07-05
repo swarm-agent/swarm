@@ -61,6 +61,7 @@ interface UseWorkspaceLauncherState {
   createFolder: (parentPath: string, name: string) => Promise<string>
   setWorkspaceTheme: (path: string, themeId: string) => Promise<void>
   moveWorkspaceToIndex: (path: string, targetIndex: number) => Promise<void>
+  swapWorkspacePositions: (sourcePath: string, targetPath: string) => Promise<void>
   setDraggingWorkspacePath: (path: string | null) => void
   refresh: (roots?: string[]) => Promise<void>
   browsePath: (path: string) => Promise<void>
@@ -623,6 +624,44 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     }
   }, [refresh, workspaces])
 
+  const swapWorkspacePositions = useCallback(async (sourcePath: string, targetPath: string) => {
+    const trimmedSourcePath = sourcePath.trim()
+    const trimmedTargetPath = targetPath.trim()
+    if (trimmedSourcePath === '' || trimmedTargetPath === '' || trimmedSourcePath === trimmedTargetPath) {
+      return
+    }
+
+    const sourceIndex = workspaces.findIndex((workspace) => workspace.path === trimmedSourcePath)
+    const targetIndex = workspaces.findIndex((workspace) => workspace.path === trimmedTargetPath)
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+      return
+    }
+
+    setSavingPath(trimmedSourcePath)
+    setActionError(null)
+    try {
+      await moveWorkspace(trimmedSourcePath, targetIndex - sourceIndex)
+      if (sourceIndex < targetIndex) {
+        const targetDelta = sourceIndex - (targetIndex - 1)
+        if (targetDelta !== 0) {
+          await moveWorkspace(trimmedTargetPath, targetDelta)
+        }
+      } else {
+        const targetDelta = sourceIndex - (targetIndex + 1)
+        if (targetDelta !== 0) {
+          await moveWorkspace(trimmedTargetPath, targetDelta)
+        }
+      }
+      await refresh()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to swap workspaces')
+      throw err
+    } finally {
+      setSavingPath(null)
+      setDraggingWorkspacePath(null)
+    }
+  }, [refresh, workspaces])
+
   const decoratedWorkspaces = useMemo(() => workspaces, [workspaces])
 
   return {
@@ -648,6 +687,7 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     createFolder,
     setWorkspaceTheme: updateWorkspaceTheme,
     moveWorkspaceToIndex,
+    swapWorkspacePositions,
     setDraggingWorkspacePath,
     refresh,
     browsePath,

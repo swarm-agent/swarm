@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, Grid2X2, Home, List, MoreHorizontal, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
+import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, GripVertical, Grid2X2, Home, MoreHorizontal, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
 import { Badge } from '../../../components/ui/badge'
@@ -91,13 +91,6 @@ function formatDiscoveredMeta(entry: { hasSwarm: boolean; hasClaude: boolean; is
   return parts.join(' · ')
 }
 
-function workspaceMeta(workspace: WorkspaceEntry): string {
-  const sessions = workspace.todoSummary?.user.taskCount ?? 0
-  const folders = Math.max(workspace.directories.length, 1)
-  const availability = workspace.topologyRoutes.length > 0 ? `${workspace.topologyRoutes.length + 1} locations` : 'this host only'
-  return `${sessions} session${sessions === 1 ? '' : 's'} · ${folders} folder${folders === 1 ? '' : 's'} · ${availability}`
-}
-
 function workspaceLocation(workspace: WorkspaceEntry): string {
   return formatWorkspaceDirectories(workspace.directories)[0] ?? formatWorkspacePath(workspace.path)
 }
@@ -152,23 +145,64 @@ function WorkspaceGlyph({ active = false }: { active?: boolean }) {
 
 interface PinnedWorkspaceCardProps {
   workspace: WorkspaceEntry
+  position: number
   current: boolean
   busy: boolean
+  dragging: boolean
   onOpen: (path: string) => void
   onEdit: (path: string) => void
   onDelete: (path: string) => void
+  onSwapWith: (sourcePath: string, targetPath: string) => void
+  onDraggingChange: (path: string | null) => void
 }
 
-function PinnedWorkspaceCard({ workspace, current, busy, onOpen, onEdit, onDelete }: PinnedWorkspaceCardProps) {
+function PinnedWorkspaceCard({ workspace, position, current, busy, dragging, onOpen, onEdit, onDelete, onSwapWith, onDraggingChange }: PinnedWorkspaceCardProps) {
+  const handleDragStart = (event: DragEvent<HTMLButtonElement>) => {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/workspace-path', workspace.path)
+    onDraggingChange(workspace.path)
+  }
+  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+  }
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    const sourcePath = event.dataTransfer.getData('text/workspace-path').trim()
+    if (sourcePath && sourcePath !== workspace.path) {
+      onSwapWith(sourcePath, workspace.path)
+    }
+    onDraggingChange(null)
+  }
+
   return (
     <div
       className={cn(
-        'group grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border px-3 py-3 text-left transition-colors',
+        'group grid min-w-0 grid-cols-[auto_auto_auto_minmax(0,1fr)_auto] items-center gap-4 rounded-2xl border px-4 py-4 text-left transition-all',
         current
           ? 'border-[color-mix(in_oklab,var(--app-border-accent)_72%,var(--app-border))] bg-[color-mix(in_oklab,var(--app-primary)_8%,var(--app-surface))] shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-border-accent)_28%,transparent)]'
           : 'border-[color-mix(in_oklab,var(--app-border)_62%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_74%,transparent)] hover:border-[color-mix(in_oklab,var(--app-border-accent)_55%,var(--app-border))] hover:bg-[var(--app-surface-hover)]',
+        dragging && 'scale-[0.99] opacity-55',
       )}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+      onDragEnd={() => onDraggingChange(null)}
     >
+      <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] bg-[var(--app-surface-subtle)] font-mono text-[11px] font-semibold tabular-nums text-[var(--app-text-muted)]" title={`Pinned position ${position}`}>
+        {String(position).padStart(2, '0')}
+      </div>
+      <button
+        type="button"
+        draggable={!busy}
+        onDragStart={handleDragStart}
+        onDragEnd={() => onDraggingChange(null)}
+        disabled={busy}
+        className="flex size-9 shrink-0 cursor-grab items-center justify-center rounded-xl border border-dashed border-[color-mix(in_oklab,var(--app-border)_70%,transparent)] text-[var(--app-text-subtle)] transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-50"
+        aria-label={`Drag ${workspace.workspaceName} onto another workspace to swap positions`}
+        title="Drag onto another workspace to swap positions"
+      >
+        <GripVertical size={15} />
+      </button>
       <button
         type="button"
         className="contents text-left disabled:cursor-wait"
@@ -180,16 +214,12 @@ function PinnedWorkspaceCard({ workspace, current, busy, onOpen, onEdit, onDelet
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <h3 className="truncate text-sm font-semibold text-[var(--app-text)]">{workspace.workspaceName}</h3>
-            {current ? (
-              <span className="shrink-0 rounded-full bg-[color-mix(in_oklab,var(--app-primary)_18%,var(--app-surface-elevated))] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text)]">
-                Active
-              </span>
-            ) : null}
+
           </div>
           <div className="mt-0.5 truncate text-xs text-[var(--app-text-subtle)]" title={workspace.path}>
             {workspaceLocation(workspace)}
           </div>
-          <div className="mt-1 truncate text-[11px] text-[var(--app-text-muted)]">{workspaceMeta(workspace)}</div>
+
         </div>
       </button>
       <div className="flex items-center gap-1">
@@ -199,6 +229,7 @@ function PinnedWorkspaceCard({ workspace, current, busy, onOpen, onEdit, onDelet
           onClick={() => onEdit(workspace.path)}
           disabled={busy}
           aria-label={`Edit ${workspace.workspaceName}`}
+          title="Edit workspace"
         >
           <MoreHorizontal size={16} />
         </button>
@@ -555,6 +586,9 @@ export function WorkspaceHomePage() {
     browserLoading,
     browserError,
     refreshing,
+    draggingWorkspacePath,
+    setDraggingWorkspacePath,
+    swapWorkspacePositions,
     openWorkspace,
     useFolderTemporarily,
     deleteWorkspace,
@@ -573,7 +607,6 @@ export function WorkspaceHomePage() {
   const [modalError, setModalError] = useState<string | null>(null)
   const [deleteTargetPath, setDeleteTargetPath] = useState<string | null>(null)
   const [workspaceSearch, setWorkspaceSearch] = useState('')
-  const [allWorkspacesCompact, setAllWorkspacesCompact] = useState(false)
   const [allWorkspacesVisible, setAllWorkspacesVisible] = useState(true)
   const [explorerDrawerMode, setExplorerDrawerMode] = useState<ExplorerDrawerMode>(null)
   const isDesktopExplorer = useMediaQuery('(min-width: 1024px)')
@@ -930,8 +963,8 @@ export function WorkspaceHomePage() {
             </div>
           </aside>
         ) : null}
-        <section className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 pb-28 [-webkit-overflow-scrolling:touch] sm:px-6 lg:px-8 lg:pb-6">
-          <div className="flex min-h-full flex-col gap-7 lg:gap-8">
+        <section className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-4 py-6 pb-28 [-webkit-overflow-scrolling:touch] sm:px-8 lg:px-12 lg:py-8 lg:pb-8 xl:px-16">
+          <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-8 lg:gap-10">
             <div className="flex items-start justify-between gap-3 bg-transparent px-0 py-1 sm:items-center">
               <div className="flex min-w-0 items-start gap-3">
                 <div className="min-w-0">
@@ -977,36 +1010,40 @@ export function WorkspaceHomePage() {
             {!loading && actionError ? <WorkspaceStatus kind="error" title="Workspace action failed" message={actionError} /> : null}
 
             {!loading && !loadError ? (
-              <div className="flex flex-col gap-9">
-                <section className="flex flex-col gap-4">
+              <div className="flex flex-col gap-12">
+                <section className="flex flex-col gap-5">
                   <div className="flex items-end justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Pinned workspaces</h2>
                       <span className="text-xs text-[var(--app-text-subtle)]">{workspaces.length}</span>
                     </div>
-                    <p className="hidden text-sm text-[var(--app-text-muted)] sm:block">Open a saved workspace or manage its local links.</p>
+                    <p className="hidden text-sm text-[var(--app-text-muted)] sm:block">Ordered list — drag a handle onto another workspace to swap them.</p>
                   </div>
                   {workspaces.length === 0 ? (
                     <WorkspaceStatus kind="empty" title="No saved workspaces" message="Browse a folder in Explorer and add it as your first workspace." />
                   ) : (
-                    <div className="grid gap-3 xl:grid-cols-2">
-                      {workspaces.map((workspace) => (
+                    <div className="grid gap-3">
+                      {workspaces.map((workspace, index) => (
                         <PinnedWorkspaceCard
                           key={workspace.path}
                           workspace={workspace}
+                          position={index + 1}
                           current={currentWorkspacePath === workspace.path || workspace.active}
                           busy={selectingPath === workspace.path || savingPath === workspace.path}
+                          dragging={draggingWorkspacePath === workspace.path}
                           onOpen={handleOpenWorkspace}
                           onEdit={startEdit}
                           onDelete={setDeleteTargetPath}
+                          onSwapWith={(sourcePath, targetPath) => void swapWorkspacePositions(sourcePath, targetPath)}
+                          onDraggingChange={setDraggingWorkspacePath}
                         />
                       ))}
                     </div>
                   )}
                 </section>
 
-                <section className="flex flex-col gap-3">
-                  <div className="flex flex-col gap-3 border-t border-[color-mix(in_oklab,var(--app-border)_56%,transparent)] pt-6 sm:flex-row sm:items-center sm:justify-between">
+                <section className="flex flex-col gap-5">
+                  <div className="flex flex-col gap-3 border-t border-[color-mix(in_oklab,var(--app-border)_56%,transparent)] pt-8 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <div className="flex items-center gap-2">
                         <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">All workspaces</h2>
@@ -1026,26 +1063,6 @@ export function WorkspaceHomePage() {
                           />
                         </div>
                       ) : null}
-                      <div className="flex rounded-lg border border-[color-mix(in_oklab,var(--app-border)_70%,transparent)] bg-[var(--app-surface)] p-0.5 text-[var(--app-text-subtle)]">
-                        <button
-                          type="button"
-                          className={cn('rounded-md p-1.5 transition-colors', !allWorkspacesCompact && 'bg-[var(--app-surface-elevated)] text-[var(--app-text)]')}
-                          aria-label="Detailed folder list"
-                          aria-pressed={!allWorkspacesCompact}
-                          onClick={() => setAllWorkspacesCompact(false)}
-                        >
-                          <List size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          className={cn('rounded-md p-1.5 transition-colors', allWorkspacesCompact && 'bg-[var(--app-surface-elevated)] text-[var(--app-text)]')}
-                          aria-label="Compact folder names"
-                          aria-pressed={allWorkspacesCompact}
-                          onClick={() => setAllWorkspacesCompact(true)}
-                        >
-                          <Grid2X2 size={14} />
-                        </button>
-                      </div>
                       <button
                         type="button"
                         className="flex size-8 items-center justify-center rounded-lg border border-[color-mix(in_oklab,var(--app-border)_70%,transparent)] bg-[var(--app-surface)] text-[var(--app-text-subtle)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
@@ -1062,9 +1079,9 @@ export function WorkspaceHomePage() {
                     discovered.length === 0 ? (
                       <WorkspaceStatus kind="empty" title="No candidate folders" message="No repositories found in scanned locations. Use Explorer to browse to a folder." />
                     ) : (
-                      <div className="grid gap-2 md:grid-cols-2">
+                      <div className="grid gap-3">
                         {discoveredRows.length === 0 ? (
-                          <div className="rounded-xl border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] px-4 py-6 text-sm text-[var(--app-text-muted)] md:col-span-2">No folders match your search.</div>
+                          <div className="rounded-xl border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] px-4 py-6 text-sm text-[var(--app-text-muted)]">No folders match your search.</div>
                         ) : (
                           discoveredRows.map(({ entry, savedWorkspace }) => (
                             <AllWorkspaceRow
@@ -1072,7 +1089,6 @@ export function WorkspaceHomePage() {
                               entry={entry}
                               savedWorkspace={savedWorkspace}
                               busy={savingPath === entry.path || selectingPath === entry.path}
-                              compact={allWorkspacesCompact}
                               onBrowse={(path) => void browsePath(path)}
                               onOpen={handleOpenWorkspace}
                               onCreate={(row) => openCreateModal(row.path, [row.path], row.name)}
