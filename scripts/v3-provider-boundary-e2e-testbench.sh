@@ -158,7 +158,20 @@ async function runTurn(token, sessionID, label, provider, model, content){
   result.ids[`${label}_assistant_id`]=assistant.id;
   return assistant;
 }
-async function fetchEvents(token, sessionID, label){ return (await api('GET',`/v3/sessions/${encodeURIComponent(sessionID)}/events?after_seq=0&limit=1000`,token,undefined,`events.${label}`)).body.events||[]; }
+async function fetchEvents(token, sessionID, label){
+  const all=[];
+  const pageLimit=1000;
+  let afterSeq=0;
+  for(let page=0; page<20; page++){
+    const body=(await api('GET',`/v3/sessions/${encodeURIComponent(sessionID)}/events?after_seq=${afterSeq}&limit=${pageLimit}`,token,undefined,`events.${label}.${page}`)).body;
+    const events=body.events||[];
+    all.push(...events);
+    const nextSeq=Number(body.next_seq||body.applied_seq||0);
+    if(events.length===0 || nextSeq<=afterSeq || events.length<pageLimit) return all;
+    afterSeq=nextSeq;
+  }
+  die(`events.${label} exceeded pagination safety limit`);
+}
 function diagnosticEvents(events, runID, stage){
   return events.filter(e=>String(e.event_type||'')===stage && (!runID || JSON.stringify(e).includes(runID))).map(e=>{
     if (e && typeof e.payload === 'object' && e.payload !== null) return e.payload;

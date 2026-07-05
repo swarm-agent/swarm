@@ -56,6 +56,38 @@ func TestEmitFireworksToolCallConstructionEventsFromStreamingDeltas(t *testing.T
 	}
 }
 
+func TestEmitFireworksToolCallConstructionEventsCompletesOnFinishOnlyChunk(t *testing.T) {
+	state := newFireworksToolCallConstructionState()
+	var events []provideriface.StreamEvent
+	emitFireworksToolCallConstructionEvents(state, chatCompletionChunk{Choices: []chatCompletionChoice{{
+		Index: 0,
+		Delta: &chatCompletionMessageDelta{ToolCalls: []chatCompletionToolCallDelta{{
+			Index:    0,
+			Function: &chatCompletionToolFunctionDelta{Name: "plan_manage", Arguments: `{"action":"complete`},
+		}}},
+	}}}, func(event provideriface.StreamEvent) { events = append(events, event) })
+	emitFireworksToolCallConstructionEvents(state, chatCompletionChunk{Choices: []chatCompletionChoice{{
+		Index:        0,
+		FinishReason: "tool_calls",
+	}}}, func(event provideriface.StreamEvent) { events = append(events, event) })
+
+	gotTypes := make([]provideriface.StreamEventType, 0, len(events))
+	for _, event := range events {
+		gotTypes = append(gotTypes, event.Type)
+	}
+	wantTypes := []provideriface.StreamEventType{
+		provideriface.StreamEventToolCallStarted,
+		provideriface.StreamEventToolCallArgumentsDelta,
+		provideriface.StreamEventToolCallCompleted,
+	}
+	if !reflect.DeepEqual(gotTypes, wantTypes) {
+		t.Fatalf("event types = %#v, want %#v; events=%#v", gotTypes, wantTypes, events)
+	}
+	if events[2].ToolName != "plan_manage" || events[2].Arguments != `{"action":"complete` {
+		t.Fatalf("completed event = %#v", events[2])
+	}
+}
+
 func TestEmitFireworksToolCallConstructionEventsAbsentWhenNoToolDeltas(t *testing.T) {
 	state := newFireworksToolCallConstructionState()
 	called := false

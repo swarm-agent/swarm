@@ -450,51 +450,63 @@ func emitFireworksToolCallConstructionEvents(state *fireworksToolCallConstructio
 		return
 	}
 	for _, choice := range chunk.Choices {
-		if choice.Delta == nil || len(choice.Delta.ToolCalls) == 0 {
+		if choice.Delta != nil {
+			for _, delta := range choice.Delta.ToolCalls {
+				index := delta.Index
+				if id := strings.TrimSpace(delta.ID); id != "" {
+					state.ids[index] = id
+				}
+				if name := strings.TrimSpace(fireworksToolCallDeltaName(delta)); name != "" {
+					state.names[index] = name
+				}
+				if !state.seenStarted[index] {
+					state.seenStarted[index] = true
+					onEvent(provideriface.StreamEvent{
+						Type:          provideriface.StreamEventToolCallStarted,
+						ToolCallID:    state.ids[index],
+						ToolCallIndex: intPointer(index),
+						ToolName:      state.names[index],
+						Metadata:      fireworksToolCallDeltaMetadata(choice.Index, delta, "fireworks.chat.completions.chunk.delta"),
+					})
+				}
+				if delta.Function != nil && delta.Function.Arguments != "" {
+					state.arguments[index] += delta.Function.Arguments
+					onEvent(provideriface.StreamEvent{
+						Type:           provideriface.StreamEventToolCallArgumentsDelta,
+						Delta:          delta.Function.Arguments,
+						ToolCallID:     state.ids[index],
+						ToolCallIndex:  intPointer(index),
+						ToolName:       state.names[index],
+						ArgumentsDelta: delta.Function.Arguments,
+						Metadata:       fireworksToolCallDeltaMetadata(choice.Index, delta, "fireworks.chat.completions.chunk.delta"),
+					})
+				}
+			}
+		}
+		if strings.EqualFold(strings.TrimSpace(choice.FinishReason), "tool_calls") {
+			emitCompletedFireworksToolCallConstructionEvents(state, choice.Index, onEvent)
+		}
+	}
+}
+
+func emitCompletedFireworksToolCallConstructionEvents(state *fireworksToolCallConstructionState, choiceIndex int, onEvent func(provideriface.StreamEvent)) {
+	for index := range state.seenStarted {
+		if state.seenCompleted[index] {
 			continue
 		}
-		for _, delta := range choice.Delta.ToolCalls {
-			index := delta.Index
-			if id := strings.TrimSpace(delta.ID); id != "" {
-				state.ids[index] = id
-			}
-			if name := strings.TrimSpace(fireworksToolCallDeltaName(delta)); name != "" {
-				state.names[index] = name
-			}
-			if !state.seenStarted[index] {
-				state.seenStarted[index] = true
-				onEvent(provideriface.StreamEvent{
-					Type:          provideriface.StreamEventToolCallStarted,
-					ToolCallID:    state.ids[index],
-					ToolCallIndex: intPointer(index),
-					ToolName:      state.names[index],
-					Metadata:      fireworksToolCallDeltaMetadata(choice.Index, delta, "fireworks.chat.completions.chunk.delta"),
-				})
-			}
-			if delta.Function != nil && delta.Function.Arguments != "" {
-				state.arguments[index] += delta.Function.Arguments
-				onEvent(provideriface.StreamEvent{
-					Type:           provideriface.StreamEventToolCallArgumentsDelta,
-					Delta:          delta.Function.Arguments,
-					ToolCallID:     state.ids[index],
-					ToolCallIndex:  intPointer(index),
-					ToolName:       state.names[index],
-					ArgumentsDelta: delta.Function.Arguments,
-					Metadata:       fireworksToolCallDeltaMetadata(choice.Index, delta, "fireworks.chat.completions.chunk.delta"),
-				})
-			}
-			if strings.EqualFold(strings.TrimSpace(choice.FinishReason), "tool_calls") && !state.seenCompleted[index] {
-				state.seenCompleted[index] = true
-				onEvent(provideriface.StreamEvent{
-					Type:          provideriface.StreamEventToolCallCompleted,
-					ToolCallID:    state.ids[index],
-					ToolCallIndex: intPointer(index),
-					ToolName:      state.names[index],
-					Arguments:     strings.TrimSpace(state.arguments[index]),
-					Metadata:      fireworksToolCallDeltaMetadata(choice.Index, delta, "fireworks.chat.completions.chunk.finish"),
-				})
-			}
-		}
+		state.seenCompleted[index] = true
+		onEvent(provideriface.StreamEvent{
+			Type:          provideriface.StreamEventToolCallCompleted,
+			ToolCallID:    state.ids[index],
+			ToolCallIndex: intPointer(index),
+			ToolName:      state.names[index],
+			Arguments:     strings.TrimSpace(state.arguments[index]),
+			Metadata: map[string]any{
+				"provider":     "fireworks",
+				"source":       "fireworks.chat.completions.chunk.finish",
+				"choice_index": choiceIndex,
+			},
+		})
 	}
 }
 
