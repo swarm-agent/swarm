@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, Grid2X2, Home, List, MoreHorizontal, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
@@ -592,6 +592,7 @@ export function WorkspaceHomePage() {
 
   const temporaryFolderActive = Boolean(currentWorkspacePath && !currentWorkspace)
   const temporaryFolderName = temporaryFolderActive && currentWorkspacePath ? fallbackWorkspaceNameFromPath(currentWorkspacePath) : ''
+  const sidebarDefaultWorkspace = currentWorkspace ?? workspaces[0] ?? null
 
   const savedWorkspaceByPath = useMemo(() => new Map(workspaces.map((workspace) => [workspace.path, workspace])), [workspaces])
   const discoveredRows = useMemo(() => {
@@ -860,7 +861,76 @@ export function WorkspaceHomePage() {
   return (
     <>
       <main className="flex h-full min-h-0 w-full overflow-hidden bg-[linear-gradient(180deg,var(--app-bg),color-mix(in_oklab,var(--app-bg)_76%,var(--app-surface-subtle)))]">
-        <section className="min-h-0 min-w-0 flex-[1_1_68%] overflow-y-auto overscroll-contain px-4 py-5 pb-28 [-webkit-overflow-scrolling:touch] sm:px-6 lg:px-8 lg:pb-6">
+        {isDesktopExplorer ? (
+          <aside className="hidden min-h-0 w-[320px] shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] lg:flex">
+            <div className="border-b border-[var(--app-border)] px-3 py-3 font-mono">
+              <div className="px-2 py-1">
+                <div className="truncate text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)]">Swarm</div>
+                <div className="mt-px truncate text-[10px] leading-[1.25] text-[var(--app-text-subtle)]">Workspace command center</div>
+              </div>
+              <div className="mt-3 grid gap-0.5 text-[11px] text-[var(--app-text-subtle)]">
+                <button
+                  type="button"
+                  className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => {
+                    if (sidebarDefaultWorkspace) handleOpenWorkspace(sidebarDefaultWorkspace.path)
+                  }}
+                  disabled={!sidebarDefaultWorkspace}
+                  aria-label={sidebarDefaultWorkspace ? `New chat in ${sidebarDefaultWorkspace.workspaceName}` : 'New chat'}
+                  title={sidebarDefaultWorkspace ? `New chat in ${sidebarDefaultWorkspace.workspaceName}` : 'New Chat'}
+                >
+                  <Plus size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                  <span className="min-w-0 truncate">New Chat</span>
+                </button>
+                <Link
+                  to="/"
+                  className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md bg-[var(--app-surface-hover)] px-2 text-left font-inherit text-[11px] text-[var(--app-text)]"
+                  aria-label="Open workspaces"
+                  title="Workspaces"
+                >
+                  <Folder size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                  <span className="min-w-0 truncate">Workspaces</span>
+                </Link>
+                <Link
+                  to="/tools"
+                  className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
+                  aria-label="Open tools"
+                  title="Tools"
+                >
+                  <Grid2X2 size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                  <span className="min-w-0 truncate">Tools</span>
+                </Link>
+                <Link
+                  to="/settings"
+                  className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
+                  aria-label="Open settings"
+                  title="Settings"
+                >
+                  <Settings size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                  <span className="min-w-0 truncate">Settings</span>
+                </Link>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1">
+              <WorkspaceFolderTree
+                browser={browser}
+                browserLoading={browserLoading}
+                browserError={browserError}
+                workspaces={workspaces}
+                selectingPath={selectingPath}
+                savingPath={savingPath}
+                onBrowsePath={(path) => {
+                  void browsePath(path)
+                }}
+                onOpenWorkspace={handleOpenWorkspace}
+                onUseFolderTemporarily={handleUseFolderTemporarily}
+                onCreateWorkspace={(entry) => openCreateModal(entry.path, [entry.path], entry.name)}
+                onCreateFolder={createFolder}
+              />
+            </div>
+          </aside>
+        ) : null}
+        <section className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 pb-28 [-webkit-overflow-scrolling:touch] sm:px-6 lg:px-8 lg:pb-6">
           <div className="flex min-h-full flex-col gap-7 lg:gap-8">
             <div className="flex items-start justify-between gap-3 bg-transparent px-0 py-1 sm:items-center">
               <div className="flex min-w-0 items-start gap-3">
@@ -1033,25 +1103,6 @@ export function WorkspaceHomePage() {
           </div>
         </section>
 
-        {isDesktopExplorer ? (
-          <aside className="min-h-0 w-[34%] min-w-[340px] max-w-[430px] shrink-0 border-l border-[color-mix(in_oklab,var(--app-border)_64%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_52%,transparent)]">
-            <WorkspaceFolderTree
-              browser={browser}
-              browserLoading={browserLoading}
-              browserError={browserError}
-              workspaces={workspaces}
-              selectingPath={selectingPath}
-              savingPath={savingPath}
-              onBrowsePath={(path) => {
-                void browsePath(path)
-              }}
-              onOpenWorkspace={handleOpenWorkspace}
-              onUseFolderTemporarily={handleUseFolderTemporarily}
-              onCreateWorkspace={(entry) => openCreateModal(entry.path, [entry.path], entry.name)}
-              onCreateFolder={createFolder}
-            />
-          </aside>
-        ) : null}
       </main>
 
       {!isDesktopExplorer ? (
