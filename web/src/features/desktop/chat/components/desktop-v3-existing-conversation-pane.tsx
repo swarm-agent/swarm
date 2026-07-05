@@ -16,7 +16,7 @@ import { normalizeSessionMode, normalizeThinkingTagsEnabled, type DesktopSession
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
-import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
+import { DesktopV3ChatHeader, type DesktopV3ChatHeaderSessionActions } from './desktop-v3-chat-header'
 import { buildDesktopV3RunStatusModel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
 import type { DesktopSlashCommand } from '../services/slash-commands'
 import {
@@ -664,6 +664,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   routeOptions?: DesktopChatRoute[]
   onOpenChats?: () => void
   onNewSession?: () => void
+  sessionActions?: DesktopV3ChatHeaderSessionActions | null
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
   onCompactingChange?: (sessionId: string, startedAt: number | null) => void
   onArchivePlanSession?: (sessionId: string) => void
@@ -694,6 +695,7 @@ export function DesktopV3ExistingConversationPane({
   routeOptions = [],
   onOpenChats,
   onNewSession,
+  sessionActions = null,
   onSlashCommand,
   onCompactingChange,
   onArchivePlanSession,
@@ -1289,6 +1291,7 @@ export function DesktopV3ExistingConversationPane({
         runStatusNow={timerNow}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
+        sessionActions={sessionActions}
       />
       <div className={cn(
         'grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden',

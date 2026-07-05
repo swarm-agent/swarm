@@ -2694,6 +2694,23 @@ export function DesktopAppPage() {
       })
   }, [handleArchivePlanSession, routeSessionId, sidebarSessionActions])
 
+  const activeRouteSession = routeSessionId ? (sessionById.get(routeSessionId) ?? null) : null
+  const activeRouteSessionCanPin = activeRouteSession ? sessionAllowsManualSidebarPin(activeRouteSession) : false
+  const activeRouteSessionIsRegularChat = activeRouteSession ? sessionSidebarRowType(activeRouteSession) === 'single_chat' : false
+  const activeRouteSessionActions = routeSessionId
+    ? {
+        pinned: Boolean(activeRouteSession && activeRouteSessionCanPin && sessionManuallyPinnedInSidebar(activeRouteSession)),
+        canPin: Boolean(activeRouteSession && activeRouteSessionIsRegularChat && activeRouteSessionCanPin),
+        pendingAction: sidebarSessionActions[routeSessionId] ?? null,
+        onTogglePinned: () => {
+          if (activeRouteSession && activeRouteSessionIsRegularChat && activeRouteSessionCanPin) {
+            handleToggleSidebarPinned(activeRouteSession.id)
+          }
+        },
+        onArchive: () => handleArchiveSidebarSession(routeSessionId),
+      }
+    : null
+
   const openWorktreeSessionModal = useCallback((input: {
     workspace: WorkspaceEntry
     workspaceSlug: string
@@ -3509,6 +3526,7 @@ export function DesktopAppPage() {
               topologyRoutes: [],
             }) : []}
             onOpenChats={() => setMobileSidebarOpen(true)}
+            sessionActions={activeRouteSessionActions}
             onCompactingChange={handleCompactingSessionChange}
             onArchivePlanSession={handleArchivePlanSession}
             onNewSession={() => {

@@ -1,5 +1,14 @@
-import { MessageSquareText, Plus } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Archive, LoaderCircle, MessageSquareText, MoreVertical, Pin, Plus } from 'lucide-react'
 import { DesktopV3RunStatusPill, formatDesktopV3RunTimerLabel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
+
+export interface DesktopV3ChatHeaderSessionActions {
+  pinned: boolean
+  canPin: boolean
+  pendingAction?: 'pin' | 'archive' | null
+  onTogglePinned: () => void
+  onArchive: () => void
+}
 
 export interface DesktopV3ChatHeaderProps {
   title: string
@@ -8,6 +17,7 @@ export interface DesktopV3ChatHeaderProps {
   mode?: string
   runStatus?: DesktopV3RunStatusModel | null
   runStatusNow?: number
+  sessionActions?: DesktopV3ChatHeaderSessionActions | null
   onOpenChats?: () => void
   onNewSession?: () => void
 }
@@ -35,6 +45,7 @@ export function DesktopV3ChatHeader({
   mode,
   runStatus = null,
   runStatusNow = Date.now(),
+  sessionActions = null,
   onOpenChats,
   onNewSession,
 }: DesktopV3ChatHeaderProps) {
@@ -43,6 +54,14 @@ export function DesktopV3ChatHeader({
   const displayBranch = normalizeBranchName(branchName)
   const displayMode = normalizeMode(mode)
   const mobileRunTimerLabel = runStatus ? formatDesktopV3RunTimerLabel(runStatus, runStatusNow) : ''
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false)
+  const mobileActionsRef = useRef<HTMLSpanElement | null>(null)
+  const pendingAction = sessionActions?.pendingAction ?? null
+  const actionDisabled = Boolean(pendingAction)
+
+  useEffect(() => {
+    if (!sessionActions) setMobileActionsOpen(false)
+  }, [sessionActions])
 
   return (
     <header className="min-h-[60px] shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 pb-2 pt-[calc(var(--app-safe-area-top)_+_0.5rem)] sm:h-[60px] sm:px-4 sm:py-0">
@@ -105,6 +124,66 @@ export function DesktopV3ChatHeader({
           >
             <Plus size={19} />
           </button>
+        ) : null}
+
+        {sessionActions ? (
+          <span
+            ref={mobileActionsRef}
+            className="relative z-20 inline-flex"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) setMobileActionsOpen(false)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault()
+                setMobileActionsOpen(false)
+              }
+            }}
+          >
+            <button
+              type="button"
+              className="inline-flex h-9 w-9 shrink-0 touch-manipulation items-center justify-center rounded-xl border border-transparent bg-transparent text-[var(--app-text-muted)] transition duration-150 hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] active:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)]"
+              onClick={() => setMobileActionsOpen((open) => !open)}
+              aria-label="Session actions"
+              aria-expanded={mobileActionsOpen}
+              title="Session actions"
+            >
+              <MoreVertical size={19} />
+            </button>
+            {mobileActionsOpen ? (
+              <span className="absolute right-0 top-full z-50 mt-1 grid min-w-32 gap-0.5 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] p-1 text-[11px] shadow-lg [background-color:var(--app-surface-elevated)]">
+                {sessionActions.canPin ? (
+                  <button
+                    type="button"
+                    className="inline-flex h-8 w-full items-center gap-2 rounded border-0 bg-transparent px-2 text-left text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
+                    disabled={actionDisabled}
+                    aria-pressed={sessionActions.pinned}
+                    onClick={() => {
+                      if (actionDisabled) return
+                      setMobileActionsOpen(false)
+                      sessionActions.onTogglePinned()
+                    }}
+                  >
+                    {pendingAction === 'pin' ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Pin size={13} aria-hidden="true" />}
+                    <span>{sessionActions.pinned ? 'Unpin session' : 'Pin session'}</span>
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="inline-flex h-8 w-full items-center gap-2 rounded border-0 bg-transparent px-2 text-left text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
+                  disabled={actionDisabled}
+                  onClick={() => {
+                    if (actionDisabled) return
+                    setMobileActionsOpen(false)
+                    sessionActions.onArchive()
+                  }}
+                >
+                  {pendingAction === 'archive' ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Archive size={13} aria-hidden="true" />}
+                  <span>Archive session</span>
+                </button>
+              </span>
+            ) : null}
+          </span>
         ) : null}
       </div>
     </header>
