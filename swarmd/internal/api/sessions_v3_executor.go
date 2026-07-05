@@ -1248,6 +1248,8 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 		strings.TrimSpace(pref.ContextMode),
 	)
 	lineageStart := e.sessionV3ProviderLineageSnapshot(job, lineageID)
+	checkpointFreshContext := sessionV3ProviderCheckpointFreshContext(job, checkpointScope)
+	nativeContinuationAllowed := !checkpointFreshContext && sessionV3ProviderNativeContinuationAllowed(previousLineageID, lineageID)
 	baseReq := provideriface.Request{
 		SessionID:                     job.SessionID,
 		ProviderLineageID:             lineageID,
@@ -1265,8 +1267,8 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 		ProviderLineageStartMessageID: lineageStart.StartMessageID,
 		ProviderLineageStartRunID:     lineageStart.StartRunID,
 		ProviderLineageStartGlobalSeq: lineageStart.StartGlobalSeq,
-		NativeContinuationAllowed:     sessionV3ProviderNativeContinuationAllowed(previousLineageID, lineageID),
-		ForceFreshProviderContext:     sessionV3ProviderForceFreshContext(job, previousLineageID, lineageID, checkpointScope),
+		NativeContinuationAllowed:     nativeContinuationAllowed,
+		ForceFreshProviderContext:     checkpointFreshContext || !nativeContinuationAllowed,
 		Model:                         model,
 		Thinking:                      strings.TrimSpace(pref.Thinking),
 		Instructions:                  resolved.Instructions,
