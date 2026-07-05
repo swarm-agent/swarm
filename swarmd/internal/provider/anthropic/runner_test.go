@@ -146,6 +146,28 @@ func TestAnthropicThinkingConfigFallsBackToLegacyBudgetWithoutCatalog(t *testing
 	}
 }
 
+func TestAnthropicUsageMapsCacheTokenTypesForFrontend(t *testing.T) {
+	usage := anthropicUsageToTokenUsage(anthropicapi.Usage{
+		InputTokens:              100,
+		OutputTokens:             20,
+		CacheReadInputTokens:     30,
+		CacheCreationInputTokens: 40,
+		ServiceTier:              anthropicapi.UsageServiceTierPriority,
+	})
+	if usage.Source != usageSource || usage.APIUsageRawPath != "usage" {
+		t.Fatalf("usage identity = %+v", usage)
+	}
+	if usage.InputTokens != 100 || usage.OutputTokens != 20 || usage.CacheReadTokens != 30 || usage.CacheWriteTokens != 40 || usage.TotalTokens != 190 {
+		t.Fatalf("usage tokens = %+v", usage)
+	}
+	if usage.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want priority", usage.ServiceTier)
+	}
+	if usage.APIUsageRaw["cache_read_input_tokens"] != int64(30) || usage.APIUsageRaw["cache_creation_input_tokens"] != int64(40) {
+		t.Fatalf("raw cache token fields = %#v", usage.APIUsageRaw)
+	}
+}
+
 func TestBuildRequestPlacesPromptCacheControlsAtOfficialBreakpoints(t *testing.T) {
 	tools, _, err := buildAnthropicTools([]provideriface.ToolDefinition{
 		{Name: "read", Description: "Read", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},

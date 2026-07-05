@@ -322,8 +322,16 @@ interface SessionUsageSummaryWire {
   model?: string;
   source?: string;
   context_window?: number;
+  turn_count?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  thinking_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
   total_tokens?: number;
   remaining_tokens?: number;
+  service_tier?: string;
+  estimated_cost_usd?: number;
   updated_at?: number;
 }
 
@@ -721,8 +729,16 @@ function mapSessionUsageSummary(
     model: String(summary.model ?? "").trim(),
     source: String(summary.source ?? "").trim(),
     contextWindow,
+    turnCount: typeof summary.turn_count === "number" ? summary.turn_count : 0,
+    inputTokens: typeof summary.input_tokens === "number" ? summary.input_tokens : 0,
+    outputTokens: typeof summary.output_tokens === "number" ? summary.output_tokens : 0,
+    thinkingTokens: typeof summary.thinking_tokens === "number" ? summary.thinking_tokens : 0,
+    cacheReadTokens: typeof summary.cache_read_tokens === "number" ? summary.cache_read_tokens : 0,
+    cacheWriteTokens: typeof summary.cache_write_tokens === "number" ? summary.cache_write_tokens : 0,
     totalTokens,
     remainingTokens,
+    serviceTier: String(summary.service_tier ?? "").trim(),
+    estimatedCostUSD: typeof summary.estimated_cost_usd === "number" ? summary.estimated_cost_usd : 0,
     updatedAt,
   };
 }

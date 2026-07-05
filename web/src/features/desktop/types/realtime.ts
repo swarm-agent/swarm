@@ -8,8 +8,16 @@ export interface DesktopSessionUsageRecord {
   model: string
   source: string
   contextWindow: number
+  turnCount: number
+  inputTokens: number
+  outputTokens: number
+  thinkingTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
   totalTokens: number
   remainingTokens: number
+  serviceTier: string
+  estimatedCostUSD: number
   updatedAt: number
 }
 

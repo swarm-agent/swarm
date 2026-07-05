@@ -93,8 +93,16 @@ function normalizePreference(value: unknown): SessionPreferenceRecord {
 
 type NormalizedUsageSummary = {
   contextWindow: number
+  turnCount: number
+  inputTokens: number
+  outputTokens: number
+  thinkingTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
   remainingTokens: number
   totalTokens: number
+  serviceTier: string
+  estimatedCostUSD: number
   updatedAt: number
 }
 
@@ -106,7 +114,20 @@ function normalizeUsageSummary(value: unknown): NormalizedUsageSummary | null {
   const remainingTokens = finiteNumber(record.remaining_tokens ?? record.remainingTokens)
   const updatedAt = finiteNumber(record.updated_at ?? record.updatedAt)
   if (contextWindow <= 0 && totalTokens <= 0 && remainingTokens <= 0 && updatedAt <= 0) return null
-  return { contextWindow, remainingTokens, totalTokens, updatedAt }
+  return {
+    contextWindow,
+    turnCount: finiteNumber(record.turn_count ?? record.turnCount),
+    inputTokens: finiteNumber(record.input_tokens ?? record.inputTokens),
+    outputTokens: finiteNumber(record.output_tokens ?? record.outputTokens),
+    thinkingTokens: finiteNumber(record.thinking_tokens ?? record.thinkingTokens),
+    cacheReadTokens: finiteNumber(record.cache_read_tokens ?? record.cacheReadTokens),
+    cacheWriteTokens: finiteNumber(record.cache_write_tokens ?? record.cacheWriteTokens),
+    remainingTokens,
+    totalTokens,
+    serviceTier: String(record.service_tier ?? record.serviceTier ?? '').trim(),
+    estimatedCostUSD: finiteNumber(record.estimated_cost_usd ?? record.estimatedCostUSD),
+    updatedAt,
+  }
 }
 
 function finiteNumber(value: unknown): number {
@@ -123,7 +144,16 @@ function formatDesktopV3ContextLabel(contextWindow: number, remainingTokens?: nu
 
 function formatDesktopV3ContextTooltip(contextWindow: number, usage: NormalizedUsageSummary | null): string {
   if (usage && contextWindow > 0) {
-    return `Remaining context ${formatContextWindow(usage.remainingTokens)} of ${formatContextWindow(contextWindow)}. Total tokens ${usage.totalTokens.toLocaleString()}.`
+    const parts = [
+      `Remaining context ${formatContextWindow(usage.remainingTokens)} of ${formatContextWindow(contextWindow)}.`,
+      `Current session context ${usage.totalTokens.toLocaleString()} tokens (${usage.inputTokens.toLocaleString()} input + ${usage.outputTokens.toLocaleString()} output).`,
+    ]
+    if (usage.cacheReadTokens > 0 || usage.cacheWriteTokens > 0) {
+      parts.push(`Cache: ${usage.cacheReadTokens.toLocaleString()} read, ${usage.cacheWriteTokens.toLocaleString()} write.`)
+    }
+    if (usage.turnCount > 0) parts.push(`Provider usage snapshots: ${usage.turnCount.toLocaleString()}.`)
+    if (usage.serviceTier) parts.push(`Service tier: ${usage.serviceTier}.`)
+    return parts.join(' ')
   }
   if (contextWindow > 0) return `Context window ${formatContextWindow(contextWindow)}`
   return 'Context window unavailable'

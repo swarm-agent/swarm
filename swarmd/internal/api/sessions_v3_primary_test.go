@@ -4407,34 +4407,68 @@ func TestSessionsV3ProviderToolLoopRecordsCodexUsagePerProviderStep(t *testing.T
 	}
 }
 
-func TestSessionsV3ProviderToolLoopRecordsAccumulatedFireworksUsagePerProviderStep(t *testing.T) {
+func TestSessionsV3ProviderUsageAccountingE2E(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	runner := &sessionsV3RecordingProviderRunner{
+
+	codexRunner := &sessionsV3RecordingProviderRunner{
+		id: "codex",
+		responses: []provideriface.Response{
+			{
+				ID:          "resp_codex_usage_step_1",
+				Model:       "gpt-5.5",
+				RestartTurn: true,
+				Usage: provideriface.TokenUsage{
+					InputTokens:     100,
+					TotalTokens:     100,
+					Source:          "codex_api_usage",
+					Transport:       "websocket",
+					ConnectedViaWS:  pebblestore.BoolPtr(true),
+					APIUsageRawPath: "response.usage",
+				},
+			},
+			{
+				ID:         "resp_codex_usage_step_2",
+				Model:      "gpt-5.5",
+				Text:       "codex done",
+				StopReason: "stop",
+				Usage: provideriface.TokenUsage{
+					InputTokens:     200,
+					OutputTokens:    5,
+					TotalTokens:     205,
+					Source:          "codex_api_usage",
+					Transport:       "websocket",
+					ConnectedViaWS:  pebblestore.BoolPtr(true),
+					APIUsageRawPath: "response.usage",
+				},
+			},
+		},
+	}
+	fireworksRunner := &sessionsV3RecordingProviderRunner{
 		id: "fireworks",
 		responses: []provideriface.Response{
 			{
 				ID:          "resp_fireworks_usage_step_1",
-				Model:       "accounts/fireworks/models/glm-4.5",
+				Model:       "accounts/fireworks/models/glm-5p2",
 				RestartTurn: true,
 				Usage: provideriface.TokenUsage{
-					InputTokens:     100,
+					InputTokens:     1000,
 					OutputTokens:    20,
 					CacheReadTokens: 30,
-					TotalTokens:     120,
+					TotalTokens:     1020,
 					Source:          "fireworks_api_usage",
 					APIUsageRawPath: "usage",
 				},
 			},
 			{
 				ID:         "resp_fireworks_usage_step_2",
-				Model:      "accounts/fireworks/models/glm-4.5",
-				Text:       "done",
+				Model:      "accounts/fireworks/models/glm-5p2",
+				Text:       "fireworks done",
 				StopReason: "stop",
 				Usage: provideriface.TokenUsage{
-					InputTokens:     80,
+					InputTokens:     800,
 					OutputTokens:    30,
 					CacheReadTokens: 10,
-					TotalTokens:     110,
+					TotalTokens:     830,
 					Source:          "fireworks_api_usage",
 					APIUsageRawPath: "usage",
 				},
@@ -4442,27 +4476,190 @@ func TestSessionsV3ProviderToolLoopRecordsAccumulatedFireworksUsagePerProviderSt
 		},
 	}
 	providers := registry.New()
-	providers.RegisterRunner(runner)
+	providers.RegisterRunner(codexRunner)
+	providers.RegisterRunner(fireworksRunner)
 	server.providers = providers
 	exec := newSessionV3Executor(server)
 	exec.startDelay = 0
 	server.v3SessionExecutor = exec
+	testCases := []sessionsV3UsageAccountingCase{
+		{
+			name:            "codex",
+			provider:        "codex",
+			model:           "gpt-5.5",
+			createID:        "codex-usage-accounting-create",
+			messageID:       "codex-usage-accounting-message",
+			runner:          codexRunner,
+			expectedContent: "codex done",
+			expectedTurns: []sessionsV3UsageExpectation{
+				{clientRequestID: "codex-usage-accounting-message", provider: "codex", model: "gpt-5.5", step: 1, inputTokens: 100, totalTokens: 100, summaryTotalTokens: 100, summaryInputTokens: 100},
+				{clientRequestID: "codex-usage-accounting-message", provider: "codex", model: "gpt-5.5", step: 2, inputTokens: 200, outputTokens: 5, totalTokens: 205, summaryTotalTokens: 205, summaryInputTokens: 200, summaryOutputTokens: 5},
+			},
+		},
+		{
+			name:            "fireworks",
+			provider:        "fireworks",
+			model:           "accounts/fireworks/models/glm-5p2",
+			createID:        "fireworks-usage-accounting-create",
+			messageID:       "fireworks-usage-accounting-message",
+			runner:          fireworksRunner,
+			expectedContent: "fireworks done",
+			expectedTurns: []sessionsV3UsageExpectation{
+				{clientRequestID: "fireworks-usage-accounting-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 1, inputTokens: 1000, outputTokens: 20, cacheReadTokens: 30, totalTokens: 1020, summaryTotalTokens: 1020, summaryInputTokens: 1000, summaryOutputTokens: 20, summaryCacheReadTokens: 30},
+				{clientRequestID: "fireworks-usage-accounting-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 2, inputTokens: 800, outputTokens: 30, cacheReadTokens: 10, totalTokens: 830, summaryTotalTokens: 1850, summaryInputTokens: 1800, summaryOutputTokens: 50, summaryCacheReadTokens: 40},
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			created := createSessionsV3PrimaryTestSessionWithPreference(t, server, tc.createID, tc.name+" usage accounting", pebblestore.ModelPreference{Provider: tc.provider, Model: tc.model, Thinking: "high"})
+			postSessionsV3PrimaryTestMessage(t, server, created.ID, tc.messageID, "check "+tc.name+" usage cadence")
+			waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+			if tc.runner.callCount != len(tc.expectedTurns) {
+				t.Fatalf("provider call count = %d, want %d", tc.runner.callCount, len(tc.expectedTurns))
+			}
+			sessionsV3AssertUsageAccounting(t, sessionSvc, created.ID, tc.expectedTurns)
+			messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+			if err != nil {
+				t.Fatalf("list messages: %v", err)
+			}
+			if len(messages) < 2 || messages[1].Content != tc.expectedContent {
+				t.Fatalf("assistant content = %+v, want %q", messages, tc.expectedContent)
+			}
+		})
+	}
+}
 
-	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "fireworks-step-usage-create", "fireworks step usage", pebblestore.ModelPreference{Provider: "fireworks", Model: "accounts/fireworks/models/glm-4.5", Thinking: "high"})
-	postSessionsV3PrimaryTestMessage(t, server, created.ID, "fireworks-step-usage-message", "check usage cadence")
+func TestSessionsV3ProviderUsageAccountingTransitionE2E(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	codexRunner := &sessionsV3RecordingProviderRunner{
+		id: "codex",
+		response: provideriface.Response{
+			ID:         "resp_codex_transition_usage",
+			Model:      "gpt-5.5",
+			Text:       "codex transition answer",
+			StopReason: "stop",
+			Usage: provideriface.TokenUsage{
+				InputTokens:     500,
+				OutputTokens:    10,
+				TotalTokens:     510,
+				Source:          "codex_api_usage",
+				Transport:       "websocket",
+				ConnectedViaWS:  pebblestore.BoolPtr(true),
+				APIUsageRawPath: "response.usage",
+			},
+		},
+	}
+	fireworksRunner := &sessionsV3RecordingProviderRunner{
+		id: "fireworks",
+		response: provideriface.Response{
+			ID:         "resp_fireworks_transition_usage",
+			Model:      "accounts/fireworks/models/glm-5p2",
+			Text:       "fireworks transition answer",
+			StopReason: "stop",
+			Usage: provideriface.TokenUsage{
+				InputTokens:     600,
+				OutputTokens:    20,
+				CacheReadTokens: 40,
+				TotalTokens:     620,
+				Source:          "fireworks_api_usage",
+				APIUsageRawPath: "usage",
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(codexRunner)
+	providers.RegisterRunner(fireworksRunner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "usage-transition-create", "usage transition", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.5", Thinking: "high"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "usage-transition-codex-message", "first use codex")
 	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
-	if runner.callCount != 2 {
-		t.Fatalf("provider call count = %d, want 2", runner.callCount)
+	sessionsV3AssertUsageAccounting(t, sessionSvc, created.ID, []sessionsV3UsageExpectation{{clientRequestID: "usage-transition-codex-message", provider: "codex", model: "gpt-5.5", step: 1, inputTokens: 500, outputTokens: 10, totalTokens: 510, summaryTotalTokens: 510, summaryInputTokens: 500, summaryOutputTokens: 10}})
+
+	prefReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/preference", bytes.NewBufferString(`{"provider":"fireworks","model":"accounts/fireworks/models/glm-5p2","thinking":"high"}`))
+	prefReq.Header.Set("Content-Type", "application/json")
+	prefRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prefRec, withTestPrincipal(prefReq))
+	if prefRec.Code != http.StatusOK {
+		t.Fatalf("preference status = %d, want %d, body=%s", prefRec.Code, http.StatusOK, prefRec.Body.String())
 	}
 
-	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 100)
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "usage-transition-fireworks-message", "now use fireworks")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 4)
+	if codexRunner.callCount != 1 || fireworksRunner.callCount != 1 {
+		t.Fatalf("provider call counts codex=%d fireworks=%d, want 1 each", codexRunner.callCount, fireworksRunner.callCount)
+	}
+	expected := []sessionsV3UsageExpectation{
+		{clientRequestID: "usage-transition-codex-message", provider: "codex", model: "gpt-5.5", step: 1, inputTokens: 500, outputTokens: 10, totalTokens: 510, summaryTotalTokens: 510, summaryInputTokens: 500, summaryOutputTokens: 10},
+		{clientRequestID: "usage-transition-fireworks-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 1, inputTokens: 600, outputTokens: 20, cacheReadTokens: 40, totalTokens: 620, summaryTotalTokens: 1130, summaryInputTokens: 1100, summaryOutputTokens: 30, summaryCacheReadTokens: 40},
+	}
+	sessionsV3AssertUsageAccounting(t, sessionSvc, created.ID, expected)
+	summary, ok, err := sessionSvc.GetUsageSummary(created.ID)
+	if err != nil {
+		t.Fatalf("get usage summary: %v", err)
+	}
+	if !ok || summary.Provider != "fireworks" || summary.Model != "accounts/fireworks/models/glm-5p2" || summary.TotalTokens != 1130 || summary.InputTokens != 1100 || summary.OutputTokens != 30 || summary.CacheReadTokens != 40 || summary.TurnCount != 2 {
+		t.Fatalf("transition summary = %+v", summary)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) < 4 || messages[1].Content != "codex transition answer" || messages[3].Content != "fireworks transition answer" {
+		t.Fatalf("transition messages = %+v", messages)
+	}
+}
+
+type sessionsV3UsageAccountingCase struct {
+	name            string
+	provider        string
+	model           string
+	createID        string
+	messageID       string
+	runner          *sessionsV3RecordingProviderRunner
+	expectedContent string
+	expectedTurns   []sessionsV3UsageExpectation
+}
+
+type sessionsV3UsageExpectation struct {
+	clientRequestID        string
+	provider               string
+	model                  string
+	step                   int
+	inputTokens            int64
+	outputTokens           int64
+	cacheReadTokens        int64
+	totalTokens            int64
+	summaryInputTokens     int64
+	summaryOutputTokens    int64
+	summaryCacheReadTokens int64
+	summaryTotalTokens     int64
+}
+
+func sessionsV3AssertUsageAccounting(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string, expected []sessionsV3UsageExpectation) {
+	t.Helper()
+	turns, err := sessionSvc.ListTurnUsage(sessionID, 20)
+	if err != nil {
+		t.Fatalf("list turn usage: %v", err)
+	}
+	if len(turns) != len(expected) {
+		t.Fatalf("turn usage count = %d, want %d: %+v", len(turns), len(expected), turns)
+	}
+	runIDs := make(map[string]bool, len(turns))
+	for _, turn := range turns {
+		runIDs[turn.RunID] = true
+	}
+	events, err := sessionSvc.ListSessionEvents(sessionID, 0, 200)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
-	var payloads []struct {
+	payloads := make(map[string]struct {
 		TurnUsage    pebblestore.SessionTurnUsageSnapshot `json:"turn_usage"`
 		UsageSummary pebblestore.SessionUsageSummary      `json:"usage_summary"`
-	}
+	}, len(expected))
 	for _, event := range events {
 		if event.EventType != "run.usage.updated" {
 			continue
@@ -4474,16 +4671,28 @@ func TestSessionsV3ProviderToolLoopRecordsAccumulatedFireworksUsagePerProviderSt
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			t.Fatalf("decode usage payload: %v", err)
 		}
-		payloads = append(payloads, payload)
+		payloads[payload.TurnUsage.RunID] = payload
 	}
-	if len(payloads) != 2 {
-		t.Fatalf("usage event count = %d, want 2 events=%+v", len(payloads), events)
+	if len(payloads) != len(expected) {
+		t.Fatalf("usage event count = %d, want %d events=%+v", len(payloads), len(expected), events)
 	}
-	if payloads[0].TurnUsage.Steps != 1 || payloads[0].TurnUsage.TotalTokens != 120 || payloads[0].UsageSummary.TotalTokens != 120 {
-		t.Fatalf("first usage payload = %+v", payloads[0])
-	}
-	if payloads[1].TurnUsage.Steps != 2 || payloads[1].TurnUsage.TotalTokens != 110 || payloads[1].UsageSummary.TotalTokens != 230 || payloads[1].UsageSummary.CacheReadTokens != 40 {
-		t.Fatalf("second usage payload should accumulate fireworks summary without changing turn precision: %+v", payloads[1])
+	for index, want := range expected {
+		baseRunID := stableSessionsV3PrimaryRunID(sessionID, want.clientRequestID)
+		wantRunID := sessionV3ProviderUsageRunID(baseRunID, want.step)
+		if !runIDs[wantRunID] {
+			t.Fatalf("missing turn usage run_id %q in %+v", wantRunID, turns)
+		}
+		payload, ok := payloads[wantRunID]
+		if !ok {
+			t.Fatalf("missing usage event run_id %q in %+v", wantRunID, payloads)
+		}
+		got := payload.TurnUsage
+		if got.Provider != want.provider || got.Model != want.model || got.Steps != want.step || got.InputTokens != want.inputTokens || got.OutputTokens != want.outputTokens || got.CacheReadTokens != want.cacheReadTokens || got.TotalTokens != want.totalTokens {
+			t.Fatalf("turn usage[%d] = %+v, want %+v", index, got, want)
+		}
+		if payload.UsageSummary.InputTokens != want.summaryInputTokens || payload.UsageSummary.OutputTokens != want.summaryOutputTokens || payload.UsageSummary.CacheReadTokens != want.summaryCacheReadTokens || payload.UsageSummary.TotalTokens != want.summaryTotalTokens {
+			t.Fatalf("usage summary[%d] = %+v, want summary input=%d output=%d cache_read=%d total=%d", index, payload.UsageSummary, want.summaryInputTokens, want.summaryOutputTokens, want.summaryCacheReadTokens, want.summaryTotalTokens)
+		}
 	}
 }
 

@@ -293,8 +293,16 @@ test('snapshot replacement hydrates session usage for context badge projections'
         model: 'gpt-5.4',
         source: 'provider_api_usage',
         contextWindow: 1000,
+        turnCount: 2,
+        inputTokens: 200,
+        outputTokens: 50,
+        thinkingTokens: 0,
+        cacheReadTokens: 125,
+        cacheWriteTokens: 0,
         totalTokens: 250,
         remainingTokens: 750,
+        serviceTier: 'standard',
+        estimatedCostUSD: 0.001,
         updatedAt: 30,
       },
     },
@@ -346,8 +354,16 @@ test('usage events update session usage without marking the desktop state stale'
         model: 'gpt-5.4',
         source: 'provider_api_usage',
         context_window: 1000,
+        turn_count: 2,
+        input_tokens: 200,
+        output_tokens: 50,
+        thinking_tokens: 0,
+        cache_read_tokens: 125,
+        cache_write_tokens: 0,
         total_tokens: 250,
         remaining_tokens: 750,
+        service_tier: 'standard',
+        estimated_cost_usd: 0.001,
         updated_at: 40,
       },
     },
@@ -356,6 +372,9 @@ test('usage events update session usage without marking the desktop state stale'
   assert.equal(next.status, 'ready')
   assert.equal(next.staleReason, null)
   assert.equal(next.usageBySessionId['session-1']?.remainingTokens, 750)
+  assert.equal(next.usageBySessionId['session-1']?.inputTokens, 200)
+  assert.equal(next.usageBySessionId['session-1']?.cacheReadTokens, 125)
+  assert.equal(next.usageBySessionId['session-1']?.serviceTier, 'standard')
   assert.equal(next.sessionsById['session-1']?.usage?.remainingTokens, 750)
   assert.equal(next.sessionsById['session-1']?.live.lastEventType, 'run.usage.updated')
   assert.equal(next.sessionsById['session-1']?.lastEventSeq, 4)

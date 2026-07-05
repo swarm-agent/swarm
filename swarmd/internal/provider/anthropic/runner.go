@@ -620,6 +620,7 @@ func anthropicUsageToTokenUsage(usage anthropicapi.Usage) provideriface.TokenUsa
 		CacheReadTokens:  maxInt64(usage.CacheReadInputTokens, 0),
 		CacheWriteTokens: maxInt64(usage.CacheCreationInputTokens, 0),
 		TotalTokens:      maxInt64(usage.InputTokens+usage.OutputTokens+usage.CacheCreationInputTokens+usage.CacheReadInputTokens, 0),
+		ServiceTier:      strings.TrimSpace(string(usage.ServiceTier)),
 		Source:           usageSource,
 		APIUsageRaw:      usageRaw,
 		APIUsageRawPath:  "usage",
