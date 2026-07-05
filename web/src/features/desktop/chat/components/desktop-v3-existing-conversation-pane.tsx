@@ -127,6 +127,12 @@ function formatDesktopV3ContextTooltip(contextWindow: number, usage: NormalizedU
   return 'Context window unavailable'
 }
 
+function desktopV3ContextUsagePercent(contextWindow: number, usage: NormalizedUsageSummary | null): number {
+  if (!usage || contextWindow <= 0) return 0
+  const usedTokens = Math.max(0, contextWindow - usage.remainingTokens)
+  return (usedTokens / contextWindow) * 100
+}
+
 function preferenceFromOption(option: ModelOptionRecord | null, current: SessionPreferenceRecord): SessionPreferenceRecord {
   if (!option) return current
   return {
@@ -792,6 +798,7 @@ export function DesktopV3ExistingConversationPane({
     : selectedContextWindow
   const contextLabel = formatDesktopV3ContextLabel(effectiveContextWindowValue, cachedUsage?.remainingTokens)
   const contextTooltip = formatDesktopV3ContextTooltip(effectiveContextWindowValue, cachedUsage)
+  const contextUsagePercent = desktopV3ContextUsagePercent(effectiveContextWindowValue, cachedUsage)
   const workspaceSettingsMatch = matchRoute({ to: '/$workspaceSlug/settings', fuzzy: false })
     ?? matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
     ?? matchRoute({ to: '/$workspaceSlug', fuzzy: false })
@@ -1367,6 +1374,7 @@ export function DesktopV3ExistingConversationPane({
             routeTitle="Changing the route starts a new session in this workspace."
             contextLabel={contextLabel}
             contextTooltip={contextTooltip}
+            contextUsagePercent={contextUsagePercent}
             compactDisabled={compacting || sending || Boolean(currentRun)}
             settingsActionLabel={showRestartSettingsAction ? 'Restart loop with new settings?' : ''}
             settingsActionBusy={restartingWithSettings}

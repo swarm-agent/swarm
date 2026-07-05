@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
 import { LoaderCircle, Mic, Minimize2, Send, Settings2, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
@@ -115,6 +115,11 @@ function normalizeFastToggle(value: string): 'on' | 'off' {
   return value.trim().toLowerCase() === 'on' ? 'on' : 'off'
 }
 
+function clampContextUsagePercent(value?: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(100, value))
+}
+
 export interface DesktopV3AgenticComposerProps {
   draft: string
   onDraftChange: (draft: string) => void
@@ -158,6 +163,7 @@ export interface DesktopV3AgenticComposerProps {
   routeTitle?: string
   contextLabel?: string
   contextTooltip?: string
+  contextUsagePercent?: number
   onCompact?: (draft: string) => void | Promise<void>
   compactDisabled?: boolean
   settingsActionLabel?: string
@@ -208,6 +214,7 @@ export function DesktopV3AgenticComposer({
   onFastChange,
   contextLabel,
   contextTooltip,
+  contextUsagePercent,
   onCompact,
   compactDisabled = false,
   settingsActionLabel = '',
@@ -537,18 +544,32 @@ export function DesktopV3AgenticComposer({
     event.dataTransfer.dropEffect = 'copy'
   }, [])
 
+  const hasContextUsagePercent = typeof contextUsagePercent === 'number' && Number.isFinite(contextUsagePercent)
+  const normalizedContextUsagePercent = clampContextUsagePercent(contextUsagePercent)
+  const mobileContextUsageLabel = hasContextUsagePercent ? `${Math.round(normalizedContextUsagePercent)}%` : 'ctx'
+  const mobileContextProgressStyle: CSSProperties = {
+    background: `conic-gradient(var(--app-primary) ${normalizedContextUsagePercent * 3.6}deg, var(--app-border) 0deg)`,
+  }
   const compactButton = (mobile = false) => (
     <button
       type="button"
       onClick={() => { void onCompact?.(draft) }}
       disabled={compactDisabled || !onCompact}
       title={contextTooltip || 'Compact conversation'}
+      aria-label={contextTooltip || 'Compact conversation'}
+      style={mobile ? mobileContextProgressStyle : undefined}
       className={mobile
-        ? 'inline-flex h-10 min-w-0 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-1.5 text-[10px] font-medium tabular-nums text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50 sm:px-2.5 sm:text-[11px]'
+        ? 'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full p-[2px] text-[9px] font-semibold uppercase tracking-wide text-[var(--app-primary)] shadow-sm transition hover:scale-[1.03] disabled:cursor-not-allowed disabled:opacity-50'
         : 'inline-flex min-h-6 items-center gap-1 rounded-full bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium tabular-nums text-[var(--app-text)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50'}
     >
-      <span className={mobile ? 'min-w-0 w-full truncate text-center' : undefined}>{contextLabel || 'ctx'}</span>
-      {mobile ? null : <Minimize2 size={12} className="text-[var(--app-text-subtle)]" />}
+      {mobile ? (
+        <span className="flex h-full w-full items-center justify-center rounded-full bg-[var(--app-bg-alt)]">{mobileContextUsageLabel}</span>
+      ) : (
+        <>
+          <span>{contextLabel || 'ctx'}</span>
+          <Minimize2 size={12} className="text-[var(--app-text-subtle)]" />
+        </>
+      )}
     </button>
   )
 
