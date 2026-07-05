@@ -16,7 +16,11 @@ if [[ -z "${EXPECTED_COMMIT}" ]]; then
 fi
 CODEX_MODEL_A="${SWARM_E2E_CODEX_MODEL_A:-gpt-5.5}"
 CODEX_MODEL_B="${SWARM_E2E_CODEX_MODEL_B:-gpt-5.4}"
-FIREWORKS_MODEL="${SWARM_E2E_FIREWORKS_MODEL:-accounts/fireworks/models/kimi-k2p6}"
+CODEX_PLAN_MODEL="${SWARM_E2E_CODEX_PLAN_MODEL:-${CODEX_MODEL_A}}"
+CODEX_AUTO_MODEL="${SWARM_E2E_CODEX_AUTO_MODEL:-${CODEX_MODEL_A}}"
+CODEX_PLAN_THINKING="${SWARM_E2E_CODEX_PLAN_THINKING:-xhigh}"
+CODEX_AUTO_THINKING="${SWARM_E2E_CODEX_AUTO_THINKING:-high}"
+FIREWORKS_MODEL="${SWARM_E2E_FIREWORKS_MODEL:-accounts/fireworks/models/glm-5p2}"
 E2E_ID="${E2E_ID:-v3-provider-boundary-$(date +%Y%m%d-%H%M%S)-$RANDOM}"
 if [[ ! "${E2E_ID}" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "E2E_ID may only contain letters, numbers, dots, underscores, and dashes" >&2
@@ -43,7 +47,7 @@ const httpLog = `${artifactDir}/http.ndjson`;
 const summaryPath = `${artifactDir}/summary.json`;
 fs.writeFileSync(httpLog, '');
 const result = {result:'NOT_DONE', e2e_id:cfg.e2eID, workspace:cfg.workspaceDir, started_at:startedISO, candidate:{}, ids:{}, gates:{}, diagnostics:{}, artifacts:{http:httpLog, summary:summaryPath, artifact_dir:artifactDir}, failures:[], failed_gates:[]};
-const requiredGates=['candidate','diagnostics_enabled','workspace','codex_same_lineage','codex_model_handoff','codex_to_fireworks_handoff','checkpoint_fresh_context','fireworks_usage','logs'];
+const requiredGates=['candidate','diagnostics_enabled','workspace','codex_same_lineage','codex_model_handoff','codex_to_fireworks_handoff','codex55_to_fireworks_glm','exit_plan_mode_splice','post_checkpoint_resume','checkpoint_fresh_context','fireworks_usage','logs'];
 function refreshSummary(){ result.failed_gates=requiredGates.filter(g=>result.gates[g]!==true); }
 function save(){ refreshSummary(); fs.writeFileSync(summaryPath, JSON.stringify(result,null,2)); }
 function die(msg){ result.failures.push(msg); save(); throw new Error(msg); }
@@ -76,9 +80,20 @@ async function ensureE2EAgent(token){
   result.ids.agent_name=agentName;
   return agentName;
 }
-async function createSession(token,binding,swarm,agentName){
-  const body={client_request_id:`${cfg.e2eID}:create:${crypto.randomBytes(3).toString('hex')}`,title:`${cfg.e2eID} provider boundary`,workspace_path:result.workspace,workspace_name:cfg.e2eID,workspace_binding_id:binding,swarm_id:swarm,target_kind:'host',target_relationship:'self',mode:'auto',agent_name:agentName,preference:{provider:'codex',model:cfg.codexModelA,thinking:'low'},metadata:{e2e_id:cfg.e2eID,provider_boundary_e2e:true}};
-  const r=await api('POST','/v3/sessions',token,body,'create.session'); const id=r.body?.session?.id; assert(id,'create missing session id'); return id;
+async function ensureExitPlanAgent(token){
+  const agentName=`provider-boundary-exit-${cfg.e2eID}`;
+  const body={mode:'primary',description:'Temporary provider boundary exit-plan E2E agent',prompt:'You are a provider boundary exit-plan E2E agent. When asked to exit plan mode, create the requested one-checkpoint plan and call exit_plan_mode. In checkpoint runs, satisfy the checkpoint with plan_manage and keep the final assistant response brief.',runtime_mode:'plan_auto',exit_plan_mode_enabled:true,model_mode:'split',plan_provider:'codex',plan_model:cfg.codexPlanModel,plan_thinking:cfg.codexPlanThinking,auto_provider:'codex',auto_model:cfg.codexAutoModel,auto_thinking:cfg.codexAutoThinking,enabled:true,tool_contract:{preset:'custom',tools:{plan_manage:{enabled:true},exit_plan_mode:{enabled:true}}}};
+  const r=await api('PUT',`/v2/agents/${encodeURIComponent(agentName)}`,token,body,'agent.exit.create');
+  assert(r.body?.ok===true,`exit agent create failed: ${JSON.stringify(r.body)}`);
+  result.ids.exit_agent_name=agentName;
+  return agentName;
+}
+async function createSession(token,binding,swarm,agentName, opts={}){
+  const mode=opts.mode||'auto';
+  const pref=opts.preference||{provider:'codex',model:cfg.codexModelA,thinking:'low'};
+  const label=opts.label||'create';
+  const body={client_request_id:`${cfg.e2eID}:create:${label}:${crypto.randomBytes(3).toString('hex')}`,title:`${cfg.e2eID} ${label} provider boundary`,workspace_path:result.workspace,workspace_name:cfg.e2eID,workspace_binding_id:binding,swarm_id:swarm,target_kind:'host',target_relationship:'self',mode,agent_name:agentName,preference:pref,metadata:{e2e_id:cfg.e2eID,provider_boundary_e2e:true,label}};
+  const r=await api('POST','/v3/sessions',token,body,`create.session.${label}`); const id=r.body?.session?.id; assert(id,'create missing session id'); return id;
 }
 async function postMessage(token, sessionID, label, content){
   const body={client_request_id:`${cfg.e2eID}:${label}:${crypto.randomBytes(3).toString('hex')}`,role:'user',content,metadata:{e2e_id:cfg.e2eID,label}};
@@ -100,6 +115,42 @@ async function waitForAssistant(token, sessionID, runID, label, timeoutMs=600000
   }
   die(`timeout waiting for assistant ${label} run=${runID}`);
 }
+async function waitForPermission(token, sessionID, runID, toolName, label, timeoutMs=180000){
+  const end=Date.now()+timeoutMs;
+  while(Date.now()<end){
+    const body=(await api('GET',`/v3/sessions/${encodeURIComponent(sessionID)}/permissions?status=pending&limit=50`,token,undefined,`permissions.${label}`,false,60000)).body;
+    const pending=(body.permissions||[]).find(p=>(!runID || String(p.run_id||'')===runID) && (!toolName || String(p.tool_name||'')===toolName));
+    if(pending?.id) return pending;
+    await new Promise(r=>setTimeout(r,1000));
+  }
+  die(`timeout waiting for ${toolName||'tool'} permission ${label} run=${runID}`);
+}
+async function resolvePermission(token, sessionID, permissionID, label){
+  const r=await api('POST',`/v3/sessions/${encodeURIComponent(sessionID)}/permissions/${encodeURIComponent(permissionID)}/resolve`,token,{action:'allow_once',reason:`${cfg.e2eID} ${label}`},`permission.resolve.${label}`,false,120000);
+  assert(r.body?.permission?.status==='approved',`permission ${permissionID} not approved: ${JSON.stringify(r.body)}`);
+  return r.body.permission;
+}
+async function waitForSessionMode(token, sessionID, mode, label, timeoutMs=180000){
+  const end=Date.now()+timeoutMs;
+  while(Date.now()<end){
+    const body=(await api('GET',`/v3/sessions/${encodeURIComponent(sessionID)}`,token,undefined,`session.${label}`,false,60000)).body;
+    const session=body.session||body;
+    if(String(session.mode||'')===mode) return session;
+    await new Promise(r=>setTimeout(r,1000));
+  }
+  die(`timeout waiting for session mode ${mode} ${label}`);
+}
+async function waitForPlanReview(token, sessionID, label, timeoutMs=600000){
+  const end=Date.now()+timeoutMs;
+  while(Date.now()<end){
+    const body=(await api('GET',`/v3/sessions/${encodeURIComponent(sessionID)}/plans/active`,token,undefined,`plan.${label}`,false,60000)).body;
+    const plan=body.plan||body.active_plan||body;
+    const doc=plan.document||{};
+    if(doc.execution_state?.status==='waiting_review' || doc.execution_state?.status==='final_review') return plan;
+    await new Promise(r=>setTimeout(r,2000));
+  }
+  die(`timeout waiting for active plan review ${label}`);
+}
 async function runTurn(token, sessionID, label, provider, model, content){
   await api('POST',`/v3/sessions/${encodeURIComponent(sessionID)}/preference`,token,{provider,model,thinking:'low'},`preference.${label}`);
   const runID=await postMessage(token, sessionID, label, content);
@@ -115,7 +166,13 @@ function diagnosticEvents(events, runID, stage){
   });
 }
 function diagnosticPayload(d){ return d?.payload || d?.Payload || d || {}; }
-function requestDiag(events, runID){ const all=diagnosticEvents(events, runID, 'session.diagnostic.provider.request'); assert(all.length>0,`missing provider request diagnostic for ${runID}`); return diagnosticPayload(all.at(-1)).request || {}; }
+function providerRequestRecords(events, runID){
+  return events.filter(e=>String(e.event_type||'')==='session.diagnostic.provider.request' && (!runID || String(e.run_id||e.runID||'')===runID || JSON.stringify(e).includes(runID))).map(e=>{ const p=diagnosticPayload(e.payload); return {event:e,payload:p,request:p.request||{}}; });
+}
+function requestDiag(events, runID){ const all=providerRequestRecords(events, runID); assert(all.length>0,`missing provider request diagnostic for ${runID}`); return all.at(-1).request || {}; }
+function requestRecordBy(events, predicate, label){ const all=providerRequestRecords(events,'').filter(r=>predicate(r.request,r)); assert(all.length>0,`missing provider request diagnostic matching ${label}`); return all.at(-1); }
+function recordRunID(record){ return String(record?.event?.run_id||record?.event?.runID||record?.payload?.run_id||record?.payload?.runID||''); }
+function requestSummary(record){ const r=record.request||{}; return {run_id:recordRunID(record), provider:record.payload?.provider||'', model:r.model||record.payload?.model||'', thinking:r.thinking||'', boundary_reason:r.boundary_reason||'', native_continuation_allowed:r.native_continuation_allowed, force_fresh_provider_context:r.force_fresh_provider_context, provider_lineage_id:r.provider_lineage_id||'', previous_provider_lineage_id:r.previous_provider_lineage_id||'', input_text_chars:r.input_text_chars||0}; }
 function apiRequestBodies(events, runID, provider){
   return diagnosticEvents(events, runID, 'session.diagnostic.provider.api.request').filter(d=>diagnosticPayload(d).provider===provider || d.provider===provider).map(d=>String(diagnosticPayload(d).body||d.body||''));
 }
@@ -129,6 +186,8 @@ function assertBoundary(label, diag, assistant, want){
   if(want.native !== undefined) assert(diag.native_continuation_allowed===want.native,`${label} native_continuation_allowed=${diag.native_continuation_allowed}`);
   if(want.fresh !== undefined) assert(diag.force_fresh_provider_context===want.fresh,`${label} force_fresh_provider_context=${diag.force_fresh_provider_context}`);
   if(want.previousEqualsCurrent !== undefined){ const equal=String(diag.previous_provider_lineage_id||'')!=='' && diag.previous_provider_lineage_id===diag.provider_lineage_id; assert(equal===want.previousEqualsCurrent,`${label} lineage equality=${equal} diag=${JSON.stringify(diag)}`); }
+  if(want.model) assert(String(diag.model||'')===want.model,`${label} model=${diag.model}, want ${want.model}`);
+  if(want.thinking) assert(String(diag.thinking||'')===want.thinking,`${label} thinking=${diag.thinking}, want ${want.thinking}`);
 }
 async function main(){
   result.candidate.hostname=run('hostname',[]).stdout.trim(); result.candidate.repo_path=cfg.repo; result.candidate.expected_commit=cfg.expectedCommit; result.candidate.commit=run('git',['-C',cfg.repo,'rev-parse','HEAD']).stdout.trim(); result.candidate.git_status=run('git',['-C',cfg.repo,'status','--short']).stdout;
@@ -142,7 +201,7 @@ for item in pathlib.Path('/proc', pid, 'environ').read_bytes().split(b'\\0'):
     if text.startswith('SWARM_V3_DIAGNOSTICS=') or text.startswith('SWARM_PROVIDER_API_DIAGNOSTICS='):
         print(text)
 PY`]); result.candidate.diagnostics_env=env.stdout; assert(env.stdout.includes('SWARM_V3_DIAGNOSTICS=1') && env.stdout.includes('SWARM_PROVIDER_API_DIAGNOSTICS=1'),`diagnostics env not enabled on running swarmd: ${env.stdout}`); result.gates.diagnostics_enabled=true;
-  const token=await authDesktop(); const agentName=await ensureE2EAgent(token); fs.mkdirSync(result.workspace,{recursive:true}); const topo=(await api('GET','/v1/swarm/topology',token,undefined,'topology')).body; const runtime=(topo.runtimes||[]).find(r=>r.relationship==='self')||(topo.runtimes||[])[0]; assert(runtime?.swarm_id,'missing self runtime'); const w=(await api('POST','/v1/workspace/add',token,{path:result.workspace,name:cfg.e2eID,make_current:false},'workspace.add')).body; const binding=w.local_workspace_binding_id; assert(binding,'workspace add missing binding'); result.ids.workspace_binding_id=binding; result.ids.runtime_swarm_id=runtime.swarm_id; const sessionID=await createSession(token,binding,runtime.swarm_id,agentName); result.ids.session_id=sessionID; result.gates.workspace=true;
+  const token=await authDesktop(); const agentName=await ensureE2EAgent(token); const exitAgentName=await ensureExitPlanAgent(token); fs.mkdirSync(result.workspace,{recursive:true}); const topo=(await api('GET','/v1/swarm/topology',token,undefined,'topology')).body; const runtime=(topo.runtimes||[]).find(r=>r.relationship==='self')||(topo.runtimes||[])[0]; assert(runtime?.swarm_id,'missing self runtime'); const w=(await api('POST','/v1/workspace/add',token,{path:result.workspace,name:cfg.e2eID,make_current:false},'workspace.add')).body; const binding=w.local_workspace_binding_id; assert(binding,'workspace add missing binding'); result.ids.workspace_binding_id=binding; result.ids.runtime_swarm_id=runtime.swarm_id; const sessionID=await createSession(token,binding,runtime.swarm_id,agentName,{label:'boundary'}); result.ids.session_id=sessionID; result.gates.workspace=true;
   const huge=`STALE_BOUNDARY_SENTINEL_${cfg.e2eID}_` + 'x'.repeat(120000);
   const a1=await runTurn(token,sessionID,'codex_a1','codex',cfg.codexModelA,`Codex first provider boundary turn ${cfg.e2eID}. Reply exactly CODEX_A1_OK. ${huge}`);
   let events=await fetchEvents(token,sessionID,'after_a1'); let d1=requestDiag(events,result.ids.codex_a1_run_id); assertBoundary('codex_a1',d1,a1,{boundary:'session_turn',native:false,fresh:true});
@@ -158,6 +217,19 @@ PY`]); result.candidate.diagnostics_env=env.stdout; assert(env.stdout.includes('
   assert(Number(df.input_text_chars||0) < 50000,`Fireworks handoff input too large: ${df.input_text_chars}`);
   for (const body of apiRequestBodies(events,result.ids.fireworks_run_id,'fireworks')) { assert(body.includes('"stream_options"') && body.includes('"include_usage":true'), 'Fireworks request missing stream_options.include_usage'); assert(!body.includes('x'.repeat(20000)), 'Fireworks handoff API request replayed huge stale transcript body'); }
   result.gates.codex_to_fireworks_handoff=true;
+  const glmSessionID=await createSession(token,binding,runtime.swarm_id,agentName,{label:'codex55-fireworks-glm',preference:{provider:'codex',model:cfg.codexModelA,thinking:'high'}}); result.ids.codex55_fireworks_session_id=glmSessionID;
+  const glmHuge=`STALE_GLM_SENTINEL_${cfg.e2eID}_` + 'y'.repeat(90000);
+  await runTurn(token,glmSessionID,'glm_codex55_seed','codex',cfg.codexModelA,`Codex gpt-5.5 seed before Fireworks GLM ${cfg.e2eID}. Reply exactly GLM_CODEX_SEED_OK. ${glmHuge}`);
+  const glmF=await runTurn(token,glmSessionID,'glm_fireworks','fireworks',cfg.fireworksModel,`Fireworks GLM handoff from Codex gpt-5.5 ${cfg.e2eID}. Reply exactly GLM_FIREWORKS_HANDOFF_OK.`);
+  let glmEvents=await fetchEvents(token,glmSessionID,'after_glm_fireworks'); let dglm=requestDiag(glmEvents,result.ids.glm_fireworks_run_id); assertBoundary('codex55_to_fireworks_glm',dglm,glmF,{boundary:'provider_model_runtime_handoff',native:false,fresh:true,previousEqualsCurrent:false,model:cfg.fireworksModel}); assert(Number(dglm.input_text_chars||0)<50000,`Codex 5.5 to Fireworks GLM input too large: ${dglm.input_text_chars}`); for (const body of apiRequestBodies(glmEvents,result.ids.glm_fireworks_run_id,'fireworks')) { assert(!body.includes('y'.repeat(20000)), 'Codex 5.5 to Fireworks GLM request replayed stale sentinel body'); } result.gates.codex55_to_fireworks_glm=true;
+
+  const exitSessionID=await createSession(token,binding,runtime.swarm_id,exitAgentName,{label:'exit-plan-splice',mode:'plan',preference:{provider:'codex',model:cfg.codexPlanModel,thinking:cfg.codexPlanThinking}}); result.ids.exit_session_id=exitSessionID;
+  const exitHuge=`STALE_EXIT_PLAN_SENTINEL_${cfg.e2eID}_` + 'z'.repeat(90000);
+  const exitRunID=await postMessage(token,exitSessionID,'exit_plan',`Plan mode live splice E2E ${cfg.e2eID}. This pre-splice sentinel must not be replayed after the checkpoint splice: ${exitHuge}\nCreate exactly one checkpoint with id cp-exit-splice whose task is to reply EXIT_CHECKPOINT_OK and then complete it with plan_manage. Submit it now with exit_plan_mode.`);
+  const exitPerm=await waitForPermission(token,exitSessionID,exitRunID,'exit_plan_mode','exit_plan_mode'); result.ids.exit_plan_permission_id=exitPerm.id; await resolvePermission(token,exitSessionID,exitPerm.id,'exit_plan_mode'); await waitForSessionMode(token,exitSessionID,'auto','after_exit_plan_mode'); const reviewPlan=await waitForPlanReview(token,exitSessionID,'exit_checkpoint');
+  let exitEvents=await fetchEvents(token,exitSessionID,'after_exit_checkpoint'); const cpRecords=providerRequestRecords(exitEvents,'').filter(r=>String(r.request?.boundary_reason||'').includes('checkpoint_fresh_context') && String(r.request?.model||'')===cfg.codexAutoModel); if(cpRecords.length===0){ const observed=providerRequestRecords(exitEvents,'').map(requestSummary); const staleReplay=apiRequestBodies(exitEvents,'','codex').some(body=>body.includes('z'.repeat(20000))); result.diagnostics.exit_plan_blocker={reason:'missing checkpoint_fresh_context provider request after approved exit_plan_mode', observed_provider_requests:observed, stale_sentinel_in_codex_api_requests:staleReplay, active_plan_execution_state:reviewPlan.document?.execution_state||null}; save(); die(`exit_plan_mode did not create a checkpoint_fresh_context provider request; observed=${JSON.stringify(observed)}`); } const cpRecord=cpRecords.at(-1); const exitCheckpointRunID=recordRunID(cpRecord)||exitRunID; result.ids.exit_checkpoint_run_id=exitCheckpointRunID; const dExitCp=cpRecord.request; assertBoundary('exit_plan_mode_splice',dExitCp,{metadata:{}},{boundary:'checkpoint_fresh_context',native:false,fresh:true,model:cfg.codexAutoModel,thinking:cfg.codexAutoThinking}); assert(Number(dExitCp.input_text_chars||0)<50000,`exit checkpoint input too large: ${dExitCp.input_text_chars}`); for (const body of apiRequestBodies(exitEvents,exitCheckpointRunID,'codex')) { assert(!body.includes('z'.repeat(20000)), 'exit checkpoint request replayed stale pre-splice transcript body'); } const exitAssistant=await waitForAssistant(token,exitSessionID,exitRunID,'exit_checkpoint_final',600000); result.ids.exit_checkpoint_assistant_id=exitAssistant.id||''; result.diagnostics.exit_plan_review={execution_state:reviewPlan.document?.execution_state||null}; result.gates.exit_plan_mode_splice=true;
+  const postRunID=await postMessage(token,exitSessionID,'post_checkpoint_resume',`Post-checkpoint resume ${cfg.e2eID}. Reply exactly POST_CHECKPOINT_RESUME_OK and do not mention the stale sentinel.`); const postAssistant=await waitForAssistant(token,exitSessionID,postRunID,'post_checkpoint_resume',600000); exitEvents=await fetchEvents(token,exitSessionID,'after_post_checkpoint_resume'); const dPost=requestDiag(exitEvents,postRunID); assertBoundary('post_checkpoint_resume',dPost,postAssistant,{boundary:'session_turn',native:true,fresh:false,previousEqualsCurrent:true,model:cfg.codexAutoModel,thinking:cfg.codexAutoThinking}); assert(dPost.provider_lineage_id===dExitCp.provider_lineage_id,`post-checkpoint lineage ${dPost.provider_lineage_id} does not match checkpoint splice lineage ${dExitCp.provider_lineage_id}`); assert(Number(dPost.input_text_chars||0)<50000,`post-checkpoint resume input too large: ${dPost.input_text_chars}`); assert(!JSON.stringify(dPost).includes('STALE_EXIT_PLAN_SENTINEL'), 'post-checkpoint diagnostic referenced stale sentinel'); for (const body of apiRequestBodies(exitEvents,postRunID,'codex')) { assert(!body.includes('z'.repeat(20000)), 'post-checkpoint user message replayed stale pre-splice transcript body'); } result.gates.post_checkpoint_resume=true;
+
   const doc={id:`plan-${cfg.e2eID}`,title:`${cfg.e2eID} checkpoint plan`,info:{goal:'E2E checkpoint fresh context boundary'},execution_policy:{mode:'automatic',shape:'checkpointed'},active_checkpoint_id:'cp-boundary',checkpoints:[{id:'cp-boundary',title:'checkpoint provider boundary',status:'pending',tasks:['Reply with CHECKPOINT_BOUNDARY_OK'],acceptance_criteria:['Fresh context run completes']} ]};
   await api('POST',`/v3/sessions/${encodeURIComponent(sessionID)}/plans`,token,{plan_id:doc.id,title:doc.title,document:doc,status:'approved',approval_state:'approved',activate:true},'plan.save');
   const start=(await api('POST',`/v3/sessions/${encodeURIComponent(sessionID)}/plan-mode/checkpoints/cp-boundary/start`,token,{plan_id:doc.id},'checkpoint.start',false,600000)).body; const checkpointRunID=start.run_start?.run_intent?.run_id||start.run_intent?.run_id||''; assert(checkpointRunID,'checkpoint start missing run_id'); result.ids.checkpoint_run_id=checkpointRunID; const cp=await waitForAssistant(token,sessionID,checkpointRunID,'checkpoint',600000);
@@ -175,7 +247,7 @@ NODE
 
 CONFIG_LOCAL="${LOCAL_DIR}/config.json"
 cat >"${CONFIG_LOCAL}" <<JSON
-{"apiURL":"${API_URL}","serviceUnit":"${SERVICE_UNIT}","repo":"${REMOTE_REPO}","e2eID":"${E2E_ID}","artifactDir":"${REMOTE_DIR}","workspaceDir":"${WORKSPACE_DIR}","expectedCommit":"${EXPECTED_COMMIT}","codexModelA":"${CODEX_MODEL_A}","codexModelB":"${CODEX_MODEL_B}","fireworksModel":"${FIREWORKS_MODEL}"}
+{"apiURL":"${API_URL}","serviceUnit":"${SERVICE_UNIT}","repo":"${REMOTE_REPO}","e2eID":"${E2E_ID}","artifactDir":"${REMOTE_DIR}","workspaceDir":"${WORKSPACE_DIR}","expectedCommit":"${EXPECTED_COMMIT}","codexModelA":"${CODEX_MODEL_A}","codexModelB":"${CODEX_MODEL_B}","codexPlanModel":"${CODEX_PLAN_MODEL}","codexAutoModel":"${CODEX_AUTO_MODEL}","codexPlanThinking":"${CODEX_PLAN_THINKING}","codexAutoThinking":"${CODEX_AUTO_THINKING}","fireworksModel":"${FIREWORKS_MODEL}"}
 JSON
 
 ssh "${SSH_HOST}" "mkdir -p '${REMOTE_DIR}'"

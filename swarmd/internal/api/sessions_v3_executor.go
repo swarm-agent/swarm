@@ -1102,11 +1102,6 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		}
 		baseReq.Input = append([]map[string]any(nil), input...)
 	}
-	e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.request", "backend.provider", "request", map[string]any{
-		"provider": providerID,
-		"model":    modelName,
-		"request":  sessionV3ProviderRequestDiagnostic(baseReq),
-	})
 	requestEventType := "session.provider.request_started"
 	if suffix := strings.TrimSpace(requestPhaseSuffix); suffix != "" {
 		requestEventType += "." + suffix
@@ -1224,10 +1219,14 @@ func (e *sessionV3Executor) sessionV3ProviderRunner(resolved sessionV3ResolvedRu
 }
 
 func (e *sessionV3Executor) sessionV3ProviderBaseRequest(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, input []map[string]any) (provideriface.Request, error) {
+	return e.sessionV3ProviderBaseRequestWithCheckpointScope(job, resolved, input, sessionV3ProviderJobCheckpointScope(job))
+}
+
+func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, input []map[string]any, checkpointScope sessionV3ProviderCheckpointScope) (provideriface.Request, error) {
 	pref := resolved.Preference
 	providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
 	model := strings.TrimSpace(pref.Model)
-	contextBranchID := sessionV3ProviderContextBranchID(job, resolved)
+	contextBranchID := sessionV3ProviderContextBranchID(job, resolved, checkpointScope)
 	previousLineage := e.sessionV3ProviderLineageSnapshot(job, "")
 	previousLineageID := previousLineage.ProviderLineageID
 	lineageID := provideriface.ShortProviderLineageKey(
@@ -1252,7 +1251,7 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequest(job sessionV3ExecutorJo
 		ContextBranchID:               contextBranchID,
 		ProviderCacheKey:              sessionV3ProviderScopedKey("cache", lineageID),
 		SessionAffinityKey:            sessionV3ProviderScopedKey("affinity", lineageID),
-		BoundaryReason:                sessionV3ProviderBoundaryReason(job, previousLineageID, lineageID),
+		BoundaryReason:                sessionV3ProviderBoundaryReason(job, previousLineageID, lineageID, checkpointScope),
 		PreviousProviderLineageID:     previousLineageID,
 		PreviousProviderID:            previousLineage.ProviderID,
 		PreviousModel:                 previousLineage.Model,
@@ -1264,7 +1263,7 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequest(job sessionV3ExecutorJo
 		ProviderLineageStartRunID:     lineageStart.StartRunID,
 		ProviderLineageStartGlobalSeq: lineageStart.StartGlobalSeq,
 		NativeContinuationAllowed:     sessionV3ProviderNativeContinuationAllowed(previousLineageID, lineageID),
-		ForceFreshProviderContext:     sessionV3ProviderForceFreshContext(job, previousLineageID, lineageID),
+		ForceFreshProviderContext:     sessionV3ProviderForceFreshContext(job, previousLineageID, lineageID, checkpointScope),
 		Model:                         model,
 		Thinking:                      strings.TrimSpace(pref.Thinking),
 		Instructions:                  resolved.Instructions,
@@ -1540,9 +1539,89 @@ func sessionV3TruncateForHandoff(value string, limit int) string {
 	return string(runes[:limit]) + fmt.Sprintf("… [truncated %d chars]", len(runes)-limit)
 }
 
-func sessionV3ProviderContextBranchID(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime) string {
-	if checkpointID := strings.TrimSpace(job.CheckpointID); checkpointID != "" {
-		return provideriface.ShortProviderLineageKey("checkpoint", strings.TrimSpace(job.PlanID), checkpointID, strings.TrimSpace(job.AttemptID), strings.TrimSpace(job.ParentSessionID), strings.TrimSpace(job.SessionID))
+type sessionV3ProviderCheckpointScope struct {
+	PlanID          string
+	CheckpointID    string
+	AttemptID       string
+	ParentSessionID string
+}
+
+func sessionV3ProviderJobCheckpointScope(job sessionV3ExecutorJob) sessionV3ProviderCheckpointScope {
+	return sessionV3ProviderCheckpointScope{
+		PlanID:          strings.TrimSpace(job.PlanID),
+		CheckpointID:    strings.TrimSpace(job.CheckpointID),
+		AttemptID:       strings.TrimSpace(job.AttemptID),
+		ParentSessionID: strings.TrimSpace(job.ParentSessionID),
+	}
+}
+
+func sessionV3ProviderCheckpointScopeFromPayload(scope sessionV3ProviderCheckpointScope, payload map[string]any) sessionV3ProviderCheckpointScope {
+	if payload == nil {
+		return scope
+	}
+	if scope.PlanID == "" {
+		scope.PlanID = strings.TrimSpace(sessionsV3MapString(payload, "plan_id"))
+	}
+	if scope.CheckpointID == "" {
+		scope.CheckpointID = strings.TrimSpace(firstNonEmptyString(sessionsV3MapString(payload, "checkpoint_id"), sessionsV3MapString(payload, "next_checkpoint_id")))
+	}
+	if runRequest, ok := payload["run_request"].(map[string]any); ok {
+		if checkpointContext, ok := runRequest["plan_checkpoint_context"].(map[string]any); ok {
+			if scope.PlanID == "" {
+				scope.PlanID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "plan_id"))
+			}
+			if scope.CheckpointID == "" {
+				scope.CheckpointID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "checkpoint_id"))
+			}
+			if scope.AttemptID == "" {
+				scope.AttemptID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "attempt_id"))
+			}
+			if scope.ParentSessionID == "" {
+				scope.ParentSessionID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "parent_session_id"))
+			}
+		}
+	}
+	return scope
+}
+
+func (e *sessionV3Executor) sessionV3ProviderCheckpointScope(job sessionV3ExecutorJob) sessionV3ProviderCheckpointScope {
+	scope := sessionV3ProviderJobCheckpointScope(job)
+	scope = sessionV3ProviderCheckpointScopeFromPayload(scope, e.sessionV3LatestCheckpointRunToolPayload(job))
+	if scope.CheckpointID == "" || e == nil || e.server == nil || e.server.sessions == nil {
+		return scope
+	}
+	if active, ok, err := e.server.sessions.GetActivePlan(job.SessionID); err == nil && ok && active.Document != nil {
+		if scope.PlanID == "" {
+			scope.PlanID = strings.TrimSpace(active.ID)
+		}
+		if active.Document.ExecutionState != nil {
+			state := active.Document.ExecutionState
+			if scope.AttemptID == "" {
+				scope.AttemptID = strings.TrimSpace(firstNonEmptyString(state.ActiveAttemptID, state.LastAttemptID))
+			}
+			if scope.ParentSessionID == "" {
+				scope.ParentSessionID = strings.TrimSpace(state.ParentSessionID)
+			}
+		}
+		for _, checkpoint := range active.Document.Checkpoints {
+			if strings.TrimSpace(checkpoint.ID) != scope.CheckpointID {
+				continue
+			}
+			if scope.AttemptID == "" {
+				scope.AttemptID = strings.TrimSpace(checkpoint.AttemptID)
+			}
+			break
+		}
+	}
+	if scope.ParentSessionID == "" {
+		scope.ParentSessionID = strings.TrimSpace(job.SessionID)
+	}
+	return scope
+}
+
+func sessionV3ProviderContextBranchID(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, checkpointScope sessionV3ProviderCheckpointScope) string {
+	if checkpointID := strings.TrimSpace(firstNonEmptyString(checkpointScope.CheckpointID, job.CheckpointID)); checkpointID != "" {
+		return provideriface.ShortProviderLineageKey("checkpoint", strings.TrimSpace(firstNonEmptyString(checkpointScope.PlanID, job.PlanID)), checkpointID, strings.TrimSpace(firstNonEmptyString(checkpointScope.AttemptID, job.AttemptID)), strings.TrimSpace(firstNonEmptyString(checkpointScope.ParentSessionID, job.ParentSessionID)), strings.TrimSpace(job.SessionID))
 	}
 	return provideriface.ShortProviderLineageKey("session", strings.TrimSpace(job.SessionID), strings.TrimSpace(resolved.Session.Mode))
 }
@@ -1607,8 +1686,8 @@ func (e *sessionV3Executor) sessionV3ProviderLineageSnapshot(job sessionV3Execut
 	return snapshot
 }
 
-func sessionV3ProviderBoundaryReason(job sessionV3ExecutorJob, previousLineageID, lineageID string) string {
-	if strings.TrimSpace(job.CheckpointID) != "" {
+func sessionV3ProviderBoundaryReason(job sessionV3ExecutorJob, previousLineageID, lineageID string, checkpointScope sessionV3ProviderCheckpointScope) string {
+	if strings.TrimSpace(job.CheckpointID) != "" || checkpointScope.CheckpointID != "" {
 		return "checkpoint_fresh_context"
 	}
 	if previousLineageID != "" && lineageID != "" && previousLineageID != lineageID {
@@ -1623,8 +1702,8 @@ func sessionV3ProviderNativeContinuationAllowed(previousLineageID, lineageID str
 	return previousLineageID != "" && lineageID != "" && previousLineageID == lineageID
 }
 
-func sessionV3ProviderForceFreshContext(job sessionV3ExecutorJob, previousLineageID, lineageID string) bool {
-	if strings.TrimSpace(job.CheckpointID) != "" {
+func sessionV3ProviderForceFreshContext(job sessionV3ExecutorJob, previousLineageID, lineageID string, checkpointScope sessionV3ProviderCheckpointScope) bool {
+	if strings.TrimSpace(job.CheckpointID) != "" || checkpointScope.CheckpointID != "" {
 		return true
 	}
 	return !sessionV3ProviderNativeContinuationAllowed(previousLineageID, lineageID)
@@ -1718,6 +1797,12 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		req := baseReq
 		req.Input = append([]map[string]any(nil), input...)
 		req.ToolInvoker = toolInvoker
+		e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.request", "backend.provider", "request", map[string]any{
+			"provider": strings.ToLower(strings.TrimSpace(resolved.Preference.Provider)),
+			"model":    strings.TrimSpace(req.Model),
+			"step":     step,
+			"request":  sessionV3ProviderRequestDiagnostic(req),
+		})
 		streamState := newSessionV3ProviderStreamState(e, job, sink, step)
 		response, providerErr := runner.CreateResponseStreaming(ctx, req, streamState.Handle)
 		finishErr := streamState.FinishStep()
@@ -1897,6 +1982,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			continue
 		}
 		if restartAfterTools {
+			restartCheckpointScope := sessionV3ProviderCheckpointScopeFromPayload(sessionV3ProviderJobCheckpointScope(job), sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(toolResults[len(toolResults)-1].Output, sessionsV3LatestFunctionCallOutput(input), toolResults[len(toolResults)-1].TextForModel))))
 			refreshed, err := e.resolveSessionV3Runtime(job)
 			if err != nil {
 				return sessionV3ProviderLoopResult{}, err
@@ -1914,11 +2000,13 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			if len(input) == 0 {
 				return sessionV3ProviderLoopResult{}, errors.New("v3 provider restart requested but continuation input is empty after tool execution")
 			}
-			baseReq, err = e.sessionV3ProviderBaseRequest(job, resolved, input)
+			baseReq, err = e.sessionV3ProviderBaseRequestWithCheckpointScope(job, resolved, input, restartCheckpointScope)
 			if err != nil {
 				return sessionV3ProviderLoopResult{}, err
 			}
-			baseReq.BoundaryReason = sessionV3ProviderBoundaryReasonWithOverride(baseReq.BoundaryReason, "restart_after_tool")
+			if !strings.Contains(strings.TrimSpace(baseReq.BoundaryReason), "checkpoint_fresh_context") {
+				baseReq.BoundaryReason = sessionV3ProviderBoundaryReasonWithOverride(baseReq.BoundaryReason, "restart_after_tool")
+			}
 			baseReq.NativeContinuationAllowed = false
 			baseReq.ForceFreshProviderContext = true
 		}
@@ -2289,7 +2377,10 @@ func (e *sessionV3Executor) sessionV3LatestPlanManageToolPayload(job sessionV3Ex
 			if !strings.EqualFold(toolName, "plan_manage") && !strings.EqualFold(toolName, "exit_plan_mode") {
 				continue
 			}
-			payload = sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(record.CompletedOutput, record.Output)))
+			payload = sessionsV3DecodeToolPayload(strings.TrimSpace(record.CompletedOutput))
+			if payload == nil {
+				payload = sessionsV3DecodeToolPayload(strings.TrimSpace(record.Output))
+			}
 		}
 		if payload == nil {
 			continue

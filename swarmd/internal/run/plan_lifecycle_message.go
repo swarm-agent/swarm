@@ -97,7 +97,7 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 
 func isPlanExecutionLifecycleMessageAction(action string) bool {
 	switch strings.TrimSpace(action) {
-	case "accept_checkpoint", "start_checkpoint", "continue_checkpoint", "restart_checkpoint", "rewind_to_checkpoint":
+	case "approve_and_start", "accept_checkpoint", "start_checkpoint", "continue_checkpoint", "restart_checkpoint", "rewind_to_checkpoint":
 		return true
 	default:
 		return isPlanExecutionOutcomeMessageAction(action)
@@ -115,6 +115,9 @@ func isPlanExecutionOutcomeMessageAction(action string) bool {
 
 func planLifecycleHeadline(action string, summary sessionruntime.PlanExecutionSummary, nextAction, modeLabel string) string {
 	base := "Plan execution updated"
+	if action == "approve_and_start" && nextAction == "run_checkpoint_with_fresh_context" && strings.TrimSpace(summary.NextCheckpointID) != "" {
+		return "Plan accepted, starting " + planLifecycleCheckpointLabel(summary.NextCheckpointID, "")
+	}
 	switch action {
 	case "mark_needs_review":
 		base = "Checkpoint paused for review"

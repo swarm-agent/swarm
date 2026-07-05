@@ -5057,6 +5057,9 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 		if !strings.Contains(req.Instructions, "Current session mode: auto.") {
 			return provideriface.Response{}, fmt.Errorf("checkpoint continuation instructions did not refresh to auto mode:\n%s", req.Instructions)
 		}
+		if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+			return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint lineage flags = boundary %q native %t fresh %t, want checkpoint fresh context", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+		}
 		if !sessionsV3ProviderInputContainsContentText(req.Input, "[checkpoint-run] Deterministic checkpoint execution context.") || !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: cp-1.") {
 			return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint input = %+v, want fresh checkpoint context", req.Input)
 		}
@@ -5125,20 +5128,23 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 5 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "tool" || messages[3].Role != "system" || messages[4].Role != "assistant" || messages[4].Content != "checkpoint completed in auto" {
+	if len(messages) != 6 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "system" || messages[3].Role != "tool" || messages[4].Role != "system" || messages[5].Role != "assistant" || messages[5].Content != "checkpoint completed in auto" {
 		t.Fatalf("messages after exit plan restart = %+v", messages)
 	}
 	if !strings.Contains(messages[1].Content, "run_checkpoint_with_fresh_context") {
 		t.Fatalf("exit-plan tool message did not request checkpoint run = %+v", messages[1])
 	}
-	if !strings.Contains(messages[2].Content, "complete_checkpoint") {
-		t.Fatalf("checkpoint completion tool message = %+v", messages[2])
+	if !strings.Contains(messages[2].Content, "Plan accepted, starting Checkpoint 1") || !strings.Contains(messages[2].Content, "Context: Starting the next checkpoint with fresh context.") {
+		t.Fatalf("exit-plan lifecycle start message content = %q", messages[2].Content)
 	}
-	if messages[3].Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || messages[3].Metadata["kind"] != "plan_execution_break" || messages[3].Metadata["action"] != "complete_checkpoint" || messages[3].Metadata["next_action"] != "await_review" {
-		t.Fatalf("checkpoint lifecycle message metadata = %+v", messages[3])
+	if !strings.Contains(messages[3].Content, "complete_checkpoint") {
+		t.Fatalf("checkpoint completion tool message = %+v", messages[3])
 	}
-	if !strings.Contains(messages[3].Content, "All checkpoints complete; review required") || !strings.Contains(messages[3].Content, "Next: all checkpoints are complete; waiting for user review.") {
-		t.Fatalf("checkpoint lifecycle message content = %q", messages[3].Content)
+	if messages[4].Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || messages[4].Metadata["kind"] != "plan_execution_break" || messages[4].Metadata["action"] != "complete_checkpoint" || messages[4].Metadata["next_action"] != "await_review" {
+		t.Fatalf("checkpoint lifecycle message metadata = %+v", messages[4])
+	}
+	if !strings.Contains(messages[4].Content, "All checkpoints complete; review required") || !strings.Contains(messages[4].Content, "Next: all checkpoints are complete; waiting for user review.") {
+		t.Fatalf("checkpoint lifecycle message content = %q", messages[4].Content)
 	}
 	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 40)
 	if err != nil {
