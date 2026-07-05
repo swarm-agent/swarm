@@ -5443,8 +5443,17 @@ func TestSessionsV3ExecutorFollowUpAfterAutomaticCheckpointUsesFreshContextBound
 			}
 			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
 		case 2:
+			if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+				return provideriface.Response{}, fmt.Errorf("terminal finalization lineage flags = boundary %q native %t fresh %t, want checkpoint fresh context", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			}
 			return provideriface.Response{Text: "automatic checkpoint finalized"}, nil
 		case 3:
+			if req.BoundaryReason != "session_turn" || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
+				return provideriface.Response{}, fmt.Errorf("post-checkpoint follow-up lineage flags = boundary %q native %t fresh %t, want session_turn native continuation", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			}
+			if runner.requests[1].ProviderLineageID == "" || runner.requests[2].ProviderLineageID != runner.requests[1].ProviderLineageID {
+				return provideriface.Response{}, fmt.Errorf("post-checkpoint follow-up changed lineage: final=%q follow-up=%q", runner.requests[1].ProviderLineageID, runner.requests[2].ProviderLineageID)
+			}
 			if sessionsV3ProviderInputContainsContentText(req.Input, oldPrompt) {
 				return provideriface.Response{}, fmt.Errorf("follow-up provider input leaked old raw transcript: %+v", req.Input)
 			}
