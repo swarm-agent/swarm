@@ -470,6 +470,7 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 	legacyBootstrapModeSeen := false
 	legacyAdvertiseHostSeen := false
 	legacyTailscaleURLSeen := false
+	canonicalV3DiagnosticsSeen := false
 	for lineNumber, rawLine := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -606,9 +607,23 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 			seen["v3_diagnostics"] = struct{}{}
 			v3Diagnostics, err := strconv.ParseBool(value)
 			if err != nil {
-				return FileConfig{}, nil, fmt.Errorf("line %d: invalid v3_diagnostics %q", lineNumber+1, value)
+				return FileConfig{}, nil, fmt.Errorf("line %d: invalid %s %q", lineNumber+1, key, value)
 			}
+			canonicalV3DiagnosticsSeen = true
 			cfg.V3Diagnostics = v3Diagnostics
+		case "provider_api_diagnostics":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen["v3_diagnostics"] = struct{}{}
+			v3Diagnostics, err := strconv.ParseBool(value)
+			if err != nil {
+				return FileConfig{}, nil, fmt.Errorf("line %d: invalid %s %q", lineNumber+1, key, value)
+			}
+			if !canonicalV3DiagnosticsSeen {
+				cfg.V3Diagnostics = v3Diagnostics
+			}
 		case "swarm_name":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
