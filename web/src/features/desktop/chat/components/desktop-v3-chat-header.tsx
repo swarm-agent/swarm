@@ -1,9 +1,10 @@
 import { MessageSquareText, Plus } from 'lucide-react'
-import { DesktopV3RunStatusPill, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
+import { DesktopV3RunStatusPill, formatDesktopV3RunTimerLabel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
 
 export interface DesktopV3ChatHeaderProps {
   title: string
   workspaceName: string
+  branchName?: string
   mode?: string
   runStatus?: DesktopV3RunStatusModel | null
   runStatusNow?: number
@@ -23,9 +24,14 @@ function normalizeMode(value: string | undefined): string {
   return value?.trim().toLowerCase() === 'plan' ? 'plan' : 'auto'
 }
 
+function normalizeBranchName(value: string | undefined): string {
+  return value?.trim() ?? ''
+}
+
 export function DesktopV3ChatHeader({
   title,
   workspaceName,
+  branchName,
   mode,
   runStatus = null,
   runStatusNow = Date.now(),
@@ -34,7 +40,9 @@ export function DesktopV3ChatHeader({
 }: DesktopV3ChatHeaderProps) {
   const displayTitle = normalizeTitle(title)
   const displayWorkspace = normalizeWorkspaceName(workspaceName)
+  const displayBranch = normalizeBranchName(branchName)
   const displayMode = normalizeMode(mode)
+  const mobileRunTimerLabel = runStatus ? formatDesktopV3RunTimerLabel(runStatus, runStatusNow) : ''
 
   return (
     <header className="min-h-[60px] shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 pb-2 pt-[calc(var(--app-safe-area-top)_+_0.5rem)] sm:h-[60px] sm:px-4 sm:py-0">
@@ -56,8 +64,18 @@ export function DesktopV3ChatHeader({
             <h1 className="truncate text-[13px] font-semibold leading-tight text-[var(--app-text)]" title={displayTitle}>
               {displayTitle}
             </h1>
-            <div className="mt-1 inline-flex min-w-0 items-center text-[10px] font-medium text-[var(--app-text-muted)]" title={displayWorkspace}>
-              <span className="truncate text-left">{displayWorkspace}</span>
+            <div className="relative mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-[10px] font-medium text-[var(--app-text-muted)]" title={displayWorkspace}>
+              <span className="min-w-0 truncate text-left">{displayWorkspace}</span>
+              {displayBranch ? (
+                <span className="pointer-events-none absolute left-1/2 max-w-[42vw] -translate-x-1/2 truncate text-center text-[var(--app-text-muted)]" title={displayBranch}>
+                  {displayBranch}
+                </span>
+              ) : null}
+              {mobileRunTimerLabel ? (
+                <span className="shrink-0 justify-self-end tabular-nums text-[var(--app-text)]" title={runStatus?.label}>
+                  {mobileRunTimerLabel}
+                </span>
+              ) : null}
             </div>
           </div>
 
@@ -73,7 +91,9 @@ export function DesktopV3ChatHeader({
           </div>
         </div>
 
-        <DesktopV3RunStatusPill model={runStatus} now={runStatusNow} />
+        <div className="hidden sm:block">
+          <DesktopV3RunStatusPill model={runStatus} now={runStatusNow} />
+        </div>
 
         {onNewSession ? (
           <button

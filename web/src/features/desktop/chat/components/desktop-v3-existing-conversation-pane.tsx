@@ -735,6 +735,12 @@ export function DesktopV3ExistingConversationPane({
     liveRuns: renderedMessages.liveRuns,
   })
   const sessionMetadata = session?.metadata ?? cacheSession?.metadata ?? metadata
+  const headerBranchLabel = metadataString(sessionMetadata, 'swarm_v3_branch_label')
+    || session?.worktreeBranch?.trim()
+    || session?.gitBranch?.trim()
+    || cacheSession?.worktree_branch?.trim()
+    || metadataString(sessionMetadata, 'git_branch')
+    || metadataString(sessionMetadata, 'branch')
   const settingsBaseline = useMemo(() => buildDesktopV3ExistingSettingsSnapshot({
     sessionId: normalizedSessionId,
     metadata: sessionMetadata,
@@ -1270,6 +1276,7 @@ export function DesktopV3ExistingConversationPane({
       <DesktopV3ChatHeader
         title={session?.title || cacheSession?.title || 'Conversation'}
         workspaceName={session?.workspaceName || cacheSession?.workspace_name || 'Workspace'}
+        branchName={headerBranchLabel}
         mode={mode}
         runStatus={runStatusModel}
         runStatusNow={timerNow}

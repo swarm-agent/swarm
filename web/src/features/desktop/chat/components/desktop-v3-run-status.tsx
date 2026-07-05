@@ -1,3 +1,4 @@
+import { cn } from '../../../../lib/cn'
 import type { LiveRunOverlay, V3SessionRunIntent } from '../../state/desktop-v3-cache-types'
 
 export type DesktopV3RunStatusKind = 'starting' | 'active' | 'paused' | 'completed' | 'failed' | 'stopped' | 'interrupted' | 'expired'
@@ -196,7 +197,7 @@ export function formatDesktopV3RunTimerLabel(model: DesktopV3RunStatusModel, now
   return showTotalTimer ? `${runTimer} (${totalTimer})` : runTimer
 }
 
-export function DesktopV3RunStatusPill({ model, now }: { model: DesktopV3RunStatusModel | null; now: number }) {
+export function DesktopV3RunStatusPill({ model, now, className }: { model: DesktopV3RunStatusModel | null; now: number; className?: string }) {
   if (!model) return null
   const runTimer = formatDesktopV3CurrentRunTimer(model, now)
   const totalTimer = formatDesktopV3RunTimer(model, now)
@@ -209,7 +210,10 @@ export function DesktopV3RunStatusPill({ model, now }: { model: DesktopV3RunStat
   ].filter(Boolean).join(' · ')
   return (
     <div
-      className="inline-flex h-8 max-w-[15rem] shrink-0 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-transparent px-2.5 text-[11px] font-medium text-[var(--app-text-muted)] sm:max-w-none sm:gap-2 sm:px-3"
+      className={cn(
+        'inline-flex h-8 max-w-[15rem] shrink-0 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-transparent px-2.5 text-[11px] font-medium text-[var(--app-text-muted)] sm:max-w-none sm:gap-2 sm:px-3',
+        className,
+      )}
       aria-live="polite"
       data-testid="desktop-v3-run-status-pill"
       title={title || model.label}
