@@ -662,6 +662,9 @@ func modelServingTiers(providerSpecificRaw json.RawMessage, providerID string) (
 		return nil, ""
 	}
 	out := normalizeCatalogStringList(providerSpecific.Serving.SupportedTiers)
+	if strings.EqualFold(strings.TrimSpace(providerID), "anthropic") {
+		out = removeCatalogString(out, "batch")
+	}
 	defaultTier := strings.ToLower(strings.TrimSpace(providerSpecific.Serving.DefaultTier))
 	return out, defaultTier
 }
@@ -733,6 +736,10 @@ func modelServiceTierMappings(providerSpecificRaw json.RawMessage, providerID st
 		if !stringInSlice(order, tier) {
 			order = append(order, tier)
 		}
+	}
+	if strings.EqualFold(strings.TrimSpace(providerID), "anthropic") {
+		order = removeCatalogString(order, "batch")
+		delete(rawByTier, "batch")
 	}
 	mappings := make([]pebblestore.ModelCatalogServiceTierMapping, 0, len(order))
 	for _, tier := range order {
@@ -819,6 +826,18 @@ func stringInSlice(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func removeCatalogString(values []string, remove string) []string {
+	remove = strings.ToLower(strings.TrimSpace(remove))
+	out := values[:0]
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), remove) {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
 }
 
 func snapshotScalarString(value any) string {

@@ -3724,6 +3724,8 @@ func applySessionV3AgentPreferenceOverridesForMode(base pebblestore.ModelPrefere
 		}
 	case "fireworks":
 		base.ServiceTier = normalizeSessionV3FireworksServiceTier(base.ServiceTier)
+	case "anthropic":
+		base.ServiceTier = modelruntime.NormalizeServiceTierForProvider(base.Provider, base.ServiceTier)
 	default:
 		base.ServiceTier = ""
 	}

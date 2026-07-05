@@ -7,6 +7,7 @@ import (
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -99,23 +100,43 @@ func TestSanitizeAnthropicToolSchemaMovesUnsupportedConstraintsToDescription(t *
 	assertContains(t, encoded, `minItems: 2`)
 }
 
-func TestAnthropicThinkingConfigUsesAdaptiveForClaudeSonnet5(t *testing.T) {
-	cfg, effort := anthropicThinkingConfig("claude-sonnet-5", "medium")
+func TestAnthropicThinkingConfigUsesCatalogAdaptiveEffortMapping(t *testing.T) {
+	catalog := pebblestore.ModelCatalogRecord{ThinkingMappings: []pebblestore.ModelCatalogThinkingMapping{
+		{SwarmSetting: "off", ProviderParameter: "thinking.type + output_config.effort", Behavior: "disabled"},
+		{SwarmSetting: "medium", ProviderParameter: "thinking.type + output_config.effort", ProviderValue: "medium", EffectiveProviderValue: "medium", Behavior: "effort"},
+	}}
+	cfg, effort := anthropicThinkingConfig(catalog, "medium")
 	if cfg == nil || cfg.OfAdaptive == nil {
-		t.Fatalf("expected adaptive thinking config for claude-sonnet-5, got %#v", cfg)
+		t.Fatalf("expected adaptive thinking config from catalog mapping, got %#v", cfg)
 	}
 	if cfg.OfEnabled != nil {
-		t.Fatalf("claude-sonnet-5 must not use enabled thinking: %#v", cfg.OfEnabled)
+		t.Fatalf("adaptive catalog mapping must not use enabled thinking: %#v", cfg.OfEnabled)
 	}
 	if effort != anthropicapi.OutputConfigEffortMedium {
 		t.Fatalf("effort = %q, want medium", effort)
 	}
 }
 
-func TestAnthropicThinkingConfigKeepsBudgetForLegacyModels(t *testing.T) {
-	cfg, effort := anthropicThinkingConfig("claude-sonnet-4-5", "medium")
+func TestAnthropicThinkingConfigKeepsBudgetForBudgetTokenMappings(t *testing.T) {
+	catalog := pebblestore.ModelCatalogRecord{ThinkingMappings: []pebblestore.ModelCatalogThinkingMapping{
+		{SwarmSetting: "medium", ProviderParameter: "thinking.budget_tokens", ProviderValue: "4096"},
+	}}
+	cfg, effort := anthropicThinkingConfig(catalog, "medium")
 	if cfg == nil || cfg.OfEnabled == nil {
-		t.Fatalf("expected enabled thinking config for legacy sonnet, got %#v", cfg)
+		t.Fatalf("expected enabled thinking config for budget-token mapping, got %#v", cfg)
+	}
+	if got := cfg.OfEnabled.BudgetTokens; got != 4096 {
+		t.Fatalf("budget tokens = %d, want 4096", got)
+	}
+	if effort != "" {
+		t.Fatalf("effort = %q, want empty", effort)
+	}
+}
+
+func TestAnthropicThinkingConfigFallsBackToLegacyBudgetWithoutCatalog(t *testing.T) {
+	cfg, effort := anthropicThinkingConfig(nil, "medium")
+	if cfg == nil || cfg.OfEnabled == nil {
+		t.Fatalf("expected enabled thinking config without catalog, got %#v", cfg)
 	}
 	if got := cfg.OfEnabled.BudgetTokens; got != 4096 {
 		t.Fatalf("budget tokens = %d, want 4096", got)

@@ -223,6 +223,27 @@ func TestEnsureBootDefaultsSeedsPinnedSnapshotOffline(t *testing.T) {
 			t.Fatalf("Fireworks %s thinking mappings = %+v, want xhigh mapped to provider max", modelID, lookup.Record.ThinkingMappings)
 		}
 	}
+	anthropic, err := catalog.Get("anthropic", "claude-sonnet-5")
+	if err != nil {
+		t.Fatalf("catalog lookup for claude-sonnet-5: %v", err)
+	}
+	if !anthropic.Found {
+		t.Fatalf("expected pinned Anthropic claude-sonnet-5 record")
+	}
+	if !stringSlicesEqual(anthropic.Record.ServiceTiers, []string{"standard", "priority"}) {
+		t.Fatalf("Anthropic service tiers = %#v, want standard/priority without batch", anthropic.Record.ServiceTiers)
+	}
+	for _, mapping := range anthropic.Record.ServiceTierMappings {
+		if mapping.Tier == "batch" || mapping.SwarmSetting == "batch" {
+			t.Fatalf("Anthropic service tier mappings should not expose batch: %+v", anthropic.Record.ServiceTierMappings)
+		}
+	}
+	if !stringSlicesEqual(anthropic.Record.ThinkingOptions, []string{"off", "low", "medium", "high", "xhigh"}) || anthropic.Record.DefaultThinking != "high" || anthropic.Record.ThinkingProviderParameter != "thinking.type + output_config.effort" {
+		t.Fatalf("Anthropic thinking metadata = %#v/%q/%q", anthropic.Record.ThinkingOptions, anthropic.Record.DefaultThinking, anthropic.Record.ThinkingProviderParameter)
+	}
+	if len(anthropic.Record.ThinkingMappings) != 5 || anthropic.Record.ThinkingMappings[2].Behavior != "effort" || anthropic.Record.ThinkingMappings[2].ProviderValue != "medium" {
+		t.Fatalf("Anthropic thinking mappings should preserve snapshot effort mappings: %+v", anthropic.Record.ThinkingMappings)
+	}
 }
 
 func TestRefreshUsesSnapshotVersionAndSkipsUnchangedSnapshot(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
@@ -221,7 +222,7 @@ func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (a
 		System:    system,
 		Tools:     tools,
 	}
-	if thinking, effort := anthropicThinkingConfig(modelName, req.Thinking); thinking != nil {
+	if thinking, effort := anthropicThinkingConfig(req.ModelCatalog, req.Thinking); thinking != nil {
 		params.Thinking = *thinking
 		if effort != "" {
 			params.OutputConfig = anthropicapi.OutputConfigParam{Effort: effort}
@@ -435,17 +436,17 @@ func buildAnthropicContentBlocksFromMaps(items []map[string]any) ([]anthropicapi
 	return blocks, nil
 }
 
-func anthropicThinkingConfig(modelName, level string) (*anthropicapi.ThinkingConfigParamUnion, anthropicapi.OutputConfigEffort) {
+func anthropicThinkingConfig(catalog any, level string) (*anthropicapi.ThinkingConfigParamUnion, anthropicapi.OutputConfigEffort) {
 	level = strings.ToLower(strings.TrimSpace(level))
+	mapping, hasMapping := anthropicThinkingMapping(catalog, level)
+	if hasMapping {
+		return anthropicThinkingConfigFromMapping(mapping, level)
+	}
 	switch level {
 	case "off":
 		cfg := anthropicapi.ThinkingConfigParamUnion{OfDisabled: &anthropicapi.ThinkingConfigDisabledParam{}}
 		return &cfg, ""
 	case "low", "medium", "high", "xhigh":
-		if anthropicModelUsesAdaptiveThinking(modelName) {
-			cfg := anthropicapi.ThinkingConfigParamUnion{OfAdaptive: &anthropicapi.ThinkingConfigAdaptiveParam{Display: anthropicapi.ThinkingConfigAdaptiveDisplaySummarized}}
-			return &cfg, anthropicOutputEffort(level)
-		}
 		cfg := anthropicapi.ThinkingConfigParamOfEnabled(anthropicThinkingBudgetTokens(level))
 		return &cfg, ""
 	default:
@@ -453,9 +454,55 @@ func anthropicThinkingConfig(modelName, level string) (*anthropicapi.ThinkingCon
 	}
 }
 
-func anthropicModelUsesAdaptiveThinking(modelName string) bool {
-	modelName = strings.ToLower(strings.TrimSpace(modelName))
-	return strings.Contains(modelName, "claude-sonnet-5") || strings.Contains(modelName, "claude-opus-5") || strings.Contains(modelName, "claude-haiku-5")
+func anthropicThinkingMapping(catalog any, level string) (pebblestore.ModelCatalogThinkingMapping, bool) {
+	record, ok := catalog.(pebblestore.ModelCatalogRecord)
+	if !ok {
+		return pebblestore.ModelCatalogThinkingMapping{}, false
+	}
+	level = strings.ToLower(strings.TrimSpace(level))
+	for _, mapping := range record.ThinkingMappings {
+		if strings.EqualFold(strings.TrimSpace(mapping.SwarmSetting), level) {
+			return mapping, true
+		}
+	}
+	return pebblestore.ModelCatalogThinkingMapping{}, false
+}
+
+func anthropicThinkingConfigFromMapping(mapping pebblestore.ModelCatalogThinkingMapping, level string) (*anthropicapi.ThinkingConfigParamUnion, anthropicapi.OutputConfigEffort) {
+	behavior := strings.ToLower(strings.TrimSpace(mapping.Behavior))
+	providerParameter := strings.ToLower(strings.TrimSpace(mapping.ProviderParameter))
+	providerValue := firstNonEmpty(strings.TrimSpace(mapping.EffectiveProviderValue), strings.TrimSpace(mapping.ProviderValue))
+	if behavior == "disabled" || strings.EqualFold(level, "off") {
+		cfg := anthropicapi.ThinkingConfigParamUnion{OfDisabled: &anthropicapi.ThinkingConfigDisabledParam{}}
+		return &cfg, ""
+	}
+	if behavior == "effort" || strings.Contains(providerParameter, "output_config.effort") || strings.Contains(providerParameter, "output_config") {
+		effort := anthropicOutputEffort(providerValue)
+		if effort == "" {
+			effort = anthropicOutputEffort(level)
+		}
+		if effort == "" {
+			return nil, ""
+		}
+		cfg := anthropicapi.ThinkingConfigParamUnion{OfAdaptive: &anthropicapi.ThinkingConfigAdaptiveParam{Display: anthropicapi.ThinkingConfigAdaptiveDisplaySummarized}}
+		return &cfg, effort
+	}
+	if strings.Contains(providerParameter, "budget_tokens") {
+		budgetTokens := anthropicThinkingBudgetTokensFromMapping(providerValue, level)
+		if budgetTokens <= 0 {
+			return nil, ""
+		}
+		cfg := anthropicapi.ThinkingConfigParamOfEnabled(budgetTokens)
+		return &cfg, ""
+	}
+	return nil, ""
+}
+
+func anthropicThinkingBudgetTokensFromMapping(providerValue, level string) int64 {
+	if parsed, err := strconv.ParseInt(strings.TrimSpace(providerValue), 10, 64); err == nil && parsed > 0 {
+		return parsed
+	}
+	return anthropicThinkingBudgetTokens(level)
 }
 
 func anthropicThinkingBudgetTokens(level string) int64 {
