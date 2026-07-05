@@ -594,7 +594,7 @@ export function DesktopV3AgenticComposer({
           </div>
         ) : null}
         <div className="relative min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
-          <div className="flex min-w-0 items-end gap-3 px-4 py-3 lg:py-2.5">
+          <div className="flex min-w-0 items-end gap-3 px-4 py-2 sm:py-3 lg:py-2.5">
             <div className="min-w-0 flex-1">
               <Textarea
                 value={dictationComposer}
@@ -611,8 +611,8 @@ export function DesktopV3AgenticComposer({
                 onDrop={onDropTodo}
                 placeholder={placeholder}
                 aria-label={inputLabel}
-                className={showDictationButton ? 'min-h-[56px] resize-none !rounded-none !border-0 !border-none bg-transparent px-0 py-0 pr-12 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent lg:min-h-[52px]' : 'min-h-[56px] resize-none !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent lg:min-h-[52px]'}
-                rows={2}
+                className={showDictationButton ? '!min-h-[32px] resize-none !rounded-none !border-0 !border-none bg-transparent px-0 py-0 pr-12 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]' : '!min-h-[32px] resize-none !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]'}
+                rows={1}
                 disabled={composerDisabled}
               />
               {showDictationButton ? (
