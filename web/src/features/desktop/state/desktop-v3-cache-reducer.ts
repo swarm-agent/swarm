@@ -2446,7 +2446,7 @@ function applyLiveRunOverlayFromEvent(
       tool.durationMs = numberValue(payload.duration_ms) || tool.durationMs
       tool.status = stringValue(payload.status) || (isFailed ? 'failed' : isCancelled ? 'cancelled' : isTerminal ? 'completed' : 'running')
       tool.updatedAt = updatedAt
-      tool.timelineSeq = tool.timelineSeq || eventSeq
+      tool.timelineSeq = isTerminal && eventSeq > 0 ? eventSeq : tool.timelineSeq || eventSeq
 
       liveRun.toolCallsByCallId[callId] = tool
       return

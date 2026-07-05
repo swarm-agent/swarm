@@ -1941,6 +1941,42 @@ test('realtime session.tool.delta appends output and terminal event replaces fin
   assert.equal(tool.outputText, '{"summary":"done"}')
   assert.equal(tool.status, 'completed')
   assert.equal(tool.durationMs, 42)
+  assert.equal(tool.timelineSeq, 7)
+})
+
+test('realtime terminal tool event keeps completed live tool after later assistant text', () => {
+  const state = bootstrappedState()
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.started', {
+      call_id: 'call-write',
+      step_id: 'step-write',
+      tool_instance_id: 'tool-instance-write',
+      tool_name: 'write',
+      arguments: '{"path":"file.txt"}',
+    }, 5, 'cursor-write-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.assistant.delta', { delta: 'after write start' }, 6, 'cursor-assistant-after-write'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.completed', {
+      call_id: 'call-write',
+      tool_instance_id: 'tool-instance-write',
+      tool_name: 'write',
+      output: '{"bytes_written":4}',
+      status: 'completed',
+    }, 7, 'cursor-write-complete'),
+  })
+
+  const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+    .filter((item) => item.type === 'live-assistant' || item.type === 'live-tool')
+    .map((item) => item.type === 'live-assistant' ? `assistant:${item.content}` : `tool:${item.tool.callId}`)
+
+  assert.deepEqual(rendered, [
+    'assistant:after write start',
+    'tool:call-write',
+  ])
 })
 
 test('realtime task tool delta replaces full task stream snapshots instead of appending', () => {
