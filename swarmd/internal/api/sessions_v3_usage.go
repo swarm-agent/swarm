@@ -22,7 +22,7 @@ func sessionV3ProviderUsageRecord(providerID string, modelName string, contextWi
 		step = 0
 	}
 	return pebblestore.SessionTurnUsageSnapshot{
-		RunID:            strings.TrimSpace(runID),
+		RunID:            sessionV3ProviderUsageRunID(runID, step),
 		Provider:         providerID,
 		Model:            strings.TrimSpace(modelName),
 		Source:           strings.TrimSpace(usage.Source),
@@ -43,6 +43,14 @@ func sessionV3ProviderUsageRecord(providerID string, modelName string, contextWi
 		APIUsageHistory:  cloneSessionV3UsageHistory(usage.APIUsageHistory),
 		APIUsagePaths:    append([]string(nil), usage.APIUsagePaths...),
 	}, true
+}
+
+func sessionV3ProviderUsageRunID(runID string, step int) string {
+	runID = strings.TrimSpace(runID)
+	if step <= 0 {
+		return runID
+	}
+	return fmt.Sprintf("%s/usage-step-%d", runID, step)
 }
 
 func sessionV3ShouldTrackProviderUsage(providerID string, usage provideriface.TokenUsage) bool {

@@ -64,12 +64,21 @@ type SessionUsageSummary struct {
 }
 
 func ApplyProviderUsageSnapshotToSummary(summary SessionUsageSummary, usage SessionTurnUsageSnapshot) SessionUsageSummary {
-	summary.InputTokens = clampUsageTokenCount(usage.InputTokens)
-	summary.OutputTokens = clampUsageTokenCount(usage.OutputTokens)
-	summary.ThinkingTokens = clampUsageTokenCount(usage.ThinkingTokens)
-	summary.CacheReadTokens = clampUsageTokenCount(usage.CacheReadTokens)
-	summary.CacheWriteTokens = clampUsageTokenCount(usage.CacheWriteTokens)
-	summary.TotalTokens = clampUsageTokenCount(usage.TotalTokens)
+	if shouldAccumulateProviderUsage(usage) {
+		summary.InputTokens = clampUsageTokenCount(summary.InputTokens) + clampUsageTokenCount(usage.InputTokens)
+		summary.OutputTokens = clampUsageTokenCount(summary.OutputTokens) + clampUsageTokenCount(usage.OutputTokens)
+		summary.ThinkingTokens = clampUsageTokenCount(summary.ThinkingTokens) + clampUsageTokenCount(usage.ThinkingTokens)
+		summary.CacheReadTokens = clampUsageTokenCount(summary.CacheReadTokens) + clampUsageTokenCount(usage.CacheReadTokens)
+		summary.CacheWriteTokens = clampUsageTokenCount(summary.CacheWriteTokens) + clampUsageTokenCount(usage.CacheWriteTokens)
+		summary.TotalTokens = clampUsageTokenCount(summary.TotalTokens) + clampUsageTokenCount(usage.TotalTokens)
+	} else {
+		summary.InputTokens = clampUsageTokenCount(usage.InputTokens)
+		summary.OutputTokens = clampUsageTokenCount(usage.OutputTokens)
+		summary.ThinkingTokens = clampUsageTokenCount(usage.ThinkingTokens)
+		summary.CacheReadTokens = clampUsageTokenCount(usage.CacheReadTokens)
+		summary.CacheWriteTokens = clampUsageTokenCount(usage.CacheWriteTokens)
+		summary.TotalTokens = clampUsageTokenCount(usage.TotalTokens)
+	}
 	summary.ServiceTier = strings.ToLower(strings.TrimSpace(usage.ServiceTier))
 	if summary.ContextWindow > 0 {
 		remaining := int64(summary.ContextWindow) - summary.TotalTokens
@@ -81,6 +90,23 @@ func ApplyProviderUsageSnapshotToSummary(summary SessionUsageSummary, usage Sess
 		summary.RemainingTokens = 0
 	}
 	return summary
+}
+
+func ApplyProviderUsageSnapshotReplacementToSummary(summary SessionUsageSummary, previous, usage SessionTurnUsageSnapshot) SessionUsageSummary {
+	if !shouldAccumulateProviderUsage(usage) {
+		return ApplyProviderUsageSnapshotToSummary(summary, usage)
+	}
+	summary.InputTokens = clampUsageTokenCount(summary.InputTokens) - clampUsageTokenCount(previous.InputTokens)
+	summary.OutputTokens = clampUsageTokenCount(summary.OutputTokens) - clampUsageTokenCount(previous.OutputTokens)
+	summary.ThinkingTokens = clampUsageTokenCount(summary.ThinkingTokens) - clampUsageTokenCount(previous.ThinkingTokens)
+	summary.CacheReadTokens = clampUsageTokenCount(summary.CacheReadTokens) - clampUsageTokenCount(previous.CacheReadTokens)
+	summary.CacheWriteTokens = clampUsageTokenCount(summary.CacheWriteTokens) - clampUsageTokenCount(previous.CacheWriteTokens)
+	summary.TotalTokens = clampUsageTokenCount(summary.TotalTokens) - clampUsageTokenCount(previous.TotalTokens)
+	return ApplyProviderUsageSnapshotToSummary(summary, usage)
+}
+
+func shouldAccumulateProviderUsage(usage SessionTurnUsageSnapshot) bool {
+	return strings.ToLower(strings.TrimSpace(usage.Provider)) == "fireworks" && strings.ToLower(strings.TrimSpace(usage.Source)) == "fireworks_api_usage"
 }
 
 func clampUsageTokenCount(value int64) int64 {

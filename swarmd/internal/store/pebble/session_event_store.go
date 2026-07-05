@@ -1900,7 +1900,11 @@ func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, n
 	}
 	summary.LastRunID = usage.RunID
 	summary.UpdatedAt = now
-	summary = ApplyProviderUsageSnapshotToSummary(summary, usage)
+	if hadPrevious {
+		summary = ApplyProviderUsageSnapshotReplacementToSummary(summary, previous, usage)
+	} else {
+		summary = ApplyProviderUsageSnapshotToSummary(summary, usage)
+	}
 	return usage, summary, true, nil
 }
 

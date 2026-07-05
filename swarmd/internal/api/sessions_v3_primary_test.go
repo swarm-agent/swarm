@@ -4407,6 +4407,86 @@ func TestSessionsV3ProviderToolLoopRecordsCodexUsagePerProviderStep(t *testing.T
 	}
 }
 
+func TestSessionsV3ProviderToolLoopRecordsAccumulatedFireworksUsagePerProviderStep(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{
+		id: "fireworks",
+		responses: []provideriface.Response{
+			{
+				ID:          "resp_fireworks_usage_step_1",
+				Model:       "accounts/fireworks/models/glm-4.5",
+				RestartTurn: true,
+				Usage: provideriface.TokenUsage{
+					InputTokens:     100,
+					OutputTokens:    20,
+					CacheReadTokens: 30,
+					TotalTokens:     120,
+					Source:          "fireworks_api_usage",
+					APIUsageRawPath: "usage",
+				},
+			},
+			{
+				ID:         "resp_fireworks_usage_step_2",
+				Model:      "accounts/fireworks/models/glm-4.5",
+				Text:       "done",
+				StopReason: "stop",
+				Usage: provideriface.TokenUsage{
+					InputTokens:     80,
+					OutputTokens:    30,
+					CacheReadTokens: 10,
+					TotalTokens:     110,
+					Source:          "fireworks_api_usage",
+					APIUsageRawPath: "usage",
+				},
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "fireworks-step-usage-create", "fireworks step usage", pebblestore.ModelPreference{Provider: "fireworks", Model: "accounts/fireworks/models/glm-4.5", Thinking: "high"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "fireworks-step-usage-message", "check usage cadence")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want 2", runner.callCount)
+	}
+
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var payloads []struct {
+		TurnUsage    pebblestore.SessionTurnUsageSnapshot `json:"turn_usage"`
+		UsageSummary pebblestore.SessionUsageSummary      `json:"usage_summary"`
+	}
+	for _, event := range events {
+		if event.EventType != "run.usage.updated" {
+			continue
+		}
+		var payload struct {
+			TurnUsage    pebblestore.SessionTurnUsageSnapshot `json:"turn_usage"`
+			UsageSummary pebblestore.SessionUsageSummary      `json:"usage_summary"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode usage payload: %v", err)
+		}
+		payloads = append(payloads, payload)
+	}
+	if len(payloads) != 2 {
+		t.Fatalf("usage event count = %d, want 2 events=%+v", len(payloads), events)
+	}
+	if payloads[0].TurnUsage.Steps != 1 || payloads[0].TurnUsage.TotalTokens != 120 || payloads[0].UsageSummary.TotalTokens != 120 {
+		t.Fatalf("first usage payload = %+v", payloads[0])
+	}
+	if payloads[1].TurnUsage.Steps != 2 || payloads[1].TurnUsage.TotalTokens != 110 || payloads[1].UsageSummary.TotalTokens != 230 || payloads[1].UsageSummary.CacheReadTokens != 40 {
+		t.Fatalf("second usage payload should accumulate fireworks summary without changing turn precision: %+v", payloads[1])
+	}
+}
+
 func TestSessionsV3ExecutorContinuesAfterOverflowCompaction(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	const userContent = "continue original task after overflow"

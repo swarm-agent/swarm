@@ -1673,7 +1673,11 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	}
 	summary.LastRunID = usage.RunID
 	summary.UpdatedAt = now
-	summary = pebblestore.ApplyProviderUsageSnapshotToSummary(summary, usage)
+	if hadPrevious {
+		summary = pebblestore.ApplyProviderUsageSnapshotReplacementToSummary(summary, previous, usage)
+	} else {
+		summary = pebblestore.ApplyProviderUsageSnapshotToSummary(summary, usage)
+	}
 	normalizeUsageSummary(&summary)
 
 	if err := s.store.PutTurnUsage(usage); err != nil {

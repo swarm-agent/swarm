@@ -17,7 +17,7 @@ func (s *Service) newRunID() string {
 
 func mergeTokenUsage(acc, next provideriface.TokenUsage) provideriface.TokenUsage {
 	source := strings.ToLower(strings.TrimSpace(next.Source))
-	if source == "codex_api_usage" || source == "google_api_usage" || source == "fireworks_api_usage" || source == "copilot_session_usage" || source == "anthropic_api_usage" || source == "openrouter_api_usage" {
+	if source == "codex_api_usage" || source == "google_api_usage" || source == "copilot_session_usage" || source == "anthropic_api_usage" || source == "openrouter_api_usage" {
 		if !hasConcreteUsageSnapshot(next) {
 			return acc
 		}

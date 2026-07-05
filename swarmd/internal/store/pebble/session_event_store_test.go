@@ -481,6 +481,69 @@ func TestApplyV3SessionMutationUsageSummaryUsesLatestProviderTotal(t *testing.T)
 	}
 }
 
+func TestApplyV3SessionMutationFireworksUsageSummaryAccumulates(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-fireworks-usage")
+
+	turns := []SessionTurnUsageSnapshot{
+		{RunID: "v3run_fireworks_1", Provider: "fireworks", Model: "accounts/fireworks/models/glm-4.5", Source: "fireworks_api_usage", ContextWindow: 1000, InputTokens: 100, OutputTokens: 20, CacheReadTokens: 40, TotalTokens: 120},
+		{RunID: "v3run_fireworks_2", Provider: "fireworks", Model: "accounts/fireworks/models/glm-4.5", Source: "fireworks_api_usage", ContextWindow: 1000, InputTokens: 80, OutputTokens: 30, CacheReadTokens: 10, TotalTokens: 110},
+	}
+
+	var summary SessionUsageSummary
+	for index, turn := range turns {
+		result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+			SessionID:      "session-fireworks-usage",
+			UserID:         "user-1",
+			AccountScopeID: "account-1",
+			IdempotencyKey: fmt.Sprintf("fireworks-usage-%d", index),
+			PayloadHash:    fmt.Sprintf("hash-fireworks-usage-%d", index),
+			Kind:           V3SessionMutationRecordUsage,
+			EventType:      "run.usage.updated",
+			TurnUsage:      &turn,
+			NowUnixMs:      int64(3000 + index),
+		})
+		if err != nil {
+			t.Fatalf("record fireworks usage %s: %v", turn.RunID, err)
+		}
+		if result.UsageSummary == nil {
+			t.Fatalf("record fireworks usage %s missing usage summary", turn.RunID)
+		}
+		summary = *result.UsageSummary
+	}
+
+	if summary.TurnCount != 2 || summary.TotalTokens != 230 || summary.InputTokens != 180 || summary.OutputTokens != 50 || summary.CacheReadTokens != 50 {
+		t.Fatalf("fireworks summary should accumulate token counts across turns, got %+v", summary)
+	}
+	if summary.RemainingTokens != 770 {
+		t.Fatalf("fireworks remaining tokens = %d, want 770", summary.RemainingTokens)
+	}
+
+	replacement := SessionTurnUsageSnapshot{RunID: "v3run_fireworks_2", Provider: "fireworks", Model: "accounts/fireworks/models/glm-4.5", Source: "fireworks_api_usage", ContextWindow: 1000, InputTokens: 70, OutputTokens: 10, CacheReadTokens: 5, TotalTokens: 80}
+	result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:      "session-fireworks-usage",
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "fireworks-usage-replacement",
+		PayloadHash:    "hash-fireworks-usage-replacement",
+		Kind:           V3SessionMutationRecordUsage,
+		EventType:      "run.usage.updated",
+		TurnUsage:      &replacement,
+		NowUnixMs:      3003,
+	})
+	if err != nil {
+		t.Fatalf("replace fireworks usage: %v", err)
+	}
+	if result.UsageSummary == nil {
+		t.Fatal("replace fireworks usage missing usage summary")
+	}
+	summary = *result.UsageSummary
+	if summary.TurnCount != 2 || summary.TotalTokens != 200 || summary.InputTokens != 170 || summary.OutputTokens != 30 || summary.CacheReadTokens != 45 || summary.RemainingTokens != 800 {
+		t.Fatalf("fireworks replacement should update accumulated totals by run id, got %+v", summary)
+	}
+}
+
 func TestArchiveSessionCreatesTombstoneEventAndRealtimeOutbox(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

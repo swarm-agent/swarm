@@ -1434,6 +1434,111 @@ func TestRunTurnStreamingEmitsUsageUpdatedForCodex(t *testing.T) {
 	}
 }
 
+func TestRunTurnStreamingEmitsAccumulatedUsageUpdatedForFireworks(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "usage-updated-fireworks.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write README fixture: %v", err)
+	}
+
+	modelSvc := model.NewService(pebblestore.NewModelStore(store), events, nil)
+	if _, _, err := modelSvc.SetGlobalPreference("fireworks", "accounts/fireworks/models/glm-4.5", "high"); err != nil {
+		t.Fatalf("set global preference: %v", err)
+	}
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	session, _, err := sessionSvc.CreateSession("usage-stream-fireworks", workspace, "workspace")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	runner := &scriptedRunner{
+		id: "fireworks",
+		responses: []provideriface.Response{
+			{
+				FunctionCalls: []provideriface.FunctionCall{{
+					CallID:    "fireworks_call_1",
+					Name:      "read",
+					Arguments: `{"path":"README.md","line_start":1,"max_lines":5}`,
+				}},
+				Usage: provideriface.TokenUsage{
+					Source:          "fireworks_api_usage",
+					InputTokens:     100,
+					OutputTokens:    20,
+					CacheReadTokens: 30,
+					TotalTokens:     120,
+					APIUsageRawPath: "usage",
+				},
+			},
+			{
+				Text: "done",
+				Usage: provideriface.TokenUsage{
+					Source:          "fireworks_api_usage",
+					InputTokens:     80,
+					OutputTokens:    30,
+					CacheReadTokens: 10,
+					TotalTokens:     110,
+					APIUsageRawPath: "usage",
+				},
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+
+	svc := NewService(sessionSvc, modelSvc, providers, tool.NewRuntime(2), nil, nil, nil, 4)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	usageEvents := make([]StreamEvent, 0, 4)
+	var mu sync.Mutex
+	result, err := svc.RunTurnStreaming(ctx, session.ID, RunOptions{Prompt: "run with fireworks usage"}, func(event StreamEvent) {
+		if strings.TrimSpace(event.Type) != StreamEventUsageUpdated {
+			return
+		}
+		mu.Lock()
+		usageEvents = append(usageEvents, event)
+		mu.Unlock()
+	})
+	if err != nil {
+		t.Fatalf("run turn streaming: %v", err)
+	}
+
+	mu.Lock()
+	captured := append([]StreamEvent(nil), usageEvents...)
+	mu.Unlock()
+	if len(captured) != 2 {
+		t.Fatalf("usage.updated events = %d, want 2", len(captured))
+	}
+	if captured[0].TurnUsage == nil || captured[0].UsageSummary == nil || captured[0].TurnUsage.TotalTokens != 120 || captured[0].UsageSummary.TotalTokens != 120 {
+		t.Fatalf("first fireworks usage event = %+v", captured[0])
+	}
+	if captured[1].TurnUsage == nil || captured[1].UsageSummary == nil || captured[1].TurnUsage.TotalTokens != 230 || captured[1].UsageSummary.TotalTokens != 230 || captured[1].UsageSummary.CacheReadTokens != 40 {
+		t.Fatalf("second fireworks usage event should expose accumulated turn and summary totals, got %+v", captured[1])
+	}
+	if result.TurnUsage == nil || result.UsageSummary == nil || result.TurnUsage.TotalTokens != 230 || result.UsageSummary.TotalTokens != 230 {
+		t.Fatalf("run result should expose accumulated fireworks usage, turn=%+v summary=%+v", result.TurnUsage, result.UsageSummary)
+	}
+
+	storedSummary, ok, err := sessionSvc.GetUsageSummary(session.ID)
+	if err != nil {
+		t.Fatalf("get stored summary: %v", err)
+	}
+	if !ok || storedSummary.TotalTokens != 230 || storedSummary.RemainingTokens < 0 {
+		t.Fatalf("stored fireworks summary = %+v ok=%v", storedSummary, ok)
+	}
+}
+
 func TestRunTurnStreamingEmitsUsageUpdatedForGoogle(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "usage-updated-google.pebble"))
 	if err != nil {
