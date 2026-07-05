@@ -1852,6 +1852,39 @@ test('realtime stream objects retain backend ordering sequence on live overlays'
   assert.equal(liveRun.assistantDraft?.timelineSeq, 5)
 })
 
+test('realtime provider tool construction events create live tool overlay while arguments stream', () => {
+  const state = bootstrappedState()
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.provider_tool_call.started', {
+      tool_call_id: 'call-plan',
+      step_id: 'step-1',
+      tool_name: 'plan_manage',
+    }, 5, 'cursor-provider-tool-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.provider_tool_call.arguments.delta', {
+      tool_call_id: 'call-plan',
+      arguments_delta: '{"action":"complete',
+    }, 6, 'cursor-provider-tool-delta'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.provider_tool_call.arguments.snapshot', {
+      tool_call_id: 'call-plan',
+      tool_name: 'plan_manage',
+      arguments_snapshot: '{"action":"complete_checkpoint","checkpoint_id":"cp-1"}',
+    }, 7, 'cursor-provider-tool-snapshot'),
+  })
+
+  const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-plan']
+  assert.equal(tool.stepId, 'step-1')
+  assert.equal(tool.toolInstanceId, 'provider-tool:call-plan')
+  assert.equal(tool.toolName, 'plan_manage')
+  assert.equal(tool.argumentsText, '{"action":"complete_checkpoint","checkpoint_id":"cp-1"}')
+  assert.equal(tool.status, 'running')
+  assert.equal(tool.timelineSeq, 5)
+})
+
 test('realtime session.tool.started creates live tool overlay before output deltas arrive', () => {
   const state = bootstrappedState()
 
