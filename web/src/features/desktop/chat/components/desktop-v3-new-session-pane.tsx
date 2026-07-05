@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
@@ -90,6 +90,7 @@ export interface DesktopV3NewSessionPaneProps {
   agentName?: string
   preference?: DesktopV3NewSessionPreference
   onOpenChats?: () => void
+  mobileSessionQuickMenu?: ReactNode
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
 }
 
@@ -114,6 +115,7 @@ export function DesktopV3NewSessionPane({
   agentName: agentNameProp = '',
   preference: preferenceProp,
   onOpenChats,
+  mobileSessionQuickMenu,
   onSlashCommand,
 }: DesktopV3NewSessionPaneProps) {
   const navigate = useNavigate()
@@ -417,8 +419,10 @@ export function DesktopV3NewSessionPane({
         runStatusNow={timerNow}
         onOpenChats={onOpenChats}
       />
-      <div className="min-h-0 flex-1 py-6">
-        <div className="mx-auto flex h-full w-full max-w-[70rem] flex-col justify-end px-4 sm:px-6" />
+      <div className="min-h-0 flex-1 overflow-y-auto py-6 [-webkit-overflow-scrolling:touch]">
+        <div className="mx-auto flex min-h-full w-full max-w-[70rem] flex-col justify-start px-4 sm:justify-end sm:px-6">
+          {mobileSessionQuickMenu ? <div className="flex min-h-0 w-full flex-1 sm:hidden">{mobileSessionQuickMenu}</div> : null}
+        </div>
       </div>
       <DesktopV3AgenticComposer
         draft={draft}

@@ -3135,6 +3135,33 @@ export function DesktopAppPage() {
     }))
   }, [])
 
+  const mobileSessionQuickMenu = routeWorkspace?.path ? (
+    <Card className="flex min-h-0 w-full flex-1 flex-col border-[var(--app-border)] bg-[var(--app-surface)] p-4 shadow-sm">
+      <div className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto pr-1 [-webkit-overflow-scrolling:touch]">
+        {renderSidebarSessionGroups({
+          nodes: globalFlattenedSessionNodes,
+          routeSessionId,
+          now: sidebarNow,
+          fallbackSwarmName: swarmName,
+          routeOptions: globalSessionRouteOptions,
+          workspaceSlug: globalSessionWorkspaceSlug,
+          expandedAgentSessions,
+          compactingSession,
+          pendingActions: sidebarSessionActions,
+          onSelect: handleSelectSession,
+          onPrefetch: handlePrefetchSession,
+          onToggleAgents: handleToggleAgentSessions,
+          onTogglePinned: handleToggleSidebarPinned,
+          onArchive: handleArchiveSidebarSession,
+        }) ?? (
+          <div className="rounded-xl border border-dashed border-[var(--app-border)] px-3 py-4 text-center text-xs text-[var(--app-text-subtle)]">
+            No active chats yet.
+          </div>
+        )}
+      </div>
+    </Card>
+  ) : null
+
   const handleWorkspaceSelect = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
     const workspacePath = event.target.value.trim()
     if (!workspacePath) return
@@ -3568,6 +3595,7 @@ export function DesktopAppPage() {
               topologyRoutes: routeWorkspace.topologyRoutes,
             })}
             onOpenChats={() => setMobileSidebarOpen(true)}
+            mobileSessionQuickMenu={mobileSessionQuickMenu}
             onSlashCommand={handleSlashCommand}
           />
         ) : (
