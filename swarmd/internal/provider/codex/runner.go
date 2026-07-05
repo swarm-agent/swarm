@@ -539,6 +539,8 @@ func fromCodexResponse(resp Response) provideriface.Response {
 			TotalTokens:      resp.Usage.TotalTokens,
 			CacheReadTokens:  resp.Usage.CacheReadTokens,
 			CacheWriteTokens: resp.Usage.CacheWriteTokens,
+			ServiceTier:      resp.Usage.ServiceTier,
+			EstimatedCostUSD: resp.Usage.EstimatedCostUSD,
 			Source:           resp.Usage.Source,
 			Transport:        resp.Usage.Transport,
 			ConnectedViaWS:   cloneBoolPointer(resp.Usage.ConnectedViaWS),

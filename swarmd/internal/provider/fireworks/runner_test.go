@@ -281,11 +281,11 @@ func TestParseUsageCapturesCachedTokensAndCost(t *testing.T) {
 	if usage.APIUsageRaw["uncached_prompt_tokens"] != int64(700) {
 		t.Fatalf("uncached prompt tokens raw = %#v", usage.APIUsageRaw["uncached_prompt_tokens"])
 	}
-	if usage.APIUsageRaw["service_tier"] != "priority" || usage.APIUsageRaw["provider_model"] != "accounts/fireworks/models/glm-5p1" {
-		t.Fatalf("usage annotations = %#v", usage.APIUsageRaw)
+	if usage.ServiceTier != "priority" || usage.APIUsageRaw["service_tier"] != "priority" || usage.APIUsageRaw["provider_model"] != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("usage annotations = usage=%+v raw=%#v", usage, usage.APIUsageRaw)
 	}
-	if usage.APIUsageRaw["estimated_cost_usd"] == nil {
-		t.Fatalf("estimated cost missing from usage raw: %#v", usage.APIUsageRaw)
+	if usage.EstimatedCostUSD <= 0 || usage.APIUsageRaw["estimated_cost_usd"] == nil {
+		t.Fatalf("estimated cost missing from usage: usage=%+v raw=%#v", usage, usage.APIUsageRaw)
 	}
 }
 

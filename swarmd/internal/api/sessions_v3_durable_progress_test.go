@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
@@ -17,10 +18,11 @@ type sessionsV3DurableProgressRecordingWriter struct {
 	release chan struct{}
 	once    sync.Once
 
-	mu        sync.Mutex
-	assistant []sessionV3AssistantProgress
-	phases    []string
-	reasoning []string
+	mu           sync.Mutex
+	assistant    []sessionV3AssistantProgress
+	phases       []string
+	reasoning    []string
+	providerTool []string
 }
 
 func newSessionsV3DurableProgressRecordingWriter(block bool) *sessionsV3DurableProgressRecordingWriter {
@@ -63,6 +65,14 @@ func (w *sessionsV3DurableProgressRecordingWriter) RecordReasoningEvent(job sess
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.reasoning = append(w.reasoning, eventType+":"+delta+":"+summary)
+	return sessionruntime.SessionMutationResult{}, nil
+}
+
+func (w *sessionsV3DurableProgressRecordingWriter) RecordProviderToolConstructionEvent(job sessionV3ExecutorJob, event provideriface.StreamEvent, step int, eventIndex int) (sessionruntime.SessionMutationResult, error) {
+	w.maybeBlock()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.providerTool = append(w.providerTool, string(event.Type))
 	return sessionruntime.SessionMutationResult{}, nil
 }
 

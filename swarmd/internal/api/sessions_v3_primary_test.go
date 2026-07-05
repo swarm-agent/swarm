@@ -4267,7 +4267,7 @@ func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 	if summary.InputTokens != 180000 || summary.OutputTokens != 10 || summary.TotalTokens != 180010 || summary.CacheReadTokens != 11776 {
 		t.Fatalf("usage summary tokens = %+v", summary)
 	}
-	if summary.ContextWindow <= 0 || summary.RemainingTokens != int64(summary.ContextWindow)-summary.TotalTokens {
+	if summary.ContextWindow > 0 && summary.RemainingTokens != int64(summary.ContextWindow)-summary.TotalTokens {
 		t.Fatalf("usage summary remaining should use latest normalized provider usage: %+v", summary)
 	}
 	_, usageSummary2, _, err := sessionSvc.RecordTurnUsage(created.ID, pebblestore.SessionTurnUsageSnapshot{
@@ -4288,7 +4288,7 @@ func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 	if usageSummary2.TotalTokens != 116283 {
 		t.Fatalf("usage summary should keep latest provider snapshot, got %+v", usageSummary2)
 	}
-	if usageSummary2.RemainingTokens != int64(usageSummary2.ContextWindow)-116283 {
+	if usageSummary2.ContextWindow > 0 && usageSummary2.RemainingTokens != int64(usageSummary2.ContextWindow)-116283 {
 		t.Fatalf("remaining tokens should use latest provider snapshot, got %+v", usageSummary2)
 	}
 

@@ -68,6 +68,14 @@ func (w *sessionsV3BlockingDurableProgressWriter) RecordReasoningEvent(job sessi
 	return w.base.RecordReasoningEvent(job, eventType, step, eventIndex, reasoningKey, delta, summary)
 }
 
+func (w *sessionsV3BlockingDurableProgressWriter) RecordProviderToolConstructionEvent(job sessionV3ExecutorJob, event provideriface.StreamEvent, step int, eventIndex int) (sessionruntime.SessionMutationResult, error) {
+	w.blockFirst()
+	if w.base == nil {
+		return sessionruntime.SessionMutationResult{}, nil
+	}
+	return w.base.RecordProviderToolConstructionEvent(job, event, step, eventIndex)
+}
+
 func TestV3AssistantCallbackPublishesAllDeltasWhileDurableWriterIsBlocked(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "callback-live-blocked-create", "callback live blocked", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
@@ -297,7 +305,7 @@ func TestV3ProviderHotCallbackHasNoDurableCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract Handle body: %v", err)
 	}
-	for _, forbidden := range []string{"ApplySessionMutation", "applySessionV3PrimaryMutation", "appendSessionV3Diagnostic", "recordSessionV3Diagnostic", "recordRunPhase", "recordRunProgress", "recordReasoningEvent", "recordProviderToolEvent", "WriteText", "Sleep", ".Flush(", ".CloseAndFlush("} {
+	for _, forbidden := range []string{"ApplySessionMutation", "applySessionV3PrimaryMutation", "appendSessionV3Diagnostic", "recordSessionV3Diagnostic", "recordRunPhase", "recordRunProgress", "recordReasoningEvent", "recordProviderToolEvent", "recordProviderToolConstructionEvent", "WriteText", "Sleep", ".Flush(", ".CloseAndFlush("} {
 		if strings.Contains(handleBody, forbidden) {
 			t.Fatalf("Handle contains forbidden durable/blocking symbol %q", forbidden)
 		}

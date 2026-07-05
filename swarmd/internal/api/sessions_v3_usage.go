@@ -36,6 +36,12 @@ func sessionV3ProviderUsageRecord(providerID string, modelName string, contextWi
 		CacheReadTokens:  usage.CacheReadTokens,
 		CacheWriteTokens: usage.CacheWriteTokens,
 		TotalTokens:      usage.TotalTokens,
+		ServiceTier:      strings.TrimSpace(usage.ServiceTier),
+		EstimatedCostUSD: usage.EstimatedCostUSD,
+		APIUsageRaw:      cloneSessionV3UsageMap(usage.APIUsageRaw),
+		APIUsageRawPath:  strings.TrimSpace(usage.APIUsageRawPath),
+		APIUsageHistory:  cloneSessionV3UsageHistory(usage.APIUsageHistory),
+		APIUsagePaths:    append([]string(nil), usage.APIUsagePaths...),
 	}, true
 }
 
@@ -125,4 +131,26 @@ func cloneSessionV3BoolPointer(value *bool) *bool {
 	}
 	out := *value
 	return &out
+}
+
+func cloneSessionV3UsageMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneSessionV3UsageHistory(in []map[string]any) []map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(in))
+	for _, item := range in {
+		out = append(out, cloneSessionV3UsageMap(item))
+	}
+	return out
 }

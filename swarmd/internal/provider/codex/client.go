@@ -226,6 +226,8 @@ type TokenUsage struct {
 	TotalTokens      int64            `json:"total_tokens,omitempty"`
 	CacheReadTokens  int64            `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int64            `json:"cache_write_tokens,omitempty"`
+	ServiceTier      string           `json:"service_tier,omitempty"`
+	EstimatedCostUSD float64          `json:"estimated_cost_usd,omitempty"`
 	Source           string           `json:"source,omitempty"`
 	Transport        string           `json:"transport,omitempty"`
 	ConnectedViaWS   *bool            `json:"connected_via_websocket,omitempty"`
@@ -3261,6 +3263,8 @@ func extractTokenUsage(responseObj map[string]any, decoded map[string]any) Token
 	totalTokens, _ := intFromPath(usage, "total_tokens")
 	cacheReadTokens, _ := intFromPath(usage, "input_tokens_details", "cached_tokens")
 	cacheWriteTokens, _ := intFromPath(usage, "input_tokens_details", "cache_creation_tokens")
+	serviceTier := strings.TrimSpace(asString(usage["service_tier"]))
+	estimatedCostUSD, _ := floatFromAny(usage["estimated_cost_usd"])
 
 	usageRaw := cloneMapAny(usage)
 	out := TokenUsage{
@@ -3270,6 +3274,8 @@ func extractTokenUsage(responseObj map[string]any, decoded map[string]any) Token
 		TotalTokens:      totalTokens,
 		CacheReadTokens:  cacheReadTokens,
 		CacheWriteTokens: cacheWriteTokens,
+		ServiceTier:      serviceTier,
+		EstimatedCostUSD: estimatedCostUSD,
 		Source:           "codex_api_usage",
 		Transport:        transport,
 		ConnectedViaWS:   connectedViaWS,
@@ -3330,6 +3336,44 @@ func intFromPath(root map[string]any, path ...string) (int64, bool) {
 		current = next
 	}
 	return asInt64(current)
+}
+
+func floatFromAny(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int8:
+		return float64(typed), true
+	case int16:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case uint:
+		return float64(typed), true
+	case uint8:
+		return float64(typed), true
+	case uint16:
+		return float64(typed), true
+	case uint32:
+		return float64(typed), true
+	case uint64:
+		return float64(typed), true
+	case json.Number:
+		if v, err := typed.Float64(); err == nil {
+			return v, true
+		}
+	case string:
+		if v, err := strconv.ParseFloat(strings.TrimSpace(typed), 64); err == nil {
+			return v, true
+		}
+	}
+	return 0, false
 }
 
 func asInt64(value any) (int64, bool) {

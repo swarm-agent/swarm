@@ -117,6 +117,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 		"payload":          fireworksDebugJSONValue(payload),
 	})
 	reasoningByKey := make(map[string]string, 4)
+	toolConstruction := newFireworksToolCallConstructionState()
 	decoded, err := r.client.CreateChatCompletionStream(ctx, record.APIKey, payload, func(chunk chatCompletionChunk) error {
 		if fireworksDebugChunkInteresting(chunk) {
 			fireworksDebugEvent("stream_chunk", map[string]any{
@@ -138,6 +139,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: choice.Delta.Content})
 			}
 		}
+		emitFireworksToolCallConstructionEvents(toolConstruction, chunk, onEvent)
 		return nil
 	}, requestOptions{SessionAffinity: serving.SessionAffinity, PromptCacheIsolationKey: serving.PromptCacheIsolationKey})
 	if err != nil {
@@ -425,6 +427,101 @@ func mapToolChoice(choice string) any {
 	}
 }
 
+type fireworksToolCallConstructionState struct {
+	seenStarted   map[int]bool
+	seenCompleted map[int]bool
+	arguments     map[int]string
+	ids           map[int]string
+	names         map[int]string
+}
+
+func newFireworksToolCallConstructionState() *fireworksToolCallConstructionState {
+	return &fireworksToolCallConstructionState{
+		seenStarted:   make(map[int]bool),
+		seenCompleted: make(map[int]bool),
+		arguments:     make(map[int]string),
+		ids:           make(map[int]string),
+		names:         make(map[int]string),
+	}
+}
+
+func emitFireworksToolCallConstructionEvents(state *fireworksToolCallConstructionState, chunk chatCompletionChunk, onEvent func(provideriface.StreamEvent)) {
+	if state == nil || onEvent == nil || len(chunk.Choices) == 0 {
+		return
+	}
+	for _, choice := range chunk.Choices {
+		if choice.Delta == nil || len(choice.Delta.ToolCalls) == 0 {
+			continue
+		}
+		for _, delta := range choice.Delta.ToolCalls {
+			index := delta.Index
+			if id := strings.TrimSpace(delta.ID); id != "" {
+				state.ids[index] = id
+			}
+			if name := strings.TrimSpace(fireworksToolCallDeltaName(delta)); name != "" {
+				state.names[index] = name
+			}
+			if !state.seenStarted[index] {
+				state.seenStarted[index] = true
+				onEvent(provideriface.StreamEvent{
+					Type:          provideriface.StreamEventToolCallStarted,
+					ToolCallID:    state.ids[index],
+					ToolCallIndex: intPointer(index),
+					ToolName:      state.names[index],
+					Metadata:      fireworksToolCallDeltaMetadata(choice.Index, delta, "fireworks.chat.completions.chunk.delta"),
+				})
+			}
+			if delta.Function != nil && delta.Function.Arguments != "" {
+				state.arguments[index] += delta.Function.Arguments
+				onEvent(provideriface.StreamEvent{
+					Type:           provideriface.StreamEventToolCallArgumentsDelta,
+					Delta:          delta.Function.Arguments,
+					ToolCallID:     state.ids[index],
+					ToolCallIndex:  intPointer(index),
+					ToolName:       state.names[index],
+					ArgumentsDelta: delta.Function.Arguments,
+					Metadata:       fireworksToolCallDeltaMetadata(choice.Index, delta, "fireworks.chat.completions.chunk.delta"),
+				})
+			}
+			if strings.EqualFold(strings.TrimSpace(choice.FinishReason), "tool_calls") && !state.seenCompleted[index] {
+				state.seenCompleted[index] = true
+				onEvent(provideriface.StreamEvent{
+					Type:          provideriface.StreamEventToolCallCompleted,
+					ToolCallID:    state.ids[index],
+					ToolCallIndex: intPointer(index),
+					ToolName:      state.names[index],
+					Arguments:     strings.TrimSpace(state.arguments[index]),
+					Metadata:      fireworksToolCallDeltaMetadata(choice.Index, delta, "fireworks.chat.completions.chunk.finish"),
+				})
+			}
+		}
+	}
+}
+
+func fireworksToolCallDeltaName(delta chatCompletionToolCallDelta) string {
+	if delta.Function == nil {
+		return ""
+	}
+	return strings.TrimSpace(delta.Function.Name)
+}
+
+func fireworksToolCallDeltaMetadata(choiceIndex int, delta chatCompletionToolCallDelta, source string) map[string]any {
+	metadata := map[string]any{
+		"provider":     "fireworks",
+		"source":       source,
+		"choice_index": choiceIndex,
+	}
+	if typeName := strings.TrimSpace(delta.Type); typeName != "" {
+		metadata["tool_call_type"] = typeName
+	}
+	return metadata
+}
+
+func intPointer(value int) *int {
+	out := value
+	return &out
+}
+
 func parseChatCompletionResponse(resp chatCompletionResponse) provideriface.Response {
 	out := provideriface.Response{
 		ID:    strings.TrimSpace(resp.ID),
@@ -533,12 +630,14 @@ func annotateUsage(usage *provideriface.TokenUsage, serving requestServingResolu
 		usage.APIUsageRaw = map[string]any{}
 	}
 	if strings.TrimSpace(serving.EffectiveTier) != "" {
-		usage.APIUsageRaw["service_tier"] = strings.TrimSpace(serving.EffectiveTier)
+		usage.ServiceTier = strings.TrimSpace(serving.EffectiveTier)
+		usage.APIUsageRaw["service_tier"] = usage.ServiceTier
 	}
 	if strings.TrimSpace(serving.ModelID) != "" {
 		usage.APIUsageRaw["provider_model"] = strings.TrimSpace(serving.ModelID)
 	}
 	if cost := EstimateCostUSD(*usage, serving.ServingTier); cost > 0 {
+		usage.EstimatedCostUSD = cost
 		usage.APIUsageRaw["estimated_cost_usd"] = cost
 	}
 	usage.APIUsageHistory = []map[string]any{cloneMap(usage.APIUsageRaw)}
