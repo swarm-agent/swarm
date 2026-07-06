@@ -32,6 +32,14 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		UtilityThinking:  "medium",
 		UtilitySubagents: []string{"explorer", "memory", "parallel"},
 	},
+	"openai": {
+		ProviderID:       "openai",
+		PrimaryModel:     "gpt-5.5",
+		PrimaryThinking:  "high",
+		UtilityModel:     "gpt-5.4-mini",
+		UtilityThinking:  "medium",
+		UtilitySubagents: []string{"explorer", "memory", "parallel"},
+	},
 	// Copilot defaults are retained for the dormant provider implementation, but
 	// Copilot is filtered out of option surfaces until we can fairly test it with
 	// the required paid plan.

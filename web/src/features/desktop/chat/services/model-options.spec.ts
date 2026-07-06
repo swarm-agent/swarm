@@ -67,3 +67,15 @@ test('GLM 5.2 thinking options come directly from catalog metadata', () => {
   assert.equal(modelThinkingOptions(glm52).includes('low'), false)
   assert.equal(modelThinkingOptions(glm52).includes('medium'), false)
 })
+
+
+test('Anthropic service tier options expose priority but hide asynchronous batch', () => {
+  assert.deepEqual(modelServiceTierOptions('anthropic', 'claude-sonnet-5', ['standard', 'priority', 'batch']), [
+    { label: 'Off / standard', value: '' },
+    { label: 'Priority', value: 'priority' },
+  ])
+  assert.equal(normalizeModelServiceTier('anthropic', 'priority'), 'priority')
+  assert.equal(normalizeModelServiceTier('anthropic', 'batch'), '')
+  assert.equal(supportsModelServiceTier('anthropic', 'claude-sonnet-5', ['standard', 'priority', 'batch'], 'priority'), true)
+  assert.equal(supportsModelServiceTier('anthropic', 'claude-sonnet-5', ['standard', 'priority', 'batch'], 'batch'), false)
+})

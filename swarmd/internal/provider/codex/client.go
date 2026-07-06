@@ -38,6 +38,7 @@ const (
 	defaultOriginatorHeaderValue               = "codex_cli_rs"
 	userAgentHeader                            = "User-Agent"
 	defaultCodexTransportUserAgent             = "codex_cli_rs/swarm-go"
+	defaultOpenAITransportUserAgent            = "swarm-go/openai-responses"
 	defaultCodexTextVerbosity                  = "low"
 	includeReasoningEncryptedContentPath       = "reasoning.encrypted_content"
 	chatGPTAccountIDHeader                     = "ChatGPT-Account-ID"
@@ -370,8 +371,16 @@ func (c *Client) CreateResponse(ctx context.Context, req Request) (Response, err
 	return c.createResponse(ctx, req, nil)
 }
 
+func (c *Client) CreateResponseWithAuth(ctx context.Context, record pebblestore.CodexAuthRecord, req Request) (Response, error) {
+	return c.createResponseWithAuth(ctx, record, req, nil)
+}
+
 func (c *Client) CreateResponseStreaming(ctx context.Context, req Request, onEvent func(StreamEvent)) (Response, error) {
 	return c.createResponse(ctx, req, onEvent)
+}
+
+func (c *Client) CreateResponseStreamingWithAuth(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (Response, error) {
+	return c.createResponseWithAuth(ctx, record, req, onEvent)
 }
 
 func (c *Client) createResponse(ctx context.Context, req Request, onEvent func(StreamEvent)) (Response, error) {
@@ -379,7 +388,13 @@ func (c *Client) createResponse(ctx context.Context, req Request, onEvent func(S
 	if err != nil {
 		return Response{}, err
 	}
+	return c.createResponseWithAuth(ctx, record, req, onEvent)
+}
 
+func (c *Client) createResponseWithAuth(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (Response, error) {
+	if strings.TrimSpace(record.Provider) == "" {
+		record.Provider = "codex"
+	}
 	payload, forceFreshProviderContext, err := buildRequestPayloadWithOptions(req)
 	if err != nil {
 		return Response{}, err
@@ -407,10 +422,14 @@ func (c *Client) createResponse(ctx context.Context, req Request, onEvent func(S
 	}
 
 	if statusCode >= 400 {
-		if transport, _ := extractCodexTransportMetadata(decoded); transport != "" {
-			return Response{}, fmt.Errorf("codex responses request failed status=%d transport=%s body=%s", statusCode, transport, compactBody(decoded))
+		providerLabel := "codex"
+		if strings.EqualFold(strings.TrimSpace(record.Provider), "openai") || record.Type != pebblestore.CodexAuthTypeOAuth {
+			providerLabel = "openai"
 		}
-		return Response{}, fmt.Errorf("codex responses request failed status=%d body=%s", statusCode, compactBody(decoded))
+		if transport, _ := extractCodexTransportMetadata(decoded); transport != "" {
+			return Response{}, fmt.Errorf("%s responses request failed status=%d transport=%s body=%s", providerLabel, statusCode, transport, compactBody(decoded))
+		}
+		return Response{}, fmt.Errorf("%s responses request failed status=%d body=%s", providerLabel, statusCode, compactBody(decoded))
 	}
 
 	return parseResponse(decoded), nil
@@ -803,23 +822,33 @@ func (c *Client) sendOpenAIResponses(ctx context.Context, record pebblestore.Cod
 	if err != nil {
 		return nil, 0, err
 	}
+	providerID := strings.ToLower(strings.TrimSpace(record.Provider))
+	if providerID == "" {
+		providerID = "codex"
+	}
+	diagnosticProvider := providerID
+	userAgent := defaultCodexTransportUserAgent
+	if providerID == "openai" || record.Type != pebblestore.CodexAuthTypeOAuth {
+		diagnosticProvider = "openai"
+		userAgent = defaultOpenAITransportUserAgent
+	}
 	httpReq.Header.Set("Authorization", "Bearer "+bearerToken(record))
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set(userAgentHeader, defaultCodexTransportUserAgent)
+	httpReq.Header.Set(userAgentHeader, userAgent)
 
-	providerdiagnostics.LogRequest("codex", "responses.http", httpReq, payload)
+	providerdiagnostics.LogRequest(diagnosticProvider, "responses.http", httpReq, payload)
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		providerdiagnostics.LogErrorContext(ctx, "codex", "responses.http", err)
+		providerdiagnostics.LogErrorContext(ctx, diagnosticProvider, "responses.http", err)
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCodexResponseBodyBytes))
-	providerdiagnostics.LogResponse("codex", "responses.http", resp, body)
+	providerdiagnostics.LogResponse(diagnosticProvider, "responses.http", resp, body)
 	if err != nil {
-		providerdiagnostics.LogErrorContext(ctx, "codex", "responses.http", err)
+		providerdiagnostics.LogErrorContext(ctx, diagnosticProvider, "responses.http", err)
 		return nil, resp.StatusCode, err
 	}
 	if resp.StatusCode >= 400 {
@@ -833,6 +862,40 @@ func (c *Client) sendOpenAIResponses(ctx context.Context, record pebblestore.Cod
 		return nil, resp.StatusCode, err
 	}
 	return annotateCodexTransportMetadata(decoded, codexTransportResponsesHTTP, false), resp.StatusCode, nil
+}
+
+func (c *Client) VerifyOpenAIAPIKey(ctx context.Context, apiKey string) (provideriface.AuthVerification, error) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, errors.New("openai api verification requires api_key")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.openai.com/v1/models", nil)
+	if err != nil {
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set(userAgentHeader, defaultOpenAITransportUserAgent)
+	providerdiagnostics.LogRequest("openai", "models.verify", httpReq, nil)
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "openai", "models.verify", err)
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCodexResponseBodyBytes))
+	providerdiagnostics.LogResponse("openai", "models.verify", resp, body)
+	if err != nil {
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, err
+	}
+	if resp.StatusCode >= 400 {
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, fmt.Errorf("openai api verification failed status=%d body=%s", resp.StatusCode, sanitizeDiagnosticText(string(body)))
+	}
+	return provideriface.AuthVerification{
+		Connected: true,
+		Method:    "api",
+		Message:   "OpenAI API key verified via /v1/models",
+	}, nil
 }
 
 func parseOpenAIResponsesBody(body []byte, contentType string, onEvent func(StreamEvent)) (map[string]any, error) {

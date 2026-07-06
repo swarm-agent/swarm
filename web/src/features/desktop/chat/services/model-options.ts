@@ -89,12 +89,14 @@ function modelPresetListForProvider(provider: string): string[] {
 
 export type ModelServiceTierOption = { label: string; value: string }
 
-function normalizedServiceTiers(serviceTiers: string[] = []): string[] {
+function normalizedServiceTiers(provider: string, serviceTiers: string[] = []): string[] {
+  const normalizedProvider = normalizeProviderID(provider)
   const seen = new Set<string>()
   const out: string[] = []
   for (const tier of serviceTiers) {
     const normalized = tier.trim().toLowerCase()
     if (!normalized || normalized === 'standard' || normalized === 'off' || seen.has(normalized)) continue
+    if (normalizedProvider === 'anthropic' && normalized === 'batch') continue
     seen.add(normalized)
     out.push(normalized)
   }
@@ -108,23 +110,23 @@ function tierLabel(tier: string): string {
 export function normalizeModelServiceTier(provider: string, serviceTier: string): string {
   const normalizedProvider = normalizeProviderID(provider)
   const normalizedTier = serviceTier.trim().toLowerCase()
-  if (normalizedProvider === 'codex' || normalizedProvider === 'fireworks') {
-    return normalizedTier && normalizedTier !== 'standard' && normalizedTier !== 'off' ? normalizedTier : ''
-  }
+  if (normalizedTier === '' || normalizedTier === 'standard' || normalizedTier === 'off') return ''
+  if (normalizedProvider === 'codex' || normalizedProvider === 'fireworks') return normalizedTier
+  if (normalizedProvider === 'anthropic') return normalizedTier === 'batch' ? '' : normalizedTier
   return ''
 }
 
 export function supportsModelServiceTier(provider: string, _model: string, serviceTiers: string[] = [], requestedTier = ''): boolean {
-  const tiers = normalizedServiceTiers(serviceTiers)
+  const tiers = normalizedServiceTiers(provider, serviceTiers)
+  const requestedRaw = requestedTier.trim().toLowerCase()
   const normalizedRequested = normalizeModelServiceTier(provider, requestedTier)
   if (normalizedRequested) return tiers.includes(normalizedRequested)
-  return normalizeProviderID(provider) === 'codex' || normalizeProviderID(provider) === 'fireworks'
-    ? tiers.length > 0
-    : false
+  if (requestedRaw && requestedRaw !== 'standard' && requestedRaw !== 'off') return false
+  return ['codex', 'fireworks', 'anthropic'].includes(normalizeProviderID(provider)) ? tiers.length > 0 : false
 }
 
-export function modelServiceTierOptions(_provider: string, _model: string, serviceTiers: string[] = []): ModelServiceTierOption[] {
-  const tiers = normalizedServiceTiers(serviceTiers)
+export function modelServiceTierOptions(provider: string, _model: string, serviceTiers: string[] = []): ModelServiceTierOption[] {
+  const tiers = normalizedServiceTiers(provider, serviceTiers)
   return [
     { label: 'Off / standard', value: '' },
     ...tiers.map((tier) => ({ label: tierLabel(tier), value: tier })),
@@ -132,7 +134,7 @@ export function modelServiceTierOptions(_provider: string, _model: string, servi
 }
 
 export function codexFastEnabled(provider: string, _model: string, serviceTier: string, serviceTiers: string[] = []): boolean {
-  return normalizeProviderID(provider) === 'codex' && normalizedServiceTiers(serviceTiers).includes('fast') && normalizeModelServiceTier(provider, serviceTier) === 'fast'
+  return normalizeProviderID(provider) === 'codex' && normalizedServiceTiers(provider, serviceTiers).includes('fast') && normalizeModelServiceTier(provider, serviceTier) === 'fast'
 }
 
 export function displayModelName(provider: string, model: string, contextMode: string): string {

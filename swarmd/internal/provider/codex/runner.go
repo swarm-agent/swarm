@@ -25,18 +25,26 @@ func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) 
 	if r.client == nil {
 		return provideriface.Response{}, errors.New("codex runner client is not configured")
 	}
-	out, err := r.client.CreateResponse(ctx, toCodexRequest(req))
+	out, err := r.client.CreateResponse(ctx, ToRequest(req))
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	return fromCodexResponse(out), nil
+	return FromResponse(out), nil
 }
 
 func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
 	if r.client == nil {
 		return provideriface.Response{}, errors.New("codex runner client is not configured")
 	}
-	out, err := r.client.CreateResponseStreaming(ctx, toCodexRequest(req), func(event StreamEvent) {
+	out, err := r.client.CreateResponseStreaming(ctx, ToRequest(req), ToProviderStreamEventCallback(onEvent))
+	if err != nil {
+		return provideriface.Response{}, err
+	}
+	return FromResponse(out), nil
+}
+
+func ToProviderStreamEventCallback(onEvent func(provideriface.StreamEvent)) func(StreamEvent) {
+	return func(event StreamEvent) {
 		if onEvent == nil {
 			return
 		}
@@ -97,14 +105,14 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 				Metadata:      cloneMapStringAny(event.Metadata),
 			})
 		}
-	})
-	if err != nil {
-		return provideriface.Response{}, err
 	}
-	return fromCodexResponse(out), nil
 }
 
 func toCodexRequest(req provideriface.Request) Request {
+	return ToRequest(req)
+}
+
+func ToRequest(req provideriface.Request) Request {
 	serviceTier := strings.ToLower(strings.TrimSpace(req.ServiceTier))
 	reasoningProviderValue := ""
 	if catalog, ok := req.ModelCatalog.(pebblestore.ModelCatalogRecord); ok {
@@ -524,7 +532,7 @@ func shouldRewriteCodexFreeformObjectSchema(schema map[string]any) bool {
 	return ok && flag
 }
 
-func fromCodexResponse(resp Response) provideriface.Response {
+func FromResponse(resp Response) provideriface.Response {
 	out := provideriface.Response{
 		ID:               resp.ID,
 		Model:            resp.Model,

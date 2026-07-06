@@ -105,6 +105,47 @@ func TestResolvePreferenceFindsFireworksCatalogByResourceName(t *testing.T) {
 	}
 }
 
+func TestResolvePreferencePreservesAnthropicPriorityAndRejectsBatchTier(t *testing.T) {
+	service, store := newTestModelService(t)
+	defer store.Close()
+
+	if err := service.catalog.store.SetRecord(pebblestore.ModelCatalogRecord{
+		Provider:     "anthropic",
+		Model:        "claude-sonnet-5",
+		ServiceTiers: []string{"standard", "priority"},
+		ServiceTierMappings: []pebblestore.ModelCatalogServiceTierMapping{
+			{Tier: "standard", SwarmSetting: "off", ProviderParameter: "service_tier", ProviderValue: "standard_only"},
+			{Tier: "priority", SwarmSetting: "fast", ProviderParameter: "service_tier", ProviderValue: "auto"},
+		},
+	}); err != nil {
+		t.Fatalf("set catalog record: %v", err)
+	}
+
+	resolved, _, err := service.SetPreferenceForAccount("account-a", "user-a", "anthropic", "claude-sonnet-5", "high", "priority")
+	if err != nil {
+		t.Fatalf("SetPreferenceForAccount returned error: %v", err)
+	}
+	if resolved.Preference.ServiceTier != "priority" {
+		t.Fatalf("resolved service tier = %q, want priority", resolved.Preference.ServiceTier)
+	}
+
+	stored, err := service.GetPreferenceForAccount("account-a")
+	if err != nil {
+		t.Fatalf("read stored preference: %v", err)
+	}
+	if stored.ServiceTier != "priority" {
+		t.Fatalf("stored service tier = %q, want priority", stored.ServiceTier)
+	}
+
+	resolved, _, err = service.SetPreferenceForAccount("account-a", "user-a", "anthropic", "claude-sonnet-5", "high", "batch")
+	if err != nil {
+		t.Fatalf("SetPreferenceForAccount batch returned error: %v", err)
+	}
+	if resolved.Preference.ServiceTier != "" {
+		t.Fatalf("resolved batch service tier = %q, want empty", resolved.Preference.ServiceTier)
+	}
+}
+
 func TestResolvePreferenceRejectsUnsupportedFireworksGLMThinking(t *testing.T) {
 	service, store := newTestModelService(t)
 	defer store.Close()

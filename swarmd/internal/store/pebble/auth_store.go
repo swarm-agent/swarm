@@ -124,8 +124,8 @@ func (s *AuthStore) SetCodexAPIKeyForAccount(accountScopeID, apiKey string) (Cod
 	return s.UpsertCredential(AuthCredentialInput{
 		AccountScopeID: accountScopeID,
 		ID:             DefaultAuthCredentialID,
-		Provider:       "codex",
-		Type:           CodexAuthTypeAPI,
+		Provider:       "openai",
+		Type:           AuthTypeAPI,
 		Label:          "default",
 		APIKey:         strings.TrimSpace(apiKey),
 		SetActive:      true,

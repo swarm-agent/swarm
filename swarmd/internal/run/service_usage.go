@@ -116,6 +116,11 @@ func resolvedServiceTierForProvider(providerID, serviceTier string) string {
 	switch providerID {
 	case "codex", "fireworks":
 		return serviceTier
+	case "anthropic":
+		if serviceTier == "batch" {
+			return ""
+		}
+		return serviceTier
 	default:
 		return ""
 	}

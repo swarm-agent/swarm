@@ -1195,7 +1195,8 @@ func (s *Server) handleCodexAuth(w http.ResponseWriter, r *http.Request) {
 		)
 		switch authType {
 		case "api":
-			status, event, err = s.auth.SetCodexKeyForAccount(accountScopeID, req.APIKey)
+			writeError(w, http.StatusBadRequest, errors.New("codex api-key auth moved to the openai provider; configure provider=openai through /v1/auth/credentials"))
+			return
 		case "oauth":
 			status, event, err = s.auth.SetCodexOAuthForAccount(accountScopeID, req.AccessToken, req.RefreshToken, req.ExpiresAt, req.AccountID)
 		default:

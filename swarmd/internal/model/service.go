@@ -377,8 +377,6 @@ func NormalizeProviderID(providerID string) string {
 func normalizeProviderID(providerID string) string {
 	providerID = strings.ToLower(strings.TrimSpace(providerID))
 	switch providerID {
-	case "openai":
-		return "codex"
 	case "github-copilot":
 		return "copilot"
 	case "fireworks-ai":

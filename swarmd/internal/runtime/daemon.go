@@ -40,6 +40,7 @@ import (
 	exaprovider "swarm/packages/swarmd/internal/provider/exa"
 	"swarm/packages/swarmd/internal/provider/fireworks"
 	"swarm/packages/swarmd/internal/provider/google"
+	"swarm/packages/swarmd/internal/provider/openai"
 	"swarm/packages/swarmd/internal/provider/openrouter"
 	"swarm/packages/swarmd/internal/provider/registry"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
@@ -337,6 +338,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		codex.NewAdapter(authStore),
 		fireworks.NewAdapter(authStore),
 		google.NewAdapter(authStore),
+		openai.NewAdapter(authStore),
 		openrouter.NewAdapter(authStore),
 		exaprovider.NewAdapter(authStore, func(context.Context) (bool, error) {
 			mcpConfig, err := mcpSvc.ResolveExaRuntimeConfig()
@@ -352,6 +354,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	providers.RegisterRunner(codex.NewRunner(codexClient))
 	providers.RegisterRunner(fireworks.NewRunner(authStore))
 	providers.RegisterRunner(google.NewRunner(authStore))
+	providers.RegisterRunner(openai.NewRunner(authStore, codexClient))
 	providers.RegisterRunner(openrouter.NewRunner(authStore))
 	runSvc := run.NewService(sessionSvc, modelSvc, providers, toolRuntime, permissionSvc, agentSvc, discoverySvc, events)
 	runSvc.SetWorkspaceService(workspaceSvc)
