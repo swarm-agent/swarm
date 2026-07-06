@@ -14,7 +14,7 @@ import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type D
 import { draftModelQueryKey, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
-import { formatContextWindow, effectiveContextWindow } from '../services/model-options'
+import { formatContextWindow, effectiveContextWindow, normalizeProviderID } from '../services/model-options'
 import { preferenceFromAgentModelLock, preferenceFromModelDraft, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
@@ -92,6 +92,9 @@ function normalizePreference(value: unknown): SessionPreferenceRecord {
 }
 
 type NormalizedUsageSummary = {
+  provider: string
+  model: string
+  source: string
   contextWindow: number
   turnCount: number
   inputTokens: number
@@ -115,6 +118,9 @@ function normalizeUsageSummary(value: unknown): NormalizedUsageSummary | null {
   const updatedAt = finiteNumber(record.updated_at ?? record.updatedAt)
   if (contextWindow <= 0 && totalTokens <= 0 && remainingTokens <= 0 && updatedAt <= 0) return null
   return {
+    provider: String(record.provider ?? '').trim(),
+    model: String(record.model ?? '').trim(),
+    source: String(record.source ?? '').trim(),
     contextWindow,
     turnCount: finiteNumber(record.turn_count ?? record.turnCount),
     inputTokens: finiteNumber(record.input_tokens ?? record.inputTokens),
@@ -732,11 +738,19 @@ export function DesktopV3ExistingConversationPane({
   const selectedContextWindow = selectedModelOption
     ? effectiveContextWindow(selectedModelOption.provider, selectedModelOption.model, selectedModelOption.contextMode, selectedModelOption.contextWindow)
     : 0
-  const effectiveContextWindowValue = cachedUsage?.contextWindow && cachedUsage.contextWindow > 0
-    ? cachedUsage.contextWindow
-    : selectedContextWindow
-  const contextLabel = formatDesktopV3ContextLabel(effectiveContextWindowValue, cachedUsage?.remainingTokens)
-  const contextTooltip = formatDesktopV3ContextTooltip(effectiveContextWindowValue, cachedUsage)
+  const cachedUsageMatchesSelectedModel = Boolean(cachedUsage && selectedModelOption
+    && normalizeProviderID(cachedUsage.provider) === normalizeProviderID(selectedModelOption.provider)
+    && cachedUsage.model === selectedModelOption.model
+    && (selectedContextWindow <= 0 || cachedUsage.contextWindow <= 0 || cachedUsage.contextWindow === selectedContextWindow))
+  const cachedUsageIsProviderSnapshot = Boolean(cachedUsage?.source && cachedUsage.source !== 'settings_mutation')
+  const displayedUsage = cachedUsageMatchesSelectedModel && cachedUsageIsProviderSnapshot ? cachedUsage : null
+  const effectiveContextWindowValue = selectedContextWindow > 0
+    ? selectedContextWindow
+    : cachedUsage?.contextWindow && cachedUsage.contextWindow > 0
+      ? cachedUsage.contextWindow
+      : 0
+  const contextLabel = formatDesktopV3ContextLabel(effectiveContextWindowValue, displayedUsage?.remainingTokens)
+  const contextTooltip = formatDesktopV3ContextTooltip(effectiveContextWindowValue, displayedUsage)
   const workspaceSettingsMatch = matchRoute({ to: '/$workspaceSlug/settings', fuzzy: false })
     ?? matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
     ?? matchRoute({ to: '/$workspaceSlug', fuzzy: false })
