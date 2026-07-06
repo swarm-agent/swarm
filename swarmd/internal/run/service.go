@@ -1065,6 +1065,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		runID = s.newRunID()
 	}
 	options.RunID = runID
+	runnerCtx = s.contextWithProviderAPIDiagnosticRecorder(runnerCtx, sessionID, runID, options.Principal, options.ApplySessionMutation)
+	ctx = runnerCtx
 	compiledPolicy := options.CompiledPolicy
 	effectiveDisabledTools := cloneDisabledTools(options.DisabledTools)
 	if agentPolicy, agentDisabled, scopeErr := s.compileAgentToolScopeForAccount(options.Principal.AccountScopeID, agentProfile); scopeErr != nil {

@@ -52,6 +52,116 @@ func (r *sessionsV3ProviderToolsRunner) CompileStoredV3AgentToolContract(string,
 	return r.contract, r.disabled, nil
 }
 
+func TestApplySessionV3AgentPreferenceOverridesPreservesSupportedPriorityServiceTier(t *testing.T) {
+	base := pebblestore.ModelPreference{
+		Provider:    "codex",
+		Model:       "gpt-5.4",
+		Thinking:    "high",
+		ServiceTier: "priority",
+		ContextMode: "1m",
+	}
+	profile := pebblestore.AgentProfile{
+		Provider: "fireworks",
+		Model:    "accounts/fireworks/models/glm-5p1",
+		Thinking: "xhigh",
+	}
+
+	got := applySessionV3AgentPreferenceOverrides(base, profile)
+	if got.Provider != "fireworks" || got.Model != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("preference provider/model = %q/%q, want fireworks/accounts/fireworks/models/glm-5p1", got.Provider, got.Model)
+	}
+	if got.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want priority", got.ServiceTier)
+	}
+	if got.ContextMode != "" {
+		t.Fatalf("context mode = %q, want cleared for non-codex/gpt-5.4", got.ContextMode)
+	}
+}
+
+func TestApplySessionV3AgentPreferenceOverridesSplitProfileUsesPlanSettingsForPlanMode(t *testing.T) {
+	base := pebblestore.ModelPreference{
+		Provider: "codex",
+		Model:    "gpt-5.4",
+		Thinking: "medium",
+	}
+	profile := pebblestore.AgentProfile{
+		ModelMode:       "split",
+		PlanProvider:    "fireworks",
+		PlanModel:       "accounts/fireworks/models/glm-5p1",
+		PlanThinking:    "high",
+		PlanServiceTier: "priority",
+		AutoProvider:    "static",
+		AutoModel:       "auto-review-model",
+		AutoThinking:    "low",
+	}
+
+	got := applySessionV3AgentPreferenceOverridesForMode(base, profile, "plan")
+	if got.Provider != "fireworks" || got.Model != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("preference provider/model = %q/%q, want fireworks/accounts/fireworks/models/glm-5p1", got.Provider, got.Model)
+	}
+	if got.Thinking != "high" {
+		t.Fatalf("thinking = %q, want high", got.Thinking)
+	}
+	if got.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want priority", got.ServiceTier)
+	}
+}
+
+func TestApplySessionV3AgentPreferenceOverridesSplitProfileKeepsInheritedPriorityServiceTier(t *testing.T) {
+	base := pebblestore.ModelPreference{
+		Provider:    "codex",
+		Model:       "gpt-5.4",
+		Thinking:    "high",
+		ServiceTier: "priority",
+		ContextMode: "1m",
+	}
+	profile := pebblestore.AgentProfile{
+		ModelMode:       "split",
+		AutoProvider:    "fireworks",
+		AutoModel:       "accounts/fireworks/models/glm-5p1",
+		AutoThinking:    "high",
+		PlanProvider:    "static",
+		PlanModel:       "plan-review-model",
+		PlanThinking:    "low",
+		PlanServiceTier: "",
+		AutoServiceTier: "",
+	}
+
+	got := applySessionV3AgentPreferenceOverridesForMode(base, profile, "auto")
+	if got.Provider != "fireworks" || got.Model != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("preference provider/model = %q/%q, want fireworks/accounts/fireworks/models/glm-5p1", got.Provider, got.Model)
+	}
+	if got.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want inherited priority", got.ServiceTier)
+	}
+	if got.ContextMode != "" {
+		t.Fatalf("context mode = %q, want cleared for non-codex/gpt-5.4", got.ContextMode)
+	}
+}
+
+func TestApplySessionV3AgentPreferenceOverridesClearsUnsupportedServiceTierProviders(t *testing.T) {
+	base := pebblestore.ModelPreference{
+		Provider:    "codex",
+		Model:       "gpt-5.4",
+		Thinking:    "high",
+		ServiceTier: "priority",
+		ContextMode: "1m",
+	}
+	profile := pebblestore.AgentProfile{
+		Provider: "static",
+		Model:    "review-model",
+		Thinking: "low",
+	}
+
+	got := applySessionV3AgentPreferenceOverrides(base, profile)
+	if got.ServiceTier != "" {
+		t.Fatalf("service tier = %q, want cleared for unsupported provider", got.ServiceTier)
+	}
+	if got.ContextMode != "" {
+		t.Fatalf("context mode = %q, want cleared for non-codex/gpt-5.4", got.ContextMode)
+	}
+}
+
 func TestResolveSessionV3ProviderToolsCanonicalizesDefinitionNames(t *testing.T) {
 	runner := &sessionsV3ProviderToolsRunner{
 		definitions: []tool.Definition{

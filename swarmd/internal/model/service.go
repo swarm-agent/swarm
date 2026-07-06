@@ -219,10 +219,20 @@ func normalizeServiceTier(serviceTier string) string {
 func normalizeServiceTierForProvider(providerID, serviceTier string) string {
 	providerID = normalizeProviderID(providerID)
 	serviceTier = normalizeServiceTier(serviceTier)
-	if (providerID == "anthropic" || providerID == "openai") && serviceTier == "batch" {
+	if serviceTier == "" {
 		return ""
 	}
-	return serviceTier
+	switch providerID {
+	case "anthropic":
+		if serviceTier == "batch" {
+			return ""
+		}
+		return serviceTier
+	case "codex", "fireworks", "openai", "openrouter":
+		return serviceTier
+	default:
+		return ""
+	}
 }
 
 func NormalizeServiceTierForProvider(providerID, serviceTier string) string {

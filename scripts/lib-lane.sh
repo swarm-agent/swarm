@@ -328,8 +328,7 @@ swarm_startup_config_remove_obsolete_keys() {
           raw_key == "managed_host_sync_credential_url" ||
           raw_key == "managed_host_sync_agent_url" ||
           raw_key == "deploy_container_sync_skill_url" ||
-          raw_key == "deploy_container_sync_permission_url" ||
-          raw_key == "provider_api_diagnostics") {
+          raw_key == "deploy_container_sync_permission_url") {
         next
       }
       print
@@ -809,8 +808,7 @@ swarm_startup_config_validate() {
           raw_key == "managed_host_sync_credential_url" ||
           raw_key == "managed_host_sync_agent_url" ||
           raw_key == "deploy_container_sync_skill_url" ||
-          raw_key == "deploy_container_sync_permission_url" ||
-          raw_key == "provider_api_diagnostics") {
+          raw_key == "deploy_container_sync_permission_url") {
         next
       }
       if (raw_key == "mode" && raw_value != "lan" && raw_value != "tailscale") {

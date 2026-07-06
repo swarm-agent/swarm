@@ -11,6 +11,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -464,7 +465,7 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 		captured = append(captured, input)
 		return svc.sessions.ApplySessionMutation(input)
 	}
-	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModePlan, taskLaunchPrepared{
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
 		LaunchIndex:       7,
 		RequestedSubagent: "purpose-review",
 		MetaPrompt:        "Map backend files",
@@ -587,6 +588,369 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 	}
 	if len(outbox) != 1 || outbox[0].Event.EventType != "session.created" || outbox[0].SessionID != childID || outbox[0].EndpointSeq == 0 {
 		t.Fatalf("child realtime outbox = %#v, want durable session.created outbox row", outbox)
+	}
+}
+
+func TestPrepareDelegatedSubagentLaunchUsesSplitProfilePlanSettingsInPlanMode(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	const accountScopeID = "account-split-plan"
+	const userID = "user-split-plan"
+	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+		Name:                "split-reviewer",
+		Mode:                agentruntime.ModeSubagent,
+		Description:         "Split review specialist",
+		ModelMode:           "split",
+		PlanProvider:        "fireworks",
+		PlanModel:           "accounts/fireworks/models/glm-5p1",
+		PlanThinking:        "high",
+		PlanServiceTier:     "priority",
+		AutoProvider:        "static",
+		AutoModel:           "auto-review-model",
+		AutoThinking:        "low",
+		Prompt:              "Review according to mode.",
+		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+		ToolContract:        &pebblestore.AgentToolContract{Preset: "read_only"},
+		Enabled:             pebblestore.BoolPtr(true),
+	}); err != nil {
+		t.Fatalf("create account-scoped split reviewer: %v", err)
+	}
+	if _, _, _, err := svc.agents.SetActiveSubagentForAccount(accountScopeID, "purpose-split", "split-reviewer"); err != nil {
+		t.Fatalf("set account-scoped active split subagent: %v", err)
+	}
+	parent, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
+		Title:          "Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModePlan,
+		Preference: &pebblestore.ModelPreference{
+			Provider: "codex",
+			Model:    "gpt-5.4",
+			Thinking: "medium",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create plan parent session: %v", err)
+	}
+
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModePlan, taskLaunchPrepared{
+		LaunchIndex:       1,
+		RequestedSubagent: "purpose-split",
+		MetaPrompt:        "Review backend files",
+	}, "split review", "", nil)
+	if err != nil {
+		t.Fatalf("prepare delegated launch: %v", err)
+	}
+
+	if launch.ChildMode != sessionruntime.ModePlan || launch.ChildSession.Mode != sessionruntime.ModePlan {
+		t.Fatalf("child mode = %q session mode = %q, want plan", launch.ChildMode, launch.ChildSession.Mode)
+	}
+	if got := launch.ChildSession.Preference.Provider; got != "fireworks" {
+		t.Fatalf("child provider = %q, want fireworks", got)
+	}
+	if got := launch.ChildSession.Preference.Model; got != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("child model = %q, want accounts/fireworks/models/glm-5p1", got)
+	}
+	if got := launch.ChildSession.Preference.Thinking; got != "high" {
+		t.Fatalf("child thinking = %q, want high", got)
+	}
+	if got := launch.ChildSession.Preference.ServiceTier; got != "priority" {
+		t.Fatalf("child service tier = %q, want priority", got)
+	}
+	if launch.SubagentProvider != "fireworks" || launch.SubagentModel != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("launch display preference = %q/%q, want plan profile settings", launch.SubagentProvider, launch.SubagentModel)
+	}
+	child, ok, err := svc.sessions.GetSession(launch.ChildSession.ID)
+	if err != nil {
+		t.Fatalf("load child session: %v", err)
+	}
+	if !ok {
+		t.Fatalf("child session %q was not persisted", launch.ChildSession.ID)
+	}
+	if child.Mode != sessionruntime.ModePlan {
+		t.Fatalf("persisted child mode = %q, want plan", child.Mode)
+	}
+	if child.Preference.Provider != "fireworks" || child.Preference.Model != "accounts/fireworks/models/glm-5p1" || child.Preference.ServiceTier != "priority" {
+		t.Fatalf("persisted child preference = %#v, want plan split profile settings", child.Preference)
+	}
+}
+
+func TestBuildTaskLaunchPermissionPayloadUsesSplitProfilePlanSettingsInPlanMode(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	const accountScopeID = "account-split-manifest"
+	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+		Name:                "split-manifest-reviewer",
+		Mode:                agentruntime.ModeSubagent,
+		Description:         "Split manifest specialist",
+		ModelMode:           "split",
+		PlanProvider:        "fireworks",
+		PlanModel:           "accounts/fireworks/models/glm-5p1",
+		PlanThinking:        "high",
+		PlanServiceTier:     "priority",
+		AutoProvider:        "static",
+		AutoModel:           "auto-review-model",
+		AutoThinking:        "low",
+		Prompt:              "Review according to mode.",
+		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+		ToolContract:        &pebblestore.AgentToolContract{Preset: "read_only"},
+		Enabled:             pebblestore.BoolPtr(true),
+	}); err != nil {
+		t.Fatalf("create account-scoped split manifest reviewer: %v", err)
+	}
+	if _, _, _, err := svc.agents.SetActiveSubagentForAccount(accountScopeID, "purpose-split-manifest", "split-manifest-reviewer"); err != nil {
+		t.Fatalf("set account-scoped active split manifest subagent: %v", err)
+	}
+	parent, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         "user-split-manifest",
+		AccountScopeID: accountScopeID,
+		Title:          "Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModePlan,
+		Preference: &pebblestore.ModelPreference{
+			Provider: "codex",
+			Model:    "gpt-5.4",
+			Thinking: "medium",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create manifest parent session: %v", err)
+	}
+
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parent.ID, sessionruntime.ModePlan, tool.Call{
+		Name: "task",
+		Arguments: mustJSON(t, map[string]any{
+			"description":   "repo map",
+			"prompt":        "inspect the repo",
+			"subagent_type": "purpose-split-manifest",
+			"meta_prompt":   "map backend files",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("build permission payload: %v", err)
+	}
+	if manifest.EffectiveChildMode != sessionruntime.ModePlan {
+		t.Fatalf("manifest child mode = %q, want plan", manifest.EffectiveChildMode)
+	}
+	if len(manifest.Launches) != 1 {
+		t.Fatalf("launch count = %d, want 1", len(manifest.Launches))
+	}
+	row := manifest.Launches[0]
+	if row.ChildMode != sessionruntime.ModePlan {
+		t.Fatalf("row child mode = %q, want plan", row.ChildMode)
+	}
+	if row.SubagentProvider != "fireworks" || row.SubagentModel != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("row preference = %q/%q, want plan split profile settings", row.SubagentProvider, row.SubagentModel)
+	}
+}
+
+func TestPrepareDelegatedSubagentLaunchPreservesSupportedPriorityServiceTier(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	const accountScopeID = "account-priority"
+	const userID = "user-priority"
+	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+		Name:                "priority-reviewer",
+		Mode:                agentruntime.ModeSubagent,
+		Description:         "Priority review specialist",
+		Provider:            "fireworks",
+		Model:               "accounts/fireworks/models/glm-5p1",
+		Prompt:              "Review quickly.",
+		RuntimeMode:         pebblestore.AgentRuntimeModeReadWrite,
+		ExecutionSetting:    pebblestore.AgentExecutionSettingReadWrite,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false),
+		ToolContract:        &pebblestore.AgentToolContract{Preset: "read_write"},
+		Enabled:             pebblestore.BoolPtr(true),
+	}); err != nil {
+		t.Fatalf("create account-scoped priority reviewer: %v", err)
+	}
+	if _, _, _, err := svc.agents.SetActiveSubagentForAccount(accountScopeID, "purpose-priority", "priority-reviewer"); err != nil {
+		t.Fatalf("set account-scoped active subagent: %v", err)
+	}
+	parent, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
+		Title:          "Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
+		Preference: &pebblestore.ModelPreference{
+			Provider:    "codex",
+			Model:       "gpt-5.4",
+			Thinking:    "high",
+			ServiceTier: "priority",
+			ContextMode: "1m",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create account-scoped parent session: %v", err)
+	}
+
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex:       1,
+		RequestedSubagent: "purpose-priority",
+		MetaPrompt:        "Review backend files",
+	}, "priority review", "", nil)
+	if err != nil {
+		t.Fatalf("prepare delegated launch: %v", err)
+	}
+
+	if got := launch.ChildSession.Preference.ServiceTier; got != "priority" {
+		t.Fatalf("launch child service tier = %q, want priority", got)
+	}
+	if got := launch.ChildSession.Preference.ContextMode; got != "" {
+		t.Fatalf("launch child context mode = %q, want cleared for non-codex/gpt-5.4", got)
+	}
+	child, ok, err := svc.sessions.GetSession(launch.ChildSession.ID)
+	if err != nil {
+		t.Fatalf("load child session: %v", err)
+	}
+	if !ok {
+		t.Fatalf("child session %q was not persisted", launch.ChildSession.ID)
+	}
+	if got := child.Preference.ServiceTier; got != "priority" {
+		t.Fatalf("persisted child service tier = %q, want priority", got)
+	}
+	if got := child.Preference.ContextMode; got != "" {
+		t.Fatalf("persisted child context mode = %q, want cleared for non-codex/gpt-5.4", got)
+	}
+}
+
+func TestPrepareTargetedSubagentLaunchPreservesSupportedPriorityServiceTier(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	const accountScopeID = "account-targeted-priority"
+	const userID = "user-targeted-priority"
+	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+		Name:                "targeted-priority-reviewer",
+		Mode:                agentruntime.ModeSubagent,
+		Description:         "Targeted priority review specialist",
+		Provider:            "fireworks",
+		Model:               "accounts/fireworks/models/glm-5p1",
+		Prompt:              "Review targeted work quickly.",
+		RuntimeMode:         pebblestore.AgentRuntimeModeReadWrite,
+		ExecutionSetting:    pebblestore.AgentExecutionSettingReadWrite,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false),
+		ToolContract:        &pebblestore.AgentToolContract{Preset: "read_write"},
+		Enabled:             pebblestore.BoolPtr(true),
+	}); err != nil {
+		t.Fatalf("create account-scoped targeted priority reviewer: %v", err)
+	}
+	parent, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         userID,
+		AccountScopeID: accountScopeID,
+		Title:          "Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
+		Preference: &pebblestore.ModelPreference{
+			Provider:    "codex",
+			Model:       "gpt-5.4",
+			Thinking:    "high",
+			ServiceTier: "priority",
+			ContextMode: "1m",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create account-scoped parent session: %v", err)
+	}
+
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex:       1,
+		RequestedSubagent: "targeted-priority-reviewer",
+	}, "@targeted-priority-reviewer priority review", "targeted-priority-reviewer", nil)
+	if err != nil {
+		t.Fatalf("prepare targeted launch: %v", err)
+	}
+
+	if got := launch.ChildSession.Preference.ServiceTier; got != "priority" {
+		t.Fatalf("launch child service tier = %q, want priority", got)
+	}
+	if got := launch.ChildSession.Preference.ContextMode; got != "" {
+		t.Fatalf("launch child context mode = %q, want cleared for non-codex/gpt-5.4", got)
+	}
+	if got := metadataStringForTest(launch.ChildSession.Metadata, "launch_source"); got != "targeted_subagent" {
+		t.Fatalf("launch source = %q, want targeted_subagent", got)
+	}
+	if got := metadataStringForTest(launch.ChildSession.Metadata, "targeted_subagent"); got != "targeted-priority-reviewer" {
+		t.Fatalf("targeted_subagent metadata = %q, want targeted-priority-reviewer", got)
+	}
+	child, ok, err := svc.sessions.GetSession(launch.ChildSession.ID)
+	if err != nil {
+		t.Fatalf("load targeted child session: %v", err)
+	}
+	if !ok {
+		t.Fatalf("targeted child session %q was not persisted", launch.ChildSession.ID)
+	}
+	if got := child.Preference.ServiceTier; got != "priority" {
+		t.Fatalf("persisted targeted child service tier = %q, want priority", got)
+	}
+	if got := child.Preference.ContextMode; got != "" {
+		t.Fatalf("persisted targeted child context mode = %q, want cleared for non-codex/gpt-5.4", got)
+	}
+}
+
+func TestApplyAgentPreferenceOverridesSplitProfileKeepsInheritedPriorityServiceTier(t *testing.T) {
+	base := pebblestore.ModelPreference{
+		Provider:    "codex",
+		Model:       "gpt-5.4",
+		Thinking:    "high",
+		ServiceTier: "priority",
+		ContextMode: "1m",
+	}
+	profile := pebblestore.AgentProfile{
+		ModelMode:       "split",
+		AutoProvider:    "fireworks",
+		AutoModel:       "accounts/fireworks/models/glm-5p1",
+		AutoThinking:    "high",
+		PlanProvider:    "static",
+		PlanModel:       "plan-review-model",
+		PlanThinking:    "low",
+		PlanServiceTier: "",
+		AutoServiceTier: "",
+	}
+
+	got := applyAgentPreferenceOverridesForMode(base, profile, sessionruntime.ModeAuto)
+	if got.Provider != "fireworks" || got.Model != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("preference provider/model = %q/%q, want fireworks/accounts/fireworks/models/glm-5p1", got.Provider, got.Model)
+	}
+	if got.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want inherited priority", got.ServiceTier)
+	}
+	if got.ContextMode != "" {
+		t.Fatalf("context mode = %q, want cleared for non-codex/gpt-5.4", got.ContextMode)
+	}
+}
+
+func TestApplyAgentPreferenceOverridesClearsUnsupportedServiceTierProviders(t *testing.T) {
+	base := pebblestore.ModelPreference{
+		Provider:    "codex",
+		Model:       "gpt-5.4",
+		Thinking:    "high",
+		ServiceTier: "priority",
+		ContextMode: "1m",
+	}
+	profile := pebblestore.AgentProfile{
+		Provider: "static",
+		Model:    "review-model",
+		Thinking: "low",
+	}
+
+	got := applyAgentPreferenceOverrides(base, profile)
+	if got.ServiceTier != "" {
+		t.Fatalf("service tier = %q, want cleared for unsupported provider", got.ServiceTier)
+	}
+	if got.ContextMode != "" {
+		t.Fatalf("context mode = %q, want cleared for non-codex/gpt-5.4", got.ContextMode)
 	}
 }
 
@@ -937,4 +1301,57 @@ func newTaskLaunchPermissionServiceWithPermissions(t *testing.T) (*Service, stri
 	permissions := permission.NewService(pebblestore.NewPermissionStore(store), events, nil)
 	svc := NewService(sessions, nil, nil, tool.NewRuntime(1), permissions, agents, nil, events)
 	return svc, parent.ID, permissions, cleanup
+}
+
+func TestProviderAPIDiagnosticRecorderPersistsViaApplySessionMutation(t *testing.T) {
+	svc, sessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	session, ok, err := svc.sessions.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	if !ok {
+		t.Fatalf("session %q not found", sessionID)
+	}
+	t.Setenv(providerdiagnostics.EnvName, "1")
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: session.UserID, AccountScopeID: session.AccountScopeID}
+	apply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		return svc.sessions.ApplySessionMutation(input)
+	}
+
+	ctx := svc.contextWithProviderAPIDiagnosticRecorder(context.Background(), sessionID, "run-diagnostic", principal, apply)
+	providerdiagnostics.LogWebsocketRequestContext(ctx, "codex", "responses.websocket", "wss://example.invalid/session", nil, []byte(`{"model":"gpt-5.5","service_tier":"priority"}`))
+
+	events, err := svc.sessions.ListSessionEvents(sessionID, 0, 20)
+	if err != nil {
+		t.Fatalf("list session events: %v", err)
+	}
+	var found bool
+	for _, event := range events {
+		if event.EventType != "session.diagnostic.provider.api.websocket_request" {
+			continue
+		}
+		found = true
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("unmarshal diagnostic payload: %v", err)
+		}
+		if got := strings.TrimSpace(mapString(payload, "run_id")); got != "run-diagnostic" {
+			t.Fatalf("diagnostic run_id = %q, want run-diagnostic", got)
+		}
+		if got := strings.TrimSpace(mapString(payload, "source")); got != "backend.provider.api" {
+			t.Fatalf("diagnostic source = %q, want backend.provider.api", got)
+		}
+		rawPayload, ok := payload["payload"].(map[string]any)
+		if !ok {
+			t.Fatalf("diagnostic payload = %#v, want object", payload["payload"])
+		}
+		if got := strings.TrimSpace(mapString(rawPayload, "body")); !strings.Contains(got, "service_tier") || !strings.Contains(got, "priority") {
+			t.Fatalf("diagnostic body = %q, want service_tier priority", got)
+		}
+	}
+	if !found {
+		t.Fatalf("missing provider api websocket_request diagnostic in events: %#v", events)
+	}
 }

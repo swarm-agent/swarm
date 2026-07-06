@@ -9,6 +9,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
+	modelruntime "swarm/packages/swarmd/internal/model"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -153,12 +154,16 @@ func applyAgentPreferenceOverridesForMode(base pebblestore.ModelPreference, agen
 			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.PlanProvider))
 			modelOverride = strings.TrimSpace(agentProfile.PlanModel)
 			thinkingOverride = normalizeThinkingLevel(agentProfile.PlanThinking)
-			base.ServiceTier = strings.TrimSpace(agentProfile.PlanServiceTier)
+			if serviceTierOverride := strings.TrimSpace(agentProfile.PlanServiceTier); serviceTierOverride != "" {
+				base.ServiceTier = serviceTierOverride
+			}
 		} else if mode == sessionruntime.ModeAuto {
 			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.AutoProvider))
 			modelOverride = strings.TrimSpace(agentProfile.AutoModel)
 			thinkingOverride = normalizeThinkingLevel(agentProfile.AutoThinking)
-			base.ServiceTier = strings.TrimSpace(agentProfile.AutoServiceTier)
+			if serviceTierOverride := strings.TrimSpace(agentProfile.AutoServiceTier); serviceTierOverride != "" {
+				base.ServiceTier = serviceTierOverride
+			}
 		}
 	}
 
@@ -173,8 +178,8 @@ func applyAgentPreferenceOverridesForMode(base pebblestore.ModelPreference, agen
 		base.Thinking = thinkingOverride
 	}
 	base.Thinking = normalizeThinkingWithProvider(base.Provider, base.Thinking)
+	base.ServiceTier = modelruntime.NormalizeServiceTierForProvider(base.Provider, base.ServiceTier)
 	if !strings.EqualFold(strings.TrimSpace(base.Provider), "codex") || !strings.EqualFold(strings.TrimSpace(base.Model), "gpt-5.4") {
-		base.ServiceTier = ""
 		base.ContextMode = ""
 	}
 	return base

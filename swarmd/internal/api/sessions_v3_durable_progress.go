@@ -276,27 +276,50 @@ func (s *sessionV3DurableProgressSink) TryAppendProviderToolConstruction(event p
 	if s == nil || event.Type == "" {
 		return nil
 	}
+	eventCopy := cloneSessionV3ProviderToolEvent(event)
+	if step <= 0 {
+		step = 1
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.callbackErrLocked(); err != nil {
 		return err
 	}
-	if err := s.reserveControlLocked(1); err != nil {
-		return err
+	usesControlBacklog := s.providerToolConstructionUsesControlBacklog(eventCopy.Type)
+	eventBytes := 0
+	if usesControlBacklog {
+		if err := s.reserveControlLocked(1); err != nil {
+			return err
+		}
+	} else {
+		eventBytes = sessionV3ProviderToolConstructionEventBacklogBytes(eventCopy)
+		if err := s.reserveBytesLocked(eventBytes); err != nil {
+			return err
+		}
 	}
 	s.sealAllCurrentLocked()
 	if err := s.callbackErrLocked(); err != nil {
 		return err
 	}
-	if err := s.reserveSealedEpochsLocked(1); err != nil {
-		return err
+	if usesControlBacklog {
+		if err := s.reserveSealedEpochsLocked(1); err != nil {
+			return err
+		}
+		s.addControlEpochLocked(sessionV3DurableProgressItem{Kind: sessionV3DurableProgressItemProviderToolProgress, ProviderTool: &eventCopy, Step: step})
+	} else {
+		s.addByteBackedEpochLocked(sessionV3DurableProgressItem{Kind: sessionV3DurableProgressItemProviderToolProgress, ProviderTool: &eventCopy, Step: step}, eventBytes)
 	}
-	eventCopy := event
-	eventCopy.ToolCallIndex = cloneSessionV3IntPointer(event.ToolCallIndex)
-	eventCopy.Metadata = cloneSessionsV3Metadata(event.Metadata)
-	s.addControlEpochLocked(sessionV3DurableProgressItem{Kind: sessionV3DurableProgressItemProviderToolProgress, ProviderTool: &eventCopy, Step: step})
 	s.signalLocked()
 	return nil
+}
+
+func (s *sessionV3DurableProgressSink) providerToolConstructionUsesControlBacklog(eventType provideriface.StreamEventType) bool {
+	switch eventType {
+	case provideriface.StreamEventToolCallArgumentsDelta, provideriface.StreamEventToolCallArgumentsSnapshot:
+		return false
+	default:
+		return true
+	}
 }
 
 func cloneSessionV3IntPointer(value *int) *int {
@@ -305,6 +328,27 @@ func cloneSessionV3IntPointer(value *int) *int {
 	}
 	out := *value
 	return &out
+}
+
+func cloneSessionV3ProviderToolEvent(event provideriface.StreamEvent) provideriface.StreamEvent {
+	event.ToolCallIndex = cloneSessionV3IntPointer(event.ToolCallIndex)
+	event.Metadata = cloneSessionsV3Metadata(event.Metadata)
+	if event.Type == provideriface.StreamEventToolCallArgumentsDelta && event.ArgumentsDelta == "" {
+		event.ArgumentsDelta = event.Delta
+		event.Delta = ""
+	}
+	if event.Type == provideriface.StreamEventToolCallArgumentsSnapshot && strings.TrimSpace(event.ArgumentsSnapshot) == "" {
+		event.ArgumentsSnapshot = strings.TrimSpace(event.Arguments)
+	}
+	return event
+}
+
+func sessionV3ProviderToolConstructionEventBacklogBytes(event provideriface.StreamEvent) int {
+	bytes := len([]byte(event.ArgumentsDelta)) + len([]byte(event.Delta)) + len([]byte(event.ArgumentsSnapshot)) + len([]byte(event.Arguments))
+	if bytes <= 0 {
+		return 1
+	}
+	return bytes
 }
 
 func (s *sessionV3DurableProgressSink) TryStartReasoning(step int, reasoningKey string) error {
@@ -535,11 +579,21 @@ func (s *sessionV3DurableProgressSink) reserveControlLocked(additional int) erro
 }
 
 func (s *sessionV3DurableProgressSink) reserveSealedEpochsLocked(additional int) error {
-	if len(s.sealedEpochs)+additional > sessionV3DurableProgressMaxSealedEpochs {
+	if s.sealedControlEpochsLocked()+additional > sessionV3DurableProgressMaxSealedEpochs {
 		s.failLocked(ErrSessionV3DurableProgressBacklog)
 		return ErrSessionV3DurableProgressBacklog
 	}
 	return nil
+}
+
+func (s *sessionV3DurableProgressSink) sealedControlEpochsLocked() int {
+	count := 0
+	for _, epoch := range s.sealedEpochs {
+		if epoch.ControlItems > 0 {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *sessionV3DurableProgressSink) addControlEpochLocked(item sessionV3DurableProgressItem) {
@@ -548,6 +602,17 @@ func (s *sessionV3DurableProgressSink) addControlEpochLocked(item sessionV3Durab
 	s.nextEpochID++
 	s.sealedEpochs = append(s.sealedEpochs, sessionV3DurableProgressEpoch{EpochID: s.nextEpochID, Items: []sessionV3DurableProgressItem{item}, ControlItems: 1})
 	s.controlItems++
+}
+
+func (s *sessionV3DurableProgressSink) addByteBackedEpochLocked(item sessionV3DurableProgressItem, bytesInEpoch int) {
+	if bytesInEpoch <= 0 {
+		bytesInEpoch = 1
+	}
+	s.nextOrder++
+	item.Order = s.nextOrder
+	s.nextEpochID++
+	s.sealedEpochs = append(s.sealedEpochs, sessionV3DurableProgressEpoch{EpochID: s.nextEpochID, Items: []sessionV3DurableProgressItem{item}, Bytes: bytesInEpoch})
+	s.pendingBytes += bytesInEpoch
 }
 
 func (s *sessionV3DurableProgressSink) sealAllCurrentLocked() {

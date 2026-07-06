@@ -371,11 +371,7 @@ func rejectTaskLaunchTrustFields(args map[string]any, label string) error {
 }
 
 func effectiveTaskChildMode(sessionMode string) string {
-	childMode := sessionruntime.NormalizeMode(sessionMode)
-	if childMode == sessionruntime.ModePlan {
-		childMode = sessionruntime.ModeAuto
-	}
-	return childMode
+	return sessionruntime.NormalizeMode(sessionMode)
 }
 
 func taskAssignmentLabel(explicitLabel, metaPrompt, description, resolvedSubagent string) string {
@@ -1182,7 +1178,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q tool contract: %w", i, requested, toolErr)
 		}
 		resolvedTools := buildTaskLaunchResolvedToolSummary(toolContract, profileDisabledTools, disabledTools, executionMode)
-		preference := applyAgentPreferenceOverrides(parentSession.Preference, subagentProfile)
+		preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
 		childTitle := assignmentLabel
 		launches = append(launches, taskLaunchManifestRow{
 			Description:           parsed.Description,

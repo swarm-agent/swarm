@@ -18,11 +18,12 @@ type sessionsV3DurableProgressRecordingWriter struct {
 	release chan struct{}
 	once    sync.Once
 
-	mu           sync.Mutex
-	assistant    []sessionV3AssistantProgress
-	phases       []string
-	reasoning    []string
-	providerTool []string
+	mu                 sync.Mutex
+	assistant          []sessionV3AssistantProgress
+	phases             []string
+	reasoning          []string
+	providerTool       []string
+	providerToolEvents []provideriface.StreamEvent
 }
 
 func newSessionsV3DurableProgressRecordingWriter(block bool) *sessionsV3DurableProgressRecordingWriter {
@@ -73,6 +74,7 @@ func (w *sessionsV3DurableProgressRecordingWriter) RecordProviderToolConstructio
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.providerTool = append(w.providerTool, string(event.Type))
+	w.providerToolEvents = append(w.providerToolEvents, event)
 	return sessionruntime.SessionMutationResult{}, nil
 }
 
@@ -152,6 +154,42 @@ func TestV3DurableProgressBacklogFailsRunWithoutBlocking(t *testing.T) {
 	case <-cancelled:
 	case <-time.After(time.Second):
 		t.Fatalf("provider context was not cancelled")
+	}
+}
+
+func TestV3DurableProgressKeepsProviderToolArgumentDeltasPerEventBehindBlockedWriter(t *testing.T) {
+	writer := newSessionsV3DurableProgressRecordingWriter(true)
+	sink := newSessionV3DurableProgressSinkWithWriter(&sessionV3Executor{reasoningDeltaFlushMaxBytes: 1 << 20, deltaFlushMaxDelay: time.Hour}, sessionV3ExecutorJob{}, func() {}, writer)
+	if err := sink.TryAppendProviderToolConstruction(provideriface.StreamEvent{Type: provideriface.StreamEventToolCallStarted, ToolCallID: "call-edit", ToolName: "edit"}, 1); err != nil {
+		t.Fatalf("start tool construction: %v", err)
+	}
+	select {
+	case <-writer.entered:
+	case <-time.After(time.Second):
+		t.Fatalf("writer did not block")
+	}
+	for i := 0; i < 200; i++ {
+		if err := sink.TryAppendProviderToolConstruction(provideriface.StreamEvent{Type: provideriface.StreamEventToolCallArgumentsDelta, ToolCallID: "call-edit", ToolName: "edit", ArgumentsDelta: "x"}, 1); err != nil {
+			t.Fatalf("argument delta %d: %v", i, err)
+		}
+	}
+	snap := sink.snapshotForTest()
+	if snap.ControlItems > 1 {
+		t.Fatalf("control items = %d, want only blocked start event snapshot=%+v", snap.ControlItems, snap)
+	}
+	close(writer.release)
+	if err := sink.CloseAndFlush(context.Background()); err != nil {
+		t.Fatalf("close sink: %v", err)
+	}
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if len(writer.providerToolEvents) != 201 {
+		t.Fatalf("provider tool events = %d, want start plus 200 argument deltas: %#v", len(writer.providerToolEvents), writer.providerTool)
+	}
+	for i, event := range writer.providerToolEvents[1:] {
+		if event.Type != provideriface.StreamEventToolCallArgumentsDelta || event.ArgumentsDelta != "x" {
+			t.Fatalf("provider tool event %d = %#v, want one argument delta", i+1, event)
+		}
 	}
 }
 

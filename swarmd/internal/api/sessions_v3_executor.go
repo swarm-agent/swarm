@@ -3706,12 +3706,16 @@ func applySessionV3AgentPreferenceOverridesForMode(base pebblestore.ModelPrefere
 			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.PlanProvider))
 			modelOverride = strings.TrimSpace(agentProfile.PlanModel)
 			thinkingOverride = strings.TrimSpace(agentProfile.PlanThinking)
-			base.ServiceTier = strings.TrimSpace(agentProfile.PlanServiceTier)
+			if serviceTierOverride := strings.TrimSpace(agentProfile.PlanServiceTier); serviceTierOverride != "" {
+				base.ServiceTier = serviceTierOverride
+			}
 		} else if mode == sessionruntime.ModeAuto {
 			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.AutoProvider))
 			modelOverride = strings.TrimSpace(agentProfile.AutoModel)
 			thinkingOverride = strings.TrimSpace(agentProfile.AutoThinking)
-			base.ServiceTier = strings.TrimSpace(agentProfile.AutoServiceTier)
+			if serviceTierOverride := strings.TrimSpace(agentProfile.AutoServiceTier); serviceTierOverride != "" {
+				base.ServiceTier = serviceTierOverride
+			}
 		}
 	}
 	if providerOverride != "" && modelOverride != "" {
@@ -3724,40 +3728,11 @@ func applySessionV3AgentPreferenceOverridesForMode(base pebblestore.ModelPrefere
 		base.Thinking = thinkingOverride
 	}
 	base.Thinking = normalizeSessionV3ThinkingWithProvider(base.Provider, base.Thinking)
-	switch strings.ToLower(strings.TrimSpace(base.Provider)) {
-	case "codex":
-		if !sessionV3SupportsServiceTier(base.Model) {
-			base.ServiceTier = ""
-		}
-	case "fireworks":
-		base.ServiceTier = normalizeSessionV3FireworksServiceTier(base.ServiceTier)
-	case "anthropic":
-		base.ServiceTier = modelruntime.NormalizeServiceTierForProvider(base.Provider, base.ServiceTier)
-	default:
-		base.ServiceTier = ""
-	}
+	base.ServiceTier = modelruntime.NormalizeServiceTierForProvider(base.Provider, base.ServiceTier)
 	if !strings.EqualFold(strings.TrimSpace(base.Provider), "codex") || !strings.EqualFold(strings.TrimSpace(base.Model), "gpt-5.4") {
 		base.ContextMode = ""
 	}
 	return base
-}
-
-func normalizeSessionV3FireworksServiceTier(serviceTier string) string {
-	switch strings.ToLower(strings.TrimSpace(serviceTier)) {
-	case "priority", "fast":
-		return strings.ToLower(strings.TrimSpace(serviceTier))
-	default:
-		return ""
-	}
-}
-
-func sessionV3SupportsServiceTier(model string) bool {
-	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "gpt-5.4", "gpt-5.5":
-		return true
-	default:
-		return false
-	}
 }
 
 func normalizeSessionV3ThinkingWithProvider(providerID, thinking string) string {

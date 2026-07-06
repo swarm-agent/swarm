@@ -409,7 +409,8 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 		return taskLaunchPrepared{}, errors.New("task resolved empty subagent")
 	}
 
-	preference := applyAgentPreferenceOverrides(parentSession.Preference, subagentProfile)
+	childMode := effectiveTaskChildMode(sessionMode)
+	preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
 	assignmentLabel := taskAssignmentLabel(launch.AssignmentLabel, launch.MetaPrompt, description, strings.TrimSpace(subagentProfile.Name))
 	childTitle := assignmentLabel
 	childWorkspacePath := strings.TrimSpace(parentSession.WorkspacePath)
@@ -458,7 +459,6 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 		childWorkspaceID = strings.TrimSpace(allocation.WorkspaceID)
 	}
 
-	childMode := effectiveTaskChildMode(sessionMode)
 	if childWorkspaceID != "" {
 		childMetadata["workspace_id"] = childWorkspaceID
 	}
