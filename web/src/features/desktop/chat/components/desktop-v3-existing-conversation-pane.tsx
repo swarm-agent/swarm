@@ -45,7 +45,7 @@ import {
   resumeDesktopPlanCheckpointed,
 } from '../../session-v3/plan-execution-api'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../../state/desktop-v3-session-api'
-import { fetchSessionMessages, resolveSessionPermission, sendSessionMessage, updateDraftModelPreference } from '../queries/chat-queries'
+import { fetchSessionMessages, resolveSessionPermission, updateDraftModelPreference } from '../queries/chat-queries'
 import { refreshAgentModelMutationCaches, updateAgentProfile } from '../queries/agent-preference-mutations'
 import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
@@ -224,13 +224,6 @@ function buildDesktopV3ExistingSettingsSnapshot(input: {
   }
 }
 
-function settingsSnapshotEqual(left: DesktopV3InputSettingsSnapshot, right: DesktopV3InputSettingsSnapshot): boolean {
-  return left.sessionId === right.sessionId
-    && left.mode === right.mode
-    && left.agent === right.agent
-    && preferencesEqual(left.preference, right.preference)
-}
-
 function planExecutionViewsEqual(left: DesktopPlanExecutionView | null, right: DesktopPlanExecutionView | null): boolean {
   if (left === right) return true
   if (!left || !right) return false
@@ -292,27 +285,6 @@ function permissionSavedRuleEqual(left: DesktopPermissionRecord['savedRule'], ri
 
 function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; serviceTier: string }): string {
   return `${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'} · tier ${input.serviceTier}`
-}
-
-function formatSettingsChangeSummary(input: {
-  previous: DesktopV3InputSettingsSnapshot
-  next: DesktopV3InputSettingsSnapshot
-  previousModelLabel: string
-  nextModelLabel: string
-}): string {
-  const changes: string[] = []
-  if (input.previous.mode !== input.next.mode) changes.push(`mode ${input.previous.mode || 'auto'} → ${input.next.mode || 'auto'}`)
-  if (input.previous.agent !== input.next.agent) changes.push(`agent ${input.previous.agent || 'default'} → ${input.next.agent || 'default'}`)
-  if (!preferencesEqual(input.previous.preference, input.next.preference)) {
-    const previousThinking = input.previous.preference.thinking || 'off'
-    const nextThinking = input.next.preference.thinking || 'off'
-    const previousServiceTier = serviceTierFromPreference(input.previous.preference)
-    const nextServiceTier = serviceTierFromPreference(input.next.preference)
-    changes.push(`model ${input.previousModelLabel || 'default'} → ${input.nextModelLabel || 'default'}`)
-    if (previousThinking !== nextThinking) changes.push(`thinking ${previousThinking} → ${nextThinking}`)
-    if (previousServiceTier !== nextServiceTier) changes.push(`tier ${previousServiceTier} → ${nextServiceTier}`)
-  }
-  return changes.join('; ')
 }
 
 type DesktopV3RenderItem =
@@ -760,7 +732,6 @@ export function DesktopV3ExistingConversationPane({
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
   const [agentModelSaving, setAgentModelSaving] = useState(false)
-  const [restartingWithSettings, setRestartingWithSettings] = useState(false)
   const [planExecutionBusyAction, setPlanExecutionBusyAction] = useState<string | null>(null)
   const [loadingOlderHistory, setLoadingOlderHistory] = useState(false)
   const [olderHistoryError, setOlderHistoryError] = useState<string | null>(null)
@@ -786,8 +757,6 @@ export function DesktopV3ExistingConversationPane({
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
   const hasResolvedPreference = Boolean(preference.provider.trim() && preference.model.trim() && preference.thinking.trim())
   const selectedModelAvailable = Boolean(selectedModelOption && hasResolvedPreference)
-  const baselineModelKey = optionKey(settingsBaseline.preference.provider, settingsBaseline.preference.model, settingsBaseline.preference.contextMode)
-  const baselineModelOption = modelOptions.find((option) => option.key === baselineModelKey) ?? null
   const cachedUsage = useMemo(() => normalizeUsageSummary(rawCachedUsage), [rawCachedUsage])
   const selectedContextWindow = selectedModelOption
     ? effectiveContextWindow(selectedModelOption.provider, selectedModelOption.model, selectedModelOption.contextMode, selectedModelOption.contextWindow)
@@ -818,22 +787,6 @@ export function DesktopV3ExistingConversationPane({
   )
   const compacting = compactStartedAt !== null
   const canSend = Boolean(normalizedSessionId && !sending && !compacting && selectedAgent.trim() && selectedModelAvailable && (hasStoredOperation || draft.trim()))
-  const visibleSettingsSnapshot = useMemo<DesktopV3InputSettingsSnapshot>(() => ({
-    sessionId: normalizedSessionId,
-    mode,
-    agent: selectedAgent.trim(),
-    preference,
-  }), [mode, normalizedSessionId, preference, selectedAgent])
-  const visibleSettingsChanged = !settingsSnapshotEqual(settingsBaseline, visibleSettingsSnapshot)
-  const settingsChangeSummary = visibleSettingsChanged
-    ? formatSettingsChangeSummary({
-      previous: settingsBaseline,
-      next: visibleSettingsSnapshot,
-      previousModelLabel: baselineModelOption?.label || settingsBaseline.preference.model,
-      nextModelLabel: selectedModelOption?.label || visibleSettingsSnapshot.preference.model,
-    })
-    : ''
-  const showRestartSettingsAction = Boolean(currentRun && visibleSettingsChanged)
   const renderItems = useMemo(() => buildDesktopV3ConversationRenderItems(renderedMessages), [renderedMessages])
   const loadedCommittedCount = loadedMessageCount ?? renderedMessages.committed.length
   const totalMessageCount = Math.max(session?.messageCount ?? cacheSession?.message_count ?? loadedCommittedCount, loadedCommittedCount)
@@ -1232,30 +1185,6 @@ export function DesktopV3ExistingConversationPane({
     }
   }
 
-  async function handleRestartWithSettings() {
-    if (!normalizedSessionId || !currentRun?.runId || restartingWithSettings || !settingsChangeSummary) return
-    setRestartingWithSettings(true)
-    setSendError(null)
-    try {
-      const stopRequest = resolveDesktopV3StopRunRequest({ route, runId: currentRun.runId })
-      await stopSessionV3Run(normalizedSessionId, stopRequest)
-      await persistVisibleSettings()
-      await sendSessionMessage(
-        normalizedSessionId,
-        'system',
-        `User has changed their settings (${settingsChangeSummary}); please continue with the new settings.`,
-        route,
-        { sessionApi: 'v3' },
-      )
-    } catch (error) {
-      if (mountedRef.current) {
-        setSendError(error instanceof Error ? error.message : String(error))
-      }
-    } finally {
-      if (mountedRef.current) setRestartingWithSettings(false)
-    }
-  }
-
   const planExecutionActionRef = useRef(handlePlanExecutionAction)
   planExecutionActionRef.current = handlePlanExecutionAction
   const stablePlanExecutionAction = useCallback((input: DesktopPlanExecutionSidebarActionInput) => (
@@ -1347,8 +1276,8 @@ export function DesktopV3ExistingConversationPane({
             onDraftChange={setDraft}
             placeholder="Message Swarm…"
             inputLabel="Continue Desktop V3 conversation"
-            disabled={sending || compacting || restartingWithSettings}
-            busy={sending || compacting || restartingWithSettings}
+            disabled={sending || compacting}
+            busy={sending || compacting}
             canSubmit={canSend}
             canStop={Boolean(currentRun)}
             error={sendError}
@@ -1378,9 +1307,6 @@ export function DesktopV3ExistingConversationPane({
             contextTooltip={contextTooltip}
             contextUsagePercent={contextUsagePercent}
             compactDisabled={compacting || sending || Boolean(currentRun)}
-            settingsActionLabel={showRestartSettingsAction ? 'Restart loop with new settings?' : ''}
-            settingsActionBusy={restartingWithSettings}
-            onSettingsAction={showRestartSettingsAction ? handleRestartWithSettings : undefined}
             onSlashCommand={onSlashCommand}
           />
         </div>

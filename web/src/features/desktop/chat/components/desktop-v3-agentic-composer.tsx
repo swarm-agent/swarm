@@ -150,9 +150,6 @@ export interface DesktopV3AgenticComposerProps {
   contextUsagePercent?: number
   onCompact?: (draft: string) => void | Promise<void>
   compactDisabled?: boolean
-  settingsActionLabel?: string
-  settingsActionBusy?: boolean
-  onSettingsAction?: () => void | Promise<void>
   subagents?: string[]
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
   onMentionSelect?: (agent: string) => void
@@ -199,9 +196,6 @@ export function DesktopV3AgenticComposer({
   contextUsagePercent,
   onCompact,
   compactDisabled = false,
-  settingsActionLabel = '',
-  settingsActionBusy = false,
-  onSettingsAction,
   subagents = [],
   onSlashCommand,
   onMentionSelect,
@@ -619,16 +613,6 @@ export function DesktopV3AgenticComposer({
                   </button>
                 ) : null}
                 {compactButton(false)}
-                {settingsActionLabel && onSettingsAction ? (
-                  <button
-                    type="button"
-                    onClick={() => { void onSettingsAction() }}
-                    disabled={settingsActionBusy || busy}
-                    className="inline-flex h-8 items-center rounded-full border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 text-[11px] font-semibold text-[var(--app-warning-text)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {settingsActionBusy ? 'Restarting…' : settingsActionLabel}
-                  </button>
-                ) : null}
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <Button size="sm" className="h-10 w-10 shrink-0 rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
