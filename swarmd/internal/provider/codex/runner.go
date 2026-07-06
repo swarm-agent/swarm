@@ -181,7 +181,53 @@ func codexThinkingProviderValue(catalog pebblestore.ModelCatalogRecord, thinking
 			return strings.TrimSpace(mapping.ProviderValue)
 		}
 	}
-	return ""
+	return codexDefaultReasoningEffortProviderValue(catalog, thinking)
+}
+
+func codexDefaultReasoningEffortProviderValue(catalog pebblestore.ModelCatalogRecord, thinking string) string {
+	if !catalog.Reasoning {
+		return ""
+	}
+	if !codexUsesReasoningEffortParameter(catalog.ThinkingProviderParameter) && !strings.EqualFold(strings.TrimSpace(catalog.Provider), "openai") {
+		return ""
+	}
+	thinking = strings.ToLower(strings.TrimSpace(thinking))
+	switch thinking {
+	case "low", "medium", "high":
+		return thinking
+	case "xhigh":
+		if strings.EqualFold(strings.TrimSpace(catalog.Provider), "openai") && codexOpenAIModelSupportsXHighFallback(catalog.Model) {
+			return thinking
+		}
+		return ""
+	case "off":
+		return "none"
+	default:
+		return ""
+	}
+}
+
+func codexOpenAIModelSupportsXHighFallback(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	switch model {
+	case "gpt-5.2", "gpt-5.2-pro", "gpt-5.4", "gpt-5.5":
+		return true
+	}
+	for _, prefix := range []string{"gpt-5.2-", "gpt-5.2-pro-", "gpt-5.4-", "gpt-5.5-"} {
+		if strings.HasPrefix(model, prefix) && len(model) > len(prefix) && model[len(prefix)] >= '0' && model[len(prefix)] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+func codexUsesReasoningEffortParameter(parameter string) bool {
+	switch strings.ToLower(strings.TrimSpace(parameter)) {
+	case "reasoning.effort", "reasoning_effort":
+		return true
+	default:
+		return false
+	}
 }
 
 func toCodexTools(input []provideriface.ToolDefinition) []ToolDefinition {
