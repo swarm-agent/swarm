@@ -28,6 +28,7 @@ test('Desktop V3 existing composer stages agent/model setup and persists profile
   assert.match(source, /!refreshedLock\.locked \&\& \(action\.kind === 'default' \|\| !preferencesEqual\(nextPreference, preference\)\)/)
   assert.match(source, /await updateSessionV3Preference\(normalizedSessionId, \{[\s\S]*provider: nextPreference\.provider[\s\S]*contextMode: nextPreference\.contextMode/)
   assert.match(source, /displayedUsage = cachedUsageMatchesSelectedModel \&\& cachedUsageIsProviderSnapshot \? cachedUsage : null/)
+  assert.match(source, /normalizeModelID\(cachedUsage\.provider, cachedUsage\.model\) === normalizeModelID\(selectedModelOption\.provider, selectedModelOption\.model\)/)
   assert.match(source, /effectiveContextWindowValue = selectedContextWindow > 0[\s\S]*\? selectedContextWindow/)
   assert.match(source, /formatDesktopV3ContextLabel\(effectiveContextWindowValue, displayedUsage\?\.remainingTokens\)/)
   assert.match(source, /handleModeSelect\(nextMode: DesktopSessionMode\)[\s\S]*localSettingsDirtyRef\.current\.mode = true[\s\S]*setMode\(nextMode\)/)

@@ -46,6 +46,20 @@ export function normalizeModelThinking(value: string): string {
   return value.trim().toLowerCase() || 'off'
 }
 
+export function normalizeModelID(provider: string, model: string): string {
+  const trimmedModel = model.trim()
+  if (trimmedModel === '') return ''
+  const normalizedProvider = normalizeProviderID(provider)
+  if (normalizedProvider !== 'fireworks') return trimmedModel
+  const lowerModel = trimmedModel.toLowerCase()
+  for (const prefix of ['accounts/fireworks/models/', 'accounts/fireworks/routers/', 'fireworks/']) {
+    if (!lowerModel.startsWith(prefix)) continue
+    const suffix = trimmedModel.slice(prefix.length).trim()
+    if (suffix && !suffix.includes('/')) return suffix
+  }
+  return trimmedModel
+}
+
 export function modelThinkingOptions(option: Pick<ModelOptionRecord, 'thinkingOptions'> | null | undefined): string[] {
   const seen = new Set<string>()
   const source = option?.thinkingOptions?.length ? option.thinkingOptions : FALLBACK_THINKING_OPTIONS
@@ -122,21 +136,9 @@ export function codexFastEnabled(provider: string, _model: string, serviceTier: 
 }
 
 export function displayModelName(provider: string, model: string, contextMode: string): string {
-  const trimmedModel = model.trim()
-  if (trimmedModel === '') {
+  const displayName = normalizeModelID(provider, model)
+  if (displayName === '') {
     return ''
-  }
-  const normalizedProvider = normalizeProviderID(provider)
-  let displayName = trimmedModel
-  if (normalizedProvider === 'fireworks') {
-    const lowerModel = trimmedModel.toLowerCase()
-    const modelPrefix = 'accounts/fireworks/models/'
-    const routerPrefix = 'accounts/fireworks/routers/'
-    if (lowerModel.startsWith(modelPrefix)) {
-      displayName = trimmedModel.slice(modelPrefix.length).trim()
-    } else if (lowerModel.startsWith(routerPrefix)) {
-      displayName = trimmedModel.slice(routerPrefix.length).trim()
-    }
   }
   const mode = contextMode.trim().toLowerCase()
   return mode ? `${displayName} (${mode})` : displayName

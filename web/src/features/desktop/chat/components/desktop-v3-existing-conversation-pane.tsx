@@ -14,7 +14,7 @@ import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type D
 import { draftModelQueryKey, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
-import { formatContextWindow, effectiveContextWindow, normalizeProviderID } from '../services/model-options'
+import { formatContextWindow, effectiveContextWindow, normalizeModelID, normalizeProviderID } from '../services/model-options'
 import { preferenceFromAgentModelLock, preferenceFromModelDraft, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
@@ -740,7 +740,7 @@ export function DesktopV3ExistingConversationPane({
     : 0
   const cachedUsageMatchesSelectedModel = Boolean(cachedUsage && selectedModelOption
     && normalizeProviderID(cachedUsage.provider) === normalizeProviderID(selectedModelOption.provider)
-    && cachedUsage.model === selectedModelOption.model
+    && normalizeModelID(cachedUsage.provider, cachedUsage.model) === normalizeModelID(selectedModelOption.provider, selectedModelOption.model)
     && (selectedContextWindow <= 0 || cachedUsage.contextWindow <= 0 || cachedUsage.contextWindow === selectedContextWindow))
   const cachedUsageIsProviderSnapshot = Boolean(cachedUsage?.source && cachedUsage.source !== 'settings_mutation')
   const displayedUsage = cachedUsageMatchesSelectedModel && cachedUsageIsProviderSnapshot ? cachedUsage : null

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { defaultModelThinking, displayModelName, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, supportsModelServiceTier } from './model-options'
+import { defaultModelThinking, displayModelName, modelServiceTierOptions, modelThinkingOptions, normalizeModelID, normalizeModelServiceTier, supportsModelServiceTier } from './model-options'
 
 test('displayModelName strips Fireworks account model prefix', () => {
   assert.equal(displayModelName('fireworks', 'accounts/fireworks/models/kimi-k2p6', ''), 'kimi-k2p6')
@@ -9,6 +9,13 @@ test('displayModelName strips Fireworks account model prefix', () => {
 
 test('displayModelName preserves hyphens after Fireworks prefix stripping', () => {
   assert.notEqual(displayModelName('fireworks', 'accounts/fireworks/models/kimi-k2p6', ''), 'kimik2p6')
+})
+
+test('normalizeModelID matches Fireworks short and provider-qualified model ids', () => {
+  assert.equal(normalizeModelID('fireworks', 'accounts/fireworks/models/deepseek-v4-flash'), 'deepseek-v4-flash')
+  assert.equal(normalizeModelID('fireworks', 'accounts/fireworks/routers/deepseek-v4-flash'), 'deepseek-v4-flash')
+  assert.equal(normalizeModelID('fireworks', 'fireworks/deepseek-v4-flash'), 'deepseek-v4-flash')
+  assert.equal(normalizeModelID('codex', 'accounts/fireworks/models/deepseek-v4-flash'), 'accounts/fireworks/models/deepseek-v4-flash')
 })
 
 test('displayModelName leaves non-Fireworks model ids unchanged', () => {
