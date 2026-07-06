@@ -85,6 +85,7 @@ type V3SyncSnapshotOptions struct {
 	IncludeCurrentRunState             bool
 	IncludeActiveSessions              bool
 	IncludePinnedSidebarSessions       bool
+	IncludeUnresolvedSidebarSessions   bool
 	IncludeSessionView                 bool
 	IncludeActivePlan                  bool
 }
@@ -181,7 +182,7 @@ func (s *SessionStore) BuildV3SyncSnapshotWithContext(ctx context.Context, optio
 	if err := contextError(ctx); err != nil {
 		return V3SyncSnapshotResult{}, err
 	}
-	if !options.Global && len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" && len(options.WorkspacePaths) == 0 && !options.IncludeActiveSessions && !options.IncludePinnedSidebarSessions {
+	if !options.Global && len(options.SessionIDs) == 0 && options.RecentLimit <= 0 && strings.TrimSpace(options.WorkspacePath) == "" && len(options.WorkspacePaths) == 0 && !options.IncludeActiveSessions && !options.IncludePinnedSidebarSessions && !options.IncludeUnresolvedSidebarSessions {
 		return V3SyncSnapshotResult{}, errors.New("at least one sync snapshot selector is required")
 	}
 	snapshot := s.store.db.NewSnapshot()
@@ -472,6 +473,15 @@ func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, option
 			appendSession(session)
 		}
 	}
+	if options.IncludeUnresolvedSidebarSessions {
+		unresolved, err := s.selectV3UnresolvedSidebarSyncSnapshotSessions(reader, options)
+		if err != nil {
+			return nil, V3SyncSnapshotPagination{}, err
+		}
+		for _, session := range unresolved {
+			appendSession(session)
+		}
+	}
 	if options.IncludeActiveSessions {
 		active, err := s.selectV3ActiveSyncSnapshotSessions(reader, options)
 		if err != nil {
@@ -612,7 +622,100 @@ func (s *SessionStore) selectV3ActiveSyncSnapshotSessions(reader pebble.Reader, 
 		}
 		out = append(out, session)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UpdatedAt == out[j].UpdatedAt {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
 	return out, nil
+}
+
+func (s *SessionStore) selectV3UnresolvedSidebarSyncSnapshotSessions(reader pebble.Reader, options V3SyncSnapshotOptions) ([]SessionSnapshot, error) {
+	accountScopeID := strings.TrimSpace(options.AccountScopeID)
+	if accountScopeID == "" {
+		return nil, nil
+	}
+	sessions := make([]SessionSnapshot, 0)
+	seen := map[string]struct{}{}
+	err := iteratePrefixFromReader(reader, SessionPlanActiveByAccountPrefix(accountScopeID), int(^uint(0)>>1), func(_ string, value []byte) error {
+		var active SessionPlanActive
+		if err := json.Unmarshal(value, &active); err != nil {
+			return err
+		}
+		sessionID := strings.TrimSpace(active.SessionID)
+		planID := strings.TrimSpace(active.PlanID)
+		if sessionID == "" || planID == "" {
+			return nil
+		}
+		if _, duplicate := seen[sessionID]; duplicate {
+			return nil
+		}
+		plan, ok, err := getPlanFromReader(reader, sessionID, planID)
+		if err != nil {
+			return err
+		}
+		if !ok || !v3SyncSnapshotPlanUnresolved(plan) {
+			return nil
+		}
+		session, ok, err := s.getSessionFromReader(reader, sessionID)
+		if err != nil {
+			return err
+		}
+		if !ok || !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
+			return nil
+		}
+		seen[sessionID] = struct{}{}
+		sessions = append(sessions, session)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].UpdatedAt == sessions[j].UpdatedAt {
+			return sessions[i].ID < sessions[j].ID
+		}
+		return sessions[i].UpdatedAt > sessions[j].UpdatedAt
+	})
+	return sessions, nil
+}
+
+func v3SyncSnapshotPlanUnresolved(plan SessionPlanSnapshot) bool {
+	if plan.Document == nil {
+		return false
+	}
+	document := plan.Document
+	status := strings.ToLower(strings.TrimSpace(document.Status))
+	if status == "" {
+		status = strings.ToLower(strings.TrimSpace(plan.Status))
+	}
+	if document.ExecutionState != nil {
+		executionStatus := strings.ToLower(strings.TrimSpace(document.ExecutionState.Status))
+		lastOutcome := strings.ToLower(strings.TrimSpace(document.ExecutionState.LastOutcome))
+		if executionStatus == "waiting_review" || lastOutcome == "needs_review" {
+			return true
+		}
+		if executionStatus == "in_progress" || strings.TrimSpace(document.ExecutionState.CurrentRunID) != "" || strings.TrimSpace(document.ExecutionState.ActiveAttemptID) != "" {
+			return true
+		}
+		if executionStatus == "blocked" || executionStatus == "failed" || executionStatus == "completed" {
+			return false
+		}
+	}
+	if status == "completed" || status == "archived" || status == "failed" || status == "blocked" {
+		return false
+	}
+	for _, checkpoint := range document.Checkpoints {
+		checkpointStatus := strings.ToLower(strings.TrimSpace(checkpoint.Status))
+		if checkpointStatus == "needs_review" || checkpointStatus == "in_progress" {
+			return true
+		}
+		if checkpoint.Review != nil && strings.ToLower(strings.TrimSpace(checkpoint.Review.Status)) == "pending" {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeV3SyncSnapshotWorkspacePaths(workspacePath string, workspacePaths []string) []string {

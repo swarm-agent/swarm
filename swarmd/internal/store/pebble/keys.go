@@ -934,6 +934,14 @@ func KeySessionPlanActiveByAccount(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("session_plan_active_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
 }
 
+func SessionPlanActiveByAccountPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return "session_plan_active_by_account/"
+	}
+	return fmt.Sprintf("session_plan_active_by_account/%s/", accountPart)
+}
+
 func KeySessionTurnUsage(sessionID, runID string) string {
 	return fmt.Sprintf("session_turn_usage/%s/%s", keyPart(sessionID), keyPart(runID))
 }

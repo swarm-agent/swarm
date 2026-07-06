@@ -526,6 +526,89 @@ func TestSessionsV3SyncBootstrapRejectsSessionViewResource(t *testing.T) {
 	}
 }
 
+func TestSessionsV3SyncBootstrapDesktopIncludesUnresolvedPlanSessionsOutsideRecentLimit(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	unresolved := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-unresolved-old", "Unresolved old", "/workspace/bootstrap-unresolved")
+	createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-unresolved-recent-new", "Recent new", "/workspace/bootstrap-unresolved")
+	createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-unresolved-recent-mid", "Recent mid", "/workspace/bootstrap-unresolved")
+	otherWorkspaceUnresolved := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-other-workspace-unresolved", "Other workspace unresolved", "/workspace/other-bootstrap-unresolved")
+
+	for _, session := range []pebblestore.SessionSnapshot{unresolved, otherWorkspaceUnresolved} {
+		plan := pebblestore.SessionPlanSnapshot{
+			ID:             "plan-" + session.ID,
+			SessionID:      session.ID,
+			UserID:         session.UserID,
+			AccountScopeID: session.AccountScopeID,
+			Title:          "Unresolved plan",
+			Status:         "approved",
+			ApprovalState:  "approved",
+			Active:         true,
+			CreatedAt:      10,
+			UpdatedAt:      10,
+			Version:        1,
+			Document: &pebblestore.SessionPlanDocument{
+				ID:     "plan-" + session.ID,
+				Title:  "Unresolved plan",
+				Status: "approved",
+				ExecutionState: &pebblestore.SessionPlanExecutionState{
+					Status:           "waiting_review",
+					LastCheckpointID: "cp-1",
+					LastOutcome:      "needs_review",
+				},
+				ActiveCheckpointID: "cp-1",
+				Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+					ID:     "cp-1",
+					Title:  "Review",
+					Status: "needs_review",
+					Review: &pebblestore.SessionPlanCheckpointReview{Status: "pending"},
+					Order:  1,
+				}},
+			},
+		}
+		if err := sessionSvc.Store().PutPlan(plan); err != nil {
+			t.Fatalf("put unresolved plan for %s: %v", session.ID, err)
+		}
+		if err := sessionSvc.Store().SetActivePlan(session.ID, plan.ID, plan.UpdatedAt); err != nil {
+			t.Fatalf("set active unresolved plan for %s: %v", session.ID, err)
+		}
+	}
+
+	older, ok, err := sessionSvc.Store().GetSession(unresolved.ID)
+	if err != nil || !ok {
+		t.Fatalf("load unresolved session: ok=%t err=%v", ok, err)
+	}
+	older.UpdatedAt = 1000
+	if err := sessionSvc.Store().UpdateSession(older); err != nil {
+		t.Fatalf("age unresolved session: %v", err)
+	}
+
+	body := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/bootstrap-unresolved","recent":{"limit":2}},"history":{"mode":"none"},"resources":{"active_plan":true}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		SessionsByID     map[string]pebblestore.SessionSnapshot `json:"sessions_by_id"`
+		SessionViewsByID map[string]sessionsV3SessionView       `json:"session_views_by_id"`
+		SessionOrder     []string                               `json:"session_order"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode bootstrap response: %v", err)
+	}
+	if len(payload.SessionOrder) != 3 || payload.SessionOrder[2] != unresolved.ID {
+		t.Fatalf("bootstrap session_order = %+v, want unresolved session outside recent limit included last", payload.SessionOrder)
+	}
+	if payload.SessionViewsByID[unresolved.ID].ActivePlan == nil {
+		t.Fatalf("bootstrap active plan missing for unresolved session: %+v", payload.SessionViewsByID[unresolved.ID])
+	}
+	if _, ok := payload.SessionsByID[otherWorkspaceUnresolved.ID]; ok {
+		t.Fatalf("bootstrap leaked unresolved session from other workspace: %+v", payload.SessionsByID)
+	}
+}
+
 func TestSessionsV3SyncBootstrapDesktopIncludesPinnedSessionsOutsideRecentLimit(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	pinned := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-pinned-old", "Pinned old", "/workspace/bootstrap-pinned")
