@@ -262,18 +262,21 @@ function testTypedPlanLifecycleKindAndPayloadParsing(): void {
     toolName: 'plan_manage',
     requirement: 'plan_followup_request',
     toolArguments: JSON.stringify({
-      title: 'Follow-up: add audit note',
+      title: 'Session checkpoint: add audit note',
       plan_id: 'plan_123',
       action: 'request_followup_checkpoint',
       change_request: 'Add an audit note before final review.',
-      approved_arguments: { action: 'request_followup_checkpoint', plan_id: 'plan_123', change_request: 'Add an audit note before final review.' },
+      notes: 'Self-contained handoff context with relevant files and validation expectations.',
+      approved_arguments: { action: 'request_followup_checkpoint', plan_id: 'plan_123', change_request: 'Add an audit note before final review.', notes: 'Self-contained handoff context with relevant files and validation expectations.' },
     }),
   })
   assert(permissionKind(followup) === 'plan-followup-request', 'expected plan-followup-request permission kind')
   assert(permissionRequiresApproval(followup, 'auto') === true, 'expected plan_followup_request approval requirement')
   const followupPayload = parsePlanUpdatePermission(followup)
-  assert(followupPayload.action === 'request_followup_checkpoint', 'expected follow-up action')
+  assert(followupPayload.action === 'request_followup_checkpoint', 'expected session checkpoint action')
   assert(followupPayload.changeRequest.includes('audit note'), 'expected exact change request')
+  assert(followupPayload.notes.includes('Self-contained handoff context'), 'expected handoff notes')
+  assert(followupPayload.approvedArguments.notes === 'Self-contained handoff context with relevant files and validation expectations.', 'expected approved notes')
 
   const revision = makePermission({
     toolName: 'plan_manage',
@@ -313,6 +316,61 @@ function testPlanUpdateKindAndPayloadParsing(): void {
   assert(payload.plan.includes('After'), 'expected updated plan body')
   assert(payload.diffLines.length === 3, 'expected diff lines to be parsed')
   assert(Object.keys(payload.approvedArguments).length === 0, 'expected no approved arguments by default')
+}
+
+function testPlanAmendmentParsesDeltaAndApprovalArguments(): void {
+  const document = {
+    id: 'plan_123',
+    title: 'Structured Plan',
+    checkpoints: [
+      { id: 'cp-1', title: 'First', status: 'completed', order: 1 },
+      { id: 'cp-2', title: 'Deploy authority', status: 'pending', order: 2 },
+    ],
+  }
+  const permission = makePermission({
+    toolName: 'plan_manage',
+    requirement: 'plan_amendment_request',
+    toolArguments: JSON.stringify({
+      title: 'Structured Plan',
+      plan_id: 'plan_123',
+      document,
+      prior_document: { ...document, checkpoints: [{ id: 'cp-1', title: 'First', status: 'completed', order: 1 }, { id: 'cp-2', title: 'Old future', status: 'pending', order: 2 }] },
+      current_revision: 4,
+      base_revision: 4,
+      plan_amendment_delta: {
+        reason: 'Replace future work',
+        base_revision: 4,
+        current_revision: 4,
+        replace_from_checkpoint_id: 'cp-2',
+        preserved_checkpoints: [{ id: 'cp-1', title: 'First', status: 'completed' }],
+        replaced_checkpoints: [{ id: 'cp-2', title: 'Old future', status: 'pending' }],
+        replacement_checkpoints: [{ id: 'cp-2', title: 'Deploy authority', status: 'pending' }],
+        next_checkpoint: { id: 'cp-2', title: 'Deploy authority', status: 'pending' },
+        bullets: ['cp-1 remains completed and preserved.', 'Replacing pending future work from cp-2 (Old future).', 'Next checkpoint becomes cp-2 (Deploy authority).', 'Reason: Replace future work'],
+      },
+      approved_arguments: {
+        action: 'amend_plan',
+        plan_id: 'plan_123',
+        base_revision: 4,
+        override_stale: true,
+        replace_from_checkpoint_id: 'cp-2',
+        update_summary: 'Replace future work',
+        document,
+      },
+    }),
+  })
+  assert(permissionKind(permission) === 'plan-amendment-request', 'expected plan amendment permission kind')
+  assert(permissionRequiresApproval(permission, 'auto') === true, 'expected plan amendment approval requirement')
+  const payload = parsePlanUpdatePermission(permission)
+  assert(Boolean(payload.priorDocument), 'expected prior structured document')
+  assert(payload.currentRevision === 4, 'expected current revision')
+  assert(payload.planAmendmentDelta?.preservedCheckpoints[0]?.id === 'cp-1', 'expected preserved cp-1')
+  assert(payload.planAmendmentDelta?.replacedCheckpoints[0]?.id === 'cp-2', 'expected replaced cp-2')
+  assert(payload.planAmendmentDelta?.nextCheckpoint?.title === 'Deploy authority', 'expected replacement checkpoint title')
+  assert(payload.planAmendmentDelta?.bullets.some((bullet) => bullet.includes('Reason')), 'expected reason bullet')
+  assert(payload.approvedArguments.base_revision === 4, 'expected approved args to preserve base revision')
+  assert(payload.approvedArguments.override_stale === true, 'expected approved args to preserve override stale')
+  assert(payload.approvedArguments.replace_from_checkpoint_id === 'cp-2', 'expected approved args to preserve replace-from checkpoint')
 }
 
 function testPlanUpdateParsesStructuredDocument(): void {
@@ -485,6 +543,7 @@ function main(): void {
   testManageTodosKindAndPayloadParsing()
   testTypedPlanLifecycleKindAndPayloadParsing()
   testPlanUpdateKindAndPayloadParsing()
+  testPlanAmendmentParsesDeltaAndApprovalArguments()
   testPlanUpdateParsesStructuredDocument()
   testExitPlanParsesStructuredDocument()
   testPlanUpdateDiffPreviewPreservesAllDiffRows()

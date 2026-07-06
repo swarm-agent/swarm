@@ -52,33 +52,59 @@ type taskLaunchManifest struct {
 }
 
 type planManagePermissionPayload struct {
-	PathID                   string         `json:"path_id,omitempty"`
-	Title                    string         `json:"title,omitempty"`
-	PlanID                   string         `json:"plan_id,omitempty"`
-	PriorTitle               string         `json:"prior_title,omitempty"`
-	PriorPlan                string         `json:"prior_plan,omitempty"`
-	Plan                     string         `json:"plan,omitempty"`
-	DiffLines                []string       `json:"diff_lines,omitempty"`
-	Document                 any            `json:"document,omitempty"`
-	Status                   string         `json:"status,omitempty"`
-	ApprovalState            string         `json:"approval_state,omitempty"`
-	Activate                 bool           `json:"activate,omitempty"`
-	Action                   string         `json:"action,omitempty"`
-	UpdateType               string         `json:"update_type,omitempty"`
-	UpdateSummary            string         `json:"update_summary,omitempty"`
-	UpdateScope              string         `json:"update_scope,omitempty"`
-	UpdateKind               string         `json:"update_kind,omitempty"`
-	DocumentOperation        string         `json:"document_operation,omitempty"`
-	Checkpoint               bool           `json:"checkpoint,omitempty"`
-	ChangeRequest            string         `json:"change_request,omitempty"`
-	CheckpointTitle          string         `json:"checkpoint_title,omitempty"`
-	Tasks                    []string       `json:"tasks,omitempty"`
-	AcceptanceCriteria       []string       `json:"acceptance_criteria,omitempty"`
-	FollowupCheckpointPolicy string         `json:"followup_checkpoint_policy,omitempty"`
-	PolicyEffective          string         `json:"policy_effective,omitempty"`
-	ApprovalRequired         bool           `json:"approval_required,omitempty"`
-	RunQueued                bool           `json:"run_queued,omitempty"`
-	ApprovedArguments        map[string]any `json:"approved_arguments,omitempty"`
+	PathID                   string              `json:"path_id,omitempty"`
+	Title                    string              `json:"title,omitempty"`
+	PlanID                   string              `json:"plan_id,omitempty"`
+	PriorTitle               string              `json:"prior_title,omitempty"`
+	PriorPlan                string              `json:"prior_plan,omitempty"`
+	Plan                     string              `json:"plan,omitempty"`
+	DiffLines                []string            `json:"diff_lines,omitempty"`
+	Document                 any                 `json:"document,omitempty"`
+	PriorDocument            any                 `json:"prior_document,omitempty"`
+	Version                  int                 `json:"version,omitempty"`
+	Revision                 int                 `json:"revision,omitempty"`
+	CurrentRevision          int                 `json:"current_revision,omitempty"`
+	BaseRevision             int                 `json:"base_revision,omitempty"`
+	PlanAmendmentDelta       *planAmendmentDelta `json:"plan_amendment_delta,omitempty"`
+	Status                   string              `json:"status,omitempty"`
+	ApprovalState            string              `json:"approval_state,omitempty"`
+	Activate                 bool                `json:"activate,omitempty"`
+	Action                   string              `json:"action,omitempty"`
+	UpdateType               string              `json:"update_type,omitempty"`
+	UpdateSummary            string              `json:"update_summary,omitempty"`
+	UpdateScope              string              `json:"update_scope,omitempty"`
+	UpdateKind               string              `json:"update_kind,omitempty"`
+	DocumentOperation        string              `json:"document_operation,omitempty"`
+	Checkpoint               bool                `json:"checkpoint,omitempty"`
+	ChangeRequest            string              `json:"change_request,omitempty"`
+	CheckpointTitle          string              `json:"checkpoint_title,omitempty"`
+	Tasks                    []string            `json:"tasks,omitempty"`
+	AcceptanceCriteria       []string            `json:"acceptance_criteria,omitempty"`
+	Notes                    string              `json:"notes,omitempty"`
+	FollowupCheckpointPolicy string              `json:"followup_checkpoint_policy,omitempty"`
+	PolicyEffective          string              `json:"policy_effective,omitempty"`
+	ApprovalRequired         bool                `json:"approval_required,omitempty"`
+	RunQueued                bool                `json:"run_queued,omitempty"`
+	ApprovedArguments        map[string]any      `json:"approved_arguments,omitempty"`
+}
+
+type planAmendmentDelta struct {
+	Reason                  string                    `json:"reason,omitempty"`
+	BaseRevision            int                       `json:"base_revision,omitempty"`
+	CurrentRevision         int                       `json:"current_revision,omitempty"`
+	OverrideStale           bool                      `json:"override_stale,omitempty"`
+	ReplaceFromCheckpointID string                    `json:"replace_from_checkpoint_id,omitempty"`
+	PreservedCheckpoints    []planCheckpointDeltaItem `json:"preserved_checkpoints,omitempty"`
+	ReplacedCheckpoints     []planCheckpointDeltaItem `json:"replaced_checkpoints,omitempty"`
+	ReplacementCheckpoints  []planCheckpointDeltaItem `json:"replacement_checkpoints,omitempty"`
+	NextCheckpoint          *planCheckpointDeltaItem  `json:"next_checkpoint,omitempty"`
+	Bullets                 []string                  `json:"bullets,omitempty"`
+}
+
+type planCheckpointDeltaItem struct {
+	ID     string `json:"id,omitempty"`
+	Title  string `json:"title,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 type taskLaunchParentInfo struct {
@@ -891,6 +917,8 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		action = "request_followup_checkpoint"
 	case "request-plan-revision", "request_plan_revision", "plan-revision", "plan_revision":
 		action = "request_plan_revision"
+	case "amend-plan", "amend_plan", "plan-amendment", "plan_amendment", "amend-future-checkpoints", "amend_future_checkpoints":
+		action = "amend_plan"
 	case "request-new-plan", "request_new_plan", "new-plan-proposal", "new_plan_proposal":
 		action = "request_new_plan"
 	case "restart-checkpoint", "restart_checkpoint", "retry-checkpoint", "retry_checkpoint", "restart-checkpoint-from-zero", "restart_checkpoint_from_zero":
@@ -900,7 +928,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	case "update-section", "update_section":
 		action = "update_section"
 	}
-	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "update_execution_policy" && action != "update_execution_state" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "start_checkpoint" && action != "continue_checkpoint" && action != "complete_checkpoint" && action != "checkpoint_outcome" && action != "mark_needs_review" && action != "mark_blocked" && action != "mark_failed" && action != "restart_checkpoint" && action != "rewind_to_checkpoint" && action != "approve_and_start" && action != "request_followup_checkpoint" && action != "request_plan_revision" && action != "request_new_plan" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
+	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "update_execution_policy" && action != "update_execution_state" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "start_checkpoint" && action != "continue_checkpoint" && action != "complete_checkpoint" && action != "checkpoint_outcome" && action != "mark_needs_review" && action != "mark_blocked" && action != "mark_failed" && action != "restart_checkpoint" && action != "rewind_to_checkpoint" && action != "approve_and_start" && action != "request_followup_checkpoint" && action != "request_plan_revision" && action != "amend_plan" && action != "request_new_plan" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
 		return planManagePermissionPayload{}, false, nil
 	}
 	planBody := strings.TrimSpace(mapString(args, "plan"))
@@ -1044,7 +1072,15 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		}
 		checkpoint = true
 	} else if previewDocument == nil {
-		previewDocument = existing.Document
+		previewDocument, err = clonePlanDocumentForExecutionAction(existing.Document)
+		if err != nil {
+			previewDocument = existing.Document
+		}
+	}
+	if action == "amend_plan" && document != nil {
+		if amendedPreview, ok := buildPlanAmendmentPreviewDocument(existing.Document, document, args); ok {
+			previewDocument = amendedPreview
+		}
 	}
 	payload := planManagePermissionPayload{
 		PathID:             "tool.plan-manage-update.v1",
@@ -1054,7 +1090,12 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		PriorPlan:          strings.TrimSpace(existing.Plan),
 		Plan:               previewPlan,
 		Document:           previewDocument,
+		PriorDocument:      existing.Document,
 		DiffLines:          sessionruntime.BuildPlanDiffLines(existing.Plan, previewPlan),
+		Version:            existing.Version,
+		Revision:           currentPlanRevision(existing),
+		CurrentRevision:    currentPlanRevision(existing),
+		BaseRevision:       currentPlanRevision(existing),
 		Status:             status,
 		ApprovalState:      approvalState,
 		Activate:           activate,
@@ -1069,8 +1110,9 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		CheckpointTitle:    checkpointTitle,
 		Tasks:              mapStringSlice(args, "tasks"),
 		AcceptanceCriteria: mapStringSlice(args, "acceptance_criteria"),
+		Notes:              strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context"))),
 		PolicyEffective:    s.resolvePlanFollowupCheckpointPolicyForPermission(existing, ""),
-		ApprovalRequired:   action == "request_plan_revision" || action == "request_new_plan" || (action == "request_followup_checkpoint" && s.resolvePlanFollowupCheckpointPolicyForPermission(existing, "") == sessionruntime.PlanFollowupCheckpointPolicyRequireApproval),
+		ApprovalRequired:   action == "request_plan_revision" || action == "amend_plan" || action == "request_new_plan" || (action == "request_followup_checkpoint" && s.resolvePlanFollowupCheckpointPolicyForPermission(existing, "") == sessionruntime.PlanFollowupCheckpointPolicyRequireApproval),
 		ApprovedArguments: map[string]any{
 			"action":         action,
 			"plan_id":        planID,
@@ -1094,7 +1136,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	} else {
 		for key, value := range args {
 			switch key {
-			case "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically", "change_request", "user_request", "request", "prompt", "checkpoint_title", "tasks", "acceptance_criteria", "source_message_id", "base_revision", "replace_from_checkpoint_id", "amend_future_checkpoints", "override_stale", "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
+			case "plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "handoff_notes", "context", "report", "result", "changed_files", "validation", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically", "change_request", "user_request", "request", "prompt", "checkpoint_title", "tasks", "acceptance_criteria", "source_message_id", "base_revision", "replace_from_checkpoint_id", "amend_future_checkpoints", "override_stale", "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
 				payload.ApprovedArguments[key] = value
 			case "checkpoint":
 				if _, isBool := value.(bool); !isBool {
@@ -1119,11 +1161,192 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	case "amend_plan":
 		payload.PathID = "tool.plan-amendment.v1"
 		payload.UpdateKind = "plan_amendment"
+		payload.PlanAmendmentDelta = buildPlanAmendmentDelta(existing.Document, previewDocument, payload.ApprovedArguments, updateSummary, currentPlanRevision(existing))
 	case "request_new_plan":
 		payload.PathID = "tool.plan-new-request.v1"
 		payload.UpdateKind = "request_new_plan"
 	}
 	return payload, true, nil
+}
+
+func buildPlanAmendmentPreviewDocument(current, proposed *pebblestore.SessionPlanDocument, args map[string]any) (*pebblestore.SessionPlanDocument, bool) {
+	if current == nil || proposed == nil {
+		return nil, false
+	}
+	preview, err := clonePlanDocumentForExecutionAction(current)
+	if err != nil || preview == nil {
+		return nil, false
+	}
+	replaceID := strings.TrimSpace(firstNonEmptyString(mapString(args, "replace_from_checkpoint_id"), mapString(args, "checkpoint_id")))
+	replaceIndex := -1
+	if replaceID != "" {
+		replaceIndex = findCheckpointDeltaIndex(preview.Checkpoints, replaceID)
+	}
+	if replaceIndex < 0 && mapBool(args, "amend_future_checkpoints") {
+		replaceIndex = firstPendingCheckpointDeltaIndex(preview.Checkpoints)
+		if replaceIndex >= 0 {
+			replaceID = strings.TrimSpace(preview.Checkpoints[replaceIndex].ID)
+		}
+	}
+	if replaceIndex < 0 || replaceID == "" {
+		return nil, false
+	}
+	proposedIndex := findCheckpointDeltaIndex(proposed.Checkpoints, replaceID)
+	if proposedIndex < 0 {
+		return nil, false
+	}
+	future := checkpointDeltaCloneSlice(proposed.Checkpoints[proposedIndex:])
+	if len(future) == 0 {
+		return nil, false
+	}
+	preview.Info = proposed.Info
+	preview.Checkpoints = append(preview.Checkpoints[:replaceIndex], future...)
+	for i := range preview.Checkpoints {
+		preview.Checkpoints[i].Order = i + 1
+	}
+	preview.ExecutionPolicy = proposed.ExecutionPolicy
+	preview.RenderedText = strings.TrimSpace(proposed.RenderedText)
+	preview.DisplayText = strings.TrimSpace(proposed.DisplayText)
+	return preview, true
+}
+
+func checkpointDeltaCloneSlice(checkpoints []pebblestore.SessionPlanCheckpoint) []pebblestore.SessionPlanCheckpoint {
+	if len(checkpoints) == 0 {
+		return nil
+	}
+	cloned := make([]pebblestore.SessionPlanCheckpoint, len(checkpoints))
+	copy(cloned, checkpoints)
+	return cloned
+}
+
+func buildPlanAmendmentDelta(current, proposed *pebblestore.SessionPlanDocument, approvedArgs map[string]any, reason string, currentRevision int) *planAmendmentDelta {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = strings.TrimSpace(firstNonEmptyString(mapString(approvedArgs, "update_summary"), mapString(approvedArgs, "summary"), mapString(approvedArgs, "reason")))
+	}
+	delta := &planAmendmentDelta{
+		Reason:                  reason,
+		BaseRevision:            mapInt(approvedArgs, "base_revision"),
+		CurrentRevision:         currentRevision,
+		OverrideStale:           mapBool(approvedArgs, "override_stale"),
+		ReplaceFromCheckpointID: strings.TrimSpace(firstNonEmptyString(mapString(approvedArgs, "replace_from_checkpoint_id"), mapString(approvedArgs, "checkpoint_id"))),
+	}
+	if current == nil || len(current.Checkpoints) == 0 {
+		delta.Bullets = buildPlanAmendmentDeltaBullets(delta)
+		return delta
+	}
+	replaceIndex := -1
+	if delta.ReplaceFromCheckpointID != "" {
+		replaceIndex = findCheckpointDeltaIndex(current.Checkpoints, delta.ReplaceFromCheckpointID)
+	}
+	if replaceIndex < 0 && mapBool(approvedArgs, "amend_future_checkpoints") {
+		replaceIndex = firstPendingCheckpointDeltaIndex(current.Checkpoints)
+		if replaceIndex >= 0 {
+			delta.ReplaceFromCheckpointID = strings.TrimSpace(current.Checkpoints[replaceIndex].ID)
+		}
+	}
+	if replaceIndex < 0 && delta.ReplaceFromCheckpointID != "" && proposed != nil {
+		replaceIndex = findCheckpointDeltaIndex(proposed.Checkpoints, delta.ReplaceFromCheckpointID)
+	}
+	if replaceIndex < 0 {
+		delta.Bullets = buildPlanAmendmentDeltaBullets(delta)
+		return delta
+	}
+	for _, checkpoint := range current.Checkpoints[:replaceIndex] {
+		delta.PreservedCheckpoints = append(delta.PreservedCheckpoints, checkpointDeltaItem(checkpoint))
+	}
+	delta.ReplacedCheckpoints = append(delta.ReplacedCheckpoints, checkpointDeltaItems(current.Checkpoints[replaceIndex:])...)
+	if proposed != nil {
+		proposedIndex := findCheckpointDeltaIndex(proposed.Checkpoints, delta.ReplaceFromCheckpointID)
+		if proposedIndex >= 0 {
+			delta.ReplacementCheckpoints = append(delta.ReplacementCheckpoints, checkpointDeltaItems(proposed.Checkpoints[proposedIndex:])...)
+			if len(delta.ReplacementCheckpoints) > 0 {
+				next := delta.ReplacementCheckpoints[0]
+				delta.NextCheckpoint = &next
+			}
+		}
+	}
+	delta.Bullets = buildPlanAmendmentDeltaBullets(delta)
+	return delta
+}
+
+func buildPlanAmendmentDeltaBullets(delta *planAmendmentDelta) []string {
+	if delta == nil {
+		return nil
+	}
+	bullets := make([]string, 0, 5)
+	for _, checkpoint := range delta.PreservedCheckpoints {
+		if strings.EqualFold(checkpoint.Status, sessionruntime.PlanCheckpointStatusCompleted) {
+			bullets = append(bullets, fmt.Sprintf("%s remains completed and preserved.", checkpointDeltaLabel(checkpoint)))
+		}
+	}
+	if len(delta.ReplacedCheckpoints) > 0 {
+		bullets = append(bullets, fmt.Sprintf("Replacing pending future work from %s.", checkpointDeltaLabel(delta.ReplacedCheckpoints[0])))
+	} else if delta.ReplaceFromCheckpointID != "" {
+		bullets = append(bullets, fmt.Sprintf("Replacing pending future work from %s.", delta.ReplaceFromCheckpointID))
+	}
+	if delta.NextCheckpoint != nil {
+		bullets = append(bullets, fmt.Sprintf("Next checkpoint becomes %s.", checkpointDeltaLabel(*delta.NextCheckpoint)))
+	}
+	if delta.Reason != "" {
+		bullets = append(bullets, fmt.Sprintf("Reason: %s", delta.Reason))
+	}
+	if delta.BaseRevision > 0 || delta.CurrentRevision > 0 {
+		bullets = append(bullets, fmt.Sprintf("Revision guard: base %d, current %d.", delta.BaseRevision, delta.CurrentRevision))
+	} else if delta.OverrideStale {
+		bullets = append(bullets, "Revision guard: override stale revision enabled.")
+	}
+	return bullets
+}
+
+func checkpointDeltaItems(checkpoints []pebblestore.SessionPlanCheckpoint) []planCheckpointDeltaItem {
+	items := make([]planCheckpointDeltaItem, 0, len(checkpoints))
+	for _, checkpoint := range checkpoints {
+		items = append(items, checkpointDeltaItem(checkpoint))
+	}
+	return items
+}
+
+func checkpointDeltaItem(checkpoint pebblestore.SessionPlanCheckpoint) planCheckpointDeltaItem {
+	return planCheckpointDeltaItem{ID: strings.TrimSpace(checkpoint.ID), Title: strings.TrimSpace(checkpoint.Title), Status: strings.TrimSpace(checkpoint.Status)}
+}
+
+func checkpointDeltaLabel(item planCheckpointDeltaItem) string {
+	id := strings.TrimSpace(item.ID)
+	title := strings.TrimSpace(item.Title)
+	if id != "" && title != "" {
+		return fmt.Sprintf("%s (%s)", id, title)
+	}
+	if id != "" {
+		return id
+	}
+	if title != "" {
+		return title
+	}
+	return "checkpoint"
+}
+
+func findCheckpointDeltaIndex(checkpoints []pebblestore.SessionPlanCheckpoint, checkpointID string) int {
+	checkpointID = strings.TrimSpace(checkpointID)
+	if checkpointID == "" {
+		return -1
+	}
+	for i := range checkpoints {
+		if strings.TrimSpace(checkpoints[i].ID) == checkpointID {
+			return i
+		}
+	}
+	return -1
+}
+
+func firstPendingCheckpointDeltaIndex(checkpoints []pebblestore.SessionPlanCheckpoint) int {
+	for i := range checkpoints {
+		status := strings.ToLower(strings.TrimSpace(checkpoints[i].Status))
+		if status == "" || status == sessionruntime.PlanCheckpointStatusPending {
+			return i
+		}
+	}
+	return -1
 }
 
 func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string, call tool.Call) (taskLaunchManifest, error) {

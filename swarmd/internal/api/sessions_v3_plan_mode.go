@@ -71,6 +71,7 @@ type sessionsV3PlanModeCheckpointResetRequest struct {
 
 type sessionsV3PlanLifecycleFollowupRequest struct {
 	PlanID                   string   `json:"plan_id,omitempty"`
+	CheckpointID             string   `json:"checkpoint_id,omitempty"`
 	ChangeRequest            string   `json:"change_request,omitempty"`
 	UserRequest              string   `json:"user_request,omitempty"`
 	Request                  string   `json:"request,omitempty"`
@@ -78,6 +79,7 @@ type sessionsV3PlanLifecycleFollowupRequest struct {
 	Title                    string   `json:"title,omitempty"`
 	Tasks                    []string `json:"tasks,omitempty"`
 	AcceptanceCriteria       []string `json:"acceptance_criteria,omitempty"`
+	Notes                    string   `json:"notes,omitempty"`
 	SourceMessageID          string   `json:"source_message_id,omitempty"`
 	FollowupCheckpointPolicy string   `json:"followup_checkpoint_policy,omitempty"`
 	SuppressLifecycleMessage bool     `json:"suppress_lifecycle_message,omitempty"`
@@ -153,6 +155,10 @@ func (s *Server) handleSessionV3PrimaryPlanMode(w http.ResponseWriter, r *http.R
 	}
 	if tail == "runs/current/resume-checkpointed" {
 		s.handleSessionV3PrimaryPlanModeResumeCheckpointed(w, r, principal, sessionID)
+		return
+	}
+	if tail == "lifecycle/start-session-checkpoint" {
+		s.handleSessionV3PrimaryPlanModeStartSessionCheckpoint(w, r, principal, sessionID)
 		return
 	}
 	if tail == "lifecycle/request-followup-checkpoint" {
@@ -350,6 +356,38 @@ func (s *Server) handleSessionV3PrimaryPlanModeResumeCheckpointed(w http.Respons
 	s.handleSessionV3PrimaryPlanModeRunCurrent(w, r, principal, sessionID, "resume_checkpointed", s.planLifecycle.ResumeCheckpointed)
 }
 
+func (s *Server) handleSessionV3PrimaryPlanModeStartSessionCheckpoint(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if !s.prepareSessionsV3PlanModeLifecycle(w, r, principal, sessionID) {
+		return
+	}
+	var req sessionsV3PlanLifecycleFollowupRequest
+	if err := decodeSessionsV3PlanModeRequest(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	checkpointID := strings.TrimSpace(firstNonEmptyString(req.CheckpointID, "cp-1"))
+	if status, err := s.preflightSessionsV3PlanModeFreshRun(sessionID); err != nil {
+		writeError(w, status, err)
+		return
+	}
+	input := s.sessionsV3PlanModeRunInput(sessionID, "", checkpointID)
+	result, err := s.planLifecycle.StartSessionCheckpoint(sessionruntime.PlanLifecycleSessionCheckpointInput{SessionID: sessionID, ChangeRequest: req.ChangeRequest, UserRequest: firstNonEmptyString(req.UserRequest, req.Request), Title: firstNonEmptyString(req.CheckpointTitle, req.Title), CheckpointID: checkpointID, Tasks: req.Tasks, AcceptanceCriteria: req.AcceptanceCriteria, Notes: req.Notes, SourceMessageID: req.SourceMessageID, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var runStart *sessionsV3PlanModeRunStart
+	if result.Summary.NextCheckpointID != "" && result.Summary.NextCheckpointStatus == sessionruntime.PlanCheckpointStatusInProgress && strings.TrimSpace(result.AttemptID) != "" {
+		var status int
+		runStart, status, err = s.startSessionsV3PlanModeRun(principal, sessionID, "start_session_checkpoint", result, req.SuppressLifecycleMessage)
+		if err != nil {
+			writeError(w, status, err)
+			return
+		}
+	}
+	s.finishSessionsV3PlanModeLifecycle(w, principal, sessionID, "start_session_checkpoint", result, runStart)
+}
+
 func (s *Server) handleSessionV3PrimaryPlanModeRequestFollowupCheckpoint(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
 	if !s.prepareSessionsV3PlanModeLifecycle(w, r, principal, sessionID) {
 		return
@@ -360,7 +398,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeRequestFollowupCheckpoint(w http.
 		return
 	}
 	input := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, "")
-	result, err := s.planLifecycle.RequestFollowupCheckpoint(sessionruntime.PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: req.PlanID, ChangeRequest: req.ChangeRequest, UserRequest: firstNonEmptyString(req.UserRequest, req.Request), Title: firstNonEmptyString(req.CheckpointTitle, req.Title), Tasks: req.Tasks, AcceptanceCriteria: req.AcceptanceCriteria, SourceMessageID: req.SourceMessageID, GlobalDefaultPolicy: req.FollowupCheckpointPolicy, ApprovalConfirmed: true, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
+	result, err := s.planLifecycle.RequestFollowupCheckpoint(sessionruntime.PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: req.PlanID, ChangeRequest: req.ChangeRequest, UserRequest: firstNonEmptyString(req.UserRequest, req.Request), Title: firstNonEmptyString(req.CheckpointTitle, req.Title), Tasks: req.Tasks, AcceptanceCriteria: req.AcceptanceCriteria, Notes: req.Notes, SourceMessageID: req.SourceMessageID, GlobalDefaultPolicy: req.FollowupCheckpointPolicy, ApprovalConfirmed: true, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

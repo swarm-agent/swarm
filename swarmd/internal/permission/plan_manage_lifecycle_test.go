@@ -18,7 +18,7 @@ func TestPlanManageLifecycleRequirementIsTyped(t *testing.T) {
 		{name: "followup", args: `{"action":"request_followup_checkpoint","change_request":"add a review note"}`, want: "plan_followup_request"},
 		{name: "request changes alias", args: `{"action":"request_changes","change_request":"add a review note"}`, want: "plan_followup_request"},
 		{name: "revision", args: `{"action":"request_plan_revision","plan_id":"plan_1"}`, want: "plan_revision_request"},
-		{name: "amendment", args: `{"action":"amend_plan","plan_id":"plan_1","base_revision":2,"replace_from_checkpoint_id":"cp-2","document":{"id":"plan_1","title":"Plan","checkpoints":[{"id":"cp-2","status":"pending"}]}}`, want: "plan_revision_request"},
+		{name: "amendment", args: `{"action":"amend_plan","plan_id":"plan_1","base_revision":2,"replace_from_checkpoint_id":"cp-2","document":{"id":"plan_1","title":"Plan","checkpoints":[{"id":"cp-2","status":"pending"}]}}`, want: "plan_amendment_request"},
 		{name: "new plan", args: `{"action":"request_new_plan","title":"New direction"}`, want: "plan_new_request"},
 		{name: "legacy save existing", args: `{"action":"save","plan_id":"plan_1","document":{"info":{"goal":"update"}}}`, want: "plan_revision_request"},
 		{name: "bulk operations existing", args: `{"action":"update_info","plan_id":"plan_1","operations":[{"operation":"update_info","info":{"goal":"bulk"}}]}`, want: "plan_revision_request"},

@@ -379,7 +379,7 @@ func (s *Service) rejectProviderManagedCheckpointRunFollowup(config providerTool
 		return nil
 	}
 	args := decodeToolPayload(strings.TrimSpace(call.Arguments))
-	if args == nil || !isPlanManageFollowupRequestAction(mapString(args, "action")) {
+	if args == nil || !isPlanManageSessionCheckpointCreationAction(mapString(args, "action")) {
 		return nil
 	}
 	active, ok, err := s.sessions.GetActivePlan(strings.TrimSpace(config.sessionID))
@@ -398,12 +398,12 @@ func (s *Service) rejectProviderManagedCheckpointRunFollowup(config providerTool
 	if checkpointID == "" {
 		return nil
 	}
-	return fmt.Errorf("request_followup_checkpoint is not allowed from checkpoint run %q for active checkpoint %q; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
+	return fmt.Errorf("session checkpoint creation is not allowed from checkpoint run %q for active checkpoint %q; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
 }
 
-func isPlanManageFollowupRequestAction(action string) bool {
+func isPlanManageSessionCheckpointCreationAction(action string) bool {
 	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
+	case "start-session-checkpoint", "start_session_checkpoint", "session-checkpoint", "session_checkpoint", "auto-checkpoint", "auto_checkpoint", "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
 		return true
 	default:
 		return false

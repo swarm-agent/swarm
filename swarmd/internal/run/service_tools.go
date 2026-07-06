@@ -1608,6 +1608,8 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 		action = "set_active_checkpoint"
 	case "approve-and-start", "approve_and_start", "approve-start", "approve_start", "start-plan", "start_plan":
 		action = "approve_and_start"
+	case "start-session-checkpoint", "start_session_checkpoint", "session-checkpoint", "session_checkpoint", "auto-checkpoint", "auto_checkpoint":
+		action = "start_session_checkpoint"
 	case "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
 		action = "request_followup_checkpoint"
 	case "request-plan-revision", "request_plan_revision", "plan-revision", "plan_revision":
@@ -1628,7 +1630,7 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 	}
 
 	switch action {
-	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "request_followup_checkpoint", "request_plan_revision", "amend_plan", "request_new_plan":
+	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "start_session_checkpoint", "request_followup_checkpoint", "request_plan_revision", "amend_plan", "request_new_plan":
 		return s.executePlanLifecycleControlAction(sessionID, action, args, applySessionMutation)
 	case "list":
 		limit := mapInt(args, "limit")
@@ -1738,6 +1740,9 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 			"action":            "get",
 			"status":            "ok",
 			"plan":              plan,
+			"revision":          currentPlanRevision(plan),
+			"current_revision":  currentPlanRevision(plan),
+			"base_revision":     currentPlanRevision(plan),
 			"path_id":           "tool.plan-manage.v3",
 			"summary":           fmt.Sprintf("loaded plan %s", plan.ID),
 			"details_truncated": false,
@@ -1764,6 +1769,9 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 			"action":            "get-active",
 			"status":            "ok",
 			"plan":              plan,
+			"revision":          currentPlanRevision(plan),
+			"current_revision":  currentPlanRevision(plan),
+			"base_revision":     currentPlanRevision(plan),
 			"path_id":           "tool.plan-manage.v3",
 			"summary":           fmt.Sprintf("active plan is %s", plan.ID),
 			"details_truncated": false,
@@ -1972,6 +1980,9 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 		"action":            "get-active",
 		"status":            "ok",
 		"plan":              plan,
+		"revision":          currentPlanRevision(plan),
+		"current_revision":  currentPlanRevision(plan),
+		"base_revision":     currentPlanRevision(plan),
 		"path_id":           "tool.plan-manage.v3",
 		"summary":           fmt.Sprintf("active plan is %s", plan.ID),
 		"details_truncated": false,
@@ -2059,20 +2070,30 @@ func rawStringArg(payload map[string]any, key string) string {
 	return typed
 }
 
+func currentPlanRevision(plan pebblestore.SessionPlanSnapshot) int {
+	if plan.Version > 0 {
+		return plan.Version
+	}
+	return 1
+}
+
 func planManagePlanSummary(plan pebblestore.SessionPlanSnapshot, includePreview bool) map[string]any {
 	item := map[string]any{
-		"id":              plan.ID,
-		"title":           plan.Title,
-		"status":          plan.Status,
-		"approval_state":  plan.ApprovalState,
-		"active":          plan.Active,
-		"updated_at":      plan.UpdatedAt,
-		"version":         plan.Version,
-		"parent_revision": plan.ParentRevision,
-		"update_summary":  plan.UpdateSummary,
-		"update_scope":    plan.UpdateScope,
-		"update_kind":     plan.UpdateKind,
-		"checkpoint":      plan.Checkpoint,
+		"id":               plan.ID,
+		"title":            plan.Title,
+		"status":           plan.Status,
+		"approval_state":   plan.ApprovalState,
+		"active":           plan.Active,
+		"updated_at":       plan.UpdatedAt,
+		"version":          plan.Version,
+		"revision":         currentPlanRevision(plan),
+		"current_revision": currentPlanRevision(plan),
+		"base_revision":    currentPlanRevision(plan),
+		"parent_revision":  plan.ParentRevision,
+		"update_summary":   plan.UpdateSummary,
+		"update_scope":     plan.UpdateScope,
+		"update_kind":      plan.UpdateKind,
+		"checkpoint":       plan.Checkpoint,
 	}
 	if includePreview {
 		item["preview"] = truncateRunes(plan.Plan, 180)
@@ -2148,6 +2169,24 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		result, err = lifecycle.RestartCheckpointFromZero(input)
 	case "rewind_to_checkpoint":
 		result, err = lifecycle.RewindToCheckpoint(input)
+	case "start_session_checkpoint":
+		input := sessionruntime.PlanLifecycleSessionCheckpointInput{
+			SessionID:          sessionID,
+			ChangeRequest:      strings.TrimSpace(mapString(args, "change_request")),
+			UserRequest:        strings.TrimSpace(firstNonEmptyString(mapString(args, "user_request"), mapString(args, "request"), mapString(args, "prompt"), mapString(args, "text"))),
+			Title:              strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title"))),
+			CheckpointID:       strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_id"), mapString(args, "id"))),
+			Tasks:              mapStringSlice(args, "tasks"),
+			AcceptanceCriteria: mapStringSlice(args, "acceptance_criteria"),
+			Notes:              strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context"))),
+			SourceMessageID:    strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message"))),
+			RunID:              strings.TrimSpace(mapString(args, "run_id")),
+			RunSessionID:       strings.TrimSpace(firstNonEmptyString(mapString(args, "run_session_id"), mapString(args, "session_id"))),
+			ParentSessionID:    strings.TrimSpace(mapString(args, "parent_session_id")),
+			StartedAt:          int64(mapInt(args, "started_at")),
+			AttemptID:          strings.TrimSpace(mapString(args, "attempt_id")),
+		}
+		result, err = lifecycle.StartSessionCheckpoint(input)
 	case "request_followup_checkpoint":
 		input := sessionruntime.PlanLifecycleFollowupCheckpointInput{
 			SessionID:          sessionID,
@@ -2157,6 +2196,7 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 			Title:              strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title"))),
 			Tasks:              mapStringSlice(args, "tasks"),
 			AcceptanceCriteria: mapStringSlice(args, "acceptance_criteria"),
+			Notes:              strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context"))),
 			SourceMessageID:    strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message"))),
 			ApprovalConfirmed:  mapBool(args, "approval_confirmed"),
 			RunID:              strings.TrimSpace(mapString(args, "run_id")),

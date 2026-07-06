@@ -85,6 +85,195 @@ func TestPlanLifecycleAmendPlanRejectsStaleBaseRevision(t *testing.T) {
 	}
 }
 
+func TestPlanLifecycleAmendPlanAllowsWaitingReviewFutureReplacement(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	plan := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:  PlanExecutionPolicyModeAutomatic,
+		Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{
+		{
+			ID:           "cp-1",
+			Title:        "Review me",
+			Status:       PlanCheckpointStatusCompleted,
+			Report:       "keep report",
+			Result:       "keep result",
+			ChangedFiles: []string{"kept.go"},
+			Validation:   []string{"kept validation"},
+			AttemptID:    "cp-1:attempt-1",
+			RunID:        "run-cp-1",
+			SessionID:    sessionID,
+			StartedAt:    100,
+			CompletedAt:  200,
+			Review:       &pebblestore.SessionPlanCheckpointReview{Status: PlanCheckpointReviewStatusPending, Notes: "waiting for user"},
+			Attempts: []pebblestore.SessionPlanCheckpointAttempt{{
+				ID:              "cp-1:attempt-1",
+				CheckpointID:    "cp-1",
+				Status:          PlanCheckpointStatusCompleted,
+				Outcome:         PlanCheckpointStatusCompleted,
+				RunID:           "run-cp-1",
+				SessionID:       sessionID,
+				ParentSessionID: sessionID,
+				StartedAt:       100,
+				CompletedAt:     200,
+				Report:          "keep report",
+				Result:          "keep result",
+				ChangedFiles:    []string{"kept.go"},
+				Validation:      []string{"kept validation"},
+			}},
+		},
+		{ID: "cp-2", Title: "Future", Status: PlanCheckpointStatusPending},
+		{ID: "cp-3", Title: "Later", Status: PlanCheckpointStatusPending},
+	})
+	current := clonePlanLifecycleDocument(plan.Document)
+	current.ActiveCheckpointID = "cp-1"
+	current.ExecutionState = &pebblestore.SessionPlanExecutionState{
+		Status:           PlanExecutionStateWaitingReview,
+		LastCheckpointID: "cp-1",
+		LastAttemptID:    "cp-1:attempt-1",
+		LastOutcome:      PlanCheckpointStatusCompleted,
+		ParentSessionID:  sessionID,
+		CurrentSessionID: sessionID,
+		CurrentRunID:     "run-cp-1",
+		StartedAt:        100,
+		UpdatedAt:        200,
+	}
+	plan, _, err := svc.SavePlanWithMetadata(sessionID, plan.ID, plan.Title, plan.Plan, plan.Status, plan.ApprovalState, true, PlanSaveMetadata{UpdateSummary: "wait for review", UpdateKind: "complete_checkpoint", RevisionKind: PlanRevisionKindExecution, Checkpoint: true, Document: current})
+	if err != nil {
+		t.Fatalf("save waiting review plan: %v", err)
+	}
+	proposed := clonePlanLifecycleDocument(plan.Document)
+	proposed.Checkpoints = []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-2", Title: "Replacement future", Status: PlanCheckpointStatusPending, Report: "must reset"},
+		{ID: "cp-4", Title: "New future", Status: PlanCheckpointStatusPending},
+	}
+
+	result, err := NewPlanLifecycleService(svc).AmendPlan(PlanLifecycleAmendmentInput{
+		SessionID:               sessionID,
+		PlanID:                  plan.ID,
+		Document:                proposed,
+		BaseRevision:            plan.Version,
+		UpdateSummary:           "Replace future while waiting for review",
+		ReplaceFromCheckpointID: "cp-2",
+	})
+	if err != nil {
+		t.Fatalf("amend waiting review future: %v", err)
+	}
+	if got := checkpointIDs(result.Plan.Document.Checkpoints); strings.Join(got, ",") != "cp-1,cp-2,cp-4" {
+		t.Fatalf("checkpoint order = %v", got)
+	}
+	kept := result.Plan.Document.Checkpoints[0]
+	if kept.Report != "keep report" || kept.Result != "keep result" || kept.AttemptID != "cp-1:attempt-1" || kept.RunID != "run-cp-1" || kept.CompletedAt != 200 {
+		t.Fatalf("completed checkpoint runtime was not preserved: %#v", kept)
+	}
+	if kept.Review == nil || kept.Review.Status != PlanCheckpointReviewStatusPending || kept.Review.Notes != "waiting for user" {
+		t.Fatalf("completed checkpoint review was not preserved: %#v", kept.Review)
+	}
+	if len(kept.Attempts) != 1 || kept.Attempts[0].ID != "cp-1:attempt-1" || kept.Attempts[0].Report != "keep report" {
+		t.Fatalf("completed checkpoint attempts were not preserved: %#v", kept.Attempts)
+	}
+	if result.Plan.Document.ActiveCheckpointID != "cp-1" || result.Plan.Document.ExecutionState == nil || result.Plan.Document.ExecutionState.Status != PlanExecutionStateWaitingReview || result.Plan.Document.ExecutionState.LastCheckpointID != "cp-1" {
+		t.Fatalf("waiting review execution state was not preserved: active=%q state=%#v", result.Plan.Document.ActiveCheckpointID, result.Plan.Document.ExecutionState)
+	}
+	replaced := result.Plan.Document.Checkpoints[1]
+	if replaced.Title != "Replacement future" || replaced.Status != PlanCheckpointStatusPending || replaced.Report != "" {
+		t.Fatalf("future replacement not reset/preserved as pending: %#v", replaced)
+	}
+}
+
+func TestPlanLifecycleAmendPlanAllowsWaitingReviewOverrideStaleFutureReplacement(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	plan := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:  PlanExecutionPolicyModeAutomatic,
+		Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{
+		{
+			ID:           "cp-1",
+			Title:        "Review me",
+			Status:       PlanCheckpointStatusCompleted,
+			Report:       "keep report",
+			Result:       "keep result",
+			ChangedFiles: []string{"kept.go"},
+			Validation:   []string{"kept validation"},
+			AttemptID:    "cp-1:attempt-1",
+			RunID:        "run-cp-1",
+			SessionID:    sessionID,
+			CompletedAt:  200,
+			Review:       &pebblestore.SessionPlanCheckpointReview{Status: PlanCheckpointReviewStatusPending, Notes: "waiting for user"},
+			Attempts: []pebblestore.SessionPlanCheckpointAttempt{{
+				ID:              "cp-1:attempt-1",
+				CheckpointID:    "cp-1",
+				Status:          PlanCheckpointStatusCompleted,
+				Outcome:         PlanCheckpointStatusCompleted,
+				RunID:           "run-cp-1",
+				SessionID:       sessionID,
+				ParentSessionID: sessionID,
+				CompletedAt:     200,
+				Report:          "keep report",
+				Result:          "keep result",
+			}},
+		},
+		{ID: "cp-2", Title: "Future", Status: PlanCheckpointStatusPending},
+		{ID: "cp-3", Title: "Later", Status: PlanCheckpointStatusPending},
+	})
+	current := clonePlanLifecycleDocument(plan.Document)
+	current.ActiveCheckpointID = "cp-1"
+	current.ExecutionState = &pebblestore.SessionPlanExecutionState{
+		Status:           PlanExecutionStateWaitingReview,
+		LastCheckpointID: "cp-1",
+		LastAttemptID:    "cp-1:attempt-1",
+		LastOutcome:      PlanCheckpointStatusCompleted,
+		ParentSessionID:  sessionID,
+		CurrentSessionID: sessionID,
+		CurrentRunID:     "run-cp-1",
+		UpdatedAt:        200,
+	}
+	plan, _, err := svc.SavePlanWithMetadata(sessionID, plan.ID, plan.Title, plan.Plan, plan.Status, plan.ApprovalState, true, PlanSaveMetadata{UpdateSummary: "wait for review", UpdateKind: "complete_checkpoint", RevisionKind: PlanRevisionKindExecution, Checkpoint: true, Document: current})
+	if err != nil {
+		t.Fatalf("save waiting review plan: %v", err)
+	}
+	proposed := clonePlanLifecycleDocument(plan.Document)
+	proposed.Checkpoints = []pebblestore.SessionPlanCheckpoint{
+		{ID: "cp-2", Title: "Override replacement", Status: PlanCheckpointStatusPending, Result: "must reset"},
+		{ID: "cp-4", Title: "Override new future", Status: PlanCheckpointStatusPending},
+	}
+
+	result, err := NewPlanLifecycleService(svc).AmendPlan(PlanLifecycleAmendmentInput{
+		SessionID:               sessionID,
+		PlanID:                  plan.ID,
+		Document:                proposed,
+		BaseRevision:            plan.Version - 1,
+		OverrideStale:           true,
+		UpdateSummary:           "Override stale and replace future while waiting for review",
+		ReplaceFromCheckpointID: "cp-2",
+	})
+	if err != nil {
+		t.Fatalf("override stale waiting review amendment: %v", err)
+	}
+	if result.Plan.ParentRevision != plan.Version || result.Plan.Version != plan.Version+1 {
+		t.Fatalf("revision linkage = v%d parent %d, want v%d parent %d", result.Plan.Version, result.Plan.ParentRevision, plan.Version+1, plan.Version)
+	}
+	if got := checkpointIDs(result.Plan.Document.Checkpoints); strings.Join(got, ",") != "cp-1,cp-2,cp-4" {
+		t.Fatalf("checkpoint order = %v", got)
+	}
+	kept := result.Plan.Document.Checkpoints[0]
+	if kept.Report != "keep report" || kept.Result != "keep result" || kept.RunID != "run-cp-1" || kept.Review == nil || kept.Review.Status != PlanCheckpointReviewStatusPending {
+		t.Fatalf("waiting-review checkpoint state was not preserved: %#v", kept)
+	}
+	if result.Plan.Document.ExecutionState == nil || result.Plan.Document.ExecutionState.Status != PlanExecutionStateWaitingReview || result.Plan.Document.ExecutionState.LastCheckpointID != "cp-1" {
+		t.Fatalf("waiting-review execution state was not preserved: %#v", result.Plan.Document.ExecutionState)
+	}
+	replaced := result.Plan.Document.Checkpoints[1]
+	if replaced.Title != "Override replacement" || replaced.Status != PlanCheckpointStatusPending || replaced.Result != "" {
+		t.Fatalf("future replacement was not reset: %#v", replaced)
+	}
+}
+
 func TestPlanLifecycleAmendPlanPreservesCurrentInProgressCheckpoint(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()
@@ -319,6 +508,147 @@ func TestPlanLifecycleRequestFollowupCheckpointGlobalAutoStartPreparesFreshRun(t
 	}
 	if NormalizeMode(currentSession.Mode) != ModeAuto {
 		t.Fatalf("mode = %q, want auto", currentSession.Mode)
+	}
+}
+
+func TestPlanLifecycleStartSessionCheckpointCreatesApprovedStartedPlan(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	request := "fix my sidebar and make the active item stay visible"
+
+	result, err := NewPlanLifecycleService(svc).StartSessionCheckpoint(PlanLifecycleSessionCheckpointInput{
+		SessionID:          sessionID,
+		ChangeRequest:      request,
+		UserRequest:        request + " with original chat context",
+		Title:              "Fix sidebar visibility",
+		Tasks:              []string{"Inspect sidebar state", "Keep the active item visible"},
+		AcceptanceCriteria: []string{"Active item remains visible after navigation"},
+		Notes:              "Relevant files: web/src; validation: targeted UI check.",
+		RunID:              "run-session-checkpoint-1",
+		RunSessionID:       sessionID,
+		ParentSessionID:    sessionID,
+		StartedAt:          1234,
+	})
+	if err != nil {
+		t.Fatalf("start session checkpoint: %v", err)
+	}
+	if result.Plan.ID == "" || !result.Plan.Active || result.Plan.Status != "approved" || result.Plan.ApprovalState != "approved" {
+		t.Fatalf("saved plan metadata = %#v", result.Plan)
+	}
+	if result.CheckpointID != "cp-1" || result.AttemptID != "cp-1:attempt-1" {
+		t.Fatalf("checkpoint/attempt = %q/%q", result.CheckpointID, result.AttemptID)
+	}
+	doc := result.Plan.Document
+	if doc == nil || doc.Status != "approved" || doc.ExecutionPolicy.Mode != PlanExecutionPolicyModeAutomatic || doc.ExecutionPolicy.Shape != PlanExecutionShapeCheckpointed {
+		t.Fatalf("document/policy = %#v", doc)
+	}
+	if doc.ActiveCheckpointID != "cp-1" || doc.ExecutionState == nil || doc.ExecutionState.Status != PlanExecutionStateInProgress || doc.ExecutionState.CurrentRunID != "run-session-checkpoint-1" {
+		t.Fatalf("execution state = active %q state %#v", doc.ActiveCheckpointID, doc.ExecutionState)
+	}
+	if len(doc.Checkpoints) != 1 {
+		t.Fatalf("checkpoint count = %d", len(doc.Checkpoints))
+	}
+	checkpoint := doc.Checkpoints[0]
+	if checkpoint.ID != "cp-1" || checkpoint.Status != PlanCheckpointStatusInProgress || checkpoint.Objective != request || checkpoint.RunID != "run-session-checkpoint-1" {
+		t.Fatalf("checkpoint = %#v", checkpoint)
+	}
+	if len(checkpoint.Tasks) != 2 || len(checkpoint.AcceptanceCriteria) != 1 {
+		t.Fatalf("handoff fields not preserved: %#v", checkpoint)
+	}
+	for _, want := range []string{"Verbatim user request / change_request:", request, "Original user request/context:", "Handoff notes:", "Relevant files:"} {
+		if !strings.Contains(checkpoint.Notes, want) {
+			t.Fatalf("checkpoint notes missing %q: %s", want, checkpoint.Notes)
+		}
+	}
+}
+
+func TestPlanLifecycleStartSessionCheckpointRejectsActivePlan(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed}, []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "One", Status: PlanCheckpointStatusPending}})
+
+	_, err := NewPlanLifecycleService(svc).StartSessionCheckpoint(PlanLifecycleSessionCheckpointInput{SessionID: sessionID, ChangeRequest: "do another task"})
+	if err == nil || !strings.Contains(err.Error(), "requires no active plan") {
+		t.Fatalf("error = %v, want active-plan refusal", err)
+	}
+}
+
+func TestPlanLifecycleStartSessionCheckpointQueuesFreshRunWithoutRunID(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+
+	result, err := NewPlanLifecycleService(svc).StartSessionCheckpoint(PlanLifecycleSessionCheckpointInput{SessionID: sessionID, ChangeRequest: "fix the sidebar", Title: "Fix sidebar"})
+	if err != nil {
+		t.Fatalf("start session checkpoint without run id: %v", err)
+	}
+	if result.CheckpointID != "cp-1" || result.AttemptID != "" {
+		t.Fatalf("checkpoint/attempt = %q/%q", result.CheckpointID, result.AttemptID)
+	}
+	if result.Summary.NextCheckpointID != "cp-1" || result.Summary.NextCheckpointStatus != PlanCheckpointStatusPending || !result.Summary.AutoAdvanceAllowed {
+		t.Fatalf("summary = %#v", result.Summary)
+	}
+	checkpoint := result.Plan.Document.Checkpoints[0]
+	if checkpoint.Status != PlanCheckpointStatusPending || checkpoint.RunID != "" || checkpoint.AttemptID != "" {
+		t.Fatalf("queued checkpoint = %#v", checkpoint)
+	}
+}
+
+func TestPlanLifecycleRequestFollowupCheckpointBuildsSelfContainedHandoff(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	plan := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:  PlanExecutionPolicyModeAutomatic,
+		Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "One", Status: PlanCheckpointStatusCompleted}})
+	request := "ok then that's the next step. please order it. the idea is this. i am noticing the ai is adding in checkpoints that are losing the original request"
+
+	result, err := NewPlanLifecycleService(svc).RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{
+		SessionID:          sessionID,
+		PlanID:             plan.ID,
+		ChangeRequest:      request,
+		UserRequest:        request + " plus parent-session context",
+		Title:              "Design session-checkpoint handoff payload requirements",
+		Tasks:              []string{"Define full request preservation", "Specify handoff fields"},
+		AcceptanceCriteria: []string{"The checkpoint preserves material parts of the original request", "The checkpoint reads as a self-contained handoff"},
+		Notes:              "Relevant files: swarmd/internal/run/service_prompt.go; validation: targeted tests only.",
+	})
+	if err != nil {
+		t.Fatalf("request follow-up handoff: %v", err)
+	}
+	if result.Plan.Document == nil || len(result.Plan.Document.Checkpoints) != 2 {
+		t.Fatalf("document checkpoints = %#v", result.Plan.Document)
+	}
+	checkpoint := result.Plan.Document.Checkpoints[1]
+	if checkpoint.Objective != request {
+		t.Fatalf("objective = %q, want verbatim request", checkpoint.Objective)
+	}
+	if checkpoint.Title != "Design session-checkpoint handoff payload requirements" || len(checkpoint.Tasks) != 2 || len(checkpoint.AcceptanceCriteria) != 2 {
+		t.Fatalf("handoff fields not preserved: %#v", checkpoint)
+	}
+	for _, want := range []string{"Verbatim user request / change_request:", request, "Original user request/context:", "Handoff notes:", "Relevant files:"} {
+		if !strings.Contains(checkpoint.Notes, want) {
+			t.Fatalf("checkpoint notes missing %q: %s", want, checkpoint.Notes)
+		}
 	}
 }
 

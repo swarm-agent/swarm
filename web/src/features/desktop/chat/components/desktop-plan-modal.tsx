@@ -160,7 +160,7 @@ export function structuredPlanCopyText(document: DesktopSessionPlanDocument): st
   appendFieldList(lines, 'Execution policy', [
     ['Mode', document.executionPolicy?.mode],
     ['Shape', document.executionPolicy?.shape],
-    ['Follow-up checkpoint policy', document.executionPolicy?.followupCheckpointPolicy],
+    ['Session checkpoint policy', document.executionPolicy?.followupCheckpointPolicy],
   ])
   appendFieldList(lines, 'Execution state', [
     ['Status', document.executionState?.status],

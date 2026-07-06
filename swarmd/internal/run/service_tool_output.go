@@ -3,6 +3,7 @@ package run
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"swarm/packages/swarmd/internal/gitstatus"
@@ -998,11 +999,15 @@ func mapBool(payload map[string]any, key string) bool {
 	if !ok {
 		return false
 	}
-	typed, ok := value.(bool)
-	if !ok {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(typed))
+		return err == nil && parsed
+	default:
 		return false
 	}
-	return typed
 }
 
 func mapInt(payload map[string]any, key string) int {
@@ -1013,15 +1018,52 @@ func mapInt(payload map[string]any, key string) int {
 	switch typed := value.(type) {
 	case int:
 		return typed
+	case int8:
+		return int(typed)
+	case int16:
+		return int(typed)
+	case int32:
+		return int(typed)
 	case int64:
+		return int(typed)
+	case uint:
+		return int(typed)
+	case uint8:
+		return int(typed)
+	case uint16:
+		return int(typed)
+	case uint32:
+		return int(typed)
+	case uint64:
 		return int(typed)
 	case float64:
 		return int(typed)
 	case float32:
 		return int(typed)
-	default:
-		return 0
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err == nil {
+			return int(parsed)
+		}
+		floatValue, err := typed.Float64()
+		if err == nil {
+			return int(floatValue)
+		}
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return 0
+		}
+		parsed, err := strconv.Atoi(trimmed)
+		if err == nil {
+			return parsed
+		}
+		floatValue, err := strconv.ParseFloat(trimmed, 64)
+		if err == nil {
+			return int(floatValue)
+		}
 	}
+	return 0
 }
 
 func cloneGenericMap(input map[string]any) map[string]any {

@@ -46,13 +46,37 @@ export interface PlanUpdatePayload {
   checkpointTitle: string
   tasks: string[]
   acceptanceCriteria: string[]
+  notes: string
   followupCheckpointPolicy: string
   policyEffective: string
   approvalRequired: boolean
   runQueued: boolean
   document: unknown
   priorDocument: unknown
+  revision: number
+  currentRevision: number
+  baseRevision: number
+  planAmendmentDelta: PlanAmendmentDelta | null
   approvedArguments: Record<string, unknown>
+}
+
+export interface PlanAmendmentDeltaItem {
+  id: string
+  title: string
+  status: string
+}
+
+export interface PlanAmendmentDelta {
+  reason: string
+  baseRevision: number
+  currentRevision: number
+  overrideStale: boolean
+  replaceFromCheckpointId: string
+  preservedCheckpoints: PlanAmendmentDeltaItem[]
+  replacedCheckpoints: PlanAmendmentDeltaItem[]
+  replacementCheckpoints: PlanAmendmentDeltaItem[]
+  nextCheckpoint: PlanAmendmentDeltaItem | null
+  bullets: string[]
 }
 
 export type PlanUpdateDiffRowKind = 'added' | 'removed' | 'context' | 'gap'
@@ -228,7 +252,7 @@ export interface AgentChangePayload {
   changes: AgentChangeField[]
 }
 
-export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-revision-request' | 'plan-new-request' | 'manage-todos' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image'
+export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-revision-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image'
 
 function decodePermissionArguments(raw: string): Record<string, unknown> | null {
   const trimmed = raw.trim()
@@ -466,7 +490,7 @@ export function permissionRequiresApproval(
     case 'skill_use':
       return false
     case 'plan_manage':
-      return ['plan_update', 'plan_followup_request', 'plan_revision_request', 'plan_new_request'].includes(
+      return ['plan_update', 'plan_followup_request', 'plan_revision_request', 'plan_amendment_request', 'plan_new_request'].includes(
         safeString(permission.requirement).toLowerCase(),
       )
     case 'task':
@@ -508,11 +532,13 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
           return 'plan-followup-request'
         case 'plan_revision_request':
           return 'plan-revision-request'
+        case 'plan_amendment_request':
+          return 'plan-amendment-request'
         case 'plan_new_request':
           return 'plan-new-request'
         case 'plan_update':
           // Legacy generic plan updates are non-lifecycle/draft-only; active plan lifecycle
-          // changes must arrive as plan_followup_request, plan_revision_request, or plan_new_request.
+          // changes must arrive as plan_followup_request, plan_revision_request, plan_amendment_request, or plan_new_request.
           return 'plan-update'
         default:
           return 'generic'
@@ -604,13 +630,58 @@ export function parsePlanUpdatePermission(permission: DesktopPermissionRecord): 
     checkpointTitle: mapStringArg(payload, 'checkpoint_title'),
     tasks: mapStringArrayArg(payload, 'tasks'),
     acceptanceCriteria: mapStringArrayArg(payload, 'acceptance_criteria'),
+    notes: mapStringArg(payload, 'notes') || mapStringArg(payload, 'handoff_notes') || mapStringArg(payload, 'context'),
     followupCheckpointPolicy: mapStringArg(payload, 'followup_checkpoint_policy'),
     policyEffective: mapStringArg(payload, 'policy_effective'),
     approvalRequired: mapBoolArg(payload, 'approval_required'),
     runQueued: mapBoolArg(payload, 'run_queued'),
     document: payload.document ?? null,
     priorDocument: payload.prior_document ?? null,
+    revision: mapNumberArg(payload, 'revision'),
+    currentRevision: mapNumberArg(payload, 'current_revision'),
+    baseRevision: mapNumberArg(payload, 'base_revision'),
+    planAmendmentDelta: parsePlanAmendmentDelta(payload.plan_amendment_delta),
     approvedArguments: mapObjectArg(payload, 'approved_arguments'),
+  }
+}
+
+function parsePlanAmendmentDelta(value: unknown): PlanAmendmentDelta | null {
+  const record = asRecord(value)
+  if (!record) {
+    return null
+  }
+  return {
+    reason: mapStringArg(record, 'reason'),
+    baseRevision: mapNumberArg(record, 'base_revision'),
+    currentRevision: mapNumberArg(record, 'current_revision'),
+    overrideStale: mapBoolArg(record, 'override_stale'),
+    replaceFromCheckpointId: mapStringArg(record, 'replace_from_checkpoint_id'),
+    preservedCheckpoints: parsePlanAmendmentDeltaItems(record.preserved_checkpoints),
+    replacedCheckpoints: parsePlanAmendmentDeltaItems(record.replaced_checkpoints),
+    replacementCheckpoints: parsePlanAmendmentDeltaItems(record.replacement_checkpoints),
+    nextCheckpoint: parsePlanAmendmentDeltaItem(record.next_checkpoint),
+    bullets: mapStringArrayArg(record, 'bullets'),
+  }
+}
+
+function parsePlanAmendmentDeltaItems(value: unknown): PlanAmendmentDeltaItem[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value
+    .map((entry) => parsePlanAmendmentDeltaItem(entry))
+    .filter((entry): entry is PlanAmendmentDeltaItem => entry !== null)
+}
+
+function parsePlanAmendmentDeltaItem(value: unknown): PlanAmendmentDeltaItem | null {
+  const record = asRecord(value)
+  if (!record) {
+    return null
+  }
+  return {
+    id: mapStringArg(record, 'id'),
+    title: mapStringArg(record, 'title'),
+    status: mapStringArg(record, 'status'),
   }
 }
 

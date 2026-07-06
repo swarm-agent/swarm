@@ -445,13 +445,13 @@ func (s *Service) authorizeDynamicToolAction(input AuthorizationInput, sessionID
 			return AuthorizationResult{}, true, err
 		}
 		if !approvalRequired {
-			return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "resolved follow-up checkpoint policy allows auto-add and start", Source: "dynamic_action_policy"}, true, nil
+			return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "resolved session checkpoint policy allows auto-add and start", Source: "dynamic_action_policy"}, true, nil
 		}
-		reason := "resolved follow-up checkpoint policy requires approval"
+		reason := "resolved session checkpoint policy requires approval"
 		if policyEffective != "" {
-			reason = fmt.Sprintf("resolved follow-up checkpoint policy %q requires approval", policyEffective)
+			reason = fmt.Sprintf("resolved session checkpoint policy %q requires approval", policyEffective)
 		}
-		result, err := s.createPendingAuthorization(input, sessionID, requirement, reason, "dynamic_action_policy", "ask plan follow-up request")
+		result, err := s.createPendingAuthorization(input, sessionID, requirement, reason, "dynamic_action_policy", "ask plan session checkpoint request")
 		return result, true, err
 	case "request_plan_revision", "amend_plan", "request_new_plan":
 		result, err := s.createPendingAuthorization(input, sessionID, requirement, "typed plan lifecycle request requires approval", "dynamic_action_policy", "ask plan lifecycle request")
@@ -1448,7 +1448,7 @@ func PlanManageLifecycleRequirement(toolArguments string) string {
 	case "request_plan_revision":
 		return "plan_revision_request"
 	case "amend_plan":
-		return "plan_revision_request"
+		return "plan_amendment_request"
 	case "request_new_plan":
 		return "plan_new_request"
 	case "save":
@@ -1497,6 +1497,8 @@ func normalizePlanManageAction(action string, op string, payload map[string]any)
 		action = strings.ToLower(strings.TrimSpace(op))
 	}
 	switch action {
+	case "start-session-checkpoint", "start_session_checkpoint", "session-checkpoint", "session_checkpoint", "auto-checkpoint", "auto_checkpoint":
+		return "start_session_checkpoint"
 	case "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
 		return "request_followup_checkpoint"
 	case "request-plan-revision", "request_plan_revision", "plan-revision", "plan_revision":

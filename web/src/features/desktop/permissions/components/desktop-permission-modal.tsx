@@ -29,6 +29,7 @@ import {
   parseManageImagePermission,
   parsePlanUpdatePermission,
   type PlanUpdatePayload,
+  type PlanAmendmentDeltaItem,
   parseTaskLaunchPermission,
   type TaskLaunchPayload,
   type TaskLaunchResolvedTools,
@@ -1254,6 +1255,7 @@ function planLifecycleApprovedArguments(payload: PlanUpdatePayload, fallbackActi
   if (payload.checkpointTitle) approved.checkpoint_title = payload.checkpointTitle
   if (payload.tasks.length > 0) approved.tasks = payload.tasks
   if (payload.acceptanceCriteria.length > 0) approved.acceptance_criteria = payload.acceptanceCriteria
+  if (payload.notes) approved.notes = payload.notes
   if (payload.followupCheckpointPolicy) approved.followup_checkpoint_policy = payload.followupCheckpointPolicy
   if (payload.action === 'request_followup_checkpoint' || fallbackAction === 'request_followup_checkpoint') approved.approval_confirmed = true
   return approved
@@ -1262,20 +1264,20 @@ function planLifecycleApprovedArguments(payload: PlanUpdatePayload, fallbackActi
 function followupPolicyLabel(policy: string): string {
   switch (policy.trim().toLowerCase()) {
     case 'auto_start':
-      return 'Auto-add & start'
+      return 'Auto-add & start session checkpoint'
     case 'require_approval':
-      return 'Ask first'
+      return 'Ask before adding session checkpoint'
     default:
-      return policy.trim() || 'Ask first'
+      return policy.trim() || 'Ask before adding session checkpoint'
   }
 }
 
 function followupApproveLabel(policy: string): string {
   switch (policy.trim().toLowerCase()) {
     case 'auto_start':
-      return 'Add & start checkpoint'
+      return 'Add & start session checkpoint'
     default:
-      return 'Approve follow-up checkpoint'
+      return 'Approve session checkpoint'
   }
 }
 
@@ -1317,7 +1319,7 @@ function PlanFollowupRequestModal({
 
   const payload = parsePlanUpdatePermission(permission)
   const effectivePolicy = payload.policyEffective || 'require_approval'
-  const checkpointTitle = payload.checkpointTitle || payload.title || `Follow-up: ${promptWordPreview(payload.changeRequest, 10) || 'New checkpoint'}`
+  const checkpointTitle = payload.checkpointTitle || payload.title || `Session checkpoint: ${promptWordPreview(payload.changeRequest, 10) || 'New checkpoint'}`
   const tasks = payload.tasks.length > 0 ? payload.tasks : payload.changeRequest ? [payload.changeRequest] : []
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
@@ -1335,8 +1337,8 @@ function PlanFollowupRequestModal({
   return (
     <ModalShell
       open={open}
-      title={payload.title || 'Review Follow-up Checkpoint'}
-      subtitle={payload.planId ? `Plan ${payload.planId}` : 'Append one new checkpoint to the approved plan'}
+      title={payload.title || 'Review Session Checkpoint'}
+      subtitle={payload.planId ? `Plan ${payload.planId}` : 'Add one ordered checkpoint to the active session'}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
       widthClassName="w-full sm:w-[min(980px,calc(100vw-48px))]"
@@ -1378,12 +1380,116 @@ function PlanFollowupRequestModal({
               </ul>
             </div>
           ) : null}
+          {payload.notes ? (
+            <div className="mt-3">
+              <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Handoff context</div>
+              <p className="mt-2 whitespace-pre-wrap break-words rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm leading-6 text-[var(--app-text-muted)]">{payload.notes}</p>
+            </div>
+          ) : null}
         </section>
         <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm leading-6">
-          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Effective follow-up policy</div>
+          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Effective session checkpoint policy</div>
           <div className="mt-2 font-medium text-[var(--app-text)]">{followupPolicyLabel(effectivePolicy)}</div>
-          <p className="mt-1 text-[var(--app-text-muted)]">Follow-up requests are append-only: this approval adds one checkpoint and does not rewrite completed checkpoints or change execution shape.</p>
+          <p className="mt-1 text-[var(--app-text-muted)]">Session checkpoint requests add one ordered checkpoint to the active session chain. They preserve lifecycle states for completed, review, blocked, and failed checkpoints and do not imply a single related thread of work.</p>
         </section>
+      </div>
+    </ModalShell>
+  )
+}
+
+function checkpointDeltaDisplay(item: PlanAmendmentDeltaItem): string {
+  const id = item.id.trim()
+  const title = item.title.trim()
+  if (id && title) return `${id} — ${title}`
+  return id || title || 'checkpoint'
+}
+
+function PlanAmendmentDeltaPreview({ payload }: { payload: PlanUpdatePayload }) {
+  const delta = payload.planAmendmentDelta
+  const bullets = delta?.bullets ?? []
+  const preserved = delta?.preservedCheckpoints ?? []
+  const replaced = delta?.replacedCheckpoints ?? []
+  const replacements = delta?.replacementCheckpoints ?? []
+  return (
+    <section className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4 text-sm leading-6 text-[var(--app-text)]">
+      <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Amendment delta</div>
+      {bullets.length > 0 ? (
+        <ul className="mt-3 list-disc space-y-1 pl-5">
+          {bullets.map((bullet) => <li key={bullet}>{bullet}</li>)}
+        </ul>
+      ) : (
+        <p className="mt-2 text-[var(--app-text-muted)]">Review the amendment control fields and structured document before approving.</p>
+      )}
+      <div className="mt-3 grid gap-3 md:grid-cols-3">
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Preserved</div>
+          {preserved.length > 0 ? preserved.map((item) => <div key={`${item.id}:${item.title}`} className="mt-2 text-sm">{checkpointDeltaDisplay(item)} <span className="text-[var(--app-text-muted)]">{item.status}</span></div>) : <div className="mt-2 text-sm text-[var(--app-text-muted)]">No earlier checkpoints listed.</div>}
+        </div>
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Replaced from {delta?.replaceFromCheckpointId || 'future checkpoint'}</div>
+          {replaced.length > 0 ? replaced.map((item) => <div key={`${item.id}:${item.title}`} className="mt-2 text-sm">{checkpointDeltaDisplay(item)} <span className="text-[var(--app-text-muted)]">{item.status}</span></div>) : <div className="mt-2 text-sm text-[var(--app-text-muted)]">Replacement start is recorded in the approved arguments.</div>}
+        </div>
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">New future work</div>
+          {replacements.length > 0 ? replacements.map((item) => <div key={`${item.id}:${item.title}`} className="mt-2 text-sm">{checkpointDeltaDisplay(item)} <span className="text-[var(--app-text-muted)]">{item.status}</span></div>) : <div className="mt-2 text-sm text-[var(--app-text-muted)]">Open the full document preview for replacement details.</div>}
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2 text-xs text-[var(--app-text-muted)]">
+        {delta?.baseRevision || payload.baseRevision ? <span>base revision {delta?.baseRevision || payload.baseRevision}</span> : null}
+        {delta?.currentRevision || payload.currentRevision ? <span>current revision {delta?.currentRevision || payload.currentRevision}</span> : null}
+        {delta?.overrideStale ? <span>override stale enabled</span> : null}
+      </div>
+    </section>
+  )
+}
+
+function PlanAmendmentRequestModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) return null
+  const payload = parsePlanUpdatePermission(permission)
+  const resolve = async (action: 'approve' | 'deny') => {
+    setLoading(true)
+    try {
+      await onResolve(action, note.trim(), action === 'approve' ? planLifecycleApprovedArguments(payload, 'amend_plan') : undefined)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title || 'Review Plan Amendment'}
+      subtitle={payload.planId ? `Plan ${payload.planId} · future-checkpoint amendment` : 'Future-checkpoint amendment approval required'}
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-full sm:w-[min(1180px,calc(100vw-48px))]"
+      bodyClassName="overflow-y-auto"
+      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Approve amendment" note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
+    >
+      <div className="grid gap-4">
+        <PlanAmendmentDeltaPreview payload={payload} />
+        {planLifecycleDocumentPreview(payload, 'No proposed amendment document or plan text was provided.')}
       </div>
     </ModalShell>
   )
@@ -3165,6 +3271,9 @@ export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
   }
   if (kind === 'plan-revision-request') {
     return <PlanRevisionRequestModal {...props} />
+  }
+  if (kind === 'plan-amendment-request') {
+    return <PlanAmendmentRequestModal {...props} />
   }
   if (kind === 'plan-new-request') {
     return <NewPlanRequestModal {...props} />

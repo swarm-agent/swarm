@@ -13,6 +13,77 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
+func TestExecutePlanManageStartSessionCheckpointCreatesRunRequest(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	if _, _, err := sessionSvc.SetMode(sessionID, sessionruntime.ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"start_session_checkpoint","change_request":"fix my sidebar and make active item visible","checkpoint_title":"Fix sidebar visibility","tasks":["Inspect sidebar","Keep active item visible"],"acceptance_criteria":["Active item stays visible"],"notes":"Relevant files: web/src","run_id":"run-session-checkpoint-1","run_session_id":"child-session","parent_session_id":"parent-session","started_at":1234}`, "")
+	if err != nil {
+		t.Fatalf("start session checkpoint: %v output=%s", err, raw)
+	}
+	var payload struct {
+		Action       string `json:"action"`
+		NextAction   string `json:"next_action"`
+		CheckpointID string `json:"checkpoint_id"`
+		RunRequest   struct {
+			Context struct {
+				PlanID       string `json:"plan_id"`
+				CheckpointID string `json:"checkpoint_id"`
+				AttemptID    string `json:"attempt_id"`
+			} `json:"plan_checkpoint_context"`
+		} `json:"run_request"`
+		Plan struct {
+			ID       string                           `json:"id"`
+			Active   bool                             `json:"active"`
+			Status   string                           `json:"status"`
+			Document *pebblestore.SessionPlanDocument `json:"document"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Action != "start_session_checkpoint" || payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "cp-1" {
+		t.Fatalf("action/next/checkpoint = %q/%q/%q", payload.Action, payload.NextAction, payload.CheckpointID)
+	}
+	if payload.Plan.ID == "" || !payload.Plan.Active || payload.Plan.Status != "approved" || payload.Plan.Document == nil {
+		t.Fatalf("plan = %#v", payload.Plan)
+	}
+	if payload.RunRequest.Context.PlanID != payload.Plan.ID || payload.RunRequest.Context.CheckpointID != "cp-1" || payload.RunRequest.Context.AttemptID != "cp-1:attempt-1" {
+		t.Fatalf("run request = %#v", payload.RunRequest.Context)
+	}
+	checkpoint := payload.Plan.Document.Checkpoints[0]
+	if checkpoint.Status != sessionruntime.PlanCheckpointStatusInProgress || checkpoint.Objective != "fix my sidebar and make active item visible" || checkpoint.RunID != "run-session-checkpoint-1" {
+		t.Fatalf("checkpoint = %#v", checkpoint)
+	}
+	if !strings.Contains(checkpoint.Notes, "Relevant files: web/src") {
+		t.Fatalf("checkpoint notes = %q", checkpoint.Notes)
+	}
+}
+
+func TestExecutePlanManageStartSessionCheckpointRejectsActivePlan(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	if _, _, err := sessionSvc.SetMode(sessionID, sessionruntime.ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-existing", "Existing", "# Existing", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: sessionruntime.PlanCheckpointStatusPending}}}})
+	if err != nil {
+		t.Fatalf("save active plan: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"start_session_checkpoint","change_request":"fix another thing"}`, "")
+	if err == nil || !strings.Contains(err.Error(), "requires no active plan") {
+		t.Fatalf("error = %v raw=%s, want active-plan refusal", err, raw)
+	}
+}
+
 func TestExecutePlanManageCheckpointOutcomeUpdatesExecutionMetadata(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
@@ -870,7 +941,7 @@ func TestProviderManagedPlanManageRejectsFollowupFromCheckpointRun(t *testing.T)
 	if result.RestartTurn {
 		t.Fatalf("rejected follow-up should not request restart, result = %#v", result)
 	}
-	if !strings.Contains(result.Error, "request_followup_checkpoint is not allowed from checkpoint run") {
+	if !strings.Contains(result.Error, "session checkpoint creation is not allowed from checkpoint run") {
 		t.Fatalf("result error = %q", result.Error)
 	}
 	for _, mutation := range appliedMutations {

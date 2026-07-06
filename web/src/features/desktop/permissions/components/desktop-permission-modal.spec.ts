@@ -147,13 +147,17 @@ test('exit plan execution choices map to approved arguments', () => {
 test('DesktopPermissionModal routes typed plan lifecycle approvals away from generic plan update modal', () => {
   const followup = renderPermission(planLifecyclePermission('plan_followup_request', {
     action: 'request_followup_checkpoint',
-    title: 'Follow-up: audit',
+    title: 'Session checkpoint: audit',
     change_request: 'Add an audit note before final review.',
-    checkpoint_title: 'Follow-up: audit',
+    checkpoint_title: 'Session checkpoint: audit',
     tasks: ['Add an audit note before final review.'],
+    acceptance_criteria: ['The fresh checkpoint has enough context to run independently.'],
+    notes: 'Relevant files and validation expectations for the fresh run.',
   }))
-  assert.match(followup, /Follow-up: audit/)
-  assert.match(followup, /append-only/)
+  assert.match(followup, /Session checkpoint: audit/)
+  assert.match(followup, /ordered checkpoint to the active session chain/)
+  assert.match(followup, /Handoff context/)
+  assert.match(followup, /Relevant files and validation expectations/)
   assert.doesNotMatch(followup, /Plan update overview/)
 
   const revision = renderPermission(planLifecyclePermission('plan_revision_request', {
@@ -164,6 +168,33 @@ test('DesktopPermissionModal routes typed plan lifecycle approvals away from gen
   assert.match(revision, /Review revised plan/)
   assert.match(revision, /Approve revision/)
   assert.doesNotMatch(revision, /Plan update overview/)
+
+  const amendment = renderPermission(planLifecyclePermission('plan_amendment_request', {
+    action: 'amend_plan',
+    title: 'Review amendment',
+    plan_id: 'plan-1',
+    current_revision: 3,
+    base_revision: 3,
+    plan_amendment_delta: {
+      reason: 'Replace future work',
+      base_revision: 3,
+      current_revision: 3,
+      replace_from_checkpoint_id: 'cp-2',
+      preserved_checkpoints: [{ id: 'cp-1', title: 'Completed setup', status: 'completed' }],
+      replaced_checkpoints: [{ id: 'cp-2', title: 'Old future', status: 'pending' }],
+      replacement_checkpoints: [{ id: 'cp-2', title: 'Deploy authority', status: 'pending' }],
+      next_checkpoint: { id: 'cp-2', title: 'Deploy authority', status: 'pending' },
+      bullets: ['cp-1 remains completed and preserved.', 'Replacing pending future work from cp-2 (Old future).', 'Next checkpoint becomes cp-2 (Deploy authority).', 'Reason: Replace future work'],
+    },
+    document: { id: 'plan-1', title: 'Review amendment', checkpoints: [{ id: 'cp-2', title: 'Deploy authority', status: 'pending' }] },
+    approved_arguments: { action: 'amend_plan', plan_id: 'plan-1', base_revision: 3, override_stale: true, replace_from_checkpoint_id: 'cp-2' },
+  }))
+  assert.match(amendment, /Amendment delta/)
+  assert.match(amendment, /Completed setup/)
+  assert.match(amendment, /Deploy authority/)
+  assert.match(amendment, /Reason: Replace future work/)
+  assert.match(amendment, /Approve amendment/)
+  assert.doesNotMatch(amendment, /Plan update overview/)
 
   const newPlan = renderPermission(planLifecyclePermission('plan_new_request', {
     action: 'request_new_plan',
