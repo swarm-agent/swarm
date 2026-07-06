@@ -649,12 +649,18 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 				return V3SessionMutationResult{}, err
 			}
 		}
-		var extraMessages []MessageSnapshot
-		if messageProvided {
-			extraMessages = []MessageSnapshot{message}
-		}
-		if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, extraMessages); err != nil {
-			return V3SessionMutationResult{}, err
+		if messageProvided && !sessionProvided && !archivedReactivation {
+			if err := s.appendV3SessionSearchMessageInBatch(batch, s.store.db, session, false, message); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		} else {
+			var extraMessages []MessageSnapshot
+			if messageProvided {
+				extraMessages = []MessageSnapshot{message}
+			}
+			if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, extraMessages); err != nil {
+				return V3SessionMutationResult{}, err
+			}
 		}
 	}
 	if messageProvided {

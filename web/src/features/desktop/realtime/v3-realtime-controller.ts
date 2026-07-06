@@ -460,7 +460,7 @@ export function reduceDesktopV3CacheActions(
   state: DesktopV3CacheState,
   actions: DesktopV3CacheAction[],
 ): DesktopV3CacheState {
-  let nextState = structuredClone(state)
+  let nextState: DesktopV3CacheState = { ...state }
   for (const action of actions) {
     nextState = desktopV3CacheReducer(nextState, action)
   }

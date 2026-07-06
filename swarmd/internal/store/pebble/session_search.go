@@ -442,6 +442,78 @@ func (s *SessionStore) replaceV3SessionSearchIndexInBatch(batch *pebble.Batch, r
 	return batch.Set([]byte(keyV3SessionSearchMeta(session.ID)), payload, nil)
 }
 
+func (s *SessionStore) appendV3SessionSearchMessageInBatch(batch *pebble.Batch, reader pebble.Reader, session SessionSnapshot, archived bool, message MessageSnapshot) error {
+	if batch == nil || reader == nil {
+		return errors.New("session search index update requires batch and reader")
+	}
+	session = normalizeSessionOwnership(session)
+	if strings.TrimSpace(session.ID) == "" || strings.TrimSpace(session.AccountScopeID) == "" {
+		return nil
+	}
+	var previous v3SessionSearchSessionMeta
+	if ok, err := getJSONFromReader(reader, keyV3SessionSearchMeta(session.ID), &previous); err != nil {
+		return err
+	} else if !ok {
+		return s.replaceV3SessionSearchIndexInBatch(batch, reader, session, archived, []MessageSnapshot{message})
+	}
+	keys := make(map[string]v3SessionSearchIndexRecord, len(previous.Keys))
+	for _, key := range previous.Keys {
+		var record v3SessionSearchIndexRecord
+		if ok, err := getJSONFromReader(reader, key, &record); err != nil {
+			return err
+		} else if !ok {
+			continue
+		}
+		if err := batch.Delete([]byte(key), nil); err != nil {
+			return err
+		}
+		movedKey, ok := v3SessionSearchKeyWithUpdatedOrder(key, session.UpdatedAt, session.ID)
+		if !ok {
+			return s.replaceV3SessionSearchIndexInBatch(batch, reader, session, archived, []MessageSnapshot{message})
+		}
+		keys[movedKey] = record
+	}
+	messageSnippet := &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, Text: truncateV3SessionSearchSnippet(message.Content), CreatedAt: message.CreatedAt}
+	for _, token := range v3SessionSearchTokens(message.Content) {
+		key := keyV3SessionSearchAccount(session.AccountScopeID, archived, token, session.UpdatedAt, session.ID)
+		if _, ok := keys[key]; ok {
+			continue
+		}
+		keys[key] = v3SessionSearchIndexRecord{SessionID: session.ID, Archived: archived, Snippet: messageSnippet}
+	}
+	for key, record := range keys {
+		payload, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(key), payload, nil); err != nil {
+			return err
+		}
+	}
+	metaKeys := make([]string, 0, len(keys))
+	for key := range keys {
+		metaKeys = append(metaKeys, key)
+	}
+	sort.Strings(metaKeys)
+	payload, err := json.Marshal(v3SessionSearchSessionMeta{SessionID: session.ID, Keys: metaKeys})
+	if err != nil {
+		return err
+	}
+	return batch.Set([]byte(keyV3SessionSearchMeta(session.ID)), payload, nil)
+}
+
+func v3SessionSearchKeyWithUpdatedOrder(key string, updatedAt int64, sessionID string) (string, bool) {
+	rest, ok := strings.CutPrefix(key, keyV3SessionSearchAccountPrefix)
+	if !ok {
+		return "", false
+	}
+	parts := strings.SplitN(rest, "/", 4)
+	if len(parts) != 4 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", false
+	}
+	return fmt.Sprintf("%s%s/%s/%s/%s", keyV3SessionSearchAccountPrefix, parts[0], parts[1], parts[2], sessionRecentIndexOrderPart(updatedAt, sessionID)), true
+}
+
 func removeV3SessionSearchIndexInBatch(batch *pebble.Batch, reader pebble.Reader, sessionID string) error {
 	var previous v3SessionSearchSessionMeta
 	if ok, err := getJSONFromReader(reader, keyV3SessionSearchMeta(sessionID), &previous); err != nil {
