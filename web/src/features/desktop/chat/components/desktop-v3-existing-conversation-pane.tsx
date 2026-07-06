@@ -879,11 +879,20 @@ export function DesktopV3ExistingConversationPane({
       }
       await updateAgentProfile(input.profile, action.agentPatch)
       const agentStateResult = await refreshAgentModelMutationCaches(queryClient)
+      const nextAgentName = input.agentName.trim()
+      if (nextAgentName) {
+        const agentResponse = await updateSessionV3Agent(normalizedSessionId, nextAgentName)
+        dispatchDesktopV3Cache({
+          type: 'mutation.sessionSettingsResult',
+          raw: sessionV3AgentSettingsMutationResponse(agentResponse, normalizedSessionId),
+        })
+        setSelectedAgent(nextAgentName)
+      }
       const refreshedLock = resolveDesktopV3AgentModelLock(agentStateResult.profiles, input.agentName, mode)
       const nextPreference = refreshedLock.locked
         ? preferenceFromAgentModelLock(refreshedLock, basePreference, modelOptions)
         : basePreference
-      if (action.kind === 'default' || refreshedLock.locked || !preferencesEqual(nextPreference, preference)) {
+      if (!refreshedLock.locked && (action.kind === 'default' || !preferencesEqual(nextPreference, preference))) {
         const preferenceResponse = await updateSessionV3Preference(normalizedSessionId, {
           provider: nextPreference.provider,
           model: nextPreference.model,
@@ -896,15 +905,9 @@ export function DesktopV3ExistingConversationPane({
         const updatedPreference = normalizePreference(settingsResponse.preference ?? nextPreference)
         setPreference(updatedPreference)
         unlockedPreferenceRef.current = updatedPreference
-      }
-      const currentAgent = settingsBaseline.agent.trim()
-      if (input.agentName.trim() && input.agentName.trim() !== currentAgent) {
-        const agentResponse = await updateSessionV3Agent(normalizedSessionId, input.agentName.trim())
-        dispatchDesktopV3Cache({
-          type: 'mutation.sessionSettingsResult',
-          raw: sessionV3AgentSettingsMutationResponse(agentResponse, normalizedSessionId),
-        })
-        setSelectedAgent(input.agentName.trim())
+      } else {
+        setPreference(nextPreference)
+        if (!refreshedLock.locked) unlockedPreferenceRef.current = nextPreference
       }
       localSettingsDirtyRef.current = { agent: false, mode: false, preference: false }
     } catch (error) {

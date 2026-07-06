@@ -5,6 +5,12 @@ const source = readFileSync(new URL('./agent-model-control.tsx', import.meta.url
 
 assert.match(
   source,
+  /function selectedDraftMode\(profile: AgentProfileRecord \| null\): DraftMode \{[\s\S]*if \(profile\.provider\.trim\(\) \|\| profile\.model\.trim\(\)\) return 'single'[\s\S]*return 'default'/,
+  'default and single are distinct UI modes; an empty single-mode profile must stay Default, while explicit provider/model becomes Single',
+)
+
+assert.match(
+  source,
   /const hasExplicitSingleModel = Boolean\(profile\?\.provider\.trim\(\) \|\| profile\?\.model\.trim\(\)\)/,
   'single draft must distinguish default-mode agents from explicit single-model locks',
 )

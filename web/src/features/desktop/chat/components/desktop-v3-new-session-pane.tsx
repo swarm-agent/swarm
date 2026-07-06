@@ -298,7 +298,7 @@ export function DesktopV3NewSessionPane({
       const nextPreference = refreshedLock.locked
         ? preferenceFromAgentModelLock(refreshedLock, basePreference, modelOptions)
         : basePreference
-      unlockedPreferenceRef.current = nextPreference
+      unlockedPreferenceRef.current = refreshedLock.locked ? basePreference : nextPreference
       setPreference(nextPreference)
       agentManuallySelectedRef.current = true
       preferenceManuallyChangedRef.current = false
