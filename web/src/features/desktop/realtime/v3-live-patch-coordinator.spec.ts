@@ -127,53 +127,6 @@ test('Desktop V3 live gap pauses only one stream', () => {
 })
 
 
-test('Desktop V3 durable tool boundary flushes pending assistant text before tool card', () => {
-  let state = createEmptyDesktopV3CacheState()
-  const frameCallbacks: FrameRequestCallback[] = []
-  let commits = 0
-  const coordinator = new DesktopV3LivePatchCoordinator({
-    getSnapshot: () => state,
-    commitSnapshot: (_previous, next) => {
-      commits += 1
-      state = next
-    },
-    requestFrame: (callback) => {
-      frameCallbacks.push(callback)
-      return frameCallbacks.length
-    },
-    cancelFrame: () => undefined,
-    setTimer: () => 0,
-    clearTimer: () => undefined,
-    isDocumentHidden: () => false,
-  })
-
-  const durableAssistant = durableDeltaFrame({
-    delta: 'assistant before ',
-    offsetStart: 0,
-    offsetEnd: 17,
-    streamId: 'assistant:run-a:step:1',
-  })
-  coordinator.beforeDurableFrame(durableAssistant)
-  applyCacheEvent(state, normalizeRealtimeEventFrame(durableAssistant))
-
-  coordinator.accept(livePatch({ live_seq_start: 1, live_seq_end: 1, offset_start: 17, offset_end: 21, text: 'tool' }), 1)
-  assert.equal(commits, 0)
-  assert.equal(coordinator.debugSnapshotForTests().pendingKeys, 1)
-
-  const toolStarted = providerToolFrame({ seq: 11, eventType: 'session.provider_tool_call.started' })
-  coordinator.beforeDurableFrame(toolStarted)
-  assert.equal(commits, 1)
-  applyCacheEvent(state, normalizeRealtimeEventFrame(toolStarted))
-
-  const run = state.liveRunsBySession['session-a']['run-a']
-  assert.equal(run.assistantSegments?.[0]?.content, 'assistant before tool')
-  assert.equal(run.assistantSegments?.[0]?.timelineSeq, 10)
-  assert.equal(run.toolCallsByCallId['call-1']?.timelineSeq, 11)
-  assert.equal(run.assistantDraft, undefined)
-  assert.equal(coordinator.debugSnapshotForTests().pendingKeys, 0)
-})
-
-
 test('Desktop V3 terminal commit prevents scheduled live resurrection', () => {
   let state = createEmptyDesktopV3CacheState()
   const frameCallbacks: FrameRequestCallback[] = []
@@ -343,33 +296,6 @@ function durableDeltaFrame(input: { delta: string; offsetStart: number; offsetEn
       event_type: 'session.assistant.delta',
       payload: { run_id: 'run-a', stream_id: input.streamId, delta: input.delta, offset_start: input.offsetStart, offset_end: input.offsetEnd },
       ts_unix_ms: 10,
-    },
-  }
-}
-
-function providerToolFrame(input: { seq: number; eventType: string }): RealtimeMessage {
-  return {
-    protocol: 'v3.realtime',
-    protocol_version: 1,
-    kind: 'event',
-    session_id: 'session-a',
-    event_type: input.eventType,
-    endpoint_cursor: `cursor-tool-${input.seq}`,
-    event: {
-      id: `evt-tool-${input.seq}`,
-      session_id: 'session-a',
-      seq: input.seq,
-      event_type: input.eventType,
-      payload: {
-        run_id: 'run-a',
-        step: 1,
-        step_id: 'step-1',
-        tool_call_id: 'call-1',
-        tool_name: 'write',
-        arguments: '{"file":"demo.txt"}',
-        recorded_at: input.seq,
-      },
-      ts_unix_ms: input.seq,
     },
   }
 }

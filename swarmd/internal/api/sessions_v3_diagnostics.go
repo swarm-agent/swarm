@@ -121,6 +121,10 @@ func sessionV3DiagnosticsEnabled() bool {
 	return os.Getenv("SWARM_V3_DIAGNOSTICS") == "1"
 }
 
+func sessionV3IsDiagnosticEventType(eventType string) bool {
+	return strings.HasPrefix(strings.TrimSpace(eventType), "session.diagnostic")
+}
+
 func shouldRecordV3StoreDiagnostic(input sessionruntime.SessionMutationInput) bool {
 	if !sessionV3DiagnosticsEnabled() {
 		return false

@@ -148,20 +148,9 @@ export class DesktopV3LivePatchCoordinator {
 
   beforeDurableFrame(frame: RealtimeMessage): void {
     const effect = durableAssistantStreamEffect(frame)
-    if (effect) {
-      if (this.pending.has(effect.key)) this.flushStreams([effect.key])
-      if (effect.kind === 'committed-message') this.tombstoneCommittedStream(effect.key)
-    }
-
-    const boundary = durableRunBoundaryEffect(frame)
-    if (!boundary) return
-    const flushKeys: string[] = []
-    for (const [key, pending] of this.pending) {
-      if (pending.sessionId !== boundary.sessionId || pending.runId !== boundary.runId) continue
-      if (pending.step > boundary.step) continue
-      flushKeys.push(key)
-    }
-    if (flushKeys.length > 0) this.flushStreams(flushKeys)
+    if (!effect) return
+    if (this.pending.has(effect.key)) this.flushStreams([effect.key])
+    if (effect.kind === 'committed-message') this.tombstoneCommittedStream(effect.key)
   }
 
   afterDurableFrame(_frame: RealtimeMessage): void {
@@ -408,46 +397,6 @@ export function durableAssistantStreamEffect(frame: RealtimeMessage): DurableAss
   }
 }
 
-interface DurableRunBoundaryEffect {
-  sessionId: string
-  runId: string
-  step: number
-  seq: number
-}
-
-export function durableRunBoundaryEffect(frame: RealtimeMessage): DurableRunBoundaryEffect | null {
-  if (frame.kind !== 'event') return null
-  const event = normalizeRealtimeEventFrame(frame)
-  if (!isDurableToolBoundaryEvent(event.eventType)) return null
-  const payload = event.payload ?? {}
-  const sessionId = event.sessionId
-  const runId = resolveDesktopV3CacheEventRunId(event)
-  const step = numberValue(payload.step)
-  const seq = numberValue(event.sessionEvent?.seq)
-  if (!sessionId || !runId || step === undefined || step <= 0 || seq === undefined || seq <= 0) return null
-  return { sessionId, runId, step, seq }
-}
-
-function isDurableToolBoundaryEvent(eventType: string): boolean {
-  switch (eventType) {
-    case 'session.tool.started':
-    case 'session.tool.delta':
-    case 'session.tool.completed':
-    case 'session.tool.failed':
-    case 'session.tool.cancelled':
-    case 'session.tool.canceled':
-    case 'session.provider_tool_call.started':
-    case 'session.provider_tool_call.arguments.delta':
-    case 'session.provider_tool_call.arguments.snapshot':
-    case 'session.provider_tool_call.completed':
-    case 'permission.requested':
-    case 'permission.updated':
-      return true
-    default:
-      return false
-  }
-}
-
 function messageFromPayload(payload: Record<string, unknown>): MessageSnapshot | null {
   const nested = payload.message
   if (nested && typeof nested === 'object' && !Array.isArray(nested)) return nested as MessageSnapshot
@@ -456,10 +405,6 @@ function messageFromPayload(payload: Record<string, unknown>): MessageSnapshot |
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
-}
-
-function numberValue(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function stringFromMetadata(metadata: Record<string, unknown> | undefined, key: string): string {

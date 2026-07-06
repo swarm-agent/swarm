@@ -2342,7 +2342,7 @@ func TestSessionsV3PrimaryStreamCarriesProviderReasoningEventsAndMessage(t *test
 	}
 }
 
-func TestSessionsV3PrimaryLiveStreamPublishesProviderToolProgressAndCommittedCompletion(t *testing.T) {
+func TestSessionsV3PrimaryLiveStreamPublishesToolExecutionProgressAndCommittedCompletion(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()
 	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{

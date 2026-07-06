@@ -299,6 +299,10 @@ func (s *Server) streamSessionV3PrimaryEvents(conn *transportws.Conn, sessionID 
 		if event.Seq <= lastSent {
 			continue
 		}
+		if sessionV3IsDiagnosticEventType(event.EventType) {
+			lastSent = event.Seq
+			continue
+		}
 		if event.Seq != lastSent+1 {
 			s.sendSessionV3StreamFrame(conn, sessionV3StreamFrame{Type: "cursor.error", OK: false, SessionID: sessionID, AfterSeq: lastSent, HighWatermarkSeq: projection.ProjectionHighWatermarkSeq, EndpointCursor: pebbleV3RealtimeOutboxCursor(lastEndpointSeq), Error: fmt.Sprintf("event sequence gap at %d, want %d; refetch required", event.Seq, lastSent+1)})
 			return
@@ -357,6 +361,13 @@ func (s *Server) catchUpSessionV3StreamFromRealtimeOutbox(conn *transportws.Conn
 				continue
 			}
 			if routed.Relation == "child" {
+				if sessionV3IsDiagnosticEventType(routed.Event.EventType) {
+					childSessionID := strings.TrimSpace(routed.Event.SessionID)
+					if routed.Event.Seq > lastChildSeqBySessionID[childSessionID] {
+						lastChildSeqBySessionID[childSessionID] = routed.Event.Seq
+					}
+					continue
+				}
 				if !s.sendSessionV3StreamChildLiveEvent(conn, parentSessionID, routed, *parentLastSeq, lastChildSeqBySessionID, current) {
 					return false
 				}
@@ -364,6 +375,10 @@ func (s *Server) catchUpSessionV3StreamFromRealtimeOutbox(conn *transportws.Conn
 			}
 			event := routed.Event
 			if event.Seq <= *parentLastSeq {
+				continue
+			}
+			if sessionV3IsDiagnosticEventType(event.EventType) {
+				*parentLastSeq = event.Seq
 				continue
 			}
 			if event.Seq != *parentLastSeq+1 {
@@ -442,6 +457,10 @@ func (s *Server) replaySessionV3StreamChildren(conn *transportws.Conn, parentSes
 			if event.Seq <= childLastSeq {
 				continue
 			}
+			if sessionV3IsDiagnosticEventType(event.EventType) {
+				childLastSeq = event.Seq
+				continue
+			}
 			if event.Seq != childLastSeq+1 {
 				if !s.sendSessionV3StreamChildCursorError(conn, parentSessionID, lineage.ChildSessionID, parentLastSeq, childLastSeq+1, event.Seq, record.EndpointSeq, nil) {
 					return false
@@ -469,6 +488,10 @@ func (s *Server) sendSessionV3StreamChildLiveEvent(conn *transportws.Conn, paren
 	}
 	lastChildSeq := lastChildSeqBySessionID[childSessionID]
 	if event.Seq <= lastChildSeq {
+		return true
+	}
+	if sessionV3IsDiagnosticEventType(event.EventType) {
+		lastChildSeqBySessionID[childSessionID] = event.Seq
 		return true
 	}
 	if event.Seq != lastChildSeq+1 {

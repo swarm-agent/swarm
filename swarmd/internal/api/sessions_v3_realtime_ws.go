@@ -535,6 +535,13 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 	if !s.v3RealtimePrincipalCanSee(principal, record) {
 		return advanced, true, false
 	}
+	if sessionV3IsDiagnosticEventType(record.Event.EventType) {
+		if subscription, subscribed := advanced.Subscriptions[record.SessionID]; subscribed && record.Event.Seq > subscription.LastSeq {
+			subscription.LastSeq = record.Event.Seq
+			advanced.Subscriptions[record.SessionID] = subscription
+		}
+		return advanced, true, false
+	}
 	if strings.TrimSpace(record.Event.EventType) == v3NotificationResourceEventType {
 		if !s.sendV3RealtimeNotificationResourceFrame(conn, principal, record, worksets, scope) {
 			return advanced, false, false

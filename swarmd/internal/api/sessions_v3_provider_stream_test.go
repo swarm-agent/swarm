@@ -68,14 +68,6 @@ func (w *sessionsV3BlockingDurableProgressWriter) RecordReasoningEvent(job sessi
 	return w.base.RecordReasoningEvent(job, eventType, step, eventIndex, reasoningKey, delta, summary)
 }
 
-func (w *sessionsV3BlockingDurableProgressWriter) RecordProviderToolConstructionEvent(job sessionV3ExecutorJob, event provideriface.StreamEvent, step int, eventIndex int) (sessionruntime.SessionMutationResult, error) {
-	w.blockFirst()
-	if w.base == nil {
-		return sessionruntime.SessionMutationResult{}, nil
-	}
-	return w.base.RecordProviderToolConstructionEvent(job, event, step, eventIndex)
-}
-
 func TestV3AssistantCallbackPublishesAllDeltasWhileDurableWriterIsBlocked(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "callback-live-blocked-create", "callback live blocked", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
