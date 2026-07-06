@@ -35,9 +35,11 @@ import (
 	"swarm/packages/swarmd/internal/provider/anthropic"
 	"swarm/packages/swarmd/internal/provider/codex"
 	"swarm/packages/swarmd/internal/provider/copilot"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	exaprovider "swarm/packages/swarmd/internal/provider/exa"
 	"swarm/packages/swarmd/internal/provider/fireworks"
 	"swarm/packages/swarmd/internal/provider/google"
+	"swarm/packages/swarmd/internal/provider/openai"
 	"swarm/packages/swarmd/internal/provider/openrouter"
 	"swarm/packages/swarmd/internal/provider/registry"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
@@ -255,6 +257,20 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("load startup config: %w", startupCfgErr)
 	}
+	if startupCfg.V3Diagnostics {
+		if err := os.Setenv("SWARM_V3_DIAGNOSTICS", "1"); err != nil {
+			return nil, fmt.Errorf("enable v3 diagnostics: %w", err)
+		}
+	} else {
+		if err := os.Setenv("SWARM_V3_DIAGNOSTICS", "0"); err != nil {
+			return nil, fmt.Errorf("disable v3 diagnostics: %w", err)
+		}
+	}
+	if startupCfg.ProviderAPIDiagnostics {
+		if err := os.Setenv(providerdiagnostics.EnvName, providerdiagnostics.BoolEnvValue(true)); err != nil {
+			return nil, fmt.Errorf("enable provider api diagnostics: %w", err)
+		}
+	}
 	updateSvc := update.NewService(strings.TrimSpace(os.Getenv("SWARM_LANE")), startupCfg.DevMode)
 	if err := seedUISwarmName(cfg.ConfigPath, uiSettingsSvc); err != nil {
 		_ = secretStore.Close()
@@ -310,6 +326,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		codex.NewAdapter(authStore),
 		fireworks.NewAdapter(authStore),
 		google.NewAdapter(authStore),
+		openai.NewAdapter(authStore),
 		openrouter.NewAdapter(authStore),
 		exaprovider.NewAdapter(authStore, func(context.Context) (bool, error) {
 			mcpConfig, err := mcpSvc.ResolveExaRuntimeConfig()
@@ -325,6 +342,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	providers.RegisterRunner(codex.NewRunner(codexClient))
 	providers.RegisterRunner(fireworks.NewRunner(authStore))
 	providers.RegisterRunner(google.NewRunner(authStore))
+	providers.RegisterRunner(openai.NewRunner(authStore, codexClient))
 	providers.RegisterRunner(openrouter.NewRunner(authStore))
 	runSvc := run.NewService(sessionSvc, modelSvc, providers, toolRuntime, permissionSvc, agentSvc, discoverySvc, events)
 	runSvc.SetWorkspaceService(workspaceSvc)
@@ -343,9 +361,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("load default model stack: %w", err)
-	}
-	if _, err := modelCatalog.Refresh(context.Background()); err != nil {
-		log.Printf("warning: refresh model catalog: %v", err)
 	}
 	if _, err := securitySvc.EnsureAttachAuth(); err != nil {
 		_ = secretStore.Close()

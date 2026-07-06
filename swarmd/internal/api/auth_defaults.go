@@ -50,6 +50,9 @@ func (s *Server) applyUtilityModelDefaultsForAccount(accountScopeID, userID, pre
 		if event != nil && s.hub != nil {
 			s.hub.Publish(*event)
 		}
+		if err := s.seedSplitModelDefaultsForAccount(accountScopeID, providerID, providerDefaults); err != nil {
+			return nil, fmt.Errorf("set plan/auto model defaults: %w", err)
+		}
 		out.Applied = true
 		out.GlobalModel = true
 	}
@@ -99,6 +102,61 @@ func (s *Server) applyUtilityModelDefaultsForAccount(accountScopeID, userID, pre
 	out.Agents = sortedKeys(agentsSeen)
 	out.Subagents = sortedKeys(subagentsSeen)
 	return out, nil
+}
+
+func (s *Server) seedSplitModelDefaultsForAccount(accountScopeID, providerID string, providerDefaults defaults.ProviderDefaults) error {
+	if s == nil || s.agents == nil {
+		return nil
+	}
+	state, err := s.agents.ListStateForAccount(accountScopeID, 2000)
+	if err != nil {
+		return err
+	}
+	planProvider := strings.ToLower(strings.TrimSpace(providerID))
+	planModel := strings.TrimSpace(providerDefaults.PrimaryModel)
+	planThinking := strings.TrimSpace(providerDefaults.PrimaryThinking)
+	autoProvider := planProvider
+	autoModel := strings.TrimSpace(providerDefaults.UtilityModel)
+	autoThinking := strings.TrimSpace(providerDefaults.UtilityThinking)
+	if planProvider == "" || planModel == "" || autoModel == "" {
+		return nil
+	}
+	for _, profile := range state.Profiles {
+		if !strings.EqualFold(strings.TrimSpace(profile.Name), "swarm") {
+			continue
+		}
+		if strings.TrimSpace(profile.Provider) != "" || strings.TrimSpace(profile.Model) != "" || strings.TrimSpace(profile.PlanProvider) != "" || strings.TrimSpace(profile.PlanModel) != "" || strings.TrimSpace(profile.AutoProvider) != "" || strings.TrimSpace(profile.AutoModel) != "" {
+			return nil
+		}
+		enabled := profile.Enabled
+		_, _, _, err := s.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
+			Name:                profile.Name,
+			Mode:                profile.Mode,
+			Description:         profile.Description,
+			Provider:            profile.Provider,
+			ProviderSet:         true,
+			Model:               profile.Model,
+			ModelSet:            true,
+			Thinking:            profile.Thinking,
+			ThinkingSet:         true,
+			ModelMode:           "split",
+			PlanProvider:        planProvider,
+			PlanModel:           planModel,
+			PlanThinking:        planThinking,
+			AutoProvider:        autoProvider,
+			AutoModel:           autoModel,
+			AutoThinking:        autoThinking,
+			Prompt:              profile.Prompt,
+			RuntimeMode:         profile.RuntimeMode,
+			ExecutionSetting:    profile.ExecutionSetting,
+			ExitPlanModeEnabled: profile.ExitPlanModeEnabled,
+			ToolScope:           profile.ToolScope,
+			ToolContract:        profile.ToolContract,
+			Enabled:             &enabled,
+		})
+		return err
+	}
+	return nil
 }
 
 func (s *Server) resolveUtilityModelProvider(preferredProvider string) (providerID string, providerDefaults defaults.ProviderDefaults, ok bool, err error) {

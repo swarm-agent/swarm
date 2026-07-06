@@ -93,6 +93,23 @@ type UpsertInput struct {
 	ProviderSet         bool                           `json:"-"`
 	ModelSet            bool                           `json:"-"`
 	ThinkingSet         bool                           `json:"-"`
+	PlanProviderSet     bool                           `json:"-"`
+	PlanModelSet        bool                           `json:"-"`
+	PlanThinkingSet     bool                           `json:"-"`
+	PlanServiceTierSet  bool                           `json:"-"`
+	AutoProviderSet     bool                           `json:"-"`
+	AutoModelSet        bool                           `json:"-"`
+	AutoThinkingSet     bool                           `json:"-"`
+	AutoServiceTierSet  bool                           `json:"-"`
+	ModelMode           string                         `json:"model_mode"`
+	PlanProvider        string                         `json:"plan_provider"`
+	PlanModel           string                         `json:"plan_model"`
+	PlanThinking        string                         `json:"plan_thinking"`
+	PlanServiceTier     string                         `json:"plan_service_tier"`
+	AutoProvider        string                         `json:"auto_provider"`
+	AutoModel           string                         `json:"auto_model"`
+	AutoThinking        string                         `json:"auto_thinking"`
+	AutoServiceTier     string                         `json:"auto_service_tier"`
 	Prompt              string                         `json:"prompt"`
 	RuntimeMode         string                         `json:"runtime_mode"`
 	ExecutionSetting    string                         `json:"execution_setting"`
@@ -1071,6 +1088,33 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		if !stringFieldProvided(input.ThinkingSet, input.Thinking) {
 			profile.Thinking = existing.Thinking
 		}
+		if strings.TrimSpace(input.ModelMode) == "" {
+			profile.ModelMode = existing.ModelMode
+		}
+		if !stringFieldProvided(input.PlanProviderSet, input.PlanProvider) {
+			profile.PlanProvider = existing.PlanProvider
+		}
+		if !stringFieldProvided(input.PlanModelSet, input.PlanModel) {
+			profile.PlanModel = existing.PlanModel
+		}
+		if !stringFieldProvided(input.PlanThinkingSet, input.PlanThinking) {
+			profile.PlanThinking = existing.PlanThinking
+		}
+		if !stringFieldProvided(input.PlanServiceTierSet, input.PlanServiceTier) {
+			profile.PlanServiceTier = existing.PlanServiceTier
+		}
+		if !stringFieldProvided(input.AutoProviderSet, input.AutoProvider) {
+			profile.AutoProvider = existing.AutoProvider
+		}
+		if !stringFieldProvided(input.AutoModelSet, input.AutoModel) {
+			profile.AutoModel = existing.AutoModel
+		}
+		if !stringFieldProvided(input.AutoThinkingSet, input.AutoThinking) {
+			profile.AutoThinking = existing.AutoThinking
+		}
+		if !stringFieldProvided(input.AutoServiceTierSet, input.AutoServiceTier) {
+			profile.AutoServiceTier = existing.AutoServiceTier
+		}
 		if strings.TrimSpace(profile.Prompt) == "" {
 			profile.Prompt = existing.Prompt
 		}
@@ -1093,10 +1137,12 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 	if profile.Name == "swarm" {
 		profile.Mode = ModePrimary
 		profile.Enabled = true
-		profile.ExitPlanModeEnabled = pebblestore.BoolPtr(true)
+		if pebblestore.NormalizeAgentRuntimeMode(input.RuntimeMode) != pebblestore.AgentRuntimeModeRead && pebblestore.NormalizeAgentRuntimeMode(input.RuntimeMode) != pebblestore.AgentRuntimeModeReadWrite {
+			profile.ExitPlanModeEnabled = pebblestore.BoolPtr(true)
+		}
 	}
 	if profile.Mode == ModePrimary {
-		if profile.Name == "swarm" {
+		if profile.Name == "swarm" && pebblestore.AgentModelMode(profile) == "split" {
 			profile.Provider = ""
 			profile.Model = ""
 			profile.Thinking = ""
@@ -1107,6 +1153,7 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
+	profile = normalizeAgentModelSelection(profile)
 	if err := requireAgentToolContract(profile); err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
@@ -1571,6 +1618,7 @@ func (s *Service) previewUpsertForAccount(accountScopeID string, input UpsertInp
 		return PreviewUpsertResult{}, err
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
+	profile = normalizeAgentModelSelection(profile)
 	if err := requireAgentToolContract(profile); err != nil {
 		return PreviewUpsertResult{}, err
 	}
@@ -2049,6 +2097,15 @@ func normalizeUpsertInput(input UpsertInput) (pebblestore.AgentProfile, error) {
 		Provider:            strings.ToLower(strings.TrimSpace(input.Provider)),
 		Model:               strings.TrimSpace(input.Model),
 		Thinking:            strings.ToLower(strings.TrimSpace(input.Thinking)),
+		ModelMode:           pebblestore.NormalizeAgentModelMode(input.ModelMode),
+		PlanProvider:        strings.ToLower(strings.TrimSpace(input.PlanProvider)),
+		PlanModel:           strings.TrimSpace(input.PlanModel),
+		PlanThinking:        strings.ToLower(strings.TrimSpace(input.PlanThinking)),
+		PlanServiceTier:     pebblestore.NormalizeModelServiceTier(input.PlanServiceTier),
+		AutoProvider:        strings.ToLower(strings.TrimSpace(input.AutoProvider)),
+		AutoModel:           strings.TrimSpace(input.AutoModel),
+		AutoThinking:        strings.ToLower(strings.TrimSpace(input.AutoThinking)),
+		AutoServiceTier:     pebblestore.NormalizeModelServiceTier(input.AutoServiceTier),
 		Prompt:              strings.TrimSpace(input.Prompt),
 		RuntimeMode:         runtimeMode,
 		ExecutionSetting:    executionSetting,
@@ -2068,6 +2125,34 @@ func stringFieldProvided(explicit bool, value string) bool {
 		return true
 	}
 	return strings.TrimSpace(value) != ""
+}
+
+func normalizeAgentModelSelection(profile pebblestore.AgentProfile) pebblestore.AgentProfile {
+	if pebblestore.AgentModelMode(profile) == "split" {
+		profile.Provider = ""
+		profile.Model = ""
+		profile.Thinking = ""
+		if strings.TrimSpace(profile.PlanProvider) == "" || strings.TrimSpace(profile.PlanModel) == "" {
+			profile.PlanServiceTier = ""
+		}
+		if strings.TrimSpace(profile.AutoProvider) == "" || strings.TrimSpace(profile.AutoModel) == "" {
+			profile.AutoServiceTier = ""
+		}
+		return profile
+	}
+
+	profile.ModelMode = ""
+	profile.PlanProvider = ""
+	profile.PlanModel = ""
+	profile.PlanThinking = ""
+	profile.PlanServiceTier = ""
+	profile.AutoProvider = ""
+	profile.AutoModel = ""
+	profile.AutoThinking = ""
+	if strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
+		profile.AutoServiceTier = ""
+	}
+	return profile
 }
 
 func (s *Service) requireAccountScopeID(accountScopeID string) (string, error) {

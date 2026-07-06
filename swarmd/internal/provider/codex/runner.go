@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 type Runner struct {
@@ -24,18 +25,26 @@ func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) 
 	if r.client == nil {
 		return provideriface.Response{}, errors.New("codex runner client is not configured")
 	}
-	out, err := r.client.CreateResponse(ctx, toCodexRequest(req))
+	out, err := r.client.CreateResponse(ctx, ToRequest(req))
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	return fromCodexResponse(out), nil
+	return FromResponse(out), nil
 }
 
 func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
 	if r.client == nil {
 		return provideriface.Response{}, errors.New("codex runner client is not configured")
 	}
-	out, err := r.client.CreateResponseStreaming(ctx, toCodexRequest(req), func(event StreamEvent) {
+	out, err := r.client.CreateResponseStreaming(ctx, ToRequest(req), ToProviderStreamEventCallback(onEvent))
+	if err != nil {
+		return provideriface.Response{}, err
+	}
+	return FromResponse(out), nil
+}
+
+func ToProviderStreamEventCallback(onEvent func(provideriface.StreamEvent)) func(StreamEvent) {
+	return func(event StreamEvent) {
 		if onEvent == nil {
 			return
 		}
@@ -96,27 +105,83 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 				Metadata:      cloneMapStringAny(event.Metadata),
 			})
 		}
-	})
-	if err != nil {
-		return provideriface.Response{}, err
 	}
-	return fromCodexResponse(out), nil
 }
 
 func toCodexRequest(req provideriface.Request) Request {
-	return Request{
-		SessionID:         req.SessionID,
-		Model:             req.Model,
-		Thinking:          req.Thinking,
-		Instructions:      req.Instructions,
-		Input:             req.Input,
-		Tools:             toCodexTools(req.Tools),
-		ToolChoice:        req.ToolChoice,
-		ServiceTier:       NormalizeServiceTier(req.ServiceTier),
-		ContextMode:       NormalizeContextMode(req.ContextMode),
-		ContextWindow:     req.ContextWindow,
-		ParallelToolCalls: req.ParallelToolCalls,
+	return ToRequest(req)
+}
+
+func ToRequest(req provideriface.Request) Request {
+	serviceTier := strings.ToLower(strings.TrimSpace(req.ServiceTier))
+	reasoningProviderValue := ""
+	if catalog, ok := req.ModelCatalog.(pebblestore.ModelCatalogRecord); ok {
+		serviceTier = codexServiceTierProviderValue(catalog, serviceTier)
+		reasoningProviderValue = codexThinkingProviderValue(catalog, req.Thinking)
 	}
+	return Request{
+		SessionID:                     req.SessionID,
+		ProviderLineageID:             req.ProviderLineageID,
+		ContextBranchID:               req.ContextBranchID,
+		ProviderCacheKey:              req.EffectiveProviderCacheKey(),
+		SessionAffinityKey:            req.EffectiveSessionAffinityKey(),
+		BoundaryReason:                req.BoundaryReason,
+		PreviousProviderLineageID:     req.PreviousProviderLineageID,
+		PreviousProviderID:            req.PreviousProviderID,
+		PreviousModel:                 req.PreviousModel,
+		NewProviderID:                 req.NewProviderID,
+		NewModel:                      req.NewModel,
+		HandoffSummaryMessageID:       req.HandoffSummaryMessageID,
+		HandoffSummaryGlobalSeq:       req.HandoffSummaryGlobalSeq,
+		ProviderLineageStartMessageID: req.ProviderLineageStartMessageID,
+		ProviderLineageStartRunID:     req.ProviderLineageStartRunID,
+		ProviderLineageStartGlobalSeq: req.ProviderLineageStartGlobalSeq,
+		NativeContinuationAllowed:     req.NativeContinuationAllowed,
+		ForceFreshProviderContext:     req.ForceFreshProviderContext,
+		Model:                         req.Model,
+		Thinking:                      req.Thinking,
+		ReasoningProviderValue:        reasoningProviderValue,
+		Instructions:                  req.Instructions,
+		Input:                         req.Input,
+		Tools:                         toCodexTools(req.Tools),
+		ToolChoice:                    req.ToolChoice,
+		ServiceTier:                   serviceTier,
+		ContextMode:                   NormalizeContextMode(req.ContextMode),
+		ContextWindow:                 req.ContextWindow,
+		ParallelToolCalls:             req.ParallelToolCalls,
+	}
+}
+
+func codexServiceTierProviderValue(catalog pebblestore.ModelCatalogRecord, serviceTier string) string {
+	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
+	if serviceTier == "" {
+		return ""
+	}
+	for _, mapping := range catalog.ServiceTierMappings {
+		matchesTier := strings.EqualFold(strings.TrimSpace(mapping.Tier), serviceTier)
+		matchesSwarmSetting := strings.EqualFold(strings.TrimSpace(mapping.SwarmSetting), serviceTier)
+		if !matchesTier && !matchesSwarmSetting {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(mapping.ProviderParameter), "service_tier") {
+			return strings.TrimSpace(mapping.ProviderValue)
+		}
+		return ""
+	}
+	return ""
+}
+
+func codexThinkingProviderValue(catalog pebblestore.ModelCatalogRecord, thinking string) string {
+	thinking = strings.ToLower(strings.TrimSpace(thinking))
+	for _, mapping := range catalog.ThinkingMappings {
+		if strings.EqualFold(strings.TrimSpace(mapping.SwarmSetting), thinking) {
+			if value := strings.TrimSpace(mapping.EffectiveProviderValue); value != "" {
+				return value
+			}
+			return strings.TrimSpace(mapping.ProviderValue)
+		}
+	}
+	return ""
 }
 
 func toCodexTools(input []provideriface.ToolDefinition) []ToolDefinition {
@@ -467,7 +532,7 @@ func shouldRewriteCodexFreeformObjectSchema(schema map[string]any) bool {
 	return ok && flag
 }
 
-func fromCodexResponse(resp Response) provideriface.Response {
+func FromResponse(resp Response) provideriface.Response {
 	out := provideriface.Response{
 		ID:               resp.ID,
 		Model:            resp.Model,
@@ -482,6 +547,8 @@ func fromCodexResponse(resp Response) provideriface.Response {
 			TotalTokens:      resp.Usage.TotalTokens,
 			CacheReadTokens:  resp.Usage.CacheReadTokens,
 			CacheWriteTokens: resp.Usage.CacheWriteTokens,
+			ServiceTier:      resp.Usage.ServiceTier,
+			EstimatedCostUSD: resp.Usage.EstimatedCostUSD,
 			Source:           resp.Usage.Source,
 			Transport:        resp.Usage.Transport,
 			ConnectedViaWS:   cloneBoolPointer(resp.Usage.ConnectedViaWS),

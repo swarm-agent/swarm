@@ -26,12 +26,16 @@ func TestSessionV3ProviderUsageRecordRequiresNormalizedTotalTokens(t *testing.T)
 		Source:          "codex_api_usage",
 		Transport:       "websocket",
 		APIUsageRawPath: "response.usage",
+		APIUsageRaw:     map[string]any{"service_tier": "priority"},
 	})
 	if !ok {
 		t.Fatal("usage with normalized total_tokens was not recorded")
 	}
 	if record.TotalTokens != 252744 || record.InputTokens != 252648 || record.OutputTokens != 96 || record.CacheReadTokens != 248320 {
 		t.Fatalf("record = %+v, want exact normalized provider usage fields", record)
+	}
+	if record.APIUsageRawPath != "response.usage" || record.APIUsageRaw["service_tier"] != "priority" {
+		t.Fatalf("raw usage not preserved: path=%q raw=%#v", record.APIUsageRawPath, record.APIUsageRaw)
 	}
 	if record.Steps != 3 {
 		t.Fatalf("record step = %d, want provider loop step 3", record.Steps)

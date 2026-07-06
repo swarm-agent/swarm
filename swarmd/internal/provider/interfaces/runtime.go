@@ -1,6 +1,11 @@
 package provideriface
 
-import "context"
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
 
 type ToolDefinition struct {
 	Type        string         `json:"type"`
@@ -10,19 +15,72 @@ type ToolDefinition struct {
 }
 
 type Request struct {
-	SessionID         string
-	Model             string
-	Thinking          string
-	Instructions      string
-	Input             []map[string]any
-	Tools             []ToolDefinition
-	ToolChoice        string
-	ServiceTier       string
-	ContextMode       string
-	ContextWindow     int
-	ParallelToolCalls bool
-	WorkspacePath     string
-	ToolInvoker       ToolInvoker
+	// SessionID is the stable durable Swarm session identity used for
+	// diagnostics/storage. Providers must not treat it as a cache/session
+	// affinity key; use ProviderCacheKey/SessionAffinityKey instead.
+	SessionID                     string
+	ProviderLineageID             string
+	ContextBranchID               string
+	ProviderCacheKey              string
+	SessionAffinityKey            string
+	BoundaryReason                string
+	PreviousProviderLineageID     string
+	PreviousProviderID            string
+	PreviousModel                 string
+	NewProviderID                 string
+	NewModel                      string
+	HandoffSummaryMessageID       string
+	HandoffSummaryGlobalSeq       uint64
+	ProviderLineageStartMessageID string
+	ProviderLineageStartRunID     string
+	ProviderLineageStartGlobalSeq uint64
+	NativeContinuationAllowed     bool
+	ForceFreshProviderContext     bool
+	Model                         string
+	Thinking                      string
+	Instructions                  string
+	Input                         []map[string]any
+	Tools                         []ToolDefinition
+	ToolChoice                    string
+	ServiceTier                   string
+	ContextMode                   string
+	ContextWindow                 int
+	ModelCatalog                  any
+	ParallelToolCalls             bool
+	WorkspacePath                 string
+	ToolInvoker                   ToolInvoker
+}
+
+func (r Request) EffectiveProviderCacheKey() string {
+	return strings.TrimSpace(firstNonEmpty(r.ProviderCacheKey, r.ProviderLineageID))
+}
+
+func (r Request) EffectiveSessionAffinityKey() string {
+	return strings.TrimSpace(firstNonEmpty(r.SessionAffinityKey, r.ProviderCacheKey, r.ProviderLineageID))
+}
+
+func ShortProviderLineageKey(parts ...string) string {
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			cleaned = append(cleaned, part)
+		}
+	}
+	if len(cleaned) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join(cleaned, "\x00")))
+	return hex.EncodeToString(sum[:16])
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 type ToolInvocation struct {
@@ -68,6 +126,8 @@ type TokenUsage struct {
 	TotalTokens      int64            `json:"total_tokens,omitempty"`
 	CacheReadTokens  int64            `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int64            `json:"cache_write_tokens,omitempty"`
+	ServiceTier      string           `json:"service_tier,omitempty"`
+	EstimatedCostUSD float64          `json:"estimated_cost_usd,omitempty"`
 	Source           string           `json:"source,omitempty"`
 	Transport        string           `json:"transport,omitempty"`
 	ConnectedViaWS   *bool            `json:"connected_via_websocket,omitempty"`

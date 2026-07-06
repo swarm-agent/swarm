@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"swarm/packages/swarmd/internal/identity"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -219,8 +222,11 @@ func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (a
 		System:    system,
 		Tools:     tools,
 	}
-	if thinking := anthropicThinkingConfig(req.Thinking); thinking != nil {
+	if thinking, effort := anthropicThinkingConfig(req.ModelCatalog, req.Thinking); thinking != nil {
 		params.Thinking = *thinking
+		if effort != "" {
+			params.OutputConfig = anthropicapi.OutputConfigParam{Effort: effort}
+		}
 	}
 	if toolChoice := anthropicToolChoice(req.ToolChoice, req.ParallelToolCalls); toolChoice != nil {
 		params.ToolChoice = *toolChoice
@@ -239,6 +245,9 @@ func anthropicClientOptions(apiKey string) []option.RequestOption {
 	return []option.RequestOption{
 		option.WithAPIKey(apiKey),
 		option.WithHeaderAdd("anthropic-beta", string(promptCachingBeta)),
+		option.WithMiddleware(func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+			return providerdiagnostics.RoundTrip("anthropic", "messages", next, req)
+		}),
 	}
 }
 
@@ -427,25 +436,102 @@ func buildAnthropicContentBlocksFromMaps(items []map[string]any) ([]anthropicapi
 	return blocks, nil
 }
 
-func anthropicThinkingConfig(level string) *anthropicapi.ThinkingConfigParamUnion {
-	switch strings.ToLower(strings.TrimSpace(level)) {
+func anthropicThinkingConfig(catalog any, level string) (*anthropicapi.ThinkingConfigParamUnion, anthropicapi.OutputConfigEffort) {
+	level = strings.ToLower(strings.TrimSpace(level))
+	mapping, hasMapping := anthropicThinkingMapping(catalog, level)
+	if hasMapping {
+		return anthropicThinkingConfigFromMapping(mapping, level)
+	}
+	switch level {
 	case "off":
 		cfg := anthropicapi.ThinkingConfigParamUnion{OfDisabled: &anthropicapi.ThinkingConfigDisabledParam{}}
-		return &cfg
-	case "low":
-		cfg := anthropicapi.ThinkingConfigParamOfEnabled(1024)
-		return &cfg
-	case "medium":
-		cfg := anthropicapi.ThinkingConfigParamOfEnabled(4096)
-		return &cfg
-	case "high":
-		cfg := anthropicapi.ThinkingConfigParamOfEnabled(8192)
-		return &cfg
-	case "xhigh":
-		cfg := anthropicapi.ThinkingConfigParamOfEnabled(16384)
-		return &cfg
+		return &cfg, ""
+	case "low", "medium", "high", "xhigh":
+		cfg := anthropicapi.ThinkingConfigParamOfEnabled(anthropicThinkingBudgetTokens(level))
+		return &cfg, ""
 	default:
-		return nil
+		return nil, ""
+	}
+}
+
+func anthropicThinkingMapping(catalog any, level string) (pebblestore.ModelCatalogThinkingMapping, bool) {
+	record, ok := catalog.(pebblestore.ModelCatalogRecord)
+	if !ok {
+		return pebblestore.ModelCatalogThinkingMapping{}, false
+	}
+	level = strings.ToLower(strings.TrimSpace(level))
+	for _, mapping := range record.ThinkingMappings {
+		if strings.EqualFold(strings.TrimSpace(mapping.SwarmSetting), level) {
+			return mapping, true
+		}
+	}
+	return pebblestore.ModelCatalogThinkingMapping{}, false
+}
+
+func anthropicThinkingConfigFromMapping(mapping pebblestore.ModelCatalogThinkingMapping, level string) (*anthropicapi.ThinkingConfigParamUnion, anthropicapi.OutputConfigEffort) {
+	behavior := strings.ToLower(strings.TrimSpace(mapping.Behavior))
+	providerParameter := strings.ToLower(strings.TrimSpace(mapping.ProviderParameter))
+	providerValue := firstNonEmpty(strings.TrimSpace(mapping.EffectiveProviderValue), strings.TrimSpace(mapping.ProviderValue))
+	if behavior == "disabled" || strings.EqualFold(level, "off") {
+		cfg := anthropicapi.ThinkingConfigParamUnion{OfDisabled: &anthropicapi.ThinkingConfigDisabledParam{}}
+		return &cfg, ""
+	}
+	if behavior == "effort" || strings.Contains(providerParameter, "output_config.effort") || strings.Contains(providerParameter, "output_config") {
+		effort := anthropicOutputEffort(providerValue)
+		if effort == "" {
+			effort = anthropicOutputEffort(level)
+		}
+		if effort == "" {
+			return nil, ""
+		}
+		cfg := anthropicapi.ThinkingConfigParamUnion{OfAdaptive: &anthropicapi.ThinkingConfigAdaptiveParam{Display: anthropicapi.ThinkingConfigAdaptiveDisplaySummarized}}
+		return &cfg, effort
+	}
+	if strings.Contains(providerParameter, "budget_tokens") {
+		budgetTokens := anthropicThinkingBudgetTokensFromMapping(providerValue, level)
+		if budgetTokens <= 0 {
+			return nil, ""
+		}
+		cfg := anthropicapi.ThinkingConfigParamOfEnabled(budgetTokens)
+		return &cfg, ""
+	}
+	return nil, ""
+}
+
+func anthropicThinkingBudgetTokensFromMapping(providerValue, level string) int64 {
+	if parsed, err := strconv.ParseInt(strings.TrimSpace(providerValue), 10, 64); err == nil && parsed > 0 {
+		return parsed
+	}
+	return anthropicThinkingBudgetTokens(level)
+}
+
+func anthropicThinkingBudgetTokens(level string) int64 {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "low":
+		return 1024
+	case "medium":
+		return 4096
+	case "high":
+		return 8192
+	case "xhigh":
+		return 16384
+	default:
+		return 4096
+	}
+}
+
+func anthropicOutputEffort(level string) anthropicapi.OutputConfigEffort {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "low":
+		return anthropicapi.OutputConfigEffortLow
+	case "medium":
+		return anthropicapi.OutputConfigEffortMedium
+	case "high":
+		return anthropicapi.OutputConfigEffortHigh
+	case "xhigh":
+		return anthropicapi.OutputConfigEffortXhigh
+	default:
+		return ""
 	}
 }
 
@@ -534,6 +620,7 @@ func anthropicUsageToTokenUsage(usage anthropicapi.Usage) provideriface.TokenUsa
 		CacheReadTokens:  maxInt64(usage.CacheReadInputTokens, 0),
 		CacheWriteTokens: maxInt64(usage.CacheCreationInputTokens, 0),
 		TotalTokens:      maxInt64(usage.InputTokens+usage.OutputTokens+usage.CacheCreationInputTokens+usage.CacheReadInputTokens, 0),
+		ServiceTier:      strings.TrimSpace(string(usage.ServiceTier)),
 		Source:           usageSource,
 		APIUsageRaw:      usageRaw,
 		APIUsageRawPath:  "usage",

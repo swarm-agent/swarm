@@ -15,6 +15,7 @@ import {
   resetAgentDefaults,
   restoreAgentDefaults,
 } from "../../../../desktop/chat/queries/chat-queries";
+import { refreshAgentModelMutationCaches } from "../../../chat/queries/agent-preference-mutations";
 import type {
   AgentProfileRecord,
   AgentStateRecord,
@@ -29,6 +30,7 @@ import {
   CUSTOM_AGENT_TOOL_PRESET_ID,
   agentToolPresetByID,
 } from "../../../chat/services/agent-tool-presets";
+import { defaultModelThinking, displayModelName, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from "../../../chat/services/model-options";
 
 interface AgentFormState {
   name: string;
@@ -37,6 +39,15 @@ interface AgentFormState {
   provider: string;
   model: string;
   thinking: string;
+  modelMode: "single" | "split";
+  planProvider: string;
+  planModel: string;
+  planThinking: string;
+  planServiceTier: string;
+  autoProvider: string;
+  autoModel: string;
+  autoThinking: string;
+  autoServiceTier: string;
   prompt: string;
   runtimeMode: "plan_auto" | "read" | "readwrite" | "";
   executionSetting: "read" | "readwrite" | "";
@@ -89,13 +100,34 @@ function displayListLabel(values: string[], fallback: string): string {
 }
 
 const NEW_AGENT_KEY = "__new__";
-const THINKING_OPTIONS = [
-  { value: "", label: "Default" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "xhigh", label: "X-High" },
-];
+const FALLBACK_AGENT_THINKING_OPTIONS = ["low", "medium", "high", "xhigh"];
+
+function thinkingOptionLabel(value: string): string {
+  if (value === "") return "Default";
+  if (value === "xhigh") return "X-High";
+  return value.replace(/(^|[-_\s])([a-z])/g, (_match, prefix: string, char: string) => `${prefix}${char.toUpperCase()}`);
+}
+
+function thinkingSelectOptionsForModel(provider: string, model: string, modelOptions: ModelOptionRecord[], includeDefault = true) {
+  const option = modelOptionFor(provider, model, modelOptions);
+  const source = option ? modelThinkingOptions(option) : FALLBACK_AGENT_THINKING_OPTIONS;
+  const values = source.filter((value) => value !== "off");
+  const normalized = values.length > 0 ? values : FALLBACK_AGENT_THINKING_OPTIONS;
+  return [
+    ...(includeDefault ? [{ value: "", label: "Default" }] : []),
+    ...normalized.map((value) => ({ value, label: thinkingOptionLabel(value) })),
+  ];
+}
+
+function normalizeThinkingForModel(provider: string, model: string, modelOptions: ModelOptionRecord[], value: string): string {
+  const normalized = normalizeModelThinking(value);
+  const option = modelOptionFor(provider, model, modelOptions);
+  if (!option) return normalized === "off" ? "" : normalized;
+  const options = modelThinkingOptions(option);
+  if (options.includes(normalized)) return normalized;
+  const fallback = defaultModelThinking(option);
+  return fallback === "off" ? "" : fallback;
+}
 
 const UTILITY_THINKING_OPTIONS = [
   { value: "off", label: "Off" },
@@ -449,6 +481,15 @@ function emptyAgentForm(): AgentFormState {
     provider: "",
     model: "",
     thinking: "",
+    modelMode: "single",
+    planProvider: "",
+    planModel: "",
+    planThinking: "",
+    planServiceTier: "",
+    autoProvider: "",
+    autoModel: "",
+    autoThinking: "",
+    autoServiceTier: "",
     prompt: "",
     runtimeMode: "readwrite",
     executionSetting: "readwrite",
@@ -469,6 +510,15 @@ function agentProviderModelSummary(
   profile: AgentProfileRecord,
   fallback = "Default model",
 ): string {
+  if (profile.modelMode === "split") {
+    const planProvider = profile.planProvider.trim();
+    const planModel = profile.planModel.trim();
+    const autoProvider = profile.autoProvider.trim();
+    const autoModel = profile.autoModel.trim();
+    if (planProvider && planModel && autoProvider && autoModel) {
+      return `Plan ${planProvider}/${planModel} → Auto ${autoProvider}/${autoModel}`;
+    }
+  }
   const provider = profile.provider.trim();
   const model = profile.model.trim();
   if (provider && model) {
@@ -530,6 +580,287 @@ function modelOptionKey(provider: string, model: string, contextMode = ""): stri
   return `${provider}:${model}:${contextMode.trim().toLowerCase()}`;
 }
 
+function modelOptionFor(provider: string, model: string, modelOptions: ModelOptionRecord[]): ModelOptionRecord | null {
+  return modelOptions.find((option) => option.provider === provider && option.model === model) ?? null;
+}
+
+function serviceTierOptionsForModel(provider: string, model: string, modelOptions: ModelOptionRecord[]) {
+  const option = modelOptionFor(provider, model, modelOptions);
+  return modelServiceTierOptions(provider, model, option?.serviceTiers ?? []);
+}
+
+function modelSupportsServiceTierSetting(provider: string, model: string, modelOptions: ModelOptionRecord[], tier = ""): boolean {
+  const option = modelOptionFor(provider, model, modelOptions);
+  return supportsModelServiceTier(provider, model, option?.serviceTiers ?? [], tier);
+}
+
+function normalizedSingleServiceTier(form: AgentFormState, modelOptions: ModelOptionRecord[]): string {
+  return modelSupportsServiceTierSetting(form.provider, form.model, modelOptions, form.autoServiceTier)
+    ? normalizeModelServiceTier(form.provider, form.autoServiceTier)
+    : "";
+}
+
+function normalizedSplitServiceTier(form: AgentFormState, prefix: AgentSplitFieldPrefix, modelOptions: ModelOptionRecord[]): string {
+  const provider = splitFieldValue(form, prefix, "provider");
+  const model = splitFieldValue(form, prefix, "model");
+  const serviceTier = splitFieldValue(form, prefix, "serviceTier");
+  return modelSupportsServiceTierSetting(provider, model, modelOptions, serviceTier)
+    ? normalizeModelServiceTier(provider, serviceTier)
+    : "";
+}
+
+function normalizeAgentModelFields(form: AgentFormState, modelOptions: ModelOptionRecord[]): AgentFormState {
+  if (form.modelMode === "split") {
+    return {
+      ...form,
+      provider: "",
+      model: "",
+      thinking: "",
+      planServiceTier: normalizedSplitServiceTier(form, "plan", modelOptions),
+      autoServiceTier: normalizedSplitServiceTier(form, "auto", modelOptions),
+    };
+  }
+  return {
+    ...form,
+    planProvider: "",
+    planModel: "",
+    planThinking: "",
+    planServiceTier: "",
+    autoProvider: "",
+    autoModel: "",
+    autoThinking: "",
+    autoServiceTier: normalizedSingleServiceTier(form, modelOptions),
+  };
+}
+
+type AgentSplitFieldPrefix = "plan" | "auto";
+
+type AgentSplitModelSectionProps = {
+  title: string;
+  description: string;
+  prefix: AgentSplitFieldPrefix;
+  form: AgentFormState;
+  providerOptions: string[];
+  modelOptions: ModelOptionRecord[];
+  selectedProfile: AgentProfileRecord | null;
+  currentDefaultModelLabel: string;
+  busy: boolean;
+  setForm: (updater: (current: AgentFormState) => AgentFormState) => void;
+};
+
+function splitFieldValue(form: AgentFormState, prefix: AgentSplitFieldPrefix, field: "provider" | "model" | "thinking" | "serviceTier"): string {
+  if (prefix === "plan") {
+    switch (field) {
+      case "provider":
+        return form.planProvider;
+      case "model":
+        return form.planModel;
+      case "thinking":
+        return form.planThinking;
+      case "serviceTier":
+        return form.planServiceTier;
+    }
+  }
+  switch (field) {
+    case "provider":
+      return form.autoProvider;
+    case "model":
+      return form.autoModel;
+    case "thinking":
+      return form.autoThinking;
+    case "serviceTier":
+      return form.autoServiceTier;
+  }
+}
+
+function withSplitFieldValue(
+  form: AgentFormState,
+  prefix: AgentSplitFieldPrefix,
+  field: "provider" | "model" | "thinking" | "serviceTier",
+  value: string,
+  modelOptions: ModelOptionRecord[],
+): AgentFormState {
+  if (prefix === "plan") {
+    switch (field) {
+      case "provider":
+        return { ...form, planProvider: value, planModel: value === form.planProvider ? form.planModel : "", planServiceTier: value === form.planProvider ? form.planServiceTier : "" };
+      case "model":
+        return {
+          ...form,
+          planModel: value,
+          planThinking: normalizeThinkingForModel(form.planProvider, value, modelOptions, form.planThinking),
+          planServiceTier: modelSupportsServiceTierSetting(form.planProvider, value, modelOptions, form.planServiceTier) ? form.planServiceTier : "",
+        };
+      case "thinking":
+        return { ...form, planThinking: value };
+      case "serviceTier":
+        return { ...form, planServiceTier: value };
+    }
+  }
+  switch (field) {
+    case "provider":
+      return { ...form, autoProvider: value, autoModel: value === form.autoProvider ? form.autoModel : "", autoServiceTier: value === form.autoProvider ? form.autoServiceTier : "" };
+    case "model":
+      return {
+        ...form,
+        autoModel: value,
+        autoThinking: normalizeThinkingForModel(form.autoProvider, value, modelOptions, form.autoThinking),
+        autoServiceTier: modelSupportsServiceTierSetting(form.autoProvider, value, modelOptions, form.autoServiceTier) ? form.autoServiceTier : "",
+      };
+    case "thinking":
+      return { ...form, autoThinking: value };
+    case "serviceTier":
+      return { ...form, autoServiceTier: value };
+  }
+}
+
+function splitModelChoices(
+  provider: string,
+  modelOptions: ModelOptionRecord[],
+  selectedProfile: AgentProfileRecord | null,
+  prefix: AgentSplitFieldPrefix,
+): string[] {
+  const trimmedProvider = provider.trim();
+  if (!trimmedProvider) {
+    return [];
+  }
+  const values = new Set<string>();
+  for (const option of modelOptions) {
+    if (option.provider === trimmedProvider && option.model.trim() !== "") {
+      values.add(option.model.trim());
+    }
+  }
+  if (selectedProfile) {
+    const savedProvider = prefix === "plan" ? selectedProfile.planProvider : selectedProfile.autoProvider;
+    const savedModel = prefix === "plan" ? selectedProfile.planModel : selectedProfile.autoModel;
+    if (savedProvider === trimmedProvider && savedModel.trim() !== "") {
+      values.add(savedModel.trim());
+    }
+  }
+  return Array.from(values).sort((left, right) => left.localeCompare(right));
+}
+
+function SplitModelSection({
+  title,
+  description,
+  prefix,
+  form,
+  providerOptions,
+  modelOptions,
+  selectedProfile,
+  currentDefaultModelLabel,
+  busy,
+  setForm,
+}: AgentSplitModelSectionProps) {
+  const provider = splitFieldValue(form, prefix, "provider");
+  const model = splitFieldValue(form, prefix, "model");
+  const thinking = splitFieldValue(form, prefix, "thinking");
+  const serviceTier = splitFieldValue(form, prefix, "serviceTier");
+  const modelChoices = splitModelChoices(provider, modelOptions, selectedProfile, prefix);
+  const serviceTierOptions = serviceTierOptionsForModel(provider, model, modelOptions);
+  const serviceTierSupported = serviceTierOptions.length > 1;
+  const normalizedServiceTier = serviceTierSupported ? normalizeModelServiceTier(provider, serviceTier) : "";
+  const thinkingOptions = thinkingSelectOptionsForModel(provider, model, modelOptions);
+  const normalizedThinking = thinkingOptions.some((option) => option.value === thinking) ? thinking : normalizeThinkingForModel(provider, model, modelOptions, thinking);
+
+  return (
+    <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+      <div className="mb-4">
+        <div className="text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">{title}</div>
+        <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{description}</p>
+      </div>
+      <div className="space-y-3">
+        <div className="flex items-center gap-3">
+          <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Provider</label>
+          <div className="relative min-w-0 flex-1">
+            <select
+              value={provider}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                const nextProvider = event.target.value;
+                setForm((current) => withSplitFieldValue(current, prefix, "provider", nextProvider, modelOptions));
+              }}
+              disabled={busy}
+              className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+            >
+              <option value="" disabled>Choose provider</option>
+              {providerOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Model</label>
+          <div className="relative min-w-0 flex-1">
+            <select
+              value={model}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                setForm((current) => withSplitFieldValue(current, prefix, "model", event.target.value, modelOptions));
+              }}
+              disabled={busy || !provider.trim()}
+              className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+            >
+              <option value="" disabled>Choose model</option>
+              {modelChoices.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Thinking</label>
+          <div className="relative min-w-0 flex-1">
+            <select
+              value={normalizedThinking}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                setForm((current) => withSplitFieldValue(current, prefix, "thinking", event.target.value, modelOptions));
+              }}
+              disabled={busy}
+              className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+            >
+              {thinkingOptions.map((option) => (
+                <option key={option.label} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Service tier</label>
+          <div className="relative min-w-0 flex-1">
+            <select
+              value={normalizedServiceTier}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                setForm((current) => withSplitFieldValue(current, prefix, "serviceTier", event.target.value, modelOptions));
+              }}
+              disabled={busy || !serviceTierSupported}
+              className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+            >
+              {serviceTierOptions.map((option) => (
+                <option key={option.label} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+          </div>
+        </div>
+      </div>
+      <p className="mt-3 text-xs leading-5 text-[var(--app-text-muted)]">
+        Split mode requires explicit provider/model choices for both Plan and Auto. Choose a provider/model here to lock this mode to that preset. Service tier options are provider-specific. Current default chat model: {currentDefaultModelLabel}.
+      </p>
+    </div>
+  );
+}
+
 function legacyToolScopeTools(
   profile: AgentProfileRecord,
 ): Record<string, AgentToolContractToolRecord> {
@@ -562,6 +893,15 @@ function profileToForm(
     provider: profile.provider,
     model: profile.model,
     thinking: profile.thinking,
+    modelMode: profile.modelMode,
+    planProvider: profile.planProvider,
+    planModel: profile.planModel,
+    planThinking: profile.planThinking,
+    planServiceTier: profile.planServiceTier,
+    autoProvider: profile.autoProvider,
+    autoModel: profile.autoModel,
+    autoThinking: profile.autoThinking,
+    autoServiceTier: profile.autoServiceTier,
     prompt: profile.prompt,
     runtimeMode: profile.exitPlanModeEnabled ? "plan_auto" : profile.runtimeMode,
     executionSetting: profile.exitPlanModeEnabled ? "" : profile.executionSetting,
@@ -616,9 +956,18 @@ async function upsertAgent(input: AgentFormState): Promise<string> {
       body: JSON.stringify({
         mode: input.mode,
         description: input.description.trim(),
-        provider: input.provider,
-        model: input.model,
-        thinking: input.thinking,
+        provider: input.modelMode === "split" ? "" : input.provider,
+        model: input.modelMode === "split" ? "" : input.model,
+        thinking: input.modelMode === "split" ? "" : input.thinking,
+        model_mode: input.modelMode === "split" ? "split" : "single",
+        plan_provider: input.planProvider,
+        plan_model: input.planModel,
+        plan_thinking: input.planThinking,
+        plan_service_tier: input.planServiceTier,
+        auto_provider: input.autoProvider,
+        auto_model: input.autoModel,
+        auto_thinking: input.autoThinking,
+        auto_service_tier: input.autoServiceTier,
         prompt: input.prompt,
         runtime_mode: resolvedExecutionMode,
         execution_setting:
@@ -996,7 +1345,7 @@ function UtilityAISettingsModal({
                           </span>
                           <span className="min-w-0 flex-1">
                             <span className="block truncate font-medium text-[var(--app-text)]">
-                              {option.model}
+                              {displayModelName(option.provider, option.model, "")}
                             </span>
                             <span className="mt-1 block truncate text-[11px] text-[var(--app-text-subtle)]">
                               {option.label || `${option.provider}/${option.model}`}
@@ -1277,20 +1626,24 @@ export function AgentsSettingsPage() {
     }
   }, [form.model, form.provider, modelChoices]);
 
+  const singleServiceTierOptions = serviceTierOptionsForModel(form.provider, form.model, modelOptions);
+  const singleServiceTierSupported = singleServiceTierOptions.length > 1;
+  const currentSingleServiceTier = singleServiceTierSupported ? normalizeModelServiceTier(form.provider, form.autoServiceTier) : "";
+  const singleThinkingOptions = thinkingSelectOptionsForModel(form.provider, form.model, modelOptions);
+  const currentSingleThinking = singleThinkingOptions.some((option) => option.value === form.thinking) ? form.thinking : normalizeThinkingForModel(form.provider, form.model, modelOptions, form.thinking);
+
   const agentStateQueryKey = agentSettingsStateQueryOptions().queryKey;
   const agentStateSummaryQueryKey = agentStateQueryOptions().queryKey;
 
   const applyAgentState = (nextState: AgentStateRecord) => {
     queryClient.setQueryData(agentStateQueryKey, nextState);
-    void queryClient.invalidateQueries({ queryKey: agentStateSummaryQueryKey });
+    queryClient.setQueryData(agentStateSummaryQueryKey, nextState);
+    void queryClient.invalidateQueries({ queryKey: agentStateSummaryQueryKey, refetchType: "inactive" });
     return nextState;
   };
 
   const refreshAgents = async () => {
-    const nextState = await queryClient.fetchQuery({
-      ...agentSettingsStateQueryOptions(),
-      staleTime: 0,
-    });
+    const nextState = await refreshAgentModelMutationCaches(queryClient);
     return applyAgentState(nextState);
   };
 
@@ -1395,21 +1748,37 @@ export function AgentsSettingsPage() {
       setError("Agent mode is required.");
       return;
     }
+    if (
+      form.modelMode === "split" &&
+      (!form.planProvider.trim() ||
+        !form.planModel.trim() ||
+        !form.autoProvider.trim() ||
+        !form.autoModel.trim())
+    ) {
+      setError("Split model mode requires explicit Plan and Auto provider/model selections.");
+      return;
+    }
     setSaving(true);
     setError(null);
     setStatus(null);
     try {
-      const savedName = await upsertAgent({
+      const savedName = await upsertAgent(normalizeAgentModelFields({
         ...form,
         name: trimmedName,
         description: form.description.trim(),
         provider: form.provider.trim(),
         model: form.provider.trim() ? form.model.trim() : "",
         thinking: form.thinking.trim(),
+        planProvider: form.planProvider.trim(),
+        planModel: form.planProvider.trim() ? form.planModel.trim() : "",
+        planThinking: form.planThinking.trim(),
+        autoProvider: form.autoProvider.trim(),
+        autoModel: form.autoProvider.trim() ? form.autoModel.trim() : "",
+        autoThinking: form.autoThinking.trim(),
         runtimeMode: displayedRuntimeMode,
         executionSetting: displayedRuntimeMode === "plan_auto" ? "" : displayedRuntimeMode,
         prompt: newPrompt,
-      });
+      }, modelOptions));
       await refreshAgents();
       setSelectedKey(savedName || trimmedName);
       setForm((current) => ({ ...current, prompt: newPrompt }));
@@ -1433,20 +1802,36 @@ export function AgentsSettingsPage() {
       setError("Agent mode is required.");
       return;
     }
+    if (
+      form.modelMode === "split" &&
+      (!form.planProvider.trim() ||
+        !form.planModel.trim() ||
+        !form.autoProvider.trim() ||
+        !form.autoModel.trim())
+    ) {
+      setError("Split model mode requires explicit Plan and Auto provider/model selections.");
+      return;
+    }
     setSaving(true);
     setError(null);
     setStatus(null);
     try {
-      const savedName = await upsertAgent({
+      const savedName = await upsertAgent(normalizeAgentModelFields({
         ...form,
         name: trimmedName,
         description: form.description.trim(),
         provider: form.provider.trim(),
         model: form.provider.trim() ? form.model.trim() : "",
         thinking: form.thinking.trim(),
+        planProvider: form.planProvider.trim(),
+        planModel: form.planProvider.trim() ? form.planModel.trim() : "",
+        planThinking: form.planThinking.trim(),
+        autoProvider: form.autoProvider.trim(),
+        autoModel: form.autoProvider.trim() ? form.autoModel.trim() : "",
+        autoThinking: form.autoThinking.trim(),
         runtimeMode: displayedRuntimeMode,
         executionSetting: displayedRuntimeMode === "plan_auto" ? "" : displayedRuntimeMode,
-      });
+      }, modelOptions));
       await refreshAgents();
       setSelectedKey(savedName || trimmedName);
       setStatus(`Saved agent ${savedName || trimmedName}.`);
@@ -2051,29 +2436,20 @@ export function AgentsSettingsPage() {
 
               <div className="flex items-center border-b border-[var(--app-border)] px-4 py-3">
                 <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                  Provider
+                  Model mode
                 </label>
                 <div className="relative w-full">
                   <select
-                    value={form.provider}
+                    value={form.modelMode}
                     onChange={(event: ChangeEvent<HTMLSelectElement>) => {
-                      const provider = event.target.value;
-                      setForm((current) => ({
-                        ...current,
-                        provider,
-                        model:
-                          provider === current.provider ? current.model : "",
-                      }));
+                      const modelMode = event.target.value === "split" ? "split" : "single";
+                      setForm((current) => ({ ...current, modelMode }));
                     }}
                     disabled={busy}
                     className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                   >
-                    <option value="">Default</option>
-                    {providerOptions.map((provider) => (
-                      <option key={provider} value={provider}>
-                        {provider}
-                      </option>
-                    ))}
+                    <option value="single">Single model (default or selected)</option>
+                    <option value="split">Split plan/auto models</option>
                   </select>
                   <ChevronDown
                     size={14}
@@ -2082,69 +2458,176 @@ export function AgentsSettingsPage() {
                 </div>
               </div>
 
-              <div className="border-b border-[var(--app-border)] px-4 py-3">
-                <div className="flex items-center">
-                  <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                    Model
-                  </label>
-                <div className="relative w-full">
-                  <select
-                    value={form.model}
-                    onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                      setForm((current) => ({
-                        ...current,
-                        model: event.target.value,
-                      }))
-                    }
-                    disabled={busy || !form.provider.trim()}
-                    className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
-                  >
-                    <option value="">Default</option>
-                    {modelChoices.map((model) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown
-                    size={14}
-                    className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
-                  />
+              {form.modelMode === "split" ? (
+                <div className="border-b border-[var(--app-border)] px-4 py-4 text-sm text-[var(--app-text)]">
+                  <div className="mb-4">
+                    <div className="text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Plan/auto split</div>
+                    <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
+                      Plan mode runs on the plan model. Exiting plan mode continues on the auto model. Leave either provider/model on Default to inherit the current chat default.
+                    </p>
+                  </div>
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <SplitModelSection
+                      title="Plan"
+                      description="Used while the agent is drafting a plan or waiting for plan approval."
+                      prefix="plan"
+                      form={form}
+                      providerOptions={providerOptions}
+                      modelOptions={modelOptions}
+                      selectedProfile={selectedProfile}
+                      currentDefaultModelLabel={currentDefaultModelLabel}
+                      busy={busy}
+                      setForm={setForm}
+                    />
+                    <SplitModelSection
+                      title="Auto"
+                      description="Used after plan approval and for direct auto execution."
+                      prefix="auto"
+                      form={form}
+                      providerOptions={providerOptions}
+                      modelOptions={modelOptions}
+                      selectedProfile={selectedProfile}
+                      currentDefaultModelLabel={currentDefaultModelLabel}
+                      busy={busy}
+                      setForm={setForm}
+                    />
+                  </div>
                 </div>
-                </div>
-                <p className="mt-2 pl-[25%] text-xs leading-5 text-[var(--app-text-muted)]">
-                  Default means this agent uses your current default chat model ({currentDefaultModelLabel}) and stays switchable in chat. Choose a provider/model here to lock the agent to that preset.
-                </p>
-              </div>
+              ) : (
+                <>
+                  <div className="flex items-center border-b border-[var(--app-border)] px-4 py-3">
+                    <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                      Provider
+                    </label>
+                    <div className="relative w-full">
+                      <select
+                        value={form.provider}
+                        onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                          const provider = event.target.value;
+                          setForm((current) => ({
+                            ...current,
+                            provider,
+                            model:
+                              provider === current.provider ? current.model : "",
+                            autoServiceTier:
+                              provider === current.provider ? current.autoServiceTier : "",
+                          }));
+                        }}
+                        disabled={busy}
+                        className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                      >
+                        <option value="">Default</option>
+                        {providerOptions.map((provider) => (
+                          <option key={provider} value={provider}>
+                            {provider}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown
+                        size={14}
+                        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
+                      />
+                    </div>
+                  </div>
 
-              <div className="flex items-center px-4 py-3">
-                <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                  Thinking
-                </label>
-                <div className="relative w-full">
-                  <select
-                    value={form.thinking}
-                    onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                      setForm((current) => ({
-                        ...current,
-                        thinking: event.target.value,
-                      }))
-                    }
-                    disabled={busy}
-                    className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
-                  >
-                    {THINKING_OPTIONS.map((option) => (
-                      <option key={option.label} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown
-                    size={14}
-                    className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
-                  />
-                </div>
-              </div>
+                  <div className="border-b border-[var(--app-border)] px-4 py-3">
+                    <div className="flex items-center">
+                      <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                        Model
+                      </label>
+                      <div className="relative w-full">
+                        <select
+                          value={form.model}
+                          onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                            setForm((current) => ({
+                              ...current,
+                              model: event.target.value,
+                              thinking: normalizeThinkingForModel(current.provider, event.target.value, modelOptions, current.thinking),
+                              autoServiceTier: modelSupportsServiceTierSetting(current.provider, event.target.value, modelOptions, current.autoServiceTier)
+                                ? current.autoServiceTier
+                                : "",
+                            }))
+                          }
+                          disabled={busy || !form.provider.trim()}
+                          className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                        >
+                          <option value="">Default</option>
+                          {modelChoices.map((model) => (
+                            <option key={model} value={model}>
+                              {model}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown
+                          size={14}
+                          className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
+                        />
+                      </div>
+                    </div>
+                    <p className="mt-2 pl-[25%] text-xs leading-5 text-[var(--app-text-muted)]">
+                      In the default state, you can freely change your settings and new chats will continue with your settings for agents with "Default" settings. Current default chat model: {currentDefaultModelLabel}. Choose a provider/model here to lock the agent to that preset.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center border-b border-[var(--app-border)] px-4 py-3">
+                    <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                      Thinking
+                    </label>
+                    <div className="relative w-full">
+                      <select
+                        value={currentSingleThinking}
+                        onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                          setForm((current) => ({
+                            ...current,
+                            thinking: event.target.value,
+                          }))
+                        }
+                        disabled={busy}
+                        className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                      >
+                        {singleThinkingOptions.map((option) => (
+                          <option key={option.label} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown
+                        size={14}
+                        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center px-4 py-3">
+                    <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                      Service tier
+                    </label>
+                    <div className="relative w-full">
+                      <select
+                        value={currentSingleServiceTier}
+                        onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                          setForm((current) => ({
+                            ...current,
+                            autoServiceTier: event.target.value,
+                          }))
+                        }
+                        disabled={busy || !singleServiceTierSupported}
+                        className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                      >
+                        {singleServiceTierOptions.map((option) => (
+                          <option key={option.label} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown
+                        size={14}
+                        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
 
               <div className="flex items-start border-t border-[var(--app-border)] px-4 py-3">
                 <label className="w-1/4 shrink-0 pt-2 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">

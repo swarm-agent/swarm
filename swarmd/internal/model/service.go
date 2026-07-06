@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -117,10 +116,10 @@ func (s *Service) SetPreferenceForAccount(accountScopeID, userID, provider, mode
 	serviceTier := ""
 	contextMode := ""
 	if len(codexRuntime) > 0 {
-		serviceTier = codexruntime.NormalizeServiceTier(codexRuntime[0])
+		serviceTier = normalizeServiceTier(codexRuntime[0])
 	}
 	if len(codexRuntime) > 1 {
-		contextMode = codexruntime.NormalizeContextMode(codexRuntime[1])
+		contextMode = normalizeContextMode(codexRuntime[1])
 	}
 
 	if provider == "" {
@@ -132,13 +131,11 @@ func (s *Service) SetPreferenceForAccount(accountScopeID, userID, provider, mode
 	if _, ok := allowedThinkingLevels[thinking]; !ok {
 		return ResolvedPreference{}, nil, fmt.Errorf("invalid thinking level %q", thinking)
 	}
-	thinking = normalizeThinkingForProvider(provider, thinking)
-	if !supportsCodexFastRuntime(provider, modelName) {
+	thinking = s.normalizeThinkingForModel(provider, modelName, thinking)
+	if !s.supportsServiceTierRuntime(provider, modelName, serviceTier) {
 		serviceTier = ""
 	}
-	if !supportsCodexContextRuntime(provider, modelName) {
-		contextMode = ""
-	}
+	contextMode = s.normalizeContextModeForModel(provider, modelName, contextMode)
 
 	pref, err := s.store.SetPreferenceForAccount(strings.TrimSpace(accountScopeID), strings.TrimSpace(userID), provider, modelName, thinking, serviceTier, contextMode)
 	if err != nil {
@@ -205,59 +202,172 @@ func (s *Service) ClearPreferenceForAccount(accountScopeID string) (ResolvedPref
 func normalizeRuntimePreference(pref pebblestore.ModelPreference) pebblestore.ModelPreference {
 	pref.Provider = normalizeProviderID(pref.Provider)
 	pref.Model = strings.TrimSpace(pref.Model)
-	pref.Thinking = normalizeThinkingForProvider(pref.Provider, pref.Thinking)
-	pref.ServiceTier = codexruntime.NormalizeServiceTier(pref.ServiceTier)
-	pref.ContextMode = codexruntime.NormalizeContextMode(pref.ContextMode)
-	if !supportsCodexFastRuntime(pref.Provider, pref.Model) {
-		pref.ServiceTier = ""
-	}
-	if !supportsCodexContextRuntime(pref.Provider, pref.Model) {
-		pref.ContextMode = ""
-	}
+	pref.Thinking = normalizeThinking(pref.Thinking)
+	pref.ServiceTier = normalizeServiceTier(pref.ServiceTier)
+	pref.ContextMode = normalizeContextMode(pref.ContextMode)
 	return pref
 }
 
-func supportsCodexFastRuntime(provider, modelName string) bool {
-	return strings.EqualFold(provider, "codex") && (strings.EqualFold(modelName, "gpt-5.4") || strings.EqualFold(modelName, "gpt-5.5"))
+func normalizeServiceTier(serviceTier string) string {
+	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
+	if serviceTier == "" || serviceTier == "standard" || serviceTier == "off" {
+		return ""
+	}
+	return serviceTier
 }
 
-func supportsCodexContextRuntime(provider, modelName string) bool {
-	return strings.EqualFold(provider, "codex") && strings.EqualFold(modelName, "gpt-5.4")
+func normalizeServiceTierForProvider(providerID, serviceTier string) string {
+	providerID = normalizeProviderID(providerID)
+	serviceTier = normalizeServiceTier(serviceTier)
+	if (providerID == "anthropic" || providerID == "openai") && serviceTier == "batch" {
+		return ""
+	}
+	return serviceTier
+}
+
+func NormalizeServiceTierForProvider(providerID, serviceTier string) string {
+	return normalizeServiceTierForProvider(providerID, serviceTier)
+}
+
+func (s *Service) supportsServiceTierRuntime(provider, modelName, serviceTier string) bool {
+	provider = normalizeProviderID(provider)
+	serviceTier = normalizeServiceTier(serviceTier)
+	if serviceTier == "" {
+		return true
+	}
+	if s == nil || s.catalog == nil {
+		return false
+	}
+	lookup, err := s.catalog.Get(provider, modelName)
+	if err != nil || !lookup.Found {
+		return false
+	}
+	return serviceTierListedForModel(serviceTier, lookup.Record)
+}
+
+func serviceTierListedForModel(serviceTier string, record pebblestore.ModelCatalogRecord) bool {
+	serviceTier = normalizeServiceTier(serviceTier)
+	if serviceTier == "" {
+		return true
+	}
+	for _, supported := range record.ServiceTiers {
+		if normalizeServiceTier(supported) == serviceTier {
+			return true
+		}
+	}
+	for _, mapping := range record.ServiceTierMappings {
+		if normalizeServiceTier(mapping.Tier) == serviceTier || normalizeServiceTier(mapping.SwarmSetting) == serviceTier {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeContextMode(contextMode string) string {
+	contextMode = strings.ToLower(strings.TrimSpace(contextMode))
+	if contextMode == "" || contextMode == "default" || contextMode == "standard" || contextMode == "off" {
+		return ""
+	}
+	return contextMode
+}
+
+func (s *Service) normalizeContextModeForModel(providerID, modelID, contextMode string) string {
+	contextMode = normalizeContextMode(contextMode)
+	if contextMode == "" {
+		return ""
+	}
+	if s == nil || s.catalog == nil {
+		return ""
+	}
+	lookup, err := s.catalog.Get(providerID, modelID)
+	if err != nil || !lookup.Found {
+		return ""
+	}
+	return contextModeForRecord(lookup.Record, contextMode)
+}
+
+func contextModeForRecord(record pebblestore.ModelCatalogRecord, contextMode string) string {
+	contextMode = normalizeContextMode(contextMode)
+	if contextMode == "" {
+		return ""
+	}
+	for _, mode := range record.ContextModes {
+		if normalizeContextMode(mode.Mode) == contextMode {
+			return contextMode
+		}
+	}
+	return ""
+}
+
+func contextWindowForMode(record pebblestore.ModelCatalogRecord, contextMode string) int {
+	contextMode = contextModeForRecord(record, contextMode)
+	if contextMode != "" {
+		for _, mode := range record.ContextModes {
+			if normalizeContextMode(mode.Mode) == contextMode && mode.ContextWindow > 0 {
+				return mode.ContextWindow
+			}
+		}
+	}
+	return record.ContextWindow
 }
 
 func applyResolvedRuntimePreference(resolved ResolvedPreference) ResolvedPreference {
 	resolved.Preference = normalizeRuntimePreference(resolved.Preference)
-	if strings.EqualFold(resolved.Preference.Provider, "codex") {
-		resolved.ContextWindow = codexruntime.EffectiveContextWindow(resolved.Preference.Model, resolved.Preference.ContextMode, resolved.ContextWindow)
-	}
 	if resolved.ContextWindow < 0 {
 		resolved.ContextWindow = 0
 	}
 	return resolved
 }
 
+func normalizeThinking(thinking string) string {
+	return strings.ToLower(strings.TrimSpace(thinking))
+}
+
 func normalizeThinkingForProvider(providerID, thinking string) string {
-	providerID = normalizeProviderID(providerID)
-	thinking = strings.ToLower(strings.TrimSpace(thinking))
-	switch providerID {
-	case "copilot":
-		if thinking == "xhigh" {
-			return "high"
-		}
-	case "fireworks":
-		if thinking == "xhigh" {
-			return "high"
-		}
-	case "openrouter":
-		if thinking == "xhigh" {
-			return "high"
-		}
-	}
-	return thinking
+	_ = normalizeProviderID(providerID)
+	return normalizeThinking(thinking)
 }
 
 func NormalizeThinkingForProvider(providerID, thinking string) string {
 	return normalizeThinkingForProvider(providerID, thinking)
+}
+
+func (s *Service) normalizeThinkingForModel(providerID, modelID, thinking string) string {
+	thinking = normalizeThinking(thinking)
+	if s == nil || s.catalog == nil {
+		return thinking
+	}
+	lookup, err := s.catalog.Get(providerID, modelID)
+	if err != nil || !lookup.Found {
+		return thinking
+	}
+	return normalizeThinkingForCatalogRecord(lookup.Record, thinking)
+}
+
+func normalizeThinkingForCatalogRecord(record pebblestore.ModelCatalogRecord, thinking string) string {
+	thinking = normalizeThinking(thinking)
+	if len(record.ThinkingOptions) == 0 {
+		return thinking
+	}
+	for _, option := range record.ThinkingOptions {
+		if strings.EqualFold(strings.TrimSpace(option), thinking) {
+			return strings.ToLower(strings.TrimSpace(option))
+		}
+	}
+	defaultThinking := strings.ToLower(strings.TrimSpace(record.DefaultThinking))
+	if defaultThinking != "" {
+		for _, option := range record.ThinkingOptions {
+			if strings.EqualFold(strings.TrimSpace(option), defaultThinking) {
+				return defaultThinking
+			}
+		}
+	}
+	for _, option := range record.ThinkingOptions {
+		if normalized := strings.ToLower(strings.TrimSpace(option)); normalized != "" {
+			return normalized
+		}
+	}
+	return thinking
 }
 
 func NormalizeProviderID(providerID string) string {
@@ -267,8 +377,6 @@ func NormalizeProviderID(providerID string) string {
 func normalizeProviderID(providerID string) string {
 	providerID = strings.ToLower(strings.TrimSpace(providerID))
 	switch providerID {
-	case "openai":
-		return "codex"
 	case "github-copilot":
 		return "copilot"
 	case "fireworks-ai":
@@ -304,6 +412,13 @@ func (s *Service) RefreshCatalog(ctx context.Context) (CatalogRefreshResult, err
 	return s.catalog.Refresh(ctx)
 }
 
+func (s *Service) RefreshCatalogManual(ctx context.Context) (CatalogRefreshResult, error) {
+	if s.catalog == nil {
+		return CatalogRefreshResult{}, errors.New("model catalog is not configured")
+	}
+	return s.catalog.RefreshManual(ctx)
+}
+
 func (s *Service) CatalogMeta() (pebblestore.ModelCatalogMeta, bool, error) {
 	if s.catalog == nil {
 		return pebblestore.ModelCatalogMeta{}, false, nil
@@ -315,7 +430,7 @@ func (s *Service) StartCatalogAutoRefresh(ctx context.Context) {
 	if s.catalog == nil {
 		return
 	}
-	s.catalog.StartAutoRefresh(ctx, 24*time.Hour)
+	s.catalog.StartAutoRefresh(ctx, time.Hour)
 }
 
 func (s *Service) ListFavorites(providerID, query string, limit int) ([]pebblestore.ModelFavoriteRecord, error) {
@@ -436,11 +551,19 @@ func (s *Service) resolvePreference(pref pebblestore.ModelPreference) (ResolvedP
 	if lookup.Found {
 		out.CatalogPresent = true
 		out.CatalogStale = lookup.Stale
-		out.ContextWindow = lookup.Record.ContextWindow
+		out.ContextWindow = contextWindowForMode(lookup.Record, out.Preference.ContextMode)
 		out.MaxOutputTokens = lookup.Record.MaxOutputTokens
 		out.CatalogSource = lookup.Record.Source
 		out.CatalogFetched = lookup.Record.FetchedAt
 		out.CatalogExpires = lookup.Record.ExpiresAt
+		out.Preference.Thinking = normalizeThinkingForCatalogRecord(lookup.Record, out.Preference.Thinking)
+	}
+	if lookup.Found {
+		out.Preference.ContextMode = contextModeForRecord(lookup.Record, out.Preference.ContextMode)
+		out.ContextWindow = contextWindowForMode(lookup.Record, out.Preference.ContextMode)
+	}
+	if out.Preference.ServiceTier != "" && (!lookup.Found || !serviceTierListedForModel(out.Preference.ServiceTier, lookup.Record)) {
+		out.Preference.ServiceTier = ""
 	}
 	meta, ok, err := s.catalog.Meta()
 	if err != nil {

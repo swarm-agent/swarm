@@ -411,11 +411,15 @@ func isPlanManageFollowupRequestAction(action string) bool {
 }
 
 func (s *Service) appendPlanLifecycleMessageForToolResult(sessionID string, call tool.Call, result tool.Result, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
-	if !strings.EqualFold(strings.TrimSpace(call.Name), "plan_manage") {
-		return nil
-	}
 	payload := decodeToolPayload(strings.TrimSpace(result.Output))
 	if payload == nil {
+		return nil
+	}
+	toolName := strings.TrimSpace(call.Name)
+	if strings.EqualFold(toolName, "exit_plan_mode") {
+		return s.appendExitPlanModeLifecycleMessage(sessionID, payload, applySessionMutation)
+	}
+	if !strings.EqualFold(toolName, "plan_manage") {
 		return nil
 	}
 	action := strings.TrimSpace(mapString(payload, "action"))
@@ -435,6 +439,30 @@ func (s *Service) appendPlanLifecycleMessageForToolResult(sessionID string, call
 		return fmt.Errorf("decode plan lifecycle payload: %w", err)
 	}
 	return s.appendPlanExecutionLifecycleSystemMessage(sessionID, action, plan, payload, applySessionMutation)
+}
+
+func (s *Service) appendExitPlanModeLifecycleMessage(sessionID string, payload map[string]any, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
+	if !strings.EqualFold(strings.TrimSpace(mapString(payload, "status")), "approved") || !strings.EqualFold(strings.TrimSpace(mapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+		return nil
+	}
+	if s == nil || s.sessions == nil {
+		return nil
+	}
+	planID := strings.TrimSpace(mapString(payload, "plan_id"))
+	var plan pebblestore.SessionPlanSnapshot
+	var ok bool
+	var err error
+	if planID != "" {
+		plan, ok, err = s.sessions.GetPlan(sessionID, planID)
+	} else {
+		plan, ok, err = s.sessions.GetActivePlan(sessionID)
+	}
+	if err != nil || !ok || plan.Document == nil {
+		return err
+	}
+	lifecyclePayload := cloneGenericMap(payload)
+	lifecyclePayload["action"] = "approve_and_start"
+	return s.appendPlanExecutionLifecycleSystemMessage(sessionID, "approve_and_start", plan, lifecyclePayload, applySessionMutation)
 }
 
 func (s *Service) storeProviderManagedToolResult(config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result) error {

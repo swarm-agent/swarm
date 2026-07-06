@@ -9,12 +9,13 @@ import { selectDesktopPlanExecutionView, type DesktopPlanExecutionView, type Ren
 import type { DesktopV3CacheState, LiveRunOverlay, MessageSnapshot, PendingUserMessage } from '../../state/desktop-v3-cache-types'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import type { DesktopPermissionRecord, DesktopSessionRecord } from '../../types/realtime'
-import type { StructuredToolMessage, ToolMessageState, AgentProfileRecord, AgentStateRecord, ModelOptionRecord, SessionPreferenceRecord, ChatMessageRecord } from '../types/chat'
+import type { StructuredToolMessage, ToolMessageState, AgentStateRecord, SessionPreferenceRecord, ChatMessageRecord } from '../types/chat'
 import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
-import { agentStateQueryOptions, draftModelQueryKey, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { draftModelQueryKey, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
-import { supportsCodexFastMode, formatContextWindow, effectiveContextWindow } from '../services/model-options'
+import { formatContextWindow, effectiveContextWindow, normalizeModelID, normalizeProviderID } from '../services/model-options'
+import { preferenceFromAgentModelLock, preferenceFromModelDraft, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader, type DesktopV3ChatHeaderSessionActions } from './desktop-v3-chat-header'
 import { buildDesktopV3RunStatusModel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
@@ -45,6 +46,8 @@ import {
 } from '../../session-v3/plan-execution-api'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../../state/desktop-v3-session-api'
 import { fetchSessionMessages, resolveSessionPermission, sendSessionMessage, updateDraftModelPreference } from '../queries/chat-queries'
+import { refreshAgentModelMutationCaches, updateAgentProfile } from '../queries/agent-preference-mutations'
+import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
 import { permissionRequiresApproval } from '../../permissions/services/permission-payload'
 import { DesktopPlanExecutionSidebar, type DesktopPlanExecutionSidebarActionInput } from './desktop-plan-execution-sidebar'
@@ -90,9 +93,20 @@ function normalizePreference(value: unknown): SessionPreferenceRecord {
 }
 
 type NormalizedUsageSummary = {
+  provider: string
+  model: string
+  source: string
   contextWindow: number
+  turnCount: number
+  inputTokens: number
+  outputTokens: number
+  thinkingTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
   remainingTokens: number
   totalTokens: number
+  serviceTier: string
+  estimatedCostUSD: number
   updatedAt: number
 }
 
@@ -104,7 +118,23 @@ function normalizeUsageSummary(value: unknown): NormalizedUsageSummary | null {
   const remainingTokens = finiteNumber(record.remaining_tokens ?? record.remainingTokens)
   const updatedAt = finiteNumber(record.updated_at ?? record.updatedAt)
   if (contextWindow <= 0 && totalTokens <= 0 && remainingTokens <= 0 && updatedAt <= 0) return null
-  return { contextWindow, remainingTokens, totalTokens, updatedAt }
+  return {
+    provider: String(record.provider ?? '').trim(),
+    model: String(record.model ?? '').trim(),
+    source: String(record.source ?? '').trim(),
+    contextWindow,
+    turnCount: finiteNumber(record.turn_count ?? record.turnCount),
+    inputTokens: finiteNumber(record.input_tokens ?? record.inputTokens),
+    outputTokens: finiteNumber(record.output_tokens ?? record.outputTokens),
+    thinkingTokens: finiteNumber(record.thinking_tokens ?? record.thinkingTokens),
+    cacheReadTokens: finiteNumber(record.cache_read_tokens ?? record.cacheReadTokens),
+    cacheWriteTokens: finiteNumber(record.cache_write_tokens ?? record.cacheWriteTokens),
+    remainingTokens,
+    totalTokens,
+    serviceTier: String(record.service_tier ?? record.serviceTier ?? '').trim(),
+    estimatedCostUSD: finiteNumber(record.estimated_cost_usd ?? record.estimatedCostUSD),
+    updatedAt,
+  }
 }
 
 function finiteNumber(value: unknown): number {
@@ -121,7 +151,16 @@ function formatDesktopV3ContextLabel(contextWindow: number, remainingTokens?: nu
 
 function formatDesktopV3ContextTooltip(contextWindow: number, usage: NormalizedUsageSummary | null): string {
   if (usage && contextWindow > 0) {
-    return `Remaining context ${formatContextWindow(usage.remainingTokens)} of ${formatContextWindow(contextWindow)}. Total tokens ${usage.totalTokens.toLocaleString()}.`
+    const parts = [
+      `Remaining context ${formatContextWindow(usage.remainingTokens)} of ${formatContextWindow(contextWindow)}.`,
+      `Current session context ${usage.totalTokens.toLocaleString()} tokens (${usage.inputTokens.toLocaleString()} input + ${usage.outputTokens.toLocaleString()} output).`,
+    ]
+    if (usage.cacheReadTokens > 0 || usage.cacheWriteTokens > 0) {
+      parts.push(`Cache: ${usage.cacheReadTokens.toLocaleString()} read, ${usage.cacheWriteTokens.toLocaleString()} write.`)
+    }
+    if (usage.turnCount > 0) parts.push(`Provider usage snapshots: ${usage.turnCount.toLocaleString()}.`)
+    if (usage.serviceTier) parts.push(`Service tier: ${usage.serviceTier}.`)
+    return parts.join(' ')
   }
   if (contextWindow > 0) return `Context window ${formatContextWindow(contextWindow)}`
   return 'Context window unavailable'
@@ -133,73 +172,8 @@ function desktopV3ContextUsagePercent(contextWindow: number, usage: NormalizedUs
   return (usedTokens / contextWindow) * 100
 }
 
-function preferenceFromOption(option: ModelOptionRecord | null, current: SessionPreferenceRecord): SessionPreferenceRecord {
-  if (!option) return current
-  return {
-    ...current,
-    provider: option.provider,
-    model: option.model,
-    thinking: current.thinking || option.thinking,
-    contextMode: option.contextMode,
-  }
-}
-
-type AgentModelLockState = {
-  profile: AgentProfileRecord | null
-  locked: boolean
-  agentName: string
-  provider: string
-  model: string
-  thinking: string
-  disabledReason: string
-}
-
-function findAgentProfile(agents: AgentProfileRecord[], agentName: string): AgentProfileRecord | null {
-  const normalizedAgentName = agentName.trim()
-  if (!normalizedAgentName) return null
-  return agents.find((agent) => agent.name === normalizedAgentName)
-    ?? agents.find((agent) => agent.name.trim().toLowerCase() === normalizedAgentName.toLowerCase())
-    ?? null
-}
-
-export function resolveDesktopV3AgentModelLock(agents: AgentProfileRecord[], selectedAgentName: string): AgentModelLockState {
-  const profile = findAgentProfile(agents, selectedAgentName)
-  const provider = profile?.provider.trim() ?? ''
-  const model = profile?.model.trim() ?? ''
-  const agentName = profile?.name.trim() || selectedAgentName.trim()
-  const locked = Boolean(provider && model)
-  return {
-    profile,
-    locked,
-    agentName,
-    provider,
-    model,
-    thinking: profile?.thinking.trim() ?? '',
-    disabledReason: locked && agentName
-      ? `To change models for ${agentName}, set the model to Default in Settings → Agents.`
-      : '',
-  }
-}
-
-function preferenceFromAgentModelLock(lock: AgentModelLockState, current: SessionPreferenceRecord, modelOptions: ModelOptionRecord[]): SessionPreferenceRecord {
-  if (!lock.locked) return current
-  const matchingOption = modelOptions.find((option) => option.provider === lock.provider && option.model === lock.model) ?? null
-  return {
-    ...current,
-    provider: lock.provider,
-    model: lock.model,
-    thinking: lock.thinking || current.thinking || matchingOption?.thinking || '',
-    contextMode: matchingOption?.contextMode ?? '',
-  }
-}
-
-function fastToggleFromPreference(preference: SessionPreferenceRecord): 'on' | 'off' {
-  return preference.serviceTier.trim().toLowerCase() === 'fast' ? 'on' : 'off'
-}
-
-function thinkingForDraftDefault(thinking: string): string {
-  const normalized = thinking.trim()
-  return normalized || 'off'
+function serviceTierFromPreference(preference: SessionPreferenceRecord): string {
+  return preference.serviceTier.trim().toLowerCase() || 'standard'
 }
 
 function preferencesEqual(left: SessionPreferenceRecord, right: SessionPreferenceRecord): boolean {
@@ -316,6 +290,10 @@ function permissionSavedRuleEqual(left: DesktopPermissionRecord['savedRule'], ri
     && left.updatedAt === right.updatedAt
 }
 
+function modelControlDetail(input: { locked: boolean; customized: boolean; modelLabel: string; thinking: string; serviceTier: string }): string {
+  return `${input.modelLabel || 'Model'} · thinking ${input.thinking || 'off'} · tier ${input.serviceTier}`
+}
+
 function formatSettingsChangeSummary(input: {
   previous: DesktopV3InputSettingsSnapshot
   next: DesktopV3InputSettingsSnapshot
@@ -328,18 +306,18 @@ function formatSettingsChangeSummary(input: {
   if (!preferencesEqual(input.previous.preference, input.next.preference)) {
     const previousThinking = input.previous.preference.thinking || 'off'
     const nextThinking = input.next.preference.thinking || 'off'
-    const previousFast = fastToggleFromPreference(input.previous.preference)
-    const nextFast = fastToggleFromPreference(input.next.preference)
+    const previousServiceTier = serviceTierFromPreference(input.previous.preference)
+    const nextServiceTier = serviceTierFromPreference(input.next.preference)
     changes.push(`model ${input.previousModelLabel || 'default'} → ${input.nextModelLabel || 'default'}`)
     if (previousThinking !== nextThinking) changes.push(`thinking ${previousThinking} → ${nextThinking}`)
-    if (previousFast !== nextFast) changes.push(`fast ${previousFast} → ${nextFast}`)
+    if (previousServiceTier !== nextServiceTier) changes.push(`tier ${previousServiceTier} → ${nextServiceTier}`)
   }
   return changes.join('; ')
 }
 
 type DesktopV3RenderItem =
   | { type: 'plan-break'; message: MessageSnapshot; headline: string; details: string[]; timelineSeq?: number }
-  | { type: 'message'; message: MessageSnapshot; timelineSeq?: number }
+  | { type: 'message'; message: MessageSnapshot; timelineSeq?: number; renderKey?: string }
   | { type: 'pending-user'; message: PendingUserMessage; timelineSeq?: number }
   | { type: 'live-assistant'; id: string; content: string; timelineSeq?: number }
   | { type: 'live-reasoning'; id: string; text: string; summary: string; state: NonNullable<LiveRunOverlay['reasoning']>['state']; startedAt: number | null; completedAt?: number | null; timelineSeq?: number }
@@ -510,6 +488,25 @@ function renderItemTimelineSeq(item: DesktopV3RenderItem): number {
   }
 }
 
+function committedToolRenderKey(message: MessageSnapshot): string {
+  const toolMessage = parseStructuredToolMessage(message.content)
+  const identity = toolMessage?.toolInstanceId || toolMessage?.callId || ''
+  return identity ? `live-tool:${identity}` : ''
+}
+
+export function desktopV3RenderItemKey(item: DesktopV3RenderItem): string {
+  switch (item.type) {
+    case 'plan-break':
+      return item.message.id
+    case 'message':
+      return item.renderKey || item.message.id
+    case 'pending-user':
+      return item.message.clientRequestId
+    default:
+      return item.id
+  }
+}
+
 export function orderDesktopV3LiveRenderItems(items: DesktopV3RenderItem[]): DesktopV3RenderItem[] {
   return items
     .map((item, index) => ({ item, index, seq: renderItemTimelineSeq(item) }))
@@ -631,7 +628,7 @@ export function buildDesktopV3ConversationRenderItems(renderedMessages: Rendered
     ...committedMessages.map((message) => (
       isDesktopV3PlanExecutionBreakMessage(message)
         ? buildDesktopV3PlanExecutionBreakItem(message)
-        : { type: 'message' as const, message, timelineSeq: message.global_seq }
+        : { type: 'message' as const, message, timelineSeq: message.global_seq, renderKey: committedToolRenderKey(message) || undefined }
     )),
     ...renderedMessages.pendingUser.map((message) => ({ type: 'pending-user' as const, message, timelineSeq: message.createdAt })),
   ]
@@ -762,6 +759,7 @@ export function DesktopV3ExistingConversationPane({
   const [sending, setSending] = useState(false)
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
+  const [agentModelSaving, setAgentModelSaving] = useState(false)
   const [restartingWithSettings, setRestartingWithSettings] = useState(false)
   const [planExecutionBusyAction, setPlanExecutionBusyAction] = useState<string | null>(null)
   const [loadingOlderHistory, setLoadingOlderHistory] = useState(false)
@@ -781,8 +779,8 @@ export function DesktopV3ExistingConversationPane({
     || renderedMessages.pendingUser.length > 0
     || renderedMessages.liveRuns.length > 0
   const selectedAgentModelLock = useMemo(
-    () => resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent),
-    [agentState.profiles, selectedAgent],
+    () => resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, mode),
+    [agentState.profiles, mode, selectedAgent],
   )
   const selectedModelKey = optionKey(preference.provider, preference.model, preference.contextMode)
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
@@ -790,17 +788,24 @@ export function DesktopV3ExistingConversationPane({
   const selectedModelAvailable = Boolean(selectedModelOption && hasResolvedPreference)
   const baselineModelKey = optionKey(settingsBaseline.preference.provider, settingsBaseline.preference.model, settingsBaseline.preference.contextMode)
   const baselineModelOption = modelOptions.find((option) => option.key === baselineModelKey) ?? null
-  const fastSupported = selectedModelOption ? supportsCodexFastMode(selectedModelOption.provider, selectedModelOption.model) : false
   const cachedUsage = useMemo(() => normalizeUsageSummary(rawCachedUsage), [rawCachedUsage])
   const selectedContextWindow = selectedModelOption
     ? effectiveContextWindow(selectedModelOption.provider, selectedModelOption.model, selectedModelOption.contextMode, selectedModelOption.contextWindow)
     : 0
-  const effectiveContextWindowValue = cachedUsage?.contextWindow && cachedUsage.contextWindow > 0
-    ? cachedUsage.contextWindow
-    : selectedContextWindow
-  const contextLabel = formatDesktopV3ContextLabel(effectiveContextWindowValue, cachedUsage?.remainingTokens)
-  const contextTooltip = formatDesktopV3ContextTooltip(effectiveContextWindowValue, cachedUsage)
-  const contextUsagePercent = desktopV3ContextUsagePercent(effectiveContextWindowValue, cachedUsage)
+  const cachedUsageMatchesSelectedModel = Boolean(cachedUsage && selectedModelOption
+    && normalizeProviderID(cachedUsage.provider) === normalizeProviderID(selectedModelOption.provider)
+    && normalizeModelID(cachedUsage.provider, cachedUsage.model) === normalizeModelID(selectedModelOption.provider, selectedModelOption.model)
+    && (selectedContextWindow <= 0 || cachedUsage.contextWindow <= 0 || cachedUsage.contextWindow === selectedContextWindow))
+  const cachedUsageIsProviderSnapshot = Boolean(cachedUsage?.source && cachedUsage.source !== 'settings_mutation')
+  const displayedUsage = cachedUsageMatchesSelectedModel && cachedUsageIsProviderSnapshot ? cachedUsage : null
+  const effectiveContextWindowValue = selectedContextWindow > 0
+    ? selectedContextWindow
+    : cachedUsage?.contextWindow && cachedUsage.contextWindow > 0
+      ? cachedUsage.contextWindow
+      : 0
+  const contextLabel = formatDesktopV3ContextLabel(effectiveContextWindowValue, displayedUsage?.remainingTokens)
+  const contextTooltip = formatDesktopV3ContextTooltip(effectiveContextWindowValue, displayedUsage)
+  const contextUsagePercent = desktopV3ContextUsagePercent(effectiveContextWindowValue, displayedUsage)
   const workspaceSettingsMatch = matchRoute({ to: '/$workspaceSlug/settings', fuzzy: false })
     ?? matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
     ?? matchRoute({ to: '/$workspaceSlug', fuzzy: false })
@@ -903,26 +908,6 @@ export function DesktopV3ExistingConversationPane({
     setPreference((current) => preferenceFromAgentModelLock(selectedAgentModelLock, current, modelOptions))
   }, [modelOptions, selectedAgentModelLock])
 
-  function handleModeChange(nextMode: DesktopSessionMode) {
-    localSettingsDirtyRef.current.mode = true
-    setMode(nextMode)
-  }
-
-  function handleAgentSelect(agentName: string) {
-    localSettingsDirtyRef.current.agent = true
-    localSettingsDirtyRef.current.preference = true
-    setSelectedAgent(agentName)
-    const lock = resolveDesktopV3AgentModelLock(agentState.profiles, agentName)
-    if (lock.locked) {
-      setPreference((current) => {
-        unlockedPreferenceRef.current = current
-        return preferenceFromAgentModelLock(lock, current, modelOptions)
-      })
-      return
-    }
-    setPreference(unlockedPreferenceRef.current)
-  }
-
   function handleOpenAgentSettings() {
     if (routeWorkspaceSlug) {
       void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab: 'agents' } })
@@ -931,59 +916,70 @@ export function DesktopV3ExistingConversationPane({
     void navigate({ to: '/settings', search: { tab: 'agents' } })
   }
 
-  function handleModelSelect(key: string) {
-    if (selectedAgentModelLock.locked) return
-    localSettingsDirtyRef.current.preference = true
-    const option = modelOptions.find((candidate) => candidate.key === key) ?? null
-    setPreference((current) => {
-      const next = preferenceFromOption(option, current)
-      unlockedPreferenceRef.current = next
-      return next
-    })
+  function handleModeSelect(nextMode: DesktopSessionMode) {
+    if (!normalizedSessionId || nextMode === mode) return
+    localSettingsDirtyRef.current.mode = true
+    setMode(nextMode)
+    if (!selectedAgentModelLock.locked) return
+    const nextLock = resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, nextMode)
+    setPreference((current) => preferenceFromAgentModelLock(nextLock, current, modelOptions))
   }
 
-  function handleThinkingChange(value: string) {
-    if (selectedAgentModelLock.locked) return
-    localSettingsDirtyRef.current.preference = true
-    setPreference((current) => {
-      const next = { ...current, thinking: value.trim() === 'off' ? '' : value.trim() }
-      unlockedPreferenceRef.current = next
-      return next
-    })
-  }
-
-  function handleFastChange(value: 'on' | 'off') {
-    if (selectedAgentModelLock.locked) return
-    localSettingsDirtyRef.current.preference = true
-    setPreference((current) => {
-      const next = {
-        ...current,
-        serviceTier: value === 'on' && fastSupported ? 'fast' : '',
+  async function handleConfirmAgentSettings(input: AgentModelControlConfirmInput) {
+    if (!normalizedSessionId || agentModelSaving) return
+    setAgentModelSaving(true)
+    setSendError(null)
+    try {
+      const action = input.action
+      let basePreference = preference
+      if (action.kind === 'default') {
+        basePreference = preferenceFromModelDraft(action.defaultPreference, modelOptions)
+        const updatedDefault = await updateDraftModelPreference(basePreference)
+        queryClient.setQueryData(draftModelQueryKey(), updatedDefault)
       }
-      unlockedPreferenceRef.current = next
-      return next
-    })
-  }
-
-  async function persistDraftModelDefault(nextPreference: SessionPreferenceRecord) {
-    if (selectedAgentModelLock.locked) return
-    if (!nextPreference.provider.trim() || !nextPreference.model.trim()) return
-    const updated = await updateDraftModelPreference({
-      ...nextPreference,
-      thinking: thinkingForDraftDefault(nextPreference.thinking),
-    })
-    queryClient.setQueryData(draftModelQueryKey(), updated)
+      await updateAgentProfile(input.profile, action.agentPatch)
+      const agentStateResult = await refreshAgentModelMutationCaches(queryClient)
+      const nextAgentName = input.agentName.trim()
+      if (nextAgentName) {
+        const agentResponse = await updateSessionV3Agent(normalizedSessionId, nextAgentName)
+        dispatchDesktopV3Cache({
+          type: 'mutation.sessionSettingsResult',
+          raw: sessionV3AgentSettingsMutationResponse(agentResponse, normalizedSessionId),
+        })
+        setSelectedAgent(nextAgentName)
+      }
+      const refreshedLock = resolveDesktopV3AgentModelLock(agentStateResult.profiles, input.agentName, mode)
+      const nextPreference = refreshedLock.locked
+        ? preferenceFromAgentModelLock(refreshedLock, basePreference, modelOptions)
+        : basePreference
+      if (!refreshedLock.locked && (action.kind === 'default' || !preferencesEqual(nextPreference, preference))) {
+        const preferenceResponse = await updateSessionV3Preference(normalizedSessionId, {
+          provider: nextPreference.provider,
+          model: nextPreference.model,
+          thinking: nextPreference.thinking,
+          serviceTier: nextPreference.serviceTier,
+          contextMode: nextPreference.contextMode,
+        })
+        const settingsResponse = sessionV3PreferenceSettingsMutationResponse(preferenceResponse, normalizedSessionId)
+        dispatchDesktopV3Cache({ type: 'mutation.sessionSettingsResult', raw: settingsResponse })
+        const updatedPreference = normalizePreference(settingsResponse.preference ?? nextPreference)
+        setPreference(updatedPreference)
+        unlockedPreferenceRef.current = updatedPreference
+      } else {
+        setPreference(nextPreference)
+        if (!refreshedLock.locked) unlockedPreferenceRef.current = nextPreference
+      }
+      localSettingsDirtyRef.current = { agent: false, mode: false, preference: false }
+    } catch (error) {
+      if (mountedRef.current) setSendError(error instanceof Error ? error.message : 'Failed to update agent settings')
+      throw error
+    } finally {
+      if (mountedRef.current) setAgentModelSaving(false)
+    }
   }
 
   async function persistVisibleSettings() {
     if (!normalizedSessionId) return
-    if (settingsBaseline.mode !== mode) {
-      const modeResponse = await updateSessionV3Mode(normalizedSessionId, mode)
-      dispatchDesktopV3Cache({
-        type: 'mutation.sessionSettingsResult',
-        raw: sessionV3ModeSettingsMutationResponse(modeResponse, normalizedSessionId, mode),
-      })
-    }
     const currentAgent = settingsBaseline.agent.trim()
     const nextAgent = selectedAgent.trim()
     if (nextAgent && nextAgent !== currentAgent) {
@@ -993,13 +989,12 @@ export function DesktopV3ExistingConversationPane({
         raw: sessionV3AgentSettingsMutationResponse(agentResponse, normalizedSessionId),
       })
     }
-    if (!preferencesEqual(preference, settingsBaseline.preference)) {
-      const preferenceResponse = await updateSessionV3Preference(normalizedSessionId, preference)
+    if (mode !== settingsBaseline.mode) {
+      const modeResponse = await updateSessionV3Mode(normalizedSessionId, mode)
       dispatchDesktopV3Cache({
         type: 'mutation.sessionSettingsResult',
-        raw: sessionV3PreferenceSettingsMutationResponse(preferenceResponse, normalizedSessionId),
+        raw: sessionV3ModeSettingsMutationResponse(modeResponse, normalizedSessionId, mode),
       })
-      await persistDraftModelDefault(preference)
     }
   }
 
@@ -1299,7 +1294,7 @@ export function DesktopV3ExistingConversationPane({
       )}>
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-            <div ref={scrollContainerRef} className="h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable]">
+            <div ref={scrollContainerRef} className="h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable]" data-testid="desktop-chat-scroller">
               <div ref={contentRef} className="mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 px-8 sm:px-12">
                 {showConversationLoading ? (
                   <DesktopV3ConversationLoadingSpinner />
@@ -1313,15 +1308,24 @@ export function DesktopV3ExistingConversationPane({
                 {messagesLoaded && !hasMessages ? (
                   <DesktopV3ChatInlineState title="Empty conversation" description="Send a message to continue this session." />
                 ) : null}
-                {renderItems.map((item, index) => (
-                  <DesktopV3RenderItemView
-                    key={item.type === 'message' || item.type === 'plan-break' ? item.message.id : item.type === 'pending-user' ? item.message.clientRequestId : item.id}
-                    item={item}
-                    thinkingTagsEnabled={thinkingTagsEnabled}
-                    timerNow={timerNow}
-                    index={index}
-                  />
-                ))}
+                {renderItems.map((item, index) => {
+                  const itemKey = desktopV3RenderItemKey(item)
+                  return (
+                    <div
+                      key={itemKey}
+                      data-testid="desktop-chat-row"
+                      data-render-item-type={item.type}
+                      data-render-item-key={itemKey}
+                    >
+                      <DesktopV3RenderItemView
+                        item={item}
+                        thinkingTagsEnabled={thinkingTagsEnabled}
+                        timerNow={timerNow}
+                        index={index}
+                      />
+                    </div>
+                  )
+                })}
                 <div aria-hidden="true" />
               </div>
             </div>
@@ -1352,30 +1356,25 @@ export function DesktopV3ExistingConversationPane({
             onStop={handleStop}
             onCompact={handleCompact}
             mode={mode}
-            onModeChange={handleModeChange}
+            onModeSelect={handleModeSelect}
             currentAgent={selectedAgent || 'Agent'}
             selectedPrimaryAgent={selectedAgent || ''}
             agents={agentState.profiles}
-            onAgentSelect={handleAgentSelect}
             modelOptions={modelOptions}
             selectedModelKey={selectedModelKey}
-            selectedModelAvailable={selectedModelAvailable}
-            onModelSelect={handleModelSelect}
+            selectedServiceTier={preference.serviceTier}
             modelPickerDisabled={selectedAgentModelLock.locked}
             modelPickerDisabledReason={selectedAgentModelLock.disabledReason}
             modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
+            modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, serviceTier: serviceTierFromPreference(preference) })}
             onOpenAgentSettings={handleOpenAgentSettings}
+            onConfirmAgentSettings={handleConfirmAgentSettings}
+            agentModelControlBusy={agentModelSaving}
             thinking={preference.thinking}
-            onThinkingChange={handleThinkingChange}
             thinkingTagsEnabled={thinkingTagsEnabled}
             onThinkingTagsToggle={(enabled) => { void handleThinkingTagsToggle(enabled) }}
             thinkingTagsBusy={thinkingTagsSaving}
-            fast={fastToggleFromPreference(preference)}
-            onFastChange={handleFastChange}
-            route={route}
-            routeOptions={routeOptions}
-            routeTitle="Changing the route starts a new session in this workspace."
-            contextLabel={contextLabel}
+                contextLabel={contextLabel}
             contextTooltip={contextTooltip}
             contextUsagePercent={contextUsagePercent}
             compactDisabled={compacting || sending || Boolean(currentRun)}

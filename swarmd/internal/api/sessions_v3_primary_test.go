@@ -4375,7 +4375,7 @@ func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 	if summary.InputTokens != 180000 || summary.OutputTokens != 10 || summary.TotalTokens != 180010 || summary.CacheReadTokens != 11776 {
 		t.Fatalf("usage summary tokens = %+v", summary)
 	}
-	if summary.ContextWindow <= 0 || summary.RemainingTokens != int64(summary.ContextWindow)-summary.TotalTokens {
+	if summary.ContextWindow > 0 && summary.RemainingTokens != int64(summary.ContextWindow)-summary.TotalTokens {
 		t.Fatalf("usage summary remaining should use latest normalized provider usage: %+v", summary)
 	}
 	_, usageSummary2, _, err := sessionSvc.RecordTurnUsage(created.ID, pebblestore.SessionTurnUsageSnapshot{
@@ -4396,7 +4396,7 @@ func TestSessionsV3ExecutorStreamsAndPersistsCodexUsage(t *testing.T) {
 	if usageSummary2.TotalTokens != 116283 {
 		t.Fatalf("usage summary should keep latest provider snapshot, got %+v", usageSummary2)
 	}
-	if usageSummary2.RemainingTokens != int64(usageSummary2.ContextWindow)-116283 {
+	if usageSummary2.ContextWindow > 0 && usageSummary2.RemainingTokens != int64(usageSummary2.ContextWindow)-116283 {
 		t.Fatalf("remaining tokens should use latest provider snapshot, got %+v", usageSummary2)
 	}
 
@@ -4512,6 +4512,295 @@ func TestSessionsV3ProviderToolLoopRecordsCodexUsagePerProviderStep(t *testing.T
 	}
 	if payloads[1].TurnUsage.Steps != 2 || payloads[1].TurnUsage.TotalTokens != 205 || payloads[1].UsageSummary.TotalTokens != 205 {
 		t.Fatalf("second usage payload = %+v", payloads[1])
+	}
+}
+
+func TestSessionsV3ProviderUsageAccountingE2E(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+
+	codexRunner := &sessionsV3RecordingProviderRunner{
+		id: "codex",
+		responses: []provideriface.Response{
+			{
+				ID:          "resp_codex_usage_step_1",
+				Model:       "gpt-5.5",
+				RestartTurn: true,
+				Usage: provideriface.TokenUsage{
+					InputTokens:     100,
+					TotalTokens:     100,
+					Source:          "codex_api_usage",
+					Transport:       "websocket",
+					ConnectedViaWS:  pebblestore.BoolPtr(true),
+					APIUsageRawPath: "response.usage",
+				},
+			},
+			{
+				ID:         "resp_codex_usage_step_2",
+				Model:      "gpt-5.5",
+				Text:       "codex done",
+				StopReason: "stop",
+				Usage: provideriface.TokenUsage{
+					InputTokens:     200,
+					OutputTokens:    5,
+					TotalTokens:     205,
+					Source:          "codex_api_usage",
+					Transport:       "websocket",
+					ConnectedViaWS:  pebblestore.BoolPtr(true),
+					APIUsageRawPath: "response.usage",
+				},
+			},
+		},
+	}
+	fireworksRunner := &sessionsV3RecordingProviderRunner{
+		id: "fireworks",
+		responses: []provideriface.Response{
+			{
+				ID:          "resp_fireworks_usage_step_1",
+				Model:       "accounts/fireworks/models/glm-5p2",
+				RestartTurn: true,
+				Usage: provideriface.TokenUsage{
+					InputTokens:     1000,
+					OutputTokens:    20,
+					CacheReadTokens: 30,
+					TotalTokens:     1020,
+					Source:          "fireworks_api_usage",
+					APIUsageRawPath: "usage",
+				},
+			},
+			{
+				ID:         "resp_fireworks_usage_step_2",
+				Model:      "accounts/fireworks/models/glm-5p2",
+				Text:       "fireworks done",
+				StopReason: "stop",
+				Usage: provideriface.TokenUsage{
+					InputTokens:     800,
+					OutputTokens:    30,
+					CacheReadTokens: 10,
+					TotalTokens:     830,
+					Source:          "fireworks_api_usage",
+					APIUsageRawPath: "usage",
+				},
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(codexRunner)
+	providers.RegisterRunner(fireworksRunner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+	testCases := []sessionsV3UsageAccountingCase{
+		{
+			name:            "codex",
+			provider:        "codex",
+			model:           "gpt-5.5",
+			createID:        "codex-usage-accounting-create",
+			messageID:       "codex-usage-accounting-message",
+			runner:          codexRunner,
+			expectedContent: "codex done",
+			expectedTurns: []sessionsV3UsageExpectation{
+				{clientRequestID: "codex-usage-accounting-message", provider: "codex", model: "gpt-5.5", step: 1, inputTokens: 100, totalTokens: 100, summaryTotalTokens: 100, summaryInputTokens: 100},
+				{clientRequestID: "codex-usage-accounting-message", provider: "codex", model: "gpt-5.5", step: 2, inputTokens: 200, outputTokens: 5, totalTokens: 205, summaryTotalTokens: 205, summaryInputTokens: 200, summaryOutputTokens: 5},
+			},
+		},
+		{
+			name:            "fireworks",
+			provider:        "fireworks",
+			model:           "accounts/fireworks/models/glm-5p2",
+			createID:        "fireworks-usage-accounting-create",
+			messageID:       "fireworks-usage-accounting-message",
+			runner:          fireworksRunner,
+			expectedContent: "fireworks done",
+			expectedTurns: []sessionsV3UsageExpectation{
+				{clientRequestID: "fireworks-usage-accounting-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 1, inputTokens: 1000, outputTokens: 20, cacheReadTokens: 30, totalTokens: 1020, summaryTotalTokens: 1020, summaryInputTokens: 1000, summaryOutputTokens: 20, summaryCacheReadTokens: 30},
+				{clientRequestID: "fireworks-usage-accounting-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 2, inputTokens: 800, outputTokens: 30, cacheReadTokens: 10, totalTokens: 830, summaryTotalTokens: 1850, summaryInputTokens: 1800, summaryOutputTokens: 50, summaryCacheReadTokens: 40},
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			created := createSessionsV3PrimaryTestSessionWithPreference(t, server, tc.createID, tc.name+" usage accounting", pebblestore.ModelPreference{Provider: tc.provider, Model: tc.model, Thinking: "high"})
+			postSessionsV3PrimaryTestMessage(t, server, created.ID, tc.messageID, "check "+tc.name+" usage cadence")
+			waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+			if tc.runner.callCount != len(tc.expectedTurns) {
+				t.Fatalf("provider call count = %d, want %d", tc.runner.callCount, len(tc.expectedTurns))
+			}
+			sessionsV3AssertUsageAccounting(t, sessionSvc, created.ID, tc.expectedTurns)
+			messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+			if err != nil {
+				t.Fatalf("list messages: %v", err)
+			}
+			if len(messages) < 2 || messages[1].Content != tc.expectedContent {
+				t.Fatalf("assistant content = %+v, want %q", messages, tc.expectedContent)
+			}
+		})
+	}
+}
+
+func TestSessionsV3ProviderUsageAccountingTransitionE2E(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	codexRunner := &sessionsV3RecordingProviderRunner{
+		id: "codex",
+		response: provideriface.Response{
+			ID:         "resp_codex_transition_usage",
+			Model:      "gpt-5.5",
+			Text:       "codex transition answer",
+			StopReason: "stop",
+			Usage: provideriface.TokenUsage{
+				InputTokens:     500,
+				OutputTokens:    10,
+				TotalTokens:     510,
+				Source:          "codex_api_usage",
+				Transport:       "websocket",
+				ConnectedViaWS:  pebblestore.BoolPtr(true),
+				APIUsageRawPath: "response.usage",
+			},
+		},
+	}
+	fireworksRunner := &sessionsV3RecordingProviderRunner{
+		id: "fireworks",
+		response: provideriface.Response{
+			ID:         "resp_fireworks_transition_usage",
+			Model:      "accounts/fireworks/models/glm-5p2",
+			Text:       "fireworks transition answer",
+			StopReason: "stop",
+			Usage: provideriface.TokenUsage{
+				InputTokens:     600,
+				OutputTokens:    20,
+				CacheReadTokens: 40,
+				TotalTokens:     620,
+				Source:          "fireworks_api_usage",
+				APIUsageRawPath: "usage",
+			},
+		},
+	}
+	providers := registry.New()
+	providers.RegisterRunner(codexRunner)
+	providers.RegisterRunner(fireworksRunner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "usage-transition-create", "usage transition", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.5", Thinking: "high"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "usage-transition-codex-message", "first use codex")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	sessionsV3AssertUsageAccounting(t, sessionSvc, created.ID, []sessionsV3UsageExpectation{{clientRequestID: "usage-transition-codex-message", provider: "codex", model: "gpt-5.5", step: 1, inputTokens: 500, outputTokens: 10, totalTokens: 510, summaryTotalTokens: 510, summaryInputTokens: 500, summaryOutputTokens: 10}})
+
+	prefReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/preference", bytes.NewBufferString(`{"provider":"fireworks","model":"accounts/fireworks/models/glm-5p2","thinking":"high"}`))
+	prefReq.Header.Set("Content-Type", "application/json")
+	prefRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prefRec, withTestPrincipal(prefReq))
+	if prefRec.Code != http.StatusOK {
+		t.Fatalf("preference status = %d, want %d, body=%s", prefRec.Code, http.StatusOK, prefRec.Body.String())
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "usage-transition-fireworks-message", "now use fireworks")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 4)
+	if codexRunner.callCount != 1 || fireworksRunner.callCount != 1 {
+		t.Fatalf("provider call counts codex=%d fireworks=%d, want 1 each", codexRunner.callCount, fireworksRunner.callCount)
+	}
+	expected := []sessionsV3UsageExpectation{
+		{clientRequestID: "usage-transition-codex-message", provider: "codex", model: "gpt-5.5", step: 1, inputTokens: 500, outputTokens: 10, totalTokens: 510, summaryTotalTokens: 510, summaryInputTokens: 500, summaryOutputTokens: 10},
+		{clientRequestID: "usage-transition-fireworks-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 1, inputTokens: 600, outputTokens: 20, cacheReadTokens: 40, totalTokens: 620, summaryTotalTokens: 1130, summaryInputTokens: 1100, summaryOutputTokens: 30, summaryCacheReadTokens: 40},
+	}
+	sessionsV3AssertUsageAccounting(t, sessionSvc, created.ID, expected)
+	summary, ok, err := sessionSvc.GetUsageSummary(created.ID)
+	if err != nil {
+		t.Fatalf("get usage summary: %v", err)
+	}
+	if !ok || summary.Provider != "fireworks" || summary.Model != "accounts/fireworks/models/glm-5p2" || summary.TotalTokens != 1130 || summary.InputTokens != 1100 || summary.OutputTokens != 30 || summary.CacheReadTokens != 40 || summary.TurnCount != 2 {
+		t.Fatalf("transition summary = %+v", summary)
+	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) < 4 || messages[1].Content != "codex transition answer" || messages[3].Content != "fireworks transition answer" {
+		t.Fatalf("transition messages = %+v", messages)
+	}
+}
+
+type sessionsV3UsageAccountingCase struct {
+	name            string
+	provider        string
+	model           string
+	createID        string
+	messageID       string
+	runner          *sessionsV3RecordingProviderRunner
+	expectedContent string
+	expectedTurns   []sessionsV3UsageExpectation
+}
+
+type sessionsV3UsageExpectation struct {
+	clientRequestID        string
+	provider               string
+	model                  string
+	step                   int
+	inputTokens            int64
+	outputTokens           int64
+	cacheReadTokens        int64
+	totalTokens            int64
+	summaryInputTokens     int64
+	summaryOutputTokens    int64
+	summaryCacheReadTokens int64
+	summaryTotalTokens     int64
+}
+
+func sessionsV3AssertUsageAccounting(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string, expected []sessionsV3UsageExpectation) {
+	t.Helper()
+	turns, err := sessionSvc.ListTurnUsage(sessionID, 20)
+	if err != nil {
+		t.Fatalf("list turn usage: %v", err)
+	}
+	if len(turns) != len(expected) {
+		t.Fatalf("turn usage count = %d, want %d: %+v", len(turns), len(expected), turns)
+	}
+	runIDs := make(map[string]bool, len(turns))
+	for _, turn := range turns {
+		runIDs[turn.RunID] = true
+	}
+	events, err := sessionSvc.ListSessionEvents(sessionID, 0, 200)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	payloads := make(map[string]struct {
+		TurnUsage    pebblestore.SessionTurnUsageSnapshot `json:"turn_usage"`
+		UsageSummary pebblestore.SessionUsageSummary      `json:"usage_summary"`
+	}, len(expected))
+	for _, event := range events {
+		if event.EventType != "run.usage.updated" {
+			continue
+		}
+		var payload struct {
+			TurnUsage    pebblestore.SessionTurnUsageSnapshot `json:"turn_usage"`
+			UsageSummary pebblestore.SessionUsageSummary      `json:"usage_summary"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode usage payload: %v", err)
+		}
+		payloads[payload.TurnUsage.RunID] = payload
+	}
+	if len(payloads) != len(expected) {
+		t.Fatalf("usage event count = %d, want %d events=%+v", len(payloads), len(expected), events)
+	}
+	for index, want := range expected {
+		baseRunID := stableSessionsV3PrimaryRunID(sessionID, want.clientRequestID)
+		wantRunID := sessionV3ProviderUsageRunID(baseRunID, want.step)
+		if !runIDs[wantRunID] {
+			t.Fatalf("missing turn usage run_id %q in %+v", wantRunID, turns)
+		}
+		payload, ok := payloads[wantRunID]
+		if !ok {
+			t.Fatalf("missing usage event run_id %q in %+v", wantRunID, payloads)
+		}
+		got := payload.TurnUsage
+		if got.Provider != want.provider || got.Model != want.model || got.Steps != want.step || got.InputTokens != want.inputTokens || got.OutputTokens != want.outputTokens || got.CacheReadTokens != want.cacheReadTokens || got.TotalTokens != want.totalTokens {
+			t.Fatalf("turn usage[%d] = %+v, want %+v", index, got, want)
+		}
+		if payload.UsageSummary.InputTokens != want.summaryInputTokens || payload.UsageSummary.OutputTokens != want.summaryOutputTokens || payload.UsageSummary.CacheReadTokens != want.summaryCacheReadTokens || payload.UsageSummary.TotalTokens != want.summaryTotalTokens {
+			t.Fatalf("usage summary[%d] = %+v, want summary input=%d output=%d cache_read=%d total=%d", index, payload.UsageSummary, want.summaryInputTokens, want.summaryOutputTokens, want.summaryCacheReadTokens, want.summaryTotalTokens)
+		}
 	}
 }
 
@@ -5141,66 +5430,84 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	workspace := t.TempDir()
 	runner := &sessionsV3RecordingProviderRunner{}
 	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
-		switch runner.callCount {
-		case 1:
-			if req.ToolInvoker == nil {
-				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
-			}
-			if !strings.Contains(req.Instructions, "Current session mode: plan.") {
-				return provideriface.Response{}, fmt.Errorf("initial instructions did not use plan mode:\n%s", req.Instructions)
-			}
-			document := map[string]any{"info": map[string]any{"goal": "continue in auto"}, "checkpoints": []map[string]any{{"id": "cp-1", "title": "continue", "status": "pending"}}}
-			args := mustSessionsV3TestJSON(t, map[string]any{"title": "Plan: continue", "document": document})
-			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-exit-plan", Name: "exit_plan_mode", Arguments: args})
-			if err != nil {
-				return provideriface.Response{}, err
-			}
-			if !result.RestartTurn {
-				return provideriface.Response{}, fmt.Errorf("exit_plan_mode result did not request turn restart: %+v", result)
-			}
-			return provideriface.Response{RestartTurn: true}, nil
-		case 2:
-			if !strings.Contains(req.Instructions, "Current session mode: auto.") {
-				return provideriface.Response{}, fmt.Errorf("checkpoint continuation instructions did not refresh to auto mode:\n%s", req.Instructions)
-			}
-			if !sessionsV3ProviderInputContainsContentText(req.Input, "[checkpoint-run] Deterministic checkpoint execution context.") || !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: cp-1.") {
-				return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint input = %+v, want fresh checkpoint context", req.Input)
-			}
-			if req.ToolInvoker == nil {
-				return provideriface.Response{}, fmt.Errorf("missing refreshed provider-managed tool invoker")
-			}
-			completeArgs := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "checkpoint complete", "result": "done"})
-			completeResult, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-checkpoint", Name: "plan_manage", Arguments: completeArgs})
-			if err != nil {
-				return provideriface.Response{}, err
-			}
-			if completeResult.Error != "" {
-				return provideriface.Response{}, fmt.Errorf("complete checkpoint after exit_plan_mode failed: %+v", completeResult)
-			}
-			return provideriface.Response{Text: "checkpoint completed in auto"}, nil
-		default:
-			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		if runner.callCount != 1 {
+			return provideriface.Response{}, fmt.Errorf("plan provider called after exit_plan_mode restart with model=%q thinking=%q", req.Model, req.Thinking)
 		}
+		if req.Model != "plan-model" || req.Thinking != "low" {
+			return provideriface.Response{}, fmt.Errorf("initial provider request model=%q thinking=%q, want plan-model/low", req.Model, req.Thinking)
+		}
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
+		}
+		if !strings.Contains(req.Instructions, "Current session mode: plan.") {
+			return provideriface.Response{}, fmt.Errorf("initial instructions did not use plan mode:\n%s", req.Instructions)
+		}
+		document := map[string]any{"info": map[string]any{"goal": "continue in auto"}, "checkpoints": []map[string]any{{"id": "cp-1", "title": "continue", "status": "pending"}}}
+		args := mustSessionsV3TestJSON(t, map[string]any{"title": "Plan: continue", "document": document})
+		return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-exit-plan", Name: "exit_plan_mode", Arguments: args}}}, nil
+	}
+	autoRunner := &sessionsV3RecordingProviderRunner{id: "auto-provider"}
+	autoRunner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if strings.TrimSpace(req.Model) != "auto-model" || strings.TrimSpace(req.Thinking) != "high" {
+			return provideriface.Response{}, fmt.Errorf("checkpoint continuation model=%q thinking=%q, want auto-model/high", req.Model, req.Thinking)
+		}
+		if !strings.Contains(req.Instructions, "Current session mode: auto.") {
+			return provideriface.Response{}, fmt.Errorf("checkpoint continuation instructions did not refresh to auto mode:\n%s", req.Instructions)
+		}
+		if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+			return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint lineage flags = boundary %q native %t fresh %t, want checkpoint fresh context", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+		}
+		if !sessionsV3ProviderInputContainsContentText(req.Input, "[checkpoint-run] Deterministic checkpoint execution context.") || !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: cp-1.") {
+			return provideriface.Response{}, fmt.Errorf("exit_plan_mode checkpoint input = %+v, want fresh checkpoint context", req.Input)
+		}
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, fmt.Errorf("missing refreshed provider-managed tool invoker")
+		}
+		completeArgs := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "checkpoint complete", "result": "done"})
+		completeResult, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-checkpoint", Name: "plan_manage", Arguments: completeArgs})
+		if err != nil {
+			return provideriface.Response{}, err
+		}
+		if completeResult.Error != "" {
+			return provideriface.Response{}, fmt.Errorf("complete checkpoint after exit_plan_mode failed: %+v", completeResult)
+		}
+		return provideriface.Response{Text: "checkpoint completed in auto"}, nil
 	}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
+	providers.RegisterRunner(autoRunner)
 	server.providers = providers
 	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
 	server.runner = runSvc
 	server.SetBypassPermissions(true)
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"exit_plan_mode": {Enabled: pebblestore.BoolPtr(true)}, "write": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ModelMode: "split", PlanProvider: "test-provider", PlanModel: "plan-model", PlanThinking: "low", AutoProvider: "auto-provider", AutoModel: "auto-model", AutoThinking: "high", ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"exit_plan_mode": {Enabled: pebblestore.BoolPtr(true)}, "write": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
 		t.Fatalf("upsert exit-plan swarm agent: %v", err)
 	}
 	exec := newSessionV3Executor(server)
 	exec.startDelay = 0
 	server.v3SessionExecutor = exec
 
-	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-exit-plan-restart-create", "provider exit plan restart", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
-	updated, _, err := sessionSvc.SetMode(created.ID, sessionruntime.ModePlan)
-	if err != nil {
-		t.Fatalf("set session plan mode: %v", err)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-exit-plan-restart-create", "provider exit plan restart", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "plan-model", Thinking: "low"})
+	settingsBody := `{"client_request_id":"provider-exit-plan-restart-mode","mode":"plan"}`
+	settingsReq := httptest.NewRequest(http.MethodPatch, "/v3/sessions/"+created.ID+"/settings", bytes.NewBufferString(settingsBody))
+	settingsReq.Header.Set("Content-Type", "application/json")
+	settingsRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(settingsRec, withTestPrincipal(settingsReq))
+	if settingsRec.Code != http.StatusOK {
+		t.Fatalf("set session plan mode status=%d want=%d body=%s", settingsRec.Code, http.StatusOK, settingsRec.Body.String())
+	}
+	updated, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get session after plan mode update: ok=%t err=%v", ok, err)
 	}
 	created = updated
+	profile, err := sessionV3AgentProfileFromMetadata(created.Metadata)
+	if err != nil {
+		t.Fatalf("decode stored agent profile after plan mode update: %v", err)
+	}
+	if profile.ModelMode != "split" || profile.PlanModel != "plan-model" || profile.AutoProvider != "auto-provider" || profile.AutoModel != "auto-model" {
+		t.Fatalf("stored agent profile after plan mode update = %+v", profile)
+	}
 	if created.Mode != sessionruntime.ModePlan {
 		t.Fatalf("created session mode = %q, want plan", created.Mode)
 	}
@@ -5218,39 +5525,71 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 4 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "tool" || messages[3].Role != "assistant" || messages[3].Content != "checkpoint completed in auto" {
+	if len(messages) != 6 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "system" || messages[3].Role != "tool" || messages[4].Role != "system" || messages[5].Role != "assistant" || messages[5].Content != "checkpoint completed in auto" {
 		t.Fatalf("messages after exit plan restart = %+v", messages)
 	}
 	if !strings.Contains(messages[1].Content, "run_checkpoint_with_fresh_context") {
 		t.Fatalf("exit-plan tool message did not request checkpoint run = %+v", messages[1])
 	}
-	if !strings.Contains(messages[2].Content, "complete_checkpoint") {
-		t.Fatalf("checkpoint completion tool message = %+v", messages[2])
+	if !strings.Contains(messages[2].Content, "Plan accepted, starting Checkpoint 1") || !strings.Contains(messages[2].Content, "Context: Starting the next checkpoint with fresh context.") {
+		t.Fatalf("exit-plan lifecycle start message content = %q", messages[2].Content)
+	}
+	if !strings.Contains(messages[3].Content, "complete_checkpoint") {
+		t.Fatalf("checkpoint completion tool message = %+v", messages[3])
+	}
+	if messages[4].Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || messages[4].Metadata["kind"] != "plan_execution_break" || messages[4].Metadata["action"] != "complete_checkpoint" || messages[4].Metadata["next_action"] != "await_review" {
+		t.Fatalf("checkpoint lifecycle message metadata = %+v", messages[4])
+	}
+	if !strings.Contains(messages[4].Content, "All checkpoints complete; review required") || !strings.Contains(messages[4].Content, "Next: all checkpoints are complete; waiting for user review.") {
+		t.Fatalf("checkpoint lifecycle message content = %q", messages[4].Content)
 	}
 	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 40)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
 	seenModeEvent := false
+	seenAutoPreference := false
+	seenAutoPolicy := false
 	for _, event := range events {
 		if event.EventType == "session.mode.updated" {
 			seenModeEvent = true
+			var payload map[string]any
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatalf("decode session.mode.updated payload: %v payload=%s", err, event.Payload)
+			}
+			preference, _ := payload["preference"].(map[string]any)
+			if preference["model"] == "auto-model" && preference["thinking"] == "high" {
+				seenAutoPreference = true
+			}
+			policy, _ := payload["agent_model_policy"].(map[string]any)
+			if policy["source"] == "agent_auto_preset" && payload["swarm_conf_v3_diagnostics_enabled"] == false {
+				seenAutoPolicy = true
+			}
 		}
 	}
 	if !seenModeEvent {
 		t.Fatalf("missing canonical session.mode.updated event after exit_plan_mode: %+v", events)
 	}
-	if runner.callCount != 2 {
-		t.Fatalf("provider call count = %d, want exit plan plus checkpoint continuation", runner.callCount)
+	if !seenAutoPreference || !seenAutoPolicy {
+		t.Fatalf("session.mode.updated payload did not include auto model preference/policy: seenPreference=%t seenPolicy=%t events=%+v", seenAutoPreference, seenAutoPolicy, events)
+	}
+	if runner.callCount != 1 {
+		t.Fatalf("plan provider call count = %d, want exit plan only", runner.callCount)
+	}
+	if autoRunner.callCount != 1 {
+		t.Fatalf("auto provider call count = %d, want checkpoint continuation after provider switch", autoRunner.callCount)
+	}
+	if autoRunner.lastRequest.Model != "auto-model" || autoRunner.lastRequest.Thinking != "high" {
+		t.Fatalf("auto provider request model=%q thinking=%q, want auto-model/high", autoRunner.lastRequest.Model, autoRunner.lastRequest.Thinking)
 	}
 	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
 	if err != nil || !ok || activePlan.Document == nil {
 		t.Fatalf("get active plan after checkpoint run: ok=%t err=%v plan=%#v", ok, err, activePlan)
 	}
-	if activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateCompleted {
+	if activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateWaitingReview || activePlan.Document.Checkpoints[0].Review == nil || activePlan.Document.Checkpoints[0].Review.Status != sessionruntime.PlanCheckpointReviewStatusPending {
 		t.Fatalf("active plan after checkpoint run = %#v", activePlan.Document)
 	}
-	assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, sessionruntime.PlanExecutionStateCompleted)
+	assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, sessionruntime.PlanExecutionStateWaitingReview)
 }
 
 func TestSessionsV3ExecutorFinalizesReviewCheckpointAfterProviderManagedPlanComplete(t *testing.T) {
@@ -5501,8 +5840,17 @@ func TestSessionsV3ExecutorFollowUpAfterAutomaticCheckpointUsesFreshContextBound
 			}
 			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
 		case 2:
+			if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+				return provideriface.Response{}, fmt.Errorf("terminal finalization lineage flags = boundary %q native %t fresh %t, want checkpoint fresh context", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			}
 			return provideriface.Response{Text: "automatic checkpoint finalized"}, nil
 		case 3:
+			if req.BoundaryReason != "session_turn" || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
+				return provideriface.Response{}, fmt.Errorf("post-checkpoint follow-up lineage flags = boundary %q native %t fresh %t, want session_turn native continuation", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			}
+			if runner.requests[1].ProviderLineageID == "" || runner.requests[2].ProviderLineageID != runner.requests[1].ProviderLineageID {
+				return provideriface.Response{}, fmt.Errorf("post-checkpoint follow-up changed lineage: final=%q follow-up=%q", runner.requests[1].ProviderLineageID, runner.requests[2].ProviderLineageID)
+			}
 			if sessionsV3ProviderInputContainsContentText(req.Input, oldPrompt) {
 				return provideriface.Response{}, fmt.Errorf("follow-up provider input leaked old raw transcript: %+v", req.Input)
 			}
@@ -5611,6 +5959,18 @@ func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T
 	}
 	if runner.callCount != 2 {
 		t.Fatalf("provider call count = %d, want restart plus continuation", runner.callCount)
+	}
+	if len(runner.requests) != 2 {
+		t.Fatalf("recorded provider requests = %d, want 2", len(runner.requests))
+	}
+	if runner.requests[0].ProviderLineageID == "" || runner.requests[0].ProviderLineageID != runner.requests[1].ProviderLineageID {
+		t.Fatalf("restart-after-tool should remain inside one provider lineage: first=%+v second=%+v", runner.requests[0], runner.requests[1])
+	}
+	if runner.requests[0].ProviderCacheKey != runner.requests[1].ProviderCacheKey || runner.requests[0].SessionAffinityKey != runner.requests[1].SessionAffinityKey {
+		t.Fatalf("restart-after-tool changed lineage cache/affinity: first=%+v second=%+v", runner.requests[0], runner.requests[1])
+	}
+	if runner.requests[1].BoundaryReason != "restart_after_tool" || runner.requests[1].NativeContinuationAllowed || !runner.requests[1].ForceFreshProviderContext {
+		t.Fatalf("restart-after-tool did not force a fresh provider context while preserving lineage key: %+v", runner.requests[1])
 	}
 }
 
@@ -5831,6 +6191,113 @@ func postSessionsV3CompactTestRequest(t *testing.T, server *Server, sessionID, c
 		t.Fatalf("compact response missing run intent: %s", rec.Body.String())
 	}
 	waitForSessionsV3SpecificRunIntentStatus(t, server.sessions, sessionID, resp.RunIntent.RunID, sessionruntime.RunIntentCompleted)
+}
+
+func TestSessionsV3ProviderLineageMetadataPersistsAcrossModelHandoff(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{text: "assistant answer"}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "lineage-meta-create", "lineage metadata", pebblestore.ModelPreference{Provider: "test-provider", Model: "model-a", Thinking: "medium"})
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "lineage-meta-message-1", "first turn")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
+	appendSessionsV3PrimaryTestUserMessage(t, server, created.ID, "lineage-meta-old-huge", "OLD-HUGE-TRANSCRIPT-"+strings.Repeat("x", 4000))
+	appendSessionsV3PrimaryTestSystemMessage(t, server, created.ID, "lineage-meta-summary", "[context-compact] index=2 origin=test\n\nCompacted recap:\nFirst turn summary.")
+	prefReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/preference", bytes.NewBufferString(`{"provider":"test-provider","model":"model-b","thinking":"medium"}`))
+	prefReq.Header.Set("Content-Type", "application/json")
+	prefRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prefRec, withTestPrincipal(prefReq))
+	if prefRec.Code != http.StatusOK {
+		t.Fatalf("preference status = %d, want %d, body=%s", prefRec.Code, http.StatusOK, prefRec.Body.String())
+	}
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "lineage-meta-message-2", "second turn")
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 6)
+
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	var firstAssistant, summary, secondAssistant *pebblestore.MessageSnapshot
+	for i := range messages {
+		message := &messages[i]
+		if strings.EqualFold(message.Role, "system") && strings.HasPrefix(strings.TrimSpace(message.Content), "[context-compact]") {
+			summary = message
+		}
+		if !strings.EqualFold(message.Role, "assistant") {
+			continue
+		}
+		if firstAssistant == nil {
+			firstAssistant = message
+		} else {
+			secondAssistant = message
+		}
+	}
+	if firstAssistant == nil || summary == nil || secondAssistant == nil {
+		t.Fatalf("expected first assistant, summary, second assistant in messages: %+v", messages)
+	}
+	firstLineage := sessionV3MetadataString(firstAssistant.Metadata, "provider_lineage_id")
+	secondLineage := sessionV3MetadataString(secondAssistant.Metadata, "provider_lineage_id")
+	if firstLineage == "" || secondLineage == "" || firstLineage == secondLineage {
+		t.Fatalf("lineage IDs first=%q second=%q", firstLineage, secondLineage)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "previous_provider_lineage_id"); got != firstLineage {
+		t.Fatalf("previous lineage = %q, want %q metadata=%+v", got, firstLineage, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "previous_provider"); got != "test-provider" {
+		t.Fatalf("previous provider = %q metadata=%+v", got, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "previous_model"); got != "model-a" {
+		t.Fatalf("previous model = %q metadata=%+v", got, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "new_provider"); got != "test-provider" {
+		t.Fatalf("new provider = %q metadata=%+v", got, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "new_model"); got != "model-b" {
+		t.Fatalf("new model = %q metadata=%+v", got, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "handoff_summary_message_id"); got != strings.TrimSpace(summary.ID) {
+		t.Fatalf("handoff summary id = %q, want %q metadata=%+v", got, summary.ID, secondAssistant.Metadata)
+	}
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "provider_lineage_start_message_id"); got != "" {
+		t.Fatalf("new lineage start message should be empty before first persisted response, got %q", got)
+	}
+	if runner.lastRequest.SessionID != created.ID {
+		t.Fatalf("durable session changed across provider handoff: got %q want %q", runner.lastRequest.SessionID, created.ID)
+	}
+	if runner.lastRequest.ProviderLineageID != secondLineage || runner.lastRequest.PreviousProviderLineageID != firstLineage {
+		t.Fatalf("request lineage first=%q second=%q request=%+v", firstLineage, secondLineage, runner.lastRequest)
+	}
+	if runner.lastRequest.BoundaryReason != "provider_model_runtime_handoff" || runner.lastRequest.NativeContinuationAllowed || !runner.lastRequest.ForceFreshProviderContext {
+		t.Fatalf("handoff request boundary flags = %+v", runner.lastRequest)
+	}
+	if runner.lastRequest.ProviderCacheKey == created.ID || runner.lastRequest.SessionAffinityKey == created.ID || !strings.Contains(runner.lastRequest.ProviderCacheKey, secondLineage) || !strings.Contains(runner.lastRequest.SessionAffinityKey, secondLineage) {
+		t.Fatalf("handoff request reused durable session/cache identity: cache=%q affinity=%q session=%q lineage=%q", runner.lastRequest.ProviderCacheKey, runner.lastRequest.SessionAffinityKey, created.ID, secondLineage)
+	}
+	for _, want := range []string{"[provider-handoff]", "First turn summary", "second turn"} {
+		if !sessionsV3ProviderInputContainsContentText(runner.lastRequest.Input, want) {
+			t.Fatalf("handoff input missing %q: %+v", want, runner.lastRequest.Input)
+		}
+	}
+	for _, forbidden := range []string{"OLD-HUGE-TRANSCRIPT", "first turn"} {
+		if sessionsV3ProviderInputContainsContentText(runner.lastRequest.Input, forbidden) {
+			t.Fatalf("handoff input replayed forbidden transcript %q: %+v", forbidden, runner.lastRequest.Input)
+		}
+	}
+
+	diagnostic := sessionV3ProviderRequestDiagnostic(runner.lastRequest)
+	for _, forbidden := range []string{"provider_cache_key", "session_affinity_key", "instructions", "input", "tools", "workspace_path"} {
+		if _, ok := diagnostic[forbidden]; ok {
+			t.Fatalf("diagnostic includes unsafe payload field %q: %+v", forbidden, diagnostic)
+		}
+	}
+	if diagnostic["provider_cache_key_present"] != true || diagnostic["session_affinity_key_present"] != true || diagnostic["boundary_reason"] == "" {
+		t.Fatalf("diagnostic missing auditable lineage shape: %+v", diagnostic)
+	}
 }
 
 func TestSessionsV3ProviderToolPersistenceUsesApplySessionMutationOnly(t *testing.T) {

@@ -28,7 +28,7 @@ Options:
 Selection/search:
   --latest <n>          Inspect latest n sessions. Default: 5
   --session <id|url>    Inspect one exact session id. A URL uses its last path segment.
-  --session-url <url>    Extract the session id from a URL, copy DB, dump JSON to /tmp.
+  --session-url <url>    Extract session id from URL, stop service, dump JSON to /tmp without copying DB.
   --query <text>        Search session id/title/workspace/metadata/messages/events.
   --all                 Inspect all sessions scanned by --scan-limit.
   --scan-limit <n>      Max sessions to scan from newest first. Default: 1000
@@ -215,7 +215,9 @@ for pair in "latest:${LATEST}" "scan-limit:${SCAN_LIMIT}" "messages:${MESSAGE_LI
 done
 if [[ "${SESSION_URL_MODE}" == "true" ]]; then
   [[ -n "${SESSION_ID}" ]] || fail "could not extract session id from URL"
-  COPY_DB="true"
+  if [[ "${COPY_DB}" != "true" ]]; then
+    STOP_SERVICE="true"
+  fi
   DUMP="true"
   JSON_OUTPUT="true"
   if [[ -z "${OUT_PATH}" ]]; then
@@ -742,7 +744,7 @@ func oneLine(value string, limit int) string {
 }
 EOF_GO
 
-cmd=("${GO_BIN}" run "." --db "${INSPECT_DB_PATH}" --source-db "${DB_PATH}" --latest "${LATEST}" --scan-limit "${SCAN_LIMIT}" --messages "${MESSAGE_LIMIT}" --events "${EVENT_LIMIT}")
+cmd=("${GO_BIN}" run -mod=mod "." --db "${INSPECT_DB_PATH}" --source-db "${DB_PATH}" --latest "${LATEST}" --scan-limit "${SCAN_LIMIT}" --messages "${MESSAGE_LIMIT}" --events "${EVENT_LIMIT}")
 if [[ -n "${SESSION_ID}" ]]; then cmd+=(--session "${SESSION_ID}"); fi
 if [[ -n "${QUERY}" ]]; then cmd+=(--query "${QUERY}"); fi
 if [[ "${ALL}" == "true" ]]; then cmd+=(--all); fi

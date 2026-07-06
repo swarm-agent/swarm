@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -145,8 +146,10 @@ func (a *Adapter) VerifyCredential(ctx context.Context, credential provideriface
 	if client == nil {
 		client = &http.Client{Timeout: 6 * time.Second}
 	}
+	providerdiagnostics.LogRequest("exa", "verify.search", req, body)
 	resp, err := client.Do(req)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "exa", "verify.search", err)
 		return provideriface.AuthVerification{
 			Connected: false,
 			Method:    "api",
@@ -155,7 +158,9 @@ func (a *Adapter) VerifyCredential(ctx context.Context, credential provideriface
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+	providerdiagnostics.LogResponse("exa", "verify.search", resp, raw)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "exa", "verify.search", err)
 		return provideriface.AuthVerification{
 			Connected: false,
 			Method:    "api",

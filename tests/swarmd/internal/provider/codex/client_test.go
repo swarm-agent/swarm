@@ -81,9 +81,10 @@ func TestNewClientUsesNoGlobalHTTPTimeout(t *testing.T) {
 
 func TestBuildRequestPayloadIncludesCodexParityFields(t *testing.T) {
 	payload, err := buildRequestPayload(Request{
-		Model:     "gpt-5.3-codex",
-		SessionID: "sess_1",
-		Thinking:  "low",
+		Model:            "gpt-5.3-codex",
+		SessionID:        "sess_1",
+		ProviderCacheKey: "cache_1",
+		Thinking:         "low",
 		Input: []map[string]any{
 			{
 				"type": "message",
@@ -105,8 +106,8 @@ func TestBuildRequestPayloadIncludesCodexParityFields(t *testing.T) {
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
-	if got := strings.TrimSpace(asString(decoded["prompt_cache_key"])); got != "sess_1" {
-		t.Fatalf("prompt_cache_key = %q, want sess_1", got)
+	if got := strings.TrimSpace(asString(decoded["prompt_cache_key"])); got != "cache_1" {
+		t.Fatalf("prompt_cache_key = %q, want cache_1", got)
 	}
 	text, ok := decoded["text"].(map[string]any)
 	if !ok {
@@ -122,10 +123,11 @@ func TestBuildRequestPayloadIncludesCodexParityFields(t *testing.T) {
 }
 
 func TestBuildRequestPayloadHashesLongPromptCacheKey(t *testing.T) {
-	longSessionID := strings.Repeat("session-", 15)
+	longCacheKey := strings.Repeat("cache-", 15)
 	payload, err := buildRequestPayload(Request{
-		Model:     "gpt-5.3-codex",
-		SessionID: longSessionID,
+		Model:            "gpt-5.3-codex",
+		SessionID:        "durable-session",
+		ProviderCacheKey: longCacheKey,
 		Input: []map[string]any{
 			{
 				"type": "message",
@@ -151,7 +153,7 @@ func TestBuildRequestPayloadHashesLongPromptCacheKey(t *testing.T) {
 	if cacheKey == "" {
 		t.Fatal("prompt_cache_key was omitted")
 	}
-	if cacheKey == longSessionID {
+	if cacheKey == longCacheKey {
 		t.Fatal("prompt_cache_key was not hashed")
 	}
 	if len(cacheKey) > maxPromptCacheKeyLength {

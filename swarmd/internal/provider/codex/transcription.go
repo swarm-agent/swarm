@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -153,8 +154,10 @@ func (c *Client) sendTranscription(ctx context.Context, record pebblestore.Codex
 		httpReq.Header.Set("ChatGPT-Account-Id", strings.TrimSpace(record.AccountID))
 	}
 
+	providerdiagnostics.LogRequest("codex", "audio.transcriptions", httpReq, body.Bytes())
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "codex", "audio.transcriptions", err)
 		codexVoiceDebugEvent("transcription.http_error", map[string]any{
 			"endpoint": endpoint,
 			"error":    sanitizeDiagnosticText(err.Error()),
@@ -164,7 +167,9 @@ func (c *Client) sendTranscription(ctx context.Context, record pebblestore.Codex
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	providerdiagnostics.LogResponse("codex", "audio.transcriptions", resp, raw)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "codex", "audio.transcriptions", err)
 		codexVoiceDebugEvent("transcription.read_error", map[string]any{
 			"endpoint":    endpoint,
 			"status_code": resp.StatusCode,

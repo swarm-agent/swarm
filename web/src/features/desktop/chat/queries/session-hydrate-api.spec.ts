@@ -51,7 +51,7 @@ async function withFetchStub(
         ok: true,
         session_id: sessionId,
         has_usage_summary: true,
-        usage_summary: { session_id: sessionId, provider: 'codex', model: 'gpt-5.4', source: 'provider', context_window: 1000, total_tokens: 42, remaining_tokens: 958, updated_at: 6 },
+        usage_summary: { session_id: sessionId, provider: 'codex', model: 'gpt-5.4', source: 'provider', context_window: 1000, turn_count: 2, input_tokens: 40, output_tokens: 2, thinking_tokens: 0, cache_read_tokens: 20, cache_write_tokens: 0, total_tokens: 42, remaining_tokens: 958, service_tier: 'standard', estimated_cost_usd: 0.001, updated_at: 6 },
       })
     }
 
@@ -244,7 +244,7 @@ function v3HydratedSessionPayload(sessionId: string) {
     pending_permissions: [
       { id: `${sessionId}-perm-1`, session_id: sessionId, run_id: 'run-1', call_id: 'call-1', tool_name: 'bash', tool_arguments: '{}', status: 'pending', requirement: 'approval', mode: 'auto', created_at: 6, updated_at: 6 },
     ],
-    usage_summary: { session_id: sessionId, provider: 'codex', model: 'gpt-5.4', source: 'provider', context_window: 1000, total_tokens: 42, remaining_tokens: 958, updated_at: 6 },
+    usage_summary: { session_id: sessionId, provider: 'codex', model: 'gpt-5.4', source: 'provider', context_window: 1000, turn_count: 2, input_tokens: 40, output_tokens: 2, thinking_tokens: 0, cache_read_tokens: 20, cache_write_tokens: 0, total_tokens: 42, remaining_tokens: 958, service_tier: 'standard', estimated_cost_usd: 0.001, updated_at: 6 },
     active_run_intent: sessionId === 'session-v3-active'
       ? { session_id: sessionId, run_id: 'run-active', status: 'running', created_at: 1000, updated_at: 4000, event_seq: 9 }
       : null,

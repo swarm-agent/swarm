@@ -4,11 +4,12 @@ import assert from 'node:assert/strict'
 import {
   buildDesktopV3ConversationRenderItems,
   buildDesktopV3LiveRunRenderItems,
+  desktopV3RenderItemKey,
   isDesktopV3PlanExecutionBreakMessage,
   completeDesktopV3ExistingMessage,
-  resolveDesktopV3AgentModelLock,
   resolveDesktopV3StopRunRequest,
 } from './desktop-v3-existing-conversation-pane'
+import { resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import {
   completeDesktopV3NewSessionStarted,
 } from './desktop-v3-new-session-pane'
@@ -181,6 +182,51 @@ test('Desktop V3 plan lifecycle messages render as conversation breaks', () => {
 })
 
 
+test('Desktop V3 committed tool message reuses matching live tool render key', () => {
+  const liveItems = buildDesktopV3LiveRunRenderItems({
+    sessionId: 'session-a',
+    runId: 'run-a',
+    status: 'running',
+    toolCallsByCallId: {
+      'call-1': {
+        callId: 'call-1',
+        toolInstanceId: 'tool-instance-1',
+        toolName: 'search',
+        outputText: '{"summary":"done"}',
+        status: 'completed',
+        updatedAt: 40,
+        timelineSeq: 4,
+      },
+    },
+    lastEventSeqSeen: 4,
+  })
+  const committedItems = buildDesktopV3ConversationRenderItems({
+    committed: [{
+      id: 'msg-tool-1',
+      session_id: 'session-a',
+      global_seq: 5,
+      role: 'tool',
+      content: JSON.stringify({
+        path_id: 'run.tool-history.v2',
+        run_id: 'run-a',
+        call_id: 'call-1',
+        tool_instance_id: 'tool-instance-1',
+        tool: 'search',
+        output: '{"summary":"done"}',
+      }),
+      created_at: 50,
+    }],
+    pendingUser: [],
+    liveRuns: [],
+    runIntents: [],
+  })
+
+  assert.equal(liveItems[0]?.type, 'live-tool')
+  assert.equal(committedItems[0]?.type, 'message')
+  assert.equal(desktopV3RenderItemKey(committedItems[0]), desktopV3RenderItemKey(liveItems[0]))
+})
+
+
 test('Desktop V3 live run render items preserve backend event order', () => {
   const items = buildDesktopV3LiveRunRenderItems({
     sessionId: 'session-a',
@@ -224,6 +270,15 @@ function agentProfile(overrides: Partial<AgentProfileRecord>): AgentProfileRecor
     provider: '',
     model: '',
     thinking: '',
+    modelMode: 'single',
+    planProvider: '',
+    planModel: '',
+    planThinking: '',
+    planServiceTier: '',
+    autoProvider: '',
+    autoModel: '',
+    autoThinking: '',
+    autoServiceTier: '',
     prompt: '',
     runtimeMode: 'plan_auto',
     executionSetting: '',
@@ -239,7 +294,7 @@ function agentProfile(overrides: Partial<AgentProfileRecord>): AgentProfileRecor
 
 test('Desktop V3 agent model lock is derived synchronously from loaded agent profiles', () => {
   const locked = resolveDesktopV3AgentModelLock([
-    agentProfile({ name: 'swarm', provider: 'codex', model: 'gpt-5.4', thinking: 'high' }),
+    agentProfile({ name: 'swarm', provider: 'codex', model: 'gpt-5.4', thinking: 'high', autoServiceTier: 'fast' }),
     agentProfile({ name: 'default-agent', provider: '', model: '', thinking: '' }),
   ], 'swarm')
 
@@ -247,6 +302,7 @@ test('Desktop V3 agent model lock is derived synchronously from loaded agent pro
   assert.equal(locked.provider, 'codex')
   assert.equal(locked.model, 'gpt-5.4')
   assert.equal(locked.thinking, 'high')
+  assert.equal(locked.serviceTier, 'fast')
   assert.match(locked.disabledReason, /set the model to Default in Settings → Agents/)
 
   const unlocked = resolveDesktopV3AgentModelLock([
@@ -255,4 +311,37 @@ test('Desktop V3 agent model lock is derived synchronously from loaded agent pro
 
   assert.equal(unlocked.locked, false)
   assert.equal(unlocked.disabledReason, '')
+})
+
+test('Desktop V3 split agent model lock resolves by composer mode', () => {
+  const profiles = [
+    agentProfile({
+      name: 'swarm',
+      modelMode: 'split',
+      planProvider: 'codex',
+      planModel: 'gpt-5.4',
+      planThinking: 'high',
+      planServiceTier: 'fast',
+      autoProvider: 'openai',
+      autoModel: 'gpt-5.5',
+      autoThinking: 'medium',
+      autoServiceTier: '',
+    }),
+  ]
+
+  const plan = resolveDesktopV3AgentModelLock(profiles, 'swarm', 'plan')
+  assert.equal(plan.locked, true)
+  assert.equal(plan.provider, 'codex')
+  assert.equal(plan.model, 'gpt-5.4')
+  assert.equal(plan.thinking, 'high')
+  assert.equal(plan.serviceTier, 'fast')
+  assert.match(plan.disabledReason, /set the plan model to Default in Settings → Agents/)
+
+  const auto = resolveDesktopV3AgentModelLock(profiles, 'swarm', 'auto')
+  assert.equal(auto.locked, true)
+  assert.equal(auto.provider, 'openai')
+  assert.equal(auto.model, 'gpt-5.5')
+  assert.equal(auto.thinking, 'medium')
+  assert.equal(auto.serviceTier, '')
+  assert.match(auto.disabledReason, /set the auto model to Default in Settings → Agents/)
 })

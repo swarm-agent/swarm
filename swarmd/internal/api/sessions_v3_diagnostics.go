@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -26,10 +27,11 @@ type sessionV3DiagnosticInput struct {
 	SequenceLabel  string
 	Payload        any
 	NowUnixMs      int64
+	Force          bool
 }
 
 func (s *Server) appendSessionV3Diagnostic(input sessionV3DiagnosticInput) (sessionruntime.SessionMutationResult, error) {
-	if !sessionV3DiagnosticsEnabled() {
+	if !input.Force && !sessionV3DiagnosticsEnabled() {
 		return sessionruntime.SessionMutationResult{}, nil
 	}
 	if s == nil || s.sessions == nil {
@@ -223,6 +225,31 @@ func sessionV3StoreDiagnosticSequence(prefix, kind, requestID string, discrimina
 	return fmt.Sprintf("%s-%s-%s-%d", strings.TrimSpace(prefix), label, requestID, discriminator)
 }
 
+func (e *sessionV3Executor) recordSessionV3ProviderAPIDiagnostic(job sessionV3ExecutorJob, event providerdiagnostics.Event) {
+	if e == nil || e.server == nil {
+		return
+	}
+	stage := "session.diagnostic.provider.api"
+	if eventStage := strings.TrimSpace(event.Stage); eventStage != "" {
+		stage += "." + strings.NewReplacer(" ", "_", "/", "_", ":", "_", "-", "_").Replace(eventStage)
+	}
+	sequence := fmt.Sprintf("provider-api-%s-%s-%s-%d-%d", strings.TrimSpace(event.Provider), strings.TrimSpace(event.Operation), strings.TrimSpace(event.Stage), event.RecordedAt, time.Now().UnixNano())
+	if _, err := e.server.appendSessionV3Diagnostic(sessionV3DiagnosticInput{
+		SessionID:      job.SessionID,
+		UserID:         job.Principal.UserID,
+		AccountScopeID: job.Principal.AccountScopeID,
+		RunID:          job.RunID,
+		Stage:          stage,
+		Source:         "backend.provider.api",
+		SequenceLabel:  sequence,
+		Payload:        event,
+		NowUnixMs:      event.RecordedAt,
+		Force:          true,
+	}); err != nil {
+		log.Printf("warning: failed to record provider api diagnostic session=%q run=%q provider=%q stage=%q: %v", job.SessionID, job.RunID, event.Provider, event.Stage, err)
+	}
+}
+
 func (e *sessionV3Executor) recordSessionV3Diagnostic(job sessionV3ExecutorJob, stage, source, sequenceLabel string, payload any) {
 	if e == nil || e.server == nil {
 		return
@@ -264,21 +291,66 @@ func sessionV3DiagnosticErrorString(err error) string {
 }
 
 func sessionV3ProviderRequestDiagnostic(req provideriface.Request) map[string]any {
+	inputCount, inputCharCount := sessionV3ProviderInputDiagnosticShape(req.Input)
+	toolsCount := len(req.Tools)
 	return map[string]any{
-		"session_id":           req.SessionID,
-		"model":                req.Model,
-		"thinking":             req.Thinking,
-		"instructions":         req.Instructions,
-		"input":                req.Input,
-		"tools":                req.Tools,
-		"tool_choice":          req.ToolChoice,
-		"service_tier":         req.ServiceTier,
-		"context_mode":         req.ContextMode,
-		"context_window":       req.ContextWindow,
-		"parallel_tool_calls":  req.ParallelToolCalls,
-		"workspace_path":       req.WorkspacePath,
-		"tool_invoker_present": req.ToolInvoker != nil,
+		"session_id":                        req.SessionID,
+		"provider_lineage_id":               req.ProviderLineageID,
+		"context_branch_id":                 req.ContextBranchID,
+		"provider_cache_key_present":        strings.TrimSpace(req.ProviderCacheKey) != "",
+		"session_affinity_key_present":      strings.TrimSpace(req.SessionAffinityKey) != "",
+		"boundary_reason":                   req.BoundaryReason,
+		"previous_provider_lineage_id":      req.PreviousProviderLineageID,
+		"previous_provider":                 req.PreviousProviderID,
+		"previous_model":                    req.PreviousModel,
+		"new_provider":                      req.NewProviderID,
+		"new_model":                         req.NewModel,
+		"handoff_summary_message_id":        req.HandoffSummaryMessageID,
+		"handoff_summary_global_seq":        req.HandoffSummaryGlobalSeq,
+		"provider_lineage_start_message_id": req.ProviderLineageStartMessageID,
+		"provider_lineage_start_run_id":     req.ProviderLineageStartRunID,
+		"provider_lineage_start_global_seq": req.ProviderLineageStartGlobalSeq,
+		"native_continuation_allowed":       req.NativeContinuationAllowed,
+		"force_fresh_provider_context":      req.ForceFreshProviderContext,
+		"model":                             req.Model,
+		"thinking":                          req.Thinking,
+		"instructions_present":              strings.TrimSpace(req.Instructions) != "",
+		"input_items":                       inputCount,
+		"input_text_chars":                  inputCharCount,
+		"tools_count":                       toolsCount,
+		"tool_choice":                       req.ToolChoice,
+		"service_tier":                      req.ServiceTier,
+		"context_mode":                      req.ContextMode,
+		"context_window":                    req.ContextWindow,
+		"parallel_tool_calls":               req.ParallelToolCalls,
+		"workspace_path_present":            strings.TrimSpace(req.WorkspacePath) != "",
+		"tool_invoker_present":              req.ToolInvoker != nil,
 	}
+}
+
+func sessionV3ProviderInputDiagnosticShape(input []map[string]any) (int, int) {
+	chars := 0
+	var walk func(any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case string:
+			chars += len([]rune(typed))
+		case []map[string]any:
+			for _, child := range typed {
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		case map[string]any:
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(input)
+	return len(input), chars
 }
 
 func sessionV3ProviderStreamEventDiagnostic(event provideriface.StreamEvent, step, index int) map[string]any {

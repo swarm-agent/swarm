@@ -153,6 +153,11 @@ func (s *sessionV3ProviderStreamState) Handle(event provideriface.StreamEvent) {
 		s.progressErr = s.sink.TryAppendAssistant(durable)
 	case provideriface.StreamEventReasoningSummaryDelta:
 		s.handleReasoningLocked(event)
+	case provideriface.StreamEventToolCallStarted,
+		provideriface.StreamEventToolCallArgumentsDelta,
+		provideriface.StreamEventToolCallArgumentsSnapshot,
+		provideriface.StreamEventToolCallCompleted:
+		s.progressErr = s.sink.TryAppendProviderToolConstruction(event, s.tracker.Step)
 	}
 }
 

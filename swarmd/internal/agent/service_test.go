@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -389,5 +390,94 @@ func TestMemoryRemainsProtectedFromDelete(t *testing.T) {
 
 	if _, _, _, err := svc.Delete("memory"); err == nil || !strings.Contains(err.Error(), "protected") {
 		t.Fatalf("Delete(memory) error = %v, want protected", err)
+	}
+}
+
+func TestNormalizeModelServiceTierKeepsPriorityDistinctFromFast(t *testing.T) {
+	if got := pebblestore.NormalizeModelServiceTier("priority"); got != "priority" {
+		t.Fatalf("NormalizeModelServiceTier(priority) = %q, want priority", got)
+	}
+	if got := pebblestore.NormalizeModelServiceTier("fast"); got != "fast" {
+		t.Fatalf("NormalizeModelServiceTier(fast) = %q, want fast", got)
+	}
+	if got := codexruntime.NormalizeServiceTier("priority"); got != "priority" {
+		t.Fatalf("codex NormalizeServiceTier(priority) = %q, want priority", got)
+	}
+	if got := codexruntime.NormalizeServiceTier("fast"); got != "fast" {
+		t.Fatalf("codex NormalizeServiceTier(fast) = %q, want fast", got)
+	}
+}
+
+func TestUpsertClearsExplicitSplitModelFields(t *testing.T) {
+	svc, _ := newTestService(t)
+	enabled := true
+	if _, _, _, err := svc.Upsert(UpsertInput{
+		Name:               "model-probe",
+		Mode:               ModeSubagent,
+		Description:        "model probe",
+		ModelMode:          "split",
+		PlanProvider:       "codex",
+		PlanModel:          "gpt-5.4",
+		PlanThinking:       "high",
+		PlanServiceTier:    "fast",
+		AutoProvider:       "fireworks",
+		AutoModel:          "glm-5p1",
+		AutoThinking:       "medium",
+		AutoServiceTier:    "priority",
+		Prompt:             "Probe model settings.",
+		RuntimeMode:        pebblestore.AgentRuntimeModeRead,
+		ToolContract:       &pebblestore.AgentToolContract{Preset: "read_only"},
+		Enabled:            &enabled,
+		PlanProviderSet:    true,
+		PlanModelSet:       true,
+		PlanThinkingSet:    true,
+		PlanServiceTierSet: true,
+		AutoProviderSet:    true,
+		AutoModelSet:       true,
+		AutoThinkingSet:    true,
+		AutoServiceTierSet: true,
+	}); err != nil {
+		t.Fatalf("create split profile: %v", err)
+	}
+
+	updated, _, _, err := svc.Upsert(UpsertInput{
+		Name:               "model-probe",
+		Mode:               ModeSubagent,
+		Provider:           "codex",
+		Model:              "gpt-5.4",
+		Thinking:           "low",
+		ModelMode:          "single",
+		PlanProvider:       "",
+		PlanModel:          "",
+		PlanThinking:       "",
+		PlanServiceTier:    "",
+		AutoProvider:       "",
+		AutoModel:          "",
+		AutoThinking:       "",
+		AutoServiceTier:    "",
+		Prompt:             "Probe model settings.",
+		RuntimeMode:        pebblestore.AgentRuntimeModeRead,
+		ToolContract:       &pebblestore.AgentToolContract{Preset: "read_only"},
+		Enabled:            &enabled,
+		ProviderSet:        true,
+		ModelSet:           true,
+		ThinkingSet:        true,
+		PlanProviderSet:    true,
+		PlanModelSet:       true,
+		PlanThinkingSet:    true,
+		PlanServiceTierSet: true,
+		AutoProviderSet:    true,
+		AutoModelSet:       true,
+		AutoThinkingSet:    true,
+		AutoServiceTierSet: true,
+	})
+	if err != nil {
+		t.Fatalf("update to single profile: %v", err)
+	}
+	if updated.ModelMode != "" || updated.PlanProvider != "" || updated.PlanModel != "" || updated.PlanThinking != "" || updated.PlanServiceTier != "" || updated.AutoProvider != "" || updated.AutoModel != "" || updated.AutoThinking != "" || updated.AutoServiceTier != "" {
+		t.Fatalf("split fields were not cleared: %+v", updated)
+	}
+	if updated.Provider != "codex" || updated.Model != "gpt-5.4" || updated.Thinking != "low" {
+		t.Fatalf("single model fields = provider=%q model=%q thinking=%q, want codex/gpt-5.4/low", updated.Provider, updated.Model, updated.Thinking)
 	}
 }

@@ -169,13 +169,22 @@ func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
 	profiles := make([]compactAgentProfileForDesktop, 0, len(state.Profiles))
 	for _, profile := range state.Profiles {
 		profiles = append(profiles, compactAgentProfileForDesktop{
-			Name:        profile.Name,
-			Mode:        profile.Mode,
-			Provider:    profile.Provider,
-			Model:       profile.Model,
-			Thinking:    profile.Thinking,
-			RuntimeMode: pebblestore.AgentProfileRuntimeMode(profile),
-			Enabled:     profile.Enabled,
+			Name:            profile.Name,
+			Mode:            profile.Mode,
+			Provider:        profile.Provider,
+			Model:           profile.Model,
+			Thinking:        profile.Thinking,
+			ModelMode:       profile.ModelMode,
+			PlanProvider:    profile.PlanProvider,
+			PlanModel:       profile.PlanModel,
+			PlanThinking:    profile.PlanThinking,
+			PlanServiceTier: profile.PlanServiceTier,
+			AutoProvider:    profile.AutoProvider,
+			AutoModel:       profile.AutoModel,
+			AutoThinking:    profile.AutoThinking,
+			AutoServiceTier: profile.AutoServiceTier,
+			RuntimeMode:     pebblestore.AgentProfileRuntimeMode(profile),
+			Enabled:         profile.Enabled,
 		})
 	}
 	return map[string]any{
@@ -187,13 +196,22 @@ func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
 }
 
 type compactAgentProfileForDesktop struct {
-	Name        string `json:"name"`
-	Mode        string `json:"mode"`
-	Provider    string `json:"provider"`
-	Model       string `json:"model"`
-	Thinking    string `json:"thinking"`
-	RuntimeMode string `json:"runtime_mode,omitempty"`
-	Enabled     bool   `json:"enabled"`
+	Name            string `json:"name"`
+	Mode            string `json:"mode"`
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	Thinking        string `json:"thinking"`
+	ModelMode       string `json:"model_mode,omitempty"`
+	PlanProvider    string `json:"plan_provider,omitempty"`
+	PlanModel       string `json:"plan_model,omitempty"`
+	PlanThinking    string `json:"plan_thinking,omitempty"`
+	PlanServiceTier string `json:"plan_service_tier,omitempty"`
+	AutoProvider    string `json:"auto_provider,omitempty"`
+	AutoModel       string `json:"auto_model,omitempty"`
+	AutoThinking    string `json:"auto_thinking,omitempty"`
+	AutoServiceTier string `json:"auto_service_tier,omitempty"`
+	RuntimeMode     string `json:"runtime_mode,omitempty"`
+	Enabled         bool   `json:"enabled"`
 }
 
 func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Request) {
@@ -466,6 +484,15 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			Provider            *string                                 `json:"provider"`
 			Model               *string                                 `json:"model"`
 			Thinking            *string                                 `json:"thinking"`
+			ModelMode           string                                  `json:"model_mode"`
+			PlanProvider        *string                                 `json:"plan_provider"`
+			PlanModel           *string                                 `json:"plan_model"`
+			PlanThinking        *string                                 `json:"plan_thinking"`
+			PlanServiceTier     *string                                 `json:"plan_service_tier"`
+			AutoProvider        *string                                 `json:"auto_provider"`
+			AutoModel           *string                                 `json:"auto_model"`
+			AutoThinking        *string                                 `json:"auto_thinking"`
+			AutoServiceTier     *string                                 `json:"auto_service_tier"`
 			Prompt              string                                  `json:"prompt"`
 			RuntimeMode         string                                  `json:"runtime_mode"`
 			ExecutionSetting    string                                  `json:"execution_setting"`
@@ -491,6 +518,38 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 		if req.Thinking != nil {
 			thinking = *req.Thinking
 		}
+		planProvider := ""
+		if req.PlanProvider != nil {
+			planProvider = *req.PlanProvider
+		}
+		planModel := ""
+		if req.PlanModel != nil {
+			planModel = *req.PlanModel
+		}
+		planThinking := ""
+		if req.PlanThinking != nil {
+			planThinking = *req.PlanThinking
+		}
+		planServiceTier := ""
+		if req.PlanServiceTier != nil {
+			planServiceTier = *req.PlanServiceTier
+		}
+		autoProvider := ""
+		if req.AutoProvider != nil {
+			autoProvider = *req.AutoProvider
+		}
+		autoModel := ""
+		if req.AutoModel != nil {
+			autoModel = *req.AutoModel
+		}
+		autoThinking := ""
+		if req.AutoThinking != nil {
+			autoThinking = *req.AutoThinking
+		}
+		autoServiceTier := ""
+		if req.AutoServiceTier != nil {
+			autoServiceTier = *req.AutoServiceTier
+		}
 		storedCustomTools := make([]pebblestore.AgentCustomToolDefinition, 0, len(req.CustomTools))
 		for _, definition := range req.CustomTools {
 			stored, err := s.agents.PutCustomToolForAccount(principal.AccountScopeID, definition)
@@ -510,6 +569,23 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			ProviderSet:         req.Provider != nil,
 			ModelSet:            req.Model != nil,
 			ThinkingSet:         req.Thinking != nil,
+			ModelMode:           req.ModelMode,
+			PlanProvider:        planProvider,
+			PlanModel:           planModel,
+			PlanThinking:        planThinking,
+			PlanServiceTier:     planServiceTier,
+			PlanProviderSet:     req.PlanProvider != nil,
+			PlanModelSet:        req.PlanModel != nil,
+			PlanThinkingSet:     req.PlanThinking != nil,
+			PlanServiceTierSet:  req.PlanServiceTier != nil,
+			AutoProvider:        autoProvider,
+			AutoModel:           autoModel,
+			AutoThinking:        autoThinking,
+			AutoServiceTier:     autoServiceTier,
+			AutoProviderSet:     req.AutoProvider != nil,
+			AutoModelSet:        req.AutoModel != nil,
+			AutoThinkingSet:     req.AutoThinking != nil,
+			AutoServiceTierSet:  req.AutoServiceTier != nil,
 			Prompt:              req.Prompt,
 			RuntimeMode:         req.RuntimeMode,
 			ExecutionSetting:    req.ExecutionSetting,

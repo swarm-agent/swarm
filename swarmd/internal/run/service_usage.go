@@ -17,7 +17,7 @@ func (s *Service) newRunID() string {
 
 func mergeTokenUsage(acc, next provideriface.TokenUsage) provideriface.TokenUsage {
 	source := strings.ToLower(strings.TrimSpace(next.Source))
-	if source == "codex_api_usage" || source == "google_api_usage" || source == "fireworks_api_usage" || source == "copilot_session_usage" || source == "anthropic_api_usage" || source == "openrouter_api_usage" {
+	if source == "codex_api_usage" || source == "google_api_usage" || source == "copilot_session_usage" || source == "anthropic_api_usage" || source == "openrouter_api_usage" {
 		if !hasConcreteUsageSnapshot(next) {
 			return acc
 		}
@@ -30,6 +30,10 @@ func mergeTokenUsage(acc, next provideriface.TokenUsage) provideriface.TokenUsag
 	acc.CacheReadTokens += next.CacheReadTokens
 	acc.CacheWriteTokens += next.CacheWriteTokens
 	acc.TotalTokens += next.TotalTokens
+	if strings.TrimSpace(next.ServiceTier) != "" {
+		acc.ServiceTier = strings.ToLower(strings.TrimSpace(next.ServiceTier))
+	}
+	acc.EstimatedCostUSD += next.EstimatedCostUSD
 	if strings.TrimSpace(acc.Source) == "" && strings.TrimSpace(next.Source) != "" {
 		acc.Source = strings.TrimSpace(next.Source)
 	}
@@ -40,14 +44,14 @@ func mergeTokenUsage(acc, next provideriface.TokenUsage) provideriface.TokenUsag
 		acc.ConnectedViaWS = cloneBoolPointer(next.ConnectedViaWS)
 	}
 	if len(next.APIUsageRaw) > 0 {
-		acc.APIUsageRaw = nil
-		acc.APIUsageRawPath = ""
+		acc.APIUsageRaw = cloneGenericMap(next.APIUsageRaw)
+		acc.APIUsageRawPath = strings.TrimSpace(next.APIUsageRawPath)
 	}
 	if len(next.APIUsageHistory) > 0 {
-		acc.APIUsageHistory = nil
+		acc.APIUsageHistory = cloneUsageHistory(next.APIUsageHistory)
 	}
 	if len(next.APIUsagePaths) > 0 {
-		acc.APIUsagePaths = nil
+		acc.APIUsagePaths = cloneUsagePaths(next.APIUsagePaths)
 	}
 	return acc
 }
@@ -59,6 +63,8 @@ func hasConcreteUsageSnapshot(next provideriface.TokenUsage) bool {
 		next.CacheReadTokens > 0 ||
 		next.CacheWriteTokens > 0 ||
 		next.TotalTokens > 0 ||
+		strings.TrimSpace(next.ServiceTier) != "" ||
+		next.EstimatedCostUSD > 0 ||
 		strings.TrimSpace(next.Transport) != "" ||
 		next.ConnectedViaWS != nil
 }
@@ -72,6 +78,8 @@ func mergeSnapshotTokenUsage(acc, next provideriface.TokenUsage) provideriface.T
 	acc.CacheReadTokens = next.CacheReadTokens
 	acc.CacheWriteTokens = next.CacheWriteTokens
 	acc.TotalTokens = next.TotalTokens
+	acc.ServiceTier = strings.ToLower(strings.TrimSpace(next.ServiceTier))
+	acc.EstimatedCostUSD = next.EstimatedCostUSD
 	if strings.TrimSpace(next.Source) != "" {
 		acc.Source = strings.TrimSpace(next.Source)
 	}
@@ -82,14 +90,14 @@ func mergeSnapshotTokenUsage(acc, next provideriface.TokenUsage) provideriface.T
 		acc.ConnectedViaWS = cloneBoolPointer(next.ConnectedViaWS)
 	}
 	if len(next.APIUsageRaw) > 0 {
-		acc.APIUsageRaw = nil
-		acc.APIUsageRawPath = ""
+		acc.APIUsageRaw = cloneGenericMap(next.APIUsageRaw)
+		acc.APIUsageRawPath = strings.TrimSpace(next.APIUsageRawPath)
 	}
 	if len(next.APIUsageHistory) > 0 {
-		acc.APIUsageHistory = nil
+		acc.APIUsageHistory = cloneUsageHistory(next.APIUsageHistory)
 	}
 	if len(next.APIUsagePaths) > 0 {
-		acc.APIUsagePaths = nil
+		acc.APIUsagePaths = cloneUsagePaths(next.APIUsagePaths)
 	}
 	return acc
 }
@@ -97,6 +105,25 @@ func mergeSnapshotTokenUsage(acc, next provideriface.TokenUsage) provideriface.T
 func normalizeUsageSource(source string) string {
 	source = strings.TrimSpace(source)
 	return source
+}
+
+func resolvedServiceTierForProvider(providerID, serviceTier string) string {
+	providerID = strings.ToLower(strings.TrimSpace(providerID))
+	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
+	if serviceTier == "" || serviceTier == "standard" || serviceTier == "off" {
+		return ""
+	}
+	switch providerID {
+	case "codex", "fireworks":
+		return serviceTier
+	case "anthropic":
+		if serviceTier == "batch" {
+			return ""
+		}
+		return serviceTier
+	default:
+		return ""
+	}
 }
 
 func shouldPersistProviderUsage(providerID string, usage provideriface.TokenUsage) bool {
@@ -146,7 +173,9 @@ func shouldPersistProviderUsage(providerID string, usage provideriface.TokenUsag
 		}
 		return usage.InputTokens > 0 ||
 			usage.OutputTokens > 0 ||
-			usage.TotalTokens > 0
+			usage.TotalTokens > 0 ||
+			usage.CacheReadTokens > 0 ||
+			usage.CacheWriteTokens > 0
 	case "openrouter":
 		source := strings.ToLower(strings.TrimSpace(usage.Source))
 		if source != "openrouter_api_usage" {
@@ -175,6 +204,10 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 		Source:           normalizeUsageSource(usage.Source),
 		Transport:        strings.ToLower(strings.TrimSpace(usage.Transport)),
 		ConnectedViaWS:   cloneBoolPointer(usage.ConnectedViaWS),
+		APIUsageRaw:      cloneGenericMap(usage.APIUsageRaw),
+		APIUsageRawPath:  strings.TrimSpace(usage.APIUsageRawPath),
+		APIUsageHistory:  cloneUsageHistory(usage.APIUsageHistory),
+		APIUsagePaths:    cloneUsagePaths(usage.APIUsagePaths),
 		ContextWindow:    contextWindow,
 		Steps:            stepsCompleted,
 		InputTokens:      usage.InputTokens,
@@ -183,6 +216,8 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 		CacheReadTokens:  usage.CacheReadTokens,
 		CacheWriteTokens: usage.CacheWriteTokens,
 		TotalTokens:      usage.TotalTokens,
+		ServiceTier:      strings.ToLower(strings.TrimSpace(usage.ServiceTier)),
+		EstimatedCostUSD: usage.EstimatedCostUSD,
 	})
 }
 

@@ -938,9 +938,9 @@ func (s *Service) SetSessionPreference(sessionID string, update SessionPreferenc
 		next.Thinking = strings.ToLower(strings.TrimSpace(*update.Thinking))
 	}
 	if update.ServiceTier != nil {
-		next.ServiceTier = codexruntime.NormalizeServiceTier(*update.ServiceTier)
-		if strings.TrimSpace(*update.ServiceTier) != "" && next.ServiceTier == "" {
-			return pebblestore.ModelPreference{}, nil, fmt.Errorf("invalid codex service tier %q", *update.ServiceTier)
+		next.ServiceTier = modelruntime.NormalizeServiceTierForProvider(next.Provider, *update.ServiceTier)
+		if strings.TrimSpace(*update.ServiceTier) != "" && !strings.EqualFold(strings.TrimSpace(*update.ServiceTier), "standard") && next.ServiceTier == "" {
+			return pebblestore.ModelPreference{}, nil, fmt.Errorf("invalid service tier %q", *update.ServiceTier)
 		}
 	}
 	if update.ContextMode != nil {
@@ -991,7 +991,7 @@ func normalizeStoredSessionPreference(pref pebblestore.ModelPreference) pebblest
 	pref.Provider = modelruntime.NormalizeProviderID(pref.Provider)
 	pref.Model = strings.TrimSpace(pref.Model)
 	pref.Thinking = strings.ToLower(strings.TrimSpace(pref.Thinking))
-	pref.ServiceTier = codexruntime.NormalizeServiceTier(pref.ServiceTier)
+	pref.ServiceTier = modelruntime.NormalizeServiceTierForProvider(pref.Provider, pref.ServiceTier)
 	pref.ContextMode = codexruntime.NormalizeContextMode(pref.ContextMode)
 	if strings.TrimSpace(pref.Provider) == "" || strings.TrimSpace(pref.Model) == "" {
 		pref.Provider = ""
@@ -1026,18 +1026,11 @@ func normalizeSessionPreferenceValue(pref pebblestore.ModelPreference) (pebblest
 		return pebblestore.ModelPreference{}, fmt.Errorf("invalid thinking level %q", pref.Thinking)
 	}
 	pref.Thinking = modelruntime.NormalizeThinkingForProvider(pref.Provider, pref.Thinking)
-	if !supportsCodexRuntime(pref.Provider, pref.Model) {
-		pref.ServiceTier = ""
-	}
 	if !supportsCodexContextRuntime(pref.Provider, pref.Model) {
 		pref.ContextMode = ""
 	}
 	pref.UpdatedAt = time.Now().UnixMilli()
 	return pref, nil
-}
-
-func supportsCodexRuntime(provider, modelName string) bool {
-	return strings.EqualFold(provider, "codex") && (strings.EqualFold(modelName, "gpt-5.4") || strings.EqualFold(modelName, "gpt-5.5"))
 }
 
 func supportsCodexContextRuntime(provider, modelName string) bool {
@@ -1662,6 +1655,16 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	if usage.Source != "" {
 		summary.Source = usage.Source
 	}
+	if usage.ServiceTier != "" {
+		summary.ServiceTier = usage.ServiceTier
+	}
+	summary.EstimatedCostUSD += usage.EstimatedCostUSD
+	if hadPrevious {
+		summary.EstimatedCostUSD -= previous.EstimatedCostUSD
+		if summary.EstimatedCostUSD < 0 {
+			summary.EstimatedCostUSD = 0
+		}
+	}
 	summary.LastTransport = usage.Transport
 	if usage.ConnectedViaWS != nil {
 		summary.LastConnectedViaWS = boolPointer(*usage.ConnectedViaWS)
@@ -1670,7 +1673,11 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	}
 	summary.LastRunID = usage.RunID
 	summary.UpdatedAt = now
-	summary = pebblestore.ApplyProviderUsageSnapshotToSummary(summary, usage)
+	if hadPrevious {
+		summary = pebblestore.ApplyProviderUsageSnapshotReplacementToSummary(summary, previous, usage)
+	} else {
+		summary = pebblestore.ApplyProviderUsageSnapshotToSummary(summary, usage)
+	}
 	normalizeUsageSummary(&summary)
 
 	if err := s.store.PutTurnUsage(usage); err != nil {

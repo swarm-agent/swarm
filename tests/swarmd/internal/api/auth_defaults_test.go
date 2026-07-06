@@ -15,6 +15,7 @@ import (
 	"swarm/packages/swarmd/internal/provider/codex"
 	"swarm/packages/swarmd/internal/provider/google"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	"swarm/packages/swarmd/internal/provider/openai"
 	"swarm/packages/swarmd/internal/provider/registry"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
@@ -58,9 +59,11 @@ func TestAuthCredentialUpsertAppliesUtilityDefaultsOnce(t *testing.T) {
 	providers := registry.New(
 		codex.NewAdapter(authStore),
 		google.NewAdapter(authStore),
+		openai.NewAdapter(authStore),
 	)
 	providers.RegisterRunner(stubRunner{id: "codex"})
 	providers.RegisterRunner(stubRunner{id: "google"})
+	providers.RegisterRunner(stubRunner{id: "openai"})
 
 	server := NewServer(authSvc, agentSvc, modelSvc, nil, nil, nil, nil, nil, providers, nil, eventLog, hub)
 	handler := server.Handler()
@@ -300,9 +303,11 @@ func TestAuthCredentialUpsertCodexFirstProviderEnforcesSparkUtilityDefaults(t *t
 	providers := registry.New(
 		codex.NewAdapter(authStore),
 		google.NewAdapter(authStore),
+		openai.NewAdapter(authStore),
 	)
 	providers.RegisterRunner(stubRunner{id: "codex"})
 	providers.RegisterRunner(stubRunner{id: "google"})
+	providers.RegisterRunner(stubRunner{id: "openai"})
 
 	server := NewServer(authSvc, agentSvc, modelSvc, nil, nil, nil, nil, nil, providers, nil, eventLog, hub)
 	handler := server.Handler()

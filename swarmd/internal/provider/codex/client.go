@@ -24,6 +24,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/privacy"
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -37,6 +38,7 @@ const (
 	defaultOriginatorHeaderValue               = "codex_cli_rs"
 	userAgentHeader                            = "User-Agent"
 	defaultCodexTransportUserAgent             = "codex_cli_rs/swarm-go"
+	defaultOpenAITransportUserAgent            = "swarm-go/openai-responses"
 	defaultCodexTextVerbosity                  = "low"
 	includeReasoningEncryptedContentPath       = "reasoning.encrypted_content"
 	chatGPTAccountIDHeader                     = "ChatGPT-Account-ID"
@@ -70,6 +72,26 @@ type Client struct {
 
 type startedWebsocketStreamError struct {
 	cause error
+}
+
+type forceFreshProviderContextKey struct{}
+
+func contextWithForceFreshProviderContext(ctx context.Context, force bool) context.Context {
+	if !force {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, forceFreshProviderContextKey{}, true)
+}
+
+func forceFreshProviderContextFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(forceFreshProviderContextKey{}).(bool)
+	return value
 }
 
 type cachedWebsocketSession struct {
@@ -161,17 +183,35 @@ type ToolDefinition struct {
 }
 
 type Request struct {
-	SessionID         string
-	Model             string
-	Thinking          string
-	Instructions      string
-	Input             []map[string]any
-	Tools             []ToolDefinition
-	ToolChoice        string
-	ServiceTier       string
-	ContextMode       string
-	ContextWindow     int
-	ParallelToolCalls bool
+	SessionID                     string
+	ProviderLineageID             string
+	ContextBranchID               string
+	ProviderCacheKey              string
+	SessionAffinityKey            string
+	BoundaryReason                string
+	PreviousProviderLineageID     string
+	PreviousProviderID            string
+	PreviousModel                 string
+	NewProviderID                 string
+	NewModel                      string
+	HandoffSummaryMessageID       string
+	HandoffSummaryGlobalSeq       uint64
+	ProviderLineageStartMessageID string
+	ProviderLineageStartRunID     string
+	ProviderLineageStartGlobalSeq uint64
+	NativeContinuationAllowed     bool
+	ForceFreshProviderContext     bool
+	Model                         string
+	Thinking                      string
+	ReasoningProviderValue        string
+	Instructions                  string
+	Input                         []map[string]any
+	Tools                         []ToolDefinition
+	ToolChoice                    string
+	ServiceTier                   string
+	ContextMode                   string
+	ContextWindow                 int
+	ParallelToolCalls             bool
 }
 
 type FunctionCall struct {
@@ -187,6 +227,8 @@ type TokenUsage struct {
 	TotalTokens      int64            `json:"total_tokens,omitempty"`
 	CacheReadTokens  int64            `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int64            `json:"cache_write_tokens,omitempty"`
+	ServiceTier      string           `json:"service_tier,omitempty"`
+	EstimatedCostUSD float64          `json:"estimated_cost_usd,omitempty"`
 	Source           string           `json:"source,omitempty"`
 	Transport        string           `json:"transport,omitempty"`
 	ConnectedViaWS   *bool            `json:"connected_via_websocket,omitempty"`
@@ -329,8 +371,16 @@ func (c *Client) CreateResponse(ctx context.Context, req Request) (Response, err
 	return c.createResponse(ctx, req, nil)
 }
 
+func (c *Client) CreateResponseWithAuth(ctx context.Context, record pebblestore.CodexAuthRecord, req Request) (Response, error) {
+	return c.createResponseWithAuth(ctx, record, req, nil)
+}
+
 func (c *Client) CreateResponseStreaming(ctx context.Context, req Request, onEvent func(StreamEvent)) (Response, error) {
 	return c.createResponse(ctx, req, onEvent)
+}
+
+func (c *Client) CreateResponseStreamingWithAuth(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (Response, error) {
+	return c.createResponseWithAuth(ctx, record, req, onEvent)
 }
 
 func (c *Client) createResponse(ctx context.Context, req Request, onEvent func(StreamEvent)) (Response, error) {
@@ -338,12 +388,19 @@ func (c *Client) createResponse(ctx context.Context, req Request, onEvent func(S
 	if err != nil {
 		return Response{}, err
 	}
+	return c.createResponseWithAuth(ctx, record, req, onEvent)
+}
 
-	payload, err := buildRequestPayload(req)
+func (c *Client) createResponseWithAuth(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (Response, error) {
+	if strings.TrimSpace(record.Provider) == "" {
+		record.Provider = "codex"
+	}
+	payload, forceFreshProviderContext, err := buildRequestPayloadWithOptions(req)
 	if err != nil {
 		return Response{}, err
 	}
 
+	ctx = contextWithForceFreshProviderContext(ctx, forceFreshProviderContext)
 	decoded, statusCode, err := c.send(ctx, record, payload, onEvent)
 	if err != nil {
 		return Response{}, err
@@ -365,10 +422,14 @@ func (c *Client) createResponse(ctx context.Context, req Request, onEvent func(S
 	}
 
 	if statusCode >= 400 {
-		if transport, _ := extractCodexTransportMetadata(decoded); transport != "" {
-			return Response{}, fmt.Errorf("codex responses request failed status=%d transport=%s body=%s", statusCode, transport, compactBody(decoded))
+		providerLabel := "codex"
+		if strings.EqualFold(strings.TrimSpace(record.Provider), "openai") || record.Type != pebblestore.CodexAuthTypeOAuth {
+			providerLabel = "openai"
 		}
-		return Response{}, fmt.Errorf("codex responses request failed status=%d body=%s", statusCode, compactBody(decoded))
+		if transport, _ := extractCodexTransportMetadata(decoded); transport != "" {
+			return Response{}, fmt.Errorf("%s responses request failed status=%d transport=%s body=%s", providerLabel, statusCode, transport, compactBody(decoded))
+		}
+		return Response{}, fmt.Errorf("%s responses request failed status=%d body=%s", providerLabel, statusCode, compactBody(decoded))
 	}
 
 	return parseResponse(decoded), nil
@@ -438,14 +499,18 @@ func (c *Client) refreshOAuth(ctx context.Context, refreshToken string) (oauthTo
 		return oauthTokens{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	providerdiagnostics.LogRequest("codex", "oauth.refresh", httpReq, []byte(values.Encode()))
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "codex", "oauth.refresh", err)
 		return oauthTokens{}, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	providerdiagnostics.LogResponse("codex", "oauth.refresh", resp, body)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "codex", "oauth.refresh", err)
 		return oauthTokens{}, err
 	}
 	if resp.StatusCode >= 400 {
@@ -478,12 +543,17 @@ type oauthTokens struct {
 }
 
 func buildRequestPayload(req Request) ([]byte, error) {
+	payload, _, err := buildRequestPayloadWithOptions(req)
+	return payload, err
+}
+
+func buildRequestPayloadWithOptions(req Request) ([]byte, bool, error) {
 	modelID := strings.TrimSpace(req.Model)
 	if modelID == "" {
-		return nil, errors.New("model is required")
+		return nil, false, errors.New("model is required")
 	}
 	if len(req.Input) == 0 {
-		return nil, errors.New("input messages are required")
+		return nil, false, errors.New("input messages are required")
 	}
 
 	body := map[string]any{
@@ -495,8 +565,8 @@ func buildRequestPayload(req Request) ([]byte, error) {
 			"verbosity": defaultCodexTextVerbosity,
 		},
 	}
-	if sessionID := codexPromptCacheKey(req.SessionID); sessionID != "" {
-		body["prompt_cache_key"] = sessionID
+	if cacheKey := codexPromptCacheKey(firstNonEmpty(req.ProviderCacheKey, req.ProviderLineageID)); cacheKey != "" {
+		body["prompt_cache_key"] = cacheKey
 	}
 	if strings.TrimSpace(req.Instructions) != "" {
 		body["instructions"] = strings.TrimSpace(req.Instructions)
@@ -510,17 +580,18 @@ func buildRequestPayload(req Request) ([]byte, error) {
 		body["tool_choice"] = toolChoice
 		body["parallel_tool_calls"] = req.ParallelToolCalls
 	}
-	switch NormalizeServiceTier(req.ServiceTier) {
-	case ServiceTierFast:
-		body["service_tier"] = "priority"
-	case ServiceTierFlex:
-		body["service_tier"] = ServiceTierFlex
+	if serviceTier := strings.TrimSpace(req.ServiceTier); serviceTier != "" {
+		body["service_tier"] = serviceTier
 	}
-	if reasoning := reasoningPayload(req.Thinking); len(reasoning) > 0 {
+	if reasoning := reasoningPayloadForRequest(req); len(reasoning) > 0 {
 		body["reasoning"] = reasoning
 		body["include"] = []string{includeReasoningEncryptedContentPath}
 	}
-	return json.Marshal(body)
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, false, err
+	}
+	return payload, req.ForceFreshProviderContext || !req.NativeContinuationAllowed, nil
 }
 
 func codexPromptCacheKey(sessionID string) string {
@@ -664,22 +735,12 @@ func isCodexRequestInputEmptyValue(value any) bool {
 	}
 }
 
-func reasoningPayload(thinking string) map[string]any {
-	thinking = strings.ToLower(strings.TrimSpace(thinking))
-	switch thinking {
-	case "", "off":
+func reasoningPayloadForRequest(req Request) map[string]any {
+	providerValue := strings.ToLower(strings.TrimSpace(req.ReasoningProviderValue))
+	if providerValue == "" || providerValue == "none" {
 		return nil
-	case "low":
-		return map[string]any{"effort": "low", "summary": "auto"}
-	case "medium":
-		return map[string]any{"effort": "medium", "summary": "auto"}
-	case "high":
-		return map[string]any{"effort": "high", "summary": "auto"}
-	case "xhigh":
-		return map[string]any{"effort": "xhigh", "summary": "auto"}
-	default:
-		return map[string]any{"effort": "medium", "summary": "auto"}
 	}
+	return map[string]any{"effort": providerValue, "summary": "auto"}
 }
 
 func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, payload []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {
@@ -761,19 +822,33 @@ func (c *Client) sendOpenAIResponses(ctx context.Context, record pebblestore.Cod
 	if err != nil {
 		return nil, 0, err
 	}
+	providerID := strings.ToLower(strings.TrimSpace(record.Provider))
+	if providerID == "" {
+		providerID = "codex"
+	}
+	diagnosticProvider := providerID
+	userAgent := defaultCodexTransportUserAgent
+	if providerID == "openai" || record.Type != pebblestore.CodexAuthTypeOAuth {
+		diagnosticProvider = "openai"
+		userAgent = defaultOpenAITransportUserAgent
+	}
 	httpReq.Header.Set("Authorization", "Bearer "+bearerToken(record))
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set(userAgentHeader, defaultCodexTransportUserAgent)
+	httpReq.Header.Set(userAgentHeader, userAgent)
 
+	providerdiagnostics.LogRequest(diagnosticProvider, "responses.http", httpReq, payload)
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, diagnosticProvider, "responses.http", err)
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCodexResponseBodyBytes))
+	providerdiagnostics.LogResponse(diagnosticProvider, "responses.http", resp, body)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, diagnosticProvider, "responses.http", err)
 		return nil, resp.StatusCode, err
 	}
 	if resp.StatusCode >= 400 {
@@ -787,6 +862,40 @@ func (c *Client) sendOpenAIResponses(ctx context.Context, record pebblestore.Cod
 		return nil, resp.StatusCode, err
 	}
 	return annotateCodexTransportMetadata(decoded, codexTransportResponsesHTTP, false), resp.StatusCode, nil
+}
+
+func (c *Client) VerifyOpenAIAPIKey(ctx context.Context, apiKey string) (provideriface.AuthVerification, error) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, errors.New("openai api verification requires api_key")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.openai.com/v1/models", nil)
+	if err != nil {
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set(userAgentHeader, defaultOpenAITransportUserAgent)
+	providerdiagnostics.LogRequest("openai", "models.verify", httpReq, nil)
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "openai", "models.verify", err)
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCodexResponseBodyBytes))
+	providerdiagnostics.LogResponse("openai", "models.verify", resp, body)
+	if err != nil {
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, err
+	}
+	if resp.StatusCode >= 400 {
+		return provideriface.AuthVerification{Connected: false, Method: "api"}, fmt.Errorf("openai api verification failed status=%d body=%s", resp.StatusCode, sanitizeDiagnosticText(string(body)))
+	}
+	return provideriface.AuthVerification{
+		Connected: true,
+		Method:    "api",
+		Message:   "OpenAI API key verified via /v1/models",
+	}, nil
 }
 
 func parseOpenAIResponsesBody(body []byte, contentType string, onEvent func(StreamEvent)) (map[string]any, error) {
@@ -926,15 +1035,19 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 	if err != nil {
 		return nil, 0, err
 	}
-	sessionID := extractSessionIDFromDecodedPayload(requestPayload)
+	cacheKey := extractSessionIDFromDecodedPayload(requestPayload)
+	freshContext := forceFreshProviderContextFromContext(ctx)
 	headers := buildCodexTransportHeaders(record, payload)
-	session := c.cachedWebsocketSession(sessionID)
+	session := c.cachedWebsocketSession(cacheKey)
 	if session != nil {
 		session.mu.Lock()
 		defer session.mu.Unlock()
 	}
 	conn := (*websocket.Conn)(nil)
 	if session != nil {
+		if freshContext {
+			closeCachedWebsocketSessionLocked(session)
+		}
 		conn = session.conn
 	}
 	if conn == nil {
@@ -958,7 +1071,7 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 	}
 
 	sendPayload := cloneMapAny(requestPayload)
-	if session != nil {
+	if session != nil && !freshContext {
 		sendPayload = prepareIncrementalWebsocketRequest(sendPayload, session.lastPayload, session.lastResponseID, session.lastOutput)
 	}
 	websocketPayload, err := buildCodexWebsocketPayload(sendPayload)
@@ -982,6 +1095,7 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 		return nil
 	}
+	providerdiagnostics.LogWebsocketRequestContext(ctx, "codex", "responses.websocket", wsURL, headers, websocketPayload)
 	if err := writeMessage(conn, websocketPayload); err != nil {
 		if ctxErr := contextErr(ctx); ctxErr != nil {
 			if session != nil {
@@ -1049,6 +1163,7 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 
 		payloadText := string(message)
+		providerdiagnostics.LogWebsocketResponseContext(ctx, "codex", "responses.websocket", message)
 		var decoded map[string]any
 		if err := json.Unmarshal(message, &decoded); err != nil {
 			codexThinkingDebugEvent("event.decode_error", map[string]any{
@@ -3211,6 +3326,8 @@ func extractTokenUsage(responseObj map[string]any, decoded map[string]any) Token
 	totalTokens, _ := intFromPath(usage, "total_tokens")
 	cacheReadTokens, _ := intFromPath(usage, "input_tokens_details", "cached_tokens")
 	cacheWriteTokens, _ := intFromPath(usage, "input_tokens_details", "cache_creation_tokens")
+	serviceTier := strings.TrimSpace(asString(usage["service_tier"]))
+	estimatedCostUSD, _ := floatFromAny(usage["estimated_cost_usd"])
 
 	usageRaw := cloneMapAny(usage)
 	out := TokenUsage{
@@ -3220,6 +3337,8 @@ func extractTokenUsage(responseObj map[string]any, decoded map[string]any) Token
 		TotalTokens:      totalTokens,
 		CacheReadTokens:  cacheReadTokens,
 		CacheWriteTokens: cacheWriteTokens,
+		ServiceTier:      serviceTier,
+		EstimatedCostUSD: estimatedCostUSD,
 		Source:           "codex_api_usage",
 		Transport:        transport,
 		ConnectedViaWS:   connectedViaWS,
@@ -3280,6 +3399,44 @@ func intFromPath(root map[string]any, path ...string) (int64, bool) {
 		current = next
 	}
 	return asInt64(current)
+}
+
+func floatFromAny(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int8:
+		return float64(typed), true
+	case int16:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case uint:
+		return float64(typed), true
+	case uint8:
+		return float64(typed), true
+	case uint16:
+		return float64(typed), true
+	case uint32:
+		return float64(typed), true
+	case uint64:
+		return float64(typed), true
+	case json.Number:
+		if v, err := typed.Float64(); err == nil {
+			return v, true
+		}
+	case string:
+		if v, err := strconv.ParseFloat(strings.TrimSpace(typed), 64); err == nil {
+			return v, true
+		}
+	}
+	return 0, false
 }
 
 func asInt64(value any) (int64, bool) {

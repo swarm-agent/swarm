@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
@@ -36,6 +37,7 @@ type sessionV3DurableProgressWriter interface {
 	RecordRunPhase(job sessionV3ExecutorJob, phase RunPhase, eventType string) (sessionruntime.SessionMutationResult, error)
 	RecordRunProgress(job sessionV3ExecutorJob, progress sessionV3AssistantProgress, deltaIndex int) (sessionruntime.SessionMutationResult, error)
 	RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, summary string) (sessionruntime.SessionMutationResult, error)
+	RecordProviderToolConstructionEvent(job sessionV3ExecutorJob, event provideriface.StreamEvent, step int, eventIndex int) (sessionruntime.SessionMutationResult, error)
 }
 
 type sessionV3ExecutorDurableProgressWriter struct {
@@ -52,6 +54,10 @@ func (w sessionV3ExecutorDurableProgressWriter) RecordRunProgress(job sessionV3E
 
 func (w sessionV3ExecutorDurableProgressWriter) RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, summary string) (sessionruntime.SessionMutationResult, error) {
 	return w.exec.recordReasoningEvent(job, eventType, step, eventIndex, reasoningKey, delta, summary)
+}
+
+func (w sessionV3ExecutorDurableProgressWriter) RecordProviderToolConstructionEvent(job sessionV3ExecutorJob, event provideriface.StreamEvent, step int, eventIndex int) (sessionruntime.SessionMutationResult, error) {
+	return w.exec.recordProviderToolConstructionEvent(job, event, step, eventIndex)
 }
 
 type sessionV3AssistantAcceptedEnd struct {
@@ -88,11 +94,12 @@ type sessionV3ReasoningProgressAggregate struct {
 type sessionV3DurableProgressItemKind string
 
 const (
-	sessionV3DurableProgressItemPhase             sessionV3DurableProgressItemKind = "phase"
-	sessionV3DurableProgressItemAssistant         sessionV3DurableProgressItemKind = "assistant"
-	sessionV3DurableProgressItemReasoningDelta    sessionV3DurableProgressItemKind = "reasoning_delta"
-	sessionV3DurableProgressItemReasoningStarted  sessionV3DurableProgressItemKind = "reasoning_started"
-	sessionV3DurableProgressItemReasoningComplete sessionV3DurableProgressItemKind = "reasoning_completed"
+	sessionV3DurableProgressItemPhase                sessionV3DurableProgressItemKind = "phase"
+	sessionV3DurableProgressItemAssistant            sessionV3DurableProgressItemKind = "assistant"
+	sessionV3DurableProgressItemReasoningDelta       sessionV3DurableProgressItemKind = "reasoning_delta"
+	sessionV3DurableProgressItemReasoningStarted     sessionV3DurableProgressItemKind = "reasoning_started"
+	sessionV3DurableProgressItemReasoningComplete    sessionV3DurableProgressItemKind = "reasoning_completed"
+	sessionV3DurableProgressItemProviderToolProgress sessionV3DurableProgressItemKind = "provider_tool_progress"
 )
 
 type sessionV3DurableProgressItem struct {
@@ -102,6 +109,7 @@ type sessionV3DurableProgressItem struct {
 	EventType    string
 	Assistant    *sessionV3AssistantProgressAggregate
 	Reasoning    *sessionV3ReasoningProgressAggregate
+	ProviderTool *provideriface.StreamEvent
 	Step         int
 	ReasoningKey string
 	Summary      string
@@ -140,6 +148,7 @@ type sessionV3DurableProgressSink struct {
 	phaseRecordedByEventType   map[string]bool
 	assistantPersistedCount    int
 	reasoningPersistedCount    int
+	providerToolProgressIndex  int
 	lastWorkerObservedActivity time.Time
 
 	notify     chan struct{}
@@ -261,6 +270,41 @@ func (s *sessionV3DurableProgressSink) TryAppendAssistant(progress sessionV3Assi
 	}
 	s.signalLocked()
 	return nil
+}
+
+func (s *sessionV3DurableProgressSink) TryAppendProviderToolConstruction(event provideriface.StreamEvent, step int) error {
+	if s == nil || event.Type == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.callbackErrLocked(); err != nil {
+		return err
+	}
+	if err := s.reserveControlLocked(1); err != nil {
+		return err
+	}
+	s.sealAllCurrentLocked()
+	if err := s.callbackErrLocked(); err != nil {
+		return err
+	}
+	if err := s.reserveSealedEpochsLocked(1); err != nil {
+		return err
+	}
+	eventCopy := event
+	eventCopy.ToolCallIndex = cloneSessionV3IntPointer(event.ToolCallIndex)
+	eventCopy.Metadata = cloneSessionsV3Metadata(event.Metadata)
+	s.addControlEpochLocked(sessionV3DurableProgressItem{Kind: sessionV3DurableProgressItemProviderToolProgress, ProviderTool: &eventCopy, Step: step})
+	s.signalLocked()
+	return nil
+}
+
+func cloneSessionV3IntPointer(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	return &out
 }
 
 func (s *sessionV3DurableProgressSink) TryStartReasoning(step int, reasoningKey string) error {
@@ -682,6 +726,17 @@ func (s *sessionV3DurableProgressSink) persistEpoch(epoch sessionV3DurableProgre
 			}
 		case sessionV3DurableProgressItemReasoningComplete:
 			if _, err := s.writer.RecordReasoningEvent(s.job, "session.reasoning.completed", item.Step, 0, item.ReasoningKey, "", item.Summary); err != nil {
+				return err
+			}
+		case sessionV3DurableProgressItemProviderToolProgress:
+			if item.ProviderTool == nil {
+				continue
+			}
+			s.mu.Lock()
+			s.providerToolProgressIndex++
+			eventIndex := s.providerToolProgressIndex
+			s.mu.Unlock()
+			if _, err := s.writer.RecordProviderToolConstructionEvent(s.job, *item.ProviderTool, item.Step, eventIndex); err != nil {
 				return err
 			}
 		}

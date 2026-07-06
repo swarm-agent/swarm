@@ -1898,6 +1898,39 @@ test('realtime stream objects retain backend ordering sequence on live overlays'
   assert.equal(liveRun.assistantDraft?.timelineSeq, 5)
 })
 
+test('realtime provider tool construction events create live tool overlay while arguments stream', () => {
+  const state = bootstrappedState()
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.provider_tool_call.started', {
+      tool_call_id: 'call-plan',
+      step_id: 'step-1',
+      tool_name: 'plan_manage',
+    }, 5, 'cursor-provider-tool-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.provider_tool_call.arguments.delta', {
+      tool_call_id: 'call-plan',
+      arguments_delta: '{"action":"complete',
+    }, 6, 'cursor-provider-tool-delta'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.provider_tool_call.arguments.snapshot', {
+      tool_call_id: 'call-plan',
+      tool_name: 'plan_manage',
+      arguments_snapshot: '{"action":"complete_checkpoint","checkpoint_id":"cp-1"}',
+    }, 7, 'cursor-provider-tool-snapshot'),
+  })
+
+  const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-plan']
+  assert.equal(tool.stepId, 'step-1')
+  assert.equal(tool.toolInstanceId, 'provider-tool:call-plan')
+  assert.equal(tool.toolName, 'plan_manage')
+  assert.equal(tool.argumentsText, '{"action":"complete_checkpoint","checkpoint_id":"cp-1"}')
+  assert.equal(tool.status, 'running')
+  assert.equal(tool.timelineSeq, 5)
+})
+
 test('realtime session.tool.started creates live tool overlay before output deltas arrive', () => {
   const state = bootstrappedState()
 
@@ -1954,6 +1987,42 @@ test('realtime session.tool.delta appends output and terminal event replaces fin
   assert.equal(tool.outputText, '{"summary":"done"}')
   assert.equal(tool.status, 'completed')
   assert.equal(tool.durationMs, 42)
+  assert.equal(tool.timelineSeq, 7)
+})
+
+test('realtime terminal tool event keeps completed live tool after later assistant text', () => {
+  const state = bootstrappedState()
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.started', {
+      call_id: 'call-write',
+      step_id: 'step-write',
+      tool_instance_id: 'tool-instance-write',
+      tool_name: 'write',
+      arguments: '{"path":"file.txt"}',
+    }, 5, 'cursor-write-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.assistant.delta', { delta: 'after write start' }, 6, 'cursor-assistant-after-write'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.completed', {
+      call_id: 'call-write',
+      tool_instance_id: 'tool-instance-write',
+      tool_name: 'write',
+      output: '{"bytes_written":4}',
+      status: 'completed',
+    }, 7, 'cursor-write-complete'),
+  })
+
+  const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+    .filter((item) => item.type === 'live-assistant' || item.type === 'live-tool')
+    .map((item) => item.type === 'live-assistant' ? `assistant:${item.content}` : `tool:${item.tool.callId}`)
+
+  assert.deepEqual(rendered, [
+    'assistant:after write start',
+    'tool:call-write',
+  ])
 })
 
 test('realtime task tool delta replaces full task stream snapshots instead of appending', () => {

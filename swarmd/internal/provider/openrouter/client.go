@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 )
 
 const (
@@ -29,6 +31,9 @@ type chatCompletionRequest struct {
 	Tools             []chatCompletionTool `json:"tools,omitempty"`
 	ToolChoice        any                  `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool                `json:"parallel_tool_calls,omitempty"`
+	Reasoning         map[string]any       `json:"reasoning,omitempty"`
+	ServiceTier       string               `json:"service_tier,omitempty"`
+	SessionID         string               `json:"session_id,omitempty"`
 	Stream            bool                 `json:"stream,omitempty"`
 }
 
@@ -59,15 +64,19 @@ type chatCompletionChoice struct {
 }
 
 type chatCompletionMessage struct {
-	Role      string                   `json:"role,omitempty"`
-	Content   any                      `json:"content,omitempty"`
-	ToolCalls []chatCompletionToolCall `json:"tool_calls,omitempty"`
+	Role             string                   `json:"role,omitempty"`
+	Content          any                      `json:"content,omitempty"`
+	Reasoning        string                   `json:"reasoning,omitempty"`
+	ReasoningDetails []map[string]any         `json:"reasoning_details,omitempty"`
+	ToolCalls        []chatCompletionToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatCompletionMessageDelta struct {
-	Role      string                        `json:"role,omitempty"`
-	Content   string                        `json:"content,omitempty"`
-	ToolCalls []chatCompletionToolCallDelta `json:"tool_calls,omitempty"`
+	Role             string                        `json:"role,omitempty"`
+	Content          string                        `json:"content,omitempty"`
+	Reasoning        string                        `json:"reasoning,omitempty"`
+	ReasoningDetails []map[string]any              `json:"reasoning_details,omitempty"`
+	ToolCalls        []chatCompletionToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 type chatCompletionToolCall struct {
@@ -102,9 +111,28 @@ type chatCompletionChunk struct {
 }
 
 type chatCompletionUsage struct {
-	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
-	CompletionTokens int64 `json:"completion_tokens,omitempty"`
-	TotalTokens      int64 `json:"total_tokens,omitempty"`
+	PromptTokens            int64                        `json:"prompt_tokens,omitempty"`
+	CompletionTokens        int64                        `json:"completion_tokens,omitempty"`
+	TotalTokens             int64                        `json:"total_tokens,omitempty"`
+	PromptTokensDetails     *chatPromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *chatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	Cost                    float64                      `json:"cost,omitempty"`
+	CostDetails             map[string]any               `json:"cost_details,omitempty"`
+	ServiceTier             string                       `json:"service_tier,omitempty"`
+}
+
+type chatPromptTokensDetails struct {
+	CachedTokens     int64 `json:"cached_tokens,omitempty"`
+	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
+	AudioTokens      int64 `json:"audio_tokens,omitempty"`
+	VideoTokens      int64 `json:"video_tokens,omitempty"`
+}
+
+type chatCompletionTokensDetails struct {
+	ReasoningTokens          int64 `json:"reasoning_tokens,omitempty"`
+	AudioTokens              int64 `json:"audio_tokens,omitempty"`
+	AcceptedPredictionTokens int64 `json:"accepted_prediction_tokens,omitempty"`
+	RejectedPredictionTokens int64 `json:"rejected_prediction_tokens,omitempty"`
 }
 
 type streamErrorPayload struct {
@@ -188,20 +216,26 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	providerdiagnostics.LogRequest("openrouter", "chat.completions.stream", req, raw)
 	resp, err := client.Do(req)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "openrouter", "chat.completions.stream", err)
 		return chatCompletionResponse{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		providerdiagnostics.LogResponse("openrouter", "chat.completions.stream", resp, body)
 		if readErr != nil {
+			providerdiagnostics.LogErrorContext(ctx, "openrouter", "chat.completions.stream", readErr)
 			return chatCompletionResponse{}, readErr
 		}
 		return chatCompletionResponse{}, fmt.Errorf("openrouter chat completions stream failed status=%d: %s", resp.StatusCode, apiErrorMessage(body))
 	}
+	providerdiagnostics.LogResponse("openrouter", "chat.completions.stream", resp, nil)
 	state := newOpenRouterStreamState()
 	if err := parseOpenRouterEventStream(resp.Body, func(payload string) error {
+		providerdiagnostics.LogStreamChunkContext(ctx, "openrouter", "chat.completions.stream", []byte(payload))
 		var chunk chatCompletionChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			return fmt.Errorf("decode openrouter stream chunk: %w", err)
@@ -215,6 +249,7 @@ func (c *Client) CreateChatCompletionStream(ctx context.Context, apiKey string, 
 		}
 		return nil
 	}); err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "openrouter", "chat.completions.stream", err)
 		return chatCompletionResponse{}, err
 	}
 	response := state.response()
@@ -241,13 +276,23 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	operation := "api"
+	if strings.EqualFold(method, http.MethodPost) && strings.Contains(url, "/chat/completions") {
+		operation = "chat.completions"
+	} else if strings.EqualFold(method, http.MethodGet) && strings.Contains(url, "/key") {
+		operation = "verify.key"
+	}
+	providerdiagnostics.LogRequest("openrouter", operation, req, body)
 	resp, err := client.Do(req)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "openrouter", operation, err)
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	providerdiagnostics.LogResponse("openrouter", operation, resp, raw)
 	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "openrouter", operation, err)
 		return nil, resp.StatusCode, err
 	}
 	return raw, resp.StatusCode, nil
@@ -293,6 +338,12 @@ func (s *openRouterStreamState) apply(chunk chatCompletionChunk) {
 			if next.Delta.Content != "" {
 				current, _ := choice.Message.Content.(string)
 				choice.Message.Content = current + next.Delta.Content
+			}
+			if next.Delta.Reasoning != "" {
+				choice.Message.Reasoning += next.Delta.Reasoning
+			}
+			if len(next.Delta.ReasoningDetails) > 0 {
+				choice.Message.ReasoningDetails = append(choice.Message.ReasoningDetails, next.Delta.ReasoningDetails...)
 			}
 			for _, delta := range next.Delta.ToolCalls {
 				call := s.toolCalls[delta.Index]

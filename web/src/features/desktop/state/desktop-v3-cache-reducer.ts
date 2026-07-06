@@ -2545,6 +2545,10 @@ function isLiveRunOutputEventType(eventType: string): boolean {
     case 'session.tool.failed':
     case 'session.tool.cancelled':
     case 'session.tool.canceled':
+    case 'session.provider_tool_call.started':
+    case 'session.provider_tool_call.arguments.delta':
+    case 'session.provider_tool_call.arguments.snapshot':
+    case 'session.provider_tool_call.completed':
       return true
     default:
       return false
@@ -2654,20 +2658,27 @@ function applyLiveRunOverlayFromEvent(
     case 'session.tool.completed':
     case 'session.tool.failed':
     case 'session.tool.cancelled':
-    case 'session.tool.canceled': {
+    case 'session.tool.canceled':
+    case 'session.provider_tool_call.started':
+    case 'session.provider_tool_call.arguments.delta':
+    case 'session.provider_tool_call.arguments.snapshot':
+    case 'session.provider_tool_call.completed': {
       if (liveRun.assistantDraft?.content) {
         flushLiveAssistantDraftToSegment(liveRun)
       }
-      const callId = stringValue(payload.call_id)
+      const providerToolConstruction = event.eventType.startsWith('session.provider_tool_call.')
+      const callId = stringValue(payload.call_id) || stringValue(payload.tool_call_id)
       if (!callId) {
         return
       }
 
-      const isStarted = event.eventType === 'session.tool.started'
-      const isDelta = event.eventType === 'session.tool.delta'
+      const isStarted = event.eventType === 'session.tool.started' || event.eventType === 'session.provider_tool_call.started'
+      const isDelta = event.eventType === 'session.tool.delta' || event.eventType === 'session.provider_tool_call.arguments.delta'
+      const isArgumentsSnapshot = event.eventType === 'session.provider_tool_call.arguments.snapshot'
       const isFailed = event.eventType === 'session.tool.failed'
       const isCancelled = event.eventType === 'session.tool.cancelled' || event.eventType === 'session.tool.canceled'
-      const isTerminal = event.eventType === 'session.tool.completed' || isFailed || isCancelled
+      const isTerminal = event.eventType === 'session.tool.completed' || event.eventType === 'session.provider_tool_call.completed' || isFailed || isCancelled
+      const toolInstanceId = providerToolConstruction ? `provider-tool:${callId}` : stringValue(payload.tool_instance_id)
       const tool = liveRun.toolCallsByCallId[callId] ?? {
         callId,
         createdAt: updatedAt,
@@ -2675,11 +2686,10 @@ function applyLiveRunOverlayFromEvent(
       }
 
       tool.stepId = stringValue(payload.step_id) || tool.stepId
-      tool.toolInstanceId =
-        stringValue(payload.tool_instance_id) || tool.toolInstanceId
+      tool.toolInstanceId = toolInstanceId || tool.toolInstanceId
       tool.toolName = stringValue(payload.tool_name) || tool.toolName
 
-      const argumentsText = stringValue(payload.arguments)
+      const argumentsText = stringValue(payload.arguments) || stringValue(payload.arguments_snapshot)
       const argumentsDelta = stringValue(payload.arguments_delta)
       const outputText = stringValue(payload.output)
       const outputDelta = stringValue(payload.output_delta) || stringValue(payload.delta)
@@ -2691,7 +2701,7 @@ function applyLiveRunOverlayFromEvent(
         tool.argumentsText = argumentsText
       } else if (argumentsDelta) {
         tool.argumentsText = `${tool.argumentsText ?? ''}${argumentsDelta}`
-      } else if (!isDelta && argumentsText) {
+      } else if ((isArgumentsSnapshot || !isDelta) && argumentsText) {
         tool.argumentsText = argumentsText
       }
 
@@ -2713,7 +2723,7 @@ function applyLiveRunOverlayFromEvent(
       tool.durationMs = numberValue(payload.duration_ms) || tool.durationMs
       tool.status = stringValue(payload.status) || (isFailed ? 'failed' : isCancelled ? 'cancelled' : isTerminal ? 'completed' : 'running')
       tool.updatedAt = updatedAt
-      tool.timelineSeq = tool.timelineSeq || eventSeq
+      tool.timelineSeq = isTerminal && eventSeq > 0 ? eventSeq : tool.timelineSeq || eventSeq
 
       liveRun.toolCallsByCallId[callId] = tool
       return

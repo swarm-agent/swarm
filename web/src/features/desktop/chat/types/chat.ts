@@ -219,6 +219,15 @@ export interface AgentProfileRecord {
   provider: string;
   model: string;
   thinking: string;
+  modelMode: "single" | "split";
+  planProvider: string;
+  planModel: string;
+  planThinking: string;
+  planServiceTier: string;
+  autoProvider: string;
+  autoModel: string;
+  autoThinking: string;
+  autoServiceTier: string;
   prompt: string;
   runtimeMode: "plan_auto" | "read" | "readwrite" | "";
   executionSetting: "read" | "readwrite" | "";
@@ -279,6 +288,43 @@ export interface AgentStateRecord {
   toolInventory: AgentToolInventoryRecord | null;
 }
 
+export interface ModelPricingRecord {
+  currency?: string;
+  input_price_per_million_tokens?: number | null;
+  output_price_per_million_tokens?: number | null;
+  cached_input_price_per_million_tokens?: number | null;
+  reasoning_price_per_million_tokens?: number | null;
+  image_input_price?: number | null;
+  image_output_price?: number | null;
+  audio_input_price?: number | null;
+  audio_output_price?: number | null;
+  is_free?: boolean | null;
+  [key: string]: unknown;
+}
+
+export interface ModelThinkingMappingRecord {
+  swarm_setting: string;
+  provider_parameter?: string;
+  provider_value?: string;
+  effective_provider_value?: string;
+  behavior?: string;
+}
+
+export interface ModelServiceTierMappingRecord {
+  tier: string;
+  swarm_setting?: string;
+  provider_parameter?: string;
+  provider_value?: string;
+  request_model_path?: string;
+}
+
+export interface ModelContextModeRecord {
+  mode: string;
+  label?: string;
+  context_window?: number;
+  default?: boolean;
+}
+
 export interface ModelOptionRecord {
   key: string;
   provider: string;
@@ -286,8 +332,17 @@ export interface ModelOptionRecord {
   contextMode: string;
   label: string;
   thinking: string;
+  thinkingOptions: string[];
+  defaultThinking: string;
+  thinkingProviderParameter: string;
+  thinkingMappings: ModelThinkingMappingRecord[];
   favorite: boolean;
   contextWindow: number;
+  pricing: ModelPricingRecord | null;
+  serviceTiers: string[];
+  defaultServiceTier: string;
+  serviceTierMappings: ModelServiceTierMappingRecord[];
+  contextModes: ModelContextModeRecord[];
 }
 
 export interface DesktopSessionPlanInfo {

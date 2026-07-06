@@ -16,6 +16,25 @@ import { useQuery } from '@tanstack/react-query'
 import type { DesktopPermissionRecord } from '../../types/realtime'
 import { safeString } from '../services/desktop-permission-normalization'
 import {
+  FlowSettingsModal,
+  agentContractSummary,
+  agentOptionGroupLabel,
+  agentOptionGroupRank,
+  agentOptionHelper,
+  agentOptionKey,
+  agentOptionLabel,
+  recordToFlowForm,
+  targetOptionGroupLabel,
+  targetOptionHelper,
+  targetOptionKey,
+  targetOptionLabel,
+  workspaceOptionsFromEntries,
+  type FlowAgentOption,
+  type FlowTargetOption,
+  type FlowWorkspaceOption,
+} from '../../settings/flows/components/flows-settings-page'
+import type { CreateFlowInput, FlowAgentProfile, FlowDetailRecord, FlowSwarmTarget, FlowWorkspaceEntry } from '../../settings/flows/api'
+import {
   buildAskUserResolutionReason,
   buildWorkspaceScopeResolutionReason,
   buildGenericPermissionMarkdown,
@@ -26,6 +45,7 @@ import {
   parseAskUserPermission,
   parseExitPlanPermission,
   parseManageTodosPermission,
+  parseManageFlowPermission,
   parseManageImagePermission,
   parsePlanUpdatePermission,
   type PlanUpdatePayload,
@@ -500,6 +520,254 @@ function GenericPermissionModal({
 }
 
 
+function stringFromRecord(record: Record<string, unknown>, key: string): string {
+  const value = record[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function flowTargetFromContent(content: Record<string, unknown>, fallbackID: string): FlowSwarmTarget {
+  const target = recordFromUnknown(content.target)
+  const swarmID = stringFromRecord(target, 'swarm_id')
+  const kind = (stringFromRecord(target, 'kind') || 'self') as FlowSwarmTarget['kind']
+  const name = stringFromRecord(target, 'name') || swarmID || 'Target'
+  return {
+    swarm_id: swarmID || fallbackID || 'self',
+    name,
+    role: '',
+    relationship: kind === 'self' ? 'self' : '',
+    kind,
+    deployment_id: stringFromRecord(target, 'deployment_id') || undefined,
+    online: true,
+    selectable: true,
+    current: kind === 'self' || (!swarmID && !fallbackID),
+  }
+}
+
+function flowWorkspaceFromContent(content: Record<string, unknown>): FlowWorkspaceEntry {
+  const workspace = recordFromUnknown(content.workspace)
+  const path = stringFromRecord(workspace, 'workspace_path') || stringFromRecord(workspace, 'host_workspace_path') || stringFromRecord(workspace, 'cwd') || ''
+  return {
+    path,
+    localWorkspaceBindingId: '',
+    workspaceName: path.split('/').filter(Boolean).pop() || path || 'workspace',
+    themeId: '',
+    directories: [],
+    isGitRepo: false,
+    topologyRoutes: [],
+    sortIndex: 0,
+    addedAt: 0,
+    updatedAt: 0,
+    lastSelectedAt: 0,
+    active: true,
+    worktreeEnabled: false,
+  }
+}
+
+function flowAgentFromContent(content: Record<string, unknown>): FlowAgentProfile {
+  const agent = recordFromUnknown(content.agent)
+  return {
+    name: stringFromRecord(agent, 'profile_name') || 'background',
+    mode: stringFromRecord(agent, 'profile_mode') || 'background',
+    description: 'Flow agent selected by manage-flow approval payload.',
+    provider: '',
+    model: '',
+    thinking: '',
+    modelMode: 'single',
+    planProvider: '',
+    planModel: '',
+    planThinking: '',
+    planServiceTier: '',
+    autoProvider: '',
+    autoModel: '',
+    autoThinking: '',
+    autoServiceTier: '',
+    prompt: '',
+    runtimeMode: '',
+    executionSetting: '',
+    exitPlanModeEnabled: false,
+    toolScope: null,
+    toolContract: null,
+    enabled: true,
+    protected: false,
+    updatedAt: 0,
+  }
+}
+
+function flowDetailFromManageFlowPayload(payload: ReturnType<typeof parseManageFlowPermission>): FlowDetailRecord {
+  const content = payload.content
+  const flowID = payload.flowId || stringFromRecord(content, 'flow_id') || stringFromRecord(content, 'id') || 'proposed-flow'
+  const target = recordFromUnknown(content.target) as unknown as FlowDetailRecord['definition']['target']
+  const agent = recordFromUnknown(content.agent) as unknown as FlowDetailRecord['definition']['agent']
+  const workspace = recordFromUnknown(content.workspace) as unknown as FlowDetailRecord['definition']['workspace']
+  const schedule = recordFromUnknown(content.schedule)
+  const catchUpPolicy = recordFromUnknown(content.catch_up_policy)
+  const intent = recordFromUnknown(content.intent)
+  return {
+    definition: {
+      flow_id: flowID,
+      revision: 1,
+      name: stringFromRecord(content, 'name') || payload.flowName || flowID,
+      enabled: typeof content.enabled === 'boolean' ? content.enabled : true,
+      target,
+      agent,
+      workspace,
+      schedule: {
+        cadence: stringFromRecord(schedule, 'cadence') || 'daily',
+        timezone: stringFromRecord(schedule, 'timezone') || 'UTC',
+        time: stringFromRecord(schedule, 'time') || undefined,
+        times: Array.isArray(schedule.times) ? schedule.times.filter((entry): entry is string => typeof entry === 'string') : undefined,
+        weekday: stringFromRecord(schedule, 'weekday') || undefined,
+        month_day: typeof schedule.month_day === 'number' ? schedule.month_day : undefined,
+        cron: stringFromRecord(schedule, 'cron') || undefined,
+      },
+      catch_up_policy: { mode: stringFromRecord(catchUpPolicy, 'mode') || 'once' },
+      intent: { prompt: stringFromRecord(intent, 'prompt'), mode: stringFromRecord(intent, 'mode') || undefined },
+    },
+    target_detail: flowTargetFromContent(content, flowID),
+    agent_detail: null,
+    workspace_detail: null,
+    assignment_statuses: [],
+    history: [],
+    history_count: 0,
+    outbox: [],
+  }
+}
+
+function optionsFromManageFlowPayload(payload: ReturnType<typeof parseManageFlowPermission>) {
+  const content = payload.content
+  const target = flowTargetFromContent(content, payload.flowId)
+  const workspace = flowWorkspaceFromContent(content)
+  const agent = flowAgentFromContent(content)
+  const targetOptions: FlowTargetOption[] = [{
+    key: targetOptionKey(target),
+    label: targetOptionLabel(target),
+    helper: targetOptionHelper(target),
+    groupLabel: targetOptionGroupLabel(target, [target]),
+    target,
+  }]
+  const workspaceOptions: FlowWorkspaceOption[] = workspace.path ? workspaceOptionsFromEntries([workspace]) : []
+  const agentOptions: FlowAgentOption[] = [{
+    key: agentOptionKey(agent),
+    label: agentOptionLabel(agent),
+    helper: agentOptionHelper(agent),
+    contractSummary: agentContractSummary(agent),
+    groupLabel: agentOptionGroupLabel(agent),
+    profile: agent,
+  }].sort((left, right) => agentOptionGroupRank(left.profile) - agentOptionGroupRank(right.profile) || left.label.localeCompare(right.label))
+  return { targetOptions, workspaceOptions, agentOptions }
+}
+
+function ManageFlowModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) {
+    return null
+  }
+
+  const payload = parseManageFlowPermission(permission)
+  const { targetOptions, workspaceOptions, agentOptions } = optionsFromManageFlowPayload(payload)
+  const initialForm = payload.isDelete ? null : recordToFlowForm(flowDetailFromManageFlowPayload(payload), targetOptions, workspaceOptions, agentOptions)
+
+  const approveWithInput = async (input: CreateFlowInput) => {
+    setLoading(true)
+    try {
+      const approvedArguments: Record<string, unknown> = {
+        ...payload.approvedArguments,
+        action: payload.action === 'update' ? 'update' : 'create',
+        confirm: true,
+        content: input,
+      }
+      if (payload.flowId) {
+        approvedArguments.flow_id = payload.flowId
+      }
+      await onResolve('approve', note.trim(), approvedArguments)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const resolveDelete = async (action: 'approve' | 'deny') => {
+    setLoading(true)
+    try {
+      await onResolve(action, note.trim(), action === 'approve' && Object.keys(payload.approvedArguments).length > 0 ? payload.approvedArguments : undefined)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (payload.isDelete) {
+    const body = [payload.summary, '', `Flow: ${payload.flowName || payload.flowId || 'unknown'}`, payload.flowId ? `ID: ${payload.flowId}` : ''].filter(Boolean).join('\n')
+    return (
+      <ModalShell
+        open={open}
+        title="Delete Flow"
+        subtitle={payload.subtitle}
+        pendingCount={pendingCount}
+        sessionMode={sessionMode}
+        widthClassName="w-full sm:w-[min(760px,calc(100vw-48px))]"
+        footer={<PermissionActionBar loading={loading} onApprove={() => void resolveDelete('approve')} onDeny={() => void resolveDelete('deny')} approveLabel="Delete flow" note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
+        onOpenChange={onOpenChange}
+        onPrimaryShortcut={() => void resolveDelete('approve')}
+        onDenyShortcut={() => void resolveDelete('deny')}
+        shortcutsDisabled={loading}
+      >
+        <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2.5 text-sm leading-6 text-[var(--app-danger)]">
+          <ChatMarkdown content={body} />
+        </div>
+      </ModalShell>
+    )
+  }
+
+  const footerAccessory = (
+    <label className="grid gap-1.5">
+      <span className="text-xs font-medium uppercase tracking-[0.08em] text-[rgba(255,255,255,0.42)]">Message to agent</span>
+      <Textarea
+        value={note}
+        onChange={(event) => setNote(event.target.value)}
+        placeholder="Optional note to send back with this action…"
+        className="min-h-11 resize-none border-[rgba(255,255,255,0.12)] bg-[rgba(255,255,255,0.035)] text-[rgba(255,255,255,0.82)] placeholder:text-[rgba(255,255,255,0.35)]"
+        rows={2}
+      />
+    </label>
+  )
+
+  return (
+    <FlowSettingsModal
+      open={open}
+      mode={payload.action === 'update' ? 'edit' : 'create'}
+      initialForm={initialForm}
+      enabledOverride={typeof payload.content.enabled === 'boolean' ? payload.content.enabled : undefined}
+      onClose={() => void resolveDelete('deny')}
+      onConfirm={(input) => void approveWithInput(input)}
+      busy={loading}
+      targetOptions={targetOptions}
+      workspaceOptions={workspaceOptions}
+      agentOptions={agentOptions}
+      loadingOptions={false}
+      loadWorkspacesForTarget={() => Promise.resolve(workspaceOptions.map((option) => option.workspace))}
+      footerAccessory={footerAccessory}
+    />
+  )
+}
 function ExitPlanSectionEyebrow({ children, className }: { children: string; className?: string }) {
   return <div className={cn('text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]', className)}>{children}</div>
 }
@@ -782,11 +1050,11 @@ function ExitPlanCheckpointList({ document }: { document: StructuredPlanDocument
 
 function ExitPlanDocumentView({ document }: { document: StructuredPlanDocument }) {
   return (
-    <div className="flex min-h-0 flex-col gap-6">
-      <div className="min-w-0">
+    <div className="grid min-h-0 grid-cols-1 gap-6 min-[901px]:grid-cols-[minmax(380px,0.85fr)_minmax(520px,1.15fr)] min-[901px]:gap-0">
+      <div className="min-w-0 min-[901px]:pr-6">
         <ExitPlanDetails document={document} />
       </div>
-      <div className="min-w-0 border-t border-[var(--app-border)] pt-6">
+      <div className="min-w-0 border-t border-[var(--app-border)] pt-6 min-[901px]:border-l min-[901px]:border-t-0 min-[901px]:pl-6 min-[901px]:pt-0">
         <ExitPlanCheckpointList document={document} />
       </div>
     </div>
@@ -3180,6 +3448,9 @@ export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
   }
   if (kind === 'manage-image') {
     return <ManageImageModal {...props} />
+  }
+  if (kind === 'manage-flow') {
+    return <ManageFlowModal {...props} />
   }
   if (kind === 'task-launch') {
     return <TaskLaunchModal {...props} />

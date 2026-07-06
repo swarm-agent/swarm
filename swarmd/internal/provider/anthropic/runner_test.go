@@ -7,6 +7,7 @@ import (
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -97,6 +98,74 @@ func TestSanitizeAnthropicToolSchemaMovesUnsupportedConstraintsToDescription(t *
 	assertContains(t, encoded, `format: regex`)
 	assertContains(t, encoded, `pattern: ^[a-z]+$`)
 	assertContains(t, encoded, `minItems: 2`)
+}
+
+func TestAnthropicThinkingConfigUsesCatalogAdaptiveEffortMapping(t *testing.T) {
+	catalog := pebblestore.ModelCatalogRecord{ThinkingMappings: []pebblestore.ModelCatalogThinkingMapping{
+		{SwarmSetting: "off", ProviderParameter: "thinking.type + output_config.effort", Behavior: "disabled"},
+		{SwarmSetting: "medium", ProviderParameter: "thinking.type + output_config.effort", ProviderValue: "medium", EffectiveProviderValue: "medium", Behavior: "effort"},
+	}}
+	cfg, effort := anthropicThinkingConfig(catalog, "medium")
+	if cfg == nil || cfg.OfAdaptive == nil {
+		t.Fatalf("expected adaptive thinking config from catalog mapping, got %#v", cfg)
+	}
+	if cfg.OfEnabled != nil {
+		t.Fatalf("adaptive catalog mapping must not use enabled thinking: %#v", cfg.OfEnabled)
+	}
+	if effort != anthropicapi.OutputConfigEffortMedium {
+		t.Fatalf("effort = %q, want medium", effort)
+	}
+}
+
+func TestAnthropicThinkingConfigKeepsBudgetForBudgetTokenMappings(t *testing.T) {
+	catalog := pebblestore.ModelCatalogRecord{ThinkingMappings: []pebblestore.ModelCatalogThinkingMapping{
+		{SwarmSetting: "medium", ProviderParameter: "thinking.budget_tokens", ProviderValue: "4096"},
+	}}
+	cfg, effort := anthropicThinkingConfig(catalog, "medium")
+	if cfg == nil || cfg.OfEnabled == nil {
+		t.Fatalf("expected enabled thinking config for budget-token mapping, got %#v", cfg)
+	}
+	if got := cfg.OfEnabled.BudgetTokens; got != 4096 {
+		t.Fatalf("budget tokens = %d, want 4096", got)
+	}
+	if effort != "" {
+		t.Fatalf("effort = %q, want empty", effort)
+	}
+}
+
+func TestAnthropicThinkingConfigFallsBackToLegacyBudgetWithoutCatalog(t *testing.T) {
+	cfg, effort := anthropicThinkingConfig(nil, "medium")
+	if cfg == nil || cfg.OfEnabled == nil {
+		t.Fatalf("expected enabled thinking config without catalog, got %#v", cfg)
+	}
+	if got := cfg.OfEnabled.BudgetTokens; got != 4096 {
+		t.Fatalf("budget tokens = %d, want 4096", got)
+	}
+	if effort != "" {
+		t.Fatalf("effort = %q, want empty", effort)
+	}
+}
+
+func TestAnthropicUsageMapsCacheTokenTypesForFrontend(t *testing.T) {
+	usage := anthropicUsageToTokenUsage(anthropicapi.Usage{
+		InputTokens:              100,
+		OutputTokens:             20,
+		CacheReadInputTokens:     30,
+		CacheCreationInputTokens: 40,
+		ServiceTier:              anthropicapi.UsageServiceTierPriority,
+	})
+	if usage.Source != usageSource || usage.APIUsageRawPath != "usage" {
+		t.Fatalf("usage identity = %+v", usage)
+	}
+	if usage.InputTokens != 100 || usage.OutputTokens != 20 || usage.CacheReadTokens != 30 || usage.CacheWriteTokens != 40 || usage.TotalTokens != 190 {
+		t.Fatalf("usage tokens = %+v", usage)
+	}
+	if usage.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want priority", usage.ServiceTier)
+	}
+	if usage.APIUsageRaw["cache_read_input_tokens"] != int64(30) || usage.APIUsageRaw["cache_creation_input_tokens"] != int64(40) {
+		t.Fatalf("raw cache token fields = %#v", usage.APIUsageRaw)
+	}
 }
 
 func TestBuildRequestPlacesPromptCacheControlsAtOfficialBreakpoints(t *testing.T) {

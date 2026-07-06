@@ -131,6 +131,7 @@ Use these instead of one-off scripts when the user asks for the matching task:
 - `ssh-fast-test.sh` rsyncs the working tree to a discovered remote checkout, rebuilds with `./rebuild s`, and restarts the configured service. Use `--remote-dir` or `--service` for explicit non-default targets; do not hardcode host paths.
 - `local-session-db-inspect.sh` copies the configured local Pebble DB, dumps the requested session to a temp JSON file, and deletes only the copied DB.
 - `ssh-session-db-inspect.sh` inspects remote session data through an SSH alias, handles service stop/restart by default, and supports latest/session/query modes plus JSON output.
+- If the user asks for a remote DB dump through SSH and explicitly names an SSH alias or forbids helper/runner scripts, use the exact SSH alias with direct `ssh <alias>` and run `./scripts/local-session-db-inspect.sh` on the remote checkout. Do not substitute a hostname, do not use `ssh-fast-test.sh`, and do not use `ssh-session-db-inspect.sh` when the user forbids it. Stop or restore the remote service exactly as requested.
 - Use each script’s `--help` for current flags.
 
 ## 4. Safe Throwaway / Scratch Locations

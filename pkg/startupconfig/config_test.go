@@ -18,26 +18,19 @@ func TestV3DiagnosticsConfigParsesAndFormats(t *testing.T) {
 	}
 }
 
-func TestProviderAPIDiagnosticsLegacyAliasParsesAsV3Diagnostics(t *testing.T) {
-	cfg, seen, err := parseEntries("provider_api_diagnostics = true\n", Default(t.TempDir()+"/swarm.conf"))
+func TestProviderAPIDiagnosticsConfigParsesAndFormats(t *testing.T) {
+	cfg, _, err := parseEntries("provider_api_diagnostics = true\n", Default(t.TempDir()+"/swarm.conf"))
 	if err != nil {
 		t.Fatalf("parseEntries: %v", err)
 	}
-	if !cfg.V3Diagnostics {
-		t.Fatalf("V3Diagnostics = false, want true")
-	}
-	if _, ok := seen["v3_diagnostics"]; !ok {
-		t.Fatalf("seen missing v3_diagnostics")
-	}
-}
-
-func TestV3DiagnosticsOverridesProviderAPIDiagnosticsLegacyAlias(t *testing.T) {
-	cfg, _, err := parseEntries("provider_api_diagnostics = true\nv3_diagnostics = false\n", Default(t.TempDir()+"/swarm.conf"))
-	if err != nil {
-		t.Fatalf("parseEntries: %v", err)
+	if !cfg.ProviderAPIDiagnostics {
+		t.Fatalf("ProviderAPIDiagnostics = false, want true")
 	}
 	if cfg.V3Diagnostics {
-		t.Fatalf("V3Diagnostics = true, want canonical v3_diagnostics value")
+		t.Fatalf("V3Diagnostics = true, want false")
+	}
+	if !containsLine(Format(cfg), "provider_api_diagnostics = true") {
+		t.Fatalf("formatted config missing provider_api_diagnostics = true")
 	}
 }
 

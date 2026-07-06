@@ -1394,8 +1394,16 @@ function usageFromPayload(payload: Record<string, unknown>): DesktopSessionUsage
     model: payloadString(source, 'model'),
     source: payloadString(source, 'source'),
     contextWindow: payloadNumber(source, 'context_window'),
+    turnCount: payloadNumber(source, 'turn_count'),
+    inputTokens: payloadNumber(source, 'input_tokens'),
+    outputTokens: payloadNumber(source, 'output_tokens'),
+    thinkingTokens: payloadNumber(source, 'thinking_tokens'),
+    cacheReadTokens: payloadNumber(source, 'cache_read_tokens'),
+    cacheWriteTokens: payloadNumber(source, 'cache_write_tokens'),
     totalTokens: payloadNumber(source, 'total_tokens'),
     remainingTokens: payloadNumber(source, 'remaining_tokens'),
+    serviceTier: payloadString(source, 'service_tier'),
+    estimatedCostUSD: payloadNumber(source, 'estimated_cost_usd'),
     updatedAt: payloadNumber(source, 'updated_at'),
   }
 }

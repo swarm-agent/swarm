@@ -22,7 +22,6 @@ import (
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/privacy"
-	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -1043,9 +1042,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if providerID == "" {
 		return RunResult{}, errors.New("resolved model provider is empty")
 	}
-	serviceTier := ""
-	if providerID == "codex" {
-		serviceTier = codexruntime.NormalizeServiceTier(resolvedPreference.Preference.ServiceTier)
+	serviceTier := resolvedServiceTierForProvider(providerID, resolvedPreference.Preference.ServiceTier)
+	var catalogRecord *pebblestore.ModelCatalogRecord
+	if lookup, err := modelCatalogLookup(s.model, providerID, resolvedPreference.Preference.Model); err != nil {
+		return RunResult{}, err
+	} else if lookup != nil {
+		catalogRecord = lookup
 	}
 	if s.providers == nil {
 		return RunResult{}, errors.New("provider registry is not configured")
@@ -1702,19 +1704,40 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			reasoningStreamingActive = false
 		}
 
+		providerLineageID := provideriface.ShortProviderLineageKey(
+			sessionID,
+			providerID,
+			resolvedPreference.Preference.Model,
+			stepInstructions,
+			providerToolsLineageHash(toolDefinitions),
+			executionMode,
+			strings.TrimSpace(agentProfile.Name),
+			strings.TrimSpace(agentProfile.Mode),
+			strings.TrimSpace(agentProfile.RuntimeMode),
+			strings.TrimSpace(agentProfile.ExecutionSetting),
+			serviceTier,
+			resolvedPreference.Preference.ContextMode,
+		)
 		stepRequest := provideriface.Request{
-			SessionID:         sessionID,
-			Model:             resolvedPreference.Preference.Model,
-			Thinking:          resolvedPreference.Preference.Thinking,
-			Instructions:      stepInstructions,
-			Input:             input,
-			Tools:             toolDefinitions,
-			ToolChoice:        "auto",
-			ServiceTier:       serviceTier,
-			ContextMode:       resolvedPreference.Preference.ContextMode,
-			ContextWindow:     resolvedPreference.ContextWindow,
-			ParallelToolCalls: true,
-			WorkspacePath:     workspaceCtx.WorkspacePath,
+			SessionID:                 sessionID,
+			ProviderLineageID:         providerLineageID,
+			ContextBranchID:           provideriface.ShortProviderLineageKey("session", sessionID, executionMode),
+			ProviderCacheKey:          providerScopedKey("cache", providerLineageID),
+			SessionAffinityKey:        providerScopedKey("affinity", providerLineageID),
+			BoundaryReason:            "session_turn",
+			NativeContinuationAllowed: true,
+			Model:                     resolvedPreference.Preference.Model,
+			Thinking:                  resolvedPreference.Preference.Thinking,
+			Instructions:              stepInstructions,
+			Input:                     input,
+			Tools:                     toolDefinitions,
+			ToolChoice:                "auto",
+			ServiceTier:               serviceTier,
+			ContextMode:               resolvedPreference.Preference.ContextMode,
+			ContextWindow:             resolvedPreference.ContextWindow,
+			ModelCatalog:              catalogRecordValue(catalogRecord),
+			ParallelToolCalls:         true,
+			WorkspacePath:             workspaceCtx.WorkspacePath,
 			ToolInvoker: s.newProviderToolInvoker(providerToolInvokerConfig{
 				sessionID:            sessionID,
 				permissionSessionID:  permissionSessionID,
@@ -3553,11 +3576,6 @@ func compactedActivePlanText(activePlan *pebblestore.SessionPlanSnapshot) string
 }
 
 func (s *Service) resolveMemoryCompactionLimits(providerID, modelName, contextMode string, contextWindow, maxOutputTokens int) (int, int) {
-	providerID = strings.ToLower(strings.TrimSpace(providerID))
-	modelName = strings.TrimSpace(modelName)
-	if providerID == "codex" {
-		contextWindow = codexruntime.EffectiveContextWindow(modelName, contextMode, contextWindow)
-	}
 	if contextWindow < 0 {
 		contextWindow = 0
 	}
@@ -3720,13 +3738,52 @@ func isMemoryCompactionEmptySummaryError(err error) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "memory compaction request returned empty summary")
 }
 
+func providerScopedKey(prefix, lineageID string) string {
+	lineageID = strings.TrimSpace(lineageID)
+	if lineageID == "" {
+		return ""
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return lineageID
+	}
+	return prefix + "-" + lineageID
+}
+
+func providerToolsLineageHash(tools []provideriface.ToolDefinition) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	projection := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		projection = append(projection, map[string]any{
+			"type":        strings.TrimSpace(tool.Type),
+			"name":        strings.TrimSpace(tool.Name),
+			"description": strings.TrimSpace(tool.Description),
+			"parameters":  tool.Parameters,
+		})
+	}
+	raw, err := json.Marshal(projection)
+	if err != nil {
+		return provideriface.ShortProviderLineageKey(fmt.Sprint(projection))
+	}
+	return provideriface.ShortProviderLineageKey(string(raw))
+}
+
 func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Runner, modelName, thinking, contextMode, instructions, userPrompt string, contextWindow, summaryMaxRunes int, emitHeartbeat func(string)) (memoryCompactionResult, error) {
+	providerLineageID := provideriface.ShortProviderLineageKey("memory_compaction", modelName, thinking, contextMode, instructions)
 	req := provideriface.Request{
-		Model:         modelName,
-		Thinking:      thinking,
-		Instructions:  instructions,
-		ContextMode:   contextMode,
-		ContextWindow: contextWindow,
+		ProviderLineageID:         providerLineageID,
+		ProviderCacheKey:          providerScopedKey("cache", providerLineageID),
+		SessionAffinityKey:        providerScopedKey("affinity", providerLineageID),
+		BoundaryReason:            "memory_compaction",
+		NativeContinuationAllowed: false,
+		ForceFreshProviderContext: true,
+		Model:                     modelName,
+		Thinking:                  thinking,
+		Instructions:              instructions,
+		ContextMode:               contextMode,
+		ContextWindow:             contextWindow,
 		Input: []map[string]any{
 			{
 				"role": "user",
@@ -4039,10 +4096,17 @@ func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWor
 	}, "\n"))
 	userPrompt := strings.TrimSpace("Conversation summary:\n" + truncateRunes(promptContext, sessionTitlePromptPreviewRunes))
 
+	providerLineageID := provideriface.ShortProviderLineageKey("session_title", modelName, thinking, stageLabel, instructions)
 	req := provideriface.Request{
-		Model:        modelName,
-		Thinking:     thinking,
-		Instructions: instructions,
+		ProviderLineageID:         providerLineageID,
+		ProviderCacheKey:          providerScopedKey("cache", providerLineageID),
+		SessionAffinityKey:        providerScopedKey("affinity", providerLineageID),
+		BoundaryReason:            "session_title",
+		NativeContinuationAllowed: false,
+		ForceFreshProviderContext: true,
+		Model:                     modelName,
+		Thinking:                  thinking,
+		Instructions:              instructions,
 		Input: []map[string]any{
 			{
 				"role": "user",

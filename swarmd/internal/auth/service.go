@@ -348,26 +348,7 @@ func (s *Service) SetCodexKey(rawKey string) (CodexStatus, *pebblestore.EventEnv
 }
 
 func (s *Service) SetCodexKeyForAccount(accountScopeID, rawKey string) (CodexStatus, *pebblestore.EventEnvelope, error) {
-	accountScopeID, err := requireAccountScopeID(accountScopeID)
-	if err != nil {
-		return CodexStatus{}, nil, err
-	}
-	apiKey := strings.TrimSpace(rawKey)
-	if apiKey == "" {
-		return CodexStatus{}, nil, errors.New("codex api key must not be empty")
-	}
-
-	record, err := s.authStore.SetCodexAPIKeyForAccount(accountScopeID, apiKey)
-	if err != nil {
-		return CodexStatus{}, nil, fmt.Errorf("persist codex auth: %w", err)
-	}
-
-	status := s.statusFromRecord(record)
-	env, err := s.appendCodexUpdatedEvent(status)
-	if err != nil {
-		return CodexStatus{}, nil, err
-	}
-	return status, env, nil
+	return CodexStatus{}, nil, errors.New("codex api-key auth moved to the openai provider")
 }
 
 func (s *Service) SetCodexOAuth(accessToken, refreshToken string, expiresAt int64, accountID string) (CodexStatus, *pebblestore.EventEnvelope, error) {

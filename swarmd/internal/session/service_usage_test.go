@@ -7,6 +7,81 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestRecordTurnUsageFireworksPreservesTierAndCost(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-usage-fireworks-cost.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	svc := NewService(pebblestore.NewSessionStore(store), events)
+	session, _, err := svc.CreateSessionWithOptions(CreateSessionOptions{Title: "Fireworks usage", WorkspacePath: t.TempDir(), WorkspaceName: "workspace", Mode: "auto", Preference: &pebblestore.ModelPreference{Provider: "fireworks", Model: "glm-5p1", Thinking: "high", ServiceTier: "priority"}})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	turn, summary, _, err := svc.RecordTurnUsage(session.ID, pebblestore.SessionTurnUsageSnapshot{RunID: "run-fireworks", Provider: "fireworks", Model: "glm-5p1", Source: "fireworks_api_usage", ContextWindow: 1000, InputTokens: 100, CacheReadTokens: 40, OutputTokens: 10, TotalTokens: 110, ServiceTier: "priority", EstimatedCostUSD: 0.000123, APIUsageRaw: map[string]any{"estimated_cost_usd": 0.000123, "service_tier": "priority"}, APIUsageRawPath: "usage", APIUsageHistory: []map[string]any{{"estimated_cost_usd": 0.000123}}, APIUsagePaths: []string{"usage"}})
+	if err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+	if turn.ServiceTier != "priority" || turn.EstimatedCostUSD != 0.000123 || turn.CacheReadTokens != 40 {
+		t.Fatalf("turn usage = %+v", turn)
+	}
+	if summary.ServiceTier != "priority" || summary.EstimatedCostUSD != 0.000123 || summary.CacheReadTokens != 40 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if turn.APIUsageRaw["estimated_cost_usd"] == nil || len(turn.APIUsageHistory) != 1 {
+		t.Fatalf("raw usage not preserved: raw=%#v history=%#v", turn.APIUsageRaw, turn.APIUsageHistory)
+	}
+}
+
+func TestRecordTurnUsageFireworksAccumulatesAndReplacesByRunID(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-usage-fireworks-accumulate.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	svc := NewService(pebblestore.NewSessionStore(store), events)
+	session, _, err := svc.CreateSessionWithOptions(CreateSessionOptions{Title: "Fireworks Usage", WorkspacePath: t.TempDir(), WorkspaceName: "workspace", Mode: "auto", Preference: &pebblestore.ModelPreference{Provider: "fireworks", Model: "glm-5p1", Thinking: "high"}})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	_, summary1, _, err := svc.RecordTurnUsage(session.ID, pebblestore.SessionTurnUsageSnapshot{RunID: "run_fireworks_1", Provider: "fireworks", Model: "glm-5p1", Source: "fireworks_api_usage", ContextWindow: 1000, InputTokens: 100, OutputTokens: 20, CacheReadTokens: 40, CacheWriteTokens: 5, TotalTokens: 120})
+	if err != nil {
+		t.Fatalf("record fireworks run 1: %v", err)
+	}
+	if summary1.TotalTokens != 120 || summary1.RemainingTokens != 880 {
+		t.Fatalf("summary 1 = %+v", summary1)
+	}
+
+	_, summary2, _, err := svc.RecordTurnUsage(session.ID, pebblestore.SessionTurnUsageSnapshot{RunID: "run_fireworks_2", Provider: "fireworks", Model: "glm-5p1", Source: "fireworks_api_usage", ContextWindow: 1000, InputTokens: 80, OutputTokens: 30, CacheReadTokens: 10, CacheWriteTokens: 2, TotalTokens: 110})
+	if err != nil {
+		t.Fatalf("record fireworks run 2: %v", err)
+	}
+	if summary2.TurnCount != 2 || summary2.TotalTokens != 230 || summary2.InputTokens != 180 || summary2.OutputTokens != 50 || summary2.CacheReadTokens != 50 || summary2.CacheWriteTokens != 7 || summary2.RemainingTokens != 770 {
+		t.Fatalf("fireworks summary should accumulate across runs, got %+v", summary2)
+	}
+
+	turn3, summary3, _, err := svc.RecordTurnUsage(session.ID, pebblestore.SessionTurnUsageSnapshot{RunID: "run_fireworks_2", Provider: "fireworks", Model: "glm-5p1", Source: "fireworks_api_usage", ContextWindow: 1000, InputTokens: 70, OutputTokens: 10, CacheReadTokens: 5, CacheWriteTokens: 1, TotalTokens: 80})
+	if err != nil {
+		t.Fatalf("replace fireworks run 2: %v", err)
+	}
+	if turn3.TotalTokens != 80 {
+		t.Fatalf("replacement turn total = %d, want 80", turn3.TotalTokens)
+	}
+	if summary3.TurnCount != 2 || summary3.TotalTokens != 200 || summary3.InputTokens != 170 || summary3.OutputTokens != 30 || summary3.CacheReadTokens != 45 || summary3.CacheWriteTokens != 6 || summary3.RemainingTokens != 800 {
+		t.Fatalf("fireworks replacement should update accumulated totals by run id, got %+v", summary3)
+	}
+}
+
 func TestRecordTurnUsageCodexRemainingUsesLatestProviderSnapshot(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-usage-codex-remaining.pebble"))
 	if err != nil {
