@@ -103,7 +103,9 @@ type swarmSnapshotModel struct {
 	ModelID             string `json:"model_id"`
 	DisplayName         string `json:"display_name"`
 	Capabilities        struct {
-		SupportsReasoning *bool `json:"supports_reasoning"`
+		SupportsTextInput  *bool `json:"supports_text_input"`
+		SupportsTextOutput *bool `json:"supports_text_output"`
+		SupportsReasoning  *bool `json:"supports_reasoning"`
 	} `json:"capabilities"`
 	Limits struct {
 		ContextWindowTokens *int `json:"context_window_tokens"`
@@ -602,7 +604,7 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 			continue
 		}
 		contextWindow := modelDefaultContextWindow(model.ProviderSpecific, providerID, firstPositiveInt(model.Limits.ContextWindowTokens, model.Routing.TopProviderContextWindowTokens))
-		if contextWindow <= 0 {
+		if contextWindow <= 0 && !modelAllowsUnknownContextWindow(providerID, model) {
 			continue
 		}
 		key := providerID + "\x00" + modelID
@@ -656,16 +658,40 @@ func modelDefaultContextWindow(providerSpecificRaw json.RawMessage, providerID s
 	return fallback
 }
 
+func modelAllowsUnknownContextWindow(providerID string, model swarmSnapshotModel) bool {
+	providerID = canonicalCatalogProviderID(providerID)
+	if providerID != "openai" {
+		return false
+	}
+	return boolPtrValue(model.Capabilities.SupportsTextInput) && boolPtrValue(model.Capabilities.SupportsTextOutput)
+}
+
+func boolPtrValue(value *bool) bool {
+	return value != nil && *value
+}
+
+func providerHidesAsyncBatchTier(providerID string) bool {
+	switch canonicalCatalogProviderID(providerID) {
+	case "anthropic", "openai":
+		return true
+	default:
+		return false
+	}
+}
+
 func modelServingTiers(providerSpecificRaw json.RawMessage, providerID string) ([]string, string) {
 	providerSpecific, ok := snapshotProviderSpecificFor(providerSpecificRaw, providerID)
 	if !ok {
 		return nil, ""
 	}
 	out := normalizeCatalogStringList(providerSpecific.Serving.SupportedTiers)
-	if strings.EqualFold(strings.TrimSpace(providerID), "anthropic") {
+	if providerHidesAsyncBatchTier(providerID) {
 		out = removeCatalogString(out, "batch")
 	}
 	defaultTier := strings.ToLower(strings.TrimSpace(providerSpecific.Serving.DefaultTier))
+	if providerHidesAsyncBatchTier(providerID) && defaultTier == "batch" {
+		defaultTier = ""
+	}
 	return out, defaultTier
 }
 
@@ -737,7 +763,7 @@ func modelServiceTierMappings(providerSpecificRaw json.RawMessage, providerID st
 			order = append(order, tier)
 		}
 	}
-	if strings.EqualFold(strings.TrimSpace(providerID), "anthropic") {
+	if providerHidesAsyncBatchTier(providerID) {
 		order = removeCatalogString(order, "batch")
 		delete(rawByTier, "batch")
 	}

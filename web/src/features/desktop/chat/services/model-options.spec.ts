@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { defaultModelThinking, displayModelName, modelServiceTierOptions, modelThinkingOptions, normalizeModelID, normalizeModelServiceTier, supportsModelServiceTier } from './model-options'
+import { defaultModelThinking, displayModelName, modelAllowedByProviderPreset, modelServiceTierOptions, modelThinkingOptions, normalizeModelID, normalizeModelServiceTier, normalizeProviderID, supportsModelServiceTier } from './model-options'
 
 test('displayModelName strips Fireworks account model prefix', () => {
   assert.equal(displayModelName('fireworks', 'accounts/fireworks/models/kimi-k2p6', ''), 'kimi-k2p6')
@@ -54,6 +54,22 @@ test('Codex service tier options come from catalog tiers and keep priority disti
   assert.equal(supportsModelServiceTier('codex', 'gpt-5.5', ['fast'], 'fast'), true)
   assert.equal(supportsModelServiceTier('codex', 'gpt-5.5', ['flex'], 'flex'), true)
   assert.equal(supportsModelServiceTier('codex', 'gpt-5.5', [], 'fast'), false)
+})
+
+test('OpenAI API provider stays distinct from Codex and exposes catalog models', () => {
+  assert.equal(normalizeProviderID('openai'), 'openai')
+  assert.equal(normalizeModelID('openai', 'gpt-5.5'), 'gpt-5.5')
+  assert.equal(modelAllowedByProviderPreset('openai', 'babbage-002'), true)
+  assert.deepEqual(modelServiceTierOptions('openai', 'gpt-5.5', ['standard', 'priority', 'flex', 'batch']), [
+    { label: 'Off / standard', value: '' },
+    { label: 'Priority', value: 'priority' },
+    { label: 'Flex', value: 'flex' },
+  ])
+  assert.equal(normalizeModelServiceTier('openai', 'priority'), 'priority')
+  assert.equal(normalizeModelServiceTier('openai', 'flex'), 'flex')
+  assert.equal(normalizeModelServiceTier('openai', 'batch'), '')
+  assert.equal(supportsModelServiceTier('openai', 'gpt-5.5', ['standard', 'priority', 'flex', 'batch'], 'priority'), true)
+  assert.equal(supportsModelServiceTier('openai', 'gpt-5.5', ['standard', 'priority', 'flex', 'batch'], 'batch'), false)
 })
 
 test('GLM 5.2 thinking options come directly from catalog metadata', () => {

@@ -21,8 +21,8 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 	if snapshot.SnapshotID != "snapshot-test" || snapshot.SnapshotVersion != "v-test" {
 		t.Fatalf("snapshot metadata = %q/%q", snapshot.SnapshotID, snapshot.SnapshotVersion)
 	}
-	if len(records) != 4 {
-		t.Fatalf("record count = %d, want exactly 4 valid context-window snapshot records", len(records))
+	if len(records) != 5 {
+		t.Fatalf("record count = %d, want exactly 5 valid snapshot records", len(records))
 	}
 
 	codex54 := records[0]
@@ -67,7 +67,21 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 		t.Fatalf("codex gpt-5.5 context window = %d, want snapshot value 444444", codex55.ContextWindow)
 	}
 
-	fireworks := records[2]
+	openai := records[2]
+	if openai.Provider != "openai" || openai.Model != "gpt-5.5" || openai.CatalogID != "openai/gpt-5.5" || openai.DisplayName != "GPT 5.5 API" {
+		t.Fatalf("openai gpt-5.5 identifiers not preserved: %+v", openai)
+	}
+	if openai.ContextWindow != 0 || !openai.Reasoning {
+		t.Fatalf("openai gpt-5.5 context/reasoning = %d/%v, want unknown context and reasoning", openai.ContextWindow, openai.Reasoning)
+	}
+	if !stringSlicesEqual(openai.ServiceTiers, []string{"standard", "priority", "flex"}) || openai.DefaultServiceTier != "standard" {
+		t.Fatalf("openai tiers/default = %#v/%q, want synchronous tiers without batch", openai.ServiceTiers, openai.DefaultServiceTier)
+	}
+	if len(openai.ServiceTierMappings) != 3 || openai.ServiceTierMappings[2].Tier != "flex" || openai.ServiceTierMappings[2].ProviderParameter != "service_tier" || openai.ServiceTierMappings[2].ProviderValue != "flex" {
+		t.Fatalf("openai service tier mappings not decoded without async batch: %+v", openai.ServiceTierMappings)
+	}
+
+	fireworks := records[3]
 	if fireworks.Provider != "fireworks" || fireworks.Model != "glm-5p1" || fireworks.CatalogID != "fireworks/glm-5p1" || fireworks.DisplayName != "GLM 5.1" {
 		t.Fatalf("fireworks base identifiers not preserved: %+v", fireworks)
 	}
@@ -103,7 +117,7 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 		t.Fatalf("fireworks resource_name = %v", fireworksData["resource_name"])
 	}
 
-	fast := records[3]
+	fast := records[4]
 	if fast.Provider != "fireworks" || fast.Model != "glm-5p1-fast" || fast.CatalogID != "fireworks/glm-5p1-fast" || fast.DisplayName != "GLM 5.1 Fast" {
 		t.Fatalf("fireworks fast identifiers not preserved from snapshot: %+v", fast)
 	}
@@ -336,7 +350,7 @@ func snapshotPassthroughPayload() []byte {
 		"snapshot_id":"snapshot-test",
 		"snapshot_version":"v-test",
 		"generated_at":"2026-07-01T00:00:00Z",
-		"model_count":5,
+		"model_count":6,
 		"provider_count":2,
 		"hydrated_provider_count":2,
 		"models":[
@@ -370,6 +384,16 @@ func snapshotPassthroughPayload() []byte {
 				"display_name":"No Context",
 				"capabilities":{"supports_reasoning":true},
 				"limits":{"context_window_tokens":null,"max_output_tokens":128000}
+			},
+			{
+				"catalog_id":"openai/gpt-5.5",
+				"provider_id":"openai",
+				"provider_display_name":"OpenAI",
+				"model_id":"gpt-5.5",
+				"display_name":"GPT 5.5 API",
+				"capabilities":{"supports_text_input":true,"supports_text_output":true,"supports_reasoning":true},
+				"limits":{"context_window_tokens":null,"max_output_tokens":128000},
+				"provider_specific":{"openai":{"serving":{"supported_tiers":["standard","priority","flex","batch"],"default_tier":"standard","tiers":{"standard":{"tier":"standard","swarm_setting":"off","provider_parameter":"service_tier","provider_value":null},"priority":{"tier":"priority","swarm_setting":"priority","provider_parameter":"service_tier","provider_value":"priority"},"flex":{"tier":"flex","swarm_setting":"flex","provider_parameter":"service_tier","provider_value":"flex"},"batch":{"tier":"batch","swarm_setting":"batch","provider_parameter":null,"provider_value":null}}}}}
 			},
 			{
 				"catalog_id":"fireworks/glm-5p1",
