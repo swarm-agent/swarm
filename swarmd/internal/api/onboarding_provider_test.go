@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -118,6 +120,37 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	}
 	if pref.Provider != "openai" || strings.TrimSpace(pref.Model) == "" {
 		t.Fatalf("composer/global preference not hydrated: %+v", pref)
+	}
+}
+
+func TestOnboardingProviderCredentialEndpointAcceptsDesktopActiveField(t *testing.T) {
+	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"})
+	payload := map[string]any{
+		"provider": "openai",
+		"type":     "api",
+		"api_key":  "sk-test-valid",
+		"active":   true,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:5555/v1/onboarding/provider/credential", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), principal))
+	rec := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/onboarding/provider/credential status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var status auth.CredentialStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !status.Active || status.AutoDefaults == nil || !status.AutoDefaults.Applied {
+		t.Fatalf("credential not activated and hydrated: %+v", status)
 	}
 }
 

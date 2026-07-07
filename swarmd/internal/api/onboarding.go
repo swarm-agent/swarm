@@ -152,6 +152,7 @@ type onboardingProviderCredentialRequest struct {
 	RefreshToken string   `json:"refresh_token"`
 	ExpiresAt    int64    `json:"expires_at"`
 	AccountID    string   `json:"account_id"`
+	Active       *bool    `json:"active,omitempty"`
 }
 
 type tailscalePeerStatusWire struct {
