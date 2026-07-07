@@ -211,11 +211,8 @@ func (s *Server) resolveAgentProviderDefaultsForAccount(accountScopeID string) (
 		if err == nil {
 			providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
 			if providerID != "" {
-				providerDefaults, ok := defaults.Lookup(providerID)
-				if ok {
-					if err := s.applySnapshotRecommendedDefaults(providerID, &providerDefaults); err == nil {
-						return providerID, providerDefaults, true
-					}
+				providerDefaults, ok, err := s.snapshotRecommendedProviderDefaults(providerID, false)
+				if err == nil && ok {
 					return providerID, providerDefaults, true
 				}
 			}
@@ -224,9 +221,6 @@ func (s *Server) resolveAgentProviderDefaultsForAccount(accountScopeID string) (
 	if s.providers != nil {
 		providerID, providerDefaults, ok, err := s.resolveUtilityModelProvider("")
 		if err == nil && ok {
-			if err := s.applySnapshotRecommendedDefaults(providerID, &providerDefaults); err == nil {
-				return providerID, providerDefaults, true
-			}
 			return providerID, providerDefaults, true
 		}
 	}

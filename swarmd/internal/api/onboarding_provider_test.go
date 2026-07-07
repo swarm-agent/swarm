@@ -144,6 +144,52 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	}
 }
 
+func TestOnboardingProviderCredentialHydratesPreferredProviderEvenWhenStatusIsNotYetRunnable(t *testing.T) {
+	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "fireworks", ready: false, connected: true, message: "ok"})
+
+	status, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{
+		Provider: "fireworks",
+		Type:     "api",
+		APIKey:   "sk-test-valid",
+	})
+	if err != nil {
+		t.Fatalf("accept fireworks onboarding provider credential: %v", err)
+	}
+	if status.AutoDefaults == nil || !status.AutoDefaults.Applied || status.AutoDefaults.Provider != "fireworks" || status.AutoDefaults.Model != "snapshot-main-model" || status.AutoDefaults.UtilityModel != "snapshot-utility-model" {
+		t.Fatalf("fireworks defaults not applied from catalog: %+v", status.AutoDefaults)
+	}
+}
+
+func TestOnboardingProviderCredentialHydratesProviderFromSnapshotWithoutLegacyDefaults(t *testing.T) {
+	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "snapshot-only", ready: true, connected: true, message: "ok"})
+
+	status, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{
+		Provider: "snapshot-only",
+		Type:     "api",
+		APIKey:   "sk-test-valid",
+	})
+	if err != nil {
+		t.Fatalf("accept snapshot-only onboarding provider credential: %v", err)
+	}
+	if status.AutoDefaults == nil || !status.AutoDefaults.Applied || status.AutoDefaults.Provider != "snapshot-only" || status.AutoDefaults.Model != "snapshot-main-model" || status.AutoDefaults.UtilityModel != "snapshot-utility-model" {
+		t.Fatalf("snapshot-only defaults not applied from catalog: %+v", status.AutoDefaults)
+	}
+	agents, err := server.agents.ListStateForAccount(principal.AccountScopeID, 2000)
+	if err != nil {
+		t.Fatalf("list hydrated agents: %v", err)
+	}
+	var swarmProfile *pebblestore.AgentProfile
+	for i := range agents.Profiles {
+		if strings.EqualFold(agents.Profiles[i].Name, "swarm") {
+			swarmProfile = &agents.Profiles[i]
+			break
+		}
+	}
+	if swarmProfile == nil || swarmProfile.PlanModel != "snapshot-plan-model" || swarmProfile.AutoModel != "snapshot-main-model" {
+		t.Fatalf("snapshot-only swarm split defaults not hydrated: %+v", swarmProfile)
+	}
+}
+
 func TestOnboardingProviderCredentialRequiresSnapshotRecommendationsAndRollsBack(t *testing.T) {
 	server, principal := newOnboardingProviderCredentialTestServerWithoutRecommendations(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"})
 

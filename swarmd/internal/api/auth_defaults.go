@@ -128,6 +128,10 @@ func (s *Server) applySnapshotRecommendedDefaultsForMode(providerID string, prov
 		}
 		return nil
 	}
+	providerDefaults.ProviderID = strings.ToLower(strings.TrimSpace(main.Provider))
+	if providerDefaults.ProviderID == "" {
+		providerDefaults.ProviderID = strings.ToLower(strings.TrimSpace(providerID))
+	}
 	providerDefaults.PrimaryModel = strings.TrimSpace(main.Model)
 	providerDefaults.PrimaryThinking = recommendedThinking(mainRec, providerDefaults.PrimaryThinking)
 	providerDefaults.PlanModel = strings.TrimSpace(plan.Model)
@@ -158,36 +162,59 @@ func recommendedThinking(rec pebblestore.ModelCatalogRecommendation, fallback st
 }
 
 func (s *Server) resolveUtilityModelProvider(preferredProvider string) (providerID string, providerDefaults defaults.ProviderDefaults, ok bool, err error) {
+	preferredProvider = strings.ToLower(strings.TrimSpace(preferredProvider))
+	if preferredProvider != "" {
+		providerDefaults, ok, err := s.snapshotRecommendedProviderDefaults(preferredProvider, true)
+		if err != nil {
+			return "", defaults.ProviderDefaults{}, false, err
+		}
+		if !ok {
+			return "", defaults.ProviderDefaults{}, false, nil
+		}
+		return providerDefaults.ProviderID, providerDefaults, true, nil
+	}
+
 	statuses, err := s.providers.ListStatuses(context.Background())
 	if err != nil {
 		return "", defaults.ProviderDefaults{}, false, fmt.Errorf("list provider statuses: %w", err)
 	}
-
-	preferredProvider = strings.ToLower(strings.TrimSpace(preferredProvider))
-	if preferredProvider != "" {
-		for _, status := range statuses {
-			id := strings.ToLower(strings.TrimSpace(status.ID))
-			if id != preferredProvider || !status.Runnable {
-				continue
-			}
-			providerDefaults, ok := defaults.Lookup(id)
-			if !ok || strings.TrimSpace(providerDefaults.PrimaryModel) == "" || strings.TrimSpace(providerDefaults.UtilityModel) == "" {
-				continue
-			}
-			return id, providerDefaults, true, nil
-		}
-	}
-
 	for _, status := range statuses {
 		id := strings.ToLower(strings.TrimSpace(status.ID))
 		if id == "" || !status.Runnable {
 			continue
 		}
-		providerDefaults, ok := defaults.Lookup(id)
-		if !ok || strings.TrimSpace(providerDefaults.PrimaryModel) == "" || strings.TrimSpace(providerDefaults.UtilityModel) == "" {
+		providerDefaults, ok, err := s.snapshotRecommendedProviderDefaults(id, false)
+		if err != nil {
+			return "", defaults.ProviderDefaults{}, false, err
+		}
+		if !ok {
 			continue
 		}
-		return id, providerDefaults, true, nil
+		return providerDefaults.ProviderID, providerDefaults, true, nil
 	}
 	return "", defaults.ProviderDefaults{}, false, nil
+}
+
+func (s *Server) snapshotRecommendedProviderDefaults(providerID string, required bool) (defaults.ProviderDefaults, bool, error) {
+	providerID = strings.ToLower(strings.TrimSpace(providerID))
+	if providerID == "" {
+		return defaults.ProviderDefaults{}, false, nil
+	}
+	providerDefaults := defaults.ProviderDefaults{
+		ProviderID:       providerID,
+		UtilitySubagents: builtinUtilityAgentNames(),
+	}
+	if err := s.applySnapshotRecommendedDefaultsForMode(providerID, &providerDefaults, required); err != nil {
+		return defaults.ProviderDefaults{}, false, err
+	}
+	if strings.TrimSpace(providerDefaults.PrimaryModel) == "" || strings.TrimSpace(providerDefaults.PlanModel) == "" || strings.TrimSpace(providerDefaults.AutoModel) == "" || strings.TrimSpace(providerDefaults.UtilityModel) == "" {
+		if required {
+			return defaults.ProviderDefaults{}, false, fmt.Errorf("missing required snapshot recommendations for provider %q", providerID)
+		}
+		return defaults.ProviderDefaults{}, false, nil
+	}
+	if strings.TrimSpace(providerDefaults.ProviderID) == "" {
+		providerDefaults.ProviderID = providerID
+	}
+	return providerDefaults, true, nil
 }
