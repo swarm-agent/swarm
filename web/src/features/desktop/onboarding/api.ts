@@ -1,4 +1,6 @@
 import { requestJson } from '../../../app/api'
+import type { AuthCredential, AuthCredentialWire, UpsertAuthCredentialInput } from '../settings/types/auth'
+import { mapAuthCredential } from '../settings/types/auth'
 import type {
   DesktopOnboardingStatusWire,
   SaveDesktopOnboardingInput,
@@ -78,6 +80,17 @@ export async function patchDesktopOnboarding(input: SaveDesktopOnboardingInput):
     },
     body: JSON.stringify(buildDesktopOnboardingPayload(input)),
   })
+}
+
+export async function acceptOnboardingProviderCredential(input: UpsertAuthCredentialInput): Promise<AuthCredential> {
+  const response = await requestJson<AuthCredentialWire>('/v1/onboarding/provider/credential', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  })
+  return mapAuthCredential(response)
 }
 
 export async function upgradeAccountToTeam(teamName: string): Promise<void> {

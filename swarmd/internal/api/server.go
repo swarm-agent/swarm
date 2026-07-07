@@ -1249,6 +1249,15 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("provider is required"))
 			return
 		}
+		if req.Active {
+			if firstRun, _, _, firstRunErr := s.firstOnboardingProviderHydrationState(accountScopeID); firstRunErr != nil {
+				writeError(w, http.StatusBadRequest, firstRunErr)
+				return
+			} else if firstRun {
+				writeError(w, http.StatusBadRequest, errors.New("first onboarding provider credential must use /v1/onboarding/provider/credential"))
+				return
+			}
+		}
 		wantsActive := req.Active
 		input := auth.CredentialUpsertInput{
 			ID:             req.ID,

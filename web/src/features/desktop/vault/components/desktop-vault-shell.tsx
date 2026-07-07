@@ -64,6 +64,9 @@ function mapOnboardingBootstrapStatus(onboarding: DesktopOnboardingStatusWire): 
     : typeof onboarding.auth?.credential_count === 'number'
       ? onboarding.auth.credential_count
       : 0
+  const agentCount = typeof onboarding.heuristics?.agent_count === 'number'
+    ? onboarding.heuristics.agent_count
+    : 0
   const savedWorkspaceCount = typeof onboarding.heuristics?.saved_workspace_count === 'number'
     ? onboarding.heuristics.saved_workspace_count
     : typeof onboarding.workspace?.saved_count === 'number'
@@ -109,6 +112,7 @@ function mapOnboardingBootstrapStatus(onboarding: DesktopOnboardingStatusWire): 
     heuristics: {
       missingSwarmName: Boolean(onboarding.heuristics?.missing_swarm_name),
       credentialCount,
+      agentCount,
       savedWorkspaceCount,
       vaultConfigured: Boolean(onboarding.heuristics?.vault_configured),
     },

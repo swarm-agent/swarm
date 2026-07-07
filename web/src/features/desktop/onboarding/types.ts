@@ -32,6 +32,7 @@ export interface DesktopOnboardingConfigWire {
 export interface DesktopOnboardingHeuristicsWire {
   missing_swarm_name?: boolean
   credential_count?: number
+  agent_count?: number
   saved_workspace_count?: number
   vault_configured?: boolean
 }
@@ -169,6 +170,7 @@ export interface DesktopOnboardingConfig {
 export interface DesktopOnboardingHeuristics {
   missingSwarmName: boolean
   credentialCount: number
+  agentCount: number
   savedWorkspaceCount: number
   vaultConfigured: boolean
 }

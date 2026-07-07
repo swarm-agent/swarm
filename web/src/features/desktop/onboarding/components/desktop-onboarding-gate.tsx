@@ -3,7 +3,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { queryClient } from '../../../../app/query-client'
 import { Button } from '../../../../components/ui/button'
 import { Input } from '../../../../components/ui/input'
-import { patchDesktopOnboarding } from '../api'
+import { acceptOnboardingProviderCredential, patchDesktopOnboarding } from '../api'
 import type { DesktopOnboardingStatus } from '../types'
 import { startCodexOAuth } from '../../settings/mutations/start-codex-oauth'
 import { getCodexOAuthStatus } from '../../settings/queries/get-codex-oauth-status'
@@ -238,6 +238,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const showOAuthSection = providerSetupMode === 'oauth-browser' || providerSetupMode === 'oauth-manual'
   const submitting = pendingAction !== null
   const progress = pendingMessage(pendingAction)
+  const mustUseOnboardingProviderAPI = status.heuristics.credentialCount === 0 && status.heuristics.agentCount === 0
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(workspaces), [workspaces])
   const savedWorkspaceByPath = useMemo(() => new Map(workspaces.map((workspace) => [workspace.path, workspace])), [workspaces])
   const visibleSavedWorkspaces = useMemo(() => {
@@ -550,10 +551,23 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
         payload.access_token = credentialValue.trim()
       }
 
-      const saved = await upsertAuthCredential(payload)
-      const verification = await verifyAuthCredential({ provider: saved.provider, id: saved.id })
-      if (!verification.connected) {
-        throw new Error(verification.message || 'Credential saved, but verification failed.')
+      if (mustUseOnboardingProviderAPI) {
+        const accepted = await acceptOnboardingProviderCredential(payload)
+        if (!accepted.active) {
+          throw new Error('Onboarding provider was verified but not activated.')
+        }
+        if (accepted.connection && !accepted.connection.connected) {
+          throw new Error(accepted.connection.message || 'Onboarding provider verification failed.')
+        }
+        if (!accepted.autoDefaults?.applied) {
+          throw new Error(accepted.autoDefaults?.error || 'Onboarding did not hydrate agent defaults.')
+        }
+      } else {
+        const saved = await upsertAuthCredential(payload)
+        const verification = await verifyAuthCredential({ provider: saved.provider, id: saved.id })
+        if (!verification.connected) {
+          throw new Error(verification.message || 'Credential saved, but verification failed.')
+        }
       }
 
       setCredentialValue('')

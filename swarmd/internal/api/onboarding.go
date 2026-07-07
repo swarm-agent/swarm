@@ -56,6 +56,7 @@ type onboardingConfigPayload struct {
 type onboardingHeuristicsPayload struct {
 	MissingSwarmName    bool `json:"missing_swarm_name"`
 	CredentialCount     int  `json:"credential_count"`
+	AgentCount          int  `json:"agent_count"`
 	SavedWorkspaceCount int  `json:"saved_workspace_count"`
 	VaultConfigured     bool `json:"vault_configured"`
 }
@@ -139,6 +140,18 @@ type onboardingUpdateRequest struct {
 	AdvertisePort             *int    `json:"advertise_port,omitempty"`
 	TailscaleURL              *string `json:"tailscale_url,omitempty"`
 	PeerTransportPort         *int    `json:"peer_transport_port,omitempty"`
+}
+
+type onboardingProviderCredentialRequest struct {
+	Provider     string   `json:"provider"`
+	Type         string   `json:"type"`
+	Label        string   `json:"label"`
+	Tags         []string `json:"tags"`
+	APIKey       string   `json:"api_key"`
+	AccessToken  string   `json:"access_token"`
+	RefreshToken string   `json:"refresh_token"`
+	ExpiresAt    int64    `json:"expires_at"`
+	AccountID    string   `json:"account_id"`
 }
 
 type tailscalePeerStatusWire struct {
@@ -295,6 +308,29 @@ func (s *Server) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleOnboardingProviderCredential(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	var req onboardingProviderCredentialRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	status, err := s.acceptFirstOnboardingProviderCredential(r.Context(), principal, req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
 func (s *Server) allowSensitiveOnboardingMetadata(r *http.Request) bool {
 	if r == nil {
 		return false
@@ -356,6 +392,10 @@ func (s *Server) onboardingResponseWithServeDetectionAndLocalLinkState(includeSe
 	if err != nil {
 		return onboardingResponse{}, err
 	}
+	agentCount, err := s.readAgentCount(identityPayload.AccountScopeID)
+	if err != nil {
+		return onboardingResponse{}, err
+	}
 	savedCount, err := s.readSavedWorkspaceCount(identityPayload.AccountScopeID, identityPayload.UserID)
 	if err != nil {
 		return onboardingResponse{}, err
@@ -395,6 +435,7 @@ func (s *Server) onboardingResponseWithServeDetectionAndLocalLinkState(includeSe
 		Heuristics: onboardingHeuristicsPayload{
 			MissingSwarmName:    strings.TrimSpace(cfg.SwarmName) == "",
 			CredentialCount:     credentialList.Total,
+			AgentCount:          agentCount,
 			SavedWorkspaceCount: savedCount,
 			VaultConfigured:     vaultStatus.Enabled,
 		},
@@ -631,14 +672,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		if s.identitySessions == nil {
 			return onboardingResponse{}, nil, identity.ErrSessionServiceNotConfigured
 		}
-		if s.agents == nil {
-			return onboardingResponse{}, nil, errors.New("agent service not configured")
-		}
-		bootstrapResult, err := s.identityService.BootstrapFirstIdentity(bootstrapUsername)
-		if err != nil {
-			return onboardingResponse{}, nil, err
-		}
-		if _, _, _, err := s.agents.RestoreDefaultsForAccount(bootstrapResult.AccountScope.ID); err != nil {
+		if _, err := s.identityService.BootstrapFirstIdentity(bootstrapUsername); err != nil {
 			return onboardingResponse{}, nil, err
 		}
 		createdSession, err := s.identitySessions.IssueForCurrentSelection()
@@ -709,6 +743,17 @@ func (s *Server) persistUISwarmName(name string) error {
 	settings.Swarm.Name = strings.TrimSpace(name)
 	_, err = s.uiSettings.Set(settings)
 	return err
+}
+
+func (s *Server) readAgentCount(accountScopeID string) (int, error) {
+	if s == nil || s.agents == nil || strings.TrimSpace(accountScopeID) == "" {
+		return 0, nil
+	}
+	state, err := s.agents.ListStateForAccount(accountScopeID, 2000)
+	if err != nil {
+		return 0, err
+	}
+	return len(state.Profiles), nil
 }
 
 func (s *Server) readSavedWorkspaceCount(accountScopeID, userID string) (int, error) {
