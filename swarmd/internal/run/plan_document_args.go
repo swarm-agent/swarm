@@ -70,6 +70,62 @@ func planToolArgJSON(value any) ([]byte, error) {
 	return json.Marshal(value)
 }
 
+func planManageDocumentPatchActions() map[string]bool {
+	return map[string]bool{
+		"update_info":             true,
+		"update_execution_policy": true,
+		"update_execution_state":  true,
+		"upsert_checkpoint":       true,
+		"update_checkpoint":       true,
+		"start_checkpoint":        true,
+		"continue_checkpoint":     true,
+		"complete_checkpoint":     true,
+		"checkpoint_outcome":      true,
+		"mark_needs_review":       true,
+		"mark_blocked":            true,
+		"mark_failed":             true,
+		"remove_checkpoint":       true,
+		"reorder_checkpoints":     true,
+		"set_active_checkpoint":   true,
+	}
+}
+
+func planManageActionUsesDocumentPatch(action string) bool {
+	return planManageDocumentPatchActions()[strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_")]
+}
+
+func planManageApprovedArgumentKeys(action string) map[string]bool {
+	keys := map[string]bool{}
+	add := func(names ...string) {
+		for _, name := range names {
+			keys[name] = true
+		}
+	}
+	if planManageActionUsesDocumentPatch(action) {
+		add("plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation")
+		return keys
+	}
+	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_") {
+	case "patch", "update_section":
+		add("plan_id", "id", "patch", "operation", "patch_operation", "patch_action", "section", "update_scope", "scope", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all")
+	case "approve_and_start":
+		add("plan_id", "id", "checkpoint_id", "active_checkpoint_id", "active_checkpoint", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically")
+	case "restart_checkpoint", "rewind_to_checkpoint":
+		add("plan_id", "id", "checkpoint_id", "active_checkpoint_id", "active_checkpoint")
+	case "start_session_checkpoint":
+		add("checkpoint_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "notes", "handoff_notes", "context", "source_message_id", "source_message", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at")
+	case "request_followup_checkpoint":
+		add("plan_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "notes", "handoff_notes", "context", "source_message_id", "source_message", "approval_confirmed", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at")
+	case "request_plan_revision":
+		add("plan_id", "id", "title", "plan", "document", "reason", "update_summary", "summary")
+	case "amend_plan":
+		add("plan_id", "id", "title", "plan", "document", "base_revision", "update_summary", "summary", "reason", "replace_from_checkpoint_id", "checkpoint_id", "amend_future_checkpoints", "override_stale")
+	case "request_new_plan":
+		add("plan_id", "id", "title", "plan", "document", "reason", "update_summary", "summary", "approval_confirmed", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically")
+	}
+	return keys
+}
+
 func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumentPatch, error) {
 	if value, ok := args["document_patch"]; ok && value != nil {
 		var patch sessionruntime.PlanDocumentPatch

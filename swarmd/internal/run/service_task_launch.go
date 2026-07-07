@@ -1030,14 +1030,17 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	if err != nil {
 		return planManagePermissionPayload{}, false, err
 	}
-	documentPatch, err := planDocumentPatchFromArgs(args)
-	if err != nil {
-		return planManagePermissionPayload{}, false, err
-	}
-	if documentPatch != nil && strings.Contains(action, "checkpoint") {
-		checkpoint = true
-	} else if documentPatch == nil && (action == "update_info" || action == "update_execution_policy" || action == "update_execution_state" || action == "upsert_checkpoint" || action == "update_checkpoint" || action == "start_checkpoint" || action == "continue_checkpoint" || action == "complete_checkpoint" || action == "checkpoint_outcome" || action == "mark_needs_review" || action == "mark_blocked" || action == "mark_failed" || action == "remove_checkpoint" || action == "reorder_checkpoints" || action == "set_active_checkpoint") {
-		return planManagePermissionPayload{}, false, nil
+	var documentPatch *sessionruntime.PlanDocumentPatch
+	if planManageActionUsesDocumentPatch(action) {
+		documentPatch, err = planDocumentPatchFromArgs(args)
+		if err != nil {
+			return planManagePermissionPayload{}, false, err
+		}
+		if documentPatch != nil && strings.Contains(action, "checkpoint") {
+			checkpoint = true
+		} else if documentPatch == nil {
+			return planManagePermissionPayload{}, false, nil
+		}
 	}
 	previewPlan := planBody
 	if previewPlan == "" && document != nil {
@@ -1158,11 +1161,13 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 			payload.ApprovedArguments["document"] = document
 		}
 	} else {
+		approvedKeys := planManageApprovedArgumentKeys(action)
 		for key, value := range args {
-			switch key {
-			case "plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "handoff_notes", "context", "report", "result", "changed_files", "validation", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically", "change_request", "user_request", "request", "prompt", "checkpoint_title", "tasks", "acceptance_criteria", "source_message_id", "base_revision", "replace_from_checkpoint_id", "amend_future_checkpoints", "override_stale", "patch", "operation", "patch_operation", "patch_action", "section", "old_text", "new_text", "text", "checklist_item", "item", "checked", "replace_all":
+			if approvedKeys[key] {
 				payload.ApprovedArguments[key] = value
-			case "checkpoint":
+				continue
+			}
+			if key == "checkpoint" && planManageActionUsesDocumentPatch(action) {
 				if _, isBool := value.(bool); !isBool {
 					payload.ApprovedArguments[key] = value
 				}

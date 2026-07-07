@@ -43,6 +43,19 @@ func TestPlanDocumentFromArgsAcceptsObjectAndJSONString(t *testing.T) {
 	}
 }
 
+func TestPlanDocumentPatchFromArgsRejectsInvalidDocumentPatchOperation(t *testing.T) {
+	patch, err := planDocumentPatchFromArgs(map[string]any{"document_operation": "definitely_not_supported", "info": map[string]any{"goal": "update"}})
+	if err != nil {
+		t.Fatalf("planDocumentPatchFromArgs: %v", err)
+	}
+	if patch == nil || patch.Operation != "definitely_not_supported" {
+		t.Fatalf("patch = %#v", patch)
+	}
+	if _, err := sessionruntime.ApplyPlanDocumentPatch("plan-one", "One Plan", &pebblestore.SessionPlanDocument{Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "One"}}}, *patch); err == nil || !strings.Contains(err.Error(), "unsupported plan document patch operation") {
+		t.Fatalf("ApplyPlanDocumentPatch invalid operation err=%v", err)
+	}
+}
+
 func TestPlanDocumentPatchFromArgsPreservesPartialInfoFieldPresence(t *testing.T) {
 	patch, err := planDocumentPatchFromArgs(map[string]any{
 		"action":             "update_info",

@@ -498,6 +498,37 @@ func TestPlanManagePermissionPayloadRequestNewPlanDefaultsAutomaticCheckpointed(
 	}
 }
 
+func TestPlanManagePermissionPayloadRequestFollowupUsesLifecycleArguments(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-followup-permission", "Followup Plan", "# Followup", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		Checkpoints:     []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "First", Status: sessionruntime.PlanCheckpointStatusCompleted}},
+	}})
+	if err != nil {
+		t.Fatalf("save follow-up plan: %v", err)
+	}
+
+	payload, needsApproval, err := runSvc.buildPlanManagePermissionPayload(sessionID, tool.Call{Name: "plan_manage", Arguments: `{"action":"request_followup_checkpoint","plan_id":"plan-followup-permission","change_request":"add a review note","checkpoint_title":"Audit note handoff","tasks":["Preserve request"],"acceptance_criteria":["No context lost"],"notes":"handoff context"}`})
+	if err != nil {
+		t.Fatalf("build permission payload: %v", err)
+	}
+	if !needsApproval || payload.PathID != "tool.plan-followup-request.v1" || !payload.ApprovalRequired {
+		t.Fatalf("follow-up permission payload = %#v needsApproval=%v", payload, needsApproval)
+	}
+	approved := payload.ApprovedArguments
+	if approved["action"] != "request_followup_checkpoint" || approved["change_request"] != "add a review note" || approved["checkpoint_title"] != "Audit note handoff" || approved["notes"] != "handoff context" || approved["approval_confirmed"] != true {
+		t.Fatalf("approved lifecycle arguments = %#v", approved)
+	}
+	for _, patchKey := range []string{"document_operation", "operation", "document_patch", "operations", "checkpoint_order", "active_checkpoint_id"} {
+		if _, ok := approved[patchKey]; ok {
+			t.Fatalf("approved lifecycle arguments leaked patch key %q: %#v", patchKey, approved)
+		}
+	}
+}
+
 func TestPlanManagePermissionPayloadRequestNewPlanRejectsEmptyTitleOnly(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
@@ -574,9 +605,36 @@ func TestExecutePlanManageRequestNewPlanReplacementApprovesActivePlan(t *testing
 		t.Fatalf("replacement checkpoint runtime was not reset: %#v", payload.Plan.Document.Checkpoints)
 	}
 
-	followupRaw, err := runSvc.executePlanManageTool(sessionID, `{"action":"request_followup_checkpoint","plan_id":"plan-replace","change_request":"Add follow-up.","approval_confirmed":true}`, "")
+	followupRaw, err := runSvc.executePlanManageTool(sessionID, `{"action":"request_followup_checkpoint","plan_id":"plan-replace","change_request":"Add follow-up.","checkpoint_title":"Follow-up handoff","tasks":["Handle follow-up"],"acceptance_criteria":["Follow-up preserved"],"notes":"Lifecycle notes should not be parsed as a patch.","approval_confirmed":true}`, "")
 	if err != nil {
 		t.Fatalf("request follow-up after replacement: %v output=%s", err, followupRaw)
+	}
+	var followupPayload struct {
+		Action       string `json:"action"`
+		NextAction   string `json:"next_action"`
+		CheckpointID string `json:"checkpoint_id"`
+		Plan         struct {
+			Document *pebblestore.SessionPlanDocument `json:"document"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(followupRaw), &followupPayload); err != nil {
+		t.Fatalf("decode follow-up payload: %v", err)
+	}
+	if followupPayload.Action != "request_followup_checkpoint" || followupPayload.NextAction != "run_checkpoint_with_fresh_context" || followupPayload.CheckpointID == "" {
+		t.Fatalf("approved follow-up should be inserted and runnable, raw=%s", followupRaw)
+	}
+	if followupPayload.Plan.Document == nil || len(followupPayload.Plan.Document.Checkpoints) != 2 {
+		t.Fatalf("follow-up document missing inserted checkpoint: %#v", followupPayload.Plan.Document)
+	}
+	var inserted *pebblestore.SessionPlanCheckpoint
+	for i := range followupPayload.Plan.Document.Checkpoints {
+		if followupPayload.Plan.Document.Checkpoints[i].Title == "Follow-up handoff" {
+			inserted = &followupPayload.Plan.Document.Checkpoints[i]
+			break
+		}
+	}
+	if inserted == nil || inserted.Notes == "" || inserted.Tasks[0] != "Handle follow-up" || inserted.AcceptanceCriteria[0] != "Follow-up preserved" {
+		t.Fatalf("follow-up checkpoint did not preserve lifecycle fields: %#v", followupPayload.Plan.Document.Checkpoints)
 	}
 }
 
