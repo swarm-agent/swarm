@@ -806,7 +806,7 @@ const exitPlanExecutionChoices: Array<{
 }> = [
   {
     id: 'checkpointed_automatic',
-    title: 'Automatic mode',
+    title: 'Automatic checkpointed',
     description: 'Run checkpoints automatically until completion or until review, blocker, or failure stops execution.',
     detail: 'Default: preserves checkpoint boundaries and continues automatically.',
   },
@@ -863,7 +863,7 @@ function ExitPlanExecutionChoiceSelector({
     <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
       <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Run mode</div>
       <div className="mt-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
-        <span className="font-semibold">Automatic mode is selected by default.</span>{' '}
+        <span className="font-semibold">Automatic checkpointed is selected by default.</span>{' '}
         Choose a different run mode before approving if needed.
       </div>
       <div className="mt-3 grid gap-3 md:grid-cols-3" role="radiogroup" aria-label="Run mode">
@@ -1624,7 +1624,7 @@ function NewPlanRequestModal({
     <ModalShell
       open={open}
       title={payload.title || 'Review New Plan'}
-      subtitle="Explicit approval required before saving a new plan proposal"
+      subtitle="Explicit approval required before approving and activating a new plan"
       pendingCount={pendingCount}
       sessionMode={sessionMode}
       widthClassName="w-full sm:w-[min(1180px,calc(100vw-48px))]"
@@ -1638,7 +1638,7 @@ function NewPlanRequestModal({
       <div className="grid gap-4">
         <section className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4 text-sm leading-6 text-[var(--app-text)]">
           <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Lifecycle action</div>
-          <p className="mt-2">Approve a separate new plan proposal. This does not silently overwrite the current active plan.</p>
+          <p className="mt-2">Approve, activate, and prepare this separate new plan for execution. It will replace the current active plan only after this approval.</p>
           {payload.updateSummary ? <p className="mt-2 whitespace-pre-wrap break-words text-[var(--app-text-muted)]">{payload.updateSummary}</p> : null}
         </section>
         <ExitPlanExecutionChoiceSelector

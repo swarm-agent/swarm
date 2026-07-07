@@ -544,6 +544,69 @@ func TestPlanLifecycleRequestNewPlanWithoutPlanIDKeepsSeparateProposalInactive(t
 	}
 }
 
+func TestPlanLifecycleRequestNewPlanWithoutPlanIDApprovalActivatesApprovedPlan(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	original := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
+		Mode:  PlanExecutionPolicyModeReviewEachCheckpoint,
+		Shape: PlanExecutionShapeCheckpointed,
+	}, []pebblestore.SessionPlanCheckpoint{{ID: "cp-old", Title: "Old", Status: PlanCheckpointStatusCompleted}})
+	approved, err := NewPlanLifecycleService(svc).RequestNewPlan(PlanLifecycleProposalInput{
+		SessionID:         sessionID,
+		Title:             "Approved Separate Plan",
+		Plan:              "# Approved Separate Plan",
+		ApprovalConfirmed: true,
+		Document: &pebblestore.SessionPlanDocument{
+			Title:          "Approved Separate Plan",
+			ExecutionState: &pebblestore.SessionPlanExecutionState{Status: "running", ActiveAttemptID: "stale-attempt"},
+			Checkpoints:    []pebblestore.SessionPlanCheckpoint{{ID: "cp-proposed", Title: "Proposed", Status: PlanCheckpointStatusInProgress, AttemptID: "stale-attempt"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("approve separate new plan: %v", err)
+	}
+	if approved.Plan.ID == original.ID || !approved.Plan.Active || approved.Plan.Status != "approved" || approved.Plan.ApprovalState != "approved" {
+		t.Fatalf("approved separate plan state = %#v", approved.Plan)
+	}
+	if approved.Summary.NextCheckpointID != "cp-proposed" || approved.Summary.PolicyMode != PlanExecutionPolicyModeAutomatic || approved.Summary.ExecutionShape != PlanExecutionShapeCheckpointed {
+		t.Fatalf("approved separate execution summary = %#v", approved.Summary)
+	}
+	if approved.Plan.Document == nil || approved.Plan.Document.ID != approved.Plan.ID || approved.Plan.Document.Status != "approved" || approved.Plan.Document.ActiveCheckpointID != "cp-proposed" {
+		t.Fatalf("approved separate document = %#v", approved.Plan.Document)
+	}
+	if approved.Plan.Document.ExecutionState != nil || approved.Plan.Document.Checkpoints[0].Status != PlanCheckpointStatusPending || approved.Plan.Document.Checkpoints[0].AttemptID != "" {
+		t.Fatalf("approved separate runtime was not reset: %#v", approved.Plan.Document)
+	}
+	active, ok, err := svc.GetActivePlan(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get active: ok=%v err=%v", ok, err)
+	}
+	if active.ID != approved.Plan.ID || active.ID == original.ID || active.ApprovalState != "approved" {
+		t.Fatalf("active approved separate plan = %#v", active)
+	}
+}
+
+func TestPlanLifecycleRequestNewPlanApprovalRequiresStructuredDocument(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	_, err := NewPlanLifecycleService(svc).RequestNewPlan(PlanLifecycleProposalInput{
+		SessionID:         sessionID,
+		Title:             "Missing Document",
+		Plan:              "# Missing Document",
+		ApprovalConfirmed: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "structured document") {
+		t.Fatalf("approval without document error = %v", err)
+	}
+}
+
 func TestPlanLifecycleRequestFollowupCheckpointGlobalAutoStartPreparesFreshRun(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()

@@ -710,10 +710,17 @@ func (s *PlanLifecycleService) RequestNewPlan(input PlanLifecycleProposalInput) 
 	if planText == "" {
 		planText = "# " + title
 	}
+	if input.ApprovalConfirmed && doc == nil {
+		return PlanLifecycleResult{}, errors.New("request_new_plan approval requires a structured document")
+	}
 	if doc != nil {
 		doc.Title = title
-		if replacing && input.ApprovalConfirmed {
-			doc.ID = planID
+		if input.ApprovalConfirmed {
+			if replacing {
+				doc.ID = planID
+			} else {
+				doc.ID = ""
+			}
 			doc.Status = "approved"
 			granularity := strings.TrimSpace(input.ExecutionGranularity)
 			if granularity == "" {
@@ -737,16 +744,21 @@ func (s *PlanLifecycleService) RequestNewPlan(input PlanLifecycleProposalInput) 
 			doc.Status = "pending_approval"
 		}
 	}
-	if replacing && input.ApprovalConfirmed && doc == nil {
-		return PlanLifecycleResult{}, errors.New("request_new_plan replacement approval requires a structured document")
-	}
 
-	if replacing && input.ApprovalConfirmed {
-		saved, event, err := s.sessions.SavePlanWithMetadata(session.ID, planID, title, planText, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: firstNonBlank(strings.TrimSpace(input.Reason), "Replacement plan approved and activated"), UpdateScope: "plan", UpdateKind: "request_new_plan", RevisionKind: PlanRevisionKindDefinition, Document: doc})
+	if input.ApprovalConfirmed {
+		approvedPlanID := ""
+		message := "new plan approved and activated"
+		updateSummary := "New plan approved and activated"
+		if replacing {
+			approvedPlanID = planID
+			message = "replacement plan approved and activated"
+			updateSummary = "Replacement plan approved and activated"
+		}
+		saved, event, err := s.sessions.SavePlanWithMetadata(session.ID, approvedPlanID, title, planText, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: firstNonBlank(strings.TrimSpace(input.Reason), updateSummary), UpdateScope: "plan", UpdateKind: "request_new_plan", RevisionKind: PlanRevisionKindDefinition, Document: doc})
 		if err != nil {
 			return PlanLifecycleResult{}, err
 		}
-		return PlanLifecycleResult{Session: session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), Action: "request_new_plan", Message: "replacement plan approved and activated"}, nil
+		return PlanLifecycleResult{Session: session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), Action: "request_new_plan", Message: message}, nil
 	}
 
 	saved, event, err := s.sessions.SavePlanWithMetadata(session.ID, "", title, planText, "pending_approval", "pending", false, PlanSaveMetadata{UpdateSummary: firstNonBlank(strings.TrimSpace(input.Reason), "New plan proposal pending approval"), UpdateScope: "plan", UpdateKind: "request_new_plan", Document: doc})

@@ -285,12 +285,37 @@ function testTypedPlanLifecycleKindAndPayloadParsing(): void {
   })
   assert(permissionKind(revision) === 'plan-revision-request', 'expected plan-revision-request permission kind')
 
+  const newPlanDocument = {
+    title: 'New plan',
+    info: { goal: 'Render top-level document content' },
+    checkpoints: [{ id: 'cp-new', title: 'New checkpoint', status: 'pending' }],
+  }
   const newPlan = makePermission({
     toolName: 'plan_manage',
     requirement: 'plan_new_request',
-    toolArguments: JSON.stringify({ action: 'request_new_plan', title: 'New plan' }),
+    toolArguments: JSON.stringify({
+      action: 'request_new_plan',
+      title: 'New plan',
+      document: newPlanDocument,
+      approved_arguments: {
+        action: 'request_new_plan',
+        title: 'New plan',
+        document: newPlanDocument,
+        approval_confirmed: true,
+        execution_granularity: 'checkpointed',
+        continuation_policy: 'automatic',
+        continue_automatically: true,
+      },
+    }),
   })
   assert(permissionKind(newPlan) === 'plan-new-request', 'expected plan-new-request permission kind')
+  const newPlanPayload = parsePlanUpdatePermission(newPlan)
+  assert(newPlanPayload.planId === '', 'expected separate new plan permission not to inject active plan id')
+  assert(Boolean(newPlanPayload.document), 'expected top-level structured new-plan document')
+  assert((newPlanPayload.document as { info?: { goal?: string } }).info?.goal === 'Render top-level document content', 'expected top-level document content')
+  assert(!('plan_id' in newPlanPayload.approvedArguments), 'expected approved arguments not to inject active plan_id')
+  assert(newPlanPayload.approvedArguments.approval_confirmed === true, 'expected approval confirmation argument')
+  assert(((newPlanPayload.approvedArguments.document as { checkpoints?: Array<{ id?: string }> })?.checkpoints?.[0]?.id ?? '') === 'cp-new', 'expected approved arguments to preserve document')
 }
 
 function testPlanUpdateKindAndPayloadParsing(): void {

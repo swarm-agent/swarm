@@ -469,11 +469,18 @@ func TestPlanManagePermissionPayloadRequestNewPlanDefaultsAutomaticCheckpointed(
 		t.Fatalf("request_new_plan should require approval")
 	}
 	approved := payload.ApprovedArguments
-	if approved["execution_granularity"] != sessionruntime.PlanAcceptanceGranularityCheckpointed || approved["continuation_policy"] != sessionruntime.PlanAcceptanceContinuationAutomatic || approved["continue_automatically"] != true {
+	if approved["execution_granularity"] != sessionruntime.PlanAcceptanceGranularityCheckpointed || approved["continuation_policy"] != sessionruntime.PlanAcceptanceContinuationAutomatic || approved["continue_automatically"] != true || approved["approval_confirmed"] != true {
 		t.Fatalf("approved execution defaults = %#v", approved)
 	}
+	doc, ok := payload.Document.(*pebblestore.SessionPlanDocument)
+	if !ok || doc == nil || doc.Title != "Replacement Plan" || len(doc.Checkpoints) != 1 || doc.Checkpoints[0].ID != "cp-new" {
+		t.Fatalf("document-only request_new_plan payload lost structured document: %#v", payload.Document)
+	}
+	if _, hasPlanID := approved["plan_id"]; hasPlanID {
+		t.Fatalf("separate request_new_plan unexpectedly injected plan_id: %#v", approved)
+	}
 
-	explicitPayload, needsApproval, err := runSvc.buildPlanManagePermissionPayload(sessionID, tool.Call{Name: "plan_manage", Arguments: `{"action":"request_new_plan","title":"Replacement Plan","execution_granularity":"run_through","continue_automatically":false}`})
+	explicitPayload, needsApproval, err := runSvc.buildPlanManagePermissionPayload(sessionID, tool.Call{Name: "plan_manage", Arguments: `{"action":"request_new_plan","title":"Replacement Plan","plan":"# Replacement Plan","execution_granularity":"run_through","continue_automatically":false}`})
 	if err != nil {
 		t.Fatalf("build explicit permission payload: %v", err)
 	}
@@ -486,8 +493,19 @@ func TestPlanManagePermissionPayloadRequestNewPlanDefaultsAutomaticCheckpointed(
 	}
 
 	approvedArgs := planManageApprovalArguments(map[string]any{"action": "request_new_plan", "approved_arguments": map[string]any{"action": "request_new_plan", "title": "Approved replacement"}})
-	if approvedArgs["execution_granularity"] != sessionruntime.PlanAcceptanceGranularityCheckpointed || approvedArgs["continuation_policy"] != sessionruntime.PlanAcceptanceContinuationAutomatic || approvedArgs["continue_automatically"] != true {
+	if approvedArgs["execution_granularity"] != sessionruntime.PlanAcceptanceGranularityCheckpointed || approvedArgs["continuation_policy"] != sessionruntime.PlanAcceptanceContinuationAutomatic || approvedArgs["continue_automatically"] != true || approvedArgs["approval_confirmed"] != true {
 		t.Fatalf("approved feedback defaults = %#v", approvedArgs)
+	}
+}
+
+func TestPlanManagePermissionPayloadRequestNewPlanRejectsEmptyTitleOnly(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := runSvc.buildPlanManagePermissionPayload(sessionID, tool.Call{Name: "plan_manage", Arguments: `{"action":"request_new_plan","title":"Empty Proposal"}`})
+	if err == nil || !strings.Contains(err.Error(), "structured document or plan text") {
+		t.Fatalf("empty request_new_plan permission err=%v", err)
 	}
 }
 
@@ -600,6 +618,73 @@ func TestExecutePlanManageRequestNewPlanSeparateProposalAwaitsApproval(t *testin
 	}
 	if active.ID != "plan-original" || active.ApprovalState != "approved" {
 		t.Fatalf("active plan should remain original, got %#v", active)
+	}
+}
+
+func TestExecutePlanManageRequestNewPlanApprovedSeparatePlanActivatesAndRuns(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-original", "Original Plan", "# Original", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Title:       "Original Plan",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-old", Title: "Old", Status: sessionruntime.PlanCheckpointStatusCompleted}},
+	}})
+	if err != nil {
+		t.Fatalf("save original plan: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"request_new_plan","title":"Approved Separate","plan":"# Approved Separate","approval_confirmed":true,"document":{"title":"Approved Separate","execution_state":{"status":"running","active_attempt_id":"stale-attempt"},"checkpoints":[{"id":"cp-proposed","title":"Proposed","status":"in_progress","attempt_id":"stale-attempt"}]}}`, "")
+	if err != nil {
+		t.Fatalf("approve separate proposal: %v output=%s", err, raw)
+	}
+	var payload struct {
+		NextAction       string                              `json:"next_action"`
+		CheckpointID     string                              `json:"checkpoint_id"`
+		ExecutionSummary sessionruntime.PlanExecutionSummary `json:"execution_summary"`
+		Plan             struct {
+			ID            string                           `json:"id"`
+			Status        string                           `json:"status"`
+			ApprovalState string                           `json:"approval_state"`
+			Active        bool                             `json:"active"`
+			Document      *pebblestore.SessionPlanDocument `json:"document"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode approved separate payload: %v", err)
+	}
+	if payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "cp-proposed" || payload.ExecutionSummary.NextCheckpointID != "cp-proposed" {
+		t.Fatalf("approved separate proposal should be runnable: %#v raw=%s", payload, raw)
+	}
+	if payload.Plan.ID == "plan-original" || !payload.Plan.Active || payload.Plan.Status != "approved" || payload.Plan.ApprovalState != "approved" {
+		t.Fatalf("approved separate plan state = %#v", payload.Plan)
+	}
+	if payload.Plan.Document == nil || payload.Plan.Document.ID != payload.Plan.ID || payload.Plan.Document.Status != "approved" || payload.Plan.Document.ActiveCheckpointID != "cp-proposed" {
+		t.Fatalf("approved separate document = %#v", payload.Plan.Document)
+	}
+	if payload.Plan.Document.ExecutionPolicy.Mode != sessionruntime.PlanExecutionPolicyModeAutomatic || payload.Plan.Document.ExecutionPolicy.Shape != sessionruntime.PlanExecutionShapeCheckpointed || payload.Plan.Document.ExecutionState != nil {
+		t.Fatalf("approved separate policy/runtime = %#v", payload.Plan.Document)
+	}
+	if len(payload.Plan.Document.Checkpoints) != 1 || payload.Plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusPending || payload.Plan.Document.Checkpoints[0].AttemptID != "" {
+		t.Fatalf("approved separate checkpoint runtime was not reset: %#v", payload.Plan.Document.Checkpoints)
+	}
+	active, ok, err := sessionSvc.GetActivePlan(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get active: ok=%v err=%v", ok, err)
+	}
+	if active.ID != payload.Plan.ID || active.ID == "plan-original" || active.ApprovalState != "approved" {
+		t.Fatalf("active approved separate plan = %#v", active)
+	}
+}
+
+func TestExecutePlanManageRequestNewPlanApprovalWithoutDocumentFails(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"request_new_plan","title":"Missing Document","plan":"# Missing Document","approval_confirmed":true}`, "")
+	if err == nil || !strings.Contains(err.Error(), "structured document") {
+		t.Fatalf("approval without document err=%v output=%s", err, raw)
 	}
 }
 

@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -938,19 +939,39 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	if s.sessions == nil {
 		return planManagePermissionPayload{}, false, fmt.Errorf("session service is not configured")
 	}
+	var existing pebblestore.SessionPlanSnapshot
+	var found bool
+	var err error
+	var requestNewPlanDocument *pebblestore.SessionPlanDocument
+	if action == "request_new_plan" {
+		requestNewPlanDocument, err = planDocumentFromArgs(args)
+		if err != nil {
+			return planManagePermissionPayload{}, false, err
+		}
+		if planBody == "" && requestNewPlanDocument == nil {
+			return planManagePermissionPayload{}, false, errors.New("request_new_plan requires a structured document or plan text before approval")
+		}
+	}
 	planID := strings.TrimSpace(mapString(args, "plan_id"))
 	if planID == "" {
 		planID = strings.TrimSpace(mapString(args, "id"))
 	}
-	var existing pebblestore.SessionPlanSnapshot
-	var found bool
-	var err error
 	if planID != "" {
-		existing, found, err = s.sessions.GetPlan(sessionID, planID)
-		if err != nil {
-			return planManagePermissionPayload{}, false, err
+		if strings.EqualFold(planID, "active") {
+			existing, found, err = s.sessions.GetActivePlan(sessionID)
+			if err != nil {
+				return planManagePermissionPayload{}, false, err
+			}
+			if found {
+				planID = strings.TrimSpace(existing.ID)
+			}
+		} else {
+			existing, found, err = s.sessions.GetPlan(sessionID, planID)
+			if err != nil {
+				return planManagePermissionPayload{}, false, err
+			}
 		}
-	} else {
+	} else if action != "request_new_plan" {
 		existing, found, err = s.sessions.GetActivePlan(sessionID)
 		if err != nil {
 			return planManagePermissionPayload{}, false, err
@@ -963,7 +984,8 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		if action != "request_new_plan" {
 			return planManagePermissionPayload{}, false, nil
 		}
-		approved := map[string]any{"action": action}
+		document := requestNewPlanDocument
+		approved := map[string]any{"action": action, "approval_confirmed": true}
 		for key, value := range args {
 			switch key {
 			case "title", "plan", "document", "reason", "update_summary", "summary", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically":
@@ -974,7 +996,8 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		return planManagePermissionPayload{
 			PathID:            "tool.plan-new-request.v1",
 			Title:             firstNonEmptyString(strings.TrimSpace(mapString(args, "title")), "New plan proposal"),
-			Plan:              strings.TrimSpace(mapString(args, "plan")),
+			Plan:              planBody,
+			Document:          document,
 			Action:            action,
 			UpdateType:        "new_plan",
 			UpdateSummary:     strings.TrimSpace(firstNonEmptyString(mapString(args, "reason"), mapString(args, "update_summary"), mapString(args, "summary"))),
@@ -1832,6 +1855,7 @@ func planManageApprovalArguments(payload map[string]any) map[string]any {
 			args["action"] = "save"
 		}
 		if strings.TrimSpace(mapString(args, "action")) == "request_new_plan" {
+			args["approval_confirmed"] = true
 			applyRequestNewPlanExecutionDefaults(args)
 		}
 		return args
@@ -1855,6 +1879,7 @@ func planManageApprovalArguments(payload map[string]any) map[string]any {
 		args["action"] = "save"
 	}
 	if strings.TrimSpace(mapString(args, "action")) == "request_new_plan" {
+		args["approval_confirmed"] = true
 		applyRequestNewPlanExecutionDefaults(args)
 	}
 	if len(args) == 1 {
