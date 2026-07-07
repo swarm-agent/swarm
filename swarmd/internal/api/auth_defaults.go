@@ -2,8 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -14,115 +14,63 @@ import (
 )
 
 // hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount has one job:
-// after a provider credential has been verified and activated, hydrate the first-run
-// onboarding model defaults for that account in the required order.
+// after a provider credential has been verified and activated, create the
+// account's built-in agents already hydrated with verified snapshot defaults.
 func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, userID, activatedProvider string) (*auth.AutoDefaultsStatus, error) {
 	if s == nil || s.model == nil || s.agents == nil || s.providers == nil {
-		return nil, nil
+		return nil, errors.New("onboarding provider hydration is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope ID is required")
 	}
 
-	// 1. Ensure the account's built-in agents exist before assigning models.
-	if strings.TrimSpace(accountScopeID) != "" {
-		if err := s.agents.EnsureDefaultsForAccount(accountScopeID); err != nil {
-			return nil, fmt.Errorf("ensure account agent defaults: %w", err)
-		}
-	}
-
-	// 2. Refresh the provider catalog so onboarding recommendations are current.
-	if err := s.refreshModelCatalogForOnboardingDefaults(); err != nil {
-		return nil, err
-	}
-
-	// 3. Resolve the activated provider's onboarding defaults and catalog recommendations.
 	providerID, providerDefaults, ok, err := s.resolveUtilityModelProvider(activatedProvider)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return nil, nil
+		return nil, fmt.Errorf("provider %q is not available for onboarding defaults", strings.TrimSpace(activatedProvider))
 	}
-	if err := s.applySnapshotRecommendedDefaults(providerID, &providerDefaults); err != nil {
+	if err := s.applyRequiredSnapshotRecommendedDefaults(providerID, &providerDefaults); err != nil {
 		return nil, err
 	}
 
-	out := &auth.AutoDefaultsStatus{
+	_, event, err := s.model.SetPreferenceForAccount(accountScopeID, userID, providerID, providerDefaults.PrimaryModel, providerDefaults.PrimaryThinking)
+	if err != nil {
+		return nil, fmt.Errorf("set global model default: %w", err)
+	}
+	result, err := s.agents.EnsureHydratedDefaultsForAccount(accountScopeID, agentruntime.DefaultModelHydrationInput{
+		Provider:          providerID,
+		PrimaryModel:      providerDefaults.PrimaryModel,
+		PrimaryThinking:   providerDefaults.PrimaryThinking,
+		PlanModel:         providerDefaults.PlanModel,
+		PlanThinking:      providerDefaults.PlanThinking,
+		AutoModel:         providerDefaults.AutoModel,
+		AutoThinking:      providerDefaults.AutoThinking,
+		UtilityModel:      providerDefaults.UtilityModel,
+		UtilityThinking:   providerDefaults.UtilityThinking,
+		UtilityAgentNames: providerDefaults.UtilitySubagents,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create hydrated agent defaults: %w", err)
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
+
+	return &auth.AutoDefaultsStatus{
+		Applied:         true,
 		Provider:        providerID,
 		Model:           providerDefaults.PrimaryModel,
 		Thinking:        providerDefaults.PrimaryThinking,
+		GlobalModel:     true,
+		Agents:          result.Agents,
+		Subagents:       result.Subagents,
 		UtilityProvider: providerID,
 		UtilityModel:    providerDefaults.UtilityModel,
 		UtilityThinking: providerDefaults.UtilityThinking,
-	}
-
-	// 4. Set composer/global defaults for the first activated provider only.
-	pref, err := s.model.GetPreferenceForAccount(accountScopeID)
-	if err != nil {
-		return nil, fmt.Errorf("read model preference: %w", err)
-	}
-	firstProviderOnboarding := strings.TrimSpace(pref.Provider) == ""
-	if firstProviderOnboarding {
-		_, event, err := s.model.SetPreferenceForAccount(accountScopeID, userID, providerID, providerDefaults.PrimaryModel, providerDefaults.PrimaryThinking)
-		if err != nil {
-			return nil, fmt.Errorf("set global model default: %w", err)
-		}
-		if event != nil && s.hub != nil {
-			s.hub.Publish(*event)
-		}
-		// 5. Hydrate the primary swarm agent split plan/auto defaults.
-		if err := s.seedSplitModelDefaultsForAccount(accountScopeID, providerID, providerDefaults); err != nil {
-			return nil, fmt.Errorf("set plan/auto model defaults: %w", err)
-		}
-		out.Applied = true
-		out.GlobalModel = true
-	}
-
-	state, err := s.agents.ListStateForAccount(accountScopeID, 2000)
-	if err != nil {
-		return nil, fmt.Errorf("list agent state: %w", err)
-	}
-
-	assignments := make(map[string]struct{}, len(builtinUtilityAgentNames()))
-	for _, name := range builtinUtilityAgentNames() {
-		if normalized := strings.ToLower(strings.TrimSpace(name)); normalized != "" {
-			assignments[normalized] = struct{}{}
-		}
-	}
-	if len(assignments) == 0 {
-		return nil, nil
-	}
-	agentsSeen := make(map[string]struct{}, len(assignments))
-	subagentsSeen := make(map[string]struct{}, len(assignments))
-	if firstProviderOnboarding {
-		// 6. Hydrate utility agent defaults after global and swarm split defaults.
-		state, err = s.applyUtilityAIToBuiltInsForAccount(accountScopeID, state, providerID, providerDefaults.UtilityModel, providerDefaults.UtilityThinking, false)
-		if err != nil {
-			return nil, fmt.Errorf("set utility AI defaults: %w", err)
-		}
-		for _, profile := range state.Profiles {
-			name := strings.ToLower(strings.TrimSpace(profile.Name))
-			if name == "" {
-				continue
-			}
-			if _, target := assignments[name]; !target {
-				continue
-			}
-			agentsSeen[name] = struct{}{}
-			if strings.EqualFold(strings.TrimSpace(profile.Mode), agentruntime.ModeSubagent) {
-				subagentsSeen[name] = struct{}{}
-			}
-		}
-		if len(agentsSeen) > 0 {
-			out.Applied = true
-		}
-	}
-
-	// 7. Return changed/default status only when hydration changed defaults.
-	if !out.Applied {
-		return nil, nil
-	}
-	out.Agents = sortedKeys(agentsSeen)
-	out.Subagents = sortedKeys(subagentsSeen)
-	return out, nil
+	}, nil
 }
 
 func (s *Server) refreshModelCatalogForOnboardingDefaults() error {
@@ -147,7 +95,18 @@ func (s *Server) refreshModelCatalogForOnboardingDefaults() error {
 }
 
 func (s *Server) applySnapshotRecommendedDefaults(providerID string, providerDefaults *defaults.ProviderDefaults) error {
+	return s.applySnapshotRecommendedDefaultsForMode(providerID, providerDefaults, false)
+}
+
+func (s *Server) applyRequiredSnapshotRecommendedDefaults(providerID string, providerDefaults *defaults.ProviderDefaults) error {
+	return s.applySnapshotRecommendedDefaultsForMode(providerID, providerDefaults, true)
+}
+
+func (s *Server) applySnapshotRecommendedDefaultsForMode(providerID string, providerDefaults *defaults.ProviderDefaults, required bool) error {
 	if s == nil || s.model == nil || providerDefaults == nil {
+		if required {
+			return errors.New("model service is required for onboarding recommendations")
+		}
 		return nil
 	}
 	main, plan, utility, ok, err := s.model.RecommendedCatalogDefaults(providerID)
@@ -155,12 +114,18 @@ func (s *Server) applySnapshotRecommendedDefaults(providerID string, providerDef
 		return fmt.Errorf("read model catalog recommendations: %w", err)
 	}
 	if !ok {
+		if required {
+			return fmt.Errorf("missing required snapshot recommendations for provider %q", strings.TrimSpace(providerID))
+		}
 		return nil
 	}
 	mainRec := recommendationForRole(main, "main", "auto")
 	planRec := recommendationForRole(plan, "plan")
 	utilityRec := recommendationForRole(utility, "utility")
-	if strings.TrimSpace(main.Model) == "" || strings.TrimSpace(plan.Model) == "" || strings.TrimSpace(utility.Model) == "" {
+	if strings.TrimSpace(main.Model) == "" || strings.TrimSpace(plan.Model) == "" || strings.TrimSpace(utility.Model) == "" || strings.TrimSpace(mainRec.Role) == "" || strings.TrimSpace(planRec.Role) == "" || strings.TrimSpace(utilityRec.Role) == "" {
+		if required {
+			return fmt.Errorf("missing required snapshot recommendation roles for provider %q", strings.TrimSpace(providerID))
+		}
 		return nil
 	}
 	providerDefaults.PrimaryModel = strings.TrimSpace(main.Model)
@@ -190,61 +155,6 @@ func recommendedThinking(rec pebblestore.ModelCatalogRecommendation, fallback st
 		return thinking
 	}
 	return strings.TrimSpace(fallback)
-}
-
-func (s *Server) seedSplitModelDefaultsForAccount(accountScopeID, providerID string, providerDefaults defaults.ProviderDefaults) error {
-	if s == nil || s.agents == nil {
-		return nil
-	}
-	state, err := s.agents.ListStateForAccount(accountScopeID, 2000)
-	if err != nil {
-		return err
-	}
-	planProvider := strings.ToLower(strings.TrimSpace(providerID))
-	planModel := strings.TrimSpace(providerDefaults.PlanModel)
-	planThinking := strings.TrimSpace(providerDefaults.PlanThinking)
-	autoProvider := planProvider
-	autoModel := strings.TrimSpace(providerDefaults.AutoModel)
-	autoThinking := strings.TrimSpace(providerDefaults.AutoThinking)
-	if planProvider == "" || planModel == "" || autoModel == "" {
-		return nil
-	}
-	for _, profile := range state.Profiles {
-		if !strings.EqualFold(strings.TrimSpace(profile.Name), "swarm") {
-			continue
-		}
-		if strings.TrimSpace(profile.Provider) != "" || strings.TrimSpace(profile.Model) != "" || strings.TrimSpace(profile.PlanProvider) != "" || strings.TrimSpace(profile.PlanModel) != "" || strings.TrimSpace(profile.AutoProvider) != "" || strings.TrimSpace(profile.AutoModel) != "" {
-			return nil
-		}
-		enabled := profile.Enabled
-		_, _, _, err := s.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
-			Name:                profile.Name,
-			Mode:                profile.Mode,
-			Description:         profile.Description,
-			Provider:            profile.Provider,
-			ProviderSet:         true,
-			Model:               profile.Model,
-			ModelSet:            true,
-			Thinking:            profile.Thinking,
-			ThinkingSet:         true,
-			ModelMode:           "split",
-			PlanProvider:        planProvider,
-			PlanModel:           planModel,
-			PlanThinking:        planThinking,
-			AutoProvider:        autoProvider,
-			AutoModel:           autoModel,
-			AutoThinking:        autoThinking,
-			Prompt:              profile.Prompt,
-			RuntimeMode:         profile.RuntimeMode,
-			ExecutionSetting:    profile.ExecutionSetting,
-			ExitPlanModeEnabled: profile.ExitPlanModeEnabled,
-			ToolScope:           profile.ToolScope,
-			ToolContract:        profile.ToolContract,
-			Enabled:             &enabled,
-		})
-		return err
-	}
-	return nil
 }
 
 func (s *Server) resolveUtilityModelProvider(preferredProvider string) (providerID string, providerDefaults defaults.ProviderDefaults, ok bool, err error) {
@@ -280,18 +190,4 @@ func (s *Server) resolveUtilityModelProvider(preferredProvider string) (provider
 		return id, providerDefaults, true, nil
 	}
 	return "", defaults.ProviderDefaults{}, false, nil
-}
-
-func sortedKeys(values map[string]struct{}) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(values))
-	for value := range values {
-		if strings.TrimSpace(value) != "" {
-			out = append(out, strings.TrimSpace(value))
-		}
-	}
-	sort.Strings(out)
-	return out
 }

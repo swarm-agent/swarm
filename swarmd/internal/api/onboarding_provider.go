@@ -96,14 +96,32 @@ func (s *Server) acceptFirstOnboardingProviderCredential(ctx context.Context, pr
 	autoDefaults, defaultsErr := s.hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, principal.UserID, provider)
 	if defaultsErr != nil {
 		_, _, _ = s.auth.DeleteCredentialForAccount(accountScopeID, provider, status.ID)
+		rollbackOnboardingAgentHydration(s, accountScopeID)
 		return auth.CredentialStatus{}, fmt.Errorf("hydrate onboarding provider defaults: %w", defaultsErr)
 	}
 	if autoDefaults == nil || !autoDefaults.Applied {
 		_, _, _ = s.auth.DeleteCredentialForAccount(accountScopeID, provider, status.ID)
+		rollbackOnboardingAgentHydration(s, accountScopeID)
 		return auth.CredentialStatus{}, errors.New("onboarding provider defaults were not hydrated")
 	}
 	status.AutoDefaults = autoDefaults
 	return status, nil
+}
+
+func rollbackOnboardingAgentHydration(s *Server, accountScopeID string) {
+	if s == nil || s.agents == nil {
+		return
+	}
+	state, err := s.agents.ListStateForAccount(accountScopeID, 2000)
+	if err != nil {
+		return
+	}
+	for _, profile := range state.Profiles {
+		if strings.EqualFold(strings.TrimSpace(profile.Name), "memory") {
+			continue
+		}
+		_, _, _, _ = s.agents.DeleteForAccount(accountScopeID, profile.Name)
+	}
 }
 
 func (s *Server) requireFirstOnboardingProviderHydrationState(accountScopeID string) error {

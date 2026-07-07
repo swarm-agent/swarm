@@ -119,6 +119,24 @@ type UpsertInput struct {
 	Enabled             *bool                          `json:"enabled"`
 }
 
+type DefaultModelHydrationInput struct {
+	Provider          string
+	PrimaryModel      string
+	PrimaryThinking   string
+	PlanModel         string
+	PlanThinking      string
+	AutoModel         string
+	AutoThinking      string
+	UtilityModel      string
+	UtilityThinking   string
+	UtilityAgentNames []string
+}
+
+type DefaultModelHydrationResult struct {
+	Agents    []string
+	Subagents []string
+}
+
 type DeleteResult struct {
 	Deleted       string `json:"deleted"`
 	ActivePrimary string `json:"active_primary"`
@@ -154,6 +172,127 @@ func (s *Service) EnsureDefaultsForAccount(accountScopeID string) error {
 		return err
 	}
 	return s.ensureDefaultsForAccount(accountScopeID)
+}
+
+func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input DefaultModelHydrationInput) (DefaultModelHydrationResult, error) {
+	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return DefaultModelHydrationResult{}, err
+	}
+	input.Provider = strings.ToLower(strings.TrimSpace(input.Provider))
+	input.PrimaryModel = strings.TrimSpace(input.PrimaryModel)
+	input.PrimaryThinking = strings.TrimSpace(input.PrimaryThinking)
+	input.PlanModel = strings.TrimSpace(input.PlanModel)
+	input.PlanThinking = strings.TrimSpace(input.PlanThinking)
+	input.AutoModel = strings.TrimSpace(input.AutoModel)
+	input.AutoThinking = strings.TrimSpace(input.AutoThinking)
+	input.UtilityModel = strings.TrimSpace(input.UtilityModel)
+	input.UtilityThinking = strings.TrimSpace(input.UtilityThinking)
+	if strings.EqualFold(input.UtilityThinking, "off") {
+		input.UtilityThinking = ""
+	}
+	if input.Provider == "" || input.PrimaryModel == "" || input.PlanModel == "" || input.AutoModel == "" || input.UtilityModel == "" {
+		return DefaultModelHydrationResult{}, errors.New("hydrated default agents require provider and main, plan, auto, utility models")
+	}
+	utilityNames := normalizeDefaultUtilityAgentNames(input.UtilityAgentNames)
+	if len(utilityNames) == 0 {
+		return DefaultModelHydrationResult{}, errors.New("hydrated default agents require utility agents")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	version, hasVersion, err := s.getVersionForAccountLocked(accountScopeID)
+	if err != nil {
+		return DefaultModelHydrationResult{}, err
+	}
+	profiles, err := s.listProfilesForAccountLocked(accountScopeID, 2000)
+	if err != nil {
+		return DefaultModelHydrationResult{}, err
+	}
+	if hasVersion || len(profiles) != 0 {
+		return DefaultModelHydrationResult{}, errors.New("hydrated default agents require an empty agent account")
+	}
+
+	now := time.Now().UnixMilli()
+	seen := make(map[string]struct{}, len(utilityNames)+1)
+	result := DefaultModelHydrationResult{}
+	for _, profile := range defaultProfiles(now) {
+		name := normalizeName(profile.Name)
+		switch name {
+		case "swarm":
+			profile.ModelMode = "split"
+			profile.PlanProvider = input.Provider
+			profile.PlanModel = input.PlanModel
+			profile.PlanThinking = input.PlanThinking
+			profile.AutoProvider = input.Provider
+			profile.AutoModel = input.AutoModel
+			profile.AutoThinking = input.AutoThinking
+			result.Agents = append(result.Agents, name)
+		default:
+			if _, ok := utilityNames[name]; !ok {
+				continue
+			}
+			profile.Provider = input.Provider
+			profile.Model = input.UtilityModel
+			profile.Thinking = input.UtilityThinking
+			result.Agents = append(result.Agents, name)
+			if strings.EqualFold(strings.TrimSpace(profile.Mode), ModeSubagent) {
+				result.Subagents = append(result.Subagents, name)
+			}
+		}
+		profile = pebblestore.NormalizeAgentProfile(profile)
+		if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
+			return DefaultModelHydrationResult{}, err
+		}
+		seen[name] = struct{}{}
+	}
+	if _, ok := seen["swarm"]; !ok {
+		return DefaultModelHydrationResult{}, errors.New("hydrated default agents missing swarm profile")
+	}
+	for name := range utilityNames {
+		if _, ok := seen[name]; !ok {
+			return DefaultModelHydrationResult{}, fmt.Errorf("hydrated default agents missing utility profile %q", name)
+		}
+	}
+	if err := s.setActivePrimaryForAccountLocked(accountScopeID, "swarm"); err != nil {
+		return DefaultModelHydrationResult{}, err
+	}
+	for purpose, profileName := range defaultSubagentAssignments() {
+		if _, ok := utilityNames[normalizeName(profileName)]; !ok {
+			continue
+		}
+		if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, profileName); err != nil {
+			return DefaultModelHydrationResult{}, err
+		}
+	}
+	if hasVersion {
+		version++
+	} else {
+		version = 1
+	}
+	if err := s.setVersionForAccountLocked(accountScopeID, version); err != nil {
+		return DefaultModelHydrationResult{}, err
+	}
+	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
+	if err != nil {
+		return DefaultModelHydrationResult{}, err
+	}
+	env, err := s.appendEventLocked("agent.defaults.hydrated", "defaults", map[string]any{
+		"account_scope_id": strings.TrimSpace(accountScopeID),
+		"state":            state,
+		"version":          version,
+		"provider":         input.Provider,
+	})
+	if err != nil {
+		return DefaultModelHydrationResult{}, err
+	}
+	if s.publish != nil {
+		s.publish(env)
+	}
+	sort.Strings(result.Agents)
+	sort.Strings(result.Subagents)
+	return result, nil
 }
 
 func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
@@ -256,6 +395,17 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 		return nil
 	}
 	return s.setActivePrimaryForAccountLocked(accountScopeID, fallback)
+}
+
+func normalizeDefaultUtilityAgentNames(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		name := normalizeName(value)
+		if name != "" {
+			out[name] = struct{}{}
+		}
+	}
+	return out
 }
 
 func defaultMemoryPrompt() string {
