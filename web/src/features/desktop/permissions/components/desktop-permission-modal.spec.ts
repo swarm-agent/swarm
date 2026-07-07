@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import { DesktopPermissionModal, exitPlanExecutionArguments } from './desktop-permission-modal'
+import { DesktopPermissionModal, exitPlanExecutionArguments, newPlanLifecycleApprovedArguments } from './desktop-permission-modal'
 import type { DesktopPermissionRecord } from '../../types/realtime'
 
 function exitPlanPermission(approvedArguments: Record<string, unknown> = {}, payloadOverrides: Record<string, unknown> = {}): DesktopPermissionRecord {
@@ -203,5 +203,58 @@ test('DesktopPermissionModal routes typed plan lifecycle approvals away from gen
   }))
   assert.match(newPlan, /Review new plan/)
   assert.match(newPlan, /Approve new plan/)
+  assert.match(newPlan, /Run mode/)
+  assert.match(newPlan, /Automatic mode is selected by default\./)
+  assert.match(newPlan, /aria-checked="true"/)
   assert.doesNotMatch(newPlan, /Plan update overview/)
+})
+
+test('new plan lifecycle approval merges automatic checkpointed execution controls with payload approved arguments', () => {
+  assert.deepEqual(
+    newPlanLifecycleApprovedArguments({
+      action: 'request_new_plan',
+      planId: 'plan-1',
+      title: 'Review new plan',
+      plan: '# New plan',
+      document: null,
+      changeRequest: '',
+      checkpointTitle: '',
+      tasks: [],
+      acceptanceCriteria: [],
+      notes: '',
+      updateSummary: '',
+      updateScope: '',
+      updateKind: '',
+      checkpoint: false,
+      followupCheckpointPolicy: '',
+      policyEffective: '',
+      approvalRequired: true,
+      runQueued: false,
+      revision: 0,
+      baseRevision: 0,
+      currentRevision: 0,
+      planAmendmentDelta: null,
+      approvedArguments: {
+        action: 'request_new_plan',
+        plan_id: 'plan-1',
+        title: 'Review new plan',
+        execution_granularity: 'run_through',
+        continuation_policy: 'automatic',
+        continue_automatically: true,
+      },
+      diffLines: [],
+      priorPlan: '',
+      priorTitle: '',
+      priorDocument: null,
+    }, 'checkpointed_automatic'),
+    {
+      action: 'request_new_plan',
+      plan_id: 'plan-1',
+      title: 'Review new plan',
+      approval_confirmed: true,
+      execution_granularity: 'checkpointed',
+      continuation_policy: 'automatic',
+      continue_automatically: true,
+    },
+  )
 })

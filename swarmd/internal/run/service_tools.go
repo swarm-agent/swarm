@@ -2211,7 +2211,18 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 	case "amend_plan":
 		result, err = lifecycle.AmendPlan(sessionruntime.PlanLifecycleAmendmentInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, BaseRevision: mapInt(args, "base_revision"), UpdateSummary: strings.TrimSpace(firstNonEmptyString(mapString(args, "update_summary"), mapString(args, "summary"), mapString(args, "reason"))), ReplaceFromCheckpointID: strings.TrimSpace(firstNonEmptyString(mapString(args, "replace_from_checkpoint_id"), mapString(args, "checkpoint_id"))), AmendFutureCheckpoints: mapBool(args, "amend_future_checkpoints"), OverrideStale: mapBool(args, "override_stale")})
 	case "request_new_plan":
-		result, err = lifecycle.RequestNewPlan(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, Reason: strings.TrimSpace(firstNonEmptyString(mapString(args, "reason"), mapString(args, "update_summary"), mapString(args, "summary"))), ApprovalConfirmed: mapBool(args, "approval_confirmed")})
+		continuation := strings.TrimSpace(firstNonEmptyString(mapString(args, "continuation_policy"), mapString(args, "continuation"), mapString(args, "mode")))
+		continueAutomatically := (*bool)(nil)
+		if _, ok := args["continue_automatically"]; ok {
+			value := mapBool(args, "continue_automatically")
+			continueAutomatically = &value
+			if value {
+				continuation = sessionruntime.PlanAcceptanceContinuationAutomatic
+			} else {
+				continuation = sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint
+			}
+		}
+		result, err = lifecycle.RequestNewPlan(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, Reason: strings.TrimSpace(firstNonEmptyString(mapString(args, "reason"), mapString(args, "update_summary"), mapString(args, "summary"))), ApprovalConfirmed: mapBool(args, "approval_confirmed"), ExecutionGranularity: strings.TrimSpace(firstNonEmptyString(mapString(args, "execution_granularity"), mapString(args, "granularity"), mapString(args, "execution_shape"), mapString(args, "shape"))), ContinuationPolicy: continuation, ContinueAutomatically: continueAutomatically})
 	default:
 		return "", fmt.Errorf("plan execution action %q is not supported", action)
 	}

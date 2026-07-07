@@ -456,6 +456,41 @@ func TestExecutePlanManageApproveAndStartAppliesExecutionPolicy(t *testing.T) {
 	}
 }
 
+func TestPlanManagePermissionPayloadRequestNewPlanDefaultsAutomaticCheckpointed(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	payload, needsApproval, err := runSvc.buildPlanManagePermissionPayload(sessionID, tool.Call{Name: "plan_manage", Arguments: `{"action":"request_new_plan","title":"Replacement Plan","document":{"title":"Replacement Plan","checkpoints":[{"id":"cp-new","title":"New","status":"pending"}]}}`})
+	if err != nil {
+		t.Fatalf("build permission payload: %v", err)
+	}
+	if !needsApproval {
+		t.Fatalf("request_new_plan should require approval")
+	}
+	approved := payload.ApprovedArguments
+	if approved["execution_granularity"] != sessionruntime.PlanAcceptanceGranularityCheckpointed || approved["continuation_policy"] != sessionruntime.PlanAcceptanceContinuationAutomatic || approved["continue_automatically"] != true {
+		t.Fatalf("approved execution defaults = %#v", approved)
+	}
+
+	explicitPayload, needsApproval, err := runSvc.buildPlanManagePermissionPayload(sessionID, tool.Call{Name: "plan_manage", Arguments: `{"action":"request_new_plan","title":"Replacement Plan","execution_granularity":"run_through","continue_automatically":false}`})
+	if err != nil {
+		t.Fatalf("build explicit permission payload: %v", err)
+	}
+	if !needsApproval {
+		t.Fatalf("explicit request_new_plan should require approval")
+	}
+	explicit := explicitPayload.ApprovedArguments
+	if explicit["execution_granularity"] != "run_through" || explicit["continuation_policy"] != sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint || explicit["continue_automatically"] != false {
+		t.Fatalf("explicit execution controls were not preserved: %#v", explicit)
+	}
+
+	approvedArgs := planManageApprovalArguments(map[string]any{"action": "request_new_plan", "approved_arguments": map[string]any{"action": "request_new_plan", "title": "Approved replacement"}})
+	if approvedArgs["execution_granularity"] != sessionruntime.PlanAcceptanceGranularityCheckpointed || approvedArgs["continuation_policy"] != sessionruntime.PlanAcceptanceContinuationAutomatic || approvedArgs["continue_automatically"] != true {
+		t.Fatalf("approved feedback defaults = %#v", approvedArgs)
+	}
+}
+
 func TestExecutePlanManageRequestNewPlanReplacementApprovesActivePlan(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
@@ -476,10 +511,11 @@ func TestExecutePlanManageRequestNewPlanReplacementApprovesActivePlan(t *testing
 	replacement := &pebblestore.SessionPlanDocument{
 		Title: "Replacement Plan",
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
-			Mode:  sessionruntime.PlanExecutionPolicyModeAutomatic,
+			Mode:  sessionruntime.PlanExecutionPolicyModeReviewEachCheckpoint,
 			Shape: sessionruntime.PlanExecutionShapeCheckpointed,
 		},
-		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-new", Title: "New", Status: sessionruntime.PlanCheckpointStatusPending}},
+		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: "running", ActiveAttemptID: "stale-attempt"},
+		Checkpoints:    []pebblestore.SessionPlanCheckpoint{{ID: "cp-new", Title: "New", Status: sessionruntime.PlanCheckpointStatusInProgress, AttemptID: "stale-attempt"}},
 	}
 	replacementRaw, err := json.Marshal(replacement)
 	if err != nil {
@@ -512,6 +548,12 @@ func TestExecutePlanManageRequestNewPlanReplacementApprovesActivePlan(t *testing
 	}
 	if payload.Plan.Document == nil || payload.Plan.Document.ID != "plan-replace" || payload.Plan.Document.Status != "approved" || payload.Plan.Document.ActiveCheckpointID != "cp-new" {
 		t.Fatalf("replacement document = %#v", payload.Plan.Document)
+	}
+	if payload.Plan.Document.ExecutionPolicy.Mode != sessionruntime.PlanExecutionPolicyModeAutomatic || payload.Plan.Document.ExecutionPolicy.Shape != sessionruntime.PlanExecutionShapeCheckpointed || payload.Plan.Document.ExecutionState != nil {
+		t.Fatalf("replacement approval policy/state = %#v", payload.Plan.Document)
+	}
+	if len(payload.Plan.Document.Checkpoints) != 1 || payload.Plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusPending || payload.Plan.Document.Checkpoints[0].AttemptID != "" {
+		t.Fatalf("replacement checkpoint runtime was not reset: %#v", payload.Plan.Document.Checkpoints)
 	}
 
 	followupRaw, err := runSvc.executePlanManageTool(sessionID, `{"action":"request_followup_checkpoint","plan_id":"plan-replace","change_request":"Add follow-up.","approval_confirmed":true}`, "")

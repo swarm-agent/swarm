@@ -81,13 +81,16 @@ type PlanLifecycleSessionCheckpointInput struct {
 }
 
 type PlanLifecycleProposalInput struct {
-	SessionID         string
-	PlanID            string
-	Title             string
-	Plan              string
-	Document          *pebblestore.SessionPlanDocument
-	Reason            string
-	ApprovalConfirmed bool
+	SessionID             string
+	PlanID                string
+	Title                 string
+	Plan                  string
+	Document              *pebblestore.SessionPlanDocument
+	Reason                string
+	ApprovalConfirmed     bool
+	ExecutionGranularity  string
+	ContinuationPolicy    string
+	ContinueAutomatically *bool
 }
 
 type PlanLifecycleAmendmentInput struct {
@@ -712,10 +715,22 @@ func (s *PlanLifecycleService) RequestNewPlan(input PlanLifecycleProposalInput) 
 		if replacing && input.ApprovalConfirmed {
 			doc.ID = planID
 			doc.Status = "approved"
-			resetPlanExecutionRuntimeForAcceptance(doc)
-			normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
-			if doc.ExecutionPolicy.Shape == PlanExecutionShapeCheckpointed {
-				doc.ActiveCheckpointID = defaultActiveCheckpointID(doc.Checkpoints)
+			granularity := strings.TrimSpace(input.ExecutionGranularity)
+			if granularity == "" {
+				granularity = PlanAcceptanceGranularityCheckpointed
+			}
+			continuation := strings.TrimSpace(input.ContinuationPolicy)
+			if input.ContinueAutomatically != nil {
+				if *input.ContinueAutomatically {
+					continuation = PlanAcceptanceContinuationAutomatic
+				} else {
+					continuation = PlanAcceptanceContinuationReviewEachCheckpoint
+				}
+			} else if continuation == "" {
+				continuation = PlanAcceptanceContinuationAutomatic
+			}
+			if _, err := ApplyPlanAcceptanceExecutionPolicy(doc, PlanAcceptanceExecutionOptions{ExecutionGranularity: granularity, ContinuationPolicy: continuation}); err != nil {
+				return PlanLifecycleResult{}, err
 			}
 		} else {
 			doc.ID = ""

@@ -966,10 +966,11 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		approved := map[string]any{"action": action}
 		for key, value := range args {
 			switch key {
-			case "title", "plan", "document", "reason", "update_summary", "summary":
+			case "title", "plan", "document", "reason", "update_summary", "summary", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically":
 				approved[key] = value
 			}
 		}
+		applyRequestNewPlanExecutionDefaults(approved)
 		return planManagePermissionPayload{
 			PathID:            "tool.plan-new-request.v1",
 			Title:             firstNonEmptyString(strings.TrimSpace(mapString(args, "title")), "New plan proposal"),
@@ -1151,6 +1152,9 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	if action == "request_followup_checkpoint" || action == "request_new_plan" {
 		payload.ApprovedArguments["approval_confirmed"] = true
 	}
+	if action == "request_new_plan" {
+		applyRequestNewPlanExecutionDefaults(payload.ApprovedArguments)
+	}
 	switch action {
 	case "request_followup_checkpoint":
 		payload.PathID = "tool.plan-followup-request.v1"
@@ -1167,6 +1171,30 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		payload.UpdateKind = "request_new_plan"
 	}
 	return payload, true, nil
+}
+
+func applyRequestNewPlanExecutionDefaults(args map[string]any) {
+	if args == nil {
+		return
+	}
+	granularity := strings.TrimSpace(firstNonEmptyString(mapString(args, "execution_granularity"), mapString(args, "granularity"), mapString(args, "execution_shape"), mapString(args, "shape")))
+	continuation := strings.TrimSpace(firstNonEmptyString(mapString(args, "continuation_policy"), mapString(args, "continuation"), mapString(args, "mode")))
+	_, hasContinueAutomatically := args["continue_automatically"]
+	if granularity == "" {
+		args["execution_granularity"] = sessionruntime.PlanAcceptanceGranularityCheckpointed
+	}
+	if continuation == "" && !hasContinueAutomatically {
+		args["continuation_policy"] = sessionruntime.PlanAcceptanceContinuationAutomatic
+		args["continue_automatically"] = true
+		return
+	}
+	if hasContinueAutomatically {
+		if mapBool(args, "continue_automatically") {
+			args["continuation_policy"] = sessionruntime.PlanAcceptanceContinuationAutomatic
+		} else {
+			args["continuation_policy"] = sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint
+		}
+	}
 }
 
 func buildPlanAmendmentPreviewDocument(current, proposed *pebblestore.SessionPlanDocument, args map[string]any) (*pebblestore.SessionPlanDocument, bool) {
@@ -1803,6 +1831,9 @@ func planManageApprovalArguments(payload map[string]any) map[string]any {
 		if strings.TrimSpace(mapString(args, "action")) == "" {
 			args["action"] = "save"
 		}
+		if strings.TrimSpace(mapString(args, "action")) == "request_new_plan" {
+			applyRequestNewPlanExecutionDefaults(args)
+		}
 		return args
 	}
 	args := cloneGenericMap(payload)
@@ -1822,6 +1853,9 @@ func planManageApprovalArguments(payload map[string]any) map[string]any {
 	delete(args, "version")
 	if strings.TrimSpace(mapString(args, "action")) == "" {
 		args["action"] = "save"
+	}
+	if strings.TrimSpace(mapString(args, "action")) == "request_new_plan" {
+		applyRequestNewPlanExecutionDefaults(args)
 	}
 	if len(args) == 1 {
 		return nil

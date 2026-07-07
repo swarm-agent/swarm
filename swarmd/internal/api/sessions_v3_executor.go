@@ -1624,30 +1624,48 @@ func sessionV3ProviderCheckpointScopeFromPayload(scope sessionV3ProviderCheckpoi
 	if payload == nil {
 		return scope
 	}
-	if strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+	freshContext := strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context")
+	if freshContext {
 		scope.FreshContext = true
 	}
-	if scope.PlanID == "" {
-		scope.PlanID = strings.TrimSpace(sessionsV3MapString(payload, "plan_id"))
-	}
-	if scope.CheckpointID == "" {
-		scope.CheckpointID = strings.TrimSpace(firstNonEmptyString(sessionsV3MapString(payload, "checkpoint_id"), sessionsV3MapString(payload, "next_checkpoint_id")))
-	}
+	payloadPlanID := strings.TrimSpace(sessionsV3MapString(payload, "plan_id"))
+	payloadCheckpointID := strings.TrimSpace(firstNonEmptyString(sessionsV3MapString(payload, "checkpoint_id"), sessionsV3MapString(payload, "next_checkpoint_id")))
+	payloadAttemptID := ""
+	payloadParentSessionID := ""
 	if runRequest, ok := payload["run_request"].(map[string]any); ok {
 		if checkpointContext, ok := runRequest["plan_checkpoint_context"].(map[string]any); ok {
-			if scope.PlanID == "" {
-				scope.PlanID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "plan_id"))
-			}
-			if scope.CheckpointID == "" {
-				scope.CheckpointID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "checkpoint_id"))
-			}
-			if scope.AttemptID == "" {
-				scope.AttemptID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "attempt_id"))
-			}
-			if scope.ParentSessionID == "" {
-				scope.ParentSessionID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "parent_session_id"))
-			}
+			payloadPlanID = strings.TrimSpace(firstNonEmptyString(sessionsV3MapString(checkpointContext, "plan_id"), payloadPlanID))
+			payloadCheckpointID = strings.TrimSpace(firstNonEmptyString(sessionsV3MapString(checkpointContext, "checkpoint_id"), payloadCheckpointID))
+			payloadAttemptID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "attempt_id"))
+			payloadParentSessionID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "parent_session_id"))
 		}
+	}
+	if freshContext {
+		if payloadPlanID != "" {
+			scope.PlanID = payloadPlanID
+		}
+		if payloadCheckpointID != "" {
+			scope.CheckpointID = payloadCheckpointID
+		}
+		if payloadAttemptID != "" {
+			scope.AttemptID = payloadAttemptID
+		}
+		if payloadParentSessionID != "" {
+			scope.ParentSessionID = payloadParentSessionID
+		}
+		return scope
+	}
+	if scope.PlanID == "" {
+		scope.PlanID = payloadPlanID
+	}
+	if scope.CheckpointID == "" {
+		scope.CheckpointID = payloadCheckpointID
+	}
+	if scope.AttemptID == "" {
+		scope.AttemptID = payloadAttemptID
+	}
+	if scope.ParentSessionID == "" {
+		scope.ParentSessionID = payloadParentSessionID
 	}
 	return scope
 }
@@ -2532,29 +2550,11 @@ func (e *sessionV3Executor) sessionV3ProviderCheckpointRestartInput(ctx context.
 			return nil, false, nil
 		}
 	}
-	checkpointID := strings.TrimSpace(job.CheckpointID)
-	if checkpointID == "" {
-		checkpointID = strings.TrimSpace(sessionsV3MapString(payload, "checkpoint_id"))
-	}
-	if checkpointID == "" {
-		checkpointID = strings.TrimSpace(sessionsV3MapString(payload, "next_checkpoint_id"))
-	}
-	planID := strings.TrimSpace(job.PlanID)
-	if planID == "" {
-		planID = strings.TrimSpace(sessionsV3MapString(payload, "plan_id"))
-	}
-	if checkpointID == "" || planID == "" {
-		if runRequest, ok := payload["run_request"].(map[string]any); ok {
-			if checkpointContext, ok := runRequest["plan_checkpoint_context"].(map[string]any); ok {
-				if planID == "" {
-					planID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "plan_id"))
-				}
-				if checkpointID == "" {
-					checkpointID = strings.TrimSpace(sessionsV3MapString(checkpointContext, "checkpoint_id"))
-				}
-			}
-		}
-	}
+	scope := sessionV3ProviderCheckpointScopeFromPayload(sessionV3ProviderJobCheckpointScope(job), payload)
+	checkpointID := strings.TrimSpace(scope.CheckpointID)
+	planID := strings.TrimSpace(scope.PlanID)
+	attemptID := strings.TrimSpace(scope.AttemptID)
+	parentSessionID := strings.TrimSpace(scope.ParentSessionID)
 	if checkpointID == "" {
 		return nil, true, errors.New("checkpoint restart requested without checkpoint_id")
 	}
@@ -2570,11 +2570,10 @@ func (e *sessionV3Executor) sessionV3ProviderCheckpointRestartInput(ctx context.
 	if !ok || builder == nil {
 		return nil, true, errors.New("v3 checkpoint restart requires checkpoint input builder")
 	}
-	parentSessionID := strings.TrimSpace(job.ParentSessionID)
 	if parentSessionID == "" {
 		parentSessionID = job.SessionID
 	}
-	checkpointInput, ok, err := builder.BuildPlanCheckpointRunInput(job.SessionID, job.RunID, runruntime.RunRequest{PlanCheckpointContext: &runruntime.RunPlanCheckpointContext{PlanID: planID, CheckpointID: checkpointID, AttemptID: job.AttemptID, ParentSessionID: parentSessionID}}, runruntime.RunStartMeta{RunID: job.RunID, Principal: job.Principal, ApplySessionMutation: e.server.applySessionV3PrimaryMutation})
+	checkpointInput, ok, err := builder.BuildPlanCheckpointRunInput(job.SessionID, job.RunID, runruntime.RunRequest{PlanCheckpointContext: &runruntime.RunPlanCheckpointContext{PlanID: planID, CheckpointID: checkpointID, AttemptID: attemptID, ParentSessionID: parentSessionID}}, runruntime.RunStartMeta{RunID: job.RunID, Principal: job.Principal, ApplySessionMutation: e.server.applySessionV3PrimaryMutation})
 	if err != nil {
 		return nil, true, err
 	}

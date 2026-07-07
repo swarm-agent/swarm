@@ -850,6 +850,63 @@ export function exitPlanExecutionArguments(choice: ExitPlanExecutionChoice): {
   }
 }
 
+function ExitPlanExecutionChoiceSelector({
+  executionChoice,
+  loading,
+  onExecutionChoiceChange,
+}: {
+  executionChoice: ExitPlanExecutionChoice
+  loading: boolean
+  onExecutionChoiceChange: (choice: ExitPlanExecutionChoice) => void
+}) {
+  return (
+    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+      <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Run mode</div>
+      <div className="mt-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
+        <span className="font-semibold">Automatic mode is selected by default.</span>{' '}
+        Choose a different run mode before approving if needed.
+      </div>
+      <div className="mt-3 grid gap-3 md:grid-cols-3" role="radiogroup" aria-label="Run mode">
+        {exitPlanExecutionChoices.map((choice) => {
+          const selected = executionChoice === choice.id
+          return (
+            <button
+              key={choice.id}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              disabled={loading}
+              onClick={() => onExecutionChoiceChange(choice.id)}
+              className={cn(
+                'grid min-h-[132px] gap-2 rounded-2xl border px-4 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]',
+                selected
+                  ? 'border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] shadow-[0_12px_28px_rgba(0,0,0,0.12)]'
+                  : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-active)]',
+                loading ? 'cursor-not-allowed opacity-70' : 'cursor-pointer',
+              )}
+            >
+              <span className="flex items-start justify-between gap-3">
+                <span className="text-sm font-semibold text-[var(--app-text)]">{choice.title}</span>
+                <span
+                  className={cn(
+                    'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-full border',
+                    selected ? 'border-[var(--app-primary)] bg-[var(--app-primary)] text-[var(--app-primary-contrast)]' : 'border-[var(--app-border-strong)]',
+                  )}
+                  aria-hidden="true"
+                >
+                  {selected ? <Check className="size-3" /> : null}
+                </span>
+              </span>
+              <span className="text-xs leading-5 text-[var(--app-text)]">{choice.description}</span>
+              <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">{choice.detail}</span>
+            </button>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
 function ExitPlanModal({
   permission,
   open,
@@ -949,50 +1006,11 @@ function ExitPlanModal({
     >
       <div className="grid gap-4">
         {hasStructuredPlan ? (
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
-            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Run mode</div>
-            <div className="mt-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
-              <span className="font-semibold">Automatic mode is selected by default.</span>{' '}
-              Choose a different run mode before approving if needed.
-            </div>
-            <div className="mt-3 grid gap-3 md:grid-cols-3" role="radiogroup" aria-label="Run mode">
-              {exitPlanExecutionChoices.map((choice) => {
-                const selected = executionChoice === choice.id
-                return (
-                  <button
-                    key={choice.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={selected}
-                    disabled={loading}
-                    onClick={() => setExecutionChoice(choice.id)}
-                    className={cn(
-                      'grid min-h-[132px] gap-2 rounded-2xl border px-4 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]',
-                      selected
-                        ? 'border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] shadow-[0_12px_28px_rgba(0,0,0,0.12)]'
-                        : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-active)]',
-                      loading ? 'cursor-not-allowed opacity-70' : 'cursor-pointer',
-                    )}
-                  >
-                    <span className="flex items-start justify-between gap-3">
-                      <span className="text-sm font-semibold text-[var(--app-text)]">{choice.title}</span>
-                      <span
-                        className={cn(
-                          'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-full border',
-                          selected ? 'border-[var(--app-primary)] bg-[var(--app-primary)] text-[var(--app-primary-contrast)]' : 'border-[var(--app-border-strong)]',
-                        )}
-                        aria-hidden="true"
-                      >
-                        {selected ? <Check className="size-3" /> : null}
-                      </span>
-                    </span>
-                    <span className="text-xs leading-5 text-[var(--app-text)]">{choice.description}</span>
-                    <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">{choice.detail}</span>
-                  </button>
-                )
-              })}
-            </div>
-          </section>
+          <ExitPlanExecutionChoiceSelector
+            executionChoice={executionChoice}
+            loading={loading}
+            onExecutionChoiceChange={setExecutionChoice}
+          />
         ) : null}
         {structuredDocument ? (
           <ExitPlanDocumentView document={structuredDocument} />
@@ -1257,8 +1275,24 @@ function planLifecycleApprovedArguments(payload: PlanUpdatePayload, fallbackActi
   if (payload.acceptanceCriteria.length > 0) approved.acceptance_criteria = payload.acceptanceCriteria
   if (payload.notes) approved.notes = payload.notes
   if (payload.followupCheckpointPolicy) approved.followup_checkpoint_policy = payload.followupCheckpointPolicy
-  if (payload.action === 'request_followup_checkpoint' || fallbackAction === 'request_followup_checkpoint') approved.approval_confirmed = true
+  if (
+    payload.action === 'request_followup_checkpoint' ||
+    fallbackAction === 'request_followup_checkpoint' ||
+    payload.action === 'request_new_plan' ||
+    fallbackAction === 'request_new_plan'
+  ) approved.approval_confirmed = true
   return approved
+}
+
+export function newPlanLifecycleApprovedArguments(
+  payload: PlanUpdatePayload,
+  executionChoice: ExitPlanExecutionChoice,
+): Record<string, unknown> {
+  return {
+    ...planLifecycleApprovedArguments(payload, 'request_new_plan'),
+    approval_confirmed: true,
+    ...exitPlanExecutionArguments(executionChoice),
+  }
 }
 
 function followupPolicyLabel(policy: string): string {
@@ -1561,11 +1595,13 @@ function NewPlanRequestModal({
 }: DesktopPermissionModalProps) {
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
+  const [executionChoice, setExecutionChoice] = useState<ExitPlanExecutionChoice>(defaultExitPlanExecutionChoice)
 
   useEffect(() => {
     if (open) {
       setNote('')
       setLoading(false)
+      setExecutionChoice(defaultExitPlanExecutionChoice)
     }
   }, [open, permission?.id])
 
@@ -1574,7 +1610,11 @@ function NewPlanRequestModal({
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
     try {
-      await onResolve(action, note.trim(), action === 'approve' ? planLifecycleApprovedArguments(payload, 'request_new_plan') : undefined)
+      await onResolve(
+        action,
+        note.trim(),
+        action === 'approve' ? newPlanLifecycleApprovedArguments(payload, executionChoice) : undefined,
+      )
     } finally {
       setLoading(false)
     }
@@ -1601,6 +1641,11 @@ function NewPlanRequestModal({
           <p className="mt-2">Approve a separate new plan proposal. This does not silently overwrite the current active plan.</p>
           {payload.updateSummary ? <p className="mt-2 whitespace-pre-wrap break-words text-[var(--app-text-muted)]">{payload.updateSummary}</p> : null}
         </section>
+        <ExitPlanExecutionChoiceSelector
+          executionChoice={executionChoice}
+          loading={loading}
+          onExecutionChoiceChange={setExecutionChoice}
+        />
         {planLifecycleDocumentPreview(payload, 'No proposed new plan document or plan text was provided.')}
       </div>
     </ModalShell>

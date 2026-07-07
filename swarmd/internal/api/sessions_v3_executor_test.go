@@ -13,9 +13,14 @@ import (
 )
 
 type sessionsV3ProviderToolsRunner struct {
-	definitions []tool.Definition
-	contract    runruntime.ResolvedAgentToolContract
-	disabled    map[string]bool
+	definitions                []tool.Definition
+	contract                   runruntime.ResolvedAgentToolContract
+	disabled                   map[string]bool
+	checkpointRequests         []runruntime.RunRequest
+	checkpointMetas            []runruntime.RunStartMeta
+	checkpointInputReturn      []map[string]any
+	checkpointInputReturnOK    bool
+	checkpointInputReturnOKSet bool
 }
 
 func (r *sessionsV3ProviderToolsRunner) RunTurn(context.Context, string, runruntime.RunRequest, runruntime.RunStartMeta) (runruntime.RunResult, error) {
@@ -50,6 +55,74 @@ func (r *sessionsV3ProviderToolsRunner) ResolveAgentToolContractForAccount(strin
 
 func (r *sessionsV3ProviderToolsRunner) CompileStoredV3AgentToolContract(string, pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, map[string]bool, error) {
 	return r.contract, r.disabled, nil
+}
+
+func (r *sessionsV3ProviderToolsRunner) BuildPlanCheckpointRunInput(_ string, _ string, request runruntime.RunRequest, meta runruntime.RunStartMeta) ([]map[string]any, bool, error) {
+	r.checkpointRequests = append(r.checkpointRequests, request)
+	r.checkpointMetas = append(r.checkpointMetas, meta)
+	if r.checkpointInputReturnOKSet {
+		return r.checkpointInputReturn, r.checkpointInputReturnOK, nil
+	}
+	return []map[string]any{{"role": "user", "content": "checkpoint"}}, true, nil
+}
+
+func TestSessionV3ProviderCheckpointScopeFromFreshPayloadOverridesStaleJobScope(t *testing.T) {
+	scope := sessionV3ProviderCheckpointScopeFromPayload(sessionV3ProviderCheckpointScope{
+		PlanID:          "old-plan",
+		CheckpointID:    "cp-4",
+		AttemptID:       "cp-4:attempt-1",
+		ParentSessionID: "parent-old",
+		FreshContext:    true,
+	}, map[string]any{
+		"next_action":        "run_checkpoint_with_fresh_context",
+		"next_checkpoint_id": "cp-5",
+		"run_request": map[string]any{
+			"plan_checkpoint_context": map[string]any{
+				"plan_id":           "new-plan",
+				"checkpoint_id":     "cp-5",
+				"attempt_id":        "cp-5:attempt-1",
+				"parent_session_id": "parent-new",
+			},
+		},
+	})
+
+	if scope.PlanID != "new-plan" || scope.CheckpointID != "cp-5" || scope.AttemptID != "cp-5:attempt-1" || scope.ParentSessionID != "parent-new" {
+		t.Fatalf("scope = %+v, want fresh payload plan/checkpoint/attempt/parent", scope)
+	}
+	if !scope.FreshContext {
+		t.Fatalf("FreshContext = false, want true")
+	}
+}
+
+func TestSessionV3ProviderCheckpointRestartInputUsesFreshPayloadCheckpointOverJobCheckpoint(t *testing.T) {
+	runner := &sessionsV3ProviderToolsRunner{}
+	exec := &sessionV3Executor{server: &Server{runner: runner}}
+	toolOutput := `{"next_action":"run_checkpoint_with_fresh_context","next_checkpoint_id":"cp-5","run_request":{"plan_checkpoint_context":{"plan_id":"replacement-plan","checkpoint_id":"cp-5","attempt_id":"cp-5:attempt-1","parent_session_id":"parent-new"}}}`
+
+	input, ok, err := exec.sessionV3ProviderCheckpointRestartInput(context.Background(), sessionV3ExecutorJob{
+		SessionID:       "session-1",
+		RunID:           "run-1",
+		PlanID:          "old-plan",
+		CheckpointID:    "cp-4",
+		AttemptID:       "cp-4:attempt-1",
+		ParentSessionID: "parent-old",
+	}, sessionV3ResolvedRuntime{}, toolOutput)
+	if err != nil {
+		t.Fatalf("checkpoint restart input: %v", err)
+	}
+	if !ok || len(input) == 0 {
+		t.Fatalf("checkpoint restart input ok=%v input=%v, want non-empty", ok, input)
+	}
+	if len(runner.checkpointRequests) != 1 {
+		t.Fatalf("checkpoint request count = %d, want 1", len(runner.checkpointRequests))
+	}
+	ctx := runner.checkpointRequests[0].PlanCheckpointContext
+	if ctx == nil {
+		t.Fatalf("PlanCheckpointContext is nil")
+	}
+	if ctx.PlanID != "replacement-plan" || ctx.CheckpointID != "cp-5" || ctx.AttemptID != "cp-5:attempt-1" || ctx.ParentSessionID != "parent-new" {
+		t.Fatalf("PlanCheckpointContext = %+v, want fresh payload context", *ctx)
+	}
 }
 
 func TestApplySessionV3AgentPreferenceOverridesPreservesSupportedPriorityServiceTier(t *testing.T) {

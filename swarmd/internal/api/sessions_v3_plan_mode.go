@@ -86,11 +86,14 @@ type sessionsV3PlanLifecycleFollowupRequest struct {
 }
 
 type sessionsV3PlanLifecycleProposalRequest struct {
-	PlanID   string                           `json:"plan_id,omitempty"`
-	Title    string                           `json:"title,omitempty"`
-	Plan     string                           `json:"plan,omitempty"`
-	Document *pebblestore.SessionPlanDocument `json:"document,omitempty"`
-	Reason   string                           `json:"reason,omitempty"`
+	PlanID                string                           `json:"plan_id,omitempty"`
+	Title                 string                           `json:"title,omitempty"`
+	Plan                  string                           `json:"plan,omitempty"`
+	Document              *pebblestore.SessionPlanDocument `json:"document,omitempty"`
+	Reason                string                           `json:"reason,omitempty"`
+	ExecutionGranularity  string                           `json:"execution_granularity,omitempty"`
+	ContinuationPolicy    string                           `json:"continuation_policy,omitempty"`
+	ContinueAutomatically *bool                            `json:"continue_automatically,omitempty"`
 }
 
 type sessionsV3PlanLifecycleAmendRequest struct {
@@ -516,7 +519,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeProposal(w http.ResponseWriter, r
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := method(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: req.PlanID, Title: req.Title, Plan: req.Plan, Document: req.Document, Reason: req.Reason})
+	result, err := method(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: req.PlanID, Title: req.Title, Plan: req.Plan, Document: req.Document, Reason: req.Reason, ExecutionGranularity: req.ExecutionGranularity, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
