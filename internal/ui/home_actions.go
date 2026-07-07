@@ -19,6 +19,8 @@ const (
 	HomeActionSetDefaultSessionMode HomeActionKind = "set-default-session-mode"
 	HomeActionOpenAlertSession      HomeActionKind = "open-alert-session"
 	HomeActionClearAlerts           HomeActionKind = "clear-alerts"
+	HomeActionOpenAuthModal         HomeActionKind = "open-auth-modal"
+	HomeActionSaveOnboarding        HomeActionKind = "save-onboarding"
 )
 
 type HomeAction struct {
@@ -32,6 +34,8 @@ type HomeAction struct {
 	WorktreeEnabled  bool
 	WorktreeRootPath string
 	NotificationID   string
+	Username         string
+	SwarmName        string
 }
 
 func (p *HomePage) PopHomeAction() (HomeAction, bool) {

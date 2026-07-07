@@ -1814,6 +1814,9 @@ func (a *App) loadSessionSummary(ctx context.Context, sessionID string) (model.S
 
 func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 	keybinds := a.activeKeyBindings()
+	if a.home != nil && a.home.OnboardingVisible() {
+		return false
+	}
 	if keybinds.Match(ev, ui.KeybindGlobalOpenAgents) {
 		if a.route == "chat" && a.chat != nil && a.chat.PermissionModalVisible() {
 			return false
@@ -1956,6 +1959,9 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 }
 
 func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
+	if a.home.OnboardingVisible() {
+		return false
+	}
 	if a.home.AlertsModalVisible() ||
 		a.home.SessionsModalVisible() ||
 		a.home.AuthModalVisible() ||
@@ -2047,6 +2053,15 @@ func (a *App) executeCommand(raw string) {
 	}
 	cmd := strings.ToLower(fields[0])
 	args := fields[1:]
+	if a.home != nil && a.home.OnboardingVisible() {
+		switch cmd {
+		case "auth", "quit", "exit", "help":
+		default:
+			a.home.ClearCommandOverlay()
+			a.home.SetStatus("Complete required onboarding before using other commands.")
+			return
+		}
+	}
 	if a.vault.Enabled && !a.vault.Unlocked {
 		switch cmd {
 		case "help", "quit", "exit", "vault":
@@ -3995,6 +4010,10 @@ func (a *App) consumeHomeOverlayActions() {
 	for {
 		processed := false
 
+		if action, ok := a.home.PopHomeAction(); ok {
+			a.handleHomeAction(action)
+			processed = true
+		}
 		if action, ok := a.home.PopAuthModalAction(); ok {
 			a.handleAuthModalAction(action)
 			processed = true
@@ -4821,6 +4840,10 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		a.cycleChatRoute()
 	case ui.HomeActionClearAlerts:
 		a.clearAlertsFromModal()
+	case ui.HomeActionOpenAuthModal:
+		a.openAuthModal()
+	case ui.HomeActionSaveOnboarding:
+		a.saveOnboarding(action.Username, action.SwarmName)
 	}
 }
 
@@ -6084,6 +6107,32 @@ func (a *App) loadWorkspaceModalEntries(statusHint string) ([]client.WorkspaceEn
 	return entries, nil
 }
 
+func (a *App) saveOnboarding(username, swarmName string) {
+	username = strings.TrimSpace(username)
+	swarmName = strings.TrimSpace(swarmName)
+	if username == "" || swarmName == "" {
+		a.home.SetOnboardingError("Username and swarm name are required.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	status, err := a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{Username: username, SwarmName: swarmName})
+	if err != nil {
+		a.home.SetOnboardingError(fmt.Sprintf("onboarding save failed: %v", err))
+		return
+	}
+	if session, err := a.api.IssueLocalProductSession(ctx); err == nil && strings.TrimSpace(session.Token) != "" {
+		a.api.SetToken(session.Token)
+	}
+	a.home.SetOnboardingRequired(false, strings.TrimSpace(status.Identity.Username), strings.TrimSpace(status.Config.SwarmName))
+	a.home.ShowOnboardingLocked("Identity setup saved. Press Enter to add provider auth, or Esc/s to skip for now.")
+	a.home.SetStatus("Identity setup saved. Provider auth can be added in /auth; Needs auth remains until credentials are added.")
+	a.queueReload(false)
+	if !a.home.AuthModalVisible() {
+		a.openAuthModal()
+	}
+}
+
 func (a *App) openAuthModal() {
 	a.home.ClearCommandOverlay()
 	a.home.HideSessionsModal()
@@ -6182,6 +6231,7 @@ func (a *App) refreshAuthModalData(statusHint string) {
 	}
 
 	modalProviders := mergeAuthModalProviders(providerStatuses, credentials)
+	modalProviders = filterOnboardingAuthMethods(modalProviders)
 	modalCredentials := mapAuthModalCredentials(credentials.Records)
 	agentProfiles := make([]ui.AgentModalProfile, 0)
 	if agentState, err := a.api.ListAgents(ctx, 500); err == nil {
@@ -6300,6 +6350,27 @@ func mergeAuthModalProviders(statuses []client.ProviderStatus, credentials clien
 		out = append(out, providerMap[id])
 	}
 	return out
+}
+
+func filterOnboardingAuthMethods(providers []ui.AuthModalProvider) []ui.AuthModalProvider {
+	for i := range providers {
+		providerID := strings.ToLower(strings.TrimSpace(providers[i].ID))
+		methods := providers[i].AuthMethods
+		if providerID == "codex" {
+			filtered := make([]ui.AuthModalAuthMethod, 0, len(methods))
+			for _, method := range methods {
+				methodID := strings.ToLower(strings.TrimSpace(method.ID))
+				credentialType := strings.ToLower(strings.TrimSpace(method.CredentialType))
+				label := strings.ToLower(strings.TrimSpace(method.Label))
+				if methodID == "api" || credentialType == "api" || strings.Contains(label, "api key") {
+					continue
+				}
+				filtered = append(filtered, method)
+			}
+			providers[i].AuthMethods = filtered
+		}
+	}
+	return providers
 }
 
 func mapAuthModalMethods(methods []client.AuthMethod) []ui.AuthModalAuthMethod {
@@ -7544,8 +7615,17 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 	if strings.TrimSpace(a.api.Token()) == "" {
 		if err := a.api.EnsureLocalAuth(ctx); err != nil {
 			if errors.Is(err, client.ErrLocalIdentityBootstrapRequired) {
-				next.HintLine = "No product user exists yet. Complete onboarding before using protected actions."
-				next.TipLine = "Create username + swarm name, then type desktop to confirm local owner bootstrap."
+				status, statusErr := a.api.GetOnboardingStatus(ctx)
+				if statusErr == nil {
+					next.OnboardingRequired = status.NeedsOnboarding
+					next.OnboardingUsername = strings.TrimSpace(status.Identity.Username)
+					next.OnboardingSwarmName = strings.TrimSpace(status.Config.SwarmName)
+				}
+				if !next.OnboardingRequired {
+					next.OnboardingRequired = true
+				}
+				next.HintLine = "Required onboarding: create username + swarm name before using Swarm."
+				next.TipLine = "Provider auth can be skipped, but Needs auth remains until /auth is completed."
 				return next, nil
 			}
 			errorsSeen = append(errorsSeen, "local auth bootstrap failed")

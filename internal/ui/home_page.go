@@ -96,6 +96,7 @@ type HomePage struct {
 	pressedTopAction          string
 	pressedTopFrames          int
 	commandOverlay            []string
+	onboarding                onboardingState
 	swarmName                 string
 	swarmNotificationCount    int
 	alertsModal               alertsModalState
@@ -158,7 +159,7 @@ func (p *HomePage) HandleMouse(ev *tcell.EventMouse) {
 		p.handleAgentsModalMouse(ev)
 		return
 	}
-	if p.alertsModal.Visible || p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.worktreesModal.Visible || p.mcpModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
+	if p.onboarding.Visible || p.alertsModal.Visible || p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.worktreesModal.Visible || p.mcpModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
 		return
 	}
 
@@ -252,6 +253,10 @@ func (p *HomePage) HandleTick() bool {
 }
 
 func (p *HomePage) HandleKey(ev *tcell.EventKey) {
+	if p.onboarding.Visible && !p.authModal.Visible {
+		p.handleOnboardingKey(ev)
+		return
+	}
 	if p.alertsModal.Visible {
 		p.handleAlertsModalKey(ev)
 		return
@@ -430,7 +435,8 @@ func (p *HomePage) ChatOverlayVisible() bool {
 	if p == nil {
 		return false
 	}
-	return p.alertsModal.Visible ||
+	return p.onboarding.Visible ||
+		p.alertsModal.Visible ||
 		p.keybindsModal.Visible ||
 		p.authDefaultsInfoModal.Visible ||
 		p.authModal.Visible ||
@@ -464,6 +470,10 @@ func (p *HomePage) HandleChatOverlayMouse(ev *tcell.EventMouse) bool {
 func (p *HomePage) HandleChatOverlayKey(ev *tcell.EventKey) bool {
 	if p == nil {
 		return false
+	}
+	if p.onboarding.Visible && !p.authModal.Visible {
+		p.handleOnboardingKey(ev)
+		return true
 	}
 	switch {
 	case p.alertsModal.Visible:
@@ -508,6 +518,7 @@ func (p *HomePage) DrawChatOverlay(s tcell.Screen) {
 	if p == nil {
 		return
 	}
+	p.drawOnboarding(s)
 	p.drawAuthModal(s)
 	p.drawAuthDefaultsInfoModal(s)
 	p.drawWorkspaceModal(s)

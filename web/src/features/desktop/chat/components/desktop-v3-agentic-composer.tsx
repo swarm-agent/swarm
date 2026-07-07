@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
-import { ChevronsUp, Lightbulb, LoaderCircle, Mic, Minimize2, NotepadText, Send, Settings2, Square, Zap, ZapOff } from 'lucide-react'
+import { AlertTriangle, ChevronsUp, Lightbulb, LoaderCircle, Mic, Minimize2, NotepadText, Send, Settings2, Square, Zap, ZapOff } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
@@ -139,6 +139,8 @@ export interface DesktopV3AgenticComposerProps {
   modelLockNotice?: string
   modelControlDetail?: string
   onOpenAgentSettings?: () => void
+  needsAuth?: boolean
+  onOpenAuthSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
   agentModelControlBusy?: boolean
   thinking: string
@@ -185,6 +187,8 @@ export function DesktopV3AgenticComposer({
   modelLockNotice = '',
   modelControlDetail = '',
   onOpenAgentSettings,
+  needsAuth = false,
+  onOpenAuthSettings,
   onConfirmAgentSettings,
   agentModelControlBusy = false,
   thinking,
@@ -542,7 +546,7 @@ export function DesktopV3AgenticComposer({
     <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-v3-agentic-composer">
       <div className="mx-auto grid w-full min-w-0 max-w-[70rem] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 focus-within:pb-[calc(1rem+var(--app-safe-area-bottom))] sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5">
         {error ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]" role="alert">{error}</div> : null}
-        {dictationError ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning-text)]">{dictationError}</div> : null}
+        {dictationError ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning)]">{dictationError}</div> : null}
         {mentionPaletteIsActive ? (
           <DesktopMentionPanel matches={mentionPaletteMatches} selectedIndex={mentionSelectionIndex} onHover={setMentionSelectionIndex} onSelect={handleMentionInsert} />
         ) : slashPalette.active ? (
@@ -607,6 +611,12 @@ export function DesktopV3AgenticComposer({
                   </span>
                 ) : null}
                 {showModePicker ? <AgentModelControl currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} selectedModel={selectedModel} selectedServiceTier={selectedServiceTier} selectedThinking={normalizedThinking} modelOptions={modelOptions} modelLocked={modelPickerLocked} modelLockNotice={modelPickerReason} triggerDetail={modelControlDetail || settingsSummary} openSignal={effectiveAgentSettingsSignal} onOpenAgentSettings={onOpenAgentSettings} onConfirmAgentSettings={onConfirmAgentSettings} busy={agentModelControlBusy} /> : null}
+                {needsAuth ? (
+                  <button type="button" onClick={onOpenAuthSettings} disabled={!onOpenAuthSettings} className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1 text-[11px] font-semibold text-[var(--app-warning)] transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60" title="Open auth settings to add a provider credential">
+                    <AlertTriangle size={13} className="shrink-0" />
+                    Needs auth!
+                  </button>
+                ) : null}
                 {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? (
                   <button type="button" onClick={() => onThinkingTagsToggle(!thinkingTagsEnabled)} disabled={thinkingTagsBusy} className="inline-flex h-6 items-center rounded-full border border-[var(--app-border)] px-2 text-[10px] font-semibold text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-60">
                     tags {thinkingTagsEnabled ? 'on' : 'off'}
@@ -634,11 +644,20 @@ export function DesktopV3AgenticComposer({
                     <span className="flex min-w-0 flex-col leading-tight">
                       <span className="truncate text-[11px] font-medium text-[var(--app-text)] sm:text-[12px]">{currentAgent}</span>
                       <span className="flex min-w-0 items-center gap-1 truncate text-[10px] text-[var(--app-text-muted)]">
-                        <span className="truncate">{modelSummary}</span>
-                        <Lightbulb size={10} className="shrink-0" />
-                        <span>{normalizedThinking}</span>
-                        {serviceTierSupported ? (normalizedServiceTier ? <Zap size={10} className="shrink-0" /> : <ZapOff size={10} className="shrink-0" />) : null}
-                        {serviceTierSupported ? <span>{selectedServiceTierLabel}</span> : null}
+                        {needsAuth ? (
+                          <span className="inline-flex min-w-0 items-center gap-1 truncate font-semibold text-[var(--app-warning)]">
+                            <AlertTriangle size={10} className="shrink-0" />
+                            <span className="truncate">Needs auth!</span>
+                          </span>
+                        ) : (
+                          <>
+                            <span className="truncate">{modelSummary}</span>
+                            <Lightbulb size={10} className="shrink-0" />
+                            <span>{normalizedThinking}</span>
+                            {serviceTierSupported ? (normalizedServiceTier ? <Zap size={10} className="shrink-0" /> : <ZapOff size={10} className="shrink-0" />) : null}
+                            {serviceTierSupported ? <span>{selectedServiceTierLabel}</span> : null}
+                          </>
+                        )}
                       </span>
                     </span>
                   </button>

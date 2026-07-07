@@ -119,6 +119,7 @@ async function refreshAuthDependentQueries(): Promise<void> {
     queryClient.invalidateQueries({ queryKey: draftModelQueryOptions().queryKey }),
     queryClient.invalidateQueries({ queryKey: modelOptionsQueryOptions().queryKey }),
     queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey }),
+    queryClient.invalidateQueries({ queryKey: ['auth-credentials'] }),
   ])
 }
 

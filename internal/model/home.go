@@ -193,6 +193,9 @@ type HomeModel struct {
 	QuickActions                []string
 	HintLine                    string
 	TipLine                     string
+	OnboardingRequired          bool
+	OnboardingUsername          string
+	OnboardingSwarmName         string
 	RecentSessions              []SessionSummary
 	BackgroundSessions          []BackgroundSessionSummary
 }

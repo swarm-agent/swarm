@@ -48,8 +48,27 @@ func (p *HomePage) AcceptCommandPaletteEnter() bool {
 }
 
 func (p *HomePage) SetModel(next model.HomeModel) {
+	draftUsername := ""
+	draftSwarmName := ""
+	if p.onboarding.Visible {
+		draftUsername = strings.TrimSpace(p.model.OnboardingUsername)
+		draftSwarmName = strings.TrimSpace(p.model.OnboardingSwarmName)
+	}
+	if next.OnboardingRequired {
+		if strings.TrimSpace(next.OnboardingUsername) == "" {
+			next.OnboardingUsername = draftUsername
+		}
+		if strings.TrimSpace(next.OnboardingSwarmName) == "" {
+			next.OnboardingSwarmName = draftSwarmName
+		}
+	}
 	p.model = next
 	p.sessionMode = normalizeHomeSessionMode(p.sessionMode)
+	if next.OnboardingRequired {
+		p.ShowOnboardingLocked("Complete required identity setup before using Swarm.")
+	} else if p.onboarding.Visible && !p.identityOnboardingComplete() {
+		p.onboarding = onboardingState{}
+	}
 	total := len(p.model.RecentSessions)
 	if total == 0 {
 		p.selectedIndex = 0

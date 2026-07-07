@@ -18,6 +18,8 @@ import { formatContextWindow, effectiveContextWindow, normalizeModelID, normaliz
 import { preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader, type DesktopV3ChatHeaderSessionActions } from './desktop-v3-chat-header'
+import { listAuthCredentials } from '../../settings/queries/list-auth-credentials'
+import { desktopProviderNeedsAuth } from '../services/auth-needs'
 import { buildDesktopV3RunStatusModel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
 import type { DesktopSlashCommand } from '../services/slash-commands'
 import {
@@ -681,6 +683,11 @@ export function DesktopV3ExistingConversationPane({
   const agentStateQuery = useQuery(agentStateQueryOptions())
   const modelOptionsQuery = useQuery(modelOptionsQueryOptions())
   const uiSettingsQuery = useQuery(uiSettingsQueryOptions())
+  const authCredentialsQuery = useQuery({
+    queryKey: ['auth-credentials', 'desktop-composer'],
+    queryFn: () => listAuthCredentials('', '', 200),
+    staleTime: 30_000,
+  })
   const agentState = agentStateQuery.data ?? EMPTY_AGENT_STATE
   const modelOptions = modelOptionsQuery.data ?? []
   const thinkingTagsEnabled = normalizeThinkingTagsEnabled(uiSettingsQuery.data)
@@ -757,6 +764,7 @@ export function DesktopV3ExistingConversationPane({
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
   const hasResolvedPreference = Boolean(preference.provider.trim() && preference.model.trim() && preference.thinking.trim())
   const selectedModelAvailable = Boolean(selectedModelOption && hasResolvedPreference)
+  const needsAuth = desktopProviderNeedsAuth(preference.provider, authCredentialsQuery.data)
   const cachedUsage = useMemo(() => normalizeUsageSummary(rawCachedUsage), [rawCachedUsage])
   const selectedContextWindow = selectedModelOption
     ? effectiveContextWindow(selectedModelOption.provider, selectedModelOption.model, selectedModelOption.contextMode, selectedModelOption.contextWindow)
@@ -867,6 +875,14 @@ export function DesktopV3ExistingConversationPane({
       return
     }
     void navigate({ to: '/settings', search: { tab: 'agents' } })
+  }
+
+  function handleOpenAuthSettings() {
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab: 'auth' } })
+      return
+    }
+    void navigate({ to: '/settings', search: { tab: 'auth' } })
   }
 
   function handleModeSelect(nextMode: DesktopSessionMode) {
@@ -1292,6 +1308,8 @@ export function DesktopV3ExistingConversationPane({
             modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
             modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, serviceTier: serviceTierFromPreference(preference) })}
             onOpenAgentSettings={handleOpenAgentSettings}
+            needsAuth={needsAuth}
+            onOpenAuthSettings={handleOpenAuthSettings}
             onConfirmAgentSettings={handleConfirmAgentSettings}
             agentModelControlBusy={agentModelSaving}
             thinking={preference.thinking}

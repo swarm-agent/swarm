@@ -13,6 +13,8 @@ import { refreshAgentModelMutationCaches, updateAgentProfile } from '../queries/
 import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
+import { listAuthCredentials } from '../../settings/queries/list-auth-credentials'
+import { desktopProviderNeedsAuth } from '../services/auth-needs'
 import type { DesktopSlashCommand } from '../services/slash-commands'
 import {
   clearDesktopV3NewSessionOperation,
@@ -121,6 +123,11 @@ export function DesktopV3NewSessionPane({
   const modelOptionsQuery = useQuery(modelOptionsQueryOptions())
   const draftPreferenceQuery = useQuery(draftModelQueryOptions())
   const uiSettingsQuery = useQuery(uiSettingsQueryOptions())
+  const authCredentialsQuery = useQuery({
+    queryKey: ['auth-credentials', 'desktop-composer'],
+    queryFn: () => listAuthCredentials('', '', 200),
+    staleTime: 30_000,
+  })
   const agentState = agentStateQuery.data ?? EMPTY_AGENT_STATE
   const modelOptions = modelOptionsQuery.data ?? []
   const uiSettings = uiSettingsQuery.data
@@ -256,6 +263,7 @@ export function DesktopV3NewSessionPane({
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
   const hasResolvedPreference = Boolean(preference.provider.trim() && preference.model.trim() && preference.thinking.trim())
   const selectedModelAvailable = Boolean(selectedModelOption && hasResolvedPreference)
+  const needsAuth = desktopProviderNeedsAuth(preference.provider, authCredentialsQuery.data)
   const selectedContextWindow = selectedModelOption
     ? effectiveContextWindow(selectedModelOption.provider, selectedModelOption.model, selectedModelOption.contextMode, selectedModelOption.contextWindow)
     : draftPreferenceQuery.data?.contextWindow ?? 0
@@ -313,6 +321,14 @@ export function DesktopV3NewSessionPane({
       return
     }
     void navigate({ to: '/settings', search: { tab: 'agents' } })
+  }
+
+  function handleOpenAuthSettings() {
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab: 'auth' } })
+      return
+    }
+    void navigate({ to: '/settings', search: { tab: 'auth' } })
   }
 
   async function handleThinkingTagsToggle(enabled: boolean) {
@@ -443,6 +459,8 @@ export function DesktopV3NewSessionPane({
         modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
         modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, serviceTier: serviceTierFromPreference(preference) })}
         onOpenAgentSettings={handleOpenAgentSettings}
+        needsAuth={needsAuth}
+        onOpenAuthSettings={handleOpenAuthSettings}
         onConfirmAgentSettings={handleConfirmAgentSettings}
         agentModelControlBusy={agentModelSaving}
         thinking={preference.thinking}
