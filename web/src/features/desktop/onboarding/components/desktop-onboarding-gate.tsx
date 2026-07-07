@@ -207,7 +207,10 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     createFolder,
     refresh: refreshWorkspaces,
     browsePath,
-  } = useWorkspaceLauncher({ applyDocumentTheme: false })
+  } = useWorkspaceLauncher({
+    applyDocumentTheme: false,
+    autoRefresh: step === 'workspace',
+  })
 
   const selectedProvider = useMemo(
     () => providerOptions.find((provider) => provider.id === providerID) ?? providerOptions[0] ?? null,
