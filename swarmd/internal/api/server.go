@@ -1188,7 +1188,7 @@ func (s *Server) handleCodexAuth(w http.ResponseWriter, r *http.Request) {
 		if event != nil {
 			s.hub.Publish(*event)
 		}
-		autoDefaults, defaultsErr := s.applyUtilityModelDefaultsForAccount(accountScopeID, principal.UserID, "codex")
+		autoDefaults, defaultsErr := s.hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, principal.UserID, "codex")
 		if defaultsErr != nil {
 			status.AutoDefaults = &auth.AutoDefaultsStatus{Error: defaultsErr.Error()}
 		} else if autoDefaults != nil {
@@ -1315,7 +1315,7 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 		}
 		status.Connection = connection
 		if wantsActive {
-			autoDefaults, defaultsErr := s.applyUtilityModelDefaultsForAccount(accountScopeID, principal.UserID, provider)
+			autoDefaults, defaultsErr := s.hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, principal.UserID, provider)
 			if defaultsErr != nil {
 				status.AutoDefaults = &auth.AutoDefaultsStatus{Error: defaultsErr.Error()}
 			} else if autoDefaults != nil {
@@ -1423,7 +1423,7 @@ func (s *Server) handleAuthCredentialActive(w http.ResponseWriter, r *http.Reque
 		s.hub.Publish(*event)
 	}
 	status.Connection = connection
-	autoDefaults, defaultsErr := s.applyUtilityModelDefaultsForAccount(accountScopeID, principal.UserID, provider)
+	autoDefaults, defaultsErr := s.hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, principal.UserID, provider)
 	if defaultsErr != nil {
 		status.AutoDefaults = &auth.AutoDefaultsStatus{Error: defaultsErr.Error()}
 	} else if autoDefaults != nil {

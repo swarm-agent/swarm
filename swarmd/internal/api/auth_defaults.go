@@ -13,25 +13,28 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func (s *Server) applyUtilityModelDefaults(preferredProvider string) (*auth.AutoDefaultsStatus, error) {
-	return s.applyUtilityModelDefaultsForAccount("", "", preferredProvider)
-}
-
-func (s *Server) applyUtilityModelDefaultsForAccount(accountScopeID, userID, preferredProvider string) (*auth.AutoDefaultsStatus, error) {
+// hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount has one job:
+// after a provider credential has been verified and activated, hydrate the first-run
+// onboarding model defaults for that account in the required order.
+func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, userID, activatedProvider string) (*auth.AutoDefaultsStatus, error) {
 	if s == nil || s.model == nil || s.agents == nil || s.providers == nil {
 		return nil, nil
 	}
+
+	// 1. Ensure the account's built-in agents exist before assigning models.
 	if strings.TrimSpace(accountScopeID) != "" {
 		if err := s.agents.EnsureDefaultsForAccount(accountScopeID); err != nil {
 			return nil, fmt.Errorf("ensure account agent defaults: %w", err)
 		}
 	}
 
+	// 2. Refresh the provider catalog so onboarding recommendations are current.
 	if err := s.refreshModelCatalogForOnboardingDefaults(); err != nil {
 		return nil, err
 	}
 
-	providerID, providerDefaults, ok, err := s.resolveUtilityModelProvider(preferredProvider)
+	// 3. Resolve the activated provider's onboarding defaults and catalog recommendations.
+	providerID, providerDefaults, ok, err := s.resolveUtilityModelProvider(activatedProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -51,6 +54,7 @@ func (s *Server) applyUtilityModelDefaultsForAccount(accountScopeID, userID, pre
 		UtilityThinking: providerDefaults.UtilityThinking,
 	}
 
+	// 4. Set composer/global defaults for the first activated provider only.
 	pref, err := s.model.GetPreferenceForAccount(accountScopeID)
 	if err != nil {
 		return nil, fmt.Errorf("read model preference: %w", err)
@@ -64,6 +68,7 @@ func (s *Server) applyUtilityModelDefaultsForAccount(accountScopeID, userID, pre
 		if event != nil && s.hub != nil {
 			s.hub.Publish(*event)
 		}
+		// 5. Hydrate the primary swarm agent split plan/auto defaults.
 		if err := s.seedSplitModelDefaultsForAccount(accountScopeID, providerID, providerDefaults); err != nil {
 			return nil, fmt.Errorf("set plan/auto model defaults: %w", err)
 		}
@@ -88,6 +93,7 @@ func (s *Server) applyUtilityModelDefaultsForAccount(accountScopeID, userID, pre
 	agentsSeen := make(map[string]struct{}, len(assignments))
 	subagentsSeen := make(map[string]struct{}, len(assignments))
 	if firstProviderOnboarding {
+		// 6. Hydrate utility agent defaults after global and swarm split defaults.
 		state, err = s.applyUtilityAIToBuiltInsForAccount(accountScopeID, state, providerID, providerDefaults.UtilityModel, providerDefaults.UtilityThinking, false)
 		if err != nil {
 			return nil, fmt.Errorf("set utility AI defaults: %w", err)
@@ -110,6 +116,7 @@ func (s *Server) applyUtilityModelDefaultsForAccount(accountScopeID, userID, pre
 		}
 	}
 
+	// 7. Return changed/default status only when hydration changed defaults.
 	if !out.Applied {
 		return nil, nil
 	}
