@@ -783,11 +783,11 @@ function ExitPlanCheckpointList({ document }: { document: StructuredPlanDocument
 
 function ExitPlanDocumentView({ document }: { document: StructuredPlanDocument }) {
   return (
-    <div className="grid min-h-0 grid-cols-1 gap-6 min-[901px]:grid-cols-[minmax(380px,0.85fr)_minmax(520px,1.15fr)] min-[901px]:gap-0">
-      <div className="min-w-0 min-[901px]:pr-6">
+    <div className="grid min-h-0 gap-6">
+      <div className="min-w-0">
         <ExitPlanDetails document={document} />
       </div>
-      <div className="min-w-0 border-t border-[var(--app-border)] pt-6 min-[901px]:border-l min-[901px]:border-t-0 min-[901px]:pl-6 min-[901px]:pt-0">
+      <div className="min-w-0 border-t border-[var(--app-border)] pt-6">
         <ExitPlanCheckpointList document={document} />
       </div>
     </div>
@@ -1318,7 +1318,7 @@ function followupApproveLabel(policy: string): string {
 function planLifecycleDocumentPreview(payload: PlanUpdatePayload, emptyText: string) {
   const structuredDocument = normalizeStructuredPlanDocument(payload.document)
   if (structuredDocument) {
-    return <StructuredPlanDocumentView document={structuredDocument} emptyText={emptyText} />
+    return <ExitPlanDocumentView document={structuredDocument} />
   }
   return (
     <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
@@ -1595,18 +1595,32 @@ function NewPlanRequestModal({
 }: DesktopPermissionModalProps) {
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const [executionChoice, setExecutionChoice] = useState<ExitPlanExecutionChoice>(defaultExitPlanExecutionChoice)
 
   useEffect(() => {
     if (open) {
       setNote('')
       setLoading(false)
+      setCopyState('idle')
       setExecutionChoice(defaultExitPlanExecutionChoice)
     }
   }, [open, permission?.id])
 
   if (!permission) return null
   const payload = parsePlanUpdatePermission(permission)
+  const structuredDocument = normalizeStructuredPlanDocument(payload.document)
+  const handleCopy = async () => {
+    try {
+      if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
+        throw new Error('Clipboard unavailable')
+      }
+      await navigator.clipboard.writeText(structuredDocument ? JSON.stringify(payload.document, null, 2) : payload.plan)
+      setCopyState('copied')
+    } catch {
+      setCopyState('error')
+    }
+  }
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
     try {
@@ -1627,8 +1641,22 @@ function NewPlanRequestModal({
       subtitle="Explicit approval required before approving and activating a new plan"
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-full sm:w-[min(1180px,calc(100vw-48px))]"
+      widthClassName="w-[min(1180px,calc(100vw-24px))] sm:w-[min(1280px,calc(100vw-48px))]"
       bodyClassName="overflow-y-auto"
+      showSessionMeta={false}
+      planStyle
+      headerActions={
+        <Button type="button" variant="outline" size="sm" onClick={() => void handleCopy()}>
+          {copyState === 'copied' ? (
+            <Check className="size-4" />
+          ) : copyState === 'error' ? (
+            <AlertCircle className="size-4" />
+          ) : (
+            <Copy className="size-4" />
+          )}
+          {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy'}
+        </Button>
+      }
       footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Approve new plan" note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve')}
@@ -1636,17 +1664,27 @@ function NewPlanRequestModal({
       shortcutsDisabled={loading}
     >
       <div className="grid gap-4">
-        <section className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4 text-sm leading-6 text-[var(--app-text)]">
-          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Lifecycle action</div>
-          <p className="mt-2">Approve, activate, and prepare this separate new plan for execution. It will replace the current active plan only after this approval.</p>
-          {payload.updateSummary ? <p className="mt-2 whitespace-pre-wrap break-words text-[var(--app-text-muted)]">{payload.updateSummary}</p> : null}
-        </section>
         <ExitPlanExecutionChoiceSelector
           executionChoice={executionChoice}
           loading={loading}
           onExecutionChoiceChange={setExecutionChoice}
         />
-        {planLifecycleDocumentPreview(payload, 'No proposed new plan document or plan text was provided.')}
+        <section className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4 text-sm leading-6 text-[var(--app-text)]">
+          <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Lifecycle action</div>
+          <p className="mt-2">Approve, activate, and prepare this separate new plan for execution. It will replace the current active plan only after this approval.</p>
+          {payload.updateSummary ? <p className="mt-2 whitespace-pre-wrap break-words text-[var(--app-text-muted)]">{payload.updateSummary}</p> : null}
+        </section>
+        {structuredDocument ? (
+          <ExitPlanDocumentView document={structuredDocument} />
+        ) : (
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-5">
+            {payload.plan.trim() ? (
+              <ChatMarkdown content={payload.plan} className="text-base leading-7" />
+            ) : (
+              <div className="text-sm text-[var(--app-text-muted)]">No proposed new plan document or plan text was provided.</div>
+            )}
+          </section>
+        )}
       </div>
     </ModalShell>
   )

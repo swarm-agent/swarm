@@ -144,6 +144,47 @@ test('exit plan execution choices map to approved arguments', () => {
   })
 })
 
+test('exit plan and new plan approval modals use the same non-split plan layout order', () => {
+  const exitPlan = renderPermission(exitPlanPermission(), 'plan')
+  const exitRunModeIndex = exitPlan.indexOf('Run mode')
+  const exitDetailsIndex = exitPlan.indexOf('Plan details')
+  const exitCheckpointsIndex = exitPlan.indexOf('Checkpoints')
+  assert(exitRunModeIndex >= 0, 'expected exit plan run mode selector')
+  assert(exitDetailsIndex > exitRunModeIndex, 'expected exit plan details below run mode')
+  assert(exitCheckpointsIndex > exitDetailsIndex, 'expected exit plan checkpoints below plan details')
+  assert.doesNotMatch(exitPlan, /min-\[901px\]:grid-cols/)
+  assert.doesNotMatch(exitPlan, /min-\[901px\]:border-l/)
+
+  const newPlan = renderPermission(planLifecyclePermission('plan_new_request', {
+    action: 'request_new_plan',
+    title: 'Review shared plan look',
+    update_summary: 'Use the exit plan approval look for auto-mode plan proposals.',
+    document: {
+      title: 'Review shared plan look',
+      info: { goal: 'Display structured content', decisions: ['Expose full structured plan before approval'] },
+      checkpoints: [{
+        id: 'cp-new',
+        title: 'Structured checkpoint',
+        status: 'pending',
+        tasks: ['Render checkpoint task'],
+        acceptance_criteria: ['Checkpoint content is visible before approval'],
+      }],
+    },
+  }))
+  const newRunModeIndex = newPlan.indexOf('Run mode')
+  const lifecycleIndex = newPlan.indexOf('Lifecycle action')
+  const newDetailsIndex = newPlan.indexOf('Plan details')
+  const newCheckpointsIndex = newPlan.indexOf('Checkpoints')
+  assert(newRunModeIndex >= 0, 'expected new plan run mode selector')
+  assert(lifecycleIndex > newRunModeIndex, 'expected lifecycle context below run mode')
+  assert(newDetailsIndex > lifecycleIndex, 'expected plan details below lifecycle context')
+  assert(newCheckpointsIndex > newDetailsIndex, 'expected checkpoints below plan details')
+  assert.match(newPlan, /rounded-3xl/)
+  assert.match(newPlan, /Copy/)
+  assert.doesNotMatch(newPlan, /min-\[901px\]:grid-cols/)
+  assert.doesNotMatch(newPlan, /min-\[901px\]:border-l/)
+})
+
 test('DesktopPermissionModal routes typed plan lifecycle approvals away from generic plan update modal', () => {
   const followup = renderPermission(planLifecyclePermission('plan_followup_request', {
     action: 'request_followup_checkpoint',
