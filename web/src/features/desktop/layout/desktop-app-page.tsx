@@ -69,7 +69,6 @@ import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortc
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
-const SIDEBAR_ACTION_MENU_MOUSE_LEAVE_GRACE_MS = 1_000
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
 const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
 const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
@@ -1622,7 +1621,7 @@ interface SessionRowProps {
   onArchive: (sessionId: string) => void
 }
 
-function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, onSelect, onPrefetch, onToggleAgents, onTogglePinned, onArchive }: SessionRowProps) {
+function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, onSelect, onPrefetch, onToggleAgents, onTogglePinned, onArchive }: SessionRowProps) {
   const session = initialSession
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
@@ -1638,7 +1637,6 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const isNestedSession = depth > 0
   const nestedAssignmentTitle = isNestedSession && childAssignmentLabel ? childAssignmentLabel : ''
   const rowTitle = nestedAssignmentTitle || session.title || 'New conversation'
-  const visibleChildLabel = childLabel && childLabel !== rowTitle ? childLabel : ''
   const hasAgentChildren = agentSummary.total > 0
   const metadataLabel = sessionRowMetadataLabel(session)
   const relativeActivityLabel = sessionStatusDetail(session, now)
@@ -1658,9 +1656,12 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       : sessionMeta(session) || ''
   const rightSideLabel = hasPendingPermission || isPlanRow ? '' : singleStatusLabel
   const statusTone = sessionStatusTone(session)
-  const checkpointProgressText = checkpointProgressLabel || (checkpointCounts.totalCount > 0
-    ? `${checkpointCounts.activeIndex || checkpointCounts.completedCount}/${checkpointCounts.totalCount}`
-    : '')
+  const showStatusCircle = activeSession || statusTone === 'error'
+  const checkpointTotalCount = Math.max(0, checkpointCounts.totalCount)
+  const checkpointCompletedCount = Math.min(Math.max(0, checkpointCounts.completedCount), checkpointTotalCount)
+  const showPlanProgressBar = isPlanRow && sessionSidebarGroup(session) === 'in_progress' && checkpointTotalCount > 0
+  const checkpointProgressPercent = checkpointTotalCount > 0 ? Math.min(100, (checkpointCompletedCount / checkpointTotalCount) * 100) : 0
+  const checkpointProgressAriaLabel = checkpointProgressLabel || `Checkpoint progress: ${checkpointCompletedCount} of ${checkpointTotalCount} complete`
   const [actionsOpen, setActionsOpen] = useState(false)
   const actionMenuRef = useRef<HTMLSpanElement | null>(null)
   const actionMenuCloseTimerRef = useRef<number | null>(null)
@@ -1674,19 +1675,24 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
     clearActionMenuCloseTimer()
     setActionsOpen(false)
   }, [clearActionMenuCloseTimer])
-  const scheduleActionMenuClose = useCallback(() => {
-    clearActionMenuCloseTimer()
-    actionMenuCloseTimerRef.current = window.setTimeout(() => {
-      actionMenuCloseTimerRef.current = null
-      if (!actionMenuRef.current?.matches(':hover') && !actionMenuRef.current?.contains(document.activeElement)) {
-        setActionsOpen(false)
-      }
-    }, SIDEBAR_ACTION_MENU_MOUSE_LEAVE_GRACE_MS)
-  }, [clearActionMenuCloseTimer])
   useEffect(() => clearActionMenuCloseTimer, [clearActionMenuCloseTimer])
-  const hasDetailsRowContent = Boolean(backgroundInfo || visibleChildLabel || hasAgentChildren)
+  useEffect(() => {
+    if (!actionsOpen) {
+      return undefined
+    }
+    const handlePointerDownOutside = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Node && actionMenuRef.current?.contains(target)) {
+        return
+      }
+      closeActionMenu()
+    }
+    document.addEventListener('pointerdown', handlePointerDownOutside, true)
+    return () => document.removeEventListener('pointerdown', handlePointerDownOutside, true)
+  }, [actionsOpen, closeActionMenu])
+  const hasDetailsRowContent = Boolean(backgroundInfo)
   const showDetailsRow = !isPlanRow && hasDetailsRowContent
-  const showActionMenuInMetadataRow = !isPlanRow && !hasDetailsRowContent
+  const showActionMenuInMetadataRow = !showPlanProgressBar && !showDetailsRow
   const pinned = sessionAllowsManualSidebarPin(session) && sessionManuallyPinnedInSidebar(session)
   const pinDisabled = pendingAction !== null || !sessionAllowsManualSidebarPin(session)
   const archiveDisabled = pendingAction !== null
@@ -1738,12 +1744,29 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       <span>Archive</span>
     </button>
   )
+  const subagentSessionsActionControl = hasAgentChildren ? (
+    <button
+      type="button"
+      className={cn(actionButtonBaseClass, agentsExpanded ? 'text-[var(--app-primary)] hover:text-[var(--app-primary-hover)]' : null)}
+      aria-label={`${agentsExpanded ? 'Hide' : 'Show'} ${agentSummary.total} subagent session${agentSummary.total === 1 ? '' : 's'}`}
+      aria-pressed={agentsExpanded}
+      title={agentsExpanded ? 'Hide subagent sessions' : 'Show subagent sessions'}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        onToggleAgents(session.id)
+      }}
+    >
+      <Bot size={12} aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate">Subagent sessions</span>
+      <span className="ml-auto font-mono tabular-nums text-[10px] leading-none text-[var(--app-text-muted)]">{agentSummary.total}</span>
+    </button>
+  ) : null
   const actionMenu = (
     <span
       ref={actionMenuRef}
       className={cn('relative z-20 inline-flex translate-x-[5px] shrink-0 items-center', actionsOpen ? 'z-40' : null)}
       onMouseEnter={clearActionMenuCloseTimer}
-      onMouseLeave={scheduleActionMenuClose}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) {
           closeActionMenu()
@@ -1776,41 +1799,20 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       </button>
       {actionsOpen ? (
         <span
-          className="absolute right-0 top-full z-50 mt-1 grid min-w-28 gap-0.5 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] p-1 opacity-100 shadow-lg backdrop-blur-none [background-color:var(--app-surface-elevated)]"
+          className="absolute right-0 top-full z-50 mt-1 grid min-w-40 gap-0.5 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] p-1 opacity-100 shadow-lg backdrop-blur-none [background-color:var(--app-surface-elevated)]"
           onMouseEnter={clearActionMenuCloseTimer}
           onClick={(event) => {
             event.preventDefault()
             event.stopPropagation()
           }}
         >
+          {subagentSessionsActionControl}
           {pinActionControl}
           {archiveActionControl}
         </span>
       ) : null}
     </span>
   )
-  const agentToggleControl = hasAgentChildren ? (
-    <button
-      type="button"
-      className={cn(
-        'inline-flex h-4 shrink-0 items-center gap-1 border-0 bg-transparent p-0 font-mono tabular-nums text-[10px] leading-4 transition-colors',
-        agentsExpanded
-          ? 'text-[var(--app-text)]'
-          : 'text-[var(--app-text-subtle)] hover:text-[var(--app-text)]',
-      )}
-      onClick={(event) => {
-        event.preventDefault()
-        event.stopPropagation()
-        onToggleAgents(session.id)
-      }}
-      aria-label={`${agentSummary.running} running of ${agentSummary.total} subagents`}
-      aria-pressed={agentsExpanded}
-      title={`${agentSummary.total} subagent${agentSummary.total === 1 ? '' : 's'} · ${agentSummary.running} running${agentsExpanded ? ' · click to hide subagent sessions' : ' · click to show subagent sessions'}`}
-    >
-      <Bot size={11} className={cn('shrink-0', agentSummary.running > 0 ? 'animate-pulse text-[var(--app-success)]' : null)} />
-      <span className={cn('font-mono tabular-nums text-[10px] leading-none', agentSummary.running > 0 ? 'text-[var(--app-success)]' : null)}>{agentSummary.total}</span>
-    </button>
-  ) : null
   return (
     <Link
       to="/$workspaceSlug/$sessionId"
@@ -1831,13 +1833,13 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       onMouseEnter={() => onPrefetch(session.id)}
       onFocus={() => onPrefetch(session.id)}
       className={cn(
-        'group relative grid w-full min-w-0 rounded-md border text-left outline-none transition-colors',
+        'group relative grid w-full min-w-0 rounded-md border text-left outline-none transition-[background-color,border-color,box-shadow,transform]',
         isPlanRow ? 'gap-1.5 px-2.5 py-2' : 'gap-1 px-2.5 py-1.5',
         active
-          ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45'
-          : 'border-transparent bg-[var(--app-surface)]/45 hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]',
+          ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45 shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-border-accent)_20%,transparent)]'
+          : 'border-transparent bg-[var(--app-surface)]/45 hover:-translate-y-px hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:shadow-[0_10px_24px_rgba(0,0,0,0.10)]',
         pendingPermissionAlertActive ? 'border-transparent bg-[var(--app-warning-bg)] hover:border-transparent hover:bg-[var(--app-warning-bg)]' : null,
-        isNestedSession ? 'ml-0 rounded-sm border-transparent bg-[var(--app-bg-alt)]/20 py-1 pl-1 pr-2 hover:border-transparent hover:bg-[var(--app-surface)]/25' : null,
+        isNestedSession ? 'ml-0 rounded-sm border-transparent bg-[var(--app-bg-alt)]/20 py-1 pl-1 pr-2 hover:translate-y-0 hover:border-transparent hover:bg-[var(--app-surface)]/25 hover:shadow-[0_6px_16px_rgba(0,0,0,0.06)]' : null,
         isNestedSession && active ? 'border-transparent bg-[var(--app-surface)]/30' : null,
         hasAgentChildren && agentsExpanded && !isNestedSession ? 'border-[var(--app-border-accent)]' : null,
       )}
@@ -1857,18 +1859,20 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         <span className="inline-flex shrink-0 items-center justify-end gap-1.5 text-[10px] leading-4 text-[var(--app-text-muted)]">
           {compactingActive ? <LoaderCircle size={10} className="animate-spin text-[var(--app-primary)]" aria-hidden="true" /> : null}
           {rightSideLabel ? <span className="max-w-[5.5rem] truncate text-right">{rightSideLabel}</span> : null}
-          <span
-            className={cn(
-              'h-1.5 w-1.5 shrink-0 rounded-full',
-              compactingActive || statusTone === 'running'
-                ? 'bg-[var(--app-success)]'
-                : statusTone === 'blocked'
-                  ? 'bg-[var(--app-warning)]'
-                  : statusTone === 'error'
-                    ? 'bg-[var(--app-danger)]'
-                    : 'bg-[var(--app-border-strong)]',
-            )}
-          />
+          {showStatusCircle ? (
+            <span
+              className={cn(
+                'h-1.5 w-1.5 shrink-0 rounded-full',
+                compactingActive || statusTone === 'running'
+                  ? 'bg-[var(--app-success)]'
+                  : statusTone === 'blocked'
+                    ? 'bg-[var(--app-warning)]'
+                    : statusTone === 'error'
+                      ? 'bg-[var(--app-danger)]'
+                      : 'bg-[var(--app-border-strong)]',
+              )}
+            />
+          ) : null}
         </span>
       </div>
       <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
@@ -1879,16 +1883,23 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         </span>
       </div>
 
-      {isPlanRow ? (
-        <div className="flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-          <span
-            className="inline-flex shrink-0 items-center rounded-full bg-[var(--app-surface-subtle)]/70 px-1.5 py-0 font-mono text-[10px] font-semibold uppercase leading-4 tracking-[0.08em] text-[var(--app-text-muted)]"
-            aria-label={checkpointProgressLabel || undefined}
+      {showPlanProgressBar ? (
+        <div className="flex min-w-0 items-center gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+          <div
+            className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[var(--app-surface-subtle)]"
+            role="progressbar"
+            aria-label={checkpointProgressAriaLabel}
+            aria-valuemin={0}
+            aria-valuemax={checkpointTotalCount}
+            aria-valuenow={checkpointCompletedCount}
+            aria-valuetext={`${checkpointCompletedCount} of ${checkpointTotalCount} checkpoints complete`}
           >
-            {checkpointProgressText ? `CP ${checkpointProgressText}` : 'CP'}
-          </span>
+            <div
+              className="h-full rounded-full bg-[var(--app-primary)] transition-[width]"
+              style={{ width: `${checkpointProgressPercent}%` }}
+            />
+          </div>
           <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
-            {agentToggleControl}
             {actionMenu}
           </div>
         </div>
@@ -1903,14 +1914,8 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
               </span>
             ) : null}
             {backgroundInfo?.targetLabel ? <span className="truncate">{backgroundInfo.targetLabel}</span> : null}
-            {visibleChildLabel ? (
-              <span className={cn('truncate', childKind === 'subagent' ? 'text-[var(--app-info)]' : 'text-[var(--app-text-subtle)]')}>
-                {visibleChildLabel}
-              </span>
-            ) : null}
           </div>
           <div className="ml-auto flex shrink-0 items-center gap-1.5">
-            {!isPlanRow ? agentToggleControl : null}
             {!isPlanRow ? actionMenu : null}
           </div>
         </div>
