@@ -344,6 +344,78 @@ func TestRefreshUsesSnapshotVersionAndSkipsUnchangedSnapshot(t *testing.T) {
 	}
 }
 
+func TestProviderLevelRecommendationsHydrateRecommendedDefaults(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "catalog.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	catalog := NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	if _, err := catalog.replaceSnapshotLocked(providerRecommendationsPayload(), catalogSourceLive, "test://snapshot", "test://version", "", "", "test"); err != nil {
+		t.Fatalf("replace snapshot: %v", err)
+	}
+
+	main, plan, utility, ok, err := catalog.RecommendedDefaults("anthropic")
+	if err != nil {
+		t.Fatalf("recommended defaults: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected provider-level recommendations")
+	}
+	if main.Model != "claude-sonnet-5" || plan.Model != "claude-opus-4-8" || utility.Model != "claude-sonnet-5" {
+		t.Fatalf("recommended models = main %q plan %q utility %q", main.Model, plan.Model, utility.Model)
+	}
+	mainRec := main.Recommendations[0]
+	if mainRec.Role != "auto" || mainRec.Thinking != "high" {
+		t.Fatalf("main recommendation = %+v, want auto/high", mainRec)
+	}
+	planRec := plan.Recommendations[0]
+	if planRec.Role != "plan" || planRec.Thinking != "xhigh" {
+		t.Fatalf("plan recommendation = %+v, want plan/xhigh", planRec)
+	}
+	utilityRec := utility.Recommendations[1]
+	if utilityRec.Role != "utility" || utilityRec.Thinking != "medium" {
+		t.Fatalf("utility recommendation = %+v, want utility/medium", utilityRec)
+	}
+}
+
+func providerRecommendationsPayload() []byte {
+	return []byte(`{
+		"snapshot_schema_version":"2026-07-01.1",
+		"snapshot_id":"snapshot-provider-recs",
+		"snapshot_version":"v-provider-recs",
+		"generated_at":"2026-07-01T00:00:00Z",
+		"model_count":2,
+		"provider_count":1,
+		"hydrated_provider_count":1,
+		"recommendations":{
+			"anthropic":{
+				"plan":{"model":"claude-opus-4-8","thinking":"xhigh"},
+				"auto":{"model":"claude-sonnet-5","thinking":"high"},
+				"utility":{"model":"claude-sonnet-5","thinking":"medium"}
+			}
+		},
+		"models":[
+			{
+				"catalog_id":"anthropic/claude-opus-4-8",
+				"provider_id":"anthropic",
+				"model_id":"claude-opus-4-8",
+				"display_name":"Claude Opus 4.8",
+				"capabilities":{"supports_reasoning":true},
+				"limits":{"context_window_tokens":200000,"max_output_tokens":64000}
+			},
+			{
+				"catalog_id":"anthropic/claude-sonnet-5",
+				"provider_id":"anthropic",
+				"model_id":"claude-sonnet-5",
+				"display_name":"Claude Sonnet 5",
+				"capabilities":{"supports_reasoning":true},
+				"limits":{"context_window_tokens":200000,"max_output_tokens":64000}
+			}
+		]
+	}`)
+}
+
 func snapshotPassthroughPayload() []byte {
 	return []byte(`{
 		"snapshot_schema_version":"2026-07-01.1",

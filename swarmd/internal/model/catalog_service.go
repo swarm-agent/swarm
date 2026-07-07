@@ -84,16 +84,31 @@ type swarmSnapshotVersion struct {
 }
 
 type swarmSnapshot struct {
-	SchemaVersion         string               `json:"schema_version"`
-	APIVersion            string               `json:"api_version"`
-	SnapshotSchemaVersion string               `json:"snapshot_schema_version"`
-	SnapshotID            string               `json:"snapshot_id"`
-	SnapshotVersion       string               `json:"snapshot_version"`
-	GeneratedAt           string               `json:"generated_at"`
-	ModelCount            int                  `json:"model_count"`
-	ProviderCount         int                  `json:"provider_count"`
-	HydratedProviderCount int                  `json:"hydrated_provider_count"`
-	Models                []swarmSnapshotModel `json:"models"`
+	SchemaVersion         string                                                    `json:"schema_version"`
+	APIVersion            string                                                    `json:"api_version"`
+	SnapshotSchemaVersion string                                                    `json:"snapshot_schema_version"`
+	SnapshotID            string                                                    `json:"snapshot_id"`
+	SnapshotVersion       string                                                    `json:"snapshot_version"`
+	GeneratedAt           string                                                    `json:"generated_at"`
+	ModelCount            int                                                       `json:"model_count"`
+	ProviderCount         int                                                       `json:"provider_count"`
+	HydratedProviderCount int                                                       `json:"hydrated_provider_count"`
+	Recommendations       map[string]map[string]swarmSnapshotProviderRecommendation `json:"recommendations"`
+	Providers             []swarmSnapshotProvider                                   `json:"providers"`
+	Models                []swarmSnapshotModel                                      `json:"models"`
+}
+
+type swarmSnapshotProvider struct {
+	ProviderID      string                                         `json:"provider_id"`
+	Recommendations map[string]swarmSnapshotProviderRecommendation `json:"recommendations"`
+}
+
+type swarmSnapshotProviderRecommendation struct {
+	Model    string `json:"model"`
+	Thinking string `json:"thinking"`
+	Fast     string `json:"fast"`
+	Serving  string `json:"serving"`
+	Notes    string `json:"notes"`
 }
 
 type swarmSnapshotModel struct {
@@ -662,6 +677,8 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 		reasoning := model.Capabilities.SupportsReasoning != nil && *model.Capabilities.SupportsReasoning
 		serviceTiers, defaultServiceTier := modelServingTiers(model.ProviderSpecific, providerID)
 		thinkingOptions, defaultThinking, thinkingProviderParameter, thinkingMappings := modelThinkingMetadata(model.Thinking)
+		recommendations := modelRecommendations(model.Swarm.Recommendations)
+		recommendations = appendProviderRecommendations(recommendations, providerID, modelID, model.CatalogID, snapshot.providerRecommendations(providerID))
 		record := pebblestore.ModelCatalogRecord{
 			Provider:                  providerID,
 			ProviderDisplayName:       strings.TrimSpace(model.ProviderDisplayName),
@@ -678,7 +695,7 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 			ServiceTiers:              serviceTiers,
 			DefaultServiceTier:        defaultServiceTier,
 			ServiceTierMappings:       modelServiceTierMappings(model.ProviderSpecific, providerID),
-			Recommendations:           modelRecommendations(model.Swarm.Recommendations),
+			Recommendations:           recommendations,
 			ContextModes:              modelContextModes(model.ProviderSpecific, providerID, contextWindow),
 			Source:                    source,
 			SourceSnapshotID:          snapshot.SnapshotID,
@@ -773,6 +790,94 @@ func modelThinkingMetadata(thinkingRaw json.RawMessage) ([]string, string, strin
 		}
 	}
 	return options, defaultThinking, providerParameter, mappings
+}
+
+func (snapshot swarmSnapshot) providerRecommendations(providerID string) map[string]swarmSnapshotProviderRecommendation {
+	providerID = canonicalCatalogProviderID(providerID)
+	if providerID == "" {
+		return nil
+	}
+	out := make(map[string]swarmSnapshotProviderRecommendation)
+	add := func(role string, rec swarmSnapshotProviderRecommendation) {
+		role = strings.ToLower(strings.TrimSpace(role))
+		if role == "" || strings.TrimSpace(rec.Model) == "" {
+			return
+		}
+		if _, exists := out[role]; exists {
+			return
+		}
+		out[role] = rec
+	}
+	for rawProviderID, recommendations := range snapshot.Recommendations {
+		if canonicalCatalogProviderID(rawProviderID) != providerID {
+			continue
+		}
+		for role, rec := range recommendations {
+			add(role, rec)
+		}
+	}
+	for _, provider := range snapshot.Providers {
+		if canonicalCatalogProviderID(provider.ProviderID) != providerID {
+			continue
+		}
+		for role, rec := range provider.Recommendations {
+			add(role, rec)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func appendProviderRecommendations(existing []pebblestore.ModelCatalogRecommendation, providerID, modelID, catalogID string, values map[string]swarmSnapshotProviderRecommendation) []pebblestore.ModelCatalogRecommendation {
+	if len(values) == 0 {
+		return existing
+	}
+	providerID = canonicalCatalogProviderID(providerID)
+	modelID = canonicalCatalogModelID(providerID, modelID)
+	catalogID = strings.TrimSpace(catalogID)
+	existingRoles := make(map[string]struct{}, len(existing))
+	for _, rec := range existing {
+		role := strings.ToLower(strings.TrimSpace(rec.Role))
+		if role != "" {
+			existingRoles[role] = struct{}{}
+		}
+	}
+	appendRole := func(role string) {
+		role = strings.ToLower(strings.TrimSpace(role))
+		if role == "" {
+			return
+		}
+		if _, exists := existingRoles[role]; exists {
+			return
+		}
+		rec, ok := values[role]
+		if !ok {
+			return
+		}
+		recommendedModel := strings.TrimSpace(rec.Model)
+		if recommendedModel == "" {
+			return
+		}
+		if canonicalCatalogModelID(providerID, recommendedModel) != modelID && !strings.EqualFold(recommendedModel, catalogID) {
+			return
+		}
+		existing = append(existing, pebblestore.ModelCatalogRecommendation{
+			Role:     role,
+			Thinking: strings.ToLower(strings.TrimSpace(rec.Thinking)),
+			Serving:  strings.ToLower(strings.TrimSpace(firstNonEmpty(rec.Serving, rec.Fast))),
+			Notes:    strings.TrimSpace(rec.Notes),
+		})
+		existingRoles[role] = struct{}{}
+	}
+	for _, role := range []string{"main", "auto", "plan", "utility"} {
+		appendRole(role)
+	}
+	for role := range values {
+		appendRole(role)
+	}
+	return existing
 }
 
 func modelRecommendations(values []swarmSnapshotRecommendation) []pebblestore.ModelCatalogRecommendation {

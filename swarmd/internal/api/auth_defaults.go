@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/auth"
@@ -19,6 +20,10 @@ func (s *Server) applyUtilityModelDefaults(preferredProvider string) (*auth.Auto
 func (s *Server) applyUtilityModelDefaultsForAccount(accountScopeID, userID, preferredProvider string) (*auth.AutoDefaultsStatus, error) {
 	if s == nil || s.model == nil || s.agents == nil || s.providers == nil {
 		return nil, nil
+	}
+
+	if err := s.refreshModelCatalogForOnboardingDefaults(); err != nil {
+		return nil, err
 	}
 
 	providerID, providerDefaults, ok, err := s.resolveUtilityModelProvider(preferredProvider)
@@ -106,6 +111,27 @@ func (s *Server) applyUtilityModelDefaultsForAccount(accountScopeID, userID, pre
 	out.Agents = sortedKeys(agentsSeen)
 	out.Subagents = sortedKeys(subagentsSeen)
 	return out, nil
+}
+
+func (s *Server) refreshModelCatalogForOnboardingDefaults() error {
+	if s == nil || s.model == nil {
+		return nil
+	}
+	meta, ok, err := s.model.CatalogMeta()
+	if err != nil {
+		return fmt.Errorf("read model catalog metadata: %w", err)
+	}
+	if ok && strings.TrimSpace(meta.LiveSnapshotVersion) != "" {
+		if meta.ExpiresAt <= 0 || meta.ExpiresAt > time.Now().UnixMilli() {
+			return nil
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := s.model.RefreshCatalog(ctx); err != nil {
+		return fmt.Errorf("refresh model catalog recommendations: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) applySnapshotRecommendedDefaults(providerID string, providerDefaults *defaults.ProviderDefaults) error {

@@ -2,9 +2,9 @@
   "schema_version": "2026-06-09.1",
   "api_version": "v1",
   "snapshot_schema_version": "2026-07-01.1",
-  "snapshot_id": "swarm-models-v1-8dab26958bdaee52",
-  "snapshot_version": "8dab26958bdaee52",
-  "generated_at": "2026-07-06T15:39:28.849Z",
+  "snapshot_id": "swarm-models-v1-e1268cd5e0b5f913",
+  "snapshot_version": "e1268cd5e0b5f913",
+  "generated_at": "2026-07-07T11:17:20.934Z",
   "model_count": 470,
   "provider_count": 7,
   "hydrated_provider_count": 6,
@@ -399,12 +399,133 @@
       }
     }
   },
+  "recommendations": {
+    "codex": {
+      "plan": {
+        "model": "gpt-5.5",
+        "thinking": "xhigh",
+        "fast": "off"
+      },
+      "auto": {
+        "model": "gpt-5.5",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "utility": {
+        "model": "gpt-5.4-mini",
+        "thinking": "medium",
+        "fast": "off"
+      }
+    },
+    "openai": {
+      "plan": {
+        "model": "gpt-5.5",
+        "thinking": "xhigh",
+        "fast": "off"
+      },
+      "auto": {
+        "model": "gpt-5.5",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "utility": {
+        "model": "gpt-5.4-mini",
+        "thinking": "medium",
+        "fast": "off"
+      }
+    },
+    "anthropic": {
+      "plan": {
+        "model": "claude-opus-4-8",
+        "thinking": "xhigh",
+        "fast": "off"
+      },
+      "auto": {
+        "model": "claude-sonnet-5",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "utility": {
+        "model": "claude-sonnet-5",
+        "thinking": "medium",
+        "fast": "off"
+      }
+    },
+    "google": {
+      "plan": {
+        "model": "gemini-3.1-pro-preview",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "auto": {
+        "model": "gemini-3.5-flash",
+        "thinking": "medium",
+        "fast": "off"
+      },
+      "utility": {
+        "model": "gemini-3.5-flash",
+        "thinking": "medium",
+        "fast": "off"
+      }
+    },
+    "fireworks": {
+      "plan": {
+        "model": "accounts/fireworks/models/glm-5p2",
+        "thinking": "xhigh",
+        "fast": "off"
+      },
+      "auto": {
+        "model": "accounts/fireworks/models/glm-5p2",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "utility": {
+        "model": "accounts/fireworks/models/deepseek-v4-flash",
+        "thinking": "high",
+        "fast": "off"
+      }
+    },
+    "openrouter": {
+      "plan": {
+        "model": "openai/gpt-5.5",
+        "thinking": "xhigh",
+        "fast": "off"
+      },
+      "auto": {
+        "model": "openai/gpt-5.5",
+        "thinking": "high",
+        "fast": "off"
+      },
+      "utility": {
+        "model": "google/gemini-3.5-flash",
+        "thinking": "medium",
+        "fast": "off"
+      }
+    }
+  },
   "providers": [
     {
       "provider_id": "anthropic",
       "display_name": "Anthropic",
       "catalog_status": "source_identified",
       "auth_required_for_hydration": true,
+      "recommendations": {
+        "plan": {
+          "model": "claude-opus-4-8",
+          "thinking": "xhigh",
+          "fast": "off"
+        },
+        "auto": {
+          "model": "claude-sonnet-5",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "utility": {
+          "model": "claude-sonnet-5",
+          "thinking": "medium",
+          "fast": "off"
+        }
+      },
       "model_count": 10,
       "sources": [
         {
@@ -456,6 +577,23 @@
       "display_name": "OpenAI Codex (OAuth)",
       "catalog_status": "source_identified",
       "auth_required_for_hydration": false,
+      "recommendations": {
+        "plan": {
+          "model": "gpt-5.5",
+          "thinking": "xhigh",
+          "fast": "off"
+        },
+        "auto": {
+          "model": "gpt-5.5",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "utility": {
+          "model": "gpt-5.4-mini",
+          "thinking": "medium",
+          "fast": "off"
+        }
+      },
       "model_count": 4,
       "sources": [
         {
@@ -486,6 +624,7 @@
       "display_name": "Exa",
       "catalog_status": "non_model_provider",
       "auth_required_for_hydration": false,
+      "recommendations": null,
       "model_count": 0,
       "sources": [
         {
@@ -502,6 +641,23 @@
       "display_name": "Fireworks AI",
       "catalog_status": "source_identified",
       "auth_required_for_hydration": true,
+      "recommendations": {
+        "plan": {
+          "model": "accounts/fireworks/models/glm-5p2",
+          "thinking": "xhigh",
+          "fast": "off"
+        },
+        "auto": {
+          "model": "accounts/fireworks/models/glm-5p2",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "utility": {
+          "model": "accounts/fireworks/models/deepseek-v4-flash",
+          "thinking": "high",
+          "fast": "off"
+        }
+      },
       "model_count": 18,
       "sources": [
         {
@@ -539,6 +695,23 @@
       "display_name": "Google Gemini",
       "catalog_status": "source_identified",
       "auth_required_for_hydration": true,
+      "recommendations": {
+        "plan": {
+          "model": "gemini-3.1-pro-preview",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "auto": {
+          "model": "gemini-3.5-flash",
+          "thinking": "medium",
+          "fast": "off"
+        },
+        "utility": {
+          "model": "gemini-3.5-flash",
+          "thinking": "medium",
+          "fast": "off"
+        }
+      },
       "model_count": 54,
       "sources": [
         {
@@ -604,6 +777,23 @@
       "display_name": "OpenAI",
       "catalog_status": "source_identified",
       "auth_required_for_hydration": true,
+      "recommendations": {
+        "plan": {
+          "model": "gpt-5.5",
+          "thinking": "xhigh",
+          "fast": "off"
+        },
+        "auto": {
+          "model": "gpt-5.5",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "utility": {
+          "model": "gpt-5.4-mini",
+          "thinking": "medium",
+          "fast": "off"
+        }
+      },
       "model_count": 44,
       "sources": [
         {
@@ -634,6 +824,23 @@
       "display_name": "OpenRouter",
       "catalog_status": "source_identified",
       "auth_required_for_hydration": false,
+      "recommendations": {
+        "plan": {
+          "model": "openai/gpt-5.5",
+          "thinking": "xhigh",
+          "fast": "off"
+        },
+        "auto": {
+          "model": "openai/gpt-5.5",
+          "thinking": "high",
+          "fast": "off"
+        },
+        "utility": {
+          "model": "google/gemini-3.5-flash",
+          "thinking": "medium",
+          "fast": "off"
+        }
+      },
       "model_count": 340,
       "sources": [
         {
@@ -5853,7 +6060,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-06T15:39:28.849Z",
+          "fetched_at": "2026-07-07T11:17:20.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -6057,7 +6264,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-06T15:39:28.849Z"
+      "updated_at": "2026-07-07T11:17:20.934Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -6240,7 +6447,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-06T15:39:28.849Z",
+          "fetched_at": "2026-07-07T11:17:20.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -6487,7 +6694,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-06T15:39:28.849Z"
+      "updated_at": "2026-07-07T11:17:20.934Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -6669,7 +6876,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-06T15:39:28.849Z",
+          "fetched_at": "2026-07-07T11:17:20.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -6909,7 +7116,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-06T15:39:28.849Z"
+      "updated_at": "2026-07-07T11:17:20.934Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -7092,7 +7299,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-06T15:39:28.849Z",
+          "fetched_at": "2026-07-07T11:17:20.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -7362,7 +7569,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-06T15:39:28.849Z"
+      "updated_at": "2026-07-07T11:17:20.934Z"
     },
     {
       "schema_version": "2026-06-09.1",
