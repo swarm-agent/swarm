@@ -963,11 +963,6 @@ export function DesktopV3ExistingConversationPane({
     setPreference((current) => preferenceFromAgentModelLock(selectedAgentModelLock, current, modelOptions))
   }, [cachedPolicyMatchesSelectedMode, lockedPolicyPreference, modelOptions, selectedAgentModelLock])
 
-  function handleModeChange(nextMode: DesktopSessionMode) {
-    localSettingsDirtyRef.current.mode = true
-    setMode(nextMode)
-  }
-
   useEffect(() => {
     if (modeCommand !== 'toggle-plan-auto') return
     localSettingsDirtyRef.current.mode = true

@@ -68,9 +68,13 @@ function validateWorkspaceSessionParams(params: Record<string, unknown>): { work
   return { workspaceSlug, sessionId }
 }
 
-function validateSettingsSearch(search: Record<string, unknown>): { tab?: string } {
+function validateSettingsSearch(search: Record<string, unknown>): { tab?: string; returnSessionId?: string } {
   const tab = typeof search.tab === 'string' ? search.tab.trim() : ''
-  return tab ? { tab } : {}
+  const returnSessionId = typeof search.returnSessionId === 'string' ? search.returnSessionId.trim() : ''
+  return {
+    ...(tab ? { tab } : {}),
+    ...(returnSessionId ? { returnSessionId } : {}),
+  }
 }
 
 const rootRoute = createRootRoute({

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode, ChangeEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Home, Keyboard, LayoutGrid, LoaderCircle, Menu, MoreVertical, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, LayoutGrid, LoaderCircle, Menu, MoreVertical, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -2935,12 +2935,13 @@ export function DesktopAppPage() {
     setQuickSettingsTab(null)
     setQuickActionsOpen(false)
     setMobileSidebarOpen(false)
+    const search = { tab, ...(routeSessionId ? { returnSessionId: routeSessionId } : {}) }
     if (routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab } })
+      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search })
       return
     }
-    void navigate({ to: '/settings', search: { tab } })
-  }, [navigate, routeWorkspaceSlug])
+    void navigate({ to: '/settings', search })
+  }, [navigate, routeSessionId, routeWorkspaceSlug])
 
   const handleSlashCommand = useCallback((command: DesktopSlashCommand) => {
     const action = command.action
@@ -3030,7 +3031,17 @@ export function DesktopAppPage() {
   const canStartNewSession = Boolean(topWorkspacePath)
   const canReturnToPreviousChat = Boolean(previousChatSessionId && sessionById.has(previousChatSessionId))
   useEffect(() => {
-    function shortcutTargetIsTextEntry(target: EventTarget | null): boolean {
+    function desktopShortcutMatches(event: KeyboardEvent, key: string): boolean {
+      const normalizedKey = event.key.toLowerCase()
+      return (event.metaKey || event.ctrlKey) && event.altKey && !event.shiftKey && normalizedKey === key
+    }
+
+    function shortcutTargetIsChatComposer(target: EventTarget | null): boolean {
+      if (!(target instanceof HTMLElement)) return false
+      return Boolean(target.closest('[data-testid="desktop-v3-agentic-composer"]'))
+    }
+
+    function shortcutTargetBlocksDesktopShortcuts(target: EventTarget | null): boolean {
       if (!(target instanceof HTMLElement)) return false
       if (target.closest('[role="dialog"]')) return true
       if (target.isContentEditable) return true
@@ -3040,60 +3051,60 @@ export function DesktopAppPage() {
     function handleDesktopShortcut(event: KeyboardEvent) {
       if (event.defaultPrevented) return
       const target = event.target
-      const modifier = event.metaKey || event.ctrlKey
       const element = target instanceof HTMLElement ? target : null
-      const insideComposer = Boolean(element?.closest('[data-testid="desktop-v3-agentic-composer"]'))
       const insideDialog = Boolean(element?.closest('[role="dialog"]'))
-      if (event.shiftKey && !modifier && !event.altKey && event.key === 'Tab' && insideComposer && !insideDialog && (routeSessionId || (routeWorkspaceSlug && routeWorkspace?.path))) {
-        event.preventDefault()
-        setSessionModeCommand('toggle-plan-auto')
-        return
-      }
-      if (shortcutTargetIsTextEntry(target)) {
-        return
-      }
-      if (modifier && event.key.toLowerCase() === 'k' && !insideDialog) {
-        event.preventDefault()
-        handleOpenQuickActions()
-        return
-      }
-      if (modifier && event.key.toLowerCase() === 'n') {
+      const insideChatComposer = shortcutTargetIsChatComposer(target)
+      const targetBlocksDesktopShortcuts = shortcutTargetBlocksDesktopShortcuts(target)
+      if (desktopShortcutMatches(event, 'n') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
         event.preventDefault()
         if (topWorkspacePath) handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)
         return
       }
-      if (modifier && event.key === ',') {
-        event.preventDefault()
-        handleOpenSettingsTab('shortcuts')
-        return
-      }
-      if (modifier && event.shiftKey && event.key.toLowerCase() === 'f') {
+      if (desktopShortcutMatches(event, 'f') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
         event.preventDefault()
         handleOpenSearchChats()
         return
       }
-      if (modifier && event.shiftKey && event.key.toLowerCase() === 'a') {
+      if (desktopShortcutMatches(event, 'a') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
         event.preventDefault()
         handleOpenLatestNeedsApproval()
         return
       }
-      if (modifier && event.key === '[') {
+      if (desktopShortcutMatches(event, 'm') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
+        event.preventDefault()
+        setSessionModeCommand('toggle-plan-auto')
+        return
+      }
+      if (desktopShortcutMatches(event, 'p') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
         event.preventDefault()
         handleOpenPreviousChat()
+        return
+      }
+      if (targetBlocksDesktopShortcuts) {
+        return
+      }
+      if (desktopShortcutMatches(event, 'k') && !insideDialog) {
+        event.preventDefault()
+        handleOpenQuickActions()
+        return
+      }
+      if (desktopShortcutMatches(event, 's')) {
+        event.preventDefault()
+        handleOpenSettingsTab('shortcuts')
         return
       }
     }
 
     window.addEventListener('keydown', handleDesktopShortcut)
     return () => window.removeEventListener('keydown', handleDesktopShortcut)
-  }, [handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleStartNewSessionInWorkspace, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, topWorkspaceLabel, topWorkspacePath])
+  }, [handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleStartNewSessionInWorkspace, topWorkspaceLabel, topWorkspacePath])
 
   const quickActions = useMemo<DesktopQuickActionItem[]>(() => [
     {
       id: 'quick-actions',
       label: 'Open quick actions',
       description: 'Show Desktop shortcut actions and run the supported ones from one modal.',
-      keys: ['⌘/Ctrl', 'K'],
+      keys: ['⌘/Ctrl', 'Alt', 'K'],
       availability: 'Available anywhere in Desktop unless another modal or text field owns the shortcut.',
       enabled: true,
       icon: Keyboard,
@@ -3103,7 +3114,7 @@ export function DesktopAppPage() {
       id: 'new-session',
       label: 'New session',
       description: 'Start a fresh chat in the current or top selected workspace.',
-      keys: ['⌘/Ctrl', 'N'],
+      keys: ['⌘/Ctrl', 'Alt', 'N'],
       availability: 'Requires a selected workspace.',
       enabled: canStartNewSession,
       disabledReason: 'Select a workspace before starting a new session.',
@@ -3117,7 +3128,7 @@ export function DesktopAppPage() {
       id: 'settings',
       label: 'Open settings',
       description: 'Open Desktop Settings, preserving the current workspace route when possible.',
-      keys: ['⌘/Ctrl', ','],
+      keys: ['⌘/Ctrl', 'Alt', 'S'],
       availability: 'Available anywhere in Desktop.',
       enabled: true,
       icon: Settings,
@@ -3127,7 +3138,7 @@ export function DesktopAppPage() {
       id: 'search-chats',
       label: 'Search chats',
       description: 'Open Desktop chat search.',
-      keys: ['⌘/Ctrl', '⇧', 'F'],
+      keys: ['⌘/Ctrl', 'Alt', 'F'],
       availability: 'Available anywhere in Desktop.',
       enabled: true,
       icon: Search,
@@ -3137,7 +3148,7 @@ export function DesktopAppPage() {
       id: 'latest-needs-approval',
       label: 'Latest needs approval',
       description: 'Jump to the newest visible chat that has a pending permission request.',
-      keys: ['⌘/Ctrl', '⇧', 'A'],
+      keys: ['⌘/Ctrl', 'Alt', 'A'],
       availability: 'Requires a session with pending permissions in the sidebar.',
       enabled: Boolean(latestNeedsApprovalSession),
       disabledReason: 'No session currently needs approval.',
@@ -3151,7 +3162,7 @@ export function DesktopAppPage() {
       id: 'previous-chat',
       label: 'Previous chat',
       description: 'Return to the previously selected Desktop chat in this window.',
-      keys: ['⌘/Ctrl', '['],
+      keys: ['⌘/Ctrl', 'Alt', 'P'],
       availability: 'Available after switching between chats in the same Desktop window.',
       enabled: canReturnToPreviousChat,
       disabledReason: 'Switch chats once before using previous chat.',
@@ -3165,8 +3176,8 @@ export function DesktopAppPage() {
       id: 'toggle-plan-auto',
       label: 'Toggle plan/auto mode',
       description: 'Switch the active chat composer between plan and auto mode.',
-      keys: ['⇧', 'Tab'],
-      availability: 'Only intercepted when the active composer supports mode switching and focus is safe to keep in chat.',
+      keys: ['⌘/Ctrl', 'Alt', 'M'],
+      availability: 'Requires an active Desktop chat route.',
       enabled: Boolean(routeSessionId || (routeWorkspaceSlug && routeWorkspace?.path)),
       disabledReason: 'Open a Desktop chat composer to toggle plan/auto mode.',
       icon: CheckCircle2,

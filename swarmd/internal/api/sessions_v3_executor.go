@@ -383,6 +383,7 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	if err != nil {
 		if !e.isRunCanceled(job) {
 			if sessionV3IsContextOverflowDiagnostic(err.Error()) {
+				e.recordSessionV3ContextOverflowDecision(job, "assistant_response_error", err)
 				response, err = e.contextOverflowCompactedAssistantResponse(runCtx, job, err)
 			}
 			if err != nil {

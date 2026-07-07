@@ -29,6 +29,7 @@ const tabs = settingsTabs
 
 interface SettingsSearchParams {
   tab?: unknown
+  returnSessionId?: unknown
 }
 
 export function DesktopSettingsPage() {
@@ -38,6 +39,7 @@ export function DesktopSettingsPage() {
   const workspaceSettingsMatch = matchRoute({ to: '/$workspaceSlug/settings', fuzzy: false })
   const routeWorkspaceSlug = workspaceSettingsMatch ? workspaceSettingsMatch.workspaceSlug.trim() : ''
   const search = useSearch({ strict: false }) as SettingsSearchParams
+  const returnSessionId = typeof search.returnSessionId === 'string' ? search.returnSessionId.trim() : ''
   const [activeTab, setActiveTab] = useState<SettingsTabID>(() => normalizeSettingsTabID(search.tab))
 
   useEffect(() => {
@@ -47,6 +49,11 @@ export function DesktopSettingsPage() {
   const agentsPageKey = useMemo(() => (activeTab === 'agents' ? `agents-${Date.now()}` : 'agents-closed'), [activeTab])
 
   const handleBack = useMemo(() => {
+    if (routeWorkspaceSlug && returnSessionId) {
+      return () => {
+        void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: returnSessionId } })
+      }
+    }
     if (routeWorkspaceSlug) {
       return () => {
         void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
@@ -60,15 +67,16 @@ export function DesktopSettingsPage() {
     return () => {
       void navigate({ to: '/' })
     }
-  }, [navigate, routeWorkspaceSlug, settingsRouteMatch])
+  }, [navigate, returnSessionId, routeWorkspaceSlug, settingsRouteMatch])
 
   const handleTabChange = (tab: SettingsTabID) => {
     setActiveTab(tab)
+    const nextSearch = { tab, ...(returnSessionId ? { returnSessionId } : {}) }
     if (routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab } })
+      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: nextSearch })
       return
     }
-    void navigate({ to: '/settings', search: { tab } })
+    void navigate({ to: '/settings', search: nextSearch })
   }
 
   return (
@@ -76,7 +84,7 @@ export function DesktopSettingsPage() {
       <aside className="hidden w-[240px] shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-5 md:flex">
         <Button variant="outline" className="h-11 justify-start rounded-xl" onClick={handleBack}>
           <Home size={16} />
-          {routeWorkspaceSlug ? 'Back to workspace' : 'Back to launcher'}
+          {returnSessionId ? 'Back to chat' : routeWorkspaceSlug ? 'Back to workspace' : 'Back to launcher'}
         </Button>
 
         <div className="mt-6 px-2">
@@ -113,7 +121,7 @@ export function DesktopSettingsPage() {
         <div className="sticky top-0 z-10 grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(7.5rem,42vw)] items-center gap-3 border-b border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-3 md:hidden">
           <Button variant="outline" className="h-10 min-w-0 justify-start rounded-xl px-3" onClick={handleBack}>
             <Home size={16} className="shrink-0" />
-            <span className="min-w-0 truncate">Workspace</span>
+            <span className="min-w-0 truncate">{returnSessionId ? 'Chat' : 'Workspace'}</span>
           </Button>
           <div className="min-w-0">
             <label className="sr-only" htmlFor="settings-mobile-section">Settings section</label>

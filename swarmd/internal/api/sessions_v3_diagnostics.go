@@ -254,6 +254,46 @@ func (e *sessionV3Executor) recordSessionV3ProviderAPIDiagnostic(job sessionV3Ex
 	}
 }
 
+func (e *sessionV3Executor) recordSessionV3ContextOverflowDecision(job sessionV3ExecutorJob, phase string, cause error) {
+	if e == nil || e.server == nil {
+		return
+	}
+	now := time.Now().UnixMilli()
+	rawError := ""
+	if cause != nil {
+		rawError = cause.Error()
+	}
+	payload := map[string]any{
+		"phase":              strings.TrimSpace(phase),
+		"raw_error":          rawError,
+		"classifier":         "sessionV3IsContextOverflowDiagnostic",
+		"classifier_matched": sessionV3IsContextOverflowDiagnostic(rawError),
+	}
+	if e.server.sessions != nil {
+		if summary, ok, err := e.server.sessions.GetUsageSummary(job.SessionID); err != nil {
+			payload["usage_summary_error"] = err.Error()
+		} else if ok {
+			payload["last_usage_summary"] = summary
+		} else {
+			payload["last_usage_summary_present"] = false
+		}
+	}
+	if _, err := e.server.appendSessionV3Diagnostic(sessionV3DiagnosticInput{
+		SessionID:      job.SessionID,
+		UserID:         job.Principal.UserID,
+		AccountScopeID: job.Principal.AccountScopeID,
+		RunID:          job.RunID,
+		Stage:          "session.diagnostic.context_overflow.decision",
+		Source:         "backend.executor",
+		SequenceLabel:  fmt.Sprintf("context-overflow-decision-%d", now),
+		Payload:        payload,
+		NowUnixMs:      now,
+		Force:          true,
+	}); err != nil {
+		log.Printf("warning: failed to record v3 context overflow decision diagnostic session=%q run=%q: %v", job.SessionID, job.RunID, err)
+	}
+}
+
 func (e *sessionV3Executor) recordSessionV3Diagnostic(job sessionV3ExecutorJob, stage, source, sequenceLabel string, payload any) {
 	if e == nil || e.server == nil {
 		return

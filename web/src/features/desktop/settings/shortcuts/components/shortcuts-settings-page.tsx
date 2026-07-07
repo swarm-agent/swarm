@@ -13,7 +13,7 @@ export function ShortcutsSettingsPage() {
           </p>
         </div>
         <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm text-[var(--app-text-muted)]">
-          Open quick actions with <strong className="text-[var(--app-text)]">⌘/Ctrl K</strong> to run supported Desktop actions from a modal.
+          Open quick actions with <strong className="text-[var(--app-text)]">⌘/Ctrl Alt K</strong> to run supported Desktop actions from a modal.
         </div>
       </div>
 
