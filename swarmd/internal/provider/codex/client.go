@@ -1249,7 +1249,7 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 	if session != nil {
 		session.lastPayload = cloneMapAny(requestPayload)
 		session.lastResponseID = extractResponseID(decoded)
-		session.lastOutput = extractResponseOutputItems(decoded)
+		session.lastOutput = normalizeCodexResponseOutputMapsForReplay(state.outputItemsDone)
 	}
 	return decoded, http.StatusOK, nil
 }
@@ -1435,36 +1435,63 @@ func prepareIncrementalWebsocketRequest(current, previous map[string]any, lastRe
 	if len(current) == 0 || len(previous) == 0 || strings.TrimSpace(lastResponseID) == "" {
 		return current
 	}
-	currentNoInput := cloneMapAny(current)
-	delete(currentNoInput, "input")
-	delete(currentNoInput, "type")
-	delete(currentNoInput, "previous_response_id")
-
-	previousNoInput := cloneMapAny(previous)
-	delete(previousNoInput, "input")
-	delete(previousNoInput, "type")
-	delete(previousNoInput, "previous_response_id")
-
-	if !reflect.DeepEqual(currentNoInput, previousNoInput) {
+	if !codexWebsocketRequestPropertiesMatch(previous, current) {
 		return current
 	}
 
-	currentInput := cloneSliceAny(asSlice(current["input"]))
-	baseline := cloneSliceAny(asSlice(previous["input"]))
+	currentInputRaw := asSlice(current["input"])
+	currentInput := codexInputItemsForIncrementalCompare(currentInputRaw)
+	baseline := codexInputItemsForIncrementalCompare(asSlice(previous["input"]))
 	if len(lastOutput) > 0 {
-		baseline = append(baseline, cloneSliceAny(lastOutput)...)
+		baseline = append(baseline, codexInputItemsForIncrementalCompare(lastOutput)...)
 	}
 	if !inputStartsWith(currentInput, baseline) {
 		return current
 	}
 
-	incremental := cloneSliceAny(currentInput[len(baseline):])
+	incremental := cloneSliceAny(currentInputRaw[len(baseline):])
 	if incremental == nil {
 		incremental = []any{}
 	}
 	current["previous_response_id"] = strings.TrimSpace(lastResponseID)
 	current["input"] = incremental
 	return current
+}
+
+func codexWebsocketRequestPropertiesMatch(previous, current map[string]any) bool {
+	for _, key := range []string{
+		"model",
+		"instructions",
+		"tools",
+		"tool_choice",
+		"parallel_tool_calls",
+		"reasoning",
+		"store",
+		"stream",
+		"include",
+		"service_tier",
+		"prompt_cache_key",
+		"text",
+	} {
+		if !reflect.DeepEqual(previous[key], current[key]) {
+			return false
+		}
+	}
+	return true
+}
+
+func codexInputItemsForIncrementalCompare(items []any) []any {
+	out := cloneSliceAny(items)
+	for i, item := range out {
+		itemMap, ok := item.(map[string]any)
+		if !ok || itemMap == nil {
+			continue
+		}
+		delete(itemMap, "internal_chat_message_metadata_passthrough")
+		delete(itemMap, "internal_chat_message_metadata")
+		out[i] = itemMap
+	}
+	return out
 }
 
 func inputStartsWith(input []any, prefix []any) bool {
@@ -1559,7 +1586,9 @@ type streamDecodeState struct {
 	reasoningSummary        map[string]string
 	reasoningOrder          []string
 	outputItems             []map[string]any
+	outputItemsDone         []map[string]any
 	outputItemPos           map[string]int
+	outputItemDonePos       map[string]int
 	imageGenerationResults  map[string]string
 	imageGenerationPartials []map[string]any
 	imageGenerationFinals   []map[string]any
@@ -1637,6 +1666,9 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 			break
 		}
 		recordOutputItemEvent(state, item, decoded)
+		if strings.EqualFold(strings.TrimSpace(eventName), "response.output_item.done") {
+			recordDoneOutputItemEvent(state, item, decoded)
+		}
 		emitToolCallOutputItemEvent(eventName, state, item, decoded, onEvent)
 		if text := extractOutputTextFromOutputItem(item); strings.TrimSpace(text) != "" {
 			phase := outputItemAssistantPhase(item)
@@ -2066,7 +2098,21 @@ func outputItemAssistantPhase(item map[string]any) provideriface.AssistantPhase 
 }
 
 func recordOutputItemEvent(state *streamDecodeState, item map[string]any, event map[string]any) {
-	if state == nil || len(item) == 0 {
+	if state == nil {
+		return
+	}
+	recordOutputItemInto(state, item, event, &state.outputItems, &state.outputItemPos)
+}
+
+func recordDoneOutputItemEvent(state *streamDecodeState, item map[string]any, event map[string]any) {
+	if state == nil {
+		return
+	}
+	recordOutputItemInto(state, item, event, &state.outputItemsDone, &state.outputItemDonePos)
+}
+
+func recordOutputItemInto(state *streamDecodeState, item map[string]any, event map[string]any, items *[]map[string]any, positions *map[string]int) {
+	if state == nil || len(item) == 0 || items == nil || positions == nil {
 		return
 	}
 	item = cloneMapAny(item)
@@ -2076,16 +2122,16 @@ func recordOutputItemEvent(state *streamDecodeState, item map[string]any, event 
 		}
 	}
 	mergeImageGenerationResultIntoItem(state, item, event)
-	if state.outputItemPos == nil {
-		state.outputItemPos = make(map[string]int, 8)
+	if *positions == nil {
+		*positions = make(map[string]int, 8)
 	}
-	key := outputItemEventKey(item, event, len(state.outputItems))
-	if pos, ok := state.outputItemPos[key]; ok && pos >= 0 && pos < len(state.outputItems) {
-		state.outputItems[pos] = item
+	key := outputItemEventKey(item, event, len(*items))
+	if pos, ok := (*positions)[key]; ok && pos >= 0 && pos < len(*items) {
+		(*items)[pos] = item
 		return
 	}
-	state.outputItems = append(state.outputItems, item)
-	state.outputItemPos[key] = len(state.outputItems) - 1
+	*items = append(*items, item)
+	(*positions)[key] = len(*items) - 1
 }
 
 func recordImageGenerationPartialImageEvent(state *streamDecodeState, event map[string]any) {

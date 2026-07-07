@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"encoding/json"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -104,6 +105,182 @@ func TestPrepareIncrementalWebsocketRequestReusesWithinSameLineage(t *testing.T)
 	input := asSlice(got["input"])
 	if len(input) != 1 {
 		t.Fatalf("incremental input length = %d, want 1: %#v", len(input), input)
+	}
+}
+
+func TestCodexWebsocketSendPayloadMirrorsUpstreamToolOutputDelta(t *testing.T) {
+	first := map[string]any{
+		"model":            "gpt-5.3-codex",
+		"prompt_cache_key": "cache-lineage",
+		"input": []any{
+			map[string]any{"role": "user", "content": "run the echo command"},
+		},
+	}
+	firstPayload := codexWebsocketSendPayload(first, nil, false)
+	if _, ok := firstPayload["previous_response_id"]; ok {
+		t.Fatalf("first websocket request set previous_response_id: %#v", firstPayload)
+	}
+	if input := asSlice(firstPayload["input"]); len(input) != 1 {
+		t.Fatalf("first websocket request input length = %d, want full single user item: %#v", len(input), input)
+	}
+
+	callID := "shell-command-call"
+	functionCall := map[string]any{
+		"type":    "function_call",
+		"call_id": callID,
+		"name":    "shell",
+		"arguments": map[string]any{
+			"command": "echo websocket",
+		},
+		"internal_chat_message_metadata_passthrough": map[string]any{"turn_id": "turn-123"},
+	}
+	functionCallOutput := map[string]any{
+		"type":    "function_call_output",
+		"call_id": callID,
+		"output":  "websocket\n",
+	}
+	current := map[string]any{
+		"model":            "gpt-5.3-codex",
+		"prompt_cache_key": "cache-lineage",
+		"input": []any{
+			map[string]any{"role": "user", "content": "run the echo command"},
+			functionCall,
+			functionCallOutput,
+		},
+	}
+	session := &cachedWebsocketSession{
+		lastPayload:    first,
+		lastResponseID: "resp-1",
+		lastOutput:     []any{functionCall},
+	}
+
+	secondPayload := codexWebsocketSendPayload(current, session, false)
+	if gotID := asString(secondPayload["previous_response_id"]); gotID != "resp-1" {
+		t.Fatalf("second websocket previous_response_id = %q, want resp-1", gotID)
+	}
+	input := asSlice(secondPayload["input"])
+	if len(input) != 1 {
+		t.Fatalf("second websocket incremental input length = %d, want only function_call_output delta: %#v", len(input), input)
+	}
+	output, ok := input[0].(map[string]any)
+	if !ok || asString(output["type"]) != "function_call_output" || asString(output["call_id"]) != callID {
+		t.Fatalf("second websocket delta = %#v, want function_call_output for %s", input[0], callID)
+	}
+}
+
+func TestPrepareIncrementalWebsocketRequestMatchesUpstreamProperties(t *testing.T) {
+	previous := map[string]any{
+		"model":            "gpt-5.3-codex",
+		"prompt_cache_key": "cache-lineage",
+		"stream_options":   map[string]any{"reasoning_summary_delivery": "delta"},
+		"client_metadata":  map[string]any{"trace": "old"},
+		"input":            []any{map[string]any{"role": "user", "content": "old"}},
+	}
+	current := map[string]any{
+		"model":            "gpt-5.3-codex",
+		"prompt_cache_key": "cache-lineage",
+		"stream_options":   map[string]any{"reasoning_summary_delivery": "snapshot"},
+		"client_metadata":  map[string]any{"trace": "new"},
+		"input": []any{
+			map[string]any{"role": "user", "content": "old"},
+			map[string]any{"role": "user", "content": "new"},
+		},
+	}
+
+	got := prepareIncrementalWebsocketRequest(current, previous, "resp_old", nil)
+	if gotID := asString(got["previous_response_id"]); gotID != "resp_old" {
+		t.Fatalf("ignored upstream fields prevented reuse; previous_response_id = %q", gotID)
+	}
+
+	changedText := map[string]any{
+		"model":            "gpt-5.3-codex",
+		"prompt_cache_key": "cache-lineage",
+		"text":             map[string]any{"verbosity": "high"},
+		"stream_options":   map[string]any{"reasoning_summary_delivery": "snapshot"},
+		"client_metadata":  map[string]any{"trace": "new"},
+		"input": []any{
+			map[string]any{"role": "user", "content": "old"},
+			map[string]any{"role": "user", "content": "new"},
+		},
+	}
+	got = prepareIncrementalWebsocketRequest(changedText, previous, "resp_old", nil)
+	if _, ok := got["previous_response_id"]; ok {
+		t.Fatalf("text change reused previous response: %#v", got)
+	}
+}
+
+func TestPrepareIncrementalWebsocketRequestIgnoresInternalItemMetadata(t *testing.T) {
+	previous := map[string]any{
+		"model":            "gpt-5.3-codex",
+		"prompt_cache_key": "cache-lineage",
+		"input": []any{map[string]any{
+			"role":    "user",
+			"content": "old",
+			"internal_chat_message_metadata_passthrough": map[string]any{"turn_id": "old-turn"},
+		}},
+	}
+	current := map[string]any{
+		"model":            "gpt-5.3-codex",
+		"prompt_cache_key": "cache-lineage",
+		"input": []any{
+			map[string]any{
+				"role":    "user",
+				"content": "old",
+				"internal_chat_message_metadata_passthrough": map[string]any{"turn_id": "new-turn"},
+			},
+			map[string]any{"role": "user", "content": "new"},
+		},
+	}
+
+	got := prepareIncrementalWebsocketRequest(current, previous, "resp_old", nil)
+	if gotID := asString(got["previous_response_id"]); gotID != "resp_old" {
+		t.Fatalf("internal metadata prevented reuse; previous_response_id = %q", gotID)
+	}
+	input := asSlice(got["input"])
+	if len(input) != 1 {
+		t.Fatalf("incremental input length = %d, want 1: %#v", len(input), input)
+	}
+}
+
+func TestPrepareIncrementalWebsocketRequestUsesCompletedOutputBaseline(t *testing.T) {
+	previous := map[string]any{
+		"model":            "gpt-5.3-codex",
+		"prompt_cache_key": "cache-lineage",
+		"input":            []any{map[string]any{"role": "user", "content": "old"}},
+	}
+	lastOutput := []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "done"}}}}
+	current := map[string]any{
+		"model":            "gpt-5.3-codex",
+		"prompt_cache_key": "cache-lineage",
+		"input": []any{
+			map[string]any{"role": "user", "content": "old"},
+			map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "done"}}},
+			map[string]any{"role": "user", "content": "new"},
+		},
+	}
+
+	got := prepareIncrementalWebsocketRequest(current, previous, "resp_old", lastOutput)
+	if gotID := asString(got["previous_response_id"]); gotID != "resp_old" {
+		t.Fatalf("previous_response_id = %q, want resp_old", gotID)
+	}
+	input := asSlice(got["input"])
+	if len(input) != 1 {
+		t.Fatalf("incremental input length = %d, want 1: %#v", len(input), input)
+	}
+}
+
+func TestRecordDoneOutputItemsTracksOnlyOutputItemDone(t *testing.T) {
+	state := &streamDecodeState{}
+	added := map[string]any{"type": "response.output_item.added", "output_index": float64(0), "item": map[string]any{"id": "partial", "type": "message", "status": "in_progress"}}
+	done := map[string]any{"type": "response.output_item.done", "output_index": float64(0), "item": map[string]any{"id": "done", "type": "message", "status": "completed"}}
+
+	processResponseStreamEvent("response.output_item.added", mustMarshalTestJSON(t, added), state, nil)
+	if len(state.outputItemsDone) != 0 {
+		t.Fatalf("added event was recorded as completed output: %#v", state.outputItemsDone)
+	}
+	processResponseStreamEvent("response.output_item.done", mustMarshalTestJSON(t, done), state, nil)
+	if len(state.outputItemsDone) != 1 || asString(state.outputItemsDone[0]["id"]) != "done" {
+		t.Fatalf("done output items = %#v, want done item only", state.outputItemsDone)
 	}
 }
 
@@ -233,4 +410,13 @@ func TestCodexOutboundShapeDiagnosticsAreSafeAndCountNativeInput(t *testing.T) {
 	if event.Extra["input_items"] != 2 || event.Extra["input_text_chars"] != 40 || event.Extra["native_input_items"] != 1 || event.Extra["encrypted_input_items"] != 1 {
 		t.Fatalf("diagnostic input shape = %+v", event.Extra)
 	}
+}
+
+func mustMarshalTestJSON(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal test JSON: %v", err)
+	}
+	return string(encoded)
 }

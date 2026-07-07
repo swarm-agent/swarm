@@ -2001,11 +2001,10 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				}
 				runner = refreshedRunner
 				if terminal, ok := e.sessionV3LatestTerminalPlanToolPayload(job); ok {
-					input = e.sessionV3ProviderContinuationInput(job, false)
+					input = sessionsV3ProviderTerminalPlanFinalizationRequestInput(terminal)
 					if len(input) == 0 {
-						return sessionV3ProviderLoopResult{}, errors.New("terminal plan finalization requested but continuation input is empty")
+						return sessionV3ProviderLoopResult{}, errors.New("terminal plan finalization requested but finalization input is empty")
 					}
-					input = append(input, sessionsV3ProviderTerminalPlanFinalizationInput(terminal))
 					baseReq, err = e.sessionV3ProviderBaseRequestWithCheckpointScope(job, resolved, input, e.sessionV3ProviderTerminalPlanCheckpointScope(job, terminal))
 					if err != nil {
 						return sessionV3ProviderLoopResult{}, err
@@ -2104,7 +2103,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider continuation input is empty after tool execution")
 		}
 		if terminal, ok := sessionsV3ProviderTerminalPlanToolResult(toolResults); ok {
-			input = append(input, sessionsV3ProviderTerminalPlanFinalizationInput(terminal))
+			input = sessionsV3ProviderTerminalPlanFinalizationRequestInput(terminal)
 			nextReq, err := e.sessionV3ProviderBaseRequestWithCheckpointScope(job, resolved, input, e.sessionV3ProviderTerminalPlanCheckpointScope(job, terminal))
 			if err != nil {
 				return sessionV3ProviderLoopResult{}, err
@@ -2205,6 +2204,10 @@ func sessionsV3ProviderTerminalPlanNextAction(nextAction string) bool {
 	default:
 		return false
 	}
+}
+
+func sessionsV3ProviderTerminalPlanFinalizationRequestInput(terminal sessionV3ProviderTerminalPlanResult) []map[string]any {
+	return []map[string]any{sessionsV3ProviderTerminalPlanFinalizationInput(terminal)}
 }
 
 func sessionsV3ProviderTerminalPlanFinalizationInput(terminal sessionV3ProviderTerminalPlanResult) map[string]any {

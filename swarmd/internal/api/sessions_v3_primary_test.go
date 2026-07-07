@@ -3354,10 +3354,13 @@ func appendSessionsV3PrimaryTestUserMessage(t *testing.T, server *Server, sessio
 	}
 }
 
-func appendSessionsV3PrimaryTestSystemMessage(t *testing.T, server *Server, sessionID, clientRequestID, content string) {
+func appendSessionsV3PrimaryTestSystemMessage(t *testing.T, server *Server, sessionID, clientRequestID, content string, metadata ...map[string]any) {
 	t.Helper()
 	now := time.Now().UnixMilli()
 	message := pebblestore.MessageSnapshot{ID: "test-system-" + clientRequestID, Role: "system", Content: content, CreatedAt: now}
+	if len(metadata) > 0 {
+		message.Metadata = metadata[0]
+	}
 	payloadHash, err := sessionV3ExecutorPayloadHash(sessionID, "test-system", sessionruntime.RunIntentRunning, "", "session.message.appended", clientRequestID+":"+content)
 	if err != nil {
 		t.Fatalf("hash system message payload: %v", err)
@@ -5742,6 +5745,128 @@ func assertSessionsV3NoMessageAppendedActivePlanPayload(t *testing.T, sessionSvc
 	}
 }
 
+func TestSessionsV3ProviderBaseRequestCheckpointCategoriesUseFreshCodexBoundary(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	exec := newSessionV3Executor(server)
+	server.v3SessionExecutor = exec
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-checkpoint-categories-create", "provider checkpoint categories", workspace, pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.3-codex", Thinking: "medium"})
+	appendSessionsV3PrimaryTestSystemMessage(t, server, created.ID, "provider-checkpoint-categories-old-lineage", "previous codex response", map[string]any{
+		"provider_lineage_id": "cache:old-codex-lineage",
+		"context_branch_id":   "old-context-branch",
+		"boundary_reason":     "session_turn",
+		"provider":            "codex",
+		"model":               "gpt-5.3-codex",
+		"run_id":              "old-run",
+	})
+	resolved := sessionV3ResolvedRuntime{
+		Session: created,
+		AgentProfile: pebblestore.AgentProfile{
+			Name:                "swarm",
+			Mode:                string(agentruntime.ModePrimary),
+			RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
+			ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+			ExecutionSetting:    "auto",
+		},
+		Preference:   pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.3-codex", Thinking: "medium"},
+		Scope:        tool.WorkspaceScope{PrimaryPath: workspace},
+		Instructions: "Swarm prompt",
+		ToolChoice:   "none",
+	}
+	input := []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "checkpoint payload"}}}}
+
+	cases := []struct {
+		name  string
+		job   sessionV3ExecutorJob
+		scope sessionV3ProviderCheckpointScope
+	}{
+		{name: "start_session_checkpoint", job: sessionV3ExecutorJob{SessionID: created.ID, PlanID: "plan-start", CheckpointID: "cp-start", AttemptID: "cp-start:attempt-1", RunID: "run-start", ParentSessionID: created.ID}},
+		{name: "request_followup_checkpoint", job: sessionV3ExecutorJob{SessionID: created.ID, PlanID: "plan-followup", CheckpointID: "cp-followup", AttemptID: "cp-followup:attempt-1", RunID: "run-followup", ParentSessionID: created.ID}},
+		{name: "approved_plan_checkpoint_start", job: sessionV3ExecutorJob{SessionID: created.ID, PlanID: "plan-approved", CheckpointID: "cp-approved", AttemptID: "cp-approved:attempt-1", RunID: "run-approved", ParentSessionID: created.ID}},
+		{name: "automatic_continuation", job: sessionV3ExecutorJob{SessionID: created.ID, PlanID: "plan-auto", CheckpointID: "cp-auto", AttemptID: "cp-auto:attempt-1", RunID: "run-auto", ParentSessionID: created.ID}},
+		{name: "review_finalization", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-review"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-review", CheckpointID: "cp-review", AttemptID: "cp-review:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
+		{name: "restart_retry", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-retry"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-retry", CheckpointID: "cp-retry", AttemptID: "cp-retry:attempt-2", ParentSessionID: created.ID, FreshContext: true}},
+		{name: "terminal_completed", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-completed"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-completed", CheckpointID: "cp-completed", AttemptID: "cp-completed:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
+		{name: "terminal_needs_review", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-review-needed"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-review-needed", CheckpointID: "cp-review-needed", AttemptID: "cp-review-needed:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
+		{name: "terminal_blocked", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-blocked"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-blocked", CheckpointID: "cp-blocked", AttemptID: "cp-blocked:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
+		{name: "terminal_failed", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-failed"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-failed", CheckpointID: "cp-failed", AttemptID: "cp-failed:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
+	}
+	seenAffinity := map[string]string{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := exec.sessionV3ProviderBaseRequestWithCheckpointScope(tc.job, resolved, input, tc.scope)
+			if err != nil {
+				t.Fatalf("base request: %v", err)
+			}
+			if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+				t.Fatalf("lineage flags = boundary %q native %t fresh %t, want checkpoint fresh context", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			}
+			if req.PreviousProviderLineageID == req.ProviderLineageID {
+				t.Fatalf("checkpoint request reused previous provider lineage %q", req.ProviderLineageID)
+			}
+			if req.ProviderCacheKey == "" || req.SessionAffinityKey == "" || req.ProviderCacheKey == req.SessionAffinityKey {
+				t.Fatalf("provider keys = cache %q affinity %q, want separate non-empty keys", req.ProviderCacheKey, req.SessionAffinityKey)
+			}
+			if len(req.Input) != 1 || !sessionsV3ProviderInputContainsContentText(req.Input, "checkpoint payload") {
+				t.Fatalf("checkpoint request input = %+v, want bounded supplied payload", req.Input)
+			}
+			if prev, exists := seenAffinity[req.SessionAffinityKey]; exists {
+				t.Fatalf("session affinity key %q reused for %s and %s", req.SessionAffinityKey, prev, tc.name)
+			}
+			seenAffinity[req.SessionAffinityKey] = tc.name
+		})
+	}
+}
+
+func TestSessionsV3ProviderPostCheckpointFollowupUsesNativeContinuation(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	exec := newSessionV3Executor(server)
+	server.v3SessionExecutor = exec
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-post-checkpoint-followup-create", "provider post checkpoint followup", workspace, pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.3-codex", Thinking: "medium"})
+	resolved := sessionV3ResolvedRuntime{
+		Session:      created,
+		AgentProfile: pebblestore.AgentProfile{Name: "swarm", Mode: string(agentruntime.ModePrimary), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ExecutionSetting: "auto"},
+		Preference:   pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.3-codex", Thinking: "medium"},
+		Scope:        tool.WorkspaceScope{PrimaryPath: workspace},
+		Instructions: "Swarm prompt",
+		ToolChoice:   "none",
+	}
+	previousLineageID := provideriface.ShortProviderLineageKey(
+		created.ID,
+		"checkpoint-branch",
+		"codex",
+		"gpt-5.3-codex",
+		resolved.Instructions,
+		sessionV3ProviderToolsLineageHash(resolved.Tools),
+		strings.TrimSpace(created.Mode),
+		strings.TrimSpace(resolved.AgentProfile.Name),
+		strings.TrimSpace(resolved.AgentProfile.Mode),
+		strings.TrimSpace(resolved.AgentProfile.RuntimeMode),
+		strings.TrimSpace(resolved.AgentProfile.ExecutionSetting),
+		"",
+		"",
+	)
+	appendSessionsV3PrimaryTestSystemMessage(t, server, created.ID, "provider-post-checkpoint-followup-lineage", "fresh checkpoint finalized", map[string]any{
+		"provider_lineage_id": previousLineageID,
+		"context_branch_id":   "checkpoint-branch",
+		"boundary_reason":     "checkpoint_fresh_context",
+		"provider":            "codex",
+		"model":               "gpt-5.3-codex",
+		"run_id":              "run-finalize",
+	})
+	req, err := exec.sessionV3ProviderBaseRequest(sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-followup"}, resolved, []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "normal follow-up"}}}})
+	if err != nil {
+		t.Fatalf("base request: %v", err)
+	}
+	if req.BoundaryReason != "session_turn" || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
+		t.Fatalf("post-checkpoint follow-up flags = boundary %q native %t fresh %t, want same-lineage session_turn", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+	}
+	if req.ProviderLineageID != previousLineageID || req.ContextBranchID != "checkpoint-branch" {
+		t.Fatalf("post-checkpoint follow-up lineage = %q branch %q, want continued checkpoint lineage %q", req.ProviderLineageID, req.ContextBranchID, previousLineageID)
+	}
+}
+
 func TestSessionsV3ProviderManagedPlanManageTerminalOutcomesUsePlanSavedOutbox(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -5809,6 +5934,9 @@ func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing
 			}
 			if req.ToolInvoker != nil || req.ToolChoice != "none" || len(req.Tools) != 0 {
 				return provideriface.Response{}, fmt.Errorf("finalization request tools enabled: tool_choice=%q tools=%d invoker=%v", req.ToolChoice, len(req.Tools), req.ToolInvoker != nil)
+			}
+			if sessionsV3ProviderInputContainsContentText(req.Input, "complete_checkpoint") || sessionsV3ProviderInputContainsContentText(req.Input, "call-complete-final-checkpoint") {
+				return provideriface.Response{}, fmt.Errorf("finalization input leaked raw terminal tool transcript: %+v", req.Input)
 			}
 			if !sessionsV3ProviderInputContainsContentText(req.Input, "waiting for checkpoint review") || !sessionsV3ProviderInputContainsContentText(req.Input, "Do not call tools") {
 				return provideriface.Response{}, fmt.Errorf("finalization input missing review instruction: %+v", req.Input)
@@ -5899,6 +6027,14 @@ func TestSessionsV3ExecutorFollowUpAfterAutomaticCheckpointUsesFreshContextBound
 		case 2:
 			if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
 				return provideriface.Response{}, fmt.Errorf("terminal finalization lineage flags = boundary %q native %t fresh %t, want checkpoint fresh context", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			}
+			if sessionsV3ProviderInputContainsContentText(req.Input, "complete_checkpoint") || sessionsV3ProviderInputContainsContentText(req.Input, "call-complete-auto-checkpoint") || sessionsV3ProviderInputContainsContentText(req.Input, oldPrompt) {
+				return provideriface.Response{}, fmt.Errorf("automatic checkpoint finalization leaked raw checkpoint transcript: %+v", req.Input)
+			}
+			for _, want := range []string{"terminal state", "waiting for checkpoint review", "Do not call tools"} {
+				if !sessionsV3ProviderInputContainsContentText(req.Input, want) {
+					return provideriface.Response{}, fmt.Errorf("automatic checkpoint finalization missing %q: %+v", want, req.Input)
+				}
 			}
 			return provideriface.Response{Text: "automatic checkpoint finalized"}, nil
 		case 3:
