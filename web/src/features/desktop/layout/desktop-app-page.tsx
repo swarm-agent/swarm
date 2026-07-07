@@ -1766,6 +1766,10 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
     <span
       ref={actionMenuRef}
       className={cn('relative z-20 inline-flex translate-x-[5px] shrink-0 items-center', actionsOpen ? 'z-40' : null)}
+      onPointerDownCapture={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+      }}
       onMouseEnter={clearActionMenuCloseTimer}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) {
@@ -1842,6 +1846,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         isNestedSession ? 'ml-0 rounded-sm border-transparent bg-[var(--app-bg-alt)]/20 py-1 pl-1 pr-2 hover:translate-y-0 hover:border-transparent hover:bg-[var(--app-surface)]/25 hover:shadow-[0_6px_16px_rgba(0,0,0,0.06)]' : null,
         isNestedSession && active ? 'border-transparent bg-[var(--app-surface)]/30' : null,
         hasAgentChildren && agentsExpanded && !isNestedSession ? 'border-[var(--app-border-accent)]' : null,
+        actionsOpen ? 'z-30' : null,
       )}
       title={tooltip || metadataLabel}
     >

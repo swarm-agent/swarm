@@ -94,3 +94,11 @@ test('Desktop V3 sidebar active timer replaces the relative-time metadata slot',
   assert.doesNotMatch(source, /grid-cols-\[minmax\(0,1fr\)_5\.5rem\]/)
   assert.doesNotMatch(source, /ml-auto w-\[5\.5rem\] shrink-0 truncate text-right tabular-nums/)
 })
+
+test('Desktop V3 sidebar action menu is isolated from inactive row selection', async () => {
+  const source = await readDesktopAppPage()
+
+  assert.match(source, /onPointerDownCapture=\{\(event\) => \{\s*event\.preventDefault\(\)\s*event\.stopPropagation\(\)\s*\}\}/)
+  assert.match(source, /onClick=\{\(event\) => \{\s*event\.preventDefault\(\)\s*event\.stopPropagation\(\)\s*setActionsOpen/s)
+  assert.match(source, /actionsOpen \? 'z-30' : null/)
+})
