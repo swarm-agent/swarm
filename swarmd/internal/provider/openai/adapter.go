@@ -61,6 +61,20 @@ func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 			AuthMethods:     openAIAuthMethods(),
 		}, nil
 	}
+	if record.Connection != nil && !record.Connection.Connected {
+		reason := strings.TrimSpace(record.Connection.Message)
+		if reason == "" {
+			reason = "openai api key has not been verified"
+		}
+		return provideriface.Status{
+			ID:              "openai",
+			Ready:           false,
+			Reason:          reason,
+			DefaultModel:    providerDefaults.PrimaryModel,
+			DefaultThinking: providerDefaults.PrimaryThinking,
+			AuthMethods:     openAIAuthMethods(),
+		}, nil
+	}
 	return provideriface.Status{
 		ID:              "openai",
 		Ready:           true,

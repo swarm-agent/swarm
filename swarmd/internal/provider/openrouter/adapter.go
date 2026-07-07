@@ -60,6 +60,20 @@ func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 			AuthMethods:     openRouterAuthMethods(),
 		}, nil
 	}
+	if record.Connection != nil && !record.Connection.Connected {
+		reason := strings.TrimSpace(record.Connection.Message)
+		if reason == "" {
+			reason = "openrouter api key has not been verified"
+		}
+		return provideriface.Status{
+			ID:              "openrouter",
+			Ready:           false,
+			Reason:          reason,
+			DefaultModel:    providerDefaults.PrimaryModel,
+			DefaultThinking: providerDefaults.PrimaryThinking,
+			AuthMethods:     openRouterAuthMethods(),
+		}, nil
+	}
 	return provideriface.Status{
 		ID:              "openrouter",
 		Ready:           true,

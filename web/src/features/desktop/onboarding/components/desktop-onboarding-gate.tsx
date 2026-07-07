@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import { queryClient } from '../../../../app/query-client'
 import { Button } from '../../../../components/ui/button'
 import { Input } from '../../../../components/ui/input'
 import { patchDesktopOnboarding } from '../api'
@@ -16,6 +17,7 @@ import { WorkspaceStatus } from '../../../workspaces/launcher/components/workspa
 import { useWorkspaceLauncher } from '../../../workspaces/launcher/state/use-workspace-launcher'
 import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../../../workspaces/launcher/services/workspace-route'
 import { formatWorkspacePath } from '../../../workspaces/launcher/services/workspace-format'
+import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions } from '../../../queries/query-options'
 import type { WorkspaceDiscoverEntry, WorkspaceResolution } from '../../../workspaces/launcher/types/workspace'
 
 type OnboardingStep = 'identity' | 'provider' | 'workspace'
@@ -79,6 +81,15 @@ function credentialLabel(method: AuthMethod | null): string {
     return 'API key'
   }
   return 'Access token'
+}
+
+async function refreshAuthDependentQueries(): Promise<void> {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: draftModelQueryOptions().queryKey }),
+    queryClient.invalidateQueries({ queryKey: modelOptionsQueryOptions().queryKey }),
+    queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey }),
+    queryClient.invalidateQueries({ queryKey: ['auth-credentials'] }),
+  ])
 }
 
 function pendingMessage(action: PendingAction): string | null {
@@ -326,6 +337,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
           if (next.status === 'success') {
             setError(null)
             void reloadStatus()
+              .then(() => refreshAuthDependentQueries())
               .then(() => {
                 setNotice('Provider connected. Choose your workspace when you’re ready.')
                 transitionToStep('workspace')
@@ -546,6 +558,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
       setCredentialValue('')
       await reloadStatus()
+      await refreshAuthDependentQueries()
       setNotice('Provider connected. Choose your workspace when you’re ready.')
       transitionToStep('workspace')
     } catch (err) {
@@ -632,6 +645,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setCredentialValue('')
       setCallbackInput('')
       await reloadStatus()
+      await refreshAuthDependentQueries()
       setNotice('Provider connected. Choose your workspace when you’re ready.')
       transitionToStep('workspace')
     } catch (err) {

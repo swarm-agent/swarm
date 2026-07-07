@@ -32,6 +32,7 @@ import (
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/permission"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	runruntime "swarm/packages/swarmd/internal/run"
@@ -1248,7 +1249,8 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("provider is required"))
 			return
 		}
-		status, event, err := s.auth.UpsertCredential(auth.CredentialUpsertInput{
+		wantsActive := req.Active
+		input := auth.CredentialUpsertInput{
 			ID:             req.ID,
 			Provider:       provider,
 			AccountScopeID: accountScopeID,
@@ -1260,8 +1262,29 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 			RefreshToken:   req.RefreshToken,
 			ExpiresAt:      req.ExpiresAt,
 			AccountID:      req.AccountID,
-			Active:         req.Active,
+			Active:         false,
+		}
+		connection, verifyErr := s.verifyCredentialMaterialForAccount(r.Context(), accountScopeID, provideriface.AuthCredential{
+			ID:           strings.ToLower(strings.TrimSpace(input.ID)),
+			Provider:     provider,
+			Type:         input.Type,
+			Label:        input.Label,
+			Tags:         append([]string(nil), input.Tags...),
+			APIKey:       input.APIKey,
+			AccessToken:  input.AccessToken,
+			RefreshToken: input.RefreshToken,
+			ExpiresAt:    input.ExpiresAt,
+			AccountID:    input.AccountID,
 		})
+		if verifyErr != nil {
+			writeError(w, http.StatusInternalServerError, verifyErr)
+			return
+		}
+		if !authCredentialVerificationAccepted(connection) {
+			writeError(w, http.StatusBadRequest, authCredentialVerificationError(connection))
+			return
+		}
+		status, event, err := s.auth.UpsertCredential(input)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -1269,17 +1292,35 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 		if event != nil {
 			s.hub.Publish(*event)
 		}
-		connection, verifyErr := s.verifyAuthCredentialConnectionForAccount(r.Context(), accountScopeID, provider, status.ID)
-		if verifyErr != nil {
-			writeError(w, http.StatusInternalServerError, verifyErr)
-			return
+		if connection != nil {
+			updated, updateEvent, updateErr := s.auth.UpdateCredentialConnectionForAccount(accountScopeID, provider, status.ID, connection)
+			if updateErr != nil {
+				writeError(w, http.StatusInternalServerError, updateErr)
+				return
+			}
+			status = updated
+			if updateEvent != nil {
+				s.hub.Publish(*updateEvent)
+			}
+		}
+		if wantsActive {
+			status, event, err = s.auth.SetActiveCredentialForAccount(accountScopeID, provider, status.ID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if event != nil {
+				s.hub.Publish(*event)
+			}
 		}
 		status.Connection = connection
-		autoDefaults, defaultsErr := s.applyUtilityModelDefaultsForAccount(accountScopeID, principal.UserID, provider)
-		if defaultsErr != nil {
-			status.AutoDefaults = &auth.AutoDefaultsStatus{Error: defaultsErr.Error()}
-		} else if autoDefaults != nil {
-			status.AutoDefaults = autoDefaults
+		if wantsActive {
+			autoDefaults, defaultsErr := s.applyUtilityModelDefaultsForAccount(accountScopeID, principal.UserID, provider)
+			if defaultsErr != nil {
+				status.AutoDefaults = &auth.AutoDefaultsStatus{Error: defaultsErr.Error()}
+			} else if autoDefaults != nil {
+				status.AutoDefaults = autoDefaults
+			}
 		}
 		writeJSON(w, http.StatusOK, status)
 	default:
@@ -1359,18 +1400,27 @@ func (s *Server) handleAuthCredentialActive(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, errors.New("provider is required"))
 		return
 	}
-	status, event, err := s.auth.SetActiveCredentialForAccount(accountScopeID, provider, req.ID)
+	credentialID := strings.ToLower(strings.TrimSpace(req.ID))
+	if credentialID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("id is required"))
+		return
+	}
+	connection, verifyErr := s.verifyAuthCredentialConnectionForAccount(r.Context(), accountScopeID, provider, credentialID)
+	if verifyErr != nil {
+		writeError(w, http.StatusInternalServerError, verifyErr)
+		return
+	}
+	if !authCredentialVerificationAccepted(connection) {
+		writeError(w, http.StatusBadRequest, authCredentialVerificationError(connection))
+		return
+	}
+	status, event, err := s.auth.SetActiveCredentialForAccount(accountScopeID, provider, credentialID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	if event != nil {
 		s.hub.Publish(*event)
-	}
-	connection, verifyErr := s.verifyAuthCredentialConnectionForAccount(r.Context(), accountScopeID, provider, status.ID)
-	if verifyErr != nil {
-		writeError(w, http.StatusInternalServerError, verifyErr)
-		return
 	}
 	status.Connection = connection
 	autoDefaults, defaultsErr := s.applyUtilityModelDefaultsForAccount(accountScopeID, principal.UserID, provider)

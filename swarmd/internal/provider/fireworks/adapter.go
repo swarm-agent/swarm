@@ -60,6 +60,20 @@ func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 			AuthMethods:     fireworksAuthMethods(),
 		}, nil
 	}
+	if record.Connection != nil && !record.Connection.Connected {
+		reason := strings.TrimSpace(record.Connection.Message)
+		if reason == "" {
+			reason = "fireworks api key has not been verified"
+		}
+		return provideriface.Status{
+			ID:              "fireworks",
+			Ready:           false,
+			Reason:          reason,
+			DefaultModel:    providerDefaults.PrimaryModel,
+			DefaultThinking: providerDefaults.PrimaryThinking,
+			AuthMethods:     fireworksAuthMethods(),
+		}, nil
+	}
 	return provideriface.Status{
 		ID:              "fireworks",
 		Ready:           true,

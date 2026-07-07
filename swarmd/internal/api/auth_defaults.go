@@ -21,6 +21,11 @@ func (s *Server) applyUtilityModelDefaultsForAccount(accountScopeID, userID, pre
 	if s == nil || s.model == nil || s.agents == nil || s.providers == nil {
 		return nil, nil
 	}
+	if strings.TrimSpace(accountScopeID) != "" {
+		if err := s.agents.EnsureDefaultsForAccount(accountScopeID); err != nil {
+			return nil, fmt.Errorf("ensure account agent defaults: %w", err)
+		}
+	}
 
 	if err := s.refreshModelCatalogForOnboardingDefaults(); err != nil {
 		return nil, err
