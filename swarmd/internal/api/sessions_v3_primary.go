@@ -876,7 +876,7 @@ func (s *Server) handleSessionV3PrimaryMode(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if sessionruntime.NormalizeMode(session.Mode) == mode {
-		writeJSON(w, http.StatusOK, sessionV3ModeMutationResponse(session.ID, mode, nil))
+		writeJSON(w, http.StatusOK, s.sessionV3ModeMutationResponseWithPolicy(session, mode, nil))
 		return
 	}
 	next := session
@@ -909,7 +909,7 @@ func (s *Server) handleSessionV3PrimaryMode(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionV3ModeMutationResponse(sessionID, mode, &result))
+	writeJSON(w, http.StatusOK, s.sessionV3ModeMutationResponseWithPolicy(next, mode, &result))
 }
 
 func (s *Server) handleSessionV3PrimaryAgent(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
@@ -1768,6 +1768,20 @@ func sessionV3ModeMutationResponse(sessionID, mode string, mutation *sessionrunt
 	return response
 }
 
+func (s *Server) sessionV3ModeMutationResponseWithPolicy(session pebblestore.SessionSnapshot, mode string, mutation *sessionruntime.SessionMutationResult) map[string]any {
+	response := sessionV3ModeMutationResponse(session.ID, mode, mutation)
+	preference := normalizeSessionsV3ModelPreference(session.Preference)
+	agentModelPolicy := s.sessionsV3AgentModelPolicy(session, preference, 0, 0)
+	if agentModelPolicy.Locked {
+		preference = agentModelPolicy.Preference
+		response["context_window"] = agentModelPolicy.ContextWindow
+		response["max_output_tokens"] = agentModelPolicy.MaxOutputTokens
+	}
+	response["preference"] = preference
+	response["agent_model_policy"] = agentModelPolicy
+	return response
+}
+
 func (s *Server) validateSessionsV3PrimaryStopTarget(principal identity.Principal, sessionID, targetSwarmID string) (bool, error) {
 	session, ok, err := s.sessions.GetSession(sessionID)
 	if err != nil || !ok {
@@ -1864,11 +1878,12 @@ func (s *Server) sessionsV3PrimaryPreferenceResponse(principal identity.Principa
 		maxOutputTokens = agentModelPolicy.MaxOutputTokens
 	}
 	return map[string]any{
-		"ok":                true,
-		"session_id":        session.ID,
-		"preference":        preference,
-		"context_window":    contextWindow,
-		"max_output_tokens": maxOutputTokens,
+		"ok":                 true,
+		"session_id":         session.ID,
+		"preference":         preference,
+		"context_window":     contextWindow,
+		"max_output_tokens":  maxOutputTokens,
+		"agent_model_policy": agentModelPolicy,
 	}, true, nil
 }
 

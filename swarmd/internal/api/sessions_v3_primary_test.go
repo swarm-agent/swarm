@@ -809,7 +809,7 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 	prefReq.Header.Set("Content-Type", "application/json")
 	prefRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(prefRec, withTestPrincipal(prefReq))
-	if prefRec.Code != http.StatusBadRequest || !strings.Contains(prefRec.Body.String(), "Default") {
+	if prefRec.Code != http.StatusBadRequest || !strings.Contains(prefRec.Body.String(), "Agent model is set in agent settings") {
 		t.Fatalf("locked preference status = %d body=%s", prefRec.Code, prefRec.Body.String())
 	}
 	stored, ok, err := sessionSvc.GetSession(created.ID)

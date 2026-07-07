@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	"testing"
@@ -801,6 +802,73 @@ func TestSessionsV3SyncHydrateReturnsSessionView(t *testing.T) {
 	if view.HasActivePlan == nil || !*view.HasActivePlan || view.ActivePlan == nil || view.ActivePlan.ID != "sync-view-plan" {
 		t.Fatalf("session view active plan = has:%v plan:%+v", view.HasActivePlan, view.ActivePlan)
 	}
+}
+
+func TestSessionsV3SyncHydrateSplitAgentPolicyUsesSessionMode(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{
+		Name:                "swarm",
+		Mode:                agentruntime.ModePrimary,
+		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+		ModelMode:           "split",
+		PlanProvider:        "test-provider",
+		PlanModel:           "plan-model",
+		PlanThinking:        "low",
+		AutoProvider:        "auto-provider",
+		AutoModel:           "auto-model",
+		AutoThinking:        "high",
+		Enabled:             pebblestore.BoolPtr(true),
+		Prompt:              "Swarm split prompt",
+	}); err != nil {
+		t.Fatalf("upsert split swarm agent: %v", err)
+	}
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "sync-split-agent-policy-create", "sync split agent policy", pebblestore.ModelPreference{Provider: "test-provider", Model: "stored-model", Thinking: "medium"})
+
+	hydrate := func(wantMode, wantSource, wantProvider, wantModel, wantThinking string) {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{
+			"surface":     "desktop",
+			"session_ids": []string{created.ID},
+			"resources": map[string]any{
+				"session_view": true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("marshal hydrate body: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, V3SyncHydratePath, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("hydrate status = %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			SessionViewsByID map[string]sessionsV3SessionView `json:"session_views_by_id"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode hydrate response: %v", err)
+		}
+		view := payload.SessionViewsByID[created.ID]
+		policy := view.AgenticSettings.AgentModelPolicy
+		if view.AgenticSettings.Mode != wantMode || !policy.Locked || policy.Source != wantSource || policy.Preference.Provider != wantProvider || policy.Preference.Model != wantModel || policy.Preference.Thinking != wantThinking {
+			t.Fatalf("agentic settings = %+v policy=%+v, want mode=%s source=%s preference=%s/%s/%s", view.AgenticSettings, policy, wantMode, wantSource, wantProvider, wantModel, wantThinking)
+		}
+		if view.AgenticSettings.EffectivePreference.Provider != wantProvider || view.AgenticSettings.EffectivePreference.Model != wantModel || view.AgenticSettings.EffectivePreference.Thinking != wantThinking {
+			t.Fatalf("effective preference = %+v, want %s/%s/%s", view.AgenticSettings.EffectivePreference, wantProvider, wantModel, wantThinking)
+		}
+	}
+
+	hydrate(sessionruntime.ModeAuto, "agent_auto_preset", "auto-provider", "auto-model", "high")
+	modeReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/mode", bytes.NewBufferString(`{"mode":"plan"}`))
+	modeReq.Header.Set("Content-Type", "application/json")
+	modeRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(modeRec, withTestPrincipal(modeReq))
+	if modeRec.Code != http.StatusOK {
+		t.Fatalf("set plan mode status = %d body=%s", modeRec.Code, modeRec.Body.String())
+	}
+	hydrate(sessionruntime.ModePlan, "agent_plan_preset", "test-provider", "plan-model", "low")
 }
 
 func TestSessionsV3SyncHydrateCanonicalizesSessionIDSelectorForCursorScope(t *testing.T) {

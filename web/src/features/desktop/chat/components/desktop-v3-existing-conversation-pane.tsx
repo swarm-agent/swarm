@@ -79,6 +79,24 @@ function metadataString(metadata: Record<string, unknown> | null | undefined, ke
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function recordObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function policyString(policy: unknown, camelKey: string, snakeKey: string): string {
+  const record = recordObject(policy)
+  if (!record) return ''
+  const value = record[camelKey] ?? record[snakeKey]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function policyLockedPreference(policy: unknown): SessionPreferenceRecord | null {
+  const record = recordObject(policy)
+  if (!record || record.locked !== true) return null
+  const preference = normalizePreference(record.preference)
+  return preference.provider && preference.model ? preference : null
+}
+
 function normalizePreference(value: unknown): SessionPreferenceRecord {
   const record = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
   const nested = record.preference && typeof record.preference === 'object' && !Array.isArray(record.preference)
@@ -212,7 +230,7 @@ function buildDesktopV3ExistingSettingsSnapshot(input: {
   session?: DesktopSessionRecord | null
   cacheSession?: { mode?: string; metadata?: Record<string, unknown> } | null
   cachedPreference: SessionPreferenceRecord
-  fallbackAgent: string
+  agentModelPolicy?: unknown
 }): DesktopV3InputSettingsSnapshot {
   return {
     sessionId: input.sessionId,
@@ -220,7 +238,8 @@ function buildDesktopV3ExistingSettingsSnapshot(input: {
     agent: firstNonEmpty(
       metadataString(input.metadata, 'agent_name'),
       metadataString(input.metadata, 'resolved_agent_name'),
-      input.fallbackAgent,
+      policyString(input.agentModelPolicy, 'agentName', 'agent_name'),
+      policyString(input.agentModelPolicy, 'resolvedAgentName', 'resolved_agent_name'),
     ),
     preference: input.cachedPreference,
   }
@@ -697,6 +716,7 @@ export function DesktopV3ExistingConversationPane({
   )
   const rawCachedPreference = useDesktopV3CacheSelector((state) => state.preferencesBySession[normalizedSessionId])
   const rawCachedUsage = useDesktopV3CacheSelector((state) => state.usageBySession[normalizedSessionId])
+  const cachedAgentModelPolicy = useDesktopV3CacheSelector((state) => state.agentModelPolicyBySession[normalizedSessionId])
   const planExecutionView = useDesktopV3CacheSelector(selectPlanExecutionViewForSession, planExecutionViewsEqual)
   const cachedPreference = useMemo(() => normalizePreference(rawCachedPreference), [rawCachedPreference])
   const cacheSession = useDesktopV3CacheSelector((state) => {
@@ -731,8 +751,8 @@ export function DesktopV3ExistingConversationPane({
     session,
     cacheSession,
     cachedPreference,
-    fallbackAgent: agentState.activePrimary,
-  }), [agentState.activePrimary, cacheSession, cachedPreference, normalizedSessionId, session, sessionMetadata])
+    agentModelPolicy: cachedAgentModelPolicy,
+  }), [cacheSession, cachedAgentModelPolicy, cachedPreference, normalizedSessionId, session, sessionMetadata])
   const [draft, setDraft] = useState(storedOperation?.request.content ?? '')
   const [sendError, setSendError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
@@ -759,6 +779,10 @@ export function DesktopV3ExistingConversationPane({
   const selectedAgentModelLock = useMemo(
     () => resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, mode),
     [agentState.profiles, mode, selectedAgent],
+  )
+  const lockedPolicyPreference = useMemo(
+    () => policyLockedPreference(cachedAgentModelPolicy),
+    [cachedAgentModelPolicy],
   )
   const selectedModelKey = optionKey(preference.provider, preference.model, preference.contextMode)
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
@@ -865,9 +889,13 @@ export function DesktopV3ExistingConversationPane({
   }, [normalizedSessionId, settingsBaseline])
 
   useEffect(() => {
+    if (lockedPolicyPreference) {
+      setPreference((current) => preferencesEqual(current, lockedPolicyPreference) ? current : lockedPolicyPreference)
+      return
+    }
     if (!selectedAgentModelLock.locked) return
     setPreference((current) => preferenceFromAgentModelLock(selectedAgentModelLock, current, modelOptions))
-  }, [modelOptions, selectedAgentModelLock])
+  }, [lockedPolicyPreference, modelOptions, selectedAgentModelLock])
 
   function handleOpenAgentSettings() {
     if (routeWorkspaceSlug) {
@@ -889,8 +917,8 @@ export function DesktopV3ExistingConversationPane({
     if (!normalizedSessionId || nextMode === mode) return
     localSettingsDirtyRef.current.mode = true
     setMode(nextMode)
-    if (!selectedAgentModelLock.locked) return
     const nextLock = resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, nextMode)
+    if (!nextLock.locked) return
     setPreference((current) => preferenceFromAgentModelLock(nextLock, current, modelOptions))
   }
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -903,25 +904,25 @@ func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.Sess
 		policy.ResolvedAgent = strings.TrimSpace(profile.Name)
 	}
 	agentPref := sessionsV3AgentPresetPreference(profile)
-	if pebblestore.AgentModelMode(profile) == "split" && pebblestore.AgentSupportsSplitModel(profile) && strings.TrimSpace(profile.PlanProvider) != "" && strings.TrimSpace(profile.PlanModel) != "" {
-		agentPref = pebblestore.ModelPreference{
-			Provider:    strings.ToLower(strings.TrimSpace(profile.PlanProvider)),
-			Model:       strings.TrimSpace(profile.PlanModel),
-			Thinking:    normalizeSessionV3ThinkingWithProvider(profile.PlanProvider, profile.PlanThinking),
-			ServiceTier: strings.TrimSpace(profile.PlanServiceTier),
-			UpdatedAt:   profile.UpdatedAt,
+	policySource := "agent_preset"
+	policyReason := "Agent model is set in agent settings; update the agent model in agent settings to choose a different model."
+	if pebblestore.AgentModelMode(profile) == "split" && pebblestore.AgentSupportsSplitModel(profile) {
+		if strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModePlan) {
+			agentPref = sessionsV3SplitAgentPreference(profile.PlanProvider, profile.PlanModel, profile.PlanThinking, profile.PlanServiceTier, profile.UpdatedAt)
+			policySource = "agent_plan_preset"
+			policyReason = "Agent plan model is set in agent settings; exit plan mode uses the configured auto model."
+		} else {
+			agentPref = sessionsV3SplitAgentPreference(profile.AutoProvider, profile.AutoModel, profile.AutoThinking, profile.AutoServiceTier, profile.UpdatedAt)
+			policySource = "agent_auto_preset"
+			policyReason = "Agent auto model is set in agent settings; enter plan mode uses the configured plan model."
 		}
 	}
 	if strings.TrimSpace(agentPref.Provider) == "" || strings.TrimSpace(agentPref.Model) == "" {
 		return policy
 	}
-	policy.Source = "agent_preset"
+	policy.Source = policySource
 	policy.Locked = true
-	policy.Reason = "Agent model is set in agent settings; update the agent model in agent settings to choose a different model."
-	if pebblestore.AgentModelMode(profile) == "split" && pebblestore.AgentSupportsSplitModel(profile) {
-		policy.Source = "agent_plan_preset"
-		policy.Reason = "Agent plan model is set in agent settings; exit plan mode uses the configured auto model."
-	}
+	policy.Reason = policyReason
 	policy.Preference = normalizeSessionsV3ModelPreference(agentPref)
 	policy.ContextWindow = 0
 	policy.MaxOutputTokens = 0
@@ -932,6 +933,21 @@ func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.Sess
 		policy.MaxOutputTokens = resolved.MaxOutputTokens
 	}
 	return policy
+}
+
+func sessionsV3SplitAgentPreference(provider, model, thinking, serviceTier string, updatedAt int64) pebblestore.ModelPreference {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return pebblestore.ModelPreference{}
+	}
+	return pebblestore.ModelPreference{
+		Provider:    provider,
+		Model:       model,
+		Thinking:    normalizeSessionV3ThinkingWithProvider(provider, thinking),
+		ServiceTier: strings.TrimSpace(serviceTier),
+		UpdatedAt:   updatedAt,
+	}
 }
 
 func sessionsV3SyncSessionShells(sessions map[string]pebblestore.SessionSnapshot) map[string]pebblestore.SessionSnapshot {

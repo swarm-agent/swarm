@@ -442,6 +442,10 @@ export interface SessionV3MessageCommitResponseWire extends SessionV3MutationRes
 
 export interface SessionV3ModeMutationResponseWire extends SessionV3MutationResponseWire {
   mode?: string
+  preference?: SessionV3PreferenceWire
+  context_window?: number
+  max_output_tokens?: number
+  agent_model_policy?: unknown
 }
 
 export interface SessionV3AgentMutationResponseWire extends SessionV3MutationResponseWire {
@@ -491,6 +495,7 @@ export interface SessionV3PreferenceResponseWire extends SessionV3MutationRespon
   preference?: SessionV3PreferenceWire
   context_window?: number
   max_output_tokens?: number
+  agent_model_policy?: unknown
 }
 
 export interface SessionV3UsageResponseWire {
