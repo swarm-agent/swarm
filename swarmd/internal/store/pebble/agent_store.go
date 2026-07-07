@@ -137,6 +137,34 @@ func AgentModelMode(profile AgentProfile) string {
 	return mode
 }
 
+func AgentSupportsSplitModel(profile AgentProfile) bool {
+	runtimeMode := NormalizeAgentRuntimeMode(profile.RuntimeMode)
+	if runtimeMode == AgentRuntimeModePlanAuto || AgentExitPlanModeEnabled(profile) {
+		return true
+	}
+	if runtimeMode == AgentRuntimeModeRead || runtimeMode == AgentRuntimeModeReadWrite {
+		return false
+	}
+	return agentToolContractEnablesPlanCapability(profile.ToolContract)
+}
+
+func agentToolContractEnablesPlanCapability(contract *AgentToolContract) bool {
+	contract = NormalizeAgentToolContract(contract)
+	if contract == nil {
+		return false
+	}
+	for rawName, cfg := range contract.Tools {
+		name := normalizeAgentToolScopeKey(rawName)
+		if name != "plan_manage" && name != "exit_plan_mode" {
+			continue
+		}
+		if cfg.Enabled != nil && *cfg.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
 func CloneAgentToolScope(scope *AgentToolScope) *AgentToolScope {
 	if scope == nil {
 		return nil
@@ -399,6 +427,29 @@ func NormalizeAgentProfile(profile AgentProfile) AgentProfile {
 			profile.RuntimeMode = AgentRuntimeModePlanAuto
 			profile.ExitPlanModeEnabled = BoolPtr(true)
 			profile.ExecutionSetting = ""
+		}
+	}
+	if AgentModelMode(profile) == "split" && AgentSupportsSplitModel(profile) {
+		profile.Provider = ""
+		profile.Model = ""
+		profile.Thinking = ""
+		if strings.TrimSpace(profile.PlanProvider) == "" || strings.TrimSpace(profile.PlanModel) == "" {
+			profile.PlanServiceTier = ""
+		}
+		if strings.TrimSpace(profile.AutoProvider) == "" || strings.TrimSpace(profile.AutoModel) == "" {
+			profile.AutoServiceTier = ""
+		}
+	} else {
+		profile.ModelMode = ""
+		profile.PlanProvider = ""
+		profile.PlanModel = ""
+		profile.PlanThinking = ""
+		profile.PlanServiceTier = ""
+		profile.AutoProvider = ""
+		profile.AutoModel = ""
+		profile.AutoThinking = ""
+		if strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
+			profile.AutoServiceTier = ""
 		}
 	}
 	profile.Protected = strings.EqualFold(profile.Name, "memory")

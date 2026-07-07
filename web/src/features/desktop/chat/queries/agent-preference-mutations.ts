@@ -9,10 +9,17 @@ function runtimeModeForAgent(profile: AgentProfileRecord): 'plan_auto' | 'read' 
   return raw === 'plan_auto' || raw === 'read' || raw === 'readwrite' ? raw : 'readwrite'
 }
 
+function agentIsPlanCapable(profile: AgentProfileRecord): boolean {
+  if (profile.exitPlanModeEnabled || profile.runtimeMode === 'plan_auto') return true
+  if (profile.runtimeMode === 'read' || profile.runtimeMode === 'readwrite' || profile.executionSetting === 'read' || profile.executionSetting === 'readwrite') return false
+  const tools = profile.toolContract?.tools ?? {}
+  return Boolean(tools.plan_manage?.enabled || tools.exit_plan_mode?.enabled)
+}
+
 function agentPayload(profile: AgentProfileRecord, patch: Partial<AgentProfileRecord>): Record<string, unknown> {
   const next = { ...profile, ...patch }
-  const modelMode = next.modelMode === 'split' ? 'split' : 'single'
   const runtimeMode = runtimeModeForAgent(next)
+  const modelMode = next.modelMode === 'split' && agentIsPlanCapable(next) ? 'split' : 'single'
   return {
     mode: next.mode || 'primary',
     description: next.description || '',
@@ -20,13 +27,13 @@ function agentPayload(profile: AgentProfileRecord, patch: Partial<AgentProfileRe
     model: modelMode === 'split' ? '' : next.model,
     thinking: modelMode === 'split' ? '' : next.thinking,
     model_mode: modelMode,
-    plan_provider: next.planProvider,
-    plan_model: next.planModel,
-    plan_thinking: next.planThinking,
-    plan_service_tier: next.planServiceTier,
-    auto_provider: next.autoProvider,
-    auto_model: next.autoModel,
-    auto_thinking: next.autoThinking,
+    plan_provider: modelMode === 'split' ? next.planProvider : '',
+    plan_model: modelMode === 'split' ? next.planModel : '',
+    plan_thinking: modelMode === 'split' ? next.planThinking : '',
+    plan_service_tier: modelMode === 'split' ? next.planServiceTier : '',
+    auto_provider: modelMode === 'split' ? next.autoProvider : '',
+    auto_model: modelMode === 'split' ? next.autoModel : '',
+    auto_thinking: modelMode === 'split' ? next.autoThinking : '',
     auto_service_tier: next.autoServiceTier,
     prompt: next.prompt,
     runtime_mode: runtimeMode,
@@ -93,37 +100,4 @@ export async function updateAgentProfile(profile: AgentProfileRecord, patch: Age
       body: JSON.stringify(agentPayload(profile, nextPatch)),
     },
   )
-}
-
-export async function switchAgentToSingleModel(profile: AgentProfileRecord): Promise<void> {
-  const provider = profile.provider || profile.autoProvider || profile.planProvider
-  const model = profile.model || profile.autoModel || profile.planModel
-  const thinking = profile.thinking || profile.autoThinking || profile.planThinking || 'off'
-  await updateAgentProfile(profile, {
-    modelMode: 'single',
-    provider,
-    model,
-    thinking,
-    planProvider: '',
-    planModel: '',
-    planThinking: '',
-    planServiceTier: '',
-  })
-}
-
-export async function switchAgentToDefaultModel(profile: AgentProfileRecord): Promise<void> {
-  await updateAgentProfile(profile, {
-    modelMode: 'single',
-    provider: '',
-    model: '',
-    thinking: '',
-    planProvider: '',
-    planModel: '',
-    planThinking: '',
-    planServiceTier: '',
-    autoProvider: '',
-    autoModel: '',
-    autoThinking: '',
-    autoServiceTier: '',
-  })
 }

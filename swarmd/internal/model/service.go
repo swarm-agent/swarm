@@ -415,6 +415,13 @@ func (s *Service) ListCatalog(providerID string, limit int) ([]pebblestore.Model
 	return s.catalog.List(providerID, limit)
 }
 
+func (s *Service) RecommendedCatalogDefaults(providerID string) (pebblestore.ModelCatalogRecord, pebblestore.ModelCatalogRecord, pebblestore.ModelCatalogRecord, bool, error) {
+	if s.catalog == nil {
+		return pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, false, nil
+	}
+	return s.catalog.RecommendedDefaults(providerID)
+}
+
 func (s *Service) RefreshCatalog(ctx context.Context) (CatalogRefreshResult, error) {
 	if s.catalog == nil {
 		return CatalogRefreshResult{}, errors.New("model catalog is not configured")

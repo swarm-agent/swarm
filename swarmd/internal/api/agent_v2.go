@@ -168,6 +168,7 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
 	profiles := make([]compactAgentProfileForDesktop, 0, len(state.Profiles))
 	for _, profile := range state.Profiles {
+		profile = pebblestore.NormalizeAgentProfile(profile)
 		profiles = append(profiles, compactAgentProfileForDesktop{
 			Name:            profile.Name,
 			Mode:            profile.Mode,

@@ -114,7 +114,10 @@ type swarmSnapshotModel struct {
 	Pricing          json.RawMessage `json:"pricing"`
 	Thinking         json.RawMessage `json:"thinking"`
 	ProviderSpecific json.RawMessage `json:"provider_specific"`
-	Routing          struct {
+	Swarm            struct {
+		Recommendations []swarmSnapshotRecommendation `json:"recommendations"`
+	} `json:"swarm"`
+	Routing struct {
 		TopProviderContextWindowTokens *int `json:"top_provider_context_window_tokens"`
 		TopProviderMaxOutputTokens     *int `json:"top_provider_max_output_tokens"`
 	} `json:"routing"`
@@ -133,6 +136,14 @@ type swarmSnapshotThinkingMapping struct {
 	ProviderValue          any    `json:"provider_value"`
 	EffectiveProviderValue any    `json:"effective_provider_value"`
 	Behavior               string `json:"behavior"`
+}
+
+type swarmSnapshotRecommendation struct {
+	Role     string `json:"role"`
+	Mode     string `json:"mode"`
+	Thinking string `json:"thinking"`
+	Serving  string `json:"serving"`
+	Notes    string `json:"notes"`
 }
 
 type swarmSnapshotContextMode struct {
@@ -274,6 +285,40 @@ func (s *CatalogService) List(providerID string, limit int) ([]pebblestore.Model
 		limit = 1000
 	}
 	return s.store.ListProvider(providerID, limit)
+}
+
+func (s *CatalogService) RecommendedDefaults(providerID string) (pebblestore.ModelCatalogRecord, pebblestore.ModelCatalogRecord, pebblestore.ModelCatalogRecord, bool, error) {
+	providerID = canonicalCatalogProviderID(providerID)
+	if providerID == "" {
+		return pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, false, nil
+	}
+	records, err := s.store.ListProvider(providerID, 2000)
+	if err != nil {
+		return pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, false, err
+	}
+	var main, plan, utility pebblestore.ModelCatalogRecord
+	for _, record := range records {
+		for _, rec := range record.Recommendations {
+			switch strings.ToLower(strings.TrimSpace(rec.Role)) {
+			case "main", "auto":
+				if strings.TrimSpace(main.Model) == "" {
+					main = record
+				}
+			case "plan":
+				if strings.TrimSpace(plan.Model) == "" {
+					plan = record
+				}
+			case "utility":
+				if strings.TrimSpace(utility.Model) == "" {
+					utility = record
+				}
+			}
+		}
+	}
+	if strings.TrimSpace(main.Model) == "" || strings.TrimSpace(plan.Model) == "" || strings.TrimSpace(utility.Model) == "" {
+		return pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, false, nil
+	}
+	return main, plan, utility, true, nil
 }
 
 func (s *CatalogService) Meta() (pebblestore.ModelCatalogMeta, bool, error) {
@@ -633,6 +678,7 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 			ServiceTiers:              serviceTiers,
 			DefaultServiceTier:        defaultServiceTier,
 			ServiceTierMappings:       modelServiceTierMappings(model.ProviderSpecific, providerID),
+			Recommendations:           modelRecommendations(model.Swarm.Recommendations),
 			ContextModes:              modelContextModes(model.ProviderSpecific, providerID, contextWindow),
 			Source:                    source,
 			SourceSnapshotID:          snapshot.SnapshotID,
@@ -727,6 +773,27 @@ func modelThinkingMetadata(thinkingRaw json.RawMessage) ([]string, string, strin
 		}
 	}
 	return options, defaultThinking, providerParameter, mappings
+}
+
+func modelRecommendations(values []swarmSnapshotRecommendation) []pebblestore.ModelCatalogRecommendation {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]pebblestore.ModelCatalogRecommendation, 0, len(values))
+	for _, value := range values {
+		role := strings.ToLower(strings.TrimSpace(value.Role))
+		if role == "" {
+			continue
+		}
+		out = append(out, pebblestore.ModelCatalogRecommendation{
+			Role:     role,
+			Mode:     strings.ToLower(strings.TrimSpace(value.Mode)),
+			Thinking: strings.ToLower(strings.TrimSpace(value.Thinking)),
+			Serving:  strings.ToLower(strings.TrimSpace(value.Serving)),
+			Notes:    strings.TrimSpace(value.Notes),
+		})
+	}
+	return out
 }
 
 func modelServiceTierMappings(providerSpecificRaw json.RawMessage, providerID string) []pebblestore.ModelCatalogServiceTierMapping {

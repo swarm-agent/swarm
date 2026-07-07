@@ -903,7 +903,7 @@ func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.Sess
 		policy.ResolvedAgent = strings.TrimSpace(profile.Name)
 	}
 	agentPref := sessionsV3AgentPresetPreference(profile)
-	if pebblestore.AgentModelMode(profile) == "split" && strings.TrimSpace(profile.PlanProvider) != "" && strings.TrimSpace(profile.PlanModel) != "" {
+	if pebblestore.AgentModelMode(profile) == "split" && pebblestore.AgentSupportsSplitModel(profile) && strings.TrimSpace(profile.PlanProvider) != "" && strings.TrimSpace(profile.PlanModel) != "" {
 		agentPref = pebblestore.ModelPreference{
 			Provider:    strings.ToLower(strings.TrimSpace(profile.PlanProvider)),
 			Model:       strings.TrimSpace(profile.PlanModel),
@@ -917,8 +917,8 @@ func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.Sess
 	}
 	policy.Source = "agent_preset"
 	policy.Locked = true
-	policy.Reason = "Agent model is set in agent settings; set the agent model to Default to choose a different model."
-	if pebblestore.AgentModelMode(profile) == "split" {
+	policy.Reason = "Agent model is set in agent settings; update the agent model in agent settings to choose a different model."
+	if pebblestore.AgentModelMode(profile) == "split" && pebblestore.AgentSupportsSplitModel(profile) {
 		policy.Source = "agent_plan_preset"
 		policy.Reason = "Agent plan model is set in agent settings; exit plan mode uses the configured auto model."
 	}

@@ -30,6 +30,9 @@ func (s *Server) providerDefaultsPreviewForState(state agentruntime.State) *prov
 	if !ok {
 		return nil
 	}
+	if err := s.applySnapshotRecommendedDefaults(providerID, &providerDefaults); err != nil {
+		return nil
+	}
 	utilityAgents := utilityAgentNames(providerDefaults)
 	preview := &providerDefaultsPreviewResponse{
 		Provider:              providerID,
@@ -80,6 +83,9 @@ func (s *Server) applyProviderDefaultsToBuiltInsForAccount(accountScopeID string
 	providerID, providerDefaults, ok := s.resolveAgentProviderDefaultsForAccount(accountScopeID)
 	if !ok {
 		return state, nil
+	}
+	if err := s.applySnapshotRecommendedDefaults(providerID, &providerDefaults); err != nil {
+		return state, err
 	}
 	return s.applyUtilityAIToBuiltInsForAccount(accountScopeID, state, providerID, providerDefaults.UtilityModel, providerDefaults.UtilityThinking, false)
 }
@@ -207,6 +213,9 @@ func (s *Server) resolveAgentProviderDefaultsForAccount(accountScopeID string) (
 			if providerID != "" {
 				providerDefaults, ok := defaults.Lookup(providerID)
 				if ok {
+					if err := s.applySnapshotRecommendedDefaults(providerID, &providerDefaults); err == nil {
+						return providerID, providerDefaults, true
+					}
 					return providerID, providerDefaults, true
 				}
 			}
@@ -215,6 +224,9 @@ func (s *Server) resolveAgentProviderDefaultsForAccount(accountScopeID string) (
 	if s.providers != nil {
 		providerID, providerDefaults, ok, err := s.resolveUtilityModelProvider("")
 		if err == nil && ok {
+			if err := s.applySnapshotRecommendedDefaults(providerID, &providerDefaults); err == nil {
+				return providerID, providerDefaults, true
+			}
 			return providerID, providerDefaults, true
 		}
 	}

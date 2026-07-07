@@ -214,6 +214,9 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 			return err
 		}
 	}
+	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+		return err
+	}
 
 	if !hasVersion {
 		version = 1
@@ -330,7 +333,7 @@ func builtInDefaultToolContract(name string) *pebblestore.AgentToolContract {
 		return defaultExplorerToolContract()
 	case "memory":
 		return defaultMemoryToolContract()
-	case "parallel", "clone":
+	case "parallel":
 		return defaultReadWriteSubagentToolContract()
 	default:
 		return nil
@@ -428,6 +431,61 @@ func shouldReconcileBuiltInParallel(profile pebblestore.AgentProfile) bool {
 		return true
 	}
 	return pebblestore.NormalizeAgentExecutionSetting(profile.ExecutionSetting) != pebblestore.AgentExecutionSettingReadWrite
+}
+
+func oldDefaultClonePrompt() string {
+	return strings.TrimSpace("" +
+		"You are Clone, a fast implementation subagent mirroring Swarm behavior.\n" +
+		"Execute concrete file-change tasks and report exact edits with minimal narrative.")
+}
+
+func shouldRemoveBuiltInClone(profile pebblestore.AgentProfile) bool {
+	if strings.TrimSpace(profile.Name) != "clone" {
+		return false
+	}
+	if profile.Mode != ModeSubagent || !profile.Enabled {
+		return false
+	}
+	if strings.TrimSpace(profile.Description) != "Swarm clone" || strings.TrimSpace(profile.Prompt) != oldDefaultClonePrompt() {
+		return false
+	}
+	if strings.TrimSpace(profile.Provider) != "" || strings.TrimSpace(profile.Model) != "" || strings.TrimSpace(profile.Thinking) != "" {
+		return false
+	}
+	if strings.TrimSpace(profile.ModelMode) != "" || strings.TrimSpace(profile.PlanProvider) != "" || strings.TrimSpace(profile.PlanModel) != "" || strings.TrimSpace(profile.AutoProvider) != "" || strings.TrimSpace(profile.AutoModel) != "" {
+		return false
+	}
+	if pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModeReadWrite {
+		return false
+	}
+	return profile.ToolContract != nil && strings.TrimSpace(profile.ToolContract.Preset) == "read_write"
+}
+
+func (s *Service) cleanupBuiltInCloneForAccountLocked(accountScopeID string) error {
+	activeSubagents, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(activeSubagents["clone"]), "clone") {
+		if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, "clone"); err != nil {
+			return err
+		}
+	}
+	current, ok, err := s.getProfileForAccountLocked(accountScopeID, "clone")
+	if err != nil || !ok {
+		return err
+	}
+	if !shouldRemoveBuiltInClone(current) {
+		return nil
+	}
+	for purpose, assigned := range activeSubagents {
+		if strings.EqualFold(strings.TrimSpace(assigned), "clone") {
+			if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose); err != nil {
+				return err
+			}
+		}
+	}
+	return s.deleteProfileForAccountLocked(accountScopeID, "clone")
 }
 
 func (s *Service) ListState(limit int) (State, error) {
@@ -1399,6 +1457,9 @@ func (s *Service) restoreDefaultsForAccount(accountScopeID string) (State, int64
 			return State{}, 0, nil, err
 		}
 	}
+	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+		return State{}, 0, nil, err
+	}
 
 	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
@@ -1511,6 +1572,9 @@ func (s *Service) resetDefaultsForAccount(accountScopeID string) (State, int64, 
 		if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, profileName); err != nil {
 			return State{}, 0, nil, err
 		}
+	}
+	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+		return State{}, 0, nil, err
 	}
 
 	version, err := s.bumpVersionForAccountLocked(accountScopeID)
@@ -1975,20 +2039,6 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			Enabled:      true,
 			UpdatedAt:    now,
 		},
-		{
-			Name:             "clone",
-			Mode:             ModeSubagent,
-			Description:      "Swarm clone",
-			Provider:         "",
-			RuntimeMode:      pebblestore.AgentRuntimeModeReadWrite,
-			ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
-			Prompt: strings.TrimSpace("" +
-				"You are Clone, a fast implementation subagent mirroring Swarm behavior.\n" +
-				"Execute concrete file-change tasks and report exact edits with minimal narrative."),
-			ToolContract: defaultReadWriteSubagentToolContract(),
-			Enabled:      true,
-			UpdatedAt:    now,
-		},
 	}
 }
 
@@ -1997,7 +2047,6 @@ func defaultSubagentAssignments() map[string]string {
 		"explorer": "explorer",
 		"memory":   "memory",
 		"parallel": "parallel",
-		"clone":    "clone",
 	}
 }
 
@@ -2128,31 +2177,7 @@ func stringFieldProvided(explicit bool, value string) bool {
 }
 
 func normalizeAgentModelSelection(profile pebblestore.AgentProfile) pebblestore.AgentProfile {
-	if pebblestore.AgentModelMode(profile) == "split" {
-		profile.Provider = ""
-		profile.Model = ""
-		profile.Thinking = ""
-		if strings.TrimSpace(profile.PlanProvider) == "" || strings.TrimSpace(profile.PlanModel) == "" {
-			profile.PlanServiceTier = ""
-		}
-		if strings.TrimSpace(profile.AutoProvider) == "" || strings.TrimSpace(profile.AutoModel) == "" {
-			profile.AutoServiceTier = ""
-		}
-		return profile
-	}
-
-	profile.ModelMode = ""
-	profile.PlanProvider = ""
-	profile.PlanModel = ""
-	profile.PlanThinking = ""
-	profile.PlanServiceTier = ""
-	profile.AutoProvider = ""
-	profile.AutoModel = ""
-	profile.AutoThinking = ""
-	if strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
-		profile.AutoServiceTier = ""
-	}
-	return profile
+	return pebblestore.NormalizeAgentProfile(profile)
 }
 
 func (s *Service) requireAccountScopeID(accountScopeID string) (string, error) {

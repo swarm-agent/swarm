@@ -14,7 +14,6 @@ func TestEnsureDefaultsBackfillsMissingBuiltInToolContractsOnly(t *testing.T) {
 		{Name: "explorer", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead, Prompt: "custom explorer", Enabled: false},
 		{Name: "memory", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite, Prompt: defaultMemoryPrompt(), Enabled: true},
 		{Name: "parallel", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite, Prompt: "custom parallel", Enabled: true},
-		{Name: "clone", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite, Prompt: "custom clone", Enabled: true},
 		{Name: "custom", Mode: ModeSubagent, RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead, Prompt: "custom agent", Enabled: true},
 	}
 	for _, profile := range legacyBuiltIns {
@@ -32,7 +31,6 @@ func TestEnsureDefaultsBackfillsMissingBuiltInToolContractsOnly(t *testing.T) {
 		"explorer": "read_only",
 		"memory":   "background_commit",
 		"parallel": "read_write",
-		"clone":    "read_write",
 	}
 	for name, wantPreset := range wantPresets {
 		profile, ok, err := agents.GetProfile(name)

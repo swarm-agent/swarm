@@ -36,8 +36,16 @@ func TestEnsureDefaultsSeedsPrimaryAndSubagents(t *testing.T) {
 	if state.Version <= 0 {
 		t.Fatalf("version = %d, want > 0", state.Version)
 	}
-	if len(state.Profiles) < 5 {
-		t.Fatalf("profiles = %d, want >= 5", len(state.Profiles))
+	if len(state.Profiles) != 4 {
+		t.Fatalf("profiles = %d, want 4 built-ins", len(state.Profiles))
+	}
+	for _, profile := range state.Profiles {
+		if profile.Name == "clone" {
+			t.Fatalf("clone should not be seeded as a built-in profile")
+		}
+	}
+	if got := state.ActiveSubagent["clone"]; got != "" {
+		t.Fatalf("active subagent clone = %q, want empty", got)
 	}
 	if _, ok := state.ActiveSubagent["explorer"]; !ok {
 		t.Fatalf("missing default explorer subagent mapping")
@@ -91,6 +99,56 @@ func TestUpsertAndActivatePrimary(t *testing.T) {
 	}
 	if _, _, _, err := svc.ActivatePrimary("worker"); err == nil {
 		t.Fatalf("ActivatePrimary(worker) expected error, got nil")
+	}
+}
+
+func TestAgentModelModeNormalizationAllowsOnlySingleOrPlanCapableSplit(t *testing.T) {
+	if got := pebblestore.NormalizeAgentModelMode("single"); got != "" {
+		t.Fatalf("NormalizeAgentModelMode(single) = %q, want empty single storage", got)
+	}
+	if got := pebblestore.AgentModelMode(pebblestore.AgentProfile{ModelMode: "single"}); got != "single" {
+		t.Fatalf("AgentModelMode(single) = %q, want single", got)
+	}
+	if got := pebblestore.NormalizeAgentModelMode("default"); got != "" {
+		t.Fatalf("NormalizeAgentModelMode(default) = %q, want empty single storage", got)
+	}
+	if got := pebblestore.NormalizeAgentModelMode("split"); got != "split" {
+		t.Fatalf("NormalizeAgentModelMode(split) = %q, want split", got)
+	}
+
+	planCapable := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name:                "planner",
+		Mode:                ModeSubagent,
+		ModelMode:           "split",
+		PlanProvider:        "codex",
+		PlanModel:           "gpt-5.5",
+		PlanThinking:        "high",
+		AutoProvider:        "codex",
+		AutoModel:           "gpt-5.4-mini",
+		AutoThinking:        "medium",
+		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+	})
+	if !pebblestore.AgentSupportsSplitModel(planCapable) || planCapable.ModelMode != "split" {
+		t.Fatalf("plan-capable split profile normalized incorrectly: %+v", planCapable)
+	}
+
+	readOnly := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name:             "reader",
+		Mode:             ModeSubagent,
+		ModelMode:        "split",
+		PlanProvider:     "codex",
+		PlanModel:        "gpt-5.5",
+		AutoProvider:     "codex",
+		AutoModel:        "gpt-5.4-mini",
+		RuntimeMode:      pebblestore.AgentRuntimeModeRead,
+		ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+	})
+	if pebblestore.AgentSupportsSplitModel(readOnly) {
+		t.Fatalf("read-only profile should not support split: %+v", readOnly)
+	}
+	if readOnly.ModelMode != "" || readOnly.PlanProvider != "" || readOnly.AutoProvider != "" {
+		t.Fatalf("read-only split fields were not cleared: %+v", readOnly)
 	}
 }
 
@@ -512,7 +570,7 @@ func TestResetDefaultsDeletesCustomAgentsAndTools(t *testing.T) {
 	if got := state.ActiveSubagent["explorer"]; got != "explorer" {
 		t.Fatalf("active subagent explorer = %q, want explorer", got)
 	}
-	defaultNames := map[string]bool{"swarm": true, "explorer": true, "memory": true, "commit": true, "parallel": true, "clone": true}
+	defaultNames := map[string]bool{"swarm": true, "explorer": true, "memory": true, "parallel": true}
 	for _, profile := range state.Profiles {
 		if !defaultNames[profile.Name] {
 			t.Fatalf("unexpected profile after reset: %s", profile.Name)

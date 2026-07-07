@@ -24,6 +24,14 @@ type ModelCatalogServiceTierMapping struct {
 	RequestModelPath  string `json:"request_model_path,omitempty"`
 }
 
+type ModelCatalogRecommendation struct {
+	Role     string `json:"role"`
+	Mode     string `json:"mode,omitempty"`
+	Thinking string `json:"thinking,omitempty"`
+	Serving  string `json:"serving,omitempty"`
+	Notes    string `json:"notes,omitempty"`
+}
+
 type ModelCatalogContextMode struct {
 	Mode          string `json:"mode"`
 	Label         string `json:"label,omitempty"`
@@ -47,6 +55,7 @@ type ModelCatalogRecord struct {
 	ServiceTiers              []string                         `json:"service_tiers,omitempty"`
 	DefaultServiceTier        string                           `json:"default_service_tier,omitempty"`
 	ServiceTierMappings       []ModelCatalogServiceTierMapping `json:"service_tier_mappings,omitempty"`
+	Recommendations           []ModelCatalogRecommendation     `json:"recommendations,omitempty"`
 	ContextModes              []ModelCatalogContextMode        `json:"context_modes,omitempty"`
 	Source                    string                           `json:"source"`
 	SourceSnapshotID          string                           `json:"source_snapshot_id,omitempty"`

@@ -1501,7 +1501,7 @@ func (s *Service) resolvePlanLifecycleModePreference(result sessionruntime.PlanL
 		"context_window":      resolved.ContextWindow,
 		"max_output_tokens":   resolved.MaxOutputTokens,
 	}
-	if pebblestore.AgentModelMode(profile) == "split" {
+	if pebblestore.AgentModelMode(profile) == "split" && pebblestore.AgentSupportsSplitModel(profile) {
 		policy["source"] = "agent_auto_preset"
 		policy["locked"] = true
 		policy["reason"] = "Session exited plan mode; active model switched to the configured auto model."

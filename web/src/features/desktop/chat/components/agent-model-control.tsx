@@ -21,7 +21,6 @@ export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
 >>
 
 export type AgentModelControlAction =
-  | { kind: 'default'; agentPatch: AgentModelControlProfilePatch; defaultPreference: ModelDraft }
   | { kind: 'single'; agentPatch: AgentModelControlProfilePatch }
   | { kind: 'split'; agentPatch: AgentModelControlProfilePatch }
 
@@ -49,7 +48,7 @@ interface AgentModelControlProps {
   busy?: boolean
 }
 
-type DraftMode = 'default' | 'single' | 'split'
+type DraftMode = 'single' | 'split'
 export type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string }
 
 function agentMode(profile: AgentProfileRecord): string {
@@ -80,17 +79,23 @@ function runtimeLabel(profile: AgentProfileRecord | null): string {
 }
 
 function modelBehaviorLabel(profile: AgentProfileRecord | null): string {
-  if (!profile) return 'Default model'
-  if (profile.modelMode === 'split') return 'Split plan/auto models'
-  if (profile.provider.trim() || profile.model.trim()) return 'Single model lock'
-  return 'Default model'
+  if (!profile) return 'Single model'
+  if (profile.modelMode === 'split' && isPlanCapableAgent(profile)) return 'Split plan/auto models'
+  return 'Single model'
+}
+
+function isPlanCapableAgent(profile: AgentProfileRecord | null): boolean {
+  if (!profile) return false
+  if (profile.exitPlanModeEnabled || profile.runtimeMode === 'plan_auto') return true
+  if (profile.runtimeMode === 'read' || profile.runtimeMode === 'readwrite' || profile.executionSetting === 'read' || profile.executionSetting === 'readwrite') return false
+  const tools = profile.toolContract?.tools ?? {}
+  const planManage = tools.plan_manage ?? tools['plan-manage']
+  const exitPlanMode = tools.exit_plan_mode ?? tools['exit-plan-mode']
+  return Boolean(planManage?.enabled || exitPlanMode?.enabled)
 }
 
 function selectedDraftMode(profile: AgentProfileRecord | null): DraftMode {
-  if (!profile) return 'default'
-  if (profile.modelMode === 'split') return 'split'
-  if (profile.provider.trim() || profile.model.trim()) return 'single'
-  return 'default'
+  return profile?.modelMode === 'split' && isPlanCapableAgent(profile) ? 'split' : 'single'
 }
 
 function modelOptionFor(provider: string, model: string, modelOptions: ModelOptionRecord[]): ModelOptionRecord | null {
@@ -201,22 +206,6 @@ function normalizeDraftThinking(provider: string, model: string, modelOptions: M
 }
 
 function buildPatch(mode: DraftMode, single: ModelDraft, plan: ModelDraft, auto: ModelDraft, modelOptions: ModelOptionRecord[]): AgentModelControlProfilePatch {
-  if (mode === 'default') {
-    return {
-      modelMode: 'single',
-      provider: '',
-      model: '',
-      thinking: '',
-      planProvider: '',
-      planModel: '',
-      planThinking: '',
-      planServiceTier: '',
-      autoProvider: '',
-      autoModel: '',
-      autoThinking: '',
-      autoServiceTier: '',
-    }
-  }
   if (mode === 'single') {
     return {
       modelMode: 'single',
@@ -278,6 +267,8 @@ export function AgentModelControl({
   const [planDraft, setPlanDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'plan', selectedModel, selectedServiceTier, selectedThinking))
   const [autoDraft, setAutoDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'auto', selectedModel, selectedServiceTier, selectedThinking))
   const providers = useMemo(() => providerOptions(modelOptions), [modelOptions])
+  const splitModeAllowed = isPlanCapableAgent(draftProfile)
+  const effectiveDraftMode: DraftMode = draftMode === 'split' && !splitModeAllowed ? 'single' : draftMode
   const agentSections = useMemo(() => {
     const sections = [
       { label: 'Primary agents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'primary') },
@@ -292,7 +283,7 @@ export function AgentModelControl({
   const pricingLabel = selectedModel ? formatModelPricing(selectedModel.pricing) : ''
   const selectedModelLabel = selectedModel
     ? `${selectedModel.provider}/${displayModelName(selectedModel.provider, selectedModel.model, selectedModel.contextMode)}`
-    : 'Default model'
+    : 'No resolved model'
   const normalizedSelectedThinking = selectedThinking.trim() || defaultThinkingForOption(selectedModel)
   const selectedServiceTierSupported = selectedModel ? supportsModelServiceTier(selectedModel.provider, selectedModel.model, selectedModel.serviceTiers) : false
   const normalizedSelectedServiceTier = normalizeDraftServiceTier(selectedModel?.provider ?? '', selectedServiceTier)
@@ -340,26 +331,11 @@ export function AgentModelControl({
   async function confirm() {
     const profile = draftProfile
     if (!profile || saving || busy) return
-    const agentPatch = buildPatch(draftMode, singleDraft, planDraft, autoDraft, modelOptions)
-    const action: AgentModelControlAction = draftMode === 'default'
-      ? {
-        kind: 'default',
-        agentPatch,
-        defaultPreference: {
-          ...singleDraft,
-          provider: singleDraft.provider.trim(),
-          model: singleDraft.model.trim(),
-          thinking: normalizeDraftThinking(singleDraft.provider, singleDraft.model, modelOptions, singleDraft.thinking),
-          serviceTier: modelSupportsServiceTier(singleDraft.provider, singleDraft.model, modelOptions, singleDraft.serviceTier) ? normalizeDraftServiceTier(singleDraft.provider, singleDraft.serviceTier) : '',
-        },
-      }
-      : draftMode === 'single'
-        ? { kind: 'single', agentPatch }
-        : { kind: 'split', agentPatch }
-    if (action.kind === 'default' && (!action.defaultPreference.provider || !action.defaultPreference.model || !action.defaultPreference.thinking)) {
-      setError('Choose provider, model, and thinking for your default model settings.')
-      return
-    }
+    const normalizedDraftMode: DraftMode = draftMode === 'split' && !isPlanCapableAgent(profile) ? 'single' : draftMode
+    const agentPatch = buildPatch(normalizedDraftMode, singleDraft, planDraft, autoDraft, modelOptions)
+    const action: AgentModelControlAction = normalizedDraftMode === 'single'
+      ? { kind: 'single', agentPatch }
+      : { kind: 'split', agentPatch }
     if (action.kind === 'single' && (!action.agentPatch.provider || !action.agentPatch.model || !action.agentPatch.thinking)) {
       setError('Choose provider, model, and thinking for the single-model lock.')
       return
@@ -433,10 +409,9 @@ export function AgentModelControl({
 
             <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
-              <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                <ModeButton selected={draftMode === 'default'} title="Default" description="Show your current defaults here. Editing them changes the defaults used by future default-mode agents and conversations." onClick={() => { setDraftMode('default'); setSingleDraft(defaultDraftFromModel(selectedModel, selectedServiceTier, selectedThinking)) }} />
-                <ModeButton selected={draftMode === 'single'} title="Single" description="Lock this agent to one model." onClick={() => setDraftMode('single')} />
-                <ModeButton selected={draftMode === 'split'} title="Split" description="Use separate plan and auto models." onClick={() => setDraftMode('split')} />
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <ModeButton selected={effectiveDraftMode === 'single'} title="Single" description="Use one explicit model for this agent." onClick={() => setDraftMode('single')} />
+                <ModeButton selected={effectiveDraftMode === 'split'} title="Split" description={splitModeAllowed ? 'Use explicit separate plan and auto models.' : 'Available only for plan-capable agents.'} onClick={() => { if (splitModeAllowed) setDraftMode('split') }} disabled={!splitModeAllowed} />
               </div>
               {modelLocked ? (
                 <div className="mt-3 flex gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-[11px] text-[var(--app-text-muted)]">
@@ -446,19 +421,12 @@ export function AgentModelControl({
               ) : null}
             </div>
 
-            {draftMode === 'single' ? (
+            {effectiveDraftMode === 'single' ? (
               <ModelDraftEditor title="Single model" draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
-            ) : draftMode === 'split' ? (
+            ) : (
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
                 <ModelDraftEditor title="Plan model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
                 <ModelDraftEditor title="Auto model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
-              </div>
-            ) : (
-              <div className="mt-4 grid gap-3">
-                <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-sm text-[var(--app-text-muted)]">
-                  This agent is using your defaults. The fields below show those defaults; changing them updates your future default model settings instead of locking this agent.
-                </div>
-                <ModelDraftEditor title="Default model settings" draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
               </div>
             )}
             {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
@@ -481,7 +449,7 @@ export function AgentModelControl({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        title={triggerDetail ? `Open defaults for ${currentAgent || selectedPrimaryAgent || 'Agent'}: ${triggerDetail}` : 'Open agent and model setup'}
+        title={triggerDetail ? `Open model settings for ${currentAgent || selectedPrimaryAgent || 'Agent'}: ${triggerDetail}` : 'Open agent and model setup'}
         className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
       >
         <Bot size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
@@ -514,9 +482,9 @@ function SummaryCard({ label, value, detail = '' }: { label: string; value: stri
   )
 }
 
-function ModeButton({ selected, title, description, onClick }: { selected: boolean; title: string; description: string; onClick: () => void }) {
+function ModeButton({ selected, title, description, onClick, disabled = false }: { selected: boolean; title: string; description: string; onClick: () => void; disabled?: boolean }) {
   return (
-    <button type="button" onClick={onClick} className={`rounded-xl border px-3 py-2 text-left transition ${selected ? 'border-[var(--app-border-accent)] bg-[var(--app-primary-soft)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
+    <button type="button" onClick={onClick} disabled={disabled} className={`rounded-xl border px-3 py-2 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${selected ? 'border-[var(--app-border-accent)] bg-[var(--app-primary-soft)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
       <span className="flex items-center gap-2 text-sm font-semibold">{selected ? <Check size={14} className="text-[var(--app-primary)]" /> : null}{title}</span>
       <span className="mt-1 block text-[11px] leading-4">{description}</span>
     </button>

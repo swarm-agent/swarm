@@ -2,15 +2,14 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
-import { draftModelQueryKey, draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { draftModelQueryOptions, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { getDesktopSessionCreateTarget, type DesktopChatRoute } from '../services/chat-routing'
 import { formatContextWindow, effectiveContextWindow } from '../services/model-options'
-import { preferenceFromAgentModelLock, preferenceFromModelDraft, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
+import { preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import type { AgentStateRecord, ResolvedSessionPreference, SessionPreferenceRecord } from '../types/chat'
 import { refreshAgentModelMutationCaches, updateAgentProfile } from '../queries/agent-preference-mutations'
-import { updateDraftModelPreference } from '../queries/chat-queries'
 import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
@@ -288,12 +287,7 @@ export function DesktopV3NewSessionPane({
     setStartError(null)
     try {
       const action = input.action
-      let basePreference = preference
-      if (action.kind === 'default') {
-        basePreference = preferenceFromModelDraft(action.defaultPreference, modelOptions)
-        const updated = await updateDraftModelPreference(basePreference)
-        queryClient.setQueryData(draftModelQueryKey(), updated)
-      }
+      const basePreference = preference
       await updateAgentProfile(input.profile, action.agentPatch)
       const agentStateResult = await refreshAgentModelMutationCaches(queryClient)
       const refreshedLock = resolveDesktopV3AgentModelLock(agentStateResult.profiles, input.agentName, mode)

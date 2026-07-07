@@ -11,11 +11,11 @@ import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../../state/d
 import type { DesktopPermissionRecord, DesktopSessionRecord } from '../../types/realtime'
 import type { StructuredToolMessage, ToolMessageState, AgentStateRecord, SessionPreferenceRecord, ChatMessageRecord } from '../types/chat'
 import { getDesktopSessionStopTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../services/chat-routing'
-import { draftModelQueryKey, agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { agentStateQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeSessionMode, normalizeThinkingTagsEnabled, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
 import { formatContextWindow, effectiveContextWindow, normalizeModelID, normalizeProviderID } from '../services/model-options'
-import { preferenceFromAgentModelLock, preferenceFromModelDraft, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
+import { preferenceFromAgentModelLock, resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader, type DesktopV3ChatHeaderSessionActions } from './desktop-v3-chat-header'
 import { buildDesktopV3RunStatusModel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
@@ -45,7 +45,7 @@ import {
   resumeDesktopPlanCheckpointed,
 } from '../../session-v3/plan-execution-api'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../../state/desktop-v3-session-api'
-import { fetchSessionMessages, resolveSessionPermission, updateDraftModelPreference } from '../queries/chat-queries'
+import { fetchSessionMessages, resolveSessionPermission } from '../queries/chat-queries'
 import { refreshAgentModelMutationCaches, updateAgentProfile } from '../queries/agent-preference-mutations'
 import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
@@ -884,12 +884,7 @@ export function DesktopV3ExistingConversationPane({
     setSendError(null)
     try {
       const action = input.action
-      let basePreference = preference
-      if (action.kind === 'default') {
-        basePreference = preferenceFromModelDraft(action.defaultPreference, modelOptions)
-        const updatedDefault = await updateDraftModelPreference(basePreference)
-        queryClient.setQueryData(draftModelQueryKey(), updatedDefault)
-      }
+      const basePreference = preference
       await updateAgentProfile(input.profile, action.agentPatch)
       const agentStateResult = await refreshAgentModelMutationCaches(queryClient)
       const nextAgentName = input.agentName.trim()
@@ -905,7 +900,7 @@ export function DesktopV3ExistingConversationPane({
       const nextPreference = refreshedLock.locked
         ? preferenceFromAgentModelLock(refreshedLock, basePreference, modelOptions)
         : basePreference
-      if (!refreshedLock.locked && (action.kind === 'default' || !preferencesEqual(nextPreference, preference))) {
+      if (!refreshedLock.locked && !preferencesEqual(nextPreference, preference)) {
         const preferenceResponse = await updateSessionV3Preference(normalizedSessionId, {
           provider: nextPreference.provider,
           model: nextPreference.model,

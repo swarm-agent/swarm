@@ -108,15 +108,12 @@ function thinkingOptionLabel(value: string): string {
   return value.replace(/(^|[-_\s])([a-z])/g, (_match, prefix: string, char: string) => `${prefix}${char.toUpperCase()}`);
 }
 
-function thinkingSelectOptionsForModel(provider: string, model: string, modelOptions: ModelOptionRecord[], includeDefault = true) {
+function thinkingSelectOptionsForModel(provider: string, model: string, modelOptions: ModelOptionRecord[]) {
   const option = modelOptionFor(provider, model, modelOptions);
   const source = option ? modelThinkingOptions(option) : FALLBACK_AGENT_THINKING_OPTIONS;
   const values = source.filter((value) => value !== "off");
   const normalized = values.length > 0 ? values : FALLBACK_AGENT_THINKING_OPTIONS;
-  return [
-    ...(includeDefault ? [{ value: "", label: "Default" }] : []),
-    ...normalized.map((value) => ({ value, label: thinkingOptionLabel(value) })),
-  ];
+  return normalized.map((value) => ({ value, label: thinkingOptionLabel(value) }));
 }
 
 function normalizeThinkingForModel(provider: string, model: string, modelOptions: ModelOptionRecord[], value: string): string {
@@ -294,6 +291,17 @@ function formMatchesSavedToolContract(
     form.toolContractInheritPolicy === saved.toolContractInheritPolicy &&
     sameToolContractTools(form.toolContractTools, saved.toolContractTools)
   );
+}
+
+function toolConfigEnabled(config: AgentToolContractToolRecord | undefined): boolean {
+  return config?.enabled === true;
+}
+
+function profileSupportsSplitModel(profile: AgentProfileRecord | null | undefined): boolean {
+  if (!profile) return false;
+  if (profile.exitPlanModeEnabled || profile.runtimeMode === "plan_auto") return true;
+  if (profile.runtimeMode === "read" || profile.runtimeMode === "readwrite" || profile.executionSetting === "read" || profile.executionSetting === "readwrite") return false;
+  return toolConfigEnabled(profile.toolContract?.tools?.plan_manage) || toolConfigEnabled(profile.toolContract?.tools?.exit_plan_mode);
 }
 
 const READ_ONLY_TOOL_NAMES = new Set([
@@ -508,7 +516,7 @@ function agentRuntimeSummary(profile: AgentProfileRecord): string {
 
 function agentProviderModelSummary(
   profile: AgentProfileRecord,
-  fallback = "Default model",
+  fallback = "No model configured",
 ): string {
   if (profile.modelMode === "split") {
     const planProvider = profile.planProvider.trim();
@@ -893,7 +901,7 @@ function profileToForm(
     provider: profile.provider,
     model: profile.model,
     thinking: profile.thinking,
-    modelMode: profile.modelMode,
+    modelMode: profile.modelMode === "split" && profileSupportsSplitModel(profile) ? "split" : "single",
     planProvider: profile.planProvider,
     planModel: profile.planModel,
     planThinking: profile.planThinking,
@@ -946,6 +954,8 @@ async function upsertAgent(input: AgentFormState): Promise<string> {
 
   const resolvedExecutionMode = normalizeExecutionMode(input) || "readwrite";
 
+  const planCapable = resolvedExecutionMode === "plan_auto" || (resolvedExecutionMode === "" && (toolConfigEnabled(input.toolContractTools.plan_manage) || toolConfigEnabled(input.toolContractTools.exit_plan_mode)));
+  const modelMode = input.modelMode === "split" && planCapable ? "split" : "single";
   const response = await requestJson<{ profile?: { name?: string } }>(
     `/v2/agents/${encodeURIComponent(input.name.trim())}`,
     {
@@ -956,17 +966,17 @@ async function upsertAgent(input: AgentFormState): Promise<string> {
       body: JSON.stringify({
         mode: input.mode,
         description: input.description.trim(),
-        provider: input.modelMode === "split" ? "" : input.provider,
-        model: input.modelMode === "split" ? "" : input.model,
-        thinking: input.modelMode === "split" ? "" : input.thinking,
-        model_mode: input.modelMode === "split" ? "split" : "single",
-        plan_provider: input.planProvider,
-        plan_model: input.planModel,
-        plan_thinking: input.planThinking,
-        plan_service_tier: input.planServiceTier,
-        auto_provider: input.autoProvider,
-        auto_model: input.autoModel,
-        auto_thinking: input.autoThinking,
+        provider: modelMode === "split" ? "" : input.provider,
+        model: modelMode === "split" ? "" : input.model,
+        thinking: modelMode === "split" ? "" : input.thinking,
+        model_mode: modelMode,
+        plan_provider: modelMode === "split" ? input.planProvider : "",
+        plan_model: modelMode === "split" ? input.planModel : "",
+        plan_thinking: modelMode === "split" ? input.planThinking : "",
+        plan_service_tier: modelMode === "split" ? input.planServiceTier : "",
+        auto_provider: modelMode === "split" ? input.autoProvider : "",
+        auto_model: modelMode === "split" ? input.autoModel : "",
+        auto_thinking: modelMode === "split" ? input.autoThinking : "",
         auto_service_tier: input.autoServiceTier,
         prompt: input.prompt,
         runtime_mode: resolvedExecutionMode,
@@ -1531,6 +1541,8 @@ export function AgentsSettingsPage() {
   const showRuntimeToolAccess =
     Boolean(runtimeToolAccess) && formMatchesSavedToolContract(form, selectedProfile);
   const displayedRuntimeMode = normalizeExecutionMode(form);
+  const splitModelAllowed = displayedRuntimeMode === "plan_auto" || (displayedRuntimeMode === "" && (toolConfigEnabled(form.toolContractTools.plan_manage) || toolConfigEnabled(form.toolContractTools.exit_plan_mode)));
+  const displayedModelMode = form.modelMode === "split" && splitModelAllowed ? "split" : "single";
   const rawDisplayedToolContractAccess =
     showRuntimeToolAccess && runtimeToolAccess
       ? runtimeToolAccess
@@ -1561,6 +1573,7 @@ export function AgentsSettingsPage() {
         runtimeMode: nextMode,
         executionSetting: nextMode === "plan_auto" ? "" : nextMode,
         exitPlanModeEnabled: nextMode === "plan_auto",
+        modelMode: nextMode === "plan_auto" ? current.modelMode : "single",
         toolContractPreset: CUSTOM_AGENT_TOOL_PRESET_ID,
         toolContractTools: customToolsFromAccess(nextAccess),
       };
@@ -1696,6 +1709,7 @@ export function AgentsSettingsPage() {
         runtimeMode: nextRuntimeMode,
         executionSetting: nextRuntimeMode,
         exitPlanModeEnabled: false,
+        modelMode: "single",
         toolContractPreset: preset.id,
         toolContractTools: {},
       };
@@ -1748,8 +1762,12 @@ export function AgentsSettingsPage() {
       setError("Agent mode is required.");
       return;
     }
+    if (displayedModelMode === "single" && (!form.provider.trim() || !form.model.trim())) {
+      setError("Single model mode requires explicit provider/model selections.");
+      return;
+    }
     if (
-      form.modelMode === "split" &&
+      displayedModelMode === "split" &&
       (!form.planProvider.trim() ||
         !form.planModel.trim() ||
         !form.autoProvider.trim() ||
@@ -1766,6 +1784,7 @@ export function AgentsSettingsPage() {
         ...form,
         name: trimmedName,
         description: form.description.trim(),
+        modelMode: displayedModelMode,
         provider: form.provider.trim(),
         model: form.provider.trim() ? form.model.trim() : "",
         thinking: form.thinking.trim(),
@@ -1802,8 +1821,12 @@ export function AgentsSettingsPage() {
       setError("Agent mode is required.");
       return;
     }
+    if (displayedModelMode === "single" && (!form.provider.trim() || !form.model.trim())) {
+      setError("Single model mode requires explicit provider/model selections.");
+      return;
+    }
     if (
-      form.modelMode === "split" &&
+      displayedModelMode === "split" &&
       (!form.planProvider.trim() ||
         !form.planModel.trim() ||
         !form.autoProvider.trim() ||
@@ -1820,6 +1843,7 @@ export function AgentsSettingsPage() {
         ...form,
         name: trimmedName,
         description: form.description.trim(),
+        modelMode: displayedModelMode,
         provider: form.provider.trim(),
         model: form.provider.trim() ? form.model.trim() : "",
         thinking: form.thinking.trim(),
@@ -2440,16 +2464,16 @@ export function AgentsSettingsPage() {
                 </label>
                 <div className="relative w-full">
                   <select
-                    value={form.modelMode}
+                    value={displayedModelMode}
                     onChange={(event: ChangeEvent<HTMLSelectElement>) => {
-                      const modelMode = event.target.value === "split" ? "split" : "single";
+                      const modelMode = event.target.value === "split" && splitModelAllowed ? "split" : "single";
                       setForm((current) => ({ ...current, modelMode }));
                     }}
                     disabled={busy}
                     className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                   >
-                    <option value="single">Single model (default or selected)</option>
-                    <option value="split">Split plan/auto models</option>
+                    <option value="single">Single model</option>
+                    <option value="split" disabled={!splitModelAllowed}>Split plan/auto models</option>
                   </select>
                   <ChevronDown
                     size={14}
@@ -2458,12 +2482,12 @@ export function AgentsSettingsPage() {
                 </div>
               </div>
 
-              {form.modelMode === "split" ? (
+              {displayedModelMode === "split" ? (
                 <div className="border-b border-[var(--app-border)] px-4 py-4 text-sm text-[var(--app-text)]">
                   <div className="mb-4">
                     <div className="text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Plan/auto split</div>
                     <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
-                      Plan mode runs on the plan model. Exiting plan mode continues on the auto model. Leave either provider/model on Default to inherit the current chat default.
+                      Plan mode runs on the plan model. Exiting plan mode continues on the auto model. Split requires explicit provider/model choices and is only available for Plan approval agents.
                     </p>
                   </div>
                   <div className="grid gap-4 xl:grid-cols-2">
@@ -2516,7 +2540,7 @@ export function AgentsSettingsPage() {
                         disabled={busy}
                         className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                       >
-                        <option value="">Default</option>
+                        <option value="" disabled>Choose provider</option>
                         {providerOptions.map((provider) => (
                           <option key={provider} value={provider}>
                             {provider}
@@ -2551,7 +2575,7 @@ export function AgentsSettingsPage() {
                           disabled={busy || !form.provider.trim()}
                           className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                         >
-                          <option value="">Default</option>
+                          <option value="" disabled>Choose model</option>
                           {modelChoices.map((model) => (
                             <option key={model} value={model}>
                               {model}
@@ -2565,7 +2589,7 @@ export function AgentsSettingsPage() {
                       </div>
                     </div>
                     <p className="mt-2 pl-[25%] text-xs leading-5 text-[var(--app-text-muted)]">
-                      In the default state, you can freely change your settings and new chats will continue with your settings for agents with "Default" settings. Current default chat model: {currentDefaultModelLabel}. Choose a provider/model here to lock the agent to that preset.
+                      Single mode requires explicit provider/model choices. Current default chat model: {currentDefaultModelLabel}.
                     </p>
                   </div>
 

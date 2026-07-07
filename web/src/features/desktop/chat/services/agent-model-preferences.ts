@@ -23,6 +23,14 @@ export function findAgentProfile(agents: AgentProfileRecord[], agentName: string
     ?? null
 }
 
+function agentIsPlanCapable(profile: AgentProfileRecord | null): boolean {
+  if (!profile) return false
+  if (profile.exitPlanModeEnabled || profile.runtimeMode === 'plan_auto') return true
+  if (profile.runtimeMode === 'read' || profile.runtimeMode === 'readwrite' || profile.executionSetting === 'read' || profile.executionSetting === 'readwrite') return false
+  const tools = profile.toolContract?.tools ?? {}
+  return Boolean(tools.plan_manage?.enabled || tools.exit_plan_mode?.enabled)
+}
+
 function splitPreferenceForMode(profile: AgentProfileRecord, mode: DesktopSessionMode) {
   if (mode === 'plan') {
     return {
@@ -48,7 +56,8 @@ export function resolveDesktopV3AgentModelLock(
   const normalizedMode = normalizeSessionMode(mode)
   const profile = findAgentProfile(agents, selectedAgentName)
   const agentName = profile?.name.trim() || selectedAgentName.trim()
-  const preference = profile?.modelMode === 'split'
+  const splitModelActive = profile?.modelMode === 'split' && agentIsPlanCapable(profile)
+  const preference = splitModelActive
     ? splitPreferenceForMode(profile, normalizedMode)
     : {
         provider: profile?.provider.trim() ?? '',
@@ -57,11 +66,11 @@ export function resolveDesktopV3AgentModelLock(
         serviceTier: profile?.autoServiceTier.trim() ?? '',
       }
   const locked = Boolean(preference.provider && preference.model)
-  const modeLabel = profile?.modelMode === 'split' ? `${normalizedMode} ` : ''
+  const modeLabel = splitModelActive ? `${normalizedMode} ` : ''
   return {
     profile,
     locked,
-    customized: Boolean(profile && (profile.modelMode === 'split' || profile.provider.trim() || profile.model.trim())),
+    customized: Boolean(profile && (splitModelActive || profile.provider.trim() || profile.model.trim())),
     agentName,
     provider: preference.provider,
     model: preference.model,
@@ -69,32 +78,13 @@ export function resolveDesktopV3AgentModelLock(
     serviceTier: preference.serviceTier,
     mode: normalizedMode,
     disabledReason: locked && agentName
-      ? `To change models for ${agentName}, set the ${modeLabel}model to Default in Settings → Agents.`
+      ? `To change models for ${agentName}, update the ${modeLabel}model in Settings → Agents.`
       : '',
   }
 }
 
 function defaultThinkingForModelOption(option: ModelOptionRecord | null): string {
   return defaultModelThinking(option)
-}
-
-export function preferenceFromModelDraft(
-  draft: { provider: string; model: string; thinking: string; serviceTier: string },
-  modelOptions: ModelOptionRecord[],
-): SessionPreferenceRecord {
-  const provider = draft.provider.trim()
-  const model = draft.model.trim()
-  const matchingOption = modelOptions.find((option) => option.provider === provider && option.model === model && option.contextMode.trim() === '')
-    ?? modelOptions.find((option) => option.provider === provider && option.model === model)
-    ?? null
-  return {
-    provider,
-    model,
-    thinking: draft.thinking.trim() || defaultThinkingForModelOption(matchingOption),
-    serviceTier: draft.serviceTier.trim(),
-    contextMode: matchingOption?.contextMode ?? '',
-    updatedAt: Date.now(),
-  }
 }
 
 export function preferenceFromAgentModelLock(

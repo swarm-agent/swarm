@@ -150,7 +150,7 @@ func applyAgentPreferenceOverridesForMode(base pebblestore.ModelPreference, agen
 	modelOverride := strings.TrimSpace(agentProfile.Model)
 	thinkingOverride := normalizeThinkingLevel(agentProfile.Thinking)
 
-	if pebblestore.AgentModelMode(agentProfile) == "split" {
+	if pebblestore.AgentModelMode(agentProfile) == "split" && pebblestore.AgentSupportsSplitModel(agentProfile) {
 		mode = sessionruntime.NormalizeMode(mode)
 		if mode == sessionruntime.ModePlan {
 			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.PlanProvider))

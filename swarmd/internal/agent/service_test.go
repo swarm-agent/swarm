@@ -147,7 +147,6 @@ func TestEnsureDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
 		"explorer": "read_only",
 		"memory":   "background_commit",
 		"parallel": "read_write",
-		"clone":    "read_write",
 	}
 	for name, wantPreset := range wantPresets {
 		profile, ok, err := agents.GetProfile(name)
@@ -197,8 +196,11 @@ func TestRestoreDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
 	if len(state.Profiles) == 0 {
 		t.Fatalf("RestoreDefaults() returned no profiles")
 	}
+	if got := state.ActiveSubagent["clone"]; got != "" {
+		t.Fatalf("active subagent clone = %q, want empty", got)
+	}
 
-	for _, name := range []string{"swarm", "explorer", "memory", "parallel", "clone"} {
+	for _, name := range []string{"swarm", "explorer", "memory", "parallel"} {
 		profile, ok, err := agents.GetProfile(name)
 		if err != nil {
 			t.Fatalf("GetProfile(%s) error = %v", name, err)
@@ -209,6 +211,100 @@ func TestRestoreDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
 		if profile.ToolContract == nil {
 			t.Fatalf("%s missing tool contract after RestoreDefaults", name)
 		}
+	}
+	if _, ok, err := agents.GetProfile("clone"); err != nil {
+		t.Fatalf("GetProfile(clone) error = %v", err)
+	} else if ok {
+		t.Fatalf("clone should not be restored as a built-in profile")
+	}
+}
+
+func TestEnsureDefaultsRemovesOldBuiltInCloneProfileAndAssignments(t *testing.T) {
+	svc, agents := newTestService(t)
+	if err := svc.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+	if err := agents.PutProfile(pebblestore.AgentProfile{
+		Name:             "clone",
+		Mode:             ModeSubagent,
+		Description:      "Swarm clone",
+		RuntimeMode:      pebblestore.AgentRuntimeModeReadWrite,
+		ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
+		Prompt:           oldDefaultClonePrompt(),
+		ToolContract:     defaultReadWriteSubagentToolContract(),
+		Enabled:          true,
+	}); err != nil {
+		t.Fatalf("put legacy clone: %v", err)
+	}
+	if err := agents.SetActiveSubagent("clone", "clone"); err != nil {
+		t.Fatalf("set clone assignment: %v", err)
+	}
+	if err := agents.SetActiveSubagent("helper", "clone"); err != nil {
+		t.Fatalf("set helper assignment: %v", err)
+	}
+
+	if err := svc.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults() cleanup error = %v", err)
+	}
+	if _, ok, err := agents.GetProfile("clone"); err != nil {
+		t.Fatalf("GetProfile(clone) error = %v", err)
+	} else if ok {
+		t.Fatalf("old built-in clone profile should be removed")
+	}
+	assignments, err := agents.GetActiveSubagents(20)
+	if err != nil {
+		t.Fatalf("GetActiveSubagents() error = %v", err)
+	}
+	if got := assignments["clone"]; got != "" {
+		t.Fatalf("clone assignment = %q, want empty", got)
+	}
+	if got := assignments["helper"]; got != "" {
+		t.Fatalf("helper assignment = %q, want empty", got)
+	}
+}
+
+func TestEnsureDefaultsPreservesCustomizedCloneProfile(t *testing.T) {
+	svc, agents := newTestService(t)
+	if err := svc.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+	if err := agents.PutProfile(pebblestore.AgentProfile{
+		Name:             "clone",
+		Mode:             ModeSubagent,
+		Description:      "Custom clone",
+		Provider:         "codex",
+		Model:            "gpt-5.5",
+		RuntimeMode:      pebblestore.AgentRuntimeModeReadWrite,
+		ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
+		Prompt:           "custom clone prompt",
+		ToolContract:     defaultReadWriteSubagentToolContract(),
+		Enabled:          true,
+	}); err != nil {
+		t.Fatalf("put custom clone: %v", err)
+	}
+	if err := agents.SetActiveSubagent("clone", "clone"); err != nil {
+		t.Fatalf("set clone assignment: %v", err)
+	}
+
+	if err := svc.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults() cleanup error = %v", err)
+	}
+	profile, ok, err := agents.GetProfile("clone")
+	if err != nil {
+		t.Fatalf("GetProfile(clone) error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("custom clone profile should be preserved")
+	}
+	if profile.Description != "Custom clone" || profile.Provider != "codex" || profile.Model != "gpt-5.5" {
+		t.Fatalf("custom clone profile was changed: %+v", profile)
+	}
+	assignments, err := agents.GetActiveSubagents(20)
+	if err != nil {
+		t.Fatalf("GetActiveSubagents() error = %v", err)
+	}
+	if got := assignments["clone"]; got != "" {
+		t.Fatalf("clone assignment = %q, want empty", got)
 	}
 }
 
@@ -408,10 +504,63 @@ func TestNormalizeModelServiceTierKeepsPriorityDistinctFromFast(t *testing.T) {
 	}
 }
 
+func TestUpsertPlanCapableAgentPreservesSplitModelFields(t *testing.T) {
+	svc, _ := newTestService(t)
+	enabled := true
+	profile, _, _, err := svc.Upsert(UpsertInput{
+		Name:                "planner-model-probe",
+		Mode:                ModeSubagent,
+		Description:         "planner model probe",
+		Provider:            "codex",
+		Model:               "base-model",
+		Thinking:            "low",
+		ModelMode:           "split",
+		PlanProvider:        "codex",
+		PlanModel:           "gpt-5.4",
+		PlanThinking:        "high",
+		PlanServiceTier:     "fast",
+		AutoProvider:        "fireworks",
+		AutoModel:           "glm-5p1",
+		AutoThinking:        "medium",
+		AutoServiceTier:     "priority",
+		Prompt:              "Probe model settings.",
+		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+		ToolContract:        &pebblestore.AgentToolContract{Preset: "read_only"},
+		Enabled:             &enabled,
+		ProviderSet:         true,
+		ModelSet:            true,
+		ThinkingSet:         true,
+		PlanProviderSet:     true,
+		PlanModelSet:        true,
+		PlanThinkingSet:     true,
+		PlanServiceTierSet:  true,
+		AutoProviderSet:     true,
+		AutoModelSet:        true,
+		AutoThinkingSet:     true,
+		AutoServiceTierSet:  true,
+	})
+	if err != nil {
+		t.Fatalf("create plan-capable split profile: %v", err)
+	}
+	if profile.ModelMode != "split" {
+		t.Fatalf("model_mode = %q, want split", profile.ModelMode)
+	}
+	if profile.Provider != "" || profile.Model != "" || profile.Thinking != "" {
+		t.Fatalf("single fields were not cleared for split profile: %+v", profile)
+	}
+	if profile.PlanProvider != "codex" || profile.PlanModel != "gpt-5.4" || profile.PlanThinking != "high" || profile.PlanServiceTier != "fast" {
+		t.Fatalf("plan split fields = %+v", profile)
+	}
+	if profile.AutoProvider != "fireworks" || profile.AutoModel != "glm-5p1" || profile.AutoThinking != "medium" || profile.AutoServiceTier != "priority" {
+		t.Fatalf("auto split fields = %+v", profile)
+	}
+}
+
 func TestUpsertClearsExplicitSplitModelFields(t *testing.T) {
 	svc, _ := newTestService(t)
 	enabled := true
-	if _, _, _, err := svc.Upsert(UpsertInput{
+	created, _, _, err := svc.Upsert(UpsertInput{
 		Name:               "model-probe",
 		Mode:               ModeSubagent,
 		Description:        "model probe",
@@ -436,8 +585,12 @@ func TestUpsertClearsExplicitSplitModelFields(t *testing.T) {
 		AutoModelSet:       true,
 		AutoThinkingSet:    true,
 		AutoServiceTierSet: true,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("create split profile: %v", err)
+	}
+	if created.ModelMode != "" || created.PlanProvider != "" || created.PlanModel != "" || created.PlanThinking != "" || created.PlanServiceTier != "" || created.AutoProvider != "" || created.AutoModel != "" || created.AutoThinking != "" || created.AutoServiceTier != "" {
+		t.Fatalf("non-plan-capable split fields were not cleared on create: %+v", created)
 	}
 
 	updated, _, _, err := svc.Upsert(UpsertInput{

@@ -55,7 +55,11 @@ func TestAuthCredentialUpsertAppliesUtilityDefaultsOnce(t *testing.T) {
 	if err := agentSvc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
 	}
-	modelSvc := model.NewService(pebblestore.NewModelStore(store), eventLog, nil)
+	catalogSvc := model.NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	if err := catalogSvc.EnsureBootDefaults(); err != nil {
+		t.Fatalf("EnsureBootDefaults catalog: %v", err)
+	}
+	modelSvc := model.NewService(pebblestore.NewModelStore(store), eventLog, catalogSvc)
 	providers := registry.New(
 		codex.NewAdapter(authStore),
 		google.NewAdapter(authStore),
@@ -158,11 +162,14 @@ func TestAuthCredentialUpsertAppliesUtilityDefaultsOnce(t *testing.T) {
 	for _, profile := range agentsResp.State.Profiles {
 		switch profile.Name {
 		case "swarm":
-			if profile.Provider != "" {
-				t.Fatalf("profile %q provider = %q, want empty inherited primary", profile.Name, profile.Provider)
+			if profile.ModelMode != "split" {
+				t.Fatalf("profile %q model_mode = %q, want split", profile.Name, profile.ModelMode)
 			}
-			if profile.Model != "" {
-				t.Fatalf("profile %q model = %q, want empty inherited primary", profile.Name, profile.Model)
+			if profile.PlanProvider != "google" || profile.PlanModel != "gemini-3.1-pro-preview" {
+				t.Fatalf("profile %q plan = %s/%s, want google/gemini-3.1-pro-preview", profile.Name, profile.PlanProvider, profile.PlanModel)
+			}
+			if profile.AutoProvider != "google" || profile.AutoModel != "gemini-3.1-pro-preview" {
+				t.Fatalf("profile %q auto = %s/%s, want google/gemini-3.1-pro-preview", profile.Name, profile.AutoProvider, profile.AutoModel)
 			}
 		case "explorer", "memory", "parallel":
 			if profile.Provider != "google" {
@@ -172,12 +179,7 @@ func TestAuthCredentialUpsertAppliesUtilityDefaultsOnce(t *testing.T) {
 				t.Fatalf("profile %q model = %q, want gemini-3-flash-preview", profile.Name, profile.Model)
 			}
 		case "clone":
-			if profile.Provider != "" {
-				t.Fatalf("profile %q provider = %q, want empty", profile.Name, profile.Provider)
-			}
-			if profile.Model != "" {
-				t.Fatalf("profile %q model = %q, want empty", profile.Name, profile.Model)
-			}
+			t.Fatalf("clone should not be created as a built-in utility agent")
 		}
 	}
 
@@ -259,11 +261,14 @@ func TestAuthCredentialUpsertAppliesUtilityDefaultsOnce(t *testing.T) {
 	for _, profile := range agentsResp.State.Profiles {
 		switch profile.Name {
 		case "swarm":
-			if profile.Provider != "" {
-				t.Fatalf("profile %q provider after second provider = %q, want empty inherited primary", profile.Name, profile.Provider)
+			if profile.ModelMode != "split" {
+				t.Fatalf("profile %q model_mode after second provider = %q, want split", profile.Name, profile.ModelMode)
 			}
-			if profile.Model != "" {
-				t.Fatalf("profile %q model after second provider = %q, want empty inherited primary", profile.Name, profile.Model)
+			if profile.PlanProvider != "google" || profile.PlanModel != "gemini-3.1-pro-preview" {
+				t.Fatalf("profile %q plan after second provider = %s/%s, want google/gemini-3.1-pro-preview", profile.Name, profile.PlanProvider, profile.PlanModel)
+			}
+			if profile.AutoProvider != "google" || profile.AutoModel != "gemini-3.1-pro-preview" {
+				t.Fatalf("profile %q auto after second provider = %s/%s, want google/gemini-3.1-pro-preview", profile.Name, profile.AutoProvider, profile.AutoModel)
 			}
 		case "explorer", "memory", "parallel":
 			if profile.Provider != "openai" {
@@ -299,7 +304,11 @@ func TestAuthCredentialUpsertCodexFirstProviderEnforcesSparkUtilityDefaults(t *t
 	if err := agentSvc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
 	}
-	modelSvc := model.NewService(pebblestore.NewModelStore(store), eventLog, nil)
+	catalogSvc := model.NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	if err := catalogSvc.EnsureBootDefaults(); err != nil {
+		t.Fatalf("EnsureBootDefaults catalog: %v", err)
+	}
+	modelSvc := model.NewService(pebblestore.NewModelStore(store), eventLog, catalogSvc)
 	providers := registry.New(
 		codex.NewAdapter(authStore),
 		google.NewAdapter(authStore),
@@ -365,6 +374,9 @@ func TestAuthCredentialUpsertCodexFirstProviderEnforcesSparkUtilityDefaults(t *t
 	if upsertResp.AutoDefaults.Provider != "codex" || upsertResp.AutoDefaults.Model != "gpt-5.5" {
 		t.Fatalf("auto default target = %s/%s, want codex/gpt-5.5", upsertResp.AutoDefaults.Provider, upsertResp.AutoDefaults.Model)
 	}
+	if upsertResp.AutoDefaults.Thinking != "high" {
+		t.Fatalf("auto thinking = %q, want high", upsertResp.AutoDefaults.Thinking)
+	}
 	if !upsertResp.AutoDefaults.GlobalModel {
 		t.Fatalf("expected first provider onboarding to set global model")
 	}
@@ -373,6 +385,9 @@ func TestAuthCredentialUpsertCodexFirstProviderEnforcesSparkUtilityDefaults(t *t
 	}
 	if upsertResp.AutoDefaults.UtilityModel != "gpt-5.4-mini" {
 		t.Fatalf("utility model = %q, want gpt-5.4-mini", upsertResp.AutoDefaults.UtilityModel)
+	}
+	if upsertResp.AutoDefaults.UtilityThinking != "medium" {
+		t.Fatalf("utility thinking = %q, want medium", upsertResp.AutoDefaults.UtilityThinking)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/v2/agents", nil)
@@ -391,6 +406,16 @@ func TestAuthCredentialUpsertCodexFirstProviderEnforcesSparkUtilityDefaults(t *t
 	}
 	for _, profile := range agentsResp.State.Profiles {
 		switch profile.Name {
+		case "swarm":
+			if profile.ModelMode != "split" {
+				t.Fatalf("profile %q model_mode = %q, want split", profile.Name, profile.ModelMode)
+			}
+			if profile.PlanProvider != "codex" || profile.PlanModel != "gpt-5.5" || profile.PlanThinking != "xhigh" {
+				t.Fatalf("profile %q plan = %s/%s/%s, want codex/gpt-5.5/xhigh", profile.Name, profile.PlanProvider, profile.PlanModel, profile.PlanThinking)
+			}
+			if profile.AutoProvider != "codex" || profile.AutoModel != "gpt-5.5" || profile.AutoThinking != "high" {
+				t.Fatalf("profile %q auto = %s/%s/%s, want codex/gpt-5.5/high", profile.Name, profile.AutoProvider, profile.AutoModel, profile.AutoThinking)
+			}
 		case "explorer", "memory", "parallel":
 			if profile.Provider != "codex" {
 				t.Fatalf("profile %q provider = %q, want codex", profile.Name, profile.Provider)

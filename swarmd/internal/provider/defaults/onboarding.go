@@ -10,6 +10,10 @@ type ProviderDefaults struct {
 	ProviderID       string
 	PrimaryModel     string
 	PrimaryThinking  string
+	PlanModel        string
+	PlanThinking     string
+	AutoModel        string
+	AutoThinking     string
 	UtilityModel     string
 	UtilityThinking  string
 	UtilitySubagents []string
@@ -86,8 +90,24 @@ func Lookup(providerID string) (ProviderDefaults, bool) {
 	defaults.ProviderID = providerID
 	defaults.PrimaryModel = strings.TrimSpace(defaults.PrimaryModel)
 	defaults.PrimaryThinking = normalizeThinking(defaults.PrimaryThinking)
+	defaults.PlanModel = strings.TrimSpace(defaults.PlanModel)
+	defaults.PlanThinking = normalizeThinking(defaults.PlanThinking)
+	defaults.AutoModel = strings.TrimSpace(defaults.AutoModel)
+	defaults.AutoThinking = normalizeThinking(defaults.AutoThinking)
 	defaults.UtilityModel = strings.TrimSpace(defaults.UtilityModel)
 	defaults.UtilityThinking = normalizeThinking(defaults.UtilityThinking)
+	if defaults.PlanModel == "" {
+		defaults.PlanModel = defaults.PrimaryModel
+	}
+	if defaults.PlanThinking == "" {
+		defaults.PlanThinking = defaults.PrimaryThinking
+	}
+	if defaults.AutoModel == "" {
+		defaults.AutoModel = defaults.PrimaryModel
+	}
+	if defaults.AutoThinking == "" {
+		defaults.AutoThinking = defaults.PrimaryThinking
+	}
 	defaults.UtilitySubagents = dedupeNames(defaults.UtilitySubagents)
 	return defaults, true
 }

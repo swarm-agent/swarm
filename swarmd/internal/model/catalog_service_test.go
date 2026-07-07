@@ -244,8 +244,8 @@ func TestEnsureBootDefaultsSeedsPinnedSnapshotOffline(t *testing.T) {
 	if !anthropic.Found {
 		t.Fatalf("expected pinned Anthropic claude-sonnet-5 record")
 	}
-	if !stringSlicesEqual(anthropic.Record.ServiceTiers, []string{"standard", "priority"}) {
-		t.Fatalf("Anthropic service tiers = %#v, want standard/priority without batch", anthropic.Record.ServiceTiers)
+	if !stringSlicesEqual(anthropic.Record.ServiceTiers, []string{"standard"}) {
+		t.Fatalf("Anthropic service tiers = %#v, want standard without batch", anthropic.Record.ServiceTiers)
 	}
 	for _, mapping := range anthropic.Record.ServiceTierMappings {
 		if mapping.Tier == "batch" || mapping.SwarmSetting == "batch" {
