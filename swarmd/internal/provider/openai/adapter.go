@@ -3,7 +3,6 @@ package openai
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -85,11 +84,10 @@ func (a *Adapter) VerifyCredential(ctx context.Context, credential provideriface
 }
 
 func openAIAuthMethods() []provideriface.AuthMethod {
-	providerDefaults := defaults.MustLookup("openai")
 	return []provideriface.AuthMethod{{
 		ID:             "api",
 		Label:          "API key",
 		CredentialType: pebblestore.AuthTypeAPI,
-		Description:    fmt.Sprintf("Use an OpenAI API key for the Responses API (%s).", providerDefaults.PrimaryModel),
+		Description:    "Use an OpenAI API key for the Responses API.",
 	}}
 }

@@ -30,7 +30,7 @@ const ONBOARDING_STEPS: Record<OnboardingStep, { stepLabel: string; title: strin
   identity: {
     stepLabel: 'Step 1 of 3 · Identity',
     title: 'Hi, I’m Swarm — your AI command center.',
-    subtitle: 'Start with the basics: what should Swarm call you, and what should this device be named?',
+    subtitle: 'Start with the basics: your username and this device name.',
   },
   provider: {
     stepLabel: 'Step 2 of 3 · Provider',
@@ -658,7 +658,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                 <form className="grid h-full content-start gap-6" onSubmit={handleIdentitySubmit}>
                   <div className="grid gap-2">
                     <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-username">
-                      Add your username.
+                      Your username.
                     </label>
                     <Input
                       id="desktop-onboarding-username"
@@ -748,145 +748,161 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                 ].join(' ')}
                               >
                                 <span className="text-sm font-medium text-[var(--app-text)]">{provider.id}</span>
-                                <span className="text-xs text-[var(--app-text-muted)]">{connected ? 'Connected' : 'Set up now'}</span>
+                                {connected ? <span className="text-xs text-[var(--app-text-muted)]">Connected</span> : null}
                               </button>
                             )
                           })}
                         </div>
                       </div>
 
-                      {providerAlreadyConnected ? (
-                        <div className="border-l-2 border-[var(--app-success)] py-2 pl-4 text-sm leading-6 text-[var(--app-success)]">
-                          {selectedProvider?.id || 'Selected provider'} is connected. Continue when you’re ready.
+                      <div className="grid gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="grid gap-1">
+                            <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Selected provider</span>
+                            <h3 className="text-base font-semibold text-[var(--app-text)]">{selectedProvider?.id || 'Provider setup'}</h3>
+                          </div>
+                          {providerAlreadyConnected ? (
+                            <span className="rounded-full border border-[var(--app-success-border)] px-3 py-1 text-xs font-medium text-[var(--app-success)]">Connected</span>
+                          ) : null}
                         </div>
-                      ) : canQuickAuthenticate ? (
-                        <div className="grid gap-4">
-                          {showProviderSetupChoices ? (
-                            <div className="mx-auto flex max-w-2xl flex-wrap items-center justify-center gap-2">
-                              {selectedManualMethod ? (
-                                <button
-                                  type="button"
-                                  onClick={() => setProviderSetupMode(providerSetupMode === 'api' ? null : 'api')}
-                                  disabled={submitting}
-                                  className={[
-                                    'border-b px-4 py-2 text-center text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
-                                    providerSetupMode === 'api'
-                                      ? 'border-[var(--app-primary)] text-[var(--app-text)]'
-                                      : 'border-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
-                                  ].join(' ')}
-                                >
-                                  API key
-                                </button>
-                              ) : null}
-                              {canStartOAuth ? (
-                                <>
+
+                        {providerAlreadyConnected ? (
+                          <p className="text-sm leading-6 text-[var(--app-success)]">
+                            {selectedProvider?.id || 'Selected provider'} is connected. Continue when you’re ready.
+                          </p>
+                        ) : canQuickAuthenticate ? (
+                          <div className="grid gap-4">
+                            {showProviderSetupChoices ? (
+                              <div className="grid gap-2 sm:grid-cols-3">
+                                {selectedManualMethod ? (
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      setProviderSetupMode('oauth-browser')
-                                      void handleStartOAuth('browser')
-                                    }}
+                                    onClick={() => setProviderSetupMode(providerSetupMode === 'api' ? null : 'api')}
                                     disabled={submitting}
                                     className={[
-                                      'border-b px-4 py-2 text-center text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
-                                      providerSetupMode === 'oauth-browser'
-                                        ? 'border-[var(--app-primary)] text-[var(--app-text)]'
-                                        : 'border-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
+                                      'rounded-lg border px-4 py-3 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+                                      providerSetupMode === 'api'
+                                        ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)] text-[var(--app-text)]'
+                                        : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
                                     ].join(' ')}
                                   >
-                                    {pendingAction === 'oauth-browser' ? 'Opening…' : 'Local browser sign-in'}
+                                    API key
                                   </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setProviderSetupMode('oauth-manual')
-                                      void handleStartOAuth('manual')
-                                    }}
-                                    disabled={submitting}
-                                    className={[
-                                      'border-b px-4 py-2 text-center text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
-                                      providerSetupMode === 'oauth-manual'
-                                        ? 'border-[var(--app-primary)] text-[var(--app-text)]'
-                                        : 'border-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
-                                    ].join(' ')}
-                                  >
-                                    {pendingAction === 'oauth-manual' ? 'Preparing…' : 'Remote browser sign-in'}
-                                  </button>
-                                </>
-                              ) : null}
-                            </div>
-                          ) : null}
-
-                          {showCredentialSection && selectedManualMethod ? (
-                            <div className="mx-auto grid w-full max-w-2xl gap-3 border-l border-[var(--app-border)] pl-4">
-                              <label className="grid gap-2">
-                                <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
-                                  Enter credential
-                                </span>
-                                <Input
-                                  type="password"
-                                  autoComplete="off"
-                                  value={credentialValue}
-                                  onChange={(event) => setCredentialValue(event.target.value)}
-                                  onKeyDown={handleCredentialKeyDown}
-                                  placeholder={credentialLabel(selectedManualMethod)}
-                                  disabled={submitting}
-                                />
-                              </label>
-                              {selectedManualMethod.description ? (
-                                <p className="text-sm leading-6 text-[var(--app-text-muted)]">{selectedManualMethod.description}</p>
-                              ) : null}
-                              <div className="flex justify-end">
-                                <Button type="button" onClick={() => void handleProviderSave()} disabled={submitting}>
-                                  {pendingAction === 'provider-save' ? 'Verifying…' : 'Save provider'}
-                                </Button>
-                              </div>
-                            </div>
-                          ) : null}
-
-                          {showOAuthSection && oauthSession ? (
-                            <div className="grid gap-3 border-l border-[var(--app-border)] pl-4 text-sm leading-6 text-[var(--app-text-muted)]">
-                              <div>
-                                {codexOAuthMode === 'browser' ? 'Local browser sign-in' : 'Remote browser sign-in'} status:{' '}
-                                <span className={oauthSession.status === 'success' ? 'font-medium text-[var(--app-success)]' : 'font-medium text-[var(--app-text)]'}>
-                                  {oauthSession.status || 'waiting'}
-                                </span>
-                                {oauthSession.error ? <div className="text-[var(--app-danger)]">{oauthSession.error}</div> : null}
-                              </div>
-                              {oauthSession.authURL ? (
-                                <label className="grid gap-2">
-                                  <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Auth URL</span>
-                                  <textarea readOnly value={oauthSession.authURL} className="min-h-24 rounded-xl border border-[var(--app-border)] bg-transparent px-3 py-2 text-sm text-[var(--app-text)] outline-none" />
-                                </label>
-                              ) : null}
-                              {codexOAuthMode === 'manual' ? (
-                                <>
-                                  <label className="grid gap-2">
-                                    <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Callback URL or code</span>
-                                    <textarea
-                                      value={callbackInput}
-                                      onChange={(event) => setCallbackInput(event.target.value)}
-                                      onKeyDown={handleCallbackKeyDown}
-                                      placeholder="Paste the callback URL, query string, or authorization code"
+                                ) : null}
+                                {canStartOAuth ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setProviderSetupMode('oauth-browser')
+                                        void handleStartOAuth('browser')
+                                      }}
                                       disabled={submitting}
-                                      className="min-h-24 rounded-xl border border-[var(--app-border)] bg-transparent px-3 py-2 text-sm text-[var(--app-text)] outline-none transition-colors focus:border-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-60"
-                                    />
+                                      className={[
+                                        'rounded-lg border px-4 py-3 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+                                        providerSetupMode === 'oauth-browser'
+                                          ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)] text-[var(--app-text)]'
+                                          : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
+                                      ].join(' ')}
+                                    >
+                                      {pendingAction === 'oauth-browser' ? 'Opening…' : 'Local browser sign-in'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setProviderSetupMode('oauth-manual')
+                                        void handleStartOAuth('manual')
+                                      }}
+                                      disabled={submitting}
+                                      className={[
+                                        'rounded-lg border px-4 py-3 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+                                        providerSetupMode === 'oauth-manual'
+                                          ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)] text-[var(--app-text)]'
+                                          : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
+                                      ].join(' ')}
+                                    >
+                                      {pendingAction === 'oauth-manual' ? 'Preparing…' : 'Remote browser sign-in'}
+                                    </button>
+                                  </>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <div className="rounded-lg border border-[var(--app-border)] bg-transparent px-4 py-3 text-sm font-medium text-[var(--app-text)]">
+                                {selectedManualMethod ? credentialLabel(selectedManualMethod) : 'Provider sign-in'}
+                              </div>
+                            )}
+
+                            {showCredentialSection && selectedManualMethod ? (
+                              <div className="grid gap-3">
+                                <label className="grid gap-2">
+                                  <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                                    Enter credential
+                                  </span>
+                                  <Input
+                                    type="password"
+                                    autoComplete="off"
+                                    value={credentialValue}
+                                    onChange={(event) => setCredentialValue(event.target.value)}
+                                    onKeyDown={handleCredentialKeyDown}
+                                    placeholder={credentialLabel(selectedManualMethod)}
+                                    disabled={submitting}
+                                  />
+                                </label>
+                                {selectedManualMethod.description ? (
+                                  <p className="text-sm leading-6 text-[var(--app-text-muted)]">{selectedManualMethod.description}</p>
+                                ) : null}
+                                <div className="flex justify-end">
+                                  <Button type="button" onClick={() => void handleProviderSave()} disabled={submitting}>
+                                    {pendingAction === 'provider-save' ? 'Verifying…' : 'Save provider'}
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {showOAuthSection && oauthSession ? (
+                              <div className="grid gap-3 text-sm leading-6 text-[var(--app-text-muted)]">
+                                <div>
+                                  {codexOAuthMode === 'browser' ? 'Local browser sign-in' : 'Remote browser sign-in'} status:{' '}
+                                  <span className={oauthSession.status === 'success' ? 'font-medium text-[var(--app-success)]' : 'font-medium text-[var(--app-text)]'}>
+                                    {oauthSession.status || 'waiting'}
+                                  </span>
+                                  {oauthSession.error ? <div className="text-[var(--app-danger)]">{oauthSession.error}</div> : null}
+                                </div>
+                                {oauthSession.authURL ? (
+                                  <label className="grid gap-2">
+                                    <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Auth URL</span>
+                                    <textarea readOnly value={oauthSession.authURL} className="min-h-24 rounded-xl border border-[var(--app-border)] bg-transparent px-3 py-2 text-sm text-[var(--app-text)] outline-none" />
                                   </label>
-                                  <div className="flex justify-end">
-                                    <Button type="button" onClick={() => void handleCompleteOAuth()} disabled={submitting || !oauthSession.sessionID}>
-                                      {pendingAction === 'oauth-complete' ? 'Completing…' : 'Complete remote sign-in'}
-                                    </Button>
-                                  </div>
-                                </>
-                              ) : null}
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <div className="border-l border-[var(--app-border)] py-2 pl-4 text-sm leading-6 text-[var(--app-text-muted)]">
-                          The selected provider does not expose a quick auth method here. Continue to workspace setup and connect it later from Settings.
-                        </div>
-                      )}
+                                ) : null}
+                                {codexOAuthMode === 'manual' ? (
+                                  <>
+                                    <label className="grid gap-2">
+                                      <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Callback URL or code</span>
+                                      <textarea
+                                        value={callbackInput}
+                                        onChange={(event) => setCallbackInput(event.target.value)}
+                                        onKeyDown={handleCallbackKeyDown}
+                                        placeholder="Paste the callback URL, query string, or authorization code"
+                                        disabled={submitting}
+                                        className="min-h-24 rounded-xl border border-[var(--app-border)] bg-transparent px-3 py-2 text-sm text-[var(--app-text)] outline-none transition-colors focus:border-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+                                      />
+                                    </label>
+                                    <div className="flex justify-end">
+                                      <Button type="button" onClick={() => void handleCompleteOAuth()} disabled={submitting || !oauthSession.sessionID}>
+                                        {pendingAction === 'oauth-complete' ? 'Completing…' : 'Complete remote sign-in'}
+                                      </Button>
+                                    </div>
+                                  </>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <p className="text-sm leading-6 text-[var(--app-text-muted)]">
+                            The selected provider does not expose a quick auth method here. Continue to workspace setup and connect it later from Settings.
+                          </p>
+                        )}
+                      </div>
                     </>
                   ) : !providerLoading ? (
                     <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-4 text-sm leading-6 text-[var(--app-text-muted)]">
