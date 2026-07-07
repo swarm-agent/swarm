@@ -399,7 +399,23 @@ function normalizeExecutionMode(form: AgentFormState): AgentFormState["runtimeMo
   if (form.exitPlanModeEnabled || form.runtimeMode === "plan_auto") {
     return "plan_auto";
   }
-  return form.runtimeMode || form.executionSetting || "readwrite";
+  return form.runtimeMode || form.executionSetting || "";
+}
+
+function formSupportsSplitModel(
+  form: AgentFormState,
+  mode = normalizeExecutionMode(form),
+): boolean {
+  if (mode === "plan_auto") {
+    return true;
+  }
+  if (mode === "") {
+    return (
+      toolConfigEnabled(form.toolContractTools.plan_manage) ||
+      toolConfigEnabled(form.toolContractTools.exit_plan_mode)
+    );
+  }
+  return false;
 }
 
 function toolAccessForExecutionMode(
@@ -952,9 +968,10 @@ async function upsertAgent(input: AgentFormState): Promise<string> {
     }
   }
 
-  const resolvedExecutionMode = normalizeExecutionMode(input) || "readwrite";
+  const rawExecutionMode = normalizeExecutionMode(input);
+  const resolvedExecutionMode = rawExecutionMode || "readwrite";
 
-  const planCapable = resolvedExecutionMode === "plan_auto" || (resolvedExecutionMode === "" && (toolConfigEnabled(input.toolContractTools.plan_manage) || toolConfigEnabled(input.toolContractTools.exit_plan_mode)));
+  const planCapable = formSupportsSplitModel(input, rawExecutionMode);
   const modelMode = input.modelMode === "split" && planCapable ? "split" : "single";
   const response = await requestJson<{ profile?: { name?: string } }>(
     `/v2/agents/${encodeURIComponent(input.name.trim())}`,
@@ -1541,7 +1558,7 @@ export function AgentsSettingsPage() {
   const showRuntimeToolAccess =
     Boolean(runtimeToolAccess) && formMatchesSavedToolContract(form, selectedProfile);
   const displayedRuntimeMode = normalizeExecutionMode(form);
-  const splitModelAllowed = displayedRuntimeMode === "plan_auto" || (displayedRuntimeMode === "" && (toolConfigEnabled(form.toolContractTools.plan_manage) || toolConfigEnabled(form.toolContractTools.exit_plan_mode)));
+  const splitModelAllowed = formSupportsSplitModel(form, displayedRuntimeMode);
   const displayedModelMode = form.modelMode === "split" && splitModelAllowed ? "split" : "single";
   const rawDisplayedToolContractAccess =
     showRuntimeToolAccess && runtimeToolAccess
