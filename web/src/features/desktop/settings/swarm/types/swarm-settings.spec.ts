@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  DEFAULT_GLOBAL_THEME_ID,
   normalizeFollowupCheckpointPolicyDefault,
+  normalizeGlobalThemeSettings,
   normalizeSessionMode,
   normalizeSwarmSettings,
   withDefaultNewSessionMode,
@@ -14,6 +16,12 @@ test('normalizeSessionMode only accepts Desktop session modes', () => {
   assert.equal(normalizeSessionMode('auto'), 'auto')
   assert.equal(normalizeSessionMode('readwrite'), 'auto')
   assert.equal(normalizeSessionMode(undefined), 'auto')
+})
+
+test('global theme settings default to Kanagawa Wave when unset', () => {
+  assert.equal(normalizeGlobalThemeSettings({}).activeId, DEFAULT_GLOBAL_THEME_ID)
+  assert.equal(normalizeGlobalThemeSettings(null).activeId, DEFAULT_GLOBAL_THEME_ID)
+  assert.equal(normalizeGlobalThemeSettings({ theme: { active_id: '  ' } }).activeId, DEFAULT_GLOBAL_THEME_ID)
 })
 
 test('withDefaultNewSessionMode preserves existing chat fields while updating default mode', () => {

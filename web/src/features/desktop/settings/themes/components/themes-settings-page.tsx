@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronDown } from 'lucide-react'
 import { applyWorkspaceTheme, setWorkspaceThemeCustomOptions } from '../../../../workspaces/launcher/services/workspace-theme'
 import { saveGlobalThemeSettings } from '../../swarm/mutations/save-global-theme-settings'
-import { normalizeGlobalThemeSettings } from '../../swarm/types/swarm-settings'
+import { DEFAULT_GLOBAL_THEME_ID, normalizeGlobalThemeSettings } from '../../swarm/types/swarm-settings'
 import { useWorkspaceLauncher } from '../../../../workspaces/launcher/state/use-workspace-launcher'
 import { WORKSPACE_THEME_OPTIONS, formatWorkspaceThemeLabel } from '../../../../workspaces/launcher/services/workspace-theme'
 import { uiSettingsQueryOptions } from '../../../../queries/query-options'
@@ -22,8 +22,8 @@ export function ThemesSettingsPage() {
   const [savingPath, setSavingPath] = useState<string | null>(null)
   const [savingGlobalTheme, setSavingGlobalTheme] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [globalThemeId, setGlobalThemeId] = useState('crimson')
-  const [globalThemeLabel, setGlobalThemeLabel] = useState('Crimson')
+  const [globalThemeId, setGlobalThemeId] = useState(DEFAULT_GLOBAL_THEME_ID)
+  const [globalThemeLabel, setGlobalThemeLabel] = useState('Kanagawa Wave')
   const uiSettingsQuery = useQuery(uiSettingsQueryOptions())
 
   useEffect(() => {

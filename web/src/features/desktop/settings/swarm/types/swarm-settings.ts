@@ -6,6 +6,7 @@
 // should send only the setting section they intend to change.
 
 export const DEFAULT_SWARM_NAME = 'Local'
+export const DEFAULT_GLOBAL_THEME_ID = 'kanagawa-wave'
 
 export interface UISwarmingSettingsWire {
   title?: string
@@ -88,7 +89,7 @@ export function normalizeFollowupCheckpointPolicyDefault(value: unknown): Follow
 export function normalizeGlobalThemeSettings(payload?: UISettingsWire | null): GlobalThemeSettings {
   const activeId = typeof payload?.theme?.active_id === 'string' && payload.theme.active_id.trim()
     ? payload.theme.active_id.trim().toLowerCase()
-    : 'crimson'
+    : DEFAULT_GLOBAL_THEME_ID
 
   return {
     activeId,
