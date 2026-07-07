@@ -206,6 +206,7 @@ export function DesktopV3AgenticComposer({
   onDropTodo,
 }: DesktopV3AgenticComposerProps) {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const dictationEnabledRef = useRef(false)
   const dictationCanRunRef = useRef(false)
   const dictationRestartTimerRef = useRef<number | null>(null)
@@ -250,6 +251,19 @@ export function DesktopV3AgenticComposer({
   const dictationComposer = dictationEnabled
     ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
     : draft
+
+  const resizeTextareaElement = useCallback((textarea: HTMLTextAreaElement | null) => {
+    if (!textarea) return
+    textarea.style.height = 'auto'
+    const viewportMaxHeight = typeof window === 'undefined' ? 360 : Math.max(120, Math.floor(window.innerHeight * 0.5))
+    const nextHeight = Math.min(textarea.scrollHeight, viewportMaxHeight)
+    textarea.style.height = `${nextHeight}px`
+    textarea.style.overflowY = textarea.scrollHeight > viewportMaxHeight ? 'auto' : 'hidden'
+  }, [])
+
+  const resizeComposerTextarea = useCallback(() => {
+    resizeTextareaElement(textareaRef.current)
+  }, [resizeTextareaElement])
 
   const clearDictationRestartTimer = useCallback(() => {
     if (dictationRestartTimerRef.current === null || typeof window === 'undefined') return
@@ -388,6 +402,16 @@ export function DesktopV3AgenticComposer({
   }, [clearDictationRestartTimer, clearFinalFlushTimer, onDraftChange, startRecognition, stopDictation])
 
   useEffect(() => {
+    resizeComposerTextarea()
+  }, [dictationComposer, resizeComposerTextarea])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.addEventListener('resize', resizeComposerTextarea)
+    return () => window.removeEventListener('resize', resizeComposerTextarea)
+  }, [resizeComposerTextarea])
+
+  useEffect(() => {
     dictationCanRunRef.current = showDictationButton && !composerDisabled
     if (!dictationCanRunRef.current && dictationEnabledRef.current) stopDictation(true)
   }, [composerDisabled, showDictationButton, stopDictation])
@@ -511,6 +535,22 @@ export function DesktopV3AgenticComposer({
   const mobileContextProgressStyle: CSSProperties = {
     background: `conic-gradient(var(--app-primary) ${normalizedContextUsagePercent * 3.6}deg, var(--app-border) 0deg)`,
   }
+  const dictationButton = () => showDictationButton ? (
+    <button
+      type="button"
+      onClick={handleDictationToggle}
+      disabled={dictationButtonDisabled}
+      aria-pressed={dictationEnabled}
+      aria-label={dictationEnabled ? 'Stop microphone dictation' : 'Start microphone dictation'}
+      title={dictationSupported ? (dictationEnabled ? 'Stop dictation' : 'Start dictation') : 'Speech recognition is not available in this browser'}
+      className={dictationEnabled
+        ? 'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-sm transition hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-50'
+        : 'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] text-[var(--app-text-muted)] shadow-sm transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50'}
+    >
+      <Mic size={17} className={dictationListening ? 'animate-pulse' : undefined} />
+    </button>
+  ) : null
+
   const compactButton = (mobile = false) => (
     <button
       type="button"
@@ -556,6 +596,7 @@ export function DesktopV3AgenticComposer({
           <div className="flex min-w-0 items-end gap-3 px-4 py-2 sm:py-3 lg:py-2.5">
             <div className="min-w-0 flex-1">
               <Textarea
+                ref={textareaRef}
                 value={dictationComposer}
                 onChange={(event) => {
                   if (dictationEnabledRef.current) {
@@ -564,31 +605,17 @@ export function DesktopV3AgenticComposer({
                     dictationInterimTranscriptRef.current = ''
                   }
                   onDraftChange(event.target.value)
+                  resizeTextareaElement(event.target)
                 }}
                 onKeyDown={handleKeyDown}
                 onDragOver={handleDragOver}
                 onDrop={onDropTodo}
                 placeholder={placeholder}
                 aria-label={inputLabel}
-                className={showDictationButton ? '!min-h-[32px] resize-none !rounded-none !border-0 !border-none bg-transparent px-0 py-0 pr-12 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]' : '!min-h-[32px] resize-none !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]'}
+                className="max-h-[50vh] !min-h-[32px] resize-none overflow-y-hidden !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]"
                 rows={1}
                 disabled={composerDisabled}
               />
-              {showDictationButton ? (
-                <button
-                  type="button"
-                  onClick={handleDictationToggle}
-                  disabled={dictationButtonDisabled}
-                  aria-pressed={dictationEnabled}
-                  aria-label={dictationEnabled ? 'Stop microphone dictation' : 'Start microphone dictation'}
-                  title={dictationSupported ? (dictationEnabled ? 'Stop dictation' : 'Start dictation') : 'Speech recognition is not available in this browser'}
-                  className={dictationEnabled
-                    ? 'absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-sm transition hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-50'
-                    : 'absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] shadow-sm transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50'}
-                >
-                  <Mic size={17} className={dictationListening ? 'animate-pulse' : undefined} />
-                </button>
-              ) : null}
             </div>
           </div>
           {mentionPaletteIsActive ? (
@@ -625,13 +652,14 @@ export function DesktopV3AgenticComposer({
                 {compactButton(false)}
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                {dictationButton()}
                 <Button size="sm" className="h-10 w-10 shrink-0 rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <Send size={20} />}
                 </Button>
               </div>
             </div>
             <div className="flex w-full min-w-0 min-[1000px]:hidden">
-              <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_40px] sm:gap-2">
+              <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_40px_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_40px_40px] sm:gap-2">
                 <div className="flex h-10 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] shadow-sm">
                   {showModePicker ? (
                     <button type="button" onClick={handleModeToggle} disabled={!onModeSelect || composerDisabled} className="inline-flex h-full shrink-0 items-center gap-1 border-r border-[var(--app-border)] px-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-primary)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50" title="Toggle plan/auto mode">
@@ -663,6 +691,7 @@ export function DesktopV3AgenticComposer({
                   </button>
                 </div>
                 {compactButton(true)}
+                {dictationButton()}
                 <Button size="sm" className="h-10 w-10 shrink-0 rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <Send size={20} />}
                 </Button>
