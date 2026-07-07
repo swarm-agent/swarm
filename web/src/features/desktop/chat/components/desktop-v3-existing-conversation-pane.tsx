@@ -784,6 +784,7 @@ export function DesktopV3ExistingConversationPane({
     () => policyLockedPreference(cachedAgentModelPolicy),
     [cachedAgentModelPolicy],
   )
+  const cachedPolicyMatchesSelectedMode = mode === settingsBaseline.mode
   const selectedModelKey = optionKey(preference.provider, preference.model, preference.contextMode)
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
   const hasResolvedPreference = Boolean(preference.provider.trim() && preference.model.trim() && preference.thinking.trim())
@@ -889,13 +890,13 @@ export function DesktopV3ExistingConversationPane({
   }, [normalizedSessionId, settingsBaseline])
 
   useEffect(() => {
-    if (lockedPolicyPreference) {
+    if (cachedPolicyMatchesSelectedMode && lockedPolicyPreference) {
       setPreference((current) => preferencesEqual(current, lockedPolicyPreference) ? current : lockedPolicyPreference)
       return
     }
     if (!selectedAgentModelLock.locked) return
     setPreference((current) => preferenceFromAgentModelLock(selectedAgentModelLock, current, modelOptions))
-  }, [lockedPolicyPreference, modelOptions, selectedAgentModelLock])
+  }, [cachedPolicyMatchesSelectedMode, lockedPolicyPreference, modelOptions, selectedAgentModelLock])
 
   function handleOpenAgentSettings() {
     if (routeWorkspaceSlug) {
@@ -983,10 +984,14 @@ export function DesktopV3ExistingConversationPane({
     }
     if (mode !== settingsBaseline.mode) {
       const modeResponse = await updateSessionV3Mode(normalizedSessionId, mode)
+      const settingsResponse = sessionV3ModeSettingsMutationResponse(modeResponse, normalizedSessionId, mode)
       dispatchDesktopV3Cache({
         type: 'mutation.sessionSettingsResult',
-        raw: sessionV3ModeSettingsMutationResponse(modeResponse, normalizedSessionId, mode),
+        raw: settingsResponse,
       })
+      if (settingsResponse.preference) {
+        setPreference(normalizePreference(settingsResponse.preference))
+      }
     }
   }
 
