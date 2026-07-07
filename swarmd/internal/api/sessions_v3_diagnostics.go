@@ -335,14 +335,17 @@ func sessionV3DiagnosticErrorString(err error) string {
 }
 
 func sessionV3ProviderRequestDiagnostic(req provideriface.Request) map[string]any {
-	inputCount, inputCharCount := sessionV3ProviderInputDiagnosticShape(req.Input)
+	inputCount, inputCharCount, nativeInputCount, encryptedInputCount := sessionV3ProviderInputDiagnosticShape(req.Input)
 	toolsCount := len(req.Tools)
 	return map[string]any{
 		"session_id":                        req.SessionID,
 		"provider_lineage_id":               req.ProviderLineageID,
 		"context_branch_id":                 req.ContextBranchID,
 		"provider_cache_key_present":        strings.TrimSpace(req.ProviderCacheKey) != "",
+		"provider_cache_key_hash":           sessionV3DiagnosticSafeKeyHash(req.ProviderCacheKey),
 		"session_affinity_key_present":      strings.TrimSpace(req.SessionAffinityKey) != "",
+		"session_affinity_key_hash":         sessionV3DiagnosticSafeKeyHash(req.SessionAffinityKey),
+		"cache_affinity_decoupled":          strings.TrimSpace(req.ProviderCacheKey) != "" && strings.TrimSpace(req.SessionAffinityKey) != "" && strings.TrimSpace(req.ProviderCacheKey) != strings.TrimSpace(req.SessionAffinityKey),
 		"boundary_reason":                   req.BoundaryReason,
 		"previous_provider_lineage_id":      req.PreviousProviderLineageID,
 		"previous_provider":                 req.PreviousProviderID,
@@ -361,6 +364,8 @@ func sessionV3ProviderRequestDiagnostic(req provideriface.Request) map[string]an
 		"instructions_present":              strings.TrimSpace(req.Instructions) != "",
 		"input_items":                       inputCount,
 		"input_text_chars":                  inputCharCount,
+		"native_input_items":                nativeInputCount,
+		"encrypted_input_items":             encryptedInputCount,
 		"tools_count":                       toolsCount,
 		"tool_choice":                       req.ToolChoice,
 		"service_tier":                      req.ServiceTier,
@@ -372,8 +377,10 @@ func sessionV3ProviderRequestDiagnostic(req provideriface.Request) map[string]an
 	}
 }
 
-func sessionV3ProviderInputDiagnosticShape(input []map[string]any) (int, int) {
+func sessionV3ProviderInputDiagnosticShape(input []map[string]any) (int, int, int, int) {
 	chars := 0
+	nativeItems := 0
+	encryptedItems := 0
 	var walk func(any)
 	walk = func(value any) {
 		switch typed := value.(type) {
@@ -388,13 +395,29 @@ func sessionV3ProviderInputDiagnosticShape(input []map[string]any) (int, int) {
 				walk(child)
 			}
 		case map[string]any:
+			itemType := strings.ToLower(strings.TrimSpace(fmt.Sprint(typed["type"])))
+			if itemType == "reasoning" || itemType == "function_call" || itemType == "function_call_output" {
+				nativeItems++
+			}
+			if encryptedContent, ok := typed["encrypted_content"]; ok && strings.TrimSpace(fmt.Sprint(encryptedContent)) != "" {
+				encryptedItems++
+			}
 			for _, child := range typed {
 				walk(child)
 			}
 		}
 	}
 	walk(input)
-	return len(input), chars
+	return len(input), chars, nativeItems, encryptedItems
+}
+
+func sessionV3DiagnosticSafeKeyHash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:8])
 }
 
 func sessionV3ProviderStreamEventDiagnostic(event provideriface.StreamEvent, step, index int) map[string]any {

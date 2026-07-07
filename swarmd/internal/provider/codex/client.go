@@ -75,6 +75,15 @@ type startedWebsocketStreamError struct {
 }
 
 type forceFreshProviderContextKey struct{}
+type codexTransportContextKey struct{}
+
+type codexTransportContext struct {
+	PromptCacheKey            string
+	SessionAffinityKey        string
+	NativeContinuationAllowed bool
+	ForceFreshProviderContext bool
+	BoundaryReason            string
+}
 
 func contextWithForceFreshProviderContext(ctx context.Context, force bool) context.Context {
 	if !force {
@@ -92,6 +101,21 @@ func forceFreshProviderContextFromContext(ctx context.Context) bool {
 	}
 	value, _ := ctx.Value(forceFreshProviderContextKey{}).(bool)
 	return value
+}
+
+func contextWithCodexTransportContext(ctx context.Context, transport codexTransportContext) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, codexTransportContextKey{}, transport)
+}
+
+func codexTransportContextFromContext(ctx context.Context) codexTransportContext {
+	if ctx == nil {
+		return codexTransportContext{}
+	}
+	transport, _ := ctx.Value(codexTransportContextKey{}).(codexTransportContext)
+	return transport
 }
 
 type cachedWebsocketSession struct {
@@ -401,6 +425,13 @@ func (c *Client) createResponseWithAuth(ctx context.Context, record pebblestore.
 	}
 
 	ctx = contextWithForceFreshProviderContext(ctx, forceFreshProviderContext)
+	ctx = contextWithCodexTransportContext(ctx, codexTransportContext{
+		PromptCacheKey:            codexPromptCacheKey(firstNonEmpty(req.ProviderCacheKey, req.ProviderLineageID)),
+		SessionAffinityKey:        codexSessionAffinityKey(firstNonEmpty(req.SessionAffinityKey, req.ProviderLineageID)),
+		NativeContinuationAllowed: req.NativeContinuationAllowed,
+		ForceFreshProviderContext: forceFreshProviderContext,
+		BoundaryReason:            strings.TrimSpace(req.BoundaryReason),
+	})
 	decoded, statusCode, err := c.send(ctx, record, payload, onEvent)
 	if err != nil {
 		return Response{}, err
@@ -595,6 +626,18 @@ func buildRequestPayloadWithOptions(req Request) ([]byte, bool, error) {
 }
 
 func codexPromptCacheKey(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	if len(sessionID) <= maxPromptCacheKeyLength {
+		return sessionID
+	}
+	sum := sha256.Sum256([]byte(sessionID))
+	return fmt.Sprintf("%x", sum)
+}
+
+func codexSessionAffinityKey(sessionID string) string {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return ""
@@ -1035,20 +1078,23 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 	if err != nil {
 		return nil, 0, err
 	}
-	cacheKey := extractSessionIDFromDecodedPayload(requestPayload)
+	transportContext := codexTransportContextFromContext(ctx)
+	cacheKey := strings.TrimSpace(transportContext.SessionAffinityKey)
 	freshContext := forceFreshProviderContextFromContext(ctx)
-	headers := buildCodexTransportHeaders(record, payload)
+	headers := buildCodexTransportHeaders(record, transportContext)
 	session := c.cachedWebsocketSession(cacheKey)
 	if session != nil {
 		session.mu.Lock()
 		defer session.mu.Unlock()
 	}
 	conn := (*websocket.Conn)(nil)
+	websocketReused := false
 	if session != nil {
 		if freshContext {
 			closeCachedWebsocketSessionLocked(session)
 		}
 		conn = session.conn
+		websocketReused = conn != nil
 	}
 	if conn == nil {
 		var failureBody map[string]any
@@ -1070,10 +1116,7 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 	}
 
-	sendPayload := cloneMapAny(requestPayload)
-	if session != nil && !freshContext {
-		sendPayload = prepareIncrementalWebsocketRequest(sendPayload, session.lastPayload, session.lastResponseID, session.lastOutput)
-	}
+	sendPayload := codexWebsocketSendPayload(requestPayload, session, freshContext)
 	websocketPayload, err := buildCodexWebsocketPayload(sendPayload)
 	if err != nil {
 		if session != nil {
@@ -1095,6 +1138,7 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 		return nil
 	}
+	providerdiagnostics.RecordContext(ctx, codexOutboundShapeEvent("websocket_request_shape", transportContext, sendPayload, asString(sendPayload["previous_response_id"]) != "", websocketReused))
 	providerdiagnostics.LogWebsocketRequestContext(ctx, "codex", "responses.websocket", wsURL, headers, websocketPayload)
 	if err := writeMessage(conn, websocketPayload); err != nil {
 		if ctxErr := contextErr(ctx); ctxErr != nil {
@@ -1313,6 +1357,80 @@ func extractSessionIDFromDecodedPayload(decoded map[string]any) string {
 	return sessionID
 }
 
+func codexWebsocketSendPayload(requestPayload map[string]any, session *cachedWebsocketSession, freshContext bool) map[string]any {
+	if session == nil || freshContext {
+		return cloneMapAny(requestPayload)
+	}
+	return prepareIncrementalWebsocketRequest(cloneMapAny(requestPayload), session.lastPayload, session.lastResponseID, session.lastOutput)
+}
+
+func codexOutboundShapeEvent(stage string, transport codexTransportContext, payload map[string]any, previousResponseIDPresent, websocketReused bool) providerdiagnostics.Event {
+	inputItems, inputChars, nativeItems, encryptedItems := codexPayloadInputShape(payload)
+	return providerdiagnostics.Event{
+		Provider:  "codex",
+		Operation: "responses.websocket",
+		Stage:     strings.TrimSpace(stage),
+		Extra: map[string]any{
+			"native_continuation_allowed":  transport.NativeContinuationAllowed,
+			"force_fresh_provider_context": transport.ForceFreshProviderContext,
+			"boundary_reason":              transport.BoundaryReason,
+			"prompt_cache_key_present":     strings.TrimSpace(transport.PromptCacheKey) != "",
+			"session_affinity_key_present": strings.TrimSpace(transport.SessionAffinityKey) != "",
+			"session_affinity_key_hash":    codexSafeKeyHash(transport.SessionAffinityKey),
+			"previous_response_id_present": previousResponseIDPresent,
+			"websocket_reused":             websocketReused,
+			"input_items":                  inputItems,
+			"input_text_chars":             inputChars,
+			"native_input_items":           nativeItems,
+			"encrypted_input_items":        encryptedItems,
+		},
+	}
+}
+
+func codexPayloadInputShape(payload map[string]any) (int, int, int, int) {
+	input := asSlice(payload["input"])
+	chars := 0
+	nativeItems := 0
+	encryptedItems := 0
+	var walk func(any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case string:
+			chars += len([]rune(typed))
+		case []map[string]any:
+			for _, child := range typed {
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		case map[string]any:
+			itemType := strings.ToLower(strings.TrimSpace(asString(typed["type"])))
+			if itemType == "reasoning" || itemType == "function_call" || itemType == "function_call_output" {
+				nativeItems++
+			}
+			if encryptedContent, ok := typed["encrypted_content"]; ok && strings.TrimSpace(asString(encryptedContent)) != "" {
+				encryptedItems++
+			}
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(input)
+	return len(input), chars, nativeItems, encryptedItems
+}
+
+func codexSafeKeyHash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", sum[:8])
+}
+
 func prepareIncrementalWebsocketRequest(current, previous map[string]any, lastResponseID string, lastOutput []any) map[string]any {
 	if len(current) == 0 || len(previous) == 0 || strings.TrimSpace(lastResponseID) == "" {
 		return current
@@ -1414,14 +1532,15 @@ func extractSessionIDFromPayload(payload []byte) string {
 	return sessionID
 }
 
-func buildCodexTransportHeaders(record pebblestore.CodexAuthRecord, payload []byte) http.Header {
+func buildCodexTransportHeaders(record pebblestore.CodexAuthRecord, transport codexTransportContext) http.Header {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+bearerToken(record))
 	headers.Set(originatorHeader, defaultOriginatorHeaderValue)
 	headers.Set(userAgentHeader, defaultCodexTransportUserAgent)
 	headers.Set(openAIBetaHeader, responsesWebsocketBetaHeaderV2)
-	if sessionID := extractSessionIDFromPayload(payload); sessionID != "" {
+	if sessionID := strings.TrimSpace(transport.SessionAffinityKey); sessionID != "" {
 		headers.Set("session_id", sessionID)
+		headers.Set("x-codex-window-id", sessionID)
 	}
 	if record.Type == pebblestore.CodexAuthTypeOAuth && strings.TrimSpace(record.AccountID) != "" {
 		headers.Set(chatGPTAccountIDHeader, strings.TrimSpace(record.AccountID))

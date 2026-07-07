@@ -4173,6 +4173,34 @@ func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ProviderInputSuppressesCodexNativeReplayAcrossFreshBoundary(t *testing.T) {
+	message := pebblestore.MessageSnapshot{
+		Role:    "assistant",
+		Content: "visible assistant answer",
+		Metadata: map[string]any{
+			"provider":               "codex",
+			"provider_output_format": "responses_api",
+			"provider_output_items": []any{
+				map[string]any{"type": "reasoning", "id": "rs_native_hidden", "encrypted_content": "encrypted-hidden-context"},
+				map[string]any{"type": "message", "id": "msg_native_visible", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "visible assistant answer"}}},
+			},
+		},
+	}
+
+	replayed := sessionsV3ProviderInputWithOptions([]pebblestore.MessageSnapshot{message}, sessionsV3ProviderInputOptions{})
+	if !sessionsV3ProviderInputHasTopLevelType(replayed, "reasoning") || fmt.Sprint(replayed) == "" || !strings.Contains(fmt.Sprint(replayed), "encrypted-hidden-context") {
+		t.Fatalf("native replay fixture did not include encrypted reasoning: %+v", replayed)
+	}
+
+	fresh := sessionsV3ProviderInputWithOptions([]pebblestore.MessageSnapshot{message}, sessionsV3ProviderInputOptions{SuppressNativeReplay: true})
+	if sessionsV3ProviderInputHasTopLevelType(fresh, "reasoning") || strings.Contains(fmt.Sprint(fresh), "encrypted-hidden-context") {
+		t.Fatalf("fresh-boundary provider input replayed native hidden reasoning: %+v", fresh)
+	}
+	if !sessionsV3ProviderInputContainsContentText(fresh, "visible assistant answer") {
+		t.Fatalf("fresh-boundary provider input lost visible assistant content: %+v", fresh)
+	}
+}
+
 func TestSessionsV3ExecutorReplaysCodexNativeOutputItems(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	firstOutput := []any{
@@ -5776,11 +5804,14 @@ func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing
 			}
 			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
 		case 2:
+			if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+				return provideriface.Response{}, fmt.Errorf("terminal finalization lineage flags = boundary %q native %t fresh %t, want checkpoint fresh context", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			}
 			if req.ToolInvoker != nil || req.ToolChoice != "none" || len(req.Tools) != 0 {
 				return provideriface.Response{}, fmt.Errorf("finalization request tools enabled: tool_choice=%q tools=%d invoker=%v", req.ToolChoice, len(req.Tools), req.ToolInvoker != nil)
 			}
-			if !sessionsV3ProviderInputContainsContentText(req.Input, "plan is complete") || !sessionsV3ProviderInputContainsContentText(req.Input, "Do not call tools") {
-				return provideriface.Response{}, fmt.Errorf("finalization input missing plan completion instruction: %+v", req.Input)
+			if !sessionsV3ProviderInputContainsContentText(req.Input, "waiting for checkpoint review") || !sessionsV3ProviderInputContainsContentText(req.Input, "Do not call tools") {
+				return provideriface.Response{}, fmt.Errorf("finalization input missing review instruction: %+v", req.Input)
 			}
 			return provideriface.Response{Text: "The final checkpoint is complete. Let me know if you need changes."}, nil
 		default:
@@ -5799,7 +5830,7 @@ func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 4 || messages[1].Role != "system" || messages[2].Role != "tool" || messages[3].Role != "assistant" {
+	if len(messages) != 4 || messages[1].Role != "tool" || messages[2].Role != "system" || messages[3].Role != "assistant" {
 		t.Fatalf("messages after automatic finalization = %+v", messages)
 	}
 	if messages[3].Content != "The final checkpoint is complete. Let me know if you need changes." {
@@ -5809,11 +5840,37 @@ func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing
 	if err != nil || !ok || activePlan.Document == nil {
 		t.Fatalf("get active plan: ok=%t err=%v plan=%#v", ok, err, activePlan)
 	}
-	if activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateCompleted || activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted {
+	if activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateWaitingReview || activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || activePlan.Document.Checkpoints[0].Review == nil || activePlan.Document.Checkpoints[0].Review.Status != sessionruntime.PlanCheckpointReviewStatusPending {
 		t.Fatalf("completed plan state = %#v", activePlan.Document)
 	}
 	if runner.callCount != 2 {
 		t.Fatalf("provider call count = %d, want tool turn plus finalization", runner.callCount)
+	}
+}
+
+func TestSessionsV3MessagesForProviderLineageTrimsToLatestCompactionBoundary(t *testing.T) {
+	messages := []pebblestore.MessageSnapshot{
+		{Role: "user", Content: "old raw transcript before compact"},
+		{Role: "system", Content: "[context-compact] origin=overflow index=1\nold summary"},
+		{Role: "assistant", Content: "checkpoint raw tool transcript", Metadata: map[string]any{"provider_lineage_id": "same-lineage"}},
+		{Role: "tool", Content: "large hidden tool result from checkpoint"},
+		{Role: "system", Content: "[context-compact] origin=plan_fresh_context index=2\nbounded checkpoint summary"},
+		{Role: "user", Content: "normal follow-up after checkpoint"},
+	}
+
+	bounded := sessionsV3MessagesForProviderLineage(messages, "same-lineage", true)
+	if len(bounded) != 2 {
+		t.Fatalf("bounded messages length = %d, want latest compact boundary plus follow-up: %+v", len(bounded), bounded)
+	}
+	if !strings.Contains(bounded[0].Content, "origin=plan_fresh_context") || bounded[1].Content != "normal follow-up after checkpoint" {
+		t.Fatalf("bounded messages = %+v, want plan fresh boundary and follow-up", bounded)
+	}
+	input := sessionsV3ProviderInputForLineage(messages, "same-lineage", true)
+	if sessionsV3ProviderInputContainsContentText(input, "checkpoint raw tool transcript") || sessionsV3ProviderInputContainsContentText(input, "large hidden tool result") {
+		t.Fatalf("same-lineage bounded input leaked checkpoint raw/tool transcript: %+v", input)
+	}
+	if !sessionsV3ProviderInputContainsContentText(input, "bounded checkpoint summary") || !sessionsV3ProviderInputContainsContentText(input, "normal follow-up after checkpoint") {
+		t.Fatalf("same-lineage bounded input missing boundary summary/follow-up: %+v", input)
 	}
 }
 
@@ -5868,6 +5925,7 @@ func TestSessionsV3ExecutorFollowUpAfterAutomaticCheckpointUsesFreshContextBound
 	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-auto-follow-up-create", "provider auto follow-up", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
 	saveSessionsV3ActivePlanForFinalizationTest(t, sessionSvc, created.ID, sessionruntime.PlanExecutionPolicyModeAutomatic, []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Final", Status: sessionruntime.PlanCheckpointStatusInProgress}})
 
+	appendSessionsV3PrimaryTestSystemMessage(t, server, created.ID, "compact-before-auto-checkpoint", "[context-compact] origin=overflow index=1\nold compact summary")
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-auto-follow-up-checkpoint", oldPrompt)
 	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-auto-follow-up-normal", followUp)
@@ -5963,14 +6021,17 @@ func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T
 	if len(runner.requests) != 2 {
 		t.Fatalf("recorded provider requests = %d, want 2", len(runner.requests))
 	}
-	if runner.requests[0].ProviderLineageID == "" || runner.requests[0].ProviderLineageID != runner.requests[1].ProviderLineageID {
-		t.Fatalf("restart-after-tool should remain inside one provider lineage: first=%+v second=%+v", runner.requests[0], runner.requests[1])
+	if runner.requests[1].ProviderLineageID == "" || runner.requests[1].ProviderCacheKey == "" || runner.requests[1].SessionAffinityKey == "" {
+		t.Fatalf("restart-after-tool request missing provider lineage keys: %+v", runner.requests[1])
 	}
-	if runner.requests[0].ProviderCacheKey != runner.requests[1].ProviderCacheKey || runner.requests[0].SessionAffinityKey != runner.requests[1].SessionAffinityKey {
-		t.Fatalf("restart-after-tool changed lineage cache/affinity: first=%+v second=%+v", runner.requests[0], runner.requests[1])
+	if runner.requests[1].BoundaryReason != "restart_after_tool" {
+		t.Fatalf("restart-after-tool boundary reason = %q, want restart_after_tool", runner.requests[1].BoundaryReason)
 	}
-	if runner.requests[1].BoundaryReason != "restart_after_tool" || runner.requests[1].NativeContinuationAllowed || !runner.requests[1].ForceFreshProviderContext {
-		t.Fatalf("restart-after-tool did not force a fresh provider context while preserving lineage key: %+v", runner.requests[1])
+	if runner.requests[1].NativeContinuationAllowed || !runner.requests[1].ForceFreshProviderContext {
+		t.Fatalf("restart-after-tool did not force a fresh provider context: %+v", runner.requests[1])
+	}
+	if sessionsV3ProviderInputHasTopLevelType(runner.requests[1].Input, "reasoning") || strings.Contains(fmt.Sprint(runner.requests[1].Input), "encrypted-reasoning") {
+		t.Fatalf("restart-after-tool fresh input replayed native encrypted reasoning: %+v", runner.requests[1].Input)
 	}
 }
 
@@ -6297,6 +6358,9 @@ func TestSessionsV3ProviderLineageMetadataPersistsAcrossModelHandoff(t *testing.
 	}
 	if diagnostic["provider_cache_key_present"] != true || diagnostic["session_affinity_key_present"] != true || diagnostic["boundary_reason"] == "" {
 		t.Fatalf("diagnostic missing auditable lineage shape: %+v", diagnostic)
+	}
+	if diagnostic["provider_cache_key_hash"] == "" || diagnostic["session_affinity_key_hash"] == "" || diagnostic["cache_affinity_decoupled"] != true {
+		t.Fatalf("diagnostic missing safe decoupled cache/affinity evidence: %+v", diagnostic)
 	}
 }
 

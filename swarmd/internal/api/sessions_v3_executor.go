@@ -1154,7 +1154,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		}
 		baseReq.Input = handoffInput
 	} else {
-		input = sessionsV3ProviderInputForLineage(messages, baseReq.ProviderLineageID)
+		input = sessionsV3ProviderInputForLineage(messages, baseReq.ProviderLineageID, baseReq.NativeContinuationAllowed && !baseReq.ForceFreshProviderContext)
 		if len(input) == 0 {
 			return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")
 		}
@@ -1308,12 +1308,17 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 	lineageStart := e.sessionV3ProviderLineageSnapshot(job, lineageID)
 	checkpointFreshContext := sessionV3ProviderCheckpointFreshContext(job, checkpointScope)
 	nativeContinuationAllowed := !checkpointFreshContext && sessionV3ProviderNativeContinuationAllowed(previousLineageID, lineageID)
+	providerCacheKey := sessionV3ProviderScopedKey("cache", lineageID)
+	sessionAffinityKey := sessionV3ProviderScopedKey("affinity", lineageID)
+	if checkpointFreshContext {
+		sessionAffinityKey = sessionV3ProviderScopedKey("affinity", provideriface.ShortProviderLineageKey(lineageID, contextBranchID, strings.TrimSpace(firstNonEmptyString(checkpointScope.AttemptID, job.AttemptID)), strings.TrimSpace(job.RunID)))
+	}
 	baseReq := provideriface.Request{
 		SessionID:                     job.SessionID,
 		ProviderLineageID:             lineageID,
 		ContextBranchID:               contextBranchID,
-		ProviderCacheKey:              sessionV3ProviderScopedKey("cache", lineageID),
-		SessionAffinityKey:            sessionV3ProviderScopedKey("affinity", lineageID),
+		ProviderCacheKey:              providerCacheKey,
+		SessionAffinityKey:            sessionAffinityKey,
 		BoundaryReason:                sessionV3ProviderBoundaryReason(job, previousLineageID, lineageID, checkpointScope),
 		PreviousProviderLineageID:     previousLineageID,
 		PreviousProviderID:            previousLineage.ProviderID,
@@ -1996,7 +2001,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				}
 				runner = refreshedRunner
 				if terminal, ok := e.sessionV3LatestTerminalPlanToolPayload(job); ok {
-					input = e.sessionV3ProviderContinuationInput(job)
+					input = e.sessionV3ProviderContinuationInput(job, false)
 					if len(input) == 0 {
 						return sessionV3ProviderLoopResult{}, errors.New("terminal plan finalization requested but continuation input is empty")
 					}
@@ -2023,6 +2028,11 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				if err != nil {
 					return sessionV3ProviderLoopResult{}, err
 				}
+				if !strings.Contains(strings.TrimSpace(baseReq.BoundaryReason), "checkpoint_fresh_context") {
+					baseReq.BoundaryReason = sessionV3ProviderBoundaryReasonWithOverride(baseReq.BoundaryReason, "restart_after_tool")
+				}
+				baseReq.NativeContinuationAllowed = false
+				baseReq.ForceFreshProviderContext = true
 				continue
 			}
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider requested a tool-loop restart without tool calls")
@@ -2451,12 +2461,12 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 	return err
 }
 
-func (e *sessionV3Executor) sessionV3ProviderContinuationInput(job sessionV3ExecutorJob) []map[string]any {
+func (e *sessionV3Executor) sessionV3ProviderContinuationInput(job sessionV3ExecutorJob, nativeReplayAllowed bool) []map[string]any {
 	messages, err := e.sessionV3ProviderContextMessages(job)
 	if err != nil || len(messages) == 0 {
 		return nil
 	}
-	return sessionsV3ProviderInput(messages)
+	return sessionsV3ProviderInputWithOptions(messages, sessionsV3ProviderInputOptions{SuppressNativeReplay: !nativeReplayAllowed})
 }
 
 func sessionsV3DecodeToolPayload(raw string) map[string]any {
@@ -2534,7 +2544,7 @@ func (e *sessionV3Executor) sessionV3ProviderRestartInput(ctx context.Context, j
 	if input, ok, err := e.sessionV3ProviderCheckpointRestartInput(ctx, job, resolved, toolOutput); err != nil || ok {
 		return input, err
 	}
-	input := e.sessionV3ProviderContinuationInput(job)
+	input := e.sessionV3ProviderContinuationInput(job, false)
 	if len(input) == 0 {
 		return nil, errors.New("v3 provider restart requested but continuation input is empty")
 	}
@@ -2617,12 +2627,6 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 func (e *sessionV3Executor) sessionV3ProviderPlanFreshContextBoundary(job sessionV3ExecutorJob, messages []pebblestore.MessageSnapshot) (*pebblestore.MessageSnapshot, int, error) {
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return nil, 0, errors.New("v3 executor is not configured")
-	}
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
-		if strings.EqualFold(strings.TrimSpace(msg.Role), "system") && strings.HasPrefix(strings.TrimSpace(msg.Content), "[context-compact]") {
-			return nil, 0, nil
-		}
 	}
 	activePlan, ok, err := e.server.sessions.GetActivePlan(job.SessionID)
 	if err != nil {
@@ -3000,12 +3004,13 @@ func sessionsV3ProviderInput(messages []pebblestore.MessageSnapshot) []map[strin
 }
 
 type sessionsV3ProviderInputOptions struct {
-	LineageID string
-	Bounded   bool
+	LineageID            string
+	Bounded              bool
+	SuppressNativeReplay bool
 }
 
-func sessionsV3ProviderInputForLineage(messages []pebblestore.MessageSnapshot, lineageID string) []map[string]any {
-	return sessionsV3ProviderInputWithOptions(messages, sessionsV3ProviderInputOptions{LineageID: lineageID, Bounded: true})
+func sessionsV3ProviderInputForLineage(messages []pebblestore.MessageSnapshot, lineageID string, nativeReplayAllowed bool) []map[string]any {
+	return sessionsV3ProviderInputWithOptions(messages, sessionsV3ProviderInputOptions{LineageID: lineageID, Bounded: true, SuppressNativeReplay: !nativeReplayAllowed})
 }
 
 func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, options sessionsV3ProviderInputOptions) []map[string]any {
@@ -3018,9 +3023,11 @@ func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, 
 		}
 		switch strings.ToLower(strings.TrimSpace(message.Role)) {
 		case "assistant":
-			if nativeItems := sessionsV3ProviderNativeInputItems(message.Metadata); len(nativeItems) > 0 {
-				input = append(input, nativeItems...)
-				continue
+			if !options.SuppressNativeReplay {
+				if nativeItems := sessionsV3ProviderNativeInputItems(message.Metadata); len(nativeItems) > 0 {
+					input = append(input, nativeItems...)
+					continue
+				}
 			}
 			input = append(input, sessionsV3ProviderAssistantInputItem(content))
 		case "system":
@@ -3038,11 +3045,25 @@ func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, 
 	return input
 }
 
+func sessionV3LatestCompactionBoundary(messages []pebblestore.MessageSnapshot) int {
+	latest := 0
+	for i := range messages {
+		if !strings.EqualFold(strings.TrimSpace(messages[i].Role), "system") {
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(messages[i].Content), "[context-compact]") {
+			continue
+		}
+		latest = i
+	}
+	return latest
+}
+
 func sessionsV3MessagesForProviderLineage(messages []pebblestore.MessageSnapshot, lineageID string, bounded bool) []pebblestore.MessageSnapshot {
 	if !bounded || strings.TrimSpace(lineageID) == "" || len(messages) == 0 {
 		return messages
 	}
-	boundary := 0
+	boundary := sessionV3LatestCompactionBoundary(messages)
 	for i := len(messages) - 1; i >= 0; i-- {
 		messageLineageID := sessionV3MetadataString(messages[i].Metadata, "provider_lineage_id")
 		if messageLineageID == "" {
@@ -3051,7 +3072,9 @@ func sessionsV3MessagesForProviderLineage(messages []pebblestore.MessageSnapshot
 		if messageLineageID == lineageID {
 			break
 		}
-		boundary = i + 1
+		if i+1 > boundary {
+			boundary = i + 1
+		}
 		break
 	}
 	if boundary <= 0 {

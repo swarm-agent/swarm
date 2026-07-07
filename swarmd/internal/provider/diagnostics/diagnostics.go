@@ -52,6 +52,16 @@ func recorderFromContext(ctx context.Context) Recorder {
 	return recorder
 }
 
+func RecordContext(ctx context.Context, event Event) {
+	if event.RecordedAt == 0 {
+		event.RecordedAt = time.Now().UnixMilli()
+	}
+	if Enabled() {
+		log.Printf("[swarmd.provider.api] provider=%q operation=%q stage=%s extra=%v", event.Provider, event.Operation, event.Stage, event.Extra)
+	}
+	record(ctx, event)
+}
+
 func Enabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvName))) {
 	case "1", "true", "yes", "on", "debug":
