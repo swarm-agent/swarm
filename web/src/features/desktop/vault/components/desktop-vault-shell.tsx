@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Outlet } from '@tanstack/react-router'
 import { requestJson } from '../../../../app/api'
 import { DesktopVaultGate } from './desktop-vault-gate'
@@ -188,6 +188,25 @@ export function DesktopVaultShell() {
   const [onboardingError, setOnboardingError] = useState<string | null>(null)
   const directLANDesktopWarning = useMemo(() => getDirectLANDesktopWarning(), [])
 
+  const loadOnboardingStatus = useCallback(async () => {
+    setOnboardingLoading(true)
+    setOnboardingError(null)
+
+    try {
+      const next = mapOnboardingBootstrapStatus(
+        await requestJson<DesktopOnboardingStatusWire>('/v1/onboarding', undefined, false),
+      )
+      setOnboardingStatus(next)
+      return next
+    } catch (error) {
+      setOnboardingStatus(null)
+      setOnboardingError(error instanceof Error ? error.message : 'Failed to load onboarding')
+      return null
+    } finally {
+      setOnboardingLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     if (directLANDesktopWarning) {
       setOnboardingLoading(false)
@@ -210,6 +229,7 @@ export function DesktopVaultShell() {
         if (cancelled) {
           return
         }
+        setOnboardingStatus(null)
         setOnboardingError(error instanceof Error ? error.message : 'Failed to load onboarding')
       })
       .finally(() => {
@@ -227,19 +247,30 @@ export function DesktopVaultShell() {
     return <DirectLANDesktopWarningScreen warning={directLANDesktopWarning} />
   }
 
-  if (onboardingFlowRequested && onboardingError) {
+  if (onboardingError && onboardingStatus === null) {
     return (
-      <div className="absolute inset-0 flex items-center justify-center bg-[var(--app-bg)] px-6">
-        <div className="max-w-xl rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-5 py-4 text-sm text-[var(--app-danger)]">
-          {onboardingError}
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black px-6">
+        <div className="max-w-xl rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-5 py-4 text-sm text-[var(--app-danger)] shadow-2xl shadow-black/40">
+          <div className="font-medium">Unable to load Swarm onboarding.</div>
+          <div className="mt-2 text-[var(--app-danger)]/90">{onboardingError}</div>
+          <button
+            type="button"
+            onClick={() => {
+              void loadOnboardingStatus()
+            }}
+            className="mt-4 rounded-lg border border-[var(--app-danger-border)] px-3 py-1.5 text-xs font-medium transition hover:bg-[var(--app-danger)]/10 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={onboardingLoading}
+          >
+            {onboardingLoading ? 'Retrying…' : 'Try again'}
+          </button>
         </div>
       </div>
     )
   }
 
-  if (onboardingFlowRequested && (onboardingLoading || onboardingStatus === null)) {
+  if (onboardingLoading || onboardingStatus === null) {
     return (
-      <div className="absolute inset-0 flex items-center justify-center bg-[var(--app-bg)] text-sm text-[var(--app-text-muted)]">
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black text-sm text-[var(--app-text-muted)]">
         Loading Swarm…
       </div>
     )
