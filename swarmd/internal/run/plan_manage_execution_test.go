@@ -679,6 +679,79 @@ func TestExecutePlanManageRequestNewPlanSeparateProposalAwaitsApproval(t *testin
 	}
 }
 
+func TestExecutePlanManageRequestNewPlanWithoutActivePlanRequiresApproval(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	if _, _, err := sessionSvc.SetMode(sessionID, sessionruntime.ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"request_new_plan","title":"Big Plan","document":{"title":"Big Plan","checkpoints":[{"id":"cp-1","title":"First","status":"pending"},{"id":"cp-2","title":"Second","status":"pending"}]}}`, "")
+	if err == nil || !strings.Contains(err.Error(), "requires user approval") {
+		t.Fatalf("request_new_plan without approval err=%v raw=%s", err, raw)
+	}
+	if active, ok, err := sessionSvc.GetActivePlan(sessionID); err != nil || ok {
+		t.Fatalf("unapproved request_new_plan should not create active plan: ok=%v err=%v active=%#v", ok, err, active)
+	}
+}
+
+func TestExecutePlanManageRequestNewPlanPermissionThenApprovalWithoutActivePlanRuns(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	if _, _, err := sessionSvc.SetMode(sessionID, sessionruntime.ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+
+	call := tool.Call{Name: "plan_manage", Arguments: `{"action":"propose_plan","title":"Big Plan","document":{"title":"Big Plan","execution_state":{"status":"running","active_attempt_id":"stale-attempt"},"checkpoints":[{"id":"cp-1","title":"First","status":"in_progress","attempt_id":"stale-attempt"},{"id":"cp-2","title":"Second","status":"pending"}]}}`}
+	permissionPayload, needsApproval, err := runSvc.buildPlanManagePermissionPayload(sessionID, call)
+	if err != nil {
+		t.Fatalf("build permission payload: %v", err)
+	}
+	if !needsApproval || permissionPayload.PathID != "tool.plan-new-request.v1" || permissionPayload.Action != "request_new_plan" {
+		t.Fatalf("permission payload = %#v needsApproval=%v", permissionPayload, needsApproval)
+	}
+	approved := permissionPayload.ApprovedArguments
+	if approved["action"] != "request_new_plan" || approved["approval_confirmed"] != true || approved["execution_granularity"] != sessionruntime.PlanAcceptanceGranularityCheckpointed || approved["continue_automatically"] != true {
+		t.Fatalf("approved arguments = %#v", approved)
+	}
+	feedbackRaw, err := json.Marshal(map[string]any{"action": permissionPayload.Action, "approved_arguments": approved})
+	if err != nil {
+		t.Fatalf("marshal feedback: %v", err)
+	}
+	raw, err := runSvc.executePlanManageTool(sessionID, call.Arguments, string(feedbackRaw))
+	if err != nil {
+		t.Fatalf("approved request_new_plan: %v output=%s", err, raw)
+	}
+	var payload struct {
+		Action       string `json:"action"`
+		NextAction   string `json:"next_action"`
+		CheckpointID string `json:"checkpoint_id"`
+		Plan         struct {
+			ID            string                           `json:"id"`
+			Status        string                           `json:"status"`
+			ApprovalState string                           `json:"approval_state"`
+			Active        bool                             `json:"active"`
+			Document      *pebblestore.SessionPlanDocument `json:"document"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode approved payload: %v", err)
+	}
+	if payload.Action != "request_new_plan" || payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "cp-1" {
+		t.Fatalf("approved payload action=%q next=%q checkpoint=%q raw=%s", payload.Action, payload.NextAction, payload.CheckpointID, raw)
+	}
+	if payload.Plan.ID == "" || !payload.Plan.Active || payload.Plan.Status != "approved" || payload.Plan.ApprovalState != "approved" || payload.Plan.Document == nil {
+		t.Fatalf("approved plan = %#v", payload.Plan)
+	}
+	if payload.Plan.Document.ExecutionState != nil || payload.Plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusPending || payload.Plan.Document.Checkpoints[0].AttemptID != "" {
+		t.Fatalf("approved document runtime was not reset: %#v", payload.Plan.Document)
+	}
+}
+
 func TestExecutePlanManageRequestNewPlanApprovedSeparatePlanActivatesAndRuns(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()

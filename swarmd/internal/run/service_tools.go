@@ -1570,6 +1570,8 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 		action = "new"
 	case "upsert", "set", "write-active", "write_active":
 		action = "save"
+	case "create-plan", "create_plan", "propose-plan", "propose_plan":
+		action = "request_new_plan"
 	case "update", "edit":
 		if strings.TrimSpace(mapString(args, "plan")) == "" && args["document"] == nil {
 			action = "patch"
@@ -1929,6 +1931,15 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 		addPlanExecutionPayloadFields(payload, action, plan.Document)
 		return marshalPlanManagePayload(payload)
 	case "new":
+		if document, err := planDocumentFromArgs(args); err != nil {
+			return "", err
+		} else if document != nil || strings.TrimSpace(mapString(args, "plan")) != "" {
+			if session, ok, err := s.sessions.GetSession(sessionID); err != nil {
+				return "", err
+			} else if ok && sessionruntime.NormalizeMode(session.Mode) == sessionruntime.ModeAuto {
+				return "", errors.New("plan_manage new is only for an empty draft shell; in auto mode with no active plan, propose a multi-checkpoint plan with plan_manage request_new_plan so the user can approve it and execution can start, or use start_session_checkpoint for a single bounded checkpoint")
+			}
+		}
 		title := strings.TrimSpace(mapString(args, "title"))
 		if title == "" {
 			title = "New Plan"

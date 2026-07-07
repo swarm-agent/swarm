@@ -876,6 +876,8 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		action = "new"
 	case "upsert", "set", "write-active", "write_active":
 		action = "save"
+	case "create-plan", "create_plan", "propose-plan", "propose_plan":
+		action = "request_new_plan"
 	case "update", "edit":
 		if strings.TrimSpace(mapString(args, "plan")) == "" && args["document"] == nil {
 			action = "patch"

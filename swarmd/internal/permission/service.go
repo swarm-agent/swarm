@@ -1505,7 +1505,7 @@ func normalizePlanManageAction(action string, op string, payload map[string]any)
 		return "request_plan_revision"
 	case "amend-plan", "amend_plan", "plan-amendment", "plan_amendment", "amend-future-checkpoints", "amend_future_checkpoints":
 		return "amend_plan"
-	case "request-new-plan", "request_new_plan", "new-plan-proposal", "new_plan_proposal":
+	case "request-new-plan", "request_new_plan", "new-plan-proposal", "new_plan_proposal", "create-plan", "create_plan", "propose-plan", "propose_plan":
 		return "request_new_plan"
 	case "upsert", "set", "write-active", "write_active":
 		return "save"

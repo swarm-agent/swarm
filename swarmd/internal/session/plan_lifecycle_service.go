@@ -700,6 +700,13 @@ func (s *PlanLifecycleService) RequestNewPlan(input PlanLifecycleProposalInput) 
 		}
 		replacing = true
 	}
+	if !input.ApprovalConfirmed && !replacing && NormalizeMode(session.Mode) == ModeAuto {
+		if active, ok, err := s.sessions.GetActivePlan(session.ID); err != nil {
+			return PlanLifecycleResult{}, err
+		} else if !ok || strings.TrimSpace(active.ID) == "" {
+			return PlanLifecycleResult{}, errors.New("request_new_plan in auto mode with no active plan requires user approval; invoke plan_manage request_new_plan with a structured document through the approval flow, or use start_session_checkpoint for a single bounded checkpoint")
+		}
+	}
 
 	doc := clonePlanLifecycleDocument(input.Document)
 	title := strings.TrimSpace(firstNonBlank(input.Title, planLifecycleDocumentTitle(doc), target.Title, "New plan proposal"))

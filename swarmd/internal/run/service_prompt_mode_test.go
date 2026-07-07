@@ -69,10 +69,10 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 	prompt := masterHarnessPrompt("/workspace")
 
 	for _, want := range []string{
-		"For multi-step implementation work, keep agent execution progress in `plan_manage` on the active plan/checkpoint",
+		"For multi-step implementation work, use `plan_manage` terminal checkpoint actions for checkpoint outcomes",
 		"Preserve manage_todos as the user-owned workspace todo surface",
 		"Do not use manage_todos for agent execution checklists or checkpoint progress",
-		"plan_manage checkpoint checklist example",
+		"plan_manage terminal checkpoint example",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("master harness prompt missing %q\n--- prompt ---\n%s", want, prompt)
