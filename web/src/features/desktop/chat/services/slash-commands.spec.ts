@@ -40,11 +40,21 @@ function testMCPCommandIsDeferredButFreeExaSearchRemains(): void {
   assert(mcp?.tips.some((tip) => tip.includes('Free Exa MCP search')), 'expected /mcp tips to mention free Exa MCP search')
 }
 
+function testKeybindingsWarnsAboutDesktopShortcuts(): void {
+  const keybindings = getDesktopSlashCommands().find((command) => command.id === 'keybindings')
+  assert(Boolean(keybindings), 'expected /keybindings command to exist')
+  assert(keybindings?.state === 'ready', 'expected /keybindings command to be ready')
+  assert((keybindings?.action as DesktopSlashCommandAction | undefined)?.kind === 'open-quick-actions', 'expected /keybindings to open quick actions')
+  assert(keybindings?.hint.includes('Desktop shortcuts differ from TUI keybindings') === true, 'expected /keybindings hint to warn about Desktop shortcuts')
+  assert(keybindings?.tips.some((tip) => tip.includes('Settings → Shortcuts')) === true, 'expected /keybindings tips to point to Settings → Shortcuts')
+}
+
 function main(): void {
   testPlanCommandIsReady()
   testSlashPaletteMatchesPlan()
   testFastCommandIsReady()
   testMCPCommandIsDeferredButFreeExaSearchRemains()
+  testKeybindingsWarnsAboutDesktopShortcuts()
   console.log('slash-commands tests passed')
 }
 

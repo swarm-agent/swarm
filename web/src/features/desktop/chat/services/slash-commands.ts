@@ -11,6 +11,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'toggle-fast' }
   | { kind: 'open-commit-modal' }
   | { kind: 'open-plan-modal' }
+  | { kind: 'open-quick-actions' }
   | { kind: 'compact-session' }
   | { kind: 'new-session' }
   | { kind: 'show-help' }
@@ -184,6 +185,20 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/plan', '/plan show', 'Review, copy, and edit the active session plan'],
     state: 'ready',
     action: { kind: 'open-plan-modal' },
+  },
+  {
+    id: 'keybindings',
+    command: '/keybindings',
+    aliases: ['/shortcuts', '/keys'],
+    hint: 'Desktop shortcuts differ from TUI keybindings',
+    actionLabel: 'Open Desktop Quick Actions',
+    tips: [
+      'Desktop shortcuts are separate from TUI keybindings',
+      'This opens the Desktop quick actions modal',
+      'Open Settings → Shortcuts for the full Desktop list',
+    ],
+    state: 'ready',
+    action: { kind: 'open-quick-actions' },
   },
   {
     id: 'sessions',

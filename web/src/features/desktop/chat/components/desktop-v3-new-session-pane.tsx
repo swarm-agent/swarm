@@ -75,6 +75,8 @@ function preferenceForRequest(preference: SessionPreferenceRecord): DesktopV3New
 }
 
 export interface DesktopV3NewSessionPaneProps {
+  modeCommand?: 'toggle-plan-auto' | null
+  onModeCommandHandled?: () => void
   workspace: WorkspaceEntry
   workspaceSlug: string
   routeOptions: DesktopChatRoute[]
@@ -100,6 +102,8 @@ export function completeDesktopV3NewSessionStarted(input: {
 }
 
 export function DesktopV3NewSessionPane({
+  modeCommand = null,
+  onModeCommandHandled,
   workspace,
   workspaceSlug,
   routeOptions,
@@ -330,6 +334,13 @@ export function DesktopV3NewSessionPane({
     }
     void navigate({ to: '/settings', search: { tab: 'auth' } })
   }
+
+  useEffect(() => {
+    if (modeCommand !== 'toggle-plan-auto') return
+    modeManuallySelectedRef.current = true
+    setMode((current) => (current === 'plan' ? 'auto' : 'plan'))
+    onModeCommandHandled?.()
+  }, [modeCommand, onModeCommandHandled])
 
   async function handleThinkingTagsToggle(enabled: boolean) {
     if (thinkingTagsSaving) return

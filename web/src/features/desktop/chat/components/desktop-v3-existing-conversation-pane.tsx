@@ -687,6 +687,8 @@ export function resolveDesktopV3StopRunRequest(input: { route: DesktopChatRoute 
 }
 
 export interface DesktopV3ExistingConversationPaneProps {
+  modeCommand?: 'toggle-plan-auto' | null
+  onModeCommandHandled?: () => void
   sessionId: string
   initialHydrateStatus: 'idle' | 'loading' | 'cached' | 'ready' | 'error'
   renderedMessages: RenderedSessionMessages
@@ -718,6 +720,8 @@ export function completeDesktopV3ExistingMessage(input: {
 }
 
 export function DesktopV3ExistingConversationPane({
+  modeCommand = null,
+  onModeCommandHandled,
   sessionId,
   initialHydrateStatus,
   renderedMessages,
@@ -958,6 +962,18 @@ export function DesktopV3ExistingConversationPane({
     if (!selectedAgentModelLock.locked) return
     setPreference((current) => preferenceFromAgentModelLock(selectedAgentModelLock, current, modelOptions))
   }, [cachedPolicyMatchesSelectedMode, lockedPolicyPreference, modelOptions, selectedAgentModelLock])
+
+  function handleModeChange(nextMode: DesktopSessionMode) {
+    localSettingsDirtyRef.current.mode = true
+    setMode(nextMode)
+  }
+
+  useEffect(() => {
+    if (modeCommand !== 'toggle-plan-auto') return
+    localSettingsDirtyRef.current.mode = true
+    setMode((current) => (current === 'plan' ? 'auto' : 'plan'))
+    onModeCommandHandled?.()
+  }, [modeCommand, onModeCommandHandled])
 
   function handleOpenAgentSettings() {
     if (routeWorkspaceSlug) {
