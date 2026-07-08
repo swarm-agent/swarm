@@ -852,12 +852,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                           : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
                                       ].join(' ')}
                                     >
-                                      <span className="block font-medium text-[var(--app-text)]">
-                                        {pendingAction === 'oauth-manual' ? 'Preparing…' : 'Remote browser sign-in'}
-                                      </span>
-                                      <span className="mt-1 block text-xs leading-5 text-[var(--app-text-muted)]">
-                                        Opens a link you can use from another browser or machine. Click again to generate a fresh login link.
-                                      </span>
+                                      {pendingAction === 'oauth-manual' ? 'Preparing…' : 'Remote browser sign-in'}
                                     </button>
                                   </>
                                 ) : null}
