@@ -5502,7 +5502,7 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 		if completeResult.Error != "" {
 			return provideriface.Response{}, fmt.Errorf("complete checkpoint after exit_plan_mode failed: %+v", completeResult)
 		}
-		return provideriface.Response{Text: "checkpoint completed in auto"}, nil
+		return provideriface.Response{RestartTurn: completeResult.RestartTurn}, nil
 	}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
@@ -5556,7 +5556,7 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 6 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "system" || messages[3].Role != "tool" || messages[4].Role != "system" || messages[5].Role != "assistant" || messages[5].Content != "checkpoint completed in auto" {
+	if len(messages) != 5 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "system" || messages[3].Role != "tool" || messages[4].Role != "system" {
 		t.Fatalf("messages after exit plan restart = %+v", messages)
 	}
 	if !strings.Contains(messages[1].Content, "run_checkpoint_with_fresh_context") {
@@ -5642,14 +5642,6 @@ func TestSessionsV3ExecutorFinalizesReviewCheckpointAfterProviderManagedPlanComp
 				return provideriface.Response{}, fmt.Errorf("terminal review checkpoint did not request finalization restart: %+v", result)
 			}
 			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
-		case 2:
-			if req.ToolInvoker != nil || req.ToolChoice != "none" || len(req.Tools) != 0 {
-				return provideriface.Response{}, fmt.Errorf("finalization request tools enabled: tool_choice=%q tools=%d invoker=%v", req.ToolChoice, len(req.Tools), req.ToolInvoker != nil)
-			}
-			if !sessionsV3ProviderInputContainsContentText(req.Input, "waiting for checkpoint review") || !sessionsV3ProviderInputContainsContentText(req.Input, "Do not call tools") {
-				return provideriface.Response{}, fmt.Errorf("finalization input missing review instruction: %+v", req.Input)
-			}
-			return provideriface.Response{Text: "Checkpoint cp-1 is complete and ready for your review. Let me know if you need changes."}, nil
 		default:
 			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
 		}
@@ -5667,11 +5659,14 @@ func TestSessionsV3ExecutorFinalizesReviewCheckpointAfterProviderManagedPlanComp
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 4 || messages[1].Role != "system" || messages[2].Role != "tool" || messages[3].Role != "assistant" {
-		t.Fatalf("messages after review finalization = %+v", messages)
+	if len(messages) != 3 || messages[1].Role != "tool" || messages[2].Role != "system" {
+		t.Fatalf("messages after review lifecycle completion = %+v", messages)
 	}
-	if messages[3].Content != "Checkpoint cp-1 is complete and ready for your review. Let me know if you need changes." {
-		t.Fatalf("assistant final = %q", messages[3].Content)
+	if messages[2].Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || messages[2].Metadata["action"] != "complete_checkpoint" || messages[2].Metadata["next_action"] != "await_review" {
+		t.Fatalf("review lifecycle message metadata = %+v", messages[2].Metadata)
+	}
+	if strings.Contains(messages[2].Content, "All checkpoints complete") || strings.Contains(messages[2].Content, "Context: Starting the next checkpoint") || !strings.Contains(messages[2].Content, "Checkpoint complete") || !strings.Contains(messages[2].Content, "Next: waiting for checkpoint review") || !strings.Contains(messages[2].Content, "cp-1 complete") {
+		t.Fatalf("review lifecycle message content = %q", messages[2].Content)
 	}
 	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
 	if err != nil || !ok || activePlan.Document == nil {
@@ -5682,8 +5677,8 @@ func TestSessionsV3ExecutorFinalizesReviewCheckpointAfterProviderManagedPlanComp
 	}
 	assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, sessionruntime.PlanExecutionStateWaitingReview)
 	assertSessionsV3NoMessageAppendedActivePlanPayload(t, sessionSvc, created.ID)
-	if runner.callCount != 2 {
-		t.Fatalf("provider call count = %d, want tool turn plus finalization", runner.callCount)
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want only terminal tool turn", runner.callCount)
 	}
 }
 
@@ -5919,29 +5914,15 @@ func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing
 			if req.ToolInvoker == nil {
 				return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
 			}
-			args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "last checkpoint complete", "result": "done"})
+			args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "report": "last checkpoint complete", "result": "done", "validation": []string{"targeted final lifecycle regression"}})
 			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-final-checkpoint", Name: "plan_manage", Arguments: args})
 			if err != nil {
 				return provideriface.Response{}, err
 			}
 			if !result.RestartTurn {
-				return provideriface.Response{}, fmt.Errorf("terminal plan completion did not request finalization restart: %+v", result)
+				return provideriface.Response{}, fmt.Errorf("terminal plan completion did not request executor stop restart: %+v", result)
 			}
 			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
-		case 2:
-			if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
-				return provideriface.Response{}, fmt.Errorf("terminal finalization lineage flags = boundary %q native %t fresh %t, want checkpoint fresh context", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
-			}
-			if req.ToolInvoker != nil || req.ToolChoice != "none" || len(req.Tools) != 0 {
-				return provideriface.Response{}, fmt.Errorf("finalization request tools enabled: tool_choice=%q tools=%d invoker=%v", req.ToolChoice, len(req.Tools), req.ToolInvoker != nil)
-			}
-			if sessionsV3ProviderInputContainsContentText(req.Input, "complete_checkpoint") || sessionsV3ProviderInputContainsContentText(req.Input, "call-complete-final-checkpoint") {
-				return provideriface.Response{}, fmt.Errorf("finalization input leaked raw terminal tool transcript: %+v", req.Input)
-			}
-			if !sessionsV3ProviderInputContainsContentText(req.Input, "waiting for checkpoint review") || !sessionsV3ProviderInputContainsContentText(req.Input, "Do not call tools") {
-				return provideriface.Response{}, fmt.Errorf("finalization input missing review instruction: %+v", req.Input)
-			}
-			return provideriface.Response{Text: "The final checkpoint is complete. Let me know if you need changes."}, nil
 		default:
 			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
 		}
@@ -5958,11 +5939,14 @@ func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 4 || messages[1].Role != "tool" || messages[2].Role != "system" || messages[3].Role != "assistant" {
+	if len(messages) != 3 || messages[1].Role != "tool" || messages[2].Role != "system" {
 		t.Fatalf("messages after automatic finalization = %+v", messages)
 	}
-	if messages[3].Content != "The final checkpoint is complete. Let me know if you need changes." {
-		t.Fatalf("assistant final = %q", messages[3].Content)
+	if messages[2].Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || messages[2].Metadata["action"] != "complete_checkpoint" || messages[2].Metadata["next_action"] != "await_review" {
+		t.Fatalf("final lifecycle message metadata = %+v", messages[2].Metadata)
+	}
+	if strings.Contains(messages[2].Content, "Review and approve this plan") || strings.Contains(messages[2].Content, "Context: Starting the next checkpoint") || !strings.Contains(messages[2].Content, "All checkpoints complete; review required") || !strings.Contains(messages[2].Content, "Final checkpoint handoff") || !strings.Contains(messages[2].Content, "Report: last checkpoint complete") || !strings.Contains(messages[2].Content, "Result: done") || !strings.Contains(messages[2].Content, "Validation: targeted final lifecycle regression") {
+		t.Fatalf("final lifecycle message content = %q", messages[2].Content)
 	}
 	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
 	if err != nil || !ok || activePlan.Document == nil {
@@ -5971,8 +5955,8 @@ func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing
 	if activePlan.Document.ExecutionState == nil || activePlan.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateWaitingReview || activePlan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || activePlan.Document.Checkpoints[0].Review == nil || activePlan.Document.Checkpoints[0].Review.Status != sessionruntime.PlanCheckpointReviewStatusPending {
 		t.Fatalf("completed plan state = %#v", activePlan.Document)
 	}
-	if runner.callCount != 2 {
-		t.Fatalf("provider call count = %d, want tool turn plus finalization", runner.callCount)
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want only terminal tool turn", runner.callCount)
 	}
 }
 
@@ -6021,28 +6005,12 @@ func TestSessionsV3ExecutorFollowUpAfterAutomaticCheckpointUsesFreshContextBound
 				return provideriface.Response{}, err
 			}
 			if !result.RestartTurn {
-				return provideriface.Response{}, fmt.Errorf("terminal plan completion did not request finalization restart: %+v", result)
+				return provideriface.Response{}, fmt.Errorf("terminal plan completion did not request executor stop restart: %+v", result)
 			}
 			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
 		case 2:
-			if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
-				return provideriface.Response{}, fmt.Errorf("terminal finalization lineage flags = boundary %q native %t fresh %t, want checkpoint fresh context", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
-			}
-			if sessionsV3ProviderInputContainsContentText(req.Input, "complete_checkpoint") || sessionsV3ProviderInputContainsContentText(req.Input, "call-complete-auto-checkpoint") || sessionsV3ProviderInputContainsContentText(req.Input, oldPrompt) {
-				return provideriface.Response{}, fmt.Errorf("automatic checkpoint finalization leaked raw checkpoint transcript: %+v", req.Input)
-			}
-			for _, want := range []string{"terminal state", "waiting for checkpoint review", "Do not call tools"} {
-				if !sessionsV3ProviderInputContainsContentText(req.Input, want) {
-					return provideriface.Response{}, fmt.Errorf("automatic checkpoint finalization missing %q: %+v", want, req.Input)
-				}
-			}
-			return provideriface.Response{Text: "automatic checkpoint finalized"}, nil
-		case 3:
-			if req.BoundaryReason != "session_turn" || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
-				return provideriface.Response{}, fmt.Errorf("post-checkpoint follow-up lineage flags = boundary %q native %t fresh %t, want session_turn native continuation", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
-			}
-			if runner.requests[1].ProviderLineageID == "" || runner.requests[2].ProviderLineageID != runner.requests[1].ProviderLineageID {
-				return provideriface.Response{}, fmt.Errorf("post-checkpoint follow-up changed lineage: final=%q follow-up=%q", runner.requests[1].ProviderLineageID, runner.requests[2].ProviderLineageID)
+			if req.BoundaryReason != "session_turn" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+				return provideriface.Response{}, fmt.Errorf("post-checkpoint follow-up lineage flags = boundary %q native %t fresh %t, want bounded fresh context after lifecycle-only completion", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
 			}
 			if sessionsV3ProviderInputContainsContentText(req.Input, oldPrompt) {
 				return provideriface.Response{}, fmt.Errorf("follow-up provider input leaked old raw transcript: %+v", req.Input)
@@ -6066,11 +6034,11 @@ func TestSessionsV3ExecutorFollowUpAfterAutomaticCheckpointUsesFreshContextBound
 	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-auto-follow-up-normal", followUp)
 	waitForSessionsV3SpecificRunIntentStatus(t, sessionSvc, created.ID, stableSessionsV3PrimaryRunID(created.ID, "provider-auto-follow-up-normal"), sessionruntime.RunIntentCompleted)
-	if runner.callCount != 3 {
-		t.Fatalf("provider call count = %d, want checkpoint tool turn, finalization, follow-up", runner.callCount)
+	if runner.callCount != 2 {
+		t.Fatalf("provider call count = %d, want checkpoint tool turn and follow-up", runner.callCount)
 	}
-	if sessionsV3ProviderInputContainsContentText(runner.requests[2].Input, oldPrompt) {
-		t.Fatalf("follow-up request leaked old raw transcript: %+v", runner.requests[2].Input)
+	if sessionsV3ProviderInputContainsContentText(runner.requests[1].Input, oldPrompt) {
+		t.Fatalf("follow-up request leaked old raw transcript: %+v", runner.requests[1].Input)
 	}
 }
 

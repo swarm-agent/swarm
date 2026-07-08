@@ -298,14 +298,14 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 		t.Fatalf("start second checkpoint should only add plan saved mutation, count = %d: %#v", len(appliedMutations), appliedMutations)
 	}
 
-	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"done"}`, "", applyMutation)
+	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"done","result":"finished","validation":["lifecycle handoff regression"]}`, "", applyMutation)
 	if err != nil {
 		t.Fatalf("complete final checkpoint: %v output=%s", err, raw)
 	}
 	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
 		t.Fatalf("append final lifecycle: %v", err)
 	}
-	assertLifecycleMessage(1, "complete_checkpoint", "await_review", 6, "All checkpoints complete; review required — Automatic mode", "Completed: Checkpoint 2 — API", "Next: all checkpoints are complete; waiting for user review.")
+	assertLifecycleMessage(1, "complete_checkpoint", "await_review", 6, "All checkpoints complete; review required — Automatic mode", "Completed: Checkpoint 2 — API", "Next: all checkpoints are complete; waiting for user review.", "Final checkpoint handoff", "Report: done", "Result: finished", "Validation: lifecycle handoff regression")
 
 	_, _, err = sessionSvc.SavePlanWithMetadata(sessionID, "plan-blocked-lifecycle", "Plan: Blocked Lifecycle", "# Blocked", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},

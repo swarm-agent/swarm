@@ -401,6 +401,10 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	if e.isRunCanceled(job) || runCtx.Err() != nil {
 		return
 	}
+	if response.LifecycleOnly {
+		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentCompleted, "", "session.assistant.completed")
+		return
+	}
 	if _, err := e.completeRun(job, response); err != nil {
 		if !e.isRunCanceled(job) {
 			_, _ = e.recordRunFailureSystemMessage(job, err.Error())
@@ -697,6 +701,7 @@ type sessionV3ResolvedRuntime struct {
 
 type sessionV3AssistantResponse struct {
 	Content                       string
+	LifecycleOnly                 bool
 	AgentName                     string
 	ResolvedAgentName             string
 	ExecutorKind                  string
@@ -1205,6 +1210,9 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		"model":    modelName,
 		"result":   sessionV3ProviderResponseDiagnostic(response, loopResult.FinalContent, loopResult.DurableFlushCount),
 	})
+	if loopResult.TerminalPlanHandled {
+		return sessionV3AssistantResponse{LifecycleOnly: true}, nil
+	}
 	content := loopResult.FinalContent
 	if strings.TrimSpace(content) == "" {
 		return sessionV3AssistantResponse{}, errors.New("provider returned empty assistant response")
@@ -1676,18 +1684,6 @@ func sessionV3ProviderCheckpointScopeFromPayload(scope sessionV3ProviderCheckpoi
 	return scope
 }
 
-func (e *sessionV3Executor) sessionV3ProviderTerminalPlanCheckpointScope(job sessionV3ExecutorJob, terminal sessionV3ProviderTerminalPlanResult) sessionV3ProviderCheckpointScope {
-	scope := e.sessionV3ProviderCheckpointScope(job)
-	if planID := strings.TrimSpace(terminal.PlanID); planID != "" {
-		scope.PlanID = planID
-	}
-	if checkpointID := strings.TrimSpace(firstNonEmptyString(terminal.CheckpointID, terminal.NextCheckpointID)); checkpointID != "" {
-		scope.CheckpointID = checkpointID
-		scope.FreshContext = true
-	}
-	return scope
-}
-
 func (e *sessionV3Executor) sessionV3ProviderCheckpointScope(job sessionV3ExecutorJob) sessionV3ProviderCheckpointScope {
 	scope := sessionV3ProviderJobCheckpointScope(job)
 	scope = sessionV3ProviderCheckpointScopeFromPayload(scope, e.sessionV3LatestCheckpointRunToolPayload(job))
@@ -1891,13 +1887,14 @@ func sessionV3ProviderToolsLineageHash(tools []provideriface.ToolDefinition) str
 }
 
 type sessionV3ProviderLoopResult struct {
-	Response          provideriface.Response
-	FinalContent      string
-	FinalRequest      provideriface.Request
-	DurableFlushCount int
-	FinalStreamID     string
-	FinalStep         int
-	FinalOffsetEnd    uint64
+	Response            provideriface.Response
+	FinalContent        string
+	FinalRequest        provideriface.Request
+	DurableFlushCount   int
+	FinalStreamID       string
+	FinalStep           int
+	FinalOffsetEnd      uint64
+	TerminalPlanHandled bool
 }
 
 func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, runner provideriface.Runner, baseReq provideriface.Request, sink *sessionV3DurableProgressSink) (sessionV3ProviderLoopResult, error) {
@@ -2000,21 +1997,8 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 					return sessionV3ProviderLoopResult{}, err
 				}
 				runner = refreshedRunner
-				if terminal, ok := e.sessionV3LatestTerminalPlanToolPayload(job); ok {
-					input = sessionsV3ProviderTerminalPlanFinalizationRequestInput(terminal)
-					if len(input) == 0 {
-						return sessionV3ProviderLoopResult{}, errors.New("terminal plan finalization requested but finalization input is empty")
-					}
-					baseReq, err = e.sessionV3ProviderBaseRequestWithCheckpointScope(job, resolved, input, e.sessionV3ProviderTerminalPlanCheckpointScope(job, terminal))
-					if err != nil {
-						return sessionV3ProviderLoopResult{}, err
-					}
-					baseReq.Tools = nil
-					baseReq.ToolChoice = "none"
-					baseReq.ToolInvoker = nil
-					baseReq.ParallelToolCalls = false
-					finalizingPlanTerminal = true
-					continue
+				if _, ok := e.sessionV3LatestTerminalPlanToolPayload(job); ok {
+					return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), TerminalPlanHandled: true}, nil
 				}
 				input, err = e.sessionV3ProviderRestartInput(ctx, job, resolved, "")
 				if err != nil {
@@ -2102,19 +2086,8 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if len(input) == 0 {
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider continuation input is empty after tool execution")
 		}
-		if terminal, ok := sessionsV3ProviderTerminalPlanToolResult(toolResults); ok {
-			input = sessionsV3ProviderTerminalPlanFinalizationRequestInput(terminal)
-			nextReq, err := e.sessionV3ProviderBaseRequestWithCheckpointScope(job, resolved, input, e.sessionV3ProviderTerminalPlanCheckpointScope(job, terminal))
-			if err != nil {
-				return sessionV3ProviderLoopResult{}, err
-			}
-			baseReq = nextReq
-			baseReq.Tools = nil
-			baseReq.ToolChoice = "none"
-			baseReq.ToolInvoker = nil
-			baseReq.ParallelToolCalls = false
-			finalizingPlanTerminal = true
-			continue
+		if _, ok := sessionsV3ProviderTerminalPlanToolResult(toolResults); ok {
+			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), TerminalPlanHandled: true}, nil
 		}
 		if restartAfterTools {
 			restartCheckpointScope := sessionV3ProviderCheckpointScopeFromPayload(sessionV3ProviderJobCheckpointScope(job), sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(toolResults[len(toolResults)-1].Output, sessionsV3LatestFunctionCallOutput(input), toolResults[len(toolResults)-1].TextForModel))))
@@ -2204,43 +2177,6 @@ func sessionsV3ProviderTerminalPlanNextAction(nextAction string) bool {
 	default:
 		return false
 	}
-}
-
-func sessionsV3ProviderTerminalPlanFinalizationRequestInput(terminal sessionV3ProviderTerminalPlanResult) []map[string]any {
-	return []map[string]any{sessionsV3ProviderTerminalPlanFinalizationInput(terminal)}
-}
-
-func sessionsV3ProviderTerminalPlanFinalizationInput(terminal sessionV3ProviderTerminalPlanResult) map[string]any {
-	lines := []string{
-		"[plan-execution] The plan/checkpoint lifecycle reached a terminal state for this turn.",
-		"Do not call tools. Do not start another checkpoint. Provide the user-facing final response now.",
-	}
-	switch strings.ToLower(strings.TrimSpace(terminal.NextAction)) {
-	case "await_review":
-		lines = append(lines, "State: checkpoint completed and waiting for checkpoint review.")
-	case "plan_complete":
-		lines = append(lines, "State: final checkpoint completed and the plan is complete.")
-	case "stopped":
-		lines = append(lines, "State: plan execution stopped.")
-	}
-	if terminal.PlanTitle != "" || terminal.PlanID != "" {
-		plan := strings.TrimSpace(terminal.PlanTitle)
-		if terminal.PlanID != "" {
-			if plan != "" {
-				plan += " "
-			}
-			plan += "(" + terminal.PlanID + ")"
-		}
-		lines = append(lines, "Plan: "+plan)
-	}
-	if terminal.CheckpointID != "" {
-		lines = append(lines, "Checkpoint: "+terminal.CheckpointID)
-	}
-	if terminal.Summary != "" {
-		lines = append(lines, "Tool summary: "+terminal.Summary)
-	}
-	lines = append(lines, "Keep the response concise; summarize what completed and ask whether the user needs changes or wants to continue.")
-	return map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": strings.Join(lines, "\n")}}}
 }
 
 type sessionV3ProviderIdenticalToolCallTracker struct {

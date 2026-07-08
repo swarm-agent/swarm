@@ -79,6 +79,17 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 			t.Fatalf("prompt missing %q instruction: %s", want, text)
 		}
 	}
+	for _, want := range []string{
+		"Final checkpoint handoff required",
+		"last remaining checkpoint",
+		"final waiting_review/final-review state",
+		"Do not save the compact user-facing handoff in the plan document",
+		`"final_checkpoint": true`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("final checkpoint prompt missing %q: %s", want, text)
+		}
+	}
 	if strings.Contains(text, "old chat that must not appear") {
 		t.Fatalf("prompt leaked prior conversation: %s", text)
 	}

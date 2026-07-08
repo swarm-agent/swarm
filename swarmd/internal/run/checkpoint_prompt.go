@@ -20,6 +20,7 @@ type checkpointRunPromptPayload struct {
 	Validation       string                                 `json:"validation_strategy,omitempty"`
 	ExecutionPolicy  pebblestore.SessionPlanExecutionPolicy `json:"execution_policy"`
 	ExecutionSummary sessionruntime.PlanExecutionSummary    `json:"execution_summary"`
+	FinalCheckpoint  bool                                   `json:"final_checkpoint,omitempty"`
 	Checkpoint       pebblestore.SessionPlanCheckpoint      `json:"checkpoint"`
 	AttemptID        string                                 `json:"attempt_id,omitempty"`
 	RunID            string                                 `json:"run_id,omitempty"`
@@ -126,6 +127,7 @@ func (s *Service) buildPlanCheckpointRunInput(sessionID, runID string, options R
 		Validation:       strings.TrimSpace(doc.Info.ValidationStrategy),
 		ExecutionPolicy:  doc.ExecutionPolicy,
 		ExecutionSummary: sessionruntime.SummarizePlanExecution(doc),
+		FinalCheckpoint:  isFinalPlanCheckpointRun(doc, checkpointID),
 		Checkpoint:       checkpoint,
 		AttemptID:        attemptID,
 		RunID:            runID,
@@ -154,12 +156,17 @@ func renderCheckpointRunPrompt(payload checkpointRunPromptPayload) (string, erro
 	if checkpointID == "" {
 		checkpointID = "current checkpoint"
 	}
-	return strings.TrimSpace(strings.Join([]string{
+	parts := []string{
 		"[checkpoint-run] Deterministic checkpoint execution context.",
 		"Conversation history has been intentionally cleared for this run. Use only this payload plus the system/developer instructions and tool results from this run.",
 		"Execute exactly one checkpoint: " + checkpointID + ". Do not begin later checkpoints in this run.",
 		"Use plan_manage as the only checkpoint lifecycle surface for this run. Do not use manage_todos for agent self-tracking, checkpoint progress, or terminal outcomes; manage_todos is reserved for user-owned workspace todos.",
 		"Do not call plan_manage update_checkpoint or structured document patches merely to record checkpoint progress or summarize completed work. The checkpoint payload already contains the task context.",
+	}
+	if payload.FinalCheckpoint {
+		parts = append(parts, "Final checkpoint handoff required: this is the last remaining checkpoint. Completing it will put the plan into final waiting_review/final-review state, not start another checkpoint. Put the full durable report, changed files, validation, and result/next-action evidence in the terminal plan_manage call as usual. Do not save the compact user-facing handoff in the plan document; the backend records the user-facing handoff as a lifecycle system message from the terminal tool payload.")
+	}
+	parts = append(parts,
 		"Complete this checkpoint with exactly one terminal plan_manage outcome action: complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed. Always include the current checkpoint_id from the payload in that terminal call.",
 		"The terminal outcome tool call must include checkpoint_id, attempt_id when present, run_id, run_session_id, parent_session_id, report, changed_files, validation, and result/next-action evidence; put final notes and evidence in that terminal call instead of a separate update_checkpoint call.",
 		"Do not call start_session_checkpoint or request_followup_checkpoint from this checkpoint run. The checkpoint payload is already the selected unit of work for this fresh-context run; satisfy it and finish with one terminal outcome action. Ordered session checkpoint creation is only valid from the parent conversation before a checkpoint run starts.",
@@ -169,7 +176,29 @@ func renderCheckpointRunPrompt(payload checkpointRunPromptPayload) (string, erro
 		"After any terminal plan_manage call, do not emit a text-only completion or begin another checkpoint; backend durable plan state decides continuation.",
 		"Checkpoint payload:",
 		string(raw),
-	}, "\n\n")), nil
+	)
+	return strings.TrimSpace(strings.Join(parts, "\n\n")), nil
+}
+
+func isFinalPlanCheckpointRun(doc *pebblestore.SessionPlanDocument, checkpointID string) bool {
+	if doc == nil {
+		return false
+	}
+	idx := findPlanRunCheckpointIndex(doc.Checkpoints, checkpointID)
+	if idx < 0 {
+		return false
+	}
+	for i, checkpoint := range doc.Checkpoints {
+		if i == idx {
+			continue
+		}
+		status := strings.TrimSpace(checkpoint.Status)
+		switch status {
+		case "", sessionruntime.PlanCheckpointStatusPending, sessionruntime.PlanCheckpointStatusInProgress, sessionruntime.PlanCheckpointStatusNeedsReview, sessionruntime.PlanCheckpointStatusBlocked, sessionruntime.PlanCheckpointStatusFailed:
+			return false
+		}
+	}
+	return true
 }
 
 func findPlanRunCheckpointIndex(checkpoints []pebblestore.SessionPlanCheckpoint, id string) int {

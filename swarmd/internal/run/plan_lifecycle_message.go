@@ -42,7 +42,7 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 
 	checkpointLabel := planLifecycleCheckpointLabel(checkpointID, checkpointTitle)
 	modeLabel := planLifecycleModeLabel(doc.ExecutionPolicy)
-	lines := []string{planLifecycleHeadline(action, summary, nextAction, modeLabel)}
+	lines := []string{planLifecycleHeadline(action, doc, summary, nextAction, modeLabel)}
 	bodyLines := make([]string, 0, 4)
 	if planLabel := planLifecyclePlanLabel(input.Plan, doc); planLabel != "" {
 		bodyLines = append(bodyLines, "Plan: "+planLabel)
@@ -62,9 +62,11 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	if nextCheckpointID != "" && nextCheckpointID != checkpointID && nextAction != "await_review" && nextAction != "stopped" && nextAction != "plan_complete" {
 		bodyLines = append(bodyLines, "Next: "+planLifecycleCheckpointLabel(nextCheckpointID, nextCheckpointTitle))
 	}
+	finalReview := nextAction == "await_review" && allPlanLifecycleCheckpointsCompleted(doc)
 	if nextAction == "await_review" {
-		if allPlanLifecycleCheckpointsCompleted(doc) {
+		if finalReview {
 			bodyLines = append(bodyLines, "Next: all checkpoints are complete; waiting for user review.")
+			bodyLines = append(bodyLines, finalPlanLifecycleHandoffLines(input.Payload)...)
 		} else {
 			bodyLines = append(bodyLines, "Next: waiting for checkpoint review.")
 		}
@@ -72,6 +74,9 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 		bodyLines = append(bodyLines, "Next: execution stopped until the blocker or failure is resolved.")
 	} else if nextAction == "plan_complete" {
 		bodyLines = append(bodyLines, "Next: plan complete.")
+	}
+	if !finalReview && isPlanExecutionOutcomeMessageAction(action) {
+		bodyLines = append(bodyLines, planLifecycleOutcomeDetailLines(input.Payload)...)
 	}
 	if len(bodyLines) > 0 {
 		lines = append(lines, "")
@@ -121,7 +126,7 @@ func isPlanExecutionOutcomeMessageAction(action string) bool {
 	}
 }
 
-func planLifecycleHeadline(action string, summary sessionruntime.PlanExecutionSummary, nextAction, modeLabel string) string {
+func planLifecycleHeadline(action string, doc *pebblestore.SessionPlanDocument, summary sessionruntime.PlanExecutionSummary, nextAction, modeLabel string) string {
 	base := "Plan execution updated"
 	if action == "approve_and_start" && nextAction == "run_checkpoint_with_fresh_context" && strings.TrimSpace(summary.NextCheckpointID) != "" {
 		return "Plan accepted, starting " + planLifecycleCheckpointLabel(summary.NextCheckpointID, "")
@@ -156,7 +161,7 @@ func planLifecycleHeadline(action string, summary sessionruntime.PlanExecutionSu
 	case "rewind_to_checkpoint":
 		base = "Checkpoint rewound"
 	case "complete_checkpoint", "checkpoint_outcome":
-		if nextAction == "await_review" && allPlanLifecycleCheckpointsCompletedFromSummary(summary) {
+		if nextAction == "await_review" && allPlanLifecycleCheckpointsCompleted(doc) {
 			base = "All checkpoints complete; review required"
 		} else if summary.PlanComplete || nextAction == "plan_complete" {
 			base = "Plan complete"
@@ -227,10 +232,6 @@ func planLifecycleActionCompleted(action string) bool {
 	default:
 		return false
 	}
-}
-
-func allPlanLifecycleCheckpointsCompletedFromSummary(summary sessionruntime.PlanExecutionSummary) bool {
-	return summary.ReviewRequired && summary.NextCheckpointID != "" && !summary.PlanComplete && summary.NextCheckpointStatus == sessionruntime.PlanCheckpointStatusCompleted
 }
 
 func allPlanLifecycleCheckpointsCompleted(doc *pebblestore.SessionPlanDocument) bool {
@@ -307,6 +308,32 @@ func inferPlanExecutionNextAction(summary sessionruntime.PlanExecutionSummary) s
 	return ""
 }
 
+func finalPlanLifecycleHandoffLines(payload map[string]any) []string {
+	if payload == nil {
+		return nil
+	}
+	lines := []string{"Final checkpoint handoff: the last checkpoint is complete; no additional checkpoint will start unless the user explicitly requests it."}
+	lines = append(lines, planLifecycleOutcomeDetailLines(payload)...)
+	return lines
+}
+
+func planLifecycleOutcomeDetailLines(payload map[string]any) []string {
+	if payload == nil {
+		return nil
+	}
+	var lines []string
+	if report := stringFromPlanPayload(payload, "report"); report != "" {
+		lines = append(lines, "Report: "+report)
+	}
+	if result := stringFromPlanPayload(payload, "result"); result != "" {
+		lines = append(lines, "Result: "+result)
+	}
+	if validation := stringsFromPlanPayload(payload, "validation"); len(validation) > 0 {
+		lines = append(lines, "Validation: "+strings.Join(validation, "; "))
+	}
+	return lines
+}
+
 func stringFromPlanPayload(payload map[string]any, key string) string {
 	if payload == nil {
 		return ""
@@ -320,4 +347,39 @@ func stringFromPlanPayload(payload map[string]any, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(text)
+}
+
+func stringsFromPlanPayload(payload map[string]any, key string) []string {
+	if payload == nil {
+		return nil
+	}
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return nil
+	}
+	switch typed := value.(type) {
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok {
+				if trimmed := strings.TrimSpace(text); trimmed != "" {
+					out = append(out, trimmed)
+				}
+			}
+		}
+		return out
+	case string:
+		if trimmed := strings.TrimSpace(typed); trimmed != "" {
+			return []string{trimmed}
+		}
+	}
+	return nil
 }

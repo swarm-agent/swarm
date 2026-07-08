@@ -1930,6 +1930,17 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 			"summary":           fmt.Sprintf("patched plan %s", plan.ID),
 			"details_truncated": false,
 		}
+		if documentPatch != nil {
+			if strings.TrimSpace(documentPatch.Report) != "" {
+				payload["report"] = strings.TrimSpace(documentPatch.Report)
+			}
+			if strings.TrimSpace(documentPatch.Result) != "" {
+				payload["result"] = strings.TrimSpace(documentPatch.Result)
+			}
+			if len(documentPatch.Validation) > 0 {
+				payload["validation"] = trimStringSliceForPrompt(documentPatch.Validation)
+			}
+		}
 		addPlanExecutionPayloadFields(payload, action, plan.Document)
 		return marshalPlanManagePayload(payload)
 	case "new":

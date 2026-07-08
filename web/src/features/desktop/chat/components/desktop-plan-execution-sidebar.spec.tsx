@@ -524,6 +524,45 @@ test("manual review mode exposes only the enabled accept-and-archive review acti
   assert.doesNotMatch(markup, /Accept &amp; move to next/);
 });
 
+test("automatic final review keeps automatic copy and no policy toggle when all checkpoints are complete", () => {
+  const base = view({
+    policyMode: "automatic",
+    reviewRequired: true,
+    status: "waiting_review",
+    completed: true,
+  });
+  base.plan.document.executionPolicy.mode = "automatic";
+  base.activeCheckpoint = {
+    ...base.activeCheckpoint!,
+    status: "completed",
+    review: {
+      status: "pending",
+      reviewerId: "",
+      reviewerType: "",
+      result: "",
+      notes: "",
+      reviewedAt: 0,
+    },
+  };
+  base.plan.document.checkpoints = [base.activeCheckpoint];
+
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar
+      view={base}
+      onAction={() => undefined}
+      onEditPlan={() => undefined}
+    />,
+  );
+
+  assert.match(markup, /Automatic mode paused/);
+  assert.match(markup, /Backend policy is automatic/);
+  assert.match(markup, /All checkpoints are complete and waiting for final review/);
+  assert.match(markup, /Accept \u0026amp; archive plan/);
+  assert.doesNotMatch(markup, /Review Mode/);
+  assert.doesNotMatch(markup, /Backend policy is checkpoint-by-checkpoint/);
+  assert.doesNotMatch(markup, /Switch to automatic/);
+});
+
 test("manual review mode keeps finish-plan action clickable when all checkpoints are complete but review is still pending", () => {
   const base = view({
     policyMode: "review_each_checkpoint",

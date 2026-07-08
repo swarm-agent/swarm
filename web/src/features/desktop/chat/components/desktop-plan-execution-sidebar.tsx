@@ -360,6 +360,12 @@ function ActionsCard({
     ? "Accepting review starts the next checkpoint. You can keep chatting first or ask the AI to add or adjust checkpoints."
     : "Accept & archive plan moves the completed plan to Archived without running checkpoint acceptance first.";
   const showDirectArchiveAction = !view.reviewRequired || hasNextCheckpoint;
+  const reviewModeLabel = automatic ? "Automatic mode paused" : "Review Mode";
+  const reviewModeHelp = automatic
+    ? view.completed
+      ? "Backend policy is automatic. All checkpoints are complete and waiting for final review."
+      : "Backend policy is automatic. Execution is paused for review before another checkpoint can start."
+    : "Backend policy is checkpoint-by-checkpoint. The next completed checkpoint pauses for review unless you switch back to automatic.";
 
   if (view.blocked) {
     return (
@@ -497,15 +503,15 @@ function ActionsCard({
       </div>
       <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
         <div className="text-sm font-medium text-[var(--app-text)]">
-          Review Mode
+          {reviewModeLabel}
         </div>
         <p className="mt-0.5 text-xs leading-5 text-[var(--app-text-muted)]">
-          Backend policy is checkpoint-by-checkpoint. The next completed
-          checkpoint pauses for review unless you switch back to automatic.
+          {reviewModeHelp}
         </p>
       </div>
 
-      {!isSingleRunView(view) &&
+      {!automatic &&
+      !isSingleRunView(view) &&
       !view.blocked &&
       !view.failed &&
       !view.completed ? (
