@@ -119,11 +119,13 @@ func codexTransportContextFromContext(ctx context.Context) codexTransportContext
 }
 
 type cachedWebsocketSession struct {
-	mu             sync.Mutex
-	conn           *websocket.Conn
-	lastPayload    map[string]any
-	lastResponseID string
-	lastOutput     []any
+	mu                    sync.Mutex
+	conn                  *websocket.Conn
+	lastPayload           map[string]any
+	lastRequestProperties map[string]any
+	lastInputLen          int
+	lastResponseID        string
+	lastOutput            []any
 }
 
 func (e *startedWebsocketStreamError) Error() string {
@@ -361,6 +363,8 @@ func closeCachedWebsocketSessionLocked(session *cachedWebsocketSession) {
 		session.conn = nil
 	}
 	session.lastPayload = nil
+	session.lastRequestProperties = nil
+	session.lastInputLen = 0
 	session.lastResponseID = ""
 	session.lastOutput = nil
 }
@@ -419,10 +423,7 @@ func (c *Client) createResponseWithAuth(ctx context.Context, record pebblestore.
 	if strings.TrimSpace(record.Provider) == "" {
 		record.Provider = "codex"
 	}
-	payload, forceFreshProviderContext, err := buildRequestPayloadWithOptions(req)
-	if err != nil {
-		return Response{}, err
-	}
+	forceFreshProviderContext := req.ForceFreshProviderContext || !req.NativeContinuationAllowed
 
 	ctx = contextWithForceFreshProviderContext(ctx, forceFreshProviderContext)
 	ctx = contextWithCodexTransportContext(ctx, codexTransportContext{
@@ -432,7 +433,7 @@ func (c *Client) createResponseWithAuth(ctx context.Context, record pebblestore.
 		ForceFreshProviderContext: forceFreshProviderContext,
 		BoundaryReason:            strings.TrimSpace(req.BoundaryReason),
 	})
-	decoded, statusCode, err := c.send(ctx, record, payload, onEvent)
+	decoded, statusCode, err := c.sendRequest(ctx, record, req, onEvent)
 	if err != nil {
 		return Response{}, err
 	}
@@ -446,7 +447,7 @@ func (c *Client) createResponseWithAuth(ctx context.Context, record pebblestore.
 		if err != nil {
 			return Response{}, fmt.Errorf("persist refreshed codex oauth: %w", err)
 		}
-		decoded, statusCode, err = c.send(ctx, record, payload, onEvent)
+		decoded, statusCode, err = c.sendRequest(ctx, record, req, onEvent)
 		if err != nil {
 			return Response{}, err
 		}
@@ -579,50 +580,66 @@ func buildRequestPayload(req Request) ([]byte, error) {
 }
 
 func buildRequestPayloadWithOptions(req Request) ([]byte, bool, error) {
-	modelID := strings.TrimSpace(req.Model)
-	if modelID == "" {
-		return nil, false, errors.New("model is required")
-	}
-	if len(req.Input) == 0 {
-		return nil, false, errors.New("input messages are required")
-	}
-
-	body := map[string]any{
-		"model":  modelID,
-		"stream": true,
-		"store":  false,
-		"input":  sanitizeCodexRequestInput(req.Input),
-		"text": map[string]any{
-			"verbosity": defaultCodexTextVerbosity,
-		},
-	}
-	if cacheKey := codexPromptCacheKey(firstNonEmpty(req.ProviderCacheKey, req.ProviderLineageID)); cacheKey != "" {
-		body["prompt_cache_key"] = cacheKey
-	}
-	if strings.TrimSpace(req.Instructions) != "" {
-		body["instructions"] = strings.TrimSpace(req.Instructions)
-	}
-	if len(req.Tools) > 0 {
-		body["tools"] = normalizeCodexRequestTools(req.Tools)
-		toolChoice := strings.TrimSpace(req.ToolChoice)
-		if toolChoice == "" {
-			toolChoice = "auto"
-		}
-		body["tool_choice"] = toolChoice
-		body["parallel_tool_calls"] = req.ParallelToolCalls
-	}
-	if serviceTier := strings.TrimSpace(req.ServiceTier); serviceTier != "" {
-		body["service_tier"] = serviceTier
-	}
-	if reasoning := reasoningPayloadForRequest(req); len(reasoning) > 0 {
-		body["reasoning"] = reasoning
-		body["include"] = []string{includeReasoningEncryptedContentPath}
+	body, err := buildCodexRequestBody(req, req.Input)
+	if err != nil {
+		return nil, false, err
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, false, err
 	}
 	return payload, req.ForceFreshProviderContext || !req.NativeContinuationAllowed, nil
+}
+
+func buildCodexRequestBody(req Request, input []map[string]any) (map[string]any, error) {
+	properties, err := buildCodexRequestProperties(req)
+	if err != nil {
+		return nil, err
+	}
+	if len(input) == 0 {
+		return nil, errors.New("input messages are required")
+	}
+	body := cloneMapAny(properties)
+	body["input"] = sanitizeCodexRequestInput(input)
+	return body, nil
+}
+
+func buildCodexRequestProperties(req Request) (map[string]any, error) {
+	modelID := strings.TrimSpace(req.Model)
+	if modelID == "" {
+		return nil, errors.New("model is required")
+	}
+	properties := map[string]any{
+		"model":  modelID,
+		"stream": true,
+		"store":  false,
+		"text": map[string]any{
+			"verbosity": defaultCodexTextVerbosity,
+		},
+	}
+	if cacheKey := codexPromptCacheKey(firstNonEmpty(req.ProviderCacheKey, req.ProviderLineageID)); cacheKey != "" {
+		properties["prompt_cache_key"] = cacheKey
+	}
+	if strings.TrimSpace(req.Instructions) != "" {
+		properties["instructions"] = strings.TrimSpace(req.Instructions)
+	}
+	if len(req.Tools) > 0 {
+		properties["tools"] = normalizeCodexRequestTools(req.Tools)
+		toolChoice := strings.TrimSpace(req.ToolChoice)
+		if toolChoice == "" {
+			toolChoice = "auto"
+		}
+		properties["tool_choice"] = toolChoice
+		properties["parallel_tool_calls"] = req.ParallelToolCalls
+	}
+	if serviceTier := strings.TrimSpace(req.ServiceTier); serviceTier != "" {
+		properties["service_tier"] = serviceTier
+	}
+	if reasoning := reasoningPayloadForRequest(req); len(reasoning) > 0 {
+		properties["reasoning"] = reasoning
+		properties["include"] = []string{includeReasoningEncryptedContentPath}
+	}
+	return properties, nil
 }
 
 func codexPromptCacheKey(sessionID string) string {
@@ -763,6 +780,17 @@ func isCodexRequestInputResponseOnlyField(key string) bool {
 	}
 }
 
+func sanitizeCodexRequestDeltaInput(input []map[string]any) []any {
+	if len(input) == 0 {
+		return []any{}
+	}
+	out := make([]any, 0, len(input))
+	for _, item := range sanitizeCodexRequestInput(input) {
+		out = append(out, item)
+	}
+	return out
+}
+
 func isCodexRequestInputEmptyValue(value any) bool {
 	switch typed := value.(type) {
 	case nil:
@@ -784,6 +812,62 @@ func reasoningPayloadForRequest(req Request) map[string]any {
 		return nil
 	}
 	return map[string]any{"effort": providerValue, "summary": "auto"}
+}
+
+func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (map[string]any, int, error) {
+	if record.Type != pebblestore.CodexAuthTypeOAuth || c.sendWSFn != nil {
+		payload, _, err := buildRequestPayloadWithOptions(req)
+		if err != nil {
+			return nil, 0, err
+		}
+		return c.send(ctx, record, payload, onEvent)
+	}
+
+	streamEmitter := &retryAwareStreamEmitter{onEvent: onEvent}
+	for attempt := 1; attempt <= transportRetryAttempts; attempt++ {
+		var wsDecoded map[string]any
+		var wsStatus int
+		var wsErr error
+		for startedRetry := 0; ; startedRetry++ {
+			streamEmitter.beginAttempt()
+			wsDecoded, wsStatus, wsErr = c.sendWebsocketRequest(ctx, record, req, streamEmitter.emit)
+			if wsErr == nil || !errors.Is(wsErr, errWebsocketStreamStarted) {
+				break
+			}
+			if !shouldRetryStartedWebsocketStream(wsErr) || startedRetry >= startedWebsocketStreamRetryLimit {
+				return nil, 0, wsErr
+			}
+			if err := sleepWithContext(ctx, transportRetryBaseDelay*time.Duration(startedRetry+1)); err != nil {
+				return nil, 0, err
+			}
+		}
+		if wsErr != nil {
+			if ctxErr := contextErr(ctx); ctxErr != nil {
+				return nil, 0, ctxErr
+			}
+			if shouldRetryWebsocketTransportError(wsErr) && attempt < transportRetryAttempts {
+				if err := sleepWithContext(ctx, transportRetryBaseDelay*time.Duration(attempt)); err != nil {
+					return nil, 0, err
+				}
+				continue
+			}
+			return nil, 0, wsErr
+		}
+		if ctxErr := contextErr(ctx); ctxErr != nil {
+			return nil, 0, ctxErr
+		}
+		if shouldRetryTransportStatus(wsStatus, wsDecoded) && attempt < transportRetryAttempts {
+			if err := sleepWithContext(ctx, transportRetryBaseDelay*time.Duration(attempt)); err != nil {
+				return nil, 0, err
+			}
+			continue
+		}
+		return annotateRetryAttempts(annotateCodexTransportMetadata(wsDecoded, codexTransportWebsocket, true), attempt), wsStatus, nil
+	}
+	return map[string]any{
+		"raw_body":       "",
+		"retry_attempts": transportRetryAttempts,
+	}, http.StatusServiceUnavailable, nil
 }
 
 func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, payload []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {
@@ -1068,16 +1152,66 @@ func responsesWebsocketURL() (string, error) {
 	return parsed.String(), nil
 }
 
+func (c *Client) codexWebsocketRequestPayload(ctx context.Context, req Request) (map[string]any, map[string]any, int, error) {
+	properties, err := buildCodexRequestProperties(req)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	if len(req.Input) == 0 {
+		return nil, nil, 0, errors.New("input messages are required")
+	}
+	requestInputLen := len(req.Input)
+	transportContext := codexTransportContextFromContext(ctx)
+	freshContext := forceFreshProviderContextFromContext(ctx)
+	session := c.cachedWebsocketSession(transportContext.SessionAffinityKey)
+	if session == nil || freshContext {
+		payload, err := buildCodexRequestBody(req, req.Input)
+		return payload, properties, requestInputLen, err
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if strings.TrimSpace(session.lastResponseID) == "" || !codexWebsocketRequestPropertiesMatch(session.lastRequestProperties, properties) {
+		payload, err := buildCodexRequestBody(req, req.Input)
+		return payload, properties, requestInputLen, err
+	}
+	baselineOutputLen := len(session.lastOutput)
+	baselineLen := session.lastInputLen + baselineOutputLen
+	if baselineLen < 0 || baselineLen > len(req.Input) {
+		payload, err := buildCodexRequestBody(req, req.Input)
+		return payload, properties, requestInputLen, err
+	}
+	if baselineOutputLen > 0 && !inputStartsWith(codexInputItemsForIncrementalCompare(mapsToAnySlice(req.Input[session.lastInputLen:baselineLen])), codexInputItemsForIncrementalCompare(session.lastOutput)) {
+		payload, err := buildCodexRequestBody(req, req.Input)
+		return payload, properties, requestInputLen, err
+	}
+	payload := cloneMapAny(properties)
+	payload["input"] = sanitizeCodexRequestDeltaInput(req.Input[baselineLen:])
+	payload["previous_response_id"] = strings.TrimSpace(session.lastResponseID)
+	return payload, properties, requestInputLen, nil
+}
+
 func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuthRecord, payload []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {
+	requestPayload, err := decodeCodexPayload(payload)
+	if err != nil {
+		return nil, 0, err
+	}
+	return c.sendWebsocketMap(ctx, record, requestPayload, codexWebsocketRequestPropertiesFromPayload(requestPayload), len(asSlice(requestPayload["input"])), false, onEvent)
+}
+
+func (c *Client) sendWebsocketRequest(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (map[string]any, int, error) {
+	requestPayload, requestProperties, requestInputLen, err := c.codexWebsocketRequestPayload(ctx, req)
+	if err != nil {
+		return nil, 0, err
+	}
+	return c.sendWebsocketMap(ctx, record, requestPayload, requestProperties, requestInputLen, true, onEvent)
+}
+
+func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexAuthRecord, requestPayload map[string]any, requestProperties map[string]any, requestInputLen int, payloadPrepared bool, onEvent func(StreamEvent)) (map[string]any, int, error) {
 	wsURL, err := responsesWebsocketURL()
 	if err != nil {
 		return nil, 0, err
 	}
 
-	requestPayload, err := decodeCodexPayload(payload)
-	if err != nil {
-		return nil, 0, err
-	}
 	transportContext := codexTransportContextFromContext(ctx)
 	cacheKey := strings.TrimSpace(transportContext.SessionAffinityKey)
 	freshContext := forceFreshProviderContextFromContext(ctx)
@@ -1092,6 +1226,9 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 	if session != nil {
 		if freshContext {
 			closeCachedWebsocketSessionLocked(session)
+			if payloadPrepared && asString(requestPayload["previous_response_id"]) != "" {
+				return nil, 0, errWebsocketRetryFresh
+			}
 		}
 		conn = session.conn
 		websocketReused = conn != nil
@@ -1116,7 +1253,10 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 	}
 
-	sendPayload := codexWebsocketSendPayload(requestPayload, session, freshContext)
+	sendPayload := requestPayload
+	if !payloadPrepared {
+		sendPayload = codexWebsocketSendPayload(requestPayload, session, freshContext)
+	}
 	websocketPayload, err := buildCodexWebsocketPayload(sendPayload)
 	if err != nil {
 		if session != nil {
@@ -1149,6 +1289,9 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 		}
 		if session != nil {
 			closeCachedWebsocketSessionLocked(session)
+			if payloadPrepared && asString(requestPayload["previous_response_id"]) != "" {
+				return nil, 0, errWebsocketRetryFresh
+			}
 			var failureBody map[string]any
 			var status int
 			var dialErr error
@@ -1248,6 +1391,8 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 	}
 	if session != nil {
 		session.lastPayload = cloneMapAny(requestPayload)
+		session.lastRequestProperties = cloneMapAny(requestProperties)
+		session.lastInputLen = requestInputLen
 		session.lastResponseID = extractResponseID(decoded)
 		session.lastOutput = normalizeCodexResponseOutputMapsForReplay(state.outputItemsDone)
 	}
@@ -1435,7 +1580,7 @@ func prepareIncrementalWebsocketRequest(current, previous map[string]any, lastRe
 	if len(current) == 0 || len(previous) == 0 || strings.TrimSpace(lastResponseID) == "" {
 		return current
 	}
-	if !codexWebsocketRequestPropertiesMatch(previous, current) {
+	if !reflect.DeepEqual(codexWebsocketRequestPropertiesFromPayload(previous), codexWebsocketRequestPropertiesFromPayload(current)) {
 		return current
 	}
 
@@ -1459,6 +1604,14 @@ func prepareIncrementalWebsocketRequest(current, previous map[string]any, lastRe
 }
 
 func codexWebsocketRequestPropertiesMatch(previous, current map[string]any) bool {
+	return reflect.DeepEqual(codexWebsocketRequestPropertiesFromPayload(previous), codexWebsocketRequestPropertiesFromPayload(current))
+}
+
+func codexWebsocketRequestPropertiesFromPayload(payload map[string]any) map[string]any {
+	if len(payload) == 0 {
+		return nil
+	}
+	properties := make(map[string]any, len(payload))
 	for _, key := range []string{
 		"model",
 		"instructions",
@@ -1473,11 +1626,11 @@ func codexWebsocketRequestPropertiesMatch(previous, current map[string]any) bool
 		"prompt_cache_key",
 		"text",
 	} {
-		if !reflect.DeepEqual(previous[key], current[key]) {
-			return false
+		if value, ok := payload[key]; ok {
+			properties[key] = value
 		}
 	}
-	return true
+	return properties
 }
 
 func codexInputItemsForIncrementalCompare(items []any) []any {

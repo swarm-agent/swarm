@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -327,6 +328,58 @@ func decodeTestPayload(t *testing.T, payload []byte) map[string]any {
 		t.Fatalf("decode payload: %v", err)
 	}
 	return decoded
+}
+
+func TestCodexWebsocketRequestPayloadUsesIncrementalDeltaWithoutFullPayloadBuild(t *testing.T) {
+	client := NewClient(nil)
+	ctx := contextWithCodexTransportContext(context.Background(), codexTransportContext{
+		PromptCacheKey:            "cache-lineage-key",
+		SessionAffinityKey:        "affinity-window-key",
+		NativeContinuationAllowed: true,
+	})
+	session := client.cachedWebsocketSession("affinity-window-key")
+	session.lastRequestProperties = map[string]any{
+		"model":            "gpt-5.3-codex",
+		"stream":           true,
+		"store":            false,
+		"prompt_cache_key": "cache-lineage-key",
+		"text":             map[string]any{"verbosity": defaultCodexTextVerbosity},
+	}
+	session.lastInputLen = 1
+	session.lastResponseID = "resp-1"
+	session.lastOutput = []any{map[string]any{"type": "function_call", "call_id": "shell-command-call", "name": "shell", "arguments": map[string]any{"command": "echo websocket"}}}
+
+	payload, properties, inputLen, err := client.codexWebsocketRequestPayload(ctx, Request{
+		ProviderCacheKey:          "cache-lineage-key",
+		SessionAffinityKey:        "affinity-window-key",
+		Model:                     "gpt-5.3-codex",
+		NativeContinuationAllowed: true,
+		Input: []map[string]any{
+			{"role": "user", "content": "run the echo command"},
+			{"type": "function_call", "call_id": "shell-command-call", "name": "shell", "arguments": map[string]any{"command": "echo websocket"}},
+			{"type": "function_call_output", "call_id": "shell-command-call", "output": "websocket\n"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("codexWebsocketRequestPayload error: %v", err)
+	}
+	if gotID := asString(payload["previous_response_id"]); gotID != "resp-1" {
+		t.Fatalf("previous_response_id = %q, want resp-1: %#v", gotID, payload)
+	}
+	input := asSlice(payload["input"])
+	if len(input) != 1 {
+		t.Fatalf("incremental input length = %d, want only function_call_output delta: %#v", len(input), input)
+	}
+	output, ok := input[0].(map[string]any)
+	if !ok || asString(output["type"]) != "function_call_output" {
+		t.Fatalf("incremental input = %#v, want function_call_output", input[0])
+	}
+	if inputLen != 3 {
+		t.Fatalf("inputLen = %d, want full request input length 3", inputLen)
+	}
+	if !codexWebsocketRequestPropertiesMatch(properties, session.lastRequestProperties) {
+		t.Fatalf("request properties changed unexpectedly: %#v", properties)
+	}
 }
 
 func TestCodexFreshWebsocketPayloadDoesNotReusePreviousResponseEvenWithSameProviderCacheKey(t *testing.T) {
