@@ -101,6 +101,15 @@ function normalizedServiceTiers(provider: string, serviceTiers: string[] = []): 
   return out
 }
 
+function serviceTierCandidates(option: Pick<ModelOptionRecord, 'serviceTiers' | 'serviceTierMappings'> | null | undefined): string[] {
+  const values = [...(option?.serviceTiers ?? [])]
+  for (const mapping of option?.serviceTierMappings ?? []) {
+    if (mapping.tier) values.push(mapping.tier)
+    if (mapping.swarm_setting) values.push(mapping.swarm_setting)
+  }
+  return values
+}
+
 function tierLabel(tier: string): string {
   return FALLBACK_SERVICE_TIER_LABELS[tier] ?? tier.replace(/(^|[-_\s])([a-z])/g, (_match, prefix: string, char: string) => `${prefix}${char.toUpperCase()}`)
 }
@@ -114,8 +123,8 @@ export function normalizeModelServiceTier(provider: string, serviceTier: string)
   return ''
 }
 
-export function supportsModelServiceTier(provider: string, _model: string, serviceTiers: string[] = [], requestedTier = ''): boolean {
-  const tiers = normalizedServiceTiers(provider, serviceTiers)
+export function supportsModelServiceTier(provider: string, _model: string, serviceTiers: string[] | Pick<ModelOptionRecord, 'serviceTiers' | 'serviceTierMappings'> = [], requestedTier = ''): boolean {
+  const tiers = normalizedServiceTiers(provider, Array.isArray(serviceTiers) ? serviceTiers : serviceTierCandidates(serviceTiers))
   const requestedRaw = requestedTier.trim().toLowerCase()
   const normalizedRequested = normalizeModelServiceTier(provider, requestedTier)
   if (normalizedRequested) return tiers.includes(normalizedRequested)
@@ -123,16 +132,16 @@ export function supportsModelServiceTier(provider: string, _model: string, servi
   return ['codex', 'fireworks', 'anthropic', 'openai'].includes(normalizeProviderID(provider)) ? tiers.length > 0 : false
 }
 
-export function modelServiceTierOptions(provider: string, _model: string, serviceTiers: string[] = []): ModelServiceTierOption[] {
-  const tiers = normalizedServiceTiers(provider, serviceTiers)
+export function modelServiceTierOptions(provider: string, _model: string, serviceTiers: string[] | Pick<ModelOptionRecord, 'serviceTiers' | 'serviceTierMappings'> = []): ModelServiceTierOption[] {
+  const tiers = normalizedServiceTiers(provider, Array.isArray(serviceTiers) ? serviceTiers : serviceTierCandidates(serviceTiers))
   return [
     { label: 'Off / standard', value: '' },
     ...tiers.map((tier) => ({ label: tierLabel(tier), value: tier })),
   ]
 }
 
-export function codexFastEnabled(provider: string, _model: string, serviceTier: string, serviceTiers: string[] = []): boolean {
-  return normalizeProviderID(provider) === 'codex' && normalizedServiceTiers(provider, serviceTiers).includes('fast') && normalizeModelServiceTier(provider, serviceTier) === 'fast'
+export function codexFastEnabled(provider: string, _model: string, serviceTier: string, serviceTiers: string[] | Pick<ModelOptionRecord, 'serviceTiers' | 'serviceTierMappings'> = []): boolean {
+  return normalizeProviderID(provider) === 'codex' && normalizedServiceTiers(provider, Array.isArray(serviceTiers) ? serviceTiers : serviceTierCandidates(serviceTiers)).includes('fast') && normalizeModelServiceTier(provider, serviceTier) === 'fast'
 }
 
 export function displayModelName(provider: string, model: string, contextMode: string): string {

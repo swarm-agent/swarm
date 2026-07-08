@@ -265,6 +265,9 @@ func serviceTierListedForModel(serviceTier string, record pebblestore.ModelCatal
 			return true
 		}
 	}
+	// Provider Fast Mode is intentionally separate from Priority Tier. Some
+	// providers (Anthropic) expose it only as provider-specific mapping metadata,
+	// not as a normal serving tier in service_tiers.
 	for _, mapping := range record.ServiceTierMappings {
 		if normalizeServiceTier(mapping.Tier) == serviceTier || normalizeServiceTier(mapping.SwarmSetting) == serviceTier {
 			return true

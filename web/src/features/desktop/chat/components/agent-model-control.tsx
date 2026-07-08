@@ -108,12 +108,12 @@ function normalizeDraftServiceTier(provider: string, value: string): string {
 
 function modelSupportsServiceTier(provider: string, model: string, modelOptions: ModelOptionRecord[], tier = ''): boolean {
   const option = modelOptionFor(provider, model, modelOptions)
-  return supportsModelServiceTier(provider, model, option?.serviceTiers ?? [], tier)
+  return supportsModelServiceTier(provider, model, option ?? { serviceTiers: [], serviceTierMappings: [] }, tier)
 }
 
 function serviceTierOptionsForDraft(draft: ModelDraft, modelOptions: ModelOptionRecord[]) {
   const option = modelOptionFor(draft.provider, draft.model, modelOptions)
-  return modelServiceTierOptions(draft.provider, draft.model, option?.serviceTiers ?? [])
+  return modelServiceTierOptions(draft.provider, draft.model, option ?? { serviceTiers: [], serviceTierMappings: [] })
 }
 
 function serviceTierLabel(provider: string, model: string, modelOptions: ModelOptionRecord[], value: string): string {
@@ -285,7 +285,7 @@ export function AgentModelControl({
     ? `${selectedModel.provider}/${displayModelName(selectedModel.provider, selectedModel.model, selectedModel.contextMode)}`
     : 'No resolved model'
   const normalizedSelectedThinking = selectedThinking.trim() || defaultThinkingForOption(selectedModel)
-  const selectedServiceTierSupported = selectedModel ? supportsModelServiceTier(selectedModel.provider, selectedModel.model, selectedModel.serviceTiers) : false
+  const selectedServiceTierSupported = selectedModel ? supportsModelServiceTier(selectedModel.provider, selectedModel.model, selectedModel) : false
   const normalizedSelectedServiceTier = normalizeDraftServiceTier(selectedModel?.provider ?? '', selectedServiceTier)
   const selectedServiceTierLabel = normalizedSelectedServiceTier ? serviceTierLabel(selectedModel?.provider ?? '', selectedModel?.model ?? '', modelOptions, normalizedSelectedServiceTier) : 'standard'
   const SelectedServiceTierIcon = normalizedSelectedServiceTier ? Zap : ZapOff

@@ -241,10 +241,10 @@ export function DesktopV3AgenticComposer({
   const modelPickerLocked = modelPickerDisabled || Boolean(modelLockNotice.trim())
   const modelPickerReason = modelPickerDisabledReason || modelLockNotice
   const normalizedThinking = normalizeThinking(thinking)
-  const serviceTierSupported = selectedModel ? supportsModelServiceTier(selectedModel.provider, selectedModel.model, selectedModel.serviceTiers) : false
+  const serviceTierSupported = selectedModel ? supportsModelServiceTier(selectedModel.provider, selectedModel.model, selectedModel) : false
   const normalizedServiceTier = selectedModel ? normalizeModelServiceTier(selectedModel.provider, selectedServiceTier) : ''
   const selectedServiceTierLabel = selectedModel && normalizedServiceTier
-    ? (modelServiceTierOptions(selectedModel.provider, selectedModel.model, selectedModel.serviceTiers).find((option) => option.value === normalizedServiceTier)?.label ?? normalizedServiceTier)
+    ? (modelServiceTierOptions(selectedModel.provider, selectedModel.model, selectedModel).find((option) => option.value === normalizedServiceTier)?.label ?? normalizedServiceTier)
     : 'standard'
   const ModeIcon = mode === 'plan' ? NotepadText : ChevronsUp
   const effectiveAgentSettingsSignal = agentSettingsOpenSignal + internalAgentSettingsSignal

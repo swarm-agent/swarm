@@ -38,11 +38,11 @@ func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) 
 	if r == nil || r.authStore == nil {
 		return provideriface.Response{}, errors.New("anthropic runner auth store is not configured")
 	}
-	client, modelName, params, err := r.buildRequest(ctx, req)
+	client, modelName, params, requestOptions, err := r.buildRequest(ctx, req)
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	message, err := client.Messages.New(ctx, params)
+	message, err := client.Messages.New(ctx, params, requestOptions...)
 	if err != nil {
 		return provideriface.Response{}, err
 	}
@@ -57,11 +57,11 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 	if r == nil || r.authStore == nil {
 		return provideriface.Response{}, errors.New("anthropic runner auth store is not configured")
 	}
-	client, modelName, params, err := r.buildRequest(ctx, req)
+	client, modelName, params, requestOptions, err := r.buildRequest(ctx, req)
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	stream := client.Messages.NewStreaming(ctx, params)
+	stream := client.Messages.NewStreaming(ctx, params, requestOptions...)
 	message := anthropicapi.Message{}
 	streamState := newAnthropicStreamState()
 	for stream.Next() {
@@ -187,29 +187,29 @@ func anthropicReasoningKey(index int64) string {
 	return fmt.Sprintf("anthropic-thinking-%d", index)
 }
 
-func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (anthropicapi.Client, string, anthropicapi.MessageNewParams, error) {
+func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (anthropicapi.Client, string, anthropicapi.MessageNewParams, []option.RequestOption, error) {
 	principal, principalOK := identity.PrincipalFromContext(ctx)
 	if !principalOK {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, identity.ErrPrincipalRequired
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, identity.ErrPrincipalRequired
 	}
 	record, ok, err := r.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "anthropic")
 	if err != nil {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, fmt.Errorf("read anthropic auth: %w", err)
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, fmt.Errorf("read anthropic auth: %w", err)
 	}
 	if !ok || strings.TrimSpace(record.APIKey) == "" {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, errors.New("anthropic auth is not configured")
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, errors.New("anthropic auth is not configured")
 	}
 	modelName := strings.TrimSpace(req.Model)
 	if modelName == "" {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, errors.New("model is required")
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, errors.New("model is required")
 	}
 	messages, err := buildAnthropicMessages(req.Input)
 	if err != nil {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, err
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, err
 	}
 	tools, enablePromptCaching, err := buildAnthropicTools(req.Tools)
 	if err != nil {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, err
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, err
 	}
 	system := buildAnthropicSystem(req.Instructions)
 	if len(system) > 0 {
@@ -231,14 +231,15 @@ func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (a
 	if toolChoice := anthropicToolChoice(req.ToolChoice, req.ParallelToolCalls); toolChoice != nil {
 		params.ToolChoice = *toolChoice
 	}
-	if serviceTier := anthropicServiceTier(req.ServiceTier); serviceTier != "" {
+	requestOptions := anthropicRequestOptions(req.ModelCatalog, req.ServiceTier)
+	if serviceTier := anthropicProviderServiceTier(req.ModelCatalog, req.ServiceTier); serviceTier != "" {
 		params.ServiceTier = serviceTier
 	}
 	if enablePromptCaching {
 		applyAnthropicPromptCaching(&params, tools)
 	}
 	client := anthropicapi.NewClient(anthropicClientOptions(strings.TrimSpace(record.APIKey))...)
-	return client, modelName, params, nil
+	return client, modelName, params, requestOptions, nil
 }
 
 func anthropicClientOptions(apiKey string) []option.RequestOption {
@@ -249,6 +250,47 @@ func anthropicClientOptions(apiKey string) []option.RequestOption {
 			return providerdiagnostics.RoundTrip("anthropic", "messages", next, req)
 		}),
 	}
+}
+
+func anthropicRequestOptions(catalog any, serviceTier string) []option.RequestOption {
+	mapping, ok := anthropicServiceTierMapping(catalog, serviceTier)
+	if !ok || !strings.EqualFold(strings.TrimSpace(mapping.ProviderParameter), "speed") || !strings.EqualFold(strings.TrimSpace(mapping.ProviderValue), "fast") {
+		return nil
+	}
+	options := []option.RequestOption{option.WithJSONSet("speed", "fast")}
+	if betaHeader := strings.TrimSpace(mapping.BetaHeader); betaHeader != "" {
+		options = append(options, option.WithHeaderAdd("anthropic-beta", betaHeader))
+	}
+	return options
+}
+
+func anthropicServiceTierMapping(catalog any, serviceTier string) (pebblestore.ModelCatalogServiceTierMapping, bool) {
+	record, ok := catalog.(pebblestore.ModelCatalogRecord)
+	if !ok {
+		return pebblestore.ModelCatalogServiceTierMapping{}, false
+	}
+	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
+	if serviceTier == "" || serviceTier == "standard" || serviceTier == "off" {
+		return pebblestore.ModelCatalogServiceTierMapping{}, false
+	}
+	for _, mapping := range record.ServiceTierMappings {
+		if strings.EqualFold(strings.TrimSpace(mapping.Tier), serviceTier) {
+			return mapping, true
+		}
+	}
+	for _, mapping := range record.ServiceTierMappings {
+		if strings.EqualFold(strings.TrimSpace(mapping.SwarmSetting), serviceTier) {
+			return mapping, true
+		}
+	}
+	return pebblestore.ModelCatalogServiceTierMapping{}, false
+}
+
+func anthropicProviderServiceTier(catalog any, serviceTier string) anthropicapi.MessageNewParamsServiceTier {
+	if mapping, ok := anthropicServiceTierMapping(catalog, serviceTier); ok && strings.EqualFold(strings.TrimSpace(mapping.ProviderParameter), "service_tier") {
+		return anthropicServiceTier(mapping.ProviderValue)
+	}
+	return anthropicServiceTier(serviceTier)
 }
 
 func applyAnthropicPromptCaching(params *anthropicapi.MessageNewParams, tools []anthropicapi.ToolUnionParam) {
@@ -555,7 +597,7 @@ func anthropicToolChoice(choice string, parallel bool) *anthropicapi.ToolChoiceU
 
 func anthropicServiceTier(serviceTier string) anthropicapi.MessageNewParamsServiceTier {
 	switch strings.ToLower(strings.TrimSpace(serviceTier)) {
-	case "auto":
+	case "auto", "priority":
 		return anthropicapi.MessageNewParamsServiceTierAuto
 	case "standard_only":
 		return anthropicapi.MessageNewParamsServiceTierStandardOnly

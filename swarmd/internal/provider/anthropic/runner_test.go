@@ -146,6 +146,23 @@ func TestAnthropicThinkingConfigFallsBackToLegacyBudgetWithoutCatalog(t *testing
 	}
 }
 
+func TestAnthropicRequestOptionsApplyProviderFastModeSeparatelyFromPriority(t *testing.T) {
+	catalog := pebblestore.ModelCatalogRecord{ServiceTierMappings: []pebblestore.ModelCatalogServiceTierMapping{
+		{Tier: "priority", SwarmSetting: "fast", ProviderParameter: "service_tier", ProviderValue: "auto"},
+		{Tier: "fast", ProviderParameter: "speed", ProviderValue: "fast", BetaHeader: "fast-mode-2026-02-01"},
+	}}
+	if opts := anthropicRequestOptions(catalog, "priority"); len(opts) != 0 {
+		t.Fatalf("priority tier must not enable provider Fast Mode options: %d", len(opts))
+	}
+	if got := anthropicProviderServiceTier(catalog, "priority"); got != anthropicapi.MessageNewParamsServiceTierAuto {
+		t.Fatalf("priority service tier = %q, want auto", got)
+	}
+	opts := anthropicRequestOptions(catalog, "fast")
+	if len(opts) != 2 {
+		t.Fatalf("fast mode options = %d, want speed JSON set and beta header", len(opts))
+	}
+}
+
 func TestAnthropicUsageMapsCacheTokenTypesForFrontend(t *testing.T) {
 	usage := anthropicUsageToTokenUsage(anthropicapi.Usage{
 		InputTokens:              100,

@@ -610,12 +610,12 @@ function modelOptionFor(provider: string, model: string, modelOptions: ModelOpti
 
 function serviceTierOptionsForModel(provider: string, model: string, modelOptions: ModelOptionRecord[]) {
   const option = modelOptionFor(provider, model, modelOptions);
-  return modelServiceTierOptions(provider, model, option?.serviceTiers ?? []);
+  return modelServiceTierOptions(provider, model, option ?? { serviceTiers: [], serviceTierMappings: [] });
 }
 
 function modelSupportsServiceTierSetting(provider: string, model: string, modelOptions: ModelOptionRecord[], tier = ""): boolean {
   const option = modelOptionFor(provider, model, modelOptions);
-  return supportsModelServiceTier(provider, model, option?.serviceTiers ?? [], tier);
+  return supportsModelServiceTier(provider, model, option ?? { serviceTiers: [], serviceTierMappings: [] }, tier);
 }
 
 function normalizedSingleServiceTier(form: AgentFormState, modelOptions: ModelOptionRecord[]): string {

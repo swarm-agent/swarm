@@ -639,6 +639,7 @@ interface ModelServiceTierMappingWire {
   swarm_setting?: string;
   provider_parameter?: string;
   provider_value?: string;
+  beta_header?: string;
   request_model_path?: string;
 }
 
@@ -2123,10 +2124,12 @@ function normalizeServiceTierMappings(value: unknown): ModelServiceTierMappingRe
       const swarmSetting = String(raw.swarm_setting ?? "").trim().toLowerCase();
       const providerParameter = String(raw.provider_parameter ?? "").trim();
       const providerValue = String(raw.provider_value ?? "").trim();
+      const betaHeader = String(raw.beta_header ?? "").trim();
       const requestModelPath = String(raw.request_model_path ?? "").trim();
       if (swarmSetting) out.swarm_setting = swarmSetting;
       if (providerParameter) out.provider_parameter = providerParameter;
       if (providerValue) out.provider_value = providerValue;
+      if (betaHeader) out.beta_header = betaHeader;
       if (requestModelPath) out.request_model_path = requestModelPath;
       return out;
     })

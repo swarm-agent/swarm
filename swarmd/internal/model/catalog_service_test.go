@@ -21,8 +21,8 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 	if snapshot.SnapshotID != "snapshot-test" || snapshot.SnapshotVersion != "v-test" {
 		t.Fatalf("snapshot metadata = %q/%q", snapshot.SnapshotID, snapshot.SnapshotVersion)
 	}
-	if len(records) != 5 {
-		t.Fatalf("record count = %d, want exactly 5 valid snapshot records", len(records))
+	if len(records) != 6 {
+		t.Fatalf("record count = %d, want exactly 6 valid snapshot records", len(records))
 	}
 
 	codex54 := records[0]
@@ -81,7 +81,7 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 		t.Fatalf("openai service tier mappings not decoded without async batch: %+v", openai.ServiceTierMappings)
 	}
 
-	fireworks := records[3]
+	fireworks := records[4]
 	if fireworks.Provider != "fireworks" || fireworks.Model != "glm-5p1" || fireworks.CatalogID != "fireworks/glm-5p1" || fireworks.DisplayName != "GLM 5.1" {
 		t.Fatalf("fireworks base identifiers not preserved: %+v", fireworks)
 	}
@@ -117,7 +117,18 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 		t.Fatalf("fireworks resource_name = %v", fireworksData["resource_name"])
 	}
 
-	fast := records[4]
+	anthropicOpus := records[3]
+	if anthropicOpus.Provider != "anthropic" || anthropicOpus.Model != "claude-opus-4-8" {
+		t.Fatalf("anthropic opus identifiers not preserved from snapshot: %+v", anthropicOpus)
+	}
+	if !stringSlicesEqual(anthropicOpus.ServiceTiers, []string{"standard", "priority"}) {
+		t.Fatalf("anthropic opus visible service tiers = %#v, want standard+priority", anthropicOpus.ServiceTiers)
+	}
+	if len(anthropicOpus.ServiceTierMappings) != 3 || anthropicOpus.ServiceTierMappings[2].Tier != "fast" || anthropicOpus.ServiceTierMappings[2].ProviderParameter != "speed" || anthropicOpus.ServiceTierMappings[2].ProviderValue != "fast" || anthropicOpus.ServiceTierMappings[2].BetaHeader != "fast-mode-2026-02-01" {
+		t.Fatalf("anthropic provider fast mode mapping not decoded distinctly from priority: %+v", anthropicOpus.ServiceTierMappings)
+	}
+
+	fast := records[5]
 	if fast.Provider != "fireworks" || fast.Model != "glm-5p1-fast" || fast.CatalogID != "fireworks/glm-5p1-fast" || fast.DisplayName != "GLM 5.1 Fast" {
 		t.Fatalf("fireworks fast identifiers not preserved from snapshot: %+v", fast)
 	}
@@ -466,6 +477,16 @@ func snapshotPassthroughPayload() []byte {
 				"capabilities":{"supports_text_input":true,"supports_text_output":true,"supports_reasoning":true},
 				"limits":{"context_window_tokens":null,"max_output_tokens":128000},
 				"provider_specific":{"openai":{"serving":{"supported_tiers":["standard","priority","flex","batch"],"default_tier":"standard","tiers":{"standard":{"tier":"standard","swarm_setting":"off","provider_parameter":"service_tier","provider_value":null},"priority":{"tier":"priority","swarm_setting":"priority","provider_parameter":"service_tier","provider_value":"priority"},"flex":{"tier":"flex","swarm_setting":"flex","provider_parameter":"service_tier","provider_value":"flex"},"batch":{"tier":"batch","swarm_setting":"batch","provider_parameter":null,"provider_value":null}}}}}
+			},
+			{
+				"catalog_id":"anthropic/claude-opus-4-8",
+				"provider_id":"anthropic",
+				"provider_display_name":"Anthropic",
+				"model_id":"claude-opus-4-8",
+				"display_name":"Claude Opus 4.8",
+				"capabilities":{"supports_reasoning":true},
+				"limits":{"context_window_tokens":200000,"max_output_tokens":32000},
+				"provider_specific":{"anthropic":{"serving":{"supported_tiers":["standard","priority","batch"],"default_tier":"standard","tiers":{"standard":{"tier":"standard","swarm_setting":"off","provider_parameter":"service_tier","provider_value":"standard_only"},"priority":{"tier":"priority","swarm_setting":"fast","provider_parameter":"service_tier","provider_value":"auto"},"batch":{"tier":"batch","swarm_setting":"batch","provider_parameter":null,"provider_value":null}},"fast_mode":{"supported":true,"provider_parameter":"speed","provider_value":"fast","beta_header":"fast-mode-2026-02-01"}}}}
 			},
 			{
 				"catalog_id":"fireworks/glm-5p1",

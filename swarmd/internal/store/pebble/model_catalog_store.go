@@ -21,6 +21,7 @@ type ModelCatalogServiceTierMapping struct {
 	SwarmSetting      string `json:"swarm_setting,omitempty"`
 	ProviderParameter string `json:"provider_parameter,omitempty"`
 	ProviderValue     string `json:"provider_value,omitempty"`
+	BetaHeader        string `json:"beta_header,omitempty"`
 	RequestModelPath  string `json:"request_model_path,omitempty"`
 }
 

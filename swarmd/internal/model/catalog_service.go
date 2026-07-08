@@ -180,15 +180,18 @@ type swarmSnapshotProviderSpecific struct {
 		Standard       *swarmSnapshotRawTier           `json:"standard"`
 		Priority       *swarmSnapshotRawTier           `json:"priority"`
 		Fast           *swarmSnapshotRawTier           `json:"fast"`
+		FastMode       *swarmSnapshotRawTier           `json:"fast_mode"`
 		Tiers          map[string]swarmSnapshotRawTier `json:"tiers"`
 	} `json:"serving"`
 }
 
 type swarmSnapshotRawTier struct {
 	Tier              string          `json:"tier"`
+	Supported         *bool           `json:"supported"`
 	SwarmSetting      string          `json:"swarm_setting"`
 	ProviderParameter string          `json:"provider_parameter"`
 	ProviderValue     string          `json:"provider_value"`
+	BetaHeader        string          `json:"beta_header"`
 	RequestModelPath  string          `json:"request_model_path"`
 	Pricing           json.RawMessage `json:"pricing,omitempty"`
 }
@@ -912,6 +915,9 @@ func modelServiceTierMappings(providerSpecificRaw json.RawMessage, providerID st
 			return
 		}
 		copy := *raw
+		if copy.Supported != nil && !*copy.Supported {
+			return
+		}
 		if strings.TrimSpace(copy.Tier) == "" {
 			copy.Tier = key
 		}
@@ -924,6 +930,7 @@ func modelServiceTierMappings(providerSpecificRaw json.RawMessage, providerID st
 	addRawTier("standard", providerSpecific.Serving.Standard)
 	addRawTier("priority", providerSpecific.Serving.Priority)
 	addRawTier("fast", providerSpecific.Serving.Fast)
+	addRawTier("fast", providerSpecific.Serving.FastMode)
 	for key, raw := range providerSpecific.Serving.Tiers {
 		copy := raw
 		addRawTier(key, &copy)
@@ -951,6 +958,7 @@ func modelServiceTierMappings(providerSpecificRaw json.RawMessage, providerID st
 			SwarmSetting:      strings.ToLower(strings.TrimSpace(raw.SwarmSetting)),
 			ProviderParameter: strings.TrimSpace(raw.ProviderParameter),
 			ProviderValue:     strings.TrimSpace(raw.ProviderValue),
+			BetaHeader:        strings.TrimSpace(raw.BetaHeader),
 			RequestModelPath:  firstNonEmpty(raw.RequestModelPath, providerSpecific.RequestModelPath),
 		})
 	}

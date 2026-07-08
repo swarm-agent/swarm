@@ -315,6 +315,7 @@ export interface ModelServiceTierMappingRecord {
   swarm_setting?: string;
   provider_parameter?: string;
   provider_value?: string;
+  beta_header?: string;
   request_model_path?: string;
 }
 
