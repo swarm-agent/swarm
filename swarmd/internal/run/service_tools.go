@@ -1600,6 +1600,8 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 		action = "mark_needs_review"
 	case "mark-blocked", "mark_blocked":
 		action = "mark_blocked"
+	case "resolve-blocked-checkpoint", "resolve_blocked_checkpoint", "resolve-block", "resolve_block", "clear-block", "clear_block", "unblock-checkpoint", "unblock_checkpoint":
+		action = "resolve_blocked_checkpoint"
 	case "mark-failed", "mark_failed":
 		action = "mark_failed"
 	case "remove-checkpoint", "remove_checkpoint", "delete-checkpoint", "delete_checkpoint":
@@ -1632,7 +1634,7 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 	}
 
 	switch action {
-	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "start_session_checkpoint", "request_followup_checkpoint", "request_plan_revision", "amend_plan", "request_new_plan":
+	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "resolve_blocked_checkpoint", "start_session_checkpoint", "request_followup_checkpoint", "request_plan_revision", "amend_plan", "request_new_plan":
 		return s.executePlanLifecycleControlAction(sessionID, action, args, applySessionMutation)
 	case "list":
 		limit := mapInt(args, "limit")
@@ -2180,6 +2182,25 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		result, err = lifecycle.RestartCheckpointFromZero(input)
 	case "rewind_to_checkpoint":
 		result, err = lifecycle.RewindToCheckpoint(input)
+	case "resolve_blocked_checkpoint":
+		input.Result = strings.TrimSpace(firstNonEmptyString(mapString(args, "result"), mapString(args, "resolution_result")))
+		input.Notes = strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "resolution_notes"), mapString(args, "report")))
+		input.ReviewedAt = int64(mapInt(args, "reviewed_at"))
+		input.StartNext = mapBool(args, "start_next") || mapBool(args, "continue_next")
+		if input.StartNext {
+			if strings.TrimSpace(input.RunID) == "" {
+				input.RunID = strings.TrimSpace(mapString(args, "run_id"))
+			}
+			if strings.TrimSpace(input.RunSessionID) == "" {
+				input.RunSessionID = strings.TrimSpace(firstNonEmptyString(mapString(args, "run_session_id"), mapString(args, "session_id")))
+			}
+			if strings.TrimSpace(input.ParentSessionID) == "" {
+				input.ParentSessionID = strings.TrimSpace(mapString(args, "parent_session_id"))
+			}
+			input.StartedAt = int64(mapInt(args, "started_at"))
+			input.AttemptID = strings.TrimSpace(mapString(args, "attempt_id"))
+		}
+		result, err = lifecycle.ResolveBlockedCheckpoint(input)
 	case "start_session_checkpoint":
 		input := sessionruntime.PlanLifecycleSessionCheckpointInput{
 			SessionID:          sessionID,
@@ -2255,6 +2276,15 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 	}
 	if !strings.EqualFold(strings.TrimSpace(result.Plan.ApprovalState), "approved") {
 		payload["next_action"] = "await_approval"
+	} else if action == "resolve_blocked_checkpoint" && !input.StartNext {
+		payload["next_checkpoint_id"] = result.Summary.NextCheckpointID
+		if result.Summary.PlanComplete {
+			payload["next_action"] = "plan_complete"
+		} else if result.Summary.ReviewRequired {
+			payload["next_action"] = "await_review"
+		} else {
+			payload["next_action"] = "blocked_resolved"
+		}
 	} else if result.Summary.PlanComplete {
 		payload["next_action"] = "plan_complete"
 	} else if result.Summary.ReviewRequired {

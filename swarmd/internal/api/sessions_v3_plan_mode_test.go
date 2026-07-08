@@ -193,6 +193,34 @@ func TestSessionsV3PlanModeDedicatedLifecycleEndpointsSuccess(t *testing.T) {
 		}
 	})
 
+	t.Run("resolve blocked checkpoint emits lifecycle system message", func(t *testing.T) {
+		server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+		created := createSessionsV3PrimaryTestSession(t, server, "plan-mode-resolve-block-create", "plan mode resolve block")
+		sessionsV3PlanModeInstallDelayedExecutor(server)
+		doc := sessionsV3PlanModeTestDocument("plan-resolve-block", sessionruntime.PlanExecutionPolicyModeAutomatic, sessionruntime.PlanExecutionShapeCheckpointed, "cp-1", []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Blocked", Status: sessionruntime.PlanCheckpointStatusBlocked, AttemptID: "attempt-blocked", RunID: "run-blocked"}, {ID: "cp-2", Title: "Next", Status: sessionruntime.PlanCheckpointStatusPending}})
+		doc.ExecutionState = &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateBlocked, LastCheckpointID: "cp-1", LastAttemptID: "attempt-blocked", LastOutcome: sessionruntime.PlanCheckpointStatusBlocked}
+		sessionsV3PlanModeSeedPlan(t, sessionSvc, created.ID, "plan-resolve-block", doc, "approved")
+
+		payload := postSessionsV3PlanModeTestJSON(t, server, created.ID, "/plan-mode/checkpoints/cp-1/resolve-block", `{"start_next":true,"reviewed_at":1234}`)
+		if payload["transition"] != "resolve_blocked_checkpoint" || payload["checkpoint_id"] != "cp-2" || payload["run_queued"] != true {
+			t.Fatalf("payload = %#v", payload)
+		}
+		messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+		if err != nil {
+			t.Fatalf("list messages: %v", err)
+		}
+		if len(messages) != 1 {
+			t.Fatalf("message count = %d, want 1: %#v", len(messages), messages)
+		}
+		message := messages[0]
+		if message.Role != "system" || message.Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || message.Metadata["kind"] != "plan_execution_break" || message.Metadata["action"] != "resolve_blocked_checkpoint" || message.Metadata["next_action"] != "run_checkpoint_with_fresh_context" {
+			t.Fatalf("message role/metadata = role %q metadata %#v", message.Role, message.Metadata)
+		}
+		if !strings.Contains(message.Content, "Blocked checkpoint resolved; starting next checkpoint — Automatic mode") || !strings.Contains(message.Content, "Resolved: Checkpoint 1 — Blocked") || !strings.Contains(message.Content, "Checkpoint: Checkpoint 2 — Next") || !strings.Contains(message.Content, "Context: Starting the next checkpoint with fresh context.") {
+			t.Fatalf("message content missing resolve/start details: %q", message.Content)
+		}
+	})
+
 	t.Run("accept checkpoint review", func(t *testing.T) {
 		server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 		created := createSessionsV3PrimaryTestSession(t, server, "plan-mode-accept-create", "plan mode accept")

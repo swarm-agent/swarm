@@ -70,6 +70,7 @@ test('Existing A completion after navigation does not clear or overwrite existin
   persistDesktopV3ExistingMessageOperation(operationA)
   persistDesktopV3ExistingMessageOperation(operationB)
 
+  let draftA = operationA.request.content
   let draftB = operationB.request.content
   let operationRefB = operationB
   completeDesktopV3ExistingMessage({
@@ -80,14 +81,42 @@ test('Existing A completion after navigation does not clear or overwrite existin
       operationRefB = operationA
     },
     setDraft: (nextDraft) => {
+      draftA = nextDraft
       draftB = nextDraft
     },
   })
 
   assert.equal(loadDesktopV3ExistingMessageOperation('session-a'), null)
+  assert.equal(draftA, operationA.request.content)
   assert.equal(loadDesktopV3ExistingMessageOperation('session-b')?.operationId, operationB.operationId)
   assert.equal(operationRefB.operationId, operationB.operationId)
   assert.equal(draftB, operationB.request.content)
+}))
+
+test('Existing message completion clears the mounted composer draft after send', () => withSessionStorage(() => {
+  const operation = createDesktopV3ExistingMessageOperation({
+    sessionId: 'session-a',
+    prompt: 'sent text',
+  })
+  persistDesktopV3ExistingMessageOperation(operation)
+
+  let draft = operation.request.content
+  let operationRef: typeof operation | null = operation
+  completeDesktopV3ExistingMessage({
+    sessionId: 'session-a',
+    operation,
+    mountedRef: { current: true },
+    setOperation: (nextOperation) => {
+      operationRef = nextOperation
+    },
+    setDraft: (nextDraft) => {
+      draft = nextDraft
+    },
+  })
+
+  assert.equal(loadDesktopV3ExistingMessageOperation('session-a'), null)
+  assert.equal(operationRef, null)
+  assert.equal(draft, '')
 }))
 
 test('Workspace A creation completion after navigation does not navigate away from workspace B or clear B retained operation', () => withSessionStorage(() => {
@@ -113,6 +142,7 @@ test('Workspace A creation completion after navigation does not navigate away fr
   persistDesktopV3NewSessionOperation(operationA)
   persistDesktopV3NewSessionOperation(operationB)
 
+  let draftA = operationA.firstMessageRequest.content
   let visibleWorkspacePath = '/workspace-b'
   let operationRefB = operationB
   const navigations: string[] = []
@@ -123,6 +153,9 @@ test('Workspace A creation completion after navigation does not navigate away fr
     setOperation: () => {
       operationRefB = operationA
     },
+    setDraft: (nextDraft) => {
+      draftA = nextDraft
+    },
     navigateToSession: (sessionId) => {
       visibleWorkspacePath = '/workspace-a'
       navigations.push(sessionId)
@@ -130,10 +163,45 @@ test('Workspace A creation completion after navigation does not navigate away fr
   })
 
   assert.equal(loadDesktopV3NewSessionOperation('/workspace-a'), null)
+  assert.equal(draftA, operationA.firstMessageRequest.content)
   assert.equal(loadDesktopV3NewSessionOperation('/workspace-b')?.operationId, operationB.operationId)
   assert.equal(operationRefB.operationId, operationB.operationId)
   assert.equal(visibleWorkspacePath, '/workspace-b')
   assert.deepEqual(navigations, [])
+}))
+
+test('New session completion clears the mounted composer draft after send', () => withSessionStorage(() => {
+  const operation = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace-a',
+    workspaceName: 'workspace-a',
+    route,
+    prompt: 'sent text',
+    agentName: 'swarm',
+  })
+  persistDesktopV3NewSessionOperation(operation)
+
+  let draft = operation.firstMessageRequest.content
+  let operationRef: typeof operation | null = operation
+  const navigations: string[] = []
+  completeDesktopV3NewSessionStarted({
+    workspacePath: '/workspace-a',
+    operation,
+    mountedRef: { current: true },
+    setOperation: (nextOperation) => {
+      operationRef = nextOperation
+    },
+    setDraft: (nextDraft) => {
+      draft = nextDraft
+    },
+    navigateToSession: (sessionId) => {
+      navigations.push(sessionId)
+    },
+  })
+
+  assert.equal(loadDesktopV3NewSessionOperation('/workspace-a'), null)
+  assert.equal(operationRef, null)
+  assert.equal(draft, '')
+  assert.deepEqual(navigations, [operation.sessionId])
 }))
 
 

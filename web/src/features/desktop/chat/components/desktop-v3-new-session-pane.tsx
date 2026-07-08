@@ -93,11 +93,13 @@ export function completeDesktopV3NewSessionStarted(input: {
   operation: DesktopV3NewSessionOperation
   mountedRef: { current: boolean }
   setOperation: (operation: DesktopV3NewSessionOperation | null) => void
+  setDraft?: (draft: string) => void
   navigateToSession: (sessionId: string) => void
 }): void {
   clearDesktopV3NewSessionOperation(input.workspacePath, input.operation.operationId)
   if (!input.mountedRef.current) return
   input.setOperation(null)
+  input.setDraft?.('')
   input.navigateToSession(input.operation.sessionId)
 }
 
@@ -358,7 +360,7 @@ export function DesktopV3NewSessionPane({
     }
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(submittedDraft = draft) {
     if (starting || !selectedRoute) return
 
     setStarting(true)
@@ -380,7 +382,7 @@ export function DesktopV3NewSessionPane({
           workspacePath: workspace.path,
           workspaceName: workspace.workspaceName,
           route: selectedRoute,
-          prompt: draft,
+          prompt: submittedDraft,
           mode,
           agentName,
           preference: preferenceForRequest(preference),
@@ -397,7 +399,7 @@ export function DesktopV3NewSessionPane({
         })
       })()
       operationRef.current = operation
-      setDraft(operation.firstMessageRequest.content)
+      setDraft('')
       persistDesktopV3NewSessionOperation(operation)
 
       await startNewDesktopV3Session({
@@ -411,6 +413,7 @@ export function DesktopV3NewSessionPane({
             setOperation: (nextOperation) => {
               operationRef.current = nextOperation
             },
+            setDraft,
             navigateToSession: (sessionId) => {
               void navigate({
                 to: '/$workspaceSlug/$sessionId',

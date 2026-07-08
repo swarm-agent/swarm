@@ -146,6 +146,7 @@ type PlanLifecycleExecutionInput struct {
 	ParentSessionID         string
 	AttemptID               string
 	StartedAt               int64
+	StartNext               bool
 	RequestedCheckpointKind string
 }
 
@@ -901,6 +902,47 @@ func (s *PlanLifecycleService) RewindToCheckpoint(input PlanLifecycleExecutionIn
 		return PlanLifecycleResult{}, err
 	}
 	return s.saveLifecyclePlan(state, checkpointID, "rewind_to_checkpoint", "Rewound plan execution to checkpoint and prepared fresh-context checkpoint start")
+}
+
+func (s *PlanLifecycleService) ResolveBlockedCheckpoint(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
+	state, err := s.loadApprovedPlan(input.SessionID, input.PlanID, "resolve blocked checkpoint")
+	if err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	checkpointID := strings.TrimSpace(firstNonBlank(input.CheckpointID, state.doc.ActiveCheckpointID))
+	resolvedAt := input.ReviewedAt
+	if resolvedAt <= 0 {
+		resolvedAt = time.Now().UnixMilli()
+	}
+	summary, err := ApplyPlanCheckpointBlockResolution(state.doc, PlanCheckpointBlockResolutionOptions{CheckpointID: checkpointID, Result: input.Result, Notes: input.Notes, ResolvedAt: resolvedAt})
+	if err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	if input.StartNext && summary.NextCheckpointID != "" && !summary.ReviewRequired && !summary.Blocked && !summary.Failed && !summary.PlanComplete {
+		nextCheckpointID := summary.NextCheckpointID
+		if strings.TrimSpace(input.RunID) == "" {
+			input.RunID = fmt.Sprintf("plan-resolve-run:%s:%d", nextCheckpointID, resolvedAt)
+		}
+		if strings.TrimSpace(input.RunSessionID) == "" {
+			input.RunSessionID = state.session.ID
+		}
+		if strings.TrimSpace(input.ParentSessionID) == "" {
+			input.ParentSessionID = state.session.ID
+		}
+		input.StartedAt = resolvedAt
+		decision, err := ApplyPlanCheckpointStart(state.doc, PlanCheckpointStartOptions{CheckpointID: nextCheckpointID, PlanID: state.plan.ID, AttemptID: input.AttemptID, RunID: input.RunID, SessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
+		if err != nil {
+			return PlanLifecycleResult{}, err
+		}
+		result, err := s.saveLifecyclePlan(state, nextCheckpointID, "resolve_blocked_checkpoint", "Resolved blocked checkpoint and prepared fresh-context checkpoint start")
+		if err != nil {
+			return PlanLifecycleResult{}, err
+		}
+		result.CheckpointID = decision.CheckpointID
+		result.AttemptID = decision.AttemptID
+		return result, nil
+	}
+	return s.saveLifecyclePlan(state, checkpointID, "resolve_blocked_checkpoint", "Resolved blocked checkpoint without restart")
 }
 
 type planLifecycleState struct {

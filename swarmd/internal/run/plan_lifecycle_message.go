@@ -36,6 +36,9 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	nextCheckpointID := strings.TrimSpace(summary.NextCheckpointID)
 	nextCheckpointTitle := planLifecycleCheckpointTitle(doc, nextCheckpointID)
 	freshContext := nextAction == "run_checkpoint_with_fresh_context" || action == "start_checkpoint" || action == "continue_checkpoint" || action == "restart_checkpoint" || action == "rewind_to_checkpoint" || action == "approve_and_start"
+	if action == "resolve_blocked_checkpoint" && (nextAction == "await_review" || nextAction == "plan_complete") {
+		freshContext = false
+	}
 
 	checkpointLabel := planLifecycleCheckpointLabel(checkpointID, checkpointTitle)
 	modeLabel := planLifecycleModeLabel(doc.ExecutionPolicy)
@@ -48,6 +51,11 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 		checkpointLineLabel := "Checkpoint"
 		if planLifecycleActionCompleted(action) {
 			checkpointLineLabel = "Completed"
+		}
+		if action == "resolve_blocked_checkpoint" {
+			if resolvedID := stringFromPlanPayload(input.Payload, "resolved_checkpoint_id"); resolvedID != "" && resolvedID != checkpointID {
+				bodyLines = append(bodyLines, "Resolved: "+planLifecycleCheckpointLabel(resolvedID, planLifecycleCheckpointTitle(doc, resolvedID)))
+			}
 		}
 		bodyLines = append(bodyLines, checkpointLineLabel+": "+checkpointLabel)
 	}
@@ -97,7 +105,7 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 
 func isPlanExecutionLifecycleMessageAction(action string) bool {
 	switch strings.TrimSpace(action) {
-	case "approve_and_start", "accept_checkpoint", "start_checkpoint", "continue_checkpoint", "restart_checkpoint", "rewind_to_checkpoint":
+	case "approve_and_start", "accept_checkpoint", "start_checkpoint", "continue_checkpoint", "restart_checkpoint", "rewind_to_checkpoint", "resolve_blocked_checkpoint":
 		return true
 	default:
 		return isPlanExecutionOutcomeMessageAction(action)
@@ -131,6 +139,16 @@ func planLifecycleHeadline(action string, summary sessionruntime.PlanExecutionSu
 		} else {
 			base = "Checkpoint review accepted"
 		}
+	case "resolve_blocked_checkpoint":
+		if summary.PlanComplete || nextAction == "plan_complete" {
+			base = "Blocked checkpoint resolved; plan complete"
+		} else if nextAction == "await_review" {
+			base = "Blocked checkpoint resolved; review required"
+		} else if nextAction == "run_checkpoint_with_fresh_context" {
+			base = "Blocked checkpoint resolved; starting next checkpoint"
+		} else {
+			base = "Blocked checkpoint resolved"
+		}
 	case "start_checkpoint", "continue_checkpoint":
 		base = "Checkpoint started"
 	case "restart_checkpoint":
@@ -156,7 +174,7 @@ func planLifecycleCheckpointID(action string, doc *pebblestore.SessionPlanDocume
 	if doc == nil {
 		return ""
 	}
-	if action == "start_checkpoint" || action == "continue_checkpoint" || action == "approve_and_start" || action == "restart_checkpoint" || action == "rewind_to_checkpoint" {
+	if action == "start_checkpoint" || action == "continue_checkpoint" || action == "approve_and_start" || action == "restart_checkpoint" || action == "rewind_to_checkpoint" || action == "resolve_blocked_checkpoint" {
 		if checkpointID := stringFromPlanPayload(payload, "checkpoint_id"); checkpointID != "" {
 			return checkpointID
 		}

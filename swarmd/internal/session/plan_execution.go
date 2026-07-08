@@ -113,6 +113,13 @@ type PlanCheckpointResetOptions struct {
 	Rewind       bool
 }
 
+type PlanCheckpointBlockResolutionOptions struct {
+	CheckpointID string
+	Result       string
+	Notes        string
+	ResolvedAt   int64
+}
+
 func normalizePlanExecutionPolicy(policy *pebblestore.SessionPlanExecutionPolicy, checkpointCount int) {
 	if policy == nil {
 		return
@@ -1056,6 +1063,106 @@ func ApplyPlanCheckpointReset(doc *pebblestore.SessionPlanDocument, options Plan
 	}
 	doc.ActiveCheckpointID = checkpointID
 	doc.ExecutionState = &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateIdle}
+	return SummarizePlanExecution(doc), nil
+}
+
+func ApplyPlanCheckpointBlockResolution(doc *pebblestore.SessionPlanDocument, options PlanCheckpointBlockResolutionOptions) (PlanExecutionSummary, error) {
+	if doc == nil {
+		return PlanExecutionSummary{}, errors.New("plan document is required")
+	}
+	normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
+	normalizePlanExecutionState(doc.ExecutionState)
+	checkpointID := strings.TrimSpace(options.CheckpointID)
+	if checkpointID == "" {
+		checkpointID = strings.TrimSpace(doc.ActiveCheckpointID)
+	}
+	if checkpointID == "" {
+		return PlanExecutionSummary{}, errors.New("checkpoint_id is required")
+	}
+	idx := findPlanCheckpointIndex(doc.Checkpoints, checkpointID)
+	if idx < 0 {
+		return PlanExecutionSummary{}, fmt.Errorf("plan document checkpoint %q was not found", checkpointID)
+	}
+	checkpoint := &doc.Checkpoints[idx]
+	status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
+	if status != PlanCheckpointStatusBlocked {
+		return PlanExecutionSummary{}, fmt.Errorf("checkpoint %q status %q is not blocked", checkpointID, status)
+	}
+	if doc.ExecutionState != nil && normalizePlanExecutionStateStatus(doc.ExecutionState.Status) == PlanExecutionStateInProgress {
+		return PlanExecutionSummary{}, errors.New("resolve blocked checkpoint requires no active in-progress run")
+	}
+	resolvedAt := options.ResolvedAt
+	checkpoint.Status = PlanCheckpointStatusCompleted
+	if result := strings.TrimSpace(options.Result); result != "" {
+		checkpoint.Result = result
+	} else if strings.TrimSpace(checkpoint.Result) == "" {
+		checkpoint.Result = "blocked_resolved"
+	}
+	if notes := strings.TrimSpace(options.Notes); notes != "" {
+		checkpoint.Report = notes
+	} else if strings.TrimSpace(checkpoint.Report) == "" {
+		checkpoint.Report = "Blocked checkpoint resolved without restart."
+	}
+	if resolvedAt > 0 {
+		checkpoint.CompletedAt = resolvedAt
+	}
+	if checkpoint.Review == nil {
+		checkpoint.Review = &pebblestore.SessionPlanCheckpointReview{}
+	}
+	checkpoint.Review.Status = PlanCheckpointReviewStatusApproved
+	checkpoint.Review.Result = firstNonBlank(strings.TrimSpace(options.Result), "blocked_resolved")
+	checkpoint.Review.Notes = strings.TrimSpace(options.Notes)
+	if resolvedAt > 0 {
+		checkpoint.Review.ReviewedAt = resolvedAt
+	}
+	attemptID := strings.TrimSpace(checkpoint.AttemptID)
+	parentSessionID := ""
+	if doc.ExecutionState != nil {
+		parentSessionID = strings.TrimSpace(doc.ExecutionState.ParentSessionID)
+		if attemptID == "" {
+			attemptID = strings.TrimSpace(firstNonBlank(doc.ExecutionState.ActiveAttemptID, doc.ExecutionState.LastAttemptID))
+		}
+	}
+	if attemptID != "" {
+		upsertPlanCheckpointAttempt(checkpoint, pebblestore.SessionPlanCheckpointAttempt{
+			ID:              attemptID,
+			CheckpointID:    checkpointID,
+			Status:          PlanCheckpointStatusCompleted,
+			Outcome:         PlanCheckpointStatusCompleted,
+			RunID:           strings.TrimSpace(checkpoint.RunID),
+			SessionID:       strings.TrimSpace(checkpoint.SessionID),
+			ParentSessionID: parentSessionID,
+			StartedAt:       checkpoint.StartedAt,
+			CompletedAt:     resolvedAt,
+			Report:          checkpoint.Report,
+			Result:          checkpoint.Result,
+			ChangedFiles:    cloneStringSlice(checkpoint.ChangedFiles),
+			Validation:      cloneStringSlice(checkpoint.Validation),
+		})
+		checkpoint.AttemptID = attemptID
+	}
+	if doc.ExecutionState == nil {
+		doc.ExecutionState = &pebblestore.SessionPlanExecutionState{}
+	}
+	doc.ExecutionState.LastCheckpointID = checkpointID
+	doc.ExecutionState.LastAttemptID = attemptID
+	doc.ExecutionState.LastOutcome = PlanCheckpointStatusCompleted
+	doc.ExecutionState.ActiveAttemptID = ""
+	doc.ExecutionState.CurrentRunID = ""
+	doc.ExecutionState.CurrentSessionID = ""
+	if resolvedAt > 0 {
+		doc.ExecutionState.UpdatedAt = resolvedAt
+	}
+	summary := SummarizePlanExecution(doc)
+	if summary.NextCheckpointID != "" && summary.NextCheckpointID != checkpointID {
+		doc.ActiveCheckpointID = summary.NextCheckpointID
+		doc.ExecutionState.Status = PlanExecutionStateIdle
+	} else if summary.PlanComplete || allPlanCheckpointsCompleted(doc.Checkpoints) {
+		doc.ActiveCheckpointID = checkpointID
+		doc.ExecutionState.Status = PlanExecutionStateWaitingReview
+	} else {
+		doc.ExecutionState.Status = PlanExecutionStateIdle
+	}
 	return SummarizePlanExecution(doc), nil
 }
 

@@ -121,7 +121,7 @@ export interface DesktopV3AgenticComposerProps {
   canStop?: boolean
   submitLabel?: string
   error?: string | null
-  onSubmit: () => void | Promise<void>
+  onSubmit: (draft: string) => void | Promise<void>
   onStop?: () => void | Promise<void>
   mode: DesktopSessionMode
   onModeSelect?: (mode: DesktopSessionMode) => void
@@ -321,6 +321,35 @@ export function DesktopV3AgenticComposer({
     }
   }, [clearDictationRestartTimer, clearFinalFlushTimer, commitDictationDraft])
 
+  const clearComposerForSubmit = useCallback(() => {
+    dictationEnabledRef.current = false
+    dictationCanRunRef.current = false
+    dictationAcceptLateResultRef.current = false
+    dictationManualStopRef.current = true
+    dictationStartingRef.current = false
+    dictationBaseDraftRef.current = ''
+    dictationFinalTranscriptRef.current = ''
+    dictationInterimTranscriptRef.current = ''
+    clearDictationRestartTimer()
+    clearFinalFlushTimer()
+    setDictationEnabled(false)
+    setDictationListening(false)
+    const recognition = recognitionRef.current
+    if (recognition) {
+      try {
+        recognition.abort()
+      } catch {
+        // ignore browser recognition shutdown races
+      }
+    }
+    const textarea = textareaRef.current
+    if (textarea) {
+      textarea.value = ''
+      resizeTextareaElement(textarea)
+    }
+    onDraftChange('')
+  }, [clearDictationRestartTimer, clearFinalFlushTimer, onDraftChange, resizeTextareaElement])
+
   const startRecognition = useCallback(() => {
     if (!dictationEnabledRef.current || !dictationCanRunRef.current || dictationStartingRef.current) return
     const recognition = recognitionRef.current
@@ -442,9 +471,10 @@ export function DesktopV3AgenticComposer({
       void onStop?.()
       return
     }
-    if (dictationEnabledRef.current) stopDictation(true)
-    void onSubmit()
-  }, [canStop, onStop, onSubmit, stopDictation])
+    const submittedDraft = textareaRef.current?.value ?? dictationComposer
+    clearComposerForSubmit()
+    void onSubmit(submittedDraft)
+  }, [canStop, clearComposerForSubmit, dictationComposer, onStop, onSubmit])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length

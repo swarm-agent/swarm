@@ -307,18 +307,40 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	}
 	assertLifecycleMessage(1, "complete_checkpoint", "await_review", 6, "All checkpoints complete; review required — Automatic mode", "Completed: Checkpoint 2 — API", "Next: all checkpoints are complete; waiting for user review.")
 
+	_, _, err = sessionSvc.SavePlanWithMetadata(sessionID, "plan-blocked-lifecycle", "Plan: Blocked Lifecycle", "# Blocked", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-a", Title: "Blocked", Status: sessionruntime.PlanCheckpointStatusBlocked, AttemptID: "attempt-blocked", RunID: "run-blocked"},
+			{ID: "cp-b", Title: "Next", Status: sessionruntime.PlanCheckpointStatusPending},
+		},
+		ActiveCheckpointID: "cp-a",
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateBlocked, LastCheckpointID: "cp-a", LastAttemptID: "attempt-blocked", LastOutcome: sessionruntime.PlanCheckpointStatusBlocked},
+	}})
+	if err != nil {
+		t.Fatalf("save blocked lifecycle plan: %v", err)
+	}
+	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"resolve_blocked_checkpoint","checkpoint_id":"cp-a","start_next":true,"attempt_id":"attempt-b","run_id":"run-b","run_session_id":"child-session-b","parent_session_id":"parent-session","reviewed_at":3456}`, "", applyMutation)
+	if err != nil {
+		t.Fatalf("resolve blocked checkpoint: %v output=%s", err, raw)
+	}
+	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
+		t.Fatalf("append resolve blocked lifecycle: %v", err)
+	}
+	assertLifecycleMessage(2, "resolve_blocked_checkpoint", "run_checkpoint_with_fresh_context", 8, "Blocked checkpoint resolved; starting next checkpoint — Automatic mode", "Resolved: Checkpoint a — Blocked", "Checkpoint: Checkpoint b — Next", "Context: Starting the next checkpoint with fresh context.")
+
 	outbox, err := sessionSvc.ListRealtimeOutboxForSessionAfterSeq(sessionID, 0, 20)
 	if err != nil {
 		t.Fatalf("list realtime outbox: %v", err)
 	}
-	if len(outbox) != 7 {
-		t.Fatalf("realtime outbox count = %d, want 7: %#v", len(outbox), outbox)
+	if len(outbox) != 9 {
+		t.Fatalf("realtime outbox count = %d, want 9: %#v", len(outbox), outbox)
 	}
 	wantEvents := []string{
 		"session.plan.saved",
 		"session.plan.saved",
 		"session.plan.saved", "session.message.appended",
 		"session.plan.saved",
+		"session.plan.saved", "session.message.appended",
 		"session.plan.saved", "session.message.appended",
 	}
 	for i, want := range wantEvents {

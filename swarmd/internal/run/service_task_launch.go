@@ -906,6 +906,8 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		action = "mark_needs_review"
 	case "mark-blocked", "mark_blocked":
 		action = "mark_blocked"
+	case "resolve-blocked-checkpoint", "resolve_blocked_checkpoint", "resolve-block", "resolve_block", "clear-block", "clear_block", "unblock-checkpoint", "unblock_checkpoint":
+		action = "resolve_blocked_checkpoint"
 	case "mark-failed", "mark_failed":
 		action = "mark_failed"
 	case "remove-checkpoint", "remove_checkpoint", "delete-checkpoint", "delete_checkpoint":
@@ -931,7 +933,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	case "update-section", "update_section":
 		action = "update_section"
 	}
-	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "update_execution_policy" && action != "update_execution_state" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "start_checkpoint" && action != "continue_checkpoint" && action != "complete_checkpoint" && action != "checkpoint_outcome" && action != "mark_needs_review" && action != "mark_blocked" && action != "mark_failed" && action != "restart_checkpoint" && action != "rewind_to_checkpoint" && action != "approve_and_start" && action != "request_followup_checkpoint" && action != "request_plan_revision" && action != "amend_plan" && action != "request_new_plan" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
+	if action != "save" && action != "patch" && action != "update_section" && action != "update_info" && action != "update_execution_policy" && action != "update_execution_state" && action != "upsert_checkpoint" && action != "update_checkpoint" && action != "start_checkpoint" && action != "continue_checkpoint" && action != "complete_checkpoint" && action != "checkpoint_outcome" && action != "mark_needs_review" && action != "mark_blocked" && action != "mark_failed" && action != "restart_checkpoint" && action != "rewind_to_checkpoint" && action != "resolve_blocked_checkpoint" && action != "approve_and_start" && action != "request_followup_checkpoint" && action != "request_plan_revision" && action != "amend_plan" && action != "request_new_plan" && action != "remove_checkpoint" && action != "reorder_checkpoints" && action != "set_active_checkpoint" {
 		return planManagePermissionPayload{}, false, nil
 	}
 	planBody := strings.TrimSpace(mapString(args, "plan"))
@@ -1069,7 +1071,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		if err != nil {
 			return planManagePermissionPayload{}, false, err
 		}
-	} else if action == "approve_and_start" || action == "restart_checkpoint" || action == "rewind_to_checkpoint" {
+	} else if action == "approve_and_start" || action == "restart_checkpoint" || action == "rewind_to_checkpoint" || action == "resolve_blocked_checkpoint" {
 		previewDocument, err = clonePlanDocumentForExecutionAction(existing.Document)
 		if err != nil {
 			return planManagePermissionPayload{}, false, err
@@ -1095,6 +1097,8 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 			_, err = sessionruntime.ApplyPlanCheckpointReset(previewDocument, sessionruntime.PlanCheckpointResetOptions{CheckpointID: checkpointID})
 		case "rewind_to_checkpoint":
 			_, err = sessionruntime.ApplyPlanCheckpointReset(previewDocument, sessionruntime.PlanCheckpointResetOptions{CheckpointID: checkpointID, Rewind: true})
+		case "resolve_blocked_checkpoint":
+			_, err = sessionruntime.ApplyPlanCheckpointBlockResolution(previewDocument, sessionruntime.PlanCheckpointBlockResolutionOptions{CheckpointID: checkpointID, Result: strings.TrimSpace(firstNonEmptyString(mapString(args, "result"), mapString(args, "resolution_result"))), Notes: strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "resolution_notes"), mapString(args, "report"))), ResolvedAt: int64(mapInt(args, "reviewed_at"))})
 		}
 		if err != nil {
 			return planManagePermissionPayload{}, false, err

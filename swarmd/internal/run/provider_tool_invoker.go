@@ -423,7 +423,7 @@ func (s *Service) appendPlanLifecycleMessageForToolResult(sessionID string, call
 		return nil
 	}
 	action := strings.TrimSpace(mapString(payload, "action"))
-	if !isPlanExecutionOutcomeMessageAction(action) {
+	if !isPlanExecutionOutcomeMessageAction(action) && action != "resolve_blocked_checkpoint" {
 		return nil
 	}
 	planPayload, ok := payload["plan"].(map[string]any)
@@ -438,7 +438,32 @@ func (s *Service) appendPlanLifecycleMessageForToolResult(sessionID string, call
 	if err := json.Unmarshal(planRaw, &plan); err != nil {
 		return fmt.Errorf("decode plan lifecycle payload: %w", err)
 	}
+	if action == "resolve_blocked_checkpoint" && payload["resolved_checkpoint_id"] == nil {
+		if resolvedID := resolvedPlanLifecycleCheckpointID(plan.Document, strings.TrimSpace(mapString(payload, "checkpoint_id"))); resolvedID != "" {
+			payload["resolved_checkpoint_id"] = resolvedID
+		}
+	}
 	return s.appendPlanExecutionLifecycleSystemMessage(sessionID, action, plan, payload, applySessionMutation)
+}
+
+func resolvedPlanLifecycleCheckpointID(doc *pebblestore.SessionPlanDocument, selectedCheckpointID string) string {
+	if doc == nil {
+		return ""
+	}
+	selectedCheckpointID = strings.TrimSpace(selectedCheckpointID)
+	for _, checkpoint := range doc.Checkpoints {
+		checkpointID := strings.TrimSpace(checkpoint.ID)
+		if checkpointID == "" || checkpointID == selectedCheckpointID {
+			continue
+		}
+		if strings.TrimSpace(checkpoint.Result) == "blocked_resolved" {
+			return checkpointID
+		}
+		if checkpoint.Review != nil && strings.TrimSpace(checkpoint.Review.Result) == "blocked_resolved" {
+			return checkpointID
+		}
+	}
+	return ""
 }
 
 func (s *Service) appendExitPlanModeLifecycleMessage(sessionID string, payload map[string]any, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {

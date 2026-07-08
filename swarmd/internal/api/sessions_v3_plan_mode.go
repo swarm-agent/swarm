@@ -69,6 +69,15 @@ type sessionsV3PlanModeCheckpointResetRequest struct {
 	PlanID string `json:"plan_id,omitempty"`
 }
 
+type sessionsV3PlanModeCheckpointResolveBlockRequest struct {
+	PlanID       string `json:"plan_id,omitempty"`
+	Result       string `json:"result,omitempty"`
+	Notes        string `json:"notes,omitempty"`
+	ReviewedAt   int64  `json:"reviewed_at,omitempty"`
+	StartNext    bool   `json:"start_next,omitempty"`
+	ContinueNext bool   `json:"continue_next,omitempty"`
+}
+
 type sessionsV3PlanLifecycleFollowupRequest struct {
 	PlanID                   string   `json:"plan_id,omitempty"`
 	CheckpointID             string   `json:"checkpoint_id,omitempty"`
@@ -225,6 +234,9 @@ func (s *Server) handleSessionV3PrimaryPlanMode(w http.ResponseWriter, r *http.R
 				return
 			case "rewind":
 				s.handleSessionV3PrimaryPlanModeRewindCheckpoint(w, r, principal, sessionID, parts[0])
+				return
+			case "resolve-block":
+				s.handleSessionV3PrimaryPlanModeResolveBlockedCheckpoint(w, r, principal, sessionID, parts[0])
 				return
 			}
 		}
@@ -602,6 +614,44 @@ func (s *Server) handleSessionV3PrimaryPlanModeRestartCheckpoint(w http.Response
 
 func (s *Server) handleSessionV3PrimaryPlanModeRewindCheckpoint(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, checkpointID string) {
 	s.handleSessionV3PrimaryPlanModeResetCheckpointWithMethod(w, r, principal, sessionID, checkpointID, "rewind_to_checkpoint", s.planLifecycle.RewindCheckpointRun)
+}
+
+func (s *Server) handleSessionV3PrimaryPlanModeResolveBlockedCheckpoint(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, checkpointID string) {
+	if !s.prepareSessionsV3PlanModeLifecycle(w, r, principal, sessionID) {
+		return
+	}
+	var req sessionsV3PlanModeCheckpointResolveBlockRequest
+	if err := decodeSessionsV3PlanModeRequest(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	startNext := req.StartNext || req.ContinueNext
+	if startNext {
+		if status, err := s.preflightSessionsV3PlanModeFreshRun(sessionID); err != nil {
+			writeError(w, status, err)
+			return
+		}
+	}
+	input := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, checkpointID)
+	input.Result = req.Result
+	input.Notes = req.Notes
+	input.ReviewedAt = req.ReviewedAt
+	input.StartNext = startNext
+	result, err := s.planLifecycle.ResolveBlockedCheckpoint(input)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var runStart *sessionsV3PlanModeRunStart
+	if startNext && result.Summary.NextCheckpointID != "" && result.Summary.NextCheckpointStatus == sessionruntime.PlanCheckpointStatusInProgress && strings.TrimSpace(result.AttemptID) != "" {
+		var status int
+		runStart, status, err = s.startSessionsV3PlanModeRun(principal, sessionID, "resolve_blocked_checkpoint", result, false)
+		if err != nil {
+			writeError(w, status, err)
+			return
+		}
+	}
+	s.finishSessionsV3PlanModeLifecycle(w, principal, sessionID, "resolve_blocked_checkpoint", result, runStart)
 }
 
 func (s *Server) handleSessionV3PrimaryPlanModeResetCheckpointWithMethod(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, checkpointID, transition string, method func(sessionruntime.PlanLifecycleExecutionInput) (sessionruntime.PlanLifecycleResult, error)) {
