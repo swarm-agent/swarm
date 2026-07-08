@@ -6525,7 +6525,7 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *te
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{handler: func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
 		if strings.Contains(req.Instructions, "You generate deterministic session titles") {
-			return provideriface.Response{Text: "Memory Agent Session Title Flow", StopReason: "stop"}, nil
+			return provideriface.Response{Text: "Brief Greeting Exchange Recorded", StopReason: "stop"}, nil
 		}
 		return provideriface.Response{Text: "assistant answer", StopReason: "stop"}, nil
 	}}
@@ -6542,7 +6542,7 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *te
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "title-update-create", "New Session", pebblestore.ModelPreference{Provider: "test-provider", Model: "chat-model", Thinking: "medium"})
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "title-update-message", "please title this first turn")
 	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
-	waitForSessionsV3Title(t, sessionSvc, created.ID, "Memory Agent Session Title Flow")
+	waitForSessionsV3Title(t, sessionSvc, created.ID, "Brief Greeting Exchange Recorded")
 	if !server.WaitForInFlightRuns(2 * time.Second) {
 		t.Fatalf("server did not drain v3 title generation")
 	}
@@ -6551,7 +6551,7 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *te
 	if err != nil || !ok {
 		t.Fatalf("load titled session ok=%v err=%v", ok, err)
 	}
-	if stored.Title != "Memory Agent Session Title Flow" {
+	if stored.Title != "Brief Greeting Exchange Recorded" {
 		t.Fatalf("session title = %q", stored.Title)
 	}
 	if runner.callCount != 2 {
@@ -6586,14 +6586,14 @@ func TestSessionsV3ExecutorUpdatesDefaultTitleWithMemoryAgentAfterFirstRun(t *te
 	if err := json.Unmarshal(titleEvent.Payload, &payload); err != nil {
 		t.Fatalf("decode title event payload: %v", err)
 	}
-	if payload.SessionID != created.ID || payload.Title != "Memory Agent Session Title Flow" || payload.Stage != "final" || payload.Session.Title != "Memory Agent Session Title Flow" {
+	if payload.SessionID != created.ID || payload.Title != "Brief Greeting Exchange Recorded" || payload.Stage != "final" || payload.Session.Title != "Brief Greeting Exchange Recorded" {
 		t.Fatalf("title event payload = %+v", payload)
 	}
 	replay, err := sessionSvc.ReplaySessionEvents(created.ID, 0, 80)
 	if err != nil {
 		t.Fatalf("replay events: %v", err)
 	}
-	if replay.Session == nil || replay.Session.Title != "Memory Agent Session Title Flow" {
+	if replay.Session == nil || replay.Session.Title != "Brief Greeting Exchange Recorded" {
 		t.Fatalf("replayed session = %+v", replay.Session)
 	}
 }

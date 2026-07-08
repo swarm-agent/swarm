@@ -45,8 +45,8 @@ const (
 	sessionV3TitleConversationLimit           = 24
 	sessionV3TitlePromptPreviewRunes          = 2000
 	sessionV3TitleGenerationTimeout           = 20 * time.Second
-	sessionV3TitleFinalWordsMin               = 5
-	sessionV3TitleFinalWordsMax               = 6
+	sessionV3TitleFinalWordsMin               = 0
+	sessionV3TitleFinalWordsMax               = 5
 	sessionV3HandoffDefaultTailMessages       = 24
 	sessionV3HandoffDefaultToolOutputChars    = 1200
 	sessionV3HandoffDefaultTotalChars         = 60000
@@ -1037,7 +1037,7 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 	instructions := strings.TrimSpace(strings.Join([]string{
 		strings.TrimSpace(memoryProfile.Prompt),
 		"You generate deterministic session titles.",
-		fmt.Sprintf("Return only the title text with %d to %d words.", sessionV3TitleFinalWordsMin, sessionV3TitleFinalWordsMax),
+		fmt.Sprintf("Return only the title text with at most %d words.", sessionV3TitleFinalWordsMax),
 		"No markdown, no quotes, no explanations, no trailing punctuation.",
 		"Stage: final.",
 	}, "\n"))
@@ -1095,7 +1095,7 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 	rejectReason := ""
 	if strings.TrimSpace(rawTitle) == "" {
 		rejectReason = "empty_raw_title"
-	} else if len(words) < sessionV3TitleFinalWordsMin {
+	} else if sessionV3TitleFinalWordsMin > 0 && len(words) < sessionV3TitleFinalWordsMin {
 		rejectReason = "too_few_words"
 	} else if title == "" {
 		rejectReason = "sanitizer_rejected"
@@ -3690,7 +3690,7 @@ func sanitizeSessionV3GeneratedTitle(raw string, minWords, maxWords int) string 
 	if maxWords > 0 && len(words) > maxWords {
 		words = words[:maxWords]
 	}
-	if len(words) < minWords {
+	if minWords > 0 && len(words) < minWords {
 		return ""
 	}
 	return strings.Join(words, " ")
