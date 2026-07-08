@@ -14,6 +14,7 @@ import { listProviders } from '../../settings/queries/list-providers'
 import type { AuthMethod, CodexOAuthSession, ProviderStatus, StartCodexOAuthInput, UpsertAuthCredentialInput } from '../../settings/types/auth'
 import { WorkspaceFolderTree } from '../../../workspaces/launcher/components/workspace-folder-tree'
 import { WorkspaceStatus } from '../../../workspaces/launcher/components/workspace-status'
+import { applyWorkspaceTheme } from '../../../workspaces/launcher/services/workspace-theme'
 import { useWorkspaceLauncher } from '../../../workspaces/launcher/state/use-workspace-launcher'
 import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../../../workspaces/launcher/services/workspace-route'
 import { formatWorkspacePath } from '../../../workspaces/launcher/services/workspace-format'
@@ -25,8 +26,12 @@ type CodexOAuthMode = StartCodexOAuthInput['method']
 type ProviderSetupMode = 'api' | 'oauth-browser' | 'oauth-manual' | null
 type PendingAction = 'identity' | 'provider-save' | 'oauth-browser' | 'oauth-manual' | 'oauth-complete' | 'finalize' | 'workspace' | null
 
+type OnboardingView = OnboardingStep | 'setup'
+
 const SWARM_MARK_SRC = '/favicon.svg'
-const STEP_TRANSITION_MS = 140
+const STEP_TRANSITION_MS = 180
+const ONBOARDING_READY_HOLD_MS = 1_000
+const ONBOARDING_THEME_ID = 'crimson'
 
 const ONBOARDING_STEPS: Record<OnboardingStep, { stepLabel: string; title: string; subtitle: string }> = {
   identity: {
@@ -106,10 +111,17 @@ function pendingMessage(action: PendingAction): string | null {
       return 'Completing sign-in…'
     case 'finalize':
     case 'workspace':
-      return 'Finishing onboarding…'
+      return 'Setting up your Swarm…'
     default:
       return null
   }
+}
+
+function waitForOnboardingReadyHold(): Promise<void> {
+  return new Promise((resolve) => {
+    const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
+    setTimeoutFn(resolve, ONBOARDING_READY_HOLD_MS)
+  })
 }
 
 function OnboardingBrandHeader({ restart, step }: { restart: boolean; step: OnboardingStep }) {
@@ -146,6 +158,24 @@ function OnboardingBrandHeader({ restart, step }: { restart: boolean; step: Onbo
   )
 }
 
+function OnboardingSetupPane() {
+  return (
+    <div className="grid min-h-[25rem] place-items-center px-6 text-center" role="status" aria-live="polite">
+      <div className="grid max-w-md gap-4">
+        <div className="mx-auto grid size-14 place-items-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] shadow-[0_18px_60px_rgb(0_0_0/0.3)]">
+          <img src={SWARM_MARK_SRC} alt="" className="size-8" aria-hidden="true" />
+        </div>
+        <div className="grid gap-2">
+          <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">Setting up your Swarm…</h2>
+          <p className="text-sm leading-6 text-[var(--app-text-muted)]">
+            Holding the onboarding surface steady while the workspace is confirmed.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function FeedbackSlot({ error, notice, progress }: { error: string | null; notice: string | null; progress: string | null }) {
   const message = error || progress || notice
   const kind = error ? 'error' : progress ? 'progress' : notice ? 'success' : null
@@ -175,6 +205,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const navigate = useNavigate()
   const [status, setStatus] = useState(initialStatus)
   const [step, setStep] = useState<OnboardingStep>(() => (restart ? 'identity' : deriveInitialStep(initialStatus)))
+  const [view, setView] = useState<OnboardingView>(() => (restart ? 'identity' : deriveInitialStep(initialStatus)))
   const [pendingAction, setPendingAction] = useState<PendingAction>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -268,6 +299,10 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
         : 'Skip for now'
 
   useEffect(() => {
+    applyWorkspaceTheme(ONBOARDING_THEME_ID)
+  }, [])
+
+  useEffect(() => {
     return () => {
       if (transitionTimerRef.current !== null) {
         window.clearTimeout(transitionTimerRef.current)
@@ -357,7 +392,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }, [codexOAuthMode, oauthSession])
 
   const transitionToStep = (nextStep: OnboardingStep) => {
-    if (nextStep === step) {
+    if (nextStep === step && view === nextStep) {
       return
     }
     if (transitionTimerRef.current !== null) {
@@ -366,9 +401,19 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     setPanelVisible(false)
     transitionTimerRef.current = window.setTimeout(() => {
       setStep(nextStep)
+      setView(nextStep)
       setPanelVisible(true)
       transitionTimerRef.current = null
     }, STEP_TRANSITION_MS)
+  }
+
+  const transitionToSetup = () => {
+    if (transitionTimerRef.current !== null) {
+      window.clearTimeout(transitionTimerRef.current)
+      transitionTimerRef.current = null
+    }
+    setView('setup')
+    setPanelVisible(true)
   }
 
   const reloadStatus = async () => {
@@ -414,8 +459,12 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   const finalizeOnboarding = async () => {
-    await patchDesktopOnboarding({ desktopOnboardingComplete: true })
-    const next = await reloadStatus()
+    setPendingAction('finalize')
+    transitionToSetup()
+    const [, next] = await Promise.all([
+      waitForOnboardingReadyHold(),
+      patchDesktopOnboarding({ desktopOnboardingComplete: true }).then(() => reloadStatus()),
+    ])
     setStatus(next)
     onComplete(next)
     return next
@@ -438,7 +487,10 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   const finishWithWorkspace = async (resolution: WorkspaceResolution, fallbackPath: string) => {
-    await finalizeOnboarding()
+    const next = await finalizeOnboarding()
+    if (next.needsOnboarding) {
+      throw new Error('Swarm is still finishing onboarding. Try opening the workspace again in a moment.')
+    }
     await navigateToWorkspace(resolution, fallbackPath)
   }
 
@@ -459,10 +511,12 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setPendingAction('workspace')
       setError(null)
       setWorkspaceError(null)
+      transitionToSetup()
       try {
         const resolution = await openWorkspace(path)
         await finishWithWorkspace(resolution, path)
       } catch (err) {
+        transitionToStep('workspace')
         setWorkspaceError(err instanceof Error ? err.message : 'Failed to open workspace')
       } finally {
         setPendingAction(null)
@@ -478,6 +532,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setPendingAction('workspace')
       setError(null)
       setWorkspaceError(null)
+      transitionToSetup()
       try {
         const savedWorkspace = savedWorkspaceByPath.get(entry.path)
         if (!savedWorkspace) {
@@ -491,6 +546,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
         const resolution = await openWorkspace(entry.path)
         await finishWithWorkspace(resolution, entry.path)
       } catch (err) {
+        transitionToStep('workspace')
         setWorkspaceError(err instanceof Error ? err.message : 'Failed to save and open workspace')
       } finally {
         setPendingAction(null)
@@ -675,17 +731,19 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
         <div className="grid min-h-[42rem] grid-rows-[auto_auto_minmax(0,1fr)] gap-5 p-8">
           <OnboardingBrandHeader restart={restart} step={step} />
 
-          <FeedbackSlot error={error} notice={notice} progress={progress} />
+          <FeedbackSlot error={error} notice={view === 'setup' ? null : notice} progress={progress} />
 
           <div className="relative min-h-[25rem] overflow-hidden">
             <div
-              key={step}
+              key={view}
               className={[
                 'h-full transition-[opacity,transform] duration-200 ease-out',
                 panelVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
               ].join(' ')}
             >
-              {step === 'identity' ? (
+              {view === 'setup' ? <OnboardingSetupPane /> : null}
+
+              {view === 'identity' ? (
                 <form className="grid h-full content-start gap-6" onSubmit={handleIdentitySubmit}>
                   <div className="grid gap-2">
                     <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-username">
@@ -732,7 +790,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                 </form>
               ) : null}
 
-              {step === 'provider' ? (
+              {view === 'provider' ? (
                 <div className="grid h-full content-start gap-6">
                   {providerLoading ? (
                     <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-4 text-sm leading-6 text-[var(--app-text-muted)]">
@@ -971,17 +1029,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                 </div>
               ) : null}
 
-              {step === 'workspace' ? (
+              {view === 'workspace' ? (
                 <div className="grid h-full min-h-0 content-start gap-5">
                   <div className="grid min-h-0 content-start gap-5">
-                    {workspaceLoading ? (
-                      <WorkspaceStatus
-                        kind="empty"
-                        title="Finding workspaces"
-                        message="Looking for saved and discovered folders on this computer…"
-                      />
-                    ) : null}
-
                     {workspaceStatusError ? (
                       <WorkspaceStatus
                         kind="error"
@@ -997,7 +1047,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                         <div>
                           <div className="flex items-center gap-2">
                             <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">All workspaces</h2>
-                            <span className="text-[11px] text-[var(--app-text-subtle)]">{workspaces.length} saved · {discovered.length} discovered</span>
+                            <span className="text-[11px] text-[var(--app-text-subtle)]">
+                              {workspaces.length} saved · {discovered.length} discovered{workspaceLoading || workspaceRefreshing ? ' · refreshing' : ''}
+                            </span>
                           </div>
                           <p className="mt-1 text-sm text-[var(--app-text-muted)]">Folders with AGENTS.md or git repos</p>
                         </div>

@@ -18,7 +18,7 @@ test('normalizeSessionMode only accepts Desktop session modes', () => {
   assert.equal(normalizeSessionMode(undefined), 'auto')
 })
 
-test('global theme settings default to Kanagawa Wave when unset', () => {
+test('global theme settings default to Crimson when unset', () => {
   assert.equal(normalizeGlobalThemeSettings({}).activeId, DEFAULT_GLOBAL_THEME_ID)
   assert.equal(normalizeGlobalThemeSettings(null).activeId, DEFAULT_GLOBAL_THEME_ID)
   assert.equal(normalizeGlobalThemeSettings({ theme: { active_id: '  ' } }).activeId, DEFAULT_GLOBAL_THEME_ID)

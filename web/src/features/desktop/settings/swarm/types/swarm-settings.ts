@@ -6,7 +6,7 @@
 // should send only the setting section they intend to change.
 
 export const DEFAULT_SWARM_NAME = 'Local'
-export const DEFAULT_GLOBAL_THEME_ID = 'kanagawa-wave'
+export const DEFAULT_GLOBAL_THEME_ID = 'crimson'
 
 export interface UISwarmingSettingsWire {
   title?: string
