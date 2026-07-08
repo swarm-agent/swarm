@@ -905,17 +905,8 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                   {oauthSession.error ? <div className="text-[var(--app-danger)]">{oauthSession.error}</div> : null}
                                 </div>
                                 {codexOAuthMode === 'manual' ? (
-                                  <div className="rounded-xl border border-[var(--app-border)] bg-[color-mix(in_oklab,var(--app-surface)_62%,transparent)] px-4 py-3">
-                                    <div className="text-sm font-medium text-[var(--app-text)]">How remote Codex sign-in works</div>
-                                    <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm leading-6 text-[var(--app-text-muted)]">
-                                      <li>Open the auth URL below in a new tab.</li>
-                                      <li>Finish Codex / ChatGPT sign-in in that tab.</li>
-                                      <li>When the browser lands on a localhost callback URL, copy the entire URL from the address bar.</li>
-                                      <li>Paste that full callback URL here and complete sign-in.</li>
-                                    </ol>
-                                    <p className="mt-2 text-sm leading-6 text-[var(--app-text-muted)]">
-                                      The callback will look like <span className="font-mono text-[var(--app-text)]">http://localhost:1455/auth/callback?code=...&amp;state=...</span>. Copy the whole URL, not just the code. If the link expires or you want to restart, click Remote browser sign-in again to generate a fresh login link.
-                                    </p>
+                                  <div className="rounded-xl border border-[var(--app-border)] bg-[color-mix(in_oklab,var(--app-surface)_62%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--app-text-muted)]">
+                                    Open the auth URL in a new tab and finish Codex / ChatGPT sign-in there. When it lands on <span className="font-mono text-[var(--app-text)]">http://localhost:1455/auth/callback?code=...</span>, copy the full address-bar URL back here; click Remote browser sign-in again if you need a fresh link.
                                   </div>
                                 ) : null}
                                 {oauthSession.authURL ? (
