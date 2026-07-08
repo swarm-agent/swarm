@@ -110,13 +110,14 @@ type googleRequest struct {
 }
 
 type googleInteractionsRequest struct {
-	Model             string                              `json:"model"`
-	Input             any                                 `json:"input"`
-	SystemInstruction string                              `json:"system_instruction,omitempty"`
-	Tools             []googleInteractionsTool            `json:"tools,omitempty"`
-	Stream            bool                                `json:"stream,omitempty"`
-	Store             *bool                               `json:"store,omitempty"`
-	GenerationConfig  *googleInteractionsGenerationConfig `json:"generation_config,omitempty"`
+	Model                 string                              `json:"model"`
+	Input                 any                                 `json:"input"`
+	PreviousInteractionID string                              `json:"previous_interaction_id,omitempty"`
+	SystemInstruction     string                              `json:"system_instruction,omitempty"`
+	Tools                 []googleInteractionsTool            `json:"tools,omitempty"`
+	Stream                bool                                `json:"stream,omitempty"`
+	Store                 *bool                               `json:"store,omitempty"`
+	GenerationConfig      *googleInteractionsGenerationConfig `json:"generation_config,omitempty"`
 }
 
 type googleInteractionsTool struct {
@@ -427,11 +428,13 @@ func shouldUseGoogleInteractions(req provideriface.Request) bool {
 
 func buildGoogleInteractionsRequest(req provideriface.Request, modelID string, stream bool) googleInteractionsRequest {
 	store := false
+	previousInteractionID := strings.TrimSpace(req.PreviousResponseID)
 	out := googleInteractionsRequest{
-		Model:  strings.TrimSpace(modelID),
-		Input:  buildGoogleInteractionsInput(req.Input),
-		Stream: stream,
-		Store:  &store,
+		Model:                 strings.TrimSpace(modelID),
+		Input:                 buildGoogleInteractionsInput(req.Input, previousInteractionID != "", req.PreviousResponseFunctionCallIDs),
+		PreviousInteractionID: previousInteractionID,
+		Stream:                stream,
+		Store:                 &store,
 	}
 	if strings.TrimSpace(req.Instructions) != "" {
 		out.SystemInstruction = strings.TrimSpace(req.Instructions)
@@ -714,7 +717,10 @@ func sanitizeGoogleToolSchemaValue(value any) any {
 	}
 }
 
-func buildGoogleInteractionsInput(input []map[string]any) any {
+func buildGoogleInteractionsInput(input []map[string]any, statefulContinuation bool, previousResponseFunctionCallIDs []string) any {
+	if statefulContinuation {
+		return buildGoogleInteractionsStatefulFunctionResults(input, previousResponseFunctionCallIDs)
+	}
 	steps := make([]map[string]any, 0, len(input))
 	pendingThoughtSignature := ""
 	for i := 0; i < len(input); i++ {
@@ -783,6 +789,40 @@ func buildGoogleInteractionsInput(input []map[string]any) any {
 		}
 	}
 	return steps
+}
+
+func buildGoogleInteractionsStatefulFunctionResults(input []map[string]any, previousResponseFunctionCallIDs []string) any {
+	results := make([]map[string]any, 0, len(input))
+	pendingCallIDs := make(map[string]struct{}, len(previousResponseFunctionCallIDs))
+	for _, callID := range previousResponseFunctionCallIDs {
+		if callID = strings.TrimSpace(callID); callID != "" {
+			pendingCallIDs[callID] = struct{}{}
+		}
+	}
+	for _, item := range input {
+		typeName, ok := stringField(item, "type")
+		if !ok || !strings.EqualFold(strings.TrimSpace(typeName), "function_call_output") {
+			continue
+		}
+		callID, _ := stringField(item, "call_id")
+		callID = strings.TrimSpace(callID)
+		if len(pendingCallIDs) > 0 {
+			if _, ok := pendingCallIDs[callID]; !ok {
+				continue
+			}
+		}
+		step := map[string]any{"type": "function_result"}
+		if callID != "" {
+			step["call_id"] = callID
+		}
+		if name, _ := stringField(item, "name"); strings.TrimSpace(name) != "" {
+			step["name"] = strings.TrimSpace(name)
+		}
+		outputRaw, _ := stringField(item, "output")
+		step["result"] = []map[string]any{{"type": "text", "text": strings.TrimSpace(outputRaw)}}
+		results = append(results, step)
+	}
+	return results
 }
 
 func buildGoogleContents(input []map[string]any) []googleContent {

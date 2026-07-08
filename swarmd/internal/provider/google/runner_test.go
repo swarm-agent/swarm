@@ -82,6 +82,61 @@ func TestBuildGoogleInteractionsRequestUsesThinkingSummaries(t *testing.T) {
 	}
 }
 
+func TestBuildGoogleInteractionsRequestUsesPreviousInteractionIDForToolResults(t *testing.T) {
+	req := buildGoogleInteractionsRequest(provideriface.Request{
+		Model:                           "gemini-3.5-flash",
+		Thinking:                        "high",
+		PreviousResponseID:              "v1_prev",
+		PreviousResponseFunctionCallIDs: []string{"call_weather"},
+		Input: []map[string]any{
+			{
+				"role":    "user",
+				"content": "What is the temperature in London?",
+			},
+			{
+				"type":      "function_call",
+				"call_id":   "call_weather",
+				"name":      "get_current_temperature",
+				"arguments": `{"location":"London"}`,
+			},
+			{
+				"type":    "function_call_output",
+				"call_id": "call_weather",
+				"name":    "get_current_temperature",
+				"output":  `{"temperature":"22","unit":"celsius"}`,
+			},
+		},
+		Tools: []provideriface.ToolDefinition{{
+			Name:        "get_current_temperature",
+			Description: "Gets the current temperature.",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+	}, "gemini-3.5-flash", true)
+
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal interactions request: %v", err)
+	}
+	var encoded map[string]any
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		t.Fatalf("unmarshal interactions request: %v", err)
+	}
+	if got := encoded["previous_interaction_id"]; got != "v1_prev" {
+		t.Fatalf("previous_interaction_id = %#v, want v1_prev (json=%s)", got, raw)
+	}
+	input, ok := encoded["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("input = %#v, want only documented function_result continuation", encoded["input"])
+	}
+	result, ok := input[0].(map[string]any)
+	if !ok || result["type"] != "function_result" || result["call_id"] != "call_weather" || result["name"] != "get_current_temperature" {
+		t.Fatalf("function result input = %#v, want documented function_result", input[0])
+	}
+	if strings.Contains(string(raw), `"type":"function_call"`) || strings.Contains(string(raw), "What is the temperature") {
+		t.Fatalf("stateful continuation replayed prior history/tool call: %s", raw)
+	}
+}
+
 func TestBuildGoogleContentsPreservesThoughtSignatureMetadata(t *testing.T) {
 	contents := buildGoogleContents([]map[string]any{{
 		"type":      "function_call",
@@ -124,7 +179,7 @@ func TestBuildGoogleInteractionsInputAttachesFunctionCallSignature(t *testing.T)
 			"call_id": "call_plan",
 			"output":  `{"status":"empty"}`,
 		},
-	})
+	}, false, nil)
 	steps, ok := input.([]map[string]any)
 	if !ok {
 		t.Fatalf("interactions input = %#v, want step slice", input)
@@ -253,6 +308,18 @@ func TestGoogleInteractionsStreamEmitsThoughtSummaryDeltas(t *testing.T) {
 	rawJSON, _ := json.Marshal(response.Raw)
 	if !strings.Contains(string(rawJSON), "opaque-sig") || strings.Contains(response.ReasoningSummary, "opaque-sig") {
 		t.Fatalf("raw = %s reasoning = %q, want signature preserved out of reasoning text", rawJSON, response.ReasoningSummary)
+	}
+}
+
+func TestGoogleInteractionsStreamCapturesCreatedInteractionID(t *testing.T) {
+	acc := newGoogleInteractionsStreamAccumulator("gemini-3.5-flash")
+	payload := `{"event_type":"interaction.created","interaction":{"id":"v1_tool_turn","status":"in_progress","model":"gemini-3.5-flash"}}`
+	if err := acc.applyPayload(payload, nil); err != nil {
+		t.Fatalf("applyPayload error: %v", err)
+	}
+	response := acc.response()
+	if response.ID != "v1_tool_turn" || response.Model != "gemini-3.5-flash" || response.StopReason != "in_progress" {
+		t.Fatalf("response id/model/status = %q/%q/%q, want created interaction state", response.ID, response.Model, response.StopReason)
 	}
 }
 
