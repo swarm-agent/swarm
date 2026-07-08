@@ -76,7 +76,7 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 		bodyLines = append(bodyLines, "Next: plan complete.")
 	}
 	if !finalReview && isPlanExecutionOutcomeMessageAction(action) {
-		bodyLines = append(bodyLines, planLifecycleOutcomeDetailLines(input.Payload)...)
+		bodyLines = append(bodyLines, planLifecycleOutcomeDetailLines(input.Payload, false)...)
 	}
 	if len(bodyLines) > 0 {
 		lines = append(lines, "")
@@ -329,9 +329,12 @@ func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMes
 		"",
 		"The last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it.",
 	}
-	if detailLines := planLifecycleOutcomeDetailLines(input.Payload); len(detailLines) > 0 {
+	if detailLines := planLifecycleOutcomeDetailLines(input.Payload, true); len(detailLines) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, detailLines...)
+	}
+	if hasPlanLifecycleMarkdownHandoffContent(input.Payload) {
+		lines = append(lines, "", "Markdown is supported in this handoff and will be rendered for the user.")
 	}
 	metadata := map[string]any{
 		"source":           PlanExecutionFinalHandoffMessageSource,
@@ -352,21 +355,67 @@ func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMes
 	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
 }
 
-func planLifecycleOutcomeDetailLines(payload map[string]any) []string {
+func planLifecycleOutcomeDetailLines(payload map[string]any, markdown bool) []string {
 	if payload == nil {
 		return nil
 	}
 	var lines []string
-	if report := stringFromPlanPayload(payload, "report"); report != "" {
-		lines = append(lines, "Report: "+report)
+	appendSection := func(label, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if markdown && hasMarkdownBlockStructure(value) {
+			lines = append(lines, label+":", value)
+			return
+		}
+		lines = append(lines, label+": "+value)
 	}
-	if result := stringFromPlanPayload(payload, "result"); result != "" {
-		lines = append(lines, "Result: "+result)
-	}
+	appendSection("Report", stringFromPlanPayload(payload, "report"))
+	appendSection("Result", stringFromPlanPayload(payload, "result"))
 	if validation := stringsFromPlanPayload(payload, "validation"); len(validation) > 0 {
-		lines = append(lines, "Validation: "+strings.Join(validation, "; "))
+		validationText := strings.Join(validation, "; ")
+		if markdown && anyPlanLifecycleMarkdownBlockStructure(validation) {
+			validationText = strings.Join(validation, "\n")
+		}
+		appendSection("Validation", validationText)
 	}
 	return lines
+}
+
+func hasPlanLifecycleMarkdownHandoffContent(payload map[string]any) bool {
+	if payload == nil {
+		return false
+	}
+	for _, key := range []string{"report", "result"} {
+		if hasMarkdownBlockStructure(stringFromPlanPayload(payload, key)) {
+			return true
+		}
+	}
+	return anyPlanLifecycleMarkdownBlockStructure(stringsFromPlanPayload(payload, "validation"))
+}
+
+func anyPlanLifecycleMarkdownBlockStructure(values []string) bool {
+	for _, value := range values {
+		if hasMarkdownBlockStructure(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMarkdownBlockStructure(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, line := range strings.Split(value, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "-") || strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, ">") || strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			return true
+		}
+	}
+	return false
 }
 
 func stringFromPlanPayload(payload map[string]any, key string) string {

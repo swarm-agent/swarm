@@ -279,7 +279,7 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 		t.Fatalf("start second checkpoint should only add plan saved mutation, count = %d: %#v", len(appliedMutations), appliedMutations)
 	}
 
-	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"done","result":"finished","validation":["lifecycle handoff regression"]}`, "", applyMutation)
+	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"## Summary\n- done","result":"finished","validation":["- lifecycle handoff regression"]}`, "", applyMutation)
 	if err != nil {
 		t.Fatalf("complete final checkpoint: %v output=%s", err, raw)
 	}
@@ -294,12 +294,12 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if len(messages) != 3 || messages[2].Role != "system" || messages[2].Metadata["source"] != PlanExecutionFinalHandoffMessageSource || messages[2].Metadata["kind"] != "plan_final_checkpoint_handoff" || messages[2].Metadata["action"] != "complete_checkpoint" || messages[2].Metadata["next_action"] != "await_review" {
 		t.Fatalf("final handoff message metadata/order = %#v", messages)
 	}
-	for _, want := range []string{"Final checkpoint handoff", "Report: done", "Result: finished", "Validation: lifecycle handoff regression"} {
+	for _, want := range []string{"Final checkpoint handoff", "Report:\n## Summary\n- done", "Result: finished", "Validation:\n- lifecycle handoff regression", "Markdown is supported in this handoff and will be rendered for the user."} {
 		if !strings.Contains(messages[2].Content, want) {
 			t.Fatalf("final handoff content missing %q: %q", want, messages[2].Content)
 		}
 	}
-	if strings.Contains(messages[1].Content, "Final checkpoint handoff") || strings.Contains(messages[1].Content, "Report: done") || strings.Contains(messages[1].Content, "Result: finished") || strings.Contains(messages[1].Content, "Validation: lifecycle handoff regression") {
+	if strings.Contains(messages[1].Content, "Final checkpoint handoff") || strings.Contains(messages[1].Content, "Report:") || strings.Contains(messages[1].Content, "Result: finished") || strings.Contains(messages[1].Content, "Validation:") {
 		t.Fatalf("final lifecycle message leaked handoff details: %q", messages[1].Content)
 	}
 	if len(appliedMutations) <= 7 || appliedMutations[7].Kind != sessionruntime.SessionMutationAppendMessage || appliedMutations[7].Message == nil || appliedMutations[7].Message.Metadata["source"] != PlanExecutionFinalHandoffMessageSource {

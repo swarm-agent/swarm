@@ -83,6 +83,9 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"Final checkpoint handoff required",
 		"last remaining checkpoint",
 		"final waiting_review/final-review state",
+		"may use markdown where helpful",
+		"Desktop V3 parses and renders that markdown nicely for the user",
+		"report/result/validation text may use markdown where helpful",
 		"Do not save the compact user-facing handoff in the plan document",
 		`"final_checkpoint": true`,
 	} {

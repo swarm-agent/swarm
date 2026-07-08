@@ -267,7 +267,7 @@ test('Desktop V3 final checkpoint handoff renders separately after lifecycle bre
     session_id: 'session-a',
     global_seq: 8,
     role: 'system',
-    content: 'Final checkpoint handoff\n\nThe last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it.\n\nReport: rendered separately\nResult: done\nValidation: focused render regression',
+    content: 'Final checkpoint handoff\n\nThe last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it.\n\nReport:\n## Summary\n- rendered separately\nResult: **done**\nValidation:\n- focused render regression\n\nMarkdown is supported in this handoff and will be rendered for the user.',
     metadata: { source: 'plan_execution_final_handoff', kind: 'plan_final_checkpoint_handoff' },
     created_at: 8,
   }
@@ -282,8 +282,10 @@ test('Desktop V3 final checkpoint handoff renders separately after lifecycle bre
   }
   if (items[1]?.type === 'plan-final-handoff') {
     assert.equal(items[1].headline, 'Final checkpoint handoff')
-    assert.match(items[1].body, /Report: rendered separately/)
-    assert.match(items[1].body, /Validation: focused render regression/)
+    assert.match(items[1].body, /Report:\n## Summary\n- rendered separately/)
+    assert.match(items[1].body, /Result: \*\*done\*\*/)
+    assert.match(items[1].body, /Validation:\n- focused render regression/)
+    assert.match(items[1].body, /Markdown is supported in this handoff/)
   }
 })
 
