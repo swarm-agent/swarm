@@ -24,6 +24,7 @@ import (
 const (
 	generateContentURL       = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 	streamGenerateContentURL = "https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent"
+	interactionsURL          = "https://generativelanguage.googleapis.com/v1beta/interactions"
 	googleAPIKeyHeader       = "x-goog-api-key"
 	googleReasoningKey       = "google-thinking"
 	maxResponseBytes         = 8 << 20
@@ -88,6 +89,12 @@ type googleGenerationConfig struct {
 	ThinkingConfig *googleThinkingConfig `json:"thinkingConfig,omitempty"`
 }
 
+type googleInteractionsGenerationConfig struct {
+	ThinkingLevel     string `json:"thinking_level,omitempty"`
+	ThinkingSummaries string `json:"thinking_summaries,omitempty"`
+	ToolChoice        string `json:"tool_choice,omitempty"`
+}
+
 type googleThinkingConfig struct {
 	ThinkingBudget  *int   `json:"thinkingBudget,omitempty"`
 	ThinkingLevel   string `json:"thinkingLevel,omitempty"`
@@ -102,9 +109,76 @@ type googleRequest struct {
 	GenerationConfig  *googleGenerationConfig `json:"generationConfig,omitempty"`
 }
 
+type googleInteractionsRequest struct {
+	Model             string                              `json:"model"`
+	Input             any                                 `json:"input"`
+	SystemInstruction string                              `json:"system_instruction,omitempty"`
+	Tools             []googleInteractionsTool            `json:"tools,omitempty"`
+	Stream            bool                                `json:"stream,omitempty"`
+	Store             *bool                               `json:"store,omitempty"`
+	GenerationConfig  *googleInteractionsGenerationConfig `json:"generation_config,omitempty"`
+}
+
+type googleInteractionsTool struct {
+	Type        string         `json:"type"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
 type googleResponse struct {
 	Candidates    []googleCandidate    `json:"candidates"`
 	UsageMetadata *googleUsageMetadata `json:"usageMetadata,omitempty"`
+}
+
+type googleInteractionResponse struct {
+	ID     string                  `json:"id,omitempty"`
+	Model  string                  `json:"model,omitempty"`
+	Status string                  `json:"status,omitempty"`
+	Steps  []googleInteractionStep `json:"steps,omitempty"`
+	Usage  *googleInteractionUsage `json:"usage,omitempty"`
+	Raw    map[string]any          `json:"-"`
+}
+
+type googleInteractionStep struct {
+	Type      string                     `json:"type,omitempty"`
+	ID        string                     `json:"id,omitempty"`
+	Name      string                     `json:"name,omitempty"`
+	Signature string                     `json:"signature,omitempty"`
+	Summary   []googleInteractionContent `json:"summary,omitempty"`
+	Content   []googleInteractionContent `json:"content,omitempty"`
+	Arguments any                        `json:"arguments,omitempty"`
+}
+
+type googleInteractionContent struct {
+	Type string `json:"type,omitempty"`
+	Text string `json:"text,omitempty"`
+}
+
+type googleInteractionStreamEvent struct {
+	EventType   string                     `json:"event_type,omitempty"`
+	Index       int                        `json:"index,omitempty"`
+	Step        *googleInteractionStep     `json:"step,omitempty"`
+	Delta       *googleInteractionDelta    `json:"delta,omitempty"`
+	Interaction *googleInteractionResponse `json:"interaction,omitempty"`
+}
+
+type googleInteractionDelta struct {
+	Type      string                    `json:"type,omitempty"`
+	Text      string                    `json:"text,omitempty"`
+	Signature string                    `json:"signature,omitempty"`
+	Arguments string                    `json:"arguments,omitempty"`
+	Content   *googleInteractionContent `json:"content,omitempty"`
+}
+
+type googleInteractionUsage struct {
+	TotalInputTokens   int64          `json:"total_input_tokens,omitempty"`
+	TotalOutputTokens  int64          `json:"total_output_tokens,omitempty"`
+	TotalThoughtTokens int64          `json:"total_thought_tokens,omitempty"`
+	TotalTokens        int64          `json:"total_tokens,omitempty"`
+	TotalCachedTokens  int64          `json:"total_cached_tokens,omitempty"`
+	TotalToolUseTokens int64          `json:"total_tool_use_tokens,omitempty"`
+	Raw                map[string]any `json:"-"`
 }
 
 type googleCandidate struct {
@@ -209,6 +283,16 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	if err != nil {
 		return provideriface.Response{}, err
 	}
+	if shouldUseGoogleInteractions(req) {
+		result, err := r.createInteractionsStreamingResponse(ctx, req, modelID, auth, onEvent)
+		if err == nil {
+			return result, nil
+		}
+		var unavailable googleInteractionsUnavailableError
+		if !errors.As(err, &unavailable) {
+			return provideriface.Response{}, err
+		}
+	}
 
 	requestPayload := buildGoogleRequest(req)
 	raw, err := json.Marshal(requestPayload)
@@ -258,6 +342,64 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	return accumulator.response(), nil
 }
 
+type googleInteractionsUnavailableError struct {
+	statusCode int
+}
+
+func (e googleInteractionsUnavailableError) Error() string {
+	return fmt.Sprintf("google interactions unavailable status=%d", e.statusCode)
+}
+
+func (r *Runner) createInteractionsStreamingResponse(ctx context.Context, req provideriface.Request, modelID string, auth googleAuth, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	requestPayload := buildGoogleInteractionsRequest(req, modelID, true)
+	raw, err := json.Marshal(requestPayload)
+	if err != nil {
+		return provideriface.Response{}, fmt.Errorf("marshal google interactions request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, interactionsURL, bytes.NewReader(raw))
+	if err != nil {
+		return provideriface.Response{}, err
+	}
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set(googleAPIKeyHeader, auth.APIKey)
+
+	providerdiagnostics.LogRequest("google", "interactions", httpReq, raw)
+	resp, err := r.httpClient.Do(httpReq)
+	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "google", "interactions", err)
+		return provideriface.Response{}, sanitizeGoogleError("google interactions request failed", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotImplemented {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		providerdiagnostics.LogResponse("google", "interactions", resp, body)
+		return provideriface.Response{}, googleInteractionsUnavailableError{statusCode: resp.StatusCode}
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		providerdiagnostics.LogResponse("google", "interactions", resp, body)
+		if readErr != nil {
+			providerdiagnostics.LogErrorContext(ctx, "google", "interactions", readErr)
+			return provideriface.Response{}, sanitizeGoogleError("read google interactions error response", readErr)
+		}
+		return provideriface.Response{}, googleStatusError("google interactions failed", resp.StatusCode, body)
+	}
+
+	providerdiagnostics.LogResponse("google", "interactions", resp, nil)
+	accumulator := newGoogleInteractionsStreamAccumulator(modelID)
+	if err := parseGoogleEventStream(resp.Body, func(payload string) error {
+		providerdiagnostics.LogStreamChunkContext(ctx, "google", "interactions", []byte(payload))
+		return accumulator.applyPayload(payload, onEvent)
+	}); err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "google", "interactions", err)
+		return provideriface.Response{}, sanitizeGoogleError("decode google interactions stream response", err)
+	}
+	return accumulator.response(), nil
+}
+
 func (r *Runner) ensureAuth(ctx context.Context) (googleAuth, error) {
 	principal, principalOK := identity.PrincipalFromContext(ctx)
 	if !principalOK {
@@ -274,6 +416,84 @@ func (r *Runner) ensureAuth(ctx context.Context) (googleAuth, error) {
 		return googleAuth{APIKey: apiKey}, nil
 	}
 	return googleAuth{}, errors.New("google api key is required")
+}
+
+func shouldUseGoogleInteractions(req provideriface.Request) bool {
+	if !supportsGoogleThinking(req.Model) {
+		return false
+	}
+	return normalizeGoogleThinkingLevel(req.Thinking) != ""
+}
+
+func buildGoogleInteractionsRequest(req provideriface.Request, modelID string, stream bool) googleInteractionsRequest {
+	store := false
+	out := googleInteractionsRequest{
+		Model:  strings.TrimSpace(modelID),
+		Input:  buildGoogleInteractionsInput(req.Input),
+		Stream: stream,
+		Store:  &store,
+	}
+	if strings.TrimSpace(req.Instructions) != "" {
+		out.SystemInstruction = strings.TrimSpace(req.Instructions)
+	}
+	if generationConfig := googleInteractionsGenerationConfigForRequest(req); generationConfig != nil {
+		out.GenerationConfig = generationConfig
+	}
+	if tools := buildGoogleInteractionsTools(req.Tools); len(tools) > 0 {
+		out.Tools = tools
+	}
+	return out
+}
+
+func googleInteractionsGenerationConfigForRequest(req provideriface.Request) *googleInteractionsGenerationConfig {
+	level := normalizeGoogleThinkingLevel(req.Thinking)
+	if level == "" {
+		return nil
+	}
+	out := &googleInteractionsGenerationConfig{}
+	if level != "off" && level != "xhigh" {
+		out.ThinkingLevel = level
+	}
+	if level != "off" {
+		out.ThinkingSummaries = "auto"
+	}
+	if toolChoice := googleInteractionsToolChoice(req.ToolChoice); toolChoice != "" {
+		out.ToolChoice = toolChoice
+	}
+	if out.ThinkingLevel == "" && out.ThinkingSummaries == "" && out.ToolChoice == "" {
+		return nil
+	}
+	return out
+}
+
+func googleInteractionsToolChoice(toolChoice string) string {
+	switch strings.ToLower(strings.TrimSpace(toolChoice)) {
+	case "auto":
+		return "auto"
+	case "required", "any":
+		return "any"
+	case "none":
+		return "none"
+	default:
+		return ""
+	}
+}
+
+func buildGoogleInteractionsTools(tools []provideriface.ToolDefinition) []googleInteractionsTool {
+	out := make([]googleInteractionsTool, 0, len(tools))
+	for _, definition := range tools {
+		name := strings.TrimSpace(definition.Name)
+		if name == "" {
+			continue
+		}
+		out = append(out, googleInteractionsTool{
+			Type:        "function",
+			Name:        name,
+			Description: strings.TrimSpace(definition.Description),
+			Parameters:  sanitizeGoogleToolParameters(definition.Parameters),
+		})
+	}
+	return out
 }
 
 func buildGoogleRequest(req provideriface.Request) googleRequest {
@@ -492,6 +712,77 @@ func sanitizeGoogleToolSchemaValue(value any) any {
 	default:
 		return value
 	}
+}
+
+func buildGoogleInteractionsInput(input []map[string]any) any {
+	steps := make([]map[string]any, 0, len(input))
+	pendingThoughtSignature := ""
+	for i := 0; i < len(input); i++ {
+		item := input[i]
+		if typeName, ok := stringField(item, "type"); ok {
+			if strings.EqualFold(strings.TrimSpace(typeName), "reasoning") || strings.EqualFold(strings.TrimSpace(typeName), "thought") {
+				if signature := extractGoogleThoughtSignature(item); signature != "" {
+					pendingThoughtSignature = signature
+				}
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(typeName)) {
+			case "function_call":
+				if pendingThoughtSignature == "" {
+					pendingThoughtSignature = extractGoogleThoughtSignature(item)
+				}
+				if pendingThoughtSignature != "" {
+					steps = append(steps, map[string]any{"type": "thought", "signature": pendingThoughtSignature})
+					pendingThoughtSignature = ""
+				}
+				step := map[string]any{"type": "function_call"}
+				if callID := strings.TrimSpace(extractGoogleProviderCallID(item)); callID != "" {
+					step["id"] = callID
+				}
+				if name, _ := stringField(item, "name"); strings.TrimSpace(name) != "" {
+					step["name"] = strings.TrimSpace(name)
+				}
+				if arguments, _ := stringField(item, "arguments"); strings.TrimSpace(arguments) != "" {
+					step["arguments"] = parseFunctionArgs(arguments)
+				} else {
+					step["arguments"] = map[string]any{}
+				}
+				steps = append(steps, step)
+			case "function_call_output":
+				step := map[string]any{"type": "function_result"}
+				if callID, _ := stringField(item, "call_id"); strings.TrimSpace(callID) != "" {
+					step["call_id"] = strings.TrimSpace(callID)
+				}
+				if name, _ := stringField(item, "name"); strings.TrimSpace(name) != "" {
+					step["name"] = strings.TrimSpace(name)
+				}
+				outputRaw, _ := stringField(item, "output")
+				step["result"] = []map[string]any{{"type": "text", "text": strings.TrimSpace(outputRaw)}}
+				steps = append(steps, step)
+			}
+			continue
+		}
+
+		role, _ := stringField(item, "role")
+		text := extractInputText(item["content"])
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		stepType := "user_input"
+		if strings.EqualFold(strings.TrimSpace(role), "assistant") {
+			stepType = "model_output"
+		}
+		steps = append(steps, map[string]any{
+			"type":    stepType,
+			"content": []map[string]any{{"type": "text", "text": text}},
+		})
+	}
+	if len(steps) == 1 {
+		if content, ok := steps[0]["content"]; ok {
+			return content
+		}
+	}
+	return steps
 }
 
 func buildGoogleContents(input []map[string]any) []googleContent {
@@ -747,6 +1038,298 @@ func (a *googleStreamAccumulator) response() provideriface.Response {
 		result.FunctionCalls = a.functionCalls
 	}
 	return result
+}
+
+type googleInteractionsStreamAccumulator struct {
+	modelID                  string
+	id                       string
+	status                   string
+	text                     string
+	reasoningSummary         string
+	thoughtSignatures        []string
+	pendingThoughtSignature  string
+	functionCalls            []provideriface.FunctionCall
+	usage                    provideriface.TokenUsage
+	currentFunctionCallIndex map[int]int
+	currentFunctionCallArgs  map[int]string
+}
+
+func newGoogleInteractionsStreamAccumulator(modelID string) *googleInteractionsStreamAccumulator {
+	return &googleInteractionsStreamAccumulator{
+		modelID:                  strings.TrimSpace(modelID),
+		currentFunctionCallIndex: make(map[int]int),
+		currentFunctionCallArgs:  make(map[int]string),
+	}
+}
+
+func (a *googleInteractionsStreamAccumulator) applyPayload(payload string, onEvent func(provideriface.StreamEvent)) error {
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return nil
+	}
+	var decoded googleInteractionStreamEvent
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		return fmt.Errorf("decode google interactions stream payload: %w", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(decoded.EventType)) {
+	case "interaction.created", "interaction.completed":
+		if decoded.Interaction != nil {
+			a.applyInteraction(*decoded.Interaction)
+		}
+	case "step.start":
+		if decoded.Step != nil && strings.EqualFold(strings.TrimSpace(decoded.Step.Type), "function_call") {
+			call := buildGoogleInteractionFunctionCall(*decoded.Step, decoded.Index, "")
+			if signature := strings.TrimSpace(a.pendingThoughtSignature); signature != "" {
+				call.Metadata = mergeGoogleFunctionCallMetadata(call.Metadata, googleFunctionCallMetadata(signature, false))
+				a.pendingThoughtSignature = ""
+			}
+			a.upsertFunctionCall(decoded.Index, call)
+			a.emitToolCallStarted(decoded.Index, call, onEvent)
+		}
+	case "step.delta":
+		if decoded.Delta == nil {
+			return nil
+		}
+		switch strings.ToLower(strings.TrimSpace(decoded.Delta.Type)) {
+		case "text":
+			a.text += decoded.Delta.Text
+			if onEvent != nil && decoded.Delta.Text != "" {
+				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: decoded.Delta.Text})
+			}
+		case "thought_summary":
+			delta := decoded.Delta.Text
+			if delta == "" && decoded.Delta.Content != nil && strings.EqualFold(strings.TrimSpace(decoded.Delta.Content.Type), "text") {
+				delta = decoded.Delta.Content.Text
+			}
+			if delta != "" {
+				a.reasoningSummary += delta
+				if onEvent != nil {
+					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: a.reasoningSummary, ReasoningKey: googleReasoningKey})
+				}
+			}
+		case "thought_signature":
+			if signature := strings.TrimSpace(decoded.Delta.Signature); signature != "" {
+				a.thoughtSignatures = append(a.thoughtSignatures, signature)
+				a.pendingThoughtSignature = signature
+			}
+			// Preserve signatures in response metadata/state; do not render opaque
+			// signatures as reasoning text.
+		case "arguments_delta":
+			if decoded.Delta.Arguments != "" {
+				a.currentFunctionCallArgs[decoded.Index] += decoded.Delta.Arguments
+				if callIndex, ok := a.currentFunctionCallIndex[decoded.Index]; ok && callIndex >= 0 && callIndex < len(a.functionCalls) {
+					a.functionCalls[callIndex].Arguments = strings.TrimSpace(a.currentFunctionCallArgs[decoded.Index])
+					call := a.functionCalls[callIndex]
+					if onEvent != nil {
+						onEvent(provideriface.StreamEvent{
+							Type:              provideriface.StreamEventToolCallArgumentsSnapshot,
+							ToolCallID:        call.CallID,
+							ToolCallIndex:     intPointer(decoded.Index),
+							ToolName:          call.Name,
+							ArgumentsSnapshot: strings.TrimSpace(a.currentFunctionCallArgs[decoded.Index]),
+							Metadata:          cloneGoogleMetadataMap(call.Metadata),
+						})
+					}
+				}
+			}
+		}
+	case "step.stop":
+		if callIndex, ok := a.currentFunctionCallIndex[decoded.Index]; ok && callIndex >= 0 && callIndex < len(a.functionCalls) {
+			call := a.functionCalls[callIndex]
+			if strings.TrimSpace(call.Arguments) == "" {
+				call.Arguments = strings.TrimSpace(a.currentFunctionCallArgs[decoded.Index])
+				a.functionCalls[callIndex] = call
+			}
+			a.emitToolCallCompleted(decoded.Index, call, onEvent)
+		}
+	}
+	return nil
+}
+
+func (a *googleInteractionsStreamAccumulator) applyInteraction(interaction googleInteractionResponse) {
+	if strings.TrimSpace(interaction.ID) != "" {
+		a.id = strings.TrimSpace(interaction.ID)
+	}
+	if strings.TrimSpace(interaction.Model) != "" {
+		a.modelID = strings.TrimSpace(interaction.Model)
+	}
+	if strings.TrimSpace(interaction.Status) != "" {
+		a.status = strings.TrimSpace(interaction.Status)
+	}
+	if interaction.Usage != nil {
+		a.usage = parseGoogleInteractionUsage(*interaction.Usage)
+	}
+	for _, step := range interaction.Steps {
+		if strings.EqualFold(strings.TrimSpace(step.Type), "thought") {
+			if signature := strings.TrimSpace(step.Signature); signature != "" {
+				a.thoughtSignatures = append(a.thoughtSignatures, signature)
+			}
+		}
+	}
+}
+
+func (a *googleInteractionsStreamAccumulator) upsertFunctionCall(stepIndex int, call provideriface.FunctionCall) {
+	if existingIndex, ok := a.currentFunctionCallIndex[stepIndex]; ok && existingIndex >= 0 && existingIndex < len(a.functionCalls) {
+		a.functionCalls[existingIndex] = mergeGoogleProviderFunctionCall(a.functionCalls[existingIndex], call)
+		return
+	}
+	a.functionCalls = append(a.functionCalls, call)
+	a.currentFunctionCallIndex[stepIndex] = len(a.functionCalls) - 1
+}
+
+func (a *googleInteractionsStreamAccumulator) emitToolCallStarted(index int, call provideriface.FunctionCall, onEvent func(provideriface.StreamEvent)) {
+	if onEvent == nil {
+		return
+	}
+	onEvent(provideriface.StreamEvent{
+		Type:          provideriface.StreamEventToolCallStarted,
+		ToolCallID:    call.CallID,
+		ToolCallIndex: intPointer(index),
+		ToolName:      call.Name,
+		Metadata:      cloneGoogleMetadataMap(call.Metadata),
+	})
+}
+
+func (a *googleInteractionsStreamAccumulator) emitToolCallCompleted(index int, call provideriface.FunctionCall, onEvent func(provideriface.StreamEvent)) {
+	if onEvent == nil {
+		return
+	}
+	onEvent(provideriface.StreamEvent{
+		Type:          provideriface.StreamEventToolCallCompleted,
+		ToolCallID:    call.CallID,
+		ToolCallIndex: intPointer(index),
+		ToolName:      call.Name,
+		Arguments:     strings.TrimSpace(call.Arguments),
+		Metadata:      cloneGoogleMetadataMap(call.Metadata),
+	})
+}
+
+func (a *googleInteractionsStreamAccumulator) response() provideriface.Response {
+	out := provideriface.Response{
+		ID:               strings.TrimSpace(a.id),
+		Model:            strings.TrimSpace(a.modelID),
+		StopReason:       strings.TrimSpace(a.status),
+		Text:             strings.TrimSpace(a.text),
+		ReasoningSummary: strings.TrimSpace(a.reasoningSummary),
+		FunctionCalls:    append([]provideriface.FunctionCall(nil), a.functionCalls...),
+		Usage:            a.usage,
+	}
+	if len(a.thoughtSignatures) > 0 {
+		out.Raw = map[string]any{"google": map[string]any{"thought_signatures": append([]string(nil), a.thoughtSignatures...)}}
+	}
+	return out
+}
+
+func buildGoogleInteractionFunctionCall(step googleInteractionStep, sequence int, arguments string) provideriface.FunctionCall {
+	name := strings.TrimSpace(step.Name)
+	if name == "" {
+		name = "tool"
+	}
+	callID := strings.TrimSpace(step.ID)
+	if callID == "" {
+		callID = fmt.Sprintf("google_interaction_call_%d", sequence)
+	}
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		if encoded, err := json.Marshal(step.Arguments); err == nil && len(encoded) > 0 && string(encoded) != "null" {
+			arguments = string(encoded)
+		}
+	}
+	if arguments == "" {
+		arguments = "{}"
+	}
+	return provideriface.FunctionCall{
+		CallID:    callID,
+		Name:      name,
+		Arguments: arguments,
+		Metadata:  googleFunctionCallMetadata("", strings.TrimSpace(step.ID) == ""),
+	}
+}
+
+func parseGoogleInteractionResponse(resp googleInteractionResponse) provideriface.Response {
+	out := provideriface.Response{
+		ID:         strings.TrimSpace(resp.ID),
+		Model:      strings.TrimSpace(resp.Model),
+		StopReason: strings.TrimSpace(resp.Status),
+	}
+	textParts := make([]string, 0, len(resp.Steps))
+	reasoningParts := make([]string, 0, len(resp.Steps))
+	functionCalls := make([]provideriface.FunctionCall, 0, len(resp.Steps))
+	thoughtSignatures := make([]string, 0, len(resp.Steps))
+	for i, step := range resp.Steps {
+		switch strings.ToLower(strings.TrimSpace(step.Type)) {
+		case "thought":
+			if signature := strings.TrimSpace(step.Signature); signature != "" {
+				thoughtSignatures = append(thoughtSignatures, signature)
+			}
+			for _, content := range step.Summary {
+				if strings.EqualFold(strings.TrimSpace(content.Type), "text") && strings.TrimSpace(content.Text) != "" {
+					reasoningParts = append(reasoningParts, strings.TrimSpace(content.Text))
+				}
+			}
+		case "model_output":
+			for _, content := range step.Content {
+				if strings.EqualFold(strings.TrimSpace(content.Type), "text") && strings.TrimSpace(content.Text) != "" {
+					textParts = append(textParts, strings.TrimSpace(content.Text))
+				}
+			}
+		case "function_call":
+			functionCalls = append(functionCalls, buildGoogleInteractionFunctionCall(step, i+1, ""))
+		}
+	}
+	out.Text = strings.TrimSpace(strings.Join(textParts, "\n\n"))
+	out.ReasoningSummary = strings.TrimSpace(strings.Join(reasoningParts, "\n\n"))
+	out.FunctionCalls = functionCalls
+	if len(thoughtSignatures) > 0 {
+		out.Raw = map[string]any{"google": map[string]any{"thought_signatures": thoughtSignatures}}
+	}
+	if resp.Usage != nil {
+		out.Usage = parseGoogleInteractionUsage(*resp.Usage)
+	}
+	return out
+}
+
+func parseGoogleInteractionUsage(usage googleInteractionUsage) provideriface.TokenUsage {
+	usageRaw := cloneGoogleUsageMap(usage.Raw)
+	if len(usageRaw) == 0 {
+		usageRaw = map[string]any{
+			"total_input_tokens":    usage.TotalInputTokens,
+			"total_output_tokens":   usage.TotalOutputTokens,
+			"total_thought_tokens":  usage.TotalThoughtTokens,
+			"total_tokens":          usage.TotalTokens,
+			"total_cached_tokens":   usage.TotalCachedTokens,
+			"total_tool_use_tokens": usage.TotalToolUseTokens,
+		}
+	}
+	out := provideriface.TokenUsage{
+		InputTokens:      usage.TotalInputTokens,
+		OutputTokens:     usage.TotalOutputTokens,
+		ThinkingTokens:   usage.TotalThoughtTokens,
+		TotalTokens:      usage.TotalTokens,
+		CacheReadTokens:  usage.TotalCachedTokens,
+		CacheWriteTokens: 0,
+		Source:           "google_api_usage",
+		APIUsageRaw:      cloneGoogleUsageMap(usageRaw),
+		APIUsageRawPath:  "usage",
+		APIUsageHistory:  []map[string]any{cloneGoogleUsageMap(usageRaw)},
+		APIUsagePaths:    []string{"usage"},
+	}
+	if out.InputTokens < 0 {
+		out.InputTokens = 0
+	}
+	if out.OutputTokens < 0 {
+		out.OutputTokens = 0
+	}
+	if out.ThinkingTokens < 0 {
+		out.ThinkingTokens = 0
+	}
+	if out.CacheReadTokens < 0 {
+		out.CacheReadTokens = 0
+	}
+	if out.TotalTokens < 0 {
+		out.TotalTokens = 0
+	}
+	return out
 }
 
 func googleStatusError(prefix string, statusCode int, body []byte) error {

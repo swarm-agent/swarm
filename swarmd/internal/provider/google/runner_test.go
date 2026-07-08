@@ -43,6 +43,45 @@ func TestGoogleThinkingConfigUsesCatalogBudgetMapping(t *testing.T) {
 	}
 }
 
+func TestBuildGoogleInteractionsRequestUsesThinkingSummaries(t *testing.T) {
+	req := buildGoogleInteractionsRequest(provideriface.Request{
+		Model:        "gemini-3.5-flash",
+		Thinking:     "high",
+		Instructions: "be concise",
+		ToolChoice:   "auto",
+		Input: []map[string]any{{
+			"role":    "user",
+			"content": "explain",
+		}},
+		Tools: []provideriface.ToolDefinition{{
+			Name:        "lookup",
+			Description: "look up a fact",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+	}, "gemini-3.5-flash", true)
+
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal interactions request: %v", err)
+	}
+	encoded := string(raw)
+	for _, want := range []string{
+		`"model":"gemini-3.5-flash"`,
+		`"stream":true`,
+		`"store":false`,
+		`"system_instruction":"be concise"`,
+		`"thinking_level":"high"`,
+		`"thinking_summaries":"auto"`,
+		`"tool_choice":"auto"`,
+		`"type":"function"`,
+		`"name":"lookup"`,
+	} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("interactions request JSON = %s, want %s", encoded, want)
+		}
+	}
+}
+
 func TestBuildGoogleContentsPreservesThoughtSignatureMetadata(t *testing.T) {
 	contents := buildGoogleContents([]map[string]any{{
 		"type":      "function_call",
@@ -104,6 +143,72 @@ func TestParseGoogleUsageMapsResponseAndThoughtCacheTokens(t *testing.T) {
 	}
 	if usage.APIUsageRaw["responseTokenCount"] != int64(7) || usage.APIUsageRaw["toolUsePromptTokenCount"] != int64(2) {
 		t.Fatalf("raw usage = %+v, want response/tool-use fields preserved", usage.APIUsageRaw)
+	}
+}
+
+func TestGoogleInteractionsStreamEmitsThoughtSummaryDeltas(t *testing.T) {
+	acc := newGoogleInteractionsStreamAccumulator("gemini-3.5-flash")
+	events := make([]provideriface.StreamEvent, 0, 3)
+	payloads := []string{
+		`{"event_type":"step.delta","index":0,"delta":{"type":"thought_summary","content":{"type":"text","text":"Plan:"}}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"thought_summary","content":{"type":"text","text":" inspect"}}}`,
+		`{"event_type":"step.delta","index":1,"delta":{"type":"text","text":"Answer"}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"thought_signature","signature":"opaque-sig"}}`,
+		`{"event_type":"interaction.completed","interaction":{"id":"v1_test","status":"completed","usage":{"total_input_tokens":2,"total_output_tokens":3,"total_thought_tokens":5,"total_tokens":10}}}`,
+	}
+	for _, payload := range payloads {
+		if err := acc.applyPayload(payload, func(event provideriface.StreamEvent) { events = append(events, event) }); err != nil {
+			t.Fatalf("applyPayload error: %v", err)
+		}
+	}
+	response := acc.response()
+	if response.Text != "Answer" {
+		t.Fatalf("text = %q, want Answer", response.Text)
+	}
+	if response.ReasoningSummary != "Plan: inspect" {
+		t.Fatalf("reasoning summary = %q, want thought summary only", response.ReasoningSummary)
+	}
+	if response.Usage.ThinkingTokens != 5 {
+		t.Fatalf("usage = %+v, want thinking tokens", response.Usage)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %+v, want 3 rendered events", events)
+	}
+	if events[0].Type != provideriface.StreamEventReasoningSummaryDelta || events[0].Delta != "Plan:" || events[0].ReasoningKey != googleReasoningKey {
+		t.Fatalf("first event = %+v, want reasoning snapshot", events[0])
+	}
+	if events[1].Type != provideriface.StreamEventReasoningSummaryDelta || events[1].Delta != "Plan: inspect" || events[1].ReasoningKey != googleReasoningKey {
+		t.Fatalf("second event = %+v, want reasoning snapshot", events[1])
+	}
+	if events[2].Type != provideriface.StreamEventOutputTextDelta || events[2].Delta != "Answer" {
+		t.Fatalf("third event = %+v, want output text", events[2])
+	}
+	rawJSON, _ := json.Marshal(response.Raw)
+	if !strings.Contains(string(rawJSON), "opaque-sig") || strings.Contains(response.ReasoningSummary, "opaque-sig") {
+		t.Fatalf("raw = %s reasoning = %q, want signature preserved out of reasoning text", rawJSON, response.ReasoningSummary)
+	}
+}
+
+func TestGoogleInteractionsResponseParsesThoughtSummariesAndSignatures(t *testing.T) {
+	response := parseGoogleInteractionResponse(googleInteractionResponse{
+		ID:     "v1_test",
+		Model:  "gemini-3.5-flash",
+		Status: "completed",
+		Steps: []googleInteractionStep{
+			{Type: "thought", Signature: "sig-step", Summary: []googleInteractionContent{{Type: "text", Text: "inspect"}}},
+			{Type: "model_output", Content: []googleInteractionContent{{Type: "text", Text: "answer"}}},
+			{Type: "function_call", ID: "call_1", Name: "lookup", Arguments: map[string]any{"q": "x"}},
+		},
+	})
+	if response.Text != "answer" || response.ReasoningSummary != "inspect" {
+		t.Fatalf("response text/reasoning = %q/%q", response.Text, response.ReasoningSummary)
+	}
+	if len(response.FunctionCalls) != 1 || response.FunctionCalls[0].CallID != "call_1" || response.FunctionCalls[0].Arguments != `{"q":"x"}` {
+		t.Fatalf("function calls = %+v", response.FunctionCalls)
+	}
+	rawJSON, _ := json.Marshal(response.Raw)
+	if !strings.Contains(string(rawJSON), "sig-step") {
+		t.Fatalf("raw = %s, want thought signature", rawJSON)
 	}
 }
 
