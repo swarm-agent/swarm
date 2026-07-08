@@ -5939,14 +5939,20 @@ func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 3 || messages[1].Role != "tool" || messages[2].Role != "system" {
+	if len(messages) != 4 || messages[1].Role != "tool" || messages[2].Role != "system" || messages[3].Role != "system" {
 		t.Fatalf("messages after automatic finalization = %+v", messages)
 	}
-	if messages[2].Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || messages[2].Metadata["action"] != "complete_checkpoint" || messages[2].Metadata["next_action"] != "await_review" {
+	if messages[2].Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || messages[2].Metadata["kind"] != "plan_execution_break" || messages[2].Metadata["action"] != "complete_checkpoint" || messages[2].Metadata["next_action"] != "await_review" {
 		t.Fatalf("final lifecycle message metadata = %+v", messages[2].Metadata)
 	}
-	if strings.Contains(messages[2].Content, "Review and approve this plan") || strings.Contains(messages[2].Content, "Context: Starting the next checkpoint") || !strings.Contains(messages[2].Content, "All checkpoints complete; review required") || !strings.Contains(messages[2].Content, "Final checkpoint handoff") || !strings.Contains(messages[2].Content, "Report: last checkpoint complete") || !strings.Contains(messages[2].Content, "Result: done") || !strings.Contains(messages[2].Content, "Validation: targeted final lifecycle regression") {
+	if messages[3].Metadata["source"] != runruntime.PlanExecutionFinalHandoffMessageSource || messages[3].Metadata["kind"] != "plan_final_checkpoint_handoff" || messages[3].Metadata["action"] != "complete_checkpoint" || messages[3].Metadata["next_action"] != "await_review" {
+		t.Fatalf("final handoff message metadata = %+v", messages[3].Metadata)
+	}
+	if strings.Contains(messages[2].Content, "Review and approve this plan") || strings.Contains(messages[2].Content, "Context: Starting the next checkpoint") || !strings.Contains(messages[2].Content, "All checkpoints complete; review required") || strings.Contains(messages[2].Content, "Final checkpoint handoff") || strings.Contains(messages[2].Content, "Report: last checkpoint complete") || strings.Contains(messages[2].Content, "Result: done") || strings.Contains(messages[2].Content, "Validation: targeted final lifecycle regression") {
 		t.Fatalf("final lifecycle message content = %q", messages[2].Content)
+	}
+	if !strings.Contains(messages[3].Content, "Final checkpoint handoff") || !strings.Contains(messages[3].Content, "Report: last checkpoint complete") || !strings.Contains(messages[3].Content, "Result: done") || !strings.Contains(messages[3].Content, "Validation: targeted final lifecycle regression") {
+		t.Fatalf("final handoff message content = %q", messages[3].Content)
 	}
 	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)
 	if err != nil || !ok || activePlan.Document == nil {

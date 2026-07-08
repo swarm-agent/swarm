@@ -217,8 +217,8 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 		if err != nil {
 			t.Fatalf("list messages: %v", err)
 		}
-		if len(messages) != index+1 {
-			t.Fatalf("message count = %d, want %d: %#v", len(messages), index+1, messages)
+		if len(messages) < index+1 {
+			t.Fatalf("message count = %d, want at least %d: %#v", len(messages), index+1, messages)
 		}
 		message := messages[index]
 		if message.Role != "system" || message.Metadata["source"] != PlanExecutionLifecycleMessageSource || message.Metadata["kind"] != "plan_execution_break" {
@@ -237,31 +237,12 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 				t.Fatalf("message[%d] content includes internal/duplicated text %q: %q", index, forbidden, message.Content)
 			}
 		}
-		messageMutationIndex := -1
-		seenMessages := 0
-		for i := range appliedMutations {
-			mutation := appliedMutations[i]
-			if mutation.Kind != sessionruntime.SessionMutationAppendMessage || mutation.EventType != "session.message.appended" || mutation.Message == nil {
-				continue
-			}
-			if mutation.Message.Metadata["source"] != PlanExecutionLifecycleMessageSource {
-				continue
-			}
-			if seenMessages == index {
-				messageMutationIndex = i
-				break
-			}
-			seenMessages++
+		if len(appliedMutations) <= expectedMutationOffset {
+			t.Fatalf("applied mutations missing expected lifecycle mutation offset %d: %#v", expectedMutationOffset, appliedMutations)
 		}
-		if messageMutationIndex < 0 {
-			t.Fatalf("applied mutations missing lifecycle message[%d]: %#v", index, appliedMutations)
-		}
-		if messageMutationIndex != expectedMutationOffset {
-			t.Fatalf("message[%d] mutation index = %d, want %d: %#v", index, messageMutationIndex, expectedMutationOffset, appliedMutations)
-		}
-		messageMutation := appliedMutations[messageMutationIndex]
-		if messageMutation.Message.Metadata["action"] != action {
-			t.Fatalf("message[%d] mutation metadata = %#v", index, messageMutation.Message.Metadata)
+		messageMutation := appliedMutations[expectedMutationOffset]
+		if messageMutation.Kind != sessionruntime.SessionMutationAppendMessage || messageMutation.EventType != "session.message.appended" || messageMutation.Message == nil || messageMutation.Message.Metadata["source"] != PlanExecutionLifecycleMessageSource || messageMutation.Message.Metadata["action"] != action {
+			t.Fatalf("message[%d] expected mutation metadata = %#v", index, messageMutation)
 		}
 	}
 
@@ -305,7 +286,25 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
 		t.Fatalf("append final lifecycle: %v", err)
 	}
-	assertLifecycleMessage(1, "complete_checkpoint", "await_review", 6, "All checkpoints complete; review required — Automatic mode", "Completed: Checkpoint 2 — API", "Next: all checkpoints are complete; waiting for user review.", "Final checkpoint handoff", "Report: done", "Result: finished", "Validation: lifecycle handoff regression")
+	assertLifecycleMessage(1, "complete_checkpoint", "await_review", 6, "All checkpoints complete; review required — Automatic mode", "Completed: Checkpoint 2 — API", "Next: all checkpoints are complete; waiting for user review.")
+	messages, err := sessionSvc.ListSessionMessages(sessionID, 0, 20)
+	if err != nil {
+		t.Fatalf("list messages after final handoff: %v", err)
+	}
+	if len(messages) != 3 || messages[2].Role != "system" || messages[2].Metadata["source"] != PlanExecutionFinalHandoffMessageSource || messages[2].Metadata["kind"] != "plan_final_checkpoint_handoff" || messages[2].Metadata["action"] != "complete_checkpoint" || messages[2].Metadata["next_action"] != "await_review" {
+		t.Fatalf("final handoff message metadata/order = %#v", messages)
+	}
+	for _, want := range []string{"Final checkpoint handoff", "Report: done", "Result: finished", "Validation: lifecycle handoff regression"} {
+		if !strings.Contains(messages[2].Content, want) {
+			t.Fatalf("final handoff content missing %q: %q", want, messages[2].Content)
+		}
+	}
+	if strings.Contains(messages[1].Content, "Final checkpoint handoff") || strings.Contains(messages[1].Content, "Report: done") || strings.Contains(messages[1].Content, "Result: finished") || strings.Contains(messages[1].Content, "Validation: lifecycle handoff regression") {
+		t.Fatalf("final lifecycle message leaked handoff details: %q", messages[1].Content)
+	}
+	if len(appliedMutations) <= 7 || appliedMutations[7].Kind != sessionruntime.SessionMutationAppendMessage || appliedMutations[7].Message == nil || appliedMutations[7].Message.Metadata["source"] != PlanExecutionFinalHandoffMessageSource {
+		t.Fatalf("final handoff mutation ordering = %#v", appliedMutations)
+	}
 
 	_, _, err = sessionSvc.SavePlanWithMetadata(sessionID, "plan-blocked-lifecycle", "Plan: Blocked Lifecycle", "# Blocked", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
@@ -326,21 +325,21 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
 		t.Fatalf("append resolve blocked lifecycle: %v", err)
 	}
-	assertLifecycleMessage(2, "resolve_blocked_checkpoint", "run_checkpoint_with_fresh_context", 8, "Blocked checkpoint resolved; starting next checkpoint — Automatic mode", "Resolved: Checkpoint a — Blocked", "Checkpoint: Checkpoint b — Next", "Context: Starting the next checkpoint with fresh context.")
+	assertLifecycleMessage(3, "resolve_blocked_checkpoint", "run_checkpoint_with_fresh_context", 9, "Blocked checkpoint resolved; starting next checkpoint — Automatic mode", "Resolved: Checkpoint a — Blocked", "Checkpoint: Checkpoint b — Next", "Context: Starting the next checkpoint with fresh context.")
 
 	outbox, err := sessionSvc.ListRealtimeOutboxForSessionAfterSeq(sessionID, 0, 20)
 	if err != nil {
 		t.Fatalf("list realtime outbox: %v", err)
 	}
-	if len(outbox) != 9 {
-		t.Fatalf("realtime outbox count = %d, want 9: %#v", len(outbox), outbox)
+	if len(outbox) != 10 {
+		t.Fatalf("realtime outbox count = %d, want 10: %#v", len(outbox), outbox)
 	}
 	wantEvents := []string{
 		"session.plan.saved",
 		"session.plan.saved",
 		"session.plan.saved", "session.message.appended",
 		"session.plan.saved",
-		"session.plan.saved", "session.message.appended",
+		"session.plan.saved", "session.message.appended", "session.message.appended",
 		"session.plan.saved", "session.message.appended",
 	}
 	for i, want := range wantEvents {

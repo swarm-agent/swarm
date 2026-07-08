@@ -13,6 +13,20 @@ func (s *Service) appendPlanExecutionLifecycleSystemMessage(sessionID, action st
 	if !ok {
 		return nil
 	}
+	if err := s.appendPlanExecutionSystemMessage(sessionID, plan, message, planLifecycleMessageLogicalKey(action, plan, payload), "plan execution lifecycle", applySessionMutation); err != nil {
+		return err
+	}
+	handoffMessage, ok := BuildFinalPlanExecutionHandoffSystemMessage(PlanExecutionLifecycleMessageInput{Action: action, Plan: plan, Payload: payload})
+	if !ok {
+		return nil
+	}
+	if err := s.appendPlanExecutionSystemMessage(sessionID, plan, handoffMessage, planFinalHandoffMessageLogicalKey(action, plan, payload), "plan execution final handoff", applySessionMutation); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Service) appendPlanExecutionSystemMessage(sessionID string, plan pebblestore.SessionPlanSnapshot, message PlanExecutionLifecycleMessage, logicalKey, label string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
 	// Plan state is delivered by the canonical session.plan.saved realtime
 	// outbox row. This system message is only transcript/history context; do
 	// not piggyback active_plan on its session.message.appended payload.
@@ -23,22 +37,22 @@ func (s *Service) appendPlanExecutionLifecycleSystemMessage(sessionID, action st
 		Metadata:             message.Metadata,
 		RunID:                planLifecycleMessageRunID(plan),
 		Step:                 int(plan.Version),
-		LogicalKey:           planLifecycleMessageLogicalKey(action, plan, payload),
+		LogicalKey:           logicalKey,
 		ApplySessionMutation: applySessionMutation,
 	}
 	if applySessionMutation != nil {
 		_, _, mutation, err := s.appendRunMessageWithMutation(appendInput)
 		if err != nil {
-			return fmt.Errorf("append plan execution lifecycle system message: %w", err)
+			return fmt.Errorf("append %s system message: %w", label, err)
 		}
 		if mutation == nil || mutation.Message == nil || mutation.RealtimeOutbox == nil || mutation.RealtimeOutbox.EndpointSeq == 0 {
-			return fmt.Errorf("plan execution lifecycle message mutation did not return committed realtime outbox")
+			return fmt.Errorf("%s message mutation did not return committed realtime outbox", label)
 		}
 		return nil
 	}
 	_, _, _, err := s.appendRunMessage(appendInput)
 	if err != nil {
-		return fmt.Errorf("append plan execution lifecycle system message: %w", err)
+		return fmt.Errorf("append %s system message: %w", label, err)
 	}
 	return nil
 }
@@ -52,7 +66,15 @@ func planLifecycleMessageRunID(plan pebblestore.SessionPlanSnapshot) string {
 }
 
 func planLifecycleMessageLogicalKey(action string, plan pebblestore.SessionPlanSnapshot, payload map[string]any) string {
-	parts := []string{"system", "plan_execution", strings.TrimSpace(action), fmt.Sprintf("v%d", plan.Version)}
+	return strings.Join(planExecutionMessageLogicalKeyParts("plan_execution", action, plan, payload), ":")
+}
+
+func planFinalHandoffMessageLogicalKey(action string, plan pebblestore.SessionPlanSnapshot, payload map[string]any) string {
+	return strings.Join(planExecutionMessageLogicalKeyParts("plan_final_handoff", action, plan, payload), ":")
+}
+
+func planExecutionMessageLogicalKeyParts(kind, action string, plan pebblestore.SessionPlanSnapshot, payload map[string]any) []string {
+	parts := []string{"system", kind, strings.TrimSpace(action), fmt.Sprintf("v%d", plan.Version)}
 	if checkpointID := stringFromPlanPayload(payload, "checkpoint_id"); checkpointID != "" {
 		parts = append(parts, checkpointID)
 	} else if checkpointID := stringFromPlanPayload(payload, "next_checkpoint_id"); checkpointID != "" {
@@ -60,5 +82,5 @@ func planLifecycleMessageLogicalKey(action string, plan pebblestore.SessionPlanS
 	} else if plan.Document != nil && plan.Document.ActiveCheckpointID != "" {
 		parts = append(parts, strings.TrimSpace(plan.Document.ActiveCheckpointID))
 	}
-	return strings.Join(parts, ":")
+	return parts
 }

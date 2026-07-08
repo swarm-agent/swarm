@@ -6,6 +6,7 @@ import {
   buildDesktopV3LiveRunRenderItems,
   desktopV3RenderItemKey,
   isDesktopV3PlanExecutionBreakMessage,
+  isDesktopV3PlanFinalHandoffMessage,
   completeDesktopV3ExistingMessage,
   resolveDesktopV3StopRunRequest,
 } from './desktop-v3-existing-conversation-pane'
@@ -241,11 +242,48 @@ test('Desktop V3 plan lifecycle messages render as conversation breaks', () => {
   }
 
   assert.equal(isDesktopV3PlanExecutionBreakMessage(message), true)
+  assert.equal(isDesktopV3PlanFinalHandoffMessage(message), false)
   const items = buildDesktopV3ConversationRenderItems({ committed: [message], pendingUser: [], liveRuns: [], runIntents: [] })
   assert.equal(items[0]?.type, 'plan-break')
   if (items[0]?.type === 'plan-break') {
     assert.equal(items[0].headline, 'Checkpoint started')
     assert.equal(items[0].details.includes('Checkpoint: cp-1 Build UI'), true)
+  }
+})
+
+
+test('Desktop V3 final checkpoint handoff renders separately after lifecycle break', () => {
+  const lifecycle = {
+    id: 'plan-break-final',
+    session_id: 'session-a',
+    global_seq: 7,
+    role: 'system',
+    content: 'All checkpoints complete; review required — Automatic mode\nPlan: Demo plan (plan-1)\nCompleted: Checkpoint 2 — UI\nNext: all checkpoints are complete; waiting for user review.',
+    metadata: { source: 'plan_execution_lifecycle', kind: 'plan_execution_break' },
+    created_at: 7,
+  }
+  const handoff = {
+    id: 'plan-handoff-final',
+    session_id: 'session-a',
+    global_seq: 8,
+    role: 'system',
+    content: 'Final checkpoint handoff\n\nThe last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it.\n\nReport: rendered separately\nResult: done\nValidation: focused render regression',
+    metadata: { source: 'plan_execution_final_handoff', kind: 'plan_final_checkpoint_handoff' },
+    created_at: 8,
+  }
+
+  assert.equal(isDesktopV3PlanExecutionBreakMessage(handoff), false)
+  assert.equal(isDesktopV3PlanFinalHandoffMessage(handoff), true)
+  const items = buildDesktopV3ConversationRenderItems({ committed: [lifecycle, handoff], pendingUser: [], liveRuns: [], runIntents: [] })
+  assert.deepEqual(items.map((item) => item.type), ['plan-break', 'plan-final-handoff'])
+  if (items[0]?.type === 'plan-break') {
+    assert.equal(items[0].details.some((detail) => detail.includes('Report: rendered separately')), false)
+    assert.equal(items[0].details.includes('Next: all checkpoints are complete; waiting for user review.'), true)
+  }
+  if (items[1]?.type === 'plan-final-handoff') {
+    assert.equal(items[1].headline, 'Final checkpoint handoff')
+    assert.match(items[1].body, /Report: rendered separately/)
+    assert.match(items[1].body, /Validation: focused render regression/)
   }
 })
 

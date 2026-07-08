@@ -8,6 +8,7 @@ import (
 )
 
 const PlanExecutionLifecycleMessageSource = "plan_execution_lifecycle"
+const PlanExecutionFinalHandoffMessageSource = "plan_execution_final_handoff"
 
 type PlanExecutionLifecycleMessageInput struct {
 	Action  string
@@ -66,7 +67,6 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	if nextAction == "await_review" {
 		if finalReview {
 			bodyLines = append(bodyLines, "Next: all checkpoints are complete; waiting for user review.")
-			bodyLines = append(bodyLines, finalPlanLifecycleHandoffLines(input.Payload)...)
 		} else {
 			bodyLines = append(bodyLines, "Next: waiting for checkpoint review.")
 		}
@@ -308,13 +308,48 @@ func inferPlanExecutionNextAction(summary sessionruntime.PlanExecutionSummary) s
 	return ""
 }
 
-func finalPlanLifecycleHandoffLines(payload map[string]any) []string {
-	if payload == nil {
-		return nil
+func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMessageInput) (PlanExecutionLifecycleMessage, bool) {
+	action := strings.TrimSpace(input.Action)
+	if !planLifecycleActionCompleted(action) || input.Plan.Document == nil {
+		return PlanExecutionLifecycleMessage{}, false
 	}
-	lines := []string{"Final checkpoint handoff: the last checkpoint is complete; no additional checkpoint will start unless the user explicitly requests it."}
-	lines = append(lines, planLifecycleOutcomeDetailLines(payload)...)
-	return lines
+	doc := input.Plan.Document
+	summary := sessionruntime.SummarizePlanExecution(doc)
+	nextAction := stringFromPlanPayload(input.Payload, "next_action")
+	if nextAction == "" {
+		nextAction = inferPlanExecutionNextAction(summary)
+	}
+	if nextAction != "await_review" || !allPlanLifecycleCheckpointsCompleted(doc) {
+		return PlanExecutionLifecycleMessage{}, false
+	}
+	checkpointID := planLifecycleCheckpointID(action, doc, summary, input.Payload)
+	checkpointTitle := planLifecycleCheckpointTitle(doc, checkpointID)
+	lines := []string{
+		"Final checkpoint handoff",
+		"",
+		"The last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it.",
+	}
+	if detailLines := planLifecycleOutcomeDetailLines(input.Payload); len(detailLines) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, detailLines...)
+	}
+	metadata := map[string]any{
+		"source":           PlanExecutionFinalHandoffMessageSource,
+		"kind":             "plan_final_checkpoint_handoff",
+		"action":           action,
+		"plan_id":          strings.TrimSpace(input.Plan.ID),
+		"plan_title":       strings.TrimSpace(input.Plan.Title),
+		"checkpoint_id":    checkpointID,
+		"checkpoint_title": checkpointTitle,
+		"next_action":      nextAction,
+	}
+	if doc.ExecutionState != nil {
+		metadata["execution_status"] = strings.TrimSpace(doc.ExecutionState.Status)
+		metadata["attempt_id"] = strings.TrimSpace(firstNonEmptyString(doc.ExecutionState.ActiveAttemptID, doc.ExecutionState.LastAttemptID))
+		metadata["run_id"] = strings.TrimSpace(doc.ExecutionState.CurrentRunID)
+		metadata["run_session_id"] = strings.TrimSpace(doc.ExecutionState.CurrentSessionID)
+	}
+	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
 }
 
 func planLifecycleOutcomeDetailLines(payload map[string]any) []string {

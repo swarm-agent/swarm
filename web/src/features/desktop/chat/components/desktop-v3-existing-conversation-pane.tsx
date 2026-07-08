@@ -508,6 +508,13 @@ type DesktopV3RenderItem =
       timelineSeq?: number;
     }
   | {
+      type: "plan-final-handoff";
+      message: MessageSnapshot;
+      headline: string;
+      body: string;
+      timelineSeq?: number;
+    }
+  | {
       type: "message";
       message: MessageSnapshot;
       timelineSeq?: number;
@@ -811,6 +818,7 @@ function committedToolRenderKey(message: MessageSnapshot): string {
 export function desktopV3RenderItemKey(item: DesktopV3RenderItem): string {
   switch (item.type) {
     case "plan-break":
+    case "plan-final-handoff":
       return item.message.id;
     case "message":
       return item.renderKey || item.message.id;
@@ -929,6 +937,24 @@ export function isDesktopV3PlanExecutionBreakMessage(
   );
 }
 
+export function isDesktopV3PlanFinalHandoffMessage(
+  message: MessageSnapshot,
+): boolean {
+  if ((message.role || "").trim().toLowerCase() !== "system") return false;
+  const metadataSource =
+    typeof message.metadata?.source === "string"
+      ? message.metadata.source.trim().toLowerCase()
+      : "";
+  const metadataKind =
+    typeof message.metadata?.kind === "string"
+      ? message.metadata.kind.trim().toLowerCase()
+      : "";
+  return (
+    metadataSource === "plan_execution_final_handoff" ||
+    metadataKind === "plan_final_checkpoint_handoff"
+  );
+}
+
 function buildDesktopV3PlanExecutionBreakItem(
   message: MessageSnapshot,
 ): Extract<DesktopV3RenderItem, { type: "plan-break" }> {
@@ -942,6 +968,23 @@ function buildDesktopV3PlanExecutionBreakItem(
     message,
     headline,
     details: lines.slice(1),
+    timelineSeq: message.global_seq,
+  };
+}
+
+function buildDesktopV3PlanFinalHandoffItem(
+  message: MessageSnapshot,
+): Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }> {
+  const lines = message.content.split(/\r?\n/);
+  const headline = lines.find((line) => line.trim())?.trim() || "Final checkpoint handoff";
+  const headlineIndex = lines.findIndex((line) => line.trim());
+  const bodyLines = headlineIndex >= 0 ? lines.slice(headlineIndex + 1) : [];
+  const body = bodyLines.join("\n").trim() || message.content.trim();
+  return {
+    type: "plan-final-handoff",
+    message,
+    headline,
+    body,
     timelineSeq: message.global_seq,
   };
 }
@@ -1027,12 +1070,14 @@ export function buildDesktopV3ConversationRenderItems(
     ...committedMessages.map((message) =>
       isDesktopV3PlanExecutionBreakMessage(message)
         ? buildDesktopV3PlanExecutionBreakItem(message)
-        : {
-            type: "message" as const,
-            message,
-            timelineSeq: message.global_seq,
-            renderKey: committedToolRenderKey(message) || undefined,
-          },
+        : isDesktopV3PlanFinalHandoffMessage(message)
+          ? buildDesktopV3PlanFinalHandoffItem(message)
+          : {
+              type: "message" as const,
+              message,
+              timelineSeq: message.global_seq,
+              renderKey: committedToolRenderKey(message) || undefined,
+            },
     ),
     ...renderedMessages.pendingUser.map((message) => ({
       type: "pending-user" as const,
@@ -2265,6 +2310,8 @@ const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   switch (item.type) {
     case "plan-break":
       return <DesktopV3PlanExecutionBreak item={item} />;
+    case "plan-final-handoff":
+      return <DesktopV3PlanFinalHandoff item={item} />;
     case "message":
       return (
         <DesktopV3CommittedMessage
@@ -2316,6 +2363,32 @@ function DesktopV3PlanExecutionBreak({
               <div key={`${item.message.id}:detail:${index}`}>{detail}</div>
             ))}
           </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function DesktopV3PlanFinalHandoff({
+  item,
+}: {
+  item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>;
+}) {
+  return (
+    <div
+      className="flex justify-start py-1"
+      data-testid="desktop-v3-plan-final-handoff"
+    >
+      <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)] opacity-90">
+        <div className="mb-1 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
+          <CheckCircle2 size={12} className="text-[var(--app-primary)]" />
+          {item.headline}
+        </div>
+        {item.body ? (
+          <ChatMarkdown
+            content={item.body}
+            className="text-xs leading-5 text-[var(--app-text-muted)]"
+          />
         ) : null}
       </div>
     </div>
