@@ -230,7 +230,39 @@ test('continueDesktopV3Conversation rejects deleted sessions before append', asy
   }
 })
 
-test('continueDesktopV3Conversation requires queued or running run intent', async () => {
+test('continueDesktopV3Conversation accepts terminal replay so retained operation can clear', async () => {
+  const operation = createDesktopV3ExistingMessageOperation({
+    sessionId: 'session-1',
+    prompt: 'continue',
+  })
+  const state = createEmptyDesktopV3CacheState()
+  const actions: DesktopV3CacheAction[] = []
+  const restore = setDesktopV3ExistingSessionFlowDepsForTests({
+    getSnapshot: () => state,
+    requireControllerReady: async () => ({
+      ensureSessionConnected: async () => undefined,
+      start: async () => undefined,
+      stop: () => undefined,
+    }),
+    dispatch: (action) => {
+      actions.push(action)
+    },
+    postAppendMessage: async () => ({
+      ...makeMessageResponse(operation),
+      run_intent: { ...makeMessageResponse(operation).run_intent!, status: 'cancelled' },
+    }),
+  })
+
+  try {
+    const response = await continueDesktopV3Conversation(operation)
+    assert.equal(response.run_intent?.status, 'cancelled')
+    assert.equal(actions.at(-1)?.type, 'mutation.messageResult')
+  } finally {
+    restore()
+  }
+})
+
+test('continueDesktopV3Conversation still rejects dispatch-blocked run intent', async () => {
   const operation = createDesktopV3ExistingMessageOperation({
     sessionId: 'session-1',
     prompt: 'continue',

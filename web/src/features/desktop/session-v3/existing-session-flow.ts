@@ -124,6 +124,14 @@ export function setDesktopV3ExistingSessionFlowDepsForTests(
   }
 }
 
+const COMPLETED_REPLAY_RUN_PHASES = new Set([
+  'completed',
+  'cancelled',
+  'failed',
+  'interrupted',
+  'expired',
+])
+
 export async function continueDesktopV3Conversation(
   operation: DesktopV3ExistingMessageOperation,
 ): Promise<SessionMessageMutationResponse> {
@@ -181,6 +189,9 @@ export async function continueDesktopV3Conversation(
   }
   const status = acceptedRunPhase(raw)
   if (status !== 'accepted' && status !== 'pending_executor') {
+    if (COMPLETED_REPLAY_RUN_PHASES.has(status)) {
+      return raw
+    }
     throw new Error(`Desktop V3 existing-conversation run was not accepted: ${status || 'missing phase'}`)
   }
 
