@@ -294,10 +294,13 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if len(messages) != 3 || messages[2].Role != "system" || messages[2].Metadata["source"] != PlanExecutionFinalHandoffMessageSource || messages[2].Metadata["kind"] != "plan_final_checkpoint_handoff" || messages[2].Metadata["action"] != "complete_checkpoint" || messages[2].Metadata["next_action"] != "await_review" {
 		t.Fatalf("final handoff message metadata/order = %#v", messages)
 	}
-	for _, want := range []string{"Final checkpoint handoff", "Report:\n## Summary\n- done", "Result: finished", "Validation:\n- lifecycle handoff regression", "Markdown is supported in this handoff and will be rendered for the user."} {
+	for _, want := range []string{"Final checkpoint handoff", "Report:\n## Summary\n- done", "Result: finished", "Validation:\n- lifecycle handoff regression"} {
 		if !strings.Contains(messages[2].Content, want) {
 			t.Fatalf("final handoff content missing %q: %q", want, messages[2].Content)
 		}
+	}
+	if strings.Contains(messages[2].Content, "Markdown is supported in this handoff") {
+		t.Fatalf("final handoff content leaked markdown-support note: %q", messages[2].Content)
 	}
 	if strings.Contains(messages[1].Content, "Final checkpoint handoff") || strings.Contains(messages[1].Content, "Report:") || strings.Contains(messages[1].Content, "Result: finished") || strings.Contains(messages[1].Content, "Validation:") {
 		t.Fatalf("final lifecycle message leaked handoff details: %q", messages[1].Content)

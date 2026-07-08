@@ -333,9 +333,6 @@ func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMes
 		lines = append(lines, "")
 		lines = append(lines, detailLines...)
 	}
-	if hasPlanLifecycleMarkdownHandoffContent(input.Payload) {
-		lines = append(lines, "", "Markdown is supported in this handoff and will be rendered for the user.")
-	}
 	metadata := map[string]any{
 		"source":           PlanExecutionFinalHandoffMessageSource,
 		"kind":             "plan_final_checkpoint_handoff",
@@ -381,18 +378,6 @@ func planLifecycleOutcomeDetailLines(payload map[string]any, markdown bool) []st
 		appendSection("Validation", validationText)
 	}
 	return lines
-}
-
-func hasPlanLifecycleMarkdownHandoffContent(payload map[string]any) bool {
-	if payload == nil {
-		return false
-	}
-	for _, key := range []string{"report", "result"} {
-		if hasMarkdownBlockStructure(stringFromPlanPayload(payload, key)) {
-			return true
-		}
-	}
-	return anyPlanLifecycleMarkdownBlockStructure(stringsFromPlanPayload(payload, "validation"))
 }
 
 func anyPlanLifecycleMarkdownBlockStructure(values []string) bool {

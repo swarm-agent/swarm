@@ -5951,7 +5951,7 @@ func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing
 	if strings.Contains(messages[2].Content, "Review and approve this plan") || strings.Contains(messages[2].Content, "Context: Starting the next checkpoint") || !strings.Contains(messages[2].Content, "All checkpoints complete; review required") || strings.Contains(messages[2].Content, "Final checkpoint handoff") || strings.Contains(messages[2].Content, "Report:") || strings.Contains(messages[2].Content, "Result: done") || strings.Contains(messages[2].Content, "Validation:") {
 		t.Fatalf("final lifecycle message content = %q", messages[2].Content)
 	}
-	if !strings.Contains(messages[3].Content, "Final checkpoint handoff") || !strings.Contains(messages[3].Content, "Report:\n## Summary\n- last checkpoint complete") || !strings.Contains(messages[3].Content, "Result: done") || !strings.Contains(messages[3].Content, "Validation:\n- targeted final lifecycle regression") || !strings.Contains(messages[3].Content, "Markdown is supported in this handoff and will be rendered for the user.") {
+	if !strings.Contains(messages[3].Content, "Final checkpoint handoff") || !strings.Contains(messages[3].Content, "Report:\n## Summary\n- last checkpoint complete") || !strings.Contains(messages[3].Content, "Result: done") || !strings.Contains(messages[3].Content, "Validation:\n- targeted final lifecycle regression") || strings.Contains(messages[3].Content, "Markdown is supported in this handoff") {
 		t.Fatalf("final handoff message content = %q", messages[3].Content)
 	}
 	activePlan, ok, err := sessionSvc.GetActivePlan(created.ID)

@@ -1122,11 +1122,8 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
-	messages, err := e.sessionV3ProviderContextMessages(job)
-	if err != nil {
-		return sessionV3AssistantResponse{}, err
-	}
-	input := sessionsV3ProviderInput(messages)
+	var messages []pebblestore.MessageSnapshot
+	var input []map[string]any
 	checkpointRestartInput := false
 	if !forceCommittedContext && (strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "") {
 		checkpointInput, ok, checkpointErr := e.sessionV3ProviderCheckpointRestartInput(ctx, job, resolved, "")
@@ -1137,6 +1134,14 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 			input = checkpointInput
 			checkpointRestartInput = true
 		}
+	}
+	if !checkpointRestartInput {
+		var err error
+		messages, err = e.sessionV3ProviderContextMessages(job)
+		if err != nil {
+			return sessionV3AssistantResponse{}, err
+		}
+		input = sessionsV3ProviderInput(messages)
 	}
 	if len(input) == 0 {
 		return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")

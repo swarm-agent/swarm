@@ -2384,12 +2384,7 @@ function DesktopV3PlanFinalHandoff({
           <CheckCircle2 size={12} className="text-[var(--app-primary)]" />
           {item.headline}
         </div>
-        {item.body ? (
-          <ChatMarkdown
-            content={item.body}
-            className="text-xs leading-5 text-[var(--app-text-muted)]"
-          />
-        ) : null}
+        {item.body ? <ChatMarkdown content={item.body} /> : null}
       </div>
     </div>
   );
