@@ -2137,10 +2137,6 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			toolResults = append(toolResults, result)
 		}
 		input = append(input, sessionsV3ProviderToolResultInputItems(response.FunctionCalls, toolResults)...)
-		if strings.EqualFold(strings.TrimSpace(runner.ID()), "google") {
-			baseReq.PreviousResponseID = strings.TrimSpace(response.ID)
-			baseReq.PreviousResponseFunctionCallIDs = sessionV3ProviderFunctionCallIDs(response.FunctionCalls)
-		}
 		if len(input) == 0 {
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider continuation input is empty after tool execution")
 		}
@@ -3460,18 +3456,6 @@ func sessionsV3LatestFunctionCallOutput(input []map[string]any) string {
 		return strings.TrimSpace(sessionsV3MapString(item, "output"))
 	}
 	return ""
-}
-
-func sessionV3ProviderFunctionCallIDs(calls []provideriface.FunctionCall) []string {
-	out := make([]string, 0, len(calls))
-	for _, call := range calls {
-		callID := strings.TrimSpace(call.CallID)
-		if callID == "" {
-			continue
-		}
-		out = append(out, callID)
-	}
-	return out
 }
 
 func sessionsV3ProviderToolResultInputItems(calls []provideriface.FunctionCall, results []provideriface.ToolExecutionResult) []map[string]any {

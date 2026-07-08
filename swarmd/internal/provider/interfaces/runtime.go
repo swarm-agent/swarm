@@ -18,39 +18,37 @@ type Request struct {
 	// SessionID is the stable durable Swarm session identity used for
 	// diagnostics/storage. Providers must not treat it as a cache/session
 	// affinity key; use ProviderCacheKey/SessionAffinityKey instead.
-	SessionID                       string
-	ProviderLineageID               string
-	ContextBranchID                 string
-	ProviderCacheKey                string
-	SessionAffinityKey              string
-	BoundaryReason                  string
-	PreviousProviderLineageID       string
-	PreviousProviderID              string
-	PreviousModel                   string
-	NewProviderID                   string
-	NewModel                        string
-	HandoffSummaryMessageID         string
-	HandoffSummaryGlobalSeq         uint64
-	ProviderLineageStartMessageID   string
-	ProviderLineageStartRunID       string
-	ProviderLineageStartGlobalSeq   uint64
-	NativeContinuationAllowed       bool
-	ForceFreshProviderContext       bool
-	PreviousResponseID              string
-	PreviousResponseFunctionCallIDs []string
-	Model                           string
-	Thinking                        string
-	Instructions                    string
-	Input                           []map[string]any
-	Tools                           []ToolDefinition
-	ToolChoice                      string
-	ServiceTier                     string
-	ContextMode                     string
-	ContextWindow                   int
-	ModelCatalog                    any
-	ParallelToolCalls               bool
-	WorkspacePath                   string
-	ToolInvoker                     ToolInvoker
+	SessionID                     string
+	ProviderLineageID             string
+	ContextBranchID               string
+	ProviderCacheKey              string
+	SessionAffinityKey            string
+	BoundaryReason                string
+	PreviousProviderLineageID     string
+	PreviousProviderID            string
+	PreviousModel                 string
+	NewProviderID                 string
+	NewModel                      string
+	HandoffSummaryMessageID       string
+	HandoffSummaryGlobalSeq       uint64
+	ProviderLineageStartMessageID string
+	ProviderLineageStartRunID     string
+	ProviderLineageStartGlobalSeq uint64
+	NativeContinuationAllowed     bool
+	ForceFreshProviderContext     bool
+	Model                         string
+	Thinking                      string
+	Instructions                  string
+	Input                         []map[string]any
+	Tools                         []ToolDefinition
+	ToolChoice                    string
+	ServiceTier                   string
+	ContextMode                   string
+	ContextWindow                 int
+	ModelCatalog                  any
+	ParallelToolCalls             bool
+	WorkspacePath                 string
+	ToolInvoker                   ToolInvoker
 }
 
 func (r Request) EffectiveProviderCacheKey() string {
