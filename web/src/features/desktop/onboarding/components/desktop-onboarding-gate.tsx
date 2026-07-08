@@ -615,7 +615,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       }
       setNotice(method === 'browser'
         ? 'Finish local sign-in in your browser. Swarm will continue when it sees the callback.'
-        : 'Open the remote auth URL anywhere, then paste the callback URL or code here.')
+        : 'Open the remote auth URL in a new tab, finish Codex sign-in, then paste the full localhost callback URL here. Click Remote browser sign-in again if you need a fresh link.')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start Codex sign-in')
     } finally {
@@ -852,7 +852,12 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                           : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
                                       ].join(' ')}
                                     >
-                                      {pendingAction === 'oauth-manual' ? 'Preparing…' : 'Remote browser sign-in'}
+                                      <span className="block font-medium text-[var(--app-text)]">
+                                        {pendingAction === 'oauth-manual' ? 'Preparing…' : 'Remote browser sign-in'}
+                                      </span>
+                                      <span className="mt-1 block text-xs leading-5 text-[var(--app-text-muted)]">
+                                        Opens a link you can use from another browser or machine. Click again to generate a fresh login link.
+                                      </span>
                                     </button>
                                   </>
                                 ) : null}
@@ -891,7 +896,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                             ) : null}
 
                             {showOAuthSection && oauthSession ? (
-                              <div className="grid gap-3 text-sm leading-6 text-[var(--app-text-muted)]">
+                              <div className="grid gap-4 text-sm leading-6 text-[var(--app-text-muted)]">
                                 <div>
                                   {codexOAuthMode === 'browser' ? 'Local browser sign-in' : 'Remote browser sign-in'} status:{' '}
                                   <span className={oauthSession.status === 'success' ? 'font-medium text-[var(--app-success)]' : 'font-medium text-[var(--app-text)]'}>
@@ -899,21 +904,49 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                   </span>
                                   {oauthSession.error ? <div className="text-[var(--app-danger)]">{oauthSession.error}</div> : null}
                                 </div>
+                                {codexOAuthMode === 'manual' ? (
+                                  <div className="rounded-xl border border-[var(--app-border)] bg-[color-mix(in_oklab,var(--app-surface)_62%,transparent)] px-4 py-3">
+                                    <div className="text-sm font-medium text-[var(--app-text)]">How remote Codex sign-in works</div>
+                                    <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm leading-6 text-[var(--app-text-muted)]">
+                                      <li>Open the auth URL below in a new tab.</li>
+                                      <li>Finish Codex / ChatGPT sign-in in that tab.</li>
+                                      <li>When the browser lands on a localhost callback URL, copy the entire URL from the address bar.</li>
+                                      <li>Paste that full callback URL here and complete sign-in.</li>
+                                    </ol>
+                                    <p className="mt-2 text-sm leading-6 text-[var(--app-text-muted)]">
+                                      The callback will look like <span className="font-mono text-[var(--app-text)]">http://localhost:1455/auth/callback?code=...&amp;state=...</span>. Copy the whole URL, not just the code. If the link expires or you want to restart, click Remote browser sign-in again to generate a fresh login link.
+                                    </p>
+                                  </div>
+                                ) : null}
                                 {oauthSession.authURL ? (
                                   <label className="grid gap-2">
-                                    <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Auth URL</span>
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Auth URL</span>
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        onClick={() => {
+                                          if (typeof window !== 'undefined') {
+                                            window.open(oauthSession.authURL, '_blank', 'noopener,noreferrer')
+                                          }
+                                        }}
+                                        disabled={submitting || !oauthSession.authURL}
+                                      >
+                                        Open in new tab
+                                      </Button>
+                                    </div>
                                     <textarea readOnly value={oauthSession.authURL} className="min-h-24 rounded-xl border border-[var(--app-border)] bg-transparent px-3 py-2 text-sm text-[var(--app-text)] outline-none" />
                                   </label>
                                 ) : null}
                                 {codexOAuthMode === 'manual' ? (
                                   <>
                                     <label className="grid gap-2">
-                                      <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Callback URL or code</span>
+                                      <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Callback URL</span>
                                       <textarea
                                         value={callbackInput}
                                         onChange={(event) => setCallbackInput(event.target.value)}
                                         onKeyDown={handleCallbackKeyDown}
-                                        placeholder="Paste the callback URL, query string, or authorization code"
+                                        placeholder="Paste the full http://localhost:1455/auth/callback?code=...&state=... URL"
                                         disabled={submitting}
                                         className="min-h-24 rounded-xl border border-[var(--app-border)] bg-transparent px-3 py-2 text-sm text-[var(--app-text)] outline-none transition-colors focus:border-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-60"
                                       />
