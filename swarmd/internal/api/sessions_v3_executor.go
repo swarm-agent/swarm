@@ -1066,13 +1066,56 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 	}
 	ctx, cancel := context.WithTimeout(bgCtx, sessionV3TitleGenerationTimeout)
 	defer cancel()
-	response, err := runner.CreateResponse(ctx, req)
+	e.recordSessionV3Diagnostic(sessionV3ExecutorJob{Principal: principal, SessionID: session.ID, RunID: providerLineageID}, "session.diagnostic.title.request", "backend.title", "memory-title-request", map[string]any{
+		"provider": providerID,
+		"model":    modelName,
+		"request":  sessionV3ProviderRequestDiagnostic(req),
+	})
+	var streamed strings.Builder
+	var reasoning strings.Builder
+	response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
+		switch event.Type {
+		case provideriface.StreamEventOutputTextDelta:
+			streamed.WriteString(event.Delta)
+		case provideriface.StreamEventReasoningSummaryDelta:
+			reasoning.WriteString(event.Delta)
+		}
+	})
 	if err != nil {
+		e.recordSessionV3Diagnostic(sessionV3ExecutorJob{Principal: principal, SessionID: session.ID, RunID: providerLineageID}, "session.diagnostic.title.error", "backend.title", "memory-title-error", map[string]any{
+			"provider": providerID,
+			"model":    modelName,
+			"error":    err.Error(),
+		})
 		return "", err
 	}
-	title := sanitizeSessionV3GeneratedTitle(firstNonEmpty(strings.TrimSpace(response.Text), strings.TrimSpace(response.ReasoningSummary)), sessionV3TitleFinalWordsMin, sessionV3TitleFinalWordsMax)
+	rawTitle := firstNonEmpty(strings.TrimSpace(response.Text), strings.TrimSpace(streamed.String()), strings.TrimSpace(response.ReasoningSummary), strings.TrimSpace(reasoning.String()))
+	words := sessionV3TitleWordPattern.FindAllString(strings.TrimSpace(rawTitle), -1)
+	title := sanitizeSessionV3GeneratedTitle(rawTitle, sessionV3TitleFinalWordsMin, sessionV3TitleFinalWordsMax)
+	rejectReason := ""
+	if strings.TrimSpace(rawTitle) == "" {
+		rejectReason = "empty_raw_title"
+	} else if len(words) < sessionV3TitleFinalWordsMin {
+		rejectReason = "too_few_words"
+	} else if title == "" {
+		rejectReason = "sanitizer_rejected"
+	}
+	e.recordSessionV3Diagnostic(sessionV3ExecutorJob{Principal: principal, SessionID: session.ID, RunID: providerLineageID}, "session.diagnostic.title.response", "backend.title", "memory-title-response", map[string]any{
+		"provider":                   providerID,
+		"model":                      modelName,
+		"response_model":             strings.TrimSpace(response.Model),
+		"stop_reason":                strings.TrimSpace(response.StopReason),
+		"text_present":               strings.TrimSpace(response.Text) != "",
+		"streamed_text_present":      strings.TrimSpace(streamed.String()) != "",
+		"reasoning_present":          strings.TrimSpace(response.ReasoningSummary) != "",
+		"streamed_reasoning_present": strings.TrimSpace(reasoning.String()) != "",
+		"raw_title_preview":          truncateSessionV3TitleRunes(rawTitle, 160),
+		"raw_word_count":             len(words),
+		"sanitized_title":            title,
+		"reject_reason":              rejectReason,
+	})
 	if title == "" {
-		return "", errors.New("memory agent returned an empty/invalid title")
+		return "", fmt.Errorf("memory agent returned an empty/invalid title: %s", firstNonEmpty(rejectReason, "unknown"))
 	}
 	return title, nil
 }
