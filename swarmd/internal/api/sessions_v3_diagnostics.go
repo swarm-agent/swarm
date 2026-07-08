@@ -371,6 +371,7 @@ func sessionV3ProviderRequestDiagnostic(req provideriface.Request) map[string]an
 		"service_tier":                      req.ServiceTier,
 		"context_mode":                      req.ContextMode,
 		"context_window":                    req.ContextWindow,
+		"model_catalog_present":             req.ModelCatalog != nil,
 		"parallel_tool_calls":               req.ParallelToolCalls,
 		"workspace_path_present":            strings.TrimSpace(req.WorkspacePath) != "",
 		"tool_invoker_present":              req.ToolInvoker != nil,

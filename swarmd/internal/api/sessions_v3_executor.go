@@ -1018,7 +1018,11 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 		}
 		memoryProfile = resolved
 	}
-	preference, _, err := e.resolveSessionV3ProviderPreference(applySessionV3AgentPreferenceOverridesForMode(session.Preference, memoryProfile, session.Mode))
+	preference, contextWindow, err := e.resolveSessionV3ProviderPreference(applySessionV3AgentPreferenceOverridesForMode(session.Preference, memoryProfile, session.Mode))
+	if err != nil {
+		return "", err
+	}
+	catalogRecord, err := e.sessionV3ModelCatalogRecord(preference)
 	if err != nil {
 		return "", err
 	}
@@ -1058,6 +1062,8 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 		ToolChoice:                "none",
 		ServiceTier:               strings.TrimSpace(preference.ServiceTier),
 		ContextMode:               strings.TrimSpace(preference.ContextMode),
+		ContextWindow:             contextWindow,
+		ModelCatalog:              catalogRecord,
 		WorkspacePath:             strings.TrimSpace(session.WorkspacePath),
 	}
 	bgCtx := context.Background()
@@ -2791,16 +2797,9 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if strings.TrimSpace(pref.Provider) == "" || strings.TrimSpace(pref.Model) == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 provider/model is empty")
 	}
-	var catalogRecord any
-	if e.server.model != nil {
-		lookup, lookupErr := e.server.model.GetCatalog(pref.Provider, pref.Model)
-		if lookupErr != nil {
-			if !strings.Contains(lookupErr.Error(), "model catalog is not configured") {
-				return sessionV3ResolvedRuntime{}, lookupErr
-			}
-		} else if lookup.Found {
-			catalogRecord = lookup.Record
-		}
+	catalogRecord, err := e.sessionV3ModelCatalogRecord(pref)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
 	}
 	scope, err := e.resolveSessionV3WorkspaceScope(session, job.Principal)
 	if err != nil {
@@ -2822,6 +2821,23 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 		toolChoice = "auto"
 	}
 	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, ModelCatalog: catalogRecord, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
+}
+
+func (e *sessionV3Executor) sessionV3ModelCatalogRecord(pref pebblestore.ModelPreference) (any, error) {
+	if e == nil || e.server == nil || e.server.model == nil {
+		return nil, nil
+	}
+	lookup, err := e.server.model.GetCatalog(pref.Provider, pref.Model)
+	if err != nil {
+		if strings.Contains(err.Error(), "model catalog is not configured") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if !lookup.Found {
+		return nil, nil
+	}
+	return lookup.Record, nil
 }
 
 func (e *sessionV3Executor) resolveSessionV3WorkspaceScope(session pebblestore.SessionSnapshot, principal identity.Principal) (tool.WorkspaceScope, error) {
