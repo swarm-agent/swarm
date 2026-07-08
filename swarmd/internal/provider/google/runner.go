@@ -25,6 +25,7 @@ const (
 	generateContentURL       = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 	streamGenerateContentURL = "https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent"
 	googleAPIKeyHeader       = "x-goog-api-key"
+	googleReasoningKey       = "google-thinking"
 	maxResponseBytes         = 8 << 20
 )
 
@@ -46,6 +47,7 @@ type googleContent struct {
 
 type googlePart struct {
 	Text                  string                  `json:"text,omitempty"`
+	Thought               bool                    `json:"thought,omitempty"`
 	FunctionCall          *googleFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse      *googleFunctionResponse `json:"functionResponse,omitempty"`
 	ThoughtSignature      string                  `json:"thoughtSignature,omitempty"`
@@ -87,8 +89,9 @@ type googleGenerationConfig struct {
 }
 
 type googleThinkingConfig struct {
-	ThinkingBudget *int   `json:"thinkingBudget,omitempty"`
-	ThinkingLevel  string `json:"thinkingLevel,omitempty"`
+	ThinkingBudget  *int   `json:"thinkingBudget,omitempty"`
+	ThinkingLevel   string `json:"thinkingLevel,omitempty"`
+	IncludeThoughts bool   `json:"includeThoughts,omitempty"`
 }
 
 type googleRequest struct {
@@ -314,12 +317,12 @@ func googleThinkingConfigForRequest(req provideriface.Request) *googleThinkingCo
 		return nil
 	}
 	if config := googleThinkingConfigFromCatalog(req.ModelCatalog, level); config != nil {
-		return config
+		return googleThinkingConfigWithVisibleThoughts(config, level)
 	}
 	if !supportsGoogleThinking(req.Model) {
 		return nil
 	}
-	return googleLegacyThinkingBudgetConfig(level)
+	return googleThinkingConfigWithVisibleThoughts(googleLegacyThinkingBudgetConfig(level), level)
 }
 
 func googleThinkingConfigFromCatalog(catalog any, level string) *googleThinkingConfig {
@@ -360,6 +363,17 @@ func googleThinkingConfigFromMapping(mapping pebblestore.ModelCatalogThinkingMap
 		return &googleThinkingConfig{ThinkingBudget: budget}
 	}
 	return nil
+}
+
+func googleThinkingConfigWithVisibleThoughts(config *googleThinkingConfig, level string) *googleThinkingConfig {
+	if config == nil {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(level), "off") {
+		return config
+	}
+	config.IncludeThoughts = true
+	return config
 }
 
 func googleThinkingBudgetFromMapping(providerValue string) *int {
@@ -618,13 +632,18 @@ func parseGoogleResponse(resp googleResponse) provideriface.Response {
 	}
 
 	textParts := make([]string, 0, len(candidate.Content.Parts))
+	reasoningParts := make([]string, 0, len(candidate.Content.Parts))
 	functionCalls := make([]provideriface.FunctionCall, 0, len(candidate.Content.Parts))
 	pendingThoughtSignature := ""
 	functionCallSequence := 0
 	for _, part := range candidate.Content.Parts {
 		partThoughtSignature := partThoughtSignatureValue(part)
 		if text := strings.TrimSpace(part.Text); text != "" {
-			textParts = append(textParts, text)
+			if part.Thought {
+				reasoningParts = append(reasoningParts, text)
+			} else {
+				textParts = append(textParts, text)
+			}
 		}
 		if part.FunctionCall == nil {
 			if partThoughtSignature != "" {
@@ -640,6 +659,7 @@ func parseGoogleResponse(resp googleResponse) provideriface.Response {
 		functionCalls = append(functionCalls, buildGoogleFunctionCall(part, functionCallSequence, partThoughtSignature))
 	}
 	out.Text = strings.TrimSpace(strings.Join(textParts, "\n\n"))
+	out.ReasoningSummary = strings.TrimSpace(strings.Join(reasoningParts, "\n\n"))
 	out.FunctionCalls = functionCalls
 	return out
 }
@@ -648,6 +668,7 @@ type googleStreamAccumulator struct {
 	modelID                 string
 	merged                  googleResponse
 	text                    string
+	reasoningSummary        string
 	functionCalls           []provideriface.FunctionCall
 	pendingThoughtSignature string
 	toolState               *googleToolCallConstructionState
@@ -678,9 +699,16 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 	for _, part := range candidate.Content.Parts {
 		partThoughtSignature := partThoughtSignatureValue(part)
 		if part.Text != "" {
-			a.text += part.Text
-			if onEvent != nil {
-				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: part.Text})
+			if part.Thought {
+				a.reasoningSummary += part.Text
+				if onEvent != nil {
+					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: a.reasoningSummary, ReasoningKey: googleReasoningKey})
+				}
+			} else {
+				a.text += part.Text
+				if onEvent != nil {
+					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: part.Text})
+				}
 			}
 		}
 		if part.FunctionCall == nil {
@@ -711,6 +739,9 @@ func (a *googleStreamAccumulator) response() provideriface.Response {
 	}
 	if a.text != "" {
 		result.Text = a.text
+	}
+	if a.reasoningSummary != "" {
+		result.ReasoningSummary = strings.TrimSpace(a.reasoningSummary)
 	}
 	if len(a.functionCalls) > 0 {
 		result.FunctionCalls = a.functionCalls
