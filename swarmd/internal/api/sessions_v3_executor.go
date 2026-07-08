@@ -2437,7 +2437,7 @@ func (e *sessionV3Executor) sessionV3LatestPlanManageToolPayload(job sessionV3Ex
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return nil
 	}
-	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, 64)
+	messages, err := e.server.sessions.ListSessionMessageTail(job.SessionID, 64)
 	if err != nil || len(messages) == 0 {
 		return nil
 	}

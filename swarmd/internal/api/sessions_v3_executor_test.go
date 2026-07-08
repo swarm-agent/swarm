@@ -2,12 +2,16 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"testing"
 
 	"swarm/packages/swarmd/internal/permission"
 	runruntime "swarm/packages/swarmd/internal/run"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -123,6 +127,95 @@ func TestSessionV3ProviderCheckpointRestartInputUsesFreshPayloadCheckpointOverJo
 	if ctx.PlanID != "replacement-plan" || ctx.CheckpointID != "cp-5" || ctx.AttemptID != "cp-5:attempt-1" || ctx.ParentSessionID != "parent-new" {
 		t.Fatalf("PlanCheckpointContext = %+v, want fresh payload context", *ctx)
 	}
+}
+
+func TestSessionV3LatestPlanManageToolPayloadUsesMessageTail(t *testing.T) {
+	dir := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(dir, "sessions.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("event log: %v", err)
+	}
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	created, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:     "session-tail-plan-payload",
+		Title:         "tail plan payload",
+		WorkspacePath: t.TempDir(),
+		WorkspaceName: "workspace",
+		Mode:          sessionruntime.ModeAuto,
+		Preference: &pebblestore.ModelPreference{
+			Provider: "test-provider",
+			Model:    "test-model",
+			Thinking: "low",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	stalePayload := `{"next_action":"run_checkpoint_with_fresh_context","next_checkpoint_id":"followup-1","run_request":{"plan_checkpoint_context":{"plan_id":"plan-1","checkpoint_id":"followup-1","attempt_id":"followup-1:attempt-1","parent_session_id":"parent-stale"}}}`
+	latestPayload := `{"next_action":"run_checkpoint_with_fresh_context","next_checkpoint_id":"cp-3","run_request":{"plan_checkpoint_context":{"plan_id":"plan-1","checkpoint_id":"cp-3","attempt_id":"cp-3:attempt-1","parent_session_id":"parent-current"}}}`
+	mutationSeq := 0
+	appendMessage := func(role, content string) {
+		t.Helper()
+		mutationSeq++
+		requestID := fmt.Sprintf("append-%03d", mutationSeq)
+		if _, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+			SessionID:       created.ID,
+			ClientRequestID: requestID,
+			IdempotencyKey:  requestID,
+			PayloadHash:     requestID,
+			Kind:            sessionruntime.SessionMutationAppendMessage,
+			Message: &pebblestore.MessageSnapshot{
+				Role:    role,
+				Content: content,
+			},
+		}); err != nil {
+			t.Fatalf("append %s message: %v", role, err)
+		}
+	}
+	appendToolResult := func(content string) {
+		t.Helper()
+		appendMessage("tool", content)
+	}
+	appendToolResult(providerToolResultRecordJSON("plan_manage", stalePayload))
+	for i := 0; i < 70; i++ {
+		appendMessage("system", fmt.Sprintf("filler %02d", i))
+	}
+	appendToolResult(providerToolResultRecordJSON("plan_manage", latestPayload))
+
+	exec := &sessionV3Executor{server: &Server{sessions: sessionSvc}}
+	payload := exec.sessionV3LatestPlanManageToolPayload(sessionV3ExecutorJob{SessionID: created.ID})
+	if got := sessionsV3MapString(payload, "next_checkpoint_id"); got != "cp-3" {
+		t.Fatalf("next_checkpoint_id = %q, want cp-3; payload=%v", got, payload)
+	}
+	request, ok := payload["run_request"].(map[string]any)
+	if !ok {
+		t.Fatalf("run_request missing from payload: %v", payload)
+	}
+	context, ok := request["plan_checkpoint_context"].(map[string]any)
+	if !ok {
+		t.Fatalf("plan_checkpoint_context missing from payload: %v", payload)
+	}
+	if got := sessionsV3MapString(context, "checkpoint_id"); got != "cp-3" {
+		t.Fatalf("checkpoint_id = %q, want cp-3; payload=%v", got, payload)
+	}
+}
+
+func providerToolResultRecordJSON(toolName, completedOutput string) string {
+	payload, err := json.Marshal(sessionV3ProviderToolResultRecord{
+		PathID:          "run.v3.provider-tool-result.v1",
+		ToolName:        toolName,
+		CallID:          "call-" + toolName,
+		CompletedOutput: completedOutput,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(payload)
 }
 
 func TestApplySessionV3AgentPreferenceOverridesPreservesSupportedPriorityServiceTier(t *testing.T) {
