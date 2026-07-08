@@ -277,6 +277,54 @@ func TestBuildCodexWebsocketPayloadPreservesReasoningSummaryArray(t *testing.T) 
 	}
 }
 
+func TestParseEventStreamPreservesOutputTextDeltaTrailingZeroes(t *testing.T) {
+	stream := "event: response.output_text.delta\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"300\"}\n\n" +
+		"event: response.output_text.delta\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"0\"}\n\n" +
+		"event: response.output_text.delta\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\" and 310\"}\n\n" +
+		"event: response.output_text.delta\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"0\"}\n\n" +
+		"event: response.completed\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_zeroes\",\"model\":\"gpt-5\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"3000 and 3100\"}]}]}}\n\n"
+
+	var deltas []string
+	decoded, err := parseEventStreamWithCallback([]byte(stream), func(event StreamEvent) {
+		if event.Type == StreamEventOutputTextDelta {
+			deltas = append(deltas, event.Delta)
+		}
+	})
+	if err != nil {
+		t.Fatalf("parseEventStreamWithCallback error: %v", err)
+	}
+	if got := strings.Join(deltas, ""); got != "3000 and 3100" {
+		t.Fatalf("streamed deltas = %q, want 3000 and 3100", got)
+	}
+	if got := asString(decoded["output_text"]); got != "3000 and 3100" {
+		t.Fatalf("decoded output_text = %q, want 3000 and 3100", got)
+	}
+}
+
+func TestRetryAwareStreamEmitterPreservesOutputTextDeltaTrailingZeroes(t *testing.T) {
+	var deltas []string
+	emitter := retryAwareStreamEmitter{onEvent: func(event StreamEvent) {
+		if event.Type == StreamEventOutputTextDelta {
+			deltas = append(deltas, event.Delta)
+		}
+	}}
+
+	emitter.beginAttempt()
+	emitter.emit(StreamEvent{Type: StreamEventOutputTextDelta, Delta: "300"})
+	emitter.emit(StreamEvent{Type: StreamEventOutputTextDelta, Delta: "0"})
+	emitter.emit(StreamEvent{Type: StreamEventOutputTextDelta, Delta: " and 310"})
+	emitter.emit(StreamEvent{Type: StreamEventOutputTextDelta, Delta: "0"})
+
+	if got := strings.Join(deltas, ""); got != "3000 and 3100" {
+		t.Fatalf("streamed deltas = %q, want 3000 and 3100", got)
+	}
+}
+
 func TestSendRoutesAPIKeyAuthToOpenAIResponsesHTTP(t *testing.T) {
 	var gotAuth string
 	var gotAccountID string

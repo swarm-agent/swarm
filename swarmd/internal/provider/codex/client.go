@@ -175,7 +175,7 @@ func (e *retryAwareStreamEmitter) emit(event StreamEvent) {
 	}
 	switch event.Type {
 	case StreamEventOutputTextDelta:
-		e.attemptOutputText, _ = mergeStreamDelta(e.attemptOutputText, event.Delta)
+		e.attemptOutputText += event.Delta
 		next, appended := mergeRetriedStreamText(e.emittedOutputText, e.attemptOutputText)
 		e.emittedOutputText = next
 		if appended != "" {
@@ -1795,10 +1795,9 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 	case "response.output_text.delta":
 		delta := firstNonEmpty(asString(decoded["delta"]), asString(decoded["text"]), asString(decoded["output_text_delta"]))
 		if delta != "" {
-			next, appended := mergeStreamDelta(state.outputText, delta)
-			state.outputText = next
-			if onEvent != nil && appended != "" {
-				onEvent(StreamEvent{Type: StreamEventOutputTextDelta, Delta: appended})
+			state.outputText += delta
+			if onEvent != nil {
+				onEvent(StreamEvent{Type: StreamEventOutputTextDelta, Delta: delta})
 			}
 		}
 	case "response.output_text.done":
