@@ -102,6 +102,73 @@ func TestBuildGoogleContentsPreservesThoughtSignatureMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildGoogleInteractionsInputAttachesFunctionCallSignature(t *testing.T) {
+	input := buildGoogleInteractionsInput([]map[string]any{
+		{
+			"role":    "user",
+			"content": "Check my plan",
+		},
+		{
+			"type":      "function_call",
+			"call_id":   "call_plan",
+			"name":      "plan_manage",
+			"arguments": `{"action":"get-active"}`,
+			"metadata": map[string]any{
+				"google": map[string]any{
+					"thought_signature": "sig-call",
+				},
+			},
+		},
+		{
+			"type":    "function_call_output",
+			"call_id": "call_plan",
+			"output":  `{"status":"empty"}`,
+		},
+	})
+	steps, ok := input.([]map[string]any)
+	if !ok {
+		t.Fatalf("interactions input = %#v, want step slice", input)
+	}
+	if len(steps) != 3 {
+		t.Fatalf("steps = %#v, want user input, function call, function result", steps)
+	}
+	callStep := steps[1]
+	if got := callStep["type"]; got != "function_call" {
+		t.Fatalf("call type = %#v, want function_call", got)
+	}
+	if got := callStep["signature"]; got != "sig-call" {
+		t.Fatalf("call signature = %#v, want sig-call", got)
+	}
+	if _, ok := callStep["call_id"]; ok {
+		t.Fatalf("call step unexpectedly used call_id field: %#v", callStep)
+	}
+	if got := steps[2]["call_id"]; got != "call_plan" {
+		t.Fatalf("function result call_id = %#v, want call_plan", got)
+	}
+}
+
+func TestParseGoogleInteractionResponsePreservesFunctionCallSignatureMetadata(t *testing.T) {
+	response := parseGoogleInteractionResponse(googleInteractionResponse{
+		Steps: []googleInteractionStep{{
+			Type:      "function_call",
+			ID:        "call_plan",
+			Name:      "plan_manage",
+			Signature: "sig-call",
+			Arguments: map[string]any{"action": "get-active"},
+		}},
+	})
+	if len(response.FunctionCalls) != 1 {
+		t.Fatalf("function calls = %+v, want one", response.FunctionCalls)
+	}
+	googleMetadata, ok := response.FunctionCalls[0].Metadata["google"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing google metadata: %#v", response.FunctionCalls[0].Metadata)
+	}
+	if got, _ := googleMetadata["thought_signature"].(string); got != "sig-call" {
+		t.Fatalf("thought_signature = %q, want sig-call", got)
+	}
+}
+
 func TestGoogleThinkingConfigIncludesVisibleThoughtsForLegacyBudget(t *testing.T) {
 	cfg := googleThinkingConfigForRequest(provideriface.Request{
 		Model:    "gemini-2.5-flash",

@@ -728,14 +728,14 @@ func buildGoogleInteractionsInput(input []map[string]any) any {
 			}
 			switch strings.ToLower(strings.TrimSpace(typeName)) {
 			case "function_call":
-				if pendingThoughtSignature == "" {
-					pendingThoughtSignature = extractGoogleThoughtSignature(item)
-				}
 				if pendingThoughtSignature != "" {
 					steps = append(steps, map[string]any{"type": "thought", "signature": pendingThoughtSignature})
 					pendingThoughtSignature = ""
 				}
 				step := map[string]any{"type": "function_call"}
+				if signature := extractGoogleThoughtSignature(item); signature != "" {
+					step["signature"] = signature
+				}
 				if callID := strings.TrimSpace(extractGoogleProviderCallID(item)); callID != "" {
 					step["id"] = callID
 				}
@@ -1242,7 +1242,7 @@ func buildGoogleInteractionFunctionCall(step googleInteractionStep, sequence int
 		CallID:    callID,
 		Name:      name,
 		Arguments: arguments,
-		Metadata:  googleFunctionCallMetadata("", strings.TrimSpace(step.ID) == ""),
+		Metadata:  googleFunctionCallMetadata(strings.TrimSpace(step.Signature), strings.TrimSpace(step.ID) == ""),
 	}
 }
 
