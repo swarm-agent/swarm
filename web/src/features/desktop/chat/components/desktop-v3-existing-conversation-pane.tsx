@@ -1269,7 +1269,7 @@ export function DesktopV3ExistingConversationPane({
       sessionMetadata,
     ],
   );
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(storedOperation?.request.content ?? "");
   const [sendError, setSendError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
@@ -1521,7 +1521,7 @@ export function DesktopV3ExistingConversationPane({
     const operation =
       loadDesktopV3ExistingMessageOperation(normalizedSessionId);
     operationRef.current = operation;
-    setDraft("");
+    setDraft(operation?.request.content ?? "");
     setSendError(null);
   }, [normalizedSessionId]);
 
