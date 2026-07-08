@@ -162,8 +162,7 @@ export function DesktopV3NewSessionPane({
     () => writableRoutes.find((route) => route.id === selectedRouteId) ?? writableRoutes[0] ?? routeOptions[0] ?? null,
     [routeOptions, selectedRouteId, writableRoutes],
   )
-  const currentOperation = operationRef.current
-  const [draft, setDraft] = useState(currentOperation?.firstMessageRequest.content ?? '')
+  const [draft, setDraft] = useState('')
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
@@ -260,9 +259,7 @@ export function DesktopV3NewSessionPane({
   useEffect(() => {
     const operation = loadDesktopV3NewSessionOperation(workspace.path)
     operationRef.current = operation
-    if (operation) {
-      setDraft(operation.firstMessageRequest.content)
-    }
+    setDraft('')
   }, [workspace.path])
 
   const selectedModelKey = optionKey(preference.provider, preference.model, preference.contextMode)
