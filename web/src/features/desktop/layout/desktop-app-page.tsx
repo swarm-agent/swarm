@@ -2514,7 +2514,9 @@ export function DesktopAppPage() {
     workspacePath: topWorkspacePath,
     workspaceName: topWorkspaceLabel,
     topologyRoutes: topWorkspace?.topologyRoutes ?? [],
-  }), [swarmName, topWorkspace?.topologyRoutes, topWorkspaceLabel, topWorkspacePath])
+    localWorkspaceBindingId: topWorkspace?.localWorkspaceBindingId ?? '',
+    hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
+  }), [currentSwarmTarget?.swarm_id, swarmName, topWorkspace?.localWorkspaceBindingId, topWorkspace?.topologyRoutes, topWorkspaceLabel, topWorkspacePath])
 
   useEffect(() => {
     if (!routeSessionId) return
@@ -3686,6 +3688,8 @@ export function DesktopAppPage() {
                               workspacePath: topWorkspace.path,
                               workspaceName: topWorkspace.workspaceName,
                               topologyRoutes: topWorkspace.topologyRoutes,
+                              localWorkspaceBindingId: topWorkspace.localWorkspaceBindingId,
+                              hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
                             }),
                           })
                         }
@@ -3791,12 +3795,18 @@ export function DesktopAppPage() {
             modeCommand={sessionModeCommand}
             onModeCommandHandled={() => setSessionModeCommand(null)}
             session={sessionById.get(routeSessionId) ?? null}
-            routeOptions={sessionById.get(routeSessionId) ? buildDesktopChatRouteOptions({
-              hostSwarmName: swarmName,
-              workspacePath: desktopSidebarWorkspacePathForSession(sessionById.get(routeSessionId)!, workspacePathByBindingId),
-              workspaceName: sessionById.get(routeSessionId)?.workspaceName ?? '',
-              topologyRoutes: [],
-            }) : []}
+            routeOptions={sessionById.get(routeSessionId) ? (() => {
+              const sessionWorkspacePath = desktopSidebarWorkspacePathForSession(sessionById.get(routeSessionId)!, workspacePathByBindingId)
+              const sessionWorkspace = mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === sessionWorkspacePath) ?? null
+              return buildDesktopChatRouteOptions({
+                hostSwarmName: swarmName,
+                workspacePath: sessionWorkspacePath,
+                workspaceName: sessionById.get(routeSessionId)?.workspaceName ?? '',
+                topologyRoutes: sessionWorkspace?.topologyRoutes ?? [],
+                localWorkspaceBindingId: sessionWorkspace?.localWorkspaceBindingId ?? '',
+                hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
+              })
+            })() : []}
             onOpenChats={() => setMobileSidebarOpen(true)}
             sessionActions={activeRouteSessionActions}
             onCompactingChange={handleCompactingSessionChange}
@@ -3830,6 +3840,8 @@ export function DesktopAppPage() {
               workspacePath: routeWorkspace.path,
               workspaceName: routeWorkspace.workspaceName,
               topologyRoutes: routeWorkspace.topologyRoutes,
+              localWorkspaceBindingId: routeWorkspace.localWorkspaceBindingId,
+              hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
             })}
             onOpenChats={() => setMobileSidebarOpen(true)}
             mobileSessionQuickMenu={mobileSessionQuickMenu}

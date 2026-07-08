@@ -19,6 +19,7 @@ import type { DesktopSlashCommand } from '../services/slash-commands'
 import {
   clearDesktopV3NewSessionOperation,
   createDesktopV3NewSessionOperation,
+  desktopV3NewSessionOperationMatchesRoute,
   loadDesktopV3NewSessionOperation,
   persistDesktopV3NewSessionOperation,
   startNewDesktopV3Session,
@@ -265,6 +266,14 @@ export function DesktopV3NewSessionPane({
     }
   }, [workspace.path])
 
+  useEffect(() => {
+    const operation = operationRef.current
+    if (!operation || !selectedRoute) return
+    if (desktopV3NewSessionOperationMatchesRoute(operation, selectedRoute)) return
+    clearDesktopV3NewSessionOperation(workspace.path, operation.operationId)
+    operationRef.current = null
+  }, [selectedRoute, workspace.path])
+
   const selectedModelKey = optionKey(preference.provider, preference.model, preference.contextMode)
   const selectedModelOption = modelOptions.find((option) => option.key === selectedModelKey) ?? null
   const hasResolvedPreference = Boolean(preference.provider.trim() && preference.model.trim() && preference.thinking.trim())
@@ -367,7 +376,12 @@ export function DesktopV3NewSessionPane({
     setStartError(null)
     try {
       const existingOperation = operationRef.current
-      const operation = existingOperation ?? (() => {
+      if (existingOperation && !desktopV3NewSessionOperationMatchesRoute(existingOperation, selectedRoute)) {
+        clearDesktopV3NewSessionOperation(workspace.path, existingOperation.operationId)
+        operationRef.current = null
+      }
+      const reusableOperation = operationRef.current
+      const operation = reusableOperation ?? (() => {
         const agentName = selectedAgentName
         if (!agentName) {
           throw new Error('New Desktop V3 session requires agent_name')

@@ -230,6 +230,27 @@ export function loadDesktopV3NewSessionOperation(
   return readStoredDesktopV3NewSessionOperation(workspacePath)
 }
 
+export function desktopV3NewSessionOperationMatchesRoute(
+  operation: DesktopV3CreateOnlySessionOperation | null | undefined,
+  route: DesktopChatRoute | null | undefined,
+): boolean {
+  if (!operation || !route) return false
+  const target = getDesktopSessionCreateTarget(route)
+  if (target.endpoint !== '/v3/sessions') return false
+  const createRequest = operation.createRequest
+  const requestSwarmId = createRequest.swarm_id?.trim() ?? ''
+  const requestBindingId = createRequest.workspace_binding_id?.trim() ?? ''
+  if (!requestSwarmId || !requestBindingId) return false
+  if (requestSwarmId !== target.swarmId.trim()) return false
+  if (requestBindingId !== target.workspaceBindingId.trim()) return false
+  const requestTargetKind = createRequest.target_kind?.trim().toLowerCase() || 'host'
+  const routeTargetKind = route.targetKind?.trim().toLowerCase() || 'host'
+  if (requestTargetKind !== routeTargetKind) return false
+  const requestRelationship = createRequest.target_relationship?.trim().toLowerCase() || 'self'
+  const routeRelationship = route.targetRelationship?.trim().toLowerCase() || 'self'
+  return requestRelationship === routeRelationship
+}
+
 export function clearDesktopV3NewSessionOperation(
   workspacePath: string,
   operationId: string,

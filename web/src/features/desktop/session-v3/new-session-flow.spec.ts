@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   createDesktopV3CreateOnlySessionOperation,
   createDesktopV3NewSessionOperation,
+  desktopV3NewSessionOperationMatchesRoute,
   loadDesktopV3NewSessionOperation,
   persistDesktopV3NewSessionOperation,
   setDesktopV3NewSessionFlowDepsForTests,
@@ -149,6 +150,30 @@ test('Path A operation rejects missing writable create authority before HTTP', (
     prompt: 'hello',
     agentName: 'swarm',
   }), /workspace_binding_id/)
+})
+
+test('stored Path A operation must match the selected primary route authority', () => {
+  const operation = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    prompt: 'hello',
+    agentName: 'swarm',
+  })
+
+  assert.equal(desktopV3NewSessionOperationMatchesRoute(operation, route), true)
+  assert.equal(desktopV3NewSessionOperationMatchesRoute(operation, {
+    ...route,
+    swarmId: 'other-swarm',
+  }), false)
+  assert.equal(desktopV3NewSessionOperationMatchesRoute(operation, {
+    ...route,
+    workspaceBindingId: 'other-binding',
+  }), false)
+  assert.equal(desktopV3NewSessionOperationMatchesRoute(operation, {
+    ...route,
+    targetKind: 'self',
+  }), false)
 })
 
 test('Path A operation rejects missing agent_name before HTTP', () => {
