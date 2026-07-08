@@ -1,5 +1,4 @@
 import { createRootRoute, createRoute, createRouter, lazyRouteComponent } from '@tanstack/react-router'
-import { DesktopV3RuntimeProvider } from '../features/desktop/runtime/desktop-v3-runtime-provider'
 import { DesktopDocumentTitleController } from '../features/desktop/runtime/desktop-document-title-controller'
 import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-vault-shell'
 
@@ -84,10 +83,10 @@ const rootRoute = createRootRoute({
 function DesktopRootShell() {
   const initialPreferredSessionId = initialDesktopV3PreferredSessionId()
   return (
-    <DesktopV3RuntimeProvider initialPreferredSessionId={initialPreferredSessionId}>
+    <>
       <DesktopDocumentTitleController />
-      <DesktopVaultShell />
-    </DesktopV3RuntimeProvider>
+      <DesktopVaultShell initialPreferredSessionId={initialPreferredSessionId} />
+    </>
   )
 }
 

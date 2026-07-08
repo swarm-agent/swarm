@@ -30,11 +30,16 @@ test('warm restore does not force startup network hydrate', async () => {
   assert.doesNotMatch(source, /await hydrateDesktopV3InitialSessions\(/)
 })
 
-test('DesktopV3RuntimeProvider wraps the root desktop shell so route changes keep one socket', async () => {
+test('DesktopV3RuntimeProvider wraps only the unlocked desktop shell after onboarding gates pass', async () => {
   const source = await readRouter()
+  const runtimeSource = await readRuntimeProvider()
+  const vaultSource = await readFile(new URL('../vault/components/desktop-vault-shell.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /component: DesktopRootShell/)
-  assert.match(source, /function DesktopRootShell\(\) \{[\s\S]*?<DesktopV3RuntimeProvider initialPreferredSessionId=\{initialPreferredSessionId\}>[\s\S]*?<DesktopVaultShell \/>[\s\S]*?<\/DesktopV3RuntimeProvider>/)
+  assert.match(source, /function DesktopRootShell\(\) \{[\s\S]*?<DesktopVaultShell initialPreferredSessionId=\{initialPreferredSessionId\} \/>/)
+  assert.doesNotMatch(source, /<DesktopV3RuntimeProvider/)
+  assert.match(vaultSource, /<DesktopV3RuntimeProvider initialPreferredSessionId=\{initialPreferredSessionId\}>[\s\S]*?<Outlet \/>[\s\S]*?<\/DesktopV3RuntimeProvider>/)
+  assert.match(runtimeSource, /bootstrapDesktopV3SidebarMetadataOnly/)
   assert.match(source, /function initialDesktopV3PreferredSessionId\(\): string \| null \| undefined/)
   assert.match(source, /return route\.sessionId \|\| null/)
 })

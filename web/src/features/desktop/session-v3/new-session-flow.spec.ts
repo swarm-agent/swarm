@@ -11,6 +11,7 @@ import {
   startNewDesktopV3Session,
   type DesktopV3NewSessionOperation,
 } from './new-session-flow'
+import type { DesktopV3RealtimeController, DesktopV3RealtimeLease } from '../realtime/v3-realtime-controller'
 import { createEmptyDesktopV3CacheState } from '../state/desktop-v3-cache-reducer'
 import type {
   DesktopV3CacheAction,
@@ -316,6 +317,78 @@ test('startNewDesktopV3Session creates, appends first message, selects, and appl
     ])
     assert.deepEqual(capturedRequest, operation.createRequest)
     assert.equal(actions.find((action) => action.type === 'session.select')?.sessionId, operation.sessionId)
+  } finally {
+    restore()
+  }
+})
+
+test('startNewDesktopV3Session primes sidebar bootstrap before create on first desktop load', async () => {
+  const operation = createDesktopV3NewSessionOperation({
+    workspacePath: '/workspace',
+    workspaceName: 'workspace',
+    route,
+    prompt: 'start',
+    agentName: 'swarm',
+  })
+  const state: DesktopV3CacheState = createEmptyDesktopV3CacheState()
+  const calls: string[] = []
+  const actions: DesktopV3CacheAction[] = []
+  let released = false
+  const restore = setDesktopV3NewSessionFlowDepsForTests({
+    getSnapshot: () => state,
+    ensureSidebarBootstrap: async () => {
+      calls.push('bootstrap')
+      state.desktopSidebarBootstrap.scopeId = 'scope-primed'
+      return { response: {} as never }
+    },
+    retainRealtimeController: (): DesktopV3RealtimeLease => {
+      calls.push('retain')
+      return {
+        ready: Promise.resolve(),
+        release: () => {
+          released = true
+          calls.push('release')
+        },
+      }
+    },
+    requireControllerReady: async (): Promise<DesktopV3RealtimeController> => ({
+      ensureSessionConnected: async (sessionId: string) => {
+        calls.push(`connect:${sessionId}`)
+      },
+      start: async () => undefined,
+      stop: () => undefined,
+    }),
+    dispatch: (action) => {
+      actions.push(action)
+      calls.push(`dispatch:${action.type}`)
+    },
+    postCreateSession: async (request) => {
+      calls.push(`create:${request.session_id}`)
+      return makeCreateResponse(operation)
+    },
+    postAppendMessage: async (sessionId, request) => {
+      calls.push(`message:${sessionId}:${request.message_id}`)
+      return makeMessageResponse(operation)
+    },
+  })
+
+  try {
+    await startNewDesktopV3Session({ operation })
+
+    assert.equal(released, true)
+    assert.deepEqual(calls, [
+      'bootstrap',
+      'retain',
+      `create:${operation.sessionId}`,
+      'dispatch:mutation.sessionCreateResult',
+      'dispatch:session.select',
+      `connect:${operation.sessionId}`,
+      'dispatch:pendingUser.upsert',
+      `message:${operation.sessionId}:${operation.firstMessageRequest.message_id}`,
+      'dispatch:mutation.messageResult',
+      'release',
+    ])
+    assert.equal(actions.find((action) => action.type === 'mutation.sessionCreateResult')?.sidebarScopeId, 'scope-primed')
   } finally {
     restore()
   }

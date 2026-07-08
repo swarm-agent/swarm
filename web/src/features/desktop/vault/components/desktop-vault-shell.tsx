@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Outlet } from '@tanstack/react-router'
+import { DesktopV3RuntimeProvider } from '../../runtime/desktop-v3-runtime-provider'
 import { requestJson } from '../../../../app/api'
 import { DesktopVaultGate } from './desktop-vault-gate'
 import { DesktopOnboardingGate } from '../../onboarding/components/desktop-onboarding-gate'
@@ -185,7 +186,11 @@ function mapOnboardingBootstrapStatus(onboarding: DesktopOnboardingStatusWire): 
   }
 }
 
-export function DesktopVaultShell() {
+export interface DesktopVaultShellProps {
+  initialPreferredSessionId?: string | null
+}
+
+export function DesktopVaultShell({ initialPreferredSessionId }: DesktopVaultShellProps) {
   const onboardingFlowRequested = false
   const [onboardingStatus, setOnboardingStatus] = useState<DesktopOnboardingStatus | null>(null)
   const [onboardingLoading, setOnboardingLoading] = useState(true)
@@ -298,8 +303,8 @@ export function DesktopVaultShell() {
   }
 
   return (
-    <>
+    <DesktopV3RuntimeProvider initialPreferredSessionId={initialPreferredSessionId}>
       <Outlet />
-    </>
+    </DesktopV3RuntimeProvider>
   )
 }

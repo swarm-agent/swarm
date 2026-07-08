@@ -2,7 +2,7 @@ import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 import { normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
 import { getDesktopSessionCreateTarget } from '../chat/services/chat-routing'
-import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
+import { retainDesktopV3RealtimeController, requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import type {
   MessageMutationConflictResponse,
@@ -10,6 +10,7 @@ import type {
   SessionMessageMutationResponse,
   SessionMutationErrorResponse,
 } from '../state/desktop-v3-cache-types'
+import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
 import {
   messageMutationResponseToAction,
   selectSession,
@@ -258,6 +259,8 @@ export interface StartDesktopV3CreateOnlySessionResult {
 interface DesktopV3NewSessionFlowDeps {
   getSnapshot: typeof getDesktopV3CacheSnapshot
   requireControllerReady: typeof requireDesktopV3RealtimeControllerReady
+  ensureSidebarBootstrap: typeof bootstrapDesktopV3SidebarMetadataOnly
+  retainRealtimeController: typeof retainDesktopV3RealtimeController
   dispatch: typeof dispatchDesktopV3Cache
   postCreateSession: typeof postDesktopV3CreateSession
   postAppendMessage: typeof postDesktopV3AppendMessage
@@ -266,6 +269,8 @@ interface DesktopV3NewSessionFlowDeps {
 let flowDeps: DesktopV3NewSessionFlowDeps = {
   getSnapshot: getDesktopV3CacheSnapshot,
   requireControllerReady: requireDesktopV3RealtimeControllerReady,
+  ensureSidebarBootstrap: bootstrapDesktopV3SidebarMetadataOnly,
+  retainRealtimeController: retainDesktopV3RealtimeController,
   dispatch: dispatchDesktopV3Cache,
   postCreateSession: postDesktopV3CreateSession,
   postAppendMessage: postDesktopV3AppendMessage,
@@ -291,41 +296,59 @@ export async function startDesktopV3CreateOnlySession(input: {
     throw new Error('Desktop V3 new-session operation has inconsistent session identity')
   }
 
-  const stateBeforeCreate = flowDeps.getSnapshot()
-  const sidebarScopeId = stateBeforeCreate.desktopSidebarBootstrap.scopeId?.trim()
-  if (!sidebarScopeId) {
-    throw new Error('New Desktop V3 session requires a bootstrapped sidebar scope')
-  }
+  let bootstrapLease: ReturnType<typeof flowDeps.retainRealtimeController> | undefined
+  try {
+    let stateBeforeCreate = flowDeps.getSnapshot()
+    let sidebarScopeId = stateBeforeCreate.desktopSidebarBootstrap.scopeId?.trim()
+    if (!sidebarScopeId) {
+      const bootstrapReady = flowDeps.ensureSidebarBootstrap({
+        preferredSessionId: operation.sessionId,
+      })
+      bootstrapLease = flowDeps.retainRealtimeController({
+        ownerKey: `desktop-v3-new-session:${operation.operationId}`,
+        preferredSessionId: operation.sessionId,
+        bootstrap: bootstrapReady,
+      })
+      await bootstrapReady
+      stateBeforeCreate = flowDeps.getSnapshot()
+      sidebarScopeId = stateBeforeCreate.desktopSidebarBootstrap.scopeId?.trim()
+    }
+    if (!sidebarScopeId) {
+      throw new Error('New Desktop V3 session requires a bootstrapped sidebar scope')
+    }
 
-  const controller = await flowDeps.requireControllerReady()
+    const controller = await flowDeps.requireControllerReady()
 
-  const rawCreate: SessionCreateMutationResponse | SessionMutationErrorResponse = await flowDeps.postCreateSession(operation.createRequest)
+    const rawCreate: SessionCreateMutationResponse | SessionMutationErrorResponse = await flowDeps.postCreateSession(operation.createRequest)
 
-  flowDeps.dispatch(sessionCreateResponseToAction(
-    rawCreate,
-    sidebarScopeId,
-  ))
+    flowDeps.dispatch(sessionCreateResponseToAction(
+      rawCreate,
+      sidebarScopeId,
+    ))
 
-  if (rawCreate.ok === false) {
-    const message = rawCreate.error || rawCreate.error_code || 'Desktop V3 session create failed'
-    throw new Error(message)
-  }
+    if (rawCreate.ok === false) {
+      const message = rawCreate.error || rawCreate.error_code || 'Desktop V3 session create failed'
+      throw new Error(message)
+    }
 
-  if (rawCreate.session_id !== operation.sessionId) {
-    throw new Error('Desktop V3 create returned a different session_id')
-  }
+    if (rawCreate.session_id !== operation.sessionId) {
+      throw new Error('Desktop V3 create returned a different session_id')
+    }
 
-  if (input.shouldSelectSession?.() ?? true) {
-    flowDeps.dispatch(selectSession(operation.sessionId))
-  }
+    if (input.shouldSelectSession?.() ?? true) {
+      flowDeps.dispatch(selectSession(operation.sessionId))
+    }
 
-  await controller.ensureSessionConnected(operation.sessionId)
+    await controller.ensureSessionConnected(operation.sessionId)
 
-  input.onSessionStarted?.(operation.sessionId)
+    input.onSessionStarted?.(operation.sessionId)
 
-  return {
-    sessionId: operation.sessionId,
-    createResponse: rawCreate,
+    return {
+      sessionId: operation.sessionId,
+      createResponse: rawCreate,
+    }
+  } finally {
+    bootstrapLease?.release()
   }
 }
 
