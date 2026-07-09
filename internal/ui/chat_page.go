@@ -2931,7 +2931,7 @@ func (p *ChatPage) ingestMessageRecord(message ChatMessageRecord) {
 		if p.streamedTools == nil {
 			p.streamedTools = make(map[string]struct{}, 16)
 		}
-		callKey := toolReplayDedupKey(entry)
+		callKey := toolStreamEntryKey(entry)
 		if _, seen := p.streamedTools[callKey]; !seen {
 			p.appendToolMessage(entry, entry.CreatedAt)
 		}

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -250,4 +251,93 @@ func renderLinesContainStyle(lines []chatRenderLine, style tcell.Style) bool {
 		}
 	}
 	return false
+}
+
+func TestParseToolStreamEntryMapsV3ProviderToolResult(t *testing.T) {
+	content := `{"path_id":"run.v3.provider-tool-result.v1","type":"tool.completed","tool_name":"read","call_id":"call-shared","tool_instance_id":"step-7:call-shared","arguments":"{\"path\":\"facts.go\"}","output":"{\"count\":1,\"lines\":[{\"line\":12,\"text\":\"hello world\"}]}","completed_output":"{\"count\":1,\"lines\":[{\"line\":12,\"text\":\"hello world\"}]}","duration_ms":42}`
+
+	entry, ok := parseToolHistoryStreamEntry(content, 1234)
+	if !ok {
+		t.Fatal("expected V3 provider tool result to parse as tool history entry")
+	}
+	if entry.ToolName != "read" {
+		t.Fatalf("tool name mismatch: %q", entry.ToolName)
+	}
+	if entry.CallID != "call-shared" {
+		t.Fatalf("call id mismatch: %q", entry.CallID)
+	}
+	if entry.EntryKey != "step-7:call-shared" {
+		t.Fatalf("entry key should preserve tool instance identity: %q", entry.EntryKey)
+	}
+	if entry.StartedArguments != `{"path":"facts.go"}` || !entry.StartedArgsAreJSON {
+		t.Fatalf("arguments not preserved as JSON: %q json=%v", entry.StartedArguments, entry.StartedArgsAreJSON)
+	}
+	if entry.DurationMS != 42 {
+		t.Fatalf("duration mismatch: %d", entry.DurationMS)
+	}
+
+	rendered := formatUnifiedToolEntry(entry)
+	if !strings.Contains(rendered, "read") {
+		t.Fatalf("rendered V3 provider result should look like a read tool summary, got %q", rendered)
+	}
+	if strings.Contains(rendered, "path_id") || strings.Contains(rendered, "run.v3.provider-tool-result.v1") {
+		t.Fatalf("rendered V3 provider result leaked raw envelope JSON: %q", rendered)
+	}
+}
+
+func TestParseToolStreamEntryV3ProviderToolResultPreservesInstanceIdentity(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-test"})
+
+	for i := 1; i <= 2; i++ {
+		content := fmt.Sprintf(`{"path_id":"run.v3.provider-tool-result.v1","type":"tool.completed","tool_name":"search","call_id":"call-reused","tool_instance_id":"step-%d:call-reused","arguments":"{\"query\":\"q%d\"}","completed_output":"{\"count\":%d,\"results\":[{\"path\":\"file%d.go\",\"items\":[{\"line\":%d,\"text\":\"match %d\"}]}]}","duration_ms":%d}`, i, i, i, i, i, i, i*10)
+		page.ingestMessageRecord(ChatMessageRecord{
+			ID:        fmt.Sprintf("msg-tool-%d", i),
+			SessionID: "session-test",
+			GlobalSeq: uint64(i),
+			Role:      "tool",
+			Content:   content,
+			CreatedAt: int64(1000 + i),
+		})
+	}
+
+	if len(page.toolStream) != 2 {
+		t.Fatalf("expected distinct tool stream entries for reused call id, got %d", len(page.toolStream))
+	}
+	if page.toolStream[0].EntryKey != "message:msg-tool-1" || page.toolStream[1].EntryKey != "message:msg-tool-2" {
+		t.Fatalf("historical entries should keep message identity: %#v", page.toolStream)
+	}
+	managed := make([]chatMessageItem, 0, len(page.timeline))
+	for _, item := range page.timeline {
+		if isManagedToolTimelineMessage(item) {
+			managed = append(managed, item)
+		}
+	}
+	if len(managed) != 2 {
+		t.Fatalf("expected distinct timeline entries for reused call id, got %d: %#v", len(managed), page.timeline)
+	}
+	if managed[0].Text == managed[1].Text {
+		t.Fatalf("timeline entries unexpectedly collapsed to the same text: %#v", managed)
+	}
+	if strings.Contains(managed[0].Text, "path_id") || strings.Contains(managed[1].Text, "path_id") {
+		t.Fatalf("timeline leaked raw V3 provider envelope JSON: %#v", managed)
+	}
+}
+
+func TestParseToolStreamEntryLegacyToolHistoryStillWorks(t *testing.T) {
+	content := `{"path_id":"run.tool-history.v2","tool":"search","call_id":"call-search","tool_instance_id":"legacy-step:call-search","arguments":"{\"query\":\"needle\"}","completed_output":"{\"count\":1,\"results\":[{\"path\":\"file.go\",\"items\":[{\"line\":3,\"text\":\"needle\"}]}]}","duration_ms":7}`
+
+	entry, ok := parseToolHistoryStreamEntry(content, 1234)
+	if !ok {
+		t.Fatal("expected legacy tool history to parse")
+	}
+	if entry.ToolName != "search" || entry.CallID != "call-search" {
+		t.Fatalf("legacy entry identity mismatch: %#v", entry)
+	}
+	if entry.EntryKey != "legacy-step:call-search" {
+		t.Fatalf("legacy tool instance id should be preserved: %q", entry.EntryKey)
+	}
+	rendered := formatUnifiedToolEntry(entry)
+	if !strings.Contains(rendered, "search") || !strings.Contains(rendered, "file.go") {
+		t.Fatalf("legacy rendered entry missing search summary: %q", rendered)
+	}
 }

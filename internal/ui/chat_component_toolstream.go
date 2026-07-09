@@ -70,11 +70,20 @@ func parseToolStreamEntry(content string, createdAt int64) chatToolStreamEntry {
 
 func parseToolHistoryStreamEntry(raw string, createdAt int64) (chatToolStreamEntry, bool) {
 	payload := parseToolJSON(raw)
-	if payload == nil || !strings.EqualFold(strings.TrimSpace(jsonString(payload, "path_id")), "run.tool-history.v2") {
+	if payload == nil {
+		return chatToolStreamEntry{}, false
+	}
+	pathID := strings.TrimSpace(jsonString(payload, "path_id"))
+	toolNameKey := "tool"
+	switch {
+	case strings.EqualFold(pathID, "run.tool-history.v2"):
+	case strings.EqualFold(pathID, "run.v3.provider-tool-result.v1"):
+		toolNameKey = "tool_name"
+	default:
 		return chatToolStreamEntry{}, false
 	}
 
-	toolName := strings.TrimSpace(jsonString(payload, "tool"))
+	toolName := strings.TrimSpace(jsonString(payload, toolNameKey))
 	if toolName == "" {
 		toolName = "tool"
 	}
@@ -87,6 +96,7 @@ func parseToolHistoryStreamEntry(raw string, createdAt int64) (chatToolStreamEnt
 		rawOutput = output
 	}
 	entry := chatToolStreamEntry{
+		EntryKey:   strings.TrimSpace(jsonString(payload, "tool_instance_id")),
 		ToolName:   toolName,
 		CallID:     strings.TrimSpace(jsonString(payload, "call_id")),
 		Output:     output,
