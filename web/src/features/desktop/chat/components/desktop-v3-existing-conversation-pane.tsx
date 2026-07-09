@@ -6,12 +6,14 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMatchRoute, useNavigate } from "@tanstack/react-router";
 import {
   ArrowDown,
   CheckCircle2,
+  CircleAlert,
   Loader2,
   LoaderCircle,
   XCircle,
@@ -515,6 +517,13 @@ type DesktopV3RenderItem =
       timelineSeq?: number;
     }
   | {
+      type: "plan-blocked-handoff";
+      message: MessageSnapshot;
+      headline: string;
+      body: string;
+      timelineSeq?: number;
+    }
+  | {
       type: "message";
       message: MessageSnapshot;
       timelineSeq?: number;
@@ -819,6 +828,7 @@ export function desktopV3RenderItemKey(item: DesktopV3RenderItem): string {
   switch (item.type) {
     case "plan-break":
     case "plan-final-handoff":
+    case "plan-blocked-handoff":
       return item.message.id;
     case "message":
       return item.renderKey || item.message.id;
@@ -955,6 +965,24 @@ export function isDesktopV3PlanFinalHandoffMessage(
   );
 }
 
+export function isDesktopV3PlanBlockedHandoffMessage(
+  message: MessageSnapshot,
+): boolean {
+  if ((message.role || "").trim().toLowerCase() !== "system") return false;
+  const metadataSource =
+    typeof message.metadata?.source === "string"
+      ? message.metadata.source.trim().toLowerCase()
+      : "";
+  const metadataKind =
+    typeof message.metadata?.kind === "string"
+      ? message.metadata.kind.trim().toLowerCase()
+      : "";
+  return (
+    metadataSource === "plan_execution_blocked_handoff" ||
+    metadataKind === "plan_blocked_checkpoint_handoff"
+  );
+}
+
 function buildDesktopV3PlanExecutionBreakItem(
   message: MessageSnapshot,
 ): Extract<DesktopV3RenderItem, { type: "plan-break" }> {
@@ -986,6 +1014,16 @@ function buildDesktopV3PlanFinalHandoffItem(
     headline,
     body,
     timelineSeq: message.global_seq,
+  };
+}
+
+function buildDesktopV3PlanBlockedHandoffItem(
+  message: MessageSnapshot,
+): Extract<DesktopV3RenderItem, { type: "plan-blocked-handoff" }> {
+  const item = buildDesktopV3PlanFinalHandoffItem(message);
+  return {
+    ...item,
+    type: "plan-blocked-handoff",
   };
 }
 
@@ -1072,7 +1110,9 @@ export function buildDesktopV3ConversationRenderItems(
         ? buildDesktopV3PlanExecutionBreakItem(message)
         : isDesktopV3PlanFinalHandoffMessage(message)
           ? buildDesktopV3PlanFinalHandoffItem(message)
-          : {
+          : isDesktopV3PlanBlockedHandoffMessage(message)
+            ? buildDesktopV3PlanBlockedHandoffItem(message)
+            : {
               type: "message" as const,
               message,
               timelineSeq: message.global_seq,
@@ -2312,6 +2352,8 @@ const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
       return <DesktopV3PlanExecutionBreak item={item} />;
     case "plan-final-handoff":
       return <DesktopV3PlanFinalHandoff item={item} />;
+    case "plan-blocked-handoff":
+      return <DesktopV3PlanBlockedHandoff item={item} />;
     case "message":
       return (
         <DesktopV3CommittedMessage
@@ -2375,13 +2417,42 @@ function DesktopV3PlanFinalHandoff({
   item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>;
 }) {
   return (
-    <div
-      className="flex justify-start py-1"
-      data-testid="desktop-v3-plan-final-handoff"
-    >
+    <DesktopV3PlanHandoff
+      item={item}
+      icon={<CheckCircle2 size={12} className="text-[var(--app-primary)]" />}
+      testId="desktop-v3-plan-final-handoff"
+    />
+  );
+}
+
+function DesktopV3PlanBlockedHandoff({
+  item,
+}: {
+  item: Extract<DesktopV3RenderItem, { type: "plan-blocked-handoff" }>;
+}) {
+  return (
+    <DesktopV3PlanHandoff
+      item={item}
+      icon={<CircleAlert size={12} className="text-[var(--app-warning)]" />}
+      testId="desktop-v3-plan-blocked-handoff"
+    />
+  );
+}
+
+function DesktopV3PlanHandoff({
+  item,
+  icon,
+  testId,
+}: {
+  item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" | "plan-blocked-handoff" }>;
+  icon: ReactNode;
+  testId: string;
+}) {
+  return (
+    <div className="flex justify-start py-1" data-testid={testId}>
       <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)] opacity-90">
         <div className="mb-1 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
-          <CheckCircle2 size={12} className="text-[var(--app-primary)]" />
+          {icon}
           {item.headline}
         </div>
         {item.body ? <ChatMarkdown content={item.body} /> : null}

@@ -9,6 +9,7 @@ import (
 
 const PlanExecutionLifecycleMessageSource = "plan_execution_lifecycle"
 const PlanExecutionFinalHandoffMessageSource = "plan_execution_final_handoff"
+const PlanExecutionBlockedHandoffMessageSource = "plan_execution_blocked_handoff"
 
 type PlanExecutionLifecycleMessageInput struct {
 	Action  string
@@ -75,7 +76,7 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	} else if nextAction == "plan_complete" {
 		bodyLines = append(bodyLines, "Next: plan complete.")
 	}
-	if !finalReview && isPlanExecutionOutcomeMessageAction(action) {
+	if !finalReview && isPlanExecutionOutcomeMessageAction(action) && action != "mark_blocked" {
 		bodyLines = append(bodyLines, planLifecycleOutcomeDetailLines(input.Payload, false)...)
 	}
 	if len(bodyLines) > 0 {
@@ -333,9 +334,43 @@ func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMes
 		lines = append(lines, "")
 		lines = append(lines, detailLines...)
 	}
+	metadata := planExecutionHandoffMetadata(input, action, doc, checkpointID, checkpointTitle, nextAction, PlanExecutionFinalHandoffMessageSource, "plan_final_checkpoint_handoff")
+	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
+}
+
+func BuildBlockedPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMessageInput) (PlanExecutionLifecycleMessage, bool) {
+	action := strings.TrimSpace(input.Action)
+	if action != "mark_blocked" || input.Plan.Document == nil {
+		return PlanExecutionLifecycleMessage{}, false
+	}
+	doc := input.Plan.Document
+	summary := sessionruntime.SummarizePlanExecution(doc)
+	nextAction := stringFromPlanPayload(input.Payload, "next_action")
+	if nextAction == "" {
+		nextAction = inferPlanExecutionNextAction(summary)
+	}
+	if nextAction != "stopped" {
+		return PlanExecutionLifecycleMessage{}, false
+	}
+	checkpointID := planLifecycleCheckpointID(action, doc, summary, input.Payload)
+	checkpointTitle := planLifecycleCheckpointTitle(doc, checkpointID)
+	lines := []string{
+		"Blocked checkpoint handoff",
+		"",
+		"Checkpoint execution is blocked. Resolve the blocker before continuing.",
+	}
+	if detailLines := planLifecycleOutcomeDetailLines(input.Payload, true); len(detailLines) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, detailLines...)
+	}
+	metadata := planExecutionHandoffMetadata(input, action, doc, checkpointID, checkpointTitle, nextAction, PlanExecutionBlockedHandoffMessageSource, "plan_blocked_checkpoint_handoff")
+	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
+}
+
+func planExecutionHandoffMetadata(input PlanExecutionLifecycleMessageInput, action string, doc *pebblestore.SessionPlanDocument, checkpointID, checkpointTitle, nextAction, source, kind string) map[string]any {
 	metadata := map[string]any{
-		"source":           PlanExecutionFinalHandoffMessageSource,
-		"kind":             "plan_final_checkpoint_handoff",
+		"source":           source,
+		"kind":             kind,
 		"action":           action,
 		"plan_id":          strings.TrimSpace(input.Plan.ID),
 		"plan_title":       strings.TrimSpace(input.Plan.Title),
@@ -349,7 +384,7 @@ func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMes
 		metadata["run_id"] = strings.TrimSpace(doc.ExecutionState.CurrentRunID)
 		metadata["run_session_id"] = strings.TrimSpace(doc.ExecutionState.CurrentSessionID)
 	}
-	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
+	return metadata
 }
 
 func planLifecycleOutcomeDetailLines(payload map[string]any, markdown bool) []string {

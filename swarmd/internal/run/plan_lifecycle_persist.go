@@ -16,11 +16,19 @@ func (s *Service) appendPlanExecutionLifecycleSystemMessage(sessionID, action st
 	if err := s.appendPlanExecutionSystemMessage(sessionID, plan, message, planLifecycleMessageLogicalKey(action, plan, payload), "plan execution lifecycle", applySessionMutation); err != nil {
 		return err
 	}
-	handoffMessage, ok := BuildFinalPlanExecutionHandoffSystemMessage(PlanExecutionLifecycleMessageInput{Action: action, Plan: plan, Payload: payload})
+	handoffInput := PlanExecutionLifecycleMessageInput{Action: action, Plan: plan, Payload: payload}
+	handoffMessage, ok := BuildFinalPlanExecutionHandoffSystemMessage(handoffInput)
+	logicalKey := planFinalHandoffMessageLogicalKey
+	label := "plan execution final handoff"
+	if !ok {
+		handoffMessage, ok = BuildBlockedPlanExecutionHandoffSystemMessage(handoffInput)
+		logicalKey = planBlockedHandoffMessageLogicalKey
+		label = "plan execution blocked handoff"
+	}
 	if !ok {
 		return nil
 	}
-	if err := s.appendPlanExecutionSystemMessage(sessionID, plan, handoffMessage, planFinalHandoffMessageLogicalKey(action, plan, payload), "plan execution final handoff", applySessionMutation); err != nil {
+	if err := s.appendPlanExecutionSystemMessage(sessionID, plan, handoffMessage, logicalKey(action, plan, payload), label, applySessionMutation); err != nil {
 		return err
 	}
 	return nil
@@ -71,6 +79,10 @@ func planLifecycleMessageLogicalKey(action string, plan pebblestore.SessionPlanS
 
 func planFinalHandoffMessageLogicalKey(action string, plan pebblestore.SessionPlanSnapshot, payload map[string]any) string {
 	return strings.Join(planExecutionMessageLogicalKeyParts("plan_final_handoff", action, plan, payload), ":")
+}
+
+func planBlockedHandoffMessageLogicalKey(action string, plan pebblestore.SessionPlanSnapshot, payload map[string]any) string {
+	return strings.Join(planExecutionMessageLogicalKeyParts("plan_blocked_handoff", action, plan, payload), ":")
 }
 
 func planExecutionMessageLogicalKeyParts(kind, action string, plan pebblestore.SessionPlanSnapshot, payload map[string]any) []string {

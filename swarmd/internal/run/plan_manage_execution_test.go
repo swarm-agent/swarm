@@ -352,6 +352,74 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	}
 }
 
+func TestExecutePlanManageBlockedCheckpointHandoffSeparatedFromLifecycleBreak(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-blocked-handoff", "Plan: Blocked Handoff", "# Blocked", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:  &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateInProgress, ActiveAttemptID: "attempt-blocked", CurrentRunID: "run-blocked", CurrentSessionID: "child-session", ParentSessionID: "parent-session"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-a", Title: "Blocked", Status: sessionruntime.PlanCheckpointStatusInProgress, AttemptID: "attempt-blocked", RunID: "run-blocked", SessionID: "child-session"},
+			{ID: "cp-b", Title: "Next", Status: sessionruntime.PlanCheckpointStatusPending},
+		},
+		ActiveCheckpointID: "cp-a",
+	}})
+	if err != nil {
+		t.Fatalf("save blocked handoff plan: %v", err)
+	}
+
+	var appliedMutations []sessionruntime.SessionMutationInput
+	applyMutation := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		appliedMutations = append(appliedMutations, input)
+		return sessionSvc.ApplySessionMutation(input)
+	}
+
+	raw, err := runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"mark_blocked","checkpoint_id":"cp-a","attempt_id":"attempt-blocked","run_id":"run-blocked","run_session_id":"child-session","parent_session_id":"parent-session","report":"## Blocker\n- dependency missing","result":"blocked","validation":["- not run; blocked by dependency"]}`, "", applyMutation)
+	if err != nil {
+		t.Fatalf("mark blocked: %v output=%s", err, raw)
+	}
+	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
+		t.Fatalf("append blocked lifecycle: %v", err)
+	}
+
+	messages, err := sessionSvc.ListSessionMessages(sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages after blocked handoff: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("blocked handoff should append lifecycle and handoff messages, got %#v", messages)
+	}
+	lifecycle := messages[0]
+	if lifecycle.Role != "system" || lifecycle.Metadata["source"] != PlanExecutionLifecycleMessageSource || lifecycle.Metadata["kind"] != "plan_execution_break" || lifecycle.Metadata["action"] != "mark_blocked" || lifecycle.Metadata["next_action"] != "stopped" {
+		t.Fatalf("blocked lifecycle metadata = %#v", lifecycle.Metadata)
+	}
+	for _, want := range []string{"Checkpoint blocked — Automatic mode", "Checkpoint: Checkpoint a — Blocked", "Next: execution stopped until the blocker or failure is resolved."} {
+		if !strings.Contains(lifecycle.Content, want) {
+			t.Fatalf("blocked lifecycle content missing %q: %q", want, lifecycle.Content)
+		}
+	}
+	for _, forbidden := range []string{"Report:", "Result: blocked", "Validation:"} {
+		if strings.Contains(lifecycle.Content, forbidden) {
+			t.Fatalf("blocked lifecycle leaked handoff detail %q: %q", forbidden, lifecycle.Content)
+		}
+	}
+
+	handoff := messages[1]
+	if handoff.Role != "system" || handoff.Metadata["source"] != PlanExecutionBlockedHandoffMessageSource || handoff.Metadata["kind"] != "plan_blocked_checkpoint_handoff" || handoff.Metadata["action"] != "mark_blocked" || handoff.Metadata["next_action"] != "stopped" {
+		t.Fatalf("blocked handoff metadata = %#v", handoff.Metadata)
+	}
+	for _, want := range []string{"Blocked checkpoint handoff", "Checkpoint execution is blocked. Resolve the blocker before continuing.", "Report:\n## Blocker\n- dependency missing", "Result: blocked", "Validation:\n- not run; blocked by dependency"} {
+		if !strings.Contains(handoff.Content, want) {
+			t.Fatalf("blocked handoff content missing %q: %q", want, handoff.Content)
+		}
+	}
+	if len(appliedMutations) != 3 || appliedMutations[1].Kind != sessionruntime.SessionMutationAppendMessage || appliedMutations[1].Message == nil || appliedMutations[1].Message.Metadata["source"] != PlanExecutionLifecycleMessageSource || appliedMutations[2].Kind != sessionruntime.SessionMutationAppendMessage || appliedMutations[2].Message == nil || appliedMutations[2].Message.Metadata["source"] != PlanExecutionBlockedHandoffMessageSource {
+		t.Fatalf("blocked handoff mutation ordering = %#v", appliedMutations)
+	}
+}
+
 func TestExecutePlanManageStartAndContinueCheckpoint(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
