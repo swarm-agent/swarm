@@ -271,6 +271,108 @@ func TestEnsureBootDefaultsSeedsPinnedSnapshotOffline(t *testing.T) {
 	}
 }
 
+func TestEnsureBootDefaultsRefreshesStalePersistedSnapshot(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "catalog.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	catalog := NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	if err := catalog.store.SetRecord(pebblestore.ModelCatalogRecord{
+		Provider:              "codex",
+		Model:                 "gpt-5.4",
+		ContextWindow:         200000,
+		Source:                catalogSourceLive,
+		SourceSnapshotID:      "old-snapshot",
+		SourceSnapshotVersion: "old-version",
+	}); err != nil {
+		t.Fatalf("seed old record: %v", err)
+	}
+	if err := catalog.store.SetMeta(pebblestore.ModelCatalogMeta{
+		Source:          catalogSourceLive,
+		SourceURL:       "test://old-snapshot",
+		SnapshotURL:     "test://old-snapshot",
+		VersionURL:      "test://old-version",
+		SnapshotID:      "old-snapshot",
+		SnapshotVersion: "old-version",
+		GeneratedAt:     "2026-01-01T00:00:00Z",
+		RecordCount:     1,
+		ModelCount:      1,
+	}); err != nil {
+		t.Fatalf("seed old meta: %v", err)
+	}
+
+	if err := catalog.EnsureBootDefaults(); err != nil {
+		t.Fatalf("EnsureBootDefaults returned error: %v", err)
+	}
+	meta, ok, err := catalog.Meta()
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if !ok || meta.Source != catalogSourcePinned || meta.SnapshotID == "old-snapshot" || meta.PinnedSnapshotVersion == "" {
+		t.Fatalf("expected stale persisted meta to be replaced by pinned snapshot, got ok=%v meta=%+v", ok, meta)
+	}
+	lookup, err := catalog.Get("codex", "gpt-5.6-luna")
+	if err != nil {
+		t.Fatalf("lookup refreshed Codex snapshot record: %v", err)
+	}
+	if !lookup.Found || lookup.Record.Source != catalogSourcePinned || lookup.Record.SourceSnapshotID == "old-snapshot" {
+		t.Fatalf("expected embedded GPT-5.6 Codex record after stale refresh, got %+v", lookup)
+	}
+}
+
+func TestEnsureBootDefaultsPreservesNewerPersistedLiveSnapshot(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "catalog.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	catalog := NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	if err := catalog.store.SetRecord(pebblestore.ModelCatalogRecord{
+		Provider:              "codex",
+		Model:                 "gpt-future",
+		ContextWindow:         300000,
+		Source:                catalogSourceLive,
+		SourceSnapshotID:      "future-snapshot",
+		SourceSnapshotVersion: "future-version",
+	}); err != nil {
+		t.Fatalf("seed future record: %v", err)
+	}
+	if err := catalog.store.SetMeta(pebblestore.ModelCatalogMeta{
+		Source:          catalogSourceLive,
+		SourceURL:       "test://future-snapshot",
+		SnapshotURL:     "test://future-snapshot",
+		VersionURL:      "test://future-version",
+		SnapshotID:      "future-snapshot",
+		SnapshotVersion: "future-version",
+		GeneratedAt:     "2027-01-01T00:00:00Z",
+		RecordCount:     1,
+		ModelCount:      1,
+	}); err != nil {
+		t.Fatalf("seed future meta: %v", err)
+	}
+
+	if err := catalog.EnsureBootDefaults(); err != nil {
+		t.Fatalf("EnsureBootDefaults returned error: %v", err)
+	}
+	meta, ok, err := catalog.Meta()
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if !ok || meta.Source != catalogSourceLive || meta.SnapshotID != "future-snapshot" || meta.PinnedSnapshotVersion == "" {
+		t.Fatalf("expected newer live snapshot with current pinned metadata, got ok=%v meta=%+v", ok, meta)
+	}
+	lookup, err := catalog.Get("codex", "gpt-future")
+	if err != nil {
+		t.Fatalf("lookup future record: %v", err)
+	}
+	if !lookup.Found || lookup.Record.SourceSnapshotID != "future-snapshot" {
+		t.Fatalf("expected future live record to remain authoritative, got %+v", lookup)
+	}
+}
+
 func TestRefreshUsesSnapshotVersionAndSkipsUnchangedSnapshot(t *testing.T) {
 	versionBody := []byte(`{
 		"snapshot_id":"snapshot-live",

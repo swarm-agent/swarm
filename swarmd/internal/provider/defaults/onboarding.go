@@ -136,7 +136,7 @@ func SupportedProviders() []string {
 
 func normalizeThinking(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "off", "low", "medium", "high", "xhigh":
+	case "off", "low", "medium", "high", "xhigh", "max", "ultra":
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return ""

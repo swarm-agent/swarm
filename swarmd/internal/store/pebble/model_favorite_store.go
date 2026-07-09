@@ -204,7 +204,7 @@ func normalizeFavoritePart(value string) string {
 func normalizeThinking(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	switch value {
-	case "off", "low", "medium", "high", "xhigh":
+	case "off", "low", "medium", "high", "xhigh", "max", "ultra":
 		return value
 	default:
 		return ""

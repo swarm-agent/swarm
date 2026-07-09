@@ -157,20 +157,8 @@ export function effectiveContextWindow(_provider: string, _model: string, _conte
   return fallback
 }
 
-export function modelAllowedByProviderPreset(provider: string, model: string): boolean {
-  const normalizedProvider = normalizeProviderID(provider)
-  const normalizedModel = model.trim()
-  if (!normalizedModel) {
-    return false
-  }
-  if (normalizedProvider !== 'codex') {
-    return true
-  }
-  const presets = modelPresetListForProvider(normalizedProvider)
-  if (presets.length === 0) {
-    return true
-  }
-  return presets.some((preset) => preset.localeCompare(normalizedModel, undefined, { sensitivity: 'accent' }) === 0)
+export function modelAllowedByProviderPreset(_provider: string, model: string): boolean {
+  return model.trim() !== ''
 }
 
 function modelIDLessForProvider(provider: string, left: string, right: string): boolean {

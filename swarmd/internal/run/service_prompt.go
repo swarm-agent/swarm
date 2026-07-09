@@ -222,6 +222,10 @@ func normalizeThinkingLevel(value string) string {
 		return "high"
 	case "xhigh":
 		return "xhigh"
+	case "max":
+		return "max"
+	case "ultra":
+		return "ultra"
 	default:
 		return ""
 	}

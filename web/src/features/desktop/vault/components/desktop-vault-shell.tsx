@@ -11,6 +11,7 @@ import type {
   DesktopOnboardingTransportWire,
 } from '../../onboarding/types'
 import { DirectLANDesktopWarningScreen, getDirectLANDesktopWarning } from '../../security/direct-lan-desktop-warning'
+import { DesktopModelCatalogSync } from '../../models/desktop-model-catalog-sync'
 
 function normalizeAPIPort(port: number | undefined): number {
   return typeof port === 'number' && Number.isFinite(port) ? port : 0
@@ -303,8 +304,11 @@ export function DesktopVaultShell({ initialPreferredSessionId }: DesktopVaultShe
   }
 
   return (
-    <DesktopV3RuntimeProvider initialPreferredSessionId={initialPreferredSessionId}>
-      <Outlet />
-    </DesktopV3RuntimeProvider>
+    <>
+      <DesktopModelCatalogSync />
+      <DesktopV3RuntimeProvider initialPreferredSessionId={initialPreferredSessionId}>
+        <Outlet />
+      </DesktopV3RuntimeProvider>
+    </>
   )
 }

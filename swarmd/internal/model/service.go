@@ -18,6 +18,8 @@ var allowedThinkingLevels = map[string]struct{}{
 	"medium": {},
 	"high":   {},
 	"xhigh":  {},
+	"max":    {},
+	"ultra":  {},
 }
 
 type Service struct {
@@ -430,6 +432,13 @@ func (s *Service) RefreshCatalog(ctx context.Context) (CatalogRefreshResult, err
 		return CatalogRefreshResult{}, errors.New("model catalog is not configured")
 	}
 	return s.catalog.Refresh(ctx)
+}
+
+func (s *Service) CheckCatalog(ctx context.Context) (CatalogRefreshResult, error) {
+	if s.catalog == nil {
+		return CatalogRefreshResult{}, errors.New("model catalog is not configured")
+	}
+	return s.catalog.Check(ctx)
 }
 
 func (s *Service) RefreshCatalogManual(ctx context.Context) (CatalogRefreshResult, error) {

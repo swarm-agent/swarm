@@ -125,6 +125,7 @@ func (s *Server) registerProviderRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/image/storage/reveal", s.handleImageStorageReveal)
 	mux.HandleFunc("/v1/model", s.handleModelPreference)
 	mux.HandleFunc("/v1/model/catalog", s.handleModelCatalog)
+	mux.HandleFunc("/v1/model/catalog/check", s.handleModelCatalogCheck)
 	mux.HandleFunc("/v1/models/favorites", s.handleModelFavorites)
 	mux.HandleFunc("/v1/models/favorites/delete", s.handleModelFavoriteDelete)
 	mux.HandleFunc("/v1/providers", s.handleProviders)

@@ -263,6 +263,12 @@ func (s *CatalogService) seedPinnedSnapshotIfNeeded() error {
 		return fmt.Errorf("read model catalog meta: %w", err)
 	}
 	if ok && !catalogMetaNeedsPinnedSeed(meta) {
+		if catalogMetaPinnedMetadataNeedsUpdate(meta) {
+			applyPinnedMetadata(&meta)
+			if err := s.store.SetMeta(meta); err != nil {
+				return fmt.Errorf("persist model catalog pinned snapshot metadata: %w", err)
+			}
+		}
 		return nil
 	}
 	_, err = s.replaceSnapshotLocked(pinnedSwarmSnapshotJSON, catalogSourcePinned, pinnedCatalogSourceURL, pinnedCatalogVersionURL, "", "", "pinned_seed")
@@ -345,6 +351,10 @@ func (s *CatalogService) Meta() (pebblestore.ModelCatalogMeta, bool, error) {
 
 func (s *CatalogService) Refresh(ctx context.Context) (CatalogRefreshResult, error) {
 	return s.refresh(ctx, false, "scheduled")
+}
+
+func (s *CatalogService) Check(ctx context.Context) (CatalogRefreshResult, error) {
+	return s.refresh(ctx, false, "app_poll")
 }
 
 func (s *CatalogService) RefreshManual(ctx context.Context) (CatalogRefreshResult, error) {
@@ -1158,10 +1168,38 @@ func catalogMetaNeedsPinnedSeed(meta pebblestore.ModelCatalogMeta) bool {
 	if !ok {
 		return false
 	}
-	if meta.Source == catalogSourcePinned && !sameCatalogSnapshot(meta, pinned) {
+	if sameCatalogSnapshot(meta, pinned) {
+		return false
+	}
+	if meta.Source == catalogSourcePinned {
 		return true
 	}
-	return false
+	if !catalogMetaPinnedMetadataNeedsUpdate(meta) {
+		return false
+	}
+	return !catalogMetaGeneratedAfter(meta, pinned)
+}
+
+func catalogMetaPinnedMetadataNeedsUpdate(meta pebblestore.ModelCatalogMeta) bool {
+	pinned, ok := pinnedSnapshotVersionMetadata()
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(meta.PinnedSnapshotID) != strings.TrimSpace(pinned.SnapshotID) ||
+		strings.TrimSpace(meta.PinnedSnapshotVersion) != strings.TrimSpace(pinned.SnapshotVersion) ||
+		strings.TrimSpace(meta.PinnedGeneratedAt) != strings.TrimSpace(pinned.GeneratedAt)
+}
+
+func catalogMetaGeneratedAfter(meta pebblestore.ModelCatalogMeta, version swarmSnapshotVersion) bool {
+	metaGeneratedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(meta.GeneratedAt))
+	if err != nil {
+		return false
+	}
+	versionGeneratedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(version.GeneratedAt))
+	if err != nil {
+		return false
+	}
+	return metaGeneratedAt.After(versionGeneratedAt)
 }
 
 func sameCatalogSnapshot(meta pebblestore.ModelCatalogMeta, version swarmSnapshotVersion) bool {

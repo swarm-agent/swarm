@@ -3682,7 +3682,7 @@ func applySessionV3AgentPreferenceOverridesForMode(base pebblestore.ModelPrefere
 func normalizeSessionV3ThinkingWithProvider(providerID, thinking string) string {
 	normalized := strings.ToLower(strings.TrimSpace(thinking))
 	switch normalized {
-	case "off", "low", "medium", "high", "xhigh":
+	case "off", "low", "medium", "high", "xhigh", "max", "ultra":
 		if (strings.EqualFold(providerID, "copilot") || strings.EqualFold(providerID, "fireworks") || strings.EqualFold(providerID, "openrouter")) && normalized == "xhigh" {
 			return "high"
 		}

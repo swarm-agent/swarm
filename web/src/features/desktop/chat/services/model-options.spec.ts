@@ -72,6 +72,16 @@ test('OpenAI API provider stays distinct from Codex and exposes catalog models',
   assert.equal(supportsModelServiceTier('openai', 'gpt-5.5', ['standard', 'priority', 'flex', 'batch'], 'batch'), false)
 })
 
+test('Codex catalog models are not filtered by the local sorting presets', () => {
+  assert.equal(modelAllowedByProviderPreset('codex', 'gpt-5.6-luna'), true)
+  assert.equal(modelAllowedByProviderPreset('codex', 'gpt-5.6-sol'), true)
+  assert.equal(modelAllowedByProviderPreset('codex', 'gpt-5.6-terra'), true)
+})
+
+test('thinking options preserve snapshot max and ultra levels', () => {
+  assert.deepEqual(modelThinkingOptions({ thinkingOptions: ['off', 'high', 'max', 'ultra'] }), ['off', 'high', 'max', 'ultra'])
+})
+
 test('GLM 5.2 thinking options come directly from catalog metadata', () => {
   const glm52 = {
     thinkingOptions: ['off', 'high', 'xhigh'],

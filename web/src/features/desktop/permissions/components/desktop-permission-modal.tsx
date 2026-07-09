@@ -11,6 +11,7 @@ import { StructuredPlanDocumentView, normalizeStructuredPlanDocument, type Struc
 import { getToolTheme } from '../../chat/services/tool-theme'
 import { AGENT_TOOL_PRESET_OPTIONS, CUSTOM_AGENT_TOOL_PRESET_ID } from '../../chat/services/agent-tool-presets'
 import type { ModelOptionRecord } from '../../chat/types/chat'
+import { defaultModelThinking, modelThinkingOptions } from '../../chat/services/model-options'
 import { modelOptionsQueryOptions } from '../../../queries/query-options'
 import { useQuery } from '@tanstack/react-query'
 import type { DesktopPermissionRecord } from '../../types/realtime'
@@ -2582,13 +2583,15 @@ function toolInventoryTools(payload: ReturnType<typeof parseAgentChangePermissio
 
 const AGENT_WRITE_TOOL_NAMES = new Set(['write', 'edit', 'bash', 'task', 'git_add', 'git_commit'])
 const AGENT_DEFAULT_READWRITE_TOOL_NAMES = ['write', 'edit']
-const AGENT_THINKING_OPTIONS = [
+const FALLBACK_AGENT_THINKING_OPTIONS = [
   { value: '', label: 'Default' },
   { value: 'off', label: 'Off' },
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
   { value: 'xhigh', label: 'X-High' },
+  { value: 'max', label: 'Max' },
+  { value: 'ultra', label: 'Ultra' },
 ]
 
 function deriveExecutionSettingFromTools(tools: Record<string, AgentToolConfigFormState>): AgentEffectiveExecution {
@@ -2989,6 +2992,19 @@ function AgentProfileApprovalForm({
     return groups
   }, [form.provider, modelOptions])
   const activeModels = providers.find(([provider]) => provider === form.provider)?.[1] ?? []
+  const activeModel = activeModels.find((option) => option.model === form.model)
+  const thinkingOptions = activeModel
+    ? [
+        { value: '', label: 'Default' },
+        ...modelThinkingOptions(activeModel).map((value) => ({
+          value,
+          label: value === 'xhigh' ? 'X-High' : `${value.charAt(0).toUpperCase()}${value.slice(1)}`,
+        })),
+      ]
+    : FALLBACK_AGENT_THINKING_OPTIONS
+  const visibleThinkingOptions = form.thinking && !thinkingOptions.some((option) => option.value === form.thinking)
+    ? [...thinkingOptions, { value: form.thinking, label: form.thinking }]
+    : thinkingOptions
   const inventoryTools = toolInventoryTools(payload, form)
   const presetOptions = agentToolInventoryPresetOptions(payload)
   const activePreset = agentToolInventoryPreset(payload, form.toolContractPreset)
@@ -3054,8 +3070,13 @@ function AgentProfileApprovalForm({
           <div className="relative">
             <select value={form.provider} onChange={(event: ChangeEvent<HTMLSelectElement>) => {
               const provider = event.target.value
-              const firstModel = providers.find(([candidate]) => candidate === provider)?.[1]?.[0]?.model ?? ''
-              onChange({ ...form, provider, model: firstModel })
+              const firstOption = providers.find(([candidate]) => candidate === provider)?.[1]?.[0]
+              onChange({
+                ...form,
+                provider,
+                model: firstOption?.model ?? '',
+                thinking: firstOption ? defaultModelThinking(firstOption) : '',
+              })
             }} disabled={disabled} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
               <option value="">None / inherit default</option>
               {providers.map(([provider]) => <option key={provider} value={provider}>{provider}</option>)}
@@ -3066,7 +3087,15 @@ function AgentProfileApprovalForm({
         <label className="grid gap-1.5 text-sm">
           <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Model</span>
           <div className="relative">
-            <select value={form.model} onChange={(event: ChangeEvent<HTMLSelectElement>) => onChange({ ...form, model: event.target.value })} disabled={disabled || !form.provider} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
+            <select value={form.model} onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+              const model = event.target.value
+              const option = activeModels.find((candidate) => candidate.model === model)
+              onChange({
+                ...form,
+                model,
+                thinking: option ? defaultModelThinking(option) : form.thinking,
+              })
+            }} disabled={disabled || !form.provider} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
               <option value="">Choose model</option>
               {form.model && !activeModels.some((option) => option.model === form.model) ? <option value={form.model}>{form.model}</option> : null}
               {activeModels.map((option) => <option key={`${option.provider}:${option.model}:${option.contextMode}`} value={option.model}>{option.label || option.model}</option>)}
@@ -3078,8 +3107,7 @@ function AgentProfileApprovalForm({
           <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Thinking</span>
           <div className="relative">
             <select value={form.thinking} onChange={(event: ChangeEvent<HTMLSelectElement>) => onChange({ ...form, thinking: event.target.value })} disabled={disabled} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
-              {AGENT_THINKING_OPTIONS.map((option) => <option key={option.value || 'default'} value={option.value}>{option.label}</option>)}
-              {form.thinking && !AGENT_THINKING_OPTIONS.some((option) => option.value === form.thinking) ? <option value={form.thinking}>{form.thinking}</option> : null}
+              {visibleThinkingOptions.map((option) => <option key={option.value || 'default'} value={option.value}>{option.label}</option>)}
             </select>
             <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
           </div>

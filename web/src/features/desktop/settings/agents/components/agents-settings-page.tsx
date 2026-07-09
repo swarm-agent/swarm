@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Plus, Settings2, Trash2 } from "lucide-react";
+import { ChevronDown, Plus, RefreshCcw, Settings2, Trash2 } from "lucide-react";
 import { requestJson } from "../../../../../app/api";
 import { Dialog, DialogBackdrop, DialogPanel } from "../../../../../components/ui/dialog";
 import { ModalCloseButton } from "../../../../../components/ui/modal-close-button";
@@ -31,6 +31,7 @@ import {
   agentToolPresetByID,
 } from "../../../chat/services/agent-tool-presets";
 import { defaultModelThinking, displayModelName, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from "../../../chat/services/model-options";
+import { checkModelCatalogSnapshot } from "../../../models/model-catalog-api";
 
 interface AgentFormState {
   name: string;
@@ -100,7 +101,7 @@ function displayListLabel(values: string[], fallback: string): string {
 }
 
 const NEW_AGENT_KEY = "__new__";
-const FALLBACK_AGENT_THINKING_OPTIONS = ["low", "medium", "high", "xhigh"];
+const FALLBACK_AGENT_THINKING_OPTIONS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
 function thinkingOptionLabel(value: string): string {
   if (value === "") return "Default";
@@ -125,14 +126,6 @@ function normalizeThinkingForModel(provider: string, model: string, modelOptions
   const fallback = defaultModelThinking(option);
   return fallback === "off" ? "" : fallback;
 }
-
-const UTILITY_THINKING_OPTIONS = [
-  { value: "off", label: "Off" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "xhigh", label: "X-High" },
-];
 
 function presetLabel(preset: { id: string; label: string }): string {
   return preset.label.trim() && preset.label !== preset.id
@@ -1201,6 +1194,16 @@ function UtilityAISettingsModal({
   const activeProvider = value.provider.trim() || providers[0]?.[0] || "";
   const activeModels =
     providers.find(([provider]) => provider === activeProvider)?.[1] ?? [];
+  const selectedOption = options.find(
+    (option) => option.provider === value.provider.trim() && option.model === value.model.trim(),
+  );
+  const utilityThinkingValues = selectedOption
+    ? modelThinkingOptions(selectedOption)
+    : ["off", ...FALLBACK_AGENT_THINKING_OPTIONS];
+  const utilityThinkingOptions = Array.from(new Set([
+    ...utilityThinkingValues,
+    ...(value.thinking.trim() ? [value.thinking.trim()] : []),
+  ])).map((thinking) => ({ value: thinking, label: thinkingOptionLabel(thinking) }));
   const selectedKey = modelOptionKey(value.provider.trim(), value.model.trim());
   const utilityAgentsLabel = displayListLabel(
     utilityAgents,
@@ -1309,10 +1312,9 @@ function UtilityAISettingsModal({
                             onChange({
                               provider,
                               model: selected?.model || "",
-                              thinking:
-                                selected?.thinking ||
-                                value.thinking ||
-                                defaultUtilityThinkingForProvider(provider),
+                              thinking: selected
+                                ? defaultModelThinking(selected)
+                                : defaultUtilityThinkingForProvider(provider),
                             });
                           }}
                           disabled={busy}
@@ -1354,10 +1356,7 @@ function UtilityAISettingsModal({
                             onChange({
                               provider: option.provider,
                               model: option.model,
-                              thinking:
-                                option.thinking ||
-                                value.thinking ||
-                                defaultUtilityThinkingForProvider(option.provider),
+                              thinking: defaultModelThinking(option),
                             });
                           }}
                           disabled={busy}
@@ -1399,7 +1398,7 @@ function UtilityAISettingsModal({
                   disabled={busy}
                   className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {UTILITY_THINKING_OPTIONS.map((option) => (
+                  {utilityThinkingOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -1458,11 +1457,20 @@ export function AgentsSettingsPage() {
     isFetching,
     refetch: refetchAgentState,
   } = useQuery(agentSettingsStateQueryOptions());
-  const { data: modelOptions = [] } = useQuery(modelOptionsQueryOptions());
+  const {
+    data: modelOptions = [],
+    isFetching: modelOptionsFetching,
+    refetch: refetchModelOptions,
+  } = useQuery({
+    ...modelOptionsQueryOptions(),
+    staleTime: 0,
+    refetchOnMount: "always",
+  });
 
   useEffect(() => {
     void refetchAgentState();
-  }, [refetchAgentState]);
+    void refetchModelOptions();
+  }, [refetchAgentState, refetchModelOptions]);
 
   const profiles = agentState?.profiles ?? [];
   const activePrimary = agentState?.activePrimary?.trim() || "swarm";
@@ -1689,6 +1697,22 @@ export function AgentsSettingsPage() {
     setStatus(null);
     setError(null);
     setViewMode("edit");
+  };
+
+  const handleRefreshModelOptions = async () => {
+    setError(null);
+    setStatus(null);
+    try {
+      const check = await checkModelCatalogSnapshot();
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: modelOptionsQueryOptions().queryKey }),
+        queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey }),
+      ]);
+      const version = check.refresh.snapshot_version?.trim();
+      setStatus(`Refreshed agent model options from snapshot${version ? ` ${version}` : ""}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to refresh agent model options");
+    }
   };
 
   const handleBackToList = () => {
@@ -2066,7 +2090,7 @@ export function AgentsSettingsPage() {
     Boolean(selectedProfile?.name) &&
     !Boolean(selectedProfile?.protected) &&
     (selectedMode !== "primary" || primaryAgents.length > 1);
-  const busy = saving || isFetching;
+  const busy = saving || isFetching || modelOptionsFetching;
 
   const subAgents = profiles.filter(
     (p) => (p.mode || "primary").toLowerCase() === "subagent",
@@ -2133,6 +2157,16 @@ export function AgentsSettingsPage() {
             >
               <Settings2 size={16} />
               Set Utility AI
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleRefreshModelOptions()}
+              disabled={busy}
+              className={actionButtonClassName("secondary")}
+              title="Refresh provider/model choices from the current model catalog."
+            >
+              <RefreshCcw size={16} className={modelOptionsFetching ? "animate-spin" : undefined} />
+              Refresh models
             </button>
             <button
               type="button"

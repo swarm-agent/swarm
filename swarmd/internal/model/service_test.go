@@ -198,6 +198,30 @@ func TestResolvePreferenceRejectsUnsupportedFireworksGLM51Thinking(t *testing.T)
 	}
 }
 
+func TestSetPreferenceForAccountAcceptsSnapshotExtendedThinkingLevels(t *testing.T) {
+	service, store := newTestModelService(t)
+	defer store.Close()
+
+	if err := service.catalog.store.SetRecord(pebblestore.ModelCatalogRecord{
+		Provider:        "codex",
+		Model:           "gpt-5.6-sol",
+		ThinkingOptions: []string{"off", "low", "medium", "high", "xhigh", "max", "ultra"},
+		DefaultThinking: "low",
+	}); err != nil {
+		t.Fatalf("set catalog record: %v", err)
+	}
+
+	for _, thinking := range []string{"max", "ultra"} {
+		resolved, _, err := service.SetPreferenceForAccount("account-a", "user-a", "codex", "gpt-5.6-sol", thinking)
+		if err != nil {
+			t.Fatalf("SetPreferenceForAccount(%q) returned error: %v", thinking, err)
+		}
+		if resolved.Preference.Thinking != thinking {
+			t.Fatalf("resolved thinking = %q, want %q", resolved.Preference.Thinking, thinking)
+		}
+	}
+}
+
 func TestResolvePreferenceUsesSnapshotContextMode(t *testing.T) {
 	service, store := newTestModelService(t)
 	defer store.Close()
