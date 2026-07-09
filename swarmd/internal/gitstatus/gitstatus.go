@@ -49,32 +49,27 @@ type RepoStatus struct {
 }
 
 type Snapshot struct {
-	WorkspacePath      string       `json:"workspace_path"`
-	RepoRoot           string       `json:"repo_root,omitempty"`
-	GitDir             string       `json:"git_dir,omitempty"`
-	HasGit             bool         `json:"has_git"`
-	Clean              bool         `json:"clean"`
-	Branch             string       `json:"branch,omitempty"`
-	HeadOID            string       `json:"head_oid,omitempty"`
-	Upstream           string       `json:"upstream,omitempty"`
-	AheadCount         int          `json:"ahead_count"`
-	BehindCount        int          `json:"behind_count"`
-	StashCount         int          `json:"stash_count"`
-	DirtyCount         int          `json:"dirty_count"`
-	Additions          int          `json:"additions,omitempty"`
-	Deletions          int          `json:"deletions,omitempty"`
-	CommittedFileCount int          `json:"committed_file_count,omitempty"`
-	CommittedAdditions int          `json:"committed_additions,omitempty"`
-	CommittedDeletions int          `json:"committed_deletions,omitempty"`
-	StagedCount        int          `json:"staged_count"`
-	ModifiedCount      int          `json:"modified_count"`
-	UntrackedCount     int          `json:"untracked_count"`
-	ConflictCount      int          `json:"conflict_count"`
-	Files              []FileStatus `json:"files"`
-	Remotes            []Remote     `json:"remotes,omitempty"`
-	RecentCommits      []Commit     `json:"recent_commits,omitempty"`
-	RefreshedAt        time.Time    `json:"refreshed_at"`
-	DurationMS         int64        `json:"duration_ms"`
+	WorkspacePath  string       `json:"workspace_path"`
+	RepoRoot       string       `json:"repo_root,omitempty"`
+	GitDir         string       `json:"git_dir,omitempty"`
+	HasGit         bool         `json:"has_git"`
+	Clean          bool         `json:"clean"`
+	Branch         string       `json:"branch,omitempty"`
+	HeadOID        string       `json:"head_oid,omitempty"`
+	Upstream       string       `json:"upstream,omitempty"`
+	AheadCount     int          `json:"ahead_count"`
+	BehindCount    int          `json:"behind_count"`
+	StashCount     int          `json:"stash_count"`
+	DirtyCount     int          `json:"dirty_count"`
+	StagedCount    int          `json:"staged_count"`
+	ModifiedCount  int          `json:"modified_count"`
+	UntrackedCount int          `json:"untracked_count"`
+	ConflictCount  int          `json:"conflict_count"`
+	Files          []FileStatus `json:"files"`
+	Remotes        []Remote     `json:"remotes,omitempty"`
+	RecentCommits  []Commit     `json:"recent_commits,omitempty"`
+	RefreshedAt    time.Time    `json:"refreshed_at"`
+	DurationMS     int64        `json:"duration_ms"`
 }
 
 type FileStatus struct {
@@ -169,15 +164,11 @@ func SnapshotForPath(ctx context.Context, path string, opts Options) (Snapshot, 
 	if snapshot.Branch == "-" {
 		snapshot.Branch = ""
 	}
-	populateWorkingTreeDiffStats(ctx, &snapshot, target)
 	if opts.BaseBranch != "" {
 		status := RepoStatus{AheadCount: snapshot.AheadCount, BehindCount: snapshot.BehindCount}
 		populateCommittedDiffStats(&status, target, opts.BaseBranch)
 		snapshot.AheadCount = status.AheadCount
 		snapshot.BehindCount = status.BehindCount
-		snapshot.CommittedFileCount = status.CommittedFileCount
-		snapshot.CommittedAdditions = status.CommittedAdditions
-		snapshot.CommittedDeletions = status.CommittedDeletions
 	}
 	if opts.IncludeDetails {
 		snapshot.Remotes = listRemotes(ctx, target)
@@ -382,37 +373,6 @@ func parseCount(value string) int {
 		return 0
 	}
 	return count
-}
-
-func populateWorkingTreeDiffStats(ctx context.Context, snapshot *Snapshot, target string) {
-	if snapshot == nil {
-		return
-	}
-	for _, args := range [][]string{
-		{"diff", "--numstat"},
-		{"diff", "--numstat", "--cached"},
-	} {
-		raw, err := gitOutputContext(ctx, target, args...)
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(raw), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			fields := strings.Split(line, "\t")
-			if len(fields) < 3 {
-				continue
-			}
-			if fields[0] != "-" {
-				snapshot.Additions += parseCount(fields[0])
-			}
-			if fields[1] != "-" {
-				snapshot.Deletions += parseCount(fields[1])
-			}
-		}
-	}
 }
 
 func populateCommittedDiffStats(status *RepoStatus, target, baseBranch string) {

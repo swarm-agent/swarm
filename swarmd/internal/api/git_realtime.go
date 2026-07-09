@@ -2,10 +2,8 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -17,8 +15,6 @@ import (
 
 	"swarm/packages/swarmd/internal/gitstatus"
 	"swarm/packages/swarmd/internal/identity"
-	sessionruntime "swarm/packages/swarmd/internal/session"
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const (
@@ -196,105 +192,20 @@ func (r *gitRealtimeRepo) refreshAndPublish(previous string) string {
 	if fingerprint == previous {
 		return fingerprint
 	}
-	if r.manager == nil || r.manager.server == nil {
+	if r.manager == nil || r.manager.server == nil || r.manager.server.events == nil || r.manager.server.hub == nil {
 		return fingerprint
 	}
-	if err := r.manager.server.publishGitStatusV3Realtime(r.workspacePath, snapshot); err != nil {
-		log.Printf("git realtime v3 publish failed workspace=%q err=%v", r.workspacePath, err)
+	payload, err := json.Marshal(gitRealtimePayload{WorkspacePath: r.workspacePath, Status: snapshot})
+	if err != nil {
 		return fingerprint
 	}
+	event, err := r.manager.server.events.Append("workspace_git:"+r.workspacePath, "workspace.git.status.updated", r.workspacePath, payload, "", "")
+	if err != nil {
+		log.Printf("git realtime event append failed workspace=%q err=%v", r.workspacePath, err)
+		return fingerprint
+	}
+	r.manager.server.hub.Publish(event)
 	return fingerprint
-}
-
-func (s *Server) publishGitStatusV3Realtime(workspacePath string, snapshot gitstatus.Snapshot) error {
-	if s == nil || s.sessions == nil {
-		return nil
-	}
-	payload, err := json.Marshal(gitRealtimePayload{WorkspacePath: workspacePath, Status: snapshot})
-	if err != nil {
-		return err
-	}
-	principalSessions, err := s.gitRealtimeSessionsForWorkspace(workspacePath)
-	if err != nil {
-		return err
-	}
-	if len(principalSessions) == 0 {
-		return nil
-	}
-	now := time.Now().UnixMilli()
-	hash := sha256.Sum256(payload)
-	for _, session := range principalSessions {
-		sessionID := strings.TrimSpace(session.ID)
-		userID := strings.TrimSpace(session.UserID)
-		accountScopeID := strings.TrimSpace(session.AccountScopeID)
-		if sessionID == "" || userID == "" || accountScopeID == "" {
-			continue
-		}
-		input := sessionruntime.SessionMutationInput{
-			SessionID:       sessionID,
-			UserID:          userID,
-			AccountScopeID:  accountScopeID,
-			ClientRequestID: fmt.Sprintf("git-status:%s:%d:%x", sessionID, now, hash[:8]),
-			IdempotencyKey:  fmt.Sprintf("git-status:%s:%d:%x", sessionID, now, hash[:8]),
-			PayloadHash:     fmt.Sprintf("sha256:%x", hash),
-			RequestHash:     fmt.Sprintf("sha256:%x", hash),
-			Kind:            "workspace.git.status.update",
-			EventType:       "workspace.git.status.updated",
-			EventPayload:    payload,
-			NowUnixMs:       now,
-		}
-		if _, err := s.applySessionV3PrimaryMutation(input); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Server) gitRealtimeSessionsForWorkspace(workspacePath string) ([]pebblestore.SessionSnapshot, error) {
-	workspacePath = gitstatus.NormalizePath(workspacePath)
-	if s == nil || s.sessions == nil || workspacePath == "" {
-		return nil, nil
-	}
-	workset, err := s.sessions.BuildSessionWorkset(pebblestore.V3SessionWorksetOptions{
-		Global:        true,
-		WorkspacePath: workspacePath,
-	})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]pebblestore.SessionSnapshot, 0, len(workset.SessionsByID))
-	for _, session := range workset.SessionsByID {
-		if strings.TrimSpace(session.UserID) == "" || strings.TrimSpace(session.AccountScopeID) == "" {
-			continue
-		}
-		if !gitRealtimeSessionMatchesWorkspace(session, workspacePath) {
-			continue
-		}
-		out = append(out, session)
-	}
-	return out, nil
-}
-
-func gitRealtimeSessionMatchesWorkspace(session pebblestore.SessionSnapshot, workspacePath string) bool {
-	workspacePath = gitstatus.NormalizePath(workspacePath)
-	if workspacePath == "" {
-		return false
-	}
-	for _, candidate := range []string{
-		session.WorkspacePath,
-		session.WorktreeRootPath,
-		metadataMapString(session.Metadata, "swarm_v3_source_workspace_path"),
-		metadataMapString(session.Metadata, "swarm_v2_source_workspace_path"),
-		metadataMapString(session.Metadata, "swarm_v3_tui_cwd_path"),
-		metadataMapString(session.Metadata, "swarm_v3_tui_original_cwd_path"),
-		metadataMapString(session.Metadata, "swarm_v3_tui_worktree_path"),
-	} {
-		candidate = gitstatus.NormalizePath(candidate)
-		if candidate == workspacePath {
-			return true
-		}
-	}
-	return false
 }
 
 func (r *gitRealtimeRepo) watchFingerprint() string {
@@ -353,41 +264,31 @@ func gitRealtimeMetadataWatchPaths(paths gitstatus.WatchPaths) []string {
 
 func gitSnapshotFingerprint(snapshot gitstatus.Snapshot) string {
 	payload, err := json.Marshal(struct {
-		Branch             string                 `json:"branch"`
-		HeadOID            string                 `json:"head_oid"`
-		Upstream           string                 `json:"upstream"`
-		AheadCount         int                    `json:"ahead_count"`
-		BehindCount        int                    `json:"behind_count"`
-		StashCount         int                    `json:"stash_count"`
-		DirtyCount         int                    `json:"dirty_count"`
-		Additions          int                    `json:"additions"`
-		Deletions          int                    `json:"deletions"`
-		CommittedFileCount int                    `json:"committed_file_count"`
-		CommittedAdditions int                    `json:"committed_additions"`
-		CommittedDeletions int                    `json:"committed_deletions"`
-		StagedCount        int                    `json:"staged_count"`
-		ModifiedCount      int                    `json:"modified_count"`
-		UntrackedCount     int                    `json:"untracked_count"`
-		ConflictCount      int                    `json:"conflict_count"`
-		Files              []gitstatus.FileStatus `json:"files"`
+		Branch         string                 `json:"branch"`
+		HeadOID        string                 `json:"head_oid"`
+		Upstream       string                 `json:"upstream"`
+		AheadCount     int                    `json:"ahead_count"`
+		BehindCount    int                    `json:"behind_count"`
+		StashCount     int                    `json:"stash_count"`
+		DirtyCount     int                    `json:"dirty_count"`
+		StagedCount    int                    `json:"staged_count"`
+		ModifiedCount  int                    `json:"modified_count"`
+		UntrackedCount int                    `json:"untracked_count"`
+		ConflictCount  int                    `json:"conflict_count"`
+		Files          []gitstatus.FileStatus `json:"files"`
 	}{
-		Branch:             snapshot.Branch,
-		HeadOID:            snapshot.HeadOID,
-		Upstream:           snapshot.Upstream,
-		AheadCount:         snapshot.AheadCount,
-		BehindCount:        snapshot.BehindCount,
-		StashCount:         snapshot.StashCount,
-		DirtyCount:         snapshot.DirtyCount,
-		Additions:          snapshot.Additions,
-		Deletions:          snapshot.Deletions,
-		CommittedFileCount: snapshot.CommittedFileCount,
-		CommittedAdditions: snapshot.CommittedAdditions,
-		CommittedDeletions: snapshot.CommittedDeletions,
-		StagedCount:        snapshot.StagedCount,
-		ModifiedCount:      snapshot.ModifiedCount,
-		UntrackedCount:     snapshot.UntrackedCount,
-		ConflictCount:      snapshot.ConflictCount,
-		Files:              snapshot.Files,
+		Branch:         snapshot.Branch,
+		HeadOID:        snapshot.HeadOID,
+		Upstream:       snapshot.Upstream,
+		AheadCount:     snapshot.AheadCount,
+		BehindCount:    snapshot.BehindCount,
+		StashCount:     snapshot.StashCount,
+		DirtyCount:     snapshot.DirtyCount,
+		StagedCount:    snapshot.StagedCount,
+		ModifiedCount:  snapshot.ModifiedCount,
+		UntrackedCount: snapshot.UntrackedCount,
+		ConflictCount:  snapshot.ConflictCount,
+		Files:          snapshot.Files,
 	})
 	if err != nil {
 		return snapshot.RefreshedAt.String()

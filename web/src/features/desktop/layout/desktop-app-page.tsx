@@ -494,14 +494,6 @@ export function desktopSidebarWorkspacePathForSession(
   return session.workspacePath.trim()
 }
 
-export function desktopGitWorkspacePathForSession(
-  session: Pick<DesktopSessionRecord, 'workspacePath' | 'worktreeRootPath'> | null | undefined,
-): string {
-  const worktreePath = session?.worktreeRootPath?.trim()
-  if (worktreePath) return worktreePath
-  return session?.workspacePath.trim() ?? ''
-}
-
 export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): DesktopSessionRecord {
   const record = row.record
   const session = record.kind === 'full'
@@ -2071,7 +2063,6 @@ export function DesktopAppPage() {
   const activeChatSessionIdRef = useRef<string | null>(null)
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
-  const startedGitRealtimePathsRef = useRef<Set<string>>(new Set())
   const workspaceByPath = useMemo<Map<string, WorkspaceEntry>>(
     () => new Map(workspaces.map((workspace) => [workspace.path, workspace] as const)),
     [workspaces],
@@ -2128,6 +2119,45 @@ export function DesktopAppPage() {
     [mergedSidebarWorkspaceEntries, workspaceLayout],
   )
   const visibleWorkspacePaths = useMemo<string[]>(() => visibleSidebarWorkspaceEntries.map((workspace) => workspace.path), [visibleSidebarWorkspaceEntries])
+  const selectedGitWorkspacePath = selectedWorkspacePath ?? visibleWorkspacePaths[0] ?? ''
+
+  const gitStatusQuery = useQuery({
+    queryKey: gitStatusQueryKey(selectedGitWorkspacePath),
+    queryFn: () => fetchGitStatus(selectedGitWorkspacePath, 12),
+    enabled: selectedGitWorkspacePath.trim() !== '',
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+  })
+  const gitSnapshot = gitStatusQuery.data?.status ?? null
+  const gitSnapshotByPath = useMemo(() => {
+    const entries = new Map<string, GitSnapshot>()
+    if (gitSnapshot?.workspace_path) entries.set(gitSnapshot.workspace_path, gitSnapshot)
+    if (selectedGitWorkspacePath && gitSnapshot) entries.set(selectedGitWorkspacePath, gitSnapshot)
+    return entries
+  }, [gitSnapshot, selectedGitWorkspacePath])
+
+  useEffect(() => {
+    let cancelled = false
+    visibleWorkspacePaths.forEach((workspacePath) => {
+      void startGitRealtime(workspacePath)
+        .then(() => {
+          if (!cancelled) {
+            setGitRealtimeErrors((current) => {
+              if (!current[workspacePath]) return current
+              const next = { ...current }
+              delete next[workspacePath]
+              return next
+            })
+          }
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setGitRealtimeErrors((current) => ({ ...current, [workspacePath]: error instanceof Error ? error.message : String(error) }))
+          }
+        })
+    })
+    return () => { cancelled = true }
+  }, [visibleWorkspacePaths])
 
   const overviewQuery = useQuery({
     ...workspaceOverviewQueryOptions([], 25),
@@ -2431,61 +2461,6 @@ export function DesktopAppPage() {
     () => new Map(desktopStateSessions.map((session) => [session.id, session] as const)),
     [desktopStateSessions],
   )
-  const routeGitSession = routeSessionId ? sessionById.get(routeSessionId) ?? null : null
-  const selectedGitWorkspacePath = desktopGitWorkspacePathForSession(routeGitSession) || selectedWorkspacePath || visibleWorkspacePaths[0] || ''
-  const gitRealtimeWorkspacePaths = useMemo(() => {
-    const paths = new Set<string>()
-    for (const workspacePath of visibleWorkspacePaths) {
-      const normalized = workspacePath.trim()
-      if (normalized) paths.add(normalized)
-    }
-    const selectedGitPath = selectedGitWorkspacePath.trim()
-    if (selectedGitPath) paths.add(selectedGitPath)
-    return Array.from(paths)
-  }, [selectedGitWorkspacePath, visibleWorkspacePaths])
-
-  const gitStatusQuery = useQuery({
-    queryKey: gitStatusQueryKey(selectedGitWorkspacePath),
-    queryFn: () => fetchGitStatus(selectedGitWorkspacePath, 12),
-    enabled: selectedGitWorkspacePath.trim() !== '',
-    staleTime: 0,
-    refetchOnWindowFocus: true,
-  })
-  const gitSnapshot = gitStatusQuery.data?.status ?? null
-  const gitSnapshotByPath = useMemo(() => {
-    const entries = new Map<string, GitSnapshot>()
-    if (gitSnapshot?.workspace_path) entries.set(gitSnapshot.workspace_path, gitSnapshot)
-    if (selectedGitWorkspacePath && gitSnapshot) entries.set(selectedGitWorkspacePath, gitSnapshot)
-    return entries
-  }, [gitSnapshot, selectedGitWorkspacePath])
-
-  useEffect(() => {
-    let cancelled = false
-    gitRealtimeWorkspacePaths.forEach((workspacePath) => {
-      const normalizedPath = workspacePath.trim()
-      if (!normalizedPath || startedGitRealtimePathsRef.current.has(normalizedPath)) return
-      startedGitRealtimePathsRef.current.add(normalizedPath)
-      void startGitRealtime(normalizedPath)
-        .then(() => {
-          if (!cancelled) {
-            setGitRealtimeErrors((current) => {
-              if (!current[normalizedPath]) return current
-              const next = { ...current }
-              delete next[normalizedPath]
-              return next
-            })
-          }
-        })
-        .catch((error) => {
-          startedGitRealtimePathsRef.current.delete(normalizedPath)
-          if (!cancelled) {
-            setGitRealtimeErrors((current) => ({ ...current, [normalizedPath]: error instanceof Error ? error.message : String(error) }))
-          }
-        })
-    })
-    return () => { cancelled = true }
-  }, [gitRealtimeWorkspacePaths])
-
   const workspaceSlugByPath = useMemo(() => {
     const routeWorkspaces: Array<Pick<WorkspaceEntry, 'path' | 'workspaceName'>> = mergedSidebarWorkspaceEntries.map((workspace) => ({
       path: workspace.path,
@@ -3820,7 +3795,6 @@ export function DesktopAppPage() {
             modeCommand={sessionModeCommand}
             onModeCommandHandled={() => setSessionModeCommand(null)}
             session={sessionById.get(routeSessionId) ?? null}
-            gitSnapshot={selectedGitWorkspacePath ? gitSnapshotByPath.get(selectedGitWorkspacePath) ?? gitSnapshot : gitSnapshot}
             routeOptions={sessionById.get(routeSessionId) ? (() => {
               const sessionWorkspacePath = desktopSidebarWorkspacePathForSession(sessionById.get(routeSessionId)!, workspacePathByBindingId)
               const sessionWorkspace = mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === sessionWorkspacePath) ?? null

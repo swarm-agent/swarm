@@ -15,7 +15,6 @@ import type {
   DesktopSessionPlanRevisionRecord,
 } from "../types/chat";
 import type { DesktopPlanExecutionView } from "../../state/desktop-v3-cache-selectors";
-import type { GitSnapshot } from "../../git/types";
 
 type HostElement = ReactElement<
   {
@@ -190,35 +189,6 @@ function renderPlanModal(
   );
 }
 
-function gitSnapshot(overrides: Partial<GitSnapshot> = {}): GitSnapshot {
-  return {
-    workspace_path: "/repo",
-    has_git: true,
-    clean: false,
-    branch: "agent/sidebar",
-    ahead_count: 0,
-    behind_count: 0,
-    stash_count: 0,
-    dirty_count: 2,
-    staged_count: 1,
-    modified_count: 1,
-    untracked_count: 1,
-    conflict_count: 0,
-    additions: 42,
-    deletions: 7,
-    committed_file_count: 3,
-    committed_additions: 42,
-    committed_deletions: 7,
-    files: [
-      { kind: "ordinary", xy: " M", path: "web/src/app.tsx", modified: true },
-      { kind: "untracked", xy: "??", path: "notes.md", untracked: true },
-    ],
-    refreshed_at: "2026-01-01T00:00:00Z",
-    duration_ms: 4,
-    ...overrides,
-  };
-}
-
 function view(
   overrides: Partial<DesktopPlanExecutionView> = {},
 ): DesktopPlanExecutionView {
@@ -387,29 +357,6 @@ test("automatic checkpointed mode sidebar actions card explains continuation and
   assert.doesNotMatch(markup, /Inherit global default/);
   assert.doesNotMatch(markup, /Auto-add only/);
   assert.doesNotMatch(markup, /role="switch"/);
-});
-
-test("sidebar renders files changed as the third section with counts and changed paths", () => {
-  const markup = renderToStaticMarkup(
-    <DesktopPlanExecutionSidebar
-      view={view()}
-      gitSnapshot={gitSnapshot()}
-      onAction={() => undefined}
-      onEditPlan={() => undefined}
-    />,
-  );
-
-  const activeIndex = markup.indexOf("Active checkpoint");
-  const actionsIndex = markup.indexOf("Actions");
-  const filesIndex = markup.indexOf("Files Changed");
-  assert(activeIndex >= 0, "expected active checkpoint section");
-  assert(actionsIndex > activeIndex, "expected actions section after plan section");
-  assert(filesIndex > actionsIndex, "expected Files Changed as third section");
-  assert.match(markup, /3 files/);
-  assert.match(markup, /\+42/);
-  assert.match(markup, /-7/);
-  assert.match(markup, /web\/src\/app\.tsx/);
-  assert.match(markup, /notes\.md/);
 });
 
 test("blocked checkpoint sidebar shows unblock controls without automatic pause controls", () => {

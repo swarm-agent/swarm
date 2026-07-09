@@ -1,7 +1,4 @@
 import { ensureDesktopSession } from '../../../app/api'
-import { queryClient } from '../../../app/query-client'
-import { gitStatusQueryKey } from '../git/api'
-import type { GitSnapshot, GitStatusRealtimePayload } from '../git/types'
 import { DesktopV3RealtimeTransport, type DesktopV3RealtimeTransportStatus } from '../session-v3/transport'
 import type { SessionV3RealtimeWorksetSubscriptionRequestWire } from '../session-v3/types'
 import { DesktopV3LivePatchCoordinator, createDefaultDesktopV3LivePatchCoordinatorDeps } from './v3-live-patch-coordinator'
@@ -341,7 +338,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     try {
       this.livePatchCoordinator.beforeDurableFrame(frame)
       await commitDesktopV3StreamFrame(this.streamCommit, frame)
-      this.applyGitStatusRealtimeFrame(frame)
       this.livePatchCoordinator.afterDurableFrame(frame)
       if (frame.kind === 'event' || frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.updated' || frame.kind === 'workset.session.removed') {
         // Reconcile after durable state commits. Workset frames update transport
@@ -355,19 +351,6 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       this.livePatchCoordinator.resetGeneration(0)
       this.handleDurableStreamCommitFailure(error)
       throw error
-    }
-  }
-
-  private applyGitStatusRealtimeFrame(frame: RealtimeMessage): void {
-    const payload = gitStatusRealtimePayloadFromFrame(frame)
-    if (!payload) return
-    const workspacePath = payload.workspace_path.trim()
-    if (!workspacePath) return
-    const response = { ok: true as const, status: payload.status }
-    queryClient.setQueryData(gitStatusQueryKey(workspacePath), response)
-    const snapshotWorkspacePath = payload.status.workspace_path?.trim()
-    if (snapshotWorkspacePath && snapshotWorkspacePath !== workspacePath) {
-      queryClient.setQueryData(gitStatusQueryKey(snapshotWorkspacePath), response)
     }
   }
 
@@ -694,29 +677,6 @@ function firstRealtimeString(...values: unknown[]): string {
 
 function realtimeStringValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
-}
-
-function gitStatusRealtimePayloadFromFrame(frame: RealtimeMessage): GitStatusRealtimePayload | undefined {
-  if (frame.kind !== 'event') return undefined
-  const eventType = frame.event_type || frame.event?.event_type || ''
-  if (eventType !== 'workspace.git.status.updated') return undefined
-  const raw = frame.event?.payload ?? frame.payload
-  const payload = typeof raw === 'string'
-    ? parseRealtimeJsonRecord(raw)
-    : realtimeRecordValue(raw)
-  if (!payload) return undefined
-  const workspacePath = realtimeStringValue(payload.workspace_path).trim()
-  const status = gitSnapshotValue(payload.status)
-  if (!workspacePath || !status) return undefined
-  return { workspace_path: workspacePath, status }
-}
-
-function gitSnapshotValue(value: unknown): GitSnapshot | undefined {
-  const snapshot = realtimeRecordValue(value)
-  if (!snapshot) return undefined
-  if (!realtimeStringValue(snapshot.workspace_path).trim()) return undefined
-  if (!Array.isArray(snapshot.files)) return undefined
-  return snapshot as unknown as GitSnapshot
 }
 
 function realtimeRecordValue(value: unknown): Record<string, unknown> | undefined {
