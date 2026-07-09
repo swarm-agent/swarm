@@ -151,6 +151,145 @@ func TestTUISessionStoreMessageResultDoesNotReplaceTUIEndpointCursor(t *testing.
 	}
 }
 
+func TestTUISessionStoreOrdersHydratedEventsAndMessages(t *testing.T) {
+	store := newTUISessionStore()
+	store.MergeHydrated(client.SessionV3Hydrated{
+		Session:    client.SessionSummary{ID: "a", SessionAPI: "v3"},
+		Projection: client.SessionV3Projection{SessionID: "a", LastEventSeq: 3},
+		Messages: []client.SessionMessage{
+			{ID: "m3", SessionID: "a", GlobalSeq: 30, CreatedAt: 300},
+			{ID: "m1", SessionID: "a", GlobalSeq: 10, CreatedAt: 100},
+			{ID: "m2", SessionID: "a", GlobalSeq: 20, CreatedAt: 200},
+		},
+		Events: []client.SessionV3Event{
+			{ID: "e3", SessionID: "a", Seq: 3, TsUnixMS: 300},
+			{ID: "e1", SessionID: "a", Seq: 1, TsUnixMS: 100},
+			{ID: "e2", SessionID: "a", Seq: 2, TsUnixMS: 200},
+		},
+	})
+
+	snapshot, ok := store.ChatSnapshot("a")
+	if !ok {
+		t.Fatalf("ChatSnapshot missing")
+	}
+	if got := sessionMessageIDs(snapshot.Messages); !reflect.DeepEqual(got, []string{"m1", "m2", "m3"}) {
+		t.Fatalf("hydrated messages order = %#v", got)
+	}
+	if got := sessionEventIDs(snapshot.Events); !reflect.DeepEqual(got, []string{"e1", "e2", "e3"}) {
+		t.Fatalf("hydrated events order = %#v", got)
+	}
+}
+
+func TestTUISessionStoreMergeResultOrdersAndReplacesEventsAndMessages(t *testing.T) {
+	store := newTUISessionStore()
+	result := store.MergeMessageResult(client.SessionV3MessageResult{
+		Session: client.SessionSummary{ID: "a", SessionAPI: "v3"},
+		Messages: []client.SessionMessage{
+			{ID: "m2", SessionID: "a", GlobalSeq: 2, CreatedAt: 200, Content: "old"},
+			{ID: "m1", SessionID: "a", GlobalSeq: 1, CreatedAt: 100, Content: "one"},
+		},
+		Events: []client.SessionV3Event{
+			{ID: "e2", SessionID: "a", Seq: 2, TsUnixMS: 200, EventType: "two"},
+			{ID: "e1", SessionID: "a", Seq: 1, TsUnixMS: 100, EventType: "one"},
+		},
+	})
+	if !result.Changed {
+		t.Fatalf("initial merge did not change store: %#v", result)
+	}
+	result = store.MergeMessageResult(client.SessionV3MessageResult{
+		Session: client.SessionSummary{ID: "a", SessionAPI: "v3"},
+		Message: client.SessionMessage{ID: "m2", SessionID: "a", GlobalSeq: 2, CreatedAt: 200, Content: "updated"},
+		Events: []client.SessionV3Event{
+			{ID: "e2", SessionID: "a", Seq: 2, TsUnixMS: 200, EventType: "updated"},
+			{ID: "e3", SessionID: "a", Seq: 3, TsUnixMS: 300, EventType: "three"},
+		},
+	})
+	if !result.Changed {
+		t.Fatalf("replacement merge did not change store: %#v", result)
+	}
+
+	snapshot, ok := store.ChatSnapshot("a")
+	if !ok {
+		t.Fatalf("ChatSnapshot missing")
+	}
+	if got := sessionMessageIDs(snapshot.Messages); !reflect.DeepEqual(got, []string{"m1", "m2"}) {
+		t.Fatalf("merged messages order = %#v", got)
+	}
+	if snapshot.Messages[1].Content != "updated" {
+		t.Fatalf("replacement message not retained: %#v", snapshot.Messages)
+	}
+	if got := sessionEventIDs(snapshot.Events); !reflect.DeepEqual(got, []string{"e1", "e2", "e3"}) {
+		t.Fatalf("merged events order = %#v", got)
+	}
+	if snapshot.Events[1].EventType != "updated" {
+		t.Fatalf("replacement event not retained: %#v", snapshot.Events)
+	}
+}
+
+func TestTUISessionStoreRealtimeMessagesRetainSeqOrderAndReplacement(t *testing.T) {
+	store := newTUISessionStore()
+	store.ResetFromWorkset(client.SessionV3Workset{
+		SessionsByID:      map[string]client.SessionSummary{"a": {ID: "a", SessionAPI: "v3"}},
+		SessionOrder:      []string{"a"},
+		MessagesBySession: map[string][]client.SessionMessage{},
+		EventsBySession:   map[string][]client.SessionV3Event{},
+	})
+
+	frames := []client.V3RealtimeFrame{
+		realtimeMessageFrame("a", "e1", 1, client.SessionMessage{ID: "m3", SessionID: "a", GlobalSeq: 30, CreatedAt: 300, Content: "three"}),
+		realtimeMessageFrame("a", "e2", 2, client.SessionMessage{ID: "m1", SessionID: "a", GlobalSeq: 10, CreatedAt: 100, Content: "one"}),
+		realtimeMessageFrame("a", "e3", 3, client.SessionMessage{ID: "m2", SessionID: "a", GlobalSeq: 20, CreatedAt: 200, Content: "two"}),
+	}
+	for _, frame := range frames {
+		result := store.ApplyRealtimeFrame(frame)
+		if !result.Changed {
+			t.Fatalf("realtime message frame did not change store: frame=%#v result=%#v", frame, result)
+		}
+	}
+
+	snapshot, ok := store.ChatSnapshot("a")
+	if !ok {
+		t.Fatalf("ChatSnapshot missing")
+	}
+	if got := sessionMessageIDs(snapshot.Messages); !reflect.DeepEqual(got, []string{"m1", "m2", "m3"}) {
+		t.Fatalf("realtime messages order = %#v", got)
+	}
+	if got := sessionEventIDs(snapshot.Events); !reflect.DeepEqual(got, []string{"e1", "e2", "e3"}) {
+		t.Fatalf("realtime events order = %#v", got)
+	}
+
+	result := store.MergeMessageResult(client.SessionV3MessageResult{
+		Session: client.SessionSummary{ID: "a", SessionAPI: "v3"},
+		Message: client.SessionMessage{
+			ID:        "m2",
+			SessionID: "a",
+			GlobalSeq: 20,
+			CreatedAt: 200,
+			Content:   "updated",
+		},
+		Events: []client.SessionV3Event{{ID: "e2", SessionID: "a", Seq: 2, TsUnixMS: 200, EventType: "message.updated"}},
+	})
+	if !result.Changed {
+		t.Fatalf("duplicate replacement did not change store: %#v", result)
+	}
+	snapshot, ok = store.ChatSnapshot("a")
+	if !ok {
+		t.Fatalf("ChatSnapshot missing after replacement")
+	}
+	if got := sessionMessageIDs(snapshot.Messages); !reflect.DeepEqual(got, []string{"m1", "m2", "m3"}) {
+		t.Fatalf("messages order after replacement = %#v", got)
+	}
+	if snapshot.Messages[1].Content != "updated" {
+		t.Fatalf("replacement message not retained in order: %#v", snapshot.Messages)
+	}
+	if got := sessionEventIDs(snapshot.Events); !reflect.DeepEqual(got, []string{"e1", "e2", "e3"}) {
+		t.Fatalf("events order after replacement = %#v", got)
+	}
+	if snapshot.Events[1].EventType != "message.updated" {
+		t.Fatalf("replacement event not retained in order: %#v", snapshot.Events)
+	}
+}
+
 func TestTUISessionStoreHydrationDoesNotReplaceTUIEndpointCursor(t *testing.T) {
 	store := newTUISessionStore()
 	store.ResetFromWorkset(client.SessionV3Workset{
@@ -266,10 +405,32 @@ func realtimeEventFrame(sessionID string, seq uint64, eventType string, payload 
 	return client.V3RealtimeFrame{Kind: tuiRealtimeKindEvent, SessionID: sessionID, EventType: eventType, LastSeq: seq, Event: &event}
 }
 
+func realtimeMessageFrame(sessionID, eventID string, seq uint64, message client.SessionMessage) client.V3RealtimeFrame {
+	raw, _ := json.Marshal(map[string]any{"message": message})
+	event := client.SessionV3Event{ID: eventID, SessionID: sessionID, Seq: seq, EventType: "message.updated", Payload: raw, TsUnixMS: message.CreatedAt}
+	return client.V3RealtimeFrame{Kind: tuiRealtimeKindEvent, SessionID: sessionID, EventType: event.EventType, LastSeq: seq, Event: &event}
+}
+
 func sessionIDs(sessions []model.SessionSummary) []string {
 	ids := make([]string, 0, len(sessions))
 	for _, session := range sessions {
 		ids = append(ids, session.ID)
+	}
+	return ids
+}
+
+func sessionMessageIDs(messages []client.SessionMessage) []string {
+	ids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		ids = append(ids, message.ID)
+	}
+	return ids
+}
+
+func sessionEventIDs(events []client.SessionV3Event) []string {
+	ids := make([]string, 0, len(events))
+	for _, event := range events {
+		ids = append(ids, event.ID)
 	}
 	return ids
 }

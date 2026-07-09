@@ -915,7 +915,7 @@ func cloneSessionMessages(in []client.SessionMessage) []client.SessionMessage {
 	for i := range out {
 		out[i].Metadata = cloneMetadataMap(out[i].Metadata)
 	}
-	return out
+	return sortSessionMessages(out)
 }
 
 func cloneSessionV3Events(in []client.SessionV3Event) []client.SessionV3Event {
@@ -923,7 +923,7 @@ func cloneSessionV3Events(in []client.SessionV3Event) []client.SessionV3Event {
 	for i := range in {
 		out[i] = cloneSessionV3Event(in[i])
 	}
-	return out
+	return sortSessionV3Events(out)
 }
 
 func clonePermissionRecords(in []client.PermissionRecord) []client.PermissionRecord {
@@ -1040,13 +1040,41 @@ func orderedSessionIDs(workset client.SessionV3Workset) []string {
 }
 
 func appendOrReplaceMessage(items []client.SessionMessage, item client.SessionMessage) []client.SessionMessage {
+	id := strings.TrimSpace(item.ID)
 	for i := range items {
-		if strings.TrimSpace(items[i].ID) == strings.TrimSpace(item.ID) {
+		if strings.TrimSpace(items[i].ID) == id {
 			items[i] = item
-			return items
+			return sortSessionMessages(items)
 		}
 	}
-	return append(items, item)
+	return sortSessionMessages(append(items, item))
+}
+
+func sortSessionMessages(items []client.SessionMessage) []client.SessionMessage {
+	sort.SliceStable(items, func(i, j int) bool {
+		left := items[i]
+		right := items[j]
+		if left.GlobalSeq != right.GlobalSeq {
+			if left.GlobalSeq == 0 {
+				return false
+			}
+			if right.GlobalSeq == 0 {
+				return true
+			}
+			return left.GlobalSeq < right.GlobalSeq
+		}
+		if left.CreatedAt != right.CreatedAt {
+			if left.CreatedAt == 0 {
+				return false
+			}
+			if right.CreatedAt == 0 {
+				return true
+			}
+			return left.CreatedAt < right.CreatedAt
+		}
+		return strings.TrimSpace(left.ID) < strings.TrimSpace(right.ID)
+	})
+	return items
 }
 
 func appendOrReplaceV3Event(items []client.SessionV3Event, item client.SessionV3Event) []client.SessionV3Event {
@@ -1055,14 +1083,41 @@ func appendOrReplaceV3Event(items []client.SessionV3Event, item client.SessionV3
 	for i := range items {
 		if id != "" && strings.TrimSpace(items[i].ID) == id {
 			items[i] = item
-			return items
+			return sortSessionV3Events(items)
 		}
 		if id == "" && seq != 0 && items[i].Seq == seq {
 			items[i] = item
-			return items
+			return sortSessionV3Events(items)
 		}
 	}
-	return append(items, item)
+	return sortSessionV3Events(append(items, item))
+}
+
+func sortSessionV3Events(items []client.SessionV3Event) []client.SessionV3Event {
+	sort.SliceStable(items, func(i, j int) bool {
+		left := items[i]
+		right := items[j]
+		if left.Seq != right.Seq {
+			if left.Seq == 0 {
+				return false
+			}
+			if right.Seq == 0 {
+				return true
+			}
+			return left.Seq < right.Seq
+		}
+		if left.TsUnixMS != right.TsUnixMS {
+			if left.TsUnixMS == 0 {
+				return false
+			}
+			if right.TsUnixMS == 0 {
+				return true
+			}
+			return left.TsUnixMS < right.TsUnixMS
+		}
+		return strings.TrimSpace(left.ID) < strings.TrimSpace(right.ID)
+	})
+	return items
 }
 
 func appendOrReplacePermission(items []client.PermissionRecord, item client.PermissionRecord) []client.PermissionRecord {
