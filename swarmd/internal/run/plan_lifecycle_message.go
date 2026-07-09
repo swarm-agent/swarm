@@ -397,6 +397,9 @@ func planLifecycleOutcomeDetailLines(payload map[string]any, markdown bool) []st
 		if value == "" {
 			return
 		}
+		if markdown && len(lines) > 0 {
+			lines = append(lines, "")
+		}
 		if markdown && hasMarkdownBlockStructure(value) {
 			lines = append(lines, label+":", value)
 			return
@@ -407,12 +410,39 @@ func planLifecycleOutcomeDetailLines(payload map[string]any, markdown bool) []st
 	appendSection("Result", stringFromPlanPayload(payload, "result"))
 	if validation := stringsFromPlanPayload(payload, "validation"); len(validation) > 0 {
 		validationText := strings.Join(validation, "; ")
-		if markdown && anyPlanLifecycleMarkdownBlockStructure(validation) {
-			validationText = strings.Join(validation, "\n")
+		if markdown {
+			if anyPlanLifecycleMarkdownBlockStructure(validation) {
+				validationText = strings.Join(validation, "\n")
+			} else {
+				validationText = planLifecycleMarkdownValidationList(validation)
+			}
 		}
 		appendSection("Validation", validationText)
 	}
 	return lines
+}
+
+func planLifecycleMarkdownValidationList(values []string) string {
+	var items []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		lines := strings.Split(value, "\n")
+		for i, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if i == 0 {
+				items = append(items, "- "+line)
+				continue
+			}
+			items = append(items, "  "+line)
+		}
+	}
+	return strings.Join(items, "\n")
 }
 
 func anyPlanLifecycleMarkdownBlockStructure(values []string) bool {

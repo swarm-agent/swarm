@@ -279,7 +279,7 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 		t.Fatalf("start second checkpoint should only add plan saved mutation, count = %d: %#v", len(appliedMutations), appliedMutations)
 	}
 
-	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"## Summary\n- done","result":"finished","validation":["- lifecycle handoff regression"]}`, "", applyMutation)
+	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"## Summary\n- done","result":"finished","validation":["lifecycle handoff regression","second validation"]}`, "", applyMutation)
 	if err != nil {
 		t.Fatalf("complete final checkpoint: %v output=%s", err, raw)
 	}
@@ -294,10 +294,13 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if len(messages) != 3 || messages[2].Role != "system" || messages[2].Metadata["source"] != PlanExecutionFinalHandoffMessageSource || messages[2].Metadata["kind"] != "plan_final_checkpoint_handoff" || messages[2].Metadata["action"] != "complete_checkpoint" || messages[2].Metadata["next_action"] != "await_review" {
 		t.Fatalf("final handoff message metadata/order = %#v", messages)
 	}
-	for _, want := range []string{"Final checkpoint handoff", "Report:\n## Summary\n- done", "Result: finished", "Validation:\n- lifecycle handoff regression"} {
+	for _, want := range []string{"Final checkpoint handoff", "Report:\n## Summary\n- done", "\n\nResult: finished", "\n\nValidation:\n- lifecycle handoff regression\n- second validation"} {
 		if !strings.Contains(messages[2].Content, want) {
 			t.Fatalf("final handoff content missing %q: %q", want, messages[2].Content)
 		}
+	}
+	if strings.Contains(messages[2].Content, "Validation: Read-only git inspection") || strings.Contains(messages[2].Content, "; Revert operation:") {
+		t.Fatalf("final handoff validation should render as a markdown list, not semicolon-joined prose: %q", messages[2].Content)
 	}
 	if strings.Contains(messages[2].Content, "Markdown is supported in this handoff") {
 		t.Fatalf("final handoff content leaked markdown-support note: %q", messages[2].Content)
@@ -410,7 +413,7 @@ func TestExecutePlanManageBlockedCheckpointHandoffSeparatedFromLifecycleBreak(t 
 	if handoff.Role != "system" || handoff.Metadata["source"] != PlanExecutionBlockedHandoffMessageSource || handoff.Metadata["kind"] != "plan_blocked_checkpoint_handoff" || handoff.Metadata["action"] != "mark_blocked" || handoff.Metadata["next_action"] != "stopped" {
 		t.Fatalf("blocked handoff metadata = %#v", handoff.Metadata)
 	}
-	for _, want := range []string{"Blocked checkpoint handoff", "Checkpoint execution is blocked. Resolve the blocker before continuing.", "Report:\n## Blocker\n- dependency missing", "Result: blocked", "Validation:\n- not run; blocked by dependency"} {
+	for _, want := range []string{"Blocked checkpoint handoff", "Checkpoint execution is blocked. Resolve the blocker before continuing.", "Report:\n## Blocker\n- dependency missing", "\n\nResult: blocked", "\n\nValidation:\n- not run; blocked by dependency"} {
 		if !strings.Contains(handoff.Content, want) {
 			t.Fatalf("blocked handoff content missing %q: %q", want, handoff.Content)
 		}
