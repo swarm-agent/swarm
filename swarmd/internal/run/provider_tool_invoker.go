@@ -133,6 +133,58 @@ func (i *providerToolInvoker) ExecuteTool(ctx context.Context, invocation provid
 	}, nil
 }
 
+func (s *Service) providerManagedWorkspaceContext(config providerToolInvokerConfig, principal identity.Principal) (runWorkspaceContext, error) {
+	workspaceCtx := runWorkspaceContext{
+		WorkspacePath:        strings.TrimSpace(config.workspacePath),
+		WorkspaceRoots:       append([]string(nil), config.workspaceRoots...),
+		OriginWorkspacePath:  strings.TrimSpace(firstNonEmptyString(config.workspaceOriginPath, config.workspacePath)),
+		OriginWorkspaceRoots: providerManagedOriginWorkspaceRoots(config),
+	}
+	if s == nil || s.sessions == nil || strings.TrimSpace(config.sessionID) == "" {
+		return normalizeProviderManagedWorkspaceContext(workspaceCtx), nil
+	}
+	session, ok, err := s.sessions.GetSession(config.sessionID)
+	if err != nil {
+		return runWorkspaceContext{}, err
+	}
+	if !ok {
+		return runWorkspaceContext{}, fmt.Errorf("session %q not found", strings.TrimSpace(config.sessionID))
+	}
+	identityAvailable := principal.Valid() || (strings.TrimSpace(session.UserID) != "" && strings.TrimSpace(session.AccountScopeID) != "")
+	if identityAvailable {
+		if _, err := s.syncWorkspaceScopeFromSession(session, principal, &workspaceCtx); err != nil {
+			return runWorkspaceContext{}, err
+		}
+		return normalizeProviderManagedWorkspaceContext(workspaceCtx), nil
+	}
+	if len(session.TemporaryWorkspaceRoots) > 0 {
+		workspaceCtx.OriginWorkspaceRoots = mergeSessionWorkspaceRoots(workspaceCtx.OriginWorkspaceRoots, session.TemporaryWorkspaceRoots)
+		workspaceCtx.WorkspaceRoots = mergeSessionWorkspaceRoots(workspaceCtx.WorkspaceRoots, session.TemporaryWorkspaceRoots)
+	}
+	return normalizeProviderManagedWorkspaceContext(workspaceCtx), nil
+}
+
+func normalizeProviderManagedWorkspaceContext(workspaceCtx runWorkspaceContext) runWorkspaceContext {
+	if len(workspaceCtx.OriginWorkspaceRoots) == 0 && strings.TrimSpace(workspaceCtx.OriginWorkspacePath) != "" {
+		workspaceCtx.OriginWorkspaceRoots = []string{workspaceCtx.OriginWorkspacePath}
+	}
+	if len(workspaceCtx.WorkspaceRoots) == 0 && strings.TrimSpace(workspaceCtx.WorkspacePath) != "" {
+		workspaceCtx.WorkspaceRoots = []string{workspaceCtx.WorkspacePath}
+	}
+	return workspaceCtx
+}
+
+func providerManagedOriginWorkspaceRoots(config providerToolInvokerConfig) []string {
+	originRoots := append([]string(nil), config.workspaceOriginRoots...)
+	if len(originRoots) == 0 {
+		originRoots = append([]string(nil), config.workspaceRoots...)
+	}
+	if len(originRoots) == 0 && strings.TrimSpace(config.workspaceOriginPath) != "" {
+		originRoots = []string{strings.TrimSpace(config.workspaceOriginPath)}
+	}
+	return originRoots
+}
+
 func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) bool {
 	payload := decodeToolPayload(strings.TrimSpace(result.Output))
 	if payload == nil {
@@ -255,18 +307,9 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					Error:  "tool runtime is not configured",
 				}
 			} else {
-				originRoots := append([]string(nil), config.workspaceOriginRoots...)
-				if len(originRoots) == 0 {
-					originRoots = append([]string(nil), config.workspaceRoots...)
-				}
-				workspaceCtx := runWorkspaceContext{
-					WorkspacePath:        config.workspacePath,
-					WorkspaceRoots:       append([]string(nil), config.workspaceRoots...),
-					OriginWorkspacePath:  strings.TrimSpace(firstNonEmptyString(config.workspaceOriginPath, config.workspacePath)),
-					OriginWorkspaceRoots: originRoots,
-				}
-				if len(workspaceCtx.OriginWorkspaceRoots) == 0 && strings.TrimSpace(workspaceCtx.OriginWorkspacePath) != "" {
-					workspaceCtx.OriginWorkspaceRoots = []string{workspaceCtx.OriginWorkspacePath}
+				workspaceCtx, err := s.providerManagedWorkspaceContext(config, principal)
+				if err != nil {
+					return tool.Result{}, err
 				}
 				runtimeCalls := []tool.Call{call}
 				scopeResults, scopeApprovedCalls, _, _, scopeErr := s.gateWorkspaceScopeCalls(
