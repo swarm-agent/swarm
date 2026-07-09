@@ -2,10 +2,10 @@
   "schema_version": "2026-06-09.1",
   "api_version": "v1",
   "snapshot_schema_version": "2026-07-01.1",
-  "snapshot_id": "swarm-models-v1-e1268cd5e0b5f913",
-  "snapshot_version": "e1268cd5e0b5f913",
-  "generated_at": "2026-07-07T11:17:20.934Z",
-  "model_count": 470,
+  "snapshot_id": "swarm-models-v1-ff7921f74d2b674a",
+  "snapshot_version": "ff7921f74d2b674a",
+  "generated_at": "2026-07-09T07:26:57.245Z",
+  "model_count": 473,
   "provider_count": 7,
   "hydrated_provider_count": 6,
   "definitions": {
@@ -298,17 +298,17 @@
   "onboarding": {
     "codex": {
       "plan": {
-        "model": "gpt-5.5",
+        "model": "gpt-5.6-terra",
         "thinking": "xhigh",
         "fast": "off"
       },
       "auto": {
-        "model": "gpt-5.5",
+        "model": "gpt-5.6-sol",
         "thinking": "high",
         "fast": "off"
       },
       "utility": {
-        "model": "gpt-5.4-mini",
+        "model": "gpt-5.6-luna",
         "thinking": "medium",
         "fast": "off"
       }
@@ -402,17 +402,17 @@
   "recommendations": {
     "codex": {
       "plan": {
-        "model": "gpt-5.5",
+        "model": "gpt-5.6-terra",
         "thinking": "xhigh",
         "fast": "off"
       },
       "auto": {
-        "model": "gpt-5.5",
+        "model": "gpt-5.6-sol",
         "thinking": "high",
         "fast": "off"
       },
       "utility": {
-        "model": "gpt-5.4-mini",
+        "model": "gpt-5.6-luna",
         "thinking": "medium",
         "fast": "off"
       }
@@ -579,22 +579,22 @@
       "auth_required_for_hydration": false,
       "recommendations": {
         "plan": {
-          "model": "gpt-5.5",
+          "model": "gpt-5.6-terra",
           "thinking": "xhigh",
           "fast": "off"
         },
         "auto": {
-          "model": "gpt-5.5",
+          "model": "gpt-5.6-sol",
           "thinking": "high",
           "fast": "off"
         },
         "utility": {
-          "model": "gpt-5.4-mini",
+          "model": "gpt-5.6-luna",
           "thinking": "medium",
           "fast": "off"
         }
       },
-      "model_count": 4,
+      "model_count": 7,
       "sources": [
         {
           "source_id": "codex_models_manager_models_json",
@@ -879,7 +879,7 @@
       "provider_id": "codex",
       "provider_display_name": "OpenAI Codex (OAuth)",
       "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
-      "model_count": 4,
+      "model_count": 7,
       "path": "/v1/models/codex.json"
     },
     {
@@ -5944,18 +5944,15 @@
           "off",
           "low",
           "medium",
-          "high",
-          "xhigh"
+          "high"
         ],
         "default_swarm_setting": "medium",
         "provider_parameter": "reasoning_effort",
         "provider_supported_values": [
           "none",
-          "minimal",
           "low",
           "medium",
-          "high",
-          "xhigh"
+          "high"
         ],
         "provider_default_value": "medium",
         "can_disable": true,
@@ -5990,21 +5987,18 @@
             "effective_provider_value": "high",
             "behavior": "effort",
             "notes": null
-          },
-          {
-            "swarm_setting": "xhigh",
-            "provider_value": "xhigh",
-            "effective_provider_value": "xhigh",
-            "behavior": "effort",
-            "notes": null
           }
         ],
-        "unsupported_swarm_settings": [],
+        "unsupported_swarm_settings": [
+          "xhigh",
+          "max",
+          "ultra"
+        ],
         "source_ids": [
           "codex_models_manager_models_json",
           "openai_api_reasoning_docs"
         ],
-        "notes": "OpenAI GPT reasoning uses reasoning_effort. Swarm off maps to provider value none; low/medium/high/xhigh pass through directly."
+        "notes": "OpenAI Codex reasoning uses reasoning_effort. Swarm off maps to provider value none; effort values pass through only when advertised by each model's supported_reasoning_levels."
       },
       "limits": {
         "context_window_tokens": 128000,
@@ -6060,7 +6054,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-07T11:17:20.934Z",
+          "fetched_at": "2026-07-09T07:26:57.245Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -6216,7 +6210,10 @@
               "gpt-5.3-codex-spark",
               "gpt-5.4",
               "gpt-5.4-mini",
-              "gpt-5.5"
+              "gpt-5.5",
+              "gpt-5.6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra"
             ],
             "source_url": "https://github.com/openai/codex/issues/25839",
             "note": "Swarm currently treats this model as available for Codex when authenticated with a ChatGPT subscription account. Authenticated runtime availability can still vary by account or rollout."
@@ -6264,7 +6261,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-07T11:17:20.934Z"
+      "updated_at": "2026-07-09T07:26:57.245Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -6272,7 +6269,7 @@
       "provider_id": "codex",
       "provider_display_name": "OpenAI Codex (OAuth)",
       "model_id": "gpt-5.4",
-      "display_name": "gpt-5.4",
+      "display_name": "GPT-5.4",
       "description": "Strong model for everyday coding.",
       "family": "gpt-5",
       "external_ids": {
@@ -6337,7 +6334,6 @@
         "provider_parameter": "reasoning_effort",
         "provider_supported_values": [
           "none",
-          "minimal",
           "low",
           "medium",
           "high",
@@ -6385,12 +6381,15 @@
             "notes": null
           }
         ],
-        "unsupported_swarm_settings": [],
+        "unsupported_swarm_settings": [
+          "max",
+          "ultra"
+        ],
         "source_ids": [
           "codex_models_manager_models_json",
           "openai_api_reasoning_docs"
         ],
-        "notes": "OpenAI GPT reasoning uses reasoning_effort. Swarm off maps to provider value none; low/medium/high/xhigh pass through directly."
+        "notes": "OpenAI Codex reasoning uses reasoning_effort. Swarm off maps to provider value none; effort values pass through only when advertised by each model's supported_reasoning_levels."
       },
       "limits": {
         "context_window_tokens": 1000000,
@@ -6447,7 +6446,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-07T11:17:20.934Z",
+          "fetched_at": "2026-07-09T07:26:57.245Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -6535,7 +6534,7 @@
           "slug": "gpt-5.4",
           "visibility": "list",
           "supported_in_api": true,
-          "priority": 2,
+          "priority": 16,
           "default_reasoning_level": "medium",
           "supported_reasoning_levels": [
             {
@@ -6624,8 +6623,11 @@
           "available_in_plans": [
             "business",
             "edu",
+            "edu_plus",
+            "edu_pro",
             "education",
             "enterprise",
+            "enterprise_cbp_automation",
             "enterprise_cbp_usage_based",
             "finserv",
             "go",
@@ -6634,6 +6636,7 @@
             "pro",
             "prolite",
             "quorum",
+            "sci",
             "self_serve_business_usage_based",
             "team"
           ],
@@ -6644,7 +6647,10 @@
               "gpt-5.3-codex-spark",
               "gpt-5.4",
               "gpt-5.4-mini",
-              "gpt-5.5"
+              "gpt-5.5",
+              "gpt-5.6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra"
             ],
             "source_url": "https://github.com/openai/codex/issues/25839",
             "note": "Swarm currently treats this model as available for Codex when authenticated with a ChatGPT subscription account. Authenticated runtime availability can still vary by account or rollout."
@@ -6694,7 +6700,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-07T11:17:20.934Z"
+      "updated_at": "2026-07-09T07:26:57.245Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -6767,7 +6773,6 @@
         "provider_parameter": "reasoning_effort",
         "provider_supported_values": [
           "none",
-          "minimal",
           "low",
           "medium",
           "high",
@@ -6815,12 +6820,15 @@
             "notes": null
           }
         ],
-        "unsupported_swarm_settings": [],
+        "unsupported_swarm_settings": [
+          "max",
+          "ultra"
+        ],
         "source_ids": [
           "codex_models_manager_models_json",
           "openai_api_reasoning_docs"
         ],
-        "notes": "OpenAI GPT reasoning uses reasoning_effort. Swarm off maps to provider value none; low/medium/high/xhigh pass through directly."
+        "notes": "OpenAI Codex reasoning uses reasoning_effort. Swarm off maps to provider value none; effort values pass through only when advertised by each model's supported_reasoning_levels."
       },
       "limits": {
         "context_window_tokens": 272000,
@@ -6876,7 +6884,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-07T11:17:20.934Z",
+          "fetched_at": "2026-07-09T07:26:57.245Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -6964,7 +6972,7 @@
           "slug": "gpt-5.4-mini",
           "visibility": "list",
           "supported_in_api": true,
-          "priority": 4,
+          "priority": 23,
           "default_reasoning_level": "medium",
           "supported_reasoning_levels": [
             {
@@ -7034,8 +7042,11 @@
           "available_in_plans": [
             "business",
             "edu",
+            "edu_plus",
+            "edu_pro",
             "education",
             "enterprise",
+            "enterprise_cbp_automation",
             "enterprise_cbp_usage_based",
             "finserv",
             "free",
@@ -7047,6 +7058,7 @@
             "pro",
             "prolite",
             "quorum",
+            "sci",
             "self_serve_business_usage_based",
             "team"
           ],
@@ -7057,7 +7069,10 @@
               "gpt-5.3-codex-spark",
               "gpt-5.4",
               "gpt-5.4-mini",
-              "gpt-5.5"
+              "gpt-5.5",
+              "gpt-5.6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra"
             ],
             "source_url": "https://github.com/openai/codex/issues/25839",
             "note": "Swarm currently treats this model as available for Codex when authenticated with a ChatGPT subscription account. Authenticated runtime availability can still vary by account or rollout."
@@ -7084,19 +7099,8 @@
         }
       },
       "swarm": {
-        "routing_roles": [
-          "utility_default",
-          "provider_utility_default"
-        ],
-        "recommendations": [
-          {
-            "role": "utility",
-            "mode": "utility",
-            "thinking": "medium",
-            "serving": "off",
-            "notes": "Recommended Codex utility model: GPT-5.4-Mini with medium thinking and standard serving."
-          }
-        ],
+        "routing_roles": [],
+        "recommendations": [],
         "labels": {
           "best_for_coding": null,
           "best_for_reasoning": null,
@@ -7116,7 +7120,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-07T11:17:20.934Z"
+      "updated_at": "2026-07-09T07:26:57.245Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -7189,7 +7193,6 @@
         "provider_parameter": "reasoning_effort",
         "provider_supported_values": [
           "none",
-          "minimal",
           "low",
           "medium",
           "high",
@@ -7237,12 +7240,15 @@
             "notes": null
           }
         ],
-        "unsupported_swarm_settings": [],
+        "unsupported_swarm_settings": [
+          "max",
+          "ultra"
+        ],
         "source_ids": [
           "codex_models_manager_models_json",
           "openai_api_reasoning_docs"
         ],
-        "notes": "OpenAI GPT reasoning uses reasoning_effort. Swarm off maps to provider value none; low/medium/high/xhigh pass through directly."
+        "notes": "OpenAI Codex reasoning uses reasoning_effort. Swarm off maps to provider value none; effort values pass through only when advertised by each model's supported_reasoning_levels."
       },
       "limits": {
         "context_window_tokens": 272000,
@@ -7299,7 +7305,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-07-07T11:17:20.934Z",
+          "fetched_at": "2026-07-09T07:26:57.245Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -7387,7 +7393,7 @@
           "slug": "gpt-5.5",
           "visibility": "list",
           "supported_in_api": true,
-          "priority": 0,
+          "priority": 7,
           "default_reasoning_level": "medium",
           "supported_reasoning_levels": [
             {
@@ -7476,8 +7482,11 @@
           "available_in_plans": [
             "business",
             "edu",
+            "edu_plus",
+            "edu_pro",
             "education",
             "enterprise",
+            "enterprise_cbp_automation",
             "enterprise_cbp_usage_based",
             "finserv",
             "free",
@@ -7489,6 +7498,7 @@
             "pro",
             "prolite",
             "quorum",
+            "sci",
             "self_serve_business_usage_based",
             "team"
           ],
@@ -7499,7 +7509,10 @@
               "gpt-5.3-codex-spark",
               "gpt-5.4",
               "gpt-5.4-mini",
-              "gpt-5.5"
+              "gpt-5.5",
+              "gpt-5.6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra"
             ],
             "source_url": "https://github.com/openai/codex/issues/25839",
             "note": "Swarm currently treats this model as available for Codex when authenticated with a ChatGPT subscription account. Authenticated runtime availability can still vary by account or rollout."
@@ -7528,26 +7541,469 @@
         }
       },
       "swarm": {
+        "routing_roles": [],
+        "recommendations": [],
+        "labels": {
+          "best_for_coding": null,
+          "best_for_reasoning": null,
+          "best_for_fast_chat": null,
+          "best_for_vision": true,
+          "best_for_voice": false,
+          "best_for_image_generation": null,
+          "best_for_low_cost": null
+        },
+        "measurements": {
+          "time_to_first_token_ms": null,
+          "output_tokens_per_second": null,
+          "reliability_score": null,
+          "sample_count": null,
+          "measured_at": null
+        },
+        "reviewed_at": null,
+        "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
+      },
+      "updated_at": "2026-07-09T07:26:57.245Z"
+    },
+    {
+      "schema_version": "2026-06-09.1",
+      "catalog_id": "codex/gpt-5.6-luna",
+      "provider_id": "codex",
+      "provider_display_name": "OpenAI Codex (OAuth)",
+      "model_id": "gpt-5.6-luna",
+      "display_name": "GPT-5.6-Luna",
+      "description": "Fast and affordable agentic coding model.",
+      "family": "gpt-5",
+      "external_ids": {
+        "provider_canonical_slug": "gpt-5.6-luna",
+        "hugging_face_id": null,
+        "upstream_model_id": "gpt-5.6-luna"
+      },
+      "lifecycle": {
+        "created_at": null,
+        "created_at_unix_seconds": null,
+        "release_date": null,
+        "knowledge_cutoff": null,
+        "deprecation_date": null,
+        "expiration_date": null
+      },
+      "availability_status": "available",
+      "architecture": {
+        "source_modality": "image+text->text",
+        "tokenizer": null,
+        "instruct_type": null,
+        "parameter_count": null,
+        "active_parameter_count": null
+      },
+      "modalities": {
+        "input": [
+          "image",
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "supports_text_input": true,
+        "supports_text_output": true,
+        "supports_image_input": true,
+        "supports_image_output": null,
+        "supports_audio_input": false,
+        "supports_audio_output": false,
+        "supports_voice": false,
+        "supports_tools": true,
+        "supports_parallel_tool_calls": true,
+        "supports_structured_outputs": null,
+        "supports_json_mode": null,
+        "supports_reasoning": true,
+        "supports_embeddings": false,
+        "supports_batch": null,
+        "supports_fine_tuning": null,
+        "supports_caching": null
+      },
+      "thinking": {
+        "supported": true,
+        "control_kind": "effort",
+        "supported_swarm_settings": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default_swarm_setting": "medium",
+        "provider_parameter": "reasoning_effort",
+        "provider_supported_values": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "provider_default_value": "medium",
+        "can_disable": true,
+        "supports_budget_tokens": false,
+        "supports_effort_levels": true,
+        "supports_reasoning_content": true,
+        "swarm_setting_mappings": [
+          {
+            "swarm_setting": "off",
+            "provider_value": "none",
+            "effective_provider_value": "none",
+            "behavior": "disabled",
+            "notes": "OpenAI's provider-native value for disabling reasoning is none."
+          },
+          {
+            "swarm_setting": "low",
+            "provider_value": "low",
+            "effective_provider_value": "low",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "medium",
+            "provider_value": "medium",
+            "effective_provider_value": "medium",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "high",
+            "provider_value": "high",
+            "effective_provider_value": "high",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "xhigh",
+            "provider_value": "xhigh",
+            "effective_provider_value": "xhigh",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "max",
+            "provider_value": "max",
+            "effective_provider_value": "max",
+            "behavior": "effort",
+            "notes": null
+          }
+        ],
+        "unsupported_swarm_settings": [
+          "ultra"
+        ],
+        "source_ids": [
+          "codex_models_manager_models_json",
+          "openai_api_reasoning_docs"
+        ],
+        "notes": "OpenAI Codex reasoning uses reasoning_effort. Swarm off maps to provider value none; effort values pass through only when advertised by each model's supported_reasoning_levels."
+      },
+      "limits": {
+        "context_window_tokens": 372000,
+        "max_input_tokens": null,
+        "max_output_tokens": null,
+        "max_reasoning_tokens": null
+      },
+      "pricing": {
+        "currency": "unknown",
+        "input_price_per_million_tokens": null,
+        "output_price_per_million_tokens": null,
+        "cached_input_price_per_million_tokens": null,
+        "reasoning_price_per_million_tokens": null,
+        "image_input_price": null,
+        "image_output_price": null,
+        "audio_input_price": null,
+        "audio_output_price": null,
+        "is_free": null
+      },
+      "parameters": {
+        "supported_parameters": [
+          "apply_patch",
+          "default_reasoning_effort",
+          "parallel_tool_calls",
+          "reasoning_effort",
+          "service_tier",
+          "verbosity",
+          "web_search"
+        ],
+        "default_parameters": {
+          "reasoning_effort": "medium",
+          "verbosity": "low"
+        },
+        "supported_voices": null
+      },
+      "routing": {
+        "routed_through_provider_id": "codex",
+        "upstream_provider_ids": [
+          "openai"
+        ],
+        "top_provider_context_window_tokens": 372000,
+        "top_provider_max_output_tokens": null,
+        "top_provider_is_moderated": null,
+        "per_request_limits": null
+      },
+      "links": {
+        "details_url": "https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json",
+        "docs_url": "https://developers.openai.com/codex/models",
+        "pricing_url": null,
+        "endpoint_url": "https://chatgpt.com/backend-api/codex"
+      },
+      "sources": [
+        {
+          "source_id": "codex_models_manager_models_json",
+          "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
+          "source_kind": "official_api",
+          "fetched_at": "2026-07-09T07:26:57.245Z",
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "availability_status",
+            "capabilities",
+            "catalog_id",
+            "description",
+            "display_name",
+            "family",
+            "limits",
+            "links",
+            "modalities",
+            "model_id",
+            "parameters",
+            "provider_id",
+            "provider_specific.codex",
+            "routing"
+          ]
+        },
+        {
+          "source_id": "codex_backend_models_endpoint",
+          "source_url": "https://chatgpt.com/backend-api/codex/models",
+          "source_kind": "official_api",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "links.endpoint_url",
+            "model_id",
+            "provider_specific.codex.chatgpt_codex_base_url"
+          ]
+        },
+        {
+          "source_id": "codex_backend_images_v2_endpoint",
+          "source_url": "https://chatgpt.com/backend-api/codex/images/generations",
+          "source_kind": "official_api",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "capabilities.supports_image_input",
+            "capabilities.supports_image_output",
+            "catalog_id",
+            "display_name",
+            "links.endpoint_url",
+            "modalities",
+            "model_id",
+            "provider_id",
+            "provider_specific.codex.images_api"
+          ]
+        },
+        {
+          "source_id": "codex_chatgpt_subscription_availability_update",
+          "source_url": "https://github.com/openai/codex/issues/25839",
+          "source_kind": "manual",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "availability_status",
+            "provider_specific.codex.chatgpt_subscription_availability",
+            "swarm.recommendations",
+            "swarm.routing_roles"
+          ]
+        },
+        {
+          "source_id": "openai_api_reasoning_docs",
+          "source_url": "https://developers.openai.com/api/docs/guides/reasoning",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "capabilities.supports_reasoning",
+            "parameters.default_parameters.reasoning_effort",
+            "parameters.supported_parameters",
+            "provider_specific.codex.default_reasoning_level",
+            "provider_specific.codex.supported_reasoning_levels",
+            "thinking"
+          ]
+        }
+      ],
+      "provider_specific": {
+        "codex": {
+          "slug": "gpt-5.6-luna",
+          "visibility": "list",
+          "supported_in_api": true,
+          "priority": 3,
+          "default_reasoning_level": "medium",
+          "supported_reasoning_levels": [
+            {
+              "effort": "low",
+              "description": "Fast responses with lighter reasoning"
+            },
+            {
+              "effort": "medium",
+              "description": "Balances speed and reasoning depth for everyday tasks"
+            },
+            {
+              "effort": "high",
+              "description": "Greater reasoning depth for complex problems"
+            },
+            {
+              "effort": "xhigh",
+              "description": "Extra high reasoning depth for complex problems"
+            },
+            {
+              "effort": "max",
+              "description": "Maximum reasoning depth for the hardest problems"
+            }
+          ],
+          "support_verbosity": true,
+          "default_verbosity": "low",
+          "apply_patch_tool_type": "freeform",
+          "web_search_tool_type": "text_and_image",
+          "truncation_policy": {
+            "mode": "tokens",
+            "limit": 10000
+          },
+          "context_window": 372000,
+          "max_context_window": 372000,
+          "auto_compact_token_limit": null,
+          "effective_context_window_percent": null,
+          "supports_image_detail_original": true,
+          "supports_search_tool": true,
+          "service_tiers": [
+            {
+              "id": "priority",
+              "name": "Fast",
+              "description": "1.5x speed, increased usage"
+            }
+          ],
+          "default_service_tier": null,
+          "additional_speed_tiers": [
+            "fast"
+          ],
+          "serving": {
+            "supported": true,
+            "supported_tiers": [
+              "standard",
+              "fast"
+            ],
+            "default_tier": "standard",
+            "provider_parameter": "service_tier",
+            "tiers": {
+              "standard": {
+                "tier": "standard",
+                "swarm_setting": "off",
+                "provider_parameter": "service_tier",
+                "provider_value": null,
+                "interface": "synchronous",
+                "pricing": null,
+                "latency": "Standard Codex OAuth latency",
+                "reliability": "Standard ChatGPT Codex backend availability; account and rollout dependent.",
+                "notes": "Default Codex OAuth serving tier when no service_tier is requested."
+              },
+              "fast": {
+                "tier": "fast",
+                "swarm_setting": "fast",
+                "provider_parameter": "service_tier",
+                "provider_value": "priority",
+                "interface": "synchronous",
+                "pricing": null,
+                "latency": "OpenAI Codex models.json describes Fast as 1.5x speed with increased usage.",
+                "reliability": "ChatGPT Codex backend availability; account and rollout dependent.",
+                "notes": "Codex OAuth Fast is selected with provider service_tier=priority when the model advertises the Fast tier."
+              }
+            },
+            "source_ids": [
+              "codex_models_manager_models_json",
+              "codex_backend_models_endpoint"
+            ],
+            "notes": "Codex OAuth serving supports Swarm off=standard and fast=provider service_tier priority for this model."
+          },
+          "experimental_supported_tools": [],
+          "tool_mode": "code_mode_only",
+          "minimal_client_version": "0.144.0",
+          "available_in_plans": [
+            "business",
+            "edu",
+            "edu_plus",
+            "edu_pro",
+            "education",
+            "enterprise",
+            "enterprise_cbp_automation",
+            "enterprise_cbp_usage_based",
+            "finserv",
+            "free",
+            "free_workspace",
+            "go",
+            "hc",
+            "k12",
+            "plus",
+            "pro",
+            "prolite",
+            "quorum",
+            "sci",
+            "self_serve_business_usage_based",
+            "team"
+          ],
+          "chatgpt_subscription_availability": {
+            "available": true,
+            "status": "available",
+            "available_model_ids": [
+              "gpt-5.3-codex-spark",
+              "gpt-5.4",
+              "gpt-5.4-mini",
+              "gpt-5.5",
+              "gpt-5.6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra"
+            ],
+            "source_url": "https://github.com/openai/codex/issues/25839",
+            "note": "Swarm currently treats this model as available for Codex when authenticated with a ChatGPT subscription account. Authenticated runtime availability can still vary by account or rollout."
+          },
+          "supports_reasoning_summaries": true,
+          "default_reasoning_summary": "none",
+          "reasoning_summary_format": "experimental",
+          "prefer_websockets": true,
+          "upgrade": null,
+          "availability_nux": null,
+          "images_api": {
+            "generation_endpoint": "https://chatgpt.com/backend-api/codex/images/generations",
+            "edits_endpoint": "https://chatgpt.com/backend-api/codex/images/edits",
+            "typed_client_source_url": "https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/images.rs",
+            "known_codex_image_model": "gpt-image-1.5",
+            "note": "The Codex images v2 API is provider-level; models.json does not currently publish per-chat-model image generation model choices. Swarm represents the known image model as its own catalog entry."
+          },
+          "openai_api_pricing": null,
+          "source_urls": {
+            "models_json": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
+            "model_info_types": "https://github.com/openai/codex/blob/main/codex-rs/protocol/src/openai_models.rs",
+            "model_manager": "https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json"
+          }
+        }
+      },
+      "swarm": {
         "routing_roles": [
-          "primary_default",
-          "plan_default",
-          "provider_primary_default",
-          "provider_plan_default"
+          "utility_default",
+          "provider_utility_default"
         ],
         "recommendations": [
           {
-            "role": "main",
-            "mode": "auto",
-            "thinking": "high",
+            "role": "utility",
+            "mode": "utility",
+            "thinking": "medium",
             "serving": "off",
-            "notes": "Recommended Codex main/auto model: GPT-5.5 with high thinking and standard serving."
-          },
-          {
-            "role": "plan",
-            "mode": "plan",
-            "thinking": "xhigh",
-            "serving": "off",
-            "notes": "Recommended Codex plan model: GPT-5.5 with xhigh thinking and standard serving."
+            "notes": "Recommended Codex utility model: GPT-5.6-Luna with medium thinking and standard serving."
           }
         ],
         "labels": {
@@ -7569,7 +8025,957 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-07-07T11:17:20.934Z"
+      "updated_at": "2026-07-09T07:26:57.245Z"
+    },
+    {
+      "schema_version": "2026-06-09.1",
+      "catalog_id": "codex/gpt-5.6-sol",
+      "provider_id": "codex",
+      "provider_display_name": "OpenAI Codex (OAuth)",
+      "model_id": "gpt-5.6-sol",
+      "display_name": "GPT-5.6-Sol",
+      "description": "Latest frontier agentic coding model.",
+      "family": "gpt-5",
+      "external_ids": {
+        "provider_canonical_slug": "gpt-5.6-sol",
+        "hugging_face_id": null,
+        "upstream_model_id": "gpt-5.6-sol"
+      },
+      "lifecycle": {
+        "created_at": null,
+        "created_at_unix_seconds": null,
+        "release_date": null,
+        "knowledge_cutoff": null,
+        "deprecation_date": null,
+        "expiration_date": null
+      },
+      "availability_status": "available",
+      "architecture": {
+        "source_modality": "image+text->text",
+        "tokenizer": null,
+        "instruct_type": null,
+        "parameter_count": null,
+        "active_parameter_count": null
+      },
+      "modalities": {
+        "input": [
+          "image",
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "supports_text_input": true,
+        "supports_text_output": true,
+        "supports_image_input": true,
+        "supports_image_output": null,
+        "supports_audio_input": false,
+        "supports_audio_output": false,
+        "supports_voice": false,
+        "supports_tools": true,
+        "supports_parallel_tool_calls": true,
+        "supports_structured_outputs": null,
+        "supports_json_mode": null,
+        "supports_reasoning": true,
+        "supports_embeddings": false,
+        "supports_batch": null,
+        "supports_fine_tuning": null,
+        "supports_caching": null
+      },
+      "thinking": {
+        "supported": true,
+        "control_kind": "effort",
+        "supported_swarm_settings": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "default_swarm_setting": "low",
+        "provider_parameter": "reasoning_effort",
+        "provider_supported_values": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "provider_default_value": "low",
+        "can_disable": true,
+        "supports_budget_tokens": false,
+        "supports_effort_levels": true,
+        "supports_reasoning_content": true,
+        "swarm_setting_mappings": [
+          {
+            "swarm_setting": "off",
+            "provider_value": "none",
+            "effective_provider_value": "none",
+            "behavior": "disabled",
+            "notes": "OpenAI's provider-native value for disabling reasoning is none."
+          },
+          {
+            "swarm_setting": "low",
+            "provider_value": "low",
+            "effective_provider_value": "low",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "medium",
+            "provider_value": "medium",
+            "effective_provider_value": "medium",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "high",
+            "provider_value": "high",
+            "effective_provider_value": "high",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "xhigh",
+            "provider_value": "xhigh",
+            "effective_provider_value": "xhigh",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "max",
+            "provider_value": "max",
+            "effective_provider_value": "max",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "ultra",
+            "provider_value": "ultra",
+            "effective_provider_value": "ultra",
+            "behavior": "effort",
+            "notes": null
+          }
+        ],
+        "unsupported_swarm_settings": [],
+        "source_ids": [
+          "codex_models_manager_models_json",
+          "openai_api_reasoning_docs"
+        ],
+        "notes": "OpenAI Codex reasoning uses reasoning_effort. Swarm off maps to provider value none; effort values pass through only when advertised by each model's supported_reasoning_levels."
+      },
+      "limits": {
+        "context_window_tokens": 372000,
+        "max_input_tokens": null,
+        "max_output_tokens": null,
+        "max_reasoning_tokens": null
+      },
+      "pricing": {
+        "currency": "unknown",
+        "input_price_per_million_tokens": null,
+        "output_price_per_million_tokens": null,
+        "cached_input_price_per_million_tokens": null,
+        "reasoning_price_per_million_tokens": null,
+        "image_input_price": null,
+        "image_output_price": null,
+        "audio_input_price": null,
+        "audio_output_price": null,
+        "is_free": null
+      },
+      "parameters": {
+        "supported_parameters": [
+          "apply_patch",
+          "default_reasoning_effort",
+          "parallel_tool_calls",
+          "reasoning_effort",
+          "service_tier",
+          "verbosity",
+          "web_search"
+        ],
+        "default_parameters": {
+          "reasoning_effort": "low",
+          "verbosity": "low"
+        },
+        "supported_voices": null
+      },
+      "routing": {
+        "routed_through_provider_id": "codex",
+        "upstream_provider_ids": [
+          "openai"
+        ],
+        "top_provider_context_window_tokens": 372000,
+        "top_provider_max_output_tokens": null,
+        "top_provider_is_moderated": null,
+        "per_request_limits": null
+      },
+      "links": {
+        "details_url": "https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json",
+        "docs_url": "https://developers.openai.com/codex/models",
+        "pricing_url": null,
+        "endpoint_url": "https://chatgpt.com/backend-api/codex"
+      },
+      "sources": [
+        {
+          "source_id": "codex_models_manager_models_json",
+          "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
+          "source_kind": "official_api",
+          "fetched_at": "2026-07-09T07:26:57.245Z",
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "availability_status",
+            "capabilities",
+            "catalog_id",
+            "description",
+            "display_name",
+            "family",
+            "limits",
+            "links",
+            "modalities",
+            "model_id",
+            "parameters",
+            "provider_id",
+            "provider_specific.codex",
+            "routing"
+          ]
+        },
+        {
+          "source_id": "codex_backend_models_endpoint",
+          "source_url": "https://chatgpt.com/backend-api/codex/models",
+          "source_kind": "official_api",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "links.endpoint_url",
+            "model_id",
+            "provider_specific.codex.chatgpt_codex_base_url"
+          ]
+        },
+        {
+          "source_id": "codex_backend_images_v2_endpoint",
+          "source_url": "https://chatgpt.com/backend-api/codex/images/generations",
+          "source_kind": "official_api",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "capabilities.supports_image_input",
+            "capabilities.supports_image_output",
+            "catalog_id",
+            "display_name",
+            "links.endpoint_url",
+            "modalities",
+            "model_id",
+            "provider_id",
+            "provider_specific.codex.images_api"
+          ]
+        },
+        {
+          "source_id": "codex_chatgpt_subscription_availability_update",
+          "source_url": "https://github.com/openai/codex/issues/25839",
+          "source_kind": "manual",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "availability_status",
+            "provider_specific.codex.chatgpt_subscription_availability",
+            "swarm.recommendations",
+            "swarm.routing_roles"
+          ]
+        },
+        {
+          "source_id": "openai_api_reasoning_docs",
+          "source_url": "https://developers.openai.com/api/docs/guides/reasoning",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "capabilities.supports_reasoning",
+            "parameters.default_parameters.reasoning_effort",
+            "parameters.supported_parameters",
+            "provider_specific.codex.default_reasoning_level",
+            "provider_specific.codex.supported_reasoning_levels",
+            "thinking"
+          ]
+        }
+      ],
+      "provider_specific": {
+        "codex": {
+          "slug": "gpt-5.6-sol",
+          "visibility": "list",
+          "supported_in_api": true,
+          "priority": 1,
+          "default_reasoning_level": "low",
+          "supported_reasoning_levels": [
+            {
+              "effort": "low",
+              "description": "Fast responses with lighter reasoning"
+            },
+            {
+              "effort": "medium",
+              "description": "Balances speed and reasoning depth for everyday tasks"
+            },
+            {
+              "effort": "high",
+              "description": "Greater reasoning depth for complex problems"
+            },
+            {
+              "effort": "xhigh",
+              "description": "Extra high reasoning depth for complex problems"
+            },
+            {
+              "effort": "max",
+              "description": "Maximum reasoning depth for the hardest problems"
+            },
+            {
+              "effort": "ultra",
+              "description": "Maximum reasoning with automatic task delegation"
+            }
+          ],
+          "support_verbosity": true,
+          "default_verbosity": "low",
+          "apply_patch_tool_type": "freeform",
+          "web_search_tool_type": "text_and_image",
+          "truncation_policy": {
+            "mode": "tokens",
+            "limit": 10000
+          },
+          "context_window": 372000,
+          "max_context_window": 372000,
+          "auto_compact_token_limit": null,
+          "effective_context_window_percent": null,
+          "supports_image_detail_original": true,
+          "supports_search_tool": true,
+          "service_tiers": [
+            {
+              "id": "priority",
+              "name": "Fast",
+              "description": "1.5x speed, increased usage"
+            }
+          ],
+          "default_service_tier": null,
+          "additional_speed_tiers": [
+            "fast"
+          ],
+          "serving": {
+            "supported": true,
+            "supported_tiers": [
+              "standard",
+              "fast"
+            ],
+            "default_tier": "standard",
+            "provider_parameter": "service_tier",
+            "tiers": {
+              "standard": {
+                "tier": "standard",
+                "swarm_setting": "off",
+                "provider_parameter": "service_tier",
+                "provider_value": null,
+                "interface": "synchronous",
+                "pricing": null,
+                "latency": "Standard Codex OAuth latency",
+                "reliability": "Standard ChatGPT Codex backend availability; account and rollout dependent.",
+                "notes": "Default Codex OAuth serving tier when no service_tier is requested."
+              },
+              "fast": {
+                "tier": "fast",
+                "swarm_setting": "fast",
+                "provider_parameter": "service_tier",
+                "provider_value": "priority",
+                "interface": "synchronous",
+                "pricing": null,
+                "latency": "OpenAI Codex models.json describes Fast as 1.5x speed with increased usage.",
+                "reliability": "ChatGPT Codex backend availability; account and rollout dependent.",
+                "notes": "Codex OAuth Fast is selected with provider service_tier=priority when the model advertises the Fast tier."
+              }
+            },
+            "source_ids": [
+              "codex_models_manager_models_json",
+              "codex_backend_models_endpoint"
+            ],
+            "notes": "Codex OAuth serving supports Swarm off=standard and fast=provider service_tier priority for this model."
+          },
+          "experimental_supported_tools": [],
+          "tool_mode": "code_mode_only",
+          "minimal_client_version": "0.144.0",
+          "available_in_plans": [
+            "business",
+            "edu",
+            "edu_plus",
+            "edu_pro",
+            "education",
+            "enterprise",
+            "enterprise_cbp_automation",
+            "enterprise_cbp_usage_based",
+            "finserv",
+            "free",
+            "free_workspace",
+            "go",
+            "hc",
+            "k12",
+            "plus",
+            "pro",
+            "prolite",
+            "quorum",
+            "sci",
+            "self_serve_business_usage_based",
+            "team"
+          ],
+          "chatgpt_subscription_availability": {
+            "available": true,
+            "status": "available",
+            "available_model_ids": [
+              "gpt-5.3-codex-spark",
+              "gpt-5.4",
+              "gpt-5.4-mini",
+              "gpt-5.5",
+              "gpt-5.6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra"
+            ],
+            "source_url": "https://github.com/openai/codex/issues/25839",
+            "note": "Swarm currently treats this model as available for Codex when authenticated with a ChatGPT subscription account. Authenticated runtime availability can still vary by account or rollout."
+          },
+          "supports_reasoning_summaries": true,
+          "default_reasoning_summary": "none",
+          "reasoning_summary_format": "experimental",
+          "prefer_websockets": true,
+          "upgrade": null,
+          "availability_nux": {
+            "message": "Our most capable model yet. GPT-5.6 Sol can tackle complex code changes, dig into research, produce polished documents, and take on your most ambitious work. Sol is highly capable at lower reasoning efforts—try starting lower, then turn it up for harder jobs."
+          },
+          "images_api": {
+            "generation_endpoint": "https://chatgpt.com/backend-api/codex/images/generations",
+            "edits_endpoint": "https://chatgpt.com/backend-api/codex/images/edits",
+            "typed_client_source_url": "https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/images.rs",
+            "known_codex_image_model": "gpt-image-1.5",
+            "note": "The Codex images v2 API is provider-level; models.json does not currently publish per-chat-model image generation model choices. Swarm represents the known image model as its own catalog entry."
+          },
+          "openai_api_pricing": null,
+          "source_urls": {
+            "models_json": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
+            "model_info_types": "https://github.com/openai/codex/blob/main/codex-rs/protocol/src/openai_models.rs",
+            "model_manager": "https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json"
+          }
+        }
+      },
+      "swarm": {
+        "routing_roles": [
+          "primary_default",
+          "provider_primary_default"
+        ],
+        "recommendations": [
+          {
+            "role": "main",
+            "mode": "auto",
+            "thinking": "high",
+            "serving": "off",
+            "notes": "Recommended Codex main/auto model: GPT-5.6-Sol with high thinking and standard serving."
+          }
+        ],
+        "labels": {
+          "best_for_coding": null,
+          "best_for_reasoning": null,
+          "best_for_fast_chat": null,
+          "best_for_vision": true,
+          "best_for_voice": false,
+          "best_for_image_generation": null,
+          "best_for_low_cost": null
+        },
+        "measurements": {
+          "time_to_first_token_ms": null,
+          "output_tokens_per_second": null,
+          "reliability_score": null,
+          "sample_count": null,
+          "measured_at": null
+        },
+        "reviewed_at": null,
+        "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
+      },
+      "updated_at": "2026-07-09T07:26:57.245Z"
+    },
+    {
+      "schema_version": "2026-06-09.1",
+      "catalog_id": "codex/gpt-5.6-terra",
+      "provider_id": "codex",
+      "provider_display_name": "OpenAI Codex (OAuth)",
+      "model_id": "gpt-5.6-terra",
+      "display_name": "GPT-5.6-Terra",
+      "description": "Balanced agentic coding model for everyday work.",
+      "family": "gpt-5",
+      "external_ids": {
+        "provider_canonical_slug": "gpt-5.6-terra",
+        "hugging_face_id": null,
+        "upstream_model_id": "gpt-5.6-terra"
+      },
+      "lifecycle": {
+        "created_at": null,
+        "created_at_unix_seconds": null,
+        "release_date": null,
+        "knowledge_cutoff": null,
+        "deprecation_date": null,
+        "expiration_date": null
+      },
+      "availability_status": "available",
+      "architecture": {
+        "source_modality": "image+text->text",
+        "tokenizer": null,
+        "instruct_type": null,
+        "parameter_count": null,
+        "active_parameter_count": null
+      },
+      "modalities": {
+        "input": [
+          "image",
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "supports_text_input": true,
+        "supports_text_output": true,
+        "supports_image_input": true,
+        "supports_image_output": null,
+        "supports_audio_input": false,
+        "supports_audio_output": false,
+        "supports_voice": false,
+        "supports_tools": true,
+        "supports_parallel_tool_calls": true,
+        "supports_structured_outputs": null,
+        "supports_json_mode": null,
+        "supports_reasoning": true,
+        "supports_embeddings": false,
+        "supports_batch": null,
+        "supports_fine_tuning": null,
+        "supports_caching": null
+      },
+      "thinking": {
+        "supported": true,
+        "control_kind": "effort",
+        "supported_swarm_settings": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "default_swarm_setting": "medium",
+        "provider_parameter": "reasoning_effort",
+        "provider_supported_values": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "provider_default_value": "medium",
+        "can_disable": true,
+        "supports_budget_tokens": false,
+        "supports_effort_levels": true,
+        "supports_reasoning_content": true,
+        "swarm_setting_mappings": [
+          {
+            "swarm_setting": "off",
+            "provider_value": "none",
+            "effective_provider_value": "none",
+            "behavior": "disabled",
+            "notes": "OpenAI's provider-native value for disabling reasoning is none."
+          },
+          {
+            "swarm_setting": "low",
+            "provider_value": "low",
+            "effective_provider_value": "low",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "medium",
+            "provider_value": "medium",
+            "effective_provider_value": "medium",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "high",
+            "provider_value": "high",
+            "effective_provider_value": "high",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "xhigh",
+            "provider_value": "xhigh",
+            "effective_provider_value": "xhigh",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "max",
+            "provider_value": "max",
+            "effective_provider_value": "max",
+            "behavior": "effort",
+            "notes": null
+          },
+          {
+            "swarm_setting": "ultra",
+            "provider_value": "ultra",
+            "effective_provider_value": "ultra",
+            "behavior": "effort",
+            "notes": null
+          }
+        ],
+        "unsupported_swarm_settings": [],
+        "source_ids": [
+          "codex_models_manager_models_json",
+          "openai_api_reasoning_docs"
+        ],
+        "notes": "OpenAI Codex reasoning uses reasoning_effort. Swarm off maps to provider value none; effort values pass through only when advertised by each model's supported_reasoning_levels."
+      },
+      "limits": {
+        "context_window_tokens": 372000,
+        "max_input_tokens": null,
+        "max_output_tokens": null,
+        "max_reasoning_tokens": null
+      },
+      "pricing": {
+        "currency": "unknown",
+        "input_price_per_million_tokens": null,
+        "output_price_per_million_tokens": null,
+        "cached_input_price_per_million_tokens": null,
+        "reasoning_price_per_million_tokens": null,
+        "image_input_price": null,
+        "image_output_price": null,
+        "audio_input_price": null,
+        "audio_output_price": null,
+        "is_free": null
+      },
+      "parameters": {
+        "supported_parameters": [
+          "apply_patch",
+          "default_reasoning_effort",
+          "parallel_tool_calls",
+          "reasoning_effort",
+          "service_tier",
+          "verbosity",
+          "web_search"
+        ],
+        "default_parameters": {
+          "reasoning_effort": "medium",
+          "verbosity": "low"
+        },
+        "supported_voices": null
+      },
+      "routing": {
+        "routed_through_provider_id": "codex",
+        "upstream_provider_ids": [
+          "openai"
+        ],
+        "top_provider_context_window_tokens": 372000,
+        "top_provider_max_output_tokens": null,
+        "top_provider_is_moderated": null,
+        "per_request_limits": null
+      },
+      "links": {
+        "details_url": "https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json",
+        "docs_url": "https://developers.openai.com/codex/models",
+        "pricing_url": null,
+        "endpoint_url": "https://chatgpt.com/backend-api/codex"
+      },
+      "sources": [
+        {
+          "source_id": "codex_models_manager_models_json",
+          "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
+          "source_kind": "official_api",
+          "fetched_at": "2026-07-09T07:26:57.245Z",
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "availability_status",
+            "capabilities",
+            "catalog_id",
+            "description",
+            "display_name",
+            "family",
+            "limits",
+            "links",
+            "modalities",
+            "model_id",
+            "parameters",
+            "provider_id",
+            "provider_specific.codex",
+            "routing"
+          ]
+        },
+        {
+          "source_id": "codex_backend_models_endpoint",
+          "source_url": "https://chatgpt.com/backend-api/codex/models",
+          "source_kind": "official_api",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "links.endpoint_url",
+            "model_id",
+            "provider_specific.codex.chatgpt_codex_base_url"
+          ]
+        },
+        {
+          "source_id": "codex_backend_images_v2_endpoint",
+          "source_url": "https://chatgpt.com/backend-api/codex/images/generations",
+          "source_kind": "official_api",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "capabilities.supports_image_input",
+            "capabilities.supports_image_output",
+            "catalog_id",
+            "display_name",
+            "links.endpoint_url",
+            "modalities",
+            "model_id",
+            "provider_id",
+            "provider_specific.codex.images_api"
+          ]
+        },
+        {
+          "source_id": "codex_chatgpt_subscription_availability_update",
+          "source_url": "https://github.com/openai/codex/issues/25839",
+          "source_kind": "manual",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "availability_status",
+            "provider_specific.codex.chatgpt_subscription_availability",
+            "swarm.recommendations",
+            "swarm.routing_roles"
+          ]
+        },
+        {
+          "source_id": "openai_api_reasoning_docs",
+          "source_url": "https://developers.openai.com/api/docs/guides/reasoning",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "capabilities.supports_reasoning",
+            "parameters.default_parameters.reasoning_effort",
+            "parameters.supported_parameters",
+            "provider_specific.codex.default_reasoning_level",
+            "provider_specific.codex.supported_reasoning_levels",
+            "thinking"
+          ]
+        }
+      ],
+      "provider_specific": {
+        "codex": {
+          "slug": "gpt-5.6-terra",
+          "visibility": "list",
+          "supported_in_api": true,
+          "priority": 2,
+          "default_reasoning_level": "medium",
+          "supported_reasoning_levels": [
+            {
+              "effort": "low",
+              "description": "Fast responses with lighter reasoning"
+            },
+            {
+              "effort": "medium",
+              "description": "Balances speed and reasoning depth for everyday tasks"
+            },
+            {
+              "effort": "high",
+              "description": "Greater reasoning depth for complex problems"
+            },
+            {
+              "effort": "xhigh",
+              "description": "Extra high reasoning depth for complex problems"
+            },
+            {
+              "effort": "max",
+              "description": "Maximum reasoning depth for the hardest problems"
+            },
+            {
+              "effort": "ultra",
+              "description": "Maximum reasoning with automatic task delegation"
+            }
+          ],
+          "support_verbosity": true,
+          "default_verbosity": "low",
+          "apply_patch_tool_type": "freeform",
+          "web_search_tool_type": "text_and_image",
+          "truncation_policy": {
+            "mode": "tokens",
+            "limit": 10000
+          },
+          "context_window": 372000,
+          "max_context_window": 372000,
+          "auto_compact_token_limit": null,
+          "effective_context_window_percent": null,
+          "supports_image_detail_original": true,
+          "supports_search_tool": true,
+          "service_tiers": [
+            {
+              "id": "priority",
+              "name": "Fast",
+              "description": "1.5x speed, increased usage"
+            }
+          ],
+          "default_service_tier": null,
+          "additional_speed_tiers": [
+            "fast"
+          ],
+          "serving": {
+            "supported": true,
+            "supported_tiers": [
+              "standard",
+              "fast"
+            ],
+            "default_tier": "standard",
+            "provider_parameter": "service_tier",
+            "tiers": {
+              "standard": {
+                "tier": "standard",
+                "swarm_setting": "off",
+                "provider_parameter": "service_tier",
+                "provider_value": null,
+                "interface": "synchronous",
+                "pricing": null,
+                "latency": "Standard Codex OAuth latency",
+                "reliability": "Standard ChatGPT Codex backend availability; account and rollout dependent.",
+                "notes": "Default Codex OAuth serving tier when no service_tier is requested."
+              },
+              "fast": {
+                "tier": "fast",
+                "swarm_setting": "fast",
+                "provider_parameter": "service_tier",
+                "provider_value": "priority",
+                "interface": "synchronous",
+                "pricing": null,
+                "latency": "OpenAI Codex models.json describes Fast as 1.5x speed with increased usage.",
+                "reliability": "ChatGPT Codex backend availability; account and rollout dependent.",
+                "notes": "Codex OAuth Fast is selected with provider service_tier=priority when the model advertises the Fast tier."
+              }
+            },
+            "source_ids": [
+              "codex_models_manager_models_json",
+              "codex_backend_models_endpoint"
+            ],
+            "notes": "Codex OAuth serving supports Swarm off=standard and fast=provider service_tier priority for this model."
+          },
+          "experimental_supported_tools": [],
+          "tool_mode": "code_mode_only",
+          "minimal_client_version": "0.144.0",
+          "available_in_plans": [
+            "business",
+            "edu",
+            "edu_plus",
+            "edu_pro",
+            "education",
+            "enterprise",
+            "enterprise_cbp_automation",
+            "enterprise_cbp_usage_based",
+            "finserv",
+            "free",
+            "free_workspace",
+            "go",
+            "hc",
+            "k12",
+            "plus",
+            "pro",
+            "prolite",
+            "quorum",
+            "sci",
+            "self_serve_business_usage_based",
+            "team"
+          ],
+          "chatgpt_subscription_availability": {
+            "available": true,
+            "status": "available",
+            "available_model_ids": [
+              "gpt-5.3-codex-spark",
+              "gpt-5.4",
+              "gpt-5.4-mini",
+              "gpt-5.5",
+              "gpt-5.6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra"
+            ],
+            "source_url": "https://github.com/openai/codex/issues/25839",
+            "note": "Swarm currently treats this model as available for Codex when authenticated with a ChatGPT subscription account. Authenticated runtime availability can still vary by account or rollout."
+          },
+          "supports_reasoning_summaries": true,
+          "default_reasoning_summary": "none",
+          "reasoning_summary_format": "experimental",
+          "prefer_websockets": true,
+          "upgrade": null,
+          "availability_nux": null,
+          "images_api": {
+            "generation_endpoint": "https://chatgpt.com/backend-api/codex/images/generations",
+            "edits_endpoint": "https://chatgpt.com/backend-api/codex/images/edits",
+            "typed_client_source_url": "https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/images.rs",
+            "known_codex_image_model": "gpt-image-1.5",
+            "note": "The Codex images v2 API is provider-level; models.json does not currently publish per-chat-model image generation model choices. Swarm represents the known image model as its own catalog entry."
+          },
+          "openai_api_pricing": null,
+          "source_urls": {
+            "models_json": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
+            "model_info_types": "https://github.com/openai/codex/blob/main/codex-rs/protocol/src/openai_models.rs",
+            "model_manager": "https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json"
+          }
+        }
+      },
+      "swarm": {
+        "routing_roles": [
+          "plan_default",
+          "provider_plan_default"
+        ],
+        "recommendations": [
+          {
+            "role": "plan",
+            "mode": "plan",
+            "thinking": "xhigh",
+            "serving": "off",
+            "notes": "Recommended Codex plan model: GPT-5.6-Terra with xhigh thinking and standard serving."
+          }
+        ],
+        "labels": {
+          "best_for_coding": null,
+          "best_for_reasoning": null,
+          "best_for_fast_chat": null,
+          "best_for_vision": true,
+          "best_for_voice": false,
+          "best_for_image_generation": null,
+          "best_for_low_cost": null
+        },
+        "measurements": {
+          "time_to_first_token_ms": null,
+          "output_tokens_per_second": null,
+          "reliability_score": null,
+          "sample_count": null,
+          "measured_at": null
+        },
+        "reviewed_at": null,
+        "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
+      },
+      "updated_at": "2026-07-09T07:26:57.245Z"
     },
     {
       "schema_version": "2026-06-09.1",
