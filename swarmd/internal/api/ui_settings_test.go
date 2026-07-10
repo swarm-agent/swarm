@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -240,6 +241,53 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenThemeOnlyPayloadSent(t *
 	}
 	if response.Chat.ThinkingTags {
 		t.Fatal("response thinking tags = true after theme-only update, want preserved false")
+	}
+}
+
+func TestUISettingsPostPersistsSidebarHideInactiveHours(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-sidebar-hours.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+
+	reqBody := []byte(`{"chat":{"sidebar_hide_inactive_hours":24}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader(reqBody))
+	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), identity.Principal{
+		Type:           identity.PrincipalTypeUser,
+		UserID:         "test-user",
+		AccountScopeID: "test-account",
+	}))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Chat.SidebarHideInactiveHours != 24 {
+		t.Fatalf("sidebar hide inactive hours = %d, want 24", response.Chat.SidebarHideInactiveHours)
+	}
+	loaded, err := settingsSvc.GetForAccount("test-account")
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if loaded.Chat.SidebarHideInactiveHours != 24 {
+		t.Fatalf("persisted sidebar hide inactive hours = %d, want 24", loaded.Chat.SidebarHideInactiveHours)
 	}
 }
 

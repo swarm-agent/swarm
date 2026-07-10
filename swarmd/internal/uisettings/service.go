@@ -65,6 +65,7 @@ type ChatSettings struct {
 	ThinkingTags                    bool                   `json:"thinking_tags"`
 	DefaultNewSessionMode           string                 `json:"default_new_session_mode,omitempty"`
 	FollowupCheckpointPolicyDefault string                 `json:"followup_checkpoint_policy_default,omitempty"`
+	SidebarHideInactiveHours        int                    `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          map[string]string      `json:"default_workspace_routes,omitempty"`
 	ToolStream                      ChatToolStreamSettings `json:"tool_stream,omitempty"`
 }
@@ -206,6 +207,7 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 			ThinkingTags:                    record.Chat.ThinkingTags,
 			DefaultNewSessionMode:           strings.TrimSpace(record.Chat.DefaultNewSessionMode),
 			FollowupCheckpointPolicyDefault: strings.TrimSpace(record.Chat.FollowupCheckpointPolicyDefault),
+			SidebarHideInactiveHours:        *record.Chat.SidebarHideInactiveHours,
 			DefaultWorkspaceRoutes:          cloneMap(record.Chat.DefaultWorkspaceRoutes),
 			ToolStream: ChatToolStreamSettings{
 				ShowAnchor:    record.Chat.ToolStream.ShowAnchor,
@@ -281,6 +283,7 @@ func chatRecordFromSettings(settings ChatSettings) *pebblestore.UIChatSettingsRe
 		ThinkingTagsSet:                 true,
 		DefaultNewSessionMode:           strings.TrimSpace(settings.DefaultNewSessionMode),
 		FollowupCheckpointPolicyDefault: strings.TrimSpace(settings.FollowupCheckpointPolicyDefault),
+		SidebarHideInactiveHours:        intPointer(settings.SidebarHideInactiveHours),
 		DefaultWorkspaceRoutes:          cloneMap(settings.DefaultWorkspaceRoutes),
 		ToolStream: pebblestore.UIChatToolStreamSettingsRecord{
 			ShowAnchor:    settings.ToolStream.ShowAnchor,
@@ -290,6 +293,10 @@ func chatRecordFromSettings(settings ChatSettings) *pebblestore.UIChatSettingsRe
 			ErrorSymbol:   strings.TrimSpace(settings.ToolStream.ErrorSymbol),
 		},
 	}
+}
+
+func intPointer(value int) *int {
+	return &value
 }
 
 func swarmingRecordFromSettings(settings SwarmingSettings) *pebblestore.UISwarmingSettingsRecord {

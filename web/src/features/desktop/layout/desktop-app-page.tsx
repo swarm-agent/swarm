@@ -1934,14 +1934,17 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         <div className="flex min-w-0 flex-1 items-start gap-2">
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
-              {selectionMode && depth === 0 ? (
+              {depth === 0 ? (
                 <input
                   type="checkbox"
                   checked={selected}
                   aria-label={`Select ${rowTitle}`}
                   onChange={() => undefined}
                   onClick={(event) => { event.preventDefault(); event.stopPropagation(); onToggleSelected?.(session.id, event.shiftKey) }}
-                  className="h-4 w-4 shrink-0 accent-[var(--app-primary)]"
+                  className={cn(
+                    'h-4 shrink-0 accent-[var(--app-primary)] transition-[width,opacity] focus:w-4 focus:opacity-100',
+                    selectionMode ? 'w-4 opacity-100' : 'w-0 opacity-0 group-hover:w-4 group-hover:opacity-100 group-focus-within:w-4 group-focus-within:opacity-100',
+                  )}
                 />
               ) : null}
               {renaming ? (
@@ -2058,6 +2061,14 @@ interface RenderSidebarSessionGroupsInput {
   pendingActions: Record<string, 'pin' | 'archive' | 'rename' | undefined>
   selectionMode: boolean
   selectedRootIDs: Set<string>
+  hideInactiveHours: number | null
+  thresholdSaving: boolean
+  bulkArchivePending: boolean
+  masterSelectionGroup: SidebarSessionGroupID | null
+  onEnterSelectionMode: (group: SidebarSessionGroupID) => void
+  onClearSelection: () => void
+  onBulkArchive: () => void
+  onThresholdChange: (hours: number | null) => void
   onSelect: (sessionId: string) => void | boolean
   onToggleSelected: (sessionId: string, range: boolean) => void
   onPrefetch: (sessionId: string) => void
@@ -2067,13 +2078,26 @@ interface RenderSidebarSessionGroupsInput {
   onRename: (sessionId: string, title: string) => Promise<void>
 }
 
+export function sidebarRootIDsForSelectionGroup(nodes: SidebarSessionNode[], group: SidebarSessionGroupID | null): string[] {
+  return nodes
+    .filter((node) => !group || sessionSidebarDisplayGroup(node.session) === group)
+    .map((node) => node.session.id)
+}
+
+export function sidebarShouldRenderSelectionToolbar(
+  selectionMode: boolean,
+  masterGroup: SidebarSessionGroupID | null,
+  group: SidebarSessionGroupID,
+): boolean {
+  return selectionMode && masterGroup === group
+}
+
 export const SIDEBAR_SESSION_GROUPS = [
-  { id: 'needs_review', label: 'Needs Review' },
-  { id: 'in_progress', label: 'In Progress' },
-  { id: 'pinned', label: 'Pinned' },
-  { id: 'active_chats', label: 'Active Chats' },
-  { id: 'archived', label: 'Archived' },
-] as const satisfies ReadonlyArray<{ id: SidebarSessionGroupID; label: string }>
+  { id: 'needs_review', label: 'Needs Review', showInactiveThreshold: false },
+  { id: 'in_progress', label: 'In Progress', showInactiveThreshold: false },
+  { id: 'pinned', label: 'Pinned', showInactiveThreshold: false },
+  { id: 'active_chats', label: 'Active Chats', showInactiveThreshold: true },
+] as const satisfies ReadonlyArray<{ id: SidebarSessionGroupID; label: string; showInactiveThreshold: boolean }>
 
 function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX.Element[] | null {
   if (input.nodes.length === 0) return null
@@ -2088,16 +2112,36 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
     }
     grouped.get(currentRootGroup)?.push(node)
   }
-  const activeGroups = SIDEBAR_SESSION_GROUPS.filter((group) => group.id !== 'archived')
-  const archivedGroup = SIDEBAR_SESSION_GROUPS.find((group) => group.id === 'archived')
-  const groups = archivedGroup ? [...activeGroups, archivedGroup] : activeGroups
-  return groups.flatMap((group) => {
+  return SIDEBAR_SESSION_GROUPS.flatMap((group) => {
     const nodes = grouped.get(group.id) ?? []
     if (nodes.length === 0) return []
     return [(
-      <section key={group.id} className="grid content-start gap-1.5">
-        <div className="px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
-          {group.label}
+      <section key={group.id} className="group/section grid content-start gap-1.5">
+        <div className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+          <span>{group.label}</span>
+          <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
+            {group.showInactiveThreshold ? (
+              <label className="flex items-center gap-1 font-normal">
+                <span>Show last</span>
+                <select
+                  aria-label="Show Active Chats from the last"
+                  disabled={input.thresholdSaving}
+                  value={input.hideInactiveHours === null ? 'never' : String(input.hideInactiveHours)}
+                  onChange={(event) => input.onThresholdChange(event.target.value === 'never' ? null : Number(event.target.value))}
+                  className="h-5 rounded border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-1 text-[9px] text-[var(--app-text)]"
+                >
+                  <option value="1">1h</option><option value="6">6h</option><option value="12">12h</option><option value="24">24h</option><option value="168">7d</option><option value="never">All</option>
+                </select>
+              </label>
+            ) : null}
+            {sidebarShouldRenderSelectionToolbar(input.selectionMode, input.masterSelectionGroup, group.id) ? (
+              <>
+                <span>{input.selectedRootIDs.size} selected</span>
+                <button type="button" onClick={input.onClearSelection}>Clear</button>
+                <button type="button" disabled={input.bulkArchivePending || input.selectedRootIDs.size === 0} className="rounded bg-[var(--app-primary)] px-1.5 py-0.5 text-[var(--app-background)] disabled:opacity-50" onClick={input.onBulkArchive}>Archive</button>
+              </>
+            ) : null}
+          </div>
         </div>
         <div className="grid gap-1">
           {nodes.map((node) => (
@@ -2120,7 +2164,10 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             selectionMode={input.selectionMode}
             selected={input.selectedRootIDs.has(node.session.id)}
             onSelect={input.onSelect}
-            onToggleSelected={input.onToggleSelected}
+            onToggleSelected={(sessionId, range) => {
+              if (!input.selectionMode) input.onEnterSelectionMode(group.id)
+              input.onToggleSelected(sessionId, range)
+            }}
             onPrefetch={input.onPrefetch}
             onToggleAgents={input.onToggleAgents}
             onTogglePinned={input.onTogglePinned}
@@ -2184,6 +2231,7 @@ export function DesktopAppPage() {
   const [compactingSession, setCompactingSession] = useState<DesktopV3CompactingSessionState | null>(null)
   const [sidebarSessionActions, setSidebarSessionActions] = useState<Record<string, 'pin' | 'archive' | 'rename' | undefined>>({})
   const [sidebarSelectionMode, setSidebarSelectionMode] = useState(false)
+  const [sidebarMasterSelectionGroup, setSidebarMasterSelectionGroup] = useState<SidebarSessionGroupID | null>(null)
   const [selectedSidebarRootIDs, setSelectedSidebarRootIDs] = useState<Set<string>>(() => new Set())
   const [lastSelectedSidebarRootID, setLastSelectedSidebarRootID] = useState<string | null>(null)
   const [bulkArchivePending, setBulkArchivePending] = useState(false)
@@ -2595,7 +2643,10 @@ export function DesktopAppPage() {
     () => flattenVisibleSidebarSessionNodes(filteredSidebarTrees.nodes, expandedAgentSessions, routeSessionId),
     [expandedAgentSessions, filteredSidebarTrees.nodes, routeSessionId],
   )
-  const visibleSidebarRootIDs = useMemo(() => filteredSidebarTrees.nodes.map((node) => node.session.id), [filteredSidebarTrees.nodes])
+  const visibleSidebarRootIDs = useMemo(
+    () => sidebarRootIDsForSelectionGroup(filteredSidebarTrees.nodes, null),
+    [filteredSidebarTrees.nodes],
+  )
 
   const sessionById = useMemo<Map<string, DesktopSessionRecord>>(
     () => new Map(desktopStateSessions.map((session) => [session.id, session] as const)),
@@ -2876,6 +2927,18 @@ export function DesktopAppPage() {
     }
   }, [sidebarSessionActions])
 
+  const handleEnterSidebarSelectionMode = useCallback((group: SidebarSessionGroupID) => {
+    setSidebarMasterSelectionGroup((current) => current ?? group)
+    setSidebarSelectionMode(true)
+  }, [])
+
+  const handleClearSidebarSelection = useCallback(() => {
+    setSelectedSidebarRootIDs(new Set())
+    setSidebarSelectionMode(false)
+    setSidebarMasterSelectionGroup(null)
+    setLastSelectedSidebarRootID(null)
+  }, [])
+
   const handleToggleSidebarSelected = useCallback((sessionId: string, range: boolean) => {
     const normalized = sessionId.trim()
     if (!normalized) return
@@ -2903,6 +2966,8 @@ export function DesktopAppPage() {
       const selectedRouteArchived = ids.includes(routeSessionId)
       setSelectedSidebarRootIDs(new Set())
       setSidebarSelectionMode(false)
+      setSidebarMasterSelectionGroup(null)
+      setLastSelectedSidebarRootID(null)
       setMobileSidebarOpen(false)
       if (selectedRouteArchived) handleArchivePlanSession(routeSessionId)
     } catch (error) {
@@ -2932,7 +2997,9 @@ export function DesktopAppPage() {
     ? {
         pinned: Boolean(activeRouteSession && activeRouteSessionCanPin && sessionManuallyPinnedInSidebar(activeRouteSession)),
         canPin: Boolean(activeRouteSession && activeRouteSessionIsRegularChat && activeRouteSessionCanPin),
-        pendingAction: sidebarSessionActions[routeSessionId] ?? null,
+        pendingAction: sidebarSessionActions[routeSessionId] === 'pin' || sidebarSessionActions[routeSessionId] === 'archive'
+          ? sidebarSessionActions[routeSessionId]
+          : null,
         onTogglePinned: () => {
           if (activeRouteSession && activeRouteSessionIsRegularChat && activeRouteSessionCanPin) {
             handleToggleSidebarPinned(activeRouteSession.id)
@@ -3569,17 +3636,6 @@ export function DesktopAppPage() {
   const mobileSessionQuickMenu = routeWorkspace?.path ? (
     <Card className="flex min-h-0 w-full flex-1 flex-col border-[var(--app-border)] bg-[var(--app-surface)] p-4 shadow-sm">
       <div className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto pr-1 [-webkit-overflow-scrolling:touch]">
-        <div className="flex items-center gap-2 text-xs text-[var(--app-text-subtle)]">
-          <button type="button" className="text-[var(--app-primary)]" onClick={() => { setSidebarSelectionMode((value) => !value); setSelectedSidebarRootIDs(new Set()) }}>{sidebarSelectionMode ? 'Done selecting' : 'Select chats'}</button>
-          {filteredSidebarTrees.hiddenCount > 0 ? <button type="button" className="ml-auto text-[var(--app-primary)]" onClick={handleOpenSearchChats}>{filteredSidebarTrees.hiddenCount} hidden · Search</button> : null}
-        </div>
-        {sidebarSelectionMode ? (
-          <div className="sticky top-0 z-10 flex items-center gap-2 rounded-md bg-[var(--app-surface-elevated)] px-2 py-2 text-xs shadow-sm">
-            <span>{selectedSidebarRootIDs.size} selected</span>
-            <button type="button" className="ml-auto" onClick={() => setSelectedSidebarRootIDs(new Set())}>Clear</button>
-            <button type="button" disabled={bulkArchivePending || selectedSidebarRootIDs.size === 0} className="rounded bg-[var(--app-primary)] px-2 py-1 text-[var(--app-background)] disabled:opacity-50" onClick={() => { void handleBulkArchiveSidebar() }}>Archive selected</button>
-          </div>
-        ) : null}
         {renderSidebarSessionGroups({
           nodes: globalFlattenedSessionNodes,
           routeSessionId,
@@ -3592,6 +3648,14 @@ export function DesktopAppPage() {
           pendingActions: sidebarSessionActions,
           selectionMode: sidebarSelectionMode,
           selectedRootIDs: selectedSidebarRootIDs,
+          hideInactiveHours: sidebarHideInactiveHours,
+          thresholdSaving: sidebarThresholdSaving,
+          bulkArchivePending,
+          masterSelectionGroup: sidebarMasterSelectionGroup,
+          onEnterSelectionMode: handleEnterSidebarSelectionMode,
+          onClearSelection: handleClearSidebarSelection,
+          onBulkArchive: () => { void handleBulkArchiveSidebar() },
+          onThresholdChange: (hours) => { void handleSidebarThresholdChange(hours) },
           onSelect: handleSelectSession,
           onToggleSelected: handleToggleSidebarSelected,
           onPrefetch: handlePrefetchSession,
@@ -3919,31 +3983,6 @@ export function DesktopAppPage() {
                       <GitBranch size={13} strokeWidth={1.8} className="shrink-0" />
                     </button>
                   </div>
-                  <div className="sticky top-0 z-10 flex min-h-8 items-center gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[10px] text-[var(--app-text-subtle)]">
-                    <label className="flex min-w-0 items-center gap-1">
-                      <span>Show</span>
-                      <select
-                        aria-label="Hide inactive chats after"
-                        disabled={sidebarThresholdSaving}
-                        value={sidebarHideInactiveHours === null ? 'never' : String(sidebarHideInactiveHours)}
-                        onChange={(event) => { void handleSidebarThresholdChange(event.target.value === 'never' ? null : Number(event.target.value)) }}
-                        className="h-6 rounded border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-1 text-[10px] text-[var(--app-text)]"
-                      >
-                        <option value="1">1h</option><option value="6">6h</option><option value="12">12h</option><option value="24">24h</option><option value="168">7d</option><option value="never">Never hide</option>
-                      </select>
-                    </label>
-                    {filteredSidebarTrees.hiddenCount > 0 ? <button type="button" className="ml-auto text-[var(--app-primary)]" onClick={handleOpenSearchChats}>{filteredSidebarTrees.hiddenCount} hidden · Search</button> : null}
-                    <button type="button" className="ml-auto text-[var(--app-primary)]" onClick={() => { setSidebarSelectionMode((value) => !value); setSelectedSidebarRootIDs(new Set()) }}>{sidebarSelectionMode ? 'Done' : 'Select'}</button>
-                  </div>
-                  {sidebarSelectionMode ? (
-                    <div className="sticky top-9 z-10 flex items-center gap-2 rounded-md bg-[var(--app-surface-elevated)] px-2 py-1 text-[10px] shadow-sm">
-                      <span>{selectedSidebarRootIDs.size} selected</span>
-                      <button type="button" className="ml-auto" onClick={() => setSelectedSidebarRootIDs(new Set())}>Clear</button>
-                      <button type="button" disabled={bulkArchivePending || selectedSidebarRootIDs.size === 0} className="inline-flex items-center gap-1 rounded bg-[var(--app-primary)] px-2 py-1 text-[var(--app-background)] disabled:opacity-50" onClick={() => { void handleBulkArchiveSidebar() }}>
-                        {bulkArchivePending ? <LoaderCircle size={11} className="animate-spin" /> : <Archive size={11} />} Archive selected
-                      </button>
-                    </div>
-                  ) : null}
                   {renderSidebarSessionGroups({
                     nodes: globalFlattenedSessionNodes,
                     routeSessionId,
@@ -3956,6 +3995,14 @@ export function DesktopAppPage() {
                     pendingActions: sidebarSessionActions,
                     selectionMode: sidebarSelectionMode,
                     selectedRootIDs: selectedSidebarRootIDs,
+                    hideInactiveHours: sidebarHideInactiveHours,
+                    thresholdSaving: sidebarThresholdSaving,
+                    bulkArchivePending,
+                    masterSelectionGroup: sidebarMasterSelectionGroup,
+                    onEnterSelectionMode: handleEnterSidebarSelectionMode,
+                    onClearSelection: handleClearSidebarSelection,
+                    onBulkArchive: () => { void handleBulkArchiveSidebar() },
+                    onThresholdChange: (hours) => { void handleSidebarThresholdChange(hours) },
                     onSelect: handleSelectSession,
                     onToggleSelected: handleToggleSidebarSelected,
                     onPrefetch: handlePrefetchSession,

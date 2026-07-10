@@ -15,6 +15,8 @@ import {
   sessionTimerLabel,
   sessionActiveRunIntent,
   sessionSidebarDisplayGroup,
+  sidebarRootIDsForSelectionGroup,
+  sidebarShouldRenderSelectionToolbar,
 } from './desktop-app-page'
 
 test('session route workspace ignores unbound remote paths from hydrated sessions', () => {
@@ -302,14 +304,38 @@ test('sidebar manual pin moves an active chat into the Pinned display group', ()
   assert.equal(compareSidebarSessions(pinnedIdle, staleIdle, 100_500) < 0, true)
 })
 
-test('sidebar Pinned section renders above Active Chats', () => {
+test('sidebar global selection includes roots across every visible display group', () => {
+  const now = 100_000
+  const nodes = buildSidebarSessionTree([
+    makeSession('review', { metadata: { swarm_v3_sidebar_group: 'needs_review' } }),
+    makeSession('progress', { metadata: { swarm_v3_sidebar_group: 'in_progress' } }),
+    makeSession('pinned', { metadata: { [DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY]: true } }),
+    makeSession('chat'),
+  ], now)
+
+  assert.deepEqual(sidebarRootIDsForSelectionGroup(nodes, null), ['review', 'progress', 'pinned', 'chat'])
+  assert.deepEqual(sidebarRootIDsForSelectionGroup(nodes, 'needs_review'), ['review'])
+  assert.deepEqual(sidebarRootIDsForSelectionGroup(nodes, 'active_chats'), ['chat'])
+})
+
+test('sidebar selection toolbar renders only in the master group', () => {
+  assert.equal(sidebarShouldRenderSelectionToolbar(true, 'needs_review', 'needs_review'), true)
+  assert.equal(sidebarShouldRenderSelectionToolbar(true, 'needs_review', 'active_chats'), false)
+  assert.equal(sidebarShouldRenderSelectionToolbar(false, 'needs_review', 'needs_review'), false)
+  assert.equal(sidebarShouldRenderSelectionToolbar(true, null, 'needs_review'), false)
+})
+
+test('sidebar renders contextual controls for active groups without an Archived section', () => {
   assert.deepEqual(SIDEBAR_SESSION_GROUPS.map((group) => group.id), [
     'needs_review',
     'in_progress',
     'pinned',
     'active_chats',
-    'archived',
   ])
+  assert.deepEqual(
+    SIDEBAR_SESSION_GROUPS.filter((group) => group.showInactiveThreshold).map((group) => group.id),
+    ['active_chats'],
+  )
 })
 
 test('sidebar manual pin sort ignores pins for in-progress plan sessions', () => {

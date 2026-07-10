@@ -4013,6 +4013,7 @@ type uiChatSettingsPatchPresence struct {
 	ThinkingTags                    *bool                                  `json:"thinking_tags"`
 	DefaultNewSessionMode           *string                                `json:"default_new_session_mode"`
 	FollowupCheckpointPolicyDefault *string                                `json:"followup_checkpoint_policy_default"`
+	SidebarHideInactiveHours        *int                                   `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          *map[string]string                     `json:"default_workspace_routes"`
 	ToolStream                      *uiChatToolStreamSettingsPatchPresence `json:"tool_stream"`
 }
@@ -4069,6 +4070,9 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		}
 		if raw.Chat.FollowupCheckpointPolicyDefault != nil {
 			settings.Chat.FollowupCheckpointPolicyDefault = patch.Chat.FollowupCheckpointPolicyDefault
+		}
+		if raw.Chat.SidebarHideInactiveHours != nil {
+			settings.Chat.SidebarHideInactiveHours = patch.Chat.SidebarHideInactiveHours
 		}
 		if raw.Chat.DefaultWorkspaceRoutes != nil {
 			settings.Chat.DefaultWorkspaceRoutes = patch.Chat.DefaultWorkspaceRoutes
