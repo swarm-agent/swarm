@@ -15,6 +15,7 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 func TestParseTaskCallArgumentsRequiresExplicitLaunchAssignment(t *testing.T) {
@@ -416,6 +417,100 @@ func TestBuildTaskLaunchPermissionPayloadIncludesResolvedToolSummary(t *testing.
 	}
 	if stringSliceContains(tools.AllowedTools, "bash") {
 		t.Fatalf("allowed tools include bash despite task launch disabled overlay: %v", tools.AllowedTools)
+	}
+}
+
+type taskLaunchWorktreeStub struct {
+	allocations int
+	allocation  worktreeruntime.Allocation
+}
+
+func (s *taskLaunchWorktreeStub) AttachBranch(_, _, _ string) (string, error) { return "", nil }
+
+func (s *taskLaunchWorktreeStub) AllocateTaskWorkspace(_, _, _ string) (worktreeruntime.Allocation, error) {
+	s.allocations++
+	return s.allocation, nil
+}
+
+func TestApprovedExplorerInheritsParentWorktreeScopeWithoutAllocation(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	parent.WorktreeEnabled = true
+	parent.WorktreeRootPath = parent.WorkspacePath
+	parent.WorktreeBaseBranch = "dev"
+	parent.WorktreeBranch = "agent/parent"
+	temporaryRoot := t.TempDir()
+	parent.TemporaryWorkspaceRoots = []string{temporaryRoot}
+	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: t.TempDir()}}
+	svc.SetWorktreeService(stub)
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "explorer")
+	if err != nil || virtual {
+		t.Fatalf("resolve Explorer profile: virtual=%t source=%q err=%v", virtual, source, err)
+	}
+	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex: 1, RequestedSubagent: "explorer", MetaPrompt: "inspect parent", VirtualTarget: virtual,
+	}, "inspect", "", &profile, source, nil)
+	if err != nil {
+		t.Fatalf("prepare approved Explorer: %v", err)
+	}
+	child := launch.ChildSession
+	if stub.allocations != 0 {
+		t.Fatalf("Explorer allocated %d worktrees, want 0", stub.allocations)
+	}
+	if child.WorkspacePath != parent.WorkspacePath || child.WorktreeRootPath != parent.WorktreeRootPath || !child.WorktreeEnabled {
+		t.Fatalf("Explorer worktree facts = %#v, want inherited from %#v", child, parent)
+	}
+	assertStringSliceContains(t, child.TemporaryWorkspaceRoots, temporaryRoot)
+	scope, err := svc.resolveRunWorkspaceScope(child, identity.Principal{})
+	if err != nil {
+		t.Fatalf("resolve Explorer scope: %v", err)
+	}
+	if _, needsExpansion, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(parent.WorkspacePath, "README.md")})}); err != nil || needsExpansion {
+		t.Fatalf("parent worktree read expansion: needed=%t err=%v scope=%#v", needsExpansion, err, scope)
+	}
+}
+
+func TestApprovedCloneAllocatesIsolatedWorktreeScope(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	parent.WorktreeEnabled = true
+	parent.WorktreeRootPath = parent.WorkspacePath
+	parent.WorktreeBaseBranch = "dev"
+	parent.TemporaryWorkspaceRoots = []string{t.TempDir()}
+	clonePath := t.TempDir()
+	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: clonePath, RepoRoot: filepath.Dir(clonePath), BaseBranch: "dev", BranchName: "agent/clone", WorkspaceID: "clone-workspace"}}
+	svc.SetWorktreeService(stub)
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "clone")
+	if err != nil || !virtual {
+		t.Fatalf("resolve Clone profile: virtual=%t source=%q err=%v", virtual, source, err)
+	}
+	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex: 1, RequestedSubagent: "clone", MetaPrompt: "implement", VirtualTarget: virtual,
+	}, "implement", "", &profile, source, nil)
+	if err != nil {
+		t.Fatalf("prepare approved Clone: %v", err)
+	}
+	child := launch.ChildSession
+	if stub.allocations != 1 || child.WorkspacePath != clonePath || child.WorktreeRootPath != clonePath || !child.WorktreeEnabled {
+		t.Fatalf("Clone isolation facts: allocations=%d child=%#v", stub.allocations, child)
+	}
+	if len(child.TemporaryWorkspaceRoots) != 0 {
+		t.Fatalf("Clone inherited temporary roots: %v", child.TemporaryWorkspaceRoots)
+	}
+	scope, err := svc.resolveRunWorkspaceScope(child, identity.Principal{})
+	if err != nil {
+		t.Fatalf("resolve Clone scope: %v", err)
+	}
+	if _, needsExpansion, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": parent.WorkspacePath})}); err != nil || !needsExpansion {
+		t.Fatalf("parent worktree read from Clone: needed=%t err=%v scope=%#v", needsExpansion, err, scope)
 	}
 }
 
@@ -1235,6 +1330,14 @@ func TestApprovedExplorerWaveManifestDigestSurvivesPermissionRoundTrip(t *testin
 	})})
 	if err != nil {
 		t.Fatalf("build Explorer manifest: %v", err)
+	}
+	for i, row := range manifest.Launches {
+		if row.VirtualTarget {
+			t.Fatalf("Explorer manifest launch %d incorrectly classified virtual: %#v", i, row)
+		}
+		if row.ProfileSnapshot == nil {
+			t.Fatalf("Explorer manifest launch %d missing trusted profile snapshot", i)
+		}
 	}
 	raw, err := json.Marshal(manifest.ApprovedArguments)
 	if err != nil {

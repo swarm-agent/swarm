@@ -407,10 +407,9 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	var err error
 	if trustedProfile != nil {
 		subagentProfile, err = cloneTaskAgentProfile(*trustedProfile)
-		launch.VirtualTarget = true
 		launch.SourceAgentName = strings.TrimSpace(sourceAgentName)
 	} else {
-		subagentProfile, err = s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requestedSubagent)
+		subagentProfile, launch.VirtualTarget, launch.SourceAgentName, err = s.resolveTaskLaunchProfile(parentSession, requestedSubagent)
 	}
 	if err != nil {
 		return taskLaunchPrepared{}, err
@@ -425,10 +424,11 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	childTitle := assignmentLabel
 	childWorkspacePath := strings.TrimSpace(parentSession.WorkspacePath)
 	childWorkspaceName := strings.TrimSpace(parentSession.WorkspaceName)
-	childWorktreeEnabled := false
-	childWorktreeRootPath := ""
-	childWorktreeBaseBranch := ""
-	childWorktreeBranch := ""
+	childWorktreeEnabled := parentSession.WorktreeEnabled
+	childWorktreeRootPath := strings.TrimSpace(parentSession.WorktreeRootPath)
+	childWorktreeBaseBranch := strings.TrimSpace(parentSession.WorktreeBaseBranch)
+	childWorktreeBranch := strings.TrimSpace(parentSession.WorktreeBranch)
+	childTemporaryWorkspaceRoots := append([]string(nil), parentSession.TemporaryWorkspaceRoots...)
 	childWorkspaceID := ""
 	childSessionID := sessionruntime.NewSessionID()
 	childMetadata := map[string]any{
@@ -449,6 +449,11 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		"subagent":           strings.TrimSpace(subagentProfile.Name),
 	}
 	if launch.VirtualTarget {
+		childWorktreeEnabled = false
+		childWorktreeRootPath = ""
+		childWorktreeBaseBranch = ""
+		childWorktreeBranch = ""
+		childTemporaryWorkspaceRoots = nil
 		profileSnapshot, snapshotErr := cloneTaskAgentProfile(subagentProfile)
 		if snapshotErr != nil {
 			return taskLaunchPrepared{}, snapshotErr
@@ -463,7 +468,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		childMetadata["launch_source"] = "targeted_subagent"
 		childMetadata["targeted_subagent"] = lineageSource
 	}
-	if parentSession.WorktreeEnabled && s.worktrees != nil {
+	if launch.VirtualTarget && parentSession.WorktreeEnabled && s.worktrees != nil {
 		allocation, allocErr := s.worktrees.AllocateTaskWorkspace(parentSession.WorkspacePath, firstNonEmptyString(parentSession.WorktreeBranch, parentSession.WorktreeBaseBranch), childSessionID)
 		if allocErr != nil {
 			return taskLaunchPrepared{}, fmt.Errorf("task failed to allocate subagent worktree: %w", allocErr)
@@ -474,10 +479,11 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		}
 		childWorkspaceName = filepath.Base(childWorkspacePath)
 		childWorktreeEnabled = true
-		childWorktreeRootPath = strings.TrimSpace(allocation.RepoRoot)
+		childWorktreeRootPath = childWorkspacePath
 		childWorktreeBaseBranch = strings.TrimSpace(allocation.BaseBranch)
 		childWorktreeBranch = strings.TrimSpace(allocation.BranchName)
 		childWorkspaceID = strings.TrimSpace(allocation.WorkspaceID)
+		childTemporaryWorkspaceRoots = nil
 	}
 
 	if childWorkspaceID != "" {
@@ -485,21 +491,22 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	}
 	nowMS := time.Now().UnixMilli()
 	childSession := pebblestore.SessionSnapshot{
-		ID:                 childSessionID,
-		UserID:             strings.TrimSpace(parentSession.UserID),
-		AccountScopeID:     strings.TrimSpace(parentSession.AccountScopeID),
-		WorkspacePath:      childWorkspacePath,
-		WorkspaceName:      childWorkspaceName,
-		Title:              childTitle,
-		Mode:               childMode,
-		Preference:         preference,
-		Metadata:           childMetadata,
-		CreatedAt:          nowMS,
-		UpdatedAt:          nowMS,
-		WorktreeEnabled:    childWorktreeEnabled,
-		WorktreeRootPath:   childWorktreeRootPath,
-		WorktreeBaseBranch: childWorktreeBaseBranch,
-		WorktreeBranch:     childWorktreeBranch,
+		ID:                      childSessionID,
+		UserID:                  strings.TrimSpace(parentSession.UserID),
+		AccountScopeID:          strings.TrimSpace(parentSession.AccountScopeID),
+		WorkspacePath:           childWorkspacePath,
+		WorkspaceName:           childWorkspaceName,
+		Title:                   childTitle,
+		Mode:                    childMode,
+		Preference:              preference,
+		Metadata:                childMetadata,
+		CreatedAt:               nowMS,
+		UpdatedAt:               nowMS,
+		WorktreeEnabled:         childWorktreeEnabled,
+		WorktreeRootPath:        childWorktreeRootPath,
+		WorktreeBaseBranch:      childWorktreeBaseBranch,
+		WorktreeBranch:          childWorktreeBranch,
+		TemporaryWorkspaceRoots: childTemporaryWorkspaceRoots,
 	}
 	payloadHash := "task-child-create:" + childSessionID
 	applyMutation := applySessionMutation
@@ -2628,6 +2635,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	}
 
 	trustedProfiles := make([]*pebblestore.AgentProfile, len(launchSpecs))
+	trustedVirtualTargets := make([]bool, len(launchSpecs))
 	trustedSources := make([]string, len(launchSpecs))
 	if approved := strings.TrimSpace(req.ApprovedArguments); approved != "" {
 		var envelope struct {
@@ -2657,6 +2665,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				return "", err
 			}
 			trustedProfiles[i] = &profile
+			trustedVirtualTargets[i] = row.VirtualTarget
 			trustedSources[i] = strings.TrimSpace(row.SourceAgentName)
 		}
 	}
@@ -2698,6 +2707,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, taskLaunchPrepared{
 			LaunchIndex:       i + 1,
+			VirtualTarget:     trustedVirtualTargets[i],
 			RequestedSubagent: requestedSubagent,
 			MetaPrompt:        metaPrompt,
 			AssignmentLabel:   spec.AssignmentLabel,
