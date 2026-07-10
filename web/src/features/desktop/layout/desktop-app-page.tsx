@@ -494,6 +494,26 @@ export function desktopSidebarWorkspacePathForSession(
   return session.workspacePath.trim()
 }
 
+export function desktopRouteWorkspacePathForSession(
+  session: Pick<DesktopSessionRecord, 'workspacePath' | 'metadata'>,
+  workspacePathByBindingId: ReadonlyMap<string, string>,
+  knownWorkspacePaths: ReadonlySet<string>,
+): string {
+  const bindingID = metadataStringValue(session.metadata, 'local_workspace_binding_id')
+    || metadataStringValue(session.metadata, 'swarm_v3_workspace_binding_id')
+  if (bindingID) {
+    const boundPath = workspacePathByBindingId.get(bindingID)?.trim()
+    if (boundPath) return boundPath
+  }
+
+  const candidates = [
+    metadataStringValue(session.metadata, 'swarm_v3_source_workspace_path'),
+    metadataStringValue(session.metadata, 'swarm_v2_source_workspace_path'),
+    session.workspacePath.trim(),
+  ]
+  return candidates.find((path) => path && knownWorkspacePaths.has(path)) ?? ''
+}
+
 export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): DesktopSessionRecord {
   const record = row.record
   const session = record.kind === 'full'
@@ -2073,6 +2093,10 @@ export function DesktopAppPage() {
       .filter(([bindingID]) => bindingID !== '')),
     [workspaces],
   )
+  const knownWorkspacePaths = useMemo<Set<string>>(
+    () => new Set(workspaces.map((workspace) => workspace.path)),
+    [workspaces],
+  )
   const routeWorkspace = useMemo(
     () => (routeWorkspaceSlug ? resolveWorkspaceBySlug(workspaces, routeWorkspaceSlug) : null),
     [routeWorkspaceSlug, workspaces],
@@ -2461,20 +2485,12 @@ export function DesktopAppPage() {
     () => new Map(desktopStateSessions.map((session) => [session.id, session] as const)),
     [desktopStateSessions],
   )
-  const workspaceSlugByPath = useMemo(() => {
-    const routeWorkspaces: Array<Pick<WorkspaceEntry, 'path' | 'workspaceName'>> = mergedSidebarWorkspaceEntries.map((workspace) => ({
+  const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(
+    mergedSidebarWorkspaceEntries.map((workspace) => ({
       path: workspace.path,
       workspaceName: workspace.workspaceName,
-    }))
-    const seenPaths = new Set(routeWorkspaces.map((workspace) => workspace.path))
-    for (const session of desktopStateSessions) {
-      const path = desktopSidebarWorkspacePathForSession(session, workspacePathByBindingId)
-      if (!path || seenPaths.has(path)) continue
-      seenPaths.add(path)
-      routeWorkspaces.push({ path, workspaceName: session.workspaceName || fallbackWorkspaceNameFromPath(path) })
-    }
-    return buildWorkspaceRouteSlugMap(routeWorkspaces)
-  }, [desktopStateSessions, mergedSidebarWorkspaceEntries, workspacePathByBindingId])
+    })),
+  ), [mergedSidebarWorkspaceEntries])
   const selectedSidebarControlWorkspace = sidebarWorkspaceControlPath
     ? mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === sidebarWorkspaceControlPath) ?? null
     : null
@@ -2501,14 +2517,14 @@ export function DesktopAppPage() {
   const defaultNewChatWorkspacePath = defaultNewChatWorkspace?.path || ''
   const defaultNewChatWorkspaceLabel = defaultNewChatWorkspace?.workspaceName?.trim() || 'Default Workspace'
   const globalSessionWorkspaceSlug = useCallback((session: DesktopSessionRecord): string => {
-    const workspacePath = desktopSidebarWorkspacePathForSession(session, workspacePathByBindingId)
+    const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths)
       || selectedWorkspacePath
       || visibleWorkspacePaths[0]
       || ''
     if (!workspacePath) return topWorkspaceSlug || routeWorkspaceSlug || 'workspace'
     return workspaceSlugByPath.get(workspacePath)
       ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName || fallbackWorkspaceNameFromPath(workspacePath) })
-  }, [routeWorkspaceSlug, selectedWorkspacePath, topWorkspaceSlug, visibleWorkspacePaths, workspacePathByBindingId, workspaceSlugByPath])
+  }, [knownWorkspacePaths, routeWorkspaceSlug, selectedWorkspacePath, topWorkspaceSlug, visibleWorkspacePaths, workspacePathByBindingId, workspaceSlugByPath])
   const globalSessionRouteOptions = useMemo(() => buildDesktopChatRouteOptions({
     hostSwarmName: swarmName,
     workspacePath: topWorkspacePath,
@@ -2589,7 +2605,7 @@ export function DesktopAppPage() {
     if (!session) {
       return
     }
-    const workspacePath = desktopSidebarWorkspacePathForSession(session, workspacePathByBindingId)
+    const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths)
     if (!workspacePath) {
       return
     }
@@ -2603,7 +2619,7 @@ export function DesktopAppPage() {
       params: { workspaceSlug: canonicalWorkspaceSlug, sessionId: session.id },
       replace: true,
     })
-  }, [navigate, routeSessionId, routeWorkspaceSlug, sessionById, workspacePathByBindingId, workspaceSlugByPath])
+  }, [knownWorkspacePaths, navigate, routeSessionId, routeWorkspaceSlug, sessionById, workspacePathByBindingId, workspaceSlugByPath])
 
 
 
@@ -2614,7 +2630,10 @@ export function DesktopAppPage() {
     if (!session) {
       return false
     }
-    const workspacePath = desktopSidebarWorkspacePathForSession(session, workspacePathByBindingId)
+    const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths)
+      || selectedWorkspacePath
+      || visibleWorkspacePaths[0]
+      || ''
     if (!workspacePath) {
       return false
     }
@@ -2630,7 +2649,7 @@ export function DesktopAppPage() {
       },
     })
     return true
-  }, [navigate, sessionById, workspacePathByBindingId, workspaceSlugByPath])
+  }, [knownWorkspacePaths, navigate, selectedWorkspacePath, sessionById, visibleWorkspacePaths, workspacePathByBindingId, workspaceSlugByPath])
 
 
 
@@ -2657,7 +2676,10 @@ export function DesktopAppPage() {
     const normalizedSessionId = sessionId.trim()
     const routeSession = normalizedSessionId ? sessionById.get(normalizedSessionId) : null
     const workspacePath = routeSession
-      ? desktopSidebarWorkspacePathForSession(routeSession, workspacePathByBindingId)
+      ? desktopRouteWorkspacePathForSession(routeSession, workspacePathByBindingId, knownWorkspacePaths)
+        || selectedWorkspacePath
+        || routeWorkspace?.path
+        || ''
       : selectedWorkspacePath || routeWorkspace?.path || ''
     const workspaceName = routeSession?.workspaceName || selectedWorkspace?.workspaceName || routeWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
     dispatchDesktopV3Cache(selectSession(undefined))
@@ -2670,7 +2692,7 @@ export function DesktopAppPage() {
       return
     }
     void navigate({ to: '/' })
-  }, [handleOpenWorkspace, navigate, routeWorkspace?.path, routeWorkspace?.workspaceName, routeWorkspaceSlug, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, workspacePathByBindingId])
+  }, [handleOpenWorkspace, knownWorkspacePaths, navigate, routeWorkspace?.path, routeWorkspace?.workspaceName, routeWorkspaceSlug, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, workspacePathByBindingId])
 
   const handleToggleSidebarPinned = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
@@ -3796,7 +3818,7 @@ export function DesktopAppPage() {
             onModeCommandHandled={() => setSessionModeCommand(null)}
             session={sessionById.get(routeSessionId) ?? null}
             routeOptions={sessionById.get(routeSessionId) ? (() => {
-              const sessionWorkspacePath = desktopSidebarWorkspacePathForSession(sessionById.get(routeSessionId)!, workspacePathByBindingId)
+              const sessionWorkspacePath = desktopRouteWorkspacePathForSession(sessionById.get(routeSessionId)!, workspacePathByBindingId, knownWorkspacePaths)
               const sessionWorkspace = mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === sessionWorkspacePath) ?? null
               return buildDesktopChatRouteOptions({
                 hostSwarmName: swarmName,
@@ -3813,7 +3835,11 @@ export function DesktopAppPage() {
             onArchivePlanSession={handleArchivePlanSession}
             onNewSession={() => {
               const routeSession = sessionById.get(routeSessionId)
-              const workspacePath = routeSession ? desktopSidebarWorkspacePathForSession(routeSession, workspacePathByBindingId) : ''
+              const workspacePath = routeSession
+                ? desktopRouteWorkspacePathForSession(routeSession, workspacePathByBindingId, knownWorkspacePaths)
+                  || selectedWorkspacePath
+                  || ''
+                : ''
               if (routeSession && workspacePath) handleStartNewSessionInWorkspace(workspacePath, routeSession.workspaceName)
             }}
             onSlashCommand={handleSlashCommand}

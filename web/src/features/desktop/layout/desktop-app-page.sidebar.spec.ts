@@ -6,6 +6,7 @@ import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY } from '../session-v3/api'
 import {
   SIDEBAR_SESSION_GROUPS,
   compareSidebarSessions,
+  desktopRouteWorkspacePathForSession,
   sessionActivityLabel,
   sessionStatusDetail,
   sessionStatusTone,
@@ -13,6 +14,39 @@ import {
   sessionActiveRunIntent,
   sessionSidebarDisplayGroup,
 } from './desktop-app-page'
+
+test('session route workspace ignores unbound remote paths from hydrated sessions', () => {
+  const session = makeSession('remote-session', {
+    workspacePath: '/remote/workspaces/swarm-go',
+    metadata: {
+      swarm_v3_source_workspace_path: '/remote/workspaces/swarm-go',
+      local_workspace_binding_id: 'remote-binding',
+    },
+  })
+  const localWorkspacePaths = new Set(['/local/swarm-go'])
+
+  assert.equal(desktopRouteWorkspacePathForSession(session, new Map(), localWorkspacePaths), '')
+  assert.equal(
+    desktopRouteWorkspacePathForSession(
+      session,
+      new Map([['remote-binding', '/local/swarm-go']]),
+      localWorkspacePaths,
+    ),
+    '/local/swarm-go',
+  )
+})
+
+test('session route workspace accepts authoritative local metadata paths', () => {
+  const session = makeSession('local-session', {
+    workspacePath: '/runtime/swarm-go',
+    metadata: { swarm_v3_source_workspace_path: '/local/swarm-go' },
+  })
+
+  assert.equal(
+    desktopRouteWorkspacePathForSession(session, new Map(), new Set(['/local/swarm-go'])),
+    '/local/swarm-go',
+  )
+})
 
 function activeRunIntent(
   sessionId: string,
