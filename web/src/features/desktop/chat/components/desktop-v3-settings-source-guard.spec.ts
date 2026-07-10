@@ -47,6 +47,9 @@ test('Desktop V3 existing composer stages agent/model setup and persists profile
   assert.doesNotMatch(source, /switchAgentToDefaultModel/)
 
   assert.match(composerSource, /<button type="button" onClick=\{handleModeToggle\}[\s\S]*\{mode\}[\s\S]*<AgentModelControl/)
+  assert.match(composerSource, /onClick=\{handleModeToggle\}[\s\S]*className="inline-flex w-\[68px\][^"]*transition-colors/)
+  assert.match(composerSource, /onClick=\{handleModeToggle\}[\s\S]*className="inline-flex h-full w-\[58px\][^"]*transition-colors/)
+  assert.doesNotMatch(composerSource, /focus-within:pb-/)
   assert.match(composerSource, /<AgentModelControl[\s\S]*triggerDetail=\{modelControlDetail/)
   assert.match(composerSource, /<AgentModelControl[\s\S]*onConfirmAgentSettings=\{onConfirmAgentSettings\}/)
   assert.doesNotMatch(composerSource, /<ModelPicker/)

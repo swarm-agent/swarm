@@ -614,7 +614,7 @@ export function DesktopV3AgenticComposer({
 
   return (
     <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-v3-agentic-composer">
-      <div className="mx-auto grid w-full min-w-0 max-w-[70rem] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 focus-within:pb-[calc(1rem+var(--app-safe-area-bottom))] sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5">
+      <div className="mx-auto grid w-full min-w-0 max-w-[70rem] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5">
         {error ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]" role="alert">{error}</div> : null}
         {dictationError ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning)]">{dictationError}</div> : null}
         {mentionPaletteIsActive ? (
@@ -657,7 +657,7 @@ export function DesktopV3AgenticComposer({
             <div className="hidden min-w-0 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {showModePicker ? (
-                  <button type="button" onClick={handleModeToggle} disabled={!onModeSelect || composerDisabled} title="Toggle plan/auto mode" className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--app-primary)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50">
+                  <button type="button" onClick={handleModeToggle} disabled={!onModeSelect || composerDisabled} title="Toggle plan/auto mode" className="inline-flex w-[68px] shrink-0 items-center justify-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--app-primary)] transition-colors hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50">
                     <ModeIcon size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
                     {mode}
                   </button>
@@ -692,7 +692,7 @@ export function DesktopV3AgenticComposer({
               <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_40px_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_40px_40px] sm:gap-2">
                 <div className="flex h-10 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] shadow-sm">
                   {showModePicker ? (
-                    <button type="button" onClick={handleModeToggle} disabled={!onModeSelect || composerDisabled} className="inline-flex h-full shrink-0 items-center gap-1 border-r border-[var(--app-border)] px-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-primary)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50" title="Toggle plan/auto mode">
+                    <button type="button" onClick={handleModeToggle} disabled={!onModeSelect || composerDisabled} className="inline-flex h-full w-[58px] shrink-0 items-center justify-center gap-1 border-r border-[var(--app-border)] px-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-primary)] transition-colors hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50" title="Toggle plan/auto mode">
                       <ModeIcon size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
                       {mode}
                     </button>
