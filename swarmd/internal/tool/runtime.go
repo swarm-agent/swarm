@@ -1170,6 +1170,7 @@ func (r *Runtime) Definitions() []Definition {
 					"continue_next":              map[string]any{"type": "boolean", "description": "Alias for start_next on resolve_blocked_checkpoint."},
 					"changed_files":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Files changed while completing/updating a checkpoint."},
 					"validation":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Validation evidence for checkpoint updates."},
+					"recommendation":             map[string]any{"type": "object", "description": "Single final-review recommendation for terminal checkpoint outcomes: decision ship/change/revert/defer, action, short reason, and action_state taken/ready/needs_approval."},
 					"activate":                   map[string]any{"type": "boolean", "description": "Whether the saved/new plan becomes the active plan (default true)."},
 					"override":                   map[string]any{"type": "boolean", "description": "Required for action=new when the session already has an active plan. Set true only to intentionally create a replacement active plan instead of updating the current canonical plan."},
 				},

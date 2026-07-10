@@ -34,6 +34,21 @@ func TestNormalizePlanDocumentForSaveFillsPlanIdentityAndValidatesStructure(t *t
 	}
 }
 
+func TestNormalizePlanDocumentForSaveDefaultsLegacyExecutionOriginToApprovedPlan(t *testing.T) {
+	doc, err := NormalizePlanDocumentForSave("plan-legacy", "Legacy Plan", &pebblestore.SessionPlanDocument{
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("normalize legacy document: %v", err)
+	}
+	if got, want := doc.ExecutionOrigin, PlanExecutionOriginApprovedPlan; got != want {
+		t.Fatalf("legacy execution origin = %q, want %q", got, want)
+	}
+	if got := NormalizePlanExecutionOrigin("unexpected"); got != PlanExecutionOriginApprovedPlan {
+		t.Fatalf("unknown origin = %q, want fail-safe approved-plan origin", got)
+	}
+}
+
 func TestValidatePlanDocumentRejectsStructuralInconsistency(t *testing.T) {
 	_, err := NormalizePlanDocumentForSave("plan-one", "One Plan", &pebblestore.SessionPlanDocument{
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1"}, {ID: "cp-1"}},

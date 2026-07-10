@@ -18,7 +18,11 @@ func NormalizePlanDocumentForSave(planID, title string, incoming, existing *pebb
 	planID = strings.TrimSpace(planID)
 	title = strings.TrimSpace(title)
 	if incoming == nil {
-		return clonePlanDocument(existing), nil
+		doc := clonePlanDocument(existing)
+		if doc != nil {
+			doc.ExecutionOrigin = NormalizePlanExecutionOrigin(doc.ExecutionOrigin)
+		}
+		return doc, nil
 	}
 	doc := clonePlanDocument(incoming)
 	if doc == nil {
@@ -36,6 +40,7 @@ func NormalizePlanDocumentForSave(planID, title string, incoming, existing *pebb
 	doc.SchemaVersion = strings.TrimSpace(doc.SchemaVersion)
 	doc.RevisionID = strings.TrimSpace(doc.RevisionID)
 	doc.ActiveCheckpointID = strings.TrimSpace(doc.ActiveCheckpointID)
+	doc.ExecutionOrigin = NormalizePlanExecutionOrigin(doc.ExecutionOrigin)
 	doc.RenderedText = strings.TrimSpace(doc.RenderedText)
 	doc.DisplayText = strings.TrimSpace(doc.DisplayText)
 	trimPlanInfo(&doc.Info)
@@ -108,29 +113,30 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 // documents. The service applies the whole patch atomically and stores exactly
 // one normal plan revision for the accepted update.
 type PlanDocumentPatch struct {
-	Operation          string                                  `json:"operation,omitempty"`
-	Info               *pebblestore.SessionPlanInfo            `json:"info,omitempty"`
-	InfoFields         map[string]json.RawMessage              `json:"-"`
-	ExecutionPolicy    *pebblestore.SessionPlanExecutionPolicy `json:"execution_policy,omitempty"`
-	ExecutionState     *pebblestore.SessionPlanExecutionState  `json:"execution_state,omitempty"`
-	Checkpoint         *pebblestore.SessionPlanCheckpoint      `json:"checkpoint,omitempty"`
-	CheckpointFields   map[string]json.RawMessage              `json:"-"`
-	CheckpointID       string                                  `json:"checkpoint_id,omitempty"`
-	CheckpointOrder    []string                                `json:"checkpoint_order,omitempty"`
-	ActiveCheckpointID string                                  `json:"active_checkpoint_id,omitempty"`
-	Status             string                                  `json:"status,omitempty"`
-	AttemptID          string                                  `json:"attempt_id,omitempty"`
-	RunID              string                                  `json:"run_id,omitempty"`
-	RunSessionID       string                                  `json:"run_session_id,omitempty"`
-	ParentSessionID    string                                  `json:"parent_session_id,omitempty"`
-	StartedAt          int64                                   `json:"started_at,omitempty"`
-	CompletedAt        int64                                   `json:"completed_at,omitempty"`
-	Notes              string                                  `json:"notes,omitempty"`
-	Report             string                                  `json:"report,omitempty"`
-	Result             string                                  `json:"result,omitempty"`
-	ChangedFiles       []string                                `json:"changed_files,omitempty"`
-	Validation         []string                                `json:"validation,omitempty"`
-	Operations         []PlanDocumentPatchOperation            `json:"operations,omitempty"`
+	Operation          string                                           `json:"operation,omitempty"`
+	Info               *pebblestore.SessionPlanInfo                     `json:"info,omitempty"`
+	InfoFields         map[string]json.RawMessage                       `json:"-"`
+	ExecutionPolicy    *pebblestore.SessionPlanExecutionPolicy          `json:"execution_policy,omitempty"`
+	ExecutionState     *pebblestore.SessionPlanExecutionState           `json:"execution_state,omitempty"`
+	Checkpoint         *pebblestore.SessionPlanCheckpoint               `json:"checkpoint,omitempty"`
+	CheckpointFields   map[string]json.RawMessage                       `json:"-"`
+	CheckpointID       string                                           `json:"checkpoint_id,omitempty"`
+	CheckpointOrder    []string                                         `json:"checkpoint_order,omitempty"`
+	ActiveCheckpointID string                                           `json:"active_checkpoint_id,omitempty"`
+	Status             string                                           `json:"status,omitempty"`
+	AttemptID          string                                           `json:"attempt_id,omitempty"`
+	RunID              string                                           `json:"run_id,omitempty"`
+	RunSessionID       string                                           `json:"run_session_id,omitempty"`
+	ParentSessionID    string                                           `json:"parent_session_id,omitempty"`
+	StartedAt          int64                                            `json:"started_at,omitempty"`
+	CompletedAt        int64                                            `json:"completed_at,omitempty"`
+	Notes              string                                           `json:"notes,omitempty"`
+	Report             string                                           `json:"report,omitempty"`
+	Result             string                                           `json:"result,omitempty"`
+	ChangedFiles       []string                                         `json:"changed_files,omitempty"`
+	Validation         []string                                         `json:"validation,omitempty"`
+	Recommendation     *pebblestore.SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	Operations         []PlanDocumentPatchOperation                     `json:"operations,omitempty"`
 }
 
 type PlanDocumentPatchOperation = PlanDocumentPatch
@@ -330,6 +336,7 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 			Result:          op.Result,
 			ChangedFiles:    op.ChangedFiles,
 			Validation:      op.Validation,
+			Recommendation:  op.Recommendation,
 			StartedAt:       op.StartedAt,
 			CompletedAt:     op.CompletedAt,
 		})
@@ -364,6 +371,7 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 			Result:          op.Result,
 			ChangedFiles:    op.ChangedFiles,
 			Validation:      op.Validation,
+			Recommendation:  op.Recommendation,
 			StartedAt:       op.StartedAt,
 			CompletedAt:     op.CompletedAt,
 		})
@@ -687,6 +695,12 @@ func applyCheckpointCompletionFields(checkpoint *pebblestore.SessionPlanCheckpoi
 	}
 	if len(op.Validation) > 0 {
 		checkpoint.Validation = trimStringSlice(op.Validation)
+	}
+	if op.Recommendation != nil {
+		recommendation := normalizePlanCheckpointRecommendation(*op.Recommendation)
+		if validatePlanCheckpointRecommendation(recommendation) == nil {
+			checkpoint.Recommendation = &recommendation
+		}
 	}
 }
 

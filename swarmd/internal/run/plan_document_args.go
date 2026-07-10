@@ -102,7 +102,7 @@ func planManageApprovedArgumentKeys(action string) map[string]bool {
 		}
 	}
 	if planManageActionUsesDocumentPatch(action) {
-		add("plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation")
+		add("plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "recommendation")
 		return keys
 	}
 	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_") {
@@ -115,7 +115,7 @@ func planManageApprovedArgumentKeys(action string) map[string]bool {
 	case "resolve_blocked_checkpoint", "resolve_block", "clear_block", "unblock_checkpoint":
 		add("plan_id", "id", "checkpoint_id", "active_checkpoint_id", "active_checkpoint", "result", "resolution_result", "notes", "resolution_notes", "report", "reviewed_at", "start_next", "continue_next", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at")
 	case "start_session_checkpoint":
-		add("checkpoint_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "notes", "handoff_notes", "context", "source_message_id", "source_message", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at")
+		add("checkpoint_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "notes", "handoff_notes", "context", "source_message_id", "source_message", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "fresh_context", "execution_context")
 	case "request_followup_checkpoint":
 		add("plan_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "notes", "handoff_notes", "context", "source_message_id", "source_message", "approval_confirmed", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at")
 	case "request_plan_revision":
@@ -156,6 +156,13 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 		Result:             rawStringArg(args, "result"),
 		ChangedFiles:       mapStringSlice(args, "changed_files"),
 		Validation:         mapStringSlice(args, "validation"),
+	}
+	if value, ok := args["recommendation"]; ok && value != nil {
+		var recommendation pebblestore.SessionPlanCheckpointRecommendation
+		if err := unmarshalPlanToolArg(value, &recommendation, "plan_manage recommendation"); err != nil {
+			return nil, err
+		}
+		patch.Recommendation = &recommendation
 	}
 	if value, ok := args["info"]; ok && value != nil {
 		var info pebblestore.SessionPlanInfo

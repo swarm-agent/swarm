@@ -279,7 +279,14 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			controlErr = guardErr
 			controlResult = tool.Result{CallID: call.CallID, Name: call.Name}
 		} else {
-			handled, controlResult, controlErr = s.executeControlPlaneToolWithMutation(ctx, config.sessionID, config.sessionMode, config.agentProfile, config.step, call, feedback.ApprovedArguments, config.emit, config.applySessionMutation)
+			lifecycleRun := planLifecycleRunContext{
+				RunID:           strings.TrimSpace(config.runID),
+				RunSessionID:    strings.TrimSpace(config.sessionID),
+				ParentSessionID: strings.TrimSpace(config.sessionID),
+				SourceMessageID: fmt.Sprintf("provider-run:%s:step:%d:call:%s", strings.TrimSpace(config.runID), config.step, strings.TrimSpace(call.CallID)),
+				Inline:          config.providerManagedV3 && sessionruntime.NormalizeMode(config.sessionMode) == sessionruntime.ModeAuto,
+			}
+			handled, controlResult, controlErr = s.executeControlPlaneToolWithLifecycleRunContext(ctx, config.sessionID, config.sessionMode, config.agentProfile, config.step, call, feedback.ApprovedArguments, config.emit, config.applySessionMutation, lifecycleRun)
 		}
 		if handled {
 			if config.emit != nil {

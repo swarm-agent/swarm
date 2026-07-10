@@ -68,6 +68,9 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	if nextAction == "await_review" {
 		if finalReview {
 			bodyLines = append(bodyLines, "Next: all checkpoints are complete; waiting for user review.")
+			if recommendation := planLifecycleRecommendation(doc, checkpointID); recommendation != nil {
+				bodyLines = append(bodyLines, "Recommendation: "+recommendation.Decision+" — "+recommendation.Action+" ("+recommendation.ActionState+"). "+recommendation.Reason)
+			}
 		} else {
 			bodyLines = append(bodyLines, "Next: waiting for checkpoint review.")
 		}
@@ -100,6 +103,9 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 		"next_action":      nextAction,
 		"fresh_context":    freshContext,
 	}
+	if recommendation := planLifecycleRecommendation(doc, checkpointID); recommendation != nil {
+		metadata["recommendation"] = recommendation
+	}
 	if doc.ExecutionState != nil {
 		metadata["execution_status"] = strings.TrimSpace(doc.ExecutionState.Status)
 		metadata["attempt_id"] = strings.TrimSpace(firstNonEmptyString(doc.ExecutionState.ActiveAttemptID, doc.ExecutionState.LastAttemptID))
@@ -107,6 +113,19 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 		metadata["run_session_id"] = strings.TrimSpace(doc.ExecutionState.CurrentSessionID)
 	}
 	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
+}
+
+func planLifecycleRecommendation(doc *pebblestore.SessionPlanDocument, checkpointID string) *pebblestore.SessionPlanCheckpointRecommendation {
+	if doc == nil {
+		return nil
+	}
+	for _, checkpoint := range doc.Checkpoints {
+		if strings.TrimSpace(checkpoint.ID) == strings.TrimSpace(checkpointID) && checkpoint.Recommendation != nil {
+			value := *checkpoint.Recommendation
+			return &value
+		}
+	}
+	return nil
 }
 
 func isPlanExecutionLifecycleMessageAction(action string) bool {

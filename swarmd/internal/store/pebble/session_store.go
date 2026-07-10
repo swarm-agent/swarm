@@ -140,13 +140,16 @@ type SessionPlanSnapshot struct {
 }
 
 type SessionPlanDocument struct {
-	ID                  string                     `json:"id"`
-	Title               string                     `json:"title"`
-	Status              string                     `json:"status,omitempty"`
-	SchemaVersion       string                     `json:"schema_version,omitempty"`
-	RevisionID          string                     `json:"revision_id,omitempty"`
-	Info                SessionPlanInfo            `json:"info,omitempty"`
-	ExecutionPolicy     SessionPlanExecutionPolicy `json:"execution_policy,omitempty"`
+	ID              string                     `json:"id"`
+	Title           string                     `json:"title"`
+	Status          string                     `json:"status,omitempty"`
+	SchemaVersion   string                     `json:"schema_version,omitempty"`
+	RevisionID      string                     `json:"revision_id,omitempty"`
+	Info            SessionPlanInfo            `json:"info,omitempty"`
+	ExecutionPolicy SessionPlanExecutionPolicy `json:"execution_policy,omitempty"`
+	// ExecutionOrigin distinguishes lightweight auto-session work from approved
+	// full-plan execution without relying on conversation history.
+	ExecutionOrigin     string                     `json:"execution_origin,omitempty"`
 	ExecutionState      *SessionPlanExecutionState `json:"execution_state,omitempty"`
 	Checkpoints         []SessionPlanCheckpoint    `json:"checkpoints,omitempty"`
 	OriginalCheckpoints []SessionPlanCheckpoint    `json:"original_checkpoints,omitempty"`
@@ -193,26 +196,27 @@ type SessionPlanInfo struct {
 }
 
 type SessionPlanCheckpoint struct {
-	ID                 string                         `json:"id"`
-	Title              string                         `json:"title,omitempty"`
-	Status             string                         `json:"status,omitempty"`
-	Objective          string                         `json:"objective,omitempty"`
-	Tasks              []string                       `json:"tasks,omitempty"`
-	AcceptanceCriteria []string                       `json:"acceptance_criteria,omitempty"`
-	SourceMessageID    string                         `json:"source_message_id,omitempty"`
-	Notes              string                         `json:"notes,omitempty"`
-	Report             string                         `json:"report,omitempty"`
-	Result             string                         `json:"result,omitempty"`
-	ChangedFiles       []string                       `json:"changed_files,omitempty"`
-	Validation         []string                       `json:"validation,omitempty"`
-	AttemptID          string                         `json:"attempt_id,omitempty"`
-	RunID              string                         `json:"run_id,omitempty"`
-	SessionID          string                         `json:"session_id,omitempty"`
-	StartedAt          int64                          `json:"started_at,omitempty"`
-	CompletedAt        int64                          `json:"completed_at,omitempty"`
-	Review             *SessionPlanCheckpointReview   `json:"review,omitempty"`
-	Attempts           []SessionPlanCheckpointAttempt `json:"attempts,omitempty"`
-	Order              int                            `json:"order,omitempty"`
+	ID                 string                               `json:"id"`
+	Title              string                               `json:"title,omitempty"`
+	Status             string                               `json:"status,omitempty"`
+	Objective          string                               `json:"objective,omitempty"`
+	Tasks              []string                             `json:"tasks,omitempty"`
+	AcceptanceCriteria []string                             `json:"acceptance_criteria,omitempty"`
+	SourceMessageID    string                               `json:"source_message_id,omitempty"`
+	Notes              string                               `json:"notes,omitempty"`
+	Report             string                               `json:"report,omitempty"`
+	Result             string                               `json:"result,omitempty"`
+	ChangedFiles       []string                             `json:"changed_files,omitempty"`
+	Validation         []string                             `json:"validation,omitempty"`
+	AttemptID          string                               `json:"attempt_id,omitempty"`
+	RunID              string                               `json:"run_id,omitempty"`
+	SessionID          string                               `json:"session_id,omitempty"`
+	StartedAt          int64                                `json:"started_at,omitempty"`
+	CompletedAt        int64                                `json:"completed_at,omitempty"`
+	Review             *SessionPlanCheckpointReview         `json:"review,omitempty"`
+	Recommendation     *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	Attempts           []SessionPlanCheckpointAttempt       `json:"attempts,omitempty"`
+	Order              int                                  `json:"order,omitempty"`
 }
 
 type SessionPlanCheckpointAttempt struct {
@@ -238,6 +242,15 @@ type SessionPlanCheckpointReview struct {
 	Result       string `json:"result,omitempty"`
 	Notes        string `json:"notes,omitempty"`
 	ReviewedAt   int64  `json:"reviewed_at,omitempty"`
+}
+
+// SessionPlanCheckpointRecommendation is the single explicit final-review
+// recommendation emitted by a checkpoint terminal handoff.
+type SessionPlanCheckpointRecommendation struct {
+	Decision    string `json:"decision,omitempty"`
+	Action      string `json:"action,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	ActionState string `json:"action_state,omitempty"`
 }
 
 type SessionPlanActive struct {

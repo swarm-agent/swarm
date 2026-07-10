@@ -258,6 +258,7 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 			return PlanLifecycleResult{}, err
 		}
 		document.Status = "approved"
+		document.ExecutionOrigin = PlanExecutionOriginApprovedPlan
 	}
 	saved, planEvent, err := s.sessions.SavePlanWithMetadata(session.ID, planID, title, planText, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: "exit plan mode submission", UpdateScope: "plan", UpdateKind: "exit_plan_mode", Document: document})
 	if err != nil {
@@ -283,6 +284,15 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 	request := strings.TrimSpace(input.ChangeRequest)
 	if request == "" {
 		return PlanLifecycleResult{}, errors.New("request_followup_checkpoint requires change_request")
+	}
+	if sourceMessageID := strings.TrimSpace(input.SourceMessageID); sourceMessageID != "" {
+		for _, existing := range state.doc.Checkpoints {
+			if strings.TrimSpace(existing.SourceMessageID) != sourceMessageID {
+				continue
+			}
+			summary := SummarizePlanExecution(state.doc)
+			return PlanLifecycleResult{Session: state.session, Plan: state.plan, Summary: summary, CheckpointID: strings.TrimSpace(existing.ID), AttemptID: strings.TrimSpace(existing.AttemptID), Action: "request_followup_checkpoint", Message: "Reused existing session checkpoint for duplicate source message"}, nil
+		}
 	}
 	insertionPoint := followupCheckpointInsertionPointForDocument(state.doc)
 	if insertionPoint.StopReason == PlanCheckpointStatusBlocked || insertionPoint.StopReason == PlanCheckpointStatusFailed {
@@ -338,7 +348,7 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 		if strings.TrimSpace(input.RunID) == "" {
 			return s.saveLifecyclePlan(state, checkpointID, "request_followup_checkpoint", "Inserted session checkpoint and queued fresh-context checkpoint start")
 		}
-		return s.applyCheckpointStartAndSave(state, PlanLifecycleExecutionInput{SessionID: input.SessionID, PlanID: state.plan.ID, CheckpointID: checkpointID, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, AttemptID: input.AttemptID, StartedAt: input.StartedAt}, checkpointID, "request_followup_checkpoint", "Inserted session checkpoint and prepared fresh-context checkpoint start", state.plan.Status, state.plan.ApprovalState)
+		return s.applyCheckpointStartAndSave(state, PlanLifecycleExecutionInput{SessionID: input.SessionID, PlanID: state.plan.ID, CheckpointID: checkpointID, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, AttemptID: input.AttemptID, StartedAt: input.StartedAt}, checkpointID, "request_followup_checkpoint", "Inserted session checkpoint and started it with the current run", state.plan.Status, state.plan.ApprovalState)
 	}
 	return s.saveLifecyclePlan(state, checkpointID, "request_followup_checkpoint", "Inserted session checkpoint")
 }
@@ -384,6 +394,7 @@ func (s *PlanLifecycleService) StartSessionCheckpoint(input PlanLifecycleSession
 			ValidationStrategy: "Use the narrowest validation that directly covers this checkpoint; report validation actually run in the terminal checkpoint outcome.",
 		},
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		ExecutionOrigin: PlanExecutionOriginAutoSession,
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
 			ID:                 checkpointID,
 			Title:              title,
@@ -420,7 +431,7 @@ func (s *PlanLifecycleService) StartSessionCheckpoint(input PlanLifecycleSession
 	if err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	return PlanLifecycleResult{Session: session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), CheckpointID: decision.CheckpointID, AttemptID: decision.AttemptID, Action: "start_session_checkpoint", Message: "Created session checkpoint and prepared fresh-context checkpoint start"}, nil
+	return PlanLifecycleResult{Session: session, Plan: saved, PlanEvent: event, Summary: SummarizePlanExecution(saved.Document), CheckpointID: decision.CheckpointID, AttemptID: decision.AttemptID, Action: "start_session_checkpoint", Message: "Created session checkpoint and started it with the current run"}, nil
 }
 
 func renderSessionCheckpointPlanText(title, request string, tasks, criteria []string) string {

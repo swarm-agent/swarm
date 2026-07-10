@@ -388,6 +388,13 @@ export interface DesktopSessionPlanCheckpointReview {
   reviewedAt: number;
 }
 
+export interface DesktopSessionPlanCheckpointRecommendation {
+  decision: string;
+  action: string;
+  reason: string;
+  actionState: string;
+}
+
 export interface DesktopSessionPlanCheckpointAttempt {
   id: string;
   checkpointId: string;
@@ -422,6 +429,7 @@ export interface DesktopSessionPlanCheckpoint {
   startedAt: number;
   completedAt: number;
   review: DesktopSessionPlanCheckpointReview | null;
+  recommendation?: DesktopSessionPlanCheckpointRecommendation | null;
   attempts: DesktopSessionPlanCheckpointAttempt[];
   order: number;
 }

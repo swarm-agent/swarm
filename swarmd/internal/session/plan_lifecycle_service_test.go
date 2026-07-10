@@ -725,6 +725,38 @@ func TestPlanLifecycleStartSessionCheckpointCreatesApprovedStartedPlan(t *testin
 	}
 }
 
+func TestPlanLifecycleFollowupCheckpointDeduplicatesSourceMessage(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+	sessionID := createPlanTestSession(t, svc)
+	_, _, err := svc.SavePlanWithMetadata(sessionID, "plan-followup-dedup", "Followup", "# Followup", "approved", "approved", true, PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed, FollowupCheckpointPolicy: PlanFollowupCheckpointPolicyAutoStart},
+		Checkpoints:     []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Status: PlanCheckpointStatusCompleted}},
+	}})
+	if err != nil {
+		t.Fatalf("save plan: %v", err)
+	}
+	lifecycle := NewPlanLifecycleService(svc)
+	first, err := lifecycle.RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: "plan-followup-dedup", ChangeRequest: "add audit", SourceMessageID: "message-1"})
+	if err != nil {
+		t.Fatalf("first follow-up: %v", err)
+	}
+	second, err := lifecycle.RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: "plan-followup-dedup", ChangeRequest: "add audit", SourceMessageID: "message-1"})
+	if err != nil {
+		t.Fatalf("second follow-up: %v", err)
+	}
+	if first.CheckpointID == "" || second.CheckpointID != first.CheckpointID {
+		t.Fatalf("dedup checkpoint ids = %q/%q", first.CheckpointID, second.CheckpointID)
+	}
+	plan, ok, err := svc.GetPlan(sessionID, "plan-followup-dedup")
+	if err != nil || !ok {
+		t.Fatalf("get plan: ok=%v err=%v", ok, err)
+	}
+	if len(plan.Document.Checkpoints) != 2 {
+		t.Fatalf("checkpoint count = %d, want 2: %#v", len(plan.Document.Checkpoints), plan.Document.Checkpoints)
+	}
+}
+
 func TestPlanLifecycleStartSessionCheckpointRejectsActivePlan(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()

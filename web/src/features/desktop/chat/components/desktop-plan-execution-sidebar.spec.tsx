@@ -327,6 +327,41 @@ test("normal run-through sidebar shows the plan title instead of the synthetic c
   assert.doesNotMatch(markup, /No remaining checkpoint/);
 });
 
+test("checkpoint sidebar projects objective, task checklist, criteria, notes, and plain tasks from plan state", () => {
+  const base = view();
+  base.activeCheckpoint = {
+    ...base.activeCheckpoint!,
+    objective: "Ship the durable task projection",
+    tasks: ["[x] Persist task changes", "[ ] Render sidebar state", "Plain task"],
+    acceptanceCriteria: ["Tasks survive reconnect"],
+    notes: "Do not add a second task store.",
+  };
+  base.plan.document.checkpoints = [base.activeCheckpoint];
+
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar
+      view={base}
+      onAction={() => undefined}
+      onEditPlan={() => undefined}
+    />,
+  );
+
+  assert.match(markup, /Objective/);
+  assert.match(markup, /Ship the durable task projection/);
+  assert.match(markup, /Tasks/);
+  assert.match(markup, /Persist task changes/);
+  assert.match(markup, /Render sidebar state/);
+  assert.match(markup, /Plain task/);
+  assert.match(markup, /Acceptance criteria/);
+  assert.match(markup, /Tasks survive reconnect/);
+  assert.match(markup, /Notes/);
+  assert.match(markup, /Do not add a second task store/);
+  assert.match(markup, /checked=""/);
+  assert.match(markup, /type="checkbox"/);
+  assert.doesNotMatch(markup, /\[x\] Persist task changes/);
+  assert.doesNotMatch(markup, /\[ \] Render sidebar state/);
+});
+
 test("automatic checkpointed mode sidebar actions card explains continuation and exposes backend policy toggle", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
@@ -490,7 +525,7 @@ test("manual review mode keeps the start-next review button visible and enabled 
   assert.doesNotMatch(markup, /Accept &amp; move to next/);
 });
 
-test("manual review mode exposes only the enabled accept-and-archive review action on the final checkpoint", () => {
+test("manual review mode exposes final acceptance before archiving on the final checkpoint", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
       view={view({
@@ -508,7 +543,7 @@ test("manual review mode exposes only the enabled accept-and-archive review acti
   assert.match(markup, /Accept &amp; archive plan/);
   assert.match(
     markup,
-    /moves the completed plan to Archived without running checkpoint acceptance first/,
+    /Accepting final review is recorded first, then this plan is archived/,
   );
   assert.match(markup, /Switch to automatic/);
   assert.doesNotMatch(markup, /Archive plan<\/button>/);
@@ -596,7 +631,7 @@ test("manual review mode keeps finish-plan action clickable when all checkpoints
   assert.doesNotMatch(markup, /disabled="">Accept &amp; archive plan/);
 });
 
-test("final accept-and-archive review action dispatches archive without checkpoint acceptance", () => {
+test("final accept-and-archive review action dispatches checkpoint acceptance first", () => {
   const actions: DesktopPlanExecutionSidebarActionInput[] = [];
   const button = findSidebarButton(
     <DesktopPlanExecutionSidebar
@@ -616,7 +651,27 @@ test("final accept-and-archive review action dispatches archive without checkpoi
   assert.equal(button.props.disabled, false);
   button.props.onClick?.();
 
-  assert.deepEqual(actions, [{ action: "archive_plan" }]);
+  assert.deepEqual(actions, [{ action: "accept_checkpoint", checkpointId: "cp-1" }]);
+});
+
+test("final review renders the terminal recommendation", () => {
+  const base = view({ reviewRequired: true, status: "waiting_review" });
+  base.activeCheckpoint = {
+    ...base.activeCheckpoint!,
+    recommendation: {
+      decision: "ship",
+      action: "accept_and_archive",
+      reason: "Focused lifecycle coverage passes.",
+      actionState: "ready",
+    },
+  };
+  base.plan.document.checkpoints = [base.activeCheckpoint];
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar view={base} onAction={() => undefined} onEditPlan={() => undefined} />,
+  );
+  assert.match(markup, /Recommendation/);
+  assert.match(markup, /Ship — Accept And Archive/);
+  assert.match(markup, /Focused lifecycle coverage passes/);
 });
 
 test("automatic mode toggle dispatches checkpointed policy action", () => {

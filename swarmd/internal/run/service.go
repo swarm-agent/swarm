@@ -1548,6 +1548,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			emit(StreamEvent{Type: StreamEventSessionWarning, Step: step, Warning: modeWarning})
 		}
 		stepInstructions := composeModeAwareInstructions(baseInstructions, executionMode, s.permissions != nil && s.permissions.BypassPermissions(), agentProfile)
+		runStateInstructions, stateErr := s.durableRunStateInstructions(sessionID, executionMode, runID, options)
+		if stateErr != nil {
+			return RunResult{}, stateErr
+		}
+		stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + runStateInstructions)
 		stepReasoningSummary := ""
 		stepReasoningMessages := make(map[string]*pebblestore.MessageSnapshot, 4)
 		stepReasoningByKey := make(map[string]string, 4)
@@ -1720,14 +1725,23 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			serviceTier,
 			resolvedPreference.Preference.ContextMode,
 		)
+		boundaryReason := "session_turn"
+		nativeContinuationAllowed := true
+		forceFreshProviderContext := false
+		if options.PlanCheckpointContext != nil {
+			boundaryReason = "checkpoint_fresh_context"
+			nativeContinuationAllowed = false
+			forceFreshProviderContext = true
+		}
 		stepRequest := provideriface.Request{
 			SessionID:                 sessionID,
 			ProviderLineageID:         providerLineageID,
 			ContextBranchID:           provideriface.ShortProviderLineageKey("session", sessionID, executionMode),
 			ProviderCacheKey:          providerScopedKey("cache", providerLineageID),
 			SessionAffinityKey:        providerScopedKey("affinity", providerLineageID),
-			BoundaryReason:            "session_turn",
-			NativeContinuationAllowed: true,
+			BoundaryReason:            boundaryReason,
+			NativeContinuationAllowed: nativeContinuationAllowed,
+			ForceFreshProviderContext: forceFreshProviderContext,
 			Model:                     resolvedPreference.Preference.Model,
 			Thinking:                  resolvedPreference.Preference.Thinking,
 			Instructions:              stepInstructions,

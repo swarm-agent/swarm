@@ -12,6 +12,13 @@ const (
 	PlanExecutionPolicyModeAutomatic            = "automatic"
 	PlanExecutionPolicyModeReviewEachCheckpoint = "review_each_checkpoint"
 
+	// PlanExecutionOriginApprovedPlan preserves the fresh-context runner
+	// behavior used by approved plans, including legacy documents.
+	PlanExecutionOriginApprovedPlan = "approved_plan"
+	// PlanExecutionOriginAutoSession identifies lightweight auto-mode session
+	// work created from a direct user request.
+	PlanExecutionOriginAutoSession = "auto_session"
+
 	PlanExecutionShapeSingleRun    = "single_run"
 	PlanExecutionShapeCheckpointed = "checkpointed"
 
@@ -84,6 +91,7 @@ type PlanCheckpointOutcomeOptions struct {
 	Result          string
 	ChangedFiles    []string
 	Validation      []string
+	Recommendation  *pebblestore.SessionPlanCheckpointRecommendation
 	StartedAt       int64
 	CompletedAt     int64
 }
@@ -118,6 +126,43 @@ type PlanCheckpointBlockResolutionOptions struct {
 	Result       string
 	Notes        string
 	ResolvedAt   int64
+}
+
+// NormalizePlanExecutionOrigin returns the fail-safe approved-plan behavior
+// for missing or unknown persisted values.
+func normalizePlanCheckpointRecommendation(value pebblestore.SessionPlanCheckpointRecommendation) pebblestore.SessionPlanCheckpointRecommendation {
+	value.Decision = strings.ToLower(strings.TrimSpace(value.Decision))
+	value.Action = strings.ToLower(strings.TrimSpace(value.Action))
+	value.Reason = strings.TrimSpace(value.Reason)
+	value.ActionState = strings.ToLower(strings.TrimSpace(value.ActionState))
+	return value
+}
+
+func validatePlanCheckpointRecommendation(value pebblestore.SessionPlanCheckpointRecommendation) error {
+	if value.Decision == "" && value.Action == "" && value.Reason == "" && value.ActionState == "" {
+		return nil
+	}
+	if value.Decision != "ship" && value.Decision != "change" && value.Decision != "revert" && value.Decision != "defer" {
+		return fmt.Errorf("review recommendation decision %q is not supported", value.Decision)
+	}
+	if value.Action == "" || value.Reason == "" || value.ActionState == "" {
+		return errors.New("review recommendation requires action, reason, and action_state")
+	}
+	if value.ActionState != "taken" && value.ActionState != "ready" && value.ActionState != "needs_approval" {
+		return fmt.Errorf("review recommendation action_state %q is not supported", value.ActionState)
+	}
+	return nil
+}
+
+func NormalizePlanExecutionOrigin(origin string) string {
+	switch normalizePlanToken(origin) {
+	case "auto", "auto_session", "autosession", "session":
+		return PlanExecutionOriginAutoSession
+	case "", "approved", "approved_plan", "plan":
+		return PlanExecutionOriginApprovedPlan
+	default:
+		return PlanExecutionOriginApprovedPlan
+	}
 }
 
 func normalizePlanExecutionPolicy(policy *pebblestore.SessionPlanExecutionPolicy, checkpointCount int) {
@@ -833,6 +878,13 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 	}
 	if len(options.Validation) > 0 {
 		checkpoint.Validation = trimStringSlice(options.Validation)
+	}
+	if options.Recommendation != nil {
+		recommendation := normalizePlanCheckpointRecommendation(*options.Recommendation)
+		if err := validatePlanCheckpointRecommendation(recommendation); err != nil {
+			return PlanCheckpointOutcomeDecision{}, err
+		}
+		checkpoint.Recommendation = &recommendation
 	}
 	if options.StartedAt > 0 && checkpoint.StartedAt == 0 {
 		checkpoint.StartedAt = options.StartedAt

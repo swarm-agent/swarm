@@ -65,6 +65,58 @@ func TestExecutePlanManageStartSessionCheckpointCreatesRunRequest(t *testing.T) 
 	}
 }
 
+func TestProviderManagedAutoStartSessionCheckpointContinuesCurrentRun(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	if _, _, err := sessionSvc.SetMode(sessionID, sessionruntime.ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-test", AccountScopeID: "account-test"}
+	invoker := runSvc.NewProviderManagedToolInvoker(ProviderManagedToolInvokerConfig{
+		SessionID: sessionID, PermissionSessionID: sessionID, RunID: "run-inline", Step: 7,
+		SessionMode: sessionruntime.ModeAuto, Principal: principal, ProviderManagedV3: true,
+		ApplySessionMutation: func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+			if input.UserID == "" {
+				input.UserID = principal.UserID
+			}
+			if input.AccountScopeID == "" {
+				input.AccountScopeID = principal.AccountScopeID
+			}
+			return sessionSvc.ApplySessionMutation(input)
+		},
+	})
+	result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-inline", Name: "plan_manage", Arguments: `{"action":"start_session_checkpoint","change_request":"fix the sidebar","checkpoint_title":"Fix sidebar"}`})
+	if err != nil {
+		t.Fatalf("execute inline start: %v", err)
+	}
+	if result.RestartTurn {
+		t.Fatalf("inline auto checkpoint restarted turn: %#v", result)
+	}
+	var payload struct {
+		NextAction       string `json:"next_action"`
+		ContextPreserved bool   `json:"context_preserved"`
+		RunOwnership     struct {
+			RunID        string `json:"run_id"`
+			CheckpointID string `json:"checkpoint_id"`
+		} `json:"run_ownership"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &payload); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if payload.NextAction != "continue_current_run" || !payload.ContextPreserved || payload.RunOwnership.RunID != "run-inline" || payload.RunOwnership.CheckpointID != "cp-1" {
+		t.Fatalf("inline payload = %#v output=%s", payload, result.Output)
+	}
+	plan, ok, err := sessionSvc.GetActivePlan(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("active plan: ok=%v err=%v", ok, err)
+	}
+	if plan.Document == nil || plan.Document.ExecutionState == nil || plan.Document.ExecutionState.CurrentRunID != "run-inline" || plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusInProgress {
+		t.Fatalf("inline plan state = %#v", plan.Document)
+	}
+}
+
 func TestExecutePlanManageStartSessionCheckpointRejectsActivePlan(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
@@ -931,7 +983,7 @@ func TestExecutePlanManageFinalCheckpointAwaitsReview(t *testing.T) {
 		t.Fatalf("save final review plan: %v", err)
 	}
 
-	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"done"}`, "")
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"done","recommendation":{"decision":"ship","action":"accept_and_archive","reason":"focused checks passed","action_state":"ready"}}`, "")
 	if err != nil {
 		t.Fatalf("complete final checkpoint: %v output=%s", err, raw)
 	}
@@ -955,6 +1007,9 @@ func TestExecutePlanManageFinalCheckpointAwaitsReview(t *testing.T) {
 	}
 	if doc.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted || doc.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusCompleted {
 		t.Fatalf("checkpoint statuses = %#v", doc.Checkpoints)
+	}
+	if recommendation := doc.Checkpoints[1].Recommendation; recommendation == nil || recommendation.Decision != "ship" || recommendation.Action != "accept_and_archive" || recommendation.ActionState != "ready" {
+		t.Fatalf("checkpoint recommendation = %#v", recommendation)
 	}
 }
 

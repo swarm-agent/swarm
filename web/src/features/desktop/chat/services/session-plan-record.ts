@@ -184,6 +184,7 @@ function normalizeDesktopSessionPlanCheckpoints(value: unknown): DesktopSessionP
         startedAt: numberValue(checkpoint.startedAt ?? checkpoint.started_at),
         completedAt: numberValue(checkpoint.completedAt ?? checkpoint.completed_at),
         review: normalizeDesktopSessionPlanCheckpointReview(checkpoint.review),
+        recommendation: normalizeDesktopSessionPlanCheckpointRecommendation(checkpoint.recommendation),
         attempts: normalizeDesktopSessionPlanCheckpointAttempts(checkpoint.attempts),
         order: numberValue(checkpoint.order) || index + 1,
       }
@@ -204,6 +205,18 @@ function normalizeDesktopSessionPlanCheckpointReview(value: unknown): DesktopSes
     reviewedAt: numberValue(record.reviewedAt ?? record.reviewed_at),
   }
   return review.status || review.reviewerId || review.result || review.notes || review.reviewedAt > 0 ? review : null
+}
+
+function normalizeDesktopSessionPlanCheckpointRecommendation(value: unknown): DesktopSessionPlanCheckpoint['recommendation'] {
+  const record = objectValue(value)
+  if (!record) return null
+  const recommendation = {
+    decision: stringValue(record, 'decision'),
+    action: stringValue(record, 'action'),
+    reason: stringValue(record, 'reason'),
+    actionState: stringValue(record, 'actionState', 'action_state'),
+  }
+  return recommendation.decision || recommendation.action || recommendation.reason || recommendation.actionState ? recommendation : null
 }
 
 function normalizeDesktopSessionPlanCheckpointAttempts(value: unknown): DesktopSessionPlanCheckpoint['attempts'] {

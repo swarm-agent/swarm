@@ -19,6 +19,9 @@ type checkpointRunPromptPayload struct {
 	RelevantFiles    []string                               `json:"relevant_files,omitempty"`
 	Validation       string                                 `json:"validation_strategy,omitempty"`
 	ExecutionPolicy  pebblestore.SessionPlanExecutionPolicy `json:"execution_policy"`
+	ExecutionOrigin  string                                 `json:"execution_origin"`
+	RunKind          string                                 `json:"run_kind"`
+	ContextPolicy    string                                 `json:"context_policy"`
 	ExecutionSummary sessionruntime.PlanExecutionSummary    `json:"execution_summary"`
 	FinalCheckpoint  bool                                   `json:"final_checkpoint,omitempty"`
 	Checkpoint       pebblestore.SessionPlanCheckpoint      `json:"checkpoint"`
@@ -126,6 +129,9 @@ func (s *Service) buildPlanCheckpointRunInput(sessionID, runID string, options R
 		RelevantFiles:    trimStringSliceForPrompt(doc.Info.RelevantFiles),
 		Validation:       strings.TrimSpace(doc.Info.ValidationStrategy),
 		ExecutionPolicy:  doc.ExecutionPolicy,
+		ExecutionOrigin:  sessionruntime.NormalizePlanExecutionOrigin(doc.ExecutionOrigin),
+		RunKind:          runKindFreshCheckpoint,
+		ContextPolicy:    contextPolicyFresh,
 		ExecutionSummary: sessionruntime.SummarizePlanExecution(doc),
 		FinalCheckpoint:  isFinalPlanCheckpointRun(doc, checkpointID),
 		Checkpoint:       checkpoint,

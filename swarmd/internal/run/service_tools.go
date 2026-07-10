@@ -723,11 +723,26 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 	return results, approvedCalls, approvedIndexes, approvedMask, feedback, nil
 }
 
+// planLifecycleRunContext carries trusted provider-run ownership into plan lifecycle
+// actions. It is intentionally separate from tool arguments so a model cannot claim
+// inline execution merely by supplying a run_id.
+type planLifecycleRunContext struct {
+	RunID           string
+	RunSessionID    string
+	ParentSessionID string
+	SourceMessageID string
+	Inline          bool
+}
+
 func (s *Service) executeControlPlaneTool(ctx context.Context, sessionID, sessionMode string, agentProfile pebblestore.AgentProfile, step int, call tool.Call, approvedArguments string, emit StreamHandler) (bool, tool.Result, error) {
 	return s.executeControlPlaneToolWithMutation(ctx, sessionID, sessionMode, agentProfile, step, call, approvedArguments, emit, nil)
 }
 
 func (s *Service) executeControlPlaneToolWithMutation(ctx context.Context, sessionID, sessionMode string, agentProfile pebblestore.AgentProfile, step int, call tool.Call, approvedArguments string, emit StreamHandler, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (bool, tool.Result, error) {
+	return s.executeControlPlaneToolWithLifecycleRunContext(ctx, sessionID, sessionMode, agentProfile, step, call, approvedArguments, emit, applySessionMutation, planLifecycleRunContext{})
+}
+
+func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Context, sessionID, sessionMode string, agentProfile pebblestore.AgentProfile, step int, call tool.Call, approvedArguments string, emit StreamHandler, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), lifecycleRun planLifecycleRunContext) (bool, tool.Result, error) {
 	name := canonicalToolName(call.Name)
 	result := tool.Result{
 		CallID: strings.TrimSpace(call.CallID),
@@ -771,7 +786,7 @@ func (s *Service) executeControlPlaneToolWithMutation(ctx context.Context, sessi
 		result.Output = output
 		return true, result, err
 	case "plan_manage":
-		output, err := s.executePlanManageToolWithMutation(sessionID, call.Arguments, approvedArguments, applySessionMutation)
+		output, err := s.executePlanManageToolWithLifecycleRunContext(sessionID, call.Arguments, approvedArguments, applySessionMutation, lifecycleRun)
 		result.Output = output
 		return true, result, err
 	case "task":
@@ -1526,6 +1541,10 @@ func sessionV3AgentProfileFromMetadataMap(metadata map[string]any) (pebblestore.
 }
 
 func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+	return s.executePlanManageToolWithLifecycleRunContext(sessionID, arguments, feedback, applySessionMutation, planLifecycleRunContext{})
+}
+
+func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), lifecycleRun planLifecycleRunContext) (string, error) {
 	if s.sessions == nil {
 		return "", errors.New("session service is not configured")
 	}
@@ -1635,7 +1654,7 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 
 	switch action {
 	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "resolve_blocked_checkpoint", "start_session_checkpoint", "request_followup_checkpoint", "request_plan_revision", "amend_plan", "request_new_plan":
-		return s.executePlanLifecycleControlAction(sessionID, action, args, applySessionMutation)
+		return s.executePlanLifecycleControlAction(sessionID, action, args, applySessionMutation, lifecycleRun)
 	case "list":
 		limit := mapInt(args, "limit")
 		if limit <= 0 {
@@ -1931,6 +1950,9 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 			"details_truncated": false,
 		}
 		if documentPatch != nil {
+			if documentPatch.Recommendation != nil {
+				payload["recommendation"] = documentPatch.Recommendation
+			}
 			if strings.TrimSpace(documentPatch.Report) != "" {
 				payload["report"] = strings.TrimSpace(documentPatch.Report)
 			}
@@ -2141,7 +2163,12 @@ func planManagePlanRevisionSummary(plan pebblestore.SessionPlanSnapshot) map[str
 	return item
 }
 
-func (s *Service) executePlanLifecycleControlAction(sessionID, action string, args map[string]any, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+func (s *Service) executePlanLifecycleControlAction(sessionID, action string, args map[string]any, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), lifecycleRun planLifecycleRunContext) (string, error) {
+	// A caller can deliberately ask for a handoff boundary, but cannot request
+	// inline ownership without trusted provider-run context.
+	if mapBool(args, "fresh_context") || strings.EqualFold(strings.TrimSpace(mapString(args, "execution_context")), "fresh") {
+		lifecycleRun.Inline = false
+	}
 	planID := strings.TrimSpace(firstNonEmptyString(mapString(args, "plan_id"), mapString(args, "id")))
 	checkpointID := strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_id"), mapString(args, "active_checkpoint_id"), mapString(args, "active_checkpoint")))
 	document, err := planDocumentFromArgs(args)
@@ -2222,10 +2249,10 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 			Tasks:              mapStringSlice(args, "tasks"),
 			AcceptanceCriteria: mapStringSlice(args, "acceptance_criteria"),
 			Notes:              strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context"))),
-			SourceMessageID:    strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message"))),
-			RunID:              strings.TrimSpace(mapString(args, "run_id")),
-			RunSessionID:       strings.TrimSpace(firstNonEmptyString(mapString(args, "run_session_id"), mapString(args, "session_id"))),
-			ParentSessionID:    strings.TrimSpace(mapString(args, "parent_session_id")),
+			SourceMessageID:    strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message"), lifecycleRun.SourceMessageID)),
+			RunID:              strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunID, mapString(args, "run_id"))),
+			RunSessionID:       strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunSessionID, mapString(args, "run_session_id"), mapString(args, "session_id"))),
+			ParentSessionID:    strings.TrimSpace(firstNonEmptyString(lifecycleRun.ParentSessionID, mapString(args, "parent_session_id"))),
 			StartedAt:          int64(mapInt(args, "started_at")),
 			AttemptID:          strings.TrimSpace(mapString(args, "attempt_id")),
 		}
@@ -2304,8 +2331,14 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		payload["next_action"] = "stopped"
 	} else if result.Summary.NextCheckpointID != "" {
 		payload["checkpoint_id"] = result.Summary.NextCheckpointID
-		payload["next_action"] = "run_checkpoint_with_fresh_context"
-		payload["run_request"] = planCheckpointRunRequestPayload(result.Plan.ID, result.Summary.NextCheckpointID, result.AttemptID)
+		if lifecycleRun.Inline && (action == "start_session_checkpoint" || action == "request_followup_checkpoint") && result.Plan.Document != nil && result.Plan.Document.ExecutionState != nil && sessionruntime.NormalizePlanExecutionOrigin(result.Plan.Document.ExecutionOrigin) == sessionruntime.PlanExecutionOriginAutoSession && strings.TrimSpace(result.Plan.Document.ExecutionState.CurrentRunID) == strings.TrimSpace(lifecycleRun.RunID) {
+			payload["next_action"] = "continue_current_run"
+			payload["context_preserved"] = true
+			payload["run_ownership"] = map[string]any{"run_id": lifecycleRun.RunID, "checkpoint_id": result.Summary.NextCheckpointID, "attempt_id": result.AttemptID}
+		} else {
+			payload["next_action"] = "run_checkpoint_with_fresh_context"
+			payload["run_request"] = planCheckpointRunRequestPayload(result.Plan.ID, result.Summary.NextCheckpointID, result.AttemptID)
+		}
 	}
 	return marshalPlanManagePayload(payload)
 }
