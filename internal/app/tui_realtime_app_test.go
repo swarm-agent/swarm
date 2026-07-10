@@ -19,6 +19,34 @@ import (
 	"swarm-refactor/swarmtui/internal/ui"
 )
 
+func TestTUIRealtimeModePreferenceSurvivesPendingResponseProjection(t *testing.T) {
+	store := newTUISessionStore()
+	store.MergeHydrated(client.SessionV3Hydrated{
+		Session:    client.SessionSummary{ID: "session-1", SessionAPI: "v3", Mode: "plan"},
+		Preference: client.ModelPreference{Provider: "codex", Model: "plan-model", Thinking: "xhigh"},
+		AgentModelPolicy: client.SessionV3AgentModelPolicy{
+			Preference:    client.ModelPreference{Provider: "codex", Model: "plan-model", Thinking: "xhigh"},
+			ContextWindow: 200000,
+		},
+	})
+	store.ApplyModePreference("session-1", "auto", client.ModelPreference{Provider: "codex", Model: "auto-model", Thinking: "medium"}, 240000)
+
+	app := &App{tuiSessionStore: store, homeModel: model.EmptyHome()}
+	app.chat = ui.NewChatPage(ui.ChatPageOptions{SessionID: "session-1", SessionMode: "auto"})
+	app.applyTUISessionStoreToChat("session-1")
+
+	if got := app.chat.SessionMode(); got != "auto" {
+		t.Fatalf("SessionMode = %q, want auto", got)
+	}
+	provider, modelName, thinking, _, _ := app.chat.ModelState()
+	if provider != "codex" || modelName != "auto-model" || thinking != "medium" {
+		t.Fatalf("ModelState = (%q, %q, %q), want auto-mode preference", provider, modelName, thinking)
+	}
+	if got := app.chat.ContextWindow(); got != 240000 {
+		t.Fatalf("ContextWindow = %d, want 240000", got)
+	}
+}
+
 func TestTUIRealtimeWorksetSubscriptionUsesBackendAcceptedWorkspaceSelector(t *testing.T) {
 	app := &App{tuiRealtimeClientID: "tui:test"}
 	state := tuiRealtimeWorksetState{ScopeKey: "workspace:/repo", WorkspacePaths: []string{"/repo"}}

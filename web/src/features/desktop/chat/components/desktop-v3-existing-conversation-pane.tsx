@@ -1697,7 +1697,7 @@ export function DesktopV3ExistingConversationPane({
           raw: settingsResponse,
         });
         localSettingsDirtyRef.current.mode = false;
-        setMode(settingsResponse.mode ?? nextMode);
+        setMode(normalizeSessionMode(settingsResponse.mode ?? nextMode));
         if (settingsResponse.preference) {
           setPreference(normalizePreference(settingsResponse.preference));
         }

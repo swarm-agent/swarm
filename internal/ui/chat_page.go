@@ -119,35 +119,36 @@ type ChatSessionPaletteItem struct {
 }
 
 type ChatPageOptions struct {
-	Backend             ChatBackend
-	Send                ChatSendFunc
-	SessionID           string
-	SessionTitle        string
-	InitialPrompt       string
-	Presets             []string
-	SessionTabs         []ChatSessionTab
-	CommandSuggestions  []CommandSuggestion
-	ShowHeader          bool
-	ShowThinkingTags    *bool
-	Meta                ChatSessionMeta
-	AuthConfigured      bool
-	ModelProvider       string
-	ModelName           string
-	AvailableModels     []ModelsModalEntry
-	ThinkingLevel       string
-	ServiceTier         string
-	ContextMode         string
-	ContextWindow       int
-	InitialUsageSummary *ChatUsageSummary
-	SessionMode         string
-	ToolStreamStyle     ChatToolStreamStyle
-	SwarmingTitle       string
-	SwarmingStatus      string
-	SwarmName           string
-	KeyBindings         *KeyBindings
-	OnAsyncEvent        func()
-	RequestAsyncRender  func()
-	CopyText            func(string) error
+	Backend              ChatBackend
+	Send                 ChatSendFunc
+	SessionID            string
+	SessionTitle         string
+	InitialPrompt        string
+	Presets              []string
+	SessionTabs          []ChatSessionTab
+	CommandSuggestions   []CommandSuggestion
+	ShowHeader           bool
+	ShowThinkingTags     *bool
+	Meta                 ChatSessionMeta
+	AuthConfigured       bool
+	ModelProvider        string
+	ModelName            string
+	AvailableModels      []ModelsModalEntry
+	ThinkingLevel        string
+	ServiceTier          string
+	ContextMode          string
+	ContextWindow        int
+	InitialUsageSummary  *ChatUsageSummary
+	SessionMode          string
+	ToolStreamStyle      ChatToolStreamStyle
+	SwarmingTitle        string
+	SwarmingStatus       string
+	SwarmName            string
+	KeyBindings          *KeyBindings
+	OnAsyncEvent         func()
+	OnSessionModeChanged func(mode, modelProvider, modelName, thinkingLevel, serviceTier, contextMode string, contextWindow int)
+	RequestAsyncRender   func()
+	CopyText             func(string) error
 }
 
 type ChatToolStreamStyle struct {
@@ -352,6 +353,7 @@ type ChatPage struct {
 	permissionResults          chan chatPermissionLoadResult
 	permissionActions          chan chatPermissionActionResult
 	onAsyncEvent               func()
+	onSessionModeChanged       func(mode, modelProvider, modelName, thinkingLevel, serviceTier, contextMode string, contextWindow int)
 	requestAsyncRenderFn       func()
 	copyTextFn                 func(string) error
 
@@ -613,6 +615,7 @@ func NewChatPage(opts ChatPageOptions) *ChatPage {
 		toolSuccessSymbol:       toolStyle.SuccessSymbol,
 		toolErrorSymbol:         toolStyle.ErrorSymbol,
 		onAsyncEvent:            opts.OnAsyncEvent,
+		onSessionModeChanged:    opts.OnSessionModeChanged,
 		requestAsyncRenderFn:    opts.RequestAsyncRender,
 		copyTextFn:              opts.CopyText,
 	}
@@ -2559,6 +2562,9 @@ func (p *ChatPage) drainPermissionActions() bool {
 					p.SetModelState(result.ModelProvider, result.ModelName, result.ThinkingLevel, result.ServiceTier, result.ContextMode)
 					if result.ContextWindow > 0 {
 						p.SetContextWindow(result.ContextWindow)
+					}
+					if p.onSessionModeChanged != nil {
+						p.onSessionModeChanged(result.Mode, result.ModelProvider, result.ModelName, result.ThinkingLevel, result.ServiceTier, result.ContextMode, result.ContextWindow)
 					}
 				}
 			case "mode.refresh":

@@ -92,6 +92,39 @@ func (s *tuiSessionStore) MergeHydrated(hydrated client.SessionV3Hydrated) {
 	s.stale = tuiSessionStoreStaleState{}
 }
 
+// ApplyModePreference keeps the local projection aligned with the authoritative
+// mode mutation response until its realtime event is observed.
+func (s *tuiSessionStore) ApplyModePreference(sessionID, mode string, preference client.ModelPreference, contextWindow int) {
+	if s == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureWorksetMapsLocked()
+	summary := s.workset.SessionsByID[sessionID]
+	summary.ID = sessionID
+	if strings.TrimSpace(summary.SessionAPI) == "" {
+		summary.SessionAPI = "v3"
+	}
+	if nextMode := strings.TrimSpace(mode); nextMode != "" {
+		summary.Mode = nextMode
+	}
+	summary.Preference = mergeClientModelPreference(summary.Preference, preference)
+	s.workset.SessionsByID[sessionID] = summary
+	s.workset.PreferencesBySession[sessionID] = preference
+	if policy, ok := s.workset.AgentModelPolicyBySession[sessionID]; ok {
+		policy.Preference = preference
+		if contextWindow > 0 {
+			policy.ContextWindow = contextWindow
+		}
+		s.workset.AgentModelPolicyBySession[sessionID] = policy
+	}
+}
+
 func (s *tuiSessionStore) MergeMessageResult(result client.SessionV3MessageResult) tuiSessionStoreApplyResult {
 	if s == nil {
 		return tuiSessionStoreApplyResult{}

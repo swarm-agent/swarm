@@ -3378,6 +3378,18 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 			}
 			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptChatAsync))
 		},
+		OnSessionModeChanged: func(mode, provider, modelName, thinking, serviceTier, contextMode string, contextWindow int) {
+			if a == nil || a.tuiSessionStore == nil {
+				return
+			}
+			a.tuiSessionStore.ApplyModePreference(strings.TrimSpace(sessionID), mode, client.ModelPreference{
+				Provider:    provider,
+				Model:       modelName,
+				Thinking:    thinking,
+				ServiceTier: serviceTier,
+				ContextMode: contextMode,
+			}, contextWindow)
+		},
 		RequestAsyncRender: func() {
 			if a == nil || a.screen == nil {
 				return
