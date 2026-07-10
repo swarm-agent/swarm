@@ -31,17 +31,34 @@ func TestPlanEditorRevisionSelectionPreviewsBeforeActivate(t *testing.T) {
 
 	page.handlePlanEditorModalKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	action, ok := page.PopChatAction()
-	if !ok {
-		t.Fatalf("enter should queue activation action")
+	if ok {
+		t.Fatalf("choosing a recovery snapshot must not activate it: %#v", action)
 	}
-	if action.Kind != ChatActionActivatePlan || action.Plan.ID != "plan-1" || !action.Plan.RestoreRevision {
-		t.Fatalf("activation action = %#v", action)
+	if !page.planEditorVisible || page.planEditorRecoveryFocus != 1 {
+		t.Fatalf("enter should open recovery settings without closing the plan modal")
 	}
-	if !strings.Contains(action.Plan.Plan, "older") {
-		t.Fatalf("activation should use previewed revision body, got %q", action.Plan.Plan)
+}
+
+func TestPlanEditorRecoveryQueuesTypedLifecycleAction(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-1"})
+	current := ChatSessionPlan{ID: "plan-1", Title: "Plan", Active: true, Version: 3, Document: map[string]any{"active_checkpoint_id": "cp-1", "checkpoints": []any{map[string]any{"id": "cp-1"}, map[string]any{"id": "cp-2"}}}}
+	older := current
+	older.Active, older.Version = false, 2
+	page.openPlanEditorModalWithPlans(current, []ChatSessionPlan{current, older}, "plan-1")
+	page.planEditorPlanSelection = 1
+	page.loadSelectedPlanEditorPlan()
+	page.planEditorRecoveryFocus = 1
+	page.planEditorCheckpoint = 1
+	page.planEditorExecution = 0
+	page.planEditorAutomatic = false
+	page.planEditorRecoveryAction = 1
+	page.queuePlanEditorRecovery()
+	action, ok := page.PopChatAction()
+	if !ok || action.Kind != ChatActionRecoverPlan {
+		t.Fatalf("action = %#v, %v", action, ok)
 	}
-	if page.planEditorVisible {
-		t.Fatalf("activation should close plan modal")
+	if action.Recovery.Action != "fast_forward" || action.Recovery.CheckpointID != "cp-2" || action.Recovery.ExecutionGranularity != "checkpointed" || action.Recovery.ContinuationPolicy != "review_each_checkpoint" || action.Recovery.ContinueAutomatically {
+		t.Fatalf("recovery = %#v", action.Recovery)
 	}
 }
 

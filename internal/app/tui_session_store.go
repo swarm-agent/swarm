@@ -645,7 +645,14 @@ func (s *tuiSessionStore) applyEventPayloadLocked(sessionID string, event client
 			if intent.SessionID == "" {
 				intent.SessionID = sessionID
 			}
-			s.workset.RunIntentsBySession[sessionID] = appendOrReplaceRunIntent(s.workset.RunIntentsBySession[sessionID], intent)
+			priorIntents := s.workset.RunIntentsBySession[sessionID]
+			currentIntents := []client.SessionV3RunIntent{intent}
+			for _, prior := range priorIntents {
+				if strings.TrimSpace(prior.RunID) != strings.TrimSpace(intent.RunID) {
+					currentIntents = append(currentIntents, prior)
+				}
+			}
+			s.workset.RunIntentsBySession[sessionID] = currentIntents
 			if lifecycle := v3RunIntentSessionLifecycle(sessionID, &intent); lifecycle != nil {
 				summary.Lifecycle = lifecycle
 			}
@@ -655,7 +662,26 @@ func (s *tuiSessionStore) applyEventPayloadLocked(sessionID string, event client
 	if raw := firstRaw(payload, "plan"); len(raw) > 0 {
 		var plan client.SessionPlan
 		if json.Unmarshal(raw, &plan) == nil && strings.TrimSpace(plan.ID) != "" {
-			s.workset.PlansBySession[sessionID] = appendOrReplacePlan(s.workset.PlansBySession[sessionID], plan)
+			// Durable lifecycle events carry the complete current plan. Keep a single
+			// active authority while retaining non-active versions as revisions.
+			if plan.Active {
+				for _, prior := range s.workset.PlansBySession[sessionID] {
+					if prior.ID != plan.ID || prior.Version != plan.Version {
+						prior.Active = false
+						s.workset.PlanRevisionsBySession[sessionID] = appendOrReplacePlan(s.workset.PlanRevisionsBySession[sessionID], prior)
+					}
+				}
+				s.workset.PlansBySession[sessionID] = []client.SessionPlan{plan}
+			} else {
+				s.workset.PlanRevisionsBySession[sessionID] = appendOrReplacePlan(s.workset.PlanRevisionsBySession[sessionID], plan)
+			}
+			changed = true
+		}
+	}
+	if raw := firstRaw(payload, "plan_revisions", "revisions"); len(raw) > 0 {
+		var revisions []client.SessionPlan
+		if json.Unmarshal(raw, &revisions) == nil {
+			s.workset.PlanRevisionsBySession[sessionID] = cloneSessionPlans(revisions)
 			changed = true
 		}
 	}

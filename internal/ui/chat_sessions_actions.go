@@ -9,6 +9,8 @@ const (
 	ChatActionCopyText                ChatActionKind = "copy-text"
 	ChatActionSavePlan                ChatActionKind = "save-plan"
 	ChatActionActivatePlan            ChatActionKind = "activate-plan"
+	ChatActionRecoverPlan             ChatActionKind = "recover-plan"
+	ChatActionPlanExecution           ChatActionKind = "plan-execution"
 	ChatActionOpenAgentsModal         ChatActionKind = "open-agents-modal"
 	ChatActionOpenModelsModal         ChatActionKind = "open-models-modal"
 	ChatActionCycleThinking           ChatActionKind = "cycle-thinking"
@@ -17,25 +19,39 @@ const (
 )
 
 type ChatSessionPlan struct {
-	ID              string
-	Title           string
-	Plan            string
-	Document        any
-	Status          string
-	ApprovalState   string
-	Active          bool
-	CreatedAt       int64
-	UpdatedAt       int64
-	PriorTitle      string
-	PriorPlan       string
-	DiffLines       []string
-	UpdateSummary   string
-	UpdateScope     string
-	UpdateKind      string
-	Version         int
-	ParentRevision  int
-	Checkpoint      bool
-	RestoreRevision bool
+	ID             string
+	Title          string
+	Plan           string
+	Document       any
+	Status         string
+	ApprovalState  string
+	Active         bool
+	CreatedAt      int64
+	UpdatedAt      int64
+	PriorTitle     string
+	PriorPlan      string
+	DiffLines      []string
+	UpdateSummary  string
+	UpdateScope    string
+	UpdateKind     string
+	Version        int
+	ParentRevision int
+	Checkpoint     bool
+}
+
+type ChatPlanRecovery struct {
+	Action                string
+	CheckpointID          string
+	ExecutionGranularity  string
+	ContinuationPolicy    string
+	ContinueAutomatically bool
+}
+
+type ChatPlanExecutionAction struct {
+	Operation    string
+	CheckpointID string
+	StartNext    bool
+	Automatic    bool
 }
 
 type ChatAction struct {
@@ -44,6 +60,8 @@ type ChatAction struct {
 	Text          string
 	SuccessStatus string
 	Plan          ChatSessionPlan
+	Recovery      ChatPlanRecovery
+	PlanExecution ChatPlanExecutionAction
 }
 
 func (p *ChatPage) queueFooterAction(action string) {

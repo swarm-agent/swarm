@@ -467,10 +467,33 @@ func (a *App) applyTUISessionStoreToChat(sessionID string) {
 	a.chat.SetSessionTabs(chatSessionTabsFromSummaries(a.homeModel.RecentSessions))
 	a.chat.SetMessages(chatMessagesFromClient(snapshot.Messages))
 	a.chat.SetUsageSummary(convertClientUsageSummary(snapshot.UsageSummary))
+	var activePlan client.SessionPlan
+	for _, plan := range snapshot.Plans {
+		if plan.Active {
+			activePlan = plan
+			break
+		}
+	}
+	if activePlan.ID == "" && len(snapshot.Plans) > 0 {
+		activePlan = snapshot.Plans[0]
+	}
+	uiPlan := chatSessionPlanFromClient(activePlan)
+	uiRevisions := make([]ui.ChatSessionPlan, 0, len(snapshot.PlanRevisions))
+	for _, revision := range snapshot.PlanRevisions {
+		uiRevisions = append(uiRevisions, chatSessionPlanFromClient(revision))
+	}
+	runID, runStatus := "", ""
+	if snapshot.ActiveRunIntent != nil {
+		runID, runStatus = snapshot.ActiveRunIntent.RunID, snapshot.ActiveRunIntent.Status
+	}
+	a.chat.SetPlanExecutionState(uiPlan, uiRevisions, runID, runStatus)
+	if activePlan.ID != "" {
+		a.chat.SetActivePlan(chatPlanLabel(activePlan))
+	}
 	if snapshot.Session.Lifecycle != nil {
 		a.chat.ApplySessionLifecycle(chatLifecycleFromClient(snapshot.Session.Lifecycle))
 	}
-	resolvedAgent, resolvedExecution, resolvedExitPlanMode, resolvedRuntimeKnown := resolveSessionEffectiveAgent(snapshot.Summary,
+	resolvedAgent, resolvedExecution, resolvedExitPlanMode, resolvedRuntimeKnown := resolveSessionEffectiveAgent(snapshot.Summary, snapshot.AgentModelPolicy, a.agentState,
 		emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
 		strings.TrimSpace(a.homeModel.ActiveAgentExecutionSetting),
 		a.homeModel.ActiveAgentExitPlanMode,
@@ -548,6 +571,10 @@ func cloneTUIRealtimeWorksetState(state tuiRealtimeWorksetState) tuiRealtimeWork
 		WorkspacePaths: append([]string(nil), state.WorkspacePaths...),
 		CWDPath:        strings.TrimSpace(state.CWDPath),
 	}
+}
+
+func chatSessionPlanFromClient(plan client.SessionPlan) ui.ChatSessionPlan {
+	return ui.ChatSessionPlan{ID: strings.TrimSpace(plan.ID), Title: strings.TrimSpace(plan.Title), Plan: plan.Plan, Document: plan.Document, Status: strings.TrimSpace(plan.Status), ApprovalState: strings.TrimSpace(plan.ApprovalState), Active: plan.Active, CreatedAt: plan.CreatedAt, UpdatedAt: plan.UpdatedAt, PriorTitle: strings.TrimSpace(plan.PriorTitle), PriorPlan: plan.PriorPlan, DiffLines: append([]string(nil), plan.DiffLines...), UpdateSummary: strings.TrimSpace(plan.UpdateSummary), UpdateScope: strings.TrimSpace(plan.UpdateScope), UpdateKind: strings.TrimSpace(plan.UpdateKind), Version: plan.Version, ParentRevision: plan.ParentRevision, Checkpoint: plan.Checkpoint}
 }
 
 func chatMessagesFromClient(messages []client.SessionMessage) []ui.ChatMessageRecord {

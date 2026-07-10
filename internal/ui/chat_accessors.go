@@ -322,6 +322,23 @@ func (p *ChatPage) SetThinkingTagsVisible(show bool) {
 	p.bumpTimelineRenderGeneration()
 }
 
+func (p *ChatPage) SetPlanExecutionState(plan ChatSessionPlan, revisions []ChatSessionPlan, runID, runStatus string) {
+	if p == nil {
+		return
+	}
+	p.planExecutionPlan = plan
+	p.planExecutionRevisions = append([]ChatSessionPlan(nil), revisions...)
+	p.planExecutionRunID = strings.TrimSpace(runID)
+	p.planExecutionRunStatus = strings.TrimSpace(runStatus)
+}
+
+func (p *ChatPage) PlanExecutionState() (ChatSessionPlan, []ChatSessionPlan, string, string) {
+	if p == nil {
+		return ChatSessionPlan{}, nil, "", ""
+	}
+	return p.planExecutionPlan, append([]ChatSessionPlan(nil), p.planExecutionRevisions...), p.planExecutionRunID, p.planExecutionRunStatus
+}
+
 func (p *ChatPage) SetActivePlan(plan string) {
 	p.meta.Plan = strings.TrimSpace(plan)
 }

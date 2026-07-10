@@ -881,38 +881,44 @@ type SessionV3Replay struct {
 }
 
 type SessionPlan struct {
-	ID             string               `json:"id"`
-	SessionID      string               `json:"session_id"`
-	Title          string               `json:"title"`
-	Plan           string               `json:"plan"`
-	Document       *SessionPlanDocument `json:"document,omitempty"`
-	Status         string               `json:"status"`
-	ApprovalState  string               `json:"approval_state"`
-	Active         bool                 `json:"active"`
-	CreatedAt      int64                `json:"created_at"`
-	UpdatedAt      int64                `json:"updated_at"`
-	PriorTitle     string               `json:"prior_title,omitempty"`
-	PriorPlan      string               `json:"prior_plan,omitempty"`
-	DiffLines      []string             `json:"diff_lines,omitempty"`
-	UpdateSummary  string               `json:"update_summary,omitempty"`
-	UpdateScope    string               `json:"update_scope,omitempty"`
-	UpdateKind     string               `json:"update_kind,omitempty"`
-	Version        int                  `json:"version,omitempty"`
-	ParentRevision int                  `json:"parent_revision,omitempty"`
-	Checkpoint     bool                 `json:"checkpoint,omitempty"`
+	ID                  string               `json:"id"`
+	SessionID           string               `json:"session_id"`
+	Title               string               `json:"title"`
+	Plan                string               `json:"plan"`
+	Document            *SessionPlanDocument `json:"document,omitempty"`
+	Status              string               `json:"status"`
+	ApprovalState       string               `json:"approval_state"`
+	Active              bool                 `json:"active"`
+	CreatedAt           int64                `json:"created_at"`
+	UpdatedAt           int64                `json:"updated_at"`
+	PriorTitle          string               `json:"prior_title,omitempty"`
+	PriorPlan           string               `json:"prior_plan,omitempty"`
+	DiffLines           []string             `json:"diff_lines,omitempty"`
+	UpdateSummary       string               `json:"update_summary,omitempty"`
+	UpdateScope         string               `json:"update_scope,omitempty"`
+	UpdateKind          string               `json:"update_kind,omitempty"`
+	RevisionKind        string               `json:"revision_kind,omitempty"`
+	RestoredFromVersion int                  `json:"restored_from_version,omitempty"`
+	Version             int                  `json:"version,omitempty"`
+	ParentRevision      int                  `json:"parent_revision,omitempty"`
+	Checkpoint          bool                 `json:"checkpoint,omitempty"`
 }
 
 type SessionPlanDocument struct {
-	ID                 string                  `json:"id"`
-	Title              string                  `json:"title"`
-	Status             string                  `json:"status,omitempty"`
-	SchemaVersion      string                  `json:"schema_version,omitempty"`
-	RevisionID         string                  `json:"revision_id,omitempty"`
-	Info               SessionPlanInfo         `json:"info,omitempty"`
-	Checkpoints        []SessionPlanCheckpoint `json:"checkpoints,omitempty"`
-	ActiveCheckpointID string                  `json:"active_checkpoint_id,omitempty"`
-	RenderedText       string                  `json:"rendered_text,omitempty"`
-	DisplayText        string                  `json:"display_text,omitempty"`
+	ID                  string                     `json:"id"`
+	Title               string                     `json:"title"`
+	Status              string                     `json:"status,omitempty"`
+	SchemaVersion       string                     `json:"schema_version,omitempty"`
+	RevisionID          string                     `json:"revision_id,omitempty"`
+	Info                SessionPlanInfo            `json:"info,omitempty"`
+	ExecutionPolicy     SessionPlanExecutionPolicy `json:"execution_policy,omitempty"`
+	ExecutionOrigin     string                     `json:"execution_origin,omitempty"`
+	ExecutionState      *SessionPlanExecutionState `json:"execution_state,omitempty"`
+	Checkpoints         []SessionPlanCheckpoint    `json:"checkpoints,omitempty"`
+	OriginalCheckpoints []SessionPlanCheckpoint    `json:"original_checkpoints,omitempty"`
+	ActiveCheckpointID  string                     `json:"active_checkpoint_id,omitempty"`
+	RenderedText        string                     `json:"rendered_text,omitempty"`
+	DisplayText         string                     `json:"display_text,omitempty"`
 }
 
 type SessionPlanInfo struct {
@@ -928,19 +934,104 @@ type SessionPlanInfo struct {
 	ValidationStrategy string   `json:"validation_strategy,omitempty"`
 }
 
+type SessionPlanExecutionPolicy struct {
+	Mode                     string `json:"mode,omitempty"`
+	Shape                    string `json:"shape,omitempty"`
+	FollowupCheckpointPolicy string `json:"followup_checkpoint_policy,omitempty"`
+}
+
+type SessionPlanExecutionState struct {
+	Status           string `json:"status,omitempty"`
+	ActiveAttemptID  string `json:"active_attempt_id,omitempty"`
+	ParentSessionID  string `json:"parent_session_id,omitempty"`
+	CurrentSessionID string `json:"current_session_id,omitempty"`
+	CurrentRunID     string `json:"current_run_id,omitempty"`
+	LastCheckpointID string `json:"last_checkpoint_id,omitempty"`
+	LastAttemptID    string `json:"last_attempt_id,omitempty"`
+	LastOutcome      string `json:"last_outcome,omitempty"`
+	StartedAt        int64  `json:"started_at,omitempty"`
+	UpdatedAt        int64  `json:"updated_at,omitempty"`
+	CompletedAt      int64  `json:"completed_at,omitempty"`
+}
+
 type SessionPlanCheckpoint struct {
-	ID                 string   `json:"id"`
-	Title              string   `json:"title,omitempty"`
-	Status             string   `json:"status,omitempty"`
-	Objective          string   `json:"objective,omitempty"`
-	Tasks              []string `json:"tasks,omitempty"`
-	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
-	Notes              string   `json:"notes,omitempty"`
-	Report             string   `json:"report,omitempty"`
-	Result             string   `json:"result,omitempty"`
-	ChangedFiles       []string `json:"changed_files,omitempty"`
-	Validation         []string `json:"validation,omitempty"`
-	Order              int      `json:"order,omitempty"`
+	ID                 string                               `json:"id"`
+	Title              string                               `json:"title,omitempty"`
+	Status             string                               `json:"status,omitempty"`
+	Objective          string                               `json:"objective,omitempty"`
+	Tasks              []string                             `json:"tasks,omitempty"`
+	Subtasks           []SessionPlanSubtask                 `json:"subtasks,omitempty"`
+	ActiveSubtaskID    string                               `json:"active_subtask_id,omitempty"`
+	AcceptanceCriteria []string                             `json:"acceptance_criteria,omitempty"`
+	SourceMessageID    string                               `json:"source_message_id,omitempty"`
+	Notes              string                               `json:"notes,omitempty"`
+	Report             string                               `json:"report,omitempty"`
+	Result             string                               `json:"result,omitempty"`
+	ChangedFiles       []string                             `json:"changed_files,omitempty"`
+	Validation         []string                             `json:"validation,omitempty"`
+	AttemptID          string                               `json:"attempt_id,omitempty"`
+	RunID              string                               `json:"run_id,omitempty"`
+	SessionID          string                               `json:"session_id,omitempty"`
+	StartedAt          int64                                `json:"started_at,omitempty"`
+	CompletedAt        int64                                `json:"completed_at,omitempty"`
+	Review             *SessionPlanCheckpointReview         `json:"review,omitempty"`
+	Recommendation     *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	Attempts           []SessionPlanCheckpointAttempt       `json:"attempts,omitempty"`
+	Order              int                                  `json:"order,omitempty"`
+}
+
+type SessionPlanSubtask struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Status      string `json:"status,omitempty"`
+	Notes       string `json:"notes,omitempty"`
+	Result      string `json:"result,omitempty"`
+	StartedAt   int64  `json:"started_at,omitempty"`
+	CompletedAt int64  `json:"completed_at,omitempty"`
+	Order       int    `json:"order,omitempty"`
+}
+type SessionPlanCheckpointAttempt struct {
+	ID              string   `json:"id"`
+	CheckpointID    string   `json:"checkpoint_id,omitempty"`
+	Status          string   `json:"status,omitempty"`
+	Outcome         string   `json:"outcome,omitempty"`
+	RunID           string   `json:"run_id,omitempty"`
+	SessionID       string   `json:"session_id,omitempty"`
+	ParentSessionID string   `json:"parent_session_id,omitempty"`
+	StartedAt       int64    `json:"started_at,omitempty"`
+	CompletedAt     int64    `json:"completed_at,omitempty"`
+	Report          string   `json:"report,omitempty"`
+	Result          string   `json:"result,omitempty"`
+	ChangedFiles    []string `json:"changed_files,omitempty"`
+	Validation      []string `json:"validation,omitempty"`
+}
+type SessionPlanCheckpointReview struct {
+	Status       string `json:"status,omitempty"`
+	ReviewerID   string `json:"reviewer_id,omitempty"`
+	ReviewerType string `json:"reviewer_type,omitempty"`
+	Result       string `json:"result,omitempty"`
+	Notes        string `json:"notes,omitempty"`
+	ReviewedAt   int64  `json:"reviewed_at,omitempty"`
+}
+type SessionPlanCheckpointRecommendation struct {
+	Decision    string `json:"decision,omitempty"`
+	Action      string `json:"action,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	ActionState string `json:"action_state,omitempty"`
+}
+
+type SessionPlanExecutionSummary struct {
+	PolicyMode           string `json:"policy_mode"`
+	ExecutionShape       string `json:"execution_shape"`
+	ActiveCheckpointID   string `json:"active_checkpoint_id,omitempty"`
+	NextCheckpointID     string `json:"next_checkpoint_id,omitempty"`
+	NextCheckpointStatus string `json:"next_checkpoint_status,omitempty"`
+	ReviewRequired       bool   `json:"review_required"`
+	Blocked              bool   `json:"blocked"`
+	Failed               bool   `json:"failed"`
+	PlanComplete         bool   `json:"plan_complete"`
+	AutoAdvanceAllowed   bool   `json:"auto_advance_allowed"`
+	StopReason           string `json:"stop_reason,omitempty"`
 }
 
 type SessionPlanDocumentPatch struct {
@@ -3684,6 +3775,130 @@ func (c *API) GetActiveSessionV3Plan(ctx context.Context, sessionID string) (Ses
 		return SessionPlan{}, false, err
 	}
 	return resp.ActivePlan, resp.HasActive, nil
+}
+
+type SessionPlanLifecycleResult struct {
+	OK               bool                        `json:"ok"`
+	SessionID        string                      `json:"session_id"`
+	Transition       string                      `json:"transition"`
+	PlanID           string                      `json:"plan_id,omitempty"`
+	Plan             SessionPlan                 `json:"plan,omitempty"`
+	CheckpointID     string                      `json:"checkpoint_id,omitempty"`
+	AttemptID        string                      `json:"attempt_id,omitempty"`
+	RunQueued        bool                        `json:"run_queued"`
+	ExecutionSummary SessionPlanExecutionSummary `json:"execution_summary"`
+	RunIntent        *SessionV3RunIntent         `json:"run_intent,omitempty"`
+}
+
+type SessionPlanExecutionOptions struct {
+	CheckpointID          string `json:"checkpoint_id,omitempty"`
+	ExecutionGranularity  string `json:"execution_granularity,omitempty"`
+	ContinuationPolicy    string `json:"continuation_policy,omitempty"`
+	ContinueAutomatically *bool  `json:"continue_automatically,omitempty"`
+}
+
+type SessionPlanSubmitRequest struct {
+	Title    string               `json:"title,omitempty"`
+	Plan     string               `json:"plan,omitempty"`
+	Document *SessionPlanDocument `json:"document,omitempty"`
+	SessionPlanExecutionOptions
+}
+type SessionPlanCurrentRunRequest struct {
+	PlanID string `json:"plan_id,omitempty"`
+}
+type SessionPlanCheckpointStartRequest struct {
+	PlanID                   string `json:"plan_id,omitempty"`
+	SuppressLifecycleMessage bool   `json:"suppress_lifecycle_message,omitempty"`
+}
+type SessionPlanCheckpointAcceptRequest struct {
+	PlanID     string `json:"plan_id,omitempty"`
+	Result     string `json:"result,omitempty"`
+	Notes      string `json:"notes,omitempty"`
+	ReviewedAt int64  `json:"reviewed_at,omitempty"`
+}
+type SessionPlanCheckpointResolveRequest struct {
+	PlanID       string `json:"plan_id,omitempty"`
+	Result       string `json:"result,omitempty"`
+	Notes        string `json:"notes,omitempty"`
+	ReviewedAt   int64  `json:"reviewed_at,omitempty"`
+	StartNext    bool   `json:"start_next,omitempty"`
+	ContinueNext bool   `json:"continue_next,omitempty"`
+}
+type SessionPlanRevisionRequest struct {
+	PlanID                   string `json:"plan_id,omitempty"`
+	Version                  int    `json:"version,omitempty"`
+	RevisionVersion          int    `json:"revision_version,omitempty"`
+	CheckpointID             string `json:"checkpoint_id,omitempty"`
+	ExecutionGranularity     string `json:"execution_granularity,omitempty"`
+	ContinuationPolicy       string `json:"continuation_policy,omitempty"`
+	ContinueAutomatically    *bool  `json:"continue_automatically,omitempty"`
+	Restart                  bool   `json:"restart,omitempty"`
+	Start                    bool   `json:"start,omitempty"`
+	SkipPrior                bool   `json:"skip_prior,omitempty"`
+	SuppressLifecycleMessage bool   `json:"suppress_lifecycle_message,omitempty"`
+}
+
+func (c *API) sessionV3PlanLifecycle(ctx context.Context, sessionID, tail string, req any) (SessionPlanLifecycleResult, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SessionPlanLifecycleResult{}, errors.New("session id is required")
+	}
+	var resp SessionPlanLifecycleResult
+	if err := c.postJSON(ctx, sessionV3PrimaryPath(sessionID, "plan-mode/"+strings.Trim(tail, "/")), req, &resp, true); err != nil {
+		return SessionPlanLifecycleResult{}, err
+	}
+	return resp, nil
+}
+func (c *API) SubmitSessionV3Plan(ctx context.Context, sessionID, planID string, req SessionPlanSubmitRequest) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "plans/"+url.PathEscape(strings.TrimSpace(planID))+"/submit", req)
+}
+func (c *API) ApproveSessionV3Plan(ctx context.Context, sessionID, planID string, req SessionPlanExecutionOptions) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "plans/"+url.PathEscape(strings.TrimSpace(planID))+"/approve", req)
+}
+func (c *API) StartSessionV3PlanAutomatic(ctx context.Context, sessionID, planID string, req SessionPlanExecutionOptions) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "plans/"+url.PathEscape(strings.TrimSpace(planID))+"/start-automatic", req)
+}
+func (c *API) StartSessionV3PlanCheckpointed(ctx context.Context, sessionID, planID string, req SessionPlanExecutionOptions) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "plans/"+url.PathEscape(strings.TrimSpace(planID))+"/start-checkpointed", req)
+}
+func (c *API) PauseSessionV3PlanRun(ctx context.Context, sessionID string, req SessionPlanCurrentRunRequest) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "runs/current/pause", req)
+}
+func (c *API) StopSessionV3PlanRun(ctx context.Context, sessionID string, req SessionPlanCurrentRunRequest) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "runs/current/stop", req)
+}
+func (c *API) ResumeSessionV3PlanAutomatic(ctx context.Context, sessionID string, req SessionPlanCurrentRunRequest) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "runs/current/resume-automatic", req)
+}
+func (c *API) ResumeSessionV3PlanCheckpointed(ctx context.Context, sessionID string, req SessionPlanCurrentRunRequest) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "runs/current/resume-checkpointed", req)
+}
+func (c *API) StartSessionV3PlanCheckpoint(ctx context.Context, sessionID, checkpointID string, req SessionPlanCheckpointStartRequest) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "checkpoints/"+url.PathEscape(strings.TrimSpace(checkpointID))+"/start", req)
+}
+func (c *API) ContinueSessionV3PlanCheckpoint(ctx context.Context, sessionID, checkpointID string, req SessionPlanCheckpointStartRequest) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "checkpoints/"+url.PathEscape(strings.TrimSpace(checkpointID))+"/continue", req)
+}
+func (c *API) AcceptSessionV3PlanCheckpoint(ctx context.Context, sessionID, checkpointID string, req SessionPlanCheckpointAcceptRequest) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "checkpoints/"+url.PathEscape(strings.TrimSpace(checkpointID))+"/accept", req)
+}
+func (c *API) ResolveSessionV3BlockedCheckpoint(ctx context.Context, sessionID, checkpointID string, req SessionPlanCheckpointResolveRequest) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "checkpoints/"+url.PathEscape(strings.TrimSpace(checkpointID))+"/resolve-block", req)
+}
+func (c *API) RestartSessionV3PlanCheckpoint(ctx context.Context, sessionID, checkpointID, planID string) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "checkpoints/"+url.PathEscape(strings.TrimSpace(checkpointID))+"/restart", SessionPlanCurrentRunRequest{PlanID: planID})
+}
+func (c *API) RewindSessionV3PlanCheckpoint(ctx context.Context, sessionID, checkpointID, planID string) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "checkpoints/"+url.PathEscape(strings.TrimSpace(checkpointID))+"/rewind", SessionPlanCurrentRunRequest{PlanID: planID})
+}
+func (c *API) RestoreSessionV3PlanRevision(ctx context.Context, sessionID string, req SessionPlanRevisionRequest) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "lifecycle/restore-revision", req)
+}
+func (c *API) RestartSessionV3PlanFromRevision(ctx context.Context, sessionID string, req SessionPlanRevisionRequest) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "lifecycle/restart-from-revision", req)
+}
+func (c *API) JumpSessionV3PlanToCheckpoint(ctx context.Context, sessionID string, req SessionPlanRevisionRequest) (SessionPlanLifecycleResult, error) {
+	return c.sessionV3PlanLifecycle(ctx, sessionID, "lifecycle/jump-to-checkpoint", req)
 }
 
 func (c *API) SaveSessionV3Plan(ctx context.Context, sessionID string, req SessionPlanUpsertRequest) (SessionPlan, error) {

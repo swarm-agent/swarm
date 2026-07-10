@@ -246,6 +246,7 @@ type App struct {
 	workspacePath       string
 	selectedChatRouteID string
 	homeModel           model.HomeModel
+	agentState          client.AgentState
 	updateStatus        client.UpdateStatus
 	config              AppConfig
 	themePreviewID      string
@@ -1314,6 +1315,7 @@ func decodeAgentStateFromStreamEvent(event client.StreamEventEnvelope) client.Ag
 }
 
 func (a *App) applyAgentStateToRuntime(state client.AgentState) bool {
+	a.agentState = state
 	activeAgent, executionSetting, exitPlanMode, runtimeKnown := activeAgentRuntime(state)
 	subagents := chatMentionSubagentNames(state)
 	changed := false
@@ -2496,15 +2498,18 @@ func (a *App) handlePlanCommand(args []string) {
 			showCurrentPlan()
 			return
 		}
-		a.home.SetStatus("usage: /plan [show|exit|list|use|new]")
-		a.chat.AppendSystemMessage("usage:\n/plan\n/plan show\n/plan exit [title]\n/plan list [limit]\n/plan use <plan_id>\n/plan new [title]")
+		a.home.SetStatus("usage: /plan [show|recover|exit|list|use|new]")
+		a.chat.AppendSystemMessage("usage:\n/plan\n/plan show\n/plan recover\n/plan exit [title]\n/plan list [limit]\n/plan use <plan_id>\n/plan new [title]")
 		return
 	}
 
 	action := strings.ToLower(strings.TrimSpace(args[0]))
 	switch action {
-	case "show":
+	case "show", "recover":
 		showCurrentPlan()
+		if action == "recover" {
+			a.home.SetStatus("plan recovery: press R, then Tab/arrow keys and Enter")
+		}
 	case "exit":
 		if a.chat.PermissionModalVisible() {
 			a.home.SetStatus("resolve pending permissions before exiting plan mode")
@@ -2602,8 +2607,8 @@ func (a *App) handlePlanCommand(args []string) {
 		a.chat.AppendSystemMessage(fmt.Sprintf("Created new active plan %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
 		showCurrentPlan()
 	default:
-		a.home.SetStatus("usage: /plan [show|exit|list|use|new]")
-		a.chat.AppendSystemMessage("usage:\n/plan\n/plan show\n/plan exit [title]\n/plan list [limit]\n/plan use <plan_id>\n/plan new [title]")
+		a.home.SetStatus("usage: /plan [show|recover|exit|list|use|new]")
+		a.chat.AppendSystemMessage("usage:\n/plan\n/plan show\n/plan recover\n/plan exit [title]\n/plan list [limit]\n/plan use <plan_id>\n/plan new [title]")
 	}
 }
 
@@ -3129,38 +3134,59 @@ func lineageAgentName(label string) string {
 	return candidate
 }
 
-func resolveSessionEffectiveAgent(summary model.SessionSummary, fallbackAgent, fallbackExecution string, fallbackExitPlanMode, fallbackRuntimeKnown bool) (string, string, bool, bool) {
+func agentRuntimeForName(state client.AgentState, agent string) (string, bool, bool) {
+	agent = strings.TrimSpace(agent)
+	for _, profile := range state.Profiles {
+		if !strings.EqualFold(strings.TrimSpace(profile.Name), agent) {
+			continue
+		}
+		exitPlanMode := true
+		if profile.ExitPlanModeEnabled != nil {
+			exitPlanMode = *profile.ExitPlanModeEnabled
+		}
+		return strings.TrimSpace(profile.ExecutionSetting), exitPlanMode, true
+	}
+	return "", strings.EqualFold(agent, "swarm"), false
+}
+
+func genuineLineageAgent(summary model.SessionSummary) string {
 	metadata := summary.Metadata
-	resolved := consumeStringMetadata(metadata, "subagent")
-	if resolved == "" {
-		resolved = consumeStringMetadata(metadata, "requested_subagent")
+	isChild := strings.TrimSpace(consumeStringMetadata(metadata, "parent_session_id")) != ""
+	isBackground := metadataBool(metadata, "background") || strings.EqualFold(consumeStringMetadata(metadata, "launch_mode"), "background")
+	if !isChild && !isBackground {
+		return ""
 	}
-	if resolved == "" {
-		resolved = lineageAgentName(consumeStringMetadata(metadata, "lineage_label"))
-	}
-	if resolved == "" {
-		targetKind := consumeStringMetadata(metadata, "target_kind")
-		targetName := consumeStringMetadata(metadata, "target_name")
-		if targetKind != "" && targetName != "" {
-			resolved = targetName
+	for _, candidate := range []string{
+		consumeStringMetadata(metadata, "subagent"),
+		lineageAgentName(consumeStringMetadata(metadata, "lineage_label")),
+		consumeStringMetadata(metadata, "background_agent"),
+		consumeStringMetadata(metadata, "target_name"),
+	} {
+		if candidate = strings.TrimSpace(candidate); candidate != "" {
+			return candidate
 		}
 	}
+	return ""
+}
+
+func resolveSessionEffectiveAgent(summary model.SessionSummary, policy client.SessionV3AgentModelPolicy, state client.AgentState, fallbackAgent, fallbackExecution string, fallbackExitPlanMode, fallbackRuntimeKnown bool) (string, string, bool, bool) {
+	resolved := strings.TrimSpace(policy.ResolvedAgent)
 	if resolved == "" {
-		resolved = consumeStringMetadata(metadata, "background_agent")
+		resolved = strings.TrimSpace(policy.AgentName)
 	}
 	if resolved == "" {
-		resolved = consumeStringMetadata(metadata, "requested_background_agent")
-	}
-	if resolved == "" {
-		resolved = consumeStringMetadata(metadata, "agent_name")
+		resolved = genuineLineageAgent(summary)
 	}
 	if resolved == "" {
 		resolved = emptyFallback(strings.TrimSpace(fallbackAgent), "swarm")
 	}
-	if strings.EqualFold(strings.TrimSpace(resolved), strings.TrimSpace(fallbackAgent)) {
-		return emptyFallback(strings.TrimSpace(fallbackAgent), "swarm"), strings.TrimSpace(fallbackExecution), fallbackExitPlanMode, fallbackRuntimeKnown
+	if execution, exitPlanMode, known := agentRuntimeForName(state, resolved); known {
+		return resolved, execution, exitPlanMode, true
 	}
-	return resolved, "", true, true
+	if strings.EqualFold(resolved, strings.TrimSpace(fallbackAgent)) {
+		return resolved, strings.TrimSpace(fallbackExecution), fallbackExitPlanMode, fallbackRuntimeKnown
+	}
+	return resolved, "", strings.EqualFold(resolved, "swarm"), false
 }
 
 func (a *App) currentChatAgentRuntime() (string, string, bool, bool) {
@@ -3172,7 +3198,13 @@ func (a *App) currentChatAgentRuntime() (string, string, bool, bool) {
 		return fallbackAgent, fallbackExecution, fallbackExitPlanMode, fallbackRuntimeKnown
 	}
 	if summary, ok := a.sessionSummaryByID(strings.TrimSpace(a.chat.SessionID())); ok {
-		return resolveSessionEffectiveAgent(summary, fallbackAgent, fallbackExecution, fallbackExitPlanMode, fallbackRuntimeKnown)
+		policy := client.SessionV3AgentModelPolicy{}
+		if a.tuiSessionStore != nil {
+			if snapshot, found := a.tuiSessionStore.ChatSnapshot(strings.TrimSpace(a.chat.SessionID())); found {
+				policy = snapshot.AgentModelPolicy
+			}
+		}
+		return resolveSessionEffectiveAgent(summary, policy, a.agentState, fallbackAgent, fallbackExecution, fallbackExitPlanMode, fallbackRuntimeKnown)
 	}
 	return fallbackAgent, fallbackExecution, fallbackExitPlanMode, fallbackRuntimeKnown
 }
@@ -3300,7 +3332,13 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 		},
 	})
 	if summary, ok := a.sessionSummaryByID(strings.TrimSpace(sessionID)); ok {
-		resolvedAgent, resolvedExecution, resolvedExitPlanMode, resolvedRuntimeKnown := resolveSessionEffectiveAgent(summary,
+		policy := client.SessionV3AgentModelPolicy{}
+		if a.tuiSessionStore != nil {
+			if snapshot, found := a.tuiSessionStore.ChatSnapshot(strings.TrimSpace(sessionID)); found {
+				policy = snapshot.AgentModelPolicy
+			}
+		}
+		resolvedAgent, resolvedExecution, resolvedExitPlanMode, resolvedRuntimeKnown := resolveSessionEffectiveAgent(summary, policy, a.agentState,
 			emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
 			strings.TrimSpace(a.homeModel.ActiveAgentExecutionSetting),
 			a.homeModel.ActiveAgentExitPlanMode,
@@ -4729,33 +4767,122 @@ func (a *App) handleChatAction(action ui.ChatAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		var plan client.SessionPlan
-		var err error
-		if action.Plan.RestoreRevision {
-			restored, saveErr := a.api.SaveSessionPlan(ctx, sessionID, client.SessionPlanUpsertRequest{
-				ID:            planID,
-				PlanID:        planID,
-				Title:         strings.TrimSpace(action.Plan.Title),
-				Plan:          action.Plan.Plan,
-				Document:      clientSessionPlanDocumentFromAny(action.Plan.Document),
-				Status:        strings.TrimSpace(action.Plan.Status),
-				ApprovalState: strings.TrimSpace(action.Plan.ApprovalState),
-			})
-			plan, err = restored, saveErr
-		} else {
-			plan, err = a.api.SetActiveSessionPlan(ctx, sessionID, planID)
-		}
+		plan, err := a.api.SetActiveSessionPlan(ctx, sessionID, planID)
 		if err != nil {
 			a.home.SetStatus(fmt.Sprintf("activate plan failed: %v", err))
 			return
 		}
 		a.chat.SetActivePlan(chatPlanLabel(plan))
 		a.home.SetStatus(fmt.Sprintf("active plan: %s", plan.ID))
-		if action.Plan.RestoreRevision {
-			a.chat.AppendSystemMessage(fmt.Sprintf("Restored revision as active plan %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
-		} else {
-			a.chat.AppendSystemMessage(fmt.Sprintf("Active plan set to %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
+		a.chat.AppendSystemMessage(fmt.Sprintf("Active plan set to %s (%s).", plan.ID, emptyFallback(plan.Title, "untitled")))
+	case ui.ChatActionRecoverPlan:
+		if a.api == nil || a.chat == nil {
+			a.home.SetStatus("plan recovery failed: API or chat is unavailable")
+			return
 		}
+		sessionID := strings.TrimSpace(a.chat.SessionID())
+		planID := strings.TrimSpace(action.Plan.ID)
+		if sessionID == "" || planID == "" {
+			a.home.SetStatus("plan recovery failed: session id or plan id is unavailable")
+			return
+		}
+		automatic := action.Recovery.ContinueAutomatically
+		req := client.SessionPlanRevisionRequest{PlanID: planID, Version: action.Plan.Version, RevisionVersion: action.Plan.Version, CheckpointID: strings.TrimSpace(action.Recovery.CheckpointID), ExecutionGranularity: strings.TrimSpace(action.Recovery.ExecutionGranularity), ContinuationPolicy: strings.TrimSpace(action.Recovery.ContinuationPolicy), ContinueAutomatically: &automatic}
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		var result client.SessionPlanLifecycleResult
+		var err error
+		switch action.Recovery.Action {
+		case "restore_only":
+			result, err = a.api.RestoreSessionV3PlanRevision(ctx, sessionID, req)
+		case "fast_forward", "final_checkpoint":
+			req.Restart, req.Start, req.SkipPrior = true, true, true
+			result, err = a.api.JumpSessionV3PlanToCheckpoint(ctx, sessionID, req)
+		case "restart_selected":
+			req.Restart, req.Start = true, true
+			result, err = a.api.RestartSessionV3PlanFromRevision(ctx, sessionID, req)
+		default:
+			options := client.SessionPlanExecutionOptions{CheckpointID: req.CheckpointID, ExecutionGranularity: req.ExecutionGranularity, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically}
+			if req.ExecutionGranularity == "run_through" {
+				result, err = a.api.StartSessionV3PlanAutomatic(ctx, sessionID, planID, options)
+			} else {
+				result, err = a.api.StartSessionV3PlanCheckpointed(ctx, sessionID, planID, options)
+			}
+		}
+		if err != nil {
+			a.home.SetStatus(fmt.Sprintf("plan recovery failed: %v", err))
+			return
+		}
+		if strings.TrimSpace(result.Plan.ID) != "" {
+			a.chat.SetActivePlan(chatPlanLabel(result.Plan))
+		}
+		a.home.SetStatus(fmt.Sprintf("plan recovery applied: %s", action.Recovery.Action))
+		a.chat.AppendSystemMessage(fmt.Sprintf("Plan recovery action %s applied through the V3 lifecycle.", action.Recovery.Action))
+	case ui.ChatActionPlanExecution:
+		if a.api == nil || a.chat == nil {
+			a.home.SetStatus("plan action failed: API or chat is unavailable")
+			return
+		}
+		sessionID, planID := strings.TrimSpace(a.chat.SessionID()), strings.TrimSpace(action.Plan.ID)
+		checkpointID := strings.TrimSpace(action.PlanExecution.CheckpointID)
+		if sessionID == "" || planID == "" {
+			a.home.SetStatus("plan action failed: session id or plan id is unavailable")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		var result client.SessionPlanLifecycleResult
+		var err error
+		switch action.PlanExecution.Operation {
+		case "stop":
+			result, err = a.api.StopSessionV3PlanRun(ctx, sessionID, client.SessionPlanCurrentRunRequest{PlanID: planID})
+		case "accept":
+			if checkpointID == "" {
+				err = errors.New("checkpoint id is unavailable")
+				break
+			}
+			result, err = a.api.AcceptSessionV3PlanCheckpoint(ctx, sessionID, checkpointID, client.SessionPlanCheckpointAcceptRequest{PlanID: planID, Result: "accepted"})
+		case "resolve":
+			if checkpointID == "" {
+				err = errors.New("checkpoint id is unavailable")
+				break
+			}
+			result, err = a.api.ResolveSessionV3BlockedCheckpoint(ctx, sessionID, checkpointID, client.SessionPlanCheckpointResolveRequest{PlanID: planID, Result: "resolved", StartNext: action.PlanExecution.StartNext, ContinueNext: action.PlanExecution.StartNext})
+		case "restart":
+			if checkpointID == "" {
+				err = errors.New("checkpoint id is unavailable")
+				break
+			}
+			result, err = a.api.RestartSessionV3PlanCheckpoint(ctx, sessionID, checkpointID, planID)
+		case "rewind":
+			if checkpointID == "" {
+				err = errors.New("checkpoint id is unavailable")
+				break
+			}
+			result, err = a.api.RewindSessionV3PlanCheckpoint(ctx, sessionID, checkpointID, planID)
+		case "toggle_policy":
+			if action.PlanExecution.Automatic {
+				result, err = a.api.ResumeSessionV3PlanCheckpointed(ctx, sessionID, client.SessionPlanCurrentRunRequest{PlanID: planID})
+			} else {
+				result, err = a.api.ResumeSessionV3PlanAutomatic(ctx, sessionID, client.SessionPlanCurrentRunRequest{PlanID: planID})
+			}
+		default:
+			err = fmt.Errorf("unsupported plan action %q", action.PlanExecution.Operation)
+		}
+		if err != nil {
+			a.home.SetStatus(fmt.Sprintf("plan action failed: %v", err))
+			a.chat.ShowToast(ui.ToastError, fmt.Sprintf("Plan action failed: %v", err))
+			return
+		}
+		if strings.TrimSpace(result.Plan.ID) != "" {
+			runID := ""
+			if result.RunIntent != nil {
+				runID = strings.TrimSpace(result.RunIntent.RunID)
+			}
+			a.chat.SetPlanExecutionState(chatSessionPlanFromClient(result.Plan), nil, runID, strings.TrimSpace(result.Transition))
+		}
+		a.home.SetStatus("plan action applied: " + strings.ReplaceAll(action.PlanExecution.Operation, "_", " "))
+		a.chat.ShowToast(ui.ToastSuccess, "Plan execution updated")
 	case ui.ChatActionSavePlan:
 		if a.api == nil {
 			a.home.SetStatus("save plan failed: api client is not configured")
@@ -7924,6 +8051,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 	}
 
 	if agentErr == nil {
+		a.agentState = agentState
 		next.ActiveAgent, next.ActiveAgentExecutionSetting, next.ActiveAgentExitPlanMode, next.ActiveAgentRuntimeKnown = activeAgentRuntime(agentState)
 		next.Subagents = chatMentionSubagentNames(agentState)
 	} else {

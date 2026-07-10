@@ -449,26 +449,38 @@ type ChatPage struct {
 	planExitApprovedArgs string
 	planExitScroll       int
 	planExitSelection    int
+	planExitRunChoice    int
 	planExitInput        string
 	planExitCancelRect   Rect
 	planExitConfirmRect  Rect
+	planExitChoiceRects  [3]Rect
 
-	planEditorVisible       bool
-	planEditorPlan          ChatSessionPlan
-	planEditorPlans         []ChatSessionPlan
-	planEditorActivePlanID  string
-	planEditorPlanSelection int
-	planEditorPlanScroll    int
-	planEditorRevisionFocus bool
-	planEditorInput         string
-	planEditorEditing       bool
-	planEditorConfirmSave   bool
-	planEditorSelection     int
-	planEditorScroll        int
-	planEditorInputScroll   int
-	planEditorCancelRect    Rect
-	planEditorCopyRect      Rect
-	planEditorSaveRect      Rect
+	planEditorVisible        bool
+	planEditorPlan           ChatSessionPlan
+	planEditorPlans          []ChatSessionPlan
+	planExecutionPlan        ChatSessionPlan
+	planExecutionRevisions   []ChatSessionPlan
+	planExecutionRunID       string
+	planExecutionRunStatus   string
+	planEditorActivePlanID   string
+	planEditorPlanSelection  int
+	planEditorPlanScroll     int
+	planEditorRevisionFocus  bool
+	planEditorRecoveryFocus  int
+	planEditorCheckpoint     int
+	planEditorExecution      int
+	planEditorAutomatic      bool
+	planEditorRecoveryAction int
+	planEditorInput          string
+	planEditorEditing        bool
+	planEditorConfirmSave    bool
+	planEditorSelection      int
+	planEditorScroll         int
+	planEditorInputScroll    int
+	planEditorCancelRect     Rect
+	planEditorCopyRect       Rect
+	planEditorSaveRect       Rect
+	planEditorRecoveryRects  [5]Rect
 
 	manageTodosPermission  string
 	manageTodosScroll      int
@@ -964,6 +976,9 @@ func (p *ChatPage) HandleKey(ev *tcell.EventKey) {
 	if p.handlePermissionModalKey(ev) {
 		return
 	}
+	if p.handlePlanExecutionKey(ev) {
+		return
+	}
 	if p.pasteActive {
 		if p.HandlePasteKey(ev) {
 			p.syncComposerPalettes()
@@ -1404,6 +1419,10 @@ func (p *ChatPage) Draw(s tcell.Screen) {
 
 	contentX := 0
 	mainW := w
+	planPanelW := p.planExecutionPanelWidth(w)
+	if planPanelW > 0 {
+		mainW = w - planPanelW
+	}
 
 	renderHeader := p.showHeader && w >= 56 && h >= 10
 	headerH := 0
@@ -1541,6 +1560,9 @@ func (p *ChatPage) Draw(s tcell.Screen) {
 		timelineTextRect.W -= timelineInset * 2
 	}
 	p.drawTimelineComponent(s, timelineTextRect)
+	if planPanelW > 0 {
+		p.drawPlanExecutionSidebar(s, Rect{X: mainW, Y: headerH, W: planPanelW, H: h - headerH - footerH})
+	}
 	p.drawBashOutputComponent(s, bashOutputRect)
 	p.drawPermissionPanel(s, permRect)
 	if permissionModal {
