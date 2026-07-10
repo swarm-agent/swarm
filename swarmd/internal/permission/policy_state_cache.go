@@ -39,18 +39,36 @@ func (s *Service) loadPermissionStateLocked(accountScopeID string) (permissionSt
 	if entry, ok := s.permissionStateCache[key]; ok {
 		return clonePermissionStateCacheEntry(entry), nil
 	}
+	return s.refreshPermissionStatePolicyLocked(accountScopeID)
+}
+
+// refreshPermissionStatePolicyLocked reloads the canonical account policy while
+// preserving the independently managed bypass state. Prompt composition and
+// subagent reservation call this path so policy edits made by another service
+// instance take effect during an existing run rather than waiting for cache
+// invalidation or a daemon restart.
+func (s *Service) refreshPermissionStatePolicyLocked(accountScopeID string) (permissionStateCacheEntry, error) {
 	policy, err := s.loadPolicyFromStoreLocked(accountScopeID)
 	if err != nil {
 		return permissionStateCacheEntry{}, err
 	}
+	key := permissionStateCacheKey(accountScopeID)
 	now := time.Now().UnixMilli()
+	bypass := s.bypassPermissions
+	bypassUpdatedAt := now
+	if cached, ok := s.permissionStateCache[key]; ok {
+		bypass = cached.BypassPermissions
+		if cached.BypassUpdatedAt > 0 {
+			bypassUpdatedAt = cached.BypassUpdatedAt
+		}
+	}
 	entry := permissionStateCacheEntry{
 		AccountScopeID:    strings.TrimSpace(accountScopeID),
 		Policy:            NormalizePolicy(policy),
-		BypassPermissions: s.bypassPermissions,
+		BypassPermissions: bypass,
 		LoadedAt:          now,
 		PolicyUpdatedAt:   policy.UpdatedAt,
-		BypassUpdatedAt:   now,
+		BypassUpdatedAt:   bypassUpdatedAt,
 	}
 	s.permissionStateCache[key] = entry
 	return clonePermissionStateCacheEntry(entry), nil

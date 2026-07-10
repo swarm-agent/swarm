@@ -23,9 +23,79 @@ const (
 )
 
 type Policy struct {
-	Version   int          `json:"version"`
-	Rules     []PolicyRule `json:"rules,omitempty"`
-	UpdatedAt int64        `json:"updated_at,omitempty"`
+	Version   int            `json:"version"`
+	Rules     []PolicyRule   `json:"rules,omitempty"`
+	Subagents SubagentPolicy `json:"subagents"`
+	UpdatedAt int64          `json:"updated_at,omitempty"`
+}
+
+type SubagentOrchestrationMode string
+
+type SubagentOverBudgetAction string
+
+const (
+	SubagentModeDirect  SubagentOrchestrationMode = "direct"
+	SubagentModeAsk     SubagentOrchestrationMode = "ask"
+	SubagentModeBounded SubagentOrchestrationMode = "bounded"
+
+	SubagentOverBudgetAsk  SubagentOverBudgetAction = "ask"
+	SubagentOverBudgetDeny SubagentOverBudgetAction = "deny"
+)
+
+// SubagentPolicy is the single account-scoped delegation policy. Launches share one
+// budget regardless of child purpose (for example Explorer or Clone).
+type SubagentPolicy struct {
+	Mode                          SubagentOrchestrationMode `json:"mode"`
+	AutomaticLaunchesPerParentRun int                       `json:"automatic_launches_per_parent_run"`
+	ActiveChildLimit              int                       `json:"active_child_limit"`
+	OverBudgetAction              SubagentOverBudgetAction  `json:"over_budget_action"`
+	AbsoluteWaveMaximum           int                       `json:"absolute_wave_maximum"`
+	MaxDepth                      int                       `json:"max_depth"`
+	RequireWriteIsolation         bool                      `json:"require_write_isolation"`
+}
+
+func DefaultSubagentPolicy() SubagentPolicy {
+	return SubagentPolicy{
+		Mode:                          SubagentModeBounded,
+		AutomaticLaunchesPerParentRun: 5,
+		ActiveChildLimit:              5,
+		OverBudgetAction:              SubagentOverBudgetAsk,
+		AbsoluteWaveMaximum:           8,
+		MaxDepth:                      1,
+		RequireWriteIsolation:         true,
+	}
+}
+
+func ValidateSubagentPolicy(policy SubagentPolicy) error {
+	switch policy.Mode {
+	case SubagentModeDirect, SubagentModeAsk, SubagentModeBounded:
+	default:
+		return fmt.Errorf("unsupported subagent orchestration mode %q", policy.Mode)
+	}
+	switch policy.OverBudgetAction {
+	case SubagentOverBudgetAsk, SubagentOverBudgetDeny:
+	default:
+		return fmt.Errorf("unsupported subagent over-budget action %q", policy.OverBudgetAction)
+	}
+	if policy.AutomaticLaunchesPerParentRun < 0 {
+		return fmt.Errorf("automatic launches per parent run cannot be negative")
+	}
+	if policy.ActiveChildLimit < 1 {
+		return fmt.Errorf("active child limit must be at least 1")
+	}
+	if policy.AbsoluteWaveMaximum < 1 || policy.AbsoluteWaveMaximum > 8 {
+		return fmt.Errorf("absolute wave maximum must be between 1 and 8")
+	}
+	if policy.ActiveChildLimit > policy.AbsoluteWaveMaximum {
+		return fmt.Errorf("active child limit cannot exceed absolute wave maximum")
+	}
+	if policy.AutomaticLaunchesPerParentRun > policy.AbsoluteWaveMaximum {
+		return fmt.Errorf("automatic launches per parent run cannot exceed absolute wave maximum")
+	}
+	if policy.MaxDepth < 0 || policy.MaxDepth > 1 {
+		return fmt.Errorf("subagent delegation depth must be 0 or 1")
+	}
+	return nil
 }
 
 type PolicyRule struct {
@@ -58,7 +128,8 @@ type policyEvalContext struct {
 
 func DefaultPolicy() Policy {
 	return Policy{
-		Version: 1,
+		Version:   1,
+		Subagents: DefaultSubagentPolicy(),
 		Rules: []PolicyRule{
 			{ID: "default_deny_bash_rm_root", Kind: PolicyRuleKindPhrase, Decision: PolicyDecisionDeny, Tool: "bash", Pattern: "rm -rf /"},
 			{ID: "default_deny_bash_rm_root_glob", Kind: PolicyRuleKindPhrase, Decision: PolicyDecisionDeny, Tool: "bash", Pattern: "rm -rf /*"},
@@ -80,6 +151,9 @@ func NormalizePolicy(policy Policy) Policy {
 		out = append(out, normalized)
 	}
 	policy.Rules = out
+	if err := ValidateSubagentPolicy(policy.Subagents); err != nil {
+		policy.Subagents = DefaultSubagentPolicy()
+	}
 	if policy.UpdatedAt < 0 {
 		policy.UpdatedAt = 0
 	}

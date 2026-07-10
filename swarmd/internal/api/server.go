@@ -4876,6 +4876,39 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	switch {
+	case path == "/v1/permissions/subagents":
+		switch r.Method {
+		case http.MethodGet:
+			policy, err := s.perm.CurrentPolicyForAccount(accountScopeID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "subagents": policy.Subagents})
+		case http.MethodPost, http.MethodPut:
+			var req permission.SubagentPolicy
+			if err := decodeJSON(r, &req); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			updater, ok := s.perm.(interface {
+				UpdateSubagentPolicyForAccount(string, permission.SubagentPolicy) (permission.Policy, error)
+			})
+			if !ok {
+				writeError(w, http.StatusInternalServerError, errors.New("subagent permission policy updates are not configured"))
+				return
+			}
+			policy, err := updater.UpdateSubagentPolicyForAccount(accountScopeID, req)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			s.triggerPermissionSyncReconcile()
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "subagents": policy.Subagents})
+		default:
+			methodNotAllowed(w)
+		}
+		return
 	case path == "/v1/permissions":
 		switch r.Method {
 		case http.MethodGet:

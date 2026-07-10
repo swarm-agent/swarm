@@ -85,16 +85,17 @@ const (
 )
 
 type AuthorizationInput struct {
-	SessionID         string
-	AccountScopeID    string
-	RunID             string
-	Step              int
-	CallID            string
-	ToolName          string
-	ToolArguments     string
-	ToolCallArguments string
-	Mode              string
-	Overlay           *Policy
+	SessionID           string
+	AccountScopeID      string
+	RunID               string
+	Step                int
+	CallID              string
+	ToolName            string
+	ToolArguments       string
+	ToolCallArguments   string
+	Mode                string
+	Overlay             *Policy
+	SubagentReservation *SubagentReservationResult
 }
 
 type AuthorizationResult struct {
@@ -104,6 +105,7 @@ type AuthorizationResult struct {
 	Source      string
 	RulePreview string
 	Record      *pebblestore.PermissionRecord
+	Reservation *pebblestore.SubagentWaveReservation
 }
 
 type sessionLookup interface {
@@ -372,6 +374,26 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		return AuthorizationResult{}, err
 	}
 	effectiveMode := strings.TrimSpace(input.Mode)
+	// Explicit task denial remains restrictive. Evaluate it without the generic
+	// bypass flag, then apply orchestration limits before any bypass/allow path.
+	if input.SubagentReservation != nil {
+		explicit := ExplainPolicy(effectiveMode, input.ToolName, input.ToolArguments, state.Policy)
+		if explicit.Decision == PolicyDecisionDeny {
+			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: explicit.Reason, Source: explicit.Source, RulePreview: explicit.RulePreview}, nil
+		}
+	}
+	// Delegation safeguards are resolved before generic permission bypass.
+	if input.SubagentReservation != nil {
+		reservation := input.SubagentReservation
+		switch reservation.Decision {
+		case SubagentReservationDeny:
+			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: reservation.Reason, Source: "subagent_orchestration", Reservation: &reservation.Reservation}, nil
+		case SubagentReservationAsk:
+			return s.createPendingAuthorization(input, sessionID, requirement, reservation.Reason, "subagent_orchestration", "ask exact subagent wave")
+		case SubagentReservationApprove:
+			return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: reservation.Reason, Source: "subagent_orchestration", Reservation: &reservation.Reservation}, nil
+		}
+	}
 	if state.BypassPermissions {
 		result := AuthorizationResult{
 			Decision:    AuthorizationApprove,

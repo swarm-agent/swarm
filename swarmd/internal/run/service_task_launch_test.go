@@ -144,7 +144,7 @@ func TestParseTaskCallArgumentsValidLaunches(t *testing.T) {
 		"prompt":      "inspect the repo",
 		"launches": []any{
 			map[string]any{"subagent_type": "explorer", "meta_prompt": "map backend files"},
-			map[string]any{"agent": "parallel", "role": "map frontend files"},
+			map[string]any{"agent": "clone", "role": "map frontend files", "deliverable": "frontend map", "concurrency_reason": "independent tree", "owned_scope": []any{"web/src/**"}, "dependency_evidence": "read-only mapping"},
 		},
 	}))
 	if err != nil {
@@ -156,7 +156,7 @@ func TestParseTaskCallArgumentsValidLaunches(t *testing.T) {
 	if parsed.Launches[0].RequestedSubagentType != "explorer" || parsed.Launches[0].MetaPrompt != "map backend files" {
 		t.Fatalf("unexpected first launch: %#v", parsed.Launches[0])
 	}
-	if parsed.Launches[1].RequestedSubagentType != "parallel" || parsed.Launches[1].MetaPrompt != "map frontend files" {
+	if parsed.Launches[1].RequestedSubagentType != "clone" || parsed.Launches[1].MetaPrompt != "map frontend files" || parsed.Launches[1].Deliverable != "frontend map" || len(parsed.Launches[1].OwnedScope) != 1 {
 		t.Fatalf("unexpected second launch: %#v", parsed.Launches[1])
 	}
 }
@@ -1146,6 +1146,123 @@ func stringSliceContains(values []string, want string) bool {
 	return false
 }
 
+func TestVirtualClonePermissionSnapshotsCurrentCaller(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: "swarm", Mode: agentruntime.ModePrimary, RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true), Prompt: "trusted parent prompt",
+		ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}, Enabled: true,
+	})
+	metadata := cloneGenericMap(parent.Metadata)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["agent_name"] = "swarm"
+	metadata["agent_profile"] = profile
+	if _, _, err := svc.sessions.UpdateMetadata(parentSessionID, metadata); err != nil {
+		t.Fatalf("update parent metadata: %v", err)
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt": "implement independent scope", "launches": []any{map[string]any{"subagent_type": "clone", "meta_prompt": "implement backend"}},
+	})})
+	if err != nil {
+		t.Fatalf("build Clone manifest: %v", err)
+	}
+	if len(manifest.Launches) != 1 || !manifest.Launches[0].VirtualTarget || manifest.Launches[0].SourceAgentName != "swarm" {
+		t.Fatalf("Clone manifest = %#v", manifest.Launches)
+	}
+	if manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Prompt != "trusted parent prompt" || manifest.Launches[0].InheritedRuntimeMode != pebblestore.AgentRuntimeModePlanAuto {
+		t.Fatalf("Clone snapshot = %#v", manifest.Launches[0])
+	}
+	if manifest.ManifestHash == "" || manifest.ApprovedArguments == nil {
+		t.Fatalf("Clone manifest binding missing: %#v", manifest)
+	}
+}
+
+func TestCloneLaunchRequiresEnabledSavedCloneProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, svc *Service)
+		want    string
+	}{
+		{name: "absent", prepare: func(t *testing.T, svc *Service) {
+			if result, _, _, err := svc.agents.DeleteForAccount("test-account", "clone"); err != nil || result.Deleted != "clone" {
+				t.Fatalf("delete clone: result=%+v err=%v", result, err)
+			}
+		}, want: `subagent "clone" not found`},
+		{name: "disabled", prepare: func(t *testing.T, svc *Service) {
+			profile, ok, err := svc.agents.GetProfileForAccount("test-account", "clone")
+			if err != nil || !ok {
+				t.Fatalf("get clone: ok=%v err=%v", ok, err)
+			}
+			profile.Enabled = false
+			if _, _, _, err := svc.agents.UpsertForAccount("test-account", agentruntime.UpsertInput{Name: "clone", Enabled: pebblestore.BoolPtr(false)}); err != nil {
+				t.Fatalf("disable clone: %v", err)
+			}
+		}, want: `agent "clone" is disabled`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+			defer cleanup()
+			tc.prepare(t, svc)
+			_, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"prompt":"x","subagent_type":"clone","meta_prompt":"y"}`})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestApprovedExplorerWaveManifestDigestSurvivesPermissionRoundTrip(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	launches := make([]any, 5)
+	for i := range launches {
+		launches[i] = map[string]any{
+			"subagent_type": "explorer",
+			"meta_prompt":   fmt.Sprintf("Inspect scope %d", i+1),
+		}
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt":   "Inspect independent scopes.",
+		"launches": launches,
+	})})
+	if err != nil {
+		t.Fatalf("build Explorer manifest: %v", err)
+	}
+	raw, err := json.Marshal(manifest.ApprovedArguments)
+	if err != nil {
+		t.Fatalf("marshal approved arguments: %v", err)
+	}
+	var envelope struct {
+		ManifestHash string             `json:"manifest_hash"`
+		Manifest     taskLaunchManifest `json:"manifest"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("unmarshal approved arguments: %v", err)
+	}
+	digest, err := taskLaunchManifestDigest(envelope.Manifest)
+	if err != nil {
+		t.Fatalf("digest approved manifest: %v", err)
+	}
+	if digest != envelope.ManifestHash || digest != envelope.Manifest.ManifestHash {
+		t.Fatalf("approved manifest hash mismatch: digest=%q envelope=%q manifest=%q", digest, envelope.ManifestHash, envelope.Manifest.ManifestHash)
+	}
+}
+
+func TestTaskRejectsClientSuppliedCloneTrustFields(t *testing.T) {
+	_, err := parseTaskCallArguments(`{"prompt":"x","subagent_type":"clone","meta_prompt":"y","runtime_mode":"readwrite"}`)
+	if err == nil || !strings.Contains(err.Error(), "cannot set launch-time trust") {
+		t.Fatalf("parse error = %v", err)
+	}
+}
+
 func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func()) {
 	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "state.pebble"))
@@ -1163,6 +1280,10 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 	if err := agents.EnsureDefaults(); err != nil {
 		cleanup()
 		t.Fatalf("ensure agent defaults: %v", err)
+	}
+	if err := agents.EnsureDefaultsForAccount("test-account"); err != nil {
+		cleanup()
+		t.Fatalf("ensure account agent defaults: %v", err)
 	}
 	if _, _, _, err := agents.Upsert(agentruntime.UpsertInput{
 		Name:                "reviewer",
@@ -1204,10 +1325,11 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 
 	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	parent, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "Parent",
-		WorkspacePath: t.TempDir(),
-		WorkspaceName: "workspace",
-		Mode:          sessionruntime.ModeAuto,
+		AccountScopeID: "test-account",
+		Title:          "Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
 		Preference: &pebblestore.ModelPreference{
 			Provider: "parent-provider",
 			Model:    "parent-model",
@@ -1270,6 +1392,10 @@ func newTaskLaunchPermissionServiceWithPermissions(t *testing.T) (*Service, stri
 		cleanup()
 		t.Fatalf("ensure agent defaults: %v", err)
 	}
+	if err := agents.EnsureDefaultsForAccount("test-account"); err != nil {
+		cleanup()
+		t.Fatalf("ensure account agent defaults: %v", err)
+	}
 	if _, _, _, err := agents.Upsert(agentruntime.UpsertInput{
 		Name:             "reviewer",
 		Mode:             agentruntime.ModeSubagent,
@@ -1284,10 +1410,11 @@ func newTaskLaunchPermissionServiceWithPermissions(t *testing.T) (*Service, stri
 	}
 	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	parent, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "Parent",
-		WorkspacePath: t.TempDir(),
-		WorkspaceName: "workspace",
-		Mode:          sessionruntime.ModeAuto,
+		AccountScopeID: "test-account",
+		Title:          "Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
 		Preference: &pebblestore.ModelPreference{
 			Provider: "parent-provider",
 			Model:    "parent-model",

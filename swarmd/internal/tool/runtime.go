@@ -149,6 +149,7 @@ type Runtime struct {
 	workspace         manageWorktreeWorkspaceService
 	worktrees         manageWorktreeConfigService
 	agents            manageAgentService
+	orchestration     manageOrchestrationPolicyService
 	todos             manageTodoService
 	uiSettings        manageThemeUISettingsService
 	themeWorkspace    manageThemeWorkspaceService
@@ -187,6 +188,11 @@ type manageWorktreeWorkspaceService interface {
 
 type manageWorktreeConfigService interface {
 	GetConfig(workspacePath string) (worktreeruntime.Config, error)
+}
+
+type manageOrchestrationPolicyService interface {
+	CurrentSubagentPolicyForAccount(accountScopeID string) (map[string]any, error)
+	UpdateSubagentPolicyMapForAccount(accountScopeID string, input map[string]any) (map[string]any, error)
 }
 
 type manageAgentService interface {
@@ -399,6 +405,15 @@ func (r *Runtime) SetManageAgentService(agents manageAgentService) {
 		return
 	}
 	r.agents = agents
+	if service, ok := agents.(manageOrchestrationPolicyService); ok {
+		r.orchestration = service
+	}
+}
+
+func (r *Runtime) SetManageOrchestrationPolicyService(service manageOrchestrationPolicyService) {
+	if r != nil {
+		r.orchestration = service
+	}
 }
 
 func (r *Runtime) SetManageTodoService(todos manageTodoService) {
@@ -881,12 +896,12 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":    map[string]any{"type": "string", "description": "Action: inspect|list|get|create|update|delete|activate_primary|set_active_subagent|remove_active_subagent|create_custom_tool|update_custom_tool|delete_custom_tool|assign_custom_tool|unassign_custom_tool"},
+					"action":    map[string]any{"type": "string", "description": "Action: inspect|list|get_orchestration_policy|update_orchestration_policy|get|create|update|delete|activate_primary|set_active_subagent|remove_active_subagent|create_custom_tool|update_custom_tool|delete_custom_tool|assign_custom_tool|unassign_custom_tool"},
 					"agent":     map[string]any{"type": "string", "description": "Agent name or canonical id"},
 					"name":      map[string]any{"type": "string", "description": "Agent display name; used for create/update when agent is omitted"},
 					"tool_name": map[string]any{"type": "string", "description": "Custom tool name for delete/assign/unassign actions"},
 					"content": map[string]any{
-						"description": "Structured agent profile, custom tool, or assignment payload. Prefer an object; legacy JSON-object strings are still accepted.",
+						"description": "Structured agent profile, orchestration policy, custom tool, or assignment payload. Prefer an object; legacy JSON-object strings are still accepted.",
 						"oneOf": []any{
 							map[string]any{
 								"type": "object",
@@ -1184,7 +1199,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate a focused task to existing saved subagents. Put child launches in the structured launches array, not inside prompt text. Each launch needs a saved agent/purpose and a meta_prompt/role assignment, or the call fails before approval.",
+			Description: "Delegate a distinct research question to Explorer or an independent, dependency-ready owned scope to Clone. Keep cohesive work direct. Put child launches in the structured launches array; each launch states its assignment, deliverable, concurrency reason, owned scope, and dependency evidence for review.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1220,17 +1235,25 @@ func (r *Runtime) Definitions() []Definition {
 						"type":        "string",
 						"description": "Alias for meta_prompt in the single-launch shorthand.",
 					},
+					"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
+					"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to delegate now."},
+					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or research scope owned by the child."},
+					"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that the launch does not depend on unfinished child work."},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "Structured batched child launches for one task approval. For multi-subagent delegation, use this array; do not paste JSON into prompt. Each entry must name an existing saved subagent by subagent_type/agent/purpose and include an explicit meta_prompt/role assignment.",
+						"description": "The exact dependency-ready wave for one task approval. Do not paste JSON into prompt. Use Explorer for distinct research deliverables and Clone only for independent non-overlapping owned scopes. The current backend orchestration policy defines launch limits; available budget is never a target.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"subagent_type": map[string]any{"type": "string", "description": "Existing saved subagent name or purpose for this child."},
-								"agent":         map[string]any{"type": "string", "description": "Alias for subagent_type."},
-								"purpose":       map[string]any{"type": "string", "description": "Alias for subagent_type."},
-								"meta_prompt":   map[string]any{"type": "string", "description": "Required per-child assignment shown in the approval modal. This must be a field on the launch object, not text embedded in prompt."},
-								"role":          map[string]any{"type": "string", "description": "Alias for meta_prompt."},
+								"subagent_type":       map[string]any{"type": "string", "description": "Existing saved subagent name or purpose for this child."},
+								"agent":               map[string]any{"type": "string", "description": "Alias for subagent_type."},
+								"purpose":             map[string]any{"type": "string", "description": "Alias for subagent_type."},
+								"meta_prompt":         map[string]any{"type": "string", "description": "Required per-child assignment shown in the approval modal. This must be a field on the launch object, not text embedded in prompt."},
+								"role":                map[string]any{"type": "string", "description": "Alias for meta_prompt."},
+								"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
+								"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to run in the current wave."},
+								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared non-overlapping files, directories, or research scope owned by this child."},
+								"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that this launch does not depend on another child's unfinished work."},
 							},
 							"additionalProperties": false,
 						},
@@ -6058,6 +6081,10 @@ func (r *Runtime) executeManageAgent(scope WorkspaceScope, args map[string]any) 
 	switch action {
 	case "inspect", "list":
 		return r.manageAgentInspect(scope)
+	case "get_orchestration_policy", "get-orchestration-policy":
+		return r.manageAgentOrchestrationPolicy(scope, args, false, false)
+	case "update_orchestration_policy", "update-orchestration-policy":
+		return r.manageAgentOrchestrationPolicy(scope, args, true, confirm)
 	case "transcript", "session_transcript", "session-transcript":
 		return r.manageAgentSessionTranscript(scope, args)
 	case "get", "read":
@@ -6671,8 +6698,89 @@ func manageSkillInspect(scope WorkspaceScope) (string, error) {
 	return string(encoded), nil
 }
 
+func (r *Runtime) manageAgentOrchestrationPolicy(scope WorkspaceScope, args map[string]any, update, confirm bool) (string, error) {
+	if r == nil || r.orchestration == nil {
+		return "", errors.New("manage-agent orchestration policy service is not configured")
+	}
+	accountScopeID := strings.TrimSpace(scope.Principal.AccountScopeID)
+	before, err := r.orchestration.CurrentSubagentPolicyForAccount(accountScopeID)
+	if err != nil {
+		return "", err
+	}
+	if !update {
+		return manageAgentEncodeResponse(map[string]any{"status": "ok", "action": "get_orchestration_policy", "orchestration_policy": before})
+	}
+	content, err := manageAgentContentObject(args)
+	if err != nil {
+		return "", err
+	}
+	if !confirm {
+		return manageAgentEncodeResponse(map[string]any{"status": "approval_required", "action": "update_orchestration_policy", "before": before, "after": content, "confirm_required": true})
+	}
+	after, err := r.orchestration.UpdateSubagentPolicyMapForAccount(accountScopeID, content)
+	if err != nil {
+		return "", err
+	}
+	return manageAgentEncodeResponse(map[string]any{"status": "ok", "action": "update_orchestration_policy", "before": before, "after": after})
+}
+
 func manageAgentInstructionsText() string {
 	return "Use manage-agent to inspect and manage saved agents, custom tools, and subagent transcripts. Call inspect/list first, then get before mutating an agent profile. If the user asks to create an agent but does not specify the agent type/mode or execution mode, clarify before creating. Agent modes: primary agents are user-selectable in Desktop/TUI; subagent agents are usable by primary agents for task delegation and are also user-selectable in Desktop/TUI; background agents are for Flows and do not appear in the Desktop/TUI selector. Execution modes are explicit: runtime_mode=plan_auto means plan approval mode and forces exit_plan_mode_enabled=true; runtime_mode=read means direct read-only mode and forces exit_plan_mode_enabled=false; runtime_mode=readwrite means direct read/write mode and forces exit_plan_mode_enabled=false. Treat runtime_mode as authoritative for create/update. execution_setting is a legacy alias for direct read/readwrite only; do not use it with plan_auto and prefer runtime_mode for new changes. Tool presets are least-privilege grant suggestions and may imply a default direct mode, but they must not override an explicit user-requested runtime_mode. Use action=transcript/session_transcript with session_id from a task report_ref to read a child subagent transcript when inline task output was truncated or omitted. Inspect output includes tool_inventory.tools and tool_inventory.presets; each preset lists the concrete tools it grants. For create/update, prefer object-form `content`, set explicit `runtime_mode`, choose the smallest preset/bundle that fits the requested job, and avoid overscoping. Use explicit `tool_contract.tools.{tool}.enabled` overrides only when the user request needs narrower or slightly broader access than a preset; override names must come from tool_inventory.tools[].contract_name/name. Do not enable bash unless it is limited by explicit bash_prefixes. Do not use inherit_policy for model-created profiles. Custom tool actions use `content={name,kind,description?,command}` and assignment actions use top-level `agent` plus `tool_name`. Mutating actions return approval-ready previews unless confirm=true."
+}
+
+func (r *Runtime) manageAgentVirtualClone(scope WorkspaceScope) (map[string]any, error) {
+	if r == nil || r.sessions == nil {
+		return nil, errors.New("manage-agent Clone resolution requires an active session")
+	}
+	sessionID := strings.TrimSpace(firstNonEmptyString(scope.SessionID, scope.Principal.SessionID))
+	if sessionID == "" {
+		return nil, errors.New("manage-agent Clone resolution requires current session_id")
+	}
+	session, ok, err := r.sessions.GetSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("session %q not found", sessionID)
+	}
+	raw, ok := session.Metadata["agent_profile"]
+	if !ok || raw == nil {
+		return nil, errors.New("current session is missing trusted agent profile snapshot")
+	}
+	body, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var profile pebblestore.AgentProfile
+	if err := json.Unmarshal(body, &profile); err != nil {
+		return nil, err
+	}
+	profile = pebblestore.NormalizeAgentProfile(profile)
+	runtimeMode := pebblestore.AgentProfileRuntimeMode(profile)
+	return map[string]any{
+		"name":                       "clone",
+		"display_name":               "Clone",
+		"kind":                       "virtual_parent_snapshot",
+		"virtual":                    true,
+		"editable":                   false,
+		"source_agent":               strings.TrimSpace(profile.Name),
+		"source_profile_mode":        strings.TrimSpace(profile.Mode),
+		"inherited_runtime_mode":     runtimeMode,
+		"current_child_session_mode": strings.TrimSpace(session.Mode),
+		"effective_capability": map[string]any{
+			"runtime_mode":   runtimeMode,
+			"tool_contract":  pebblestore.CloneAgentToolContract(profile.ToolContract),
+			"safety_overlay": []string{"task", "plan_manage", "exit_plan_mode", "ask_user", "manage_todos", "manage_agent"},
+		},
+	}, nil
+}
+
+func isReservedCloneName(args map[string]any) bool {
+	name := strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "agent"), manageAgentStringArg(args, "name")))
+	if content, err := manageAgentContentObject(args); err == nil {
+		name = firstNonEmptyString(name, manageAgentStringArg(content, "name"))
+	}
+	return strings.EqualFold(strings.TrimSpace(name), "clone")
 }
 
 func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
@@ -6691,10 +6799,16 @@ func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
 	for _, definition := range state.CustomTools {
 		customTools = append(customTools, manageAgentCustomToolMap(definition))
 	}
+	virtualClone, cloneErr := r.manageAgentVirtualClone(scope)
+	virtualTargets := []map[string]any{}
+	if cloneErr == nil {
+		virtualTargets = append(virtualTargets, virtualClone)
+	}
 	response := map[string]any{
 		"status":            "ok",
 		"action":            "inspect",
 		"agents":            agents,
+		"virtual_targets":   virtualTargets,
 		"tool_inventory":    manageAgentToolInventoryMap(r.Definitions(), customTools),
 		"count":             len(agents),
 		"custom_tools":      customTools,
@@ -6702,7 +6816,7 @@ func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
 		"active_primary":    strings.TrimSpace(state.ActivePrimary),
 		"active_subagent":   cloneStringMap(state.ActiveSubagent),
 		"version":           state.Version,
-		"supported_actions": []string{"inspect", "list", "get", "transcript", "session_transcript", "create", "update", "delete", "activate_primary", "set_active_subagent", "remove_active_subagent", "create_custom_tool", "update_custom_tool", "delete_custom_tool", "assign_custom_tool", "unassign_custom_tool"},
+		"supported_actions": []string{"inspect", "list", "get_orchestration_policy", "update_orchestration_policy", "get", "transcript", "session_transcript", "create", "update", "delete", "activate_primary", "set_active_subagent", "remove_active_subagent", "create_custom_tool", "update_custom_tool", "delete_custom_tool", "assign_custom_tool", "unassign_custom_tool"},
 		"instructions":      manageAgentInstructionsText(),
 		"examples": []map[string]any{
 			{"action": "inspect"},
@@ -6725,6 +6839,13 @@ func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
 }
 
 func (r *Runtime) manageAgentGet(scope WorkspaceScope, args map[string]any) (string, error) {
+	if isReservedCloneName(args) {
+		clone, err := r.manageAgentVirtualClone(scope)
+		if err != nil {
+			return "", err
+		}
+		return manageAgentEncodeResponse(map[string]any{"status": "ok", "action": "get", "agent": clone, "path_id": toolPathID("manage-agent"), "summary": "resolved virtual Clone for current caller"})
+	}
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
@@ -6812,6 +6933,9 @@ func (r *Runtime) manageAgentSessionTranscript(scope WorkspaceScope, args map[st
 }
 
 func (r *Runtime) manageAgentUpsert(scope WorkspaceScope, args map[string]any, mustExist, confirm bool) (string, error) {
+	if isReservedCloneName(args) {
+		return "", errors.New("agent name clone is reserved for the non-editable virtual parent snapshot")
+	}
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
@@ -6897,6 +7021,9 @@ func (r *Runtime) manageAgentUpsert(scope WorkspaceScope, args map[string]any, m
 }
 
 func (r *Runtime) manageAgentDelete(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
+	if isReservedCloneName(args) {
+		return "", errors.New("agent name clone is reserved for the non-editable virtual parent snapshot")
+	}
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}

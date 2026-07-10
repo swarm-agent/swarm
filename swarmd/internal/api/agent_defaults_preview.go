@@ -239,7 +239,7 @@ func agentProfilesByName(profiles []pebblestore.AgentProfile) map[string]pebbles
 }
 
 func builtinUtilityAgentNames() []string {
-	return []string{"explorer", "memory", "parallel"}
+	return []string{"explorer", "memory"}
 }
 
 func utilityAgentNames(providerDefaults defaults.ProviderDefaults) []string {

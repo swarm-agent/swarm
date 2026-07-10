@@ -2,6 +2,8 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +30,10 @@ type taskLaunchSpec struct {
 	RequestedSubagentType string
 	MetaPrompt            string
 	AssignmentLabel       string
+	Deliverable           string
+	ConcurrencyReason     string
+	OwnedScope            []string
+	DependencyEvidence    string
 	SourceArguments       map[string]any
 }
 
@@ -50,6 +56,8 @@ type taskLaunchManifest struct {
 	SourceArguments     map[string]any                 `json:"source_arguments,omitempty"`
 	Parent              *taskLaunchParentInfo          `json:"parent,omitempty"`
 	Launches            []taskLaunchManifestRow        `json:"launches,omitempty"`
+	ManifestHash        string                         `json:"manifest_hash"`
+	ApprovedArguments   map[string]any                 `json:"approved_arguments,omitempty"`
 }
 
 type planManagePermissionPayload struct {
@@ -128,6 +136,10 @@ type taskLaunchManifestRow struct {
 	Action                string                         `json:"action"`
 	MetaPrompt            string                         `json:"meta_prompt,omitempty"`
 	AssignmentLabel       string                         `json:"assignment_label,omitempty"`
+	Deliverable           string                         `json:"deliverable,omitempty"`
+	ConcurrencyReason     string                         `json:"concurrency_reason,omitempty"`
+	OwnedScope            []string                       `json:"owned_scope,omitempty"`
+	DependencyEvidence    string                         `json:"dependency_evidence,omitempty"`
 	SubagentProvider      string                         `json:"subagent_provider,omitempty"`
 	SubagentModel         string                         `json:"subagent_model,omitempty"`
 	ChildTitlePreview     string                         `json:"child_title_preview,omitempty"`
@@ -138,6 +150,11 @@ type taskLaunchManifestRow struct {
 	TargetWorkspacePath   string                         `json:"target_workspace_path,omitempty"`
 	TargetWorkspaceName   string                         `json:"target_workspace_name,omitempty"`
 	SourceArguments       map[string]any                 `json:"source_arguments,omitempty"`
+	VirtualTarget         bool                           `json:"virtual_target,omitempty"`
+	SourceAgentName       string                         `json:"source_agent_name,omitempty"`
+	SourceProfileMode     string                         `json:"source_profile_mode,omitempty"`
+	InheritedRuntimeMode  string                         `json:"inherited_runtime_mode,omitempty"`
+	ProfileSnapshot       *pebblestore.AgentProfile      `json:"profile_snapshot,omitempty"`
 }
 
 type taskLaunchResolvedToolSummary struct {
@@ -211,7 +228,11 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 				mapString(raw, "assignment_label"),
 				mapString(raw, "label"),
 			)),
-			SourceArguments: cloneGenericMap(raw),
+			Deliverable:        strings.TrimSpace(mapString(raw, "deliverable")),
+			ConcurrencyReason:  strings.TrimSpace(mapString(raw, "concurrency_reason")),
+			OwnedScope:         mapStringSlice(raw, "owned_scope"),
+			DependencyEvidence: strings.TrimSpace(mapString(raw, "dependency_evidence")),
+			SourceArguments:    cloneGenericMap(raw),
 		}
 		if launch.RequestedSubagentType == "" {
 			return taskLaunchSpec{}, fmt.Errorf("%s requires subagent_type, agent, or purpose", label)
@@ -259,6 +280,27 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		Launches:        launches,
 		SourceArguments: args,
 	}, nil
+}
+
+func taskOwnedScopesOverlap(left, right []string) bool {
+	for _, leftScope := range left {
+		leftScope = strings.Trim(strings.TrimSpace(leftScope), "/")
+		leftScope = strings.TrimSuffix(strings.TrimSuffix(leftScope, "/**"), "/*")
+		if leftScope == "" {
+			continue
+		}
+		for _, rightScope := range right {
+			rightScope = strings.Trim(strings.TrimSpace(rightScope), "/")
+			rightScope = strings.TrimSuffix(strings.TrimSuffix(rightScope, "/**"), "/*")
+			if rightScope == "" {
+				continue
+			}
+			if leftScope == rightScope || strings.HasPrefix(leftScope, rightScope+"/") || strings.HasPrefix(rightScope, leftScope+"/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func rejectMalformedToolCallArguments(call tool.Call) error {
@@ -375,6 +417,14 @@ func rejectTaskLaunchTrustFields(args map[string]any, label string) error {
 		"allow-bash",
 		"execution_setting",
 		"executionSetting",
+		"runtime_mode",
+		"runtimeMode",
+		"agent_profile",
+		"agentProfile",
+		"profile_snapshot",
+		"profileSnapshot",
+		"manifest_hash",
+		"manifestHash",
 		"tool_contract",
 		"toolContract",
 		"tool_scope",
@@ -1411,6 +1461,73 @@ func firstPendingCheckpointDeltaIndex(checkpoints []pebblestore.SessionPlanCheck
 	return -1
 }
 
+func cloneTaskAgentProfile(profile pebblestore.AgentProfile) (pebblestore.AgentProfile, error) {
+	raw, err := json.Marshal(profile)
+	if err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	var cloned pebblestore.AgentProfile
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	return pebblestore.NormalizeAgentProfile(cloned), nil
+}
+
+func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnapshot, requested string) (pebblestore.AgentProfile, bool, string, error) {
+	if !strings.EqualFold(strings.TrimSpace(requested), "clone") {
+		profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested)
+		return profile, false, "", err
+	}
+	cloneProfile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, "clone")
+	if err != nil {
+		return pebblestore.AgentProfile{}, true, "", err
+	}
+	if !strings.EqualFold(strings.TrimSpace(cloneProfile.Name), "clone") {
+		return pebblestore.AgentProfile{}, true, "", fmt.Errorf("clone availability profile resolved to %q", cloneProfile.Name)
+	}
+	profile, err := sessionV3AgentProfileFromMetadataMap(parentSession.Metadata)
+	if err != nil {
+		sourceName := strings.TrimSpace(mapString(parentSession.Metadata, "agent_name"))
+		if sourceName == "" {
+			return pebblestore.AgentProfile{}, true, "", fmt.Errorf("clone requires trusted parent agent profile snapshot: %w", err)
+		}
+		profile, err = s.resolveAgentProfileForAccount(parentSession.AccountScopeID, sourceName, RunTargetKindAgent, false)
+		if err != nil {
+			return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("clone cannot resolve trusted parent agent %q: %w", sourceName, err)
+		}
+	}
+	sourceName := strings.TrimSpace(profile.Name)
+	profile, err = cloneTaskAgentProfile(profile)
+	if err != nil {
+		return pebblestore.AgentProfile{}, true, sourceName, err
+	}
+	profile.Name = "clone"
+	profile.Description = "Reserved virtual snapshot of parent agent " + sourceName
+	return profile, true, sourceName, nil
+}
+
+func taskLaunchManifestDigest(manifest taskLaunchManifest) (string, error) {
+	manifest.ManifestHash = ""
+	manifest.ApprovedArguments = nil
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		return "", err
+	}
+	// Hash the canonical JSON value rather than the Go struct encoding. Permission
+	// storage round-trips nested typed values through map[string]any; canonicalizing
+	// here keeps the approved snapshot digest stable across that boundary.
+	var canonical any
+	if err := json.Unmarshal(raw, &canonical); err != nil {
+		return "", err
+	}
+	raw, err = json.Marshal(canonical)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string, call tool.Call) (taskLaunchManifest, error) {
 	parsed, err := parseTaskCallArguments(call.Arguments)
 	if err != nil {
@@ -1437,7 +1554,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		if s == nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q: run service is not configured", i, requested)
 		}
-		subagentProfile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested)
+		subagentProfile, virtualTarget, sourceAgentName, err := s.resolveTaskLaunchProfile(parentSession, requested)
 		if err != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q: %w", i, requested, err)
 		}
@@ -1458,7 +1575,14 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		if modeErr != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q execution mode: %w", i, requested, modeErr)
 		}
-		toolContract, _, profileDisabledTools, toolErr := s.ResolveAgentToolContractForAccount(parentSession.AccountScopeID, subagentProfile)
+		var toolContract ResolvedAgentToolContract
+		var profileDisabledTools map[string]bool
+		var toolErr error
+		if virtualTarget {
+			toolContract, _, profileDisabledTools, toolErr = s.compileResolvedAgentToolContract(parentSession.AccountScopeID, subagentProfile)
+		} else {
+			toolContract, _, profileDisabledTools, toolErr = s.ResolveAgentToolContractForAccount(parentSession.AccountScopeID, subagentProfile)
+		}
 		if toolErr != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q tool contract: %w", i, requested, toolErr)
 		}
@@ -1472,6 +1596,10 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			Action:                parsed.Action,
 			MetaPrompt:            metaPrompt,
 			AssignmentLabel:       assignmentLabel,
+			Deliverable:           strings.TrimSpace(launch.Deliverable),
+			ConcurrencyReason:     strings.TrimSpace(launch.ConcurrencyReason),
+			OwnedScope:            append([]string(nil), launch.OwnedScope...),
+			DependencyEvidence:    strings.TrimSpace(launch.DependencyEvidence),
 			SubagentProvider:      strings.TrimSpace(preference.Provider),
 			SubagentModel:         strings.TrimSpace(preference.Model),
 			ChildTitlePreview:     childTitle,
@@ -1485,7 +1613,12 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 				"resolved_tools":        resolvedTools,
 				"permission_session_id": strings.TrimSpace(sessionID),
 			},
-			SourceArguments: cloneGenericMap(launch.SourceArguments),
+			SourceArguments:      cloneGenericMap(launch.SourceArguments),
+			VirtualTarget:        virtualTarget,
+			SourceAgentName:      sourceAgentName,
+			SourceProfileMode:    strings.TrimSpace(subagentProfile.Mode),
+			InheritedRuntimeMode: pebblestore.AgentProfileRuntimeMode(subagentProfile),
+			ProfileSnapshot:      &subagentProfile,
 		})
 	}
 	if len(launches) == 0 {
@@ -1527,6 +1660,14 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		}
 	}
 
+	digest, err := taskLaunchManifestDigest(manifest)
+	if err != nil {
+		return taskLaunchManifest{}, fmt.Errorf("hash task launch manifest: %w", err)
+	}
+	manifest.ManifestHash = digest
+	approvedManifest := manifest
+	approvedManifest.ApprovedArguments = nil
+	manifest.ApprovedArguments = map[string]any{"manifest_hash": digest, "manifest": approvedManifest}
 	return manifest, nil
 }
 

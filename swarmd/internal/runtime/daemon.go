@@ -280,6 +280,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	toolRuntime.SetManageWorktreeServices(sessionSvc, workspaceSvc, worktreeSvc)
 	toolRuntime.SetManageAgentService(agentSvc)
+	toolRuntime.SetManageOrchestrationPolicyService(permissionSvc)
 	toolRuntime.SetManageTodoService(todoSvc)
 	toolRuntime.SetManageIntegrationService(integrationSvc)
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)

@@ -82,14 +82,12 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- Use search hits to choose high-value read/list follow-up targets immediately.",
 		"- Do not default to full-repository sweeps for routine tasks; start with user-provided paths/symbols/errors and nearby call paths.",
 		"- Match effort to request scope: for narrow, explicit asks (for example a single-file change or a simple commit task), execute directly with minimal tooling.",
-		"- After the first pass, delegate when the scope is broad, cross-cutting, unfamiliar, or split across multiple plausible areas.",
-		"- For unfamiliar codebases or broad investigations, use task with subagent_type=explorer to map areas of interest, likely attack points, and candidate filepaths.",
-		"- Use task to delegate focused work to subagents (explorer, memory, parallel, clone) when delegation improves latency or quality.",
-		"- When one user request needs multiple subagents, batch them into a single task call using `launches` so the user gets one approval modal for the whole delegation.",
-		"- Each launch should carry only the child type plus its assigned role/meta instruction; the shared parent prompt stays at the task level.",
-		"- For broad investigations, split independent scopes and run multiple explorer delegations in parallel when possible so different agents can go deep in different areas.",
-		"- If one quick read/search/list confirms the needed change, continue directly; otherwise prefer delegation over doing all multi-branch exploration yourself.",
-		"- After delegated or parallel work, synthesize findings into one concrete update.",
+		"- Keep cohesive work direct. For example, fix one sidebar yourself unless inspection reveals genuinely independent owned scopes; delegation is available but is never a goal.",
+		"- Use Explorer only for a distinct research question with a specific evidence-based deliverable. Use Clone only for independent, dependency-ready implementation scopes with declared non-overlapping file ownership.",
+		"- Never Clone the parent's entire task, assign overlapping files to Clones, run dependent assignments concurrently, or delegate merely because budget is available. The current backend orchestration policy defines delegation limits; available budget is never a target.",
+		"- The parent retains its own work, blocks while the current launch wave runs, verifies child output, and synthesizes one coherent result.",
+		"- When one user request has multiple dependency-ready children, batch the exact current wave into one task call using `launches`; each launch must state its deliverable, concurrency reason, owned scope, and dependency evidence.",
+		"- After delegated work, synthesize findings into one concrete update.",
 		"- In that synthesis, include key findings, likely attack points, and a final Relevant filepaths list.",
 		"- Stop discovery once you can name likely files/functions and the next concrete action.",
 		"- For multi-step implementation work, use `plan_manage` terminal checkpoint actions for checkpoint outcomes; avoid separate checkpoint progress updates unless there is meaningful intermediate state to preserve.",
@@ -119,7 +117,7 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- webfetch (Exa contents for selected URLs): {\"urls\":[\"https://docs.exa.ai/reference/search\"],\"text\":{\"max_characters\":1200},\"summary\":{\"query\":\"Key points\"}}",
 		"- If search/find returns truncated=true, narrow path/include/query first; for search content pagination use next_file_offset as file_offset, and for find use page_index.",
 		"- task (explorer delegation): {\"description\":\"Map plan mode state transition flow\",\"subagent_type\":\"explorer\",\"prompt\":\"Inspect run/plan flow. Return architecture summary, attack points, and relevant filepaths with evidence.\"}",
-		"- task (batched subagents): {\"description\":\"Write poem variants\",\"prompt\":\"Write a poem about the sea.\",\"launches\":[{\"subagent_type\":\"parallel\",\"meta_prompt\":\"haiku\"},{\"subagent_type\":\"parallel\",\"meta_prompt\":\"sonnet\"},{\"subagent_type\":\"parallel\",\"meta_prompt\":\"free verse\"}]}",
+		"- task (batched independent scopes): {\"description\":\"Implement independent backend and frontend changes\",\"prompt\":\"Complete only the declared owned scopes.\",\"launches\":[{\"subagent_type\":\"clone\",\"meta_prompt\":\"Implement backend API\",\"deliverable\":\"API implementation\",\"concurrency_reason\":\"No dependency on UI work\",\"owned_scope\":[\"swarmd/internal/api/**\"],\"dependency_evidence\":\"API contract already finalized\"},{\"subagent_type\":\"clone\",\"meta_prompt\":\"Implement settings UI\",\"deliverable\":\"Settings UI implementation\",\"concurrency_reason\":\"Uses finalized API contract\",\"owned_scope\":[\"web/src/features/desktop/settings/**\"],\"dependency_evidence\":\"No files or unfinished output shared with backend child\"}]}",
 		"- manage_todos (user todo batch only): use {\"action\":\"batch\",\"owner_kind\":\"user\",\"operations\":[{...},{...},{...}]} when the user asks to mutate their workspace todo list atomically.",
 		"- manage_todos (user todo reorder only): use {\"action\":\"reorder\",\"owner_kind\":\"user\",\"ordered_ids\":[\"todo_3\",\"todo_1\",\"todo_2\"]} only when the user asks to reorder their todo list.",
 		"- Do not use manage_todos for agent execution checklists or checkpoint progress; use terminal plan_manage checkpoint actions instead. Use update_checkpoint only for meaningful intermediate state, not routine checkpoint completion notes.",
@@ -329,6 +327,22 @@ func normalizeInstructionDiscoveryRoots(roots []string) []string {
 func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.WorkspaceScope, discoveryRoots []string, agentProfile pebblestore.AgentProfile, userInstructions string) string {
 	blocks := make([]string, 0, 6)
 	blocks = append(blocks, masterHarnessPromptWithScope(scope))
+	if s.permissions != nil {
+		if policy, err := s.permissions.CurrentPolicyForAccount(scope.Principal.AccountScopeID); err == nil {
+			subagents := policy.Subagents
+			blocks = append(blocks, strings.TrimSpace(strings.Join([]string{
+				"Current backend orchestration policy (account-scoped):",
+				"- mode: " + string(subagents.Mode),
+				fmt.Sprintf("- automatic_launches_per_parent_run: %d (cumulative approval-free launch budget for this parent run; completed children still count, preventing repeated automatic spawning loops)", subagents.AutomaticLaunchesPerParentRun),
+				fmt.Sprintf("- active_child_limit: %d (concurrent active-child ceiling for this parent run; completed children release this capacity)", subagents.ActiveChildLimit),
+				"- over_budget_action: " + string(subagents.OverBudgetAction),
+				fmt.Sprintf("- absolute_wave_maximum: %d", subagents.AbsoluteWaveMaximum),
+				fmt.Sprintf("- max_depth: %d", subagents.MaxDepth),
+				fmt.Sprintf("- require_write_isolation: %t", subagents.RequireWriteIsolation),
+				"These values are loaded when runtime instructions are composed. Backend reservation enforcement remains authoritative if policy changes during an active run.",
+			}, "\n")))
+		}
+	}
 
 	agentName := strings.TrimSpace(agentProfile.Name)
 	if agentName == "" {

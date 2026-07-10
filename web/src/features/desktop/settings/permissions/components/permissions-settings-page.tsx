@@ -16,9 +16,20 @@ export interface PermissionRule {
   updated_at?: number
 }
 
+interface SubagentPolicy {
+  mode: 'direct' | 'ask' | 'bounded'
+  automatic_launches_per_parent_run: number
+  active_child_limit: number
+  over_budget_action: 'ask' | 'deny'
+  absolute_wave_maximum: number
+  max_depth: number
+  require_write_isolation: boolean
+}
+
 interface PermissionPolicy {
   version: number
   rules: PermissionRule[]
+  subagents?: SubagentPolicy
   updated_at?: number
 }
 
@@ -109,6 +120,16 @@ async function fetchPermissionPolicy(): Promise<{ policy: PermissionPolicy; bypa
   return { policy: response.policy ?? { version: 0, rules: [] }, bypassPermissions: Boolean(response.bypass_permissions) }
 }
 
+async function saveSubagentPolicy(policy: SubagentPolicy): Promise<SubagentPolicy> {
+  const response = await requestJson<{ subagents?: SubagentPolicy }>('/v1/permissions/subagents', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(policy),
+  })
+  if (!response.subagents) throw new Error('Subagent policy save returned no policy')
+  return response.subagents
+}
+
 async function setBypassPermissions(enabled: boolean): Promise<boolean> {
   const response = await requestJson<PermissionBypassResponse>('/v1/permissions/bypass', {
     method: 'POST',
@@ -168,6 +189,8 @@ export function PermissionsSettingsPage() {
   const [saving, setSaving] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [bypassPermissions, setBypassPermissionsState] = useState(false)
+  const [subagentPolicy, setSubagentPolicy] = useState<SubagentPolicy>({ mode: 'bounded', automatic_launches_per_parent_run: 5, active_child_limit: 5, over_budget_action: 'ask', absolute_wave_maximum: 8, max_depth: 1, require_write_isolation: true })
+  const [subagentBusy, setSubagentBusy] = useState(false)
   const [bypassBusy, setBypassBusy] = useState(false)
   const [confirmBypassOpen, setConfirmBypassOpen] = useState(false)
   const [busyRuleID, setBusyRuleID] = useState<string | null>(null)
@@ -187,6 +210,7 @@ export function PermissionsSettingsPage() {
     try {
       const result = await fetchPermissionPolicy()
       setPolicy(result.policy)
+      if (result.policy.subagents) setSubagentPolicy(result.policy.subagents)
       setBypassPermissionsState(result.bypassPermissions)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load permission policy')
@@ -211,6 +235,21 @@ export function PermissionsSettingsPage() {
       : kind === 'bash-prefix'
         ? 'git status'
         : 'rm -rf /'
+
+  const handleSaveSubagents = async () => {
+    setSubagentBusy(true)
+    setError(null)
+    setStatus(null)
+    try {
+      const saved = await saveSubagentPolicy(subagentPolicy)
+      setSubagentPolicy(saved)
+      setStatus('Subagent orchestration policy saved')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save subagent policy')
+    } finally {
+      setSubagentBusy(false)
+    }
+  }
 
   const handleCreateRule = async () => {
     const trimmed = value.trim()
@@ -342,6 +381,47 @@ export function PermissionsSettingsPage() {
             >
               {bypassBusy ? 'Saving…' : bypassPermissions ? 'Turn permissions ON' : 'Turn permissions OFF'}
             </Button>
+          </div>
+        </section>
+
+        <section className="min-w-0 rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-5 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-[var(--app-text)]">Subagents</div>
+              <div className="mt-1 text-xs text-[var(--app-text-muted)]">Control when Explorer and Clone can help. Limits are maximums, not targets.</div>
+            </div>
+            <Button className="w-full shrink-0 sm:w-auto" variant="outline" onClick={() => void handleSaveSubagents()} disabled={loading || subagentBusy}>
+              {subagentBusy ? 'Saving…' : 'Save'}
+            </Button>
+          </div>
+          <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
+            <label className="grid min-w-0 gap-2">
+              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Mode</span>
+              <select value={subagentPolicy.mode} onChange={(event) => setSubagentPolicy((value) => ({ ...value, mode: event.target.value as SubagentPolicy['mode'] }))} className="h-10 min-w-0 w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm">
+                <option value="direct">Direct — no delegation</option>
+                <option value="ask">Ask — review every wave</option>
+                <option value="bounded">Bounded automatic</option>
+              </select>
+            </label>
+            <label className="grid min-w-0 gap-2">
+              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Automatic starts per run</span>
+              <Input className="min-w-0 w-full" type="number" min={0} max={subagentPolicy.absolute_wave_maximum} value={subagentPolicy.automatic_launches_per_parent_run} onChange={(event) => setSubagentPolicy((value) => ({ ...value, automatic_launches_per_parent_run: Number(event.target.value) }))} />
+            </label>
+            <label className="grid min-w-0 gap-2">
+              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Running at once</span>
+              <Input className="min-w-0 w-full" type="number" min={1} max={subagentPolicy.absolute_wave_maximum} value={subagentPolicy.active_child_limit} onChange={(event) => setSubagentPolicy((value) => ({ ...value, active_child_limit: Number(event.target.value) }))} />
+            </label>
+            <label className="grid min-w-0 gap-2">
+              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">When the limit is reached</span>
+              <select value={subagentPolicy.over_budget_action} onChange={(event) => setSubagentPolicy((value) => ({ ...value, over_budget_action: event.target.value as SubagentPolicy['over_budget_action'] }))} className="h-10 min-w-0 w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm">
+                <option value="ask">Ask before starting the wave</option>
+                <option value="deny">Do not start the wave</option>
+              </select>
+            </label>
+          </div>
+          <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-3 text-xs leading-5 text-[var(--app-text-muted)]">
+            <div><span className="font-medium text-[var(--app-text)]">Automatic launches per run:</span> The total number of child agents a parent can start without asking during one run.</div>
+            <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Children running at once:</span> The number of child agents that can be running at the same time.</div>
           </div>
         </section>
 

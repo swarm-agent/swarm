@@ -27,7 +27,7 @@ func (s *Service) CurrentPolicyForAccount(accountScopeID string) (Policy, error)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state, err := s.loadPermissionStateLocked(accountScopeID)
+	state, err := s.refreshPermissionStatePolicyLocked(accountScopeID)
 	if err != nil {
 		return Policy{}, err
 	}
@@ -65,6 +65,9 @@ func (s *Service) ApplyManagedPolicyStateForAccount(accountScopeID string, state
 	}
 	if strings.TrimSpace(accountScopeID) == "" {
 		return ManagedPolicyState{}, errors.New("account scope ID is required")
+	}
+	if err := ValidateSubagentPolicy(state.Policy.Subagents); err != nil {
+		return ManagedPolicyState{}, err
 	}
 	policy := NormalizePolicy(state.Policy)
 	now := time.Now().UnixMilli()
@@ -122,6 +125,62 @@ func (s *Service) ExplainToolForAccount(accountScopeID, mode, toolName, toolArgu
 		mode = policyModeWithBypass(strings.TrimSpace(mode), true)
 	}
 	return ExplainPolicy(mode, toolName, toolArguments, policy), nil
+}
+
+func (s *Service) CurrentSubagentPolicyForAccount(accountScopeID string) (map[string]any, error) {
+	policy, err := s.CurrentPolicyForAccount(accountScopeID)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(policy.Subagents)
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]any
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *Service) UpdateSubagentPolicyMapForAccount(accountScopeID string, input map[string]any) (map[string]any, error) {
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	var subagents SubagentPolicy
+	if err := json.Unmarshal(encoded, &subagents); err != nil {
+		return nil, err
+	}
+	_, err = s.UpdateSubagentPolicyForAccount(accountScopeID, subagents)
+	if err != nil {
+		return nil, err
+	}
+	return s.CurrentSubagentPolicyForAccount(accountScopeID)
+}
+
+func (s *Service) UpdateSubagentPolicyForAccount(accountScopeID string, subagents SubagentPolicy) (Policy, error) {
+	if s == nil {
+		return Policy{}, errors.New("permission service is not configured")
+	}
+	if err := ValidateSubagentPolicy(subagents); err != nil {
+		return Policy{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.loadPermissionStateLocked(accountScopeID)
+	if err != nil {
+		return Policy{}, err
+	}
+	policy := state.Policy
+	policy.Subagents = subagents
+	now := time.Now().UnixMilli()
+	policy.UpdatedAt = now
+	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
+		return Policy{}, err
+	}
+	s.cachePermissionStateLocked(accountScopeID, policy, state.BypassPermissions, now, state.BypassUpdatedAt)
+	return NormalizePolicy(policy), nil
 }
 
 func (s *Service) UpsertRule(rule PolicyRule) (PolicyRule, error) {

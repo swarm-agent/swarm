@@ -116,13 +116,15 @@ type worktreeService interface {
 }
 
 type RunOptions struct {
-	Prompt                string
-	AgentName             string
-	Instructions          string
-	Compact               bool
-	CompactOrigin         string
-	AllowSubagent         bool
-	DisabledTools         map[string]bool
+	Prompt        string
+	AgentName     string
+	Instructions  string
+	Compact       bool
+	CompactOrigin string
+	AllowSubagent bool
+	DisabledTools map[string]bool
+	// TrustedAgentProfile is populated only by trusted internal orchestration.
+	TrustedAgentProfile   *pebblestore.AgentProfile
 	PermissionSessionID   string
 	RunID                 string
 	TargetKind            string
@@ -1025,9 +1027,20 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return RunResult{}, err
 	}
 	targetedSubagentViaTask := targetKind == RunTargetKindSubagent && !options.AllowSubagent
-	agentProfile, err := s.resolveAgentProfileForAccount(options.Principal.AccountScopeID, agentName, targetKind, options.IntegrationFlow)
-	if err != nil {
-		return RunResult{}, err
+	var agentProfile pebblestore.AgentProfile
+	if options.TrustedAgentProfile != nil {
+		if targetKind != RunTargetKindSubagent || !options.AllowSubagent {
+			return RunResult{}, errors.New("trusted agent profile override is only valid for internal delegated subagent runs")
+		}
+		agentProfile = pebblestore.NormalizeAgentProfile(*options.TrustedAgentProfile)
+		if strings.TrimSpace(agentProfile.Name) == "" {
+			return RunResult{}, errors.New("trusted agent profile override has empty name")
+		}
+	} else {
+		agentProfile, err = s.resolveAgentProfileForAccount(options.Principal.AccountScopeID, agentName, targetKind, options.IntegrationFlow)
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
 	activeAgent := strings.TrimSpace(agentProfile.Name)
 	if activeAgent == "" {

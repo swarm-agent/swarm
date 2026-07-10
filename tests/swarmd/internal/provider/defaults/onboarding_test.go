@@ -44,7 +44,7 @@ func TestLookupCodexDefaults(t *testing.T) {
 	if got.UtilityThinking != "medium" {
 		t.Fatalf("utility thinking = %q", got.UtilityThinking)
 	}
-	wantSubagents := []string{"explorer", "memory", "parallel"}
+	wantSubagents := []string{"explorer", "memory"}
 	if len(got.UtilitySubagents) != len(wantSubagents) {
 		t.Fatalf("utility subagents = %v", got.UtilitySubagents)
 	}

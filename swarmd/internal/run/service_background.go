@@ -62,8 +62,11 @@ type RunRequest struct {
 }
 
 type RunStartMeta struct {
-	AllowSubagent        bool
-	DisabledTools        map[string]bool
+	AllowSubagent bool
+	DisabledTools map[string]bool
+	// TrustedAgentProfile is an internal-only immutable run profile snapshot. It is
+	// deliberately absent from RunRequest so clients and models cannot supply it.
+	TrustedAgentProfile  *pebblestore.AgentProfile
 	PermissionSessionID  string
 	RunID                string
 	OwnerTransport       string
@@ -112,6 +115,7 @@ func NewRunOptions(request RunRequest, meta RunStartMeta) RunOptions {
 		CompactOrigin:         request.CompactOrigin,
 		AllowSubagent:         meta.AllowSubagent,
 		DisabledTools:         cloneDisabledTools(meta.DisabledTools),
+		TrustedAgentProfile:   meta.TrustedAgentProfile,
 		PermissionSessionID:   strings.TrimSpace(meta.PermissionSessionID),
 		RunID:                 strings.TrimSpace(meta.RunID),
 		TargetKind:            request.TargetKind,

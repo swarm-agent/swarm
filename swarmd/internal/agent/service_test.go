@@ -146,7 +146,7 @@ func TestEnsureDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
 		"swarm":    "custom",
 		"explorer": "read_only",
 		"memory":   "background_commit",
-		"parallel": "read_write",
+		"clone":    "read_write",
 	}
 	for name, wantPreset := range wantPresets {
 		profile, ok, err := agents.GetProfile(name)
@@ -200,7 +200,7 @@ func TestRestoreDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
 		t.Fatalf("active subagent clone = %q, want empty", got)
 	}
 
-	for _, name := range []string{"swarm", "explorer", "memory", "parallel"} {
+	for _, name := range []string{"swarm", "explorer", "memory", "clone"} {
 		profile, ok, err := agents.GetProfile(name)
 		if err != nil {
 			t.Fatalf("GetProfile(%s) error = %v", name, err)
@@ -212,14 +212,36 @@ func TestRestoreDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
 			t.Fatalf("%s missing tool contract after RestoreDefaults", name)
 		}
 	}
-	if _, ok, err := agents.GetProfile("clone"); err != nil {
-		t.Fatalf("GetProfile(clone) error = %v", err)
-	} else if ok {
-		t.Fatalf("clone should not be restored as a built-in profile")
+	if profile, ok, err := agents.GetProfile("clone"); err != nil || !ok {
+		t.Fatalf("GetProfile(clone) ok=%v error=%v", ok, err)
+	} else if profile.Description != "Copies the current parent agent's settings for each launch" {
+		t.Fatalf("clone description = %q", profile.Description)
 	}
 }
 
-func TestEnsureDefaultsRemovesOldBuiltInCloneProfileAndAssignments(t *testing.T) {
+func TestEnsureDefaultsPreservesDeletedCloneUntilRestore(t *testing.T) {
+	svc, agents := newTestService(t)
+	if err := svc.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+	if err := agents.DeleteProfile("clone"); err != nil {
+		t.Fatalf("DeleteProfile(clone) err=%v", err)
+	}
+	if err := svc.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults() after delete error = %v", err)
+	}
+	if _, ok, err := agents.GetProfile("clone"); err != nil || ok {
+		t.Fatalf("deleted clone should stay absent: ok=%v err=%v", ok, err)
+	}
+	if _, _, _, err := svc.RestoreDefaults(); err != nil {
+		t.Fatalf("RestoreDefaults() error = %v", err)
+	}
+	if _, ok, err := agents.GetProfile("clone"); err != nil || !ok {
+		t.Fatalf("restored clone missing: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestEnsureDefaultsDoesNotRewriteExistingCloneProfileAndAssignments(t *testing.T) {
 	svc, agents := newTestService(t)
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
@@ -246,20 +268,20 @@ func TestEnsureDefaultsRemovesOldBuiltInCloneProfileAndAssignments(t *testing.T)
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() cleanup error = %v", err)
 	}
-	if _, ok, err := agents.GetProfile("clone"); err != nil {
-		t.Fatalf("GetProfile(clone) error = %v", err)
-	} else if ok {
-		t.Fatalf("old built-in clone profile should be removed")
+	if profile, ok, err := agents.GetProfile("clone"); err != nil || !ok {
+		t.Fatalf("existing clone missing: ok=%v err=%v", ok, err)
+	} else if profile.Description != "Swarm clone" {
+		t.Fatalf("existing clone changed: %+v", profile)
 	}
 	assignments, err := agents.GetActiveSubagents(20)
 	if err != nil {
 		t.Fatalf("GetActiveSubagents() error = %v", err)
 	}
-	if got := assignments["clone"]; got != "" {
-		t.Fatalf("clone assignment = %q, want empty", got)
+	if got := assignments["clone"]; got != "clone" {
+		t.Fatalf("clone assignment = %q, want clone", got)
 	}
-	if got := assignments["helper"]; got != "" {
-		t.Fatalf("helper assignment = %q, want empty", got)
+	if got := assignments["helper"]; got != "clone" {
+		t.Fatalf("helper assignment = %q, want clone", got)
 	}
 }
 
@@ -303,8 +325,8 @@ func TestEnsureDefaultsPreservesCustomizedCloneProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetActiveSubagents() error = %v", err)
 	}
-	if got := assignments["clone"]; got != "" {
-		t.Fatalf("clone assignment = %q, want empty", got)
+	if got := assignments["clone"]; got != "clone" {
+		t.Fatalf("clone assignment = %q, want clone", got)
 	}
 }
 

@@ -22,6 +22,8 @@ import (
 
 type taskLaunchPrepared struct {
 	LaunchIndex          int
+	VirtualTarget        bool
+	SourceAgentName      string
 	RequestedSubagent    string
 	MetaPrompt           string
 	AssignmentLabel      string
@@ -396,12 +398,20 @@ func emitTaskStreamPayload(emit StreamHandler, step int, toolName, callID string
 	})
 }
 
-func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.SessionSnapshot, sessionMode string, launch taskLaunchPrepared, description, targetedSubagentName string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (taskLaunchPrepared, error) {
+func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebblestore.SessionSnapshot, sessionMode string, launch taskLaunchPrepared, description, targetedSubagentName string, trustedProfile *pebblestore.AgentProfile, sourceAgentName string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (taskLaunchPrepared, error) {
 	requestedSubagent := strings.TrimSpace(launch.RequestedSubagent)
 	if requestedSubagent == "" {
 		return taskLaunchPrepared{}, errors.New("task launch requires saved subagent name or purpose")
 	}
-	subagentProfile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requestedSubagent)
+	var subagentProfile pebblestore.AgentProfile
+	var err error
+	if trustedProfile != nil {
+		subagentProfile, err = cloneTaskAgentProfile(*trustedProfile)
+		launch.VirtualTarget = true
+		launch.SourceAgentName = strings.TrimSpace(sourceAgentName)
+	} else {
+		subagentProfile, err = s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requestedSubagent)
+	}
 	if err != nil {
 		return taskLaunchPrepared{}, err
 	}
@@ -437,6 +447,17 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 		"launch_index":       launch.LaunchIndex,
 		"requested_subagent": requestedSubagent,
 		"subagent":           strings.TrimSpace(subagentProfile.Name),
+	}
+	if launch.VirtualTarget {
+		profileSnapshot, snapshotErr := cloneTaskAgentProfile(subagentProfile)
+		if snapshotErr != nil {
+			return taskLaunchPrepared{}, snapshotErr
+		}
+		childMetadata["virtual_target"] = "clone"
+		childMetadata["source_agent_name"] = strings.TrimSpace(launch.SourceAgentName)
+		childMetadata["source_profile_mode"] = strings.TrimSpace(profileSnapshot.Mode)
+		childMetadata["inherited_runtime_mode"] = pebblestore.AgentProfileRuntimeMode(profileSnapshot)
+		childMetadata["agent_profile"] = profileSnapshot
 	}
 	if lineageSource := strings.TrimSpace(targetedSubagentName); lineageSource != "" {
 		childMetadata["launch_source"] = "targeted_subagent"
@@ -521,6 +542,10 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 	return launch, nil
 }
 
+func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.SessionSnapshot, sessionMode string, launch taskLaunchPrepared, description, targetedSubagentName string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (taskLaunchPrepared, error) {
+	return s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, launch, description, targetedSubagentName, nil, "", applySessionMutation)
+}
+
 func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, step int, sessionMode string, toolCalls []tool.Call, emit StreamHandler, overlay *permission.Policy) ([]tool.Result, []tool.Call, []int, []bool, []PermissionFeedback, error) {
 	results := make([]tool.Result, len(toolCalls))
 	approvedCalls := make([]tool.Call, 0, len(toolCalls))
@@ -587,17 +612,49 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				accountScopeID = strings.TrimSpace(session.AccountScopeID)
 			}
 		}
+		var subagentReservation *permission.SubagentReservationResult
+		if canonicalToolName(toolCalls[i].Name) == "task" {
+			var manifest taskLaunchManifest
+			if err := json.Unmarshal([]byte(permissionArguments), &manifest); err != nil {
+				decisions[i].Err = err
+				decisions[i].Result.Error = "task manifest is invalid"
+				continue
+			}
+			callID := strings.TrimSpace(toolCalls[i].CallID)
+			if callID == "" {
+				decisions[i].Err = errors.New("task call ID is required for durable reservation")
+				decisions[i].Result.Error = decisions[i].Err.Error()
+				continue
+			}
+			depth := 0
+			if session, ok, _ := s.sessions.GetSession(sessionID); ok {
+				if parentID := strings.TrimSpace(mapString(session.Metadata, "task_parent_session_id")); parentID != "" {
+					depth = 2
+				}
+			}
+			reserved, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
+				SessionID: sessionID, AccountScopeID: accountScopeID, RunID: runID, CallID: callID,
+				ManifestHash: manifest.ManifestHash, LaunchCount: manifest.LaunchCount, Depth: depth,
+			})
+			if reserveErr != nil {
+				decisions[i].Err = reserveErr
+				decisions[i].Result.Error = fmt.Sprintf("subagent wave reservation failed: %v", reserveErr)
+				continue
+			}
+			subagentReservation = &reserved
+		}
 		auth, err := s.permissions.AuthorizeToolCall(permission.AuthorizationInput{
-			SessionID:         sessionID,
-			AccountScopeID:    accountScopeID,
-			RunID:             runID,
-			Step:              step,
-			CallID:            toolCalls[i].CallID,
-			ToolName:          toolCalls[i].Name,
-			ToolArguments:     permissionArguments,
-			ToolCallArguments: strings.TrimSpace(toolCalls[i].Arguments),
-			Mode:              sessionMode,
-			Overlay:           overlay,
+			SessionID:           sessionID,
+			AccountScopeID:      accountScopeID,
+			RunID:               runID,
+			Step:                step,
+			CallID:              toolCalls[i].CallID,
+			ToolName:            toolCalls[i].Name,
+			ToolArguments:       permissionArguments,
+			ToolCallArguments:   strings.TrimSpace(toolCalls[i].Arguments),
+			Mode:                sessionMode,
+			Overlay:             overlay,
+			SubagentReservation: subagentReservation,
 		})
 		if err != nil {
 			decisions[i].Err = err
@@ -609,6 +666,16 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 		switch auth.Decision {
 		case permission.AuthorizationApprove:
 			decisions[i].Approved = true
+			if canonicalToolName(toolCalls[i].Name) == "task" {
+				var permissionPayload map[string]any
+				if json.Unmarshal([]byte(permissionArguments), &permissionPayload) == nil {
+					if approved, ok := permissionPayload["approved_arguments"].(map[string]any); ok {
+						if raw, marshalErr := json.Marshal(approved); marshalErr == nil {
+							decisions[i].ApprovedArguments = string(raw)
+						}
+					}
+				}
+			}
 		case permission.AuthorizationDeny:
 			status := "denied"
 			if strings.EqualFold(auth.Source, "builtin") {
@@ -692,6 +759,12 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 	wg.Wait()
 
 	for i := range decisions {
+		if !decisions[i].Approved && canonicalToolName(toolCalls[i].Name) == "task" && strings.TrimSpace(runID) != "" && strings.TrimSpace(toolCalls[i].CallID) != "" {
+			if finishErr := s.permissions.FinishSubagentWave(sessionID, runID, toolCalls[i].CallID, "failed"); finishErr != nil && decisions[i].Err == nil {
+				decisions[i].Err = fmt.Errorf("release subagent wave reservation: %w", finishErr)
+				decisions[i].Result.Error = decisions[i].Err.Error()
+			}
+		}
 		if decisions[i].Err != nil && errors.Is(decisions[i].Err, context.Canceled) {
 			return nil, nil, nil, nil, nil, decisions[i].Err
 		}
@@ -791,7 +864,7 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		return true, result, err
 	case "task":
 		principal, _ := identity.PrincipalFromContext(ctx)
-		output, err := s.executeTaskToolWithParsed(ctx, sessionID, sessionMode, step, call, emit, taskExecutionRequest{Principal: principal, ApplySessionMutation: applySessionMutation})
+		output, err := s.executeTaskToolWithParsed(ctx, sessionID, sessionMode, step, call, emit, taskExecutionRequest{ApprovedArguments: approvedArguments, RunID: lifecycleRun.RunID, Principal: principal, ApplySessionMutation: applySessionMutation})
 		result.Output = output
 		return true, result, err
 	default:
@@ -2442,6 +2515,8 @@ type taskExecutionRequest struct {
 	ParentActivePlan     *pebblestore.SessionPlanSnapshot
 	PermissionSessionID  string
 	TargetedSubagentName string
+	ApprovedArguments    string
+	RunID                string
 	Principal            identity.Principal
 	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 }
@@ -2521,6 +2596,19 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return "", fmt.Errorf("session %q not found", sessionID)
 		}
 	}
+	taskCallID := strings.TrimSpace(call.CallID)
+	if taskCallID == "" {
+		taskCallID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
+	}
+	reservationFinished := false
+	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" {
+		defer func() {
+			if !reservationFinished {
+				_ = s.permissions.FinishSubagentWave(parentSession.ID, req.RunID, taskCallID, "failed")
+			}
+		}()
+	}
+
 	parentMessages := append([]pebblestore.MessageSnapshot(nil), req.ParentMessages...)
 	parentActivePlan := req.ParentActivePlan
 	if len(parentMessages) == 0 {
@@ -2539,6 +2627,64 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 
+	trustedProfiles := make([]*pebblestore.AgentProfile, len(launchSpecs))
+	trustedSources := make([]string, len(launchSpecs))
+	if approved := strings.TrimSpace(req.ApprovedArguments); approved != "" {
+		var envelope struct {
+			ManifestHash string             `json:"manifest_hash"`
+			Manifest     taskLaunchManifest `json:"manifest"`
+		}
+		if err := json.Unmarshal([]byte(approved), &envelope); err != nil {
+			return "", fmt.Errorf("approved task manifest invalid: %w", err)
+		}
+		digest, err := taskLaunchManifestDigest(envelope.Manifest)
+		if err != nil || digest != strings.TrimSpace(envelope.ManifestHash) || digest != strings.TrimSpace(envelope.Manifest.ManifestHash) {
+			return "", errors.New("approved task manifest snapshot hash mismatch")
+		}
+		if len(envelope.Manifest.Launches) != len(launchSpecs) {
+			return "", errors.New("approved task manifest launch count mismatch")
+		}
+		for i := range launchSpecs {
+			row := envelope.Manifest.Launches[i]
+			if !strings.EqualFold(strings.TrimSpace(row.RequestedSubagentType), strings.TrimSpace(launchSpecs[i].RequestedSubagentType)) {
+				return "", fmt.Errorf("approved task manifest launch %d target mismatch", i)
+			}
+			if row.ProfileSnapshot == nil {
+				return "", fmt.Errorf("approved task manifest launch %d is missing profile snapshot", i)
+			}
+			profile, err := cloneTaskAgentProfile(*row.ProfileSnapshot)
+			if err != nil {
+				return "", err
+			}
+			trustedProfiles[i] = &profile
+			trustedSources[i] = strings.TrimSpace(row.SourceAgentName)
+		}
+	}
+
+	cloneIndexes := make([]int, 0, len(launchSpecs))
+	for i := range launchSpecs {
+		if strings.EqualFold(strings.TrimSpace(launchSpecs[i].RequestedSubagentType), "clone") {
+			cloneIndexes = append(cloneIndexes, i)
+		}
+	}
+	if len(cloneIndexes) > 1 {
+		if !parentSession.WorktreeEnabled || s.worktrees == nil {
+			return "", errors.New("concurrent write-capable clones require separate worktree isolation")
+		}
+		for _, index := range cloneIndexes {
+			if len(launchSpecs[index].OwnedScope) == 0 {
+				return "", fmt.Errorf("task launches[%d] clone requires declared owned_scope", index)
+			}
+		}
+		for left := 0; left < len(cloneIndexes); left++ {
+			for right := left + 1; right < len(cloneIndexes); right++ {
+				if taskOwnedScopesOverlap(launchSpecs[cloneIndexes[left]].OwnedScope, launchSpecs[cloneIndexes[right]].OwnedScope) {
+					return "", fmt.Errorf("concurrent clone owned scopes overlap between launches[%d] and launches[%d]", cloneIndexes[left], cloneIndexes[right])
+				}
+			}
+		}
+	}
+
 	prepared := make([]taskLaunchPrepared, 0, len(launchSpecs))
 	for i := range launchSpecs {
 		spec := launchSpecs[i]
@@ -2550,12 +2696,12 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if metaPrompt == "" {
 			return "", fmt.Errorf("task launches[%d] requires meta_prompt or role assignment", i)
 		}
-		launch, prepareErr := s.prepareDelegatedSubagentLaunch(parentSession, sessionMode, taskLaunchPrepared{
+		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, taskLaunchPrepared{
 			LaunchIndex:       i + 1,
 			RequestedSubagent: requestedSubagent,
 			MetaPrompt:        metaPrompt,
 			AssignmentLabel:   spec.AssignmentLabel,
-		}, description, strings.TrimSpace(req.TargetedSubagentName), req.ApplySessionMutation)
+		}, description, strings.TrimSpace(req.TargetedSubagentName), trustedProfiles[i], trustedSources[i], req.ApplySessionMutation)
 		if prepareErr != nil {
 			return "", prepareErr
 		}
@@ -2565,10 +2711,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	taskToolName := strings.TrimSpace(call.Name)
 	if taskToolName == "" {
 		taskToolName = "task"
-	}
-	taskCallID := strings.TrimSpace(call.CallID)
-	if taskCallID == "" {
-		taskCallID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
 	}
 	lineageUpdate := func(status string, launches []taskLaunchOutcome, extra map[string]any) {
 		if s == nil || s.sessions == nil {
@@ -2697,7 +2839,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			AgentName:  launch.SubagentProfile.Name,
 		}, RunStartMeta{
 			AllowSubagent:        true,
-			DisabledTools:        taskDisabledTools(false),
+			DisabledTools:        taskDisabledTools(launch.VirtualTarget),
+			TrustedAgentProfile:  &launch.SubagentProfile,
 			PermissionSessionID:  sessionID,
 			Principal:            req.Principal,
 			ApplySessionMutation: req.ApplySessionMutation,
@@ -2925,6 +3068,16 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	overallStatus := "ok"
 	if failedCount > 0 {
 		overallStatus = "error"
+	}
+	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" {
+		reservationStatus := "completed"
+		if failedCount > 0 {
+			reservationStatus = "failed"
+		}
+		if finishErr := s.permissions.FinishSubagentWave(parentSession.ID, req.RunID, taskCallID, reservationStatus); finishErr != nil {
+			return "", fmt.Errorf("finish subagent wave reservation: %w", finishErr)
+		}
+		reservationFinished = true
 	}
 	aggregateSummary := strings.TrimSpace(strings.Join(summaryParts, " | "))
 	if aggregateSummary == "" {
@@ -3340,6 +3493,8 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 		"plan-manage":    true,
 		"manage_todos":   true,
 		"manage-todos":   true,
+		"manage_agent":   true,
+		"manage-agent":   true,
 		"task":           true,
 	}
 	if !allowBash {

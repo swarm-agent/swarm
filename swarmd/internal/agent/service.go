@@ -344,16 +344,7 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 			return err
 		}
 	}
-	if current, ok, err := s.getProfileForAccountLocked(accountScopeID, "parallel"); err != nil {
-		return err
-	} else if ok && shouldReconcileBuiltInParallel(current) {
-		current.ExecutionSetting = pebblestore.AgentExecutionSettingReadWrite
-		current.UpdatedAt = now
-		if err := s.putProfileForAccountLocked(accountScopeID, current); err != nil {
-			return err
-		}
-	}
-	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
+	if err := s.cleanupBuiltInParallelForAccountLocked(accountScopeID); err != nil {
 		return err
 	}
 
@@ -483,7 +474,7 @@ func builtInDefaultToolContract(name string) *pebblestore.AgentToolContract {
 		return defaultExplorerToolContract()
 	case "memory":
 		return defaultMemoryToolContract()
-	case "parallel":
+	case "clone":
 		return defaultReadWriteSubagentToolContract()
 	default:
 		return nil
@@ -573,14 +564,48 @@ func shouldRemoveBuiltInCommit(profile pebblestore.AgentProfile) bool {
 	return profile.Mode == ModeBackground && profile.ToolContract != nil && strings.TrimSpace(profile.ToolContract.Preset) == "background_commit"
 }
 
-func shouldReconcileBuiltInParallel(profile pebblestore.AgentProfile) bool {
-	if strings.TrimSpace(profile.Name) != "parallel" {
+func oldDefaultParallelPrompt() string {
+	return strings.TrimSpace("" +
+		"You are Parallel, a creative execution subagent.\n" +
+		"Generate component-level outputs and parallel alternatives while keeping implementation practical.")
+}
+
+func shouldRemoveBuiltInParallel(profile pebblestore.AgentProfile) bool {
+	if strings.TrimSpace(profile.Name) != "parallel" || profile.Mode != ModeSubagent || !profile.Enabled {
 		return false
 	}
-	if profile.Mode != ModeSubagent {
-		return true
+	if strings.TrimSpace(profile.Description) != "Creative worker" || strings.TrimSpace(profile.Prompt) != oldDefaultParallelPrompt() {
+		return false
 	}
-	return pebblestore.NormalizeAgentExecutionSetting(profile.ExecutionSetting) != pebblestore.AgentExecutionSettingReadWrite
+	if strings.TrimSpace(profile.Provider) != "" || strings.TrimSpace(profile.Model) != "" || strings.TrimSpace(profile.Thinking) != "" {
+		return false
+	}
+	if strings.TrimSpace(profile.ModelMode) != "" || strings.TrimSpace(profile.PlanProvider) != "" || strings.TrimSpace(profile.PlanModel) != "" || strings.TrimSpace(profile.AutoProvider) != "" || strings.TrimSpace(profile.AutoModel) != "" {
+		return false
+	}
+	if pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModeReadWrite {
+		return false
+	}
+	return profile.ToolContract != nil && strings.TrimSpace(profile.ToolContract.Preset) == "read_write"
+}
+
+func (s *Service) cleanupBuiltInParallelForAccountLocked(accountScopeID string) error {
+	current, ok, err := s.getProfileForAccountLocked(accountScopeID, "parallel")
+	if err != nil || !ok || !shouldRemoveBuiltInParallel(current) {
+		return err
+	}
+	activeSubagents, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
+	if err != nil {
+		return err
+	}
+	for purpose, assigned := range activeSubagents {
+		if strings.EqualFold(strings.TrimSpace(assigned), "parallel") {
+			if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose); err != nil {
+				return err
+			}
+		}
+	}
+	return s.deleteProfileForAccountLocked(accountScopeID, "parallel")
 }
 
 func oldDefaultClonePrompt() string {
@@ -2176,18 +2201,16 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			UpdatedAt:           now,
 		},
 		{
-			Name:             "parallel",
-			Mode:             ModeSubagent,
-			Description:      "Creative worker",
-			Provider:         "",
-			RuntimeMode:      pebblestore.AgentRuntimeModeReadWrite,
-			ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
-			Prompt: strings.TrimSpace("" +
-				"You are Parallel, a creative execution subagent.\n" +
-				"Generate component-level outputs and parallel alternatives while keeping implementation practical."),
-			ToolContract: defaultReadWriteSubagentToolContract(),
-			Enabled:      true,
-			UpdatedAt:    now,
+			Name:                "clone",
+			Mode:                ModeSubagent,
+			Description:         "Copies the current parent agent's settings for each launch",
+			RuntimeMode:         pebblestore.AgentRuntimeModeReadWrite,
+			ExecutionSetting:    pebblestore.AgentExecutionSettingReadWrite,
+			ExitPlanModeEnabled: pebblestore.BoolPtr(false),
+			Prompt:              "Clone mirrors the current parent agent at launch time.",
+			ToolContract:        defaultReadWriteSubagentToolContract(),
+			Enabled:             true,
+			UpdatedAt:           now,
 		},
 	}
 }
@@ -2196,7 +2219,6 @@ func defaultSubagentAssignments() map[string]string {
 	return map[string]string{
 		"explorer": "explorer",
 		"memory":   "memory",
-		"parallel": "parallel",
 	}
 }
 

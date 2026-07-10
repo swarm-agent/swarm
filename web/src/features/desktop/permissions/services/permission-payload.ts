@@ -164,6 +164,8 @@ export interface TaskLaunchPayload {
   resolvedAgentError: string
   disabledTools: string[]
   resolvedTools: TaskLaunchResolvedTools
+  automaticBudgetUsed: number
+  automaticBudgetRemaining: number
   launches: TaskLaunchRow[]
 }
 
@@ -178,6 +180,13 @@ export interface TaskLaunchRow {
   subagentModel: string
   childTitlePreview: string
   childMode: string
+  sourceAgentName: string
+  sourceProfileMode: string
+  inheritedRuntimeMode: string
+  deliverable: string
+  ownedScope: string[]
+  dependencyEvidence: string
+  isolation: string
   allowBash: boolean
   reportMaxChars: number
   disabledTools: string[]
@@ -948,6 +957,8 @@ export function parseTaskLaunchPermission(permission: DesktopPermissionRecord): 
     resolvedAgentError: mapStringArg(payload, 'resolved_agent_error'),
     disabledTools: mapStringArrayArg(payload, 'disabled_tools'),
     resolvedTools: parseTaskLaunchResolvedTools(payload.resolved_tools),
+    automaticBudgetUsed: mapNumberArg(payload, 'automatic_budget_used'),
+    automaticBudgetRemaining: mapNumberArg(payload, 'automatic_budget_remaining'),
     launches,
   }
 }
@@ -1404,6 +1415,13 @@ function parseTaskLaunchRows(payload: Record<string, unknown>): TaskLaunchRow[] 
         subagentModel: mapStringArg(record, 'subagent_model'),
         childTitlePreview: firstNonEmptyString(mapStringArg(record, 'child_title_preview'), assignmentLabel),
         childMode: firstNonEmptyString(mapStringArg(record, 'effective_child_mode'), mapStringArg(record, 'child_mode'), mapStringArg(record, 'mode')),
+        sourceAgentName: mapStringArg(record, 'source_agent_name'),
+        sourceProfileMode: mapStringArg(record, 'source_profile_mode'),
+        inheritedRuntimeMode: mapStringArg(record, 'inherited_runtime_mode'),
+        deliverable: mapStringArg(record, 'deliverable'),
+        ownedScope: mapStringArrayArg(record, 'owned_scope'),
+        dependencyEvidence: mapStringArg(record, 'dependency_evidence'),
+        isolation: firstNonEmptyString(mapStringArg(record, 'isolation'), mapStringArg(record, 'worktree_isolation')),
         allowBash: mapBoolArg(record, 'allow_bash'),
         reportMaxChars: mapNumberArg(record, 'report_max_chars'),
         disabledTools: mapStringArrayArg(record, 'disabled_tools'),

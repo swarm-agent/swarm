@@ -1054,6 +1054,14 @@ func KeyRunPermission(sessionID, runID, permissionID string) string {
 	return fmt.Sprintf("run_perm/%s/%s/%s", keyPart(sessionID), keyPart(runID), keyPart(permissionID))
 }
 
+func KeySubagentWaveReservation(sessionID, runID, callID string) string {
+	return fmt.Sprintf("subagent_reservation/%s/%s/%s", keyPart(sessionID), keyPart(runID), keyPart(callID))
+}
+
+func SubagentWaveReservationRunPrefix(sessionID, runID string) string {
+	return fmt.Sprintf("subagent_reservation/%s/%s/", keyPart(sessionID), keyPart(runID))
+}
+
 func RunPermissionPrefix(sessionID, runID string) string {
 	sessionPart := keyPart(sessionID)
 	runPart := keyPart(runID)

@@ -2319,6 +2319,9 @@ function TaskLaunchModal({
   const launchSummary = `${payload.launchCount} launch${payload.launchCount === 1 ? '' : 'es'}`
   const toolsSummary = taskLaunchToolsSummary(payload.resolvedTools)
   const routerSummary = payload.resolvedAgentName ? `Router: ${payload.resolvedAgentName}` : ''
+  const budgetSummary = payload.automaticBudgetUsed || payload.automaticBudgetRemaining
+    ? `Budget ${payload.automaticBudgetUsed} used · ${payload.automaticBudgetRemaining} remaining`
+    : ''
 
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
@@ -2344,6 +2347,7 @@ function TaskLaunchModal({
           <HeaderChip icon={Rocket}>{launchSummary}</HeaderChip>
           {toolsSummary ? <HeaderChip icon={LockKeyhole}>{toolsSummary}</HeaderChip> : null}
           {routerSummary ? <HeaderChip icon={Server}>{routerSummary}</HeaderChip> : null}
+          {budgetSummary ? <HeaderChip icon={Rocket}>{budgetSummary}</HeaderChip> : null}
         </div>
       }
       footer={
@@ -2401,6 +2405,16 @@ function TaskLaunchModal({
                           {[requestedLabel ? `via ${requestedLabel}` : '', modelLabel].filter(Boolean).join(' · ')}
                         </div>
                       ) : null}
+                      <div className="mt-2 grid gap-1 text-xs text-[var(--app-text-muted)] sm:grid-cols-2">
+                        {launch.sourceAgentName ? <div><span className="text-[var(--app-text-subtle)]">Clone source:</span> {launch.sourceAgentName}</div> : null}
+                        {launch.sourceProfileMode ? <div><span className="text-[var(--app-text-subtle)]">Profile mode:</span> {launch.sourceProfileMode}</div> : null}
+                        {launch.inheritedRuntimeMode ? <div><span className="text-[var(--app-text-subtle)]">Runtime/session:</span> {launch.inheritedRuntimeMode} / {launch.childMode || '—'}</div> : null}
+                        {launch.deliverable ? <div><span className="text-[var(--app-text-subtle)]">Deliverable:</span> {launch.deliverable}</div> : null}
+                        {launch.ownedScope.length ? <div><span className="text-[var(--app-text-subtle)]">Owned scope:</span> {launch.ownedScope.join(', ')}</div> : null}
+                        {launch.dependencyEvidence ? <div><span className="text-[var(--app-text-subtle)]">Dependency evidence:</span> {launch.dependencyEvidence}</div> : null}
+                        {launch.isolation ? <div><span className="text-[var(--app-text-subtle)]">Isolation:</span> {launch.isolation}</div> : null}
+                        {launch.resolvedTools.allowedTools.length ? <div><span className="text-[var(--app-text-subtle)]">Tools:</span> {launch.resolvedTools.allowedTools.join(', ')}</div> : null}
+                      </div>
                       <div className="mt-3 min-w-0 text-sm leading-6 text-[var(--app-text)]">
                         <ChatMarkdown className="[overflow-wrap:anywhere]" content={launch.assignment || 'No launch-specific instructions.'} />
                         {launch.resolvedAgentError ? <div className="mt-2 text-sm text-[var(--app-danger)]">{launch.resolvedAgentError}</div> : null}

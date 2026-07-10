@@ -563,7 +563,7 @@ function utilityAIForProfiles(
       ? []
       : preview?.utilityAgents?.length
         ? preview.utilityAgents
-        : ["explorer", "memory", "parallel"];
+        : ["explorer", "memory"];
   for (const name of utilityNames) {
     const profile = profiles.find((entry) =>
       entry.name.trim().toLowerCase() === name.trim().toLowerCase(),
@@ -1207,7 +1207,7 @@ function UtilityAISettingsModal({
   const selectedKey = modelOptionKey(value.provider.trim(), value.model.trim());
   const utilityAgentsLabel = displayListLabel(
     utilityAgents,
-    "explorer, memory, parallel",
+    "explorer, memory",
   );
   const baselineAgentsLabel = displayListLabel(
     baselineUtilityAgents,
@@ -1997,12 +1997,12 @@ export function AgentsSettingsPage() {
         ? []
         : defaultTargets;
     const utilityAgentsLabel = overwriteExplicit
-      ? displayListLabel(defaultTargets, "explorer, memory, parallel")
+      ? displayListLabel(defaultTargets, "explorer, memory")
       : displayListLabel(
           baselineTargets,
           providerDefaultsPreview?.customUtilityAgents?.length
             ? "none"
-            : "explorer, memory, parallel",
+            : "explorer, memory",
         );
     setSaving(true);
     setUtilityError(null);
@@ -2091,6 +2091,7 @@ export function AgentsSettingsPage() {
     !Boolean(selectedProfile?.protected) &&
     (selectedMode !== "primary" || primaryAgents.length > 1);
   const busy = saving || isFetching || modelOptionsFetching;
+  const isCloneProfile = selectedProfile?.name.trim().toLowerCase() === "clone";
 
   const subAgents = profiles.filter(
     (p) => (p.mode || "primary").toLowerCase() === "subagent",
@@ -2108,7 +2109,7 @@ export function AgentsSettingsPage() {
         : utilityAgents;
   const utilityAgentsLabel = displayListLabel(
     utilityAgents,
-    "explorer, memory, parallel",
+    "explorer, memory",
   );
   const customUtilityAgentsLabel = customUtilityAgents.join(", ");
   const staleInheritedTargets = providerDefaultsPreview?.staleInheritedAgents ?? [];
@@ -2429,19 +2430,32 @@ export function AgentsSettingsPage() {
                   Delete
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => void handleSave()}
-                disabled={busy}
-                className="rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--app-primary)] transition-colors hover:bg-[var(--app-surface-subtle)] disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {saving ? "Saving…" : "Save agent"}
-              </button>
+              {!isCloneProfile ? (
+                <button
+                  type="button"
+                  onClick={() => void handleSave()}
+                  disabled={busy}
+                  className="rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--app-primary)] transition-colors hover:bg-[var(--app-surface-subtle)] disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {saving ? "Saving…" : "Save agent"}
+                </button>
+              ) : null}
             </div>
           </div>
 
           <div className="p-0">
-            <div className="border-b border-[var(--app-border)]">
+            {isCloneProfile ? (
+              <div className="px-4 py-5 text-sm leading-6 text-[var(--app-text-muted)]">
+                <div className="font-semibold text-[var(--app-text)]">Clone mirrors its parent</div>
+                <p className="mt-1">
+                  Every Clone launch copies the current parent agent&apos;s provider, model,
+                  prompt, runtime, and tool settings, then applies mandatory child safety
+                  limits. Clone has no independent execution settings. Delete it to disable
+                  Clone launches; Delete all &amp; reset restores it.
+                </p>
+              </div>
+            ) : null}
+            <div className={isCloneProfile ? "hidden" : "border-b border-[var(--app-border)]"}>
               <div className="flex items-center border-b border-[var(--app-border)] px-4 py-3">
                 <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
                   Name

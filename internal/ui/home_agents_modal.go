@@ -231,7 +231,7 @@ func (p *HomePage) SetAgentsModalData(data AgentsModalData) {
 	p.agentsModal.UtilityThinking = normalizeThinkingValue(data.UtilityThinking)
 	p.agentsModal.UtilityAgents = dedupeAgentsModalOptions(data.UtilityAgents)
 	if len(p.agentsModal.UtilityAgents) == 0 {
-		p.agentsModal.UtilityAgents = []string{"explorer", "memory", "parallel"}
+		p.agentsModal.UtilityAgents = []string{"explorer", "memory"}
 	}
 	p.agentsModal.CustomUtilityAgents = dedupeAgentsModalOptions(data.CustomUtilityAgents)
 	p.agentsModal.UtilityBaselineAgents = dedupeAgentsModalOptions(data.UtilityBaselineAgents)
@@ -813,6 +813,13 @@ func (p *HomePage) openAgentsModalUtilityAIEditor() {
 }
 
 func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
+	if strings.EqualFold(strings.TrimSpace(profile.Name), "clone") {
+		p.agentsModal.Editor = nil
+		p.agentsModal.Focus = agentsModalFocusDetails
+		p.agentsModal.Status = "Clone copies the current parent agent's provider, model, prompt, runtime, and tools at launch. Delete Clone to disable launches; reset defaults restores it."
+		p.agentsModal.Error = ""
+		return
+	}
 	mode := strings.ToLower(strings.TrimSpace(profile.Mode))
 	if mode == "" {
 		mode = "subagent"
@@ -1381,7 +1388,7 @@ func (p *HomePage) agentsModalUtilityAgentsLabel() string {
 		agents = dedupeAgentsModalOptions(p.agentsModal.UtilityAgents)
 	}
 	if len(agents) == 0 {
-		agents = []string{"explorer", "memory", "parallel"}
+		agents = []string{"explorer", "memory"}
 	}
 	return strings.Join(agents, ", ")
 }
