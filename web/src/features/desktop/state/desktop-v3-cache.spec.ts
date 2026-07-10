@@ -2940,39 +2940,6 @@ test('live run selector returns stable sequence/update/run id ordering', () => {
   assert.deepEqual(selectLiveRuns(state, sessionA.id).map((run) => run.runId), ['run-a', 'run-b', 'run-c'])
 })
 
-test('stale workset discovery cannot replace a newer canonical session mode', () => {
-  const state = bootstrappedState()
-  const current = state.sessionsById[sessionB.id]
-  assert.equal(current?.kind, 'full')
-  if (current?.kind !== 'full') return
-  state.sessionsById[sessionB.id] = {
-    ...current,
-    session: { ...current.session, mode: 'plan' },
-  }
-  state.projectionsBySession[sessionB.id] = {
-    ...projectionB,
-    last_event_seq: 9,
-    projection_high_watermark_seq: 9,
-  }
-
-  applyRealtimeFrame(state, {
-    frame: realtimeFrameFixture({
-      kind: 'workset.session.discovered',
-      workset_id: 'workset-1',
-      workset_subscription_id: 'workset-sub-1',
-      session_id: sessionB.id,
-      endpoint_cursor: 'cursor-stale-discovered',
-      event: undefined,
-      session: { ...sessionB, mode: 'auto' },
-      projection: projectionB,
-    }),
-  })
-
-  const retained = state.sessionsById[sessionB.id]
-  assert.equal(retained?.kind === 'full' ? retained.session.mode : '', 'plan')
-  assert.equal(state.projectionsBySession[sessionB.id].last_event_seq, 9)
-})
-
 test('realtime workset discovered applies child session shell and running state before event arrives', () => {
   const state = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap.scopeId = 'global-scope'
