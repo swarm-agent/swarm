@@ -175,6 +175,14 @@ type HomeModel struct {
 	ThinkingLevel               string
 	ServiceTier                 string
 	ContextMode                 string
+	PlanModelProvider           string
+	PlanModelName               string
+	PlanThinkingLevel           string
+	PlanServiceTier             string
+	AutoModelProvider           string
+	AutoModelName               string
+	AutoThinkingLevel           string
+	AutoServiceTier             string
 	ActiveAgent                 string
 	ActiveAgentExecutionSetting string
 	ActiveAgentExitPlanMode     bool

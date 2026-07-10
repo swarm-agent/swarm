@@ -323,6 +323,15 @@ type AgentProfile struct {
 	Provider            string             `json:"provider"`
 	Model               string             `json:"model"`
 	Thinking            string             `json:"thinking"`
+	ModelMode           string             `json:"model_mode,omitempty"`
+	PlanProvider        string             `json:"plan_provider,omitempty"`
+	PlanModel           string             `json:"plan_model,omitempty"`
+	PlanThinking        string             `json:"plan_thinking,omitempty"`
+	PlanServiceTier     string             `json:"plan_service_tier,omitempty"`
+	AutoProvider        string             `json:"auto_provider,omitempty"`
+	AutoModel           string             `json:"auto_model,omitempty"`
+	AutoThinking        string             `json:"auto_thinking,omitempty"`
+	AutoServiceTier     string             `json:"auto_service_tier,omitempty"`
 	Prompt              string             `json:"prompt"`
 	RuntimeMode         string             `json:"runtime_mode,omitempty"`
 	ExecutionSetting    string             `json:"execution_setting,omitempty"`

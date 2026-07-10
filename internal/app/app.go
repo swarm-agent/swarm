@@ -1318,18 +1318,23 @@ func (a *App) applyAgentStateToRuntime(state client.AgentState) bool {
 	a.agentState = state
 	activeAgent, executionSetting, exitPlanMode, runtimeKnown := activeAgentRuntime(state)
 	subagents := chatMentionSubagentNames(state)
+	next := a.homeModel
+	next.ActiveAgent = activeAgent
+	next.ActiveAgentExecutionSetting = executionSetting
+	next.ActiveAgentExitPlanMode = exitPlanMode
+	next.ActiveAgentRuntimeKnown = runtimeKnown
+	next.Subagents = append([]string(nil), subagents...)
+	next = applyActiveAgentModels(next, state)
 	changed := false
 	if strings.TrimSpace(a.homeModel.ActiveAgent) != strings.TrimSpace(activeAgent) ||
 		strings.TrimSpace(a.homeModel.ActiveAgentExecutionSetting) != strings.TrimSpace(executionSetting) ||
 		a.homeModel.ActiveAgentExitPlanMode != exitPlanMode ||
 		a.homeModel.ActiveAgentRuntimeKnown != runtimeKnown ||
-		!sameStringSet(a.homeModel.Subagents, subagents) {
-		next := a.homeModel
-		next.ActiveAgent = activeAgent
-		next.ActiveAgentExecutionSetting = executionSetting
-		next.ActiveAgentExitPlanMode = exitPlanMode
-		next.ActiveAgentRuntimeKnown = runtimeKnown
-		next.Subagents = append([]string(nil), subagents...)
+		!sameStringSet(a.homeModel.Subagents, subagents) ||
+		a.homeModel.PlanModelProvider != next.PlanModelProvider || a.homeModel.PlanModelName != next.PlanModelName ||
+		a.homeModel.PlanThinkingLevel != next.PlanThinkingLevel || a.homeModel.PlanServiceTier != next.PlanServiceTier ||
+		a.homeModel.AutoModelProvider != next.AutoModelProvider || a.homeModel.AutoModelName != next.AutoModelName ||
+		a.homeModel.AutoThinkingLevel != next.AutoThinkingLevel || a.homeModel.AutoServiceTier != next.AutoServiceTier {
 		a.homeModel = next
 		a.home.SetModel(next)
 		changed = true
@@ -2843,12 +2848,13 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
+	modelProvider, modelName, thinking, serviceTier, contextMode := a.home.ModelState()
 	preference := client.ModelPreference{
-		Provider:    strings.TrimSpace(a.homeModel.ModelProvider),
-		Model:       strings.TrimSpace(a.homeModel.ModelName),
-		Thinking:    strings.TrimSpace(a.homeModel.ThinkingLevel),
-		ServiceTier: strings.TrimSpace(a.homeModel.ServiceTier),
-		ContextMode: strings.TrimSpace(a.homeModel.ContextMode),
+		Provider:    strings.TrimSpace(modelProvider),
+		Model:       strings.TrimSpace(modelName),
+		Thinking:    strings.TrimSpace(thinking),
+		ServiceTier: strings.TrimSpace(serviceTier),
+		ContextMode: strings.TrimSpace(contextMode),
 	}
 	if strings.TrimSpace(preference.Provider) == "" || strings.TrimSpace(preference.Model) == "" || strings.TrimSpace(preference.Thinking) == "" {
 		return errors.New("new sessions require an explicit draft model selection")
@@ -3134,17 +3140,69 @@ func lineageAgentName(label string) string {
 	return candidate
 }
 
+func agentProfileRuntime(profile client.AgentProfile) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(profile.RuntimeMode)) {
+	case "plan_auto":
+		return "", true
+	case "read":
+		return "read", false
+	case "readwrite":
+		return "readwrite", false
+	}
+
+	executionSetting := strings.ToLower(strings.TrimSpace(profile.ExecutionSetting))
+	if executionSetting == "read" || executionSetting == "readwrite" {
+		if profile.ExitPlanModeEnabled == nil || !*profile.ExitPlanModeEnabled {
+			return executionSetting, false
+		}
+	}
+	exitPlanMode := true
+	if profile.ExitPlanModeEnabled != nil {
+		exitPlanMode = *profile.ExitPlanModeEnabled
+	}
+	return executionSetting, exitPlanMode
+}
+
+func activeAgentProfile(state client.AgentState) (client.AgentProfile, bool) {
+	active := strings.TrimSpace(state.ActivePrimary)
+	if active == "" {
+		active = "swarm"
+	}
+	for _, profile := range state.Profiles {
+		if strings.EqualFold(strings.TrimSpace(profile.Name), active) {
+			return profile, true
+		}
+	}
+	return client.AgentProfile{}, false
+}
+
+func applyActiveAgentModels(next model.HomeModel, state client.AgentState) model.HomeModel {
+	next.PlanModelProvider, next.PlanModelName, next.PlanThinkingLevel, next.PlanServiceTier = "", "", "", ""
+	next.AutoModelProvider, next.AutoModelName, next.AutoThinkingLevel, next.AutoServiceTier = "", "", "", ""
+	profile, ok := activeAgentProfile(state)
+	if !ok || !strings.EqualFold(strings.TrimSpace(profile.RuntimeMode), "plan_auto") || !strings.EqualFold(strings.TrimSpace(profile.ModelMode), "split") {
+		return next
+	}
+	baseProvider := strings.TrimSpace(profile.Provider)
+	next.PlanModelProvider = emptyFallback(strings.TrimSpace(profile.PlanProvider), baseProvider)
+	next.PlanModelName = strings.TrimSpace(profile.PlanModel)
+	next.PlanThinkingLevel = strings.TrimSpace(profile.PlanThinking)
+	next.PlanServiceTier = strings.TrimSpace(profile.PlanServiceTier)
+	next.AutoModelProvider = emptyFallback(strings.TrimSpace(profile.AutoProvider), baseProvider)
+	next.AutoModelName = strings.TrimSpace(profile.AutoModel)
+	next.AutoThinkingLevel = strings.TrimSpace(profile.AutoThinking)
+	next.AutoServiceTier = strings.TrimSpace(profile.AutoServiceTier)
+	return next
+}
+
 func agentRuntimeForName(state client.AgentState, agent string) (string, bool, bool) {
 	agent = strings.TrimSpace(agent)
 	for _, profile := range state.Profiles {
 		if !strings.EqualFold(strings.TrimSpace(profile.Name), agent) {
 			continue
 		}
-		exitPlanMode := true
-		if profile.ExitPlanModeEnabled != nil {
-			exitPlanMode = *profile.ExitPlanModeEnabled
-		}
-		return strings.TrimSpace(profile.ExecutionSetting), exitPlanMode, true
+		executionSetting, exitPlanMode := agentProfileRuntime(profile)
+		return executionSetting, exitPlanMode, true
 	}
 	return "", strings.EqualFold(agent, "swarm"), false
 }
@@ -7609,11 +7667,8 @@ func activeAgentRuntime(state client.AgentState) (string, string, bool, bool) {
 		if !strings.EqualFold(strings.TrimSpace(profile.Name), active) {
 			continue
 		}
-		exitPlanMode := true
-		if profile.ExitPlanModeEnabled != nil {
-			exitPlanMode = *profile.ExitPlanModeEnabled
-		}
-		return active, strings.TrimSpace(profile.ExecutionSetting), exitPlanMode, true
+		executionSetting, exitPlanMode := agentProfileRuntime(profile)
+		return active, executionSetting, exitPlanMode, true
 	}
 	return active, "", strings.EqualFold(active, "swarm"), false
 }
@@ -8054,6 +8109,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		a.agentState = agentState
 		next.ActiveAgent, next.ActiveAgentExecutionSetting, next.ActiveAgentExitPlanMode, next.ActiveAgentRuntimeKnown = activeAgentRuntime(agentState)
 		next.Subagents = chatMentionSubagentNames(agentState)
+		next = applyActiveAgentModels(next, agentState)
 	} else {
 		next.ActiveAgent = "swarm"
 		next.ActiveAgentExecutionSetting = ""

@@ -325,9 +325,13 @@ func (p *HomePage) HandleKey(ev *tcell.EventKey) {
 		return
 	}
 	if p.keybinds.Match(ev, KeybindChatCycleMode) {
-		next := nextHomeSessionMode(p.sessionMode)
-		p.sessionMode = next
-		p.statusLine = "mode: " + currentDisplayedHomeSessionMode(p)
+		if p.CanCycleSessionMode() {
+			next := nextHomeSessionMode(p.sessionMode)
+			p.SetSessionMode(next)
+			p.statusLine = "mode: " + currentDisplayedHomeSessionMode(p)
+		} else {
+			p.statusLine = "agent mode: " + currentHomeAgentModeCapability(p)
+		}
 		return
 	}
 	if p.keybinds.Match(ev, KeybindGlobalCycleRoute) {

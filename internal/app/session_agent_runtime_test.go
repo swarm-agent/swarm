@@ -111,3 +111,61 @@ func TestRealtimeAgentPolicyEventUpdatesOpenChatFooterRuntime(t *testing.T) {
 		t.Fatalf("chat runtime = %#v", meta)
 	}
 }
+
+func TestActiveAgentRuntimeUsesCanonicalRuntimeMode(t *testing.T) {
+	legacyExitDisabled := false
+	state := client.AgentState{
+		ActivePrimary: "swarm",
+		Profiles: []client.AgentProfile{
+			{
+				Name:                "swarm",
+				RuntimeMode:         "plan_auto",
+				ExecutionSetting:    "readwrite",
+				ExitPlanModeEnabled: &legacyExitDisabled,
+			},
+		},
+	}
+
+	agent, execution, canExitPlan, known := activeAgentRuntime(state)
+	if agent != "swarm" || execution != "" || !canExitPlan || !known {
+		t.Fatalf("active runtime = (%q, %q, %v, %v), want swarm/empty/true/true", agent, execution, canExitPlan, known)
+	}
+}
+
+func TestApplyActiveAgentModelsHydratesPlanAutoSplit(t *testing.T) {
+	state := client.AgentState{
+		ActivePrimary: "swarm",
+		Profiles: []client.AgentProfile{{
+			Name: "swarm", RuntimeMode: "plan_auto", ModelMode: "split", Provider: "codex",
+			PlanModel: "plan-model", PlanThinking: "xhigh", PlanServiceTier: "flex",
+			AutoProvider: "openrouter", AutoModel: "auto-model", AutoThinking: "medium", AutoServiceTier: "fast",
+		}},
+	}
+
+	got := applyActiveAgentModels(model.HomeModel{}, state)
+	if got.PlanModelProvider != "codex" || got.PlanModelName != "plan-model" || got.PlanThinkingLevel != "xhigh" || got.PlanServiceTier != "flex" {
+		t.Fatalf("plan model = (%q, %q, %q, %q)", got.PlanModelProvider, got.PlanModelName, got.PlanThinkingLevel, got.PlanServiceTier)
+	}
+	if got.AutoModelProvider != "openrouter" || got.AutoModelName != "auto-model" || got.AutoThinkingLevel != "medium" || got.AutoServiceTier != "fast" {
+		t.Fatalf("auto model = (%q, %q, %q, %q)", got.AutoModelProvider, got.AutoModelName, got.AutoThinkingLevel, got.AutoServiceTier)
+	}
+}
+
+func TestActiveAgentRuntimeUsesSingleRuntimeMode(t *testing.T) {
+	legacyExitEnabled := true
+	state := client.AgentState{
+		ActivePrimary: "reviewer",
+		Profiles: []client.AgentProfile{
+			{
+				Name:                "reviewer",
+				RuntimeMode:         "read",
+				ExitPlanModeEnabled: &legacyExitEnabled,
+			},
+		},
+	}
+
+	agent, execution, canExitPlan, known := activeAgentRuntime(state)
+	if agent != "reviewer" || execution != "read" || canExitPlan || !known {
+		t.Fatalf("active runtime = (%q, %q, %v, %v), want reviewer/read/false/true", agent, execution, canExitPlan, known)
+	}
+}

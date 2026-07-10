@@ -418,7 +418,10 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 			modeKeyLabel = label
 		}
 	}
-	modeHint := fmt.Sprintf("%s changes mode", modeKeyLabel)
+	modeHint := "agent mode: " + currentHomeAgentModeCapability(p)
+	if p.CanCycleSessionMode() {
+		modeHint = fmt.Sprintf("%s changes mode", modeKeyLabel)
+	}
 	line := ""
 	switch {
 	case hint != "" && tip != "":

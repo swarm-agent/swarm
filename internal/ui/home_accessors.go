@@ -64,6 +64,7 @@ func (p *HomePage) SetModel(next model.HomeModel) {
 	}
 	p.model = next
 	p.sessionMode = normalizeHomeSessionMode(p.sessionMode)
+	p.applySessionModeModel()
 	if next.OnboardingRequired {
 		p.ShowOnboardingLocked("Complete required identity setup before using Swarm.")
 	} else if p.onboarding.Visible && !p.identityOnboardingComplete() {
@@ -128,10 +129,39 @@ func nextHomeSessionMode(current string) string {
 
 func (p *HomePage) SetSessionMode(mode string) {
 	p.sessionMode = normalizeHomeSessionMode(mode)
+	p.applySessionModeModel()
+}
+
+func (p *HomePage) applySessionModeModel() {
+	if p == nil || !p.model.ActiveAgentRuntimeKnown || !p.model.ActiveAgentExitPlanMode {
+		return
+	}
+	var provider, modelName, thinking, serviceTier string
+	if normalizeHomeSessionMode(p.sessionMode) == "auto" {
+		provider, modelName = p.model.AutoModelProvider, p.model.AutoModelName
+		thinking, serviceTier = p.model.AutoThinkingLevel, p.model.AutoServiceTier
+	} else {
+		provider, modelName = p.model.PlanModelProvider, p.model.PlanModelName
+		thinking, serviceTier = p.model.PlanThinkingLevel, p.model.PlanServiceTier
+	}
+	if strings.TrimSpace(provider) == "" || strings.TrimSpace(modelName) == "" {
+		return
+	}
+	p.model.ModelProvider = strings.TrimSpace(provider)
+	p.model.ModelName = strings.TrimSpace(modelName)
+	p.model.ThinkingLevel = strings.TrimSpace(thinking)
+	p.model.ServiceTier = strings.TrimSpace(serviceTier)
 }
 
 func (p *HomePage) SessionMode() string {
 	return normalizeHomeSessionMode(p.sessionMode)
+}
+
+func (p *HomePage) ModelState() (provider, modelName, thinking, serviceTier, contextMode string) {
+	if p == nil {
+		return "", "", "", "", ""
+	}
+	return p.model.ModelProvider, p.model.ModelName, p.model.ThinkingLevel, p.model.ServiceTier, p.model.ContextMode
 }
 
 func homeDisplayedMode(m model.HomeModel, sessionMode string) string {
@@ -154,6 +184,27 @@ func currentDisplayedHomeSessionMode(page *HomePage) string {
 		return "plan"
 	}
 	return homeDisplayedMode(page.model, page.sessionMode)
+}
+
+func homeAgentModeCapability(m model.HomeModel, sessionMode string) string {
+	if !m.ActiveAgentRuntimeKnown {
+		return normalizeHomeSessionMode(sessionMode)
+	}
+	if m.ActiveAgentExitPlanMode {
+		return "plan/auto"
+	}
+	return homeDisplayedMode(m, sessionMode)
+}
+
+func currentHomeAgentModeCapability(page *HomePage) string {
+	if page == nil {
+		return "plan"
+	}
+	return homeAgentModeCapability(page.model, page.sessionMode)
+}
+
+func (p *HomePage) CanCycleSessionMode() bool {
+	return p != nil && (!p.model.ActiveAgentRuntimeKnown || p.model.ActiveAgentExitPlanMode)
 }
 
 func (p *HomePage) SetVoiceInputState(state VoiceInputState) {
