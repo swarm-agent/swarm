@@ -19,6 +19,9 @@ func TestUISettingsStoreDefaultsEnableThinkingTags(t *testing.T) {
 	if defaults.Chat.FollowupCheckpointPolicyDefault != "auto_start" {
 		t.Fatalf("default follow-up checkpoint policy = %q, want auto_start", defaults.Chat.FollowupCheckpointPolicyDefault)
 	}
+	if defaults.Chat.SidebarHideInactiveHours == nil || *defaults.Chat.SidebarHideInactiveHours != 12 {
+		t.Fatalf("default sidebar hide inactive hours = %v, want 12", defaults.Chat.SidebarHideInactiveHours)
+	}
 }
 
 func TestUISettingsStoreUpdateFromEmptyStorePreservesTrueDefaults(t *testing.T) {
@@ -58,6 +61,14 @@ func TestUISettingsStoreUpdateFromEmptyStorePreservesTrueDefaults(t *testing.T) 
 	}
 	if !stored.Chat.ThinkingTags {
 		t.Fatal("stored thinking tags = false, want true")
+	}
+}
+
+func TestUISettingsStorePreservesExplicitNeverHideSidebarValue(t *testing.T) {
+	never := 0
+	record := NormalizeUISettingsRecordForExternal(UISettingsRecord{Chat: UIChatSettingsRecord{SidebarHideInactiveHours: &never}})
+	if record.Chat.SidebarHideInactiveHours == nil || *record.Chat.SidebarHideInactiveHours != 0 {
+		t.Fatalf("sidebar hide inactive hours = %v, want explicit Never (0)", record.Chat.SidebarHideInactiveHours)
 	}
 }
 

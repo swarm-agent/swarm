@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode, ChangeEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, LayoutGrid, LoaderCircle, Menu, MoreVertical, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, LayoutGrid, LoaderCircle, Menu, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -33,7 +33,8 @@ import {
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
-import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { normalizeSidebarHideInactiveHours, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { saveSidebarHideInactiveHours } from '../settings/swarm/mutations/save-sidebar-hide-inactive-hours'
 import { fetchSwarmTargets, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
@@ -57,7 +58,7 @@ import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hy
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../state/desktop-v3-session-api'
 import { archiveDesktopV3Sessions, jumpDesktopPlanToRevisionCheckpoint, restartDesktopPlanFromRevision, restoreDesktopPlanRevision, startDesktopPlanAutomatic, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
-import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned } from '../session-v3/api'
+import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned, updateSessionV3Title } from '../session-v3/api'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 import { clearNotifications, updateNotification } from '../notifications/api'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
@@ -1595,6 +1596,38 @@ function nodeContainsDescendantSession(node: SidebarSessionNode, sessionID: stri
   return false
 }
 
+function sidebarNodeLastActivityAt(node: SidebarSessionNode): number {
+  return Math.max(sessionDurableActivityAt(node.session), ...node.children.map(sidebarNodeLastActivityAt))
+}
+
+function sidebarNodeIsProtected(node: SidebarSessionNode, selectedSessionID: string): boolean {
+  return node.session.id === selectedSessionID
+    || nodeContainsDescendantSession(node, selectedSessionID)
+    || sessionIsActive(node.session)
+    || (sessionAllowsManualSidebarPin(node.session) && sessionManuallyPinnedInSidebar(node.session))
+    || node.children.some((child) => sidebarNodeIsProtected(child, selectedSessionID))
+}
+
+export function filterInactiveSidebarSessionTrees(nodes: SidebarSessionNode[], now: number, hideAfterHours: number | null, selectedSessionID = ''): { nodes: SidebarSessionNode[]; hiddenCount: number } {
+  if (hideAfterHours === null) return { nodes, hiddenCount: 0 }
+  const cutoff = now - hideAfterHours * 60 * 60 * 1000
+  const visible: SidebarSessionNode[] = []
+  let hiddenCount = 0
+  for (const node of nodes) {
+    const ordinary = sessionSidebarDisplayGroup(node.session) === 'active_chats'
+    if (ordinary && sidebarNodeLastActivityAt(node) < cutoff && !sidebarNodeIsProtected(node, selectedSessionID)) {
+      hiddenCount += 1
+    } else {
+      visible.push(node)
+    }
+  }
+  return { nodes: visible, hiddenCount }
+}
+
+function sidebarNodeSessionIDs(node: SidebarSessionNode): string[] {
+  return [node.session.id, ...node.children.flatMap(sidebarNodeSessionIDs)]
+}
+
 function flattenVisibleSidebarSessionNodes(
   nodes: SidebarSessionNode[],
   expandedSessionIDs: Record<string, boolean>,
@@ -1633,15 +1666,19 @@ interface SessionRowProps {
   agentSummary: SessionAgentSummary
   agentsExpanded: boolean
   compactingStartedAt?: number | null
-  pendingAction?: 'pin' | 'archive' | null
+  pendingAction?: 'pin' | 'archive' | 'rename' | null
+  selectionMode?: boolean
+  selected?: boolean
   onSelect: (sessionId: string) => void | boolean
+  onToggleSelected?: (sessionId: string, range: boolean) => void
   onPrefetch: (sessionId: string) => void
   onToggleAgents: (sessionId: string) => void
   onTogglePinned: (sessionId: string) => void
   onArchive: (sessionId: string) => void
+  onRename: (sessionId: string, title: string) => Promise<void>
 }
 
-function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, onSelect, onPrefetch, onToggleAgents, onTogglePinned, onArchive }: SessionRowProps) {
+function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selected = false, onSelect, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
   const session = initialSession
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
@@ -1683,6 +1720,9 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const checkpointProgressPercent = checkpointTotalCount > 0 ? Math.min(100, (checkpointCompletedCount / checkpointTotalCount) * 100) : 0
   const checkpointProgressAriaLabel = checkpointProgressLabel || `Checkpoint progress: ${checkpointCompletedCount} of ${checkpointTotalCount} complete`
   const [actionsOpen, setActionsOpen] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [renameDraft, setRenameDraft] = useState(rowTitle)
+  const [renameError, setRenameError] = useState<string | null>(null)
   const actionMenuRef = useRef<HTMLSpanElement | null>(null)
   const actionMenuCloseTimerRef = useRef<number | null>(null)
   const clearActionMenuCloseTimer = useCallback(() => {
@@ -1744,6 +1784,25 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       <span>{pinned ? 'Unpin' : 'Pin'}</span>
     </button>
   ) : null
+  const renameActionControl = (
+    <button
+      type="button"
+      className={actionButtonBaseClass}
+      disabled={pendingAction !== null}
+      aria-label={`Rename ${rowTitle}`}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        closeActionMenu()
+        setRenameDraft(rowTitle)
+        setRenameError(null)
+        setRenaming(true)
+      }}
+    >
+      {pendingAction === 'rename' ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : <Pencil size={12} aria-hidden="true" />}
+      <span>Rename</span>
+    </button>
+  )
   const archiveActionControl = (
     <button
       type="button"
@@ -1832,6 +1891,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         >
           {subagentSessionsActionControl}
           {pinActionControl}
+          {renameActionControl}
           {archiveActionControl}
         </span>
       ) : null}
@@ -1874,9 +1934,46 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         <div className="flex min-w-0 flex-1 items-start gap-2">
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
-              <span className={cn('min-w-0 flex-1 truncate font-medium text-[var(--app-text)]', isNestedSession ? 'text-[12px]' : 'text-[13px]')}>
-                {rowTitle}
-              </span>
+              {selectionMode && depth === 0 ? (
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  aria-label={`Select ${rowTitle}`}
+                  onChange={() => undefined}
+                  onClick={(event) => { event.preventDefault(); event.stopPropagation(); onToggleSelected?.(session.id, event.shiftKey) }}
+                  className="h-4 w-4 shrink-0 accent-[var(--app-primary)]"
+                />
+              ) : null}
+              {renaming ? (
+                <form
+                  className="min-w-0 flex-1"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    const title = renameDraft.trim()
+                    if (!title) { setRenameError('Title is required.'); return }
+                    void onRename(session.id, title).then(() => setRenaming(false)).catch((error) => setRenameError(error instanceof Error ? error.message : 'Rename failed'))
+                  }}
+                >
+                  <input
+                    autoFocus
+                    value={renameDraft}
+                    disabled={pendingAction === 'rename'}
+                    aria-label={`Rename ${rowTitle}`}
+                    onChange={(event) => setRenameDraft(event.target.value)}
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setRenameError(null); setRenaming(false) }
+                    }}
+                    className="h-6 w-full rounded border border-[var(--app-border-accent)] bg-[var(--app-bg-inset)] px-1.5 text-[12px] text-[var(--app-text)] outline-none"
+                  />
+                  {renameError ? <span className="block truncate text-[9px] text-[var(--app-error)]">{renameError}</span> : null}
+                </form>
+              ) : (
+                <span className={cn('min-w-0 flex-1 truncate font-medium text-[var(--app-text)]', isNestedSession ? 'text-[12px]' : 'text-[13px]')}>
+                  {rowTitle}
+                </span>
+              )}
 
             </div>
           </div>
@@ -1958,12 +2055,16 @@ interface RenderSidebarSessionGroupsInput {
   workspaceSlug: string | ((session: DesktopSessionRecord) => string)
   expandedAgentSessions: Record<string, boolean>
   compactingSession: DesktopV3CompactingSessionState | null
-  pendingActions: Record<string, 'pin' | 'archive' | undefined>
+  pendingActions: Record<string, 'pin' | 'archive' | 'rename' | undefined>
+  selectionMode: boolean
+  selectedRootIDs: Set<string>
   onSelect: (sessionId: string) => void | boolean
+  onToggleSelected: (sessionId: string, range: boolean) => void
   onPrefetch: (sessionId: string) => void
   onToggleAgents: (sessionId: string) => void
   onTogglePinned: (sessionId: string) => void
   onArchive: (sessionId: string) => void
+  onRename: (sessionId: string, title: string) => Promise<void>
 }
 
 export const SIDEBAR_SESSION_GROUPS = [
@@ -2016,11 +2117,15 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
             compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
             pendingAction={input.pendingActions[node.session.id] ?? null}
+            selectionMode={input.selectionMode}
+            selected={input.selectedRootIDs.has(node.session.id)}
             onSelect={input.onSelect}
+            onToggleSelected={input.onToggleSelected}
             onPrefetch={input.onPrefetch}
             onToggleAgents={input.onToggleAgents}
             onTogglePinned={input.onTogglePinned}
             onArchive={input.onArchive}
+            onRename={input.onRename}
           />
           ))}
         </div>
@@ -2077,7 +2182,12 @@ export function DesktopAppPage() {
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
   const [sidebarWorkspaceControlPath, setSidebarWorkspaceControlPath] = useState('')
   const [compactingSession, setCompactingSession] = useState<DesktopV3CompactingSessionState | null>(null)
-  const [sidebarSessionActions, setSidebarSessionActions] = useState<Record<string, 'pin' | 'archive' | undefined>>({})
+  const [sidebarSessionActions, setSidebarSessionActions] = useState<Record<string, 'pin' | 'archive' | 'rename' | undefined>>({})
+  const [sidebarSelectionMode, setSidebarSelectionMode] = useState(false)
+  const [selectedSidebarRootIDs, setSelectedSidebarRootIDs] = useState<Set<string>>(() => new Set())
+  const [lastSelectedSidebarRootID, setLastSelectedSidebarRootID] = useState<string | null>(null)
+  const [bulkArchivePending, setBulkArchivePending] = useState(false)
+  const [sidebarThresholdSaving, setSidebarThresholdSaving] = useState(false)
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const [previousChatSessionId, setPreviousChatSessionId] = useState<string | null>(null)
   const activeChatSessionIdRef = useRef<string | null>(null)
@@ -2476,10 +2586,16 @@ export function DesktopAppPage() {
     () => buildSidebarSessionTree(desktopStateSessions, sidebarNow),
     [desktopStateSessions, sidebarNow],
   )
-  const globalFlattenedSessionNodes = useMemo(
-    () => flattenVisibleSidebarSessionNodes(globalSidebarSessionNodes, expandedAgentSessions, routeSessionId),
-    [expandedAgentSessions, globalSidebarSessionNodes, routeSessionId],
+  const sidebarHideInactiveHours = normalizeSidebarHideInactiveHours(uiSettings?.chat?.sidebar_hide_inactive_hours)
+  const filteredSidebarTrees = useMemo(
+    () => filterInactiveSidebarSessionTrees(globalSidebarSessionNodes, sidebarNow, sidebarHideInactiveHours, routeSessionId),
+    [globalSidebarSessionNodes, routeSessionId, sidebarHideInactiveHours, sidebarNow],
   )
+  const globalFlattenedSessionNodes = useMemo(
+    () => flattenVisibleSidebarSessionNodes(filteredSidebarTrees.nodes, expandedAgentSessions, routeSessionId),
+    [expandedAgentSessions, filteredSidebarTrees.nodes, routeSessionId],
+  )
+  const visibleSidebarRootIDs = useMemo(() => filteredSidebarTrees.nodes.map((node) => node.session.id), [filteredSidebarTrees.nodes])
 
   const sessionById = useMemo<Map<string, DesktopSessionRecord>>(
     () => new Map(desktopStateSessions.map((session) => [session.id, session] as const)),
@@ -2743,6 +2859,71 @@ export function DesktopAppPage() {
         })
       })
   }, [handleArchivePlanSession, routeSessionId, sidebarSessionActions])
+
+  const handleRenameSidebarSession = useCallback(async (sessionId: string, title: string): Promise<void> => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId || sidebarSessionActions[normalizedSessionId]) return
+    setSidebarSessionActions((current) => ({ ...current, [normalizedSessionId]: 'rename' }))
+    try {
+      await updateSessionV3Title(normalizedSessionId, title, crypto.randomUUID())
+      setDesktopToast({ message: 'Renamed session.', tone: 'success' })
+    } finally {
+      setSidebarSessionActions((current) => {
+        const next = { ...current }
+        delete next[normalizedSessionId]
+        return next
+      })
+    }
+  }, [sidebarSessionActions])
+
+  const handleToggleSidebarSelected = useCallback((sessionId: string, range: boolean) => {
+    const normalized = sessionId.trim()
+    if (!normalized) return
+    setSelectedSidebarRootIDs((current) => {
+      const next = new Set(current)
+      if (range && lastSelectedSidebarRootID) {
+        const start = visibleSidebarRootIDs.indexOf(lastSelectedSidebarRootID)
+        const end = visibleSidebarRootIDs.indexOf(normalized)
+        if (start >= 0 && end >= 0) visibleSidebarRootIDs.slice(Math.min(start, end), Math.max(start, end) + 1).forEach((id) => next.add(id))
+      } else if (next.has(normalized)) next.delete(normalized)
+      else next.add(normalized)
+      return next
+    })
+    setLastSelectedSidebarRootID(normalized)
+  }, [lastSelectedSidebarRootID, visibleSidebarRootIDs])
+
+  const handleBulkArchiveSidebar = useCallback(async () => {
+    const roots = globalSidebarSessionNodes.filter((node) => selectedSidebarRootIDs.has(node.session.id))
+    const ids = Array.from(new Set(roots.flatMap(sidebarNodeSessionIDs)))
+    if (ids.length === 0) return
+    setBulkArchivePending(true)
+    try {
+      await archiveDesktopV3Sessions(ids)
+      setDesktopToast({ message: `Archived ${roots.length} conversation${roots.length === 1 ? '' : 's'} (${ids.length} sessions).`, tone: 'success' })
+      const selectedRouteArchived = ids.includes(routeSessionId)
+      setSelectedSidebarRootIDs(new Set())
+      setSidebarSelectionMode(false)
+      setMobileSidebarOpen(false)
+      if (selectedRouteArchived) handleArchivePlanSession(routeSessionId)
+    } catch (error) {
+      setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to archive selected conversations.', tone: 'error' })
+    } finally {
+      setBulkArchivePending(false)
+    }
+  }, [globalSidebarSessionNodes, handleArchivePlanSession, routeSessionId, selectedSidebarRootIDs])
+
+  const handleSidebarThresholdChange = useCallback(async (hours: number | null) => {
+    setSidebarThresholdSaving(true)
+    try {
+      const saved = await saveSidebarHideInactiveHours({ current: uiSettings ?? {}, hours })
+      setUISettings(saved)
+      queryClient.setQueryData(uiSettingsQueryKey(), saved)
+    } catch (error) {
+      setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to save sidebar visibility.', tone: 'error' })
+    } finally {
+      setSidebarThresholdSaving(false)
+    }
+  }, [queryClient, uiSettings])
 
   const activeRouteSession = routeSessionId ? (sessionById.get(routeSessionId) ?? null) : null
   const activeRouteSessionCanPin = activeRouteSession ? sessionAllowsManualSidebarPin(activeRouteSession) : false
@@ -3388,6 +3569,17 @@ export function DesktopAppPage() {
   const mobileSessionQuickMenu = routeWorkspace?.path ? (
     <Card className="flex min-h-0 w-full flex-1 flex-col border-[var(--app-border)] bg-[var(--app-surface)] p-4 shadow-sm">
       <div className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto pr-1 [-webkit-overflow-scrolling:touch]">
+        <div className="flex items-center gap-2 text-xs text-[var(--app-text-subtle)]">
+          <button type="button" className="text-[var(--app-primary)]" onClick={() => { setSidebarSelectionMode((value) => !value); setSelectedSidebarRootIDs(new Set()) }}>{sidebarSelectionMode ? 'Done selecting' : 'Select chats'}</button>
+          {filteredSidebarTrees.hiddenCount > 0 ? <button type="button" className="ml-auto text-[var(--app-primary)]" onClick={handleOpenSearchChats}>{filteredSidebarTrees.hiddenCount} hidden · Search</button> : null}
+        </div>
+        {sidebarSelectionMode ? (
+          <div className="sticky top-0 z-10 flex items-center gap-2 rounded-md bg-[var(--app-surface-elevated)] px-2 py-2 text-xs shadow-sm">
+            <span>{selectedSidebarRootIDs.size} selected</span>
+            <button type="button" className="ml-auto" onClick={() => setSelectedSidebarRootIDs(new Set())}>Clear</button>
+            <button type="button" disabled={bulkArchivePending || selectedSidebarRootIDs.size === 0} className="rounded bg-[var(--app-primary)] px-2 py-1 text-[var(--app-background)] disabled:opacity-50" onClick={() => { void handleBulkArchiveSidebar() }}>Archive selected</button>
+          </div>
+        ) : null}
         {renderSidebarSessionGroups({
           nodes: globalFlattenedSessionNodes,
           routeSessionId,
@@ -3398,11 +3590,15 @@ export function DesktopAppPage() {
           expandedAgentSessions,
           compactingSession,
           pendingActions: sidebarSessionActions,
+          selectionMode: sidebarSelectionMode,
+          selectedRootIDs: selectedSidebarRootIDs,
           onSelect: handleSelectSession,
+          onToggleSelected: handleToggleSidebarSelected,
           onPrefetch: handlePrefetchSession,
           onToggleAgents: handleToggleAgentSessions,
           onTogglePinned: handleToggleSidebarPinned,
           onArchive: handleArchiveSidebarSession,
+          onRename: handleRenameSidebarSession,
         }) ?? (
           <div className="rounded-xl border border-dashed border-[var(--app-border)] px-3 py-4 text-center text-xs text-[var(--app-text-subtle)]">
             No active chats yet.
@@ -3723,6 +3919,31 @@ export function DesktopAppPage() {
                       <GitBranch size={13} strokeWidth={1.8} className="shrink-0" />
                     </button>
                   </div>
+                  <div className="sticky top-0 z-10 flex min-h-8 items-center gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[10px] text-[var(--app-text-subtle)]">
+                    <label className="flex min-w-0 items-center gap-1">
+                      <span>Show</span>
+                      <select
+                        aria-label="Hide inactive chats after"
+                        disabled={sidebarThresholdSaving}
+                        value={sidebarHideInactiveHours === null ? 'never' : String(sidebarHideInactiveHours)}
+                        onChange={(event) => { void handleSidebarThresholdChange(event.target.value === 'never' ? null : Number(event.target.value)) }}
+                        className="h-6 rounded border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-1 text-[10px] text-[var(--app-text)]"
+                      >
+                        <option value="1">1h</option><option value="6">6h</option><option value="12">12h</option><option value="24">24h</option><option value="168">7d</option><option value="never">Never hide</option>
+                      </select>
+                    </label>
+                    {filteredSidebarTrees.hiddenCount > 0 ? <button type="button" className="ml-auto text-[var(--app-primary)]" onClick={handleOpenSearchChats}>{filteredSidebarTrees.hiddenCount} hidden · Search</button> : null}
+                    <button type="button" className="ml-auto text-[var(--app-primary)]" onClick={() => { setSidebarSelectionMode((value) => !value); setSelectedSidebarRootIDs(new Set()) }}>{sidebarSelectionMode ? 'Done' : 'Select'}</button>
+                  </div>
+                  {sidebarSelectionMode ? (
+                    <div className="sticky top-9 z-10 flex items-center gap-2 rounded-md bg-[var(--app-surface-elevated)] px-2 py-1 text-[10px] shadow-sm">
+                      <span>{selectedSidebarRootIDs.size} selected</span>
+                      <button type="button" className="ml-auto" onClick={() => setSelectedSidebarRootIDs(new Set())}>Clear</button>
+                      <button type="button" disabled={bulkArchivePending || selectedSidebarRootIDs.size === 0} className="inline-flex items-center gap-1 rounded bg-[var(--app-primary)] px-2 py-1 text-[var(--app-background)] disabled:opacity-50" onClick={() => { void handleBulkArchiveSidebar() }}>
+                        {bulkArchivePending ? <LoaderCircle size={11} className="animate-spin" /> : <Archive size={11} />} Archive selected
+                      </button>
+                    </div>
+                  ) : null}
                   {renderSidebarSessionGroups({
                     nodes: globalFlattenedSessionNodes,
                     routeSessionId,
@@ -3733,11 +3954,15 @@ export function DesktopAppPage() {
                     expandedAgentSessions,
                     compactingSession,
                     pendingActions: sidebarSessionActions,
+                    selectionMode: sidebarSelectionMode,
+                    selectedRootIDs: selectedSidebarRootIDs,
                     onSelect: handleSelectSession,
+                    onToggleSelected: handleToggleSidebarSelected,
                     onPrefetch: handlePrefetchSession,
                     onToggleAgents: handleToggleAgentSessions,
                     onTogglePinned: handleToggleSidebarPinned,
                     onArchive: handleArchiveSidebarSession,
+                    onRename: handleRenameSidebarSession,
                   })}
                   {globalFlattenedSessionNodes.length === 0 ? (
                     <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">No active sessions.</div>

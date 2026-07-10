@@ -45,6 +45,7 @@ type V3SessionSearchOptions struct {
 type V3SessionSearchResult struct {
 	Items      []V3SessionSearchItem     `json:"items"`
 	Pagination V3SessionSearchPagination `json:"pagination"`
+	Summary    V3SessionLibrarySummary   `json:"summary"`
 }
 
 type V3SessionSearchPagination struct {
@@ -76,6 +77,7 @@ type V3SessionSearchItem struct {
 	Archived                bool                      `json:"archived"`
 	Deleted                 bool                      `json:"deleted,omitempty"`
 	Snippets                []V3SessionSearchSnippet  `json:"snippets,omitempty"`
+	LibraryMetric           V3SessionLibraryMetric    `json:"library_metric"`
 }
 
 type V3SessionSearchSnippet struct {
@@ -124,6 +126,9 @@ func (s *SessionStore) SearchV3Sessions(options V3SessionSearchOptions) (result 
 	if err := s.ensureV3SessionSearchIndex(); err != nil {
 		return V3SessionSearchResult{}, err
 	}
+	if err := s.ensureV3SessionLibraryIndex(); err != nil {
+		return V3SessionSearchResult{}, err
+	}
 	snapshot := s.store.db.NewSnapshot()
 	defer func() {
 		if closeErr := snapshot.Close(); err == nil && closeErr != nil {
@@ -131,9 +136,24 @@ func (s *SessionStore) SearchV3Sessions(options V3SessionSearchOptions) (result 
 		}
 	}()
 	if options.Query == "" {
-		return s.searchV3SessionsRecentFromReader(snapshot, options)
+		result, err = s.searchV3SessionsRecentFromReader(snapshot, options)
+	} else {
+		result, err = s.searchV3SessionsQueryFromReader(snapshot, options)
 	}
-	return s.searchV3SessionsQueryFromReader(snapshot, options)
+	if err != nil {
+		return V3SessionSearchResult{}, err
+	}
+	result.Summary, err = s.v3SessionLibrarySummary(snapshot, options)
+	if err != nil {
+		return V3SessionSearchResult{}, err
+	}
+	for i := range result.Items {
+		_, err = getJSONFromReader(snapshot, keyV3SessionLibraryMetricFor(result.Items[i].ID), &result.Items[i].LibraryMetric)
+		if err != nil {
+			return V3SessionSearchResult{}, err
+		}
+	}
+	return result, nil
 }
 
 func normalizeV3SessionSearchOptions(options V3SessionSearchOptions) V3SessionSearchOptions {

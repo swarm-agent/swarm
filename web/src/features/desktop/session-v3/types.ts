@@ -455,6 +455,10 @@ export interface SessionV3AgentMutationResponseWire extends SessionV3MutationRes
 
 export interface SessionV3MetadataMutationResponseWire extends SessionV3MutationResponseWire {}
 
+export interface SessionV3TitleMutationResponseWire extends SessionV3MutationResponseWire {
+  title?: string
+}
+
 export interface SessionV3CompactRequestWire {
   client_request_id?: string
   note?: string

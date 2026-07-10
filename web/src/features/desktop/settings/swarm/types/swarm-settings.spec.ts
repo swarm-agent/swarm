@@ -3,11 +3,14 @@ import test from 'node:test'
 
 import {
   DEFAULT_GLOBAL_THEME_ID,
+  DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS,
   normalizeFollowupCheckpointPolicyDefault,
   normalizeGlobalThemeSettings,
   normalizeSessionMode,
+  normalizeSidebarHideInactiveHours,
   normalizeSwarmSettings,
   withDefaultNewSessionMode,
+  withSidebarHideInactiveHours,
   type UISettingsWire,
 } from './swarm-settings'
 
@@ -34,6 +37,15 @@ test('withDefaultNewSessionMode preserves existing chat fields while updating de
   assert.deepEqual(withDefaultNewSessionMode(current, 'plan'), {
     ...current,
     chat: { thinking_tags: false, default_workspace_routes: { '/repo': 'self' }, default_new_session_mode: 'plan' },
+  })
+})
+
+test('sidebar inactivity threshold defaults to 12 hours and preserves explicit Never', () => {
+  assert.equal(normalizeSidebarHideInactiveHours(undefined), DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS)
+  assert.equal(normalizeSidebarHideInactiveHours(24), 24)
+  assert.equal(normalizeSidebarHideInactiveHours(null), null)
+  assert.deepEqual(withSidebarHideInactiveHours({ chat: { thinking_tags: true } }, null), {
+    chat: { thinking_tags: true, sidebar_hide_inactive_hours: 0 },
   })
 })
 

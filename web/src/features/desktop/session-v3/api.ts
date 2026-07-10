@@ -11,6 +11,7 @@ import type {
   SessionV3PermissionsResolveAllResponseWire,
   SessionV3PreferenceResponseWire,
   SessionV3RunStopResponseWire,
+  SessionV3TitleMutationResponseWire,
 } from './types'
 import type { SessionSettingsMutationResponse } from '../state/desktop-v3-cache-types'
 
@@ -153,6 +154,24 @@ export async function updateSessionV3Preference(
     },
   )
   return response
+}
+
+export async function updateSessionV3Title(
+  sessionId: string,
+  title: string,
+  clientRequestId: string,
+): Promise<SessionV3TitleMutationResponseWire> {
+  const normalizedSessionId = sessionId.trim()
+  const normalizedTitle = title.trim()
+  const normalizedRequestId = clientRequestId.trim()
+  if (!normalizedSessionId) throw new Error('Desktop V3 title update requires session_id')
+  if (!normalizedTitle) throw new Error('Desktop V3 title update requires title')
+  if (!normalizedRequestId) throw new Error('Desktop V3 title update requires client_request_id')
+  return requestJson<SessionV3TitleMutationResponseWire>(`/v3/sessions/${encodeURIComponent(normalizedSessionId)}/title`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: normalizedTitle, client_request_id: normalizedRequestId }),
+  })
 }
 
 export async function updateSessionV3Mode(sessionId: string, mode: DesktopSessionMode): Promise<SessionV3ModeMutationResponseWire> {

@@ -454,6 +454,25 @@ func (s *Service) DeleteSessionWithEvent(sessionID string) (*pebblestore.EventEn
 	return s.tombstoneSessionWithEvent(sessionID, "deleted")
 }
 
+func (s *Service) DeleteSessionsWithEvents(sessionIDs []string) ([]*pebblestore.EventEnvelope, error) {
+	return s.deleteSessionsWithEventsIfUnchanged(sessionIDs, nil)
+}
+
+// DeleteSessionsWithEventsIfUnchanged deletes the sessions only when every
+// snapshot still has the UpdatedAt observed by the caller's preview. The check
+// and durable delete run under the service mutation lock, so a concurrent
+// session mutation cannot slip between them.
+func (s *Service) DeleteSessionsWithEventsIfUnchanged(sessionIDs []string, expectedUpdatedAt map[string]int64) ([]*pebblestore.EventEnvelope, error) {
+	if len(expectedUpdatedAt) == 0 {
+		return nil, errors.New("expected session versions are required")
+	}
+	return s.deleteSessionsWithEventsIfUnchanged(sessionIDs, expectedUpdatedAt)
+}
+
+func (s *Service) deleteSessionsWithEventsIfUnchanged(sessionIDs []string, expectedUpdatedAt map[string]int64) ([]*pebblestore.EventEnvelope, error) {
+	return s.tombstoneSessionsWithEventsExpected(sessionIDs, "deleted", expectedUpdatedAt)
+}
+
 func (s *Service) ArchiveSession(sessionID string) error {
 	_, err := s.ArchiveSessionWithEvent(sessionID)
 	return err
@@ -480,6 +499,10 @@ func (s *Service) tombstoneSessionWithEvent(sessionID, kind string) (*pebblestor
 }
 
 func (s *Service) tombstoneSessionsWithEvents(sessionIDs []string, kind string) ([]*pebblestore.EventEnvelope, error) {
+	return s.tombstoneSessionsWithEventsExpected(sessionIDs, kind, nil)
+}
+
+func (s *Service) tombstoneSessionsWithEventsExpected(sessionIDs []string, kind string, expectedUpdatedAt map[string]int64) ([]*pebblestore.EventEnvelope, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("session service is not configured")
 	}
@@ -513,7 +536,27 @@ func (s *Service) tombstoneSessionsWithEvents(sessionIDs []string, kind string) 
 			return nil, err
 		}
 		if found {
+			if expectedUpdatedAt != nil {
+				expected, exists := expectedUpdatedAt[sessionID]
+				if !exists || session.UpdatedAt != expected {
+					return nil, fmt.Errorf("session %q changed after deletion preview", sessionID)
+				}
+			}
 			sessions = append(sessions, session)
+		} else if kind == "deleted" {
+			tombstone, tombstoneOK, tombstoneErr := s.store.GetV3SessionTombstone(sessionID)
+			if tombstoneErr != nil {
+				return nil, tombstoneErr
+			}
+			if tombstoneOK && tombstone.Archived && !tombstone.Deleted {
+				if expectedUpdatedAt != nil {
+					expected, exists := expectedUpdatedAt[sessionID]
+					if !exists || tombstone.Session.UpdatedAt != expected {
+						return nil, fmt.Errorf("session %q changed after deletion preview", sessionID)
+					}
+				}
+				sessions = append(sessions, tombstone.Session)
+			}
 		}
 	}
 	if kind == "archived" {
@@ -522,10 +565,8 @@ func (s *Service) tombstoneSessionsWithEvents(sessionIDs []string, kind string) 
 			return nil, err
 		}
 	} else {
-		for _, sessionID := range normalizedIDs {
-			if err := s.store.DeleteSession(sessionID); err != nil {
-				return nil, err
-			}
+		if err := s.store.DeleteSessions(normalizedIDs); err != nil {
+			return nil, err
 		}
 	}
 	if len(sessions) == 0 || s.events == nil {
@@ -823,6 +864,13 @@ func (s *Service) ListSessions(limit int) ([]pebblestore.SessionSnapshot, error)
 	}
 	normalizeSessionListModes(sessions)
 	return sessions, nil
+}
+
+func (s *Service) GetSessionLibraryMetric(sessionID string) (pebblestore.V3SessionLibraryMetric, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.V3SessionLibraryMetric{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetV3SessionLibraryMetric(sessionID)
 }
 
 func (s *Service) ListSessionsForAccount(accountScopeID string, limit int) ([]pebblestore.SessionSnapshot, error) {

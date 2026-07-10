@@ -7,6 +7,7 @@
 
 export const DEFAULT_SWARM_NAME = 'Local'
 export const DEFAULT_GLOBAL_THEME_ID = 'crimson'
+export const DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS = 12
 
 export interface UISwarmingSettingsWire {
   title?: string
@@ -34,6 +35,7 @@ export interface UIChatSettingsWire {
   thinking_tags?: boolean
   default_new_session_mode?: DesktopSessionMode
   followup_checkpoint_policy_default?: FollowupCheckpointPolicyDefault
+  sidebar_hide_inactive_hours?: number | null
   default_workspace_routes?: Record<string, string>
   tool_stream?: Record<string, unknown>
 }
@@ -73,6 +75,12 @@ export function normalizeSwarmName(value: string): string {
 
 export function normalizeSessionMode(value: unknown): DesktopSessionMode {
   return typeof value === 'string' && value.trim().toLowerCase() === 'plan' ? 'plan' : 'auto'
+}
+
+export function normalizeSidebarHideInactiveHours(value: unknown): number | null {
+  if (value === null || value === 'never' || value === 0) return null
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS
+  return Math.min(24 * 365, Math.max(1, Math.round(value)))
 }
 
 export function normalizeDefaultNewSessionMode(value: unknown): DesktopSessionMode {
@@ -129,6 +137,16 @@ export function withDefaultWorkspaceRoute(current: UISettingsWire, workspacePath
     chat: {
       ...(current.chat ?? {}),
       default_workspace_routes: routes,
+    },
+  }
+}
+
+export function withSidebarHideInactiveHours(current: UISettingsWire, hours: number | null): UISettingsWire {
+  return {
+    ...current,
+    chat: {
+      ...(current.chat ?? {}),
+      sidebar_hide_inactive_hours: hours === null ? 0 : normalizeSidebarHideInactiveHours(hours),
     },
   }
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -111,6 +112,12 @@ type sessionsV3MetadataRequest struct {
 	Metadata map[string]any `json:"metadata"`
 }
 
+type sessionsV3TitleRequest struct {
+	Title           string `json:"title"`
+	ClientRequestID string `json:"client_request_id"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty"`
+}
+
 type sessionsV3PlanUpsertRequest struct {
 	ID            string                            `json:"id"`
 	PlanID        string                            `json:"plan_id"`
@@ -162,6 +169,31 @@ type sessionsV3AgentModelPolicy struct {
 
 type sessionsV3ArchiveBatchRequest struct {
 	SessionIDs []string `json:"session_ids"`
+}
+
+type sessionsV3DeleteRequest struct {
+	SessionIDs        []string                   `json:"session_ids,omitempty"`
+	UpdatedBefore     *int64                     `json:"updated_before,omitempty"`
+	ArchivedMode      string                     `json:"archived_mode,omitempty"`
+	Global            bool                       `json:"global,omitempty"`
+	Workspace         sessionsV3WorksetWorkspace `json:"workspace,omitempty"`
+	WorkspacePath     string                     `json:"workspace_path,omitempty"`
+	WorkspacePaths    []string                   `json:"workspace_paths,omitempty"`
+	DryRun            bool                       `json:"dry_run,omitempty"`
+	ConfirmationToken string                     `json:"confirmation_token,omitempty"`
+	ConfirmRecent     bool                       `json:"confirm_recent,omitempty"`
+}
+
+type sessionsV3DeletePreview struct {
+	ConversationCount int      `json:"conversation_count"`
+	SessionCount      int      `json:"session_count"`
+	ChildCount        int      `json:"child_count"`
+	LogicalBytes      int64    `json:"logical_bytes"`
+	ActiveRunCount    int      `json:"active_run_count"`
+	PendingCount      int      `json:"pending_approval_count"`
+	Recent75Overlap   int      `json:"recent_75_overlap_count"`
+	SessionIDs        []string `json:"session_ids"`
+	ConfirmationToken string   `json:"confirmation_token"`
 }
 
 func (s *Server) handleSessionsV3Primary(w http.ResponseWriter, r *http.Request) {
@@ -257,6 +289,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryUsage(w, r, principal, sessionID)
 	case "metadata":
 		s.handleSessionV3PrimaryMetadata(w, r, principal, sessionID)
+	case "title":
+		s.handleSessionV3PrimaryTitle(w, r, principal, sessionID)
 	case "plans":
 		s.handleSessionV3PrimaryPlans(w, r, principal, sessionID)
 	case "plans/active":
@@ -429,6 +463,236 @@ func (s *Server) handleSessionsV3PrimaryList(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sessions": items})
 }
 
+func (s *Server) handleSessionsV3Delete(w http.ResponseWriter, r *http.Request) {
+	principal, ok := s.sessionsV3SearchPrincipal(w, r)
+	if !ok {
+		return
+	}
+	var req sessionsV3DeleteRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if (len(req.SessionIDs) > 0) == (req.UpdatedBefore != nil) {
+		writeError(w, http.StatusBadRequest, errors.New("provide exactly one of session_ids or updated_before"))
+		return
+	}
+	workspaceReq := sessionsV3SearchRequest{Global: req.Global, Workspace: req.Workspace, WorkspacePath: req.WorkspacePath, WorkspacePaths: req.WorkspacePaths, ArchivedMode: req.ArchivedMode}
+	searchOptions, err := sessionsV3SearchOptionsFromRequest(principal, workspaceReq)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	all, err := s.sessions.ListSessionsForAccount(principal.AccountScopeID, 100000)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	byID := make(map[string]pebblestore.SessionSnapshot, len(all))
+	archivedByID := make(map[string]bool)
+	workspaceAllowed := func(path string) bool {
+		if searchOptions.Global {
+			return true
+		}
+		for _, candidate := range searchOptions.WorkspacePaths {
+			if candidate == path {
+				return true
+			}
+		}
+		return false
+	}
+	if searchOptions.ArchivedMode != "only" {
+		for _, session := range all {
+			if session.UserID == principal.UserID && workspaceAllowed(session.WorkspacePath) {
+				byID[session.ID] = session
+			}
+		}
+	}
+	if searchOptions.ArchivedMode != "exclude" {
+		tombstones, tombstoneErr := s.sessions.ListSessionTombstonesForAccount(principal.AccountScopeID, 100000)
+		if tombstoneErr != nil {
+			writeError(w, http.StatusInternalServerError, tombstoneErr)
+			return
+		}
+		for _, tombstone := range tombstones {
+			if tombstone.Archived && !tombstone.Deleted && tombstone.UserID == principal.UserID && workspaceAllowed(tombstone.Session.WorkspacePath) {
+				byID[tombstone.Session.ID] = tombstone.Session
+				archivedByID[tombstone.Session.ID] = true
+			}
+		}
+	}
+	lineageInput := make(map[string]pebblestore.SessionSnapshot, len(byID))
+	for id, session := range byID {
+		lineageInput[id] = session
+	}
+	lineage := pebblestore.ResolveV3SessionLineage(lineageInput)
+	rootUpdated := make(map[string]int64)
+	for id, metric := range lineage {
+		if byID[id].UpdatedAt > rootUpdated[metric.RootSessionID] {
+			rootUpdated[metric.RootSessionID] = byID[id].UpdatedAt
+		}
+	}
+	selectedRoots := map[string]struct{}{}
+	if len(req.SessionIDs) > 0 {
+		for _, raw := range req.SessionIDs {
+			id := strings.TrimSpace(raw)
+			metric, exists := lineage[id]
+			if !exists {
+				writeSessionNotFound(w)
+				return
+			}
+			selectedRoots[metric.RootSessionID] = struct{}{}
+		}
+	} else {
+		for id, metric := range lineage {
+			if id == metric.RootSessionID && rootUpdated[id] < *req.UpdatedBefore {
+				selectedRoots[id] = struct{}{}
+			}
+		}
+	}
+	candidates := make([]pebblestore.SessionSnapshot, 0)
+	preview := sessionsV3DeletePreview{ConversationCount: len(selectedRoots)}
+	for id, metric := range lineage {
+		if _, ok := selectedRoots[metric.RootSessionID]; !ok {
+			continue
+		}
+		session := byID[id]
+		candidates = append(candidates, session)
+		preview.SessionIDs = append(preview.SessionIDs, id)
+		if metric.ParentSessionID != "" {
+			preview.ChildCount++
+		}
+		if storedMetric, found, metricErr := s.sessions.GetSessionLibraryMetric(id); metricErr != nil {
+			writeError(w, http.StatusInternalServerError, metricErr)
+			return
+		} else if found {
+			preview.LogicalBytes += storedMetric.LogicalBytes
+		}
+		if _, active, activeErr := s.sessions.GetSessionActiveRunIntent(id); activeErr != nil {
+			writeError(w, http.StatusInternalServerError, activeErr)
+			return
+		} else if active {
+			preview.ActiveRunCount++
+		}
+		if s.perm != nil {
+			if count, countErr := s.perm.PendingCount(id); countErr != nil {
+				writeError(w, http.StatusInternalServerError, countErr)
+				return
+			} else {
+				preview.PendingCount += count
+			}
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if rootUpdated[lineage[candidates[i].ID].RootSessionID] == rootUpdated[lineage[candidates[j].ID].RootSessionID] {
+			return candidates[i].ID < candidates[j].ID
+		}
+		return rootUpdated[lineage[candidates[i].ID].RootSessionID] > rootUpdated[lineage[candidates[j].ID].RootSessionID]
+	})
+	preview.SessionCount = len(candidates)
+	newestRoots := make(map[string]struct{}, 75)
+	roots := make([]string, 0)
+	for id, metric := range lineage {
+		if metric.RootSessionID == id {
+			roots = append(roots, id)
+		}
+	}
+	sort.Slice(roots, func(i, j int) bool {
+		if rootUpdated[roots[i]] == rootUpdated[roots[j]] {
+			return roots[i] < roots[j]
+		}
+		return rootUpdated[roots[i]] > rootUpdated[roots[j]]
+	})
+	for i, root := range roots {
+		if i >= 75 {
+			break
+		}
+		newestRoots[root] = struct{}{}
+	}
+	for root := range selectedRoots {
+		if _, ok := newestRoots[root]; ok {
+			preview.Recent75Overlap++
+		}
+	}
+	sort.Strings(preview.SessionIDs)
+	fingerprintParts := make([]string, 0, len(preview.SessionIDs))
+	for _, id := range preview.SessionIDs {
+		fingerprintParts = append(fingerprintParts, fmt.Sprintf("%s:%d:%t", id, byID[id].UpdatedAt, archivedByID[id]))
+	}
+	hash := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%s", principal.AccountScopeID, time.Now().Unix()/300, strings.Join(fingerprintParts, ","))))
+	preview.ConfirmationToken = hex.EncodeToString(hash[:])
+	if req.DryRun {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "dry_run": true, "preview": preview})
+		return
+	}
+	if req.ConfirmationToken != preview.ConfirmationToken {
+		writeError(w, http.StatusConflict, errors.New("deletion candidate set changed; preview again"))
+		return
+	}
+	if preview.ActiveRunCount > 0 || preview.PendingCount > 0 {
+		writeError(w, http.StatusConflict, errors.New("deletion blocked by active runs or pending approvals"))
+		return
+	}
+	if preview.Recent75Overlap > 0 && !req.ConfirmRecent {
+		writeError(w, http.StatusConflict, errors.New("deletion overlaps newest 75 conversations; explicit confirmation required"))
+		return
+	}
+	expectedUpdatedAt := make(map[string]int64, len(preview.SessionIDs))
+	for _, id := range preview.SessionIDs {
+		expectedUpdatedAt[id] = byID[id].UpdatedAt
+	}
+	// Recheck protection immediately before entering the session service's
+	// version-checked mutation lock. The version check closes the preview-to-
+	// delete race for session activity; live run/approval state remains a hard
+	// deletion guard.
+	for _, id := range preview.SessionIDs {
+		if _, active, activeErr := s.sessions.GetSessionActiveRunIntent(id); activeErr != nil {
+			writeError(w, http.StatusInternalServerError, activeErr)
+			return
+		} else if active {
+			writeError(w, http.StatusConflict, errors.New("deletion blocked by active run"))
+			return
+		}
+		if s.perm != nil {
+			if pending, pendingErr := s.perm.PendingCount(id); pendingErr != nil {
+				writeError(w, http.StatusInternalServerError, pendingErr)
+				return
+			} else if pending > 0 {
+				writeError(w, http.StatusConflict, errors.New("deletion blocked by pending approval"))
+				return
+			}
+		}
+	}
+	events, err := s.sessions.DeleteSessionsWithEventsIfUnchanged(preview.SessionIDs, expectedUpdatedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "changed after deletion preview") {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.publishSessionsV3DeleteRealtime(candidates, events)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": true, "preview": preview})
+}
+
+func (s *Server) publishSessionsV3DeleteRealtime(sessions []pebblestore.SessionSnapshot, events []*pebblestore.EventEnvelope) {
+	if head, err := s.sessions.CurrentRealtimeOutboxRevision(); err == nil {
+		for _, session := range sessions {
+			if record, ok, recordErr := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(session.ID, head); recordErr == nil && ok && record.Event.EventType == "session.deleted" {
+				_ = s.publishCommittedV3RealtimeOutbox(record)
+			}
+		}
+	}
+	if s.hub != nil {
+		for _, event := range events {
+			if event != nil {
+				s.hub.Publish(*event)
+			}
+		}
+	}
+}
+
 func (s *Server) handleSessionV3PrimaryDelete(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
 	s.handleSessionV3PrimaryTombstone(w, r, principal, sessionID, "deleted")
 }
@@ -506,6 +770,24 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 		return
 	}
 	kind = strings.TrimSpace(strings.ToLower(kind))
+	if kind == "deleted" {
+		if _, active, activeErr := s.sessions.GetSessionActiveRunIntent(session.ID); activeErr != nil {
+			writeError(w, http.StatusInternalServerError, activeErr)
+			return
+		} else if active {
+			writeError(w, http.StatusConflict, errors.New("deletion blocked by active run"))
+			return
+		}
+		if s.perm != nil {
+			if pending, pendingErr := s.perm.PendingCount(session.ID); pendingErr != nil {
+				writeError(w, http.StatusInternalServerError, pendingErr)
+				return
+			} else if pending > 0 {
+				writeError(w, http.StatusConflict, errors.New("deletion blocked by pending approval"))
+				return
+			}
+		}
+	}
 	eventType := "session.deleted"
 	if kind == "archived" {
 		eventType = "session.archived"
@@ -1202,6 +1484,70 @@ func (s *Server) handleSessionV3PrimaryPreference(w http.ResponseWriter, r *http
 		return
 	}
 	writeJSON(w, http.StatusOK, s.sessionV3PreferenceMutationResponse(sessionID, next.Preference, resolved.ContextWindow, resolved.MaxOutputTokens, result))
+}
+
+func (s *Server) handleSessionV3PrimaryTitle(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	session, found, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	var req sessionsV3TitleRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		writeError(w, http.StatusBadRequest, errors.New("title is required"))
+		return
+	}
+	if len([]rune(title)) > 200 {
+		writeError(w, http.StatusBadRequest, errors.New("title must be 200 characters or fewer"))
+		return
+	}
+	clientRequestID := strings.TrimSpace(firstNonEmpty(req.ClientRequestID, req.IdempotencyKey, r.Header.Get("Idempotency-Key")))
+	if clientRequestID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("client_request_id is required"))
+		return
+	}
+	next := session
+	next.Title = title
+	next.Metadata = cloneSessionsV3Metadata(session.Metadata)
+	if next.Metadata == nil {
+		next.Metadata = map[string]any{}
+	}
+	next.Metadata["title_locked"] = true
+	next.Metadata["title_source"] = "manual"
+	next.UpdatedAt = time.Now().UnixMilli()
+	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateTitle, map[string]any{"title": title, "metadata": next.Metadata})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	eventPayload, err := json.Marshal(map[string]any{"session_id": sessionID, "title": title, "metadata": next.Metadata, "updated_at": next.UpdatedAt})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationUpdateTitle, EventPayload: eventPayload, Session: &next, NowUnixMs: next.UpdatedAt})
+	if err != nil {
+		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "conflict": result.Conflict})
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "title": title, "metadata": next.Metadata, "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox})
 }
 
 func (s *Server) handleSessionV3PrimaryMetadata(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {

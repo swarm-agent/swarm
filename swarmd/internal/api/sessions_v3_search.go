@@ -51,6 +51,7 @@ func (s *Server) handleSessionsV3Search(w http.ResponseWriter, r *http.Request) 
 		"ok":         true,
 		"items":      result.Items,
 		"pagination": result.Pagination,
+		"summary":    result.Summary,
 	})
 }
 

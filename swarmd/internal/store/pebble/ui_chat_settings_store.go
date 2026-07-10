@@ -64,6 +64,7 @@ type UIChatSettingsRecord struct {
 	ThinkingTagsSet                 bool                           `json:"-"`
 	DefaultNewSessionMode           string                         `json:"default_new_session_mode,omitempty"`
 	FollowupCheckpointPolicyDefault string                         `json:"followup_checkpoint_policy_default,omitempty"`
+	SidebarHideInactiveHours        *int                           `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          map[string]string              `json:"default_workspace_routes,omitempty"`
 	ToolStream                      UIChatToolStreamSettingsRecord `json:"tool_stream,omitempty"`
 	UpdatedAt                       int64                          `json:"updated_at"`
@@ -207,6 +208,7 @@ func DefaultUISettingsRecord() UISettingsRecord {
 			ThinkingTagsSet:                 true,
 			DefaultNewSessionMode:           "auto",
 			FollowupCheckpointPolicyDefault: "auto_start",
+			SidebarHideInactiveHours:        intPointer(12),
 			ToolStream: UIChatToolStreamSettingsRecord{
 				ShowAnchor:    true,
 				PulseFrames:   []string{"·", "•", "◦", "•"},
@@ -247,6 +249,9 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 		record.Chat.DefaultNewSessionMode = normalizeDefaultNewSessionMode(record.Chat.DefaultNewSessionMode)
 	}
 	record.Chat.FollowupCheckpointPolicyDefault = normalizeFollowupCheckpointPolicyDefault(record.Chat.FollowupCheckpointPolicyDefault)
+	if record.Chat.SidebarHideInactiveHours == nil || *record.Chat.SidebarHideInactiveHours < 0 {
+		record.Chat.SidebarHideInactiveHours = intPointer(12)
+	}
 	record.Chat.DefaultWorkspaceRoutes = normalizeDefaultWorkspaceRoutes(record.Chat.DefaultWorkspaceRoutes)
 	if len(record.Chat.ToolStream.PulseFrames) == 0 {
 		record.Chat.ToolStream.PulseFrames = []string{"·", "•", "◦", "•"}
@@ -272,6 +277,10 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	record.Swarm.RemoteSSHTargets = normalizeRemoteSSHTargets(record.Swarm.RemoteSSHTargets)
 	record.Tools.Image.DefaultModel = strings.TrimSpace(record.Tools.Image.DefaultModel)
 	return record
+}
+
+func intPointer(value int) *int {
+	return &value
 }
 
 func normalizeDefaultWorkspaceRoutes(values map[string]string) map[string]string {

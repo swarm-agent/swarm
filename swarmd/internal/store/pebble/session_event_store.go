@@ -332,6 +332,10 @@ func KeyV3SessionOperationIdempotency(accountScopeID, sessionID, operation, clie
 	return KeyV3SessionIdempotency(accountScopeID, sessionID, strings.Join([]string{operation, clientRequestID}, "/"))
 }
 
+func V3SessionIdempotencyPrefix(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("v3/session_idempotency/%s/%s/", keyPart(accountScopeID), keyPart(sessionID))
+}
+
 func KeyV3SessionMessage(sessionID string, primarySeq uint64) string {
 	return fmt.Sprintf("v3/session_message/%s/%020d", keyPart(sessionID), primarySeq)
 }
@@ -661,6 +665,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, extraMessages); err != nil {
 				return V3SessionMutationResult{}, err
 			}
+		}
+		var appendedMessage *MessageSnapshot
+		if messageProvided {
+			appendedMessage = &message
+		}
+		if err := s.rebuildV3SessionLibraryIndexInBatch(batch, &session, appendedMessage, nil); err != nil {
+			return V3SessionMutationResult{}, err
 		}
 	}
 	if messageProvided {

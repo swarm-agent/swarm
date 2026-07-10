@@ -423,7 +423,11 @@ func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
 }
 
 func (s *SessionStore) DeleteSession(sessionID string) error {
-	return s.tombstoneSession(sessionID, "deleted")
+	return s.DeleteSessions([]string{sessionID})
+}
+
+func (s *SessionStore) DeleteSessions(sessionIDs []string) error {
+	return s.tombstoneSessions(sessionIDs, "deleted")
 }
 
 func (s *SessionStore) ArchiveSession(sessionID string) error {
@@ -469,6 +473,10 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 			return err
 		} else if ok {
 			existingByID[sessionID] = loaded
+		} else if tombstone, tombstoneOK, tombstoneErr := s.GetV3SessionTombstone(sessionID); tombstoneErr != nil {
+			return tombstoneErr
+		} else if tombstoneOK && tombstone.Archived && !tombstone.Deleted {
+			existingByID[sessionID] = tombstone.Session
 		}
 	}
 
@@ -479,9 +487,23 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 		return err
 	}
 	endpointSeq := currentOutboxSeq
+	removed := make(map[string]struct{}, len(normalizedIDs))
 	for _, sessionID := range normalizedIDs {
 		existing := existingByID[sessionID]
 		if existing.ID != "" {
+			if kind == "deleted" {
+				removed[sessionID] = struct{}{}
+				if err := s.purgeSessionContentInBatch(batch, existing); err != nil {
+					return err
+				}
+				if previousTombstone, ok, tombstoneErr := s.GetV3SessionTombstone(sessionID); tombstoneErr != nil {
+					return tombstoneErr
+				} else if ok {
+					if err := removeV3SessionTombstoneInBatch(batch, previousTombstone); err != nil {
+						return err
+					}
+				}
+			}
 			currentSeq, err := s.readV3SessionSequence(sessionID)
 			if err != nil {
 				return err
@@ -590,7 +612,47 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 			return err
 		}
 	}
+	if kind == "deleted" {
+		if err := s.rebuildV3SessionLibraryIndexInBatch(batch, nil, nil, removed); err != nil {
+			return err
+		}
+	}
 	return batch.Commit(pebble.Sync)
+}
+
+func deletePrefixInBatch(batch *pebble.Batch, prefix string) error {
+	if strings.TrimSpace(prefix) == "" {
+		return nil
+	}
+	return batch.DeleteRange([]byte(prefix), []byte(prefix+"\xff"), nil)
+}
+
+// purgeSessionContentInBatch removes reclaimable session-owned data while the
+// caller retains and replaces the minimal tombstone/event/projection/outbox
+// records needed for durable V3 removal replay.
+func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session SessionSnapshot) error {
+	for _, prefix := range []string{
+		MessagePrefix(session.ID), MessageByAccountPrefix(session.AccountScopeID, session.ID),
+		SessionPlanPrefix(session.ID), SessionPlanRevisionPrefix(session.ID, ""), SessionPlanByAccountPrefix(session.AccountScopeID, session.ID),
+		SessionTurnUsagePrefix(session.ID), SessionTurnUsageByAccountPrefix(session.AccountScopeID, session.ID),
+		PermissionPrefix(session.ID), PermissionPendingPrefix(session.ID), RunWaitPrefix(session.ID), RunPermissionPrefix(session.ID, ""),
+		V3SessionEventPrefix(session.ID), V3SessionMessagePrefix(session.ID), V3SessionRunIntentPrefix(session.ID),
+		V3SessionIdempotencyPrefix(session.AccountScopeID, session.ID), V3RealtimeOutboxBySessionEndpointPrefix(session.ID), V3RealtimeOutboxBySessionSeqPrefix(session.ID),
+	} {
+		if err := deletePrefixInBatch(batch, prefix); err != nil {
+			return err
+		}
+	}
+	for _, key := range []string{
+		KeySessionExecutionV2(session.ID), KeySessionExecutionV2ByAccount(session.AccountScopeID, session.ID),
+		KeySessionUsageSummary(session.ID), KeySessionUsageSummaryByAccount(session.AccountScopeID, session.ID),
+		KeyV3SessionSequence(session.ID), KeyV3SessionProjection(session.ID), KeyV3SessionRunIntentActive(session.ID),
+	} {
+		if err := batch.Delete([]byte(key), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+	}
+	return nil
 }
 
 func normalizeV3SessionTombstone(tombstone V3SessionTombstone) V3SessionTombstone {

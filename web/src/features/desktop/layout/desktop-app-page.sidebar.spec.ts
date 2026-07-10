@@ -7,6 +7,8 @@ import {
   SIDEBAR_SESSION_GROUPS,
   compareSidebarSessions,
   desktopRouteWorkspacePathForSession,
+  buildSidebarSessionTree,
+  filterInactiveSidebarSessionTrees,
   sessionActivityLabel,
   sessionStatusDetail,
   sessionStatusTone,
@@ -264,6 +266,24 @@ test('sidebar active sort positions a restarted old conversation by its new run 
   })
 
   assert.equal(compareSidebarSessions(existingActive, restartedOldConversation, 100_500) < 0, true)
+})
+
+test('sidebar inactivity filter hides stale ordinary trees but protects selected, pinned, running, and active descendants', () => {
+  const now = 100 * 60 * 60 * 1000
+  const staleAt = now - 13 * 60 * 60 * 1000
+  const recentAt = now - 2 * 60 * 60 * 1000
+  const sessions = [
+    makeSession('stale', { updatedAt: staleAt }),
+    makeSession('selected', { updatedAt: staleAt }),
+    makeSession('pinned', { updatedAt: staleAt, metadata: { [DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY]: true } }),
+    makeSession('recent', { updatedAt: recentAt }),
+    makeSession('parent', { updatedAt: staleAt }),
+    makeSession('child', { updatedAt: recentAt, metadata: { parent_session_id: 'parent', requested_subagent: 'explorer' } }),
+  ]
+  const result = filterInactiveSidebarSessionTrees(buildSidebarSessionTree(sessions, now), now, 12, 'selected')
+  assert.deepEqual(result.nodes.map((node) => node.session.id).sort(), ['parent', 'pinned', 'recent', 'selected'])
+  assert.equal(result.hiddenCount, 1)
+  assert.equal(filterInactiveSidebarSessionTrees(buildSidebarSessionTree(sessions, now), now, null).hiddenCount, 0)
 })
 
 test('sidebar manual pin moves an active chat into the Pinned display group', () => {
