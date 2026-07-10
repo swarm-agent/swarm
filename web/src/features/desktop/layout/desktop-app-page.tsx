@@ -11,7 +11,7 @@ import { cn } from '../../../lib/cn'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
-import { agentStateQueryOptions, draftModelQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
+import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import type { DesktopNotificationCenterRecord, DesktopSessionRecord } from '../types/realtime'
 import type { DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../chat/types/chat'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
@@ -58,7 +58,8 @@ import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desk
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../state/desktop-v3-session-api'
 import { archiveDesktopV3Sessions, jumpDesktopPlanToRevisionCheckpoint, restartDesktopPlanFromRevision, restoreDesktopPlanRevision, startDesktopPlanAutomatic, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned } from '../session-v3/api'
-import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
+import type { DesktopV3ComposerSettingsTuple, V3SessionRunIntent } from '../state/desktop-v3-cache-types'
+import { getDesktopV3DraftSettings, initializeDesktopV3DraftSettings } from '../chat/services/desktop-v3-draft-settings'
 import { clearNotifications, updateNotification } from '../notifications/api'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
@@ -189,6 +190,7 @@ interface WorktreeSessionModalState {
   branchPrefix: string
   managedWorktrees: ManagedWorktreeOption[]
   settingsLoading: boolean
+  draftSettings: DesktopV3ComposerSettingsTuple
 }
 
 function desktopRunIntentFromV3(runIntent: V3SessionRunIntent | undefined) {
@@ -2194,7 +2196,21 @@ export function DesktopAppPage() {
     staleTime: 30_000,
   })
   const agentStateQuery = useQuery(agentStateQueryOptions())
+  const modelOptionsQuery = useQuery(modelOptionsQueryOptions())
   const draftPreferenceQuery = useQuery(draftModelQueryOptions())
+  useEffect(() => {
+    if (!uiSettingsQuery.isSuccess || !agentStateQuery.isSuccess || !modelOptionsQuery.isSuccess || !draftPreferenceQuery.isSuccess) return
+    const preference = draftPreferenceQuery.data.preference
+    for (const workspace of workspaces) {
+      initializeDesktopV3DraftSettings(workspace.path, {
+        mode: normalizeDefaultNewSessionMode(uiSettingsQuery.data.chat?.default_new_session_mode),
+        selectedAgentName: agentStateQuery.data.activePrimary,
+        agents: agentStateQuery.data.profiles,
+        preference,
+        modelOptions: modelOptionsQuery.data,
+      })
+    }
+  }, [agentStateQuery.data, agentStateQuery.isSuccess, draftPreferenceQuery.data, draftPreferenceQuery.isSuccess, modelOptionsQuery.data, modelOptionsQuery.isSuccess, uiSettingsQuery.data, uiSettingsQuery.isSuccess, workspaces])
   useEffect(() => {
     if (uiSettingsQuery.data) {
       setUISettings(uiSettingsQuery.data)
@@ -2767,6 +2783,11 @@ export function DesktopAppPage() {
     routeOptions: DesktopChatRoute[]
   }) => {
     const workspacePath = input.workspace.path
+    const draftSettings = getDesktopV3DraftSettings(workspacePath)
+    if (!draftSettings) {
+      setDesktopToast({ message: 'New-session settings are still loading.', tone: 'error' })
+      return
+    }
     setWorktreeSessionModal({
       workspacePath,
       workspaceName: input.workspace.workspaceName,
@@ -2775,6 +2796,7 @@ export function DesktopAppPage() {
       branchPrefix: '',
       managedWorktrees: [],
       settingsLoading: true,
+      draftSettings,
     })
     setWorktreeSessionTitle('')
     setWorktreeSessionBranch('')
@@ -2833,14 +2855,9 @@ export function DesktopAppPage() {
       setWorktreeSessionError('No writable self/host Desktop V3 route is available for this workspace.')
       return
     }
-    if (!uiSettingsQuery.data) {
-      setWorktreeSessionError('New-session settings are still loading.')
-      return
-    }
-    const configuredMode = normalizeDefaultNewSessionMode(uiSettingsQuery.data.chat?.default_new_session_mode)
-    const activeAgent = agentStateQuery.data?.activePrimary?.trim() || 'swarm'
-    const preference = draftPreferenceQuery.data?.preference
-    if (!preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
+    const draftSettings = worktreeSessionModal.draftSettings
+    const preference = draftSettings.effectivePreference
+    if (!preference.provider.trim() || !preference.model.trim() || !preference.thinking.trim()) {
       setWorktreeSessionError('Select a default provider, model, and thinking level before creating a worktree session.')
       return
     }
@@ -2852,8 +2869,8 @@ export function DesktopAppPage() {
         workspaceName: worktreeSessionModal.workspaceName,
         route: selectedRoute,
         title,
-        mode: configuredMode,
-        agentName: activeAgent,
+        mode: draftSettings.mode,
+        agentName: draftSettings.resolvedAgentName,
         preference: {
           provider: preference.provider,
           model: preference.model,
@@ -2884,7 +2901,7 @@ export function DesktopAppPage() {
     } finally {
       setWorktreeSessionCreating(false)
     }
-  }, [agentStateQuery.data?.activePrimary, draftPreferenceQuery.data?.preference, navigate, uiSettingsQuery.data?.chat?.default_new_session_mode, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionExistingPath, worktreeSessionModal, worktreeSessionTitle])
+  }, [navigate, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionExistingPath, worktreeSessionModal, worktreeSessionTitle])
 
   const openPlanModalForSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()

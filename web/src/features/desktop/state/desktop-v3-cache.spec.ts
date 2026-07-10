@@ -3271,6 +3271,14 @@ test('session create replay does not regress fresher reconnect state or duplicat
     session_id: sessionId,
     session: staleSession,
     projection: staleProjection,
+    agentic_settings: {
+      mode: 'auto',
+      agent_name: 'swarm',
+      resolved_agent_name: 'swarm',
+      stored_preference: {},
+      effective_preference: {},
+    },
+    messages: [],
     mutation: {},
     realtime_outbox: {
       endpoint_seq: 1,

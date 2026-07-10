@@ -110,13 +110,13 @@ func TestSessionsV3PrimaryCreateResponseIsMinimalMutationResult(t *testing.T) {
 	if !strings.Contains(createHandler, "sessionV3CreateResultResponse") {
 		t.Fatalf("create handler does not use minimal create response helper")
 	}
-	createResponse := sourceBetweenForTest(t, string(body), "func sessionV3CreateResultResponse", "func sessionsV3HydratedResponse")
-	for _, required := range []string{`"ok"`, `"session_id"`, `"session"`, `"projection"`, `"mutation"`, `"realtime_outbox"`} {
+	createResponse := sourceBetweenForTest(t, string(body), "func (s *Server) sessionV3CreateResultResponse", "func sessionsV3HydratedResponse")
+	for _, required := range []string{`"ok"`, `"session_id"`, `"session"`, `"projection"`, `"agentic_settings"`, `"messages"`, `"mutation"`, `"realtime_outbox"`} {
 		if !strings.Contains(createResponse, required) {
 			t.Fatalf("create response helper missing %s", required)
 		}
 	}
-	for _, forbidden := range []string{`"messages"`, `"events"`, `"messages_by_session"`, `"events_by_session"`, `"sessions_by_id"`, `"projections_by_session"`, `"workset_id"`, `"worksets"`, `"subscriptions"`} {
+	for _, forbidden := range []string{`"events"`, `"messages_by_session"`, `"events_by_session"`, `"sessions_by_id"`, `"projections_by_session"`, `"workset_id"`, `"worksets"`, `"subscriptions"`} {
 		if strings.Contains(createResponse, forbidden) {
 			t.Fatalf("create response helper contains forbidden snapshot/workset field %s", forbidden)
 		}
@@ -353,14 +353,15 @@ func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
 	}
 
 	var createPayload struct {
-		OK             bool                                 `json:"ok"`
-		SessionID      string                               `json:"session_id"`
-		Session        pebblestore.SessionSnapshot          `json:"session"`
-		Projection     sessionruntime.SessionProjection     `json:"projection"`
-		Messages       json.RawMessage                      `json:"messages"`
-		Events         json.RawMessage                      `json:"events"`
-		RealtimeOutbox *pebblestore.V3RealtimeOutboxRecord  `json:"realtime_outbox"`
-		Mutation       sessionruntime.SessionMutationResult `json:"mutation"`
+		OK              bool                                 `json:"ok"`
+		SessionID       string                               `json:"session_id"`
+		Session         pebblestore.SessionSnapshot          `json:"session"`
+		Projection      sessionruntime.SessionProjection     `json:"projection"`
+		AgenticSettings sessionsV3AgenticSettings            `json:"agentic_settings"`
+		Messages        []pebblestore.MessageSnapshot        `json:"messages"`
+		Events          json.RawMessage                      `json:"events"`
+		RealtimeOutbox  *pebblestore.V3RealtimeOutboxRecord  `json:"realtime_outbox"`
+		Mutation        sessionruntime.SessionMutationResult `json:"mutation"`
 	}
 	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
 		t.Fatalf("decode create response: %v", err)
@@ -380,8 +381,11 @@ func TestSessionsV3PrimaryCreateListHydrateUsesPrimaryStoreOnly(t *testing.T) {
 	if createPayload.Session.Metadata["agent_name"] != "swarm" || createPayload.Session.Metadata["resolved_agent_name"] != "swarm" || createPayload.Session.Metadata["agent_mode"] != "primary" || createPayload.Session.Metadata["runtime_mode"] != pebblestore.AgentRuntimeModePlanAuto {
 		t.Fatalf("server-owned agent metadata = %+v", createPayload.Session.Metadata)
 	}
-	if createPayload.Projection.LastEventSeq != 1 || len(createPayload.Events) != 0 || len(createPayload.Messages) != 0 {
-		t.Fatalf("create response must not include hydrate messages/events: projection=%+v events=%s messages=%s", createPayload.Projection, createPayload.Events, createPayload.Messages)
+	if createPayload.Projection.LastEventSeq != 1 || len(createPayload.Events) != 0 || createPayload.Messages == nil || len(createPayload.Messages) != 0 {
+		t.Fatalf("create response must include an authoritative empty message tail and no events: projection=%+v events=%s messages=%+v", createPayload.Projection, createPayload.Events, createPayload.Messages)
+	}
+	if createPayload.AgenticSettings.Mode != "auto" || createPayload.AgenticSettings.AgentName != "swarm" || createPayload.AgenticSettings.ResolvedAgentName != "swarm" || createPayload.AgenticSettings.ProjectionSeq != 1 {
+		t.Fatalf("create response agentic_settings = %+v", createPayload.AgenticSettings)
 	}
 	if createPayload.RealtimeOutbox == nil || createPayload.RealtimeOutbox.EndpointSeq == 0 {
 		t.Fatalf("create response missing realtime_outbox: %+v", createPayload.RealtimeOutbox)

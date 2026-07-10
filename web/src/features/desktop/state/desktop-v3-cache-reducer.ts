@@ -5,6 +5,7 @@ import type {
   DesktopPermissionSummary,
   DesktopV3CacheAction,
   DesktopV3CacheState,
+  DesktopV3AgenticSettings,
   LiveRunOverlay,
   LiveRunReasoningOverlay,
   MessageListCache,
@@ -33,6 +34,7 @@ import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPendingPermissions, normalizeDesktopPermissionSummary, normalizeDesktopPermissionSummaries, safeString } from '../permissions/services/desktop-permission-normalization'
 import { normalizeDesktopSessionPlan } from '../chat/services/session-plan-record'
 import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
+import { resolveComposerSettingsFromCanonical } from '../chat/services/agent-model-preferences'
 
 export const DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS = 5
 
@@ -92,6 +94,7 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     usageBySession: {},
     preferencesBySession: {},
     agentModelPolicyBySession: {},
+    composerSettingsBySession: {},
     historyManifestsBySession: {},
     historyChunksById: {},
     omissionsByScope: {},
@@ -207,6 +210,28 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       return applyMessageMutationResult(state, action.raw, action.clientRequestId, action.messageId)
     case 'mutation.sessionSettingsResult':
       return applySessionSettingsMutationResult(state, action.raw)
+    case 'composerSettings.installCanonical':
+      installCanonicalComposerSettings(state, action.sessionId, action.settings, action.projectionSeq, action.updatedAt)
+      return state
+    case 'composerSettings.applyIntent': {
+      const current = state.composerSettingsBySession[action.sessionId]
+      if (!current?.tuple) return state
+      current.error = undefined
+      current.pending.push({
+        mutationId: action.mutationId,
+        tuple: action.tuple,
+        basedOnProjectionSeq: current.canonicalProjectionSeq,
+        createdAt: action.createdAt,
+      })
+      current.tuple = action.tuple
+      return state
+    }
+    case 'composerSettings.acknowledge':
+      acknowledgeComposerSettings(state, action.sessionId, action.mutationId, action.settings, action.projectionSeq, action.updatedAt)
+      return state
+    case 'composerSettings.reject':
+      rejectComposerSettings(state, action.sessionId, action.mutationId, action.error)
+      return state
     case 'mutation.sessionArchiveResult':
       return applySessionArchiveMutationResult(state, action.raw)
     case 'pendingUser.upsert':
@@ -812,6 +837,15 @@ export function applySessionCreateMutationResult(
       needsHydrate: false,
     }
     state.projectionsBySession[sessionId] = raw.projection
+    installCanonicalComposerSettings(state, sessionId, raw.agentic_settings, projectionSeq(raw.projection), raw.projection.updated_at)
+    state.messagesBySession[sessionId] = buildMessageListCache(raw.messages, {
+      knownFull: true,
+      sourceMessageCount: raw.session.message_count,
+      sourceLastMessageAt: raw.session.last_message_at,
+      sourceProjectionHighWatermarkSeq: raw.projection.projection_high_watermark_seq,
+      hydratedAt: Date.now(),
+      tailHydratedAt: Date.now(),
+    })
   }
   delete state.tombstonesBySession[sessionId]
 
@@ -1501,8 +1535,20 @@ export function applyWorksetSessionDiscovered(
 
   const existingProjection = state.projectionsBySession[sessionId]
   const incomingProjectionIsFresh = projectionSeq(frame.projection) >= projectionSeq(existingProjection)
-  if (frame.session && incomingProjectionIsFresh) {
-    upsertSessions(state, { [sessionId]: frame.session })
+  const eventSession = frame.event ? decodeSessionEventPayload(frame.event).session : undefined
+  const discoveredSession = eventSession ?? frame.session
+  if (discoveredSession && incomingProjectionIsFresh) {
+    const existing = state.sessionsById[sessionId]
+    const existingSession = existing?.kind === 'full' ? existing.session : undefined
+    const mergedSession = eventSession
+      ? eventSession
+      : {
+          ...discoveredSession,
+          mode: stringField(discoveredSession.mode) || existingSession?.mode || '',
+          preference: discoveredSession.preference ?? existingSession?.preference,
+          metadata: { ...(existingSession?.metadata ?? {}), ...(discoveredSession.metadata ?? {}) },
+        }
+    upsertSessions(state, { [sessionId]: mergedSession })
   } else if (!state.sessionsById[sessionId]) {
     state.sessionsById[sessionId] = {
       kind: 'stub',
@@ -2080,6 +2126,15 @@ function applySessionViews(
       ? undefined
       : view.agentic_settings
     const authoritativePreference = settings?.effective_preference ?? settings?.stored_preference
+    if (settings) {
+      installCanonicalComposerSettings(
+        state,
+        sessionId,
+        settings,
+        settings.projection_seq,
+        state.projectionsBySession[sessionId]?.updated_at,
+      )
+    }
     if (authoritativePreference !== undefined) state.preferencesBySession[sessionId] = authoritativePreference
     if (settings?.agent_model_policy !== undefined) state.agentModelPolicyBySession[sessionId] = settings.agent_model_policy
 
@@ -2100,6 +2155,61 @@ function applySessionViews(
       }
     }
   }
+}
+
+function installCanonicalComposerSettings(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  settings: DesktopV3AgenticSettings,
+  projectionSeq = 0,
+  updatedAt = 0,
+): void {
+  const tuple = resolveComposerSettingsFromCanonical(settings)
+  if (!tuple) return
+  const current = state.composerSettingsBySession[sessionId]
+  const seq = Math.max(0, projectionSeq || settings.projection_seq || 0)
+  const timestamp = Math.max(0, updatedAt)
+  if (current && (seq < current.canonicalProjectionSeq
+    || (seq === current.canonicalProjectionSeq && timestamp < current.canonicalUpdatedAt))) return
+
+  const pending = current?.pending ?? []
+  state.composerSettingsBySession[sessionId] = {
+    readiness: 'ready',
+    tuple: pending[pending.length - 1]?.tuple ?? tuple,
+    canonicalTuple: tuple,
+    canonicalProjectionSeq: seq,
+    canonicalUpdatedAt: timestamp,
+    pending,
+    error: current?.error,
+  }
+}
+
+function acknowledgeComposerSettings(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  mutationId: string,
+  settings: DesktopV3AgenticSettings,
+  projectionSeq = 0,
+  updatedAt = 0,
+): void {
+  const current = state.composerSettingsBySession[sessionId]
+  if (!current) return
+  const acknowledgedIndex = current.pending.findIndex((pending) => pending.mutationId === mutationId)
+  if (acknowledgedIndex < 0) return
+  const remaining = current.pending.slice(acknowledgedIndex + 1)
+  current.pending = []
+  installCanonicalComposerSettings(state, sessionId, settings, projectionSeq, updatedAt)
+  const installed = state.composerSettingsBySession[sessionId]
+  installed.pending = remaining
+  installed.tuple = remaining[remaining.length - 1]?.tuple ?? installed.canonicalTuple
+}
+
+function rejectComposerSettings(state: DesktopV3CacheState, sessionId: string, mutationId: string, error?: string): void {
+  const current = state.composerSettingsBySession[sessionId]
+  if (!current) return
+  current.pending = current.pending.filter((pending) => pending.mutationId !== mutationId)
+  current.tuple = current.pending[current.pending.length - 1]?.tuple ?? current.canonicalTuple
+  current.error = error?.trim() || undefined
 }
 
 function applyPlanSnapshotFromSessionView(state: DesktopV3CacheState, sessionId: string, view: Pick<NonNullable<SyncSnapshotResponse['session_views_by_id']>[string], 'has_active_plan' | 'active_plan'>): void {
