@@ -389,7 +389,7 @@ function buildDesktopV3ExistingSettingsSnapshot(input: {
 }): DesktopV3InputSettingsSnapshot {
   return {
     sessionId: input.sessionId,
-    mode: normalizeSessionMode(input.cacheSession?.mode || input.session?.mode),
+    mode: normalizeSessionMode(input.session?.mode || input.cacheSession?.mode),
     agent: firstNonEmpty(
       metadataString(input.metadata, "agent_name"),
       metadataString(input.metadata, "resolved_agent_name"),
@@ -1257,7 +1257,7 @@ export function DesktopV3ExistingConversationPane({
     return record?.kind === "full" ? record.session : null;
   });
   const storedOperation = operationRef.current;
-  const sessionMode = cacheSession?.mode || session?.mode || "auto";
+  const sessionMode = session?.mode || cacheSession?.mode || "auto";
   const selectPendingPermissionsForSession = useCallback(
     (state: DesktopV3CacheState) =>
       [...(state.permissionsBySession[normalizedSessionId] ?? [])]
@@ -1336,7 +1336,6 @@ export function DesktopV3ExistingConversationPane({
     mode: false,
     preference: false,
   });
-  const modeMutationSequenceRef = useRef(0);
   const unlockedPreferenceRef = useRef<SessionPreferenceRecord>(
     settingsBaseline.preference,
   );
@@ -1639,7 +1638,8 @@ export function DesktopV3ExistingConversationPane({
 
   useEffect(() => {
     if (modeCommand !== "toggle-plan-auto") return;
-    handleModeSelect(mode === "plan" ? "auto" : "plan");
+    localSettingsDirtyRef.current.mode = true;
+    setMode((current) => (current === "plan" ? "auto" : "plan"));
     onModeCommandHandled?.();
   }, [modeCommand, onModeCommandHandled]);
 
@@ -1669,47 +1669,17 @@ export function DesktopV3ExistingConversationPane({
 
   function handleModeSelect(nextMode: DesktopSessionMode) {
     if (!normalizedSessionId || nextMode === mode) return;
-    const mutationSequence = modeMutationSequenceRef.current + 1;
-    modeMutationSequenceRef.current = mutationSequence;
     localSettingsDirtyRef.current.mode = true;
     setMode(nextMode);
-    setSendError(null);
     const nextLock = resolveDesktopV3AgentModelLock(
       agentState.profiles,
       selectedAgent,
       nextMode,
     );
-    if (nextLock.locked) {
-      setPreference((current) =>
-        preferenceFromAgentModelLock(nextLock, current, modelOptions),
-      );
-    }
-    void updateSessionV3Mode(normalizedSessionId, nextMode)
-      .then((modeResponse) => {
-        if (!mountedRef.current || modeMutationSequenceRef.current !== mutationSequence) return;
-        const settingsResponse = sessionV3ModeSettingsMutationResponse(
-          modeResponse,
-          normalizedSessionId,
-          nextMode,
-        );
-        dispatchDesktopV3Cache({
-          type: "mutation.sessionSettingsResult",
-          raw: settingsResponse,
-        });
-        localSettingsDirtyRef.current.mode = false;
-        setMode(normalizeSessionMode(settingsResponse.mode ?? nextMode));
-        if (settingsResponse.preference) {
-          setPreference(normalizePreference(settingsResponse.preference));
-        }
-      })
-      .catch((error) => {
-        if (!mountedRef.current || modeMutationSequenceRef.current !== mutationSequence) return;
-        localSettingsDirtyRef.current.mode = false;
-        setMode(settingsBaseline.mode);
-        setSendError(
-          error instanceof Error ? error.message : "Failed to update session mode",
-        );
-      });
+    if (!nextLock.locked) return;
+    setPreference((current) =>
+      preferenceFromAgentModelLock(nextLock, current, modelOptions),
+    );
   }
 
   async function handleConfirmAgentSettings(
@@ -1817,6 +1787,21 @@ export function DesktopV3ExistingConversationPane({
           normalizedSessionId,
         ),
       });
+    }
+    if (mode !== settingsBaseline.mode) {
+      const modeResponse = await updateSessionV3Mode(normalizedSessionId, mode);
+      const settingsResponse = sessionV3ModeSettingsMutationResponse(
+        modeResponse,
+        normalizedSessionId,
+        mode,
+      );
+      dispatchDesktopV3Cache({
+        type: "mutation.sessionSettingsResult",
+        raw: settingsResponse,
+      });
+      if (settingsResponse.preference) {
+        setPreference(normalizePreference(settingsResponse.preference));
+      }
     }
   }
 

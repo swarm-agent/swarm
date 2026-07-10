@@ -33,7 +33,7 @@ import {
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
-import { normalizeDefaultNewSessionMode, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { fetchSwarmTargets, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
@@ -2847,7 +2847,7 @@ export function DesktopAppPage() {
         workspaceName: worktreeSessionModal.workspaceName,
         route: selectedRoute,
         title,
-        mode: normalizeDefaultNewSessionMode(uiSettingsQuery.data?.chat?.default_new_session_mode),
+        mode: 'auto',
         agentName: activeAgent,
         preference: {
           provider: preference.provider,
@@ -2879,7 +2879,7 @@ export function DesktopAppPage() {
     } finally {
       setWorktreeSessionCreating(false)
     }
-  }, [agentStateQuery.data?.activePrimary, draftPreferenceQuery.data?.preference, navigate, uiSettingsQuery.data?.chat?.default_new_session_mode, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionExistingPath, worktreeSessionModal, worktreeSessionTitle])
+  }, [agentStateQuery.data?.activePrimary, draftPreferenceQuery.data?.preference, navigate, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionExistingPath, worktreeSessionModal, worktreeSessionTitle])
 
   const openPlanModalForSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()

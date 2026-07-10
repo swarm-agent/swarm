@@ -425,7 +425,6 @@ test('startDesktopV3CreateOnlySession creates, selects, connects, and navigates 
     workspaceName: 'workspace',
     route,
     title: 'Worktree title',
-    mode: 'plan',
     agentName: 'swarm',
     worktree: { mode: 'on', branchName: 'agent/worktree-title' },
   })
@@ -476,7 +475,6 @@ test('startDesktopV3CreateOnlySession creates, selects, connects, and navigates 
       `navigate:${operation.sessionId}`,
     ])
     assert.equal(operation.createRequest.title, 'Worktree title')
-    assert.equal(operation.createRequest.mode, 'plan')
     assert.equal(operation.createRequest.worktree_mode, 'on')
     assert.equal(operation.createRequest.worktree_branch_name, 'agent/worktree-title')
     assert.equal(actions.some((action) => action.type === 'pendingUser.upsert'), false)

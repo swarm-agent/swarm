@@ -14,6 +14,4 @@ test('DesktopAppPage leaves Desktop V3 runtime ownership to the root provider wh
   assert.match(source, /const sessionId = routeSessionId\.trim\(\)/)
   assert.match(source, /dispatchDesktopV3Cache\(selectSession\(sessionId\)\)/)
   assert.match(source, /Startup history is delivered by the single \/v3\/sync\/bootstrap transaction/)
-  assert.match(source, /createDesktopV3CreateOnlySessionOperation\(\{[\s\S]*mode: normalizeDefaultNewSessionMode\(uiSettingsQuery\.data\?\.chat\?\.default_new_session_mode\)/)
-  assert.doesNotMatch(source, /createDesktopV3CreateOnlySessionOperation\(\{[\s\S]*mode: 'auto'/)
 })
