@@ -75,46 +75,59 @@ test('discovery prefers the durable event session and partial equal-projection s
   assert.deepEqual(installed?.kind === 'full' ? installed.session.metadata : undefined, durable.metadata)
 })
 
-test('pending requests never replace the rendered server tuple', () => {
+test('composer settings preserve an atomic pending tuple across cache consumers', () => {
   const state = createEmptyDesktopV3CacheState()
   reduce(state, { type: 'composerSettings.installCanonical', sessionId: 's', settings: canonical('auto', 'auto-model', 1), projectionSeq: 1 })
-  reduce(state, { type: 'composerSettings.requestStarted', sessionId: 's', mutationId: 'm1', createdAt: 1 })
-  assert.equal(observeTuple(state, 's'), 'auto:swarm:auto-model')
-  assert.deepEqual(state.composerSettingsBySession.s.tuple, state.composerSettingsBySession.s.canonicalTuple)
+  reduce(state, { type: 'composerSettings.applyIntent', sessionId: 's', mutationId: 'm1', tuple: tuple('plan', 'plan-model'), createdAt: 1 })
+  assert.deepEqual(state.composerSettingsBySession.s.tuple, tuple('plan', 'plan-model'))
   assert.equal(state.composerSettingsBySession.s.pending.length, 1)
 })
 
-test('only a fresh server projection changes settings while a request is pending', () => {
+test('stale canonical installs cannot replace a newer canonical or pending tuple', () => {
+  const state = createEmptyDesktopV3CacheState()
+  reduce(state, { type: 'composerSettings.installCanonical', sessionId: 's', settings: canonical('auto', 'new-auto', 5), projectionSeq: 5 })
+  reduce(state, { type: 'composerSettings.applyIntent', sessionId: 's', mutationId: 'm1', tuple: tuple('plan', 'plan-model'), createdAt: 1 })
+  reduce(state, { type: 'composerSettings.installCanonical', sessionId: 's', settings: canonical('auto', 'old-auto', 4), projectionSeq: 4 })
+  assert.equal(state.composerSettingsBySession.s.canonicalTuple?.effectivePreference.model, 'new-auto')
+  assert.deepEqual(state.composerSettingsBySession.s.tuple, tuple('plan', 'plan-model'))
+})
+
+test('reverse-order acknowledgement keeps every observed mode/model tuple coherent', () => {
   const state = createEmptyDesktopV3CacheState()
   const observed = [observeTuple(state, 's')]
   reduce(state, { type: 'composerSettings.installCanonical', sessionId: 's', settings: canonical('auto', 'auto-model', 1), projectionSeq: 1 })
   observed.push(observeTuple(state, 's'))
-  reduce(state, { type: 'composerSettings.requestStarted', sessionId: 's', mutationId: 'm1', createdAt: 1 })
+  reduce(state, { type: 'composerSettings.applyIntent', sessionId: 's', mutationId: 'm1', tuple: tuple('plan', 'plan-one'), createdAt: 1 })
   observed.push(observeTuple(state, 's'))
-  reduce(state, { type: 'composerSettings.installCanonical', sessionId: 's', settings: canonical('auto', 'stale-model', 0), projectionSeq: 0 })
+  reduce(state, { type: 'composerSettings.applyIntent', sessionId: 's', mutationId: 'm2', tuple: tuple('auto', 'auto-two'), createdAt: 2 })
   observed.push(observeTuple(state, 's'))
-  reduce(state, { type: 'composerSettings.installCanonical', sessionId: 's', settings: canonical('plan', 'plan-model', 2), projectionSeq: 2 })
+  reduce(state, { type: 'composerSettings.acknowledge', sessionId: 's', mutationId: 'm2', settings: canonical('auto', 'auto-two', 3), projectionSeq: 3 })
   observed.push(observeTuple(state, 's'))
-  reduce(state, { type: 'composerSettings.requestFinished', sessionId: 's', mutationId: 'm1' })
+  reduce(state, { type: 'composerSettings.acknowledge', sessionId: 's', mutationId: 'm1', settings: canonical('plan', 'plan-one', 2), projectionSeq: 2 })
+  observed.push(observeTuple(state, 's'))
   assert.deepEqual(observed, [
     'loading',
     'auto:swarm:auto-model',
-    'auto:swarm:auto-model',
-    'auto:swarm:auto-model',
-    'plan:swarm:plan-model',
+    'plan:swarm:plan-one',
+    'auto:swarm:auto-two',
+    'auto:swarm:auto-two',
+    'auto:swarm:auto-two',
   ])
-  assertOnlyCoherentTuples(observed, ['auto:swarm:auto-model', 'plan:swarm:plan-model'])
+  assertOnlyCoherentTuples(observed, ['auto:swarm:auto-model', 'plan:swarm:plan-one', 'auto:swarm:auto-two'])
   assert.equal(state.composerSettingsBySession.s.pending.length, 0)
 })
 
-test('mutation rejection preserves canonical settings and exposes the failure', () => {
+test('mutation failure restores canonical settings without rendering a cross-mode model', () => {
   const state = createEmptyDesktopV3CacheState()
+  const observed = [observeTuple(state, 's')]
   reduce(state, { type: 'composerSettings.installCanonical', sessionId: 's', settings: canonical('auto', 'auto-model', 1), projectionSeq: 1 })
-  reduce(state, { type: 'composerSettings.requestStarted', sessionId: 's', mutationId: 'm1', createdAt: 1 })
-  reduce(state, { type: 'composerSettings.reject', sessionId: 's', mutationId: 'm1', error: 'server rejected update' })
-  assert.equal(observeTuple(state, 's'), 'auto:swarm:auto-model')
-  assert.equal(state.composerSettingsBySession.s.error, 'server rejected update')
-  assert.equal(state.composerSettingsBySession.s.pending.length, 0)
+  observed.push(observeTuple(state, 's'))
+  reduce(state, { type: 'composerSettings.applyIntent', sessionId: 's', mutationId: 'm1', tuple: tuple('plan', 'plan-model'), createdAt: 1 })
+  observed.push(observeTuple(state, 's'))
+  reduce(state, { type: 'composerSettings.reject', sessionId: 's', mutationId: 'm1' })
+  observed.push(observeTuple(state, 's'))
+  assert.deepEqual(observed, ['loading', 'auto:swarm:auto-model', 'plan:swarm:plan-model', 'auto:swarm:auto-model'])
+  assertOnlyCoherentTuples(observed, ['auto:swarm:auto-model', 'plan:swarm:plan-model'])
 })
 
 test('missing canonical inputs remain absent rather than inventing Auto settings', () => {

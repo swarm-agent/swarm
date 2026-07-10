@@ -161,6 +161,7 @@ export interface DesktopV3ComposerSettingsTuple {
 
 export interface DesktopV3ComposerSettingsPendingMutation {
   mutationId: string
+  tuple: DesktopV3ComposerSettingsTuple
   basedOnProjectionSeq: number
   createdAt: number
 }
@@ -880,8 +881,8 @@ export type DesktopV3CacheAction =
   | { type: 'mutation.messageResult'; raw: SessionMessageMutationResponse | MessageMutationConflictResponse; clientRequestId: string; messageId: string }
   | { type: 'mutation.sessionSettingsResult'; raw: SessionSettingsMutationResponse }
   | { type: 'composerSettings.installCanonical'; sessionId: string; settings: DesktopV3AgenticSettings; projectionSeq?: number; updatedAt?: number }
-  | { type: 'composerSettings.requestStarted'; sessionId: string; mutationId: string; createdAt: number }
-  | { type: 'composerSettings.requestFinished'; sessionId: string; mutationId: string }
+  | { type: 'composerSettings.applyIntent'; sessionId: string; mutationId: string; tuple: DesktopV3ComposerSettingsTuple; createdAt: number }
+  | { type: 'composerSettings.acknowledge'; sessionId: string; mutationId: string; settings: DesktopV3AgenticSettings; projectionSeq?: number; updatedAt?: number }
   | { type: 'composerSettings.reject'; sessionId: string; mutationId: string; error?: string }
   | { type: 'mutation.sessionArchiveResult'; raw: SessionArchiveMutationResponse }
   | { type: 'pendingUser.upsert'; input: Omit<PendingUserMessage, 'role' | 'status'> }

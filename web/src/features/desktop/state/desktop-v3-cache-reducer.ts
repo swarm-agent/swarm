@@ -213,19 +213,21 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'composerSettings.installCanonical':
       installCanonicalComposerSettings(state, action.sessionId, action.settings, action.projectionSeq, action.updatedAt)
       return state
-    case 'composerSettings.requestStarted': {
+    case 'composerSettings.applyIntent': {
       const current = state.composerSettingsBySession[action.sessionId]
       if (!current?.tuple) return state
       current.error = undefined
       current.pending.push({
         mutationId: action.mutationId,
+        tuple: action.tuple,
         basedOnProjectionSeq: current.canonicalProjectionSeq,
         createdAt: action.createdAt,
       })
+      current.tuple = action.tuple
       return state
     }
-    case 'composerSettings.requestFinished':
-      finishComposerSettingsRequest(state, action.sessionId, action.mutationId)
+    case 'composerSettings.acknowledge':
+      acknowledgeComposerSettings(state, action.sessionId, action.mutationId, action.settings, action.projectionSeq, action.updatedAt)
       return state
     case 'composerSettings.reject':
       rejectComposerSettings(state, action.sessionId, action.mutationId, action.error)
@@ -2173,7 +2175,7 @@ function installCanonicalComposerSettings(
   const pending = current?.pending ?? []
   state.composerSettingsBySession[sessionId] = {
     readiness: 'ready',
-    tuple,
+    tuple: pending[pending.length - 1]?.tuple ?? tuple,
     canonicalTuple: tuple,
     canonicalProjectionSeq: seq,
     canonicalUpdatedAt: timestamp,
@@ -2182,16 +2184,31 @@ function installCanonicalComposerSettings(
   }
 }
 
-function finishComposerSettingsRequest(state: DesktopV3CacheState, sessionId: string, mutationId: string): void {
+function acknowledgeComposerSettings(
+  state: DesktopV3CacheState,
+  sessionId: string,
+  mutationId: string,
+  settings: DesktopV3AgenticSettings,
+  projectionSeq = 0,
+  updatedAt = 0,
+): void {
   const current = state.composerSettingsBySession[sessionId]
   if (!current) return
-  current.pending = current.pending.filter((pending) => pending.mutationId !== mutationId)
+  const acknowledgedIndex = current.pending.findIndex((pending) => pending.mutationId === mutationId)
+  if (acknowledgedIndex < 0) return
+  const remaining = current.pending.slice(acknowledgedIndex + 1)
+  current.pending = []
+  installCanonicalComposerSettings(state, sessionId, settings, projectionSeq, updatedAt)
+  const installed = state.composerSettingsBySession[sessionId]
+  installed.pending = remaining
+  installed.tuple = remaining[remaining.length - 1]?.tuple ?? installed.canonicalTuple
 }
 
 function rejectComposerSettings(state: DesktopV3CacheState, sessionId: string, mutationId: string, error?: string): void {
   const current = state.composerSettingsBySession[sessionId]
   if (!current) return
-  finishComposerSettingsRequest(state, sessionId, mutationId)
+  current.pending = current.pending.filter((pending) => pending.mutationId !== mutationId)
+  current.tuple = current.pending[current.pending.length - 1]?.tuple ?? current.canonicalTuple
   current.error = error?.trim() || undefined
 }
 
