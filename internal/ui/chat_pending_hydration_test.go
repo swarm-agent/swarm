@@ -12,6 +12,9 @@ import (
 type chatPendingHydrationBackendStub struct {
 	recent         []ChatPermissionRecord
 	pending        []ChatPermissionRecord
+	setModeResult  string
+	preference     [5]string
+	contextWindow  int
 	listCalls      int
 	listLimit      int
 	pendingCalls   int
@@ -33,11 +36,14 @@ func (s *chatPendingHydrationBackendStub) GetSessionMode(context.Context, string
 }
 
 func (s *chatPendingHydrationBackendStub) SetSessionMode(context.Context, string, string) (string, error) {
+	if strings.TrimSpace(s.setModeResult) != "" {
+		return s.setModeResult, nil
+	}
 	return "auto", nil
 }
 
 func (s *chatPendingHydrationBackendStub) GetSessionPreference(context.Context, string) (string, string, string, string, string, int, error) {
-	return "", "", "", "", "", 0, nil
+	return s.preference[0], s.preference[1], s.preference[2], s.preference[3], s.preference[4], s.contextWindow, nil
 }
 
 func (s *chatPendingHydrationBackendStub) SetSessionPreference(context.Context, string, string, string, string, string, string) (string, string, string, string, string, int, error) {
@@ -98,6 +104,41 @@ func (s *chatPendingHydrationBackendStub) ExplainPermission(context.Context, str
 
 func (s *chatPendingHydrationBackendStub) StopRun(context.Context, string, string) error {
 	return nil
+}
+
+func TestChatPageModeSwitchRefreshesEffectiveModelState(t *testing.T) {
+	backend := &chatPendingHydrationBackendStub{
+		setModeResult: "auto",
+		preference:    [5]string{"codex", "auto-model", "medium", "fast", "session"},
+		contextWindow: 240000,
+	}
+	page := NewChatPage(ChatPageOptions{
+		Backend:        backend,
+		SessionID:      "session-1",
+		SessionMode:    "plan",
+		AuthConfigured: true,
+		ModelProvider:  "codex",
+		ModelName:      "plan-model",
+		ThinkingLevel:  "xhigh",
+	})
+
+	page.queueSetMode("auto", false)
+	deadline := time.Now().Add(2 * time.Second)
+	for page.SessionMode() != "auto" && time.Now().Before(deadline) {
+		page.drainPermissionActions()
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if got := page.SessionMode(); got != "auto" {
+		t.Fatalf("SessionMode = %q, want auto", got)
+	}
+	provider, model, thinking, tier, contextMode := page.ModelState()
+	if provider != "codex" || model != "auto-model" || thinking != "medium" || tier != "fast" || contextMode != "session" {
+		t.Fatalf("ModelState = (%q, %q, %q, %q, %q), want auto-mode preference", provider, model, thinking, tier, contextMode)
+	}
+	if page.contextWindow != 240000 {
+		t.Fatalf("contextWindow = %d, want 240000", page.contextWindow)
+	}
 }
 
 func TestChatPageInitialHydrationMergesDedicatedPendingPermissionsIntoConversation(t *testing.T) {

@@ -7,6 +7,24 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+func TestTakePlanExitResolutionPreservesApprovedArgumentsBeforeClosing(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-1", AuthConfigured: true, SessionMode: "plan"})
+	page.OpenExitPlanModePermissionModal("perm_exit", "plan-1", "Plan", "body", "", `{"title":"Plan","document":{"checkpoints":[{"id":"cp-1","title":"One"}]}}`)
+
+	permissionID, _, approvedArguments := page.takePlanExitResolution(true)
+	if permissionID != "perm_exit" {
+		t.Fatalf("permission ID = %q", permissionID)
+	}
+	for _, want := range []string{`"title":"Plan"`, `"document"`, `"execution_granularity":"checkpointed"`} {
+		if !strings.Contains(approvedArguments, want) {
+			t.Fatalf("approved arguments %s missing %s", approvedArguments, want)
+		}
+	}
+	if page.planExitModalActive() {
+		t.Fatal("modal remained active after taking resolution")
+	}
+}
+
 func TestExitPlanRunChoicesWriteCanonicalApprovedArguments(t *testing.T) {
 	for _, tt := range []struct {
 		key             rune

@@ -465,6 +465,19 @@ func (a *App) applyTUISessionStoreToChat(sessionID string) {
 		return
 	}
 	a.chat.SetSessionTabs(chatSessionTabsFromSummaries(a.homeModel.RecentSessions))
+	a.chat.SetSessionMode(snapshot.Session.Mode)
+	if strings.TrimSpace(snapshot.Preference.Provider) != "" || strings.TrimSpace(snapshot.Preference.Model) != "" {
+		a.chat.SetModelState(
+			strings.TrimSpace(snapshot.Preference.Provider),
+			strings.TrimSpace(snapshot.Preference.Model),
+			strings.TrimSpace(snapshot.Preference.Thinking),
+			strings.TrimSpace(snapshot.Preference.ServiceTier),
+			strings.TrimSpace(snapshot.Preference.ContextMode),
+		)
+	}
+	if snapshot.AgentModelPolicy.ContextWindow > 0 {
+		a.chat.SetContextWindow(snapshot.AgentModelPolicy.ContextWindow)
+	}
 	a.chat.SetMessages(chatMessagesFromClient(snapshot.Messages))
 	a.chat.SetUsageSummary(convertClientUsageSummary(snapshot.UsageSummary))
 	var activePlan client.SessionPlan

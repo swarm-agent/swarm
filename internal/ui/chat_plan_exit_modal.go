@@ -557,12 +557,10 @@ func (p *ChatPage) clampPlanExitScroll(maxScroll int) {
 }
 
 func (p *ChatPage) resolvePlanExitModal(approve bool) {
-	permissionID := strings.TrimSpace(p.planExitPermission)
-	note := strings.TrimSpace(p.planExitInput)
-	p.closePlanExitModal()
+	permissionID, note, approvedArguments := p.takePlanExitResolution(approve)
 	if permissionID != "" {
 		if approve {
-			p.queueResolvePermissionByID(permissionID, "approve", note, p.planExitApprovedArguments())
+			p.queueResolvePermissionByID(permissionID, "approve", note, approvedArguments)
 			p.statusLine = "exit plan mode approved"
 		} else {
 			p.queueResolvePermissionByID(permissionID, "deny", note)
@@ -575,6 +573,17 @@ func (p *ChatPage) resolvePlanExitModal(approve bool) {
 		return
 	}
 	p.statusLine = "exit plan mode cancelled"
+}
+
+func (p *ChatPage) takePlanExitResolution(approve bool) (string, string, string) {
+	permissionID := strings.TrimSpace(p.planExitPermission)
+	note := strings.TrimSpace(p.planExitInput)
+	approvedArguments := ""
+	if permissionID != "" && approve {
+		approvedArguments = p.planExitApprovedArguments()
+	}
+	p.closePlanExitModal()
+	return permissionID, note, approvedArguments
 }
 
 func (p *ChatPage) planExitApprovedArguments() string {
@@ -625,6 +634,8 @@ func exitPlanPermissionPayload(record ChatPermissionRecord) (string, string, str
 	}
 	if value := mapStringArg(args, "title"); value != "" {
 		title = value
+	} else if value := titleForActionablePlanDocument(args["document"]); value != "" {
+		title = value
 	}
 	if value := mapStringArg(args, "plan"); value != "" {
 		body = value
@@ -637,9 +648,40 @@ func exitPlanPermissionPayload(record ChatPermissionRecord) (string, string, str
 		documentText = StructuredPlanDocumentTextFromValue(document)
 	}
 	if approved, ok := args["approved_arguments"]; ok {
+		if approvedMap := structuredPlanDocumentMap(approved); len(approvedMap) > 0 {
+			if mapStringArg(approvedMap, "title") == "" && !strings.EqualFold(title, "Exit Plan Mode") {
+				approvedMap["title"] = title
+			}
+			approved = approvedMap
+		}
 		if rawApproved, err := json.Marshal(approved); err == nil {
 			approvedArguments = string(rawApproved)
 		}
 	}
 	return title, body, planID, documentText, approvedArguments
+}
+
+func titleForActionablePlanDocument(value any) string {
+	document := structuredPlanDocumentMap(value)
+	if len(document) == 0 {
+		return ""
+	}
+	checkpoints, ok := document["checkpoints"].([]any)
+	if !ok || len(checkpoints) == 0 {
+		return ""
+	}
+	if title := mapStringArg(document, "title"); title != "" {
+		return title
+	}
+	if info := structuredPlanDocumentMap(document["info"]); len(info) > 0 {
+		if goal := mapStringArg(info, "goal"); goal != "" {
+			return goal
+		}
+	}
+	for _, checkpoint := range checkpoints {
+		if title := mapStringArg(structuredPlanDocumentMap(checkpoint), "title"); title != "" {
+			return title
+		}
+	}
+	return ""
 }

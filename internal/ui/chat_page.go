@@ -265,14 +265,21 @@ type chatPermissionLoadResult struct {
 }
 
 type chatPermissionActionResult struct {
-	Action       string
-	Mode         string
-	Announce     bool
-	Permission   ChatPermissionRecord
-	Permissions  []ChatPermissionRecord
-	Pending      []ChatPermissionRecord
-	ResolvedMany []ChatPermissionRecord
-	Err          error
+	Action           string
+	Mode             string
+	Announce         bool
+	ModelProvider    string
+	ModelName        string
+	ThinkingLevel    string
+	ServiceTier      string
+	ContextMode      string
+	ContextWindow    int
+	PreferenceLoaded bool
+	Permission       ChatPermissionRecord
+	Permissions      []ChatPermissionRecord
+	Pending          []ChatPermissionRecord
+	ResolvedMany     []ChatPermissionRecord
+	Err              error
 }
 
 type ChatPage struct {
@@ -2548,6 +2555,12 @@ func (p *ChatPage) drainPermissionActions() bool {
 			switch result.Action {
 			case "mode.set":
 				p.applySessionMode(result.Mode, result.Announce)
+				if result.PreferenceLoaded {
+					p.SetModelState(result.ModelProvider, result.ModelName, result.ThinkingLevel, result.ServiceTier, result.ContextMode)
+					if result.ContextWindow > 0 {
+						p.SetContextWindow(result.ContextWindow)
+					}
+				}
 			case "mode.refresh":
 				p.applySessionMode(result.Mode, false)
 			case "permission.resolve":
@@ -2645,13 +2658,19 @@ func (p *ChatPage) queueSetMode(target string, announce bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
 		mode, err := p.backend.SetSessionMode(ctx, p.sessionID, next)
-		select {
-		case p.permissionActions <- chatPermissionActionResult{
+		result := chatPermissionActionResult{
 			Action:   "mode.set",
 			Mode:     mode,
 			Announce: announce,
 			Err:      err,
-		}:
+		}
+		if err == nil {
+			var preferenceErr error
+			result.ModelProvider, result.ModelName, result.ThinkingLevel, result.ServiceTier, result.ContextMode, result.ContextWindow, preferenceErr = p.backend.GetSessionPreference(ctx, p.sessionID)
+			result.PreferenceLoaded = preferenceErr == nil
+		}
+		select {
+		case p.permissionActions <- result:
 			p.notifyAsyncEvent()
 		default:
 		}
