@@ -2833,6 +2833,11 @@ export function DesktopAppPage() {
       setWorktreeSessionError('No writable self/host Desktop V3 route is available for this workspace.')
       return
     }
+    if (!uiSettingsQuery.data) {
+      setWorktreeSessionError('New-session settings are still loading.')
+      return
+    }
+    const configuredMode = normalizeDefaultNewSessionMode(uiSettingsQuery.data.chat?.default_new_session_mode)
     const activeAgent = agentStateQuery.data?.activePrimary?.trim() || 'swarm'
     const preference = draftPreferenceQuery.data?.preference
     if (!preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
@@ -2847,7 +2852,7 @@ export function DesktopAppPage() {
         workspaceName: worktreeSessionModal.workspaceName,
         route: selectedRoute,
         title,
-        mode: normalizeDefaultNewSessionMode(uiSettingsQuery.data?.chat?.default_new_session_mode),
+        mode: configuredMode,
         agentName: activeAgent,
         preference: {
           provider: preference.provider,

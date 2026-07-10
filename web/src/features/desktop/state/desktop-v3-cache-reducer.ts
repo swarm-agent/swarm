@@ -1499,7 +1499,9 @@ export function applyWorksetSessionDiscovered(
   const sessionId = stringField(frame.session_id)
   if (!discoveredWorksetId || !sessionId) return
 
-  if (frame.session) {
+  const existingProjection = state.projectionsBySession[sessionId]
+  const incomingProjectionIsFresh = projectionSeq(frame.projection) >= projectionSeq(existingProjection)
+  if (frame.session && incomingProjectionIsFresh) {
     upsertSessions(state, { [sessionId]: frame.session })
   } else if (!state.sessionsById[sessionId]) {
     state.sessionsById[sessionId] = {
@@ -1541,7 +1543,7 @@ export function applyWorksetSessionDiscovered(
     }
   }
 
-  if (frame.projection) state.projectionsBySession[sessionId] = frame.projection
+  if (frame.projection && incomingProjectionIsFresh) state.projectionsBySession[sessionId] = frame.projection
   applyCurrentRunStateFrame(state, sessionId, frame.current_run_state)
   const summary = normalizeDesktopPermissionSummary(frame.permission_summary, sessionId)
   if (summary) applyPermissionSummary(state, sessionId, summary)
