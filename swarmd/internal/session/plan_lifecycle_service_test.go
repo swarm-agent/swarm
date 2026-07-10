@@ -452,61 +452,6 @@ func TestPlanLifecycleRequestNewPlanReplacementPersistsExplicitManualCheckpointe
 	}
 }
 
-func TestPlanLifecycleRequestNewPlanReplacementPersistsExplicitSingleRunControls(t *testing.T) {
-	svc, cleanup := newPlanTestService(t)
-	defer cleanup()
-
-	sessionID := createPlanTestSession(t, svc)
-	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
-		t.Fatalf("set auto mode: %v", err)
-	}
-	original := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{
-		Mode:  PlanExecutionPolicyModeAutomatic,
-		Shape: PlanExecutionShapeCheckpointed,
-	}, []pebblestore.SessionPlanCheckpoint{{ID: "cp-old", Title: "Old", Status: PlanCheckpointStatusCompleted}})
-	replacementDoc := &pebblestore.SessionPlanDocument{
-		ID:     "wrong-id-should-be-replaced",
-		Title:  "Replacement Plan",
-		Status: "draft",
-		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
-			Mode:  PlanExecutionPolicyModeAutomatic,
-			Shape: PlanExecutionShapeCheckpointed,
-		},
-		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-a", Title: "A", Status: PlanCheckpointStatusPending, Objective: "Do A", Order: 1},
-			{ID: "cp-b", Title: "B", Status: PlanCheckpointStatusPending, Objective: "Do B", Order: 2},
-		},
-	}
-	manual := false
-
-	result, err := NewPlanLifecycleService(svc).RequestNewPlan(PlanLifecycleProposalInput{
-		SessionID:             sessionID,
-		PlanID:                original.ID,
-		Title:                 "Replacement Plan",
-		Plan:                  "# Replacement Plan",
-		Document:              replacementDoc,
-		Reason:                "Replace current plan",
-		ApprovalConfirmed:     true,
-		ExecutionGranularity:  PlanAcceptanceGranularityRunThrough,
-		ContinueAutomatically: &manual,
-	})
-	if err != nil {
-		t.Fatalf("request replacement plan: %v", err)
-	}
-	if result.Plan.Document == nil || result.Plan.Document.ID != original.ID || result.Plan.Document.Status != "approved" {
-		t.Fatalf("replacement document = %#v", result.Plan.Document)
-	}
-	if result.Plan.Document.ExecutionPolicy.Mode != PlanExecutionPolicyModeAutomatic || result.Plan.Document.ExecutionPolicy.Shape != PlanExecutionShapeSingleRun {
-		t.Fatalf("replacement single-run policy = %#v", result.Plan.Document.ExecutionPolicy)
-	}
-	if len(result.Plan.Document.Checkpoints) != 1 || result.Plan.Document.Checkpoints[0].ID != "plan-run" || result.Plan.Document.ActiveCheckpointID != "plan-run" {
-		t.Fatalf("single-run execution checkpoint = active %q checkpoints %#v", result.Plan.Document.ActiveCheckpointID, result.Plan.Document.Checkpoints)
-	}
-	if len(result.Plan.Document.OriginalCheckpoints) != 2 || result.Plan.Document.OriginalCheckpoints[0].ID != "cp-a" || result.Plan.Document.OriginalCheckpoints[1].ID != "cp-b" {
-		t.Fatalf("original checkpoint boundaries were not preserved: %#v", result.Plan.Document.OriginalCheckpoints)
-	}
-}
-
 func TestPlanLifecycleRequestNewPlanWithoutPlanIDKeepsSeparateProposalInactive(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()

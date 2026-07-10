@@ -49,8 +49,7 @@ func TestPlanEditorRecoveryQueuesTypedLifecycleAction(t *testing.T) {
 	page.loadSelectedPlanEditorPlan()
 	page.planEditorRecoveryFocus = 1
 	page.planEditorCheckpoint = 1
-	page.planEditorExecution = 0
-	page.planEditorAutomatic = false
+	page.planEditorManualReview = true
 	page.planEditorRecoveryAction = 1
 	page.queuePlanEditorRecovery()
 	action, ok := page.PopChatAction()

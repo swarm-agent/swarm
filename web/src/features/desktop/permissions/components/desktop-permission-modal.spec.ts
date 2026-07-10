@@ -69,84 +69,70 @@ function renderPermission(permission: DesktopPermissionRecord, sessionMode = 'au
   }))
 }
 
-test('exit plan modal renders three clickable execution choices in deterministic order instead of select and checkbox controls', () => {
+test('exit plan modal renders one unchecked review checkbox', () => {
   const markup = renderPermission(exitPlanPermission(), 'plan')
 
-  const automaticIndex = markup.indexOf('Automatic checkpointed')
-  const singleRunIndex = markup.indexOf('Single run')
-  const manualIndex = markup.indexOf('Manual checkpoint review')
-  assert(automaticIndex >= 0, 'expected automatic choice')
-  assert(singleRunIndex > automaticIndex, 'expected single run after automatic')
-  assert(manualIndex > singleRunIndex, 'expected manual checkpoint review after single run')
-  assert.match(markup, /role="radiogroup"/)
-  assert.match(markup, /role="radio"/)
-  assert.doesNotMatch(markup, /<select/)
-  assert.doesNotMatch(markup, /type="checkbox"/)
+  assert.match(markup, /Pause for review after each checkpoint/)
+  assert.match(markup, /type="checkbox"/)
+  assert.doesNotMatch(markup, /type="checkbox"[^>]*checked/)
+  assert.doesNotMatch(markup, /Single run/)
+  assert.doesNotMatch(markup, /role="radiogroup"/)
 })
 
 test('exit plan modal defaults to automatic mode without presenting an AI suggestion', () => {
   const markup = renderPermission(exitPlanPermission(), 'plan')
 
-  assert.match(markup, /Run mode/)
-  assert.match(markup, /Automatic checkpointed is selected by default\./)
-  assert.match(markup, /Choose a different run mode before approving if needed\./)
+  assert.match(markup, /Unchecked continues automatically after successful checkpoints\./)
   assert.doesNotMatch(markup, /AI-suggested/)
   assert.doesNotMatch(markup, /AI suggested/)
   assert.doesNotMatch(markup, /Approval will send/)
   assert.doesNotMatch(markup, /execution_granularity=checkpointed/)
   assert.doesNotMatch(markup, /continuation_policy=automatic/)
-  assert.match(markup, /aria-checked="true"/)
 })
 
 test('exit plan modal ignores top-level backend execution recommendation', () => {
   const markup = renderPermission(exitPlanPermission({}, {
-    execution_granularity: 'run_through',
-    continuation_policy: 'automatic',
-    continue_automatically: true,
+    execution_granularity: 'checkpointed',
+    continuation_policy: 'review_each_checkpoint',
+    continue_automatically: false,
   }), 'plan')
 
-  assert.match(markup, /Automatic checkpointed is selected by default\./)
+  assert.match(markup, /Pause for review after each checkpoint/)
   assert.doesNotMatch(markup, /AI suggested/)
-  assert.doesNotMatch(markup, /execution_granularity=run_through/)
+  assert.doesNotMatch(markup, /execution_granularity=/)
   assert.doesNotMatch(markup, /continuation_policy=automatic/)
 })
 
 test('exit plan modal ignores approved argument execution controls when choosing the default', () => {
   const markup = renderPermission(exitPlanPermission({
-    execution_granularity: 'run_through',
-    continuation_policy: 'automatic',
-    continue_automatically: true,
+    execution_granularity: 'checkpointed',
+    continuation_policy: 'review_each_checkpoint',
+    continue_automatically: false,
   }), 'plan')
 
-  assert.match(markup, /Automatic checkpointed is selected by default\./)
+  assert.match(markup, /Pause for review after each checkpoint/)
   assert.doesNotMatch(markup, /AI suggested/)
-  assert.doesNotMatch(markup, /execution_granularity=run_through/)
+  assert.doesNotMatch(markup, /execution_granularity=/)
   assert.doesNotMatch(markup, /continuation_policy=automatic/)
 })
 
-test('exit plan execution choices map to approved arguments', () => {
-  assert.deepEqual(exitPlanExecutionArguments('run_through'), {
-    execution_granularity: 'run_through',
+test('exit plan review checkbox maps to checkpointed approved arguments', () => {
+  assert.deepEqual(exitPlanExecutionArguments(false), {
+    execution_granularity: 'checkpointed',
     continue_automatically: true,
     continuation_policy: 'automatic',
   })
 
-  assert.deepEqual(exitPlanExecutionArguments('checkpointed_manual'), {
+  assert.deepEqual(exitPlanExecutionArguments(true), {
     execution_granularity: 'checkpointed',
     continue_automatically: false,
     continuation_policy: 'review_each_checkpoint',
-  })
-
-  assert.deepEqual(exitPlanExecutionArguments('checkpointed_automatic'), {
-    execution_granularity: 'checkpointed',
-    continue_automatically: true,
-    continuation_policy: 'automatic',
   })
 })
 
 test('exit plan and new plan approval modals use the same non-split plan layout order', () => {
   const exitPlan = renderPermission(exitPlanPermission(), 'plan')
-  const exitRunModeIndex = exitPlan.indexOf('Run mode')
+  const exitRunModeIndex = exitPlan.indexOf('Pause for review after each checkpoint')
   const exitDetailsIndex = exitPlan.indexOf('Plan details')
   const exitCheckpointsIndex = exitPlan.indexOf('Checkpoints')
   assert(exitRunModeIndex >= 0, 'expected exit plan run mode selector')
@@ -171,11 +157,11 @@ test('exit plan and new plan approval modals use the same non-split plan layout 
       }],
     },
   }))
-  const newRunModeIndex = newPlan.indexOf('Run mode')
+  const newRunModeIndex = newPlan.indexOf('Pause for review after each checkpoint')
   const lifecycleIndex = newPlan.indexOf('Lifecycle action')
   const newDetailsIndex = newPlan.indexOf('Plan details')
   const newCheckpointsIndex = newPlan.indexOf('Checkpoints')
-  assert(newRunModeIndex >= 0, 'expected new plan run mode selector')
+  assert(newRunModeIndex >= 0, 'expected new plan review control')
   assert(lifecycleIndex > newRunModeIndex, 'expected lifecycle context below run mode')
   assert(newDetailsIndex > lifecycleIndex, 'expected plan details below lifecycle context')
   assert(newCheckpointsIndex > newDetailsIndex, 'expected checkpoints below plan details')
@@ -253,21 +239,15 @@ test('DesktopPermissionModal routes typed plan lifecycle approvals away from gen
     },
   }))
   assert.match(newPlan, /Review new plan/)
-  const automaticIndex = newPlan.indexOf('Automatic checkpointed')
-  const singleRunIndex = newPlan.indexOf('Single run')
-  const manualIndex = newPlan.indexOf('Manual checkpoint review')
   assert.match(newPlan, /Structured checkpoint/)
   assert.match(newPlan, /Display structured content/)
   assert.match(newPlan, /Expose full structured plan before approval/)
   assert.match(newPlan, /Render checkpoint task/)
   assert.match(newPlan, /Checkpoint content is visible before approval/)
   assert.match(newPlan, /Approve new plan/)
-  assert.match(newPlan, /Run mode/)
-  assert(automaticIndex >= 0, 'expected automatic checkpointed choice')
-  assert(singleRunIndex > automaticIndex, 'expected single run after automatic checkpointed')
-  assert(manualIndex > singleRunIndex, 'expected manual checkpoint review after single run')
-  assert.match(newPlan, /Automatic checkpointed is selected by default\./)
-  assert.match(newPlan, /aria-checked="true"/)
+  assert.match(newPlan, /Pause for review after each checkpoint/)
+  assert.match(newPlan, /type="checkbox"/)
+  assert.doesNotMatch(newPlan, /Single run/)
   assert.doesNotMatch(newPlan, /No proposed new plan document or plan text was provided/)
   assert.doesNotMatch(newPlan, /Plan update overview/)
 })
@@ -328,15 +308,15 @@ test('new plan lifecycle approval merges automatic checkpointed execution contro
         action: 'request_new_plan',
         plan_id: 'plan-1',
         title: 'Review new plan',
-        execution_granularity: 'run_through',
-        continuation_policy: 'automatic',
-        continue_automatically: true,
+        execution_granularity: 'checkpointed',
+        continuation_policy: 'review_each_checkpoint',
+        continue_automatically: false,
       },
       diffLines: [],
       priorPlan: '',
       priorTitle: '',
       priorDocument: null,
-    }, 'checkpointed_automatic'),
+    }, false),
     {
       action: 'request_new_plan',
       plan_id: 'plan-1',

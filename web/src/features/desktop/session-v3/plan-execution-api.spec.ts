@@ -89,7 +89,7 @@ test("startDesktopPlanAutomatic calls the dedicated start-automatic lifecycle en
   try {
     await startDesktopPlanAutomatic("session-1", "plan-1", {
       checkpointId: "cp-final",
-      executionGranularity: "run_through",
+      executionGranularity: "checkpointed",
       continuationPolicy: "automatic",
       continueAutomatically: true,
     });
@@ -102,7 +102,7 @@ test("startDesktopPlanAutomatic calls the dedicated start-automatic lifecycle en
       url: "/v3/sessions/session-1/plan-mode/plans/plan-1/start-automatic",
       body: {
         checkpoint_id: "cp-final",
-        execution_granularity: "run_through",
+        execution_granularity: "checkpointed",
         continuation_policy: "automatic",
         continue_automatically: true,
       },

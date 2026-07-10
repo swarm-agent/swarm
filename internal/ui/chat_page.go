@@ -458,11 +458,11 @@ type ChatPage struct {
 	planExitApprovedArgs string
 	planExitScroll       int
 	planExitSelection    int
-	planExitRunChoice    int
+	planExitManualReview bool
 	planExitInput        string
 	planExitCancelRect   Rect
 	planExitConfirmRect  Rect
-	planExitChoiceRects  [3]Rect
+	planExitReviewRect   Rect
 
 	planEditorVisible        bool
 	planEditorPlan           ChatSessionPlan
@@ -477,8 +477,7 @@ type ChatPage struct {
 	planEditorRevisionFocus  bool
 	planEditorRecoveryFocus  int
 	planEditorCheckpoint     int
-	planEditorExecution      int
-	planEditorAutomatic      bool
+	planEditorManualReview   bool
 	planEditorRecoveryAction int
 	planEditorInput          string
 	planEditorEditing        bool
@@ -489,7 +488,7 @@ type ChatPage struct {
 	planEditorCancelRect     Rect
 	planEditorCopyRect       Rect
 	planEditorSaveRect       Rect
-	planEditorRecoveryRects  [5]Rect
+	planEditorRecoveryRects  [4]Rect
 
 	manageTodosPermission  string
 	manageTodosScroll      int

@@ -291,52 +291,6 @@ test("plan sidebar renders supplied session content below Actions", () => {
   );
 
   assert.ok(html.indexOf("Actions") < html.indexOf("Scoped Git changes"));
-})
-
-test("normal run-through sidebar shows the plan title instead of the synthetic checkpoint", () => {
-  const base = view({ policyShape: "single_run" });
-  base.plan.title = "Plan: ship sidebar fix";
-  base.plan.document.title = "Plan: ship sidebar fix";
-  base.plan.document.executionPolicy = {
-    mode: "automatic",
-    shape: "single_run",
-    followupCheckpointPolicy: "",
-  };
-  base.plan.document.activeCheckpointId = "plan-run";
-  base.activeCheckpointId = "plan-run";
-  base.activeCheckpoint = {
-    ...base.activeCheckpoint!,
-    id: "plan-run",
-    title: "Run approved plan",
-  };
-  base.plan.document.checkpoints = [base.activeCheckpoint];
-
-  const markup = renderToStaticMarkup(
-    <DesktopPlanExecutionSidebar
-      view={base}
-      onAction={() => undefined}
-      onEditPlan={() => undefined}
-    />,
-  );
-
-  assert.match(markup, /Plan execution/);
-  assert.match(markup, /Plan: ship sidebar fix/);
-  assert.match(markup, /Continue normally/);
-  assert.match(markup, /Running the approved plan normally/);
-  assert.match(markup, /open \/plan and restore a plan revision/);
-  assert.match(
-    markup,
-    /Run-through recovery is managed from \/plan revision restore/,
-  );
-  assert.match(markup, /Archive plan/);
-  assert.match(
-    markup,
-    /Archive this plan when you no longer need the chat in your active workspace/,
-  );
-  assert.doesNotMatch(markup, /Active checkpoint/);
-  assert.doesNotMatch(markup, /plan-run/);
-  assert.doesNotMatch(markup, /Run approved plan/);
-  assert.doesNotMatch(markup, /No remaining checkpoint/);
 });
 
 test("checkpoint sidebar projects objective, task checklist, criteria, notes, and plain tasks from plan state", () => {
@@ -822,6 +776,8 @@ test("plan modal removes top-level approval cards in favor of recovery confirmat
   assert.doesNotMatch(markup, /Manual checkpoint review/);
   assert.doesNotMatch(markup, /role="radiogroup"/);
   assert.doesNotMatch(markup, /Execution style/);
+  assert.doesNotMatch(markup, /Single run is disabled/);
+  assert.doesNotMatch(markup, /Run through as one execution/);
   assert.match(markup, />Recovery<\/button>/);
   assert.doesNotMatch(markup, /Recovery mode/);
 });

@@ -25,21 +25,25 @@ func TestTakePlanExitResolutionPreservesApprovedArgumentsBeforeClosing(t *testin
 	}
 }
 
-func TestExitPlanRunChoicesWriteCanonicalApprovedArguments(t *testing.T) {
+func TestExitPlanReviewToggleWritesCanonicalApprovedArguments(t *testing.T) {
 	for _, tt := range []struct {
-		key             rune
-		wantGranularity string
-		wantPolicy      string
-		wantAutomatic   string
-	}{{'1', "checkpointed", "automatic", `"continue_automatically":true`}, {'2', "run_through", "automatic", `"continue_automatically":true`}, {'3', "checkpointed", "review_each_checkpoint", `"continue_automatically":false`}} {
-		page := NewChatPage(ChatPageOptions{SessionID: "session-1", AuthConfigured: true, SessionMode: "plan"})
-		page.OpenExitPlanModePermissionModal("perm_exit", "plan-1", "Plan", "body", "", `{"keep":"value"}`)
-		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, tt.key, tcell.ModNone))
-		got := page.planExitApprovedArguments()
-		for _, want := range []string{`"execution_granularity":"` + tt.wantGranularity + `"`, `"continuation_policy":"` + tt.wantPolicy + `"`, tt.wantAutomatic, `"keep":"value"`} {
-			if !strings.Contains(got, want) {
-				t.Fatalf("choice %c args %s missing %s", tt.key, got, want)
+		name          string
+		toggle        bool
+		wantPolicy    string
+		wantAutomatic string
+	}{{"automatic by default", false, "automatic", `"continue_automatically":true`}, {"manual review", true, "review_each_checkpoint", `"continue_automatically":false`}} {
+		t.Run(tt.name, func(t *testing.T) {
+			page := NewChatPage(ChatPageOptions{SessionID: "session-1", AuthConfigured: true, SessionMode: "plan"})
+			page.OpenExitPlanModePermissionModal("perm_exit", "plan-1", "Plan", "body", "", `{"keep":"value"}`)
+			if tt.toggle {
+				page.HandleKey(tcell.NewEventKey(tcell.KeyRune, ' ', tcell.ModNone))
 			}
-		}
+			got := page.planExitApprovedArguments()
+			for _, want := range []string{`"execution_granularity":"checkpointed"`, `"continuation_policy":"` + tt.wantPolicy + `"`, tt.wantAutomatic, `"keep":"value"`} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("args %s missing %s", got, want)
+				}
+			}
+		})
 	}
 }

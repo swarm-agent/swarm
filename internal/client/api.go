@@ -3801,7 +3801,6 @@ type SessionPlanLifecycleResult struct {
 
 type SessionPlanExecutionOptions struct {
 	CheckpointID          string `json:"checkpoint_id,omitempty"`
-	ExecutionGranularity  string `json:"execution_granularity,omitempty"`
 	ContinuationPolicy    string `json:"continuation_policy,omitempty"`
 	ContinueAutomatically *bool  `json:"continue_automatically,omitempty"`
 }
@@ -3838,7 +3837,6 @@ type SessionPlanRevisionRequest struct {
 	Version                  int    `json:"version,omitempty"`
 	RevisionVersion          int    `json:"revision_version,omitempty"`
 	CheckpointID             string `json:"checkpoint_id,omitempty"`
-	ExecutionGranularity     string `json:"execution_granularity,omitempty"`
 	ContinuationPolicy       string `json:"continuation_policy,omitempty"`
 	ContinueAutomatically    *bool  `json:"continue_automatically,omitempty"`
 	Restart                  bool   `json:"restart,omitempty"`

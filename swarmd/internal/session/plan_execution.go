@@ -19,7 +19,6 @@ const (
 	// work created from a direct user request.
 	PlanExecutionOriginAutoSession = "auto_session"
 
-	PlanExecutionShapeSingleRun    = "single_run"
 	PlanExecutionShapeCheckpointed = "checkpointed"
 
 	PlanFollowupCheckpointPolicyRequireApproval = "require_approval"
@@ -175,16 +174,12 @@ func normalizePlanExecutionPolicy(policy *pebblestore.SessionPlanExecutionPolicy
 	}
 	policy.Mode = normalizePlanExecutionPolicyMode(policy.Mode)
 	if policy.Mode == "" {
-		policy.Mode = PlanExecutionPolicyModeReviewEachCheckpoint
+		policy.Mode = PlanExecutionPolicyModeAutomatic
 	}
-	policy.Shape = normalizePlanExecutionShape(policy.Shape)
-	if policy.Shape == "" {
-		if checkpointCount > 0 {
-			policy.Shape = PlanExecutionShapeCheckpointed
-		} else {
-			policy.Shape = PlanExecutionShapeSingleRun
-		}
-	}
+	// Checkpointed execution is canonical. Legacy single-run shapes are
+	// normalized on load/save rather than retaining a second state-machine path.
+	policy.Shape = PlanExecutionShapeCheckpointed
+	_ = checkpointCount
 	policy.FollowupCheckpointPolicy = normalizePlanFollowupCheckpointPolicy(policy.FollowupCheckpointPolicy)
 }
 
@@ -321,9 +316,7 @@ func normalizePlanExecutionShape(shape string) string {
 	switch token := normalizePlanToken(shape); token {
 	case "", "default":
 		return ""
-	case "single", "single_run", "one_run", "whole_plan":
-		return PlanExecutionShapeSingleRun
-	case "checkpoint", "checkpoints", "checkpointed", "one_checkpoint_per_run":
+	case "single", "single_run", "one_run", "whole_plan", "checkpoint", "checkpoints", "checkpointed", "one_checkpoint_per_run":
 		return PlanExecutionShapeCheckpointed
 	default:
 		return token
@@ -455,7 +448,7 @@ func validatePlanExecutionPolicy(policy pebblestore.SessionPlanExecutionPolicy) 
 		return fmt.Errorf("plan document execution_policy.mode %q is not supported", policy.Mode)
 	}
 	switch policy.Shape {
-	case "", PlanExecutionShapeSingleRun, PlanExecutionShapeCheckpointed:
+	case "", PlanExecutionShapeCheckpointed:
 	default:
 		return fmt.Errorf("plan document execution_policy.shape %q is not supported", policy.Shape)
 	}
@@ -653,7 +646,7 @@ func validatePlanCheckpointContinuity(doc *pebblestore.SessionPlanDocument) erro
 
 func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionSummary {
 	if doc == nil {
-		return PlanExecutionSummary{PolicyMode: PlanExecutionPolicyModeReviewEachCheckpoint, ExecutionShape: PlanExecutionShapeSingleRun, PlanComplete: true}
+		return PlanExecutionSummary{PolicyMode: PlanExecutionPolicyModeReviewEachCheckpoint, ExecutionShape: PlanExecutionShapeCheckpointed, PlanComplete: true}
 	}
 	policy := doc.ExecutionPolicy
 	normalizePlanExecutionPolicy(&policy, len(doc.Checkpoints))

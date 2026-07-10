@@ -4857,7 +4857,7 @@ func (a *App) handleChatAction(action ui.ChatAction) {
 			return
 		}
 		automatic := action.Recovery.ContinueAutomatically
-		req := client.SessionPlanRevisionRequest{PlanID: planID, Version: action.Plan.Version, RevisionVersion: action.Plan.Version, CheckpointID: strings.TrimSpace(action.Recovery.CheckpointID), ExecutionGranularity: strings.TrimSpace(action.Recovery.ExecutionGranularity), ContinuationPolicy: strings.TrimSpace(action.Recovery.ContinuationPolicy), ContinueAutomatically: &automatic}
+		req := client.SessionPlanRevisionRequest{PlanID: planID, Version: action.Plan.Version, RevisionVersion: action.Plan.Version, CheckpointID: strings.TrimSpace(action.Recovery.CheckpointID), ContinuationPolicy: strings.TrimSpace(action.Recovery.ContinuationPolicy), ContinueAutomatically: &automatic}
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
 		var result client.SessionPlanLifecycleResult
@@ -4872,12 +4872,8 @@ func (a *App) handleChatAction(action ui.ChatAction) {
 			req.Restart, req.Start = true, true
 			result, err = a.api.RestartSessionV3PlanFromRevision(ctx, sessionID, req)
 		default:
-			options := client.SessionPlanExecutionOptions{CheckpointID: req.CheckpointID, ExecutionGranularity: req.ExecutionGranularity, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically}
-			if req.ExecutionGranularity == "run_through" {
-				result, err = a.api.StartSessionV3PlanAutomatic(ctx, sessionID, planID, options)
-			} else {
-				result, err = a.api.StartSessionV3PlanCheckpointed(ctx, sessionID, planID, options)
-			}
+			options := client.SessionPlanExecutionOptions{CheckpointID: req.CheckpointID, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically}
+			result, err = a.api.StartSessionV3PlanCheckpointed(ctx, sessionID, planID, options)
 		}
 		if err != nil {
 			a.home.SetStatus(fmt.Sprintf("plan recovery failed: %v", err))

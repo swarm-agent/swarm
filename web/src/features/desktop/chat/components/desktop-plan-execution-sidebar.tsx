@@ -124,14 +124,6 @@ function statusLabel(
   return humanize(checkpoint?.status || view.status || "Ready");
 }
 
-function isSingleRunView(view: DesktopPlanExecutionView): boolean {
-  return (
-    (view.policyShape || view.plan.document?.executionPolicy?.shape || "")
-      .trim()
-      .toLowerCase() === "single_run"
-  );
-}
-
 type CheckpointTaskView = {
   text: string;
   checked: boolean | null;
@@ -219,53 +211,6 @@ function StatusBadge({ label, tone }: { label: string; tone: Tone }) {
     >
       <span className="truncate">{label}</span>
     </span>
-  );
-}
-
-function PlanRunCard({
-  view,
-  onOpenPlan,
-}: {
-  view: DesktopPlanExecutionView;
-  onOpenPlan?: () => void;
-}) {
-  const title =
-    view.plan.document?.title?.trim() ||
-    view.plan.title?.trim() ||
-    "Approved plan";
-  const tone = statusTone(
-    view.status,
-    !view.completed && !view.blocked && !view.failed,
-  );
-
-  return (
-    <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.16)]">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
-          Plan execution
-        </div>
-        <StatusBadge label={statusLabel(view)} tone={tone} />
-      </div>
-      <h3
-        className="mt-1 min-w-0 break-words text-sm font-semibold leading-snug text-[var(--app-text)] [overflow-wrap:anywhere]"
-        title={title}
-      >
-        {title}
-      </h3>
-      <p className="mt-2 text-xs leading-5 text-[var(--app-text-muted)]">
-        Running the approved plan normally as one fresh-context execution.
-      </p>
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        onClick={onOpenPlan}
-        disabled={!onOpenPlan}
-        className="mt-3 w-full rounded-lg"
-      >
-        Open full plan
-      </Button>
-    </section>
   );
 }
 
@@ -511,7 +456,6 @@ function ActionsCard({
     !view.failed &&
     !view.completed
   ) {
-    const singleRun = isSingleRunView(view);
     return (
       <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.14)]">
         <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
@@ -519,40 +463,32 @@ function ActionsCard({
         </div>
         <div className="mt-3 rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-3 py-2.5">
           <div className="text-sm font-semibold text-[var(--app-text)]">
-            {singleRun ? "Continue normally" : "Automatic mode on"}
+            Automatic mode on
           </div>
           <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
-            {singleRun
-              ? "Execution will continue as one plan run until it completes or stops for review, a blocker, or a failure. To restart or recover a run-through plan, open /plan and restore a plan revision."
-              : "Backend policy is automatic. The next completed checkpoint starts the following checkpoint unless it stops for review, a blocker, or a failure."}
+            Backend policy is automatic. The next completed checkpoint starts the
+            following checkpoint unless it stops for review, a blocker, or a failure.
           </p>
         </div>
-        {!singleRun ? (
-          <div className="mt-3 grid gap-1.5">
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className={cn(
-                "rounded-lg",
-                checkpointedBusy ? "animate-pulse" : "",
-              )}
-              onClick={() => void onAction?.({ action: "resume_checkpointed" })}
-              disabled={!onAction || checkpointedBusy}
-            >
-              Switch to checkpoint-by-checkpoint
-            </Button>
-            <p className="px-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
-              Saves the backend policy immediately, even during a run, so the
-              next checkpoint completion pauses for review.
-            </p>
-          </div>
-        ) : (
-          <p className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
-            Run-through recovery is managed from /plan revision restore, not
-            sidebar checkpoint controls.
+        <div className="mt-3 grid gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className={cn(
+              "rounded-lg",
+              checkpointedBusy ? "animate-pulse" : "",
+            )}
+            onClick={() => void onAction?.({ action: "resume_checkpointed" })}
+            disabled={!onAction || checkpointedBusy}
+          >
+            Pause for review after each checkpoint
+          </Button>
+          <p className="px-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
+            Saves the backend policy immediately, even during a run, so the next
+            checkpoint completion pauses for review.
           </p>
-        )}
+        </div>
         <div className="mt-3 grid gap-1.5">
           <Button
             type="button"
@@ -588,7 +524,6 @@ function ActionsCard({
       </div>
 
       {!automatic &&
-      !isSingleRunView(view) &&
       !view.blocked &&
       !view.failed &&
       !view.completed ? (
@@ -682,7 +617,6 @@ export const DesktopPlanExecutionSidebar = memo(
           (checkpoint) => checkpoint.id === view.activeCheckpoint?.id,
         )
       : -1;
-    const singleRun = isSingleRunView(view);
 
     return (
       <aside
@@ -691,18 +625,14 @@ export const DesktopPlanExecutionSidebar = memo(
         data-testid="desktop-plan-execution-sidebar"
       >
         <div className="grid min-w-0 max-w-full gap-3 overflow-hidden [&_*]:min-w-0">
-          {singleRun ? (
-            <PlanRunCard view={view} onOpenPlan={onEditPlan} />
-          ) : (
-            <ActiveCheckpointCard
-              view={view}
-              checkpoints={checkpoints}
-              completedCount={completedCount}
-              totalCount={totalCount}
-              activeIndex={activeIndex}
-              onOpenPlan={onEditPlan}
-            />
-          )}
+          <ActiveCheckpointCard
+            view={view}
+            checkpoints={checkpoints}
+            completedCount={completedCount}
+            totalCount={totalCount}
+            activeIndex={activeIndex}
+            onOpenPlan={onEditPlan}
+          />
           <ActionsCard
             view={view}
             busyAction={busyAction}

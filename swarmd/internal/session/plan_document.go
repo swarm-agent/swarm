@@ -21,6 +21,8 @@ func NormalizePlanDocumentForSave(planID, title string, incoming, existing *pebb
 		doc := clonePlanDocument(existing)
 		if doc != nil {
 			doc.ExecutionOrigin = NormalizePlanExecutionOrigin(doc.ExecutionOrigin)
+			restoreOriginalCheckpointsForCheckpointedExecution(doc)
+			normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
 		}
 		return doc, nil
 	}
@@ -56,6 +58,7 @@ func NormalizePlanDocumentForSave(planID, title string, incoming, existing *pebb
 			doc.OriginalCheckpoints[i].Order = i + 1
 		}
 	}
+	restoreOriginalCheckpointsForCheckpointedExecution(doc)
 	normalizePlanExecutionPolicy(&doc.ExecutionPolicy, len(doc.Checkpoints))
 	normalizePlanExecutionState(doc.ExecutionState)
 	if doc.ActiveCheckpointID == "" && doc.ExecutionPolicy.Shape == PlanExecutionShapeCheckpointed {

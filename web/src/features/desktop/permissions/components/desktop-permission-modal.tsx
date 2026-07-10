@@ -796,115 +796,42 @@ function ExitPlanDocumentView({ document }: { document: StructuredPlanDocument }
   )
 }
 
-export type ExitPlanExecutionChoice = 'run_through' | 'checkpointed_manual' | 'checkpointed_automatic'
-
-const defaultExitPlanExecutionChoice: ExitPlanExecutionChoice = 'checkpointed_automatic'
-
-const exitPlanExecutionChoices: Array<{
-  id: ExitPlanExecutionChoice
-  title: string
-  description: string
-  detail: string
-}> = [
-  {
-    id: 'checkpointed_automatic',
-    title: 'Automatic checkpointed',
-    description: 'Run checkpoints automatically until completion or until review, blocker, or failure stops execution.',
-    detail: 'Default: preserves checkpoint boundaries and continues automatically.',
-  },
-  {
-    id: 'run_through',
-    title: 'Single run',
-    description: 'Run the approved plan as one fresh-context execution.',
-    detail: 'Available when you want one execution run instead of preserving checkpoint boundaries.'
-  },
-  {
-    id: 'checkpointed_manual',
-    title: 'Manual checkpoint review',
-    description: 'Run one checkpoint at a time and pause for your review between checkpoints.',
-    detail: 'Rare: use when you want to review every checkpoint before continuing.',
-  },
-]
-
-export function exitPlanExecutionArguments(choice: ExitPlanExecutionChoice): {
-  execution_granularity: 'checkpointed' | 'run_through'
+export function exitPlanExecutionArguments(pauseForReview: boolean): {
+  execution_granularity: 'checkpointed'
   continue_automatically: boolean
   continuation_policy: 'automatic' | 'review_each_checkpoint'
 } {
-  if (choice === 'checkpointed_manual') {
-    return {
-      execution_granularity: 'checkpointed',
-      continue_automatically: false,
-      continuation_policy: 'review_each_checkpoint',
-    }
-  }
-  if (choice === 'checkpointed_automatic') {
-    return {
-      execution_granularity: 'checkpointed',
-      continue_automatically: true,
-      continuation_policy: 'automatic',
-    }
-  }
   return {
-    execution_granularity: 'run_through',
-    continue_automatically: true,
-    continuation_policy: 'automatic',
+    execution_granularity: 'checkpointed',
+    continue_automatically: !pauseForReview,
+    continuation_policy: pauseForReview ? 'review_each_checkpoint' : 'automatic',
   }
 }
 
-function ExitPlanExecutionChoiceSelector({
-  executionChoice,
+function ExitPlanReviewControl({
+  pauseForReview,
   loading,
-  onExecutionChoiceChange,
+  onPauseForReviewChange,
 }: {
-  executionChoice: ExitPlanExecutionChoice
+  pauseForReview: boolean
   loading: boolean
-  onExecutionChoiceChange: (choice: ExitPlanExecutionChoice) => void
+  onPauseForReviewChange: (pauseForReview: boolean) => void
 }) {
   return (
     <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
-      <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Run mode</div>
-      <div className="mt-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
-        <span className="font-semibold">Automatic checkpointed is selected by default.</span>{' '}
-        Choose a different run mode before approving if needed.
-      </div>
-      <div className="mt-3 grid gap-3 md:grid-cols-3" role="radiogroup" aria-label="Run mode">
-        {exitPlanExecutionChoices.map((choice) => {
-          const selected = executionChoice === choice.id
-          return (
-            <button
-              key={choice.id}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              disabled={loading}
-              onClick={() => onExecutionChoiceChange(choice.id)}
-              className={cn(
-                'grid min-h-[132px] gap-2 rounded-2xl border px-4 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]',
-                selected
-                  ? 'border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] shadow-[0_12px_28px_rgba(0,0,0,0.12)]'
-                  : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-active)]',
-                loading ? 'cursor-not-allowed opacity-70' : 'cursor-pointer',
-              )}
-            >
-              <span className="flex items-start justify-between gap-3">
-                <span className="text-sm font-semibold text-[var(--app-text)]">{choice.title}</span>
-                <span
-                  className={cn(
-                    'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-full border',
-                    selected ? 'border-[var(--app-primary)] bg-[var(--app-primary)] text-[var(--app-primary-contrast)]' : 'border-[var(--app-border-strong)]',
-                  )}
-                  aria-hidden="true"
-                >
-                  {selected ? <Check className="size-3" /> : null}
-                </span>
-              </span>
-              <span className="text-xs leading-5 text-[var(--app-text)]">{choice.description}</span>
-              <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">{choice.detail}</span>
-            </button>
-          )
-        })}
-      </div>
+      <label className="flex items-start gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 text-sm text-[var(--app-text)]">
+        <input
+          type="checkbox"
+          className="mt-1"
+          checked={pauseForReview}
+          disabled={loading}
+          onChange={(event) => onPauseForReviewChange(event.target.checked)}
+        />
+        <span className="grid gap-1">
+          <span className="font-semibold">Pause for review after each checkpoint</span>
+          <span className="text-xs leading-5 text-[var(--app-text-muted)]">Unchecked continues automatically after successful checkpoints.</span>
+        </span>
+      </label>
     </section>
   )
 }
@@ -920,14 +847,14 @@ function ExitPlanModal({
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
-  const [executionChoice, setExecutionChoice] = useState<ExitPlanExecutionChoice>(defaultExitPlanExecutionChoice)
+  const [pauseForReview, setPauseForReview] = useState(false)
 
   useEffect(() => {
     if (open) {
       setNote('')
       setLoading(false)
       setCopyState('idle')
-      setExecutionChoice(defaultExitPlanExecutionChoice)
+      setPauseForReview(false)
     }
   }, [open, permission])
 
@@ -960,7 +887,7 @@ function ExitPlanModal({
             title: payload.title || structuredDocument?.title || payload.approvedArguments.title,
             plan: payload.body,
             document: payload.document ?? payload.approvedArguments.document,
-            ...exitPlanExecutionArguments(executionChoice),
+            ...exitPlanExecutionArguments(pauseForReview),
           }
         : undefined
       await onResolve(action, note.trim(), approvedArguments)
@@ -1008,10 +935,10 @@ function ExitPlanModal({
     >
       <div className="grid gap-4">
         {hasStructuredPlan ? (
-          <ExitPlanExecutionChoiceSelector
-            executionChoice={executionChoice}
+          <ExitPlanReviewControl
+            pauseForReview={pauseForReview}
             loading={loading}
-            onExecutionChoiceChange={setExecutionChoice}
+            onPauseForReviewChange={setPauseForReview}
           />
         ) : null}
         {structuredDocument ? (
@@ -1288,12 +1215,12 @@ function planLifecycleApprovedArguments(payload: PlanUpdatePayload, fallbackActi
 
 export function newPlanLifecycleApprovedArguments(
   payload: PlanUpdatePayload,
-  executionChoice: ExitPlanExecutionChoice,
+  pauseForReview: boolean,
 ): Record<string, unknown> {
   return {
     ...planLifecycleApprovedArguments(payload, 'request_new_plan'),
     approval_confirmed: true,
-    ...exitPlanExecutionArguments(executionChoice),
+    ...exitPlanExecutionArguments(pauseForReview),
   }
 }
 
@@ -1598,14 +1525,14 @@ function NewPlanRequestModal({
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
-  const [executionChoice, setExecutionChoice] = useState<ExitPlanExecutionChoice>(defaultExitPlanExecutionChoice)
+  const [pauseForReview, setPauseForReview] = useState(false)
 
   useEffect(() => {
     if (open) {
       setNote('')
       setLoading(false)
       setCopyState('idle')
-      setExecutionChoice(defaultExitPlanExecutionChoice)
+      setPauseForReview(false)
     }
   }, [open, permission?.id])
 
@@ -1629,7 +1556,7 @@ function NewPlanRequestModal({
       await onResolve(
         action,
         note.trim(),
-        action === 'approve' ? newPlanLifecycleApprovedArguments(payload, executionChoice) : undefined,
+        action === 'approve' ? newPlanLifecycleApprovedArguments(payload, pauseForReview) : undefined,
       )
     } finally {
       setLoading(false)
@@ -1666,10 +1593,10 @@ function NewPlanRequestModal({
       shortcutsDisabled={loading}
     >
       <div className="grid gap-4">
-        <ExitPlanExecutionChoiceSelector
-          executionChoice={executionChoice}
+        <ExitPlanReviewControl
+          pauseForReview={pauseForReview}
           loading={loading}
-          onExecutionChoiceChange={setExecutionChoice}
+          onPauseForReviewChange={setPauseForReview}
         />
         <section className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4 text-sm leading-6 text-[var(--app-text)]">
           <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Lifecycle action</div>

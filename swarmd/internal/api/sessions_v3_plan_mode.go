@@ -24,27 +24,23 @@ type sessionsV3PlanModeSubmitRequest struct {
 	Title                 string                           `json:"title,omitempty"`
 	Plan                  string                           `json:"plan,omitempty"`
 	Document              *pebblestore.SessionPlanDocument `json:"document,omitempty"`
-	ExecutionGranularity  string                           `json:"execution_granularity,omitempty"`
 	ContinuationPolicy    string                           `json:"continuation_policy,omitempty"`
 	ContinueAutomatically *bool                            `json:"continue_automatically,omitempty"`
 }
 
 type sessionsV3PlanModeApproveRequest struct {
-	ExecutionGranularity  string `json:"execution_granularity,omitempty"`
 	ContinuationPolicy    string `json:"continuation_policy,omitempty"`
 	ContinueAutomatically *bool  `json:"continue_automatically,omitempty"`
 }
 
 type sessionsV3PlanModeStartAutomaticRequest struct {
 	CheckpointID          string `json:"checkpoint_id,omitempty"`
-	ExecutionGranularity  string `json:"execution_granularity,omitempty"`
 	ContinuationPolicy    string `json:"continuation_policy,omitempty"`
 	ContinueAutomatically *bool  `json:"continue_automatically,omitempty"`
 }
 
 type sessionsV3PlanModeStartCheckpointedRequest struct {
 	CheckpointID          string `json:"checkpoint_id,omitempty"`
-	ExecutionGranularity  string `json:"execution_granularity,omitempty"`
 	ContinuationPolicy    string `json:"continuation_policy,omitempty"`
 	ContinueAutomatically *bool  `json:"continue_automatically,omitempty"`
 }
@@ -100,7 +96,6 @@ type sessionsV3PlanLifecycleProposalRequest struct {
 	Plan                  string                           `json:"plan,omitempty"`
 	Document              *pebblestore.SessionPlanDocument `json:"document,omitempty"`
 	Reason                string                           `json:"reason,omitempty"`
-	ExecutionGranularity  string                           `json:"execution_granularity,omitempty"`
 	ContinuationPolicy    string                           `json:"continuation_policy,omitempty"`
 	ContinueAutomatically *bool                            `json:"continue_automatically,omitempty"`
 }
@@ -131,7 +126,6 @@ type sessionsV3PlanLifecycleRestoreRevisionRequest struct {
 	Version                  int    `json:"version,omitempty"`
 	RevisionVersion          int    `json:"revision_version,omitempty"`
 	CheckpointID             string `json:"checkpoint_id,omitempty"`
-	ExecutionGranularity     string `json:"execution_granularity,omitempty"`
 	ContinuationPolicy       string `json:"continuation_policy,omitempty"`
 	ContinueAutomatically    *bool  `json:"continue_automatically,omitempty"`
 	Restart                  bool   `json:"restart,omitempty"`
@@ -270,7 +264,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeSubmitPlan(w http.ResponseWriter,
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.planLifecycle.SubmitPlanForApproval(sessionruntime.PlanLifecyclePlanInput{SessionID: sessionID, PlanID: planID, Title: req.Title, Plan: req.Plan, Document: req.Document, AgentCanSubmit: true, ExecutionGranularity: req.ExecutionGranularity, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically})
+	result, err := s.planLifecycle.SubmitPlanForApproval(sessionruntime.PlanLifecyclePlanInput{SessionID: sessionID, PlanID: planID, Title: req.Title, Plan: req.Plan, Document: req.Document, AgentCanSubmit: true, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -287,7 +281,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeApprovePlan(w http.ResponseWriter
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.planLifecycle.ApprovePlan(sessionruntime.PlanLifecycleExecutionInput{SessionID: sessionID, PlanID: planID, ExecutionGranularity: req.ExecutionGranularity, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically})
+	result, err := s.planLifecycle.ApprovePlan(sessionruntime.PlanLifecycleExecutionInput{SessionID: sessionID, PlanID: planID, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -309,7 +303,6 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartPlanAutomatic(w http.Respons
 		return
 	}
 	input := s.sessionsV3PlanModeRunInput(sessionID, planID, strings.TrimSpace(req.CheckpointID))
-	input.ExecutionGranularity = req.ExecutionGranularity
 	input.ContinuationPolicy = req.ContinuationPolicy
 	input.ContinueAutomatically = req.ContinueAutomatically
 	result, err := s.planLifecycle.ApproveAndStartPlanAutomatic(input)
@@ -339,7 +332,6 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartPlanCheckpointed(w http.Resp
 		return
 	}
 	input := s.sessionsV3PlanModeRunInput(sessionID, planID, strings.TrimSpace(req.CheckpointID))
-	input.ExecutionGranularity = req.ExecutionGranularity
 	input.ContinuationPolicy = req.ContinuationPolicy
 	input.ContinueAutomatically = req.ContinueAutomatically
 	result, err := s.planLifecycle.ApproveAndStartPlanCheckpointed(input)
@@ -470,7 +462,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeRestoreRevision(w http.ResponseWr
 	}
 	start := req.Start || restartPath || jumpPath
 	skipPrior := req.SkipPrior || jumpPath
-	input := sessionruntime.PlanLifecycleRevisionRestoreInput{SessionID: sessionID, PlanID: req.PlanID, Version: version, CheckpointID: req.CheckpointID, ExecutionGranularity: req.ExecutionGranularity, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically, Restart: req.Restart || restartPath || jumpPath, Start: start, SkipPrior: skipPrior}
+	input := sessionruntime.PlanLifecycleRevisionRestoreInput{SessionID: sessionID, PlanID: req.PlanID, Version: version, CheckpointID: req.CheckpointID, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically, Restart: req.Restart || restartPath || jumpPath, Start: start, SkipPrior: skipPrior}
 	if start {
 		if status, err := s.preflightSessionsV3PlanModeFreshRun(sessionID); err != nil {
 			writeError(w, status, err)
@@ -531,7 +523,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeProposal(w http.ResponseWriter, r
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := method(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: req.PlanID, Title: req.Title, Plan: req.Plan, Document: req.Document, Reason: req.Reason, ExecutionGranularity: req.ExecutionGranularity, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically})
+	result, err := method(sessionruntime.PlanLifecycleProposalInput{SessionID: sessionID, PlanID: req.PlanID, Title: req.Title, Plan: req.Plan, Document: req.Document, Reason: req.Reason, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

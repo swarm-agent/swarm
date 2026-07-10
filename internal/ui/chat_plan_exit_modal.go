@@ -11,12 +11,9 @@ import (
 )
 
 const (
-	chatPlanExitSelectCancel             = 0
-	chatPlanExitSelectConfirm            = 1
-	chatPlanExitInputMaxLines            = 3
-	chatPlanExitRunCheckpointedAutomatic = 0
-	chatPlanExitRunThrough               = 1
-	chatPlanExitRunCheckpointedManual    = 2
+	chatPlanExitSelectCancel  = 0
+	chatPlanExitSelectConfirm = 1
+	chatPlanExitInputMaxLines = 3
 )
 
 func (p *ChatPage) OpenExitPlanModeModal(title, body string) bool {
@@ -37,11 +34,11 @@ func (p *ChatPage) OpenExitPlanModeModal(title, body string) bool {
 	p.planExitApprovedArgs = ""
 	p.planExitScroll = 0
 	p.planExitSelection = chatPlanExitSelectConfirm
-	p.planExitRunChoice = chatPlanExitRunCheckpointedAutomatic
+	p.planExitManualReview = false
 	p.planExitInput = ""
 	p.planExitCancelRect = Rect{}
 	p.planExitConfirmRect = Rect{}
-	p.planExitChoiceRects = [3]Rect{}
+	p.planExitReviewRect = Rect{}
 	return true
 }
 
@@ -63,11 +60,11 @@ func (p *ChatPage) OpenExitPlanModePermissionModal(permissionID, planID, title, 
 	p.planExitApprovedArgs = strings.TrimSpace(approvedArguments)
 	p.planExitScroll = 0
 	p.planExitSelection = chatPlanExitSelectConfirm
-	p.planExitRunChoice = chatPlanExitRunCheckpointedAutomatic
+	p.planExitManualReview = false
 	p.planExitInput = ""
 	p.planExitCancelRect = Rect{}
 	p.planExitConfirmRect = Rect{}
-	p.planExitChoiceRects = [3]Rect{}
+	p.planExitReviewRect = Rect{}
 	return true
 }
 
@@ -86,7 +83,7 @@ func (p *ChatPage) closePlanExitModal() {
 	p.planExitSelection = chatPlanExitSelectConfirm
 	p.planExitCancelRect = Rect{}
 	p.planExitConfirmRect = Rect{}
-	p.planExitChoiceRects = [3]Rect{}
+	p.planExitReviewRect = Rect{}
 }
 
 func (p *ChatPage) handlePlanExitModalMouse(ev *tcell.EventMouse) bool {
@@ -103,13 +100,9 @@ func (p *ChatPage) handlePlanExitModalMouse(ev *tcell.EventMouse) bool {
 		case p.planExitConfirmRect.Contains(x, y):
 			p.resolvePlanExitModal(true)
 			return true
-		default:
-			for i, rect := range p.planExitChoiceRects {
-				if rect.Contains(x, y) {
-					p.planExitRunChoice = i
-					return true
-				}
-			}
+		case p.planExitReviewRect.Contains(x, y):
+			p.planExitManualReview = !p.planExitManualReview
+			return true
 		}
 	}
 	switch {
@@ -143,8 +136,8 @@ func (p *ChatPage) handlePlanExitModalKey(ev *tcell.EventKey) bool {
 			p.planExitSelection = chatPlanExitSelectConfirm
 		}
 		return true
-	case ev.Key() == tcell.KeyRune && strings.Contains("123", string(ev.Rune())):
-		p.planExitRunChoice = int(ev.Rune() - '1')
+	case ev.Key() == tcell.KeyRune && ev.Rune() == ' ':
+		p.planExitManualReview = !p.planExitManualReview
 		return true
 	case p.keybinds.Match(ev, KeybindPlanExitMoveUp):
 		p.shiftPlanExitScroll(-1)
@@ -216,7 +209,7 @@ func (p *ChatPage) drawPlanExitModal(s tcell.Screen, screen Rect) {
 
 	p.planExitCancelRect = Rect{}
 	p.planExitConfirmRect = Rect{}
-	p.planExitChoiceRects = [3]Rect{}
+	p.planExitReviewRect = Rect{}
 
 	FillRect(s, modal, p.theme.Panel)
 	onPanel := func(style tcell.Style) tcell.Style {
@@ -258,29 +251,14 @@ func (p *ChatPage) drawPlanExitModal(s tcell.Screen, screen Rect) {
 	}
 
 	choiceY := modal.Y + modal.H - (inputRows + 6)
-	choices := []string{"1 Automatic checkpointed", "2 Single run", "3 Manual checkpoint review"}
-	p.planExitChoiceRects = [3]Rect{}
-	xChoice := modal.X + 2
-	for i, label := range choices {
-		style := onPanel(p.theme.TextMuted)
-		prefix := "  "
-		if p.planExitRunChoice == i {
-			style = onPanel(p.theme.Warning.Bold(true))
-			prefix = "› "
-		}
-		text := prefix + label
-		w := minInt(utf8.RuneCountInString(text)+1, modal.X+modal.W-2-xChoice)
-		if w <= 0 {
-			break
-		}
-		DrawText(s, xChoice, choiceY, w, style, clampEllipsis(text, w))
-		p.planExitChoiceRects[i] = Rect{X: xChoice, Y: choiceY, W: w, H: 1}
-		xChoice += w + 1
-		if xChoice >= modal.X+modal.W-4 && i < len(choices)-1 {
-			choiceY++
-			xChoice = modal.X + 2
-		}
+	mark := "[ ]"
+	if p.planExitManualReview {
+		mark = "[x]"
 	}
+	choice := mark + " Pause for review after each checkpoint"
+	choiceW := minInt(utf8.RuneCountInString(choice), modal.W-4)
+	DrawText(s, modal.X+2, choiceY, choiceW, onPanel(p.theme.Warning.Bold(true)), clampEllipsis(choice, choiceW))
+	p.planExitReviewRect = Rect{X: modal.X + 2, Y: choiceY, W: choiceW, H: 1}
 
 	inputY := modal.Y + modal.H - (inputRows + 3)
 	textX := modal.X + 2
@@ -332,7 +310,7 @@ func (p *ChatPage) drawPlanExitModal(s tcell.Screen, screen Rect) {
 	}
 
 	helpY := modal.Y + modal.H - 3
-	help := "1/2/3 run mode • ↑/↓ scroll • Tab switch • Enter confirm • Esc cancel"
+	help := "Space toggle review • ↑/↓ scroll • Tab switch • Enter confirm • Esc cancel"
 	helpWidth := modal.W - 4
 	if maxScroll > 0 {
 		scrollLabel := fmt.Sprintf("scroll %d/%d", p.planExitScroll+1, maxScroll+1)
@@ -473,7 +451,7 @@ func (p *ChatPage) planExitModalLines(width int) []chatRenderLine {
 	lines = append(lines, chatRenderLine{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)})
 	lines = appendPlain(lines, "Approving this request switches the session from plan mode to auto mode.", p.theme.TextMuted)
 	lines = appendPlain(lines, "Execution can then proceed with normal tool permissions for auto mode.", p.theme.TextMuted)
-	lines = appendPlain(lines, "Run mode: Automatic checkpointed is selected by default; choose Single run or Manual checkpoint review if needed.", p.theme.Secondary.Bold(true))
+	lines = appendPlain(lines, "Automatic checkpoint execution is selected by default; enable review to pause after each checkpoint.", p.theme.Secondary.Bold(true))
 	lines = append(lines, chatRenderLine{Text: "", Style: styleForCurrentCellBackground(p.theme.Text)})
 	if document := strings.TrimSpace(p.planExitDocument); document != "" {
 		lines = appendPlain(lines, "Structured plan document:", p.theme.Secondary.Bold(true))
@@ -591,17 +569,11 @@ func (p *ChatPage) planExitApprovedArguments() string {
 	if raw := strings.TrimSpace(p.planExitApprovedArgs); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &args)
 	}
-	switch p.planExitRunChoice {
-	case chatPlanExitRunThrough:
-		args["execution_granularity"] = "run_through"
-		args["continuation_policy"] = "automatic"
-		args["continue_automatically"] = true
-	case chatPlanExitRunCheckpointedManual:
-		args["execution_granularity"] = "checkpointed"
+	args["execution_granularity"] = "checkpointed"
+	if p.planExitManualReview {
 		args["continuation_policy"] = "review_each_checkpoint"
 		args["continue_automatically"] = false
-	default:
-		args["execution_granularity"] = "checkpointed"
+	} else {
 		args["continuation_policy"] = "automatic"
 		args["continue_automatically"] = true
 	}

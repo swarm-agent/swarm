@@ -789,9 +789,8 @@ func normalizeExitPlanModeExecutionRecommendation(args map[string]any, document 
 		args = map[string]any{}
 	}
 	recommended := false
-	granularity := strings.TrimSpace(firstNonEmptyString(mapString(args, "execution_granularity"), mapString(args, "granularity"), mapString(args, "execution_shape"), mapString(args, "shape")))
 	continuation := strings.TrimSpace(firstNonEmptyString(mapString(args, "continuation_policy"), mapString(args, "continuation"), mapString(args, "mode")))
-	if granularity != "" || continuation != "" {
+	if continuation != "" {
 		recommended = true
 	}
 	if _, ok := args["continue_automatically"]; ok {
@@ -806,12 +805,6 @@ func normalizeExitPlanModeExecutionRecommendation(args map[string]any, document 
 		if document.ExecutionPolicy.Shape != "" || document.ExecutionPolicy.Mode != "" {
 			recommended = true
 		}
-		switch document.ExecutionPolicy.Shape {
-		case sessionruntime.PlanExecutionShapeSingleRun:
-			granularity = sessionruntime.PlanAcceptanceGranularityRunThrough
-		case sessionruntime.PlanExecutionShapeCheckpointed:
-			granularity = sessionruntime.PlanAcceptanceGranularityCheckpointed
-		}
 		switch document.ExecutionPolicy.Mode {
 		case sessionruntime.PlanExecutionPolicyModeAutomatic:
 			continuation = sessionruntime.PlanAcceptanceContinuationAutomatic
@@ -822,18 +815,11 @@ func normalizeExitPlanModeExecutionRecommendation(args map[string]any, document 
 	if !recommended {
 		return nil, nil
 	}
-	policy, err := sessionruntime.NormalizePlanAcceptanceExecutionPolicy(sessionruntime.PlanAcceptanceExecutionOptions{ExecutionGranularity: granularity, ContinuationPolicy: continuation})
+	policy, err := sessionruntime.NormalizePlanAcceptanceExecutionPolicy(sessionruntime.PlanAcceptanceExecutionOptions{ContinuationPolicy: continuation})
 	if err != nil {
 		return nil, err
 	}
-	result := &exitPlanModeExecutionRecommendation{ContinuationPolicy: sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint}
-	if policy.Shape == sessionruntime.PlanExecutionShapeSingleRun {
-		result.ExecutionGranularity = sessionruntime.PlanAcceptanceGranularityRunThrough
-		result.ContinuationPolicy = sessionruntime.PlanAcceptanceContinuationAutomatic
-		result.ContinueAutomatically = true
-		return result, nil
-	}
-	result.ExecutionGranularity = sessionruntime.PlanAcceptanceGranularityCheckpointed
+	result := &exitPlanModeExecutionRecommendation{ExecutionGranularity: sessionruntime.PlanAcceptanceGranularityCheckpointed, ContinuationPolicy: sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint}
 	if policy.Mode == sessionruntime.PlanExecutionPolicyModeAutomatic {
 		result.ContinuationPolicy = sessionruntime.PlanAcceptanceContinuationAutomatic
 		result.ContinueAutomatically = true

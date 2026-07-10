@@ -34,8 +34,7 @@ func (p *ChatPage) openPlanEditorModalWithPlans(plan ChatSessionPlan, revisions 
 	p.planEditorRevisionFocus = false
 	p.planEditorRecoveryFocus = 0
 	p.planEditorCheckpoint = planEditorInitialCheckpoint(items[0])
-	p.planEditorExecution = 0
-	p.planEditorAutomatic = true
+	p.planEditorManualReview = false
 	p.planEditorRecoveryAction = 0
 	p.planEditorInput = planEditorDisplayText(items[0])
 	p.planEditorEditing = false
@@ -46,7 +45,7 @@ func (p *ChatPage) openPlanEditorModalWithPlans(plan ChatSessionPlan, revisions 
 	p.planEditorCancelRect = Rect{}
 	p.planEditorCopyRect = Rect{}
 	p.planEditorSaveRect = Rect{}
-	p.planEditorRecoveryRects = [5]Rect{}
+	p.planEditorRecoveryRects = [4]Rect{}
 	if title := strings.TrimSpace(items[0].Title); title != "" {
 		p.statusLine = fmt.Sprintf("current plan: %s", title)
 	} else {
@@ -163,8 +162,7 @@ func (p *ChatPage) closePlanEditorModal() {
 	p.planEditorRevisionFocus = false
 	p.planEditorRecoveryFocus = 0
 	p.planEditorCheckpoint = 0
-	p.planEditorExecution = 0
-	p.planEditorAutomatic = true
+	p.planEditorManualReview = false
 	p.planEditorRecoveryAction = 0
 	p.planEditorInput = ""
 	p.planEditorEditing = false
@@ -175,7 +173,7 @@ func (p *ChatPage) closePlanEditorModal() {
 	p.planEditorCancelRect = Rect{}
 	p.planEditorCopyRect = Rect{}
 	p.planEditorSaveRect = Rect{}
-	p.planEditorRecoveryRects = [5]Rect{}
+	p.planEditorRecoveryRects = [4]Rect{}
 }
 
 func (p *ChatPage) handlePlanEditorModalMouse(ev *tcell.EventMouse) bool {
@@ -196,6 +194,9 @@ func (p *ChatPage) handlePlanEditorModalMouse(ev *tcell.EventMouse) bool {
 			for i, rect := range p.planEditorRecoveryRects {
 				if rect.Contains(x, y) {
 					p.planEditorRecoveryFocus = i + 1
+					if i == 2 {
+						p.planEditorManualReview = !p.planEditorManualReview
+					}
 					return true
 				}
 			}
@@ -228,7 +229,7 @@ func (p *ChatPage) handlePlanEditorModalKey(ev *tcell.EventKey) bool {
 	case p.keybinds.Match(ev, KeybindPlanExitToggle), p.keybinds.Match(ev, KeybindPlanExitToggleRight), p.keybinds.Match(ev, KeybindPlanExitToggleLeft):
 		if p.planEditorRecoveryFocus > 0 {
 			p.planEditorRecoveryFocus++
-			if p.planEditorRecoveryFocus > 5 {
+			if p.planEditorRecoveryFocus > 4 {
 				p.planEditorRecoveryFocus = 1
 			}
 			return true
@@ -281,7 +282,7 @@ func (p *ChatPage) handlePlanEditorModalKey(ev *tcell.EventKey) bool {
 			p.loadSelectedPlanEditorPlan()
 			p.planEditorRevisionFocus = false
 			p.planEditorRecoveryFocus = 1
-			p.statusLine = "recovery: choose checkpoint, snapshot, execution, continuation, and action"
+			p.statusLine = "recovery: choose checkpoint, snapshot, review behavior, and action"
 			return true
 		}
 		if p.planEditorSelection == chatPlanEditorSelectCancel {
@@ -333,10 +334,8 @@ func (p *ChatPage) shiftPlanEditorRecovery(delta int) {
 		p.selectPlanEditorPlan(delta)
 		p.planEditorCheckpoint = planEditorInitialCheckpoint(p.planEditorPlan)
 	case 3:
-		p.planEditorExecution = (p.planEditorExecution + delta + 2) % 2
+		p.planEditorManualReview = !p.planEditorManualReview
 	case 4:
-		p.planEditorAutomatic = !p.planEditorAutomatic
-	case 5:
 		if p.planEditorPlanSelection > 0 {
 			p.planEditorRecoveryAction = (p.planEditorRecoveryAction + delta + 4) % 4
 		}
@@ -374,15 +373,11 @@ func (p *ChatPage) queuePlanEditorRecovery() {
 		p.statusLine = "recovery unavailable: checkpoint id is missing"
 		return
 	}
-	granularity := "checkpointed"
-	if p.planEditorExecution == 1 {
-		granularity = "run_through"
+	policy := "automatic"
+	if p.planEditorManualReview {
+		policy = "review_each_checkpoint"
 	}
-	policy := "review_each_checkpoint"
-	if p.planEditorAutomatic || granularity == "run_through" {
-		policy = "automatic"
-	}
-	p.pendingChatAction = &ChatAction{Kind: ChatActionRecoverPlan, Plan: plan, Recovery: ChatPlanRecovery{Action: action, CheckpointID: checkpointID, ExecutionGranularity: granularity, ContinuationPolicy: policy, ContinueAutomatically: policy == "automatic"}}
+	p.pendingChatAction = &ChatAction{Kind: ChatActionRecoverPlan, Plan: plan, Recovery: ChatPlanRecovery{Action: action, CheckpointID: checkpointID, ExecutionGranularity: "checkpointed", ContinuationPolicy: policy, ContinueAutomatically: !p.planEditorManualReview}}
 	p.closePlanEditorModal()
 	p.statusLine = "applying plan recovery action..."
 }
@@ -393,20 +388,16 @@ func (p *ChatPage) drawPlanEditorRecoverySummary(s tcell.Screen, rect Rect, onPa
 	}
 	checkpointID := p.selectedPlanEditorCheckpointID(false)
 	snapshot := planEditorRevisionLabel(p.planEditorPlan, p.planEditorPlanSelection)
-	shape := "Checkpointed"
-	if p.planEditorExecution == 1 {
-		shape = "Single run"
-	}
-	continuation := "Manual checkpoint review"
-	if p.planEditorAutomatic || p.planEditorExecution == 1 {
-		continuation = "Automatic"
+	review := "Off (automatic)"
+	if p.planEditorManualReview {
+		review = "On (pause after each checkpoint)"
 	}
 	action := "Start selected checkpoint"
 	if p.planEditorPlanSelection > 0 {
 		action = []string{"Restore + restart selected", "Restore + fast-forward", "Restore + final checkpoint", "Restore only"}[p.planEditorRecoveryAction]
 	}
-	rows := []string{"1 Checkpoint: " + firstNonEmptyToolValue(checkpointID, "none"), "2 Snapshot: " + snapshot, "3 Execution: " + shape, "4 Continuation: " + continuation, "5 Action: " + action}
-	p.planEditorRecoveryRects = [5]Rect{}
+	rows := []string{"1 Checkpoint: " + firstNonEmptyToolValue(checkpointID, "none"), "2 Snapshot: " + snapshot, "3 Pause for review: " + review, "4 Action: " + action}
+	p.planEditorRecoveryRects = [4]Rect{}
 	for i, row := range rows {
 		style := onPanel(p.theme.TextMuted)
 		field := i + 1
@@ -475,8 +466,8 @@ func (p *ChatPage) drawPlanEditorModal(s tcell.Screen, screen Rect) {
 
 	bodyTop := modal.Y + 4
 	if p.planEditorRecoveryFocus > 0 {
-		p.drawPlanEditorRecoverySummary(s, Rect{X: modal.X + 2, Y: bodyTop, W: modal.W - 4, H: 5}, onPanel)
-		bodyTop += 6
+		p.drawPlanEditorRecoverySummary(s, Rect{X: modal.X + 2, Y: bodyTop, W: modal.W - 4, H: 4}, onPanel)
+		bodyTop += 5
 	}
 	bodyRect := Rect{X: modal.X + 2, Y: bodyTop, W: modal.W - 4, H: modal.Y + modal.H - 3 - bodyTop}
 	maxScroll := p.drawPlanEditorDocument(s, bodyRect, onPanel)
@@ -505,7 +496,7 @@ func (p *ChatPage) drawPlanEditorModal(s tcell.Screen, screen Rect) {
 	styles := []tcell.Style{p.theme.TextMuted, p.theme.Accent}
 	rects := []*Rect{&p.planEditorCancelRect, &p.planEditorCopyRect}
 	p.planEditorSaveRect = Rect{}
-	p.planEditorRecoveryRects = [5]Rect{}
+	p.planEditorRecoveryRects = [4]Rect{}
 	selection := p.planEditorSelection
 	if selection < 0 || selection >= len(styles) || p.planEditorRevisionFocus {
 		selection = -1

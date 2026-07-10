@@ -57,7 +57,7 @@ import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../state/desktop-v3-session-api'
-import { archiveDesktopV3Sessions, jumpDesktopPlanToRevisionCheckpoint, restartDesktopPlanFromRevision, restoreDesktopPlanRevision, startDesktopPlanAutomatic, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
+import { archiveDesktopV3Sessions, jumpDesktopPlanToRevisionCheckpoint, restartDesktopPlanFromRevision, restoreDesktopPlanRevision, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned, updateSessionV3Title } from '../session-v3/api'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 import { clearNotifications, updateNotification } from '../notifications/api'
@@ -3248,27 +3248,18 @@ export function DesktopAppPage() {
     }
   }, [planModal?.sessionId, planModalPlan?.id])
 
-  const handleApproveStartPlanModal = useCallback(async (input: { checkpointId?: string; executionGranularity: 'checkpointed' | 'run_through'; continueAutomatically: boolean; continuationPolicy: 'automatic' | 'review_each_checkpoint' }) => {
+  const handleApproveStartPlanModal = useCallback(async (input: { checkpointId?: string; executionGranularity: 'checkpointed'; continueAutomatically: boolean; continuationPolicy: 'automatic' | 'review_each_checkpoint' }) => {
     const sessionId = planModal?.sessionId.trim() ?? ''
     if (!sessionId || !planModalPlan?.id) return
     setPlanModalExecuting(true)
     setPlanModalError(null)
     try {
-      if (input.executionGranularity === 'run_through') {
-        await startDesktopPlanAutomatic(sessionId, planModalPlan.id, {
-          checkpointId: input.checkpointId,
-          executionGranularity: input.executionGranularity,
-          continuationPolicy: input.continuationPolicy,
-          continueAutomatically: input.continueAutomatically,
-        })
-      } else {
-        await startDesktopPlanCheckpointed(sessionId, planModalPlan.id, {
-          checkpointId: input.checkpointId,
-          executionGranularity: input.executionGranularity,
-          continuationPolicy: input.continuationPolicy,
-          continueAutomatically: input.continueAutomatically,
-        })
-      }
+      await startDesktopPlanCheckpointed(sessionId, planModalPlan.id, {
+        checkpointId: input.checkpointId,
+        executionGranularity: 'checkpointed',
+        continuationPolicy: input.continuationPolicy,
+        continueAutomatically: input.continueAutomatically,
+      })
       setPlanModal(null)
     } catch (error) {
       setPlanModalError(error instanceof Error ? error.message : String(error))

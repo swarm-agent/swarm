@@ -1,7 +1,6 @@
 package session
 
 import (
-	"strings"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -15,9 +14,9 @@ func TestNormalizePlanAcceptanceExecutionPolicyMapsUserControls(t *testing.T) {
 		shape   string
 	}{
 		{
-			name:    "checkpointed pauses by default",
+			name:    "checkpointed continues automatically by default",
 			options: PlanAcceptanceExecutionOptions{},
-			mode:    PlanExecutionPolicyModeReviewEachCheckpoint,
+			mode:    PlanExecutionPolicyModeAutomatic,
 			shape:   PlanExecutionShapeCheckpointed,
 		},
 		{
@@ -27,10 +26,10 @@ func TestNormalizePlanAcceptanceExecutionPolicyMapsUserControls(t *testing.T) {
 			shape:   PlanExecutionShapeCheckpointed,
 		},
 		{
-			name:    "run through ignores pause toggle",
-			options: PlanAcceptanceExecutionOptions{ExecutionGranularity: "run straight through", ContinuationPolicy: "pause for review"},
-			mode:    PlanExecutionPolicyModeAutomatic,
-			shape:   PlanExecutionShapeSingleRun,
+			name:    "manual review preserves checkpoints",
+			options: PlanAcceptanceExecutionOptions{ContinuationPolicy: "pause for review"},
+			mode:    PlanExecutionPolicyModeReviewEachCheckpoint,
+			shape:   PlanExecutionShapeCheckpointed,
 		},
 	}
 
@@ -44,15 +43,6 @@ func TestNormalizePlanAcceptanceExecutionPolicyMapsUserControls(t *testing.T) {
 				t.Fatalf("policy = %#v, want mode=%q shape=%q", policy, tt.mode, tt.shape)
 			}
 		})
-	}
-
-	_, err := NormalizePlanAcceptanceExecutionPolicy(PlanAcceptanceExecutionOptions{ExecutionGranularity: "surprise"})
-	if err == nil || !strings.Contains(err.Error(), "execution granularity") {
-		t.Fatalf("invalid granularity error = %v", err)
-	}
-	_, err = NormalizePlanAcceptanceExecutionPolicy(PlanAcceptanceExecutionOptions{ContinuationPolicy: "surprise"})
-	if err == nil || !strings.Contains(err.Error(), "continuation policy") {
-		t.Fatalf("invalid continuation error = %v", err)
 	}
 }
 
@@ -115,7 +105,7 @@ func TestApplyPlanAcceptanceExecutionPolicyOverridesAIRuntimeState(t *testing.T)
 	}
 }
 
-func TestApplyPlanAcceptanceExecutionPolicyPreservesOriginalCheckpointsForSingleRun(t *testing.T) {
+func TestApplyPlanAcceptanceExecutionPolicyPreservesCheckpointBoundaries(t *testing.T) {
 	doc := &pebblestore.SessionPlanDocument{
 		ID:    "plan-single-preserve",
 		Title: "Plan Single Preserve",
@@ -125,21 +115,18 @@ func TestApplyPlanAcceptanceExecutionPolicyPreservesOriginalCheckpointsForSingle
 		},
 	}
 
-	policy, err := ApplyPlanAcceptanceExecutionPolicy(doc, PlanAcceptanceExecutionOptions{ExecutionGranularity: "run_through"})
+	policy, err := ApplyPlanAcceptanceExecutionPolicy(doc, PlanAcceptanceExecutionOptions{})
 	if err != nil {
-		t.Fatalf("apply single-run acceptance policy: %v", err)
+		t.Fatalf("apply checkpointed acceptance policy: %v", err)
 	}
-	if policy.Shape != PlanExecutionShapeSingleRun || doc.ActiveCheckpointID != "plan-run" {
-		t.Fatalf("single-run policy/active = %#v active %q", policy, doc.ActiveCheckpointID)
+	if policy.Shape != PlanExecutionShapeCheckpointed || doc.ActiveCheckpointID != "cp-1" {
+		t.Fatalf("checkpointed policy/active = %#v active %q", policy, doc.ActiveCheckpointID)
 	}
-	if len(doc.Checkpoints) != 1 || doc.Checkpoints[0].ID != "plan-run" {
-		t.Fatalf("execution checkpoints = %#v, want one plan-run checkpoint", doc.Checkpoints)
+	if len(doc.Checkpoints) != 2 || doc.Checkpoints[0].ID != "cp-1" || doc.Checkpoints[1].ID != "cp-2" {
+		t.Fatalf("checkpoint boundaries changed: %#v", doc.Checkpoints)
 	}
-	if len(doc.OriginalCheckpoints) != 2 || doc.OriginalCheckpoints[0].ID != "cp-1" || doc.OriginalCheckpoints[1].ID != "cp-2" {
-		t.Fatalf("original checkpoints were not preserved: %#v", doc.OriginalCheckpoints)
-	}
-	if doc.OriginalCheckpoints[0].Objective != "Do first" || doc.OriginalCheckpoints[1].Tasks[0] != "task two" {
-		t.Fatalf("original checkpoint content was not preserved: %#v", doc.OriginalCheckpoints)
+	if len(doc.OriginalCheckpoints) != 0 {
+		t.Fatalf("legacy shadow checkpoints unexpectedly created: %#v", doc.OriginalCheckpoints)
 	}
 }
 
@@ -149,7 +136,7 @@ func TestApplyPlanAcceptanceExecutionPolicyRestoresOriginalCheckpointsForCheckpo
 		Title: "Plan Checkpointed Recovery",
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
 			Mode:  PlanExecutionPolicyModeAutomatic,
-			Shape: PlanExecutionShapeSingleRun,
+			Shape: "single_run",
 		},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "plan-run", Status: PlanCheckpointStatusInProgress, AttemptID: "attempt-1"}},
 		OriginalCheckpoints: []pebblestore.SessionPlanCheckpoint{
@@ -217,28 +204,5 @@ func TestFinalCheckpointCompletionWaitsForPlanReview(t *testing.T) {
 	}
 	if doc.ActiveCheckpointID != "" || doc.ExecutionState.Status != PlanExecutionStateCompleted || doc.ExecutionState.CompletedAt != 2345 {
 		t.Fatalf("accepted execution state = active %q state %#v", doc.ActiveCheckpointID, doc.ExecutionState)
-	}
-}
-
-func TestSingleRunFinalCompletionWaitsForPlanReview(t *testing.T) {
-	doc, err := NormalizePlanDocumentForSave("plan-single", "Single Plan", &pebblestore.SessionPlanDocument{
-		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeSingleRun},
-		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "plan-run", Status: PlanCheckpointStatusInProgress}},
-		ActiveCheckpointID: "plan-run",
-	}, nil)
-	if err != nil {
-		t.Fatalf("normalize single doc: %v", err)
-	}
-
-	decision, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{CheckpointID: "plan-run", Outcome: PlanCheckpointStatusCompleted})
-	if err != nil {
-		t.Fatalf("complete single run: %v", err)
-	}
-	if decision.PlanComplete || !decision.ReviewRequired || doc.ExecutionState == nil || doc.ExecutionState.Status != PlanExecutionStateWaitingReview {
-		t.Fatalf("single run decision=%#v state=%#v", decision, doc.ExecutionState)
-	}
-	summary := SummarizePlanExecution(doc)
-	if summary.PlanComplete || !summary.ReviewRequired || summary.NextCheckpointID != "plan-run" {
-		t.Fatalf("single run summary = %#v, want await review", summary)
 	}
 }

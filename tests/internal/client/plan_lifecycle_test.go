@@ -17,7 +17,7 @@ func TestPlanLifecycleEndpointAndPayloads(t *testing.T) {
 		want           map[string]any
 	}{
 		{"submit", "/v3/sessions/session%201/plan-mode/plans/plan%2F1/submit", func(api *client.API) error {
-			_, err := api.SubmitSessionV3Plan(context.Background(), "session 1", "plan/1", client.SessionPlanSubmitRequest{Title: "Plan", SessionPlanExecutionOptions: client.SessionPlanExecutionOptions{ExecutionGranularity: "checkpointed"}})
+			_, err := api.SubmitSessionV3Plan(context.Background(), "session 1", "plan/1", client.SessionPlanSubmitRequest{Title: "Plan", SessionPlanExecutionOptions: client.SessionPlanExecutionOptions{}})
 			return err
 		}, map[string]any{"title": "Plan", "execution_granularity": "checkpointed"}},
 		{"approve", "/v3/sessions/session%201/plan-mode/plans/plan%2F1/approve", func(api *client.API) error {

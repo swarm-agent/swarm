@@ -160,16 +160,15 @@ Body:
 ```json
 {
   "plan_id": "optional; defaults to active plan",
-  "execution_granularity": "checkpointed | run_through",
-  "continuation_policy": "automatic | review_each_checkpoint"
+  "continuation_policy": "optional: automatic | review_each_checkpoint; defaults to automatic"
 }
 ```
 
-Required fields:
+Execution policy:
 
-- `execution_granularity` is required.
-- `continuation_policy` is required when `execution_granularity=checkpointed`.
-- `continuation_policy` must be omitted or `automatic` when `execution_granularity=run_through`.
+- Execution is always checkpointed; checkpoint boundaries are preserved.
+- `continuation_policy` defaults to `automatic`.
+- Set `continuation_policy=review_each_checkpoint` only when manual review after each checkpoint is required.
 
 Allowed source states:
 
@@ -180,7 +179,7 @@ Allowed source states:
 
 Durable mutations:
 
-- Apply `ApplyPlanAcceptanceExecutionPolicy` with the exact body values.
+- Apply `ApplyPlanAcceptanceExecutionPolicy`, preserving checkpoint boundaries and mapping the optional continuation policy to automatic or manual review.
 - Save the plan with `status=approved`, `approval_state=approved`, `UpdateKind=approve_and_start`.
 - Start the selected first checkpoint with `ApplyPlanCheckpointStart`.
 - Create/enqueue the V3 run intent in the same backend lifecycle flow.
@@ -300,7 +299,7 @@ Allowed source states:
 
 Durable mutations:
 
-- Set `execution_policy.mode=automatic` and preserve `execution_policy.shape`.
+- Set `execution_policy.mode=automatic`; `execution_policy.shape` remains `checkpointed`.
 - Save plan with `UpdateKind=set_automatic_mode`.
 
 Run-intent behavior:
@@ -477,9 +476,9 @@ Required frontend end state:
 The finished architecture must enforce all of the following:
 
 - No lifecycle endpoint accepts an `action` string.
-- No lifecycle endpoint accepts alias fields (`id` for `plan_id`, `active_checkpoint` for `checkpoint_id`, `shape` for `execution_granularity`, `mode` for continuation policy, etc.).
+- No lifecycle endpoint accepts alias fields (`id` for `plan_id`, `active_checkpoint` for `checkpoint_id`, `mode` for continuation policy, etc.).
 - No action normalizer and no generic switch-case dispatcher for lifecycle transitions.
-- No implicit default `execution_granularity` or `continuation_policy` on approval/start.
+- Approval/start always uses checkpointed execution and defaults continuation to `automatic`; manual review must be requested explicitly.
 - No client-side run start after a lifecycle action.
 - No `next_action`/`run_request` lifecycle orchestration hints in API responses.
 - No silent success when a required state is missing or unchanged; invalid source states are conflicts.

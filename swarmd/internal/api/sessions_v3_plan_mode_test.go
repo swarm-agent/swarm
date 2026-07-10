@@ -68,7 +68,7 @@ func TestSessionsV3PlanModeDedicatedLifecycleEndpointsSuccess(t *testing.T) {
 			t.Fatalf("set auto mode: %v", err)
 		}
 
-		payload := postSessionsV3PlanModeTestJSON(t, server, created.ID, "/plan-mode/plans/plan-approve/approve", `{"execution_granularity":"checkpointed","continuation_policy":"review_each_checkpoint"}`)
+		payload := postSessionsV3PlanModeTestJSON(t, server, created.ID, "/plan-mode/plans/plan-approve/approve", `{"continuation_policy":"review_each_checkpoint"}`)
 		if payload["transition"] != "approve_plan" || payload["plan_id"] != "plan-approve" {
 			t.Fatalf("payload = %#v", payload)
 		}
@@ -87,10 +87,10 @@ func TestSessionsV3PlanModeDedicatedLifecycleEndpointsSuccess(t *testing.T) {
 			t.Fatalf("set auto mode: %v", err)
 		}
 
-		payload := postSessionsV3PlanModeTestJSON(t, server, created.ID, "/plan-mode/plans/plan-start-auto/start-automatic", `{"execution_granularity":"run_through","continuation_policy":"automatic","continue_automatically":true}`)
+		payload := postSessionsV3PlanModeTestJSON(t, server, created.ID, "/plan-mode/plans/plan-start-auto/start-automatic", `{"continuation_policy":"automatic","continue_automatically":true}`)
 		assertSessionsV3PlanModeQueuedRun(t, payload, sessionSvc, created.ID, "start_plan_automatic", "cp-1")
 		plan := sessionsV3PlanModeGetPlan(t, sessionSvc, created.ID, "plan-start-auto")
-		if plan.Document.ExecutionPolicy.Shape != sessionruntime.PlanExecutionShapeSingleRun || plan.Document.ExecutionPolicy.Mode != sessionruntime.PlanExecutionPolicyModeAutomatic {
+		if plan.Document.ExecutionPolicy.Shape != sessionruntime.PlanExecutionShapeCheckpointed || plan.Document.ExecutionPolicy.Mode != sessionruntime.PlanExecutionPolicyModeAutomatic {
 			t.Fatalf("policy = %#v", plan.Document.ExecutionPolicy)
 		}
 	})
@@ -104,7 +104,7 @@ func TestSessionsV3PlanModeDedicatedLifecycleEndpointsSuccess(t *testing.T) {
 			t.Fatalf("set auto mode: %v", err)
 		}
 
-		payload := postSessionsV3PlanModeTestJSON(t, server, created.ID, "/plan-mode/plans/plan-start-checkpointed/start-checkpointed", `{"execution_granularity":"checkpointed","continuation_policy":"automatic","continue_automatically":true}`)
+		payload := postSessionsV3PlanModeTestJSON(t, server, created.ID, "/plan-mode/plans/plan-start-checkpointed/start-checkpointed", `{"continuation_policy":"automatic","continue_automatically":true}`)
 		assertSessionsV3PlanModeQueuedRun(t, payload, sessionSvc, created.ID, "start_plan_checkpointed", "cp-1")
 		plan := sessionsV3PlanModeGetPlan(t, sessionSvc, created.ID, "plan-start-checkpointed")
 		if plan.Document.ExecutionPolicy.Shape != sessionruntime.PlanExecutionShapeCheckpointed || plan.Document.ExecutionPolicy.Mode != sessionruntime.PlanExecutionPolicyModeAutomatic {

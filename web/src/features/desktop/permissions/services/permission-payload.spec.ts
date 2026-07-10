@@ -447,7 +447,7 @@ function testExitPlanParsesStructuredDocument(): void {
       continuation_policy: 'automatic',
       continue_automatically: true,
       execution_recommendation: {
-        execution_granularity: 'run_through',
+        execution_granularity: 'checkpointed',
         continuation_policy: 'automatic',
         continue_automatically: true,
       },

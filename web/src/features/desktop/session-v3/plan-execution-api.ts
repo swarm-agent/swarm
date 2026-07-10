@@ -7,7 +7,7 @@ import type { DesktopSessionPlanRecord } from "../chat/types/chat";
 import { dispatchDesktopV3Cache } from "../state/desktop-v3-cache-store";
 import type { SessionArchiveMutationResponse } from "../state/desktop-v3-cache-types";
 
-export type DesktopPlanExecutionGranularity = "checkpointed" | "run_through";
+export type DesktopPlanExecutionGranularity = "checkpointed";
 export type DesktopPlanContinuationPolicy =
   "automatic" | "review_each_checkpoint";
 

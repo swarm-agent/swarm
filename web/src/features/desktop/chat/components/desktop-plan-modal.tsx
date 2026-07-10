@@ -23,7 +23,7 @@ import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import { Select } from '../../../../components/ui/select'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
-import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanExecutionPolicy, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
+import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 
 interface DesktopPlanModalProps {
   open: boolean
@@ -36,12 +36,12 @@ interface DesktopPlanModalProps {
   executing?: boolean
   onCopy: (text: string) => Promise<boolean>
   onRestoreRevision: (revision: DesktopSessionPlanRevisionRecord, input?: DesktopPlanRecoveryInput) => Promise<void>
-  onApproveStart?: (input: { checkpointId?: string; executionGranularity: 'checkpointed' | 'run_through'; continueAutomatically: boolean; continuationPolicy: 'automatic' | 'review_each_checkpoint' }) => Promise<void>
+  onApproveStart?: (input: { checkpointId?: string; executionGranularity: 'checkpointed'; continueAutomatically: boolean; continuationPolicy: 'automatic' | 'review_each_checkpoint' }) => Promise<void>
 }
 
 export interface DesktopPlanRecoveryInput {
   checkpointId?: string
-  executionGranularity?: 'checkpointed' | 'run_through'
+  executionGranularity?: 'checkpointed'
   continuationPolicy?: 'automatic' | 'review_each_checkpoint'
   continueAutomatically?: boolean
   restart?: boolean
@@ -92,14 +92,6 @@ function formatTimestamp(value: number): string {
   } catch {
     return ''
   }
-}
-
-function displayExecutionMode(mode: 'automatic' | 'review_each_checkpoint'): string {
-  return mode === 'automatic' ? 'Automatic' : 'Review each checkpoint'
-}
-
-function displayExecutionShape(shape: 'checkpointed' | 'run_through'): string {
-  return shape === 'run_through' ? 'Run through as one execution' : 'Checkpoint by checkpoint'
 }
 
 function firstNonBlankText(...values: Array<string | null | undefined>): string {
@@ -301,43 +293,6 @@ function PlanInfoSection({ title, icon: Icon, children }: { title: string; icon:
       <div className="min-w-0 pl-6">{children}</div>
     </section>
   )
-}
-
-function planExecutionSelectionFromPolicy(policy: DesktopSessionPlanExecutionPolicy | null | undefined): {
-  executionGranularity: 'checkpointed' | 'run_through'
-  continueAutomatically: boolean
-} {
-  const shape = (policy?.shape ?? '').trim().toLowerCase()
-  const mode = (policy?.mode ?? '').trim().toLowerCase()
-  if (shape === 'single_run') {
-    return { executionGranularity: 'run_through', continueAutomatically: true }
-  }
-  return {
-    executionGranularity: 'checkpointed',
-    continueAutomatically: mode === 'automatic',
-  }
-}
-
-type PlanApprovalExecutionChoice = 'checkpointed_automatic' | 'run_through' | 'checkpointed_manual'
-
-function approvalChoiceFromSelection(executionGranularity: 'checkpointed' | 'run_through', continueAutomatically: boolean): PlanApprovalExecutionChoice {
-  if (executionGranularity === 'run_through') return 'run_through'
-  return continueAutomatically ? 'checkpointed_automatic' : 'checkpointed_manual'
-}
-
-function approvalSelectionFromChoice(choice: PlanApprovalExecutionChoice): {
-  executionGranularity: 'checkpointed' | 'run_through'
-  continueAutomatically: boolean
-} {
-  if (choice === 'run_through') return { executionGranularity: 'run_through', continueAutomatically: true }
-  if (choice === 'checkpointed_manual') return { executionGranularity: 'checkpointed', continueAutomatically: false }
-  return { executionGranularity: 'checkpointed', continueAutomatically: true }
-}
-
-function disablesSingleRunApproval(policy: DesktopSessionPlanExecutionPolicy | null | undefined): boolean {
-  const mode = (policy?.mode ?? '').trim().toLowerCase()
-  const shape = (policy?.shape ?? '').trim().toLowerCase()
-  return mode === 'automatic' && (shape === '' || shape === 'checkpointed')
 }
 
 function PlanDetails({ document }: { document: DesktopSessionPlanDocument }) {
@@ -665,15 +620,13 @@ function PlanRecoveryPanel({
   executing,
   recoveryMode,
   selectedCheckpointId,
-  executionGranularity,
-  continueAutomatically,
+  pauseForReview,
   recoveryAction,
   canApproveStart,
   onRecoveryModeChange,
   onSelectRevision,
   onCheckpointSelect,
-  onExecutionGranularityChange,
-  onContinueAutomaticallyChange,
+  onPauseForReviewChange,
   onRecoveryActionChange,
   onConfirmRecovery,
 }: {
@@ -686,15 +639,13 @@ function PlanRecoveryPanel({
   executing: boolean
   recoveryMode: boolean
   selectedCheckpointId: string
-  executionGranularity: 'checkpointed' | 'run_through'
-  continueAutomatically: boolean
+  pauseForReview: boolean
   recoveryAction: PlanRecoveryAction
   canApproveStart: boolean
   onRecoveryModeChange: (value: boolean) => void
   onSelectRevision: (key: string) => void
   onCheckpointSelect: (checkpointId: string) => void
-  onExecutionGranularityChange: (value: 'checkpointed' | 'run_through') => void
-  onContinueAutomaticallyChange: (value: boolean) => void
+  onPauseForReviewChange: (value: boolean) => void
   onRecoveryActionChange: (value: PlanRecoveryAction) => void
   onConfirmRecovery: (action: PlanRecoveryAction, input: DesktopPlanRecoveryInput) => void
 }) {
@@ -704,10 +655,8 @@ function PlanRecoveryPanel({
   const requestedCheckpointId = selectedCheckpointId || document?.activeCheckpointId || checkpoints[0]?.id || ''
   const selectedCheckpoint = checkpoints.find((checkpoint) => checkpoint.id === requestedCheckpointId) ?? checkpoints[0] ?? null
   const effectiveCheckpointId = selectedCheckpoint?.id || ''
-  const singleRunDisabled = disablesSingleRunApproval(document?.executionPolicy)
-  const effectiveExecutionGranularity = singleRunDisabled && executionGranularity === 'run_through' ? 'checkpointed' : executionGranularity
-  const effectiveContinueAutomatically = effectiveExecutionGranularity === 'run_through' ? true : continueAutomatically
-  const continuationPolicy: 'automatic' | 'review_each_checkpoint' = effectiveContinueAutomatically ? 'automatic' : 'review_each_checkpoint'
+  const continueAutomatically = !pauseForReview
+  const continuationPolicy: 'automatic' | 'review_each_checkpoint' = pauseForReview ? 'review_each_checkpoint' : 'automatic'
   const disabled = saving || executing
   const selectedTimestamp = selectedRevision ? formatTimestamp(selectedRevision.createdAt || selectedRevision.updatedAt) : ''
   const snapshotLabel = selectedRevision ? revisionOptionLabel(selectedRevision) : 'Current live plan'
@@ -721,9 +670,9 @@ function PlanRecoveryPanel({
     if (!viewingRevision) {
       onConfirmRecovery('start_selected', {
         checkpointId: effectiveCheckpointId || undefined,
-        executionGranularity: effectiveExecutionGranularity,
+        executionGranularity: 'checkpointed',
         continuationPolicy,
-        continueAutomatically: effectiveContinueAutomatically,
+        continueAutomatically,
       })
       return
     }
@@ -734,9 +683,9 @@ function PlanRecoveryPanel({
     const checkpointId = recoveryAction === 'final_checkpoint' ? finalCheckpointId : effectiveCheckpointId
     onConfirmRecovery(recoveryAction, {
       checkpointId,
-      executionGranularity: effectiveExecutionGranularity,
+      executionGranularity: 'checkpointed',
       continuationPolicy,
-      continueAutomatically: effectiveContinueAutomatically,
+      continueAutomatically,
       restart: true,
       start: true,
       skipPrior: recoveryAction === 'fast_forward' || recoveryAction === 'final_checkpoint',
@@ -792,30 +741,19 @@ function PlanRecoveryPanel({
         </div>
 
         <div className="grid gap-3">
-          <label className="grid gap-1.5 text-sm text-[var(--app-text)]">
-            <span className="font-medium">2. Execution settings</span>
-            <Select value={effectiveExecutionGranularity} onChange={(event) => onExecutionGranularityChange(event.target.value === 'run_through' ? 'run_through' : 'checkpointed')} disabled={disabled || !document}>
-              <option value="checkpointed">{displayExecutionShape('checkpointed')}</option>
-              <option value="run_through" disabled={singleRunDisabled}>{displayExecutionShape('run_through')}</option>
-            </Select>
-            <span className="text-xs text-[var(--app-text-muted)]">Single run is disabled for automatic checkpoint plans.</span>
+          <label className="flex items-start gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
+            <input type="checkbox" className="mt-1" checked={pauseForReview} onChange={(event) => onPauseForReviewChange(event.target.checked)} disabled={disabled || !document} />
+            <span className="grid gap-1">
+              <span className="font-medium">Pause for review after each checkpoint</span>
+              <span className="text-xs text-[var(--app-text-muted)]">Unchecked continues automatically after successful checkpoints.</span>
+            </span>
           </label>
-
-          {effectiveExecutionGranularity === 'checkpointed' ? (
-            <label className="flex items-start gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)]">
-              <input type="checkbox" className="mt-1" checked={continueAutomatically} onChange={(event) => onContinueAutomaticallyChange(event.target.checked)} disabled={disabled || !document} />
-              <span className="grid gap-1">
-                <span className="font-medium">{displayExecutionMode(continuationPolicy)}</span>
-                <span className="text-xs text-[var(--app-text-muted)]">Automatic continues after successful checkpoints; review mode pauses after each checkpoint.</span>
-              </span>
-            </label>
-          ) : null}
         </div>
       </div>
 
       <div className="mt-4 grid gap-3 border-t border-[var(--app-border)] pt-4 sm:grid-cols-[minmax(220px,1fr)_auto] sm:items-end">
         <label className="grid gap-1.5 text-sm text-[var(--app-text)]">
-          <span className="font-medium">3. Action</span>
+          <span className="font-medium">2. Action</span>
           {viewingRevision ? (
             <Select value={recoveryAction} onChange={(event) => onRecoveryActionChange(event.target.value as PlanRecoveryAction)} disabled={disabled}>
               <option value="start_selected">Restore snapshot and start selected checkpoint</option>
@@ -857,8 +795,7 @@ export function DesktopPlanModal({
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const [selectedRevisionKey, setSelectedRevisionKey] = useState('current')
   const [selectedCheckpointId, setSelectedCheckpointId] = useState('')
-  const [executionGranularity, setExecutionGranularity] = useState<'checkpointed' | 'run_through'>('checkpointed')
-  const [continueAutomatically, setContinueAutomatically] = useState(true)
+  const [pauseForReview, setPauseForReview] = useState(false)
   const [recoveryMode, setRecoveryMode] = useState(false)
   const [recoveryAction, setRecoveryAction] = useState<PlanRecoveryAction>('start_selected')
   const modalWasOpenRef = useRef(false)
@@ -883,9 +820,7 @@ export function DesktopPlanModal({
       setSelectedCheckpointId(plan?.document?.activeCheckpointId || plan?.document?.checkpoints[0]?.id || '')
       setRecoveryMode(false)
       setRecoveryAction('start_selected')
-      const executionSelection = planExecutionSelectionFromPolicy(plan?.document?.executionPolicy)
-      setExecutionGranularity(executionSelection.executionGranularity)
-      setContinueAutomatically(executionSelection.continueAutomatically)
+      setPauseForReview(false)
     }
   }, [open, plan?.id, plan?.document])
 
@@ -939,14 +874,8 @@ export function DesktopPlanModal({
     }
   }
 
-  const singleRunApprovalDisabled = disablesSingleRunApproval(selectedDocument?.executionPolicy)
-  const approvalChoice = approvalChoiceFromSelection(
-    singleRunApprovalDisabled && executionGranularity === 'run_through' ? 'checkpointed' : executionGranularity,
-    continueAutomatically,
-  )
-  const approvalSelection = approvalSelectionFromChoice(approvalChoice)
-  const effectiveContinueAutomatically = approvalSelection.executionGranularity === 'run_through' ? true : approvalSelection.continueAutomatically
-  const effectiveContinuationPolicy: 'automatic' | 'review_each_checkpoint' = effectiveContinueAutomatically ? 'automatic' : 'review_each_checkpoint'
+  const continueAutomatically = !pauseForReview
+  const continuationPolicy: 'automatic' | 'review_each_checkpoint' = pauseForReview ? 'review_each_checkpoint' : 'automatic'
   const canApproveStart = Boolean(onApproveStart && plan?.document && !viewingRevision)
   const selectedApprovalCheckpointId = selectedCheckpointId || selectedDocument?.activeCheckpointId || selectedDocument?.checkpoints[0]?.id || ''
 
@@ -954,9 +883,9 @@ export function DesktopPlanModal({
     if (!onApproveStart || viewingRevision) return
     await onApproveStart({
       checkpointId: input?.checkpointId || selectedApprovalCheckpointId || undefined,
-      executionGranularity: input?.executionGranularity || approvalSelection.executionGranularity,
-      continueAutomatically: input?.continueAutomatically ?? effectiveContinueAutomatically,
-      continuationPolicy: input?.continuationPolicy || effectiveContinuationPolicy,
+      executionGranularity: 'checkpointed',
+      continueAutomatically: input?.continueAutomatically ?? continueAutomatically,
+      continuationPolicy: input?.continuationPolicy || continuationPolicy,
     })
   }
 
@@ -1013,15 +942,13 @@ export function DesktopPlanModal({
                       executing={executing}
                       recoveryMode={recoveryMode}
                       selectedCheckpointId={selectedCheckpointId}
-                      executionGranularity={executionGranularity}
-                      continueAutomatically={continueAutomatically}
+                      pauseForReview={pauseForReview}
                       recoveryAction={recoveryAction}
                       canApproveStart={canApproveStart}
                       onRecoveryModeChange={handleRecoveryModeChange}
                       onSelectRevision={handleSelectRevision}
                       onCheckpointSelect={setSelectedCheckpointId}
-                      onExecutionGranularityChange={setExecutionGranularity}
-                      onContinueAutomaticallyChange={setContinueAutomatically}
+                      onPauseForReviewChange={setPauseForReview}
                       onRecoveryActionChange={setRecoveryAction}
                       onConfirmRecovery={(action, input) => void handleConfirmRecovery(action, input)}
                     />
