@@ -1088,6 +1088,62 @@ test('hydrate requested tombstone without run-intent key clears stale run state'
   assert.equal(state.liveRunsBySession[sessionA.id], undefined)
 })
 
+test('stale hydrate promotes a realtime-discovered stub without replacing its newer projection', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const sessionId = 'session-client-b'
+  const canonicalTitle = 'Canonical generated title'
+  const newerProjection = {
+    ...projectionB,
+    session_id: sessionId,
+    last_event_seq: 9,
+    projection_high_watermark_seq: 9,
+    updated_at: 90,
+  }
+
+  applyRealtimeFrame(state, {
+    frame: realtimeFrameFixture({
+      kind: 'workset.session.discovered',
+      workset_id: 'workset-client-b',
+      session_id: sessionId,
+      endpoint_cursor: 'cursor-discovered-client-b',
+      event: undefined,
+      session: undefined,
+      projection: newerProjection,
+    }),
+  })
+
+  assert.equal(state.sessionsById[sessionId]?.kind, 'stub')
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionId]: { ...sessionB, id: sessionId, title: canonicalTitle } },
+    projections_by_session: { [sessionId]: { ...projectionB, session_id: sessionId } },
+    messages_by_session: { [sessionId]: [] },
+    session_order: [sessionId],
+    selector: { kind: 'session_ids', session_ids: [sessionId] },
+  }), [sessionId])
+
+  assert.equal(state.sessionsById[sessionId]?.kind, 'full')
+  assert.equal(state.sessionsById[sessionId]?.kind === 'full' ? state.sessionsById[sessionId].session.title : '', canonicalTitle)
+  assert.equal(state.projectionsBySession[sessionId], newerProjection)
+})
+
+test('stale hydrate preserves a newer full cached session', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const newerSession = { ...sessionB, title: 'Newer realtime title', updated_at: 90 }
+  state.sessionsById[sessionB.id] = { kind: 'full', session: newerSession, needsHydrate: false }
+  state.projectionsBySession[sessionB.id] = {
+    ...projectionB,
+    last_event_seq: 9,
+    projection_high_watermark_seq: 9,
+    updated_at: 90,
+  }
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionB.id]: { ...sessionB, title: 'Older hydrate title' } },
+  }), [sessionB.id])
+
+  assert.equal(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.title : '', newerSession.title)
+})
+
 test('hydrate ignores removed plan maps and preserves scoped plan cache state', () => {
   const state = bootstrappedState()
   state.plansBySession[sessionB.id] = { id: 'scoped-plan-b' }

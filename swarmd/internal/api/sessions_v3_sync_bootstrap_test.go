@@ -101,6 +101,39 @@ func TestSessionsV3SelectedSessionHydrateResourcesIncludeEvents(t *testing.T) {
 	}
 }
 
+func TestSessionsV3SyncHydrateReturnsDurableUpdatedSessionTitle(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-hydrate-title", "Initial title", "/workspace/hydrate-title")
+
+	updated, ok, err := sessionSvc.Store().GetSession(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("load session for title update: ok=%t err=%v", ok, err)
+	}
+	updated.Title = "Canonical generated title"
+	updated.UpdatedAt++
+	if err := sessionSvc.Store().UpdateSession(updated); err != nil {
+		t.Fatalf("persist generated title: %v", err)
+	}
+
+	body := `{"surface":"desktop","session_ids":["` + created.ID + `"],"history":{"mode":"none"}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncHydratePath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hydrate status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		SessionsByID map[string]pebblestore.SessionSnapshot `json:"sessions_by_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode hydrate response: %v", err)
+	}
+	if got := payload.SessionsByID[created.ID].Title; got != updated.Title {
+		t.Fatalf("hydrate durable title = %q, want %q", got, updated.Title)
+	}
+}
+
 func TestSessionsV3SyncBootstrapMetadataOnlyDoesNotEmitPerSessionMessageKeys(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-bootstrap-metadata-only", "Sync Bootstrap Metadata Only", "/workspace/metadata-only")

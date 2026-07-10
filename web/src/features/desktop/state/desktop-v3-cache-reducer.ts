@@ -492,7 +492,8 @@ function applyHydrateSessionsAndProjections(
     const existingProjection = preHydrateProjections[sessionId]
     const fresh = projectionSeq(incomingProjection) >= projectionSeq(existingProjection)
     const incomingSession = snapshot.sessions_by_id?.[sessionId]
-    if (incomingSession && (fresh || !preHydrateSessions[sessionId])) {
+    const existingSession = preHydrateSessions[sessionId]
+    if (incomingSession && (fresh || !existingSession || existingSession.kind === 'stub')) {
       const existing = state.sessionsById[sessionId]
       state.sessionsById[sessionId] = {
         kind: 'full',

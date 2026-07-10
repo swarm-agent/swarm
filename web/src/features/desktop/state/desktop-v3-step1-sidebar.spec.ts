@@ -6,7 +6,7 @@ import { buildSidebarSessionTree, desktopSessionRecordFromV3SidebarRow, desktopS
 import { selectDesktopSidebarGroupedRows, selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
 import { selectSession } from './desktop-v3-cache-wire'
 import { hydrateResponseToAction } from './desktop-v3-cache-wire'
-import { messageA1, messageB1, projectionA, projectionB, runIntentA, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
+import { hydrateSnapshotFixture, messageA1, messageB1, projectionA, projectionB, runIntentA, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
 
 test('sidebar selector uses scope order', () => {
   const state = createEmptyDesktopV3CacheState()
@@ -59,6 +59,38 @@ test('Desktop V3 sidebar record reflects server permission summary as blocked', 
   assert.equal(record.pendingPermissionCount, 1)
   assert.equal(record.pendingPermissions.length, 0)
   assert.equal(record.live.status, 'blocked')
+})
+
+test('Desktop V3 sidebar replaces a realtime-discovered ID stub with the canonical hydrated title', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const sessionId = 'session-client-b'
+  const canonicalTitle = 'Canonical generated title'
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
+  state.sessionOrderByScope['scope-a'] = [sessionId]
+  state.sessionsById[sessionId] = { kind: 'stub', id: sessionId, needsHydrate: true }
+  state.projectionsBySession[sessionId] = {
+    ...projectionB,
+    session_id: sessionId,
+    last_event_seq: 9,
+    projection_high_watermark_seq: 9,
+    updated_at: 90,
+  }
+
+  assert.equal(desktopSessionRecordFromV3SidebarRow(selectDesktopSidebarRows(state)[0]).title, sessionId)
+
+  desktopV3CacheReducer(state, hydrateResponseToAction({
+    ...hydrateSnapshotFixture({
+      sessions_by_id: { [sessionId]: { ...sessionB, id: sessionId, title: canonicalTitle } },
+      projections_by_session: { [sessionId]: { ...projectionB, session_id: sessionId } },
+      messages_by_session: { [sessionId]: [] },
+      session_order: [sessionId],
+      selector: { kind: 'session_ids', session_ids: [sessionId] },
+    }),
+  }, [sessionId]))
+
+  const record = desktopSessionRecordFromV3SidebarRow(selectDesktopSidebarRows(state)[0])
+  assert.equal(state.sessionsById[sessionId]?.kind, 'full')
+  assert.equal(record.title, canonicalTitle)
 })
 
 test('Desktop V3 sidebar render includes bootstrapped session outside launcher workspaces', () => {
