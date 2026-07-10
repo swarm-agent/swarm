@@ -87,6 +87,12 @@ func planManageDocumentPatchActions() map[string]bool {
 		"remove_checkpoint":       true,
 		"reorder_checkpoints":     true,
 		"set_active_checkpoint":   true,
+		"add_subtask":             true,
+		"update_subtask":          true,
+		"remove_subtask":          true,
+		"reorder_subtasks":        true,
+		"focus_subtask":           true,
+		"complete_subtask":        true,
 	}
 }
 
@@ -102,7 +108,7 @@ func planManageApprovedArgumentKeys(action string) map[string]bool {
 		}
 	}
 	if planManageActionUsesDocumentPatch(action) {
-		add("plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "recommendation")
+		add("plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "subtask", "subtask_id", "subtask_order", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "recommendation")
 		return keys
 	}
 	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_") {
@@ -143,6 +149,8 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 		Operation:          strings.TrimSpace(firstNonEmptyString(mapString(args, "document_operation"), mapString(args, "operation"), mapString(args, "op"))),
 		CheckpointID:       strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_id"), mapString(args, "id"))),
 		CheckpointOrder:    mapStringSlice(args, "checkpoint_order"),
+		SubtaskID:          strings.TrimSpace(mapString(args, "subtask_id")),
+		SubtaskOrder:       mapStringSlice(args, "subtask_order"),
 		ActiveCheckpointID: strings.TrimSpace(firstNonEmptyString(mapString(args, "active_checkpoint_id"), mapString(args, "active_checkpoint"))),
 		Status:             strings.TrimSpace(firstNonEmptyString(mapString(args, "status"), mapString(args, "outcome"))),
 		AttemptID:          strings.TrimSpace(mapString(args, "attempt_id")),
@@ -163,6 +171,13 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 			return nil, err
 		}
 		patch.Recommendation = &recommendation
+	}
+	if value, ok := args["subtask"]; ok && value != nil {
+		var subtask pebblestore.SessionPlanSubtask
+		if err := unmarshalPlanToolArg(value, &subtask, "plan_manage subtask"); err != nil {
+			return nil, err
+		}
+		patch.Subtask = &subtask
 	}
 	if value, ok := args["info"]; ok && value != nil {
 		var info pebblestore.SessionPlanInfo
@@ -238,7 +253,7 @@ func planDocumentActionUsesStatusForDocument(action string) bool {
 }
 
 func planDocumentPatchArgsPresent(args map[string]any) bool {
-	keys := []string{"document_patch", "document_operation", "info", "execution_policy", "execution_state", "checkpoint", "checkpoint_id", "checkpoint_order", "active_checkpoint_id", "active_checkpoint", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "notes", "report", "result", "changed_files", "validation", "operations"}
+	keys := []string{"document_patch", "document_operation", "info", "execution_policy", "execution_state", "checkpoint", "checkpoint_id", "checkpoint_order", "subtask", "subtask_id", "subtask_order", "active_checkpoint_id", "active_checkpoint", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "notes", "report", "result", "changed_files", "validation", "operations"}
 	for _, key := range keys {
 		value, ok := args[key]
 		if !ok {
@@ -253,7 +268,7 @@ func planDocumentPatchArgsPresent(args map[string]any) bool {
 	}
 	operation := strings.ToLower(strings.TrimSpace(firstNonEmptyString(mapString(args, "document_operation"), mapString(args, "operation"), mapString(args, "op"))))
 	switch strings.ReplaceAll(operation, "-", "_") {
-	case "update_info", "patch_info", "replace_info", "set_info", "update_execution_policy", "set_execution_policy", "execution_policy", "update_execution_state", "set_execution_state", "execution_state", "upsert_checkpoint", "replace_checkpoint", "set_checkpoint", "update_checkpoint", "patch_checkpoint", "start_checkpoint", "continue_checkpoint", "advance_checkpoint", "next_checkpoint", "complete_checkpoint", "finish_checkpoint", "checkpoint_outcome", "mark_checkpoint_outcome", "mark_checkpoint", "finish_checkpoint_with_outcome", "mark_needs_review", "mark_completed", "mark_blocked", "mark_failed", "accept_checkpoint_review", "approve_checkpoint", "restart_checkpoint", "retry_checkpoint", "restart_checkpoint_from_zero", "reset_checkpoint", "rewind_to_checkpoint", "rewind_checkpoint", "remove_checkpoint", "delete_checkpoint", "reorder_checkpoints", "reorder_checkpoint", "set_active_checkpoint", "activate_checkpoint":
+	case "update_info", "patch_info", "replace_info", "set_info", "update_execution_policy", "set_execution_policy", "execution_policy", "update_execution_state", "set_execution_state", "execution_state", "upsert_checkpoint", "replace_checkpoint", "set_checkpoint", "update_checkpoint", "patch_checkpoint", "start_checkpoint", "continue_checkpoint", "advance_checkpoint", "next_checkpoint", "complete_checkpoint", "finish_checkpoint", "checkpoint_outcome", "mark_checkpoint_outcome", "mark_checkpoint", "finish_checkpoint_with_outcome", "mark_needs_review", "mark_completed", "mark_blocked", "mark_failed", "accept_checkpoint_review", "approve_checkpoint", "restart_checkpoint", "retry_checkpoint", "restart_checkpoint_from_zero", "reset_checkpoint", "rewind_to_checkpoint", "rewind_checkpoint", "remove_checkpoint", "delete_checkpoint", "reorder_checkpoints", "reorder_checkpoint", "set_active_checkpoint", "activate_checkpoint", "add_subtask", "create_subtask", "upsert_subtask", "update_subtask", "patch_subtask", "remove_subtask", "delete_subtask", "reorder_subtasks", "focus_subtask", "set_active_subtask", "start_subtask", "complete_subtask", "finish_subtask":
 		return true
 	}
 	if planDocumentActionUsesStatusForDocument(mapString(args, "action")) {

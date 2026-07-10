@@ -39,6 +39,10 @@ const (
 	PlanCheckpointStatusBlocked     = "blocked"
 	PlanCheckpointStatusFailed      = "failed"
 
+	PlanSubtaskStatusPending    = "pending"
+	PlanSubtaskStatusInProgress = "in_progress"
+	PlanSubtaskStatusCompleted  = "completed"
+
 	PlanCheckpointReviewStatusPending  = "pending"
 	PlanCheckpointReviewStatusApproved = "approved"
 	PlanCheckpointReviewStatusRejected = "rejected"
@@ -206,6 +210,7 @@ func normalizePlanCheckpointRuntime(checkpoint *pebblestore.SessionPlanCheckpoin
 	checkpoint.AttemptID = strings.TrimSpace(checkpoint.AttemptID)
 	checkpoint.RunID = strings.TrimSpace(checkpoint.RunID)
 	checkpoint.SessionID = strings.TrimSpace(checkpoint.SessionID)
+	normalizePlanCheckpointSubtasks(checkpoint)
 	if checkpoint.Review != nil {
 		normalizePlanCheckpointReview(checkpoint.Review)
 		if isZeroPlanCheckpointReview(*checkpoint.Review) {
@@ -214,6 +219,57 @@ func normalizePlanCheckpointRuntime(checkpoint *pebblestore.SessionPlanCheckpoin
 	}
 	for i := range checkpoint.Attempts {
 		normalizePlanCheckpointAttempt(&checkpoint.Attempts[i], checkpoint.ID)
+	}
+}
+
+func normalizePlanCheckpointSubtasks(checkpoint *pebblestore.SessionPlanCheckpoint) {
+	if checkpoint == nil {
+		return
+	}
+	checkpoint.ActiveSubtaskID = strings.TrimSpace(checkpoint.ActiveSubtaskID)
+	if len(checkpoint.Subtasks) == 0 && len(checkpoint.Tasks) > 0 {
+		checkpoint.Subtasks = make([]pebblestore.SessionPlanSubtask, 0, len(checkpoint.Tasks))
+		for _, task := range checkpoint.Tasks {
+			title := strings.TrimSpace(task)
+			if title == "" {
+				continue
+			}
+			status := PlanSubtaskStatusPending
+			if strings.HasPrefix(strings.ToLower(title), "[x]") {
+				status = PlanSubtaskStatusCompleted
+				title = strings.TrimSpace(title[3:])
+			} else if strings.HasPrefix(strings.ToLower(title), "[ ]") {
+				title = strings.TrimSpace(title[3:])
+			}
+			checkpoint.Subtasks = append(checkpoint.Subtasks, pebblestore.SessionPlanSubtask{ID: fmt.Sprintf("task-%d", len(checkpoint.Subtasks)+1), Title: title, Status: status, Order: len(checkpoint.Subtasks) + 1})
+		}
+	}
+	for i := range checkpoint.Subtasks {
+		subtask := &checkpoint.Subtasks[i]
+		subtask.ID = strings.TrimSpace(subtask.ID)
+		subtask.Title = strings.TrimSpace(subtask.Title)
+		subtask.Notes = strings.TrimSpace(subtask.Notes)
+		subtask.Result = strings.TrimSpace(subtask.Result)
+		subtask.Status = normalizePlanSubtaskStatus(subtask.Status)
+		if subtask.Status == "" {
+			subtask.Status = PlanSubtaskStatusPending
+		}
+		if subtask.Order == 0 {
+			subtask.Order = i + 1
+		}
+	}
+}
+
+func normalizePlanSubtaskStatus(status string) string {
+	switch normalizePlanToken(status) {
+	case "", "todo", "queued", "pending":
+		return PlanSubtaskStatusPending
+	case "active", "running", "started", "in_progress":
+		return PlanSubtaskStatusInProgress
+	case "done", "complete", "completed", "success":
+		return PlanSubtaskStatusCompleted
+	default:
+		return normalizePlanToken(status)
 	}
 }
 
@@ -429,6 +485,36 @@ func validatePlanExecutionState(state *pebblestore.SessionPlanExecutionState) er
 func validatePlanCheckpointRuntime(checkpoint pebblestore.SessionPlanCheckpoint) error {
 	if checkpoint.Status != "" && !isValidPlanCheckpointStatus(checkpoint.Status) {
 		return fmt.Errorf("plan document checkpoint %q status %q is not supported", checkpoint.ID, checkpoint.Status)
+	}
+	seenSubtasks := make(map[string]struct{}, len(checkpoint.Subtasks))
+	inProgressSubtask := ""
+	for i, subtask := range checkpoint.Subtasks {
+		if subtask.ID == "" || subtask.Title == "" {
+			return fmt.Errorf("plan document checkpoint %q subtask at index %d requires id and title", checkpoint.ID, i)
+		}
+		if _, ok := seenSubtasks[subtask.ID]; ok {
+			return fmt.Errorf("plan document checkpoint %q subtask id %q is duplicated", checkpoint.ID, subtask.ID)
+		}
+		seenSubtasks[subtask.ID] = struct{}{}
+		if subtask.Status != PlanSubtaskStatusPending && subtask.Status != PlanSubtaskStatusInProgress && subtask.Status != PlanSubtaskStatusCompleted {
+			return fmt.Errorf("plan document checkpoint %q subtask %q status %q is not supported", checkpoint.ID, subtask.ID, subtask.Status)
+		}
+		if subtask.Status == PlanSubtaskStatusInProgress {
+			if inProgressSubtask != "" {
+				return fmt.Errorf("plan document checkpoint %q has multiple in_progress subtasks", checkpoint.ID)
+			}
+			inProgressSubtask = subtask.ID
+		}
+	}
+	if checkpoint.ActiveSubtaskID != "" {
+		if _, ok := seenSubtasks[checkpoint.ActiveSubtaskID]; !ok {
+			return fmt.Errorf("plan document checkpoint %q active_subtask_id %q was not found", checkpoint.ID, checkpoint.ActiveSubtaskID)
+		}
+		if checkpoint.ActiveSubtaskID != inProgressSubtask {
+			return fmt.Errorf("plan document checkpoint %q active_subtask_id must identify its in_progress subtask", checkpoint.ID)
+		}
+	} else if inProgressSubtask != "" {
+		return fmt.Errorf("plan document checkpoint %q in_progress subtask requires active_subtask_id", checkpoint.ID)
 	}
 	if checkpoint.Review != nil {
 		if err := validatePlanCheckpointReview(*checkpoint.Review, checkpoint.ID); err != nil {
@@ -799,6 +885,17 @@ func ApplyPlanCheckpointStart(doc *pebblestore.SessionPlanDocument, options Plan
 		checkpoint.StartedAt = startedAt
 	}
 	checkpoint.Status = PlanCheckpointStatusInProgress
+	normalizePlanCheckpointSubtasks(checkpoint)
+	if checkpoint.ActiveSubtaskID == "" {
+		for i := range checkpoint.Subtasks {
+			if checkpoint.Subtasks[i].Status == PlanSubtaskStatusPending {
+				checkpoint.Subtasks[i].Status = PlanSubtaskStatusInProgress
+				checkpoint.Subtasks[i].StartedAt = firstPositiveInt64(checkpoint.Subtasks[i].StartedAt, startedAt)
+				checkpoint.ActiveSubtaskID = checkpoint.Subtasks[i].ID
+				break
+			}
+		}
+	}
 	checkpoint.AttemptID = attemptID
 	checkpoint.RunID = strings.TrimSpace(options.RunID)
 	checkpoint.SessionID = strings.TrimSpace(options.SessionID)
@@ -855,6 +952,15 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 		return PlanCheckpointOutcomeDecision{}, fmt.Errorf("checkpoint outcome %q is not supported", options.Outcome)
 	}
 	checkpoint := &doc.Checkpoints[idx]
+	normalizePlanCheckpointSubtasks(checkpoint)
+	if outcome == PlanCheckpointStatusCompleted {
+		for _, subtask := range checkpoint.Subtasks {
+			if subtask.Status != PlanSubtaskStatusCompleted {
+				return PlanCheckpointOutcomeDecision{}, fmt.Errorf("checkpoint %q cannot complete while subtask %q is %q", checkpointID, subtask.ID, subtask.Status)
+			}
+		}
+		checkpoint.ActiveSubtaskID = ""
+	}
 	currentStatus := normalizePlanCheckpointStatusForSave(checkpoint.Status)
 	currentSummary := SummarizePlanExecution(doc)
 	if currentStatus == PlanCheckpointStatusCompleted && outcome == PlanCheckpointStatusCompleted && currentSummary.ReviewRequired && currentSummary.StopReason == PlanCheckpointStatusNeedsReview && allPlanCheckpointsCompleted(doc.Checkpoints) {

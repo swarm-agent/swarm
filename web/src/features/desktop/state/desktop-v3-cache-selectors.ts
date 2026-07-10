@@ -42,6 +42,9 @@ export interface DesktopV3SidebarPlanExecution {
   activeCheckpointId: string
   activeCheckpointTitle: string
   activeCheckpointStatus: string
+  activeSubtaskId: string
+  activeSubtaskTitle: string
+  activeSubtaskStatus: string
   currentRunId: string
   currentSessionId: string
   reviewRequired: boolean
@@ -237,6 +240,9 @@ function buildDesktopSidebarPlanExecution(plan: DesktopSessionPlanRecord): Deskt
     activeCheckpointId,
     activeCheckpointTitle: activeCheckpoint?.title || '',
     activeCheckpointStatus: activeCheckpoint?.status || document.executionState?.lastOutcome || '',
+    activeSubtaskId: activeCheckpoint?.activeSubtaskId || '',
+    activeSubtaskTitle: activeCheckpoint?.subtasks?.find((subtask) => subtask.id === activeCheckpoint.activeSubtaskId)?.title || '',
+    activeSubtaskStatus: activeCheckpoint?.subtasks?.find((subtask) => subtask.id === activeCheckpoint.activeSubtaskId)?.status || '',
     currentRunId: document.executionState?.currentRunId || activeCheckpoint?.runId || '',
     currentSessionId: document.executionState?.currentSessionId || activeCheckpoint?.sessionId || '',
     reviewRequired,

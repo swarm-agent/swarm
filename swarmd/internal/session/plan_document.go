@@ -122,6 +122,9 @@ type PlanDocumentPatch struct {
 	CheckpointFields   map[string]json.RawMessage                       `json:"-"`
 	CheckpointID       string                                           `json:"checkpoint_id,omitempty"`
 	CheckpointOrder    []string                                         `json:"checkpoint_order,omitempty"`
+	Subtask            *pebblestore.SessionPlanSubtask                  `json:"subtask,omitempty"`
+	SubtaskID          string                                           `json:"subtask_id,omitempty"`
+	SubtaskOrder       []string                                         `json:"subtask_order,omitempty"`
 	ActiveCheckpointID string                                           `json:"active_checkpoint_id,omitempty"`
 	Status             string                                           `json:"status,omitempty"`
 	AttemptID          string                                           `json:"attempt_id,omitempty"`
@@ -186,7 +189,7 @@ func (p *PlanDocumentPatch) UnmarshalJSON(raw []byte) error {
 }
 
 func (p PlanDocumentPatch) IsZero() bool {
-	return strings.TrimSpace(p.Operation) == "" && p.Info == nil && len(p.InfoFields) == 0 && p.ExecutionPolicy == nil && p.ExecutionState == nil && p.Checkpoint == nil && len(p.CheckpointFields) == 0 && strings.TrimSpace(p.CheckpointID) == "" && len(p.CheckpointOrder) == 0 && strings.TrimSpace(p.ActiveCheckpointID) == "" && strings.TrimSpace(p.Status) == "" && strings.TrimSpace(p.AttemptID) == "" && strings.TrimSpace(p.RunID) == "" && strings.TrimSpace(p.RunSessionID) == "" && strings.TrimSpace(p.ParentSessionID) == "" && p.StartedAt == 0 && p.CompletedAt == 0 && strings.TrimSpace(p.Notes) == "" && strings.TrimSpace(p.Report) == "" && strings.TrimSpace(p.Result) == "" && len(p.ChangedFiles) == 0 && len(p.Validation) == 0 && len(p.Operations) == 0
+	return strings.TrimSpace(p.Operation) == "" && p.Info == nil && len(p.InfoFields) == 0 && p.ExecutionPolicy == nil && p.ExecutionState == nil && p.Checkpoint == nil && len(p.CheckpointFields) == 0 && strings.TrimSpace(p.CheckpointID) == "" && len(p.CheckpointOrder) == 0 && p.Subtask == nil && strings.TrimSpace(p.SubtaskID) == "" && len(p.SubtaskOrder) == 0 && strings.TrimSpace(p.ActiveCheckpointID) == "" && strings.TrimSpace(p.Status) == "" && strings.TrimSpace(p.AttemptID) == "" && strings.TrimSpace(p.RunID) == "" && strings.TrimSpace(p.RunSessionID) == "" && strings.TrimSpace(p.ParentSessionID) == "" && p.StartedAt == 0 && p.CompletedAt == 0 && strings.TrimSpace(p.Notes) == "" && strings.TrimSpace(p.Report) == "" && strings.TrimSpace(p.Result) == "" && len(p.ChangedFiles) == 0 && len(p.Validation) == 0 && len(p.Operations) == 0
 }
 
 func ApplyPlanDocumentPatch(planID, title string, existing *pebblestore.SessionPlanDocument, patch PlanDocumentPatch) (*pebblestore.SessionPlanDocument, error) {
@@ -224,6 +227,10 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 			operation = "upsert_checkpoint"
 		case len(op.CheckpointOrder) > 0:
 			operation = "reorder_checkpoints"
+		case op.Subtask != nil:
+			operation = "add_subtask"
+		case len(op.SubtaskOrder) > 0:
+			operation = "reorder_subtasks"
 		case strings.TrimSpace(op.ActiveCheckpointID) != "":
 			operation = "set_active_checkpoint"
 		default:
@@ -396,6 +403,18 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
 		_, err := ApplyPlanCheckpointReset(doc, PlanCheckpointResetOptions{CheckpointID: id, Rewind: true})
 		return err
+	case "add_subtask", "create_subtask", "upsert_subtask":
+		return addPlanCheckpointSubtask(doc, op)
+	case "update_subtask", "patch_subtask":
+		return updatePlanCheckpointSubtask(doc, op)
+	case "focus_subtask", "set_active_subtask", "start_subtask":
+		return focusPlanCheckpointSubtask(doc, op)
+	case "complete_subtask", "finish_subtask":
+		return completePlanCheckpointSubtask(doc, op)
+	case "remove_subtask", "delete_subtask":
+		return removePlanCheckpointSubtask(doc, op)
+	case "reorder_subtasks":
+		return reorderPlanCheckpointSubtasks(doc, op)
 	case "remove_checkpoint", "delete_checkpoint":
 		id := strings.TrimSpace(firstNonBlank(op.CheckpointID, checkpointIDFromPatch(op.Checkpoint)))
 		if id == "" {
@@ -563,6 +582,19 @@ func mergePlanCheckpointPatch(target *pebblestore.SessionPlanCheckpoint, checkpo
 			target.Objective = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.Objective))
 		case "tasks":
 			target.Tasks = trimStringSlice(stringSliceFromPlanInfoRaw(raw, trimmed.Tasks))
+			if len(target.Subtasks) > 0 {
+				target.Subtasks = nil
+				target.ActiveSubtaskID = ""
+				normalizePlanCheckpointSubtasks(target)
+			}
+		case "subtasks":
+			var subtasks []pebblestore.SessionPlanSubtask
+			if len(raw) > 0 && json.Unmarshal(raw, &subtasks) == nil {
+				target.Subtasks = subtasks
+				normalizePlanCheckpointSubtasks(target)
+			}
+		case "active_subtask_id":
+			target.ActiveSubtaskID = strings.TrimSpace(stringFromPlanInfoRaw(raw, trimmed.ActiveSubtaskID))
 		case "acceptance_criteria":
 			target.AcceptanceCriteria = trimStringSlice(stringSliceFromPlanInfoRaw(raw, trimmed.AcceptanceCriteria))
 		case "notes":
@@ -784,6 +816,7 @@ func clonePlanDocumentCheckpointSlice(checkpoints []pebblestore.SessionPlanCheck
 	for i := range checkpoints {
 		clone[i] = checkpoints[i]
 		clone[i].Tasks = cloneStringSlice(checkpoints[i].Tasks)
+		clone[i].Subtasks = append([]pebblestore.SessionPlanSubtask(nil), checkpoints[i].Subtasks...)
 		clone[i].AcceptanceCriteria = cloneStringSlice(checkpoints[i].AcceptanceCriteria)
 		clone[i].SourceMessageID = strings.TrimSpace(checkpoints[i].SourceMessageID)
 		clone[i].ChangedFiles = cloneStringSlice(checkpoints[i].ChangedFiles)
@@ -839,6 +872,7 @@ func trimPlanCheckpoint(checkpoint *pebblestore.SessionPlanCheckpoint) {
 	checkpoint.Status = normalizePlanCheckpointStatusForSave(checkpoint.Status)
 	checkpoint.Objective = strings.TrimSpace(checkpoint.Objective)
 	checkpoint.Tasks = trimStringSlice(checkpoint.Tasks)
+	checkpoint.ActiveSubtaskID = strings.TrimSpace(checkpoint.ActiveSubtaskID)
 	checkpoint.AcceptanceCriteria = trimStringSlice(checkpoint.AcceptanceCriteria)
 	checkpoint.SourceMessageID = strings.TrimSpace(checkpoint.SourceMessageID)
 	checkpoint.Notes = strings.TrimSpace(checkpoint.Notes)

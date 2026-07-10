@@ -196,11 +196,15 @@ type SessionPlanInfo struct {
 }
 
 type SessionPlanCheckpoint struct {
-	ID                 string                               `json:"id"`
-	Title              string                               `json:"title,omitempty"`
-	Status             string                               `json:"status,omitempty"`
-	Objective          string                               `json:"objective,omitempty"`
+	ID        string `json:"id"`
+	Title     string `json:"title,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Objective string `json:"objective,omitempty"`
+	// Tasks is accepted as legacy compatibility input. Subtasks is the canonical
+	// durable execution checklist once a document is normalized or mutated.
 	Tasks              []string                             `json:"tasks,omitempty"`
+	Subtasks           []SessionPlanSubtask                 `json:"subtasks,omitempty"`
+	ActiveSubtaskID    string                               `json:"active_subtask_id,omitempty"`
 	AcceptanceCriteria []string                             `json:"acceptance_criteria,omitempty"`
 	SourceMessageID    string                               `json:"source_message_id,omitempty"`
 	Notes              string                               `json:"notes,omitempty"`
@@ -217,6 +221,17 @@ type SessionPlanCheckpoint struct {
 	Recommendation     *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
 	Attempts           []SessionPlanCheckpointAttempt       `json:"attempts,omitempty"`
 	Order              int                                  `json:"order,omitempty"`
+}
+
+type SessionPlanSubtask struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Status      string `json:"status,omitempty"`
+	Notes       string `json:"notes,omitempty"`
+	Result      string `json:"result,omitempty"`
+	StartedAt   int64  `json:"started_at,omitempty"`
+	CompletedAt int64  `json:"completed_at,omitempty"`
+	Order       int    `json:"order,omitempty"`
 }
 
 type SessionPlanCheckpointAttempt struct {

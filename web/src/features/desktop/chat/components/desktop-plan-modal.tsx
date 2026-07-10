@@ -467,6 +467,23 @@ function CheckpointSection({ title, values, mono = false }: { title: string; val
   )
 }
 
+function CheckpointSubtasks({ checkpoint }: { checkpoint: DesktopSessionPlanCheckpoint }) {
+  const subtasks = checkpoint.subtasks ?? checkpoint.tasks.map((title, index) => ({ id: `task-${index + 1}`, title, status: 'pending', notes: '', result: '', startedAt: 0, completedAt: 0, order: index + 1 }))
+  if (subtasks.length === 0) return null
+  return (
+    <div className="grid min-w-0 gap-1.5">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Tasks</div>
+      <ul className="grid gap-1.5 text-sm">
+        {subtasks.map((subtask) => {
+          const done = subtask.status.toLowerCase() === 'completed'
+          const active = subtask.id === checkpoint.activeSubtaskId || subtask.status.toLowerCase() === 'in_progress'
+          return <li key={subtask.id} className={cn('flex gap-2', done ? 'text-[var(--app-success)]' : active ? 'font-medium text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]')}><span>{done ? '✓' : active ? '◉' : '○'}</span><span>{subtask.title}</span></li>
+        })}
+      </ul>
+    </div>
+  )
+}
+
 function CheckpointTextSection({ title, value }: { title: string; value: string }) {
   if (!value.trim()) {
     return null
@@ -515,7 +532,7 @@ function CheckpointRow({
       {expanded ? (
         <div className={cn('grid gap-3 pb-4 pl-12 pr-3 pt-1', active ? 'border-l-2 border-[var(--app-primary)]' : 'border-l-2 border-transparent')}>
           <CheckpointTextSection title="Objective" value={checkpoint.objective} />
-          <CheckpointSection title="Tasks" values={checkpoint.tasks} />
+          <CheckpointSubtasks checkpoint={checkpoint} />
           <CheckpointSection title="Acceptance" values={checkpoint.acceptanceCriteria} />
           <CheckpointTextSection title="Notes" value={checkpoint.notes} />
           <CheckpointTextSection title="Report" value={checkpoint.report} />

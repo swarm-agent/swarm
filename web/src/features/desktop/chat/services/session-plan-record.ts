@@ -172,6 +172,8 @@ function normalizeDesktopSessionPlanCheckpoints(value: unknown): DesktopSessionP
         status: stringValue(checkpoint, 'status'),
         objective: stringValue(checkpoint, 'objective'),
         tasks: stringArrayValue(checkpoint, 'tasks'),
+        subtasks: normalizeDesktopSessionPlanSubtasks(checkpoint.subtasks, stringArrayValue(checkpoint, 'tasks')),
+        activeSubtaskId: stringValue(checkpoint, 'activeSubtaskId', 'active_subtask_id'),
         acceptanceCriteria: stringArrayValue(checkpoint, 'acceptanceCriteria', 'acceptance_criteria'),
         notes: stringValue(checkpoint, 'notes'),
         report: stringValue(checkpoint, 'report'),
@@ -191,6 +193,25 @@ function normalizeDesktopSessionPlanCheckpoints(value: unknown): DesktopSessionP
     })
     .filter((entry): entry is DesktopSessionPlanCheckpoint => entry !== null)
     .sort((left, right) => left.order - right.order)
+}
+
+function normalizeDesktopSessionPlanSubtasks(value: unknown, legacyTasks: string[]): DesktopSessionPlanCheckpoint['subtasks'] {
+  const source = Array.isArray(value) && value.length > 0
+    ? value
+    : legacyTasks.map((title, index) => ({ id: `task-${index + 1}`, title, status: 'pending', order: index + 1 }))
+  return source.map((entry, index) => {
+    const record = objectValue(entry) ?? {}
+    return {
+      id: stringValue(record, 'id') || `task-${index + 1}`,
+      title: stringValue(record, 'title'),
+      status: stringValue(record, 'status') || 'pending',
+      notes: stringValue(record, 'notes'),
+      result: stringValue(record, 'result'),
+      startedAt: numberValue(record.startedAt ?? record.started_at),
+      completedAt: numberValue(record.completedAt ?? record.completed_at),
+      order: numberValue(record.order) || index + 1,
+    }
+  }).filter((entry) => entry.title).sort((left, right) => left.order - right.order)
 }
 
 function normalizeDesktopSessionPlanCheckpointReview(value: unknown): DesktopSessionPlanCheckpoint['review'] {

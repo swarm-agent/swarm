@@ -24,6 +24,9 @@ func TestPlanManageLifecycleRequirementIsTyped(t *testing.T) {
 		{name: "bulk operations existing", args: `{"action":"update_info","plan_id":"plan_1","operations":[{"operation":"update_info","info":{"goal":"bulk"}}]}`, want: "plan_revision_request"},
 		{name: "bulk checkpoint reorder existing", args: `{"action":"reorder_checkpoints","checkpoint_order":["cp-2","cp-1"]}`, want: "plan_revision_request"},
 		{name: "draft save no active plan id", args: `{"action":"save","document":{"info":{"goal":"draft"}}}`, want: ""},
+		{name: "add subtask is execution state", args: `{"action":"add_subtask","plan_id":"plan_1","checkpoint_id":"cp-1","subtask":{"title":"docs"}}`, want: ""},
+		{name: "focus subtask is execution state", args: `{"action":"focus_subtask","plan_id":"plan_1","checkpoint_id":"cp-1","subtask_id":"task-1"}`, want: ""},
+		{name: "complete subtask is execution state", args: `{"action":"complete_subtask","plan_id":"plan_1","checkpoint_id":"cp-1","subtask_id":"task-1"}`, want: ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

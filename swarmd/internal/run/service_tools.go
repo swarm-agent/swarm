@@ -1623,6 +1623,18 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		action = "resolve_blocked_checkpoint"
 	case "mark-failed", "mark_failed":
 		action = "mark_failed"
+	case "add-subtask", "add_subtask", "create-subtask", "create_subtask", "upsert-subtask", "upsert_subtask":
+		action = "add_subtask"
+	case "update-subtask", "update_subtask", "patch-subtask", "patch_subtask":
+		action = "update_subtask"
+	case "remove-subtask", "remove_subtask", "delete-subtask", "delete_subtask":
+		action = "remove_subtask"
+	case "reorder-subtasks", "reorder_subtasks":
+		action = "reorder_subtasks"
+	case "focus-subtask", "focus_subtask", "set-active-subtask", "set_active_subtask", "start-subtask", "start_subtask":
+		action = "focus_subtask"
+	case "complete-subtask", "complete_subtask", "finish-subtask", "finish_subtask":
+		action = "complete_subtask"
 	case "remove-checkpoint", "remove_checkpoint", "delete-checkpoint", "delete_checkpoint":
 		action = "remove_checkpoint"
 	case "reorder-checkpoints", "reorder_checkpoints":
@@ -1896,7 +1908,7 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 			"details_truncated": false,
 		}
 		return marshalPlanManagePayload(payload)
-	case "patch", "update_section", "update_info", "update_execution_policy", "update_execution_state", "upsert_checkpoint", "update_checkpoint", "start_checkpoint", "continue_checkpoint", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed", "remove_checkpoint", "reorder_checkpoints", "set_active_checkpoint":
+	case "patch", "update_section", "update_info", "update_execution_policy", "update_execution_state", "upsert_checkpoint", "update_checkpoint", "start_checkpoint", "continue_checkpoint", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed", "remove_checkpoint", "reorder_checkpoints", "set_active_checkpoint", "add_subtask", "update_subtask", "remove_subtask", "reorder_subtasks", "focus_subtask", "complete_subtask":
 		planID := strings.TrimSpace(mapString(args, "plan_id"))
 		if planID == "" {
 			planID = strings.TrimSpace(mapString(args, "id"))

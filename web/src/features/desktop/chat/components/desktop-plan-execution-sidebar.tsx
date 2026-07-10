@@ -152,28 +152,22 @@ function CheckpointDetails({
   checkpoint?: DesktopSessionPlanCheckpoint;
 }) {
   if (!checkpoint) return null;
-  const tasks = checkpoint.tasks
-    .map(checkpointTaskView)
-    .filter((task) => task.text.length > 0);
-  const criteria = checkpoint.acceptanceCriteria.filter((criterion) =>
-    criterion.trim(),
-  );
-  const objective = checkpoint.objective.trim();
-  const notes = checkpoint.notes.trim();
-  if (!objective && tasks.length === 0 && criteria.length === 0 && !notes) {
+  const tasks = (checkpoint.subtasks?.length ?? 0) > 0
+    ? checkpoint.subtasks!.map((subtask) => ({
+        text: subtask.title,
+        checked: subtask.status.toLowerCase() === "completed",
+        active: subtask.id === checkpoint.activeSubtaskId || subtask.status.toLowerCase() === "in_progress",
+      }))
+    : checkpoint.tasks
+        .map(checkpointTaskView)
+        .filter((task) => task.text.length > 0)
+        .map((task) => ({ ...task, active: false }));
+  if (tasks.length === 0) {
     return null;
   }
 
   return (
     <div className="mt-3.5 grid gap-3 border-t border-[var(--app-border)] pt-3 text-xs leading-5 text-[var(--app-text-muted)]">
-      {objective ? (
-        <section>
-          <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--app-text-subtle)]">
-            Objective
-          </div>
-          <p className="mt-1 break-words [overflow-wrap:anywhere]">{objective}</p>
-        </section>
-      ) : null}
       {tasks.length > 0 ? (
         <section>
           <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--app-text-subtle)]">
@@ -181,7 +175,7 @@ function CheckpointDetails({
           </div>
           <ul className="mt-1 grid gap-1.5">
             {tasks.map((task, index) => (
-              <li key={`${index}:${task.text}`} className="flex min-w-0 items-start gap-2">
+              <li key={`${index}:${task.text}`} className={cn("flex min-w-0 items-start gap-2", task.active && "font-medium text-[var(--app-primary)]")}>
                 {task.checked === null ? (
                   <span aria-hidden="true" className="mt-0.5 text-[var(--app-text-subtle)]">
                     •
@@ -202,31 +196,6 @@ function CheckpointDetails({
               </li>
             ))}
           </ul>
-        </section>
-      ) : null}
-      {criteria.length > 0 ? (
-        <section>
-          <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--app-text-subtle)]">
-            Acceptance criteria
-          </div>
-          <ul className="mt-1 grid gap-1.5">
-            {criteria.map((criterion, index) => (
-              <li key={`${index}:${criterion}`} className="flex min-w-0 items-start gap-2">
-                <span aria-hidden="true" className="mt-0.5 text-[var(--app-text-subtle)]">•</span>
-                <span className="min-w-0 break-words [overflow-wrap:anywhere]">
-                  {criterion.trim()}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-      {notes ? (
-        <section>
-          <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--app-text-subtle)]">
-            Notes
-          </div>
-          <p className="mt-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{notes}</p>
         </section>
       ) : null}
     </div>

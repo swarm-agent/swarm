@@ -40,13 +40,21 @@ type compactRunState struct {
 }
 
 type compactCheckpointState struct {
-	ID      string   `json:"id"`
-	Title   string   `json:"title,omitempty"`
-	Status  string   `json:"status,omitempty"`
-	Attempt string   `json:"attempt_id,omitempty"`
-	RunID   string   `json:"run_id,omitempty"`
-	Session string   `json:"session_id,omitempty"`
-	Tasks   []string `json:"tasks,omitempty"`
+	ID              string                `json:"id"`
+	Title           string                `json:"title,omitempty"`
+	Status          string                `json:"status,omitempty"`
+	Attempt         string                `json:"attempt_id,omitempty"`
+	RunID           string                `json:"run_id,omitempty"`
+	Session         string                `json:"session_id,omitempty"`
+	Tasks           []string              `json:"tasks,omitempty"`
+	Subtasks        []compactSubtaskState `json:"subtasks,omitempty"`
+	ActiveSubtaskID string                `json:"active_subtask_id,omitempty"`
+}
+
+type compactSubtaskState struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
 }
 
 type compactRunOwnership struct {
@@ -106,13 +114,15 @@ func renderDurablePlanRunState(state compactRunState, plan pebblestore.SessionPl
 	if idx := findPlanRunCheckpointIndex(doc.Checkpoints, checkpointID); idx >= 0 {
 		checkpoint := doc.Checkpoints[idx]
 		state.ActiveCheckpoint = &compactCheckpointState{
-			ID:      strings.TrimSpace(checkpoint.ID),
-			Title:   truncateRunes(strings.TrimSpace(checkpoint.Title), 120),
-			Status:  strings.TrimSpace(checkpoint.Status),
-			Attempt: strings.TrimSpace(checkpoint.AttemptID),
-			RunID:   strings.TrimSpace(checkpoint.RunID),
-			Session: strings.TrimSpace(checkpoint.SessionID),
-			Tasks:   compactCheckpointTasks(checkpoint.Tasks),
+			ID:              strings.TrimSpace(checkpoint.ID),
+			Title:           truncateRunes(strings.TrimSpace(checkpoint.Title), 120),
+			Status:          strings.TrimSpace(checkpoint.Status),
+			Attempt:         strings.TrimSpace(checkpoint.AttemptID),
+			RunID:           strings.TrimSpace(checkpoint.RunID),
+			Session:         strings.TrimSpace(checkpoint.SessionID),
+			Tasks:           compactCheckpointTasks(checkpoint.Tasks),
+			Subtasks:        compactCheckpointSubtasks(checkpoint.Subtasks),
+			ActiveSubtaskID: strings.TrimSpace(checkpoint.ActiveSubtaskID),
 		}
 	}
 	return renderCompactRunState(state)
@@ -123,7 +133,7 @@ func renderCompactRunState(state compactRunState) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal durable run state: %w", err)
 	}
-	return "Durable run state (authoritative; do not infer or override it from transcript or UI):\n" + string(raw) + "\nContinue the current work when it is runnable. Refine the active checkpoint task list only when it materially improves execution. Ask the user only for a real product decision or a risky operation.", nil
+	return "Durable run state (authoritative; do not infer or override it from transcript or UI):\n" + string(raw) + "\nContinue the current work when it is runnable. Maintain the active checkpoint's typed subtasks inline: small fixes, validation, documentation, review, and commit preparation for the same deliverable are subtasks; an independent deliverable or separate failure/review boundary is a new checkpoint. Routine subtask mutations do not require plan approval. Ask the user only for a real product decision or a risky operation.", nil
 }
 
 func runKindForOptions(mode string, options RunOptions, origin string) string {
@@ -163,6 +173,21 @@ func nextPlanLifecycleAction(summary sessionruntime.PlanExecutionSummary) string
 	default:
 		return "continue_current_turn"
 	}
+}
+
+func compactCheckpointSubtasks(subtasks []pebblestore.SessionPlanSubtask) []compactSubtaskState {
+	const maxSubtasks = 8
+	out := make([]compactSubtaskState, 0, maxSubtasks)
+	for _, subtask := range subtasks {
+		if strings.TrimSpace(subtask.ID) == "" || strings.TrimSpace(subtask.Title) == "" {
+			continue
+		}
+		out = append(out, compactSubtaskState{ID: strings.TrimSpace(subtask.ID), Title: truncateRunes(strings.TrimSpace(subtask.Title), 240), Status: strings.TrimSpace(subtask.Status)})
+		if len(out) == maxSubtasks {
+			break
+		}
+	}
+	return out
 }
 
 func compactCheckpointTasks(tasks []string) []string {

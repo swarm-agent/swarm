@@ -411,12 +411,25 @@ export interface DesktopSessionPlanCheckpointAttempt {
   validation: string[];
 }
 
+export interface DesktopSessionPlanSubtask {
+  id: string;
+  title: string;
+  status: string;
+  notes: string;
+  result: string;
+  startedAt: number;
+  completedAt: number;
+  order: number;
+}
+
 export interface DesktopSessionPlanCheckpoint {
   id: string;
   title: string;
   status: string;
   objective: string;
   tasks: string[];
+  subtasks?: DesktopSessionPlanSubtask[];
+  activeSubtaskId?: string;
   acceptanceCriteria: string[];
   notes: string;
   report: string;
