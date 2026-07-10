@@ -1229,83 +1229,6 @@ test('stale hydrate ignores removed resource maps while preserving scoped state 
   assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), ['msg-b-1'])
 })
 
-test('stale hydrate session view cannot revert a newer cached plan mode or auto model policy', () => {
-  const state = bootstrappedState()
-  const current = state.sessionsById[sessionB.id]
-  assert.equal(current?.kind, 'full')
-  if (current?.kind !== 'full') return
-  state.sessionsById[sessionB.id] = {
-    ...current,
-    session: { ...current.session, mode: 'plan' },
-  }
-  state.projectionsBySession[sessionB.id] = {
-    ...projectionB,
-    last_event_seq: 9,
-    projection_high_watermark_seq: 9,
-  }
-  state.preferencesBySession[sessionB.id] = { model: 'plan-model' }
-  state.agentModelPolicyBySession[sessionB.id] = { model: 'plan-model' }
-
-  applyHydrateSnapshot(state, hydrateSnapshotFixture({
-    sessions_by_id: { [sessionB.id]: { ...sessionB, mode: 'auto' } },
-    projections_by_session: { [sessionB.id]: projectionB },
-    session_views_by_id: {
-      [sessionB.id]: {
-        agentic_settings: {
-          mode: 'auto',
-          agent_name: 'swarm',
-          resolved_agent_name: 'swarm',
-          effective_preference: { model: 'auto-model' },
-          agent_model_policy: { model: 'auto-model' },
-          projection_seq: projectionB.last_event_seq,
-        },
-      },
-    },
-    sync_scope: {
-      surface: 'desktop',
-      stream_kind: 'v3.sync.snapshot',
-      selector_filter_hash: 'session-b-hash',
-      resource_set: 'session_view',
-    },
-    scope_id: 'session-b-hash:session_view',
-    selector: { kind: 'session_ids', session_ids: [sessionB.id] },
-    session_order: [sessionB.id],
-  }), [sessionB.id])
-
-  const retained = state.sessionsById[sessionB.id]
-  assert.equal(retained?.kind === 'full' ? retained.session.mode : '', 'plan')
-  assert.deepEqual(state.preferencesBySession[sessionB.id], { model: 'plan-model' })
-  assert.deepEqual(state.agentModelPolicyBySession[sessionB.id], { model: 'plan-model' })
-})
-
-test('stale realtime scalar mode event cannot revert a newer cached plan projection', () => {
-  const state = bootstrappedState()
-  const current = state.sessionsById[sessionB.id]
-  assert.equal(current?.kind, 'full')
-  if (current?.kind !== 'full') return
-  state.sessionsById[sessionB.id] = {
-    ...current,
-    session: { ...current.session, mode: 'plan' },
-  }
-  state.projectionsBySession[sessionB.id] = {
-    ...projectionB,
-    last_event_seq: 9,
-    projection_high_watermark_seq: 9,
-  }
-
-  applyCacheEvent(state, {
-    source: 'realtime',
-    sessionId: sessionB.id,
-    eventType: 'session.mode.updated',
-    projection: projectionB,
-    payload: { mode: 'auto' },
-  })
-
-  const retained = state.sessionsById[sessionB.id]
-  assert.equal(retained?.kind === 'full' ? retained.session.mode : '', 'plan')
-  assert.equal(state.projectionsBySession[sessionB.id].last_event_seq, 9)
-})
-
 test('stored events dedupe by immutable session sequence even with different ids', () => {
   const state = createEmptyDesktopV3CacheState()
   const first = {
@@ -3552,18 +3475,10 @@ test('session preference settings mutation repairs cached context window baselin
   assert.equal(usage.updated_at, 50)
 })
 
-test('workset.session.updated preserves newer plan mode when compact sidebar shell omits mode', () => {
+test('workset.session.updated applies compact sidebar shell and current run state without subscription', () => {
   const state = bootstrappedState()
-  const current = state.sessionsById[sessionB.id]
-  assert.equal(current?.kind, 'full')
-  if (current?.kind !== 'full') return
-  state.sessionsById[sessionB.id] = {
-    ...current,
-    session: { ...current.session, mode: 'plan' },
-  }
   const updatedSession: SessionSnapshot = {
     ...sessionB,
-    mode: '',
     title: 'Updated sidebar title',
     lifecycle: undefined,
     preference: {},
@@ -3616,7 +3531,6 @@ test('workset.session.updated preserves newer plan mode when compact sidebar she
 
   assert.equal(state.sessionsById[sessionB.id]?.kind, 'full')
   assert.equal(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.title : '', 'Updated sidebar title')
-  assert.equal(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.mode : '', 'plan')
   assert.equal(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.lifecycle : undefined, undefined)
   assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.preference : undefined, {})
   assert.deepEqual(state.sessionsById[sessionB.id]?.kind === 'full' ? state.sessionsById[sessionB.id].session.metadata : undefined, { agent_name: 'explorer' })

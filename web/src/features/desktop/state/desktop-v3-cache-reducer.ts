@@ -394,8 +394,7 @@ export function applySnapshot(
     applyEventsBySessionFromSnapshot(state, snapshot.events_by_session)
   }
   applyCurrentRunStateFromSyncSnapshot(state, snapshot)
-  const bootstrappedSessionIds = new Set(Object.keys(snapshot.sessions_by_id ?? {}))
-  applySessionViewsFromSyncSnapshot(state, snapshot, bootstrappedSessionIds, bootstrappedSessionIds)
+  applySessionViewsFromSyncSnapshot(state, snapshot, new Set(Object.keys(snapshot.sessions_by_id ?? {})))
   for (const sessionId of snapshot.session_order ?? []) {
     const record = state.sessionsById[sessionId]
     if (record?.kind === 'full' && hydrateResponseCompletesSession(snapshot, sessionId)) {
@@ -548,7 +547,7 @@ function applyHydrateAuthoritativeResources(
   enforceHydratedTranscriptRetention(state)
   applyPermissionSummariesFromSyncSnapshot(state, snapshot, requested)
   applyNotificationsFromSyncSnapshot(state, snapshot)
-  applySessionViewsFromSyncSnapshot(state, snapshot, requested, freshRequested)
+  applySessionViewsFromSyncSnapshot(state, snapshot, requested)
 
   if (syncResourceSetContains(resourceSet, 'run_intents')) {
     for (const sessionId of requested) {
@@ -1083,9 +1082,7 @@ export function applyCacheEvent(
     applyTombstone(state, sessionId, payload.tombstone)
   }
 
-  if (incomingProjectionIsFresh) {
-    applyScalarSessionPatchIfPresent(state, sessionId, payload, eventType)
-  }
+  applyScalarSessionPatchIfPresent(state, sessionId, payload, eventType)
   applyLiveRunOverlayFromEvent(state, event)
   if (payload.message) {
     reconcileLiveRunWithCommittedMessage(
@@ -1559,15 +1556,8 @@ export function applyWorksetSessionUpdated(
   const sessionId = stringField(frame.session_id)
   if (!worksetIdValue || !sessionId) return
 
-  const existingProjection = state.projectionsBySession[sessionId]
-  const incomingProjectionIsFresh = projectionSeq(frame.projection) >= projectionSeq(existingProjection)
-  if (frame.session && incomingProjectionIsFresh) {
-    const existing = state.sessionsById[sessionId]
-    const mode = stringField(frame.session.mode)
-      || (existing?.kind === 'full' ? existing.session.mode : '')
-    upsertSessions(state, {
-      [sessionId]: mode ? { ...frame.session, mode } : frame.session,
-    })
+  if (frame.session) {
+    upsertSessions(state, { [sessionId]: frame.session })
   } else if (!state.sessionsById[sessionId]) {
     state.sessionsById[sessionId] = {
       kind: 'stub',
@@ -1595,7 +1585,7 @@ export function applyWorksetSessionUpdated(
   workset.inactiveSessionIds = (workset.inactiveSessionIds ?? []).filter((id) => id !== sessionId)
   state.worksetsById[worksetIdValue] = workset
 
-  if (frame.projection && incomingProjectionIsFresh) state.projectionsBySession[sessionId] = frame.projection
+  if (frame.projection) state.projectionsBySession[sessionId] = frame.projection
   applyCurrentRunStateFrame(state, sessionId, frame.current_run_state)
   const summary = normalizeDesktopPermissionSummary(frame.permission_summary, sessionId)
   if (summary) applyPermissionSummary(state, sessionId, summary)
@@ -2037,23 +2027,19 @@ function applySessionViewsFromSyncSnapshot(
   state: DesktopV3CacheState,
   snapshot: SyncSnapshotResponse,
   authoritativeSessionIds: Set<string>,
-  freshSessionIds: Set<string>,
 ): void {
   const resourceSet = snapshot.sync_scope.resource_set
   const hasSessionView = syncResourceSetContains(resourceSet, 'session_view')
   const hasActivePlan = syncResourceSetContains(resourceSet, 'active_plan')
   if (!hasSessionView && !hasActivePlan) return
-  applySessionViews(state, snapshot.session_views_by_id, authoritativeSessionIds, {
-    clearMissing: hasSessionView,
-    authoritativeSettingsIds: freshSessionIds,
-  })
+  applySessionViews(state, snapshot.session_views_by_id, authoritativeSessionIds, { clearMissing: hasSessionView })
 }
 
 function applySessionViews(
   state: DesktopV3CacheState,
   viewsById: SyncSnapshotResponse['session_views_by_id'] | undefined,
   authoritativeSessionIds: Set<string>,
-  options: { clearMissing: boolean; authoritativeSettingsIds?: Set<string> },
+  options: { clearMissing: boolean },
 ): void {
   const views = onlyRequested(viewsById, authoritativeSessionIds)
   for (const sessionId of authoritativeSessionIds) {
@@ -2074,9 +2060,7 @@ function applySessionViews(
     if (view.usage_summary !== undefined) state.usageBySession[sessionId] = view.usage_summary
     applyPlanSnapshotFromSessionView(state, sessionId, view)
 
-    const settings = options.authoritativeSettingsIds && !options.authoritativeSettingsIds.has(sessionId)
-      ? undefined
-      : view.agentic_settings
+    const settings = view.agentic_settings
     const authoritativePreference = settings?.effective_preference ?? settings?.stored_preference
     if (authoritativePreference !== undefined) state.preferencesBySession[sessionId] = authoritativePreference
     if (settings?.agent_model_policy !== undefined) state.agentModelPolicyBySession[sessionId] = settings.agent_model_policy
