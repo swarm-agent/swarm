@@ -31,8 +31,6 @@ import {
 } from "../../state/desktop-v3-cache-selectors";
 import type {
   DesktopV3CacheState,
-  DesktopV3AgenticSettings,
-  DesktopV3ComposerSettingsTuple,
   LiveRunOverlay,
   MessageSnapshot,
   PendingUserMessage,
@@ -64,6 +62,7 @@ import {
   uiSettingsQueryOptions,
 } from "../../../queries/query-options";
 import {
+  normalizeSessionMode,
   normalizeThinkingTagsEnabled,
   type DesktopSessionMode,
 } from "../../settings/swarm/types/swarm-settings";
@@ -167,6 +166,26 @@ function recordObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function policyString(
+  policy: unknown,
+  camelKey: string,
+  snakeKey: string,
+): string {
+  const record = recordObject(policy);
+  if (!record) return "";
+  const value = record[camelKey] ?? record[snakeKey];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function policyLockedPreference(
+  policy: unknown,
+): SessionPreferenceRecord | null {
+  const record = recordObject(policy);
+  if (!record || record.locked !== true) return null;
+  const preference = normalizePreference(record.preference);
+  return preference.provider && preference.model ? preference : null;
 }
 
 function normalizePreference(value: unknown): SessionPreferenceRecord {
@@ -332,6 +351,14 @@ function preferencesEqual(
   );
 }
 
+function firstNonEmpty(...values: string[]): string {
+  for (const value of values) {
+    const normalized = value.trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
 function comparePendingPermissions(
   left: DesktopPermissionRecord,
   right: DesktopPermissionRecord,
@@ -345,40 +372,36 @@ function comparePendingPermissions(
   );
 }
 
-function composerTupleAsCanonical(
-  tuple: DesktopV3ComposerSettingsTuple,
-  projectionSeq = 0,
-): DesktopV3AgenticSettings {
-  const preference = (value: DesktopV3ComposerSettingsTuple["effectivePreference"]) => ({
-    provider: value.provider,
-    model: value.model,
-    thinking: value.thinking,
-    service_tier: value.serviceTier,
-    context_mode: value.contextMode,
-    updated_at: value.updatedAt,
-  });
+type DesktopV3InputSettingsSnapshot = {
+  sessionId: string;
+  mode: DesktopSessionMode;
+  agent: string;
+  preference: SessionPreferenceRecord;
+};
+
+function buildDesktopV3ExistingSettingsSnapshot(input: {
+  sessionId: string;
+  metadata?: Record<string, unknown>;
+  session?: DesktopSessionRecord | null;
+  cacheSession?: { mode?: string; metadata?: Record<string, unknown> } | null;
+  cachedPreference: SessionPreferenceRecord;
+  agentModelPolicy?: unknown;
+}): DesktopV3InputSettingsSnapshot {
   return {
-    mode: tuple.mode,
-    agent_name: tuple.agentName,
-    resolved_agent_name: tuple.resolvedAgentName,
-    runtime_mode: tuple.runtimeMode,
-    stored_preference: preference(tuple.storedPreference),
-    effective_preference: preference(tuple.effectivePreference),
-    agent_model_policy: tuple.agentModelPolicy,
-    context_window: tuple.contextWindow,
-    max_output_tokens: tuple.maxOutputTokens,
-    projection_seq: projectionSeq,
+    sessionId: input.sessionId,
+    mode: normalizeSessionMode(input.cacheSession?.mode || input.session?.mode),
+    agent: firstNonEmpty(
+      metadataString(input.metadata, "agent_name"),
+      metadataString(input.metadata, "resolved_agent_name"),
+      policyString(input.agentModelPolicy, "agentName", "agent_name"),
+      policyString(
+        input.agentModelPolicy,
+        "resolvedAgentName",
+        "resolved_agent_name",
+      ),
+    ),
+    preference: input.cachedPreference,
   };
-}
-
-function settingsMutationProjectionSeq(response: { mutation?: { projection?: { projection_high_watermark_seq?: number } } | null }): number {
-  return response.mutation?.projection?.projection_high_watermark_seq ?? 0;
-}
-
-let desktopV3ComposerMutationSequence = 0;
-function nextDesktopV3ComposerMutationId(sessionId: string): string {
-  desktopV3ComposerMutationSequence += 1;
-  return `${sessionId}:composer:${desktopV3ComposerMutationSequence}`;
 }
 
 function planExecutionViewsEqual(
@@ -1212,24 +1235,29 @@ export function DesktopV3ExistingConversationPane({
       selectDesktopPlanExecutionView(state, normalizedSessionId),
     [normalizedSessionId],
   );
-  const composerSettings = useDesktopV3CacheSelector(
-    (state) => state.composerSettingsBySession[normalizedSessionId],
+  const rawCachedPreference = useDesktopV3CacheSelector(
+    (state) => state.preferencesBySession[normalizedSessionId],
   );
-  const composerTuple = composerSettings?.tuple;
-  const mode = composerTuple?.mode;
   const rawCachedUsage = useDesktopV3CacheSelector(
     (state) => state.usageBySession[normalizedSessionId],
+  );
+  const cachedAgentModelPolicy = useDesktopV3CacheSelector(
+    (state) => state.agentModelPolicyBySession[normalizedSessionId],
   );
   const planExecutionView = useDesktopV3CacheSelector(
     selectPlanExecutionViewForSession,
     planExecutionViewsEqual,
+  );
+  const cachedPreference = useMemo(
+    () => normalizePreference(rawCachedPreference),
+    [rawCachedPreference],
   );
   const cacheSession = useDesktopV3CacheSelector((state) => {
     const record = state.sessionsById[normalizedSessionId];
     return record?.kind === "full" ? record.session : null;
   });
   const storedOperation = operationRef.current;
-  const sessionMode = mode ?? "";
+  const sessionMode = cacheSession?.mode || session?.mode || "auto";
   const selectPendingPermissionsForSession = useCallback(
     (state: DesktopV3CacheState) =>
       [...(state.permissionsBySession[normalizedSessionId] ?? [])]
@@ -1262,10 +1290,24 @@ export function DesktopV3ExistingConversationPane({
     cacheSession?.worktree_branch?.trim() ||
     metadataString(sessionMetadata, "git_branch") ||
     metadataString(sessionMetadata, "branch");
-  const selectedAgent = composerTuple?.agentName ?? "";
-  const preference = useMemo(
-    () => normalizePreference(composerTuple?.effectivePreference),
-    [composerTuple?.effectivePreference],
+  const settingsBaseline = useMemo(
+    () =>
+      buildDesktopV3ExistingSettingsSnapshot({
+        sessionId: normalizedSessionId,
+        metadata: sessionMetadata,
+        session,
+        cacheSession,
+        cachedPreference,
+        agentModelPolicy: cachedAgentModelPolicy,
+      }),
+    [
+      cacheSession,
+      cachedAgentModelPolicy,
+      cachedPreference,
+      normalizedSessionId,
+      session,
+      sessionMetadata,
+    ],
   );
   const [draft, setDraft] = useState(storedOperation?.request.content ?? "");
   const [sendError, setSendError] = useState<string | null>(null);
@@ -1283,6 +1325,21 @@ export function DesktopV3ExistingConversationPane({
   const [olderHistoryAutoActive, setOlderHistoryAutoActive] = useState(false);
   const loadingOlderHistoryRef = useRef(false);
   const previousHistoryScrollTopRef = useRef<number | null>(null);
+  const [mode, setMode] = useState<DesktopSessionMode>(settingsBaseline.mode);
+  const [selectedAgent, setSelectedAgent] = useState(settingsBaseline.agent);
+  const [preference, setPreference] = useState<SessionPreferenceRecord>(
+    settingsBaseline.preference,
+  );
+  const initializedSettingsSessionRef = useRef("");
+  const localSettingsDirtyRef = useRef({
+    agent: false,
+    mode: false,
+    preference: false,
+  });
+  const modeMutationSequenceRef = useRef(0);
+  const unlockedPreferenceRef = useRef<SessionPreferenceRecord>(
+    settingsBaseline.preference,
+  );
 
   const hasStoredOperation = Boolean(storedOperation);
   const hasMessages =
@@ -1291,9 +1348,14 @@ export function DesktopV3ExistingConversationPane({
     renderedMessages.liveRuns.length > 0;
   const selectedAgentModelLock = useMemo(
     () =>
-      resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, mode ?? "auto"),
+      resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, mode),
     [agentState.profiles, mode, selectedAgent],
   );
+  const lockedPolicyPreference = useMemo(
+    () => policyLockedPreference(cachedAgentModelPolicy),
+    [cachedAgentModelPolicy],
+  );
+  const cachedPolicyMatchesSelectedMode = mode === settingsBaseline.mode;
   const selectedModelKey = optionKey(
     preference.provider,
     preference.model,
@@ -1386,8 +1448,6 @@ export function DesktopV3ExistingConversationPane({
     normalizedSessionId &&
     !sending &&
     !compacting &&
-    Boolean(composerTuple) &&
-    (composerSettings?.pending.length ?? 0) === 0 &&
     selectedAgent.trim() &&
     selectedModelAvailable &&
     (hasStoredOperation || draft.trim()),
@@ -1513,7 +1573,72 @@ export function DesktopV3ExistingConversationPane({
   }, [statusTimerActive]);
 
   useEffect(() => {
-    if (modeCommand !== "toggle-plan-auto" || !mode) return;
+    if (!normalizedSessionId) return;
+    const sessionChanged =
+      initializedSettingsSessionRef.current !== normalizedSessionId;
+    if (sessionChanged) {
+      initializedSettingsSessionRef.current = normalizedSessionId;
+      localSettingsDirtyRef.current = {
+        agent: false,
+        mode: false,
+        preference: false,
+      };
+      setMode(settingsBaseline.mode);
+      setSelectedAgent(settingsBaseline.agent);
+      setPreference(settingsBaseline.preference);
+      unlockedPreferenceRef.current = settingsBaseline.preference;
+      return;
+    }
+    if (!localSettingsDirtyRef.current.mode) {
+      setMode((current) =>
+        current === settingsBaseline.mode ? current : settingsBaseline.mode,
+      );
+    }
+    if (!localSettingsDirtyRef.current.agent && settingsBaseline.agent) {
+      setSelectedAgent((current) =>
+        current === settingsBaseline.agent ? current : settingsBaseline.agent,
+      );
+    }
+    if (
+      !localSettingsDirtyRef.current.preference &&
+      (settingsBaseline.preference.provider ||
+        settingsBaseline.preference.model)
+    ) {
+      unlockedPreferenceRef.current = settingsBaseline.preference;
+      setPreference((current) =>
+        preferencesEqual(current, settingsBaseline.preference)
+          ? current
+          : settingsBaseline.preference,
+      );
+    }
+  }, [normalizedSessionId, settingsBaseline]);
+
+  useEffect(() => {
+    if (cachedPolicyMatchesSelectedMode && lockedPolicyPreference) {
+      setPreference((current) =>
+        preferencesEqual(current, lockedPolicyPreference)
+          ? current
+          : lockedPolicyPreference,
+      );
+      return;
+    }
+    if (!selectedAgentModelLock.locked) return;
+    setPreference((current) =>
+      preferenceFromAgentModelLock(
+        selectedAgentModelLock,
+        current,
+        modelOptions,
+      ),
+    );
+  }, [
+    cachedPolicyMatchesSelectedMode,
+    lockedPolicyPreference,
+    modelOptions,
+    selectedAgentModelLock,
+  ]);
+
+  useEffect(() => {
+    if (modeCommand !== "toggle-plan-auto") return;
     handleModeSelect(mode === "plan" ? "auto" : "plan");
     onModeCommandHandled?.();
   }, [modeCommand, onModeCommandHandled]);
@@ -1543,113 +1668,133 @@ export function DesktopV3ExistingConversationPane({
   }
 
   function handleModeSelect(nextMode: DesktopSessionMode) {
-    if (!normalizedSessionId || !composerTuple || nextMode === mode) return;
-    const mutationId = nextDesktopV3ComposerMutationId(normalizedSessionId);
-    const nextLock = resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, nextMode);
-    const nextPreference = preferenceFromAgentModelLock(nextLock, preference, modelOptions);
-    const nextTuple: DesktopV3ComposerSettingsTuple = {
-      ...composerTuple,
-      mode: nextMode,
-      storedPreference: { ...nextPreference },
-      effectivePreference: { ...nextPreference },
-      agentModelPolicy: { ...(recordObject(composerTuple.agentModelPolicy) ?? {}), locked: nextLock.locked },
-    };
-    dispatchDesktopV3Cache({
-      type: "composerSettings.applyIntent",
-      sessionId: normalizedSessionId,
-      mutationId,
-      tuple: nextTuple,
-      createdAt: Date.now(),
-    });
+    if (!normalizedSessionId || nextMode === mode) return;
+    const mutationSequence = modeMutationSequenceRef.current + 1;
+    modeMutationSequenceRef.current = mutationSequence;
+    localSettingsDirtyRef.current.mode = true;
+    setMode(nextMode);
     setSendError(null);
+    const nextLock = resolveDesktopV3AgentModelLock(
+      agentState.profiles,
+      selectedAgent,
+      nextMode,
+    );
+    if (nextLock.locked) {
+      setPreference((current) =>
+        preferenceFromAgentModelLock(nextLock, current, modelOptions),
+      );
+    }
     void updateSessionV3Mode(normalizedSessionId, nextMode)
       .then((modeResponse) => {
-        const settingsResponse = sessionV3ModeSettingsMutationResponse(modeResponse, normalizedSessionId, nextMode);
-        dispatchDesktopV3Cache({ type: "mutation.sessionSettingsResult", raw: settingsResponse });
-        const acknowledgedTuple: DesktopV3ComposerSettingsTuple = {
-          ...nextTuple,
-          effectivePreference: normalizePreference(settingsResponse.preference ?? nextTuple.effectivePreference),
-          storedPreference: normalizePreference(settingsResponse.preference ?? nextTuple.storedPreference),
-          agentModelPolicy: settingsResponse.agent_model_policy ?? nextTuple.agentModelPolicy,
-          contextWindow: settingsResponse.context_window ?? nextTuple.contextWindow,
-          maxOutputTokens: settingsResponse.max_output_tokens ?? nextTuple.maxOutputTokens,
-        };
+        if (!mountedRef.current || modeMutationSequenceRef.current !== mutationSequence) return;
+        const settingsResponse = sessionV3ModeSettingsMutationResponse(
+          modeResponse,
+          normalizedSessionId,
+          nextMode,
+        );
         dispatchDesktopV3Cache({
-          type: "composerSettings.acknowledge",
-          sessionId: normalizedSessionId,
-          mutationId,
-          settings: composerTupleAsCanonical(acknowledgedTuple, settingsMutationProjectionSeq(settingsResponse)),
-          projectionSeq: settingsMutationProjectionSeq(settingsResponse),
-          updatedAt: Date.now(),
+          type: "mutation.sessionSettingsResult",
+          raw: settingsResponse,
         });
+        localSettingsDirtyRef.current.mode = false;
+        setMode(normalizeSessionMode(settingsResponse.mode ?? nextMode));
+        if (settingsResponse.preference) {
+          setPreference(normalizePreference(settingsResponse.preference));
+        }
       })
       .catch((error) => {
-        const message = error instanceof Error ? error.message : "Failed to update session mode";
-        dispatchDesktopV3Cache({ type: "composerSettings.reject", sessionId: normalizedSessionId, mutationId, error: message });
+        if (!mountedRef.current || modeMutationSequenceRef.current !== mutationSequence) return;
+        localSettingsDirtyRef.current.mode = false;
+        setMode(settingsBaseline.mode);
+        setSendError(
+          error instanceof Error ? error.message : "Failed to update session mode",
+        );
       });
   }
 
   async function handleConfirmAgentSettings(
     input: AgentModelControlConfirmInput,
   ) {
-    if (!normalizedSessionId || !composerTuple || !mode || agentModelSaving) return;
+    if (!normalizedSessionId || agentModelSaving) return;
     setAgentModelSaving(true);
     setSendError(null);
-    const mutationId = nextDesktopV3ComposerMutationId(normalizedSessionId);
     try {
-      await updateAgentProfile(input.profile, input.action.agentPatch);
-      const agentStateResult = await refreshAgentModelMutationCaches(queryClient);
+      const action = input.action;
+      const basePreference = preference;
+      await updateAgentProfile(input.profile, action.agentPatch);
+      const agentStateResult =
+        await refreshAgentModelMutationCaches(queryClient);
       const nextAgentName = input.agentName.trim();
-      if (!nextAgentName) throw new Error("Session agent is required");
-      const refreshedLock = resolveDesktopV3AgentModelLock(agentStateResult.profiles, nextAgentName, mode);
-      const nextPreference = preferenceFromAgentModelLock(refreshedLock, preference, modelOptions);
-      const nextTuple: DesktopV3ComposerSettingsTuple = {
-        ...composerTuple,
-        agentName: nextAgentName,
-        resolvedAgentName: refreshedLock.agentName || nextAgentName,
-        runtimeMode: refreshedLock.profile?.runtimeMode ?? composerTuple.runtimeMode,
-        storedPreference: { ...nextPreference },
-        effectivePreference: { ...nextPreference },
-        agentModelPolicy: { ...(recordObject(composerTuple.agentModelPolicy) ?? {}), locked: refreshedLock.locked },
-      };
-      dispatchDesktopV3Cache({
-        type: "composerSettings.applyIntent",
-        sessionId: normalizedSessionId,
-        mutationId,
-        tuple: nextTuple,
-        createdAt: Date.now(),
-      });
-      const agentResponse = await updateSessionV3Agent(normalizedSessionId, nextAgentName);
-      const agentSettings = sessionV3AgentSettingsMutationResponse(agentResponse, normalizedSessionId);
-      dispatchDesktopV3Cache({ type: "mutation.sessionSettingsResult", raw: agentSettings });
-      let finalTuple = nextTuple;
-      let finalProjectionSeq = settingsMutationProjectionSeq(agentSettings);
-      if (!preferencesEqual(nextPreference, preference)) {
-        const preferenceResponse = await updateSessionV3Preference(normalizedSessionId, nextPreference);
-        const preferenceSettings = sessionV3PreferenceSettingsMutationResponse(preferenceResponse, normalizedSessionId);
-        dispatchDesktopV3Cache({ type: "mutation.sessionSettingsResult", raw: preferenceSettings });
-        const acceptedPreference = normalizePreference(preferenceSettings.preference ?? nextPreference);
-        finalTuple = {
-          ...nextTuple,
-          storedPreference: acceptedPreference,
-          effectivePreference: acceptedPreference,
-          agentModelPolicy: preferenceSettings.agent_model_policy ?? agentSettings.agent_model_policy ?? nextTuple.agentModelPolicy,
-          contextWindow: preferenceSettings.context_window ?? nextTuple.contextWindow,
-          maxOutputTokens: preferenceSettings.max_output_tokens ?? nextTuple.maxOutputTokens,
-        };
-        finalProjectionSeq = Math.max(finalProjectionSeq, settingsMutationProjectionSeq(preferenceSettings));
+      if (nextAgentName) {
+        const agentResponse = await updateSessionV3Agent(
+          normalizedSessionId,
+          nextAgentName,
+        );
+        dispatchDesktopV3Cache({
+          type: "mutation.sessionSettingsResult",
+          raw: sessionV3AgentSettingsMutationResponse(
+            agentResponse,
+            normalizedSessionId,
+          ),
+        });
+        setSelectedAgent(nextAgentName);
       }
-      dispatchDesktopV3Cache({
-        type: "composerSettings.acknowledge",
-        sessionId: normalizedSessionId,
-        mutationId,
-        settings: composerTupleAsCanonical(finalTuple, finalProjectionSeq),
-        projectionSeq: finalProjectionSeq,
-        updatedAt: Date.now(),
-      });
+      const refreshedLock = resolveDesktopV3AgentModelLock(
+        agentStateResult.profiles,
+        input.agentName,
+        mode,
+      );
+      const nextPreference = refreshedLock.locked
+        ? preferenceFromAgentModelLock(
+            refreshedLock,
+            basePreference,
+            modelOptions,
+          )
+        : basePreference;
+      if (
+        !refreshedLock.locked &&
+        !preferencesEqual(nextPreference, preference)
+      ) {
+        const preferenceResponse = await updateSessionV3Preference(
+          normalizedSessionId,
+          {
+            provider: nextPreference.provider,
+            model: nextPreference.model,
+            thinking: nextPreference.thinking,
+            serviceTier: nextPreference.serviceTier,
+            contextMode: nextPreference.contextMode,
+          },
+        );
+        const settingsResponse = sessionV3PreferenceSettingsMutationResponse(
+          preferenceResponse,
+          normalizedSessionId,
+        );
+        dispatchDesktopV3Cache({
+          type: "mutation.sessionSettingsResult",
+          raw: settingsResponse,
+        });
+        const updatedPreference = normalizePreference(
+          settingsResponse.preference ?? nextPreference,
+        );
+        setPreference(updatedPreference);
+        unlockedPreferenceRef.current = updatedPreference;
+      } else {
+        setPreference(nextPreference);
+        if (!refreshedLock.locked)
+          unlockedPreferenceRef.current = nextPreference;
+      }
+      localSettingsDirtyRef.current = {
+        agent: false,
+        mode: false,
+        preference: false,
+      };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to update agent settings";
-      dispatchDesktopV3Cache({ type: "composerSettings.reject", sessionId: normalizedSessionId, mutationId, error: message });
+      if (mountedRef.current)
+        setSendError(
+          error instanceof Error
+            ? error.message
+            : "Failed to update agent settings",
+        );
       throw error;
     } finally {
       if (mountedRef.current) setAgentModelSaving(false);
@@ -1657,8 +1802,21 @@ export function DesktopV3ExistingConversationPane({
   }
 
   async function persistVisibleSettings() {
-    if (!normalizedSessionId || !composerTuple || (composerSettings?.pending.length ?? 0) > 0) {
-      throw new Error("Session settings are not ready");
+    if (!normalizedSessionId) return;
+    const currentAgent = settingsBaseline.agent.trim();
+    const nextAgent = selectedAgent.trim();
+    if (nextAgent && nextAgent !== currentAgent) {
+      const agentResponse = await updateSessionV3Agent(
+        normalizedSessionId,
+        nextAgent,
+      );
+      dispatchDesktopV3Cache({
+        type: "mutation.sessionSettingsResult",
+        raw: sessionV3AgentSettingsMutationResponse(
+          agentResponse,
+          normalizedSessionId,
+        ),
+      });
     }
   }
 
@@ -2029,15 +2187,6 @@ export function DesktopV3ExistingConversationPane({
     );
   }
 
-  if (!composerTuple || !mode) {
-    return (
-      <DesktopV3ChatStateCard
-        title="Loading session settings"
-        description="Waiting for authoritative mode, agent, and model settings."
-      />
-    );
-  }
-
   return (
     <div
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-bg)]"
@@ -2135,7 +2284,7 @@ export function DesktopV3ExistingConversationPane({
             busy={sending || compacting}
             canSubmit={canSend}
             canStop={Boolean(currentRun)}
-            error={sendError ?? composerSettings.error ?? null}
+            error={sendError}
             onSubmit={handleSubmit}
             onStop={handleStop}
             onCompact={handleCompact}

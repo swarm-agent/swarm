@@ -393,7 +393,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	response, err := s.sessionV3CreateResultResponse(principal, result)
+	response, err := sessionV3CreateResultResponse(result)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -2012,26 +2012,20 @@ func sessionsV3AgentResource(session pebblestore.SessionSnapshot) map[string]any
 	}
 }
 
-func (s *Server) sessionV3CreateResultResponse(principal identity.Principal, result sessionruntime.SessionMutationResult) (map[string]any, error) {
+func sessionV3CreateResultResponse(result sessionruntime.SessionMutationResult) (map[string]any, error) {
 	if result.Session == nil {
 		return nil, errors.New("created sessions v3 session was not returned")
 	}
 	if strings.TrimSpace(result.SessionID) == "" {
 		return nil, errors.New("created sessions v3 session_id was not returned")
 	}
-	view, err := s.buildSessionsV3SessionView(principal, *result.Session, result.Projection, nil, false)
-	if err != nil {
-		return nil, err
-	}
 	return map[string]any{
-		"ok":               true,
-		"session_id":       result.SessionID,
-		"session":          result.Session,
-		"projection":       result.Projection,
-		"agentic_settings": view.AgenticSettings,
-		"messages":         []pebblestore.MessageSnapshot{},
-		"mutation":         sessionV3MutationResultResponse(result),
-		"realtime_outbox":  result.RealtimeOutbox,
+		"ok":              true,
+		"session_id":      result.SessionID,
+		"session":         result.Session,
+		"projection":      result.Projection,
+		"mutation":        sessionV3MutationResultResponse(result),
+		"realtime_outbox": result.RealtimeOutbox,
 	}, nil
 }
 
@@ -2454,7 +2448,7 @@ func (s *Server) handleSessionsV3CreateReplay(w http.ResponseWriter, principal i
 		writeError(w, http.StatusBadRequest, err)
 		return true
 	}
-	response, err := s.sessionV3CreateResultResponse(principal, result)
+	response, err := sessionV3CreateResultResponse(result)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return true

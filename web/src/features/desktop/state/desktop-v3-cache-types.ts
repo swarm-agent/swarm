@@ -138,44 +138,6 @@ export interface V3RealtimeBootstrap {
   resume: unknown
 }
 
-export interface DesktopV3ComposerPreference {
-  provider: string
-  model: string
-  thinking: string
-  serviceTier: string
-  contextMode: string
-  updatedAt: number
-}
-
-export interface DesktopV3ComposerSettingsTuple {
-  mode: 'auto' | 'plan'
-  agentName: string
-  resolvedAgentName: string
-  runtimeMode: string
-  storedPreference: DesktopV3ComposerPreference
-  effectivePreference: DesktopV3ComposerPreference
-  agentModelPolicy: unknown
-  contextWindow: number
-  maxOutputTokens: number
-}
-
-export interface DesktopV3ComposerSettingsPendingMutation {
-  mutationId: string
-  tuple: DesktopV3ComposerSettingsTuple
-  basedOnProjectionSeq: number
-  createdAt: number
-}
-
-export interface DesktopV3ComposerSettingsRecord {
-  readiness: 'loading' | 'ready'
-  tuple?: DesktopV3ComposerSettingsTuple
-  canonicalTuple?: DesktopV3ComposerSettingsTuple
-  canonicalProjectionSeq: number
-  canonicalUpdatedAt: number
-  pending: DesktopV3ComposerSettingsPendingMutation[]
-  error?: string
-}
-
 export interface DesktopV3AgenticSettings {
   mode: string
   agent_name: string
@@ -556,8 +518,6 @@ export interface SessionCreateMutationResponse {
   session_id: string
   session: SessionSnapshot
   projection: V3SessionProjection
-  agentic_settings: DesktopV3AgenticSettings
-  messages: MessageSnapshot[]
   mutation: SessionMutationResult
   realtime_outbox: V3RealtimeOutboxRecord | null
 }
@@ -832,7 +792,6 @@ export interface DesktopV3CacheState {
   usageBySession: Record<string, unknown>
   preferencesBySession: Record<string, unknown>
   agentModelPolicyBySession: Record<string, unknown>
-  composerSettingsBySession: Record<string, DesktopV3ComposerSettingsRecord>
   historyManifestsBySession: Record<string, unknown>
   historyChunksById: Record<string, unknown>
   omissionsByScope: Record<string, unknown[]>
@@ -880,9 +839,5 @@ export type DesktopV3CacheAction =
   | { type: 'mutation.sessionCreateResult'; raw: SessionCreateMutationResponse | SessionMutationErrorResponse; sidebarScopeId: string }
   | { type: 'mutation.messageResult'; raw: SessionMessageMutationResponse | MessageMutationConflictResponse; clientRequestId: string; messageId: string }
   | { type: 'mutation.sessionSettingsResult'; raw: SessionSettingsMutationResponse }
-  | { type: 'composerSettings.installCanonical'; sessionId: string; settings: DesktopV3AgenticSettings; projectionSeq?: number; updatedAt?: number }
-  | { type: 'composerSettings.applyIntent'; sessionId: string; mutationId: string; tuple: DesktopV3ComposerSettingsTuple; createdAt: number }
-  | { type: 'composerSettings.acknowledge'; sessionId: string; mutationId: string; settings: DesktopV3AgenticSettings; projectionSeq?: number; updatedAt?: number }
-  | { type: 'composerSettings.reject'; sessionId: string; mutationId: string; error?: string }
   | { type: 'mutation.sessionArchiveResult'; raw: SessionArchiveMutationResponse }
   | { type: 'pendingUser.upsert'; input: Omit<PendingUserMessage, 'role' | 'status'> }

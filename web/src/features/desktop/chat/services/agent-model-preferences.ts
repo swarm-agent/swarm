@@ -1,6 +1,5 @@
 import { normalizeSessionMode, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import type { AgentProfileRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
-import type { DesktopV3AgenticSettings, DesktopV3ComposerPreference, DesktopV3ComposerSettingsTuple } from '../../state/desktop-v3-cache-types'
 import { defaultModelThinking } from './model-options'
 
 export type AgentModelLockState = {
@@ -86,74 +85,6 @@ export function resolveDesktopV3AgentModelLock(
 
 function defaultThinkingForModelOption(option: ModelOptionRecord | null): string {
   return defaultModelThinking(option)
-}
-
-function composerPreference(value: unknown): DesktopV3ComposerPreference {
-  const source = value && typeof value === 'object' ? value as Record<string, unknown> : {}
-  const text = (snake: string, camel = snake) => typeof source[snake] === 'string'
-    ? String(source[snake]).trim()
-    : typeof source[camel] === 'string' ? String(source[camel]).trim() : ''
-  const number = (snake: string, camel = snake) => {
-    const raw = source[snake] ?? source[camel]
-    return typeof raw === 'number' && Number.isFinite(raw) ? raw : 0
-  }
-  return {
-    provider: text('provider'),
-    model: text('model'),
-    thinking: text('thinking'),
-    serviceTier: text('service_tier', 'serviceTier'),
-    contextMode: text('context_mode', 'contextMode'),
-    updatedAt: number('updated_at', 'updatedAt'),
-  }
-}
-
-export function resolveComposerSettingsFromCanonical(settings: DesktopV3AgenticSettings): DesktopV3ComposerSettingsTuple | null {
-  const mode = settings.mode === 'plan' ? 'plan' : settings.mode === 'auto' ? 'auto' : null
-  const agentName = settings.agent_name?.trim()
-  const resolvedAgentName = settings.resolved_agent_name?.trim()
-  if (!mode || !agentName || !resolvedAgentName) return null
-  const storedPreference = composerPreference(settings.stored_preference)
-  const effectivePreference = composerPreference(settings.effective_preference ?? settings.stored_preference)
-  return {
-    mode,
-    agentName,
-    resolvedAgentName,
-    runtimeMode: settings.runtime_mode?.trim() ?? '',
-    storedPreference,
-    effectivePreference,
-    agentModelPolicy: settings.agent_model_policy ?? null,
-    contextWindow: settings.context_window ?? 0,
-    maxOutputTokens: settings.max_output_tokens ?? 0,
-  }
-}
-
-export function resolveComposerSettingsFromDraft(input: {
-  ready: boolean
-  mode?: DesktopSessionMode
-  selectedAgentName?: string
-  agents: AgentProfileRecord[]
-  preference?: SessionPreferenceRecord
-  modelOptions: ModelOptionRecord[]
-  agentModelPolicy?: unknown
-  contextWindow?: number
-  maxOutputTokens?: number
-}): DesktopV3ComposerSettingsTuple | null {
-  if (!input.ready || !input.mode || !input.selectedAgentName?.trim() || !input.preference) return null
-  const lock = resolveDesktopV3AgentModelLock(input.agents, input.selectedAgentName, input.mode)
-  if (!lock.profile) return null
-  const effective = preferenceFromAgentModelLock(lock, input.preference, input.modelOptions)
-  const toComposer = (preference: SessionPreferenceRecord): DesktopV3ComposerPreference => ({ ...preference })
-  return {
-    mode: lock.mode,
-    agentName: lock.agentName,
-    resolvedAgentName: lock.agentName,
-    runtimeMode: lock.profile.runtimeMode,
-    storedPreference: toComposer(input.preference),
-    effectivePreference: toComposer(effective),
-    agentModelPolicy: input.agentModelPolicy ?? null,
-    contextWindow: input.contextWindow ?? 0,
-    maxOutputTokens: input.maxOutputTokens ?? 0,
-  }
 }
 
 export function preferenceFromAgentModelLock(
