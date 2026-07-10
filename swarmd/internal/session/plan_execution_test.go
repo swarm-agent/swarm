@@ -122,6 +122,66 @@ func TestPlanCheckpointOutcomeAutomaticUsesStoredPolicyForNextCheckpoint(t *test
 	}
 }
 
+func TestPlanCheckpointOutcomeCompletedAtomicallyCompletesSubtasksAndAdvances(t *testing.T) {
+	doc, err := NormalizePlanDocumentForSave("plan-exec", "Execution Plan", &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Status: PlanCheckpointStatusInProgress, ActiveSubtaskID: "task-1", Subtasks: []pebblestore.SessionPlanSubtask{
+				{ID: "task-1", Title: "active", Status: PlanSubtaskStatusInProgress},
+				{ID: "task-2", Title: "pending", Status: PlanSubtaskStatusPending},
+				{ID: "task-3", Title: "done", Status: PlanSubtaskStatusCompleted, CompletedAt: 11},
+			}},
+			{ID: "cp-2", Status: PlanCheckpointStatusPending},
+		},
+		ActiveCheckpointID: "cp-1",
+	}, nil)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+
+	decision, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{CheckpointID: "cp-1", Outcome: PlanCheckpointStatusCompleted, CompletedAt: 42})
+	if err != nil {
+		t.Fatalf("apply completed outcome: %v", err)
+	}
+	if decision.NextCheckpointID != "cp-2" || !decision.AutoAdvanceAllowed || doc.ActiveCheckpointID != "cp-2" {
+		t.Fatalf("completion decision = %#v active=%q", decision, doc.ActiveCheckpointID)
+	}
+	checkpoint := doc.Checkpoints[0]
+	if checkpoint.Status != PlanCheckpointStatusCompleted || checkpoint.ActiveSubtaskID != "" {
+		t.Fatalf("completed checkpoint = %#v", checkpoint)
+	}
+	for _, subtask := range checkpoint.Subtasks {
+		if subtask.Status != PlanSubtaskStatusCompleted {
+			t.Fatalf("subtask %q status = %q", subtask.ID, subtask.Status)
+		}
+	}
+	if checkpoint.Subtasks[0].CompletedAt != 42 || checkpoint.Subtasks[1].CompletedAt != 42 || checkpoint.Subtasks[2].CompletedAt != 11 {
+		t.Fatalf("subtask completion timestamps = %#v", checkpoint.Subtasks)
+	}
+}
+
+func TestPlanCheckpointNonCompletedOutcomesPreserveUnresolvedSubtasks(t *testing.T) {
+	for _, outcome := range []string{PlanCheckpointStatusNeedsReview, PlanCheckpointStatusBlocked, PlanCheckpointStatusFailed} {
+		t.Run(outcome, func(t *testing.T) {
+			doc := &pebblestore.SessionPlanDocument{
+				ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+				Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+					ID: "cp-1", Status: PlanCheckpointStatusInProgress, ActiveSubtaskID: "task-1",
+					Subtasks: []pebblestore.SessionPlanSubtask{{ID: "task-1", Title: "active", Status: PlanSubtaskStatusInProgress}, {ID: "task-2", Title: "pending", Status: PlanSubtaskStatusPending}},
+				}},
+				ActiveCheckpointID: "cp-1",
+			}
+			if _, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{CheckpointID: "cp-1", Outcome: outcome, CompletedAt: 42}); err != nil {
+				t.Fatalf("apply %s outcome: %v", outcome, err)
+			}
+			checkpoint := doc.Checkpoints[0]
+			if checkpoint.ActiveSubtaskID != "task-1" || checkpoint.Subtasks[0].Status != PlanSubtaskStatusInProgress || checkpoint.Subtasks[1].Status != PlanSubtaskStatusPending {
+				t.Fatalf("%s outcome changed unresolved subtasks: %#v", outcome, checkpoint)
+			}
+		})
+	}
+}
+
 func TestPlanCheckpointOutcomeNeedsReviewStopsAutoAdvance(t *testing.T) {
 	doc, err := NormalizePlanDocumentForSave("plan-exec", "Execution Plan", &pebblestore.SessionPlanDocument{
 		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},

@@ -954,12 +954,7 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 	checkpoint := &doc.Checkpoints[idx]
 	normalizePlanCheckpointSubtasks(checkpoint)
 	if outcome == PlanCheckpointStatusCompleted {
-		for _, subtask := range checkpoint.Subtasks {
-			if subtask.Status != PlanSubtaskStatusCompleted {
-				return PlanCheckpointOutcomeDecision{}, fmt.Errorf("checkpoint %q cannot complete while subtask %q is %q", checkpointID, subtask.ID, subtask.Status)
-			}
-		}
-		checkpoint.ActiveSubtaskID = ""
+		completeUnresolvedPlanCheckpointSubtasks(checkpoint, options.CompletedAt)
 	}
 	currentStatus := normalizePlanCheckpointStatusForSave(checkpoint.Status)
 	currentSummary := SummarizePlanExecution(doc)

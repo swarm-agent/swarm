@@ -248,7 +248,7 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-lifecycle-actions", "Plan: Lifecycle Actions", "# Lifecycle", "draft", "pending", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Model", Status: sessionruntime.PlanCheckpointStatusPending},
+			{ID: "cp-1", Title: "Model", Status: sessionruntime.PlanCheckpointStatusPending, Subtasks: []pebblestore.SessionPlanSubtask{{ID: "task-1", Title: "Implement", Status: sessionruntime.PlanSubtaskStatusPending}, {ID: "task-2", Title: "Document", Status: sessionruntime.PlanSubtaskStatusPending}}},
 			{ID: "cp-2", Title: "API", Status: sessionruntime.PlanCheckpointStatusPending},
 		},
 		ActiveCheckpointID: "cp-1",
@@ -317,6 +317,14 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"done"}`, "", applyMutation)
 	if err != nil {
 		t.Fatalf("complete checkpoint: %v output=%s", err, raw)
+	}
+	active, ok, err := sessionSvc.GetActivePlan(sessionID)
+	if err != nil || !ok || active.Document == nil {
+		t.Fatalf("get plan after atomic checkpoint completion: ok=%v err=%v plan=%#v", ok, err, active)
+	}
+	completedCheckpoint := active.Document.Checkpoints[0]
+	if completedCheckpoint.ActiveSubtaskID != "" || len(completedCheckpoint.Subtasks) != 2 || completedCheckpoint.Subtasks[0].Status != sessionruntime.PlanSubtaskStatusCompleted || completedCheckpoint.Subtasks[1].Status != sessionruntime.PlanSubtaskStatusCompleted || active.Document.ActiveCheckpointID != "cp-2" {
+		t.Fatalf("single complete_checkpoint did not atomically complete subtasks and advance: %#v active=%q", completedCheckpoint, active.Document.ActiveCheckpointID)
 	}
 	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
 		t.Fatalf("append complete lifecycle: %v", err)

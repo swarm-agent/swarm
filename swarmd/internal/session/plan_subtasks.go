@@ -121,6 +121,22 @@ func focusPlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op PlanDoc
 	return nil
 }
 
+func completeUnresolvedPlanCheckpointSubtasks(checkpoint *pebblestore.SessionPlanCheckpoint, completedAt int64) {
+	if checkpoint == nil {
+		return
+	}
+	for i := range checkpoint.Subtasks {
+		if checkpoint.Subtasks[i].Status == PlanSubtaskStatusCompleted {
+			continue
+		}
+		checkpoint.Subtasks[i].Status = PlanSubtaskStatusCompleted
+		if completedAt > 0 {
+			checkpoint.Subtasks[i].CompletedAt = completedAt
+		}
+	}
+	checkpoint.ActiveSubtaskID = ""
+}
+
 func completePlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op PlanDocumentPatchOperation) error {
 	checkpoint, err := planSubtaskCheckpoint(doc, op)
 	if err != nil {
