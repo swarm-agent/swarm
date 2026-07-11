@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
-import { Copy, Check, AlertCircle, Archive, CalendarClock, ChevronDown, ChevronRight, Circle, Compass, Brain, CheckCircle2, FileText, Folder, ListTodo, PlayCircle, Rocket, LockKeyhole, Server, ShieldCheck, Target, type LucideIcon } from 'lucide-react'
+import { Copy, Check, AlertCircle, Archive, CalendarClock, ChevronDown, Folder, Rocket, LockKeyhole, Server, type LucideIcon } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -7,7 +7,7 @@ import { Textarea } from '../../../../components/ui/textarea'
 import { cn } from '../../../../lib/cn'
 import { requestJson } from '../../../../app/api'
 import { ChatMarkdown } from '../../chat/components/chat-markdown'
-import { StructuredPlanDocumentView, normalizeStructuredPlanDocument, type StructuredPlanCheckpoint, type StructuredPlanDocument } from '../../chat/components/structured-plan-document'
+import { StructuredPlanDocumentView, normalizeStructuredPlanDocument, type StructuredPlanDocument } from '../../chat/components/structured-plan-document'
 import { getToolTheme } from '../../chat/services/tool-theme'
 import { AGENT_TOOL_PRESET_OPTIONS, CUSTOM_AGENT_TOOL_PRESET_ID } from '../../chat/services/agent-tool-presets'
 import type { ModelOptionRecord } from '../../chat/types/chat'
@@ -502,158 +502,6 @@ function GenericPermissionModal({
         ) : null}
       </div>
     </ModalShell>
-  )
-}
-
-
-function ExitPlanSectionEyebrow({ children, className }: { children: string; className?: string }) {
-  return <div className={cn('text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]', className)}>{children}</div>
-}
-
-function ExitPlanTextBlock({ value }: { value: string }) {
-  if (!value.trim()) {
-    return null
-  }
-  return <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--app-text)]">{value}</p>
-}
-
-function ExitPlanBulletList({ values, mono = false }: { values: string[]; mono?: boolean }) {
-  if (values.length === 0) {
-    return null
-  }
-  return (
-    <ul className="grid gap-1.5">
-      {values.map((value, index) => (
-        <li key={`${index}:${value}`} className={cn('flex min-w-0 gap-2 text-sm leading-6 text-[var(--app-text)]', mono ? 'font-mono text-xs' : '')}>
-          <span className="mt-2.5 size-1.5 shrink-0 rounded-full bg-[var(--app-primary)]" />
-          <span className="min-w-0 whitespace-pre-wrap break-words">{value}</span>
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-function ExitPlanInfoSection({ title, icon: Icon, children }: { title: string; icon: LucideIcon; children: React.ReactNode }) {
-  return (
-    <section className="grid gap-2 py-4 last:pb-0">
-      <div className="flex items-center gap-2">
-        <Icon className="size-4 shrink-0 text-[var(--app-primary)]" />
-        <h4 className="text-sm font-semibold text-[var(--app-text)]">{title}</h4>
-      </div>
-      <div className="min-w-0 pl-6">{children}</div>
-    </section>
-  )
-}
-
-
-function ExitPlanCheckpointStatusIcon({ status, active }: { status: string; active: boolean }) {
-  const normStatus = status.toLowerCase()
-  if (normStatus === 'completed' || normStatus === 'done' || normStatus === 'success') {
-    return <CheckCircle2 className="size-4 text-[var(--app-success)]" />
-  }
-  if (active || normStatus === 'in_progress' || normStatus === 'in-progress' || normStatus === 'active') {
-    return <PlayCircle className="size-4 text-[var(--app-primary)]" />
-  }
-  return <Circle className="size-4 text-[var(--app-text-muted)]" />
-}
-
-function exitPlanFormatStatusLabel(status: string, active: boolean): string {
-  if (active) {
-    return 'Active'
-  }
-  const trimmed = status.trim()
-  if (!trimmed) {
-    return ''
-  }
-  return trimmed
-    .replace(/[-_]+/g, ' ')
-    .replace(/\w\S*/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-}
-
-function ExitPlanCheckpointStatusText({ status, active }: { status: string; active: boolean }) {
-  const label = exitPlanFormatStatusLabel(status, active)
-  if (!label) {
-    return null
-  }
-  const normStatus = status.toLowerCase()
-  const done = normStatus === 'done' || normStatus === 'completed' || normStatus === 'success'
-  return (
-    <span className={cn('shrink-0 text-xs font-medium', done ? 'text-[var(--app-success)]' : active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]')}>
-      {label}
-    </span>
-  )
-}
-
-function ExitPlanCheckpointSection({ title, values, mono = false }: { title: string; values: string[]; mono?: boolean }) {
-  if (values.length === 0) {
-    return null
-  }
-  return (
-    <div className="grid min-w-0 gap-1.5">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{title}</div>
-      <ExitPlanBulletList values={values} mono={mono} />
-    </div>
-  )
-}
-
-function ExitPlanCheckpointTextSection({ title, value }: { title: string; value: string }) {
-  if (!value.trim()) {
-    return null
-  }
-  return (
-    <div className="grid min-w-0 gap-1.5">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{title}</div>
-      <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--app-text-muted)]">{value}</p>
-    </div>
-  )
-}
-
-function ExitPlanCheckpointRow({
-  checkpoint,
-  index,
-  active,
-  expanded,
-  onToggle,
-}: {
-  checkpoint: StructuredPlanCheckpoint
-  index: number
-  active: boolean
-  expanded: boolean
-  onToggle: () => void
-}) {
-  const title = checkpoint.title || checkpoint.id || 'Untitled checkpoint'
-  return (
-    <div className={cn('border-b border-[var(--app-border)] last:border-b-0', active ? 'bg-[var(--app-primary-soft)]/35' : '')}>
-      <button
-        type="button"
-        onClick={onToggle}
-        className={cn(
-          'grid w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-1 py-3 text-left transition hover:bg-[var(--app-surface-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] sm:px-2',
-          active ? 'border-l-2 border-[var(--app-primary)] pl-2 sm:pl-3' : 'border-l-2 border-transparent pl-2 sm:pl-3',
-        )}
-        aria-expanded={expanded}
-      >
-        <ExitPlanCheckpointStatusIcon status={checkpoint.status} active={active} />
-        <span className={cn('min-w-0 truncate text-sm font-medium', active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text)]')}>
-          <span className="mr-1.5 font-semibold text-[var(--app-text-muted)]">{index + 1}.</span>
-          {title}
-        </span>
-        <ExitPlanCheckpointStatusText status={checkpoint.status} active={active} />
-        {expanded ? <ChevronDown className="size-4 text-[var(--app-text-muted)]" /> : <ChevronRight className="size-4 text-[var(--app-text-muted)]" />}
-      </button>
-      {expanded ? (
-        <div className={cn('grid gap-3 pb-4 pl-12 pr-3 pt-1', active ? 'border-l-2 border-[var(--app-primary)]' : 'border-l-2 border-transparent')}>
-          <ExitPlanCheckpointTextSection title="Objective" value={checkpoint.objective} />
-          <ExitPlanCheckpointSection title="Tasks" values={checkpoint.tasks} />
-          <ExitPlanCheckpointSection title="Acceptance" values={checkpoint.acceptanceCriteria} />
-          <ExitPlanCheckpointTextSection title="Notes" value={checkpoint.notes} />
-          <ExitPlanCheckpointTextSection title="Report" value={checkpoint.report} />
-          <ExitPlanCheckpointTextSection title="Result" value={checkpoint.result} />
-          <ExitPlanCheckpointSection title="Changed files" values={checkpoint.changedFiles} mono />
-          <ExitPlanCheckpointSection title="Validation" values={checkpoint.validation} />
-        </div>
-      ) : null}
-    </div>
   )
 }
 
