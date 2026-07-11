@@ -23,8 +23,10 @@ const (
 	gitRealtimePoll     = 750 * time.Millisecond
 )
 
-type gitRealtimePayload struct {
+type gitRealtimeResponse struct {
+	OK            bool               `json:"ok"`
 	WorkspacePath string             `json:"workspace_path"`
+	WatchToken    string             `json:"watch_token"`
 	Status        gitstatus.Snapshot `json:"status"`
 }
 
@@ -44,34 +46,38 @@ type gitRealtimeRepo struct {
 	stop          chan struct{}
 	stopped       chan struct{}
 	wake          chan struct{}
+	stateMu       sync.RWMutex
+	generation    uint64
+	snapshot      gitstatus.Snapshot
+	fingerprint   string
 }
 
 func newGitRealtimeManager(server *Server) *gitRealtimeManager {
 	return &gitRealtimeManager{server: server, repos: make(map[string]*gitRealtimeRepo)}
 }
 
-func (m *gitRealtimeManager) ensure(workspacePath string) error {
+func (m *gitRealtimeManager) ensure(workspacePath string) (*gitRealtimeRepo, error) {
 	if m == nil {
-		return errors.New("git realtime manager is not configured")
+		return nil, errors.New("git realtime manager is not configured")
 	}
 	target := gitstatus.NormalizePath(workspacePath)
 	if target == "" {
-		return errors.New("workspace_path is required")
+		return nil, errors.New("workspace_path is required")
 	}
 	m.mu.Lock()
-	if _, ok := m.repos[target]; ok {
+	if repo, ok := m.repos[target]; ok {
 		m.mu.Unlock()
-		return nil
+		return repo, nil
 	}
 	repo, err := newGitRealtimeRepo(m, target)
 	if err != nil {
 		m.mu.Unlock()
-		return err
+		return nil, err
 	}
 	m.repos[target] = repo
 	m.mu.Unlock()
 	go repo.run()
-	return nil
+	return repo, nil
 }
 
 func (m *gitRealtimeManager) stopAll() {
@@ -97,7 +103,7 @@ func newGitRealtimeRepo(manager *gitRealtimeManager, workspacePath string) (*git
 	if err != nil {
 		return nil, err
 	}
-	return &gitRealtimeRepo{
+	repo := &gitRealtimeRepo{
 		manager:       manager,
 		workspacePath: workspacePath,
 		repoRoot:      paths.RepoRoot,
@@ -107,13 +113,18 @@ func newGitRealtimeRepo(manager *gitRealtimeManager, workspacePath string) (*git
 		stop:          make(chan struct{}),
 		stopped:       make(chan struct{}),
 		wake:          make(chan struct{}, 1),
-	}, nil
+	}
+	if !repo.refresh() {
+		return nil, errors.New("failed to read initial git snapshot")
+	}
+	repo.fingerprint = repo.watchFingerprint()
+	return repo, nil
 }
 
 func (r *gitRealtimeRepo) run() {
 	defer close(r.stopped)
-	lastFingerprint := ""
-	dirty := true
+	lastFingerprint := r.fingerprint
+	dirty := false
 	var firstDirtyAt time.Time
 	var lastSignalAt time.Time
 	for {
@@ -137,7 +148,11 @@ func (r *gitRealtimeRepo) run() {
 				case <-time.After(wait):
 				}
 			}
-			lastFingerprint = r.refreshAndPublish(lastFingerprint)
+			r.refresh()
+			lastFingerprint = r.watchFingerprint()
+			r.stateMu.Lock()
+			r.fingerprint = lastFingerprint
+			r.stateMu.Unlock()
 			dirty = false
 			firstDirtyAt = time.Time{}
 		}
@@ -180,47 +195,65 @@ func (r *gitRealtimeRepo) signalRefresh() {
 	}
 }
 
-func (r *gitRealtimeRepo) refreshAndPublish(previous string) string {
+func (r *gitRealtimeRepo) refresh() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	snapshot, err := gitstatus.SnapshotForPath(ctx, r.workspacePath, gitstatus.Options{RecentLimit: 8, IncludeDetails: true})
 	if err != nil {
 		log.Printf("git realtime snapshot failed workspace=%q err=%v", r.workspacePath, err)
-		return previous
+		return false
 	}
-	fingerprint := gitSnapshotFingerprint(snapshot)
-	if fingerprint == previous {
-		return fingerprint
+	nextFingerprint := gitSnapshotFingerprint(snapshot)
+	r.stateMu.Lock()
+	if r.generation == 0 || nextFingerprint != gitSnapshotFingerprint(r.snapshot) {
+		r.snapshot = snapshot
+		r.generation++
 	}
-	if r.manager == nil || r.manager.server == nil || r.manager.server.events == nil || r.manager.server.hub == nil {
-		return fingerprint
-	}
-	payload, err := json.Marshal(gitRealtimePayload{WorkspacePath: r.workspacePath, Status: snapshot})
-	if err != nil {
-		return fingerprint
-	}
-	event, err := r.manager.server.events.Append("workspace_git:"+r.workspacePath, "workspace.git.status.updated", r.workspacePath, payload, "", "")
-	if err != nil {
-		log.Printf("git realtime event append failed workspace=%q err=%v", r.workspacePath, err)
-		return fingerprint
-	}
-	r.manager.server.hub.Publish(event)
-	return fingerprint
+	r.stateMu.Unlock()
+	return true
+}
+
+func (r *gitRealtimeRepo) current() (gitstatus.Snapshot, string) {
+	r.stateMu.RLock()
+	defer r.stateMu.RUnlock()
+	return r.snapshot, strconv.FormatUint(r.generation, 10)
 }
 
 func (r *gitRealtimeRepo) watchFingerprint() string {
 	parts := make([]string, 0, len(r.watchPaths))
+	seen := make(map[string]struct{})
 	for _, path := range r.watchPaths {
-		clean := strings.TrimSpace(path)
-		if clean == "" {
+		clean := filepath.Clean(strings.TrimSpace(path))
+		if clean == "." || clean == "" {
 			continue
 		}
-		info, err := os.Stat(clean)
+		err := filepath.WalkDir(clean, func(current string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				parts = append(parts, current+":missing")
+				return nil
+			}
+			current = filepath.Clean(current)
+			if entry.IsDir() && current != clean && (current == r.gitDir || current == r.commonDir) {
+				return filepath.SkipDir
+			}
+			if _, ok := seen[current]; ok {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			seen[current] = struct{}{}
+			info, err := entry.Info()
+			if err != nil {
+				parts = append(parts, current+":missing")
+				return nil
+			}
+			parts = append(parts, current+":"+info.Mode().String()+":"+info.ModTime().UTC().Format(time.RFC3339Nano)+":"+formatInt64(info.Size()))
+			return nil
+		})
 		if err != nil {
 			parts = append(parts, clean+":missing")
-			continue
 		}
-		parts = append(parts, clean+":"+info.ModTime().UTC().Format(time.RFC3339Nano)+":"+formatInt64(info.Size()))
 	}
 	return strings.Join(parts, "\n")
 }
@@ -318,9 +351,16 @@ func (s *Server) handleGitRealtime(w http.ResponseWriter, r *http.Request) {
 	if s.gitRealtime == nil {
 		s.gitRealtime = newGitRealtimeManager(s)
 	}
-	if err := s.gitRealtime.ensure(workspacePath); err != nil {
+	repo, err := s.gitRealtime.ensure(workspacePath)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace_path": gitstatus.NormalizePath(workspacePath)})
+	snapshot, token := repo.current()
+	writeJSON(w, http.StatusOK, gitRealtimeResponse{
+		OK:            true,
+		WorkspacePath: gitstatus.NormalizePath(workspacePath),
+		WatchToken:    token,
+		Status:        snapshot,
+	})
 }

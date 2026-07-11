@@ -14,6 +14,9 @@ func TestRunWorkspaceGitCommitCreatesCommitWithExactMessage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatalf("write changed file: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
 
 	result, err := runWorkspaceGitCommit(context.Background(), repo, "feat: exact manual commit", true)
 	if err != nil {
@@ -29,6 +32,10 @@ func TestRunWorkspaceGitCommitCreatesCommitWithExactMessage(t *testing.T) {
 	got := strings.TrimSpace(runGitCommitTestCommand(t, repo, "log", "-1", "--pretty=%s"))
 	if got != "feat: exact manual commit" {
 		t.Fatalf("commit subject = %q, want exact message", got)
+	}
+	committed := runGitCommitTestCommand(t, repo, "show", "--pretty=", "--name-only", "HEAD")
+	if !strings.Contains(committed, "note.txt") || !strings.Contains(committed, "untracked.txt") {
+		t.Fatalf("committed files = %q, want modified and untracked files", committed)
 	}
 }
 

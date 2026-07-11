@@ -56,4 +56,6 @@ export interface GitStatusResponse {
 export interface GitRealtimeResponse {
   ok: boolean
   workspace_path: string
+  watch_token: string
+  status: GitSnapshot
 }

@@ -113,9 +113,6 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 	}
 
 	argv := []string{"commit", "-m", message}
-	if all {
-		argv = append(argv, "--all")
-	}
 	ctx, cancel := context.WithTimeout(parent, workspaceGitCommitTimeout)
 	defer cancel()
 
@@ -140,16 +137,42 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 		return response, errors.New(response.Error)
 	}
 
+	combinedParts := []string{}
+	if strings.TrimSpace(secretCheckOutput) != "" {
+		combinedParts = append(combinedParts, strings.TrimSpace(secretCheckOutput))
+	}
+	if all {
+		stageArgv := []string{"add", "--all"}
+		stageCmd := exec.CommandContext(ctx, "git", stageArgv...)
+		stageCmd.Dir = workspacePath
+		stageCmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
+		stageOutput, stageErr := stageCmd.CombinedOutput()
+		if strings.TrimSpace(string(stageOutput)) != "" {
+			combinedParts = append(combinedParts, strings.TrimSpace(string(stageOutput)))
+		}
+		if stageErr != nil {
+			combined := strings.Join(combinedParts, "\n")
+			response := workspaceGitCommitResponse{
+				OK: false, WorkspacePath: workspacePath, CWD: workspacePath,
+				Argv: append([]string{"git"}, stageArgv...), ExitCode: workspaceGitCommandExitCode(stageErr),
+				TimedOut: errors.Is(ctx.Err(), context.DeadlineExceeded), Output: combined,
+				Summary: workspaceGitCommitSummary(stageArgv, workspaceGitCommandExitCode(stageErr), errors.Is(ctx.Err(), context.DeadlineExceeded)),
+			}
+			if combined != "" {
+				response.Error = fmt.Sprintf("git staging failed: %s", combined)
+			} else {
+				response.Error = fmt.Sprintf("git staging failed: %v", stageErr)
+			}
+			return response, errors.New(response.Error)
+		}
+	}
+
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = workspacePath
 	cmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
 	output, err := cmd.CombinedOutput()
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	exitCode := workspaceGitCommandExitCode(err)
-	combinedParts := []string{}
-	if strings.TrimSpace(secretCheckOutput) != "" {
-		combinedParts = append(combinedParts, strings.TrimSpace(secretCheckOutput))
-	}
 	if strings.TrimSpace(string(output)) != "" {
 		combinedParts = append(combinedParts, strings.TrimSpace(string(output)))
 	}
