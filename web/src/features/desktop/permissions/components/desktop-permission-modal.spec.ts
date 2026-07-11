@@ -77,6 +77,8 @@ test('exit plan modal renders one unchecked review checkbox', () => {
   assert.doesNotMatch(markup, /type="checkbox"[^>]*checked/)
   assert.doesNotMatch(markup, /Single run/)
   assert.doesNotMatch(markup, /role="radiogroup"/)
+  assert(markup.indexOf('Pause for review after each checkpoint') < markup.indexOf('>Deny<'), 'expected review checkbox to the left of Deny')
+  assert.doesNotMatch(markup, /flex items-start gap-3 rounded-xl border/)
 })
 
 test('exit plan modal defaults to automatic mode without presenting an AI suggestion', () => {
@@ -132,11 +134,12 @@ test('exit plan review checkbox maps to checkpointed approved arguments', () => 
 
 test('exit plan and new plan approval modals use the same non-split plan layout order', () => {
   const exitPlan = renderPermission(exitPlanPermission(), 'plan')
-  const exitRunModeIndex = exitPlan.indexOf('Pause for review after each checkpoint')
+  const exitReviewIndex = exitPlan.indexOf('Pause for review after each checkpoint')
+  const exitDenyIndex = exitPlan.indexOf('>Deny<')
   const exitDetailsIndex = exitPlan.indexOf('Plan details')
   const exitCheckpointsIndex = exitPlan.indexOf('Checkpoints')
-  assert(exitRunModeIndex >= 0, 'expected exit plan run mode selector')
-  assert(exitDetailsIndex > exitRunModeIndex, 'expected exit plan details below run mode')
+  assert(exitReviewIndex >= 0, 'expected exit plan review checkbox')
+  assert(exitReviewIndex < exitDenyIndex, 'expected exit plan review checkbox to the left of Deny')
   assert(exitCheckpointsIndex > exitDetailsIndex, 'expected exit plan checkpoints below plan details')
   assert.doesNotMatch(exitPlan, /min-\[901px\]:grid-cols/)
   assert.doesNotMatch(exitPlan, /min-\[901px\]:border-l/)
@@ -157,12 +160,13 @@ test('exit plan and new plan approval modals use the same non-split plan layout 
       }],
     },
   }))
-  const newRunModeIndex = newPlan.indexOf('Pause for review after each checkpoint')
+  const newReviewIndex = newPlan.indexOf('Pause for review after each checkpoint')
+  const newDenyIndex = newPlan.indexOf('>Deny<')
   const lifecycleIndex = newPlan.indexOf('Lifecycle action')
   const newDetailsIndex = newPlan.indexOf('Plan details')
   const newCheckpointsIndex = newPlan.indexOf('Checkpoints')
-  assert(newRunModeIndex >= 0, 'expected new plan review control')
-  assert(lifecycleIndex > newRunModeIndex, 'expected lifecycle context below run mode')
+  assert(newReviewIndex >= 0, 'expected new plan review checkbox')
+  assert(newReviewIndex < newDenyIndex, 'expected new plan review checkbox to the left of Deny')
   assert(newDetailsIndex > lifecycleIndex, 'expected plan details below lifecycle context')
   assert(newCheckpointsIndex > newDetailsIndex, 'expected checkpoints below plan details')
   assert.match(newPlan, /rounded-3xl/)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
+import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
 import { Copy, Check, AlertCircle, Archive, CalendarClock, ChevronDown, ChevronRight, Circle, Compass, Brain, CheckCircle2, FileText, Folder, ListTodo, PlayCircle, Rocket, LockKeyhole, Server, ShieldCheck, Target, type LucideIcon } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
@@ -241,6 +241,7 @@ function PermissionActionBar({
   shortcutHint = 'Enter approves · Esc denies',
   compactDesktop = false,
   denyVariant = 'ghost',
+  leadingAction,
 }: {
   onApprove: () => void
   onDeny: () => void
@@ -259,6 +260,7 @@ function PermissionActionBar({
   shortcutHint?: string
   compactDesktop?: boolean
   denyVariant?: 'secondary' | 'ghost' | 'outline'
+  leadingAction?: ReactNode
 }) {
   const [noteOpen, setNoteOpen] = useState(false)
   const showPersistentGroup = showPersistentActions && (onAlwaysDeny || onAlwaysAllow)
@@ -314,6 +316,7 @@ function PermissionActionBar({
           >
             {approveLabel}
           </Button>
+          {leadingAction ? <div className="order-0 w-full sm:w-auto">{leadingAction}</div> : null}
           <Button
             type="button"
             variant={denyVariant}
@@ -818,21 +821,19 @@ function ExitPlanReviewControl({
   onPauseForReviewChange: (pauseForReview: boolean) => void
 }) {
   return (
-    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
-      <label className="flex items-start gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 text-sm text-[var(--app-text)]">
-        <input
-          type="checkbox"
-          className="mt-1"
-          checked={pauseForReview}
-          disabled={loading}
-          onChange={(event) => onPauseForReviewChange(event.target.checked)}
-        />
-        <span className="grid gap-1">
-          <span className="font-semibold">Pause for review after each checkpoint</span>
-          <span className="text-xs leading-5 text-[var(--app-text-muted)]">Unchecked continues automatically after successful checkpoints.</span>
-        </span>
-      </label>
-    </section>
+    <label
+      className="flex min-h-9 items-center gap-2 text-sm text-[var(--app-text)]"
+      title="Unchecked continues automatically after successful checkpoints."
+    >
+      <input
+        type="checkbox"
+        checked={pauseForReview}
+        disabled={loading}
+        onChange={(event) => onPauseForReviewChange(event.target.checked)}
+      />
+      <span>Pause for review after each checkpoint</span>
+      <span className="sr-only">Unchecked continues automatically after successful checkpoints.</span>
+    </label>
   )
 }
 
@@ -926,6 +927,13 @@ function ExitPlanModal({
           onDeny={() => void resolve('deny')}
           note={note}
           onNoteChange={setNote}
+          leadingAction={hasStructuredPlan ? (
+            <ExitPlanReviewControl
+              pauseForReview={pauseForReview}
+              loading={loading}
+              onPauseForReviewChange={setPauseForReview}
+            />
+          ) : undefined}
         />
       }
       onOpenChange={onOpenChange}
@@ -934,13 +942,6 @@ function ExitPlanModal({
       shortcutsDisabled={loading}
     >
       <div className="grid gap-4">
-        {hasStructuredPlan ? (
-          <ExitPlanReviewControl
-            pauseForReview={pauseForReview}
-            loading={loading}
-            onPauseForReviewChange={setPauseForReview}
-          />
-        ) : null}
         {structuredDocument ? (
           <ExitPlanDocumentView document={structuredDocument} />
         ) : (
@@ -1586,18 +1587,30 @@ function NewPlanRequestModal({
           {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy'}
         </Button>
       }
-      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Approve new plan" note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
+      footer={
+        <PermissionActionBar
+          loading={loading}
+          onApprove={() => void resolve('approve')}
+          onDeny={() => void resolve('deny')}
+          approveLabel="Approve new plan"
+          note={note}
+          onNoteChange={setNote}
+          noteLabel="Message to agent"
+          leadingAction={
+            <ExitPlanReviewControl
+              pauseForReview={pauseForReview}
+              loading={loading}
+              onPauseForReviewChange={setPauseForReview}
+            />
+          }
+        />
+      }
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve')}
       onDenyShortcut={() => void resolve('deny')}
       shortcutsDisabled={loading}
     >
       <div className="grid gap-4">
-        <ExitPlanReviewControl
-          pauseForReview={pauseForReview}
-          loading={loading}
-          onPauseForReviewChange={setPauseForReview}
-        />
         <section className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4 text-sm leading-6 text-[var(--app-text)]">
           <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Lifecycle action</div>
           <p className="mt-2">Approve, activate, and prepare this separate new plan for execution. It will replace the current active plan only after this approval.</p>
