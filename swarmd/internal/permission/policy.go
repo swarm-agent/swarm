@@ -725,6 +725,11 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 			return PolicyDecisionAsk
 		}
 		return PolicyDecisionAllow
+	case "manage_sessions":
+		if ShouldApproveManageSessionsArchive(toolArguments) {
+			return PolicyDecisionAsk
+		}
+		return PolicyDecisionAllow
 	case "plan_manage":
 		if PlanManageLifecycleRequirement(toolArguments) != "" {
 			return PolicyDecisionAsk

@@ -1410,6 +1410,11 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 		return "manage_theme"
 	case "manage_worktree":
 		return "manage_worktree"
+	case "manage_sessions":
+		if ShouldApproveManageSessionsArchive(toolArguments) {
+			return "session_archive"
+		}
+		return "manage_sessions"
 	case "":
 		return "tool"
 	default:
