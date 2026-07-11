@@ -84,6 +84,7 @@ import {
 } from "./desktop-v3-chat-header";
 import { listAuthCredentials } from "../../settings/queries/list-auth-credentials";
 import { desktopProviderNeedsAuth } from "../services/auth-needs";
+import { formatConversationMarkdown, loadCompleteConversationMessages, sanitizeTranscriptFilename } from "../services/transcript-export";
 import {
   buildDesktopV3RunStatusModel,
   type DesktopV3RunStatusModel,
@@ -1325,6 +1326,7 @@ export function DesktopV3ExistingConversationPane({
     null,
   );
   const [olderHistoryAutoActive, setOlderHistoryAutoActive] = useState(false);
+  const [transcriptAction, setTranscriptAction] = useState<'copy' | 'download' | null>(null);
   const loadingOlderHistoryRef = useRef(false);
   const previousHistoryScrollTopRef = useRef<number | null>(null);
   const [mode, setMode] = useState<DesktopSessionMode>(settingsBaseline.mode);
@@ -2162,6 +2164,52 @@ export function DesktopV3ExistingConversationPane({
 
   const openPlanRef = useRef(onOpenPlan);
   openPlanRef.current = onOpenPlan;
+  const handleTranscriptExport = useCallback(async (kind: 'copy' | 'download') => {
+    if (transcriptAction) return;
+    setTranscriptAction(kind);
+    try {
+      const initial = renderedMessages.committed.map((item) => ({
+        id: item.id,
+        sessionId: item.session_id,
+        globalSeq: item.global_seq,
+        role: item.role,
+        content: item.content,
+        createdAt: item.created_at,
+        metadata: item.metadata,
+      }));
+      const complete = hasPartialHistory
+        ? await loadCompleteConversationMessages(initial, async (beforeSeq) => fetchSessionMessages(normalizedSessionId, undefined, 0, { sessionApi: 'v3', beforeSeq, limit: 200 }))
+        : initial;
+      const title = session?.title || cacheSession?.title || 'Conversation';
+      const markdown = formatConversationMarkdown({
+        title,
+        workspaceName: session?.workspaceName || cacheSession?.workspace_name,
+        sessionId: normalizedSessionId,
+        exportedAt: new Date(),
+      }, complete);
+      if (kind === 'copy') {
+        await navigator.clipboard.writeText(markdown);
+      } else {
+        const url = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }));
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = sanitizeTranscriptFilename(title);
+        anchor.click();
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      window.alert(`Conversation export failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (mountedRef.current) setTranscriptAction(null);
+    }
+  }, [cacheSession?.title, cacheSession?.workspace_name, hasPartialHistory, normalizedSessionId, renderedMessages.committed, session?.title, session?.workspaceName, transcriptAction]);
+  const headerSessionActions = useMemo(() => sessionActions ? {
+    ...sessionActions,
+    pendingAction: transcriptAction ?? sessionActions.pendingAction,
+    onCopyConversation: () => { void handleTranscriptExport('copy'); },
+    onDownloadConversation: () => { void handleTranscriptExport('download'); },
+  } : null, [handleTranscriptExport, sessionActions, transcriptAction]);
+
   const hasOpenPlan = Boolean(onOpenPlan);
   const stableOpenPlan = useMemo(
     () => (hasOpenPlan ? () => openPlanRef.current?.() : undefined),
@@ -2193,7 +2241,7 @@ export function DesktopV3ExistingConversationPane({
         runStatusNow={timerNow}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
-        sessionActions={sessionActions}
+        sessionActions={headerSessionActions}
       />
       <div
         className={cn(

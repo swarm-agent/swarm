@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { Archive, LoaderCircle, MessageSquareText, MoreVertical, Pin, Plus } from 'lucide-react'
+import { Archive, Clipboard, Download, LoaderCircle, MessageSquareText, MoreVertical, Pin, Plus } from 'lucide-react'
 import { DesktopV3RunStatusPill, formatDesktopV3RunTimerLabel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
 
 export interface DesktopV3ChatHeaderSessionActions {
   pinned: boolean
   canPin: boolean
-  pendingAction?: 'pin' | 'archive' | null
+  pendingAction?: 'pin' | 'archive' | 'copy' | 'download' | 'rename' | null
   onTogglePinned: () => void
   onArchive: () => void
+  onCopyConversation?: () => void
+  onDownloadConversation?: () => void
+  onRename?: (title: string) => Promise<void>
 }
 
 export interface DesktopV3ChatHeaderProps {
@@ -56,12 +59,68 @@ export function DesktopV3ChatHeader({
   const mobileRunTimerLabel = runStatus ? formatDesktopV3RunTimerLabel(runStatus, runStatusNow) : ''
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false)
   const mobileActionsRef = useRef<HTMLSpanElement | null>(null)
+  const titleInputRef = useRef<HTMLInputElement | null>(null)
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [titleDraft, setTitleDraft] = useState(displayTitle)
+  const [titleError, setTitleError] = useState('')
   const pendingAction = sessionActions?.pendingAction ?? null
   const actionDisabled = Boolean(pendingAction)
 
   useEffect(() => {
     if (!sessionActions) setMobileActionsOpen(false)
   }, [sessionActions])
+
+  useEffect(() => {
+    if (!editingTitle) setTitleDraft(displayTitle)
+  }, [displayTitle, editingTitle])
+
+  useEffect(() => {
+    if (editingTitle) titleInputRef.current?.focus()
+  }, [editingTitle])
+
+  const cancelTitleEdit = () => {
+    if (pendingAction === 'rename') return
+    setEditingTitle(false)
+    setTitleDraft(displayTitle)
+    setTitleError('')
+  }
+  const saveTitle = async () => {
+    const nextTitle = titleDraft.trim()
+    if (!nextTitle) {
+      setTitleError('Title cannot be blank.')
+      return
+    }
+    if (!sessionActions?.onRename || pendingAction === 'rename') return
+    try {
+      await sessionActions.onRename(nextTitle)
+      setEditingTitle(false)
+      setTitleError('')
+    } catch (error) {
+      setTitleError(error instanceof Error ? error.message : 'Failed to rename session.')
+    }
+  }
+  const editableTitle = editingTitle ? (
+    <span className="grid min-w-0 gap-0.5">
+      <input
+        ref={titleInputRef}
+        value={titleDraft}
+        disabled={pendingAction === 'rename'}
+        aria-label="Conversation title"
+        aria-invalid={Boolean(titleError)}
+        className="min-w-0 rounded border border-[var(--app-border-strong)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[13px] font-semibold text-[var(--app-text)] outline-none focus:ring-2 focus:ring-[var(--app-focus-ring)] sm:text-sm"
+        onChange={(event) => { setTitleDraft(event.target.value); setTitleError('') }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') { event.preventDefault(); void saveTitle() }
+          if (event.key === 'Escape') { event.preventDefault(); cancelTitleEdit() }
+        }}
+      />
+      {titleError ? <span role="alert" className="text-[10px] font-normal text-[var(--app-danger)]">{titleError}</span> : null}
+    </span>
+  ) : sessionActions?.onRename ? (
+    <button type="button" className="min-w-0 truncate rounded text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]" title={`${displayTitle} — click to rename`} aria-label={`Rename conversation: ${displayTitle}`} onClick={() => { setEditingTitle(true); setTitleDraft(displayTitle); setTitleError('') }}>
+      {displayTitle}
+    </button>
+  ) : <span className="truncate" title={displayTitle}>{displayTitle}</span>
 
   return (
     <header className="min-h-[60px] shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 pb-2 pt-[calc(var(--app-safe-area-top)_+_0.5rem)] sm:h-[60px] sm:px-4 sm:py-0">
@@ -80,8 +139,8 @@ export function DesktopV3ChatHeader({
 
         <div className="min-w-0 flex-1">
           <div className="sm:hidden">
-            <h1 className="truncate text-[13px] font-semibold leading-tight text-[var(--app-text)]" title={displayTitle}>
-              {displayTitle}
+            <h1 className="min-w-0 text-[13px] font-semibold leading-tight text-[var(--app-text)]">
+              {editableTitle}
             </h1>
             <div className="relative mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-[10px] font-medium text-[var(--app-text-muted)]" title={displayWorkspace}>
               <span className="min-w-0 truncate text-left">{displayWorkspace}</span>
@@ -100,7 +159,7 @@ export function DesktopV3ChatHeader({
 
           <div className="hidden min-w-0 sm:block">
             <h1 className="flex items-center gap-2 overflow-hidden text-sm font-semibold text-[var(--app-text)]">
-              <span className="truncate" title={displayTitle}>{displayTitle}</span>
+              {editableTitle}
               <span className="shrink-0 font-normal text-[var(--app-text-subtle)]">/</span>
               <span className="truncate font-normal text-[var(--app-text-muted)]" title={displayWorkspace}>{displayWorkspace}</span>
             </h1>
@@ -166,6 +225,16 @@ export function DesktopV3ChatHeader({
                   >
                     {pendingAction === 'pin' ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Pin size={13} aria-hidden="true" />}
                     <span>{sessionActions.pinned ? 'Unpin session' : 'Pin session'}</span>
+                  </button>
+                ) : null}
+                {sessionActions.onCopyConversation ? (
+                  <button type="button" className="inline-flex h-8 w-full items-center gap-2 rounded border-0 bg-transparent px-2 text-left text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:opacity-60" disabled={actionDisabled} onClick={() => { setMobileActionsOpen(false); sessionActions.onCopyConversation?.() }}>
+                    {pendingAction === 'copy' ? <LoaderCircle size={13} className="animate-spin" /> : <Clipboard size={13} />}<span>Copy conversation</span>
+                  </button>
+                ) : null}
+                {sessionActions.onDownloadConversation ? (
+                  <button type="button" className="inline-flex h-8 w-full items-center gap-2 rounded border-0 bg-transparent px-2 text-left text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:opacity-60" disabled={actionDisabled} onClick={() => { setMobileActionsOpen(false); sessionActions.onDownloadConversation?.() }}>
+                    {pendingAction === 'download' ? <LoaderCircle size={13} className="animate-spin" /> : <Download size={13} />}<span>Download Markdown</span>
                   </button>
                 ) : null}
                 <button

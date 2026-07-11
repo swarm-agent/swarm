@@ -3041,7 +3041,7 @@ export function DesktopAppPage() {
     ? {
         pinned: Boolean(activeRouteSession && activeRouteSessionCanPin && sessionManuallyPinnedInSidebar(activeRouteSession)),
         canPin: Boolean(activeRouteSession && activeRouteSessionIsRegularChat && activeRouteSessionCanPin),
-        pendingAction: sidebarSessionActions[routeSessionId] === 'pin' || sidebarSessionActions[routeSessionId] === 'archive'
+        pendingAction: sidebarSessionActions[routeSessionId] === 'pin' || sidebarSessionActions[routeSessionId] === 'archive' || sidebarSessionActions[routeSessionId] === 'rename'
           ? sidebarSessionActions[routeSessionId]
           : null,
         onTogglePinned: () => {
@@ -3050,6 +3050,7 @@ export function DesktopAppPage() {
           }
         },
         onArchive: () => handleArchiveSidebarSession(routeSessionId),
+        onRename: (title: string) => handleRenameSidebarSession(routeSessionId, title),
       }
     : null
 
