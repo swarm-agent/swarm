@@ -1,9 +1,11 @@
 package notification
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +18,7 @@ const (
 	EventNotificationCreated  = "notification.created"
 	EventNotificationUpdated  = "notification.updated"
 	EventNotificationsCleared = "notification.cleared"
+	maximumWebPushDeliveries  = 32
 )
 
 type Service struct {
@@ -24,6 +27,9 @@ type Service struct {
 	publish              func(pebblestore.EventEnvelope)
 	localSwarmIDResolver func() string
 	realtimePublisher    func(RealtimeEvent)
+	webPushDispatch      func(context.Context, string, pebblestore.NotificationRecord) error
+	webPushSlots         chan struct{}
+	webPushWG            sync.WaitGroup
 	mu                   sync.Mutex
 	counter              atomic.Uint64
 }
@@ -90,6 +96,32 @@ func (s *Service) SetRealtimePublisher(publish func(RealtimeEvent)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.realtimePublisher = publish
+}
+
+// SetWebPushDispatcher installs the optional best-effort delivery adapter. The
+// durable notification write remains authoritative and delivery never blocks it.
+func (s *Service) SetWebPushDispatcher(dispatch func(context.Context, string, pebblestore.NotificationRecord) error) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.webPushDispatch = dispatch
+	if dispatch != nil && s.webPushSlots == nil {
+		s.webPushSlots = make(chan struct{}, maximumWebPushDeliveries)
+	}
+}
+
+// CloseWebPushDispatcher prevents new deliveries and waits for in-flight sends
+// before daemon shutdown closes the secret store used by the adapter.
+func (s *Service) CloseWebPushDispatcher() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.webPushDispatch = nil
+	s.mu.Unlock()
+	s.webPushWG.Wait()
 }
 
 func (s *Service) SetLocalSwarmIDResolver(resolver func() string) {
@@ -256,6 +288,9 @@ func (s *Service) UpsertPermissionNotification(input PermissionUpsertInput) (peb
 	}
 	_, _ = s.emitLocked("swarm:notifications", eventType, record.ID, map[string]any{"notification": record, "summary": summary})
 	s.publishRealtimeLocked(RealtimeEvent{EventType: eventType, AccountScopeID: record.AccountScopeID, SwarmID: record.SwarmID, Notification: &record, Summary: &summary, RecordedAt: record.UpdatedAt})
+	if eventType == EventNotificationCreated {
+		s.dispatchWebPushLocked(record)
+	}
 	return record, true, nil
 }
 
@@ -345,6 +380,9 @@ func (s *Service) UpsertSystemNotificationForAccount(accountScopeID string, reco
 	}
 	_, _ = s.emitLocked("swarm:notifications", eventType, record.ID, map[string]any{"notification": record, "summary": summary})
 	s.publishRealtimeLocked(RealtimeEvent{EventType: eventType, AccountScopeID: record.AccountScopeID, SwarmID: record.SwarmID, Notification: &record, Summary: &summary, RecordedAt: record.UpdatedAt})
+	if eventType == EventNotificationCreated {
+		s.dispatchWebPushLocked(record)
+	}
 	return record, true, nil
 }
 
@@ -479,6 +517,29 @@ func (s *Service) refreshSummaryForAccountLocked(accountScopeID, swarmID string,
 		return pebblestore.NotificationSummary{}, err
 	}
 	return summary, nil
+}
+
+func (s *Service) dispatchWebPushLocked(record pebblestore.NotificationRecord) {
+	dispatch := s.webPushDispatch
+	if dispatch == nil || !strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.NotificationStatusActive) || record.MutedAt > 0 {
+		return
+	}
+	select {
+	case s.webPushSlots <- struct{}{}:
+		s.webPushWG.Add(1)
+	default:
+		log.Printf("warning: web push delivery capacity reached; notification %s remains durable", record.ID)
+		return
+	}
+	go func() {
+		defer func() {
+			<-s.webPushSlots
+			s.webPushWG.Done()
+		}()
+		if err := dispatch(context.Background(), record.AccountScopeID, record); err != nil {
+			log.Printf("warning: web push delivery failed for notification %s: %v", record.ID, err)
+		}
+	}()
 }
 
 func (s *Service) publishRealtimeLocked(event RealtimeEvent) {

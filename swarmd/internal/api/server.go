@@ -48,6 +48,7 @@ import (
 	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/update"
 	"swarm/packages/swarmd/internal/voice"
+	"swarm/packages/swarmd/internal/webpush"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -102,6 +103,7 @@ type Server struct {
 	codexAccount                codexAccountClient
 	perm                        permissionService
 	notifications               notificationService
+	webPush                     *webpush.Service
 	hub                         *stream.Hub
 	events                      *pebblestore.EventLog
 	voice                       *voice.Service
@@ -342,6 +344,13 @@ func (s *Server) SetCodexAccountClient(client codexAccountClient) {
 		return
 	}
 	s.codexAccount = client
+}
+
+func (s *Server) SetWebPushService(service *webpush.Service) {
+	if s == nil {
+		return
+	}
+	s.webPush = service
 }
 
 func (s *Server) SetBypassPermissions(enabled bool) {

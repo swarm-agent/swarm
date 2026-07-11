@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMatchRoute, useNavigate, useSearch } from '@tanstack/react-router'
-import { Bot, GitBranch, Home, Keyboard, Key, Palette, Shield, UserRound, type LucideIcon } from 'lucide-react'
+import { Bell, Bot, GitBranch, Home, Keyboard, Key, Palette, Shield, UserRound, type LucideIcon } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Select } from '../../../../components/ui/select'
 import { AccountSettingsPage } from '../account/components/account-settings-page'
 import { AgentsSettingsPage } from '../agents/components/agents-settings-page'
 import { AuthSettingsPage } from '../auth/components/auth-settings-page'
 import { PermissionsSettingsPage } from '../permissions/components/permissions-settings-page'
+import { NotificationsSettingsPage } from '../notifications/components/notifications-settings-page'
 import { ThemesSettingsPage } from '../themes/components/themes-settings-page'
 import { ShortcutsSettingsPage } from '../shortcuts/components/shortcuts-settings-page'
 import { VaultSettingsPage } from '../vault/components/vault-settings-page'
@@ -19,6 +20,7 @@ const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }
   { id: 'agents', label: 'Agents', icon: Bot },
   { id: 'auth', label: 'Auth', icon: Key },
   { id: 'permissions', label: 'Permissions', icon: Shield },
+  { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'themes', label: 'Themes', icon: Palette },
   { id: 'shortcuts', label: 'Shortcuts', icon: Keyboard },
   { id: 'vault', label: 'Vault', icon: Shield },
@@ -144,6 +146,7 @@ export function DesktopSettingsPage() {
             {activeTab === 'agents' ? <AgentsSettingsPage key={agentsPageKey} /> : null}
             {activeTab === 'auth' ? <AuthSettingsPage /> : null}
             {activeTab === 'permissions' ? <PermissionsSettingsPage /> : null}
+            {activeTab === 'notifications' ? <NotificationsSettingsPage /> : null}
             {activeTab === 'themes' ? <ThemesSettingsPage /> : null}
             {activeTab === 'shortcuts' ? <ShortcutsSettingsPage /> : null}
             {activeTab === 'vault' ? <VaultSettingsPage /> : null}

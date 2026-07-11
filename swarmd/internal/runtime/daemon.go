@@ -55,6 +55,7 @@ import (
 	"swarm/packages/swarmd/internal/uisettings"
 	update "swarm/packages/swarmd/internal/update"
 	"swarm/packages/swarmd/internal/voice"
+	"swarm/packages/swarmd/internal/webpush"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -67,6 +68,7 @@ type Daemon struct {
 	events                    *pebblestore.EventLog
 	hub                       *stream.Hub
 	apiServer                 *api.Server
+	notificationService       *notification.Service
 	httpServer                *http.Server
 	desktopServer             *http.Server
 	localTransportServer      *http.Server
@@ -179,6 +181,26 @@ func New(cfg config.Config) (*Daemon, error) {
 	})
 	permissionSvc := permission.NewService(pebblestore.NewPermissionStore(store), events, hub.Publish)
 	notificationSvc := notification.NewService(pebblestore.NewNotificationStore(store), events, hub.Publish)
+	webPushRepository, err := webpush.NewPebbleRepository(secretStore)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("configure web push repository: %w", err)
+	}
+	webPushSvc, err := webpush.NewService(webPushRepository, "https://github.com/swarm-agent/swarm", nil)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("configure web push service: %w", err)
+	}
+	if _, err := webPushSvc.PublicKey(context.Background()); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("initialize web push VAPID key: %w", err)
+	}
 	permissionSvc.SetSessionResolver(sessionSvc)
 	permissionSvc.SetHostedSync(permission.NewHostedSyncClient(cfg.ConfigPath, swarmStore))
 	permissionSvc.SetLocalSwarmIDResolver(func() string {
@@ -397,11 +419,16 @@ func New(cfg config.Config) (*Daemon, error) {
 		log.Printf("warning: repair permission summary pending index: %v", err)
 	}
 	bgCtx, bgCancel := context.WithCancel(context.Background())
+	notificationSvc.SetWebPushDispatcher(func(_ context.Context, accountScopeID string, record pebblestore.NotificationRecord) error {
+		_, err := webPushSvc.Send(bgCtx, accountScopeID, webpush.Payload{Title: record.Title, Body: record.Body, URL: record.ActionURL, Tag: record.ID}, webpush.SendOptions{})
+		return err
+	})
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	toolRuntime.SetManageSessionRealtimePublisher(apiServer.PublishCommittedV3RealtimeOutbox)
 	apiServer.SetCodexAccountClient(codexClient)
+	apiServer.SetWebPushService(webPushSvc)
 	apiServer.SetIdentityService(identitySvc)
 	apiServer.SetIdentitySessionService(identitySessionSvc)
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
@@ -443,6 +470,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		events:                    events,
 		hub:                       hub,
 		apiServer:                 apiServer,
+		notificationService:       notificationSvc,
 		bgCtx:                     bgCtx,
 		bgCancel:                  bgCancel,
 		stopCh:                    make(chan string, 1),
@@ -558,6 +586,10 @@ func (d *Daemon) cleanup() error {
 		if d.bgCancel != nil {
 			d.bgCancel()
 			d.bgCancel = nil
+		}
+		if d.notificationService != nil {
+			d.notificationService.CloseWebPushDispatcher()
+			d.notificationService = nil
 		}
 		if d.copilot != nil {
 			if err := d.copilot.Close(); err != nil {
