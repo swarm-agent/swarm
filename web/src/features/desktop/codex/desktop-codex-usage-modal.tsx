@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { RefreshCcw } from 'lucide-react'
+import { LoaderCircle, RefreshCcw } from 'lucide-react'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -102,6 +102,7 @@ export function DesktopCodexUsageModal({ open, onOpenChange, onOpenAuthSettings 
 
   if (!open) return null
   const authRequired = `${usageError ?? ''} ${creditsError ?? ''}`.toLowerCase().includes('oauth')
+  const initialLoading = !usage && !credits && !usageError && !creditsError
   return (
     <Dialog role="dialog" aria-modal="true" aria-label="Codex usage" className="z-[85] p-3 sm:p-6">
       <DialogBackdrop onClick={() => onOpenChange(false)} />
@@ -111,7 +112,12 @@ export function DesktopCodexUsageModal({ open, onOpenChange, onOpenAuthSettings 
           <div className="flex gap-2"><Button variant="secondary" size="sm" onClick={() => void refresh()} disabled={loading}><RefreshCcw size={14} className={loading ? 'animate-spin' : ''} /> Refresh</Button><Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>Close</Button></div>
         </div>
         <div className="min-h-0 overflow-y-auto p-5 sm:p-6">
-          {loading && !usage && !credits ? <Card className="p-5 text-sm text-[var(--app-text-muted)]">Loading Codex account usage…</Card> : null}
+          {initialLoading ? (
+            <div className="grid min-h-[280px] place-items-center" role="status" aria-label="Loading Codex account usage">
+              <LoaderCircle size={36} strokeWidth={1.8} className="animate-spin text-[var(--app-primary)]" aria-hidden="true" />
+            </div>
+          ) : (
+            <>
           {usageError ? <Card className="mb-4 border-[var(--app-error)] p-4 text-sm text-[var(--app-error)]">Usage could not be loaded: {usageError} <Button className="ml-2" variant="secondary" size="sm" onClick={authRequired ? onOpenAuthSettings : () => void refresh()}>{authRequired ? 'Open Auth settings' : 'Retry'}</Button></Card> : null}
           <div className="grid gap-4 sm:grid-cols-2">
             <LimitCard window={usage?.rate_limit?.primary_window} fallback="Primary" />
@@ -125,9 +131,11 @@ export function DesktopCodexUsageModal({ open, onOpenChange, onOpenAuthSettings 
               const expired = resetCreditExpired(credit)
               const available = resetCreditRedeemable(credit)
               const busy = busyCredit === credit.id
-              return <Card key={credit.id} className="p-4"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-[var(--app-text)]">{credit.title || 'Usage-limit reset'}</span><span className="text-xs uppercase text-[var(--app-text-subtle)]">{expired ? 'expired' : credit.status}</span></div><p className="mt-1 text-sm text-[var(--app-text-muted)]">{credit.description || credit.reset_type}</p><p className="mt-2 text-xs text-[var(--app-text-subtle)]">Expires: {resetCreditExpiry(credit)}</p>{consumeMessage[credit.id] ? <p className="mt-2 text-xs text-[var(--app-text-muted)]" role="status">{consumeMessage[credit.id]}</p> : null}</div><Button size="sm" className="shrink-0" disabled={!available || busy || Boolean(busyCredit && !busy)} onClick={() => void consume(credit)}>{busy ? 'Using…' : 'Use reset'}</Button></div></Card>
+              return <Card key={credit.id} className="p-4"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-[var(--app-text)]">{credit.title || 'Usage-limit reset'}</span><span className="text-xs uppercase text-[var(--app-text-subtle)]">{expired ? 'expired' : credit.status}</span></div><p className="mt-1 text-sm text-[var(--app-text-muted)]">{credit.description || credit.reset_type}</p><p className="mt-2 text-xs text-[var(--app-text-subtle)]">Expires: {resetCreditExpiry(credit)}</p>{consumeMessage[credit.id] ? <p className="mt-2 text-xs text-[var(--app-text-muted)]" role="status">{consumeMessage[credit.id]}</p> : null}</div><Button size="sm" className="shrink-0" disabled={!available || busy || Boolean(busyCredit && !busy)} onClick={() => void consume(credit)}>{busy ? 'Using…' : 'Use reset'}</Button></div></Card>
             })}
           </div>
+            </>
+          )}
         </div>
       </DialogPanel>
     </Dialog>

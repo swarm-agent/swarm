@@ -16,6 +16,14 @@ test('Codex usage modal wires refresh, idempotent redemption outcomes, and acces
   assert.match(source, /Open Auth settings/)
 })
 
+test('Codex usage modal shows an accessible spoke spinner until initial account data settles', async () => {
+  const source = await readFile(new URL('./desktop-codex-usage-modal.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /const initialLoading = !usage && !credits && !usageError && !creditsError/)
+  assert.match(source, /role="status" aria-label="Loading Codex account usage"/)
+  assert.match(source, /<LoaderCircle[^>]+animate-spin/)
+})
+
 test('Desktop app owns the dedicated Codex modal and slash action without coupling models or fast controls', async () => {
   const source = await readFile(new URL('../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
 
