@@ -120,7 +120,7 @@ export function DesktopSettingsPage() {
       </aside>
 
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="sticky top-0 z-10 grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(7.5rem,42vw)] items-center gap-3 border-b border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-3 md:hidden">
+        <div className="sticky top-0 z-10 grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(7.5rem,42vw)] items-center gap-3 border-b border-[var(--app-border)] bg-[var(--app-bg)] px-3 pb-3 pt-[calc(0.75rem+var(--app-safe-area-top))] md:hidden">
           <Button variant="outline" className="h-10 min-w-0 justify-start rounded-xl px-3" onClick={handleBack}>
             <Home size={16} className="shrink-0" />
             <span className="min-w-0 truncate">{returnSessionId ? 'Chat' : 'Workspace'}</span>

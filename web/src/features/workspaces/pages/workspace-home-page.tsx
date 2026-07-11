@@ -963,7 +963,7 @@ export function WorkspaceHomePage() {
             </div>
           </aside>
         ) : null}
-        <section className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-4 py-6 pb-28 [-webkit-overflow-scrolling:touch] sm:px-8 lg:px-12 lg:py-8 lg:pb-8 xl:px-16">
+        <section className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-28 pt-[calc(1.5rem+var(--app-safe-area-top))] [-webkit-overflow-scrolling:touch] sm:px-8 lg:px-12 lg:py-8 lg:pb-8 xl:px-16">
           <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-8 lg:gap-10">
             <div className="flex items-start justify-between gap-3 bg-transparent px-0 py-1 sm:items-center">
               <div className="flex min-w-0 items-start gap-3">

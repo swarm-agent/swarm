@@ -265,7 +265,7 @@ func (s *Service) UpsertPermissionNotification(input PermissionUpsertInput) (peb
 	if record.Severity == "" {
 		record.Severity = pebblestore.NotificationSeverityWarning
 	}
-	if record.ActionURL == "" && record.WorkspacePath != "" && record.SessionID != "" {
+	if record.ActionURL == "" && (record.WorkspaceName != "" || record.WorkspacePath != "") && record.SessionID != "" {
 		record.ActionURL = NotificationActionURL(record.WorkspaceName, record.WorkspacePath, record.SessionID)
 	}
 	if record.Status == "" {
@@ -336,7 +336,7 @@ func (s *Service) UpsertSystemNotificationForAccount(accountScopeID string, reco
 	if strings.TrimSpace(record.Severity) == "" {
 		record.Severity = pebblestore.NotificationSeverityInfo
 	}
-	if record.ActionURL == "" && record.WorkspacePath != "" && record.SessionID != "" {
+	if record.ActionURL == "" && (record.WorkspaceName != "" || record.WorkspacePath != "") && record.SessionID != "" {
 		record.ActionURL = NotificationActionURL(record.WorkspaceName, record.WorkspacePath, record.SessionID)
 	}
 	if strings.TrimSpace(record.Status) == "" {
