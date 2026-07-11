@@ -1154,6 +1154,7 @@ export function resolveDesktopV3StopRunRequest(input: {
 export interface DesktopV3ExistingConversationPaneProps {
   modeCommand?: "toggle-plan-auto" | null;
   onModeCommandHandled?: () => void;
+  onModeChange?: (mode: DesktopSessionMode) => void;
   sessionId: string;
   initialHydrateStatus: "idle" | "loading" | "cached" | "ready" | "error";
   renderedMessages: RenderedSessionMessages;
@@ -1193,6 +1194,7 @@ export function completeDesktopV3ExistingMessage(input: {
 export function DesktopV3ExistingConversationPane({
   modeCommand = null,
   onModeCommandHandled,
+  onModeChange,
   sessionId,
   initialHydrateStatus,
   renderedMessages,
@@ -1639,9 +1641,11 @@ export function DesktopV3ExistingConversationPane({
   useEffect(() => {
     if (modeCommand !== "toggle-plan-auto") return;
     localSettingsDirtyRef.current.mode = true;
-    setMode((current) => (current === "plan" ? "auto" : "plan"));
+    const nextMode = mode === "plan" ? "auto" : "plan";
+    setMode(nextMode);
+    onModeChange?.(nextMode);
     onModeCommandHandled?.();
-  }, [modeCommand, onModeCommandHandled]);
+  }, [mode, modeCommand, onModeChange, onModeCommandHandled]);
 
   function handleOpenAgentSettings() {
     if (routeWorkspaceSlug) {
@@ -1671,6 +1675,7 @@ export function DesktopV3ExistingConversationPane({
     if (!normalizedSessionId || nextMode === mode) return;
     localSettingsDirtyRef.current.mode = true;
     setMode(nextMode);
+    onModeChange?.(nextMode);
     const nextLock = resolveDesktopV3AgentModelLock(
       agentState.profiles,
       selectedAgent,

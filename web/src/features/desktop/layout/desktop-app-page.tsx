@@ -33,7 +33,7 @@ import {
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
-import { normalizeSidebarHideInactiveHours, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { normalizeDefaultNewSessionMode, normalizeSidebarHideInactiveHours, type DesktopSessionMode, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { saveSidebarHideInactiveHours } from '../settings/swarm/mutations/save-sidebar-hide-inactive-hours'
 import { fetchSwarmTargets, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
@@ -2224,6 +2224,7 @@ export function DesktopAppPage() {
   const [worktreeSessionExistingPath, setWorktreeSessionExistingPath] = useState('')
   const [worktreeSessionCreating, setWorktreeSessionCreating] = useState(false)
   const [worktreeSessionError, setWorktreeSessionError] = useState<string | null>(null)
+  const [newSessionModeByWorkspace, setNewSessionModeByWorkspace] = useState<Record<string, DesktopSessionMode>>({})
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
@@ -3095,7 +3096,8 @@ export function DesktopAppPage() {
         workspaceName: worktreeSessionModal.workspaceName,
         route: selectedRoute,
         title,
-        mode: 'auto',
+        mode: newSessionModeByWorkspace[worktreeSessionModal.workspacePath]
+          ?? normalizeDefaultNewSessionMode((uiSettingsQuery.data ?? uiSettings)?.chat?.default_new_session_mode),
         agentName: activeAgent,
         preference: {
           provider: preference.provider,
@@ -3127,7 +3129,7 @@ export function DesktopAppPage() {
     } finally {
       setWorktreeSessionCreating(false)
     }
-  }, [agentStateQuery.data?.activePrimary, draftPreferenceQuery.data?.preference, navigate, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionExistingPath, worktreeSessionModal, worktreeSessionTitle])
+  }, [agentStateQuery.data?.activePrimary, draftPreferenceQuery.data?.preference, navigate, newSessionModeByWorkspace, uiSettings, uiSettingsQuery.data, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionExistingPath, worktreeSessionModal, worktreeSessionTitle])
 
   const openPlanModalForSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
@@ -4088,6 +4090,13 @@ export function DesktopAppPage() {
             loadedMessageCount={selectedDesktopV3LoadedMessageCount}
             modeCommand={sessionModeCommand}
             onModeCommandHandled={() => setSessionModeCommand(null)}
+            onModeChange={(mode) => {
+              const routeSession = sessionById.get(routeSessionId)
+              const workspacePath = routeSession
+                ? desktopRouteWorkspacePathForSession(routeSession, workspacePathByBindingId, knownWorkspacePaths)
+                : ''
+              if (workspacePath) setNewSessionModeByWorkspace((current) => ({ ...current, [workspacePath]: mode }))
+            }}
             session={sessionById.get(routeSessionId) ?? null}
             routeOptions={sessionById.get(routeSessionId) ? (() => {
               const sessionWorkspacePath = desktopRouteWorkspacePathForSession(sessionById.get(routeSessionId)!, workspacePathByBindingId, knownWorkspacePaths)
@@ -4141,6 +4150,8 @@ export function DesktopAppPage() {
               localWorkspaceBindingId: routeWorkspace.localWorkspaceBindingId,
               hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
             })}
+            initialMode={newSessionModeByWorkspace[routeWorkspace.path]}
+            onModeChange={(mode) => setNewSessionModeByWorkspace((current) => ({ ...current, [routeWorkspace.path]: mode }))}
             onOpenChats={() => setMobileSidebarOpen(true)}
             mobileSessionQuickMenu={mobileSessionQuickMenu}
             onSlashCommand={handleSlashCommand}

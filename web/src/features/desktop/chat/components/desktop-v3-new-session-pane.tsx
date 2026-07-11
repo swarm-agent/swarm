@@ -82,6 +82,8 @@ export interface DesktopV3NewSessionPaneProps {
   workspaceSlug: string
   routeOptions: DesktopChatRoute[]
   pendingWorktreeBranch?: string | null
+  initialMode?: DesktopSessionMode
+  onModeChange?: (mode: DesktopSessionMode) => void
   agentName?: string
   preference?: DesktopV3NewSessionPreference
   onOpenChats?: () => void
@@ -111,6 +113,8 @@ export function DesktopV3NewSessionPane({
   workspaceSlug,
   routeOptions,
   pendingWorktreeBranch,
+  initialMode: initialModeProp,
+  onModeChange,
   agentName: agentNameProp = '',
   preference: preferenceProp,
   onOpenChats,
@@ -139,6 +143,7 @@ export function DesktopV3NewSessionPane({
   const modelOptions = modelOptionsQuery.data ?? []
   const uiSettings = uiSettingsQuery.data
   const defaultMode = normalizeDefaultNewSessionMode(uiSettings?.chat?.default_new_session_mode)
+  const initialMode = initialModeProp ?? defaultMode
   const thinkingTagsEnabled = normalizeThinkingTagsEnabled(uiSettings)
 
   const writableRoutes = useMemo(
@@ -170,7 +175,7 @@ export function DesktopV3NewSessionPane({
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
   const [agentModelSaving, setAgentModelSaving] = useState(false)
   const [timerNow, setTimerNow] = useState(() => Date.now())
-  const [mode, setMode] = useState<DesktopSessionMode>(defaultMode)
+  const [mode, setMode] = useState<DesktopSessionMode>(initialMode)
   const [selectedAgent, setSelectedAgent] = useState(agentNameProp.trim() || agentState.activePrimary || '')
   const modeManuallySelectedRef = useRef(false)
   const agentManuallySelectedRef = useRef(false)
@@ -194,8 +199,8 @@ export function DesktopV3NewSessionPane({
 
   useEffect(() => {
     if (modeManuallySelectedRef.current) return
-    setMode(defaultMode)
-  }, [defaultMode])
+    setMode(initialMode)
+  }, [initialMode])
 
   useEffect(() => {
     const active = agentNameProp.trim() || agentState.activePrimary || ''
@@ -302,6 +307,7 @@ export function DesktopV3NewSessionPane({
   function handleModeSelect(nextMode: DesktopSessionMode) {
     modeManuallySelectedRef.current = true
     setMode(nextMode)
+    onModeChange?.(nextMode)
   }
 
   async function handleConfirmAgentSettings(input: AgentModelControlConfirmInput) {
@@ -349,9 +355,11 @@ export function DesktopV3NewSessionPane({
   useEffect(() => {
     if (modeCommand !== 'toggle-plan-auto') return
     modeManuallySelectedRef.current = true
-    setMode((current) => (current === 'plan' ? 'auto' : 'plan'))
+    const nextMode = mode === 'plan' ? 'auto' : 'plan'
+    setMode(nextMode)
+    onModeChange?.(nextMode)
     onModeCommandHandled?.()
-  }, [modeCommand, onModeCommandHandled])
+  }, [mode, modeCommand, onModeChange, onModeCommandHandled])
 
   async function handleThinkingTagsToggle(enabled: boolean) {
     if (thinkingTagsSaving) return
