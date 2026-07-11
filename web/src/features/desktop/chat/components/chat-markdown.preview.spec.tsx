@@ -184,7 +184,11 @@ function testManageSessionsUsesRelativeDesktopNavigation(): void {
     tool: "manage_sessions",
     callId: "call_manage_sessions_navigation",
     outputText: JSON.stringify({
+      action: "get",
       id: sessionId,
+      title: "Durable session title",
+      updated_at: 1783769434173,
+      state: "needs_review",
       navigation: {
         kind: "session",
         session_id: sessionId,
@@ -197,9 +201,30 @@ function testManageSessionsUsesRelativeDesktopNavigation(): void {
 
   const markup = renderToolMarkup(message!);
   assert(markup.includes(`href="${href}"`), "expected canonical relative session href");
-  assert(markup.includes(`Open session ${sessionId}`), "expected session identity in action label");
+  assert(markup.includes("Durable session title"), "expected durable title as the visible session name");
+  assert(markup.includes(sessionId), "expected session id as secondary metadata");
+  assert(markup.includes("Open session"), "expected internal session action");
+  assert(markup.includes("needs review"), "expected normalized session state");
   assert(!markup.includes("http://") && !markup.includes("https://"), "must not synthesize an absolute origin");
   assert(!markup.includes('target="_blank"'), "relative Desktop session navigation should stay internal");
+}
+
+function testManageSessionsListRendersCardsWithoutRawJson(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage-sessions",
+    callId: "call_manage_sessions_list_card",
+    argumentsText: JSON.stringify({ action: "list" }),
+    outputText: JSON.stringify({
+      action: "list",
+      has_more: true,
+      items: [{ id: "session-list-1", title: "Release readiness", message_count: 18, workspace_name: "Swarm", navigation: { session_id: "session-list-1", href: "/swarm-workspace/session-list-1" } }],
+    }),
+  });
+  assert(Boolean(message), "expected list tool message");
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("Your sessions") && markup.includes("Release readiness"), "expected list card and durable title");
+  assert(markup.includes("More available"), "expected bounded pagination affordance");
+  assert(!markup.includes("&quot;items&quot;"), "raw JSON preview must be hidden behind the card");
 }
 
 function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
@@ -264,6 +289,7 @@ function main(): void {
   testTaskTerminalTimerUsesFinalElapsed();
   testBashToolUsesDedicatedFullWidthCard();
   testManageSessionsUsesRelativeDesktopNavigation();
+  testManageSessionsListRendersCardsWithoutRawJson();
   testTaskHeaderDoesNotShiftBetweenLaunchAssignments();
   console.log("chat-markdown preview tests passed");
 }

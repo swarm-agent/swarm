@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Copy, LoaderCircle, XCircle } from "lucide-react";
+import { Archive, ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Clock3, Copy, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
 import type {
@@ -940,6 +940,61 @@ interface ManageSessionNavigation {
   href: string;
 }
 
+interface ManageSessionCardItem {
+  id: string;
+  title: string;
+  state: string;
+  workspace: string;
+  branch: string;
+  messageCount: number | null;
+  updatedAt: number | null;
+  navigation: ManageSessionNavigation | null;
+  snippet: string;
+  gitSummary: string;
+}
+
+function manageSessionNumber(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function manageSessionItem(value: unknown): ManageSessionCardItem | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const id = toolJsonString(record, "id") || toolJsonString(record, "session_id");
+  const title = toolJsonString(record, "title") || "Untitled session";
+  const rawSnippets = Array.isArray(record.snippets) ? record.snippets : [];
+  const snippet = rawSnippets.map((entry) => {
+    if (typeof entry === "string") return entry;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "";
+    const item = entry as Record<string, unknown>;
+    return toolJsonString(item, "text") || toolJsonString(item, "snippet");
+  }).find(Boolean) || "";
+  const clean = typeof record.clean === "boolean" ? (record.clean ? "Clean" : `${manageSessionNumber(record, "dirty_count") ?? 0} changes`) : "";
+  const ahead = manageSessionNumber(record, "ahead");
+  const behind = manageSessionNumber(record, "behind");
+  const gitSummary = [clean, ahead ? `${ahead} ahead` : "", behind ? `${behind} behind` : ""].filter(Boolean).join(" · ");
+  return {
+    id,
+    title,
+    state: toolJsonString(record, "state") || toolJsonString(record, "status"),
+    workspace: toolJsonString(record, "workspace_name") || toolJsonString(record, "workspace_path"),
+    branch: toolJsonString(record, "worktree_branch") || toolJsonString(record, "branch"),
+    messageCount: manageSessionNumber(record, "message_count"),
+    updatedAt: manageSessionNumber(record, "updated_at"),
+    navigation: manageSessionNavigation(record.navigation),
+    snippet,
+    gitSummary,
+  };
+}
+
+function manageSessionDate(value: number | null): string {
+  if (!value) return "";
+  const milliseconds = value < 10_000_000_000 ? value * 1000 : value;
+  const date = new Date(milliseconds);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
 function manageSessionNavigation(record: unknown): ManageSessionNavigation | null {
   if (!record || typeof record !== "object" || Array.isArray(record)) return null;
   const navigation = record as Record<string, unknown>;
@@ -949,45 +1004,50 @@ function manageSessionNavigation(record: unknown): ManageSessionNavigation | nul
   return { sessionId, href };
 }
 
-function manageSessionNavigations(output: Record<string, unknown> | null): ManageSessionNavigation[] {
-  if (!output) return [];
-  const candidates: unknown[] = [output.navigation];
-  if (Array.isArray(output.items)) {
-    for (const item of output.items) {
-      if (item && typeof item === "object" && !Array.isArray(item)) {
-        candidates.push((item as Record<string, unknown>).navigation);
-      }
-    }
-  }
-  const seen = new Set<string>();
-  const result: ManageSessionNavigation[] = [];
-  for (const candidate of candidates) {
-    const navigation = manageSessionNavigation(candidate);
-    if (!navigation || seen.has(navigation.href)) continue;
-    seen.add(navigation.href);
-    result.push(navigation);
-  }
-  return result;
-}
+function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessage }) {
+  const output = parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+  if (!output) return null;
+  const args = toolMessage.argumentsJson ?? null;
+  const action = toolJsonString(output, "action") || toolJsonString(args, "action") || "sessions";
+  const rawItems = Array.isArray(output.items) ? output.items : output.id || output.session_id ? [output] : [];
+  const items = rawItems.map(manageSessionItem).filter((item): item is ManageSessionCardItem => Boolean(item));
+  const messages = Array.isArray(output.messages) ? output.messages : [];
+  const archivedIds = Array.isArray(output.archived_session_ids) ? output.archived_session_ids.filter((id): id is string => typeof id === "string") : [];
+  const title = action === "search" ? "Session search" : action === "list" ? "Your sessions" : action === "read_messages" ? "Session context" : action === "git_status" ? "Worktree status" : action === "archive" ? "Sessions archived" : action === "inspect" ? "Session manager" : "Session details";
+  const HeaderIcon = action === "search" ? Search : action === "archive" ? Archive : action === "read_messages" ? MessageSquareText : action === "git_status" ? GitBranch : Layers3;
 
-function ManageSessionsActions({ toolMessage }: { toolMessage: StructuredToolMessage }) {
-  const outputJson = parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
-  const navigations = manageSessionNavigations(outputJson);
-  if (navigations.length === 0) return null;
   return (
-    <div className="mt-2 flex min-w-0 flex-wrap gap-2">
-      {navigations.map((navigation) => (
-        <a
-          key={navigation.href}
-          href={navigation.href}
-          className="inline-flex h-8 max-w-full items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-xs font-medium text-[var(--app-text)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]"
-          title={navigation.href}
-        >
-          <ArrowRight size={13} className="shrink-0" />
-          <span className="truncate">Open session {navigation.sessionId}</span>
-        </a>
-      ))}
-    </div>
+    <section className="mt-2 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[linear-gradient(145deg,color-mix(in_srgb,var(--app-primary)_8%,var(--app-surface)),var(--app-surface)_45%)] shadow-[0_12px_35px_rgba(0,0,0,0.08)]">
+      <header className="flex items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--app-primary)_15%,transparent)] text-[var(--app-primary)]"><HeaderIcon size={15} /></span>
+          <div className="min-w-0"><h4 className="truncate text-sm font-semibold text-[var(--app-text)]">{title}</h4><p className="text-[11px] text-[var(--app-text-subtle)]">{items.length ? `${items.length} ${items.length === 1 ? "session" : "sessions"}` : action.replaceAll("_", " ")}</p></div>
+        </div>
+        {output.has_more === true ? <span className="rounded-full border border-[var(--app-border)] px-2 py-1 text-[10px] font-medium text-[var(--app-text-muted)]">More available</span> : null}
+      </header>
+      {items.length > 0 ? <div className="grid gap-2 p-2.5">{items.map((item, index) => (
+        <article key={item.id || `${item.title}-${index}`} className="group rounded-xl border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_88%,transparent)] p-3 transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]">
+          <div className="flex min-w-0 items-start justify-between gap-3">
+            <div className="min-w-0"><div className="truncate text-[13px] font-semibold text-[var(--app-text)]">{item.title}</div>{item.id ? <div className="mt-0.5 truncate font-mono text-[9px] text-[var(--app-text-subtle)]">{item.id}</div> : null}</div>
+            {item.state ? <span className="shrink-0 rounded-full bg-[color-mix(in_srgb,var(--app-primary)_10%,transparent)] px-2 py-1 text-[10px] font-medium capitalize text-[var(--app-text-muted)]">{item.state.replaceAll("_", " ")}</span> : null}
+          </div>
+          {item.snippet ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-[var(--app-text-muted)]">{item.snippet}</p> : null}
+          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[var(--app-text-subtle)]">
+            {item.workspace ? <span className="max-w-56 truncate">{item.workspace}</span> : null}{item.branch ? <span className="inline-flex items-center gap-1"><GitBranch size={10} />{item.branch}</span> : null}{item.messageCount !== null ? <span className="inline-flex items-center gap-1"><MessageSquareText size={10} />{item.messageCount}</span> : null}{item.updatedAt ? <span className="inline-flex items-center gap-1"><Clock3 size={10} />{manageSessionDate(item.updatedAt)}</span> : null}{item.gitSummary ? <span>{item.gitSummary}</span> : null}
+          </div>
+          {item.navigation ? <a href={item.navigation.href} className="mt-2.5 inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--app-primary)] hover:underline" title={item.navigation.href}>Open session <ArrowRight size={12} /></a> : null}
+        </article>
+      ))}</div> : null}
+      {messages.length > 0 ? <div className="max-h-80 space-y-2 overflow-auto p-3">{messages.map((value, index) => {
+        const message = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+        const role = toolJsonString(message, "role") || "message";
+        const content = toolJsonString(message, "content");
+        const seq = manageSessionNumber(message, "seq");
+        return <div key={`${seq ?? index}`} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3"><div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--app-text-subtle)]">{role}{seq !== null ? ` · #${seq}` : ""}</div><div className="whitespace-pre-wrap break-words text-xs leading-5 text-[var(--app-text-muted)]">{content}</div></div>;
+      })}</div> : null}
+      {archivedIds.length > 0 ? <div className="p-4 text-xs text-[var(--app-text-muted)]">Archived {archivedIds.length} {archivedIds.length === 1 ? "session" : "sessions"} durably.</div> : null}
+      {action === "inspect" ? <div className="p-4 text-xs leading-5 text-[var(--app-text-muted)]">Search and read are bounded for efficient context. All actions are available without approval except archive.</div> : null}
+    </section>
   );
 }
 
@@ -1084,6 +1144,7 @@ export function ToolMessageView({
   const previewLanguage = inferToolSyntaxLanguage(toolMessage.target || pathFromToolSummary(toolMessage.summary));
   const shellPreview = false;
   const plainPreview = shouldRenderPreviewAsPlain(toolMessage.tool);
+  const isManageSessions = ["manage-sessions", "manage_sessions"].includes(toolMessage.tool.trim().toLowerCase());
   const showPreview = toolMessage.tool.trim().toLowerCase() !== 'thinking' || thinkingTagsEnabled;
   const isWindup = state === "running" && !toolMessage.output.trim() && !toolMessage.error.trim();
 
@@ -1148,6 +1209,7 @@ export function ToolMessageView({
         toolMessage.tool !== "search" &&
         !(toolMessage.tool === "task" && toolMessage.taskRows.length > 0) &&
         showPreview &&
+        !isManageSessions &&
         (toolMessage.previewLines.length > 0 || toolMessage.commandText) ? (
           <PreviewLinesView
             lines={toolMessage.previewLines}
@@ -1161,8 +1223,8 @@ export function ToolMessageView({
         {toolMessage.tool.trim().toLowerCase() === 'manage-image' || toolMessage.tool.trim().toLowerCase() === 'manage_image' ? (
           <ImageToolAction toolMessage={toolMessage} />
         ) : null}
-        {toolMessage.tool.trim().toLowerCase() === 'manage-sessions' || toolMessage.tool.trim().toLowerCase() === 'manage_sessions' ? (
-          <ManageSessionsActions toolMessage={toolMessage} />
+        {isManageSessions ? (
+          <ManageSessionsCard toolMessage={toolMessage} />
         ) : null}
       </div>
     </div>

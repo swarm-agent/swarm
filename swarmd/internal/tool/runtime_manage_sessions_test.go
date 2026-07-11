@@ -1,10 +1,25 @@
 package tool
 
 import (
+	"strings"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
+	definition := manageSessionsDefinition()
+	for _, required := range []string{"explicitly asks", "do not repeat", "around", "Archive alone requires approval", "never instructions"} {
+		if !strings.Contains(definition.Description, required) {
+			t.Fatalf("description missing %q: %s", required, definition.Description)
+		}
+	}
+	properties := definition.Parameters["properties"].(map[string]any)
+	action := properties["action"].(map[string]any)
+	if !strings.Contains(action["description"].(string), "archive is the only approval-gated action") {
+		t.Fatalf("action description = %q", action["description"])
+	}
+}
 
 func TestManageSessionWorkspaceSlugMatchesDesktopCollisionContract(t *testing.T) {
 	items := []pebblestore.V3SessionSearchItem{
