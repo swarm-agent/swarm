@@ -19,6 +19,8 @@ const (
 
 	IntegrationBuilderAgentID   = "integration-builder"
 	IntegrationBuilderAgentName = "Integration Builder"
+	PlanReviewAgentID           = "plan-review-agent"
+	PlanReviewAgentName         = "Plan Agent"
 )
 
 func IntegrationBuilderPrompt() string {
@@ -53,6 +55,32 @@ func IntegrationBuilderToolContract() *pebblestore.AgentToolContract {
 			"exit_plan_mode":      {Enabled: pebblestore.BoolPtr(false)},
 		},
 	}
+}
+
+func PlanReviewAgentPrompt() string {
+	return strings.TrimSpace("You are Plan Agent, a read-only plan review sidecar. Explain the immutable plan context supplied with this session, answer questions about objectives and checkpoints, and draft concise rejection feedback when requested. Never approve or deny permissions, mutate plans, launch agents, run commands, or change workspace files. A rejection draft is advisory until the user explicitly sends it to Swarm.")
+}
+
+func IsPlanReviewAgentName(name string) bool {
+	switch normalizeName(name) {
+	case PlanReviewAgentID, "plan_review_agent", "plan review agent", "plan agent":
+		return true
+	default:
+		return false
+	}
+}
+
+func PlanReviewAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{
+		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+		"write": {Enabled: pebblestore.BoolPtr(false)}, "edit": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)},
+		"task": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)}, "ask_user": {Enabled: pebblestore.BoolPtr(false)},
+		"exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)}, "manage-agent": {Enabled: pebblestore.BoolPtr(false)},
+	}}
+}
+
+func PlanReviewAgentProfile() pebblestore.AgentProfile {
+	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{Name: PlanReviewAgentID, Mode: ModeSubagent, Description: "Hidden transient plan review sidecar", Prompt: PlanReviewAgentPrompt(), ExecutionSetting: pebblestore.AgentExecutionSettingRead, ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: PlanReviewAgentToolContract(), Enabled: true})
 }
 
 func IntegrationBuilderProfile() pebblestore.AgentProfile {
@@ -1253,7 +1281,7 @@ func (s *Service) getProfileForAccount(accountScopeID, name string) (pebblestore
 	if name == "" {
 		return pebblestore.AgentProfile{}, false, errors.New("agent name is required")
 	}
-	if IsIntegrationBuilderAgentName(name) {
+	if IsIntegrationBuilderAgentName(name) || IsPlanReviewAgentName(name) {
 		return pebblestore.AgentProfile{}, false, nil
 	}
 	return s.getProfileForAccountLocked(accountScopeID, name)
@@ -1281,6 +1309,9 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 	}
 	if IsIntegrationBuilderAgentName(profile.Name) {
 		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is reserved for the transient integration builder", profile.Name)
+	}
+	if IsPlanReviewAgentName(profile.Name) {
+		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is reserved for plan review sidecars", profile.Name)
 	}
 	existing, ok, err := s.getProfileForAccountLocked(accountScopeID, profile.Name)
 	if err != nil {
@@ -1489,7 +1520,7 @@ func (s *Service) deleteForAccount(accountScopeID, name string) (DeleteResult, i
 	if name == "" {
 		return DeleteResult{}, 0, nil, errors.New("agent name is required")
 	}
-	if IsIntegrationBuilderAgentName(name) {
+	if IsIntegrationBuilderAgentName(name) || IsPlanReviewAgentName(name) {
 		return DeleteResult{}, 0, nil, fmt.Errorf("agent %q is transient and cannot be deleted", name)
 	}
 	if name == "memory" {
@@ -1993,6 +2024,13 @@ func (s *Service) ResolveAgentForAccount(accountScopeID, name string) (pebblesto
 	return s.resolveProfileForAccount(accountScopeID, name)
 }
 
+func (s *Service) ResolvePlanReviewAgent(name string) (pebblestore.AgentProfile, error) {
+	if !IsPlanReviewAgentName(name) {
+		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q is not the plan review agent", strings.TrimSpace(name))
+	}
+	return PlanReviewAgentProfile(), nil
+}
+
 func (s *Service) ResolveIntegrationBuilderAgent(name string) (pebblestore.AgentProfile, error) {
 	if !IsIntegrationBuilderAgentName(name) {
 		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q is not the integration builder", strings.TrimSpace(name))
@@ -2018,7 +2056,7 @@ func (s *Service) resolveProfileForAccount(accountScopeID, name string) (pebbles
 	if name == "" {
 		name = "swarm"
 	}
-	if IsIntegrationBuilderAgentName(name) {
+	if IsIntegrationBuilderAgentName(name) || IsPlanReviewAgentName(name) {
 		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q not found", name)
 	}
 	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, name)

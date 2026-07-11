@@ -1962,6 +1962,37 @@ export async function compactSessionV3(
   return mapV3CompactResponse(await response.json() as V3CompactResponseWire);
 }
 
+export async function createPlanReviewSidecar(input: {
+  parentSessionId: string;
+  permissionId: string;
+  planId: string;
+  planRevision: number;
+  plan: unknown;
+}): Promise<{ sessionId: string; replayed: boolean }> {
+  const parentSessionId = input.parentSessionId.trim();
+  const permissionId = input.permissionId.trim();
+  const planId = input.planId.trim();
+  if (!parentSessionId || !permissionId || !planId || input.planRevision <= 0) {
+    throw new Error("Plan review sidecar requires a parent session, permission, plan, and positive revision.");
+  }
+  const response = await requestJson<{ session_id?: string; replayed?: boolean }>(
+    `/v3/sessions/${encodeURIComponent(parentSessionId)}/plan-review-sidecar`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        permission_id: permissionId,
+        plan_id: planId,
+        plan_revision: input.planRevision,
+        plan: input.plan,
+      }),
+    },
+  );
+  const sessionId = String(response.session_id ?? "").trim();
+  if (!sessionId) throw new Error("Plan review sidecar did not return a session id.");
+  return { sessionId, replayed: response.replayed === true };
+}
+
 export async function sendSessionMessage(
   sessionId: string,
   role: "user" | "assistant" | "system" | "tool" | "reasoning",

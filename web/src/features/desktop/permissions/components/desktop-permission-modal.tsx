@@ -787,16 +787,7 @@ function ExitPlanCheckpointList({ document }: { document: StructuredPlanDocument
 }
 
 function ExitPlanDocumentView({ document }: { document: StructuredPlanDocument }) {
-  return (
-    <div className="grid min-h-0 gap-6">
-      <div className="min-w-0">
-        <ExitPlanDetails document={document} />
-      </div>
-      <div className="min-w-0 border-t border-[var(--app-border)] pt-6">
-        <ExitPlanCheckpointList document={document} />
-      </div>
-    </div>
-  )
+  return <StructuredPlanDocumentView document={document} review />
 }
 
 export function exitPlanExecutionArguments(pauseForReview: boolean): {
@@ -1188,7 +1179,7 @@ function PlanUpdateReview({
   )
 }
 
-function planLifecycleApprovedArguments(payload: PlanUpdatePayload, fallbackAction: string): Record<string, unknown> {
+export function planLifecycleApprovedArguments(payload: PlanUpdatePayload, fallbackAction: string): Record<string, unknown> {
   if (Object.keys(payload.approvedArguments).length > 0) {
     return payload.approvedArguments
   }

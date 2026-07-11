@@ -23,6 +23,7 @@ import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import { Select } from '../../../../components/ui/select'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
+import { StructuredPlanDocumentView, normalizeStructuredPlanDocument } from './structured-plan-document'
 import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 
 interface DesktopPlanModalProps {
@@ -554,30 +555,14 @@ function CheckpointList({ document, checkpoints = document.checkpoints, title = 
 }
 
 function PlanModalDocumentView({ document, emptyText, recoveryControls }: { document: DesktopSessionPlanDocument | null; emptyText: string; recoveryControls?: React.ReactNode }) {
-  if (!document) {
+  const structuredDocument = normalizeStructuredPlanDocument(document)
+  if (!structuredDocument) {
     return <section className="rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-5 text-sm text-[var(--app-text-muted)]">{emptyText}</section>
   }
   return (
-    <div className="grid min-h-0 gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-5">
+    <div className="grid min-h-0 gap-4">
       {recoveryControls}
-      <PlanDetails document={document} />
-      {document.originalCheckpoints.length > 0 ? (
-        <div className="border-t border-[var(--app-border)] pt-5">
-          <CheckpointList
-            document={document}
-            checkpoints={document.originalCheckpoints}
-            title="Original checkpoint plan"
-            description="Preserved approved checkpoint boundaries before single-run execution."
-          />
-        </div>
-      ) : null}
-      <div className="border-t border-[var(--app-border)] pt-5">
-        <CheckpointList
-          document={document}
-          title={document.originalCheckpoints.length > 0 ? 'Execution checkpoint' : 'Checkpoints'}
-          description={document.originalCheckpoints.length > 0 ? 'Single-run execution state; the original checkpoint plan above remains preserved for /plan.' : undefined}
-        />
-      </div>
+      <StructuredPlanDocumentView document={structuredDocument} review />
     </div>
   )
 }

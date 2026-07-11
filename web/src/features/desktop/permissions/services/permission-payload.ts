@@ -591,6 +591,19 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
   }
 }
 
+const PLAN_PROPOSAL_PERMISSION_KINDS: ReadonlySet<DesktopPermissionKind> = new Set([
+  'exit-plan',
+  'plan-update',
+  'plan-followup-request',
+  'plan-revision-request',
+  'plan-amendment-request',
+  'plan-new-request',
+])
+
+export function isPlanProposalPermission(permission: DesktopPermissionRecord): boolean {
+  return PLAN_PROPOSAL_PERMISSION_KINDS.has(permissionKind(permission))
+}
+
 export function permissionDisplayToolName(raw: unknown): string {
   const normalized = normalizePermissionToolName(raw)
   if (!normalized) {

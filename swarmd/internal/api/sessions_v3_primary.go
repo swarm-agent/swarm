@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -297,6 +298,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryActivePlan(w, r, principal, sessionID)
 	case "permissions":
 		s.handleSessionV3PrimaryPermissions(w, r, principal, sessionID)
+	case "plan-review-sidecar":
+		s.handleSessionV3PlanReviewSidecar(w, r, principal, sessionID)
 	case "permissions/resolve_all":
 		s.handleSessionV3PrimaryPermissionResolveAll(w, r, principal, sessionID)
 	default:
@@ -319,6 +322,91 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		}
 		writeError(w, http.StatusBadRequest, errors.New("unknown sessions v3 path"))
 	}
+}
+
+func (s *Server) handleSessionV3PlanReviewSidecar(w http.ResponseWriter, r *http.Request, principal identity.Principal, parentSessionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	parent, ok, err := s.requireSessionV3Access(principal, parentSessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !ok {
+		writeSessionNotFound(w)
+		return
+	}
+	var req struct {
+		PermissionID string          `json:"permission_id"`
+		PlanID       string          `json:"plan_id"`
+		PlanRevision int64           `json:"plan_revision"`
+		Plan         json.RawMessage `json:"plan"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.PermissionID, req.PlanID = strings.TrimSpace(req.PermissionID), strings.TrimSpace(req.PlanID)
+	if req.PermissionID == "" || req.PlanID == "" || req.PlanRevision <= 0 || len(req.Plan) == 0 || !json.Valid(req.Plan) {
+		writeError(w, http.StatusBadRequest, errors.New("permission_id, plan_id, positive plan_revision, and valid plan are required"))
+		return
+	}
+	permissions, err := s.perm.ListPermissions(parentSessionID, 1000)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	bound := false
+	for _, record := range permissions {
+		toolName := strings.TrimSpace(record.ToolName)
+		if strings.TrimSpace(record.ID) == req.PermissionID && strings.TrimSpace(record.Status) == pebblestore.PermissionStatusPending && (toolName == "exit_plan_mode" || toolName == "plan_manage") {
+			bound = true
+			break
+		}
+	}
+	if !bound {
+		writeError(w, http.StatusBadRequest, errors.New("permission does not belong to parent session"))
+		return
+	}
+	binding := parentSessionID + "\x00" + req.PermissionID + "\x00" + req.PlanID + "\x00" + strconv.FormatInt(req.PlanRevision, 10)
+	sum := sha256.Sum256([]byte(binding))
+	sidecarID := "plan-review-" + hex.EncodeToString(sum[:16])
+	clientRequestID := "plan-review-sidecar:" + hex.EncodeToString(sum[:])
+	profile, err := s.agents.ResolvePlanReviewAgent(agentruntime.PlanReviewAgentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	metadata := cloneSessionsV3Metadata(parent.Metadata)
+	if metadata == nil {
+		metadata = make(map[string]any)
+	}
+	metadata["agent_name"], metadata["resolved_agent_name"], metadata["agent_mode"] = profile.Name, profile.Name, profile.Mode
+	metadata["runtime_mode"], metadata["exit_plan_mode_enabled"], metadata["agent_profile"] = profile.RuntimeMode, false, profile
+	metadata["parent_session_id"], metadata["lineage_kind"] = parentSessionID, "plan_review_sidecar"
+	metadata["presentation_kind"], metadata["navigation_hidden"], metadata["transient"] = "plan_review_sidecar", true, true
+	metadata["plan_permission_id"], metadata["plan_id"], metadata["plan_revision"] = req.PermissionID, req.PlanID, req.PlanRevision
+	metadata["immutable_plan_context"] = json.RawMessage(append([]byte(nil), req.Plan...))
+	now := time.Now().UnixMilli()
+	sidecar := pebblestore.SessionSnapshot{ID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: parent.WorkspacePath, WorkspaceName: parent.WorkspaceName, Title: "Plan review", Mode: sessionruntime.ModeAuto, Preference: parent.Preference, Metadata: metadata, CreatedAt: now, UpdatedAt: now}
+	payload, _ := json.Marshal(struct {
+		Parent, Permission, Plan string
+		Revision                 int64
+		Context                  json.RawMessage
+	}{parentSessionID, req.PermissionID, req.PlanID, req.PlanRevision, req.Plan})
+	payloadSum := sha256.Sum256(payload)
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: hex.EncodeToString(payloadSum[:]), RequestHash: hex.EncodeToString(payloadSum[:]), Kind: sessionruntime.SessionMutationCreateSession, Session: &sidecar, NowUnixMs: now})
+	if err != nil {
+		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sidecarID, "parent_session_id": parentSessionID, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "replayed": result.Replayed})
 }
 
 func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Request, principal identity.Principal) {

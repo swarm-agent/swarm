@@ -10,6 +10,7 @@ import {
   Circle,
   PlayCircle,
   ListTodo,
+  ChevronRight,
   type LucideIcon
 } from 'lucide-react'
 
@@ -106,6 +107,39 @@ export interface StructuredPlanDocument {
   activeCheckpointId: string
   renderedText: string
   displayText: string
+}
+
+export interface StructuredPlanReviewCheckpoint {
+  id: string
+  order: number
+  title: string
+  objective: string
+  tasks: string[]
+  acceptanceCriteria: string[]
+}
+
+export interface StructuredPlanReviewProjection {
+  title: string
+  objective: string
+  checkpoints: StructuredPlanReviewCheckpoint[]
+  /** The unabridged normalized document remains the authority for expansion and agent context. */
+  authoritativeDocument: StructuredPlanDocument
+}
+
+export function structuredPlanReviewProjection(document: StructuredPlanDocument): StructuredPlanReviewProjection {
+  return {
+    title: document.title || document.info.goal || 'Plan proposal',
+    objective: document.info.goal || document.title,
+    checkpoints: document.checkpoints.map((checkpoint) => ({
+      id: checkpoint.id,
+      order: checkpoint.order,
+      title: checkpoint.title || checkpoint.objective || checkpoint.id || 'Untitled checkpoint',
+      objective: checkpoint.objective,
+      tasks: checkpoint.tasks,
+      acceptanceCriteria: checkpoint.acceptanceCriteria,
+    })),
+    authoritativeDocument: document,
+  }
 }
 
 function objectValue(value: unknown): Record<string, unknown> | null {
@@ -618,16 +652,53 @@ function CheckpointsList({ document, activeID }: { document: StructuredPlanDocum
   )
 }
 
+export function StructuredPlanReviewView({ document, className }: { document: StructuredPlanDocument; className?: string }) {
+  const review = structuredPlanReviewProjection(document)
+  return (
+    <div className={cn('grid gap-4', className)}>
+      <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4 sm:p-5">
+        <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Objective</div>
+        <h3 className="mt-1 text-lg font-semibold text-[var(--app-text)]">{review.title}</h3>
+        {review.objective && review.objective !== review.title ? (
+          <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--app-text)]">{review.objective}</p>
+        ) : null}
+      </section>
+      <section className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)]">
+        <div className="flex items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
+          <div className="flex items-center gap-2"><ListTodo className="size-4 text-[var(--app-primary)]" /><h3 className="font-semibold text-[var(--app-text)]">Checkpoints</h3></div>
+          <span className="text-xs text-[var(--app-text-muted)]">{review.checkpoints.length}</span>
+        </div>
+        {review.checkpoints.length ? review.checkpoints.map((checkpoint, index) => (
+          <details key={checkpoint.id || `${checkpoint.order}:${checkpoint.title}`} className="group border-b border-[var(--app-border)] last:border-b-0">
+            <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-focus-ring)]">
+              <Circle className="size-4 shrink-0 text-[var(--app-text-muted)]" />
+              <span className="min-w-0 flex-1 text-sm font-medium text-[var(--app-text)]"><span className="mr-1.5 text-[var(--app-text-muted)]">{index + 1}.</span>{checkpoint.title}</span>
+              <ChevronRight className="size-4 shrink-0 text-[var(--app-text-muted)] transition-transform group-open:rotate-90" />
+            </summary>
+            <div className="grid gap-3 px-4 pb-4 pl-11">
+              <CheckpointTextSection title="Objective" value={checkpoint.objective} />
+              <CheckpointSection title="Tasks" values={checkpoint.tasks} />
+              <CheckpointSection title="Acceptance" values={checkpoint.acceptanceCriteria} />
+            </div>
+          </details>
+        )) : <p className="px-4 py-4 text-sm text-[var(--app-text-muted)]">No checkpoints are defined.</p>}
+      </section>
+    </div>
+  )
+}
+
 export function StructuredPlanDocumentView({
   document,
   emptyText = 'No structured plan document was provided.',
   className,
   compact = false,
+  review = false,
 }: {
   document: StructuredPlanDocument | null
   emptyText?: string
   className?: string
   compact?: boolean
+  review?: boolean
 }) {
   if (!document) {
     return (
@@ -638,6 +709,10 @@ export function StructuredPlanDocumentView({
   }
 
   const activeID = document.activeCheckpointId.trim()
+
+  if (review) {
+    return <StructuredPlanReviewView document={document} className={className} />
+  }
 
   if (compact) {
     return (

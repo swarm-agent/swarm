@@ -485,3 +485,9 @@ The finished architecture must enforce all of the following:
 - No fallback from active plan to a newly-created plan unless the endpoint contract explicitly creates one.
 - No legacy route/proxy fallback for plan lifecycle execution; backend must start local V3 execution through the primary V3 lifecycle/run path or fail clearly.
 - No prompt/system-message changes except preserving existing reentry and plan execution lifecycle messages through the new service.
+
+## Desktop proposal review and Plan Agent sidecar
+
+Approval-gated `exit_plan_mode` and plan proposal/revision/amendment/follow-up permissions render inline in the Desktop conversation. They use the shared structured-plan review projection: objective first, independently collapsed checkpoint rows, and tasks plus acceptance criteria on expansion. Ordinary tool permissions remain modal, and active execution lifecycle cards remain separate.
+
+`POST /v3/sessions/{parent_session_id}/plan-review-sidecar` creates or replays a durable sidecar bound to the pending permission, plan ID, and revision. The sidecar uses the reserved `plan-review-agent` profile, is hidden from normal session navigation and agent selection, and has read/search/list access only; write, edit, shell, delegation, plan mutation, and permission-resolution tools are explicitly disabled. Its plan context is stored with the session binding. Plan Agent output is advisory: only the Desktop user's explicit **Send changes to Swarm** action denies the parent permission with the edited draft as its reason. Direct Approve and Deny controls remain on the inline card.

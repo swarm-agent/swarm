@@ -8,6 +8,7 @@ import {
   buildPlanUpdateDiffPreview,
   parseTaskLaunchPermission,
   permissionKind,
+  isPlanProposalPermission,
   permissionRequiresApproval,
   buildGenericPermissionMarkdown,
 } from './permission-payload'
@@ -319,6 +320,22 @@ function testTypedPlanLifecycleKindAndPayloadParsing(): void {
   assert(((newPlanPayload.approvedArguments.document as { checkpoints?: Array<{ id?: string }> })?.checkpoints?.[0]?.id ?? '') === 'cp-new', 'expected approved arguments to preserve document')
 }
 
+function testPlanProposalClassifierCoversOnlyApprovalCards(): void {
+  const proposalCases: Array<[string, string]> = [
+    ['exit_plan_mode', 'permission'],
+    ['plan_manage', 'plan_update'],
+    ['plan_manage', 'plan_followup_request'],
+    ['plan_manage', 'plan_revision_request'],
+    ['plan_manage', 'plan_amendment_request'],
+    ['plan_manage', 'plan_new_request'],
+  ]
+  for (const [toolName, requirement] of proposalCases) {
+    assert(isPlanProposalPermission(makePermission({ toolName, requirement })), `expected ${requirement} inline plan proposal`)
+  }
+  assert(!isPlanProposalPermission(makePermission({ toolName: 'bash', requirement: 'permission' })), 'expected bash permission to remain modal')
+  assert(!isPlanProposalPermission(makePermission({ toolName: 'ask_user', requirement: 'permission' })), 'expected ask-user permission to remain modal')
+}
+
 function testPlanUpdateKindAndPayloadParsing(): void {
   const permission = makePermission({
     toolName: 'plan_manage',
@@ -600,6 +617,7 @@ function main(): void {
   testTaskLaunchPayloadParsing()
   testManageTodosKindAndPayloadParsing()
   testTypedPlanLifecycleKindAndPayloadParsing()
+  testPlanProposalClassifierCoversOnlyApprovalCards()
   testPlanUpdateKindAndPayloadParsing()
   testPlanAmendmentParsesDeltaAndApprovalArguments()
   testPlanUpdateParsesStructuredDocument()

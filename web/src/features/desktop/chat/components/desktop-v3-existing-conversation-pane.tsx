@@ -126,7 +126,11 @@ import {
 } from "../queries/agent-preference-mutations";
 import type { AgentModelControlConfirmInput } from "./agent-model-control";
 import { DesktopPermissionModal } from "../../permissions/components/desktop-permission-modal";
-import { permissionRequiresApproval } from "../../permissions/services/permission-payload";
+import {
+  isPlanProposalPermission,
+  permissionRequiresApproval,
+} from "../../permissions/services/permission-payload";
+import { DesktopInlinePlanReviewCard } from "./desktop-inline-plan-review-card";
 import {
   DesktopPlanExecutionSidebar,
   type DesktopPlanExecutionSidebarActionInput,
@@ -1005,7 +1009,8 @@ function buildDesktopV3PlanFinalHandoffItem(
   message: MessageSnapshot,
 ): Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }> {
   const lines = message.content.split(/\r?\n/);
-  const headline = lines.find((line) => line.trim())?.trim() || "Final checkpoint handoff";
+  const headline =
+    lines.find((line) => line.trim())?.trim() || "Final checkpoint handoff";
   const headlineIndex = lines.findIndex((line) => line.trim());
   const bodyLines = headlineIndex >= 0 ? lines.slice(headlineIndex + 1) : [];
   const body = bodyLines.join("\n").trim() || message.content.trim();
@@ -1114,11 +1119,11 @@ export function buildDesktopV3ConversationRenderItems(
           : isDesktopV3PlanBlockedHandoffMessage(message)
             ? buildDesktopV3PlanBlockedHandoffItem(message)
             : {
-              type: "message" as const,
-              message,
-              timelineSeq: message.global_seq,
-              renderKey: committedToolRenderKey(message) || undefined,
-            },
+                type: "message" as const,
+                message,
+                timelineSeq: message.global_seq,
+                renderKey: committedToolRenderKey(message) || undefined,
+              },
     ),
     ...renderedMessages.pendingUser.map((message) => ({
       type: "pending-user" as const,
@@ -1276,7 +1281,13 @@ export function DesktopV3ExistingConversationPane({
     selectPendingPermissionsForSession,
     pendingPermissionsEqual,
   );
-  const selectedPermission = pendingPermissions[0] ?? null;
+  const pendingPlanPermissions = pendingPermissions.filter(
+    isPlanProposalPermission,
+  );
+  const pendingModalPermissions = pendingPermissions.filter(
+    (permission) => !isPlanProposalPermission(permission),
+  );
+  const selectedPermission = pendingModalPermissions[0] ?? null;
   const currentRun =
     renderedMessages.liveRuns.find(
       (run) => run.status === "running" || run.status === "pending_executor",
@@ -2105,14 +2116,13 @@ export function DesktopV3ExistingConversationPane({
     }
   }
 
-  async function handleResolvePermission(
+  async function resolvePermission(
+    permission: DesktopPermissionRecord,
     action:
       "approve" | "deny" | "approve_always" | "always_allow" | "always_deny",
     reason: string,
     approvedArguments?: Record<string, unknown>,
   ) {
-    const permission = selectedPermission;
-    if (!permission) return;
     const resolved = await resolveSessionPermission(
       permission.sessionId,
       permission.id,
@@ -2150,6 +2160,21 @@ export function DesktopV3ExistingConversationPane({
         }
       }
     }
+  }
+
+  async function handleResolvePermission(
+    action:
+      "approve" | "deny" | "approve_always" | "always_allow" | "always_deny",
+    reason: string,
+    approvedArguments?: Record<string, unknown>,
+  ) {
+    if (!selectedPermission) return;
+    await resolvePermission(
+      selectedPermission,
+      action,
+      reason,
+      approvedArguments,
+    );
   }
 
   const planExecutionActionRef = useRef(handlePlanExecutionAction);
@@ -2299,6 +2324,16 @@ export function DesktopV3ExistingConversationPane({
                     </div>
                   );
                 })}
+                {pendingPlanPermissions.map((permission, index) => (
+                  <DesktopInlinePlanReviewCard
+                    key={permission.id}
+                    permission={permission}
+                    parentSessionId={normalizedSessionId}
+                    pendingPosition={index + 1}
+                    pendingCount={pendingPlanPermissions.length}
+                    onResolve={resolvePermission}
+                  />
+                ))}
                 <div aria-hidden="true" />
               </div>
             </div>
@@ -2384,7 +2419,7 @@ export function DesktopV3ExistingConversationPane({
         key={`permission:${normalizedSessionId}`}
         open={Boolean(selectedPermission)}
         permission={selectedPermission}
-        pendingCount={pendingPermissions.length}
+        pendingCount={pendingModalPermissions.length}
         sessionMode={sessionMode}
         onOpenChange={() => undefined}
         onResolve={handleResolvePermission}
@@ -2500,7 +2535,10 @@ function DesktopV3PlanHandoff({
   icon,
   testId,
 }: {
-  item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" | "plan-blocked-handoff" }>;
+  item: Extract<
+    DesktopV3RenderItem,
+    { type: "plan-final-handoff" | "plan-blocked-handoff" }
+  >;
   icon: ReactNode;
   testId: string;
 }) {

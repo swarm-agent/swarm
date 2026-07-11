@@ -876,7 +876,7 @@ func (s *Service) ListSessions(limit int) ([]pebblestore.SessionSnapshot, error)
 	if err != nil {
 		return nil, err
 	}
-	normalizeSessionListModes(sessions)
+	sessions = normalizeVisibleSessionList(sessions)
 	return sessions, nil
 }
 
@@ -892,7 +892,7 @@ func (s *Service) ListSessionsForAccount(accountScopeID string, limit int) ([]pe
 	if err != nil {
 		return nil, err
 	}
-	normalizeSessionListModes(sessions)
+	sessions = normalizeVisibleSessionList(sessions)
 	return sessions, nil
 }
 
@@ -901,7 +901,7 @@ func (s *Service) ListSessionsForPath(path string, limit int) ([]pebblestore.Ses
 	if err != nil {
 		return nil, err
 	}
-	normalizeSessionListModes(sessions)
+	sessions = normalizeVisibleSessionList(sessions)
 	return sessions, nil
 }
 
@@ -910,7 +910,7 @@ func (s *Service) ListSessionsForAccountPath(accountScopeID, path string, limit 
 	if err != nil {
 		return nil, err
 	}
-	normalizeSessionListModes(sessions)
+	sessions = normalizeVisibleSessionList(sessions)
 	return sessions, nil
 }
 
@@ -919,7 +919,7 @@ func (s *Service) ListSessionsForScope(scopePath string, limit int) ([]pebblesto
 	if err != nil {
 		return nil, err
 	}
-	normalizeSessionListModes(sessions)
+	sessions = normalizeVisibleSessionList(sessions)
 	return sessions, nil
 }
 
@@ -928,7 +928,7 @@ func (s *Service) ListSessionsForAccountScope(accountScopeID, scopePath string, 
 	if err != nil {
 		return nil, err
 	}
-	normalizeSessionListModes(sessions)
+	sessions = normalizeVisibleSessionList(sessions)
 	return sessions, nil
 }
 
@@ -937,8 +937,20 @@ func (s *Service) ListSessionsForAccountWorkspaceBindings(accountScopeID, source
 	if err != nil {
 		return nil, err
 	}
-	normalizeSessionListModes(sessions)
+	sessions = normalizeVisibleSessionList(sessions)
 	return sessions, nil
+}
+
+func normalizeVisibleSessionList(sessions []pebblestore.SessionSnapshot) []pebblestore.SessionSnapshot {
+	visible := sessions[:0]
+	for i := range sessions {
+		sessions[i].Mode = NormalizeMode(sessions[i].Mode)
+		if hidden, _ := sessions[i].Metadata["navigation_hidden"].(bool); hidden {
+			continue
+		}
+		visible = append(visible, sessions[i])
+	}
+	return visible
 }
 
 func normalizeSessionListModes(sessions []pebblestore.SessionSnapshot) {
