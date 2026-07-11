@@ -142,20 +142,21 @@ var (
 )
 
 type Runtime struct {
-	maxParallel       int
-	httpClient        *http.Client
-	exaConfigResolver func(context.Context) (ExaRuntimeConfig, error)
-	sessions          manageSessionService
-	workspace         manageWorktreeWorkspaceService
-	worktrees         manageWorktreeConfigService
-	agents            manageAgentService
-	orchestration     manageOrchestrationPolicyService
-	todos             manageTodoService
-	uiSettings        manageThemeUISettingsService
-	themeWorkspace    manageThemeWorkspaceService
-	imageGen          manageImageService
-	imageThreads      manageImageThreadService
-	integrations      manageIntegrationService
+	maxParallel          int
+	httpClient           *http.Client
+	exaConfigResolver    func(context.Context) (ExaRuntimeConfig, error)
+	sessions             manageSessionService
+	publishSessionOutbox func(pebblestore.V3RealtimeOutboxRecord) error
+	workspace            manageWorktreeWorkspaceService
+	worktrees            manageWorktreeConfigService
+	agents               manageAgentService
+	orchestration        manageOrchestrationPolicyService
+	todos                manageTodoService
+	uiSettings           manageThemeUISettingsService
+	themeWorkspace       manageThemeWorkspaceService
+	imageGen             manageImageService
+	imageThreads         manageImageThreadService
+	integrations         manageIntegrationService
 }
 
 type ExaRuntimeConfig struct {
@@ -183,6 +184,8 @@ type manageSessionService interface {
 	ListSessionMessageTail(sessionID string, limit int) ([]pebblestore.MessageSnapshot, error)
 	ListSessionMessagesBefore(sessionID string, beforeSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
 	ArchiveSessionWithEvent(sessionID string) (*pebblestore.EventEnvelope, error)
+	CurrentRealtimeOutboxRevision() (uint64, error)
+	LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID string, endpointSeq uint64) (pebblestore.V3RealtimeOutboxRecord, bool, error)
 }
 
 type manageWorktreeWorkspaceService interface {
@@ -399,6 +402,14 @@ func (r *Runtime) SetExaConfigResolver(resolver func(context.Context) (ExaRuntim
 func (r *Runtime) SetManageSessionService(sessions manageSessionService) {
 	if r != nil {
 		r.sessions = sessions
+	}
+}
+
+// SetManageSessionRealtimePublisher wires durable manage-sessions mutations into
+// the same V3 realtime wake path used by HTTP session mutations.
+func (r *Runtime) SetManageSessionRealtimePublisher(publish func(pebblestore.V3RealtimeOutboxRecord) error) {
+	if r != nil {
+		r.publishSessionOutbox = publish
 	}
 }
 

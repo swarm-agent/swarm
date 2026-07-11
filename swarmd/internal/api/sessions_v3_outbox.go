@@ -86,6 +86,12 @@ var publishCommittedV3RealtimeOutboxWake = func(hub *v3RealtimeOutboxHub, record
 	return nil
 }
 
+// PublishCommittedV3RealtimeOutbox wakes V3 realtime consumers for an already
+// committed durable outbox record.
+func (s *Server) PublishCommittedV3RealtimeOutbox(record sessionruntime.RealtimeOutboxRecord) error {
+	return s.publishCommittedV3RealtimeOutbox(record)
+}
+
 func (s *Server) publishCommittedV3RealtimeOutbox(record sessionruntime.RealtimeOutboxRecord) error {
 	if s == nil {
 		return errors.New("server is not configured")

@@ -850,6 +850,7 @@ export function applyMessageMutationResult(
     upsertCommittedMessage(state, raw.session_id || message.session_id, message)
   }
   const sessionId = raw.session_id || message?.session_id || runIntent?.session_id || ''
+  const reactivatingArchivedSession = Boolean(sessionId && state.tombstonesBySession[sessionId]?.archived === true)
   if (sessionId && raw.session) {
     state.sessionsById[sessionId] = {
       kind: 'full',
@@ -857,6 +858,7 @@ export function applyMessageMutationResult(
       needsHydrate: false,
     }
     delete state.tombstonesBySession[sessionId]
+    if (reactivatingArchivedSession) restoreSessionToSidebar(state, sessionId)
   }
   if (sessionId && raw.projection) {
     state.projectionsBySession[sessionId] = raw.projection
@@ -1051,6 +1053,12 @@ export function applyCacheEvent(
 
   if (payload.run_intent) {
     upsertRunIntent(state, sessionId, payload.run_intent)
+  }
+
+  const reactivatingArchivedSession = Boolean(payload.message && payload.session && state.tombstonesBySession[sessionId]?.archived === true)
+  if (reactivatingArchivedSession) {
+    delete state.tombstonesBySession[sessionId]
+    restoreSessionToSidebar(state, sessionId)
   }
 
   if (payload.message) {
@@ -1455,6 +1463,19 @@ export function upsertRunIntent(
   liveRuns[runIntent.run_id] = liveRun
   state.liveRunsBySession[sessionId] = liveRuns
   cleanupTerminalLiveRunIfCanonicalized(state, sessionId, runIntent.run_id, runIntent.status)
+}
+
+function restoreSessionToSidebar(state: DesktopV3CacheState, sessionId: string): void {
+  const scopeIds = new Set<string>()
+  if (state.desktopSidebarBootstrap.scopeId) scopeIds.add(state.desktopSidebarBootstrap.scopeId)
+  for (const [scopeId, workset] of Object.entries(state.worksetsById)) {
+    if ((workset.inactiveSessionIds ?? []).includes(sessionId)) scopeIds.add(scopeId)
+    workset.inactiveSessionIds = (workset.inactiveSessionIds ?? []).filter((id) => id !== sessionId)
+    if (scopeIds.has(scopeId)) workset.sessionIds = prependUnique(workset.sessionIds ?? [], sessionId)
+  }
+  for (const scopeId of scopeIds) {
+    state.sessionOrderByScope[scopeId] = prependUnique(state.sessionOrderByScope[scopeId] ?? [], sessionId)
+  }
 }
 
 export function applyTombstone(

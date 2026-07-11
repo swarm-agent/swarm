@@ -218,6 +218,22 @@ func (r *Runtime) manageSessionsArchive(scope WorkspaceScope, args map[string]an
 		if _, err := r.sessions.ArchiveSessionWithEvent(id); err != nil {
 			return "", err
 		}
+		if r.publishSessionOutbox != nil {
+			head, err := r.sessions.CurrentRealtimeOutboxRevision()
+			if err != nil {
+				return "", fmt.Errorf("load archive realtime revision: %w", err)
+			}
+			record, ok, err := r.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(id, head)
+			if err != nil {
+				return "", fmt.Errorf("load archive realtime event: %w", err)
+			}
+			if !ok || record.Event.EventType != "session.archived" {
+				return "", fmt.Errorf("durable archive realtime event missing for session %s", id)
+			}
+			if err := r.publishSessionOutbox(record); err != nil {
+				return "", fmt.Errorf("publish archive realtime event: %w", err)
+			}
+		}
 		archived = append(archived, id)
 	}
 	return marshalManageSessions(map[string]any{"action": "archive", "archived_session_ids": archived, "durable": true})

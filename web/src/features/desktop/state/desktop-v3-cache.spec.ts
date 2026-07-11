@@ -3240,6 +3240,36 @@ test('session create replay does not regress fresher reconnect state or duplicat
   assert.equal(state.syncScopesById['scope-global'].endpointCursor, 'cursor-0')
 })
 
+test('message mutation rehydrates an archived session into the sidebar', () => {
+  const state = bootstrappedState()
+  const sessionId = sessionA.id
+  state.tombstonesBySession[sessionId] = {
+    session_id: sessionId,
+    kind: 'archived',
+    archived: true,
+    deleted: false,
+    session: sessionA,
+  }
+  state.sessionOrderByScope['scope-global'] = []
+  state.desktopSidebarBootstrap.scopeId = 'scope-global'
+  state.worksetsById['scope-global'] = {
+    workset_id: 'scope-global',
+    sessionIds: [],
+    inactiveSessionIds: [sessionId],
+  }
+
+  applyMessageMutationResult(state, messageMutationFixture({
+    session_id: sessionId,
+    session: { ...sessionA, updated_at: 200 },
+    message: { ...messageA1, session_id: sessionId, seq: 2 },
+  }), 'reactivate-archived', messageA1.id)
+
+  assert.equal(state.tombstonesBySession[sessionId], undefined)
+  assert.deepEqual(state.sessionOrderByScope['scope-global'], [sessionId])
+  assert.deepEqual(state.worksetsById['scope-global'].sessionIds, [sessionId])
+  assert.deepEqual(state.worksetsById['scope-global'].inactiveSessionIds, [])
+})
+
 
 test('session settings mutation updates mode metadata preference policy and projection cache immediately', () => {
   const state = bootstrappedState()
