@@ -2409,7 +2409,7 @@ func TestSessionsV3PrimaryLiveStreamPublishesPermissionEventsBeforeProviderToolS
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()
 	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{
-		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-permission-ask", Name: "ask-user", Arguments: `{"question":"Continue?","options":["yes","no"]}`}}},
+		{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-permission-ask", Name: "ask-user", Arguments: `{"question":"Which sessions?","options":["All 8 listed sessions","Only active sessions"]}`}}},
 		{Text: "final answer after permission approval"},
 	}}
 	providers := registry.New()
@@ -2430,12 +2430,14 @@ func TestSessionsV3PrimaryLiveStreamPublishesPermissionEventsBeforeProviderToolS
 	defer httpServer.Close()
 
 	created := createSessionsV3PrimaryHTTPTestSession(t, server, httpServer.URL, "permission-stream-create", "permission stream", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
-	conn := dialSessionsV3PrimaryStream(t, httpServer.URL, created.ID, "after_seq=1")
+	conn := dialV3RealtimeStream(t, httpServer.URL)
 	defer conn.Close()
-	replayStarted := readSessionsV3PrimaryStreamFrame(t, conn)
-	replayComplete := readSessionsV3PrimaryStreamFrame(t, conn)
-	if replayStarted.Type != "replay.started" || replayComplete.Type != "replay.complete" {
-		t.Fatalf("initial stream replay frames = %+v %+v", replayStarted, replayComplete)
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindSubscribe, SessionID: created.ID, SubscriptionID: "sub-permission-stream", EndpointCursor: signedV3RealtimeCursorForTest(t, server, 0)})
+	for {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind == V3RealtimeKindReplayDone {
+			break
+		}
 	}
 
 	postSessionsV3PrimaryHTTPTestMessage(t, httpServer.URL, created.ID, "permission-stream-message", "ask before continuing")
@@ -2443,8 +2445,8 @@ func TestSessionsV3PrimaryLiveStreamPublishesPermissionEventsBeforeProviderToolS
 	var permissionID string
 	seen := make([]string, 0, 8)
 	for permissionID == "" {
-		frame := readSessionsV3PrimaryStreamFrame(t, conn)
-		if frame.Type != "event" || frame.Event == nil {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind != V3RealtimeKindEvent || frame.Event == nil {
 			continue
 		}
 		eventType := strings.TrimSpace(frame.Event.EventType)
@@ -2476,7 +2478,8 @@ func TestSessionsV3PrimaryLiveStreamPublishesPermissionEventsBeforeProviderToolS
 		permissionID = payload.Permission.ID
 	}
 
-	resolvePayload := []byte(`{"action":"allow_once","reason":"ok","approved_arguments":"yes"}`)
+	const selectedAnswer = "All 8 listed sessions"
+	resolvePayload := []byte(`{"action":"allow_once","reason":"All 8 listed sessions"}`)
 	resp, err := http.Post(httpServer.URL+"/v3/sessions/"+created.ID+"/permissions/"+permissionID+"/resolve", "application/json", bytes.NewReader(resolvePayload))
 	if err != nil {
 		t.Fatalf("resolve permission over HTTP: %v", err)
@@ -2489,12 +2492,12 @@ func TestSessionsV3PrimaryLiveStreamPublishesPermissionEventsBeforeProviderToolS
 	wantSuffix := []string{"permission.updated", "session.tool.started", "session.tool.completed", "session.assistant.completed"}
 	seenSuffix := make([]string, 0, len(wantSuffix))
 	for len(seenSuffix) < len(wantSuffix) {
-		frame := readSessionsV3PrimaryStreamFrame(t, conn)
-		if frame.Type != "event" || frame.Event == nil {
+		frame := readV3RealtimeFrame(t, conn)
+		if frame.Kind != V3RealtimeKindEvent || frame.Event == nil {
 			continue
 		}
 		eventType := strings.TrimSpace(frame.Event.EventType)
-		if eventType == "session.message.appended" || eventType == "session.assistant.started" || eventType == "session.assistant.delta" {
+		if eventType == "session.message.appended" || eventType == "session.assistant.started" || eventType == "session.assistant.delta" || eventType == "session.output.streaming" || eventType == "permission.summary.updated" {
 			continue
 		}
 		seenSuffix = append(seenSuffix, eventType)
@@ -2517,6 +2520,9 @@ func TestSessionsV3PrimaryLiveStreamPublishesPermissionEventsBeforeProviderToolS
 	}
 	if runner.callCount != 2 {
 		t.Fatalf("provider call count = %d, want tool request plus final", runner.callCount)
+	}
+	if len(runner.requests) != 2 || !strings.Contains(fmt.Sprint(runner.requests[1].Input), selectedAnswer) || !strings.Contains(fmt.Sprint(runner.requests[1].Input), `"status":"answered"`) {
+		t.Fatalf("provider continuation input did not contain captured ask-user answer: %+v", runner.requests)
 	}
 }
 

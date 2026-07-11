@@ -214,6 +214,94 @@ func TestProviderManagedV3ControlPlaneToolRequestsPermission(t *testing.T) {
 	}
 }
 
+func TestProviderManagedAskUserReasonBecomesProviderResponse(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
+	defer cleanup()
+	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
+		sessionID:            sessionID,
+		permissionSessionID:  sessionID,
+		runID:                "run-v3-ask-user-response",
+		step:                 1,
+		sessionMode:          sessionruntime.ModeAuto,
+		workspacePath:        workspace,
+		workspaceRoots:       []string{workspace},
+		workspaceOriginPath:  workspace,
+		workspaceOriginRoots: []string{workspace},
+		workspaceName:        "workspace",
+		applySessionMutation: providerManagedV3NoopMutation,
+		providerManagedV3:    true,
+	})
+	args := mustProviderToolInvokerJSON(t, map[string]any{
+		"question": "Which sessions?",
+		"options":  []string{"All 8 listed sessions", "Only active sessions"},
+	})
+	type execution struct {
+		result provideriface.ToolExecutionResult
+		err    error
+	}
+	executionCh := make(chan execution, 1)
+	go func() {
+		result, err := invoker.ExecuteTool(context.Background(), toolInvocation("call-ask-response", "ask_user", args))
+		executionCh <- execution{result: result, err: err}
+	}()
+
+	var pending []pebblestore.PermissionRecord
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		pending, err = permissions.ListPending(sessionID, 10)
+		if err != nil {
+			t.Fatalf("list pending permissions: %v", err)
+		}
+		if len(pending) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected one pending ask-user permission, got %#v", pending)
+	}
+	const answer = "All 8 listed sessions"
+	if _, err := permissions.Resolve(sessionID, pending[0].ID, permission.ActionAllowOnce, answer); err != nil {
+		t.Fatalf("resolve ask-user permission: %v", err)
+	}
+
+	select {
+	case executed := <-executionCh:
+		if executed.err != nil {
+			t.Fatalf("execute ask-user after approval: %v", executed.err)
+		}
+		if !strings.Contains(executed.result.Output, `"status":"answered"`) || !strings.Contains(executed.result.Output, `"answer":"`+answer+`"`) {
+			t.Fatalf("ask-user output did not capture reason-only answer: %s", executed.result.Output)
+		}
+		if !strings.Contains(executed.result.TextForModel, answer) || !strings.Contains(executed.result.TextForModel, `"status":"answered"`) {
+			t.Fatalf("provider-facing tool text did not capture answer: %s", executed.result.TextForModel)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("ask-user execution did not finish after approval")
+	}
+
+	selectionTests := []struct {
+		name     string
+		toolName string
+		feedback PermissionFeedback
+		want     string
+	}{
+		{name: "approved arguments take precedence", toolName: "ask_user", feedback: PermissionFeedback{Message: "reason answer", ApprovedArguments: "explicit answer"}, want: "explicit answer"},
+		{name: "ask user falls back to reason", toolName: "ask-user", feedback: PermissionFeedback{Message: "reason answer", ApprovedArguments: "{}"}, want: "reason answer"},
+		{name: "empty ask user approval stays empty", toolName: "ask_user", feedback: PermissionFeedback{ApprovedArguments: "{}"}, want: ""},
+		{name: "other control tools ignore reason", toolName: "manage_theme", feedback: PermissionFeedback{Message: "permission note"}, want: ""},
+	}
+	for _, test := range selectionTests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := providerManagedControlPlaneResponse(tool.Call{Name: test.toolName}, test.feedback); got != test.want {
+				t.Fatalf("response = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestProviderManagedV3BypassPermissionsAllowsControlPlaneTool(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)

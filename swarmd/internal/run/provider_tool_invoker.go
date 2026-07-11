@@ -214,6 +214,20 @@ func providerManagedTerminalPlanNextAction(nextAction string) bool {
 	}
 }
 
+func providerManagedControlPlaneResponse(call tool.Call, feedback PermissionFeedback) string {
+	approvedArguments := strings.TrimSpace(feedback.ApprovedArguments)
+	if canonicalToolName(call.Name) != "ask_user" {
+		return approvedArguments
+	}
+	// Permission storage normalizes an omitted approved_arguments value to an
+	// empty JSON object. For ask_user that placeholder is not a response, so use
+	// the captured permission message instead.
+	if approvedArguments != "" && approvedArguments != "{}" {
+		return approvedArguments
+	}
+	return strings.TrimSpace(feedback.Message)
+}
+
 func (s *Service) executeProviderManagedToolCall(ctx context.Context, config providerToolInvokerConfig, call tool.Call, metadata map[string]any) (tool.Result, error) {
 	if s == nil {
 		return tool.Result{}, errors.New("run service is not configured")
@@ -286,7 +300,8 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 				SourceMessageID: fmt.Sprintf("provider-run:%s:step:%d:call:%s", strings.TrimSpace(config.runID), config.step, strings.TrimSpace(call.CallID)),
 				Inline:          config.providerManagedV3 && sessionruntime.NormalizeMode(config.sessionMode) == sessionruntime.ModeAuto,
 			}
-			handled, controlResult, controlErr = s.executeControlPlaneToolWithLifecycleRunContext(ctx, config.sessionID, config.sessionMode, config.agentProfile, config.step, call, feedback.ApprovedArguments, config.emit, config.applySessionMutation, lifecycleRun)
+			controlResponse := providerManagedControlPlaneResponse(call, feedback)
+			handled, controlResult, controlErr = s.executeControlPlaneToolWithLifecycleRunContext(ctx, config.sessionID, config.sessionMode, config.agentProfile, config.step, call, controlResponse, config.emit, config.applySessionMutation, lifecycleRun)
 		}
 		if handled {
 			if config.emit != nil {
