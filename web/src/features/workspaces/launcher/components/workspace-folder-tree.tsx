@@ -16,6 +16,8 @@ interface WorkspaceFolderTreeProps {
   savingPath: string | null
   useFolderLabel?: string
   showTemporaryAction?: boolean
+  openCreatedFolder?: boolean
+  showPathInWorkspaceAction?: boolean
   onBrowsePath: (path: string) => void
   onOpenWorkspace: (path: string) => void
   onUseFolderTemporarily: (path: string) => void
@@ -51,6 +53,8 @@ export function WorkspaceFolderTree({
   savingPath,
   useFolderLabel = 'Use as temp',
   showTemporaryAction = true,
+  openCreatedFolder = false,
+  showPathInWorkspaceAction = false,
   onBrowsePath,
   onOpenWorkspace,
   onUseFolderTemporarily,
@@ -92,6 +96,9 @@ export function WorkspaceFolderTree({
       if (createdPath) {
         setCreatedFolderPath(createdPath)
         setCreateMessage(name)
+        if (openCreatedFolder) {
+          onBrowsePath(createdPath)
+        }
         window.setTimeout(() => {
           setCreateMessage((current) => (current === name ? null : current))
         }, 3500)
@@ -114,6 +121,14 @@ export function WorkspaceFolderTree({
       lastModified: 0,
     })
   }
+
+  const workspaceActionLabel = currentBusy
+    ? 'Working…'
+    : currentSaved
+      ? 'Open workspace'
+      : showPathInWorkspaceAction && currentPath
+        ? `Add ${currentPathLabel} as workspace`
+        : 'Add as workspace'
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -289,9 +304,10 @@ export function WorkspaceFolderTree({
           className="h-9 min-h-0 w-full rounded-md text-sm"
           disabled={!currentPath || currentBusy}
           onClick={() => (currentSaved ? onOpenWorkspace(currentPath) : addCurrentFolder())}
+          title={currentPath ? workspaceActionLabel : undefined}
         >
           {currentBusy ? <RefreshCw size={14} className="animate-spin" /> : currentSaved ? <Folder size={15} /> : <Plus size={15} />}
-          {currentBusy ? 'Working…' : currentSaved ? 'Open workspace' : 'Add as workspace'}
+          <span className="min-w-0 truncate">{workspaceActionLabel}</span>
         </Button>
         {showTemporaryAction ? (
           <button

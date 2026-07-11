@@ -1155,6 +1155,8 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                 selectingPath={selectingPath}
                 savingPath={savingPath}
                 showTemporaryAction={false}
+                openCreatedFolder
+                showPathInWorkspaceAction
                 onBrowsePath={(path) => void browsePath(path)}
                 onOpenWorkspace={handleOpenWorkspace}
                 onUseFolderTemporarily={handleUseBrowsedFolder}
