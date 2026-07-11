@@ -19,7 +19,7 @@ func (s *Service) contextWithProviderAPIDiagnosticRecorder(ctx context.Context, 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if s == nil || applySessionMutation == nil || strings.TrimSpace(sessionID) == "" {
+	if s == nil || applySessionMutation == nil || strings.TrimSpace(sessionID) == "" || !providerdiagnostics.Enabled() {
 		return ctx
 	}
 	return providerdiagnostics.ContextWithRecorder(ctx, func(_ context.Context, event providerdiagnostics.Event) {
@@ -28,7 +28,7 @@ func (s *Service) contextWithProviderAPIDiagnosticRecorder(ctx context.Context, 
 }
 
 func (s *Service) recordProviderAPIDiagnostic(sessionID, runID string, principal identity.Principal, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), event providerdiagnostics.Event) {
-	if s == nil || applySessionMutation == nil {
+	if s == nil || applySessionMutation == nil || !providerdiagnostics.Enabled() {
 		return
 	}
 	sessionID = strings.TrimSpace(sessionID)

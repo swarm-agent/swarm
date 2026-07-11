@@ -549,6 +549,10 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 			if err != nil {
 				return fmt.Errorf("marshal v3 session %s outbox %q: %w", kind, sessionID, err)
 			}
+			realtimeOutboxReferencePayload, err := marshalV3RealtimeOutboxReference(realtimeOutbox)
+			if err != nil {
+				return fmt.Errorf("marshal v3 session %s outbox reference %q: %w", kind, sessionID, err)
+			}
 			if err := batch.Set([]byte(KeyV3SessionSequence(sessionID)), uint64ToBytes(seq), nil); err != nil {
 				return err
 			}
@@ -558,13 +562,13 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 			if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), realtimeOutboxPayload, nil); err != nil {
 				return err
 			}
-			if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(sessionID, endpointSeq)), realtimeOutboxPayload, nil); err != nil {
+			if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(sessionID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
 				return err
 			}
-			if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(sessionID, seq)), realtimeOutboxPayload, nil); err != nil {
+			if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(sessionID, seq)), realtimeOutboxReferencePayload, nil); err != nil {
 				return err
 			}
-			if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(existing.AccountScopeID, existing.UserID, endpointSeq)), realtimeOutboxPayload, nil); err != nil {
+			if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(existing.AccountScopeID, existing.UserID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
 				return err
 			}
 			if err := batch.Set([]byte(KeyV3SessionProjection(sessionID)), projectionPayload, nil); err != nil {
@@ -617,7 +621,11 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 			return err
 		}
 	}
-	return batch.Commit(pebble.Sync)
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	v3SuccessfulBatchOperations.Add(1)
+	return nil
 }
 
 func deletePrefixInBatch(batch *pebble.Batch, prefix string) error {

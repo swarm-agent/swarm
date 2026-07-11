@@ -266,10 +266,8 @@ func New(cfg config.Config) (*Daemon, error) {
 			return nil, fmt.Errorf("disable v3 diagnostics: %w", err)
 		}
 	}
-	if startupCfg.ProviderAPIDiagnostics {
-		if err := os.Setenv(providerdiagnostics.EnvName, providerdiagnostics.BoolEnvValue(true)); err != nil {
-			return nil, fmt.Errorf("enable provider api diagnostics: %w", err)
-		}
+	if err := os.Setenv(providerdiagnostics.EnvName, providerdiagnostics.BoolEnvValue(startupCfg.ProviderAPIDiagnostics)); err != nil {
+		return nil, fmt.Errorf("configure provider api diagnostics: %w", err)
 	}
 	updateSvc := update.NewService(strings.TrimSpace(os.Getenv("SWARM_LANE")), startupCfg.DevMode)
 	if err := seedUISwarmName(cfg.ConfigPath, uiSettingsSvc); err != nil {

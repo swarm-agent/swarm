@@ -358,6 +358,24 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 						Principal:   principal,
 						SessionID:   strings.TrimSpace(config.sessionID),
 					})
+					var pendingToolDelta strings.Builder
+					var pendingToolDeltaCall tool.Call
+					var pendingToolDeltaMetadata map[string]any
+					flushToolDelta := func() {
+						if config.emit == nil || pendingToolDelta.Len() == 0 {
+							return
+						}
+						config.emit(StreamEvent{
+							Type:     StreamEventToolDelta,
+							Step:     config.step,
+							ToolName: strings.TrimSpace(pendingToolDeltaCall.Name),
+							CallID:   strings.TrimSpace(pendingToolDeltaCall.CallID),
+							Output:   pendingToolDelta.String(),
+							Metadata: pendingToolDeltaMetadata,
+						})
+						pendingToolDelta.Reset()
+						pendingToolDeltaMetadata = nil
+					}
 					executed := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, runtimeCalls, func(_ int, current tool.Call, progress tool.Progress) {
 						if config.emit == nil {
 							return
@@ -366,23 +384,25 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 						if stage != "output" && stage != "image" {
 							return
 						}
-						delta := progress.Output
+						delta := truncateRunes(progress.Output, maxToolDeltaChars)
 						if delta == "" {
 							return
 						}
-						metadata := map[string]any(nil)
-						if len(progress.Metadata) > 0 {
-							metadata = cloneGenericMap(progress.Metadata)
+						if pendingToolDelta.Len() > 0 && strings.TrimSpace(current.CallID) != strings.TrimSpace(pendingToolDeltaCall.CallID) {
+							flushToolDelta()
 						}
-						config.emit(StreamEvent{
-							Type:     StreamEventToolDelta,
-							Step:     config.step,
-							ToolName: strings.TrimSpace(current.Name),
-							CallID:   strings.TrimSpace(current.CallID),
-							Output:   truncateRunes(delta, maxToolDeltaChars),
-							Metadata: metadata,
-						})
+						pendingToolDeltaCall = current
+						if len(progress.Metadata) > 0 {
+							pendingToolDeltaMetadata = cloneGenericMap(progress.Metadata)
+						}
+						pendingToolDelta.WriteString(delta)
+						if pendingToolDelta.Len() >= maxToolDeltaChars {
+							flushToolDelta()
+						}
 					}, nil)
+					// The terminal tool record is emitted below, so drain every accepted
+					// progress byte first to preserve durable ordering.
+					flushToolDelta()
 					if len(executed) > 0 {
 						result = executed[0]
 					}

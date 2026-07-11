@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/pebble"
@@ -175,6 +176,31 @@ type V3SessionProjection struct {
 	UpdatedAt                  int64  `json:"updated_at"`
 }
 
+const v3RealtimeOutboxReferenceVersion = 1
+
+type v3RealtimeOutboxReference struct {
+	Version        int    `json:"reference_version"`
+	EndpointSeq    uint64 `json:"endpoint_seq"`
+	SessionID      string `json:"session_id"`
+	EventSeq       uint64 `json:"event_seq"`
+	UserID         string `json:"user_id,omitempty"`
+	AccountScopeID string `json:"account_scope_id,omitempty"`
+}
+
+type V3SessionWriteCounters struct {
+	SuccessfulFreshMutations  uint64 `json:"successful_fresh_mutations"`
+	SuccessfulBatchOperations uint64 `json:"successful_batch_operations"`
+	EstimatedLogicalBytes     uint64 `json:"estimated_logical_bytes"`
+}
+
+var v3SuccessfulFreshMutations atomic.Uint64
+var v3SuccessfulBatchOperations atomic.Uint64
+var v3EstimatedLogicalBytes atomic.Uint64
+
+func CurrentV3SessionWriteCounters() V3SessionWriteCounters {
+	return V3SessionWriteCounters{v3SuccessfulFreshMutations.Load(), v3SuccessfulBatchOperations.Load(), v3EstimatedLogicalBytes.Load()}
+}
+
 type V3RealtimeOutboxRecord struct {
 	EndpointSeq    uint64                      `json:"endpoint_seq"`
 	EndpointCursor string                      `json:"endpoint_cursor"`
@@ -200,6 +226,40 @@ type V3RealtimeOutboxMembership struct {
 	TombstoneKind           string         `json:"tombstone_kind,omitempty"`
 	CapturedAt              int64          `json:"captured_at"`
 }
+
+func marshalV3RealtimeOutboxReference(record V3RealtimeOutboxRecord) ([]byte, error) {
+	return json.Marshal(v3RealtimeOutboxReference{Version: v3RealtimeOutboxReferenceVersion, EndpointSeq: record.EndpointSeq, SessionID: record.SessionID, EventSeq: record.Event.Seq, UserID: record.UserID, AccountScopeID: record.AccountScopeID})
+}
+
+func (s *SessionStore) resolveV3RealtimeOutboxValue(value []byte) (V3RealtimeOutboxRecord, error) {
+	var ref v3RealtimeOutboxReference
+	if err := json.Unmarshal(value, &ref); err != nil {
+		return V3RealtimeOutboxRecord{}, err
+	}
+	if ref.Version == 0 {
+		var record V3RealtimeOutboxRecord
+		if err := json.Unmarshal(value, &record); err != nil {
+			return V3RealtimeOutboxRecord{}, err
+		}
+		return record, nil
+	}
+	if ref.Version != v3RealtimeOutboxReferenceVersion || ref.EndpointSeq == 0 {
+		return V3RealtimeOutboxRecord{}, fmt.Errorf("unsupported v3 realtime outbox reference version %d", ref.Version)
+	}
+	record, ok, err := s.GetV3RealtimeOutbox(ref.EndpointSeq)
+	if err != nil {
+		return V3RealtimeOutboxRecord{}, err
+	}
+	if !ok {
+		return V3RealtimeOutboxRecord{}, fmt.Errorf("v3 realtime outbox reference %d has no canonical record", ref.EndpointSeq)
+	}
+	if record.EndpointSeq != ref.EndpointSeq || record.SessionID != ref.SessionID || record.Event.Seq != ref.EventSeq || record.UserID != ref.UserID || record.AccountScopeID != ref.AccountScopeID {
+		return V3RealtimeOutboxRecord{}, fmt.Errorf("v3 realtime outbox reference %d does not match canonical record", ref.EndpointSeq)
+	}
+	return record, nil
+}
+
+func estimatedSetBytes(key string, value []byte) uint64 { return uint64(len(key) + len(value)) }
 
 func newV3RealtimeOutboxMembershipFromSession(session SessionSnapshot, now int64) *V3RealtimeOutboxMembership {
 	if strings.TrimSpace(session.ID) == "" {
@@ -603,6 +663,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, fmt.Errorf("marshal v3 realtime outbox event: %w", err)
 	}
+	realtimeOutboxReferencePayload, err := marshalV3RealtimeOutboxReference(realtimeOutbox)
+	if err != nil {
+		return V3SessionMutationResult{}, fmt.Errorf("marshal v3 realtime outbox reference: %w", err)
+	}
 	projectionPayload, err := json.Marshal(projection)
 	if err != nil {
 		return V3SessionMutationResult{}, fmt.Errorf("marshal v3 session projection: %w", err)
@@ -632,13 +696,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), realtimeOutboxPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq)), realtimeOutboxPayload, nil); err != nil {
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq)), realtimeOutboxPayload, nil); err != nil {
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq)), realtimeOutboxReferencePayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq)), realtimeOutboxPayload, nil); err != nil {
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
 	if err := batch.Set([]byte(KeyV3SessionProjection(input.SessionID)), projectionPayload, nil); err != nil {
@@ -759,6 +823,8 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	v3SuccessfulFreshMutations.Add(1)
+	v3EstimatedLogicalBytes.Add(estimatedSetBytes(KeyV3RealtimeOutbox(endpointSeq), realtimeOutboxPayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq), realtimeOutboxReferencePayload))
 
 	result := V3SessionMutationResult{
 		SessionID:       input.SessionID,
@@ -1465,8 +1531,8 @@ func (s *SessionStore) listV3RealtimeOutboxForExactAuthScopeAfter(accountScopeID
 	out := make([]V3RealtimeOutboxRecord, 0, limit)
 	prefix := V3RealtimeOutboxByAuthScopePrefix(accountScopeID, userID)
 	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutboxByAuthScope(accountScopeID, userID, afterEndpointSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
-		var record V3RealtimeOutboxRecord
-		if err := json.Unmarshal(value, &record); err != nil {
+		record, err := s.resolveV3RealtimeOutboxValue(value)
+		if err != nil {
 			return false, err
 		}
 		if record.EndpointSeq <= afterEndpointSeq {
@@ -1495,8 +1561,8 @@ func (s *SessionStore) ListV3RealtimeOutboxForSessionAfterEndpoint(sessionID str
 	out := make([]V3RealtimeOutboxRecord, 0, limit)
 	prefix := V3RealtimeOutboxBySessionEndpointPrefix(sessionID)
 	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutboxBySessionEndpoint(sessionID, afterEndpointSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
-		var record V3RealtimeOutboxRecord
-		if err := json.Unmarshal(value, &record); err != nil {
+		record, err := s.resolveV3RealtimeOutboxValue(value)
+		if err != nil {
 			return false, err
 		}
 		if record.EndpointSeq <= afterEndpointSeq || record.SessionID != sessionID {
@@ -1552,8 +1618,8 @@ func (s *SessionStore) LastV3RealtimeOutboxForSessionAtOrBeforeEndpoint(sessionI
 	var out V3RealtimeOutboxRecord
 	found := false
 	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: startKey, Limit: 1, Reverse: true}, func(_ string, value []byte) (bool, error) {
-		var record V3RealtimeOutboxRecord
-		if err := json.Unmarshal(value, &record); err != nil {
+		record, err := s.resolveV3RealtimeOutboxValue(value)
+		if err != nil {
 			return false, err
 		}
 		if record.SessionID != sessionID || record.EndpointSeq > endpointSeq {
@@ -1583,8 +1649,8 @@ func (s *SessionStore) ListV3RealtimeOutboxForSessionAfterSeq(sessionID string, 
 	out := make([]V3RealtimeOutboxRecord, 0, limit)
 	prefix := V3RealtimeOutboxBySessionSeqPrefix(sessionID)
 	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutboxBySessionSeq(sessionID, afterSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
-		var record V3RealtimeOutboxRecord
-		if err := json.Unmarshal(value, &record); err != nil {
+		record, err := s.resolveV3RealtimeOutboxValue(value)
+		if err != nil {
 			return false, err
 		}
 		if record.SessionID != sessionID || record.Event.Seq <= afterSeq {

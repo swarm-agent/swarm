@@ -79,6 +79,7 @@ type sessionV3ReasoningProgressAggregate struct {
 	FirstOrder     uint64
 	Step           int
 	ReasoningKey   string
+	Delta          string
 	Snapshot       string
 	Bytes          int
 	FirstPendingAt time.Time
@@ -122,11 +123,12 @@ type sessionV3DurableProgressSink struct {
 	cancelProvider context.CancelFunc
 	writer         sessionV3DurableProgressWriter
 
-	currentAssistantByStream map[string]*sessionV3AssistantProgressAggregate
-	currentReasoningByKey    map[string]*sessionV3ReasoningProgressAggregate
-	acceptedAssistantEnd     map[string]sessionV3AssistantAcceptedEnd
-	sealedEpochs             []sessionV3DurableProgressEpoch
-	waiters                  map[uint64][]chan error
+	currentAssistantByStream  map[string]*sessionV3AssistantProgressAggregate
+	currentReasoningByKey     map[string]*sessionV3ReasoningProgressAggregate
+	acceptedAssistantEnd      map[string]sessionV3AssistantAcceptedEnd
+	acceptedReasoningSnapshot map[string]string
+	sealedEpochs              []sessionV3DurableProgressEpoch
+	waiters                   map[uint64][]chan error
 
 	pendingBytes  int
 	inFlightBytes int
@@ -158,18 +160,19 @@ func newSessionV3DurableProgressSinkWithWriter(exec *sessionV3Executor, job sess
 		cancelProvider = func() {}
 	}
 	s := &sessionV3DurableProgressSink{
-		exec:                     exec,
-		job:                      job,
-		cancelProvider:           cancelProvider,
-		writer:                   writer,
-		currentAssistantByStream: make(map[string]*sessionV3AssistantProgressAggregate),
-		currentReasoningByKey:    make(map[string]*sessionV3ReasoningProgressAggregate),
-		acceptedAssistantEnd:     make(map[string]sessionV3AssistantAcceptedEnd),
-		waiters:                  make(map[uint64][]chan error),
-		reasoningDeltaIndexByKey: make(map[string]int),
-		phaseRecordedByEventType: make(map[string]bool),
-		notify:                   make(chan struct{}, 1),
-		workerDone:               make(chan struct{}),
+		exec:                      exec,
+		job:                       job,
+		cancelProvider:            cancelProvider,
+		writer:                    writer,
+		currentAssistantByStream:  make(map[string]*sessionV3AssistantProgressAggregate),
+		currentReasoningByKey:     make(map[string]*sessionV3ReasoningProgressAggregate),
+		acceptedAssistantEnd:      make(map[string]sessionV3AssistantAcceptedEnd),
+		acceptedReasoningSnapshot: make(map[string]string),
+		waiters:                   make(map[uint64][]chan error),
+		reasoningDeltaIndexByKey:  make(map[string]int),
+		phaseRecordedByEventType:  make(map[string]bool),
+		notify:                    make(chan struct{}, 1),
+		workerDone:                make(chan struct{}),
 	}
 	go s.worker()
 	return s
@@ -256,7 +259,7 @@ func (s *sessionV3DurableProgressSink) TryAppendAssistant(progress sessionV3Assi
 	agg.Bytes += additionalBytes
 	s.pendingBytes += additionalBytes
 	s.acceptedAssistantEnd[progress.StreamID] = sessionV3AssistantAcceptedEnd{LiveSeqEnd: progress.LiveSeqEnd, OffsetEnd: progress.OffsetEnd}
-	if agg.Bytes >= s.assistantFlushMaxBytesLocked() || strings.Contains(progress.Text, "\n") {
+	if agg.Bytes >= s.assistantFlushMaxBytesLocked() {
 		agg.FlushRequested = true
 	}
 	s.signalLocked()
@@ -303,11 +306,13 @@ func (s *sessionV3DurableProgressSink) TryReplaceReasoning(step int, reasoningKe
 		return err
 	}
 	agg := s.currentReasoningByKey[reasoningKey]
+	previous := s.acceptedReasoningSnapshot[reasoningKey]
 	oldBytes := 0
 	if agg != nil {
 		oldBytes = agg.Bytes
 	}
-	newBytes := len([]byte(snapshot))
+	delta := sessionV3ReasoningChangedBytes(previous, snapshot)
+	newBytes := len([]byte(delta))
 	additionalBytes := newBytes - oldBytes
 	if additionalBytes < 0 {
 		additionalBytes = 0
@@ -321,13 +326,27 @@ func (s *sessionV3DurableProgressSink) TryReplaceReasoning(step int, reasoningKe
 		s.currentReasoningByKey[reasoningKey] = agg
 	}
 	s.pendingBytes += newBytes - agg.Bytes
+	agg.Delta = delta
 	agg.Snapshot = snapshot
 	agg.Bytes = newBytes
+	s.acceptedReasoningSnapshot[reasoningKey] = snapshot
 	if agg.Bytes >= s.reasoningFlushMaxBytesLocked() {
 		agg.FlushRequested = true
 	}
 	s.signalLocked()
 	return nil
+}
+
+func sessionV3ReasoningChangedBytes(previous, snapshot string) string {
+	if previous == "" {
+		return snapshot
+	}
+	if strings.HasPrefix(snapshot, previous) {
+		return snapshot[len(previous):]
+	}
+	// A provider may replace an earlier snapshot. Persist the replacement as an
+	// explicit incremental value; consumers distinguish it via delta_version.
+	return snapshot
 }
 
 func (s *sessionV3DurableProgressSink) TryCompleteReasoning(step int, reasoningKey string, summary string) error {
@@ -691,7 +710,7 @@ func (s *sessionV3DurableProgressSink) persistEpoch(epoch sessionV3DurableProgre
 			s.reasoningDeltaIndexByKey[item.Reasoning.ReasoningKey]++
 			eventIndex := s.reasoningDeltaIndexByKey[item.Reasoning.ReasoningKey]
 			s.mu.Unlock()
-			if _, err := s.writer.RecordReasoningEvent(s.job, "session.reasoning.delta", item.Reasoning.Step, eventIndex, item.Reasoning.ReasoningKey, item.Reasoning.Snapshot, ""); err != nil {
+			if _, err := s.writer.RecordReasoningEvent(s.job, "session.reasoning.delta", item.Reasoning.Step, eventIndex, item.Reasoning.ReasoningKey, item.Reasoning.Delta, ""); err != nil {
 				return err
 			}
 			s.mu.Lock()

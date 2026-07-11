@@ -49,9 +49,6 @@ func (s *Server) publishCommittedSessionV3MutationInputResult(input sessionrunti
 	if err := s.publishCommittedV3RealtimeOutbox(*result.RealtimeOutbox); err != nil {
 		log.Printf("warning: v3 realtime outbox wake failed after durable commit session=%q endpoint_seq=%d: %v", result.SessionID, result.RealtimeOutbox.EndpointSeq, err)
 	}
-	if err := s.publishCommittedSessionV3GlobalEvent(result); err != nil {
-		log.Printf("warning: v3 session global mirror publish failed after durable commit session=%q seq=%d: %v", result.SessionID, result.Event.Seq, err)
-	}
 	s.maybeStartCommittedSessionV3TitleFlow(input, result)
 	return nil
 }
@@ -82,24 +79,6 @@ func (s *Server) maybeStartCommittedSessionV3TitleFlow(input sessionruntime.Sess
 		principal.AccountScopeID = firstNonEmpty(principal.AccountScopeID, strings.TrimSpace(result.Session.AccountScopeID))
 	}
 	s.v3SessionExecutor.maybeStartSessionV3TitleFlow(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID}, result)
-}
-
-var appendCommittedSessionV3GlobalEvent = func(s *Server, event sessionruntime.SessionEvent) error {
-	env, err := s.events.AppendWithSourceSeq("session:"+event.SessionID, event.EventType, event.SessionID, event.Payload, "v3", event.Seq, event.CausationID, event.CorrelationID)
-	if err != nil {
-		return err
-	}
-	if s.hub != nil {
-		s.hub.Publish(env)
-	}
-	return nil
-}
-
-func (s *Server) publishCommittedSessionV3GlobalEvent(result sessionruntime.SessionMutationResult) error {
-	if s == nil || s.events == nil || result.Event.Seq == 0 || strings.TrimSpace(result.Event.SessionID) == "" {
-		return nil
-	}
-	return appendCommittedSessionV3GlobalEvent(s, result.Event)
 }
 
 var publishCommittedV3RealtimeOutboxWake = func(hub *v3RealtimeOutboxHub, record sessionruntime.RealtimeOutboxRecord) error {

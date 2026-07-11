@@ -1350,16 +1350,10 @@ func TestApplySessionV3PrimaryMutationAcceptsDurableCommitWhenRealtimeWakeFails(
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindReplayDone, created.SessionID, committed.Event.Seq)
 }
 
-func TestApplySessionV3PrimaryMutationAcceptsDurableCommitWhenGlobalMirrorPublishFails(t *testing.T) {
+func TestApplySessionV3PrimaryMutationUsesNativeRealtimeWithoutGlobalMirror(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-global-fail", "create-realtime-global-fail")
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-no-global-mirror", "create-realtime-no-global-mirror")
 	checkpointCursor := signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq)
-
-	previousAppend := appendCommittedSessionV3GlobalEvent
-	appendCommittedSessionV3GlobalEvent = func(*Server, sessionruntime.SessionEvent) error {
-		return errors.New("simulated global mirror failure after durable commit")
-	}
-	t.Cleanup(func() { appendCommittedSessionV3GlobalEvent = previousAppend })
 
 	input := sessionruntime.SessionMutationInput{
 		SessionID:       created.SessionID,

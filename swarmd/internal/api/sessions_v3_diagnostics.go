@@ -27,11 +27,10 @@ type sessionV3DiagnosticInput struct {
 	SequenceLabel  string
 	Payload        any
 	NowUnixMs      int64
-	Force          bool
 }
 
 func (s *Server) appendSessionV3Diagnostic(input sessionV3DiagnosticInput) (sessionruntime.SessionMutationResult, error) {
-	if !input.Force && !sessionV3DiagnosticsEnabled() {
+	if !sessionV3DiagnosticsEnabled() {
 		return sessionruntime.SessionMutationResult{}, nil
 	}
 	if s == nil || s.sessions == nil {
@@ -230,7 +229,7 @@ func sessionV3StoreDiagnosticSequence(prefix, kind, requestID string, discrimina
 }
 
 func (e *sessionV3Executor) recordSessionV3ProviderAPIDiagnostic(job sessionV3ExecutorJob, event providerdiagnostics.Event) {
-	if e == nil || e.server == nil {
+	if e == nil || e.server == nil || !providerdiagnostics.Enabled() {
 		return
 	}
 	stage := "session.diagnostic.provider.api"
@@ -248,14 +247,13 @@ func (e *sessionV3Executor) recordSessionV3ProviderAPIDiagnostic(job sessionV3Ex
 		SequenceLabel:  sequence,
 		Payload:        event,
 		NowUnixMs:      event.RecordedAt,
-		Force:          true,
 	}); err != nil {
 		log.Printf("warning: failed to record provider api diagnostic session=%q run=%q provider=%q stage=%q: %v", job.SessionID, job.RunID, event.Provider, event.Stage, err)
 	}
 }
 
 func (e *sessionV3Executor) recordSessionV3ContextOverflowDecision(job sessionV3ExecutorJob, phase string, cause error) {
-	if e == nil || e.server == nil {
+	if e == nil || e.server == nil || !sessionV3DiagnosticsEnabled() {
 		return
 	}
 	now := time.Now().UnixMilli()
@@ -288,14 +286,13 @@ func (e *sessionV3Executor) recordSessionV3ContextOverflowDecision(job sessionV3
 		SequenceLabel:  fmt.Sprintf("context-overflow-decision-%d", now),
 		Payload:        payload,
 		NowUnixMs:      now,
-		Force:          true,
 	}); err != nil {
 		log.Printf("warning: failed to record v3 context overflow decision diagnostic session=%q run=%q: %v", job.SessionID, job.RunID, err)
 	}
 }
 
 func (e *sessionV3Executor) recordSessionV3Diagnostic(job sessionV3ExecutorJob, stage, source, sequenceLabel string, payload any) {
-	if e == nil || e.server == nil {
+	if e == nil || e.server == nil || !sessionV3DiagnosticsEnabled() {
 		return
 	}
 	if _, err := e.server.appendSessionV3Diagnostic(sessionV3DiagnosticInput{

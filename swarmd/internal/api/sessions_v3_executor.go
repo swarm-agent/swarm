@@ -644,6 +644,8 @@ func (e *sessionV3Executor) recordReasoningEvent(job sessionV3ExecutorJob, event
 	}
 	if eventIndex > 0 && eventType == "session.reasoning.delta" {
 		payload["delta_index"] = eventIndex
+		payload["delta_version"] = 2
+		payload["delta_mode"] = "append_or_replace"
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

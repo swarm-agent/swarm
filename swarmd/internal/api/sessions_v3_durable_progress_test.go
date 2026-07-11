@@ -123,6 +123,58 @@ func TestV3DurableProgressSinkCoalescesTenThousandDeltasByStream(t *testing.T) {
 	}
 }
 
+func TestV3DurableProgressReasoningPersistsIncrementalChangesAndTerminalFlush(t *testing.T) {
+	writer := newSessionsV3DurableProgressRecordingWriter(false)
+	sink := newSessionV3DurableProgressSinkWithWriter(&sessionV3Executor{deltaFlushMaxBytes: 1 << 20, deltaFlushMaxDelay: time.Hour}, sessionV3ExecutorJob{}, func() {}, writer)
+	if err := sink.TryStartReasoning(1, "reasoning-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.TryReplaceReasoning(1, "reasoning-1", "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.TryReplaceReasoning(1, "reasoning-1", "alpha beta"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.TryCompleteReasoning(1, "reasoning-1", "done"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.CloseAndFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	joined := strings.Join(writer.reasoning, "|")
+	if !strings.Contains(joined, "session.reasoning.delta: beta:") || strings.Contains(joined, "session.reasoning.delta:alpha beta:") {
+		t.Fatalf("reasoning records = %q, want incremental second delta", joined)
+	}
+	if !strings.Contains(joined, "session.reasoning.completed::done") {
+		t.Fatalf("reasoning records = %q, missing terminal completion", joined)
+	}
+}
+
+func TestV3DurableProgressAssistantNewlineDoesNotForceDurabilityAndTerminalFlushes(t *testing.T) {
+	writer := newSessionsV3DurableProgressRecordingWriter(false)
+	sink := newSessionV3DurableProgressSinkWithWriter(&sessionV3Executor{deltaFlushMaxBytes: 1 << 20, deltaFlushMaxDelay: time.Hour}, sessionV3ExecutorJob{}, func() {}, writer)
+	if err := sink.TryAppendAssistant(sessionV3AssistantProgress{StreamID: "assistant:1", Step: 1, StepID: "step-1", LiveSeqStart: 1, LiveSeqEnd: 1, OffsetStart: 0, OffsetEnd: 2, Text: "x\n"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	writer.mu.Lock()
+	before := len(writer.assistant)
+	writer.mu.Unlock()
+	if before != 0 {
+		t.Fatalf("newline forced %d durable writes", before)
+	}
+	if err := sink.CloseAndFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if len(writer.assistant) != 1 || writer.assistant[0].Text != "x\n" {
+		t.Fatalf("assistant writes = %+v", writer.assistant)
+	}
+}
+
 func TestV3DurableProgressBacklogFailsRunWithoutBlocking(t *testing.T) {
 	cancelled := make(chan struct{})
 	writer := newSessionsV3DurableProgressRecordingWriter(true)
