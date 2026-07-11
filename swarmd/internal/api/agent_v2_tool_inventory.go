@@ -111,6 +111,8 @@ func agentToolCanonicalName(name string) string {
 		return "manage_theme"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
+	case "manage-sessions", "manage_sessions":
+		return "manage_sessions"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	case "manage-image", "manage_image":

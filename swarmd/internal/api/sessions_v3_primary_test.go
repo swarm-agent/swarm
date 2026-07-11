@@ -874,7 +874,7 @@ func TestSessionsV3ExecutorUsesCurrentAgentToolContractWithStoredProfileSnapshot
 		Enabled: pebblestore.BoolPtr(true),
 		Prompt:  "MUTATED PROMPT THAT MUST NOT BE USED",
 		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-			"search": {Enabled: pebblestore.BoolPtr(true)},
+			"manage_sessions": {Enabled: pebblestore.BoolPtr(true)},
 		}},
 	}); err != nil {
 		t.Fatalf("mutate saved agent after session create: %v", err)
@@ -893,8 +893,8 @@ func TestSessionsV3ExecutorUsesCurrentAgentToolContractWithStoredProfileSnapshot
 		t.Fatalf("provider instructions used re-resolved mutated agent profile; instructions=%q", runner.lastRequest.Instructions)
 	}
 	toolNames := sessionsV3ProviderRequestToolNames(runner.lastRequest.Tools)
-	if !toolNames["search"] {
-		t.Fatalf("provider tools = %v, want current saved search tool", toolNames)
+	if !toolNames["manage-sessions"] {
+		t.Fatalf("provider tools = %v, want current saved manage_sessions tool", toolNames)
 	}
 	if toolNames["read"] {
 		t.Fatalf("provider tools = %v, retained stale stored read tool", toolNames)
