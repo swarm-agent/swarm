@@ -5111,6 +5111,12 @@ func TestSessionsV3ExecutorExecutesProviderToolCallsAndContinuesToFinalAnswer(t 
 	if len(runner.requests) != 2 || len(runner.requests[1].Input) < 2 {
 		t.Fatalf("continuation request input = %+v", runner.requests)
 	}
+	if runner.requests[0].NativeContinuationAllowed || !runner.requests[0].ForceFreshProviderContext || !runner.requests[1].NativeContinuationAllowed || runner.requests[1].ForceFreshProviderContext {
+		t.Fatalf("tool-loop continuation flags = first(native=%t fresh=%t) second(native=%t fresh=%t), want fresh once then continuation", runner.requests[0].NativeContinuationAllowed, runner.requests[0].ForceFreshProviderContext, runner.requests[1].NativeContinuationAllowed, runner.requests[1].ForceFreshProviderContext)
+	}
+	if runner.requests[0].TurnAffinityKey == "" || runner.requests[0].TurnAffinityKey != runner.requests[1].TurnAffinityKey {
+		t.Fatalf("tool-loop turn affinity changed within one turn: first=%q second=%q", runner.requests[0].TurnAffinityKey, runner.requests[1].TurnAffinityKey)
+	}
 	continuationInput := runner.requests[1].Input
 	if !sessionsV3ProviderInputHasTopLevelType(continuationInput, "function_call") || !sessionsV3ProviderInputHasTopLevelType(continuationInput, "function_call_output") || sessionsV3ProviderInputContainsContentText(continuationInput, "[tool result]") {
 		t.Fatalf("continuation provider input = %+v, want direct structured function_call/function_call_output reinjection instead of DB-reparsed user text", continuationInput)
@@ -5165,6 +5171,12 @@ func TestSessionsV3ExecutorCarriesFullContinuationHistoryAcrossMultipleToolSteps
 	}
 	if len(runner.requests) != 3 || len(runner.requests[2].Input) != 5 {
 		t.Fatalf("final continuation input = %+v, want full user plus two structured function_call/function_call_output pairs", runner.requests)
+	}
+	if runner.requests[0].NativeContinuationAllowed || !runner.requests[0].ForceFreshProviderContext || !runner.requests[1].NativeContinuationAllowed || !runner.requests[2].NativeContinuationAllowed || runner.requests[1].ForceFreshProviderContext || runner.requests[2].ForceFreshProviderContext {
+		t.Fatalf("three-step continuation flags = %+v, want fresh first request and native continuation thereafter", runner.requests)
+	}
+	if runner.requests[0].TurnAffinityKey == "" || runner.requests[0].TurnAffinityKey != runner.requests[1].TurnAffinityKey || runner.requests[1].TurnAffinityKey != runner.requests[2].TurnAffinityKey {
+		t.Fatalf("three-step turn affinity changed within one tool loop: %+v", runner.requests)
 	}
 	finalInput := runner.requests[2].Input
 	if !sessionsV3ProviderInputHasTopLevelType(finalInput, "function_call") || !sessionsV3ProviderInputHasTopLevelType(finalInput, "function_call_output") || sessionsV3ProviderInputContainsContentText(finalInput, "[tool result]") {
@@ -5787,6 +5799,7 @@ func TestSessionsV3ProviderBaseRequestCheckpointCategoriesUseFreshCodexBoundary(
 		{name: "terminal_failed", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-failed"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-failed", CheckpointID: "cp-failed", AttemptID: "cp-failed:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
 	}
 	seenAffinity := map[string]string{}
+	wantCacheKey := sessionV3ProviderCacheKey(created.ID)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := exec.sessionV3ProviderBaseRequestWithCheckpointScope(tc.job, resolved, input, tc.scope)
@@ -5799,8 +5812,8 @@ func TestSessionsV3ProviderBaseRequestCheckpointCategoriesUseFreshCodexBoundary(
 			if req.PreviousProviderLineageID == req.ProviderLineageID {
 				t.Fatalf("checkpoint request reused previous provider lineage %q", req.ProviderLineageID)
 			}
-			if req.ProviderCacheKey == "" || req.SessionAffinityKey == "" || req.ProviderCacheKey == req.SessionAffinityKey {
-				t.Fatalf("provider keys = cache %q affinity %q, want separate non-empty keys", req.ProviderCacheKey, req.SessionAffinityKey)
+			if req.ProviderCacheKey != wantCacheKey || req.SessionAffinityKey == "" || req.ProviderCacheKey == req.SessionAffinityKey {
+				t.Fatalf("provider keys = cache %q affinity %q, want stable cache %q and separate non-empty affinity", req.ProviderCacheKey, req.SessionAffinityKey, wantCacheKey)
 			}
 			if len(req.Input) != 1 || !sessionsV3ProviderInputContainsContentText(req.Input, "checkpoint payload") {
 				t.Fatalf("checkpoint request input = %+v, want bounded supplied payload", req.Input)
@@ -5810,6 +5823,46 @@ func TestSessionsV3ProviderBaseRequestCheckpointCategoriesUseFreshCodexBoundary(
 			}
 			seenAffinity[req.SessionAffinityKey] = tc.name
 		})
+	}
+}
+
+func TestSessionsV3ProviderCacheNamespaceStableAcrossCompatibleContextUpdate(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	exec := newSessionV3Executor(server)
+	server.v3SessionExecutor = exec
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "provider-stable-cache-create", "provider stable cache", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.3-codex", Thinking: "medium"})
+	resolved := sessionV3ResolvedRuntime{
+		Session:      created,
+		AgentProfile: pebblestore.AgentProfile{Name: "swarm", Mode: string(agentruntime.ModePrimary), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExecutionSetting: "auto"},
+		Preference:   pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.3-codex", Thinking: "medium"},
+		Instructions: "Swarm prompt v1",
+		ToolChoice:   "none",
+	}
+	oldInput := []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "old turn"}}}}
+	first, err := exec.sessionV3ProviderBaseRequest(sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-1"}, resolved, oldInput)
+	if err != nil {
+		t.Fatalf("first base request: %v", err)
+	}
+
+	updatedInput := append(append([]map[string]any(nil), oldInput...), map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "[system] Session mode updated to auto."}}})
+	resolved.Instructions = "Swarm prompt v2"
+	second, err := exec.sessionV3ProviderBaseRequest(sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-2"}, resolved, updatedInput)
+	if err != nil {
+		t.Fatalf("updated base request: %v", err)
+	}
+	if first.ProviderCacheKey == "" || first.ProviderCacheKey != second.ProviderCacheKey || first.ProviderCacheKey == created.ID {
+		t.Fatalf("cache namespace changed or exposed durable id: first=%q second=%q session=%q", first.ProviderCacheKey, second.ProviderCacheKey, created.ID)
+	}
+	if first.ProviderLineageID == second.ProviderLineageID || second.NativeContinuationAllowed || !second.ForceFreshProviderContext {
+		t.Fatalf("instruction change did not remain compatibility-gated: first=%+v second=%+v", first, second)
+	}
+	oldJSON, _ := json.Marshal(oldInput)
+	prefixJSON, _ := json.Marshal(second.Input[:len(oldInput)])
+	if !bytes.Equal(oldJSON, prefixJSON) || !sessionsV3ProviderInputContainsContentText(second.Input, "Session mode updated to auto") {
+		t.Fatalf("context update did not preserve byte-identical prefix and appended diff: %+v", second.Input)
+	}
+	if first.TurnAffinityKey == second.TurnAffinityKey || first.ContextWindowGeneration != second.ContextWindowGeneration {
+		t.Fatalf("turn affinity/window generation invariants = first affinity %q gen %d second affinity %q gen %d", first.TurnAffinityKey, first.ContextWindowGeneration, second.TurnAffinityKey, second.ContextWindowGeneration)
 	}
 }
 
@@ -6134,6 +6187,9 @@ func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T
 	if runner.requests[1].ProviderLineageID == "" || runner.requests[1].ProviderCacheKey == "" || runner.requests[1].SessionAffinityKey == "" {
 		t.Fatalf("restart-after-tool request missing provider lineage keys: %+v", runner.requests[1])
 	}
+	if runner.requests[0].TurnAffinityKey == "" || runner.requests[1].TurnAffinityKey == "" || runner.requests[0].TurnAffinityKey == runner.requests[1].TurnAffinityKey {
+		t.Fatalf("restart-after-tool reused provider turn affinity: first=%q second=%q", runner.requests[0].TurnAffinityKey, runner.requests[1].TurnAffinityKey)
+	}
 	if runner.requests[1].BoundaryReason != "restart_after_tool" {
 		t.Fatalf("restart-after-tool boundary reason = %q, want restart_after_tool", runner.requests[1].BoundaryReason)
 	}
@@ -6274,6 +6330,33 @@ func TestSessionsV3CompactEndpointSlicesRepeatedCompactionFromLatestCheckpoint(t
 	postSessionsV3CompactTestRequest(t, server, created.ID, "compact-slice-two")
 	if runner.callCount != 2 {
 		t.Fatalf("compact provider call count = %d, want 2", runner.callCount)
+	}
+}
+
+func TestSessionsV3ExplicitCompactionGenerationRebuildsLatestWindow(t *testing.T) {
+	messages := []pebblestore.MessageSnapshot{
+		{Role: "user", Content: "immutable old transcript"},
+		{Role: "system", Content: "[context-compact] index=2 origin=manual\n\nfirst summary", Metadata: map[string]any{"context_compaction_generation": map[string]any{"version": "durable-facts-v1", "compact_index": 2}}},
+		{Role: "assistant", Content: "old post-boundary answer"},
+		{Role: "system", Content: "[context-compact] index=3 origin=overflow\n\nreplacement summary", Metadata: map[string]any{"context_compaction_generation": map[string]any{"version": "durable-facts-v1", "compact_index": 3}}},
+		{Role: "assistant", Content: "Manual context compact complete (Compact #3).", Metadata: map[string]any{"source": "manual_context_compaction_ack"}},
+		{Role: "user", Content: "current prompt"},
+	}
+	window := sessionsV3MessagesForProviderLineage(messages, "lineage-rebuilt-after-restart", true)
+	input := sessionsV3ProviderInput(window)
+	text := fmt.Sprint(input)
+	for _, excluded := range []string{"immutable old transcript", "first summary", "old post-boundary answer", "Manual context compact complete"} {
+		if strings.Contains(text, excluded) {
+			t.Fatalf("rebuilt provider window retained excluded %q: %+v", excluded, input)
+		}
+	}
+	for _, included := range []string{"replacement summary", "current prompt"} {
+		if !strings.Contains(text, included) {
+			t.Fatalf("rebuilt provider window missing %q: %+v", included, input)
+		}
+	}
+	if got := sessionV3ProviderContextWindowGeneration(input); got != 3 {
+		t.Fatalf("context window generation = %d, want 3; input=%+v", got, input)
 	}
 }
 
@@ -6446,8 +6529,8 @@ func TestSessionsV3ProviderLineageMetadataPersistsAcrossModelHandoff(t *testing.
 	if runner.lastRequest.BoundaryReason != "provider_model_runtime_handoff" || runner.lastRequest.NativeContinuationAllowed || !runner.lastRequest.ForceFreshProviderContext {
 		t.Fatalf("handoff request boundary flags = %+v", runner.lastRequest)
 	}
-	if runner.lastRequest.ProviderCacheKey == created.ID || runner.lastRequest.SessionAffinityKey == created.ID || !strings.Contains(runner.lastRequest.ProviderCacheKey, secondLineage) || !strings.Contains(runner.lastRequest.SessionAffinityKey, secondLineage) {
-		t.Fatalf("handoff request reused durable session/cache identity: cache=%q affinity=%q session=%q lineage=%q", runner.lastRequest.ProviderCacheKey, runner.lastRequest.SessionAffinityKey, created.ID, secondLineage)
+	if runner.lastRequest.ProviderCacheKey != sessionV3ProviderCacheKey(created.ID) || runner.lastRequest.ProviderCacheKey == created.ID || runner.lastRequest.SessionAffinityKey == created.ID || !strings.Contains(runner.lastRequest.SessionAffinityKey, "turn-") {
+		t.Fatalf("handoff request cache/affinity identity = cache=%q affinity=%q session=%q lineage=%q", runner.lastRequest.ProviderCacheKey, runner.lastRequest.SessionAffinityKey, created.ID, secondLineage)
 	}
 	for _, want := range []string{"[provider-handoff]", "First turn summary", "second turn"} {
 		if !sessionsV3ProviderInputContainsContentText(runner.lastRequest.Input, want) {

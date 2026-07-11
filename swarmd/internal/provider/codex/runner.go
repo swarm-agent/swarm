@@ -124,6 +124,7 @@ func ToRequest(req provideriface.Request) Request {
 		ProviderLineageID:             req.ProviderLineageID,
 		ContextBranchID:               req.ContextBranchID,
 		ProviderCacheKey:              req.EffectiveProviderCacheKey(),
+		TurnAffinityKey:               req.TurnAffinityKey,
 		SessionAffinityKey:            req.EffectiveSessionAffinityKey(),
 		BoundaryReason:                req.BoundaryReason,
 		PreviousProviderLineageID:     req.PreviousProviderLineageID,
@@ -148,6 +149,7 @@ func ToRequest(req provideriface.Request) Request {
 		ServiceTier:                   serviceTier,
 		ContextMode:                   NormalizeContextMode(req.ContextMode),
 		ContextWindow:                 req.ContextWindow,
+		ContextWindowGeneration:       req.ContextWindowGeneration,
 		ParallelToolCalls:             req.ParallelToolCalls,
 	}
 }

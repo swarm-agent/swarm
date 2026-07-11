@@ -83,6 +83,7 @@ type codexTransportContext struct {
 	NativeContinuationAllowed bool
 	ForceFreshProviderContext bool
 	BoundaryReason            string
+	ContextWindowGeneration   int
 }
 
 func contextWithForceFreshProviderContext(ctx context.Context, force bool) context.Context {
@@ -216,6 +217,7 @@ type Request struct {
 	ProviderLineageID             string
 	ContextBranchID               string
 	ProviderCacheKey              string
+	TurnAffinityKey               string
 	SessionAffinityKey            string
 	BoundaryReason                string
 	PreviousProviderLineageID     string
@@ -240,6 +242,7 @@ type Request struct {
 	ServiceTier                   string
 	ContextMode                   string
 	ContextWindow                 int
+	ContextWindowGeneration       int
 	ParallelToolCalls             bool
 }
 
@@ -435,6 +438,7 @@ func (c *Client) createResponseWithAuth(ctx context.Context, record pebblestore.
 		NativeContinuationAllowed: req.NativeContinuationAllowed,
 		ForceFreshProviderContext: forceFreshProviderContext,
 		BoundaryReason:            strings.TrimSpace(req.BoundaryReason),
+		ContextWindowGeneration:   req.ContextWindowGeneration,
 	})
 	decoded, statusCode, err := c.sendRequest(ctx, record, req, onEvent)
 	if err != nil {
@@ -1198,7 +1202,7 @@ func (c *Client) sendWebsocket(ctx context.Context, record pebblestore.CodexAuth
 	if err != nil {
 		return nil, 0, err
 	}
-	return c.sendWebsocketMap(ctx, record, requestPayload, codexWebsocketRequestPropertiesFromPayload(requestPayload), len(asSlice(requestPayload["input"])), false, onEvent)
+	return c.sendWebsocketMap(ctx, record, requestPayload, requestPayload, codexWebsocketRequestPropertiesFromPayload(requestPayload), len(codexDiagnosticInputSlice(requestPayload["input"])), false, onEvent)
 }
 
 func (c *Client) sendWebsocketRequest(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (map[string]any, int, error) {
@@ -1206,10 +1210,12 @@ func (c *Client) sendWebsocketRequest(ctx context.Context, record pebblestore.Co
 	if err != nil {
 		return nil, 0, err
 	}
-	return c.sendWebsocketMap(ctx, record, requestPayload, requestProperties, requestInputLen, true, onEvent)
+	fullPayload := cloneMapAny(requestPayload)
+	fullPayload["input"] = req.Input
+	return c.sendWebsocketMap(ctx, record, requestPayload, fullPayload, requestProperties, requestInputLen, true, onEvent)
 }
 
-func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexAuthRecord, requestPayload map[string]any, requestProperties map[string]any, requestInputLen int, payloadPrepared bool, onEvent func(StreamEvent)) (map[string]any, int, error) {
+func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexAuthRecord, requestPayload, fullPayload map[string]any, requestProperties map[string]any, requestInputLen int, payloadPrepared bool, onEvent func(StreamEvent)) (map[string]any, int, error) {
 	wsURL, err := responsesWebsocketURL()
 	if err != nil {
 		return nil, 0, err
@@ -1281,7 +1287,7 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		}
 		return nil
 	}
-	providerdiagnostics.RecordContext(ctx, codexOutboundShapeEvent("websocket_request_shape", transportContext, sendPayload, asString(sendPayload["previous_response_id"]) != "", websocketReused))
+	providerdiagnostics.RecordContext(ctx, codexOutboundShapeEvent("websocket_request_shape", transportContext, fullPayload, sendPayload, websocketReused, codexContinuationRejectionReason(transportContext, fullPayload, sendPayload, session)))
 	providerdiagnostics.LogWebsocketRequestContext(ctx, "codex", "responses.websocket", wsURL, headers, websocketPayload)
 	if err := writeMessage(conn, websocketPayload); err != nil {
 		if ctxErr := contextErr(ctx); ctxErr != nil {
@@ -1512,31 +1518,89 @@ func codexWebsocketSendPayload(requestPayload map[string]any, session *cachedWeb
 	return prepareIncrementalWebsocketRequest(cloneMapAny(requestPayload), session.lastPayload, session.lastResponseID, session.lastOutput)
 }
 
-func codexOutboundShapeEvent(stage string, transport codexTransportContext, payload map[string]any, previousResponseIDPresent, websocketReused bool) providerdiagnostics.Event {
-	inputItems, inputChars, nativeItems, encryptedItems := codexPayloadInputShape(payload)
+func codexOutboundShapeEvent(stage string, transport codexTransportContext, fullPayload, sentPayload map[string]any, websocketReused bool, continuationRejectionReason string) providerdiagnostics.Event {
+	fullInputItems, fullInputChars, nativeItems, encryptedItems := codexPayloadInputShape(fullPayload)
+	sentInputItems, sentInputChars, _, _ := codexPayloadInputShape(sentPayload)
+	previousResponseIDPresent := strings.TrimSpace(asString(sentPayload["previous_response_id"])) != ""
 	return providerdiagnostics.Event{
 		Provider:  "codex",
 		Operation: "responses.websocket",
 		Stage:     strings.TrimSpace(stage),
 		Extra: map[string]any{
-			"native_continuation_allowed":  transport.NativeContinuationAllowed,
-			"force_fresh_provider_context": transport.ForceFreshProviderContext,
-			"boundary_reason":              transport.BoundaryReason,
-			"prompt_cache_key_present":     strings.TrimSpace(transport.PromptCacheKey) != "",
-			"session_affinity_key_present": strings.TrimSpace(transport.SessionAffinityKey) != "",
-			"session_affinity_key_hash":    codexSafeKeyHash(transport.SessionAffinityKey),
-			"previous_response_id_present": previousResponseIDPresent,
-			"websocket_reused":             websocketReused,
-			"input_items":                  inputItems,
-			"input_text_chars":             inputChars,
-			"native_input_items":           nativeItems,
-			"encrypted_input_items":        encryptedItems,
+			"native_continuation_allowed":   transport.NativeContinuationAllowed,
+			"force_fresh_provider_context":  transport.ForceFreshProviderContext,
+			"boundary_reason":               transport.BoundaryReason,
+			"prompt_cache_key_present":      strings.TrimSpace(transport.PromptCacheKey) != "",
+			"prompt_cache_key_hash":         codexSafeKeyHash(transport.PromptCacheKey),
+			"session_affinity_key_present":  strings.TrimSpace(transport.SessionAffinityKey) != "",
+			"session_affinity_key_hash":     codexSafeKeyHash(transport.SessionAffinityKey),
+			"context_window_generation":     transport.ContextWindowGeneration,
+			"previous_response_id_present":  previousResponseIDPresent,
+			"websocket_reused":              websocketReused,
+			"continuation_rejection_reason": strings.TrimSpace(continuationRejectionReason),
+			"full_input_items":              fullInputItems,
+			"full_input_text_chars":         fullInputChars,
+			"sent_input_items":              sentInputItems,
+			"sent_input_text_chars":         sentInputChars,
+			"input_items":                   sentInputItems,
+			"input_text_chars":              sentInputChars,
+			"native_input_items":            nativeItems,
+			"encrypted_input_items":         encryptedItems,
 		},
 	}
 }
 
+func codexDiagnosticInputSlice(value any) []any {
+	switch typed := value.(type) {
+	case []any:
+		return typed
+	case []map[string]any:
+		out := make([]any, len(typed))
+		for i := range typed {
+			out[i] = typed[i]
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func codexContinuationRejectionReason(transport codexTransportContext, fullPayload, sentPayload map[string]any, session *cachedWebsocketSession) string {
+	if strings.TrimSpace(asString(sentPayload["previous_response_id"])) != "" {
+		return ""
+	}
+	if transport.ForceFreshProviderContext {
+		if reason := strings.TrimSpace(transport.BoundaryReason); reason != "" {
+			return "fresh_context:" + reason
+		}
+		return "fresh_context"
+	}
+	if !transport.NativeContinuationAllowed {
+		return "native_continuation_disabled"
+	}
+	if session == nil {
+		return "session_affinity_unavailable"
+	}
+	if strings.TrimSpace(session.lastResponseID) == "" {
+		return "previous_response_unavailable"
+	}
+	properties := codexWebsocketRequestPropertiesFromPayload(fullPayload)
+	if !codexWebsocketRequestPropertiesMatch(session.lastRequestProperties, properties) {
+		return "request_properties_changed"
+	}
+	input := codexDiagnosticInputSlice(fullPayload["input"])
+	baselineLen := session.lastInputLen + len(session.lastOutput)
+	if session.lastInputLen < 0 || baselineLen < 0 || baselineLen > len(input) {
+		return "input_baseline_invalid"
+	}
+	if len(session.lastOutput) > 0 && !inputStartsWith(codexInputItemsForIncrementalCompare(input[session.lastInputLen:baselineLen]), codexInputItemsForIncrementalCompare(session.lastOutput)) {
+		return "provider_output_mismatch"
+	}
+	return "input_not_append_only"
+}
+
 func codexPayloadInputShape(payload map[string]any) (int, int, int, int) {
-	input := asSlice(payload["input"])
+	input := codexDiagnosticInputSlice(payload["input"])
 	chars := 0
 	nativeItems := 0
 	encryptedItems := 0

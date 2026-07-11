@@ -54,6 +54,9 @@ const (
 	memoryCompactionTokenEstimateDivisor    = 4
 	memoryCompactionChunkRetryLimit         = 2
 	memoryCompactionSummaryMaxRunes         = 9000
+	memoryCompactionTranscriptMaxRunes      = 256000
+	memoryCompactionTranscriptEntryMaxRunes = 100000
+	memoryCompactionAssistantDraftMaxRunes  = 12000
 	memoryCompactionHistorySlack            = 8
 	memoryCompactionOutputReserveTokens     = 4096
 	memoryCompactionSafetyMarginMinTokens   = 2048
@@ -61,6 +64,10 @@ const (
 	contextCompactionUsageSource            = "context_compaction_reset"
 	contextCompactionPlanLabelMetadataKey   = "context_compaction_attached_plan_label"
 	contextCompactionPlanTextMetadataKey    = "context_compaction_attached_plan_text"
+	contextCompactionFactsMetadataKey       = "context_compaction_durable_facts"
+	contextCompactionGenerationMetadataKey  = "context_compaction_generation"
+	contextCompactionGenerationVersion      = "durable-facts-v1"
+	contextCompactionFactsHeading           = "Authoritative durable facts (supersede conflicting generated recap):"
 	contextCompactionOriginManual           = "manual"
 	contextCompactionOriginThreshold        = "threshold"
 	contextCompactionOriginOverflow         = "overflow"
@@ -1365,6 +1372,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		compactedSummary, compactErr := s.compactRunContextWithMemory(
 			ctx,
 			sessionID,
+			runID,
 			prompt,
 			"",
 			resolvedPreference.Preference,
@@ -1477,6 +1485,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		compactedSummary, compactErr := s.compactRunContextWithMemory(
 			ctx,
 			sessionID,
+			runID,
 			prompt,
 			strings.TrimSpace(assistantDraft),
 			resolvedPreference.Preference,
@@ -2712,7 +2721,7 @@ func CompactMessagesForProviderContext(messages []pebblestore.MessageSnapshot, l
 
 func BuildProviderContextBoundaryMessage(summary, origin string, compactIndex int, activePlan *pebblestore.SessionPlanSnapshot) (string, map[string]any) {
 	checkpoint := buildCompactionCheckpointMessage(summary, origin, compactIndex, compactedActivePlanLabel(activePlan))
-	return checkpoint, compactedContextCheckpointMetadata(activePlan)
+	return checkpoint, contextCompactionCheckpointMetadata(activePlan, summary, origin, compactIndex)
 }
 
 func trimMessagesToLatestCompactionCheckpoint(messages []pebblestore.MessageSnapshot) []pebblestore.MessageSnapshot {
@@ -2791,7 +2800,7 @@ func (s *Service) applyContextCompactionArtifacts(sessionID, compactSummary, ori
 
 	nextTitle, compactIndex := nextCompactSessionTitle(session.Title)
 	checkpoint := buildCompactionCheckpointMessage(compactSummary, origin, compactIndex, compactedActivePlanLabel(activePlan))
-	checkpointMetadata := compactedContextCheckpointMetadata(activePlan)
+	checkpointMetadata := contextCompactionCheckpointMetadata(activePlan, compactSummary, origin, compactIndex)
 	appendInput.SessionID = sessionID
 	appendInput.Role = "system"
 	appendInput.Content = checkpoint
@@ -2940,6 +2949,29 @@ func compactedContextCheckpointMetadata(activePlan *pebblestore.SessionPlanSnaps
 	return metadata
 }
 
+// ContextCompactionCheckpointMetadata marks a durable message as the complete
+// replacement window for the given generation. The immutable transcript stays
+// intact; reconstruction selects the latest marked generation.
+func ContextCompactionCheckpointMetadata(activePlan *pebblestore.SessionPlanSnapshot, summary, origin string, compactIndex int) map[string]any {
+	return contextCompactionCheckpointMetadata(activePlan, summary, origin, compactIndex)
+}
+
+func contextCompactionCheckpointMetadata(activePlan *pebblestore.SessionPlanSnapshot, summary, origin string, compactIndex int) map[string]any {
+	metadata := compactedContextCheckpointMetadata(activePlan)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata[contextCompactionGenerationMetadataKey] = map[string]any{
+		"version":       contextCompactionGenerationVersion,
+		"origin":        normalizeContextCompactionOrigin(origin),
+		"compact_index": compactIndex,
+	}
+	if facts := durableFactsTailFromSummary(summary); facts != "" {
+		metadata[contextCompactionFactsMetadataKey] = facts
+	}
+	return metadata
+}
+
 func compactedActivePlanLabel(activePlan *pebblestore.SessionPlanSnapshot) string {
 	if activePlan == nil {
 		return ""
@@ -2956,7 +2988,7 @@ func compactedActivePlanLabel(activePlan *pebblestore.SessionPlanSnapshot) strin
 	}
 }
 
-func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, assistantDraft string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, preferV3Messages bool, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
+func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, currentRunID, runPrompt, assistantDraft string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, preferV3Messages bool, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
 	toolStream := newMemoryCompactionToolStream(emit, step, origin, attempt)
 	if len(streamOut) > 0 && streamOut[0] != nil {
 		*streamOut[0] = toolStream
@@ -3079,8 +3111,13 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"model":      modelName,
 				"attempt":    attempt,
 			})
+			reconciled, reconcileErr := s.reconcileMemoryCompactionSummary(sessionID, currentRunID, oneShotResult.trimmedSummary(), messages, activePlan)
+			if reconcileErr != nil {
+				finishFailure(reconcileErr)
+				return "", reconcileErr
+			}
 			finishSuccess("context compacted by memory agent; resuming run")
-			return oneShotResult.trimmedSummary(), nil
+			return reconciled, nil
 		}
 		if isMemoryCompactionEmptySummaryError(reqErr) {
 			runCompactionDebugEvent("memory_compaction_one_shot_empty_retry", map[string]any{
@@ -3194,8 +3231,13 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"overlap_runes": overlapRunes,
 				"chunk_count":   len(chunks),
 			})
+			reconciled, reconcileErr := s.reconcileMemoryCompactionSummary(sessionID, currentRunID, rollingSummary, messages, activePlan)
+			if reconcileErr != nil {
+				finishFailure(reconcileErr)
+				return "", reconcileErr
+			}
 			finishSuccess("context compacted by memory agent; resuming run")
-			return rollingSummary, nil
+			return reconciled, nil
 		}
 		nextChunkRunes := nextMemoryCompactionChunkRunes(transcript, chunkRunes)
 		runCompactionDebugEvent("memory_compaction_chunk_overflow_retry", map[string]any{
@@ -3270,29 +3312,186 @@ func (s *Service) listRunMessages(sessionID string, afterSeq uint64, limit int, 
 	return s.sessions.ListMessages(sessionID, afterSeq, limit)
 }
 
+func (s *Service) reconcileMemoryCompactionSummary(sessionID, currentRunID, generated string, messages []pebblestore.MessageSnapshot, activePlan *pebblestore.SessionPlanSnapshot) (string, error) {
+	intents, err := s.sessions.ListSessionRunIntents(sessionID, 0, 1000)
+	if err != nil {
+		return "", fmt.Errorf("list durable run intents for compaction: %w", err)
+	}
+	// The run requesting overflow compaction is necessarily still running. It is
+	// not contradictory evidence against its own generated recap; all other
+	// unfinished or non-successful durable work remains authoritative.
+	currentRunID = strings.TrimSpace(currentRunID)
+	if currentRunID != "" {
+		filtered := intents[:0]
+		for _, intent := range intents {
+			intentRunID := strings.TrimSpace(intent.RunID)
+			if intentRunID != currentRunID && intentRunID+"-overflow-compact" != currentRunID {
+				filtered = append(filtered, intent)
+			}
+		}
+		intents = filtered
+	}
+	facts := buildDurableCompactionFacts(messages, intents, activePlan)
+	generated = strings.TrimSpace(generated)
+	if durableFactsRejectGeneratedRecap(facts) {
+		generated = "(generated recap rejected because durable terminal state contains unfinished, failed, cancelled, interrupted, or newer undeployed work)"
+	}
+	parts := []string{"Generated recap (non-authoritative; durable facts below prevail):", generated}
+	if facts != "" {
+		parts = append(parts, contextCompactionFactsHeading, facts)
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n")), nil
+}
+
+func durableFactsRejectGeneratedRecap(facts string) bool {
+	facts = strings.ToLower(strings.TrimSpace(facts))
+	for _, marker := range []string{"unfinished durable work:", "unconfirmed/cancelled work:", "not confirmed deployed/live"} {
+		if strings.Contains(facts, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func durableFactsTailFromSummary(summary string) string {
+	marker := "\n\n" + contextCompactionFactsHeading + "\n\n"
+	if index := strings.LastIndex(summary, marker); index >= 0 {
+		return strings.TrimSpace(summary[index+len(marker):])
+	}
+	return ""
+}
+
+func buildDurableCompactionFacts(messages []pebblestore.MessageSnapshot, intents []pebblestore.V3SessionRunIntent, activePlan *pebblestore.SessionPlanSnapshot) string {
+	lines := []string{"Evidence policy: completion, validation, commit, and deployment claims are authoritative only when listed below from a terminal successful durable record."}
+	latestUser := ""
+	type observedTool struct {
+		seq    uint64
+		name   string
+		status string
+		output string
+	}
+	tools := make([]observedTool, 0)
+	for _, message := range messages {
+		switch strings.ToLower(strings.TrimSpace(message.Role)) {
+		case "user":
+			if text := strings.TrimSpace(message.Content); text != "" {
+				latestUser = truncateRunes(text, 1200)
+			}
+		case "tool":
+			record, ok := decodeToolHistoryRecord(message.Content)
+			if !ok {
+				continue
+			}
+			status := "succeeded"
+			if strings.TrimSpace(record.Error) != "" {
+				status = "failed"
+			}
+			output := firstNonEmptyString(record.CompletedOutput, record.Output, record.Error)
+			tools = append(tools, observedTool{seq: message.GlobalSeq, name: record.Tool, status: status, output: truncateRunes(output, 800)})
+		}
+	}
+	if latestUser != "" {
+		lines = append(lines, "Latest durable user request: "+latestUser)
+	}
+	latestCommitSeq := uint64(0)
+	latestCommit := ""
+	latestDeploySeq := uint64(0)
+	latestDeploy := ""
+	for _, item := range tools {
+		line := fmt.Sprintf("Terminal tool result: seq=%d tool=%s status=%s", item.seq, item.name, item.status)
+		if item.output != "" {
+			line += " output=" + strconv.Quote(item.output)
+		}
+		lines = append(lines, line)
+		name := strings.ToLower(item.name)
+		if item.status == "succeeded" && strings.Contains(name, "commit") && item.seq >= latestCommitSeq {
+			latestCommitSeq, latestCommit = item.seq, item.output
+		}
+		if item.status == "succeeded" && strings.Contains(name, "deploy") && item.seq >= latestDeploySeq {
+			latestDeploySeq, latestDeploy = item.seq, item.output
+		}
+	}
+	for _, intent := range intents {
+		status := strings.ToLower(strings.TrimSpace(intent.Status))
+		line := fmt.Sprintf("Run intent: run_id=%s status=%s", strings.TrimSpace(intent.RunID), status)
+		if reason := strings.TrimSpace(intent.BlockedReason); reason != "" {
+			line += " reason=" + strconv.Quote(reason)
+		}
+		lines = append(lines, line)
+		if status == sessionruntime.RunIntentRunning || status == sessionruntime.RunIntentPendingExecutor {
+			lines = append(lines, "Unfinished durable work: run "+strings.TrimSpace(intent.RunID)+" has no terminal successful result.")
+		} else if status == sessionruntime.RunIntentCancelled || status == sessionruntime.RunIntentInterrupted || status == sessionruntime.RunIntentFailed {
+			lines = append(lines, "Unconfirmed/cancelled work: run "+strings.TrimSpace(intent.RunID)+" ended "+status+"; no success claim may be inferred.")
+		}
+	}
+	if latestCommit != "" {
+		lines = append(lines, "Latest successful commit evidence: "+strconv.Quote(latestCommit))
+	}
+	if latestDeploy != "" {
+		lines = append(lines, "Latest successful deployment evidence: "+strconv.Quote(latestDeploy))
+	}
+	if latestCommitSeq > latestDeploySeq {
+		lines = append(lines, "Deployment reconciliation: the latest successful commit is newer than the latest successful deployment; that commit is NOT confirmed deployed/live.")
+	} else if latestCommit != "" && latestDeploy == "" {
+		lines = append(lines, "Deployment reconciliation: no terminal successful deployment record exists for the latest commit; it is NOT confirmed deployed/live.")
+	}
+	if plan := compactedActivePlanText(activePlan); plan != "" {
+		lines = append(lines, "Active plan state:\n"+plan)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 func buildMemoryCompactionTranscript(messages []pebblestore.MessageSnapshot, assistantDraft string) string {
+	// Project each durable message independently so a tool call and its output
+	// remain one indivisible entry when the total transcript is bounded.
 	entries := make([]string, 0, len(messages)+1)
 	for _, message := range messages {
-		content := strings.TrimSpace(message.Content)
-		if content == "" {
+		items := BuildModelContextProjection([]pebblestore.MessageSnapshot{message}, ModelContextProjectionOptions{})
+		if len(items) == 0 {
 			continue
 		}
-		if isManualCompactionAcknowledgement(message) {
+		encoded, err := json.Marshal(items)
+		if err != nil {
 			continue
 		}
-		role := strings.ToLower(strings.TrimSpace(message.Role))
-		if role == "system" && isToolDBDebugMessage(content) {
-			continue
+		entry := fmt.Sprintf("[seq:%d model_context]\n%s", message.GlobalSeq, encoded)
+		entry = truncateRunes(entry, memoryCompactionTranscriptEntryMaxRunes)
+		if strings.TrimSpace(entry) != "" {
+			entries = append(entries, entry)
 		}
-		if role == "" {
-			role = "user"
-		}
-		entries = append(entries, fmt.Sprintf("[seq:%d role:%s]\n%s", message.GlobalSeq, role, content))
 	}
 	if draft := strings.TrimSpace(assistantDraft); draft != "" {
-		entries = append(entries, "[role:assistant_draft]\n"+draft)
+		entries = append(entries, "[role:assistant_draft]\n"+truncateRunes(draft, memoryCompactionAssistantDraftMaxRunes))
 	}
-	return strings.TrimSpace(strings.Join(entries, "\n\n"))
+	return boundedMemoryCompactionEntries(entries, memoryCompactionTranscriptMaxRunes)
+}
+
+func boundedMemoryCompactionEntries(entries []string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return strings.TrimSpace(strings.Join(entries, "\n\n"))
+	}
+	kept := make([]string, 0, len(entries))
+	used := 0
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := strings.TrimSpace(entries[i])
+		if entry == "" {
+			continue
+		}
+		entryRunes := len([]rune(entry))
+		separator := 0
+		if len(kept) > 0 {
+			separator = 2
+		}
+		if used+separator+entryRunes > maxRunes {
+			continue
+		}
+		kept = append(kept, entry)
+		used += separator + entryRunes
+	}
+	for left, right := 0, len(kept)-1; left < right; left, right = left+1, right-1 {
+		kept[left], kept[right] = kept[right], kept[left]
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n\n"))
 }
 
 func splitCompactionTranscript(transcript string, chunkRunes, overlapRunes int) []string {
