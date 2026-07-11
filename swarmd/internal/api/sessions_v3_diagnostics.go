@@ -150,9 +150,7 @@ func (s *Server) recordV3StoreInputDiagnostic(input sessionruntime.SessionMutati
 		Stage:          "session.diagnostic.store.input",
 		Source:         "backend.store",
 		SequenceLabel:  sessionV3StoreDiagnosticSequence("input", input.Kind, input.ClientRequestID, time.Now().UnixNano()),
-		Payload: map[string]any{
-			"mutation_input": input,
-		},
+		Payload:        sessionV3StoreDiagnosticMetadata(input, sessionruntime.SessionMutationResult{}, nil),
 	}); err != nil {
 		log.Printf("warning: failed to record v3 store input diagnostic session=%q kind=%q request=%q: %v", input.SessionID, input.Kind, input.ClientRequestID, err)
 	}
@@ -162,46 +160,12 @@ func (s *Server) recordV3StoreResultDiagnostic(input sessionruntime.SessionMutat
 	if !shouldRecordV3StoreDiagnostic(input) {
 		return
 	}
-	runID := ""
-	if input.RunIntent != nil {
-		runID = input.RunIntent.RunID
-	}
-	payload := map[string]any{
-		"mutation_input":  input,
-		"mutation_result": result,
-		"summary": map[string]any{
-			"session_id":        input.SessionID,
-			"run_id":            runID,
-			"kind":              input.Kind,
-			"event_type":        input.EventType,
-			"client_request_id": input.ClientRequestID,
-			"idempotency_key":   input.IdempotencyKey,
-			"payload_hash":      input.PayloadHash,
-			"request_hash":      input.RequestHash,
-		},
-	}
-	if len(input.EventPayload) > 0 {
-		payload["incoming_event_payload"] = decodeSessionV3DiagnosticRawJSON(input.EventPayload)
-	}
-	if result.Conflict != nil {
-		payload["idempotency_conflict"] = map[string]any{
-			"code":                  result.Conflict.Code,
-			"message":               result.Conflict.Message,
-			"existing_payload_hash": result.Conflict.ExistingPayloadHash,
-			"incoming_payload_hash": result.Conflict.IncomingPayloadHash,
-			"client_request_id":     input.ClientRequestID,
-			"kind":                  input.Kind,
-			"event_type":            input.EventType,
-		}
-	}
-	if applyErr != nil {
-		payload["error"] = applyErr.Error()
-	}
+	payload := sessionV3StoreDiagnosticMetadata(input, result, applyErr)
 	if _, err := s.appendSessionV3Diagnostic(sessionV3DiagnosticInput{
 		SessionID:      input.SessionID,
 		UserID:         input.UserID,
 		AccountScopeID: input.AccountScopeID,
-		RunID:          runID,
+		RunID:          sessionV3StoreDiagnosticRunID(input),
 		Stage:          "session.diagnostic.store.result",
 		Source:         "backend.store",
 		SequenceLabel:  sessionV3StoreDiagnosticSequence("result", input.Kind, input.ClientRequestID, int64(result.Event.Seq)),
@@ -211,15 +175,40 @@ func (s *Server) recordV3StoreResultDiagnostic(input sessionruntime.SessionMutat
 	}
 }
 
-func decodeSessionV3DiagnosticRawJSON(raw json.RawMessage) any {
+func sessionV3StoreDiagnosticRunID(input sessionruntime.SessionMutationInput) string {
+	if input.RunIntent != nil {
+		return input.RunIntent.RunID
+	}
+	return ""
+}
+
+func sessionV3StoreDiagnosticMetadata(input sessionruntime.SessionMutationInput, result sessionruntime.SessionMutationResult, applyErr error) map[string]any {
+	runID := sessionV3StoreDiagnosticRunID(input)
+	payload := map[string]any{
+		"session_id": input.SessionID, "run_id": runID, "kind": input.Kind, "event_type": input.EventType,
+		"client_request_id": input.ClientRequestID, "idempotency_key": input.IdempotencyKey,
+		"payload_hash": input.PayloadHash, "request_hash": input.RequestHash,
+		"event_payload_bytes": len(input.EventPayload), "event_payload_sha256": sessionV3DiagnosticBytesHash(input.EventPayload),
+		"result_event_id": result.Event.ID, "result_event_seq": result.Event.Seq,
+	}
+	if result.Conflict != nil {
+		payload["conflict_code"] = result.Conflict.Code
+		payload["conflict_existing_payload_hash"] = result.Conflict.ExistingPayloadHash
+		payload["conflict_incoming_payload_hash"] = result.Conflict.IncomingPayloadHash
+	}
+	if applyErr != nil {
+		payload["error_type"] = fmt.Sprintf("%T", applyErr)
+		payload["error_hash"] = sessionV3DiagnosticSafeKeyHash(applyErr.Error())
+	}
+	return payload
+}
+
+func sessionV3DiagnosticBytesHash(raw []byte) string {
 	if len(raw) == 0 {
-		return nil
+		return ""
 	}
-	var decoded any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return map[string]any{"decode_error": err.Error(), "raw": string(raw)}
-	}
-	return decoded
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:8])
 }
 
 func sessionV3StoreDiagnosticSequence(prefix, kind, requestID string, discriminator int64) string {
