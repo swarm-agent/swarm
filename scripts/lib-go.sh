@@ -24,7 +24,7 @@ swarm_find_go_bin() {
     "${parent_root}"/.tools/go*/bin/go
   do
     [[ -x "${candidate}" ]] || continue
-    goroot_dir="$("${candidate}" env GOROOT 2>/dev/null || true)"
+    goroot_dir="$(env -u GOROOT "${candidate}" env GOROOT 2>/dev/null || true)"
     if [[ -n "${goroot_dir}" && -d "${goroot_dir}" ]]; then
       printf "%s\n" "${candidate}"
       return 0
@@ -49,10 +49,7 @@ swarm_require_go() {
     return 1
   fi
 
-  goroot_dir="${GOROOT:-}"
-  if [[ -z "${goroot_dir}" ]]; then
-    goroot_dir="$("${GO_BIN}" env GOROOT 2>/dev/null || true)"
-  fi
+  goroot_dir="$(env -u GOROOT "${GO_BIN}" env GOROOT 2>/dev/null || true)"
   if [[ -z "${goroot_dir}" ]]; then
     go_dir="$(cd -- "$(dirname -- "${GO_BIN}")" && pwd)"
     goroot_dir="$(cd -- "${go_dir}/.." && pwd)"
@@ -67,9 +64,7 @@ swarm_require_go() {
     return 1
   fi
 
-  if [[ -z "${GOROOT:-}" ]]; then
-    export GOROOT="${goroot_dir}"
-  fi
+  export GOROOT="${goroot_dir}"
   if [[ -z "${GOTOOLCHAIN:-}" ]]; then
     export GOTOOLCHAIN="local"
   fi
