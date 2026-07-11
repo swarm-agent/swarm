@@ -1,5 +1,12 @@
 import { requestJson } from '../../../app/api'
-import type { GitRealtimeResponse, GitStatusResponse } from './types'
+import type { GitRealtimeResponse, GitSnapshot, GitStatusResponse } from './types'
+
+function normalizeGitSnapshot(snapshot: GitSnapshot): GitSnapshot {
+  return {
+    ...snapshot,
+    files: Array.isArray(snapshot.files) ? snapshot.files : [],
+  }
+}
 
 export interface GitCommitResponse {
   ok?: boolean
@@ -21,13 +28,15 @@ export async function fetchGitStatus(workspacePath: string, recentLimit = 12): P
   const params = new URLSearchParams()
   params.set('workspace_path', workspacePath)
   params.set('recent_limit', String(recentLimit))
-  return requestJson<GitStatusResponse>(`/v1/workspace/git/status?${params.toString()}`)
+  const response = await requestJson<GitStatusResponse>(`/v1/workspace/git/status?${params.toString()}`)
+  return { ...response, status: normalizeGitSnapshot(response.status) }
 }
 
 export async function startGitRealtime(workspacePath: string): Promise<GitRealtimeResponse> {
   const params = new URLSearchParams()
   params.set('workspace_path', workspacePath)
-  return requestJson<GitRealtimeResponse>(`/v1/workspace/git/realtime?${params.toString()}`, { method: 'POST' })
+  const response = await requestJson<GitRealtimeResponse>(`/v1/workspace/git/realtime?${params.toString()}`, { method: 'POST' })
+  return { ...response, status: normalizeGitSnapshot(response.status) }
 }
 
 export async function commitWorkspaceChanges(input: {
