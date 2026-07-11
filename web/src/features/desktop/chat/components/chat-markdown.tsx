@@ -1021,7 +1021,7 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
       <header className="flex items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--app-primary)_15%,transparent)] text-[var(--app-primary)]"><HeaderIcon size={15} /></span>
-          <div className="min-w-0"><h4 className="truncate text-sm font-semibold text-[var(--app-text)]">{title}</h4><p className="text-[11px] text-[var(--app-text-subtle)]">{items.length ? `${items.length} ${items.length === 1 ? "session" : "sessions"}` : action.replaceAll("_", " ")}</p></div>
+          <div className="min-w-0"><h4 className="truncate text-sm font-semibold text-[var(--app-text)]">{title}</h4><p className="text-[11px] text-[var(--app-text-subtle)]">{items.length ? `${items.length} ${items.length === 1 ? "session" : "sessions"}` : action.split("_").join(" ")}</p></div>
         </div>
         {output.has_more === true ? <span className="rounded-full border border-[var(--app-border)] px-2 py-1 text-[10px] font-medium text-[var(--app-text-muted)]">More available</span> : null}
       </header>
@@ -1029,7 +1029,7 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
         <article key={item.id || `${item.title}-${index}`} className="group rounded-xl border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_88%,transparent)] p-3 transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]">
           <div className="flex min-w-0 items-start justify-between gap-3">
             <div className="min-w-0"><div className="truncate text-[13px] font-semibold text-[var(--app-text)]">{item.title}</div>{item.id ? <div className="mt-0.5 truncate font-mono text-[9px] text-[var(--app-text-subtle)]">{item.id}</div> : null}</div>
-            {item.state ? <span className="shrink-0 rounded-full bg-[color-mix(in_srgb,var(--app-primary)_10%,transparent)] px-2 py-1 text-[10px] font-medium capitalize text-[var(--app-text-muted)]">{item.state.replaceAll("_", " ")}</span> : null}
+            {item.state ? <span className="shrink-0 rounded-full bg-[color-mix(in_srgb,var(--app-primary)_10%,transparent)] px-2 py-1 text-[10px] font-medium capitalize text-[var(--app-text-muted)]">{item.state.split("_").join(" ")}</span> : null}
           </div>
           {item.snippet ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-[var(--app-text-muted)]">{item.snippet}</p> : null}
           <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[var(--app-text-subtle)]">
