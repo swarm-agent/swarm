@@ -177,6 +177,31 @@ function testBashToolUsesDedicatedFullWidthCard(): void {
   assert(!markup.includes("odd:bg"), "bash output should not use striped preview rows");
 }
 
+function testManageSessionsUsesRelativeDesktopNavigation(): void {
+  const sessionId = "session-123";
+  const href = `/workspace-abc/${sessionId}`;
+  const message = buildStructuredToolMessage({
+    tool: "manage_sessions",
+    callId: "call_manage_sessions_navigation",
+    outputText: JSON.stringify({
+      id: sessionId,
+      navigation: {
+        kind: "session",
+        session_id: sessionId,
+        workspace_slug: "workspace-abc",
+        href,
+      },
+    }),
+  });
+  assert(Boolean(message), "expected structured manage_sessions message");
+
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes(`href="${href}"`), "expected canonical relative session href");
+  assert(markup.includes(`Open session ${sessionId}`), "expected session identity in action label");
+  assert(!markup.includes("http://") && !markup.includes("https://"), "must not synthesize an absolute origin");
+  assert(!markup.includes('target="_blank"'), "relative Desktop session navigation should stay internal");
+}
+
 function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
   const description = "Map backend and UI task stream behavior";
   const firstMessage = buildStructuredToolMessage({
@@ -238,6 +263,7 @@ function main(): void {
   testTaskRunningTimerUsesStartTimestamp();
   testTaskTerminalTimerUsesFinalElapsed();
   testBashToolUsesDedicatedFullWidthCard();
+  testManageSessionsUsesRelativeDesktopNavigation();
   testTaskHeaderDoesNotShiftBetweenLaunchAssignments();
   console.log("chat-markdown preview tests passed");
 }

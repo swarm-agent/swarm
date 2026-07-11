@@ -935,12 +935,70 @@ function ImageToolAction({ toolMessage }: { toolMessage: StructuredToolMessage }
   );
 }
 
+interface ManageSessionNavigation {
+  sessionId: string;
+  href: string;
+}
+
+function manageSessionNavigation(record: unknown): ManageSessionNavigation | null {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+  const navigation = record as Record<string, unknown>;
+  const sessionId = toolJsonString(navigation, "session_id");
+  const href = toolJsonString(navigation, "href");
+  if (!sessionId || !/^\/[a-z0-9][a-z0-9-]*\/[^/?#]+(?:[?#].*)?$/i.test(href)) return null;
+  return { sessionId, href };
+}
+
+function manageSessionNavigations(output: Record<string, unknown> | null): ManageSessionNavigation[] {
+  if (!output) return [];
+  const candidates: unknown[] = [output.navigation];
+  if (Array.isArray(output.items)) {
+    for (const item of output.items) {
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        candidates.push((item as Record<string, unknown>).navigation);
+      }
+    }
+  }
+  const seen = new Set<string>();
+  const result: ManageSessionNavigation[] = [];
+  for (const candidate of candidates) {
+    const navigation = manageSessionNavigation(candidate);
+    if (!navigation || seen.has(navigation.href)) continue;
+    seen.add(navigation.href);
+    result.push(navigation);
+  }
+  return result;
+}
+
+function ManageSessionsActions({ toolMessage }: { toolMessage: StructuredToolMessage }) {
+  const outputJson = parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+  const navigations = manageSessionNavigations(outputJson);
+  if (navigations.length === 0) return null;
+  return (
+    <div className="mt-2 flex min-w-0 flex-wrap gap-2">
+      {navigations.map((navigation) => (
+        <a
+          key={navigation.href}
+          href={navigation.href}
+          className="inline-flex h-8 max-w-full items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-xs font-medium text-[var(--app-text)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]"
+          title={navigation.href}
+        >
+          <ArrowRight size={13} className="shrink-0" />
+          <span className="truncate">Open session {navigation.sessionId}</span>
+        </a>
+      ))}
+    </div>
+  );
+}
+
 function shouldRenderPreviewAsPlain(toolName: string): boolean {
   switch (toolName.trim().toLowerCase()) {
     case "manage_todos":
     case "manage-todos":
     case "manage-image":
     case "manage_image":
+    case "manage-sessions":
+    case "manage_sessions":
     case "websearch":
     case "webfetch":
     case "task":
@@ -1102,6 +1160,9 @@ export function ToolMessageView({
         ) : null}
         {toolMessage.tool.trim().toLowerCase() === 'manage-image' || toolMessage.tool.trim().toLowerCase() === 'manage_image' ? (
           <ImageToolAction toolMessage={toolMessage} />
+        ) : null}
+        {toolMessage.tool.trim().toLowerCase() === 'manage-sessions' || toolMessage.tool.trim().toLowerCase() === 'manage_sessions' ? (
+          <ManageSessionsActions toolMessage={toolMessage} />
         ) : null}
       </div>
     </div>
