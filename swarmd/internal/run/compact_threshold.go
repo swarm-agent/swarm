@@ -141,7 +141,6 @@ func (s *Service) maybeAutoCompactRunContext(ctx context.Context, sessionID, run
 	compactedSummary, compactErr := s.compactRunContextWithMemory(
 		ctx,
 		sessionID,
-		appendInput.RunID,
 		runPrompt,
 		"",
 		preference,

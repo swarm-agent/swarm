@@ -18,14 +18,10 @@ type Request struct {
 	// SessionID is the stable durable Swarm session identity used for
 	// diagnostics/storage. Providers must not treat it as a cache/session
 	// affinity key; use ProviderCacheKey/SessionAffinityKey instead.
-	SessionID         string
-	ProviderLineageID string
-	ContextBranchID   string
-	ProviderCacheKey  string
-	// TurnAffinityKey identifies one provider transport window. It must rotate
-	// across independent turns and restart boundaries while ProviderCacheKey
-	// remains stable for the durable thread.
-	TurnAffinityKey               string
+	SessionID                     string
+	ProviderLineageID             string
+	ContextBranchID               string
+	ProviderCacheKey              string
 	SessionAffinityKey            string
 	BoundaryReason                string
 	PreviousProviderLineageID     string
@@ -49,7 +45,6 @@ type Request struct {
 	ServiceTier                   string
 	ContextMode                   string
 	ContextWindow                 int
-	ContextWindowGeneration       int
 	ModelCatalog                  any
 	ParallelToolCalls             bool
 	WorkspacePath                 string
@@ -61,7 +56,7 @@ func (r Request) EffectiveProviderCacheKey() string {
 }
 
 func (r Request) EffectiveSessionAffinityKey() string {
-	return strings.TrimSpace(firstNonEmpty(r.TurnAffinityKey, r.SessionAffinityKey, r.ProviderCacheKey, r.ProviderLineageID))
+	return strings.TrimSpace(firstNonEmpty(r.SessionAffinityKey, r.ProviderCacheKey, r.ProviderLineageID))
 }
 
 func ShortProviderLineageKey(parts ...string) string {

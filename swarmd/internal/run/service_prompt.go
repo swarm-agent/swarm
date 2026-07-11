@@ -619,19 +619,7 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 	return strings.Join(lines, "\n")
 }
 
-// ModelContextProjectionOptions controls the canonical model-facing projection
-// of immutable durable messages. AssistantReplay may return provider-native
-// response items; when it does not, assistant text is projected portably.
-type ModelContextProjectionOptions struct {
-	AssistantReplay func(map[string]any) []map[string]any
-}
-
-// BuildModelContextProjection converts durable messages into the canonical
-// provider-facing representation. In particular, stored tool wrappers are
-// decoded into complete call/output pairs and their output is bounded through
-// PrepareToolOutputForModel. UI/debug-only records and malformed tool records
-// are excluded rather than copied into model context.
-func BuildModelContextProjection(messages []pebblestore.MessageSnapshot, options ModelContextProjectionOptions) []map[string]any {
+func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
 	input := make([]map[string]any, 0, len(messages))
 	for _, message := range messages {
 		content := strings.TrimSpace(message.Content)
@@ -645,12 +633,6 @@ func BuildModelContextProjection(messages []pebblestore.MessageSnapshot, options
 		role := strings.ToLower(strings.TrimSpace(message.Role))
 		switch role {
 		case "assistant":
-			if options.AssistantReplay != nil {
-				if native := options.AssistantReplay(message.Metadata); len(native) > 0 {
-					input = append(input, native...)
-					continue
-				}
-			}
 			if assistantInput, ok := buildAssistantOutputInput(content); ok {
 				input = append(input, assistantInput)
 			}
@@ -688,10 +670,6 @@ func BuildModelContextProjection(messages []pebblestore.MessageSnapshot, options
 		}
 	}
 	return input
-}
-
-func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
-	return BuildModelContextProjection(messages, ModelContextProjectionOptions{})
 }
 
 func buildAssistantOutputInput(content string) (map[string]any, bool) {

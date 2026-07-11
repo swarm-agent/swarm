@@ -439,58 +439,29 @@ func TestCodexTransportUsesSessionAffinityForHeadersAndWebsocketCache(t *testing
 	}
 }
 
-func TestCodexOutboundShapeDiagnosticsAreSafeAndCountProductionInput(t *testing.T) {
-	full := map[string]any{"input": []map[string]any{
-		{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "hello"}}},
-		{"type": "reasoning", "encrypted_content": "secret-token"},
-	}}
+func TestCodexOutboundShapeDiagnosticsAreSafeAndCountNativeInput(t *testing.T) {
 	event := codexOutboundShapeEvent("websocket_request_shape", codexTransportContext{
 		PromptCacheKey:            "cache-lineage-key",
 		SessionAffinityKey:        "affinity-window-key",
 		NativeContinuationAllowed: false,
 		ForceFreshProviderContext: true,
 		BoundaryReason:            "checkpoint_fresh_context",
-		ContextWindowGeneration:   2,
-	}, full, full, false, "fresh_context:checkpoint_fresh_context")
+	}, map[string]any{"input": []any{
+		map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": "hello"}}},
+		map[string]any{"type": "reasoning", "encrypted_content": "secret-token"},
+	}}, false, false)
 
-	if event.Extra["prompt_cache_key_hash"] == "" || event.Extra["prompt_cache_key_hash"] == "cache-lineage-key" || event.Extra["session_affinity_key_hash"] == "" || event.Extra["session_affinity_key_hash"] == "affinity-window-key" {
-		t.Fatalf("diagnostic did not hash transport identities safely: %+v", event.Extra)
+	if event.Extra["prompt_cache_key_present"] != true || event.Extra["session_affinity_key_present"] != true {
+		t.Fatalf("diagnostic missing key presence: %+v", event.Extra)
 	}
-	if event.Extra["previous_response_id_present"] != false || event.Extra["websocket_reused"] != false || event.Extra["context_window_generation"] != 2 {
-		t.Fatalf("fresh diagnostic transport shape = %+v", event.Extra)
+	if event.Extra["session_affinity_key_hash"] == "" || event.Extra["session_affinity_key_hash"] == "affinity-window-key" {
+		t.Fatalf("diagnostic did not hash affinity key safely: %+v", event.Extra)
 	}
-	if event.Extra["continuation_rejection_reason"] != "fresh_context:checkpoint_fresh_context" {
-		t.Fatalf("fresh rejection reason = %+v", event.Extra)
+	if event.Extra["previous_response_id_present"] != false || event.Extra["websocket_reused"] != false {
+		t.Fatalf("fresh diagnostic reported reuse: %+v", event.Extra)
 	}
-	if event.Extra["full_input_items"] != 2 || event.Extra["full_input_text_chars"] != 40 || event.Extra["native_input_items"] != 1 || event.Extra["encrypted_input_items"] != 1 {
-		t.Fatalf("production input shape = %+v", event.Extra)
-	}
-}
-
-func TestCodexOutboundShapeDiagnosticsDistinguishFullAndDeltaInput(t *testing.T) {
-	full := map[string]any{"input": []map[string]any{
-		{"role": "user", "content": "run tool"},
-		{"type": "function_call", "call_id": "call-1", "name": "shell", "arguments": "{}"},
-		{"type": "function_call_output", "call_id": "call-1", "output": "done"},
-	}}
-	delta := map[string]any{
-		"previous_response_id": "resp-1",
-		"input":                []map[string]any{{"type": "function_call_output", "call_id": "call-1", "output": "done"}},
-	}
-	event := codexOutboundShapeEvent("websocket_request_shape", codexTransportContext{
-		PromptCacheKey:            "cache-lineage-key",
-		SessionAffinityKey:        "affinity-window-key",
-		NativeContinuationAllowed: true,
-	}, full, delta, true, "")
-
-	if event.Extra["full_input_items"] != 3 || event.Extra["sent_input_items"] != 1 {
-		t.Fatalf("full/delta item shape = %+v", event.Extra)
-	}
-	if event.Extra["full_input_text_chars"] != 68 || event.Extra["sent_input_text_chars"] != 30 {
-		t.Fatalf("full/delta character shape = %+v", event.Extra)
-	}
-	if event.Extra["previous_response_id_present"] != true || event.Extra["continuation_rejection_reason"] != "" {
-		t.Fatalf("continuation diagnostic = %+v", event.Extra)
+	if event.Extra["input_items"] != 2 || event.Extra["input_text_chars"] != 40 || event.Extra["native_input_items"] != 1 || event.Extra["encrypted_input_items"] != 1 {
+		t.Fatalf("diagnostic input shape = %+v", event.Extra)
 	}
 }
 

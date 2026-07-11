@@ -5,21 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
-	"swarm/packages/swarmd/internal/tool"
 )
-
-func TestContextCompactionCheckpointMetadataDefinesReplacementGeneration(t *testing.T) {
-	metadata := ContextCompactionCheckpointMetadata(nil, "summary", contextCompactionOriginOverflow, 4)
-	generation, ok := metadata[contextCompactionGenerationMetadataKey].(map[string]any)
-	if !ok {
-		t.Fatalf("generation metadata missing or wrong type: %+v", metadata)
-	}
-	if generation["version"] != contextCompactionGenerationVersion || generation["origin"] != contextCompactionOriginOverflow || generation["compact_index"] != 4 {
-		t.Fatalf("generation metadata = %+v", generation)
-	}
-}
 
 func TestBuildMemoryCompactionInstructionsByOrigin(t *testing.T) {
 	manual := buildMemoryCompactionInstructions("", 9000, contextCompactionOriginManual)
@@ -130,81 +117,6 @@ func TestBuildManualCompactionAssistantTextIncludesUserVisibleRecap(t *testing.T
 		if !strings.Contains(text, want) {
 			t.Fatalf("manual compact assistant text missing %q:\n%s", want, text)
 		}
-	}
-}
-
-func TestMemoryCompactionTranscriptUsesBoundedCanonicalToolProjection(t *testing.T) {
-	largeOutput := strings.Repeat("raw-wrapper-payload-", 6000)
-	valid := formatToolHistory(tool.Call{CallID: "call-1", Name: "bash", Arguments: `{"command":"large"}`}, tool.Result{CallID: "call-1", Name: "bash", Output: largeOutput})
-	messages := []pebblestore.MessageSnapshot{
-		{GlobalSeq: 1, Role: "tool", Content: valid},
-		{GlobalSeq: 2, Role: "tool", Content: `{"path_id":"run.tool-history.v2","tool":"bash"}`},
-		{GlobalSeq: 3, Role: "tool", Content: "malformed tool wrapper"},
-		{GlobalSeq: 4, Role: "user", Content: "latest real user request"},
-	}
-
-	transcript := buildMemoryCompactionTranscript(messages, "")
-	for _, want := range []string{"function_call", "function_call_output", "call-1", "truncated_for_model", "latest real user request"} {
-		if !strings.Contains(transcript, want) {
-			t.Fatalf("canonical compaction transcript missing %q:\n%s", want, transcript)
-		}
-	}
-	for _, forbidden := range []string{largeOutput, "malformed tool wrapper"} {
-		if strings.Contains(transcript, forbidden) {
-			t.Fatalf("raw or malformed tool storage leaked into compaction transcript")
-		}
-	}
-	if got := len([]rune(transcript)); got > memoryCompactionTranscriptMaxRunes {
-		t.Fatalf("compaction transcript runes = %d, max %d", got, memoryCompactionTranscriptMaxRunes)
-	}
-}
-
-func TestBoundedMemoryCompactionEntriesRetainsLatestRealUserRequest(t *testing.T) {
-	entries := []string{strings.Repeat("old context ", 100), "[seq:2 model_context]\nlatest real user request"}
-	got := boundedMemoryCompactionEntries(entries, 80)
-	if !strings.Contains(got, "latest real user request") || strings.Contains(got, "old context") {
-		t.Fatalf("bounded transcript did not preserve latest request: %q", got)
-	}
-}
-
-func TestDurableCompactionFactsRejectsFalseDeploymentAfterNewCommitAndCancelledDeploy(t *testing.T) {
-	messages := []pebblestore.MessageSnapshot{
-		{GlobalSeq: 10, Role: "tool", Content: formatToolHistory(tool.Call{CallID: "deploy-old", Name: "deploy", Arguments: `{}`}, tool.Result{CallID: "deploy-old", Name: "deploy", Output: "deployed commit 1fb164f5"})},
-		{GlobalSeq: 20, Role: "tool", Content: formatToolHistory(tool.Call{CallID: "commit-new", Name: "git_commit", Arguments: `{}`}, tool.Result{CallID: "commit-new", Name: "git_commit", Output: "created commit 4eba49a"})},
-		{GlobalSeq: 21, Role: "user", Content: "deploy the new commit"},
-	}
-	intents := []pebblestore.V3SessionRunIntent{{RunID: "deploy-4eba49a", Status: sessionruntime.RunIntentCancelled, BlockedReason: "cancelled during deploy"}}
-
-	facts := buildDurableCompactionFacts(messages, intents, &pebblestore.SessionPlanSnapshot{ID: "plan-1", Status: "running"})
-	for _, want := range []string{"4eba49a", "1fb164f5", "status=cancelled", "NOT confirmed deployed/live", "Latest durable user request: deploy the new commit", "Active plan state:"} {
-		if !strings.Contains(facts, want) {
-			t.Fatalf("durable facts missing %q:\n%s", want, facts)
-		}
-	}
-	if strings.Contains(facts, "4eba49a is deployed") {
-		t.Fatalf("durable facts falsely reported new commit deployed:\n%s", facts)
-	}
-}
-
-func TestDurableFactsRejectContradictoryGeneratedRecap(t *testing.T) {
-	facts := "Unconfirmed/cancelled work: run deploy-new ended cancelled; no success claim may be inferred."
-	if !durableFactsRejectGeneratedRecap(facts) {
-		t.Fatal("cancelled durable work did not reject generated recap")
-	}
-	if durableFactsRejectGeneratedRecap("Run intent: run_id=done status=completed") {
-		t.Fatal("terminal successful durable work unexpectedly rejected generated recap")
-	}
-}
-
-func TestCompactionCheckpointSeparatesGeneratedRecapAndDurableFacts(t *testing.T) {
-	facts := "Run intent: run_id=deploy-new status=cancelled"
-	reconciled := strings.Join([]string{"Generated recap (non-authoritative; durable facts below prevail):", "Everything deployed successfully.", contextCompactionFactsHeading, facts}, "\n\n")
-	checkpoint := buildCompactionCheckpointMessage(reconciled, contextCompactionOriginOverflow, 2, "")
-	if !strings.Contains(checkpoint, "Generated recap (non-authoritative") || !strings.Contains(checkpoint, contextCompactionFactsHeading) {
-		t.Fatalf("checkpoint did not separate generated recap from durable facts:\n%s", checkpoint)
-	}
-	if got := durableFactsTailFromSummary(reconciled); got != facts {
-		t.Fatalf("durable facts metadata tail = %q, want %q", got, facts)
 	}
 }
 

@@ -99,7 +99,6 @@ func (s *Service) RunManualCompaction(ctx context.Context, sessionID string, inp
 	compactedSummary, compactErr := s.compactRunContextWithMemory(
 		ctx,
 		sessionID,
-		runID,
 		prompt,
 		"",
 		resolvedPreference.Preference,
@@ -132,8 +131,7 @@ func (s *Service) RunManualCompaction(ctx context.Context, sessionID string, inp
 	nextTitle, compactIndex := nextCompactSessionTitle(sessionSnapshot.Title)
 	result.CompactIndex = compactIndex
 	checkpoint := buildCompactionCheckpointMessage(compactedSummary, origin, compactIndex, compactedActivePlanLabel(activePlan))
-	checkpointMetadata := contextCompactionCheckpointMetadata(activePlan, compactedSummary, origin, compactIndex)
-	checkpointMessage, _, checkpointMutation, appendErr := s.appendRunMessageWithMutation(runAppendMessageInput{SessionID: sessionID, Role: "system", Content: checkpoint, Metadata: checkpointMetadata, RunID: runID, Step: step, LogicalKey: fmt.Sprintf("system:context_compaction:%d", compactIndex), Principal: principal, ApplySessionMutation: input.ApplySessionMutation})
+	checkpointMessage, _, checkpointMutation, appendErr := s.appendRunMessageWithMutation(runAppendMessageInput{SessionID: sessionID, Role: "system", Content: checkpoint, Metadata: compactedContextCheckpointMetadata(activePlan), RunID: runID, Step: step, LogicalKey: fmt.Sprintf("system:context_compaction:%d", compactIndex), Principal: principal, ApplySessionMutation: input.ApplySessionMutation})
 	if appendErr != nil {
 		return ManualCompactionResult{}, fmt.Errorf("manual compact checkpoint append failed: %w", appendErr)
 	}

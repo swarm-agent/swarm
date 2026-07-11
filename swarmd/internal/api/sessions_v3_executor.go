@@ -1052,7 +1052,7 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 		SessionID:                 session.ID,
 		ProviderLineageID:         providerLineageID,
 		ContextBranchID:           provideriface.ShortProviderLineageKey("session", session.ID, session.Mode),
-		ProviderCacheKey:          sessionV3ProviderCacheKey(session.ID),
+		ProviderCacheKey:          sessionV3ProviderScopedKey("cache", providerLineageID),
 		SessionAffinityKey:        sessionV3ProviderScopedKey("affinity", providerLineageID),
 		BoundaryReason:            "session_title",
 		NativeContinuationAllowed: false,
@@ -1372,23 +1372,16 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 	lineageStart := e.sessionV3ProviderLineageSnapshot(job, lineageID)
 	checkpointFreshContext := sessionV3ProviderCheckpointFreshContext(job, checkpointScope)
 	nativeContinuationAllowed := !checkpointFreshContext && sessionV3ProviderNativeContinuationAllowed(previousLineageID, lineageID)
-	providerCacheKey := sessionV3ProviderCacheKey(job.SessionID)
-	turnAffinityKey := sessionV3ProviderScopedKey("turn", provideriface.ShortProviderLineageKey(
-		job.SessionID,
-		strings.TrimSpace(job.RunID),
-		strings.TrimSpace(firstNonEmptyString(checkpointScope.AttemptID, job.AttemptID)),
-		contextBranchID,
-		providerID,
-		model,
-		fmt.Sprint(sessionV3ProviderContextWindowGeneration(input)),
-	))
-	sessionAffinityKey := turnAffinityKey
+	providerCacheKey := sessionV3ProviderScopedKey("cache", lineageID)
+	sessionAffinityKey := sessionV3ProviderScopedKey("affinity", lineageID)
+	if checkpointFreshContext {
+		sessionAffinityKey = sessionV3ProviderScopedKey("affinity", provideriface.ShortProviderLineageKey(lineageID, contextBranchID, strings.TrimSpace(firstNonEmptyString(checkpointScope.AttemptID, job.AttemptID)), strings.TrimSpace(job.RunID)))
+	}
 	baseReq := provideriface.Request{
 		SessionID:                     job.SessionID,
 		ProviderLineageID:             lineageID,
 		ContextBranchID:               contextBranchID,
 		ProviderCacheKey:              providerCacheKey,
-		TurnAffinityKey:               turnAffinityKey,
 		SessionAffinityKey:            sessionAffinityKey,
 		BoundaryReason:                sessionV3ProviderBoundaryReason(job, previousLineageID, lineageID, checkpointScope),
 		PreviousProviderLineageID:     previousLineageID,
@@ -1412,7 +1405,6 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 		ServiceTier:                   strings.TrimSpace(pref.ServiceTier),
 		ContextMode:                   strings.TrimSpace(pref.ContextMode),
 		ContextWindow:                 resolved.ContextWindow,
-		ContextWindowGeneration:       sessionV3ProviderContextWindowGeneration(input),
 		ModelCatalog:                  resolved.ModelCatalog,
 		ParallelToolCalls:             true,
 		WorkspacePath:                 strings.TrimSpace(resolved.Scope.PrimaryPath),
@@ -1909,17 +1901,6 @@ func sessionV3ProviderBoundaryReasonWithOverride(current, override string) strin
 	return current + "+" + override
 }
 
-func sessionV3ProviderCacheKey(sessionID string) string {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return ""
-	}
-	// Keep the provider cache namespace stable for the durable V3 thread while
-	// never exposing the raw durable identifier to the provider. Request
-	// compatibility and transport affinity are intentionally separate keys.
-	return sessionV3ProviderScopedKey("cache", provideriface.ShortProviderLineageKey("v3-session", sessionID))
-}
-
 func sessionV3ProviderScopedKey(prefix, lineageID string) string {
 	lineageID = strings.TrimSpace(lineageID)
 	if lineageID == "" {
@@ -1995,10 +1976,6 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		req := baseReq
 		req.Input = append([]map[string]any(nil), input...)
 		req.ToolInvoker = toolInvoker
-		if step == 1 {
-			req.NativeContinuationAllowed = false
-			req.ForceFreshProviderContext = true
-		}
 		e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.request", "backend.provider", "request", map[string]any{
 			"provider": strings.ToLower(strings.TrimSpace(resolved.Preference.Provider)),
 			"model":    strings.TrimSpace(req.Model),
@@ -2095,8 +2072,6 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				}
 				baseReq.NativeContinuationAllowed = false
 				baseReq.ForceFreshProviderContext = true
-				baseReq.TurnAffinityKey = sessionV3ProviderScopedKey("turn", provideriface.ShortProviderLineageKey(baseReq.TurnAffinityKey, "restart_after_tool", fmt.Sprint(step)))
-				baseReq.SessionAffinityKey = baseReq.TurnAffinityKey
 				continue
 			}
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider requested a tool-loop restart without tool calls")
@@ -2163,19 +2138,12 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			}
 			toolResults = append(toolResults, result)
 		}
-		input = append(input, sessionsV3ProviderContinuationItems(runner.ID(), response, toolResults)...)
+		input = append(input, sessionsV3ProviderToolResultInputItems(response.FunctionCalls, toolResults)...)
 		if len(input) == 0 {
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider continuation input is empty after tool execution")
 		}
 		if _, ok := sessionsV3ProviderTerminalPlanToolResult(toolResults); ok {
 			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), TerminalPlanHandled: true}, nil
-		}
-		if !restartAfterTools {
-			// The fresh boundary applies to the first successful provider request in
-			// this turn/window only. Later tool-loop requests may continue when the
-			// provider verifies unchanged properties and an append-only baseline.
-			baseReq.NativeContinuationAllowed = true
-			baseReq.ForceFreshProviderContext = false
 		}
 		if restartAfterTools {
 			restartCheckpointScope := sessionV3ProviderCheckpointScopeFromPayload(sessionV3ProviderJobCheckpointScope(job), sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(toolResults[len(toolResults)-1].Output, sessionsV3LatestFunctionCallOutput(input), toolResults[len(toolResults)-1].TextForModel))))
@@ -2205,8 +2173,6 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			}
 			baseReq.NativeContinuationAllowed = false
 			baseReq.ForceFreshProviderContext = true
-			baseReq.TurnAffinityKey = sessionV3ProviderScopedKey("turn", provideriface.ShortProviderLineageKey(baseReq.TurnAffinityKey, "restart_after_tool", fmt.Sprint(step)))
-			baseReq.SessionAffinityKey = baseReq.TurnAffinityKey
 		}
 	}
 }
@@ -3083,63 +3049,48 @@ func sessionsV3ProviderInputForLineage(messages []pebblestore.MessageSnapshot, l
 
 func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, options sessionsV3ProviderInputOptions) []map[string]any {
 	messages = sessionsV3MessagesForProviderLineage(messages, options.LineageID, options.Bounded)
-	projectionOptions := runruntime.ModelContextProjectionOptions{}
-	if !options.SuppressNativeReplay {
-		projectionOptions.AssistantReplay = sessionsV3ProviderNativeInputItems
-	}
-	return runruntime.BuildModelContextProjection(messages, projectionOptions)
-}
-
-func sessionV3ProviderContextWindowGeneration(input []map[string]any) int {
-	generation := 0
-	for _, item := range input {
-		content := strings.TrimSpace(fmt.Sprint(item["content"]))
-		if !strings.Contains(content, "[context-compact]") {
+	input := make([]map[string]any, 0, len(messages))
+	for _, message := range messages {
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
 			continue
 		}
-		candidate := 1
-		for _, field := range strings.Fields(content) {
-			field = strings.Trim(field, "[]{}(),")
-			if !strings.HasPrefix(field, "index=") {
-				continue
+		switch strings.ToLower(strings.TrimSpace(message.Role)) {
+		case "assistant":
+			if !options.SuppressNativeReplay {
+				if nativeItems := sessionsV3ProviderNativeInputItems(message.Metadata); len(nativeItems) > 0 {
+					input = append(input, nativeItems...)
+					continue
+				}
 			}
-			if parsed, err := strconv.Atoi(strings.Trim(strings.TrimPrefix(field, "index="), "[]{}(),")); err == nil && parsed > 0 {
-				candidate = parsed
-				break
+			input = append(input, sessionsV3ProviderAssistantInputItem(content))
+		case "system":
+			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "[system] " + content}}})
+		case "reasoning":
+			continue
+		case "tool":
+			if toolItems, ok := sessionsV3ProviderToolMessageInput(content, message.Metadata); ok {
+				input = append(input, toolItems...)
 			}
-		}
-		if candidate > generation {
-			generation = candidate
+		default:
+			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": content}}})
 		}
 	}
-	return generation
+	return input
 }
 
 func sessionV3LatestCompactionBoundary(messages []pebblestore.MessageSnapshot) int {
-	latestExplicit := -1
-	latestLegacy := -1
+	latest := 0
 	for i := range messages {
 		if !strings.EqualFold(strings.TrimSpace(messages[i].Role), "system") {
 			continue
 		}
-		if _, ok := messages[i].Metadata["context_compaction_generation"]; ok {
-			latestExplicit = i
+		if !strings.HasPrefix(strings.TrimSpace(messages[i].Content), "[context-compact]") {
 			continue
 		}
-		// Legacy durable checkpoints predate explicit generation metadata. Keep
-		// marker reconstruction only as a migration reader, never as authority
-		// when an explicit replacement window exists.
-		if strings.HasPrefix(strings.TrimSpace(messages[i].Content), "[context-compact]") {
-			latestLegacy = i
-		}
+		latest = i
 	}
-	if latestExplicit >= 0 {
-		return latestExplicit
-	}
-	if latestLegacy >= 0 {
-		return latestLegacy
-	}
-	return 0
+	return latest
 }
 
 func sessionsV3MessagesForProviderLineage(messages []pebblestore.MessageSnapshot, lineageID string, bounded bool) []pebblestore.MessageSnapshot {
@@ -3536,31 +3487,6 @@ func sessionsV3LatestFunctionCallOutput(input []map[string]any) string {
 		return strings.TrimSpace(sessionsV3MapString(item, "output"))
 	}
 	return ""
-}
-
-func sessionsV3ProviderContinuationItems(providerID string, response provideriface.Response, results []provideriface.ToolExecutionResult) []map[string]any {
-	fallback := sessionsV3ProviderToolResultInputItems(response.FunctionCalls, results)
-	native := sessionV3ProviderNativeOutputItems(providerID, response.Raw)
-	if len(native) == 0 {
-		return fallback
-	}
-	out := make([]map[string]any, 0, len(native)+len(results))
-	for _, item := range native {
-		itemMap, ok := item.(map[string]any)
-		if !ok || len(itemMap) == 0 {
-			return fallback
-		}
-		out = append(out, cloneSessionsV3Metadata(itemMap))
-	}
-	// The provider's completed output is the exact continuation baseline. Add
-	// only local tool outputs after it; rebuilding function_call items can alter
-	// provider-owned fields and makes the Codex append-only comparator reject.
-	for _, item := range fallback {
-		if strings.EqualFold(strings.TrimSpace(sessionsV3MapString(item, "type")), "function_call_output") {
-			out = append(out, item)
-		}
-	}
-	return out
 }
 
 func sessionsV3ProviderToolResultInputItems(calls []provideriface.FunctionCall, results []provideriface.ToolExecutionResult) []map[string]any {
