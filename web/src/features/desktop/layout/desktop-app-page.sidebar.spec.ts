@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import type { DesktopSessionRecord } from '../types/realtime'
@@ -15,9 +16,52 @@ import {
   sessionTimerLabel,
   sessionActiveRunIntent,
   sessionSidebarDisplayGroup,
+  sidebarCheckboxVisibilityClass,
   sidebarRootIDsForSelectionGroup,
+  sidebarShouldClearSelectionForSessionChange,
+  sidebarShouldReleaseCheckboxRevealSuppression,
   sidebarShouldRenderSelectionToolbar,
 } from './desktop-app-page'
+
+test('sidebar session focus clears selection immediately, including same-route clicks', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const handlerStart = source.indexOf('const handleSelectSession = useCallback')
+  const handlerEnd = source.indexOf('const chatWorkspacePath', handlerStart)
+  const handlerSource = source.slice(handlerStart, handlerEnd)
+
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
+  assert.match(handlerSource, /const normalizedSessionId = sessionId\.trim\(\)\s*handleClearSidebarSelection\(\)\s*void selectAndHydrateDesktopV3Session/)
+  assert.doesNotMatch(handlerSource, /routeSessionId\s*[!=]==?\s*normalizedSessionId/)
+})
+
+test('external sidebar session changes also clear selection mode so checkboxes hide', () => {
+  assert.equal(sidebarShouldClearSelectionForSessionChange('session-a', 'session-b'), true)
+  assert.equal(sidebarShouldClearSelectionForSessionChange('session-a', 'session-a'), false)
+  assert.equal(sidebarShouldClearSelectionForSessionChange('session-a', '  '), false)
+  assert.equal(sidebarShouldClearSelectionForSessionChange('', 'session-a'), true)
+})
+
+test('activated sidebar rows suppress checkbox reveal until hover and focus both leave', () => {
+  assert.equal(sidebarCheckboxVisibilityClass(true, true), 'w-4 opacity-100')
+  assert.equal(sidebarCheckboxVisibilityClass(false, true), 'w-0 opacity-0')
+  assert.match(sidebarCheckboxVisibilityClass(false, false), /group-hover:w-4/)
+  assert.match(sidebarCheckboxVisibilityClass(false, false), /group-focus-within:w-4/)
+
+  assert.equal(sidebarShouldReleaseCheckboxRevealSuppression(true, true), false)
+  assert.equal(sidebarShouldReleaseCheckboxRevealSuppression(false, true), false)
+  assert.equal(sidebarShouldReleaseCheckboxRevealSuppression(true, false), false)
+  assert.equal(sidebarShouldReleaseCheckboxRevealSuppression(false, false), true)
+})
+
+test('search result activation clears selection before hydration, including same-session results', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const handlerStart = source.indexOf('const handleOpenSearchResult = useCallback')
+  const handlerEnd = source.indexOf('useEffect(() => {', handlerStart)
+  const handlerSource = source.slice(handlerStart, handlerEnd)
+
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
+  assert.match(handlerSource, /handleClearSidebarSelection\(\)\s*void selectAndHydrateDesktopV3Session\(sessionId\)/)
+})
 
 test('session route workspace ignores unbound remote paths from hydrated sessions', () => {
   const session = makeSession('remote-session', {

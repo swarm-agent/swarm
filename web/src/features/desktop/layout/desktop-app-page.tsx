@@ -1721,8 +1721,11 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const checkpointProgressAriaLabel = checkpointProgressLabel || `Checkpoint progress: ${checkpointCompletedCount} of ${checkpointTotalCount} complete`
   const [actionsOpen, setActionsOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
+  const [checkboxRevealSuppressed, setCheckboxRevealSuppressed] = useState(false)
   const [renameDraft, setRenameDraft] = useState(rowTitle)
   const [renameError, setRenameError] = useState<string | null>(null)
+  const checkboxPointerInsideRef = useRef(false)
+  const checkboxFocusInsideRef = useRef(false)
   const actionMenuRef = useRef<HTMLSpanElement | null>(null)
   const actionMenuCloseTimerRef = useRef<number | null>(null)
   const clearActionMenuCloseTimer = useCallback(() => {
@@ -1906,16 +1909,38 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
           return
         }
         event.preventDefault()
+        setCheckboxRevealSuppressed(true)
         onSelect(session.id)
       }}
       onKeyDown={(event) => {
         if (event.key === ' ') {
           event.preventDefault()
+          setCheckboxRevealSuppressed(true)
           onSelect(session.id)
         }
       }}
-      onMouseEnter={() => onPrefetch(session.id)}
-      onFocus={() => onPrefetch(session.id)}
+      onMouseEnter={() => {
+        checkboxPointerInsideRef.current = true
+        onPrefetch(session.id)
+      }}
+      onMouseLeave={() => {
+        checkboxPointerInsideRef.current = false
+        if (sidebarShouldReleaseCheckboxRevealSuppression(false, checkboxFocusInsideRef.current)) {
+          setCheckboxRevealSuppressed(false)
+        }
+      }}
+      onFocus={() => {
+        checkboxFocusInsideRef.current = true
+        onPrefetch(session.id)
+      }}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          checkboxFocusInsideRef.current = false
+          if (sidebarShouldReleaseCheckboxRevealSuppression(checkboxPointerInsideRef.current, false)) {
+            setCheckboxRevealSuppressed(false)
+          }
+        }
+      }}
       className={cn(
         'group relative grid w-full min-w-0 rounded-md border text-left outline-none transition-[background-color,border-color,box-shadow,transform]',
         isPlanRow ? 'gap-1.5 px-2.5 py-2' : 'gap-1 px-2.5 py-1.5',
@@ -1942,8 +1967,8 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
                   onChange={() => undefined}
                   onClick={(event) => { event.preventDefault(); event.stopPropagation(); onToggleSelected?.(session.id, event.shiftKey) }}
                   className={cn(
-                    'h-4 shrink-0 accent-[var(--app-primary)] transition-[width,opacity] focus:w-4 focus:opacity-100',
-                    selectionMode ? 'w-4 opacity-100' : 'w-0 opacity-0 group-hover:w-4 group-hover:opacity-100 group-focus-within:w-4 group-focus-within:opacity-100',
+                    'h-4 shrink-0 accent-[var(--app-primary)] transition-[width,opacity]',
+                    sidebarCheckboxVisibilityClass(selectionMode, checkboxRevealSuppressed),
                   )}
                 />
               ) : null}
@@ -2090,6 +2115,21 @@ export function sidebarShouldRenderSelectionToolbar(
   group: SidebarSessionGroupID,
 ): boolean {
   return selectionMode && masterGroup === group
+}
+
+export function sidebarShouldClearSelectionForSessionChange(currentSessionId: string, nextSessionId: string): boolean {
+  const normalizedNextSessionId = nextSessionId.trim()
+  return normalizedNextSessionId !== '' && normalizedNextSessionId !== currentSessionId.trim()
+}
+
+export function sidebarCheckboxVisibilityClass(selectionMode: boolean, revealSuppressed: boolean): string {
+  if (selectionMode) return 'w-4 opacity-100'
+  if (revealSuppressed) return 'w-0 opacity-0'
+  return 'w-0 opacity-0 group-hover:w-4 group-hover:opacity-100 group-focus-within:w-4 group-focus-within:opacity-100'
+}
+
+export function sidebarShouldReleaseCheckboxRevealSuppression(pointerInside: boolean, focusInside: boolean): boolean {
+  return !pointerInside && !focusInside
 }
 
 export const SIDEBAR_SESSION_GROUPS = [
@@ -2240,6 +2280,7 @@ export function DesktopAppPage() {
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const [previousChatSessionId, setPreviousChatSessionId] = useState<string | null>(null)
   const activeChatSessionIdRef = useRef<string | null>(null)
+  const previousSidebarRouteSessionIdRef = useRef(routeSessionId)
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
   const workspaceByPath = useMemo<Map<string, WorkspaceEntry>>(
@@ -2736,6 +2777,13 @@ export function DesktopAppPage() {
     }
   }, [routeSessionId, routeSessionId, selectedWorkspacePath])
 
+  const handleClearSidebarSelection = useCallback(() => {
+    setSelectedSidebarRootIDs(new Set())
+    setSidebarSelectionMode(false)
+    setSidebarMasterSelectionGroup(null)
+    setLastSelectedSidebarRootID(null)
+  }, [])
+
   const handleOpenSearchResult = useCallback((item: DesktopSessionSearchItem) => {
     const sessionId = item.id.trim()
     if (!sessionId) return
@@ -2746,9 +2794,10 @@ export function DesktopAppPage() {
     if (!workspaceSlug) return
     setSearchModalOpen(false)
     setMobileSidebarOpen(false)
+    handleClearSidebarSelection()
     void selectAndHydrateDesktopV3Session(sessionId)
     void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } })
-  }, [navigate, workspaceSlugByPath])
+  }, [handleClearSidebarSelection, navigate, workspaceSlugByPath])
 
   useEffect(() => {
     if (!routeWorkspaceSlug || routeSessionId || !routeWorkspace?.path) {
@@ -2793,6 +2842,7 @@ export function DesktopAppPage() {
 
   const handleSelectSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
+    handleClearSidebarSelection()
     void selectAndHydrateDesktopV3Session(normalizedSessionId)
     const session = sessionById.get(normalizedSessionId)
     if (!session) {
@@ -2817,7 +2867,7 @@ export function DesktopAppPage() {
       },
     })
     return true
-  }, [knownWorkspacePaths, navigate, selectedWorkspacePath, sessionById, visibleWorkspacePaths, workspacePathByBindingId, workspaceSlugByPath])
+  }, [handleClearSidebarSelection, knownWorkspacePaths, navigate, selectedWorkspacePath, sessionById, visibleWorkspacePaths, workspacePathByBindingId, workspaceSlugByPath])
 
 
 
@@ -2931,13 +2981,6 @@ export function DesktopAppPage() {
   const handleEnterSidebarSelectionMode = useCallback((group: SidebarSessionGroupID) => {
     setSidebarMasterSelectionGroup((current) => current ?? group)
     setSidebarSelectionMode(true)
-  }, [])
-
-  const handleClearSidebarSelection = useCallback(() => {
-    setSelectedSidebarRootIDs(new Set())
-    setSidebarSelectionMode(false)
-    setSidebarMasterSelectionGroup(null)
-    setLastSelectedSidebarRootID(null)
   }, [])
 
   const handleToggleSidebarSelected = useCallback((sessionId: string, range: boolean) => {
@@ -3685,6 +3728,13 @@ export function DesktopAppPage() {
   useEffect(() => {
     setMobileSidebarOpen(false)
   }, [routeSessionId, routeWorkspaceSlug])
+
+  useEffect(() => {
+    const previousRouteSessionId = previousSidebarRouteSessionIdRef.current
+    previousSidebarRouteSessionIdRef.current = routeSessionId
+    if (!sidebarShouldClearSelectionForSessionChange(previousRouteSessionId, routeSessionId)) return
+    handleClearSidebarSelection()
+  }, [handleClearSidebarSelection, routeSessionId])
 
   const handleCompactingSessionChange = useCallback((sessionId: string, startedAt: number | null) => {
     const normalizedSessionId = sessionId.trim()
