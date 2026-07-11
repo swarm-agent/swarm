@@ -1064,6 +1064,109 @@ func TestPlanLifecycleRequestFollowupCheckpointApprovalInsertsBeforeLaterActiveC
 	assertCheckpointOrdersNormalized(t, result.Plan.Document)
 }
 
+func TestPlanLifecycleRequestFollowupCheckpointResolvesBlockedAndAutoStartsInsertedCheckpoint(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	blockedAttempt := pebblestore.SessionPlanCheckpointAttempt{
+		ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: PlanCheckpointStatusBlocked,
+		Outcome: PlanCheckpointStatusBlocked, RunID: "run-blocked", SessionID: "child-blocked",
+		ParentSessionID: sessionID, StartedAt: 100, CompletedAt: 200, Report: "dependency missing", Result: "blocked",
+	}
+	doc := &pebblestore.SessionPlanDocument{
+		ID: "plan-blocked-followup", Title: "Blocked Follow-up Plan", Status: "approved",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed,
+			FollowupCheckpointPolicy: PlanFollowupCheckpointPolicyAutoStart,
+		},
+		ExecutionState: &pebblestore.SessionPlanExecutionState{
+			Status: PlanExecutionStateBlocked, LastCheckpointID: "cp-1", LastAttemptID: blockedAttempt.ID,
+			LastOutcome: PlanCheckpointStatusBlocked, ParentSessionID: sessionID,
+		},
+		ActiveCheckpointID: "cp-1",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Blocked", Status: PlanCheckpointStatusBlocked, AttemptID: blockedAttempt.ID, RunID: blockedAttempt.RunID, SessionID: blockedAttempt.SessionID, StartedAt: 100, CompletedAt: 200, Report: blockedAttempt.Report, Result: blockedAttempt.Result, Attempts: []pebblestore.SessionPlanCheckpointAttempt{blockedAttempt}},
+			{ID: "cp-2", Title: "Later", Status: PlanCheckpointStatusPending},
+		},
+	}
+	plan, _, err := svc.SavePlanWithMetadata(sessionID, doc.ID, doc.Title, "# Blocked Follow-up Plan", "approved", "approved", true, PlanSaveMetadata{Document: doc})
+	if err != nil {
+		t.Fatalf("save blocked plan: %v", err)
+	}
+
+	result, err := NewPlanLifecycleService(svc).RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{
+		SessionID: sessionID, PlanID: plan.ID, ChangeRequest: "Continue with replacement work.",
+		RunID: "run-followup", RunSessionID: "child-followup", ParentSessionID: sessionID, StartedAt: 300,
+	})
+	if err != nil {
+		t.Fatalf("request follow-up for blocked plan: %v", err)
+	}
+	if got := strings.Join(checkpointIDs(result.Plan.Document.Checkpoints), ","); got != "cp-1,followup-1,cp-2" {
+		t.Fatalf("checkpoint order = %s", got)
+	}
+	resolved := result.Plan.Document.Checkpoints[0]
+	if resolved.Status != PlanCheckpointStatusCompleted || resolved.Result != "superseded_by_followup" || resolved.Review == nil || resolved.Review.Status != PlanCheckpointReviewStatusApproved || resolved.Review.Result != "superseded_by_followup" {
+		t.Fatalf("resolved blocked checkpoint = %#v", resolved)
+	}
+	if len(resolved.Attempts) != 1 || resolved.Attempts[0].Status != PlanCheckpointStatusCompleted || resolved.Attempts[0].Outcome != PlanCheckpointStatusCompleted || resolved.Attempts[0].Result != "superseded_by_followup" || resolved.Attempts[0].CompletedAt == 0 {
+		t.Fatalf("resolved blocked attempt = %#v", resolved.Attempts)
+	}
+	followup := result.Plan.Document.Checkpoints[1]
+	if result.CheckpointID != "followup-1" || result.AttemptID != "followup-1:attempt-1" || result.Plan.Document.ActiveCheckpointID != "followup-1" || followup.Status != PlanCheckpointStatusInProgress || followup.RunID != "run-followup" {
+		t.Fatalf("follow-up execution = result %#v checkpoint %#v", result, followup)
+	}
+	if result.Summary.Blocked || result.Summary.Failed || result.Summary.NextCheckpointID != "followup-1" {
+		t.Fatalf("execution summary = %#v", result.Summary)
+	}
+	if state := result.Plan.Document.ExecutionState; state == nil || state.Status != PlanExecutionStateInProgress || state.LastCheckpointID != "cp-1" || state.LastAttemptID != blockedAttempt.ID || state.LastOutcome != PlanCheckpointStatusCompleted {
+		t.Fatalf("execution state = %#v", state)
+	}
+	assertCheckpointOrdersNormalized(t, result.Plan.Document)
+}
+
+func TestPlanLifecycleRequestFollowupCheckpointDoesNotClearFailedCheckpoint(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	if _, _, err := svc.SetMode(sessionID, ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	doc := &pebblestore.SessionPlanDocument{
+		ID: "plan-failed-followup", Title: "Failed Follow-up Plan", Status: "approved",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed,
+			FollowupCheckpointPolicy: PlanFollowupCheckpointPolicyAutoStart,
+		},
+		ActiveCheckpointID: "cp-1",
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateFailed, LastCheckpointID: "cp-1", LastOutcome: PlanCheckpointStatusFailed},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Failed", Status: PlanCheckpointStatusFailed, Result: "failed"},
+			{ID: "cp-2", Title: "Later", Status: PlanCheckpointStatusPending},
+		},
+	}
+	plan, _, err := svc.SavePlanWithMetadata(sessionID, doc.ID, doc.Title, "# Failed Follow-up Plan", "approved", "approved", true, PlanSaveMetadata{Document: doc})
+	if err != nil {
+		t.Fatalf("save failed plan: %v", err)
+	}
+
+	_, err = NewPlanLifecycleService(svc).RequestFollowupCheckpoint(PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: plan.ID, ChangeRequest: "Do not silently recover failure."})
+	if err == nil || !strings.Contains(err.Error(), "cannot continue a failed plan") {
+		t.Fatalf("error = %v, want explicit failed-plan rejection", err)
+	}
+	current, ok, getErr := svc.GetPlan(sessionID, plan.ID)
+	if getErr != nil || !ok {
+		t.Fatalf("get unchanged failed plan: ok=%v err=%v", ok, getErr)
+	}
+	if got := strings.Join(checkpointIDs(current.Document.Checkpoints), ","); got != "cp-1,cp-2" || current.Document.Checkpoints[0].Status != PlanCheckpointStatusFailed {
+		t.Fatalf("failed plan was mutated: %#v", current.Document)
+	}
+}
+
 func TestPlanLifecycleRequestFollowupCheckpointClosesWaitingReviewBeforeInserting(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()

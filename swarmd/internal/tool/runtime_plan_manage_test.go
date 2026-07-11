@@ -40,6 +40,21 @@ func TestPlanManageDefinitionIncludesExplicitNewOverride(t *testing.T) {
 	}
 }
 
+func TestPlanManageDefinitionDirectsBlockedFollowupsToAtomicRecovery(t *testing.T) {
+	definition := mustFindDefinition(t, "plan_manage")
+	if !containsAll(definition.Description, "blocked plan", "request_followup_checkpoint", "do not call resolve_blocked_checkpoint first", "failed checkpoints remain stopped") {
+		t.Fatalf("plan_manage description does not advertise atomic blocked follow-up recovery: %q", definition.Description)
+	}
+	params, ok := definition.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("plan_manage properties type = %T", definition.Parameters["properties"])
+	}
+	actionDescription, _ := params["action"].(map[string]any)["description"].(string)
+	if !containsAll(actionDescription, "active approved/running/blocked/review plan", "atomically supersedes and resolves", "do not call resolve_blocked_checkpoint first") {
+		t.Fatalf("plan_manage action description does not direct atomic blocked recovery: %q", actionDescription)
+	}
+}
+
 func TestToolDefinitionsRouteAgentProgressToPlanManageNotManageTodos(t *testing.T) {
 	planDefinition := mustFindDefinition(t, "plan_manage")
 	if !containsAll(planDefinition.Description, "agent execution progress", "canonical agent checklist/progress surface", "do not use manage_todos") {

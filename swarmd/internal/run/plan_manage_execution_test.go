@@ -415,6 +415,73 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	}
 }
 
+func TestExecutePlanManageRequestFollowupAtomicallyUnblocksAndReturnsFreshRun(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-blocked-followup", "Plan: Blocked Follow-up", "# Blocked", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed, FollowupCheckpointPolicy: sessionruntime.PlanFollowupCheckpointPolicyAutoStart},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-a", Title: "Blocked", Status: sessionruntime.PlanCheckpointStatusBlocked, AttemptID: "attempt-blocked", RunID: "run-blocked", Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "attempt-blocked", CheckpointID: "cp-a", Status: sessionruntime.PlanCheckpointStatusBlocked, Outcome: sessionruntime.PlanCheckpointStatusBlocked, RunID: "run-blocked"}}},
+			{ID: "cp-b", Title: "Later", Status: sessionruntime.PlanCheckpointStatusPending},
+		},
+		ActiveCheckpointID: "cp-a",
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateBlocked, LastCheckpointID: "cp-a", LastAttemptID: "attempt-blocked", LastOutcome: sessionruntime.PlanCheckpointStatusBlocked},
+	}})
+	if err != nil {
+		t.Fatalf("save blocked follow-up plan: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageTool(sessionID, `{"action":"request_followup_checkpoint","plan_id":"plan-blocked-followup","change_request":"replace the blocked work","checkpoint_title":"Replacement work","run_id":"run-followup","run_session_id":"child-followup","parent_session_id":"parent-session","started_at":3456}`, "")
+	if err != nil {
+		t.Fatalf("request blocked follow-up: %v output=%s", err, raw)
+	}
+	var payload struct {
+		Action       string `json:"action"`
+		NextAction   string `json:"next_action"`
+		CheckpointID string `json:"checkpoint_id"`
+		RunRequest   struct {
+			Context struct {
+				CheckpointID string `json:"checkpoint_id"`
+				AttemptID    string `json:"attempt_id"`
+			} `json:"plan_checkpoint_context"`
+		} `json:"run_request"`
+		ExecutionSummary sessionruntime.PlanExecutionSummary `json:"execution_summary"`
+		Plan             struct {
+			Document *pebblestore.SessionPlanDocument `json:"document"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode blocked follow-up payload: %v", err)
+	}
+	if payload.Action != "request_followup_checkpoint" || payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "followup-1" || payload.RunRequest.Context.CheckpointID != "followup-1" || payload.RunRequest.Context.AttemptID != "followup-1:attempt-1" {
+		t.Fatalf("follow-up next action = %#v raw=%s", payload, raw)
+	}
+	if payload.ExecutionSummary.Blocked || payload.ExecutionSummary.Failed || payload.ExecutionSummary.NextCheckpointID != "followup-1" {
+		t.Fatalf("follow-up execution summary = %#v", payload.ExecutionSummary)
+	}
+	if payload.Plan.Document == nil || strings.Join(checkpointIDsForRunTest(payload.Plan.Document.Checkpoints), ",") != "cp-a,followup-1,cp-b" {
+		t.Fatalf("follow-up document/order = %#v", payload.Plan.Document)
+	}
+	resolved := payload.Plan.Document.Checkpoints[0]
+	inserted := payload.Plan.Document.Checkpoints[1]
+	if resolved.Status != sessionruntime.PlanCheckpointStatusCompleted || resolved.Result != "superseded_by_followup" || resolved.Review == nil || resolved.Review.Status != sessionruntime.PlanCheckpointReviewStatusApproved || len(resolved.Attempts) != 1 || resolved.Attempts[0].Status != sessionruntime.PlanCheckpointStatusCompleted {
+		t.Fatalf("resolved blocked checkpoint = %#v", resolved)
+	}
+	if inserted.Status != sessionruntime.PlanCheckpointStatusInProgress || payload.Plan.Document.ActiveCheckpointID != inserted.ID {
+		t.Fatalf("inserted checkpoint = %#v active=%q", inserted, payload.Plan.Document.ActiveCheckpointID)
+	}
+}
+
+func checkpointIDsForRunTest(checkpoints []pebblestore.SessionPlanCheckpoint) []string {
+	ids := make([]string, 0, len(checkpoints))
+	for _, checkpoint := range checkpoints {
+		ids = append(ids, checkpoint.ID)
+	}
+	return ids
+}
+
 func TestExecutePlanManageBlockedCheckpointHandoffIsStandalone(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()

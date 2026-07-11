@@ -295,8 +295,8 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 		}
 	}
 	insertionPoint := followupCheckpointInsertionPointForDocument(state.doc)
-	if insertionPoint.StopReason == PlanCheckpointStatusBlocked || insertionPoint.StopReason == PlanCheckpointStatusFailed {
-		return PlanLifecycleResult{}, fmt.Errorf("request_followup_checkpoint requires an unblocked plan; current stop reason is %q", insertionPoint.StopReason)
+	if insertionPoint.StopReason == PlanCheckpointStatusFailed {
+		return PlanLifecycleResult{}, fmt.Errorf("request_followup_checkpoint cannot continue a failed plan; current stop reason is %q", insertionPoint.StopReason)
 	}
 	policy, err := s.resolveFollowupCheckpointPolicy(state, input.GlobalDefaultPolicy)
 	if err != nil {
@@ -328,7 +328,10 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 		SourceMessageID:    strings.TrimSpace(input.SourceMessageID),
 		Order:              insertionPoint.Index + 1,
 	}
-	resolvedID := resolveFollowupInsertionPoint(state.doc, insertionPoint, checkpointID, time.Now().UnixMilli())
+	resolvedID, err := resolveFollowupInsertionPoint(state.doc, insertionPoint, checkpointID, time.Now().UnixMilli())
+	if err != nil {
+		return PlanLifecycleResult{}, err
+	}
 	state.doc.Checkpoints = insertPlanCheckpointAt(state.doc.Checkpoints, insertionPoint.Index, checkpoint)
 	normalizeCheckpointOrder(state.doc)
 	if resolvedID != "" {
@@ -1132,7 +1135,9 @@ func followupCheckpointInsertionPointForDocument(doc *pebblestore.SessionPlanDoc
 			return followupCheckpointInsertionPoint{Index: i, CheckpointID: id}
 		case PlanCheckpointStatusInProgress:
 			return followupCheckpointInsertionPoint{Index: i, CheckpointID: id, ResolveCheckpoint: true}
-		case PlanCheckpointStatusBlocked, PlanCheckpointStatusFailed:
+		case PlanCheckpointStatusBlocked:
+			return followupCheckpointInsertionPoint{Index: i + 1, CheckpointID: id, StopReason: status, ResolveCheckpoint: true}
+		case PlanCheckpointStatusFailed:
 			return followupCheckpointInsertionPoint{Index: i, CheckpointID: id, StopReason: status, ResolveCheckpoint: false}
 		}
 	}
@@ -1147,25 +1152,36 @@ func followupCheckpointInsertionPointForDocument(doc *pebblestore.SessionPlanDoc
 	return followupCheckpointInsertionPoint{Index: len(doc.Checkpoints)}
 }
 
-func resolveFollowupInsertionPoint(doc *pebblestore.SessionPlanDocument, point followupCheckpointInsertionPoint, followupID string, resolvedAt int64) string {
+func resolveFollowupInsertionPoint(doc *pebblestore.SessionPlanDocument, point followupCheckpointInsertionPoint, followupID string, resolvedAt int64) (string, error) {
 	if doc == nil || !point.ResolveCheckpoint {
-		return ""
+		return "", nil
 	}
 	checkpointID := strings.TrimSpace(point.CheckpointID)
 	if checkpointID == "" || checkpointID == strings.TrimSpace(followupID) {
-		return ""
+		return "", nil
 	}
 	idx := findPlanCheckpointIndex(doc.Checkpoints, checkpointID)
 	if idx < 0 {
-		return ""
+		return "", nil
 	}
 	checkpoint := &doc.Checkpoints[idx]
 	status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
 	if status == PlanCheckpointStatusInProgress {
-		return resolveCurrentInProgressCheckpointForFollowup(doc, followupID, resolvedAt)
+		return resolveCurrentInProgressCheckpointForFollowup(doc, followupID, resolvedAt), nil
+	}
+	if status == PlanCheckpointStatusBlocked {
+		if _, err := ApplyPlanCheckpointBlockResolution(doc, PlanCheckpointBlockResolutionOptions{
+			CheckpointID: checkpointID,
+			Result:       "superseded_by_followup",
+			Notes:        fmt.Sprintf("Blocked checkpoint superseded by session checkpoint %q.", followupID),
+			ResolvedAt:   resolvedAt,
+		}); err != nil {
+			return "", fmt.Errorf("resolve blocked checkpoint for follow-up: %w", err)
+		}
+		return checkpointID, nil
 	}
 	if status != PlanCheckpointStatusCompleted && status != PlanCheckpointStatusNeedsReview {
-		return ""
+		return "", nil
 	}
 	checkpoint.Status = PlanCheckpointStatusCompleted
 	checkpoint.Result = "superseded_by_followup"
@@ -1188,7 +1204,7 @@ func resolveFollowupInsertionPoint(doc *pebblestore.SessionPlanDocument, point f
 	doc.ExecutionState.LastCheckpointID = checkpointID
 	doc.ExecutionState.LastOutcome = PlanCheckpointStatusCompleted
 	doc.ExecutionState.UpdatedAt = resolvedAt
-	return checkpointID
+	return checkpointID, nil
 }
 
 func insertPlanCheckpointAt(checkpoints []pebblestore.SessionPlanCheckpoint, idx int, checkpoint pebblestore.SessionPlanCheckpoint) []pebblestore.SessionPlanCheckpoint {

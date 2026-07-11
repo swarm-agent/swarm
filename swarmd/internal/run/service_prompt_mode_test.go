@@ -78,6 +78,9 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 		"mark_blocked only for a named external dependency/input/unavailable permission",
 		"mark_failed only for a nonrecoverable execution error",
 		"plan_manage terminal checkpoint example",
+		"On a blocked plan, call request_followup_checkpoint directly",
+		"do not call resolve_blocked_checkpoint first",
+		"Failed checkpoints remain stopped",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("master harness prompt missing %q\n--- prompt ---\n%s", want, prompt)
