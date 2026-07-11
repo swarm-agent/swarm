@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
-import { Copy, Check, AlertCircle, ChevronDown, ChevronRight, Circle, Compass, Brain, CheckCircle2, FileText, ListTodo, PlayCircle, Rocket, LockKeyhole, Server, ShieldCheck, Target, type LucideIcon } from 'lucide-react'
+import { Copy, Check, AlertCircle, Archive, CalendarClock, ChevronDown, ChevronRight, Circle, Compass, Brain, CheckCircle2, FileText, Folder, ListTodo, PlayCircle, Rocket, LockKeyhole, Server, ShieldCheck, Target, type LucideIcon } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -27,6 +27,7 @@ import {
   parseAskUserPermission,
   parseExitPlanPermission,
   parseManageTodosPermission,
+  parseSessionArchivePermission,
   parseManageImagePermission,
   parsePlanUpdatePermission,
   type PlanUpdatePayload,
@@ -1866,6 +1867,116 @@ function ManageTodosModal({
   )
 }
 
+function sessionArchiveStateLabel(state: string): string {
+  return state.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function sessionArchiveUpdatedLabel(updatedAt: number): string {
+  if (!updatedAt) {
+    return 'Update time unavailable'
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(updatedAt))
+}
+
+function SessionArchiveModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) {
+    return null
+  }
+
+  const payload = parseSessionArchivePermission(permission)
+  const resolve = async (action: 'approve' | 'deny') => {
+    setLoading(true)
+    try {
+      await onResolve(
+        action,
+        note.trim(),
+        action === 'approve' && Object.keys(payload.approvedArguments).length > 0
+          ? payload.approvedArguments
+          : undefined,
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title="Archive sessions?"
+      subtitle="Review the sessions that will be removed from your active workspace view"
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-full sm:w-[min(760px,calc(100vw-48px))]"
+      bodyClassName="overflow-y-auto"
+      footer={
+        <PermissionActionBar
+          loading={loading}
+          onApprove={() => void resolve('approve')}
+          onDeny={() => void resolve('deny')}
+          approveLabel={payload.sessions.length === 1 ? 'Archive session' : `Archive ${payload.sessions.length} sessions`}
+          note={note}
+          onNoteChange={setNote}
+          noteLabel="Message to agent"
+          notePlaceholder="Optional note…"
+        />
+      }
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
+    >
+      <div className="grid gap-4">
+        <div className="flex items-start gap-3 rounded-2xl border border-[color-mix(in_oklab,var(--app-warning)_28%,var(--app-border))] bg-[color-mix(in_oklab,var(--app-warning)_8%,var(--app-surface))] px-4 py-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[color-mix(in_oklab,var(--app-warning)_16%,transparent)] text-[var(--app-warning)]">
+            <Archive className="size-5" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <div className="font-semibold text-[var(--app-text)]">{payload.sessions.length} {payload.sessions.length === 1 ? 'session' : 'sessions'} selected</div>
+            <p className="mt-1 text-sm leading-5 text-[var(--app-text-muted)]">Archived sessions stay in durable history and can be found later. This does not delete their messages.</p>
+          </div>
+        </div>
+
+        <section className="grid gap-2.5" aria-label="Sessions to archive">
+          {payload.sessions.length === 0 ? (
+            <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-5 text-sm text-[var(--app-text-muted)]">No session details were provided.</div>
+          ) : payload.sessions.map((session, index) => (
+            <article key={`${index}:${session.title}:${session.updatedAt}`} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 shadow-sm">
+              <div className="flex min-w-0 items-start justify-between gap-3">
+                <h3 className="min-w-0 break-words font-semibold leading-6 text-[var(--app-text)]">{session.title}</h3>
+                <span className="shrink-0 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-muted)]">{sessionArchiveStateLabel(session.state)}</span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-[var(--app-text-muted)]">
+                <span className="inline-flex items-center gap-1.5"><Folder className="size-3.5" aria-hidden="true" />{session.workspaceName}</span>
+                <span className="inline-flex items-center gap-1.5"><CalendarClock className="size-3.5" aria-hidden="true" />Updated {sessionArchiveUpdatedLabel(session.updatedAt)}</span>
+              </div>
+            </article>
+          ))}
+        </section>
+      </div>
+    </ModalShell>
+  )
+}
+
 function ManageImageModal({
   permission,
   open,
@@ -3408,6 +3519,9 @@ export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
   }
   if (kind === 'manage-todos') {
     return <ManageTodosModal {...props} />
+  }
+  if (kind === 'session-archive') {
+    return <SessionArchiveModal {...props} />
   }
   if (kind === 'ask-user') {
     return <AskUserModal {...props} />

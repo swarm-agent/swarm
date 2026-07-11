@@ -38,13 +38,13 @@ function exitPlanPermission(approvedArguments: Record<string, unknown> = {}, pay
   }
 }
 
-function planLifecyclePermission(requirement: string, toolArguments: Record<string, unknown>): DesktopPermissionRecord {
+function planLifecyclePermission(requirement: string, toolArguments: Record<string, unknown>, toolName = 'plan_manage'): DesktopPermissionRecord {
   return {
     id: `perm-${requirement}`,
     sessionId: 'session-1',
     runId: 'run-1',
     callId: 'call-1',
-    toolName: 'plan_manage',
+    toolName,
     toolArguments: JSON.stringify(toolArguments),
     status: 'pending',
     decision: '',
@@ -270,6 +270,33 @@ test('DesktopPermissionModal routes typed plan lifecycle approvals away from gen
   assert.match(newPlan, /aria-checked="true"/)
   assert.doesNotMatch(newPlan, /No proposed new plan document or plan text was provided/)
   assert.doesNotMatch(newPlan, /Plan update overview/)
+})
+
+test('session archive permission renders polished session cards instead of raw JSON', () => {
+  const markup = renderPermission(planLifecyclePermission('session_archive', {
+    action: 'archive',
+    sessions: [
+      { state: 'needs_review', title: 'Review search results', updated_at: 1783764535576, workspace_name: 'swarm-go' },
+      { state: 'idle', title: 'Git status and diff', updated_at: 1783775746686, workspace_name: 'swarm-go' },
+    ],
+    approved_arguments: {
+      action: 'archive',
+      session_ids: ['opaque-session-id'],
+      expected_updated_at_by_id: { 'opaque-session-id': 1783764535576 },
+    },
+  }, 'manage_sessions'))
+
+  assert.match(markup, /Archive sessions\?/)
+  assert.match(markup, /2 sessions selected/)
+  assert.match(markup, /Review search results/)
+  assert.match(markup, /Git status and diff/)
+  assert.match(markup, /swarm-go/)
+  assert.match(markup, /Needs Review/)
+  assert.match(markup, /Updated/)
+  assert.match(markup, /Archive 2 sessions/)
+  assert.doesNotMatch(markup, /opaque-session-id/)
+  assert.doesNotMatch(markup, /expected_updated_at_by_id/)
+  assert.doesNotMatch(markup, /\[\s*\{&quot;state&quot;/)
 })
 
 test('new plan lifecycle approval merges automatic checkpointed execution controls with payload approved arguments', () => {

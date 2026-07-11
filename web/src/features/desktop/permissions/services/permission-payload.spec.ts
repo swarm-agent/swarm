@@ -2,6 +2,7 @@ import type { DesktopPermissionRecord } from '../../types/realtime'
 import {
   parseAgentChangePermission,
   parseManageTodosPermission,
+  parseSessionArchivePermission,
   parseExitPlanPermission,
   parsePlanUpdatePermission,
   buildPlanUpdateDiffPreview,
@@ -545,6 +546,15 @@ function testManageSessionsArchiveShowsHydratedFactsOnly(): void {
       },
     }),
   })
+
+  assert(permissionKind(permission) === 'session-archive', 'expected dedicated session archive permission kind')
+  const payload = parseSessionArchivePermission(permission)
+  assert(payload.sessions.length === 1, 'expected one parsed session')
+  assert(payload.sessions[0]?.title === 'Review search results', 'expected parsed title')
+  assert(payload.sessions[0]?.workspaceName === 'Swarm', 'expected parsed workspace')
+  assert(payload.sessions[0]?.state === 'needs_review', 'expected parsed state')
+  assert(payload.sessions[0]?.updatedAt === 1783764535576, 'expected parsed timestamp')
+  assert(payload.approvedArguments.session_ids instanceof Array, 'expected approved arguments to be preserved')
 
   const body = buildGenericPermissionMarkdown(permission)
   assert(body.includes('Review search results'), 'expected hydrated title')

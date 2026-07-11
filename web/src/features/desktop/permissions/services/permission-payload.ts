@@ -261,7 +261,20 @@ export interface AgentChangePayload {
   changes: AgentChangeField[]
 }
 
-export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-revision-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image'
+export interface SessionArchivePermissionItem {
+  title: string
+  workspaceName: string
+  state: string
+  updatedAt: number
+}
+
+export interface SessionArchivePermissionPayload {
+  action: string
+  sessions: SessionArchivePermissionItem[]
+  approvedArguments: Record<string, unknown>
+}
+
+export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-revision-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'session-archive' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image'
 
 function decodePermissionArguments(raw: string): Record<string, unknown> | null {
   const trimmed = raw.trim()
@@ -554,6 +567,11 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
       }
     case 'manage_todos':
       return 'manage-todos'
+    case 'manage_sessions':
+      if (requirement === 'session_archive') {
+        return 'session-archive'
+      }
+      return 'generic'
     case 'manage_image':
       return 'manage-image'
     case 'ask_user':
@@ -603,6 +621,32 @@ export function permissionRequirementLabel(raw: unknown): string {
       return 'workspace access'
     default:
       return value
+  }
+}
+
+export function parseSessionArchivePermission(permission: DesktopPermissionRecord): SessionArchivePermissionPayload {
+  const payload = decodePermissionArguments(permission.toolArguments) ?? {}
+  const rawSessions = Array.isArray(payload.sessions) ? payload.sessions : []
+  const sessions = rawSessions.flatMap((entry): SessionArchivePermissionItem[] => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return []
+    }
+    const session = entry as Record<string, unknown>
+    const updatedAt = typeof session.updated_at === 'number' && Number.isFinite(session.updated_at)
+      ? session.updated_at
+      : 0
+    return [{
+      title: safeString(session.title) || 'Untitled session',
+      workspaceName: safeString(session.workspace_name) || 'Unknown workspace',
+      state: safeString(session.state) || 'unknown',
+      updatedAt,
+    }]
+  })
+
+  return {
+    action: mapStringArg(payload, 'action') || 'archive',
+    sessions,
+    approvedArguments: mapObjectArg(payload, 'approved_arguments'),
   }
 }
 
