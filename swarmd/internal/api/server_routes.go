@@ -119,6 +119,9 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) registerProviderRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/codex/account/usage", s.handleCodexAccountUsage)
+	mux.HandleFunc("/v1/codex/account/reset-credits", s.handleCodexResetCredits)
+	mux.HandleFunc("/v1/codex/account/reset-credits/consume", s.handleCodexConsumeResetCredit)
 	mux.HandleFunc("/v1/image/providers", s.handleImageGenerationProviders)
 	mux.HandleFunc("/v1/image/generations", s.handleImageGenerations)
 	mux.HandleFunc("/v1/image/assets", s.handleImageAssets)

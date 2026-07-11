@@ -32,6 +32,7 @@ import (
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/permission"
+	"swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
@@ -98,6 +99,7 @@ type Server struct {
 	mcp                         mcpService
 	security                    *security.Service
 	providers                   *registry.Registry
+	codexAccount                codexAccountClient
 	perm                        permissionService
 	notifications               notificationService
 	hub                         *stream.Hub
@@ -143,6 +145,12 @@ type Server struct {
 	swarmMirror               *pebblestore.SwarmMirrorStore
 	mirrorSyncStarted         atomic.Bool
 	remoteCandidateProbePorts []int
+}
+
+type codexAccountClient interface {
+	GetAccountUsage(context.Context) (codex.AccountUsage, error)
+	GetResetCredits(context.Context) (codex.ResetCredits, error)
+	ConsumeResetCredit(context.Context, codex.ConsumeResetCreditRequest) (codex.ConsumeResetCreditResponse, error)
 }
 
 type runService interface {
@@ -327,6 +335,13 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		server.planLifecycle = sessionruntime.NewPlanLifecycleService(sessionSvc)
 	}
 	return server
+}
+
+func (s *Server) SetCodexAccountClient(client codexAccountClient) {
+	if s == nil {
+		return
+	}
+	s.codexAccount = client
 }
 
 func (s *Server) SetBypassPermissions(enabled bool) {

@@ -21,6 +21,14 @@ function testSlashPaletteMatchesPlan(): void {
   assert(palette.matches[0]?.id === 'plan', 'expected /plan to be the first match')
 }
 
+function testCodexOpensUsageWithoutChangingModels(): void {
+  const commands = getDesktopSlashCommands()
+  const codex = commands.find((command) => command.command === '/codex')
+  const models = commands.find((command) => command.command === '/models')
+  assert((codex?.action as DesktopSlashCommandAction | undefined)?.kind === 'open-codex-usage', 'expected /codex to open Codex usage')
+  assert((models?.action as DesktopSlashCommandAction | undefined)?.kind === 'open-model-picker', 'expected /models to keep opening model picker')
+}
+
 function testFastCommandIsReady(): void {
   const fast = getDesktopSlashCommands().find((command) => command.command === '/fast')
   assert(Boolean(fast), 'expected /fast command to exist')
@@ -52,6 +60,7 @@ function testKeybindingsWarnsAboutDesktopShortcuts(): void {
 function main(): void {
   testPlanCommandIsReady()
   testSlashPaletteMatchesPlan()
+  testCodexOpensUsageWithoutChangingModels()
   testFastCommandIsReady()
   testMCPCommandIsDeferredButFreeExaSearchRemains()
   testKeybindingsWarnsAboutDesktopShortcuts()

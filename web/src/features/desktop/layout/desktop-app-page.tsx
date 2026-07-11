@@ -66,6 +66,7 @@ import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-
 import { SearchChatsModal } from '../session-search/search-chats-modal'
 import type { DesktopSessionSearchItem } from '../session-search/session-search-api'
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
+import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
@@ -2235,6 +2236,7 @@ export function DesktopAppPage() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [codexUsageOpen, setCodexUsageOpen] = useState(false)
   const [notificationActionError, setNotificationActionError] = useState<string | null>(null)
   const [searchModalOpen, setSearchModalOpen] = useState(false)
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
@@ -3289,6 +3291,10 @@ export function DesktopAppPage() {
         setMobileSidebarOpen(true)
         void navigate({ to: '/' })
         return
+      case 'open-codex-usage':
+        setCodexUsageOpen(true)
+        setMobileSidebarOpen(false)
+        return
       case 'open-commit-modal': {
         const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || ''
         const workspaceName = selectedWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
@@ -4236,6 +4242,15 @@ export function DesktopAppPage() {
         open={searchModalOpen}
         onOpenChange={setSearchModalOpen}
         onOpenSession={handleOpenSearchResult}
+      />
+
+      <DesktopCodexUsageModal
+        open={codexUsageOpen}
+        onOpenChange={setCodexUsageOpen}
+        onOpenAuthSettings={() => {
+          setCodexUsageOpen(false)
+          handleOpenSettingsTab('auth')
+        }}
       />
 
       <DesktopNotificationsModal

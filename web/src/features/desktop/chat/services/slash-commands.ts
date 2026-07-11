@@ -8,6 +8,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-permissions' }
   | { kind: 'open-workspace-launcher' }
   | { kind: 'open-model-picker' }
+  | { kind: 'open-codex-usage' }
   | { kind: 'toggle-fast' }
   | { kind: 'open-commit-modal' }
   | { kind: 'open-plan-modal' }
@@ -110,11 +111,11 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'codex',
     command: '/codex',
     aliases: [],
-    hint: 'Open Codex runtime controls',
-    actionLabel: 'Open Model Picker',
-    tips: ['/codex status', '/codex fast', '/fast toggles Fast'],
+    hint: 'View ChatGPT plan usage and reset credits',
+    actionLabel: 'Open Codex Usage',
+    tips: ['/codex', 'View five-hour and weekly usage', 'Use available usage-limit resets'],
     state: 'ready',
-    action: { kind: 'open-model-picker' },
+    action: { kind: 'open-codex-usage' },
   },
   {
     id: 'fast',
