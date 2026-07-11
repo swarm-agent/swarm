@@ -162,18 +162,20 @@ function renderInlineNode(node: MarkdownInlineNode, key: string): ReactNode {
       return <strong key={key}>{renderInlineNodes(node.children, key)}</strong>
     case 'em':
       return <em key={key}>{renderInlineNodes(node.children, key)}</em>
-    case 'link':
+    case 'link': {
+      const isInternalSessionLink = /^\/[a-z0-9][a-z0-9-]*\/[^/?#]+(?:[?#].*)?$/i.test(node.href)
       return (
         <a
           key={key}
           href={node.href}
           className="text-[var(--app-primary)] underline underline-offset-2 hover:opacity-85"
-          target="_blank"
-          rel="noreferrer"
+          target={isInternalSessionLink ? undefined : '_blank'}
+          rel={isInternalSessionLink ? undefined : 'noreferrer'}
         >
           {renderInlineNodes(node.children, key)}
         </a>
       )
+    }
     case 'br':
       return <br key={key} />
     default:

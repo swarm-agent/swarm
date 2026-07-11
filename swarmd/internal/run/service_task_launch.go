@@ -1503,6 +1503,12 @@ func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnap
 	}
 	profile.Name = "clone"
 	profile.Description = "Reserved virtual snapshot of parent agent " + sourceName
+	if profile.ToolContract != nil {
+		if profile.ToolContract.Tools == nil {
+			profile.ToolContract.Tools = make(map[string]pebblestore.AgentToolConfig)
+		}
+		profile.ToolContract.Tools["manage_sessions"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false)}
+	}
 	return profile, true, sourceName, nil
 }
 

@@ -13,6 +13,8 @@ const sessionsV3SearchMaxLimit = 50
 
 type sessionsV3SearchRequest struct {
 	Query           string                     `json:"query,omitempty"`
+	Queries         []string                   `json:"queries,omitempty"`
+	State           string                     `json:"state,omitempty"`
 	ArchivedMode    string                     `json:"archived_mode,omitempty"`
 	Archived        *bool                      `json:"archived,omitempty"`
 	Global          bool                       `json:"global,omitempty"`
@@ -116,6 +118,8 @@ func sessionsV3SearchOptionsFromRequest(principal identity.Principal, req sessio
 		AccountScopeID:  principal.AccountScopeID,
 		UserID:          principal.UserID,
 		Query:           req.Query,
+		Queries:         req.Queries,
+		State:           req.State,
 		ArchivedMode:    archivedMode,
 		Global:          req.Global,
 		WorkspacePaths:  workspacePaths,

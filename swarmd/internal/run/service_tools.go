@@ -3567,6 +3567,8 @@ func canonicalToolName(name string) string {
 		return "manage_integrations"
 	case "manage-theme", "manage_theme":
 		return "manage_theme"
+	case "manage-sessions", "manage_sessions":
+		return "manage_sessions"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
 	case "manage-todos", "manage_todos":
@@ -3594,6 +3596,11 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 
 	switch toolName {
 	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme", "manage_integrations":
+		return toolName, false
+	case "manage_sessions":
+		if permission.ShouldApproveManageSessionsArchive(arguments) {
+			return "session_archive", true
+		}
 		return toolName, false
 	case "manage_image":
 		if shouldApproveManageImage(arguments) {

@@ -19,6 +19,14 @@ test('MarkdownRenderer auto-links bare assistant URLs', () => {
   assert.match(html, /<a[^>]*href="https:\/\/example\.com\/docs"[^>]*target="_blank"[\s\S]*>\s*<span>explicit links<\/span>\s*<\/a>/)
 })
 
+test('MarkdownRenderer keeps relative session links in the current Desktop window', () => {
+  const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content: '[session](/workspace-abc/session-1)' }))
+
+  assert.match(html, /href="\/workspace-abc\/session-1"/)
+  assert.doesNotMatch(html, /target="_blank"/)
+  assert.doesNotMatch(html, /rel="noreferrer"/)
+})
+
 test('MarkdownRenderer renders tagged copy blocks without swallowing markdown', () => {
   const content = [
     '## Before',

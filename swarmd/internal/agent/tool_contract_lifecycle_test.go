@@ -53,6 +53,54 @@ func TestEnsureDefaultsBackfillsMissingBuiltInToolContractsOnly(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultsAddsManageSessionsToSwarmAndPreservesExplicitOptOut(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enabled *bool
+		want    bool
+	}{
+		{name: "missing", want: true},
+		{name: "disabled", enabled: pebblestore.BoolPtr(false), want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, agents := newTestService(t)
+			tools := map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}
+			if tc.enabled != nil {
+				tools["manage_sessions"] = pebblestore.AgentToolConfig{Enabled: tc.enabled}
+			}
+			if err := agents.PutProfile(pebblestore.AgentProfile{Name: "swarm", Mode: ModePrimary, RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: tools}, Enabled: true}); err != nil {
+				t.Fatalf("put swarm: %v", err)
+			}
+			if err := svc.EnsureDefaults(); err != nil {
+				t.Fatalf("EnsureDefaults() error = %v", err)
+			}
+			profile, ok, err := agents.GetProfile("swarm")
+			if err != nil || !ok {
+				t.Fatalf("GetProfile(swarm) ok=%v err=%v", ok, err)
+			}
+			cfg, ok := profile.ToolContract.Tools["manage_sessions"]
+			if !ok || cfg.Enabled == nil || *cfg.Enabled != tc.want {
+				t.Fatalf("manage_sessions = %+v, want enabled=%v", cfg, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuiltInManageSessionsDefaultIsSwarmOnly(t *testing.T) {
+	if cfg := defaultSwarmToolContract().Tools["manage_sessions"]; cfg.Enabled == nil || !*cfg.Enabled {
+		t.Fatalf("swarm manage_sessions = %+v, want enabled", cfg)
+	}
+	for name, contract := range map[string]*pebblestore.AgentToolContract{
+		"explorer":   defaultExplorerToolContract(),
+		"memory":     defaultMemoryToolContract(),
+		"read_write": defaultReadWriteSubagentToolContract(),
+	} {
+		if cfg, ok := contract.Tools["manage_sessions"]; ok && cfg.Enabled != nil && *cfg.Enabled {
+			t.Fatalf("%s manage_sessions unexpectedly enabled", name)
+		}
+	}
+}
+
 func TestEnsureDefaultsPreservesExistingBuiltInToolContract(t *testing.T) {
 	svc, agents := newTestService(t)
 	customContract := &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}

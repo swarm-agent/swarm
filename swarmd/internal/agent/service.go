@@ -427,6 +427,7 @@ func defaultSwarmToolContract() *pebblestore.AgentToolContract {
 			"manage_integrations": {Enabled: pebblestore.BoolPtr(true)},
 			"manage_image":        {Enabled: pebblestore.BoolPtr(true)},
 			"manage_theme":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_sessions":     {Enabled: pebblestore.BoolPtr(true)},
 			"manage_worktree":     {Enabled: pebblestore.BoolPtr(true)},
 			"manage_todos":        {Enabled: pebblestore.BoolPtr(true)},
 			"plan_manage":         {Enabled: pebblestore.BoolPtr(true)},
@@ -487,14 +488,29 @@ func (s *Service) backfillBuiltInToolContractsForAccountLocked(accountScopeID st
 		if err != nil {
 			return err
 		}
-		if !ok || current.ToolContract != nil {
+		if !ok {
 			continue
 		}
 		contract := builtInDefaultToolContract(current.Name)
 		if contract == nil {
 			continue
 		}
-		current.ToolContract = contract
+		changed := false
+		if current.ToolContract == nil {
+			current.ToolContract = contract
+			changed = true
+		} else if normalizeName(current.Name) == "swarm" {
+			if current.ToolContract.Tools == nil {
+				current.ToolContract.Tools = make(map[string]pebblestore.AgentToolConfig)
+			}
+			if _, explicit := current.ToolContract.Tools["manage_sessions"]; !explicit {
+				current.ToolContract.Tools["manage_sessions"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
 		current.UpdatedAt = now
 		if err := s.putProfileForAccountLocked(accountScopeID, current); err != nil {
 			return err

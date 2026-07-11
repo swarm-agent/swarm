@@ -103,6 +103,13 @@ func (s *Service) BuildSessionWorkset(options pebblestore.V3SessionWorksetOption
 	return s.store.BuildV3SessionWorkset(options)
 }
 
+func (s *Service) GetSessionTombstone(sessionID string) (pebblestore.V3SessionTombstone, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.V3SessionTombstone{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetV3SessionTombstone(sessionID)
+}
+
 func (s *Service) SearchSessions(options pebblestore.V3SessionSearchOptions) (pebblestore.V3SessionSearchResult, error) {
 	if s == nil || s.store == nil {
 		return pebblestore.V3SessionSearchResult{}, errors.New("session store is not configured")

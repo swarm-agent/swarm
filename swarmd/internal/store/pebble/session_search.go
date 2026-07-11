@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	v3SessionSearchIndexVersion     = 1
+	v3SessionSearchIndexVersion     = 2
 	keyV3SessionSearchIndexMeta     = "v3/session_search_index/meta"
 	keyV3SessionSearchMetaPrefix    = "v3/session_search_meta/"
 	keyV3SessionSearchAccountPrefix = "v3/session_search/account/"
@@ -25,12 +25,16 @@ const (
 	v3SessionSearchDefaultLimit     = 50
 	v3SessionSearchMaxLimit         = 50
 	v3SessionSearchSnippetMaxRunes  = 240
+	v3SessionSearchMaxQueries       = 8
+	v3SessionSearchMaxQueryRunes    = 200
 )
 
 type V3SessionSearchOptions struct {
 	AccountScopeID  string
 	UserID          string
 	Query           string
+	Queries         []string
+	State           string
 	ArchivedMode    string
 	Global          bool
 	WorkspacePath   string
@@ -78,12 +82,24 @@ type V3SessionSearchItem struct {
 	Deleted                 bool                      `json:"deleted,omitempty"`
 	Snippets                []V3SessionSearchSnippet  `json:"snippets,omitempty"`
 	LibraryMetric           V3SessionLibraryMetric    `json:"library_metric"`
+	Attention               V3SessionAttentionSummary `json:"attention"`
+}
+
+type V3SessionAttentionSummary struct {
+	State            string `json:"state"`
+	PlanID           string `json:"plan_id,omitempty"`
+	PlanStatus       string `json:"plan_status,omitempty"`
+	CheckpointID     string `json:"checkpoint_id,omitempty"`
+	CheckpointStatus string `json:"checkpoint_status,omitempty"`
+	ExecutionStatus  string `json:"execution_status,omitempty"`
+	LastOutcome      string `json:"last_outcome,omitempty"`
 }
 
 type V3SessionSearchSnippet struct {
 	Source    string `json:"source"`
 	Role      string `json:"role,omitempty"`
 	MessageID string `json:"message_id,omitempty"`
+	GlobalSeq uint64 `json:"global_seq,omitempty"`
 	Text      string `json:"text"`
 	CreatedAt int64  `json:"created_at,omitempty"`
 }
@@ -135,7 +151,7 @@ func (s *SessionStore) SearchV3Sessions(options V3SessionSearchOptions) (result 
 			err = closeErr
 		}
 	}()
-	if options.Query == "" {
+	if len(options.Queries) == 0 {
 		result, err = s.searchV3SessionsRecentFromReader(snapshot, options)
 	} else {
 		result, err = s.searchV3SessionsQueryFromReader(snapshot, options)
@@ -147,19 +163,53 @@ func (s *SessionStore) SearchV3Sessions(options V3SessionSearchOptions) (result 
 	if err != nil {
 		return V3SessionSearchResult{}, err
 	}
+	filtered := result.Items[:0]
 	for i := range result.Items {
 		_, err = getJSONFromReader(snapshot, keyV3SessionLibraryMetricFor(result.Items[i].ID), &result.Items[i].LibraryMetric)
 		if err != nil {
 			return V3SessionSearchResult{}, err
 		}
+		result.Items[i].Attention, err = v3SessionAttentionFromReader(snapshot, result.Items[i].ID)
+		if err != nil {
+			return V3SessionSearchResult{}, err
+		}
+		if options.State == "" || result.Items[i].Attention.State == options.State {
+			filtered = append(filtered, result.Items[i])
+		}
 	}
+	result.Items = filtered
 	return result, nil
 }
 
 func normalizeV3SessionSearchOptions(options V3SessionSearchOptions) V3SessionSearchOptions {
 	options.AccountScopeID = strings.TrimSpace(options.AccountScopeID)
 	options.UserID = strings.TrimSpace(options.UserID)
-	options.Query = strings.TrimSpace(options.Query)
+	options.Query = truncateRunes(strings.TrimSpace(options.Query), v3SessionSearchMaxQueryRunes)
+	queries := append([]string(nil), options.Queries...)
+	if options.Query != "" {
+		queries = append([]string{options.Query}, queries...)
+	}
+	options.Queries = nil
+	seenQueries := map[string]struct{}{}
+	for _, query := range queries {
+		query = truncateRunes(strings.TrimSpace(query), v3SessionSearchMaxQueryRunes)
+		key := strings.ToLower(query)
+		if query == "" {
+			continue
+		}
+		if _, ok := seenQueries[key]; ok {
+			continue
+		}
+		seenQueries[key] = struct{}{}
+		options.Queries = append(options.Queries, query)
+		if len(options.Queries) == v3SessionSearchMaxQueries {
+			break
+		}
+	}
+	if len(options.Queries) > 0 {
+		options.Query = options.Queries[0]
+	}
+	options.State = strings.ToLower(strings.TrimSpace(options.State))
 	options.WorkspacePath = strings.TrimSpace(options.WorkspacePath)
 	options.WorkspacePaths = normalizeV3SessionWorksetWorkspacePaths(options.WorkspacePath, options.WorkspacePaths)
 	options.BeforeSessionID = strings.TrimSpace(options.BeforeSessionID)
@@ -215,11 +265,19 @@ func (s *SessionStore) searchV3SessionsRecentFromReader(reader pebble.Reader, op
 }
 
 func (s *SessionStore) searchV3SessionsQueryFromReader(reader pebble.Reader, options V3SessionSearchOptions) (V3SessionSearchResult, error) {
-	tokens := v3SessionSearchTokens(options.Query)
-	if len(tokens) == 0 {
+	queryTokens := make([][]string, 0, len(options.Queries))
+	for _, query := range options.Queries {
+		if tokens := v3SessionSearchTokens(query); len(tokens) > 0 {
+			queryTokens = append(queryTokens, tokens)
+		}
+	}
+	if len(queryTokens) == 0 {
 		return s.searchV3SessionsRecentFromReader(reader, options)
 	}
-	prefixes := v3SessionSearchPrefixesForOptions(options, tokens[0])
+	prefixes := []string{}
+	for _, tokens := range queryTokens {
+		prefixes = append(prefixes, v3SessionSearchPrefixesForOptions(options, tokens[0])...)
+	}
 	startOrder := ""
 	if options.BeforeUpdatedAt != nil {
 		startOrder = sessionRecentIndexOrderPart(*options.BeforeUpdatedAt, options.BeforeSessionID) + "\x00"
@@ -250,7 +308,18 @@ func (s *SessionStore) searchV3SessionsQueryFromReader(reader pebble.Reader, opt
 			if !ok {
 				return true, nil
 			}
-			if !v3SessionSearchItemMatchesQuery(item, tokens, options.Query) {
+			matched := false
+			for _, tokens := range queryTokens {
+				ok, verifyErr := v3SessionSearchRecordHasTokens(reader, record.SessionID, record.Archived, tokens)
+				if verifyErr != nil {
+					return false, verifyErr
+				}
+				if ok {
+					matched = true
+					break
+				}
+			}
+			if !matched {
 				return true, nil
 			}
 			if existing, ok := itemsByID[item.ID]; ok {
@@ -493,8 +562,8 @@ func (s *SessionStore) appendV3SessionSearchMessageInBatch(batch *pebble.Batch, 
 		}
 		keys[movedKey] = record
 	}
-	messageSnippet := &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, Text: truncateV3SessionSearchSnippet(message.Content), CreatedAt: message.CreatedAt}
 	for _, token := range v3SessionSearchTokens(message.Content) {
+		messageSnippet := &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, GlobalSeq: message.GlobalSeq, Text: matchCenteredV3SessionSearchSnippet(message.Content, token), CreatedAt: message.CreatedAt}
 		key := keyV3SessionSearchAccount(session.AccountScopeID, archived, token, session.UpdatedAt, session.ID)
 		if _, ok := keys[key]; ok {
 			continue
@@ -557,7 +626,13 @@ func v3SessionSearchIndexEntriesForSession(reader pebble.Reader, session Session
 		for _, token := range v3SessionSearchTokens(text) {
 			key := keyV3SessionSearchAccount(session.AccountScopeID, archived, token, session.UpdatedAt, session.ID)
 			if _, ok := entries[key]; !ok {
-				entries[key] = v3SessionSearchIndexRecord{SessionID: session.ID, Archived: archived, Snippet: snippet}
+				centered := snippet
+				if snippet != nil {
+					copy := *snippet
+					copy.Text = matchCenteredV3SessionSearchSnippet(text, token)
+					centered = &copy
+				}
+				entries[key] = v3SessionSearchIndexRecord{SessionID: session.ID, Archived: archived, Snippet: centered}
 			}
 		}
 	}
@@ -579,7 +654,7 @@ func v3SessionSearchIndexEntriesForSession(reader pebble.Reader, session Session
 		}
 	}
 	for _, message := range messages {
-		snippet := &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, Text: truncateV3SessionSearchSnippet(message.Content), CreatedAt: message.CreatedAt}
+		snippet := &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, GlobalSeq: message.GlobalSeq, CreatedAt: message.CreatedAt}
 		add(message.Content, snippet)
 	}
 	return entries, nil
@@ -702,10 +777,113 @@ func mergeV3SessionSearchSnippets(a, b []V3SessionSearchSnippet) []V3SessionSear
 }
 
 func truncateV3SessionSearchSnippet(text string) string {
-	text = strings.TrimSpace(strings.Join(strings.Fields(text), " "))
-	if utf8.RuneCountInString(text) <= v3SessionSearchSnippetMaxRunes {
+	return truncateRunes(strings.TrimSpace(strings.Join(strings.Fields(text), " ")), v3SessionSearchSnippetMaxRunes)
+}
+
+func truncateRunes(text string, limit int) string {
+	if utf8.RuneCountInString(text) <= limit {
 		return text
 	}
-	runes := []rune(text)
-	return string(runes[:v3SessionSearchSnippetMaxRunes])
+	return string([]rune(text)[:limit])
+}
+
+func matchCenteredV3SessionSearchSnippet(text, token string) string {
+	normalized := strings.TrimSpace(strings.Join(strings.Fields(text), " "))
+	runes := []rune(normalized)
+	if len(runes) <= v3SessionSearchSnippetMaxRunes {
+		return normalized
+	}
+	lower := []rune(strings.ToLower(normalized))
+	needle := []rune(strings.ToLower(token))
+	at := 0
+	for i := 0; i+len(needle) <= len(lower); i++ {
+		if string(lower[i:i+len(needle)]) == string(needle) {
+			at = i
+			break
+		}
+	}
+	start := at - v3SessionSearchSnippetMaxRunes/3
+	if start < 0 {
+		start = 0
+	}
+	if start+v3SessionSearchSnippetMaxRunes > len(runes) {
+		start = len(runes) - v3SessionSearchSnippetMaxRunes
+	}
+	return string(runes[start : start+v3SessionSearchSnippetMaxRunes])
+}
+
+func v3SessionSearchRecordHasTokens(reader pebble.Reader, sessionID string, archived bool, tokens []string) (bool, error) {
+	var meta v3SessionSearchSessionMeta
+	ok, err := getJSONFromReader(reader, keyV3SessionSearchMeta(sessionID), &meta)
+	if err != nil || !ok {
+		return false, err
+	}
+	wanted := make(map[string]bool, len(tokens))
+	for _, token := range tokens {
+		wanted[keyPart(token)] = false
+	}
+	state := "/active/"
+	if archived {
+		state = "/archived/"
+	}
+	for _, key := range meta.Keys {
+		if !strings.Contains(key, state) {
+			continue
+		}
+		rest, ok := strings.CutPrefix(key, keyV3SessionSearchAccountPrefix)
+		if !ok {
+			continue
+		}
+		parts := strings.SplitN(rest, "/", 4)
+		if len(parts) == 4 {
+			if _, exists := wanted[parts[2]]; exists {
+				wanted[parts[2]] = true
+			}
+		}
+	}
+	for _, found := range wanted {
+		if !found {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func v3SessionAttentionFromReader(reader pebble.Reader, sessionID string) (V3SessionAttentionSummary, error) {
+	summary := V3SessionAttentionSummary{State: "inactive"}
+	active, ok, err := getActivePlanFromReader(reader, sessionID)
+	if err != nil || !ok {
+		return summary, err
+	}
+	plan, ok, err := getPlanFromReader(reader, sessionID, active.PlanID)
+	if err != nil || !ok {
+		return summary, err
+	}
+	summary.PlanID, summary.PlanStatus = plan.ID, strings.ToLower(plan.Status)
+	if plan.Document != nil {
+		summary.CheckpointID = plan.Document.ActiveCheckpointID
+		if plan.Document.ExecutionState != nil {
+			summary.ExecutionStatus = strings.ToLower(plan.Document.ExecutionState.Status)
+			summary.LastOutcome = strings.ToLower(plan.Document.ExecutionState.LastOutcome)
+		}
+		for _, cp := range plan.Document.Checkpoints {
+			if cp.ID == summary.CheckpointID {
+				summary.CheckpointStatus = strings.ToLower(cp.Status)
+				break
+			}
+		}
+	}
+	switch {
+	case summary.CheckpointStatus == "needs_review" || summary.ExecutionStatus == "waiting_review" || summary.LastOutcome == "needs_review":
+		summary.State = "needs_review"
+	case summary.CheckpointStatus == "blocked" || summary.ExecutionStatus == "blocked":
+		summary.State = "blocked"
+	case summary.CheckpointStatus == "failed" || summary.ExecutionStatus == "failed":
+		summary.State = "failed"
+	case summary.CheckpointStatus == "in_progress" || summary.ExecutionStatus == "in_progress" || summary.ExecutionStatus == "running":
+		summary.State = "in_progress"
+	case summary.CheckpointStatus == "pending" || summary.PlanStatus == "pending":
+		summary.State = "pending"
+	}
+	return summary, nil
 }

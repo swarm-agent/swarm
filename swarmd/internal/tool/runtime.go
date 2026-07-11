@@ -178,6 +178,11 @@ type manageSessionService interface {
 	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
 	ListMessages(sessionID string, afterGlobalSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
 	ListTopSessionsByWorkspace(workspacePaths []string, perWorkspaceLimit int) ([]pebblestore.WorkspaceSessionList, error)
+	SearchSessions(pebblestore.V3SessionSearchOptions) (pebblestore.V3SessionSearchResult, error)
+	GetSessionTombstone(sessionID string) (pebblestore.V3SessionTombstone, bool, error)
+	ListSessionMessageTail(sessionID string, limit int) ([]pebblestore.MessageSnapshot, error)
+	ListSessionMessagesBefore(sessionID string, beforeSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
+	ArchiveSessionWithEvent(sessionID string) (*pebblestore.EventEnvelope, error)
 }
 
 type manageWorktreeWorkspaceService interface {
@@ -389,6 +394,12 @@ func (r *Runtime) SetExaConfigResolver(resolver func(context.Context) (ExaRuntim
 		return
 	}
 	r.exaConfigResolver = resolver
+}
+
+func (r *Runtime) SetManageSessionService(sessions manageSessionService) {
+	if r != nil {
+		r.sessions = sessions
+	}
 }
 
 func (r *Runtime) SetManageWorktreeServices(sessions manageSessionService, workspace manageWorktreeWorkspaceService, worktrees manageWorktreeConfigService) {
@@ -1044,6 +1055,7 @@ func (r *Runtime) Definitions() []Definition {
 				"additionalProperties": false,
 			},
 		},
+		manageSessionsDefinition(),
 		{
 			Type:        "function",
 			Name:        "manage-worktree",
@@ -1416,6 +1428,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageImage(ctx, scope, args, onProgress)
 	case "manage-theme", "manage_theme":
 		return r.executeManageTheme(scope, args)
+	case "manage-sessions", "manage_sessions":
+		return r.executeManageSessions(ctx, scope, args)
 	case "manage-worktree", "manage_worktree":
 		return r.executeManageWorktree(scope, args)
 	case "manage-todos", "manage_todos":
