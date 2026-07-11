@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import { Plus } from 'lucide-react'
 import { queryClient } from '../../../../app/query-client'
 import { Button } from '../../../../components/ui/button'
 import { Input } from '../../../../components/ui/input'
+import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import { acceptOnboardingProviderCredential, patchDesktopOnboarding } from '../api'
 import type { DesktopOnboardingStatus } from '../types'
 import { startCodexOAuth } from '../../settings/mutations/start-codex-oauth'
@@ -231,6 +233,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [callbackInput, setCallbackInput] = useState('')
   const [workspaceSearch, setWorkspaceSearch] = useState('')
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
+  const [workspaceExplorerOpen, setWorkspaceExplorerOpen] = useState(false)
 
   const {
     workspaces,
@@ -507,6 +510,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     if (submitting) {
       return
     }
+    setWorkspaceExplorerOpen(false)
     void (async () => {
       setPendingAction('workspace')
       setError(null)
@@ -528,6 +532,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     if (submitting) {
       return
     }
+    setWorkspaceExplorerOpen(false)
     void (async () => {
       setPendingAction('workspace')
       setError(null)
@@ -556,6 +561,14 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const handleUseBrowsedFolder = (path: string) => {
     handleSaveAndOpenFolder({ path, name: fallbackWorkspaceNameFromPath(path) })
+  }
+
+  const openWorkspaceExplorer = () => {
+    setWorkspaceError(null)
+    setWorkspaceExplorerOpen(true)
+    if (!browser && !browserLoading) {
+      void browsePath('')
+    }
   }
 
   const handleIdentitySubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -1095,35 +1108,24 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                       </div>
                       {visibleSavedWorkspaces.length === 0 && filteredDiscovered.length === 0 ? (
                         <p className="border-l border-[var(--app-border)] py-2 pl-4 text-sm leading-6 text-[var(--app-text-muted)]">
-                          {workspaceSearch.trim() ? 'No matching workspaces. Clear the search or browse below.' : 'No saved workspaces yet. Use Explorer below to browse, add, or create one.'}
+                          {workspaceSearch.trim() ? 'No matching workspaces. Clear the search or open Explorer.' : 'No saved workspaces yet. Open Explorer to browse, add, or create one.'}
                         </p>
                       ) : null}
                     </section>
                   </div>
 
-                  <section className="min-h-[22rem] overflow-hidden border border-[var(--app-border)] bg-transparent">
-                    <WorkspaceFolderTree
-                      browser={browser}
-                      browserLoading={browserLoading}
-                      browserError={browserError}
-                      workspaces={workspaces}
-                      selectingPath={selectingPath}
-                      savingPath={savingPath}
-                      useFolderLabel="Use this folder"
-                      onBrowsePath={(path) => void browsePath(path)}
-                      onOpenWorkspace={handleOpenWorkspace}
-                      onUseFolderTemporarily={handleUseBrowsedFolder}
-                      onCreateWorkspace={handleSaveAndOpenFolder}
-                      onCreateFolder={createFolder}
-                    />
-                  </section>
-
                   <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--app-border)] pt-4">
                     <Button type="button" variant="outline" onClick={() => transitionToStep('provider')} disabled={submitting}>
                       Back
                     </Button>
-                    <Button type="button" variant="outline" onClick={() => void browsePath(browser?.resolvedPath || browser?.homePath || '')} disabled={submitting || browserLoading}>
-                      {workspaceRefreshing || browserLoading ? 'Browsing…' : 'Browse / retry explorer'}
+                    <Button
+                      type="button"
+                      onClick={openWorkspaceExplorer}
+                      disabled={submitting}
+                      className="min-w-40 border-[var(--app-primary)] bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-[0_12px_30px_rgb(0_0_0/0.28)] hover:bg-[var(--app-primary-hover)] hover:text-[var(--app-primary-text)] active:bg-[var(--app-primary-active)]"
+                    >
+                      <Plus size={16} />
+                      Add from Explorer
                     </Button>
                   </div>
                 </div>
@@ -1132,6 +1134,37 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
           </div>
         </div>
       </main>
+
+      {workspaceExplorerOpen && view === 'workspace' ? (
+        <div className="fixed inset-0 z-[10000] grid place-items-center p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="Add workspace from Explorer">
+          <button type="button" className="absolute inset-0 bg-[var(--app-backdrop)]" onClick={() => setWorkspaceExplorerOpen(false)} aria-label="Close Explorer" />
+          <div className="relative z-10 flex h-[min(44rem,calc(100dvh-24px))] w-full max-w-xl flex-col overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-[var(--shadow-panel)]">
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-5 py-4 sm:px-6">
+              <div className="grid gap-1">
+                <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">Add workspace</h2>
+                <p className="text-sm leading-6 text-[var(--app-text-muted)]">Browse to a folder, create one if needed, then add it to continue.</p>
+              </div>
+              <ModalCloseButton onClick={() => setWorkspaceExplorerOpen(false)} aria-label="Close Explorer" />
+            </div>
+            <div className="min-h-0 flex-1">
+              <WorkspaceFolderTree
+                browser={browser}
+                browserLoading={browserLoading}
+                browserError={browserError}
+                workspaces={workspaces}
+                selectingPath={selectingPath}
+                savingPath={savingPath}
+                showTemporaryAction={false}
+                onBrowsePath={(path) => void browsePath(path)}
+                onOpenWorkspace={handleOpenWorkspace}
+                onUseFolderTemporarily={handleUseBrowsedFolder}
+                onCreateWorkspace={handleSaveAndOpenFolder}
+                onCreateFolder={createFolder}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

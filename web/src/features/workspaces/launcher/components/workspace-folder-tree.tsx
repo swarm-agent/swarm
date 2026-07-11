@@ -15,6 +15,7 @@ interface WorkspaceFolderTreeProps {
   selectingPath: string | null
   savingPath: string | null
   useFolderLabel?: string
+  showTemporaryAction?: boolean
   onBrowsePath: (path: string) => void
   onOpenWorkspace: (path: string) => void
   onUseFolderTemporarily: (path: string) => void
@@ -49,6 +50,7 @@ export function WorkspaceFolderTree({
   selectingPath,
   savingPath,
   useFolderLabel = 'Use as temp',
+  showTemporaryAction = true,
   onBrowsePath,
   onOpenWorkspace,
   onUseFolderTemporarily,
@@ -291,14 +293,16 @@ export function WorkspaceFolderTree({
           {currentBusy ? <RefreshCw size={14} className="animate-spin" /> : currentSaved ? <Folder size={15} /> : <Plus size={15} />}
           {currentBusy ? 'Working…' : currentSaved ? 'Open workspace' : 'Add as workspace'}
         </Button>
-        <button
-          type="button"
-          className="mt-2 flex h-7 w-full items-center justify-center rounded-md px-3 text-xs text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={!currentPath || selectingPath === currentPath}
-          onClick={() => onUseFolderTemporarily(currentPath)}
-        >
-          {useFolderLabel}
-        </button>
+        {showTemporaryAction ? (
+          <button
+            type="button"
+            className="mt-2 flex h-7 w-full items-center justify-center rounded-md px-3 text-xs text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={!currentPath || selectingPath === currentPath}
+            onClick={() => onUseFolderTemporarily(currentPath)}
+          >
+            {useFolderLabel}
+          </button>
+        ) : null}
       </div>
     </div>
   )
