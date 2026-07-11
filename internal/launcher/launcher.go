@@ -489,7 +489,7 @@ func DevToolchainEnv(root string) (map[string]string, error) {
 		env["GOROOT"] = goRoot
 	}
 	if strings.TrimSpace(os.Getenv("GOTOOLCHAIN")) == "" {
-		env["GOTOOLCHAIN"] = "local"
+		env["GOTOOLCHAIN"] = "auto"
 	}
 	return env, nil
 }
@@ -873,7 +873,7 @@ func runGoBuildWithArgs(projectRoot, workDir, goBin, outPath, pkg string, extraA
 		"GOMODCACHE="+goModCache,
 		"GOPATH="+goPath,
 		"GO_BIN="+goBin,
-		"GOTOOLCHAIN="+envValueOrDefault("GOTOOLCHAIN", "local"),
+		"GOTOOLCHAIN="+envValueOrDefault("GOTOOLCHAIN", "auto"),
 		"PATH="+prependPathEntry(os.Getenv("PATH"), filepath.Dir(goBin)),
 	)
 	if goRoot := ResolveGoRoot(goBin); goRoot != "" {

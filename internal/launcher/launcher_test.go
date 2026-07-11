@@ -11,6 +11,32 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 )
 
+func TestDevToolchainEnvDefaultsToAutomaticToolchainSelection(t *testing.T) {
+	root := t.TempDir()
+	goBin := filepath.Join(root, ".tools", "go", "bin", "go")
+	goRoot := filepath.Join(root, "resolved-goroot")
+	if err := os.MkdirAll(filepath.Dir(goBin), 0o755); err != nil {
+		t.Fatalf("mkdir go bin: %v", err)
+	}
+	goShim := "#!/bin/sh\nif [ \"$1\" = env ] && [ \"$2\" = GOROOT ]; then echo \"" + goRoot + "\"; exit 0; fi\nexit 1\n"
+	if err := os.WriteFile(goBin, []byte(goShim), 0o755); err != nil {
+		t.Fatalf("write go shim: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(goBin), "gofmt"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write gofmt shim: %v", err)
+	}
+	t.Setenv("GO_BIN", "")
+	t.Setenv("GOTOOLCHAIN", "")
+
+	env, err := DevToolchainEnv(root)
+	if err != nil {
+		t.Fatalf("DevToolchainEnv: %v", err)
+	}
+	if got := env["GOTOOLCHAIN"]; got != "auto" {
+		t.Fatalf("GOTOOLCHAIN = %q, want auto", got)
+	}
+}
+
 func TestWriteCompressedDesktopAssetsCreatesGzipFiles(t *testing.T) {
 	dir := t.TempDir()
 	assetsDir := filepath.Join(dir, "assets")

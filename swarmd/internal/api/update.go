@@ -509,7 +509,7 @@ func devUpdateToolchainEnv(root string) (map[string]string, error) {
 		env["GOROOT"] = goRoot
 	}
 	if strings.TrimSpace(os.Getenv("GOTOOLCHAIN")) == "" {
-		env["GOTOOLCHAIN"] = "local"
+		env["GOTOOLCHAIN"] = "auto"
 	}
 	return env, nil
 }

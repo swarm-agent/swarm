@@ -163,7 +163,7 @@ func TestStartDetachedUpdateCommandDevPassesGoEnvToSystemdRun(t *testing.T) {
 		assertStringInSlice(t, cfg.Env, "GO_BIN="+goBin)
 		assertStringInSlice(t, cfg.Env, "GOFMT_BIN="+filepath.Join(filepath.Dir(goBin), "gofmt"))
 		assertStringInSlice(t, cfg.Env, "GOROOT=/tmp/test-goroot")
-		assertStringInSlice(t, cfg.Env, "GOTOOLCHAIN=local")
+		assertStringInSlice(t, cfg.Env, "GOTOOLCHAIN=auto")
 		return updateHelperLaunchCommand{CommandPath: "/bin/sleep", Args: []string{"60"}, Env: os.Environ()}, nil
 	}
 

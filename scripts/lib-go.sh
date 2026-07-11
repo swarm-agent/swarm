@@ -66,7 +66,9 @@ swarm_require_go() {
 
   export GOROOT="${goroot_dir}"
   if [[ -z "${GOTOOLCHAIN:-}" ]]; then
-    export GOTOOLCHAIN="local"
+    # Let Go select the patch release required by go.mod. Worktree-local Go
+    # installations can lag the module directive between toolchain updates.
+    export GOTOOLCHAIN="auto"
   fi
   case ":${PATH:-}:" in
     *":${go_dir}:"*) ;;
