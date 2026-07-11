@@ -1862,16 +1862,21 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 			previous = ""
 		}
 		next := previous
-		if reasoningEventIsSnapshot(eventName) {
+		if isReasoningSummaryEvent(eventName) {
+			next = mergeReasoningSummaryEvent(previous, delta, reasoningEventIsSnapshot(eventName))
+		} else if reasoningEventIsSnapshot(eventName) {
 			next = mergeReasoningSummarySnapshot(previous, delta)
 		} else {
 			next = mergeReasoningSummaryChunk(previous, delta)
 		}
 		setReasoningStateText(state, reasoningKey, next)
 		codexThinkingDebugf("tag=%s key=%s delta_chars=%d total_reasoning_chars=%d", eventName, reasoningKey, len(delta), len(next))
-		// Emit full merged snapshot so downstream UI can atomically replace
-		// the live reasoning sentence without briefly showing mixed fragments.
-		if onEvent != nil && strings.TrimSpace(next) != "" && next != previous {
+		// Emit full merged snapshots so downstream UI can atomically replace
+		// visible summary content. Hold heading-only partials until their body or
+		// final event arrives, and never emit Codex's empty HTML-comment sentinel.
+		finalSummaryPart := isReasoningSummaryEvent(eventName) && reasoningEventFinalizesPart(eventName)
+		heldHeadingCompleted := finalSummaryPart && next == previous && isHeadingOnlyReasoningSummaryPart(next)
+		if onEvent != nil && (next != previous || heldHeadingCompleted) && (!isReasoningSummaryEvent(eventName) || shouldEmitReasoningSummaryPart(next, finalSummaryPart)) {
 			onEvent(StreamEvent{Type: StreamEventReasoningSummaryDelta, Delta: next, ReasoningKey: reasoningKey})
 		}
 	case "response.completed":
@@ -2696,6 +2701,19 @@ func reasoningEventIsSnapshot(eventName string) bool {
 	}
 }
 
+func isReasoningSummaryEvent(eventName string) bool {
+	return strings.HasPrefix(eventName, "response.reasoning_summary_") || eventName == "response.reasoning_summary.delta"
+}
+
+func reasoningEventFinalizesPart(eventName string) bool {
+	switch eventName {
+	case "response.reasoning_summary_part.done", "response.reasoning_summary_text.done":
+		return true
+	default:
+		return false
+	}
+}
+
 func reasoningStateText(state *streamDecodeState, key string) string {
 	if state == nil || state.reasoningSummary == nil {
 		return ""
@@ -3205,7 +3223,7 @@ func shouldReplaceFullReasoningSummarySnapshot(current, snapshot string) bool {
 
 func normalizeReasoningSummary(summary string) string {
 	summary = strings.TrimSpace(summary)
-	if summary == "" {
+	if summary == "" || isEmptyReasoningSummaryPart(summary) {
 		return ""
 	}
 	summary = dedupeAdjacentReasoningSummaryBlocks(summary)
@@ -3906,7 +3924,7 @@ func extractReasoningSummaryFromOutput(value any) string {
 				continue
 			}
 			text := strings.TrimSpace(asString(summaryPart["text"]))
-			if text == "" {
+			if text == "" || isEmptyReasoningSummaryPart(text) {
 				continue
 			}
 			parts = append(parts, text)
