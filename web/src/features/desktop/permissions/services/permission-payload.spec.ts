@@ -530,6 +530,29 @@ function testGenericBashPermissionFormatsCommandAsCodeBlock(): void {
   assert(!body.includes(`\`${command}\``), 'expected wrapping backticks to be removed')
 }
 
+function testManageSessionsArchiveShowsHydratedFactsOnly(): void {
+  const firstId = '3797e357-ef14-4983-aa70-625efb8be323'
+  const permission = makePermission({
+    toolName: 'manage_sessions',
+    requirement: 'session_archive',
+    toolArguments: JSON.stringify({
+      action: 'archive',
+      sessions: [{ title: 'Review search results', workspace_name: 'Swarm', state: 'needs_review', updated_at: 1783764535576 }],
+      approved_arguments: {
+        action: 'archive',
+        session_ids: [firstId],
+        expected_updated_at_by_id: { [firstId]: 1783764535576 },
+      },
+    }),
+  })
+
+  const body = buildGenericPermissionMarkdown(permission)
+  assert(body.includes('Review search results'), 'expected hydrated title')
+  assert(body.includes('needs_review'), 'expected hydrated state')
+  assert(!body.includes(firstId), 'expected authoritative opaque id to stay hidden from the prompt')
+  assert(!body.includes('Expected Updated At By Id'), 'expected concurrency map to stay hidden from the prompt')
+}
+
 function testManageTodosBatchParsing(): void {
   const permission = makePermission({
     toolName: 'manage_todos',
@@ -574,6 +597,7 @@ function main(): void {
   testPlanUpdateDiffPreviewPreservesAllDiffRows()
   testPlanUpdateDiffPreviewFallsBackToCompleteBeforeAfterRows()
   testGenericBashPermissionFormatsCommandAsCodeBlock()
+  testManageSessionsArchiveShowsHydratedFactsOnly()
   testManageTodosBatchParsing()
   console.log('permission-payload tests passed')
 }

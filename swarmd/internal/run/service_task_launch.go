@@ -622,6 +622,12 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 			return "", err
 		}
 		return marshalPayload(payload)
+	case "manage_sessions":
+		payload, err := s.buildManageSessionsPermissionPayload(sessionID, call)
+		if err != nil {
+			return "", err
+		}
+		return marshalPayload(payload)
 	case "exit_plan_mode":
 		payload, err := s.buildExitPlanModePermissionPayload(sessionID, call)
 		if err != nil {

@@ -1770,6 +1770,8 @@ function permissionPreferredArgumentKeys(toolName: string): string[] {
       return ['description', 'prompt', 'subagent_type', 'max_steps']
     case 'task_launch':
       return ['goal', 'description', 'prompt', 'launch_count', 'launches']
+    case 'manage_sessions':
+      return ['action', 'sessions']
     default:
       return []
   }
@@ -1973,9 +1975,12 @@ function buildPermissionArgumentsMarkdown(permission: DesktopPermissionRecord): 
     }
   }
 
-  const fields = orderedPermissionArguments(permission.toolName, normalized).map(([key, value]) => (
-    permissionArgumentBlockMarkdown(permission.toolName, key, value)
-  ))
+  const hiddenKeys = normalizePermissionToolName(permission.toolName) === 'manage_sessions'
+    ? new Set(['approved_arguments'])
+    : new Set<string>()
+  const fields = orderedPermissionArguments(permission.toolName, normalized)
+    .filter(([key]) => !hiddenKeys.has(key.trim().toLowerCase()))
+    .map(([key, value]) => permissionArgumentBlockMarkdown(permission.toolName, key, value))
 
   if (fields.length === 0) {
     return ['```json', '{}', '```'].join('\n')
