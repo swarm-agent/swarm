@@ -291,22 +291,13 @@ test('Desktop V3 final checkpoint handoff renders separately after lifecycle bre
 })
 
 
-test('Desktop V3 blocked checkpoint handoff renders separately after lifecycle break', () => {
-  const lifecycle = {
-    id: 'plan-break-blocked',
-    session_id: 'session-a',
-    global_seq: 9,
-    role: 'system',
-    content: 'Checkpoint blocked — Automatic mode\nPlan: Demo plan\nCheckpoint: Checkpoint 1 — API\nNext: execution stopped until the blocker or failure is resolved.',
-    metadata: { source: 'plan_execution_lifecycle', kind: 'plan_execution_break' },
-    created_at: 9,
-  }
+test('Desktop V3 blocked checkpoint handoff renders as one standalone handoff', () => {
   const handoff = {
     id: 'plan-handoff-blocked',
     session_id: 'session-a',
     global_seq: 10,
     role: 'system',
-    content: 'Blocked checkpoint handoff\n\nCheckpoint execution is blocked. Resolve the blocker before continuing.\n\nReport:\n## Blocker\n- waiting on dependency\nResult: blocked\nValidation:\n- not run; blocked by dependency',
+    content: 'Blocked checkpoint handoff\n\nStatus: BLOCKED\nPlan: Demo plan\nCheckpoint: Checkpoint 1 — API\nResolution required: resolve the named external dependency, input, or permission in the report before continuing checkpoint execution.\n\nReport:\n## Blocker\n- waiting on dependency\nResult: blocked\nValidation:\n- not run; blocked by dependency',
     metadata: { source: 'plan_execution_blocked_handoff', kind: 'plan_blocked_checkpoint_handoff' },
     created_at: 10,
   }
@@ -314,18 +305,17 @@ test('Desktop V3 blocked checkpoint handoff renders separately after lifecycle b
   assert.equal(isDesktopV3PlanExecutionBreakMessage(handoff), false)
   assert.equal(isDesktopV3PlanFinalHandoffMessage(handoff), false)
   assert.equal(isDesktopV3PlanBlockedHandoffMessage(handoff), true)
-  const items = buildDesktopV3ConversationRenderItems({ committed: [lifecycle, handoff], pendingUser: [], liveRuns: [], runIntents: [] })
-  assert.deepEqual(items.map((item) => item.type), ['plan-break', 'plan-blocked-handoff'])
-  if (items[0]?.type === 'plan-break') {
-    assert.equal(items[0].details.some((detail) => detail.includes('Report:')), false)
-    assert.equal(items[0].details.some((detail) => detail.includes('Validation:')), false)
-    assert.equal(items[0].details.includes('Next: execution stopped until the blocker or failure is resolved.'), true)
-  }
-  if (items[1]?.type === 'plan-blocked-handoff') {
-    assert.equal(items[1].headline, 'Blocked checkpoint handoff')
-    assert.match(items[1].body, /Report:\n## Blocker\n- waiting on dependency/)
-    assert.match(items[1].body, /Result: blocked/)
-    assert.match(items[1].body, /Validation:\n- not run; blocked by dependency/)
+  const items = buildDesktopV3ConversationRenderItems({ committed: [handoff], pendingUser: [], liveRuns: [], runIntents: [] })
+  assert.deepEqual(items.map((item) => item.type), ['plan-blocked-handoff'])
+  if (items[0]?.type === 'plan-blocked-handoff') {
+    assert.equal(items[0].headline, 'Blocked checkpoint handoff')
+    assert.match(items[0].body, /Status: BLOCKED/)
+    assert.match(items[0].body, /Plan: Demo plan/)
+    assert.match(items[0].body, /Checkpoint: Checkpoint 1 — API/)
+    assert.match(items[0].body, /Resolution required:/)
+    assert.match(items[0].body, /Report:\n## Blocker\n- waiting on dependency/)
+    assert.match(items[0].body, /Result: blocked/)
+    assert.match(items[0].body, /Validation:\n- not run; blocked by dependency/)
   }
 })
 

@@ -72,7 +72,11 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"Do not call start_session_checkpoint or request_followup_checkpoint from this checkpoint run",
 		"Always include the current checkpoint_id from the payload",
 		"complete_checkpoint may continue to the next checkpoint only if backend execution policy allows it",
-		"mark_needs_review always pauses for review and never advances to the next checkpoint",
+		"Keep implementing until every acceptance criterion is met whenever the remaining gap is resolvable",
+		"a missing interface or API, scope growth, uncertainty, or an incomplete/failed first approach is implementation work",
+		"Use mark_needs_review only when user or audit judgment is inherently required",
+		"Use mark_blocked only for a named external dependency, required input, or unavailable permission",
+		"Use mark_failed only for a nonrecoverable execution error after reasonable recovery attempts",
 		"backend durable plan state decides continuation",
 	} {
 		if !strings.Contains(text, want) {

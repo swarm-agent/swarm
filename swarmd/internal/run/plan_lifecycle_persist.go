@@ -9,22 +9,20 @@ import (
 )
 
 func (s *Service) appendPlanExecutionLifecycleSystemMessage(sessionID, action string, plan pebblestore.SessionPlanSnapshot, payload map[string]any, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
-	message, ok := BuildPlanExecutionLifecycleSystemMessage(PlanExecutionLifecycleMessageInput{Action: action, Plan: plan, Payload: payload})
+	handoffInput := PlanExecutionLifecycleMessageInput{Action: action, Plan: plan, Payload: payload}
+	if blockedHandoff, ok := BuildBlockedPlanExecutionHandoffSystemMessage(handoffInput); ok {
+		return s.appendPlanExecutionSystemMessage(sessionID, plan, blockedHandoff, planBlockedHandoffMessageLogicalKey(action, plan, payload), "plan execution blocked handoff", applySessionMutation)
+	}
+	message, ok := BuildPlanExecutionLifecycleSystemMessage(handoffInput)
 	if !ok {
 		return nil
 	}
 	if err := s.appendPlanExecutionSystemMessage(sessionID, plan, message, planLifecycleMessageLogicalKey(action, plan, payload), "plan execution lifecycle", applySessionMutation); err != nil {
 		return err
 	}
-	handoffInput := PlanExecutionLifecycleMessageInput{Action: action, Plan: plan, Payload: payload}
 	handoffMessage, ok := BuildFinalPlanExecutionHandoffSystemMessage(handoffInput)
 	logicalKey := planFinalHandoffMessageLogicalKey
 	label := "plan execution final handoff"
-	if !ok {
-		handoffMessage, ok = BuildBlockedPlanExecutionHandoffSystemMessage(handoffInput)
-		logicalKey = planBlockedHandoffMessageLogicalKey
-		label = "plan execution blocked handoff"
-	}
 	if !ok {
 		return nil
 	}

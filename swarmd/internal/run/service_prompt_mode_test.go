@@ -72,6 +72,11 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 		"For multi-step implementation work, use `plan_manage` terminal checkpoint actions for checkpoint outcomes",
 		"Preserve manage_todos as the user-owned workspace todo surface",
 		"Do not use manage_todos for agent execution checklists or checkpoint progress",
+		"In automatic execution, keep solving acceptance gaps that are resolvable with the available tools",
+		"Discovering more work, scope growth, a missing interface/API or implementation, uncertainty, or an incomplete/failed first approach is not by itself a reason to stop",
+		"Use mark_needs_review only when user or audit judgment is inherently required",
+		"mark_blocked only for a named external dependency/input/unavailable permission",
+		"mark_failed only for a nonrecoverable execution error",
 		"plan_manage terminal checkpoint example",
 	} {
 		if !strings.Contains(prompt, want) {

@@ -376,8 +376,15 @@ func BuildBlockedPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleM
 	lines := []string{
 		"Blocked checkpoint handoff",
 		"",
-		"Checkpoint execution is blocked. Resolve the blocker before continuing.",
+		"Status: BLOCKED",
 	}
+	if planLabel := planLifecyclePlanLabel(input.Plan, doc); planLabel != "" {
+		lines = append(lines, "Plan: "+planLabel)
+	}
+	if checkpointID != "" {
+		lines = append(lines, "Checkpoint: "+planLifecycleCheckpointLabel(checkpointID, checkpointTitle))
+	}
+	lines = append(lines, "Resolution required: resolve the named external dependency, input, or permission in the report before continuing checkpoint execution.")
 	if detailLines := planLifecycleOutcomeDetailLines(input.Payload, true); len(detailLines) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, detailLines...)

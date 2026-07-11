@@ -415,7 +415,7 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	}
 }
 
-func TestExecutePlanManageBlockedCheckpointHandoffSeparatedFromLifecycleBreak(t *testing.T) {
+func TestExecutePlanManageBlockedCheckpointHandoffIsStandalone(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
 
@@ -451,34 +451,19 @@ func TestExecutePlanManageBlockedCheckpointHandoffSeparatedFromLifecycleBreak(t 
 	if err != nil {
 		t.Fatalf("list messages after blocked handoff: %v", err)
 	}
-	if len(messages) != 2 {
-		t.Fatalf("blocked handoff should append lifecycle and handoff messages, got %#v", messages)
+	if len(messages) != 1 {
+		t.Fatalf("blocked outcome should append one standalone handoff, got %#v", messages)
 	}
-	lifecycle := messages[0]
-	if lifecycle.Role != "system" || lifecycle.Metadata["source"] != PlanExecutionLifecycleMessageSource || lifecycle.Metadata["kind"] != "plan_execution_break" || lifecycle.Metadata["action"] != "mark_blocked" || lifecycle.Metadata["next_action"] != "stopped" {
-		t.Fatalf("blocked lifecycle metadata = %#v", lifecycle.Metadata)
-	}
-	for _, want := range []string{"Checkpoint blocked — Automatic mode", "Checkpoint: Checkpoint a — Blocked", "Next: execution stopped until the blocker or failure is resolved."} {
-		if !strings.Contains(lifecycle.Content, want) {
-			t.Fatalf("blocked lifecycle content missing %q: %q", want, lifecycle.Content)
-		}
-	}
-	for _, forbidden := range []string{"Report:", "Result: blocked", "Validation:"} {
-		if strings.Contains(lifecycle.Content, forbidden) {
-			t.Fatalf("blocked lifecycle leaked handoff detail %q: %q", forbidden, lifecycle.Content)
-		}
-	}
-
-	handoff := messages[1]
+	handoff := messages[0]
 	if handoff.Role != "system" || handoff.Metadata["source"] != PlanExecutionBlockedHandoffMessageSource || handoff.Metadata["kind"] != "plan_blocked_checkpoint_handoff" || handoff.Metadata["action"] != "mark_blocked" || handoff.Metadata["next_action"] != "stopped" {
 		t.Fatalf("blocked handoff metadata = %#v", handoff.Metadata)
 	}
-	for _, want := range []string{"Blocked checkpoint handoff", "Checkpoint execution is blocked. Resolve the blocker before continuing.", "Report:\n## Blocker\n- dependency missing", "\n\nResult: blocked", "\n\nValidation:\n- not run; blocked by dependency"} {
+	for _, want := range []string{"Blocked checkpoint handoff", "Status: BLOCKED", "Plan: Blocked Handoff", "Checkpoint: Checkpoint a — Blocked", "Resolution required: resolve the named external dependency, input, or permission", "Report:\n## Blocker\n- dependency missing", "\n\nResult: blocked", "\n\nValidation:\n- not run; blocked by dependency"} {
 		if !strings.Contains(handoff.Content, want) {
 			t.Fatalf("blocked handoff content missing %q: %q", want, handoff.Content)
 		}
 	}
-	if len(appliedMutations) != 3 || appliedMutations[1].Kind != sessionruntime.SessionMutationAppendMessage || appliedMutations[1].Message == nil || appliedMutations[1].Message.Metadata["source"] != PlanExecutionLifecycleMessageSource || appliedMutations[2].Kind != sessionruntime.SessionMutationAppendMessage || appliedMutations[2].Message == nil || appliedMutations[2].Message.Metadata["source"] != PlanExecutionBlockedHandoffMessageSource {
+	if len(appliedMutations) != 2 || appliedMutations[1].Kind != sessionruntime.SessionMutationAppendMessage || appliedMutations[1].Message == nil || appliedMutations[1].Message.Metadata["source"] != PlanExecutionBlockedHandoffMessageSource {
 		t.Fatalf("blocked handoff mutation ordering = %#v", appliedMutations)
 	}
 }
