@@ -2003,24 +2003,164 @@ func shortPermissionNotificationID(value string) string {
 }
 
 func permissionNotificationTitleFromRecord(record pebblestore.PermissionRecord) string {
+	summary := permissionNotificationActionSummary(record)
 	if strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending) {
+		if summary.title != "" {
+			return summary.title
+		}
 		return fmt.Sprintf("Permission requested: %s", fallbackToolName(record.ToolName))
 	}
-	return fmt.Sprintf("Permission %s: %s", strings.TrimSpace(record.Status), fallbackToolName(record.ToolName))
+	return fmt.Sprintf("Permission %s: %s", strings.TrimSpace(record.Status), firstNonEmpty(summary.label, fallbackToolName(record.ToolName)))
 }
 
 func permissionNotificationBodyFromRecord(record pebblestore.PermissionRecord) string {
-	toolName := fallbackToolName(record.ToolName)
+	summary := permissionNotificationActionSummary(record)
 	if strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending) {
-		if strings.TrimSpace(record.Requirement) == "" {
-			return fmt.Sprintf("The %s action is waiting for approval.", toolName)
+		if summary.body != "" {
+			return summary.body
 		}
-		return fmt.Sprintf("The %s %s action is waiting for approval.", strings.TrimSpace(record.Requirement), toolName)
+		if strings.TrimSpace(record.Requirement) == "" {
+			return fmt.Sprintf("The %s action is waiting for approval.", fallbackToolName(record.ToolName))
+		}
+		return fmt.Sprintf("The %s %s action is waiting for approval.", strings.TrimSpace(record.Requirement), fallbackToolName(record.ToolName))
 	}
 	if strings.TrimSpace(record.Reason) != "" {
-		return fmt.Sprintf("%s %s: %s", toolName, strings.TrimSpace(record.Status), strings.TrimSpace(record.Reason))
+		return fmt.Sprintf("%s %s: %s", firstNonEmpty(summary.label, fallbackToolName(record.ToolName)), strings.TrimSpace(record.Status), boundedNotificationText(record.Reason, 120))
 	}
-	return fmt.Sprintf("%s %s.", toolName, strings.TrimSpace(record.Status))
+	return fmt.Sprintf("%s %s.", firstNonEmpty(summary.label, fallbackToolName(record.ToolName)), strings.TrimSpace(record.Status))
+}
+
+type permissionNotificationSummary struct {
+	title string
+	body  string
+	label string
+}
+
+func permissionNotificationActionSummary(record pebblestore.PermissionRecord) permissionNotificationSummary {
+	toolName := strings.ToLower(strings.TrimSpace(record.ToolName))
+	args := parsePermissionJSONMap(firstNonEmpty(record.ToolCallArguments, record.ToolArguments))
+	switch toolName {
+	case "exit_plan_mode":
+		plan := boundedNotificationText(firstNonEmpty(
+			mapStringAny(args["title"]),
+			nestedPermissionString(args, "document", "title"),
+			nestedPermissionString(args, "document", "info", "goal"),
+		), 100)
+		if plan == "" {
+			return permissionNotificationSummary{title: "Plan approval requested", body: "Review and approve the proposed plan.", label: "plan approval"}
+		}
+		return permissionNotificationSummary{title: "Plan approval requested: " + plan, body: "Review and approve the plan: " + plan + ".", label: "plan approval: " + plan}
+	case "plan_manage":
+		action := strings.ToLower(strings.TrimSpace(mapStringAny(args["action"])))
+		label := planPermissionActionLabel(action)
+		detail := boundedNotificationText(firstNonEmpty(mapStringAny(args["checkpoint_title"]), mapStringAny(args["title"])), 100)
+		if detail != "" {
+			return permissionNotificationSummary{title: label + ": " + detail, body: "Review and approve: " + detail + ".", label: label + ": " + detail}
+		}
+		return permissionNotificationSummary{title: label, body: "Review and approve this " + strings.ToLower(label) + ".", label: label}
+	case "bash":
+		program := permissionCommandProgram(firstNonEmpty(mapStringAny(args["command"]), mapStringAny(args["cmd"])))
+		if program != "" {
+			label := "run " + program
+			return permissionNotificationSummary{title: "Command approval requested: " + program, body: "Approve running a " + program + " command.", label: label}
+		}
+		return permissionNotificationSummary{title: "Command approval requested", body: "Approve running a shell command.", label: "shell command"}
+	case "read", "write", "edit":
+		operation := map[string]string{"read": "Read", "write": "Write", "edit": "Edit"}[toolName]
+		name := boundedNotificationText(filepath.Base(strings.TrimSpace(mapStringAny(args["path"]))), 80)
+		if name != "" && name != "." {
+			return permissionNotificationSummary{title: operation + " file: " + name, body: "Approve access to " + name + ".", label: strings.ToLower(operation) + " " + name}
+		}
+		return permissionNotificationSummary{title: operation + " file approval requested", body: "Approve the requested file operation.", label: strings.ToLower(operation) + " file"}
+	case "ask_user", "ask-user":
+		return permissionNotificationSummary{title: "Input requested", body: "The agent is waiting for your answer to a question.", label: "user input"}
+	case "task":
+		description := boundedNotificationText(mapStringAny(args["description"]), 100)
+		if description != "" {
+			return permissionNotificationSummary{title: "Agent launch requested: " + description, body: "Approve delegating: " + description + ".", label: "agent launch: " + description}
+		}
+		return permissionNotificationSummary{title: "Agent launch requested", body: "Approve launching a delegated agent task.", label: "agent launch"}
+	}
+
+	action := boundedNotificationText(mapStringAny(args["action"]), 60)
+	toolLabel := humanizePermissionAction(toolName)
+	if action != "" {
+		label := toolLabel + ": " + humanizePermissionAction(action)
+		return permissionNotificationSummary{title: "Permission requested: " + label, body: "Approve the requested " + strings.ToLower(label) + " operation.", label: label}
+	}
+	if toolName != "" {
+		return permissionNotificationSummary{title: "Permission requested: " + toolLabel, body: "Approve the requested " + strings.ToLower(toolLabel) + " operation.", label: toolLabel}
+	}
+	return permissionNotificationSummary{}
+}
+
+func nestedPermissionString(value any, keys ...string) string {
+	current := value
+	for _, key := range keys {
+		if raw, ok := current.(string); ok {
+			current = parsePermissionJSONMap(raw)
+		}
+		object, ok := current.(map[string]any)
+		if !ok {
+			return ""
+		}
+		current = object[key]
+	}
+	return mapStringAny(current)
+}
+
+func planPermissionActionLabel(action string) string {
+	switch action {
+	case "request_followup_checkpoint", "request_changes":
+		return "Plan checkpoint approval requested"
+	case "request_plan_revision", "amend_plan":
+		return "Plan revision approval requested"
+	case "request_new_plan":
+		return "New plan approval requested"
+	default:
+		return "Plan action approval requested"
+	}
+}
+
+func permissionCommandProgram(command string) string {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return ""
+	}
+	for len(fields) > 1 {
+		candidate := strings.ToLower(filepath.Base(fields[0]))
+		if candidate == "sudo" || candidate == "env" || strings.Contains(fields[0], "=") {
+			fields = fields[1:]
+			continue
+		}
+		break
+	}
+	program := filepath.Base(fields[0])
+	if strings.ContainsAny(program, "=$'\"`\\") {
+		return ""
+	}
+	return boundedNotificationText(program, 32)
+}
+
+func humanizePermissionAction(action string) string {
+	action = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(action, "_", " "), "-", " "))
+	if action == "" {
+		return "requested action"
+	}
+	return strings.ToUpper(action[:1]) + action[1:]
+}
+
+func boundedNotificationText(value string, limit int) string {
+	value = privacy.SanitizeText(value)
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if value == "" || limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:limit-1])) + "…"
 }
 
 func fallbackToolName(toolName string) string {
