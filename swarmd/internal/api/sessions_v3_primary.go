@@ -361,7 +361,8 @@ func (s *Server) handleSessionV3PlanReviewSidecar(w http.ResponseWriter, r *http
 	bound := false
 	for _, record := range permissions {
 		toolName := strings.TrimSpace(record.ToolName)
-		if strings.TrimSpace(record.ID) == req.PermissionID && strings.TrimSpace(record.Status) == pebblestore.PermissionStatusPending && (toolName == "exit_plan_mode" || toolName == "plan_manage") {
+		status := strings.TrimSpace(record.Status)
+		if strings.TrimSpace(record.ID) == req.PermissionID && (status == pebblestore.PermissionStatusPending || status == pebblestore.PermissionStatusApproved) && (toolName == "exit_plan_mode" || toolName == "plan_manage") {
 			bound = true
 			break
 		}
@@ -374,21 +375,33 @@ func (s *Server) handleSessionV3PlanReviewSidecar(w http.ResponseWriter, r *http
 	sum := sha256.Sum256([]byte(binding))
 	sidecarID := "plan-review-" + hex.EncodeToString(sum[:16])
 	clientRequestID := "plan-review-sidecar:" + hex.EncodeToString(sum[:])
-	profile, err := s.agents.ResolvePlanReviewAgent(agentruntime.PlanReviewAgentID)
+	parentProfile, err := sessionV3AgentProfileFromMetadata(parent.Metadata)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
+		parentProfile = pebblestore.AgentProfile{}
 	}
-	metadata := cloneSessionsV3Metadata(parent.Metadata)
-	if metadata == nil {
-		metadata = make(map[string]any)
+	profile := agentruntime.PlanReviewAgentProfileForParent(parentProfile)
+	if provider := strings.TrimSpace(parent.Preference.Provider); provider != "" {
+		profile.Provider, profile.PlanProvider, profile.AutoProvider = provider, provider, provider
 	}
+	if model := strings.TrimSpace(parent.Preference.Model); model != "" {
+		profile.Model, profile.PlanModel, profile.AutoModel = model, model, model
+	}
+	if thinking := strings.TrimSpace(parent.Preference.Thinking); thinking != "" {
+		profile.Thinking, profile.PlanThinking, profile.AutoThinking = thinking, thinking, thinking
+	}
+	if tier := strings.TrimSpace(parent.Preference.ServiceTier); tier != "" {
+		profile.PlanServiceTier, profile.AutoServiceTier = tier, tier
+	}
+	profile = pebblestore.NormalizeAgentProfile(profile)
+	metadata := make(map[string]any)
 	metadata["agent_name"], metadata["resolved_agent_name"], metadata["agent_mode"] = profile.Name, profile.Name, profile.Mode
 	metadata["runtime_mode"], metadata["exit_plan_mode_enabled"], metadata["agent_profile"] = profile.RuntimeMode, false, profile
 	metadata["parent_session_id"], metadata["lineage_kind"] = parentSessionID, "plan_review_sidecar"
 	metadata["presentation_kind"], metadata["navigation_hidden"], metadata["transient"] = "plan_review_sidecar", true, true
 	metadata["plan_permission_id"], metadata["plan_id"], metadata["plan_revision"] = req.PermissionID, req.PlanID, req.PlanRevision
 	metadata["immutable_plan_context"] = json.RawMessage(append([]byte(nil), req.Plan...))
+	metadata["originating_agent_name"] = firstNonEmpty(sessionsV3MetadataString(parent.Metadata, "resolved_agent_name"), sessionsV3MetadataString(parent.Metadata, "agent_name"), parentProfile.Name)
+	metadata["originating_provider"], metadata["originating_model"] = profile.Provider, profile.Model
 	now := time.Now().UnixMilli()
 	sidecar := pebblestore.SessionSnapshot{ID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: parent.WorkspacePath, WorkspaceName: parent.WorkspaceName, Title: "Plan review", Mode: sessionruntime.ModeAuto, Preference: parent.Preference, Metadata: metadata, CreatedAt: now, UpdatedAt: now}
 	payload, _ := json.Marshal(struct {
@@ -406,7 +419,7 @@ func (s *Server) handleSessionV3PlanReviewSidecar(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sidecarID, "parent_session_id": parentSessionID, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "replayed": result.Replayed})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sidecarID, "parent_session_id": parentSessionID, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "originating_agent_name": metadata["originating_agent_name"], "provider": profile.Provider, "model": profile.Model, "replayed": result.Replayed})
 }
 
 func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Request, principal identity.Principal) {

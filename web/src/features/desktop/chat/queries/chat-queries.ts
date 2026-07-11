@@ -1968,14 +1968,20 @@ export async function createPlanReviewSidecar(input: {
   planId: string;
   planRevision: number;
   plan: unknown;
-}): Promise<{ sessionId: string; replayed: boolean }> {
+}): Promise<{ sessionId: string; replayed: boolean; originatingAgentName: string; provider: string; model: string }> {
   const parentSessionId = input.parentSessionId.trim();
   const permissionId = input.permissionId.trim();
   const planId = input.planId.trim();
   if (!parentSessionId || !permissionId || !planId || input.planRevision <= 0) {
     throw new Error("Plan review sidecar requires a parent session, permission, plan, and positive revision.");
   }
-  const response = await requestJson<{ session_id?: string; replayed?: boolean }>(
+  const response = await requestJson<{
+    session_id?: string;
+    replayed?: boolean;
+    originating_agent_name?: string;
+    provider?: string;
+    model?: string;
+  }>(
     `/v3/sessions/${encodeURIComponent(parentSessionId)}/plan-review-sidecar`,
     {
       method: "POST",
@@ -1990,7 +1996,13 @@ export async function createPlanReviewSidecar(input: {
   );
   const sessionId = String(response.session_id ?? "").trim();
   if (!sessionId) throw new Error("Plan review sidecar did not return a session id.");
-  return { sessionId, replayed: response.replayed === true };
+  return {
+    sessionId,
+    replayed: response.replayed === true,
+    originatingAgentName: String(response.originating_agent_name ?? "").trim(),
+    provider: String(response.provider ?? "").trim(),
+    model: String(response.model ?? "").trim(),
+  };
 }
 
 export async function sendSessionMessage(

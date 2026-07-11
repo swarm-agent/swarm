@@ -130,7 +130,11 @@ import {
   isPlanProposalPermission,
   permissionRequiresApproval,
 } from "../../permissions/services/permission-payload";
-import { DesktopInlinePlanReviewCard } from "./desktop-inline-plan-review-card";
+import {
+  DesktopInlinePlanReviewCard,
+  structuredPlanDocumentFromPermission,
+} from "./desktop-inline-plan-review-card";
+import { DesktopPlanAgentSidecar } from "./desktop-plan-agent-sidecar";
 import {
   DesktopPlanExecutionSidebar,
   type DesktopPlanExecutionSidebarActionInput,
@@ -1288,6 +1292,30 @@ export function DesktopV3ExistingConversationPane({
     (permission) => !isPlanProposalPermission(permission),
   );
   const selectedPermission = pendingModalPermissions[0] ?? null;
+  const pendingPlanPermission = pendingPlanPermissions[0] ?? null;
+  const pendingPlanDocument = useMemo(
+    () => pendingPlanPermission
+      ? structuredPlanDocumentFromPermission(pendingPlanPermission)
+      : null,
+    [pendingPlanPermission],
+  );
+  const retainedPlanReviewRef = useRef<{
+    permission: DesktopPermissionRecord;
+    document: NonNullable<typeof pendingPlanDocument>;
+  } | null>(null);
+  if (pendingPlanPermission && pendingPlanDocument) {
+    retainedPlanReviewRef.current = {
+      permission: pendingPlanPermission,
+      document: pendingPlanDocument,
+    };
+  }
+  const retainedPlanReview = retainedPlanReviewRef.current;
+  const [planAgentMobileOpen, setPlanAgentMobileOpen] = useState(true);
+  const [planAgentReopen, setPlanAgentReopen] = useState(false);
+  useEffect(() => {
+    setPlanAgentMobileOpen(Boolean(pendingPlanPermission));
+    setPlanAgentReopen(false);
+  }, [pendingPlanPermission?.id]);
   const currentRun =
     renderedMessages.liveRuns.find(
       (run) => run.status === "running" || run.status === "pending_executor",
@@ -1536,6 +1564,7 @@ export function DesktopV3ExistingConversationPane({
     !hasMessages &&
     !hasStoredOperation;
   const showPlanExecutionSidebar = Boolean(planExecutionView?.plan.document);
+  const showPlanSidebar = showPlanExecutionSidebar || Boolean(pendingPlanDocument);
   const {
     scrollContainerRef,
     contentRef,
@@ -2273,7 +2302,7 @@ export function DesktopV3ExistingConversationPane({
       <div
         className={cn(
           "grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden",
-          showPlanExecutionSidebar ? "xl:grid-cols-[minmax(0,1fr)_360px]" : "",
+          showPlanSidebar ? "xl:grid-cols-[minmax(0,1fr)_360px]" : "",
         )}
       >
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
@@ -2331,6 +2360,7 @@ export function DesktopV3ExistingConversationPane({
                     parentSessionId={normalizedSessionId}
                     pendingPosition={index + 1}
                     pendingCount={pendingPlanPermissions.length}
+                    onOpenPlanAgent={() => setPlanAgentMobileOpen(true)}
                     onResolve={resolvePermission}
                   />
                 ))}
@@ -2404,15 +2434,45 @@ export function DesktopV3ExistingConversationPane({
           />
         </div>
 
-        <DesktopPlanExecutionSidebar
-          view={planExecutionView}
-          busyAction={planExecutionBusyAction}
-          canStop={Boolean(currentRun)}
-          onAction={stablePlanExecutionAction}
-          onStop={stableStop}
-          onEditPlan={stableOpenPlan}
-          belowActions={planSidebarBelowActions}
-        />
+        {pendingPlanPermission && pendingPlanDocument ? (
+          <DesktopPlanAgentSidecar
+            key={`${pendingPlanPermission.id}:${pendingPlanDocument.revisionId}`}
+            parentSessionId={normalizedSessionId}
+            permission={pendingPlanPermission}
+            document={pendingPlanDocument}
+            embedded
+            mobileOpen={planAgentMobileOpen}
+            modelLabel={preference.model}
+            onClose={() => setPlanAgentMobileOpen(false)}
+            onSendChanges={async (draft) => {
+              await resolvePermission(pendingPlanPermission, "deny", draft);
+            }}
+          />
+        ) : (
+          <DesktopPlanExecutionSidebar
+            view={planExecutionView}
+            busyAction={planExecutionBusyAction}
+            canStop={Boolean(currentRun)}
+            onAction={stablePlanExecutionAction}
+            onStop={stableStop}
+            onEditPlan={stableOpenPlan}
+            belowActions={planSidebarBelowActions}
+            onNewAutoChat={onNewSession}
+            onOpenPlanAgent={retainedPlanReview ? () => setPlanAgentReopen(true) : undefined}
+          />
+        )}
+        {!pendingPlanPermission && planAgentReopen && retainedPlanReview ? (
+          <DesktopPlanAgentSidecar
+            key={`reopen:${retainedPlanReview.permission.id}:${retainedPlanReview.document.revisionId}`}
+            parentSessionId={normalizedSessionId}
+            permission={retainedPlanReview.permission}
+            document={retainedPlanReview.document}
+            modelLabel={preference.model}
+            allowSendChanges={false}
+            onClose={() => setPlanAgentReopen(false)}
+            onSendChanges={async () => undefined}
+          />
+        ) : null}
       </div>
 
       <DesktopPermissionModal

@@ -1,6 +1,32 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+)
+
+func TestPlanReviewAgentInheritsModelWithoutInheritingCapabilities(t *testing.T) {
+	parent := pebblestore.AgentProfile{
+		Provider: "provider-a", Model: "model-a", Thinking: "high",
+		Prompt: "private parent prompt", RuntimeMode: pebblestore.AgentRuntimeModeReadWrite,
+		ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"write": {Enabled: pebblestore.BoolPtr(true)}}},
+	}
+	profile := PlanReviewAgentProfileForParent(parent)
+	if profile.Provider != parent.Provider || profile.Model != parent.Model || profile.Thinking != parent.Thinking {
+		t.Fatalf("model settings not inherited: %+v", profile)
+	}
+	if profile.Prompt == parent.Prompt || strings.Contains(profile.Prompt, "private parent prompt") {
+		t.Fatalf("parent prompt leaked into review profile: %q", profile.Prompt)
+	}
+	if strings.Contains(strings.ToLower(profile.Prompt), "i cannot") || strings.Contains(strings.ToLower(profile.Prompt), "not allowed") {
+		t.Fatalf("review prompt invites internal capability narration: %q", profile.Prompt)
+	}
+	if config := profile.ToolContract.Tools["write"]; config.Enabled == nil || *config.Enabled {
+		t.Fatal("parent write capability leaked into review profile")
+	}
+}
 
 func TestPlanReviewAgentIsRestrictedAndHidden(t *testing.T) {
 	profile := PlanReviewAgentProfile()
@@ -10,7 +36,7 @@ func TestPlanReviewAgentIsRestrictedAndHidden(t *testing.T) {
 	if profile.ExitPlanModeEnabled == nil || *profile.ExitPlanModeEnabled {
 		t.Fatal("plan review agent must not exit plan mode")
 	}
-	for _, name := range []string{"write", "edit", "bash", "task", "plan_manage", "ask_user", "exit_plan_mode", "manage-agent"} {
+	for _, name := range []string{"write", "edit", "bash", "task", "plan_manage", "ask_user", "exit_plan_mode", "manage_agent"} {
 		config, ok := profile.ToolContract.Tools[name]
 		if !ok || config.Enabled == nil || *config.Enabled {
 			t.Fatalf("tool %q must be explicitly disabled", name)

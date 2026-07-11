@@ -16,13 +16,28 @@ import {
   planLifecycleApprovedArguments,
 } from "../../permissions/components/desktop-permission-modal";
 import { ChatMarkdown } from "./chat-markdown";
-import { DesktopPlanAgentSidecar } from "./desktop-plan-agent-sidecar";
+
+export function structuredPlanDocumentFromPermission(
+  permission: DesktopPermissionRecord,
+) {
+  const kind = permissionKind(permission);
+  const exitPayload =
+    kind === "exit-plan" ? parseExitPlanPermission(permission) : null;
+  const planPayload =
+    kind === "exit-plan" ? null : parsePlanUpdatePermission(permission);
+  return normalizeStructuredPlanDocument(
+    exitPayload?.document ??
+      planPayload?.document ??
+      planPayload?.approvedArguments.document,
+  );
+}
 
 interface DesktopInlinePlanReviewCardProps {
   permission: DesktopPermissionRecord;
   parentSessionId: string;
   pendingPosition: number;
   pendingCount: number;
+  onOpenPlanAgent?: () => void;
   onResolve: (
     permission: DesktopPermissionRecord,
     action: "approve" | "deny",
@@ -33,9 +48,10 @@ interface DesktopInlinePlanReviewCardProps {
 
 export function DesktopInlinePlanReviewCard({
   permission,
-  parentSessionId,
+  parentSessionId: _parentSessionId,
   pendingPosition,
   pendingCount,
+  onOpenPlanAgent,
   onResolve,
 }: DesktopInlinePlanReviewCardProps) {
   const kind = permissionKind(permission);
@@ -43,17 +59,12 @@ export function DesktopInlinePlanReviewCard({
     kind === "exit-plan" ? parseExitPlanPermission(permission) : null;
   const planPayload =
     kind === "exit-plan" ? null : parsePlanUpdatePermission(permission);
-  const documentValue =
-    exitPayload?.document ??
-    planPayload?.document ??
-    planPayload?.approvedArguments.document;
   const document = useMemo(
-    () => normalizeStructuredPlanDocument(documentValue),
-    [documentValue],
+    () => structuredPlanDocumentFromPermission(permission),
+    [permission],
   );
   const [pauseForReview, setPauseForReview] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [planAgentOpen, setPlanAgentOpen] = useState(false);
   const supportsExecutionChoice =
     kind === "exit-plan" || kind === "plan-new-request";
   const title =
@@ -172,12 +183,13 @@ export function DesktopInlinePlanReviewCard({
       ) : null}
 
       <div className="mt-4 flex flex-wrap justify-end gap-2">
-        {document ? (
+        {document && onOpenPlanAgent ? (
           <Button
             type="button"
             variant="outline"
             disabled={loading}
-            onClick={() => setPlanAgentOpen(true)}
+            className="xl:hidden"
+            onClick={onOpenPlanAgent}
           >
             Ask Plan Agent
           </Button>
@@ -198,23 +210,6 @@ export function DesktopInlinePlanReviewCard({
           Approve
         </Button>
       </div>
-      {planAgentOpen && document ? (
-        <DesktopPlanAgentSidecar
-          parentSessionId={parentSessionId}
-          permission={permission}
-          document={document}
-          onClose={() => setPlanAgentOpen(false)}
-          onSendChanges={async (draft) => {
-            if (loading) return;
-            setLoading(true);
-            try {
-              await onResolve(permission, "deny", draft);
-            } finally {
-              setLoading(false);
-            }
-          }}
-        />
-      ) : null}
     </section>
   );
 }

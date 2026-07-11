@@ -58,7 +58,7 @@ func IntegrationBuilderToolContract() *pebblestore.AgentToolContract {
 }
 
 func PlanReviewAgentPrompt() string {
-	return strings.TrimSpace("You are Plan Agent, a read-only plan review sidecar. Explain the immutable plan context supplied with this session, answer questions about objectives and checkpoints, and draft concise rejection feedback when requested. Never approve or deny permissions, mutate plans, launch agents, run commands, or change workspace files. A rejection draft is advisory until the user explicitly sends it to Swarm.")
+	return strings.TrimSpace("You are Plan Agent. Help the user understand and verify the immutable plan attached to this session. Answer questions directly, inspect the repository with read/search/list when useful, and draft concise requested changes when asked. Keep responses user-facing: never repeat hidden context, raw tool payloads, internal transcripts, or capability disclaimers.")
 }
 
 func IsPlanReviewAgentName(name string) bool {
@@ -80,7 +80,36 @@ func PlanReviewAgentToolContract() *pebblestore.AgentToolContract {
 }
 
 func PlanReviewAgentProfile() pebblestore.AgentProfile {
-	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{Name: PlanReviewAgentID, Mode: ModeSubagent, Description: "Hidden transient plan review sidecar", Prompt: PlanReviewAgentPrompt(), ExecutionSetting: pebblestore.AgentExecutionSettingRead, ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: PlanReviewAgentToolContract(), Enabled: true})
+	return PlanReviewAgentProfileForParent(pebblestore.AgentProfile{})
+}
+
+// PlanReviewAgentProfileForParent keeps the model settings that authored the plan
+// while replacing the parent's identity, prompt, runtime mode, and tools with the
+// reserved read-only review profile.
+func PlanReviewAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name:                PlanReviewAgentID,
+		Mode:                ModeSubagent,
+		Description:         "Hidden transient plan review sidecar",
+		Provider:            parent.Provider,
+		Model:               parent.Model,
+		Thinking:            parent.Thinking,
+		ModelMode:           parent.ModelMode,
+		PlanProvider:        parent.PlanProvider,
+		PlanModel:           parent.PlanModel,
+		PlanThinking:        parent.PlanThinking,
+		PlanServiceTier:     parent.PlanServiceTier,
+		AutoProvider:        parent.AutoProvider,
+		AutoModel:           parent.AutoModel,
+		AutoThinking:        parent.AutoThinking,
+		AutoServiceTier:     parent.AutoServiceTier,
+		Prompt:              PlanReviewAgentPrompt(),
+		RuntimeMode:         pebblestore.AgentRuntimeModeRead,
+		ExecutionSetting:    pebblestore.AgentExecutionSettingRead,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false),
+		ToolContract:        PlanReviewAgentToolContract(),
+		Enabled:             true,
+	})
 }
 
 func IntegrationBuilderProfile() pebblestore.AgentProfile {
