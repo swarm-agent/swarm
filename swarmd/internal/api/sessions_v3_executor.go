@@ -2804,6 +2804,10 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
+	agentProfile, err = e.resolveSessionV3CurrentAgentToolContract(session.AccountScopeID, agentProfile)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
 	if !agentProfile.Enabled {
 		return sessionV3ResolvedRuntime{}, fmt.Errorf("agent %q is disabled", strings.TrimSpace(agentProfile.Name))
 	}
@@ -2857,6 +2861,31 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 		toolChoice = "auto"
 	}
 	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, ModelCatalog: catalogRecord, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
+}
+
+func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScopeID string, snapshot pebblestore.AgentProfile) (pebblestore.AgentProfile, error) {
+	if e == nil || e.server == nil || e.server.agents == nil {
+		return pebblestore.AgentProfile{}, errors.New("agent service is not configured")
+	}
+	name := strings.TrimSpace(snapshot.Name)
+	if name == "" {
+		return pebblestore.AgentProfile{}, errors.New("stored v3 agent profile is missing name")
+	}
+	current, ok, err := e.server.agents.GetProfileForAccount(strings.TrimSpace(accountScopeID), name)
+	if err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	if !ok {
+		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q not found", name)
+	}
+	if current.ToolContract == nil {
+		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q tool_contract is not configured", name)
+	}
+	// Session metadata remains authoritative for the selected agent and its
+	// prompt/model/runtime snapshot. Tool access is user-owned mutable settings,
+	// so each V3 run overlays only the current saved contract onto that snapshot.
+	snapshot.ToolContract = pebblestore.CloneAgentToolContract(current.ToolContract)
+	return snapshot, nil
 }
 
 func (e *sessionV3Executor) sessionV3ModelCatalogRecord(pref pebblestore.ModelPreference) (any, error) {

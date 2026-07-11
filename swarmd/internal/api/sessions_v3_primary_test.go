@@ -857,7 +857,7 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 	}
 }
 
-func TestSessionsV3ExecutorUsesStoredAgentProfileSnapshotOnly(t *testing.T) {
+func TestSessionsV3ExecutorUsesCurrentAgentToolContractWithStoredProfileSnapshot(t *testing.T) {
 	server, sessionSvc, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "stored-profile.pebble"))
 	defer func() { _ = closeStore() }()
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "stored-profile-create", "stored profile", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
@@ -893,11 +893,11 @@ func TestSessionsV3ExecutorUsesStoredAgentProfileSnapshotOnly(t *testing.T) {
 		t.Fatalf("provider instructions used re-resolved mutated agent profile; instructions=%q", runner.lastRequest.Instructions)
 	}
 	toolNames := sessionsV3ProviderRequestToolNames(runner.lastRequest.Tools)
-	if !toolNames["read"] {
-		t.Fatalf("provider tools = %v, want stored read tool", toolNames)
+	if !toolNames["search"] {
+		t.Fatalf("provider tools = %v, want current saved search tool", toolNames)
 	}
-	if toolNames["search"] {
-		t.Fatalf("provider tools = %v, used mutated saved profile instead of stored snapshot", toolNames)
+	if toolNames["read"] {
+		t.Fatalf("provider tools = %v, retained stale stored read tool", toolNames)
 	}
 }
 
