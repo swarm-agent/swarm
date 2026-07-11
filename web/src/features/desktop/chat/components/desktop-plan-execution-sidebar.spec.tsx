@@ -281,6 +281,18 @@ function view(
   };
 }
 
+test("plan sidebar renders supplied session content below Actions", () => {
+  const html = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar
+      view={view()}
+      onAction={() => undefined}
+      belowActions={<section data-testid="session-git">Scoped Git changes</section>}
+    />,
+  );
+
+  assert.ok(html.indexOf("Actions") < html.indexOf("Scoped Git changes"));
+})
+
 test("normal run-through sidebar shows the plan title instead of the synthetic checkpoint", () => {
   const base = view({ policyShape: "single_run" });
   base.plan.title = "Plan: ship sidebar fix";

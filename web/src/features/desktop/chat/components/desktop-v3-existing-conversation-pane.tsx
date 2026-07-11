@@ -1174,6 +1174,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   onCompactingChange?: (sessionId: string, startedAt: number | null) => void;
   onArchivePlanSession?: (sessionId: string) => void;
   onOpenPlan?: () => void;
+  planSidebarBelowActions?: ReactNode;
 }
 
 export function completeDesktopV3ExistingMessage(input: {
@@ -1211,6 +1212,7 @@ export function DesktopV3ExistingConversationPane({
   onCompactingChange,
   onArchivePlanSession,
   onOpenPlan,
+  planSidebarBelowActions,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim();
   const navigate = useNavigate();
@@ -2374,6 +2376,7 @@ export function DesktopV3ExistingConversationPane({
           onAction={stablePlanExecutionAction}
           onStop={stableStop}
           onEditPlan={stableOpenPlan}
+          belowActions={planSidebarBelowActions}
         />
       </div>
 

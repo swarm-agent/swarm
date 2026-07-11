@@ -60,7 +60,7 @@ func (s *Server) writeGitCommitResponse(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 	}
-	workspacePath, err := s.resolveGitCommitWorkspacePath(req, principal)
+	workspacePath, err := s.resolveGitCommitWorkspacePath(req, principal, strings.TrimSpace(r.URL.Query().Get("session_id")))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -78,7 +78,12 @@ func (s *Server) writeGitCommitResponse(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, status, result)
 }
 
-func (s *Server) resolveGitCommitWorkspacePath(req workspaceGitCommitRequest, principal identity.Principal) (string, error) {
+func (s *Server) resolveGitCommitWorkspacePath(req workspaceGitCommitRequest, principal identity.Principal, sessionID string) (string, error) {
+	if worktreePath, ok, err := s.resolveSessionGitWorkspacePath(principal, sessionID); err != nil {
+		return "", err
+	} else if ok {
+		return worktreePath, nil
+	}
 	workspacePath := strings.TrimSpace(req.WorkspacePath)
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(req.CWD)

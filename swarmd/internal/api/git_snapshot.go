@@ -46,7 +46,37 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) resolveSessionGitWorkspacePath(principal identity.Principal, sessionID string) (string, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", false, nil
+	}
+	if s == nil || s.sessions == nil {
+		return "", false, errors.New("session service not configured")
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return "", false, err
+	}
+	if !ok || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		return "", false, errors.New("session not found")
+	}
+	if !session.WorktreeEnabled {
+		return "", false, nil
+	}
+	worktreePath := strings.TrimSpace(session.WorktreeRootPath)
+	if worktreePath == "" || worktreePath != strings.TrimSpace(session.WorkspacePath) {
+		return "", false, errors.New("session worktree path is incomplete")
+	}
+	return worktreePath, true, nil
+}
+
 func (s *Server) resolveGitStatusWorkspacePath(r *http.Request, principal identity.Principal) (string, error) {
+	if worktreePath, ok, err := s.resolveSessionGitWorkspacePath(principal, r.URL.Query().Get("session_id")); err != nil {
+		return "", err
+	} else if ok {
+		return worktreePath, nil
+	}
 	workspacePath := strings.TrimSpace(r.URL.Query().Get("workspace_path"))
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(r.URL.Query().Get("cwd"))

@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import { cn } from "../../../../lib/cn";
 import { Button } from "../../../../components/ui/button";
 import type { DesktopSessionPlanCheckpoint } from "../types/chat";
@@ -25,6 +25,7 @@ interface DesktopPlanExecutionSidebarProps {
   ) => void | Promise<void>;
   onStop?: () => void | Promise<void>;
   onEditPlan?: () => void;
+  belowActions?: ReactNode;
 }
 
 type Tone = "muted" | "primary" | "success" | "warning" | "danger";
@@ -666,6 +667,7 @@ export const DesktopPlanExecutionSidebar = memo(
     onAction,
     onStop: _onStop,
     onEditPlan,
+    belowActions,
   }: DesktopPlanExecutionSidebarProps) {
     const document = view?.plan.document ?? null;
     if (!view || !document) return null;
@@ -708,6 +710,7 @@ export const DesktopPlanExecutionSidebar = memo(
             onAction={onAction}
             onEditPlan={onEditPlan}
           />
+          {belowActions}
         </div>
       </aside>
     );

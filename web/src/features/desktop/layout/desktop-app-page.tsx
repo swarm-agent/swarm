@@ -174,6 +174,7 @@ interface PlanModalState {
 
 interface GitCommitModalState {
   workspacePath: string
+  sessionId: string
   files: GitFileStatus[]
 }
 
@@ -2667,15 +2668,16 @@ export function DesktopAppPage() {
     [desktopStateSessions],
   )
   const activeGitSession = routeSessionId ? sessionById.get(routeSessionId) ?? null : null
-  const selectedGitWorkspacePath = activeGitSession?.runtimeWorkspacePath?.trim()
-    || activeGitSession?.worktreeRootPath?.trim()
-    || selectedWorkspacePath
-    || visibleWorkspacePaths[0]
-    || ''
+  const selectedGitSessionId = activeGitSession?.id ?? ''
+  const selectedGitWorkspacePath = activeGitSession?.worktreeEnabled
+    ? activeGitSession.worktreeRootPath?.trim() || ''
+    : activeGitSession
+      ? desktopRouteWorkspacePathForSession(activeGitSession, workspacePathByBindingId, knownWorkspacePaths)
+      : ''
   const gitStatusQuery = useQuery({
-    queryKey: gitStatusQueryKey(selectedGitWorkspacePath),
-    queryFn: () => fetchGitStatus(selectedGitWorkspacePath, 12),
-    enabled: selectedGitWorkspacePath !== '',
+    queryKey: gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId),
+    queryFn: () => fetchGitStatus(selectedGitWorkspacePath, 12, selectedGitSessionId),
+    enabled: selectedGitSessionId !== '' && selectedGitWorkspacePath !== '',
     staleTime: 0,
     refetchOnWindowFocus: true,
   })
@@ -2693,11 +2695,11 @@ export function DesktopAppPage() {
     let token = ''
     const refresh = async () => {
       try {
-        const response = await startGitRealtime(selectedGitWorkspacePath)
+        const response = await startGitRealtime(selectedGitWorkspacePath, selectedGitSessionId)
         if (cancelled) return
         if (response.watch_token !== token) {
           token = response.watch_token
-          queryClient.setQueryData(gitStatusQueryKey(selectedGitWorkspacePath), { ok: true, status: response.status })
+          queryClient.setQueryData(gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId), { ok: true, status: response.status })
         }
         setGitRealtimeErrors((current) => {
           if (!current[selectedGitWorkspacePath]) return current
@@ -2710,7 +2712,7 @@ export function DesktopAppPage() {
     void refresh()
     const timer = window.setInterval(() => { if (document.visibilityState === 'visible') void refresh() }, 1_000)
     return () => { cancelled = true; window.clearInterval(timer) }
-  }, [queryClient, selectedGitWorkspacePath])
+  }, [queryClient, selectedGitSessionId, selectedGitWorkspacePath])
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(
     mergedSidebarWorkspaceEntries.map((workspace) => ({
       path: workspace.path,
@@ -3769,6 +3771,23 @@ export function DesktopAppPage() {
     })
   }, [])
 
+  const planSidebarGitPanel = selectedGitSessionId && selectedGitWorkspacePath ? (
+    <section data-testid="desktop-plan-git-sidebar" className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.14)]">
+      <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+        <GitBranch size={13} />
+        <span className="min-w-0 flex-1 truncate">{gitSnapshot?.branch || 'Git changes'}</span>
+        {gitSnapshot?.has_git ? <span>{gitSnapshot.dirty_count}</span> : null}
+        <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => { void gitStatusQuery.refetch() }} aria-label="Refresh Git status" title="Refresh Git status"><RefreshCcw size={12} className={cn(gitStatusQuery.isFetching && 'animate-spin')} /></button>
+      </div>
+      {gitRealtimeErrors[selectedGitWorkspacePath] || gitStatusQuery.error instanceof Error ? <div className="mt-2 text-xs text-[var(--app-warning)]">{gitRealtimeErrors[selectedGitWorkspacePath] || (gitStatusQuery.error as Error).message}</div>
+        : gitStatusQuery.isPending ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
+        : !gitSnapshot?.has_git ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">No Git repository for this session.</div>
+        : gitSnapshot.files.length === 0 ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div>
+        : <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-[var(--app-border)]">{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>}
+      {gitSnapshot?.has_git && gitSnapshot.files.length > 0 ? <button type="button" className="mt-3 w-full rounded-lg border border-[var(--app-border)] px-2 py-1.5 text-xs text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" onClick={() => { setGitCommitMessage(''); setGitCommitError(null); setGitCommitModal({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files }) }}>Commit all changes…</button> : null}
+    </section>
+  ) : null
+
   const sidebarContent = (
     <>
       {sidebarCollapsed ? (
@@ -4088,19 +4107,6 @@ export function DesktopAppPage() {
                   {globalFlattenedSessionNodes.length === 0 ? (
                     <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">No active sessions.</div>
                   ) : null}
-                  <section data-testid="desktop-git-sidebar" className="mt-2 border-t border-[var(--app-border)] pt-2">
-                    <div className="flex items-center gap-2 px-2 py-1 text-[11px] font-semibold text-[var(--app-text)]">
-                      <GitBranch size={13} /><span className="min-w-0 flex-1 truncate">{gitSnapshot?.branch || 'Git'}</span>
-                      {gitSnapshot?.has_git ? <span className="text-[var(--app-text-subtle)]">{gitSnapshot.dirty_count}</span> : null}
-                      <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => { void gitStatusQuery.refetch() }} aria-label="Refresh Git status" title="Refresh Git status"><RefreshCcw size={12} className={cn(gitStatusQuery.isFetching && 'animate-spin')} /></button>
-                    </div>
-                    {gitRealtimeErrors[selectedGitWorkspacePath] || gitStatusQuery.error instanceof Error ? <div className="px-2 py-1 text-[10px] text-[var(--app-warning)]">{gitRealtimeErrors[selectedGitWorkspacePath] || (gitStatusQuery.error as Error).message}</div>
-                      : gitStatusQuery.isPending ? <div className="px-2 py-2 text-[10px] text-[var(--app-text-subtle)]">Loading Git status…</div>
-                      : !gitSnapshot?.has_git ? <div className="px-2 py-2 text-[10px] text-[var(--app-text-subtle)]">No Git repository.</div>
-                      : gitSnapshot.files.length === 0 ? <div className="px-2 py-2 text-[10px] text-[var(--app-text-subtle)]">Clean working tree.</div>
-                      : <div className="max-h-48 overflow-y-auto">{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 px-2 py-1 text-[10px]"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-bg-alt)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>}
-                    {gitSnapshot?.has_git && gitSnapshot.files.length > 0 ? <button type="button" className="mx-2 mt-2 w-[calc(100%-1rem)] rounded border border-[var(--app-border)] px-2 py-1 text-[10px] text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" onClick={() => { setGitCommitMessage(''); setGitCommitError(null); setGitCommitModal({ workspacePath: selectedGitWorkspacePath, files: gitSnapshot.files }) }}>Commit all changes…</button> : null}
-                  </section>
                 </div>
             </div>
 
@@ -4210,6 +4216,7 @@ export function DesktopAppPage() {
             }}
             onSlashCommand={handleSlashCommand}
             onOpenPlan={() => openPlanModalForSession(routeSessionId)}
+            planSidebarBelowActions={planSidebarGitPanel}
           />
         ) : routeWorkspaceSlug && !chatWorkspacePath && !workspacesLoading ? (
           <div className="flex h-full flex-1 items-center justify-center px-6">
@@ -4504,7 +4511,7 @@ export function DesktopAppPage() {
           <div className="max-h-48 overflow-y-auto border border-[var(--app-border)] font-mono text-xs">{gitCommitModal.files.map((file) => <div key={`${file.kind}:${file.path}`} className="flex gap-2 border-b border-[var(--app-border)] px-2 py-1 last:border-0"><span className="text-[var(--app-text-subtle)]">{gitFileStatusLabel(file)}</span><span className="truncate">{file.path}</span></div>)}</div>
           <label className="grid gap-1 text-xs text-[var(--app-text-muted)]"><span>Commit message</span><input autoFocus value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[var(--app-text)] outline-none" /></label>
           {gitCommitError ? <div className="text-xs text-[var(--app-warning)]">{gitCommitError}</div> : null}
-          <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitCommitBusy} onClick={() => setGitCommitModal(null)}>Cancel</Button><Button disabled={gitCommitBusy || !gitCommitMessage.trim()} onClick={() => { void (async () => { setGitCommitBusy(true); setGitCommitError(null); try { await commitWorkspaceChanges({ workspacePath: gitCommitModal.workspacePath, message: gitCommitMessage.trim(), all: true }); setGitCommitModal(null); setGitCommitMessage(''); await gitStatusQuery.refetch() } catch (error) { setGitCommitError(error instanceof Error ? error.message : String(error)) } finally { setGitCommitBusy(false) } })() }}>{gitCommitBusy ? 'Committing…' : 'Commit all changes'}</Button></div>
+          <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitCommitBusy} onClick={() => setGitCommitModal(null)}>Cancel</Button><Button disabled={gitCommitBusy || !gitCommitMessage.trim()} onClick={() => { void (async () => { setGitCommitBusy(true); setGitCommitError(null); try { await commitWorkspaceChanges({ workspacePath: gitCommitModal.workspacePath, sessionId: gitCommitModal.sessionId, message: gitCommitMessage.trim(), all: true }); setGitCommitModal(null); setGitCommitMessage(''); await gitStatusQuery.refetch() } catch (error) { setGitCommitError(error instanceof Error ? error.message : String(error)) } finally { setGitCommitBusy(false) } })() }}>{gitCommitBusy ? 'Committing…' : 'Commit all changes'}</Button></div>
         </DialogPanel>
       </Dialog> : null}
       <GitDetailsOverlay
