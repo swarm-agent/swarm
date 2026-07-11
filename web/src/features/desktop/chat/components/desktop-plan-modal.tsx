@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   Check,
+  CheckCircle2,
+  Circle,
   Copy,
   PlayCircle,
   RotateCcw,
@@ -244,6 +246,30 @@ export function selectedPlanCopyText(document: DesktopSessionPlanDocument | null
     if (structuredText) return structuredText
   }
   return markdownFallback
+}
+
+function SectionEyebrow({ children, className }: { children: string; className?: string }) {
+  return <div className={cn('text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]', className)}>{children}</div>
+}
+
+function CheckpointStatusIcon({ status, active }: { status: string; active: boolean }) {
+  const normStatus = status.toLowerCase()
+  if (normStatus === 'completed' || normStatus === 'done' || normStatus === 'success') {
+    return <CheckCircle2 className="size-4 text-[var(--app-success)]" />
+  }
+  if (active || normStatus === 'in_progress' || normStatus === 'in-progress' || normStatus === 'active') {
+    return <PlayCircle className="size-4 text-[var(--app-primary)]" />
+  }
+  return <Circle className="size-4 text-[var(--app-text-muted)]" />
+}
+
+function formatStatusLabel(status: string, active: boolean): string {
+  if (active) return 'Active'
+  const trimmed = status.trim()
+  if (!trimmed) return ''
+  return trimmed
+    .replace(/[-_]+/g, ' ')
+    .replace(/\w\S*/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
 }
 
 function PlanModalDocumentView({ document, emptyText, recoveryControls }: { document: DesktopSessionPlanDocument | null; emptyText: string; recoveryControls?: React.ReactNode }) {
