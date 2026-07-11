@@ -229,12 +229,12 @@ export function DesktopV3ChatHeader({
                 ) : null}
                 {sessionActions.onCopyConversation ? (
                   <button type="button" className="inline-flex h-8 w-full items-center gap-2 rounded border-0 bg-transparent px-2 text-left text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:opacity-60" disabled={actionDisabled} onClick={() => { setMobileActionsOpen(false); sessionActions.onCopyConversation?.() }}>
-                    {pendingAction === 'copy' ? <LoaderCircle size={13} className="animate-spin" /> : <Clipboard size={13} />}<span>Copy conversation</span>
+                    {pendingAction === 'copy' ? <LoaderCircle size={13} className="animate-spin" /> : <Clipboard size={13} />}<span>Copy</span>
                   </button>
                 ) : null}
                 {sessionActions.onDownloadConversation ? (
                   <button type="button" className="inline-flex h-8 w-full items-center gap-2 rounded border-0 bg-transparent px-2 text-left text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:opacity-60" disabled={actionDisabled} onClick={() => { setMobileActionsOpen(false); sessionActions.onDownloadConversation?.() }}>
-                    {pendingAction === 'download' ? <LoaderCircle size={13} className="animate-spin" /> : <Download size={13} />}<span>Download Markdown</span>
+                    {pendingAction === 'download' ? <LoaderCircle size={13} className="animate-spin" /> : <Download size={13} />}<span>Download</span>
                   </button>
                 ) : null}
                 <button
