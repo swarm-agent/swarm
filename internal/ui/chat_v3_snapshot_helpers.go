@@ -2,6 +2,77 @@ package ui
 
 import "strings"
 
+func (p *ChatPage) trackPendingLocalUserMessage(content string, createdAt int64) {
+	content = strings.TrimSpace(content)
+	if p == nil || content == "" {
+		return
+	}
+	p.pendingLocalUserMessages = append(p.pendingLocalUserMessages, pendingLocalUserMessage{
+		Content:                 content,
+		CreatedAt:               createdAt,
+		AfterAuthoritativeCount: p.authoritativeMessageCount,
+	})
+}
+
+// reconcilePendingLocalUserMessages keeps optimistic user turns visible until the
+// V3 projection contains the corresponding durable record. Snapshot position is
+// part of the match so an older identical prompt cannot consume a newer pending
+// turn.
+func (p *ChatPage) reconcilePendingLocalUserMessages(messages []ChatMessageRecord) []ChatMessageRecord {
+	if p == nil {
+		return messages
+	}
+	p.authoritativeMessageCount = len(messages)
+	if len(p.pendingLocalUserMessages) == 0 {
+		return messages
+	}
+
+	matched := make([]bool, len(messages))
+	remaining := make([]pendingLocalUserMessage, 0, len(p.pendingLocalUserMessages))
+	for _, pending := range p.pendingLocalUserMessages {
+		found := -1
+		start := pending.AfterAuthoritativeCount
+		if start < 0 {
+			start = 0
+		}
+		if start > len(messages) {
+			start = len(messages)
+		}
+		for i := start; i < len(messages); i++ {
+			if matched[i] || !strings.EqualFold(strings.TrimSpace(messages[i].Role), "user") {
+				continue
+			}
+			if strings.TrimSpace(messages[i].Content) == pending.Content {
+				found = i
+				break
+			}
+		}
+		if found >= 0 {
+			matched[found] = true
+			continue
+		}
+		remaining = append(remaining, pending)
+	}
+	p.pendingLocalUserMessages = remaining
+	if len(remaining) == 0 {
+		return messages
+	}
+
+	out := make([]ChatMessageRecord, 0, len(messages)+len(remaining))
+	pendingIndex := 0
+	for i := 0; i <= len(messages); i++ {
+		for pendingIndex < len(remaining) && remaining[pendingIndex].AfterAuthoritativeCount <= i {
+			pending := remaining[pendingIndex]
+			out = append(out, ChatMessageRecord{Role: "user", Content: pending.Content, CreatedAt: pending.CreatedAt})
+			pendingIndex++
+		}
+		if i < len(messages) {
+			out = append(out, messages[i])
+		}
+	}
+	return out
+}
+
 func chatMessagesContainAssistantForRun(messages []ChatMessageRecord, runID string) bool {
 	runID = strings.TrimSpace(runID)
 	for _, message := range messages {

@@ -168,6 +168,12 @@ type chatMessageItem struct {
 	Metadata  map[string]any
 }
 
+type pendingLocalUserMessage struct {
+	Content                 string
+	CreatedAt               int64
+	AfterAuthoritativeCount int
+}
+
 type chatToolStreamEntry struct {
 	EntryKey           string
 	ToolName           string
@@ -308,9 +314,11 @@ type ChatPage struct {
 	commandPaletteIndex int
 	mentionPaletteIndex int
 
-	timeline       []chatMessageItem
-	toolStream     []chatToolStreamEntry
-	timelineScroll int
+	timeline                  []chatMessageItem
+	toolStream                []chatToolStreamEntry
+	timelineScroll            int
+	pendingLocalUserMessages  []pendingLocalUserMessage
+	authoritativeMessageCount int
 
 	timelineRenderGeneration uint64
 	timelineRenderCache      []chatTimelineCacheEntry
@@ -1687,7 +1695,9 @@ func (p *ChatPage) startRunRequest(req ChatSendRequest, displayPrompt string, ap
 	}
 
 	if appendUserMessage {
-		p.appendMessage("user", displayPrompt, time.Now().UnixMilli())
+		createdAt := time.Now().UnixMilli()
+		p.trackPendingLocalUserMessage(displayPrompt, createdAt)
+		p.appendMessage("user", displayPrompt, createdAt)
 		p.lastPrompt = displayPrompt
 	}
 	p.busy = true

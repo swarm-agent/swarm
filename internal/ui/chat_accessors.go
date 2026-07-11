@@ -163,6 +163,7 @@ func (p *ChatPage) SetMessages(messages []ChatMessageRecord) {
 	restoreBashOutput := p.bashOutput
 	restoreStreamedTools := cloneStringSet(p.streamedTools)
 	restoreLiveState := lifecycle != nil && lifecycle.Active && !chatMessagesContainAssistantForRun(messages, lifecycle.RunID)
+	messages = p.reconcilePendingLocalUserMessages(messages)
 	p.timeline = nil
 	p.toolStream = nil
 	p.bashOutput = chatBashOutputState{}
