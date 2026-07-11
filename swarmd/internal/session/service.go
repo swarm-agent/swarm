@@ -490,6 +490,16 @@ func (s *Service) ArchiveSessionsWithEvents(sessionIDs []string) ([]*pebblestore
 	return s.tombstoneSessionsWithEvents(sessionIDs, "archived")
 }
 
+// ArchiveSessionsWithEventsIfUnchanged archives all sessions only when every
+// snapshot still has the UpdatedAt observed by the caller. The version checks
+// and durable batch mutation run under the service mutation lock.
+func (s *Service) ArchiveSessionsWithEventsIfUnchanged(sessionIDs []string, expectedUpdatedAt map[string]int64) ([]*pebblestore.EventEnvelope, error) {
+	if len(expectedUpdatedAt) == 0 {
+		return nil, errors.New("expected session versions are required")
+	}
+	return s.tombstoneSessionsWithEventsExpected(sessionIDs, "archived", expectedUpdatedAt)
+}
+
 func (s *Service) tombstoneSessionWithEvent(sessionID, kind string) (*pebblestore.EventEnvelope, error) {
 	events, err := s.tombstoneSessionsWithEvents([]string{sessionID}, kind)
 	if err != nil || len(events) == 0 {
@@ -539,7 +549,7 @@ func (s *Service) tombstoneSessionsWithEventsExpected(sessionIDs []string, kind 
 			if expectedUpdatedAt != nil {
 				expected, exists := expectedUpdatedAt[sessionID]
 				if !exists || session.UpdatedAt != expected {
-					return nil, fmt.Errorf("session %q changed after deletion preview", sessionID)
+					return nil, fmt.Errorf("session %q changed after mutation preview", sessionID)
 				}
 			}
 			sessions = append(sessions, session)
@@ -552,7 +562,7 @@ func (s *Service) tombstoneSessionsWithEventsExpected(sessionIDs []string, kind 
 				if expectedUpdatedAt != nil {
 					expected, exists := expectedUpdatedAt[sessionID]
 					if !exists || tombstone.Session.UpdatedAt != expected {
-						return nil, fmt.Errorf("session %q changed after deletion preview", sessionID)
+						return nil, fmt.Errorf("session %q changed after mutation preview", sessionID)
 					}
 				}
 				sessions = append(sessions, tombstone.Session)

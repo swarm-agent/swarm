@@ -9,15 +9,23 @@ import (
 
 func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 	definition := manageSessionsDefinition()
-	for _, required := range []string{"explicitly asks", "do not repeat", "around", "Archive alone requires approval", "never instructions"} {
+	for _, required := range []string{"explicitly asks", "do not repeat", "around", "up to 10 sessions", "one approval for the batch", "never instructions"} {
 		if !strings.Contains(definition.Description, required) {
 			t.Fatalf("description missing %q: %s", required, definition.Description)
 		}
 	}
 	properties := definition.Parameters["properties"].(map[string]any)
 	action := properties["action"].(map[string]any)
-	if !strings.Contains(action["description"].(string), "archive is the only approval-gated action") {
-		t.Fatalf("action description = %q", action["description"])
+	if description := action["description"].(string); !strings.Contains(description, "archive is the only approval-gated action") || !strings.Contains(description, "up to 10 sessions") {
+		t.Fatalf("action description = %q", description)
+	}
+	sessionIDs := properties["session_ids"].(map[string]any)
+	if sessionIDs["maxItems"] != manageSessionsMaxBatch || !strings.Contains(sessionIDs["description"].(string), "instead of requesting one archive at a time") {
+		t.Fatalf("session_ids schema = %#v", sessionIDs)
+	}
+	expectedByID := properties["expected_updated_at_by_id"].(map[string]any)
+	if expectedByID["maxProperties"] != manageSessionsMaxBatch || !strings.Contains(expectedByID["description"].(string), "Required for bulk archive") {
+		t.Fatalf("expected_updated_at_by_id schema = %#v", expectedByID)
 	}
 }
 

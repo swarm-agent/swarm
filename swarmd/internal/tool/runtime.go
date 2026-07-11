@@ -183,7 +183,7 @@ type manageSessionService interface {
 	GetSessionTombstone(sessionID string) (pebblestore.V3SessionTombstone, bool, error)
 	ListSessionMessageTail(sessionID string, limit int) ([]pebblestore.MessageSnapshot, error)
 	ListSessionMessagesBefore(sessionID string, beforeSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
-	ArchiveSessionWithEvent(sessionID string) (*pebblestore.EventEnvelope, error)
+	ArchiveSessionsWithEventsIfUnchanged(sessionIDs []string, expectedUpdatedAt map[string]int64) ([]*pebblestore.EventEnvelope, error)
 	CurrentRealtimeOutboxRevision() (uint64, error)
 	LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID string, endpointSeq uint64) (pebblestore.V3RealtimeOutboxRecord, bool, error)
 }
