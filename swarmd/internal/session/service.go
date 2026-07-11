@@ -586,17 +586,21 @@ func (s *Service) tombstoneSessionsWithEventsExpected(sessionIDs []string, kind 
 	if kind == "archived" {
 		eventType = "session.archived"
 	}
-	events := make([]*pebblestore.EventEnvelope, 0, len(sessions))
+	appends := make([]pebblestore.EventAppend, 0, len(sessions))
 	for _, session := range sessions {
 		payload, err := json.Marshal(session)
 		if err != nil {
 			return nil, err
 		}
-		env, err := s.events.AppendWithSource("session:"+session.ID, eventType, session.ID, payload, "v3", "", "")
-		if err != nil {
-			return nil, err
-		}
-		events = append(events, &env)
+		appends = append(appends, pebblestore.EventAppend{Stream: "session:" + session.ID, EventType: eventType, EntityID: session.ID, Payload: payload, Source: "v3"})
+	}
+	envelopes, err := s.events.AppendBatch(appends)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]*pebblestore.EventEnvelope, len(envelopes))
+	for i := range envelopes {
+		events[i] = &envelopes[i]
 	}
 	return events, nil
 }

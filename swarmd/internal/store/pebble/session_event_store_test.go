@@ -588,6 +588,31 @@ func TestArchiveSessionCreatesTombstoneEventAndRealtimeOutbox(t *testing.T) {
 	}
 }
 
+func TestEventLogAppendBatchPersistsContiguousOrderedEvents(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	events, err := NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	envelopes, err := events.AppendBatch([]EventAppend{
+		{Stream: "session:a", EventType: "session.archived", EntityID: "a", Payload: []byte(`{"id":"a"}`), Source: "v3"},
+		{Stream: "session:b", EventType: "session.archived", EntityID: "b", Payload: []byte(`{"id":"b"}`), Source: "v3"},
+	})
+	if err != nil {
+		t.Fatalf("append event batch: %v", err)
+	}
+	if len(envelopes) != 2 || envelopes[0].GlobalSeq+1 != envelopes[1].GlobalSeq || envelopes[0].EntityID != "a" || envelopes[1].EntityID != "b" {
+		t.Fatalf("batch envelopes = %+v", envelopes)
+	}
+	persisted, err := events.ReadFrom(envelopes[0].GlobalSeq, 2)
+	if err != nil {
+		t.Fatalf("read event batch: %v", err)
+	}
+	if len(persisted) != 2 || persisted[0].GlobalSeq != envelopes[0].GlobalSeq || persisted[1].GlobalSeq != envelopes[1].GlobalSeq || events.CurrentSequence() != envelopes[1].GlobalSeq {
+		t.Fatalf("persisted event batch = %+v current=%d", persisted, events.CurrentSequence())
+	}
+}
+
 func TestApplyV3SessionMutationAppendMessageReactivatesArchivedSession(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

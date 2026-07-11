@@ -894,13 +894,14 @@ export function applySessionArchiveMutationResult(
   raw: SessionArchiveMutationResponse,
 ): DesktopV3CacheState {
   if (raw.ok === false) return state
+  const tombstonesBySession: Record<string, V3SessionTombstone> = {}
   for (const result of raw.results ?? []) {
     if (result?.archived !== true) continue
     const sessionId = stringField(result.session_id) || stringField(recordValue(result.tombstone)?.session_id)
     if (!sessionId) continue
-    const tombstone = archiveTombstoneFromMutationResult(state, sessionId, result.tombstone)
-    applyTombstone(state, sessionId, tombstone)
+    tombstonesBySession[sessionId] = archiveTombstoneFromMutationResult(state, sessionId, result.tombstone)
   }
+  applyTombstonesBySession(state, tombstonesBySession)
   return state
 }
 
@@ -1483,30 +1484,45 @@ export function applyTombstone(
   sessionId: string,
   tombstone?: V3SessionTombstone,
 ): void {
-  state.tombstonesBySession[sessionId] = tombstoneWithRetainedSession(
-    state,
-    sessionId,
-    tombstone ?? { session_id: sessionId, deleted: true },
-  )
+  applyTombstonesBySession(state, {
+    [sessionId]: tombstone ?? { session_id: sessionId, deleted: true },
+  })
+}
+
+function applyTombstonesBySession(
+  state: DesktopV3CacheState,
+  tombstonesBySession: Record<string, V3SessionTombstone> | undefined,
+): void {
+  if (!tombstonesBySession) return
+
+  const sessionIdsToClean = new Set<string>()
+  for (const [sessionId, tombstone] of Object.entries(tombstonesBySession)) {
+    if (!hasOwn(state.tombstonesBySession, sessionId)) sessionIdsToClean.add(sessionId)
+    state.tombstonesBySession[sessionId] = tombstoneWithRetainedSession(state, sessionId, tombstone)
+  }
+  if (sessionIdsToClean.size === 0) return
+
   for (const [scopeId, order] of Object.entries(state.sessionOrderByScope)) {
-    state.sessionOrderByScope[scopeId] = order.filter((id) => id !== sessionId)
+    state.sessionOrderByScope[scopeId] = order.filter((id) => !sessionIdsToClean.has(id))
   }
   for (const [subscriptionId, subscription] of Object.entries(state.subscriptionsById)) {
-    if (subscription.session_id === sessionId || subscription.sessionId === sessionId) {
-      delete state.subscriptionsById[subscriptionId]
-    }
+    const sessionId = subscription.session_id || subscription.sessionId
+    if (sessionId && sessionIdsToClean.has(sessionId)) delete state.subscriptionsById[subscriptionId]
   }
   for (const workset of Object.values(state.worksetsById)) {
-    workset.sessionIds = (workset.sessionIds ?? []).filter((id) => id !== sessionId)
-    if (!workset.inactiveSessionIds) workset.inactiveSessionIds = []
-    if (!workset.inactiveSessionIds.includes(sessionId)) workset.inactiveSessionIds.push(sessionId)
+    workset.sessionIds = (workset.sessionIds ?? []).filter((id) => !sessionIdsToClean.has(id))
+    const inactiveSessionIds = new Set(workset.inactiveSessionIds ?? [])
+    for (const sessionId of sessionIdsToClean) inactiveSessionIds.add(sessionId)
+    workset.inactiveSessionIds = [...inactiveSessionIds]
   }
-  delete state.liveRunsBySession[sessionId]
-  delete state.currentRunIntentBySession[sessionId]
-  delete state.runIntentsBySession[sessionId]
-  delete state.plansBySession[sessionId]
-  delete state.hasActivePlanBySession[sessionId]
-  delete state.planRevisionsBySession[sessionId]
+  for (const sessionId of sessionIdsToClean) {
+    delete state.liveRunsBySession[sessionId]
+    delete state.currentRunIntentBySession[sessionId]
+    delete state.runIntentsBySession[sessionId]
+    delete state.plansBySession[sessionId]
+    delete state.hasActivePlanBySession[sessionId]
+    delete state.planRevisionsBySession[sessionId]
+  }
 }
 
 export function applyWorksetSessionDiscovered(
@@ -2180,13 +2196,6 @@ function replaceRunIntentsForSession(
 
   for (const runIntent of runIntents) {
     upsertRunIntent(state, sessionId, runIntent)
-  }
-}
-
-function applyTombstonesBySession(state: DesktopV3CacheState, tombstonesBySession: Record<string, V3SessionTombstone> | undefined): void {
-  if (!tombstonesBySession) return
-  for (const [sessionId, tombstone] of Object.entries(tombstonesBySession)) {
-    applyTombstone(state, sessionId, tombstone)
   }
 }
 

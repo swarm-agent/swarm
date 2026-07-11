@@ -1,6 +1,9 @@
 package pebblestore
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSearchV3SessionsRecentPaginationAndFilters(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
@@ -58,6 +61,45 @@ func TestSearchV3SessionsQueryMessageCountAndArchived(t *testing.T) {
 	}
 	if len(result.Items) != 1 || result.Items[0].ID != "query-archived" || result.Items[0].MessageCount != 1 || !result.Items[0].Archived {
 		t.Fatalf("archived query result = %+v", result.Items)
+	}
+}
+
+func TestArchiveSessionTransitionsExistingSearchRecordsWithoutReadingMessages(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	workspace := t.TempDir()
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "transition-archive", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspace, Title: "Title Token", CreatedAt: 1000, UpdatedAt: 1000})
+	appendSearchTestMessage(t, sessions, "transition-archive", "user-1", "acct-1", "retained message needle", 2000)
+
+	var before v3SessionSearchSessionMeta
+	if ok, err := store.GetJSON(keyV3SessionSearchMeta("transition-archive"), &before); err != nil || !ok {
+		t.Fatalf("load search metadata before archive ok=%v err=%v", ok, err)
+	}
+	if err := store.db.Delete([]byte(KeyV3SessionMessage("transition-archive", 2)), nil); err != nil {
+		t.Fatalf("delete message row sentinel: %v", err)
+	}
+	if err := sessions.ArchiveSession("transition-archive"); err != nil {
+		t.Fatalf("archive without message row: %v", err)
+	}
+
+	var after v3SessionSearchSessionMeta
+	if ok, err := store.GetJSON(keyV3SessionSearchMeta("transition-archive"), &after); err != nil || !ok {
+		t.Fatalf("load search metadata after archive ok=%v err=%v", ok, err)
+	}
+	if len(after.Keys) != len(before.Keys) {
+		t.Fatalf("search key count changed during lifecycle transition: before=%d after=%d", len(before.Keys), len(after.Keys))
+	}
+	for _, key := range after.Keys {
+		if !strings.Contains(key, "/archived/") {
+			t.Fatalf("search key was not moved to archived namespace: %q", key)
+		}
+	}
+	result, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "needle", ArchivedMode: "only", Limit: 10})
+	if err != nil {
+		t.Fatalf("search archived message token: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "transition-archive" || len(result.Items[0].Snippets) == 0 || result.Items[0].Snippets[0].Text != "retained message needle" {
+		t.Fatalf("archived search did not retain message snippet: %+v", result.Items)
 	}
 }
 

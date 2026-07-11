@@ -29,6 +29,17 @@ type EventLog struct {
 	seq   uint64
 }
 
+type EventAppend struct {
+	Stream        string
+	EventType     string
+	EntityID      string
+	Payload       []byte
+	Source        string
+	SourceSeq     uint64
+	CausationID   string
+	CorrelationID string
+}
+
 func NewEventLog(store *Store) (*EventLog, error) {
 	seq := uint64(0)
 	raw, ok, err := store.GetBytes(keyGlobalSequenceCounter)
@@ -60,45 +71,64 @@ func (l *EventLog) AppendWithSource(stream, eventType, entityID string, payload 
 }
 
 func (l *EventLog) AppendWithSourceSeq(stream, eventType, entityID string, payload []byte, source string, sourceSeq uint64, causationID, correlationID string) (EventEnvelope, error) {
+	envelopes, err := l.AppendBatch([]EventAppend{{Stream: stream, EventType: eventType, EntityID: entityID, Payload: payload, Source: source, SourceSeq: sourceSeq, CausationID: causationID, CorrelationID: correlationID}})
+	if err != nil {
+		return EventEnvelope{}, err
+	}
+	return envelopes[0], nil
+}
+
+func (l *EventLog) AppendBatch(appends []EventAppend) ([]EventEnvelope, error) {
+	if len(appends) == 0 {
+		return nil, nil
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.seq++
-	envelope := EventEnvelope{
-		GlobalSeq:     l.seq,
-		Stream:        stream,
-		EventType:     eventType,
-		EntityID:      entityID,
-		Payload:       append([]byte(nil), payload...),
-		TsUnixMs:      time.Now().UnixMilli(),
-		Source:        source,
-		SourceSeq:     sourceSeq,
-		CausationID:   causationID,
-		CorrelationID: correlationID,
-	}
-	serialized, err := json.Marshal(envelope)
-	if err != nil {
-		l.seq--
-		return EventEnvelope{}, fmt.Errorf("marshal event envelope: %w", err)
+	startSeq := l.seq
+	envelopes := make([]EventEnvelope, 0, len(appends))
+	serialized := make([][]byte, 0, len(appends))
+	now := time.Now().UnixMilli()
+	for _, appendInput := range appends {
+		l.seq++
+		envelope := EventEnvelope{
+			GlobalSeq:     l.seq,
+			Stream:        appendInput.Stream,
+			EventType:     appendInput.EventType,
+			EntityID:      appendInput.EntityID,
+			Payload:       append([]byte(nil), appendInput.Payload...),
+			TsUnixMs:      now,
+			Source:        appendInput.Source,
+			SourceSeq:     appendInput.SourceSeq,
+			CausationID:   appendInput.CausationID,
+			CorrelationID: appendInput.CorrelationID,
+		}
+		payload, err := json.Marshal(envelope)
+		if err != nil {
+			l.seq = startSeq
+			return nil, fmt.Errorf("marshal event envelope: %w", err)
+		}
+		envelopes = append(envelopes, envelope)
+		serialized = append(serialized, payload)
 	}
 
 	batch := l.store.NewBatch()
 	defer batch.Close()
-
-	if err := batch.Set([]byte(EventKey(l.seq)), serialized, nil); err != nil {
-		l.seq--
-		return EventEnvelope{}, fmt.Errorf("write event payload: %w", err)
+	for i, payload := range serialized {
+		if err := batch.Set([]byte(EventKey(envelopes[i].GlobalSeq)), payload, nil); err != nil {
+			l.seq = startSeq
+			return nil, fmt.Errorf("write event payload: %w", err)
+		}
 	}
 	if err := batch.Set([]byte(keyGlobalSequenceCounter), uint64ToBytes(l.seq), nil); err != nil {
-		l.seq--
-		return EventEnvelope{}, fmt.Errorf("write global sequence: %w", err)
+		l.seq = startSeq
+		return nil, fmt.Errorf("write global sequence: %w", err)
 	}
 	if err := batch.Commit(pebble.Sync); err != nil {
-		l.seq--
-		return EventEnvelope{}, fmt.Errorf("commit event batch: %w", err)
+		l.seq = startSeq
+		return nil, fmt.Errorf("commit event batch: %w", err)
 	}
-
-	return envelope, nil
+	return envelopes, nil
 }
 
 func (l *EventLog) ReadFrom(startSequence uint64, limit int) ([]EventEnvelope, error) {

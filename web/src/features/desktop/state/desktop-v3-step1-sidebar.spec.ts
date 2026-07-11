@@ -311,6 +311,97 @@ test('archive mutation result moves sidebar row into Archived with cached sessio
   assert.equal(archivedRecord.metadata?.swarm_v3_sidebar_group, 'archived')
 })
 
+test('bulk archive mutation cleans several sessions from collections in one reducer pass', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const sessionC = { ...sessionA, id: 'session-c', title: 'Session C' }
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
+  state.sessionOrderByScope['scope-a'] = [sessionA.id, sessionB.id, sessionC.id]
+  state.sessionOrderByScope['scope-pinned'] = [sessionB.id, sessionC.id]
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.sessionsById[sessionB.id] = { kind: 'full', session: sessionB, needsHydrate: false }
+  state.sessionsById[sessionC.id] = { kind: 'full', session: sessionC, needsHydrate: false }
+  state.subscriptionsById = {
+    'sub-a': { session_id: sessionA.id },
+    'sub-b': { session_id: sessionB.id },
+    'sub-c': { session_id: sessionC.id },
+  }
+  state.worksetsById['scope-a'] = {
+    workset_id: 'scope-a',
+    sessionIds: [sessionA.id, sessionB.id, sessionC.id],
+    inactiveSessionIds: [],
+  }
+  state.liveRunsBySession[sessionA.id] = {}
+  state.liveRunsBySession[sessionB.id] = {}
+
+  desktopV3CacheReducer(state, {
+    type: 'mutation.sessionArchiveResult',
+    raw: {
+      ok: true,
+      archived: true,
+      results: [sessionA, sessionB].map((session, index) => ({
+        session_id: session.id,
+        archived: true,
+        tombstone: { session_id: session.id, kind: 'archived', archived: true, updated_at: 100 + index },
+      })),
+    },
+  })
+
+  assert.deepEqual(state.sessionOrderByScope['scope-a'], [sessionC.id])
+  assert.deepEqual(state.sessionOrderByScope['scope-pinned'], [sessionC.id])
+  assert.deepEqual(Object.keys(state.subscriptionsById), ['sub-c'])
+  assert.deepEqual(state.worksetsById['scope-a'].sessionIds, [sessionC.id])
+  assert.deepEqual(state.worksetsById['scope-a'].inactiveSessionIds, [sessionA.id, sessionB.id])
+  assert.equal(state.liveRunsBySession[sessionA.id], undefined)
+  assert.equal(state.liveRunsBySession[sessionB.id], undefined)
+  assert.deepEqual(selectDesktopSidebarGroupedRows(state).archived.map((row) => row.sessionId).sort(), [sessionA.id, sessionB.id].sort())
+})
+
+test('archive mutation and realtime tombstone ordering is idempotent without repeated collection cleanup', () => {
+  for (const realtimeFirst of [false, true]) {
+    const state = createEmptyDesktopV3CacheState()
+    state.sessionOrderByScope['scope-a'] = [sessionA.id, sessionB.id]
+    state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+    state.sessionsById[sessionB.id] = { kind: 'full', session: sessionB, needsHydrate: false }
+    state.subscriptionsById['sub-a'] = { session_id: sessionA.id }
+    state.worksetsById['scope-a'] = { sessionIds: [sessionA.id, sessionB.id], inactiveSessionIds: [] }
+
+    const mutation = () => desktopV3CacheReducer(state, {
+      type: 'mutation.sessionArchiveResult',
+      raw: {
+        ok: true,
+        archived: true,
+        results: [{
+          session_id: sessionA.id,
+          archived: true,
+          tombstone: { session_id: sessionA.id, kind: 'archived', archived: true, updated_at: 100 },
+        }],
+      },
+    })
+    const realtime = () => desktopV3CacheReducer(state, {
+      type: 'realtime.applyEvent',
+      event: {
+        source: 'realtime',
+        sessionId: sessionA.id,
+        eventType: 'session.archived',
+        payload: {
+          tombstone: { session_id: sessionA.id, kind: 'archived', archived: true, updated_at: 200 },
+        },
+      },
+    })
+
+    if (realtimeFirst) realtime()
+    else mutation()
+    state.sessionOrderByScope['post-cleanup-marker'] = [sessionA.id]
+    state.subscriptionsById['post-cleanup-marker'] = { session_id: sessionA.id }
+    if (realtimeFirst) mutation()
+    else realtime()
+
+    assert.equal(state.tombstonesBySession[sessionA.id].updated_at, realtimeFirst ? 100 : 200)
+    assert.deepEqual(state.sessionOrderByScope['post-cleanup-marker'], [sessionA.id])
+    assert.equal(state.subscriptionsById['post-cleanup-marker']?.session_id, sessionA.id)
+  }
+})
+
 test('metadata-only bootstrap after hydrate preserves messages', () => {
   const state = createEmptyDesktopV3CacheState()
   state.messagesBySession[sessionA.id] = {

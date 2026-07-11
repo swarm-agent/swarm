@@ -578,7 +578,7 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 				return err
 			}
 			if kind == "archived" {
-				if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, existing, true, nil); err != nil {
+				if err := s.transitionV3SessionSearchLifecycleInBatch(batch, s.store.db, existing, true); err != nil {
 					return err
 				}
 			} else if err := removeV3SessionSearchIndexInBatch(batch, s.store.db, sessionID); err != nil {
