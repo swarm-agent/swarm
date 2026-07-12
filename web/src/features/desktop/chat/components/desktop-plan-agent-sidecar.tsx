@@ -206,7 +206,7 @@ export function DesktopPlanAgentSidecar({
           </div>
           {selected.busy && renderItems.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />Opening durable {activeTab === "plan" ? "Plan" : "AI"} sidechat…</div> : null}
           <div className="flex min-w-0 flex-col gap-5">
-            {renderItems.map((item, index) => <DesktopV3RenderItemView key={`${item.type}:${"id" in item ? item.id : item.type === "pending-user" ? item.message.clientRequestId : "message" in item ? item.message.id : index}`} item={item} thinkingTagsEnabled timerNow={Date.now()} index={index} />)}
+            {renderItems.map((item, index) => <DesktopV3RenderItemView key={`${item.type}:${"id" in item ? item.id : "message" in item ? item.message.id : index}`} item={item} thinkingTagsEnabled timerNow={Date.now()} index={index} />)}
           </div>
           {selected.error ? <div role="alert" className="rounded-lg border border-[var(--app-danger)] p-3 text-sm text-[var(--app-danger)]">{selected.error}</div> : null}
         </div>
