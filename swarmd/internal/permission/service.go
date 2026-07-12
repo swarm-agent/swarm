@@ -614,6 +614,35 @@ func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord
 	}
 	if isPendingPlanProposalRecord(record) {
 		record.ProposalRevision = 1
+		payload := parsePermissionJSONMap(record.ToolArguments)
+		planID := strings.TrimSpace(firstNonEmptyPermissionString(stringValue(payload["plan_id"]), stringValue(payload["id"])))
+		if planID == "" {
+			planID = "plan_" + record.ID
+		}
+		payload["plan_id"] = planID
+		payload["proposal_revision"] = record.ProposalRevision
+		if document, ok := payload["document"].(map[string]any); ok {
+			document["id"] = planID
+			payload["document"] = document
+		}
+		if approved, ok := payload["approved_arguments"].(map[string]any); ok {
+			approved["plan_id"] = planID
+			if document, ok := approved["document"].(map[string]any); ok {
+				document["id"] = planID
+				approved["document"] = document
+			}
+			payload["approved_arguments"] = approved
+			if rawApproved, err := json.Marshal(approved); err != nil {
+				return pebblestore.PermissionRecord{}, fmt.Errorf("encode pending plan approved arguments: %w", err)
+			} else {
+				record.ApprovedArguments = permissionStoredArguments(string(rawApproved))
+			}
+		}
+		if rawPayload, err := json.Marshal(payload); err != nil {
+			return pebblestore.PermissionRecord{}, fmt.Errorf("encode pending plan proposal metadata: %w", err)
+		} else {
+			record.ToolArguments = permissionStoredArguments(string(rawPayload))
+		}
 	}
 
 	s.mu.Lock()

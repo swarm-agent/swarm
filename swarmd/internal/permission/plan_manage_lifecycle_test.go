@@ -135,6 +135,30 @@ func TestAuthorizeToolCallKeepsRevisionAndNewPlanApprovalGated(t *testing.T) {
 	}
 }
 
+func TestCreatePendingPlanProposalAddsCanonicalSidechatMetadata(t *testing.T) {
+	svc, sessionID, _, cleanup := newPermissionLifecycleTestService(t, "")
+	defer cleanup()
+	payload := `{"action":"request_new_plan","title":"Generated","document":{"title":"Generated","checkpoints":[{"id":"cp-1","title":"One","status":"pending"}]},"approved_arguments":{"action":"request_new_plan","title":"Generated","document":{"title":"Generated","checkpoints":[{"id":"cp-1","title":"One","status":"pending"}]}}}`
+	record, err := svc.CreatePending(CreateInput{SessionID: sessionID, RunID: "run-new-plan", CallID: "call-new-plan", ToolName: "plan_manage", ToolArguments: payload, Mode: sessionruntime.ModeAuto})
+	if err != nil {
+		t.Fatalf("create pending proposal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(record.ToolArguments), &got); err != nil {
+		t.Fatalf("decode pending proposal: %v", err)
+	}
+	planID, _ := got["plan_id"].(string)
+	if planID == "" || got["proposal_revision"] != float64(1) || got["document"] == nil {
+		t.Fatalf("pending proposal metadata = %#v", got)
+	}
+	document, _ := got["document"].(map[string]any)
+	approved, _ := got["approved_arguments"].(map[string]any)
+	approvedDocument, _ := approved["document"].(map[string]any)
+	if document["id"] != planID || approved["plan_id"] != planID || approvedDocument["id"] != planID {
+		t.Fatalf("canonical plan binding missing: plan_id=%q document=%#v approved=%#v", planID, document, approved)
+	}
+}
+
 func TestPendingPlanProposalEditIsRevisionedAndApprovalUsesBackendDocument(t *testing.T) {
 	svc, sessionID, _, cleanup := newPermissionLifecycleTestService(t, "")
 	defer cleanup()
@@ -145,6 +169,16 @@ func TestPendingPlanProposalEditIsRevisionedAndApprovalUsesBackendDocument(t *te
 	}
 	if record.ProposalRevision != 1 {
 		t.Fatalf("initial revision = %d, want 1", record.ProposalRevision)
+	}
+	var pendingPayload map[string]any
+	if err := json.Unmarshal([]byte(record.ToolArguments), &pendingPayload); err != nil {
+		t.Fatalf("decode pending proposal payload: %v", err)
+	}
+	if got := pendingPayload["proposal_revision"]; got != float64(1) {
+		t.Fatalf("payload proposal_revision = %#v, want 1", got)
+	}
+	if pendingPayload["plan_id"] != "plan-new" || pendingPayload["document"] == nil {
+		t.Fatalf("pending proposal metadata = %#v", pendingPayload)
 	}
 	waitCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
