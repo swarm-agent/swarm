@@ -18,7 +18,23 @@ func (s *Service) buildManageSessionsPermissionPayload(sessionID string, call to
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
 		return nil, fmt.Errorf("manage-sessions arguments invalid: %w", err)
 	}
-	if strings.ToLower(strings.TrimSpace(mapString(args, "action"))) != "archive" {
+	action := strings.ToLower(strings.TrimSpace(mapString(args, "action")))
+	if action == "deploy" {
+		manifest, err := s.buildManageSessionsDeployManifest(sessionID, call)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := json.Marshal(manifest)
+		if err != nil {
+			return nil, err
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return nil, err
+		}
+		return payload, nil
+	}
+	if action != "archive" {
 		return args, nil
 	}
 	if s == nil || s.sessions == nil {

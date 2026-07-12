@@ -140,6 +140,9 @@ type RunOptions struct {
 	IntegrationFlow       bool
 	Principal             identity.Principal
 	ApplySessionMutation  func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	// SkipInitialUserMessage is trusted control-plane state for a run whose user
+	// message and run intent were committed atomically before dispatch.
+	SkipInitialUserMessage bool
 }
 
 type RunResult struct {
@@ -1238,7 +1241,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if !manualCompact && s.eventPublish != nil {
 		titleEligible, titleEligibilityErr = s.shouldGenerateMemorySessionTitleForNextUserMessage(sessionID, sessionSnapshot)
 	}
-	if !manualCompact {
+	if !manualCompact && !options.SkipInitialUserMessage {
 		userMessage, _, userEvent, err = s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "user", Content: prompt, Metadata: runMessageMetadataWith(runMessageMetadata, map[string]any{"source": messageMetadataSourceRunTurn}), RunID: runID, Step: 0, LogicalKey: "user", Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
 		if err != nil {
 			return RunResult{}, err

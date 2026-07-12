@@ -209,6 +209,27 @@ function testManageSessionsUsesRelativeDesktopNavigation(): void {
   assert(!markup.includes('target="_blank"'), "relative Desktop session navigation should stay internal");
 }
 
+function testManageSessionsDeployRendersNavigableResultsAndHonestFailures(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage-sessions",
+    callId: "call_manage_sessions_deploy_card",
+    argumentsText: JSON.stringify({ action: "deploy" }),
+    outputText: JSON.stringify({
+      action: "deploy",
+      results: [
+        { proposal_id: "proposal-1", session_id: "session-deploy-1", title: "Approved primary", status: "started", mode: "auto", navigation: { session_id: "session-deploy-1", href: "/workspace/session-deploy-1" } },
+        { proposal_id: "proposal-2", title: "Approved extra", status: "error", error: "worktree allocation failed" },
+      ],
+    }),
+  });
+  assert(Boolean(message), "expected deploy tool message");
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("Session deployment") && markup.includes("Approved primary"), "expected deployment result card");
+  assert(markup.includes('href="/workspace/session-deploy-1"') && markup.includes("Open session"), "expected navigable deployed session");
+  assert(markup.includes("proposal-2 failed:") && markup.includes("worktree allocation failed"), "expected honest per-item failure");
+  assert(!markup.includes('results":'), "raw deployment JSON must not render");
+}
+
 function testManageSessionsListRendersCardsWithoutRawJson(): void {
   const message = buildStructuredToolMessage({
     tool: "manage-sessions",
@@ -289,6 +310,7 @@ function main(): void {
   testTaskTerminalTimerUsesFinalElapsed();
   testBashToolUsesDedicatedFullWidthCard();
   testManageSessionsUsesRelativeDesktopNavigation();
+  testManageSessionsDeployRendersNavigableResultsAndHonestFailures();
   testManageSessionsListRendersCardsWithoutRawJson();
   testTaskHeaderDoesNotShiftBetweenLaunchAssignments();
   console.log("chat-markdown preview tests passed");

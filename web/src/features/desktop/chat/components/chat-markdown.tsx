@@ -1009,11 +1009,19 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
   if (!output) return null;
   const args = toolMessage.argumentsJson ?? null;
   const action = toolJsonString(output, "action") || toolJsonString(args, "action") || "sessions";
-  const rawItems = Array.isArray(output.items) ? output.items : output.id || output.session_id ? [output] : [];
+  const deployResults = Array.isArray(output.results) ? output.results : [];
+  const rawItems = Array.isArray(output.items) ? output.items : deployResults.length ? deployResults : output.id || output.session_id ? [output] : [];
   const items = rawItems.map(manageSessionItem).filter((item): item is ManageSessionCardItem => Boolean(item));
+  const failedDeployments = action === "deploy" ? deployResults.flatMap((value): Array<{ proposal: string; error: string }> => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const record = value as Record<string, unknown>;
+    const error = toolJsonString(record, "error");
+    if (!error) return [];
+    return [{ proposal: toolJsonString(record, "proposal_id") || toolJsonString(record, "title") || "Session", error }];
+  }) : [];
   const messages = Array.isArray(output.messages) ? output.messages : [];
   const archivedIds = Array.isArray(output.archived_session_ids) ? output.archived_session_ids.filter((id): id is string => typeof id === "string") : [];
-  const title = action === "search" ? "Session search" : action === "list" ? "Your sessions" : action === "read_messages" ? "Session context" : action === "git_status" ? "Worktree status" : action === "archive" ? "Sessions archived" : action === "inspect" ? "Session manager" : "Session details";
+  const title = action === "deploy" ? "Session deployment" : action === "search" ? "Session search" : action === "list" ? "Your sessions" : action === "read_messages" ? "Session context" : action === "git_status" ? "Worktree status" : action === "archive" ? "Sessions archived" : action === "inspect" ? "Session manager" : "Session details";
   const HeaderIcon = action === "search" ? Search : action === "archive" ? Archive : action === "read_messages" ? MessageSquareText : action === "git_status" ? GitBranch : Layers3;
 
   return (
@@ -1045,6 +1053,7 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
         const seq = manageSessionNumber(message, "seq");
         return <div key={`${seq ?? index}`} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3"><div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--app-text-subtle)]">{role}{seq !== null ? ` · #${seq}` : ""}</div><div className="whitespace-pre-wrap break-words text-xs leading-5 text-[var(--app-text-muted)]">{content}</div></div>;
       })}</div> : null}
+      {failedDeployments.length > 0 ? <div className="grid gap-2 border-t border-[var(--app-border)] p-3">{failedDeployments.map((failure, index) => <div key={`${failure.proposal}:${index}`} className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]"><span className="font-semibold">{failure.proposal} failed:</span> {failure.error}</div>)}</div> : null}
       {archivedIds.length > 0 ? <div className="p-4 text-xs text-[var(--app-text-muted)]">Archived {archivedIds.length} {archivedIds.length === 1 ? "session" : "sessions"} durably.</div> : null}
       {action === "inspect" ? <div className="p-4 text-xs leading-5 text-[var(--app-text-muted)]">Search and read are bounded for efficient context. All actions are available without approval except archive.</div> : null}
     </section>

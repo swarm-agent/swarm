@@ -901,6 +901,13 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		output, err := s.executeManageTodosTool(sessionID, call, approvedArguments)
 		result.Output = output
 		return true, result, err
+	case "manage_sessions":
+		if permission.ManageSessionsAction(call.Arguments) != "deploy" {
+			return false, tool.Result{}, nil
+		}
+		output, err := s.executeManageSessionsDeploy(ctx, sessionID, call, approvedArguments, applySessionMutation)
+		result.Output = output
+		return true, result, err
 	case "exit_plan_mode":
 		output, err := s.executeExitPlanModeTool(sessionID, sessionMode, agentProfile, call.Arguments, approvedArguments, applySessionMutation)
 		result.Output = output
@@ -3740,6 +3747,9 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme", "manage_integrations", "edit_pending_plan":
 		return toolName, false
 	case "manage_sessions":
+		if permission.ShouldApproveManageSessionsDeploy(arguments) {
+			return "session_deploy", true
+		}
 		if permission.ShouldApproveManageSessionsArchive(arguments) {
 			return "session_archive", true
 		}

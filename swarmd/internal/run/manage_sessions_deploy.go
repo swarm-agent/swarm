@@ -1,0 +1,237 @@
+package run
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
+)
+
+const (
+	manageSessionsDeployManifestVersion = 1
+	manageSessionsDeployMaxProposals    = 8
+)
+
+type manageSessionsDeployProposal struct {
+	ID                  string `json:"id"`
+	Title               string `json:"title,omitempty"`
+	Prompt              string `json:"prompt"`
+	Mode                string `json:"mode"`
+	AgentName           string `json:"agent_name"`
+	AgentMode           string `json:"agent_mode"`
+	RuntimeMode         string `json:"runtime_mode"`
+	Provider            string `json:"provider,omitempty"`
+	Model               string `json:"model,omitempty"`
+	Thinking            string `json:"thinking,omitempty"`
+	WorkspaceID         string `json:"workspace_id,omitempty"`
+	WorkspaceBindingID  string `json:"workspace_binding_id,omitempty"`
+	WorkspaceGeneration int64  `json:"workspace_generation,omitempty"`
+	WorkspacePath       string `json:"workspace_path"`
+	WorkspaceName       string `json:"workspace_name,omitempty"`
+	ManagedWorktree     bool   `json:"managed_worktree"`
+	WorktreeBaseBranch  string `json:"worktree_base_branch,omitempty"`
+	WorktreeBranch      string `json:"worktree_branch,omitempty"`
+	Selected            bool   `json:"selected"`
+}
+
+type manageSessionsDeployManifest struct {
+	ManifestVersion   int                            `json:"manifest_version"`
+	Action            string                         `json:"action"`
+	ParentSessionID   string                         `json:"parent_session_id"`
+	AccountScopeID    string                         `json:"account_scope_id"`
+	UserID            string                         `json:"user_id"`
+	Proposals         []manageSessionsDeployProposal `json:"proposals"`
+	ManifestDigest    string                         `json:"manifest_digest"`
+	ApprovedArguments map[string]any                 `json:"approved_arguments"`
+}
+
+type manageSessionsDeployInput struct {
+	Title         string
+	Prompt        string
+	Mode          string
+	Agent         string
+	WorkspacePath string
+	Worktree      bool
+}
+
+func parseManageSessionsDeployArguments(arguments string) ([]manageSessionsDeployInput, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &root); err != nil {
+		return nil, fmt.Errorf("manage-sessions deploy arguments invalid: %w", err)
+	}
+	for key := range root {
+		if key != "action" && key != "proposals" {
+			return nil, fmt.Errorf("manage-sessions deploy rejects untrusted field %q", key)
+		}
+	}
+	var action string
+	if err := json.Unmarshal(root["action"], &action); err != nil || !strings.EqualFold(strings.TrimSpace(action), "deploy") {
+		return nil, fmt.Errorf("manage-sessions deploy requires action deploy")
+	}
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal(root["proposals"], &raw); err != nil {
+		return nil, fmt.Errorf("manage-sessions deploy proposals invalid: %w", err)
+	}
+	if len(raw) == 0 || len(raw) > manageSessionsDeployMaxProposals {
+		return nil, fmt.Errorf("manage-sessions deploy requires 1 to %d proposals", manageSessionsDeployMaxProposals)
+	}
+	out := make([]manageSessionsDeployInput, 0, len(raw))
+	for i, item := range raw {
+		for key := range item {
+			switch key {
+			case "title", "prompt", "mode", "agent", "workspace_path", "worktree":
+			default:
+				return nil, fmt.Errorf("manage-sessions deploy proposals[%d] rejects untrusted field %q", i, key)
+			}
+		}
+		var input struct {
+			Title         string `json:"title"`
+			Prompt        string `json:"prompt"`
+			Mode          string `json:"mode"`
+			Agent         string `json:"agent"`
+			WorkspacePath string `json:"workspace_path"`
+			Worktree      bool   `json:"worktree"`
+		}
+		encoded, _ := json.Marshal(item)
+		if err := json.Unmarshal(encoded, &input); err != nil {
+			return nil, fmt.Errorf("manage-sessions deploy proposals[%d] invalid: %w", i, err)
+		}
+		input.Prompt = strings.TrimSpace(input.Prompt)
+		if input.Prompt == "" {
+			return nil, fmt.Errorf("manage-sessions deploy proposals[%d] prompt is required", i)
+		}
+		mode := strings.ToLower(strings.TrimSpace(input.Mode))
+		if mode == "" {
+			mode = sessionruntime.ModeAuto
+		}
+		if mode != sessionruntime.ModePlan && mode != sessionruntime.ModeAuto {
+			return nil, fmt.Errorf("manage-sessions deploy proposals[%d] mode must be plan or auto", i)
+		}
+		out = append(out, manageSessionsDeployInput{Title: strings.TrimSpace(input.Title), Prompt: input.Prompt, Mode: mode, Agent: strings.TrimSpace(input.Agent), WorkspacePath: strings.TrimSpace(input.WorkspacePath), Worktree: input.Worktree})
+	}
+	return out, nil
+}
+
+func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.Call) (manageSessionsDeployManifest, error) {
+	inputs, err := parseManageSessionsDeployArguments(call.Arguments)
+	if err != nil {
+		return manageSessionsDeployManifest{}, err
+	}
+	if s == nil || s.sessions == nil || s.agents == nil || s.workspace == nil {
+		return manageSessionsDeployManifest{}, fmt.Errorf("manage-sessions deploy resolution services are not configured")
+	}
+	parent, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return manageSessionsDeployManifest{}, err
+	}
+	if !ok {
+		return manageSessionsDeployManifest{}, fmt.Errorf("session %q not found", sessionID)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	if !principal.Valid() {
+		return manageSessionsDeployManifest{}, identity.ErrPrincipalRequired
+	}
+	state, err := s.agents.ListStateForAccount(parent.AccountScopeID, 2000)
+	if err != nil {
+		return manageSessionsDeployManifest{}, err
+	}
+	profiles := make(map[string]pebblestore.AgentProfile, len(state.Profiles))
+	for _, profile := range state.Profiles {
+		profiles[strings.ToLower(strings.TrimSpace(profile.Name))] = profile
+	}
+	activeName := strings.TrimSpace(state.ActivePrimary)
+	active, found := profiles[strings.ToLower(activeName)]
+	if !found || !active.Enabled || active.Mode != agentruntime.ModePrimary {
+		return manageSessionsDeployManifest{}, fmt.Errorf("active primary agent is missing, disabled, or invalid")
+	}
+	caller, err := sessionV3AgentProfileFromMetadataMap(parent.Metadata)
+	if err != nil {
+		caller = active
+	}
+	callerContract, _, err := s.CompileStoredV3AgentToolContract(parent.AccountScopeID, caller)
+	if err != nil {
+		return manageSessionsDeployManifest{}, fmt.Errorf("resolve calling agent capability: %w", err)
+	}
+	canDelegate := callerContract.Tools["task"].Enabled
+
+	manifest := manageSessionsDeployManifest{ManifestVersion: manageSessionsDeployManifestVersion, Action: "deploy", ParentSessionID: parent.ID, AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, Proposals: make([]manageSessionsDeployProposal, 0, len(inputs))}
+	for i, input := range inputs {
+		profile := active
+		if input.Agent != "" {
+			var exists bool
+			profile, exists = profiles[strings.ToLower(input.Agent)]
+			if !exists {
+				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] agent %q not found", i, input.Agent)
+			}
+		}
+		if err := validateManageSessionsDeployAgent(active, profile, canDelegate); err != nil {
+			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d]: %w", i, err)
+		}
+		executionMode, _, err := s.resolveExecutionMode(input.Mode, profile)
+		if err != nil {
+			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] execution mode: %w", i, err)
+		}
+		preference := applyAgentPreferenceOverridesForMode(parent.Preference, profile, input.Mode)
+		var bindingPath string
+		if input.WorkspacePath != "" {
+			bindingPath = input.WorkspacePath
+		} else {
+			bindingPath = parent.WorkspacePath
+		}
+		workspace, err := s.workspace.ScopeForPathForPrincipal(principal, bindingPath)
+		if err != nil || !workspace.Matched {
+			if err == nil {
+				err = fmt.Errorf("workspace is not an account-owned binding")
+			}
+			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] workspace: %w", i, err)
+		}
+		manifest.Proposals = append(manifest.Proposals, manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0})
+	}
+	digest, err := manageSessionsDeployDigest(manifest)
+	if err != nil {
+		return manageSessionsDeployManifest{}, err
+	}
+	manifest.ManifestDigest = digest
+	selected := []string{manifest.Proposals[0].ID}
+	manifest.ApprovedArguments = map[string]any{"action": "deploy", "manifest_version": manifest.ManifestVersion, "manifest_digest": digest, "parent_session_id": manifest.ParentSessionID, "account_scope_id": manifest.AccountScopeID, "user_id": manifest.UserID, "selected_proposal_ids": selected, "proposals": manifest.Proposals}
+	return manifest, nil
+}
+
+func validateManageSessionsDeployAgent(active, target pebblestore.AgentProfile, canDelegate bool) error {
+	if !target.Enabled {
+		return fmt.Errorf("agent %q is disabled", target.Name)
+	}
+	if target.Mode == agentruntime.ModeBackground || (target.Mode != agentruntime.ModePrimary && target.Mode != agentruntime.ModeSubagent) {
+		return fmt.Errorf("agent %q is not an allowed primary or subagent", target.Name)
+	}
+	if !strings.EqualFold(target.Name, active.Name) && !canDelegate {
+		return fmt.Errorf("alternate agent %q requires calling primary task/delegation capability", target.Name)
+	}
+	return nil
+}
+
+func manageSessionsDeployDigest(manifest manageSessionsDeployManifest) (string, error) {
+	manifest.ManifestDigest = ""
+	manifest.ApprovedArguments = nil
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		return "", err
+	}
+	var canonical any
+	if err := json.Unmarshal(raw, &canonical); err != nil {
+		return "", err
+	}
+	raw, err = json.Marshal(canonical)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}

@@ -274,7 +274,32 @@ export interface SessionArchivePermissionPayload {
   approvedArguments: Record<string, unknown>
 }
 
-export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-revision-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'session-archive' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image'
+export interface SessionDeployProposal {
+  id: string
+  title: string
+  prompt: string
+  mode: 'plan' | 'auto'
+  agentName: string
+  agentMode: 'primary' | 'subagent'
+  workspacePath: string
+  workspaceName: string
+  managedWorktree: boolean
+  worktreeBaseBranch: string
+  worktreeBranch: string
+  selected: boolean
+  manifest: Record<string, unknown>
+}
+
+export interface SessionDeployPermissionPayload {
+  action: 'deploy'
+  manifestVersion: number
+  manifestDigest: string
+  proposals: SessionDeployProposal[]
+  allowedAgents: Array<{ name: string; mode: 'primary' | 'subagent' }>
+  approvedArguments: Record<string, unknown>
+}
+
+export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-revision-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'session-archive' | 'session-deploy' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image'
 
 function decodePermissionArguments(raw: string): Record<string, unknown> | null {
   const trimmed = raw.trim()
@@ -571,6 +596,9 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
       if (requirement === 'session_archive') {
         return 'session-archive'
       }
+      if (requirement === 'session_deploy') {
+        return 'session-deploy'
+      }
       return 'generic'
     case 'manage_image':
       return 'manage-image'
@@ -660,6 +688,59 @@ export function parseSessionArchivePermission(permission: DesktopPermissionRecor
     action: mapStringArg(payload, 'action') || 'archive',
     sessions,
     approvedArguments: mapObjectArg(payload, 'approved_arguments'),
+  }
+}
+
+export function parseSessionDeployPermission(permission: DesktopPermissionRecord): SessionDeployPermissionPayload {
+  const payload = decodePermissionArguments(permission.toolArguments) ?? {}
+  const approvedArguments = mapObjectArg(payload, 'approved_arguments')
+  const rawProposals = Array.isArray(payload.proposals) ? payload.proposals : []
+  const proposals = rawProposals.flatMap((entry): SessionDeployProposal[] => {
+    const proposal = asRecord(entry)
+    if (!proposal) return []
+    const id = mapStringArg(proposal, 'id')
+    const prompt = mapStringArg(proposal, 'prompt')
+    const agentName = mapStringArg(proposal, 'agent_name')
+    const agentMode = mapStringArg(proposal, 'agent_mode').toLowerCase()
+    const mode = mapStringArg(proposal, 'mode').toLowerCase()
+    if (!id || !prompt || !agentName || !['primary', 'subagent'].includes(agentMode) || !['plan', 'auto'].includes(mode)) return []
+    return [{
+      id,
+      title: mapStringArg(proposal, 'title'),
+      prompt,
+      mode: mode as 'plan' | 'auto',
+      agentName,
+      agentMode: agentMode as 'primary' | 'subagent',
+      workspacePath: mapStringArg(proposal, 'workspace_path'),
+      workspaceName: mapStringArg(proposal, 'workspace_name'),
+      managedWorktree: mapBoolArg(proposal, 'managed_worktree'),
+      worktreeBaseBranch: mapStringArg(proposal, 'worktree_base_branch'),
+      worktreeBranch: mapStringArg(proposal, 'worktree_branch'),
+      selected: mapBoolArg(proposal, 'selected'),
+      manifest: { ...proposal },
+    }]
+  }).slice(0, 8)
+  const allowedAgentsByName = new Map<string, { name: string; mode: 'primary' | 'subagent' }>()
+  proposals.forEach((proposal) => {
+    allowedAgentsByName.set(proposal.agentName.toLowerCase(), { name: proposal.agentName, mode: proposal.agentMode })
+  })
+  const rawAllowedAgents = Array.isArray(payload.allowed_agents) ? payload.allowed_agents : []
+  rawAllowedAgents.forEach((entry) => {
+    const agent = asRecord(entry)
+    if (!agent) return
+    const name = mapStringArg(agent, 'name')
+    const mode = mapStringArg(agent, 'mode').toLowerCase()
+    if (name && (mode === 'primary' || mode === 'subagent')) {
+      allowedAgentsByName.set(name.toLowerCase(), { name, mode })
+    }
+  })
+  return {
+    action: 'deploy',
+    manifestVersion: mapNumberArg(payload, 'manifest_version'),
+    manifestDigest: mapStringArg(payload, 'manifest_digest'),
+    proposals,
+    allowedAgents: [...allowedAgentsByName.values()],
+    approvedArguments,
   }
 }
 

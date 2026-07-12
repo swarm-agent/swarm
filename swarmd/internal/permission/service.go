@@ -414,6 +414,11 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: explicit.Reason, Source: explicit.Source, RulePreview: explicit.RulePreview}, nil
 		}
 	}
+	// Session deployment always asks before generic bypass or persisted allow rules.
+	if requirement == "session_deploy" {
+		input.Mode = effectiveMode
+		return s.createPendingAuthorization(input, sessionID, requirement, "session deployment always requires fresh user approval", "builtin", "ask exact session deployment manifest")
+	}
 	// Delegation safeguards are resolved before generic permission bypass.
 	if input.SubagentReservation != nil {
 		reservation := input.SubagentReservation
@@ -826,6 +831,13 @@ func (s *Service) ResolveWithArguments(sessionID, permissionID, action, reason, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	current, found, loadErr := s.store.GetPermission(sessionID, permissionID)
+	if loadErr != nil {
+		return pebblestore.PermissionRecord{}, loadErr
+	}
+	if found && authorizationRequirement(current.Mode, current.ToolName, current.ToolArguments) == "session_deploy" && action == ActionAllowAlways {
+		return pebblestore.PermissionRecord{}, errors.New("session deployment does not support persistent allow")
+	}
 	record, changed, err := s.resolveLocked(sessionID, permissionID, action, reason, approvedArguments, now)
 	if err != nil {
 		return pebblestore.PermissionRecord{}, err
@@ -1578,6 +1590,9 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 	case "manage_worktree":
 		return "manage_worktree"
 	case "manage_sessions":
+		if ShouldApproveManageSessionsDeploy(toolArguments) {
+			return "session_deploy"
+		}
 		if ShouldApproveManageSessionsArchive(toolArguments) {
 			return "session_archive"
 		}

@@ -256,6 +256,26 @@ test('DesktopPermissionModal routes typed plan lifecycle approvals away from gen
   assert.doesNotMatch(newPlan, /Plan update overview/)
 })
 
+test('session deploy permission defaults to one selected proposal and never offers persistent approval', () => {
+  const markup = renderPermission(planLifecyclePermission('session_deploy', {
+    action: 'deploy',
+    manifest_version: 1,
+    manifest_digest: 'digest-1',
+    proposals: [
+      { id: 'proposal-1', title: 'Primary work', prompt: 'Ship the primary task', mode: 'auto', agent_name: 'swarm', agent_mode: 'primary', workspace_path: '/workspace', workspace_name: 'Workspace', selected: true },
+      { id: 'proposal-2', title: 'Extra work', prompt: 'Investigate an extra task', mode: 'plan', agent_name: 'explorer', agent_mode: 'subagent', workspace_path: '/workspace', workspace_name: 'Workspace', selected: true },
+    ],
+    approved_arguments: { action: 'deploy', manifest_version: 1, manifest_digest: 'digest-1' },
+  }, 'manage-sessions'))
+
+  assert.match(markup, /Deploy sessions\?/)
+  assert.match(markup, /One safe default is selected/)
+  assert.equal((markup.match(/type="checkbox"/g) || []).length, 2)
+  assert.equal((markup.match(/checked=""/g) || []).length, 1)
+  assert.match(markup, /Deploy 1 session/)
+  assert.doesNotMatch(markup, /Always Allow|Always Deny/)
+})
+
 test('session archive permission renders polished session cards instead of raw JSON', () => {
   const markup = renderPermission(planLifecyclePermission('session_archive', {
     action: 'archive',

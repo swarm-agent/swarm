@@ -3,6 +3,7 @@ import {
   parseAgentChangePermission,
   parseManageTodosPermission,
   parseSessionArchivePermission,
+  parseSessionDeployPermission,
   parseExitPlanPermission,
   parsePlanUpdatePermission,
   buildPlanUpdateDiffPreview,
@@ -12,6 +13,28 @@ import {
   permissionRequiresApproval,
   buildGenericPermissionMarkdown,
 } from './permission-payload'
+
+function testSessionDeployPermissionPayload(): void {
+  const permission = makePermission({
+    toolName: 'manage-sessions',
+    requirement: 'session_deploy',
+    toolArguments: JSON.stringify({
+      action: 'deploy',
+      manifest_version: 1,
+      manifest_digest: 'digest-1',
+      proposals: [
+        { id: 'proposal-1', title: 'Primary', prompt: 'Do primary work', mode: 'auto', agent_name: 'swarm', agent_mode: 'primary', workspace_path: '/workspace', selected: true },
+        { id: 'proposal-2', title: 'Explore', prompt: 'Investigate', mode: 'plan', agent_name: 'explorer', agent_mode: 'subagent', workspace_path: '/workspace', selected: true },
+      ],
+      approved_arguments: { action: 'deploy', manifest_digest: 'digest-1' },
+    }),
+  })
+  const payload = parseSessionDeployPermission(permission)
+  assert(permissionKind(permission) === 'session-deploy', 'expected deploy permission kind')
+  assert(payload.proposals.length === 2, 'expected two deploy proposals')
+  assert(payload.proposals[0]?.selected === true, 'expected server default selection')
+  assert(payload.allowedAgents.map((agent) => `${agent.name}:${agent.mode}`).join(',') === 'swarm:primary,explorer:subagent', 'expected server-resolved agents')
+}
 
 function makePermission(overrides: Partial<DesktopPermissionRecord> = {}): DesktopPermissionRecord {
   return {
@@ -626,6 +649,7 @@ function main(): void {
   testPlanUpdateDiffPreviewFallsBackToCompleteBeforeAfterRows()
   testGenericBashPermissionFormatsCommandAsCodeBlock()
   testManageSessionsArchiveShowsHydratedFactsOnly()
+  testSessionDeployPermissionPayload()
   testManageTodosBatchParsing()
   console.log('permission-payload tests passed')
 }

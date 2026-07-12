@@ -175,6 +175,11 @@ func ExplainPolicy(mode, toolName, toolArguments string, policy Policy) PolicyEx
 	if explain, ok := explainPhraseDeny(ctx, policy); ok {
 		return explain
 	}
+	// Session deployment is always a fresh user decision. It intentionally runs
+	// before explicit allow rules and generic permission bypass.
+	if ctx.ToolName == "manage_sessions" && ShouldApproveManageSessionsDeploy(toolArguments) {
+		return PolicyExplain{Decision: PolicyDecisionAsk, Source: "builtin", Reason: "session deployment always requires fresh user approval", ToolName: ctx.ToolName}
+	}
 	if explain, ok := explainExplicitRule(ctx, policy); ok {
 		return explain
 	}
@@ -731,6 +736,9 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		}
 		return PolicyDecisionAllow
 	case "manage_sessions":
+		if ShouldApproveManageSessionsDeploy(toolArguments) {
+			return PolicyDecisionAsk
+		}
 		if ShouldApproveManageSessionsArchive(toolArguments) {
 			return PolicyDecisionAsk
 		}

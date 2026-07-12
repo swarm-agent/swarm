@@ -23,6 +23,14 @@ func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 	if sessionIDs["maxItems"] != manageSessionsMaxBatch || !strings.Contains(sessionIDs["description"].(string), "instead of requesting one archive at a time") {
 		t.Fatalf("session_ids schema = %#v", sessionIDs)
 	}
+	proposals := properties["proposals"].(map[string]any)
+	if proposals["maxItems"] != manageSessionsMaxDeployBatch || !strings.Contains(proposals["description"].(string), "first proposal") {
+		t.Fatalf("proposals schema = %#v", proposals)
+	}
+	proposal := proposals["items"].(map[string]any)
+	if proposal["additionalProperties"] != false {
+		t.Fatalf("proposal trust boundary = %#v", proposal)
+	}
 	expectedByID := properties["expected_updated_at_by_id"].(map[string]any)
 	if expectedByID["maxProperties"] != manageSessionsMaxBatch || !strings.Contains(expectedByID["description"].(string), "Required for bulk archive") {
 		t.Fatalf("expected_updated_at_by_id schema = %#v", expectedByID)

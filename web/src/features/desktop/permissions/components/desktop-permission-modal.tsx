@@ -28,6 +28,8 @@ import {
   parseExitPlanPermission,
   parseManageTodosPermission,
   parseSessionArchivePermission,
+  parseSessionDeployPermission,
+  type SessionDeployProposal,
   parseManageImagePermission,
   parsePlanUpdatePermission,
   type PlanUpdatePayload,
@@ -1530,6 +1532,140 @@ function sessionArchiveUpdatedLabel(updatedAt: number): string {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(new Date(updatedAt))
+}
+
+interface SessionDeployFormProposal extends SessionDeployProposal {
+  selected: boolean
+}
+
+function sessionDeployInitialProposals(proposals: SessionDeployProposal[]): SessionDeployFormProposal[] {
+  const selectedIndex = proposals.findIndex((proposal) => proposal.selected)
+  return proposals.map((proposal, index) => ({
+    ...proposal,
+    selected: index === (selectedIndex >= 0 ? selectedIndex : 0),
+  }))
+}
+
+function SessionDeployModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const payload = useMemo(() => permission ? parseSessionDeployPermission(permission) : null, [permission])
+  const [proposals, setProposals] = useState<SessionDeployFormProposal[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open || !payload) return
+    setProposals(sessionDeployInitialProposals(payload.proposals))
+    setLoading(false)
+    setError('')
+  }, [open, payload, permission?.id])
+
+  if (!permission || !payload) return null
+
+  const updateProposal = (id: string, change: Partial<SessionDeployFormProposal>) => {
+    setProposals((current) => current.map((proposal) => proposal.id === id ? { ...proposal, ...change } : proposal))
+    setError('')
+  }
+  const selectedCount = proposals.filter((proposal) => proposal.selected).length
+  const submit = async (action: 'approve' | 'deny') => {
+    if (action === 'deny') {
+      setLoading(true)
+      try { await onResolve('deny', '') } finally { setLoading(false) }
+      return
+    }
+    const selected = proposals.filter((proposal) => proposal.selected)
+    if (selected.length === 0) {
+      setError('Select at least one session to deploy.')
+      return
+    }
+    if (selected.some((proposal) => !proposal.prompt.trim() || !proposal.agentName.trim() || !proposal.workspacePath.trim())) {
+      setError('Every selected session requires a prompt, agent, and workspace.')
+      return
+    }
+    const approvedProposals = proposals.map((proposal) => ({
+      ...proposal.manifest,
+      title: proposal.title.trim(),
+      prompt: proposal.prompt.trim(),
+      mode: proposal.mode,
+      agent_name: proposal.agentName,
+      agent_mode: proposal.agentMode,
+      managed_worktree: proposal.managedWorktree,
+      worktree_base_branch: proposal.worktreeBaseBranch.trim(),
+      worktree_branch: proposal.worktreeBranch.trim(),
+      selected: proposal.selected,
+    }))
+    setLoading(true)
+    try {
+      await onResolve('approve', '', {
+        ...payload.approvedArguments,
+        action: 'deploy',
+        manifest_version: payload.manifestVersion,
+        manifest_digest: payload.manifestDigest,
+        selected_proposal_ids: selected.map((proposal) => proposal.id),
+        proposals: approvedProposals,
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title="Deploy sessions?"
+      subtitle="Review and select the exact local V3 sessions to create and start"
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-[min(100%,calc(100vw-12px))] sm:w-[min(1100px,calc(100vw-48px))]"
+      bodyClassName="overflow-y-auto"
+      footer={<PermissionActionBar loading={loading} onApprove={() => void submit('approve')} onDeny={() => void submit('deny')} approveLabel={selectedCount === 1 ? 'Deploy 1 session' : `Deploy ${selectedCount} sessions`} shortcutHint="Enter deploys selected · Esc denies" />}
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void submit('approve')}
+      onDenyShortcut={() => void submit('deny')}
+      shortcutsDisabled={loading}
+      onRequestClose={() => void submit('deny')}
+    >
+      <div className="grid gap-4">
+        <div className="rounded-2xl border border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_8%,var(--app-surface))] px-4 py-3 text-sm leading-6 text-[var(--app-text-muted)]">
+          One safe default is selected. Check additional proposals to allow more in this batch. Deployment is approved only for this request.
+        </div>
+        {proposals.length === 0 ? <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">No valid deployment proposals were provided.</div> : null}
+        <section className="grid gap-3" aria-label="Session deployment proposals">
+          {proposals.map((proposal, index) => (
+            <article key={proposal.id} className={cn('rounded-2xl border p-4', proposal.selected ? 'border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_6%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface)]')}>
+              <label className="flex cursor-pointer items-start gap-3">
+                <input type="checkbox" checked={proposal.selected} onChange={(event) => updateProposal(proposal.id, { selected: event.target.checked })} className="mt-1 size-4 accent-[var(--app-primary)]" />
+                <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-[var(--app-text)]">Session {index + 1}</span><span className="text-xs text-[var(--app-text-muted)]">{proposal.agentMode === 'primary' ? 'Primary agent' : 'Subagent'} · {proposal.workspaceName || proposal.workspacePath}</span></span>
+              </label>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <SessionDeployField label="Title"><input value={proposal.title} onChange={(event) => updateProposal(proposal.id, { title: event.target.value })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)]" placeholder="New session" /></SessionDeployField>
+                <SessionDeployField label="Mode"><select value={proposal.mode} onChange={(event) => updateProposal(proposal.id, { mode: event.target.value as 'plan' | 'auto' })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)]"><option value="auto">Auto</option><option value="plan">Plan</option></select></SessionDeployField>
+                <SessionDeployField label="Allowed agent"><select value={proposal.agentName} onChange={(event) => { const agent = payload.allowedAgents.find((candidate) => candidate.name === event.target.value); if (agent) updateProposal(proposal.id, { agentName: agent.name, agentMode: agent.mode }) }} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)]">{payload.allowedAgents.map((agent) => <option key={`${agent.mode}:${agent.name}`} value={agent.name}>{agent.name} ({agent.mode})</option>)}</select></SessionDeployField>
+                <SessionDeployField label="Workspace"><input value={proposal.workspacePath} readOnly className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 font-mono text-xs text-[var(--app-text-muted)]" /></SessionDeployField>
+              </div>
+              <SessionDeployField label="Prompt" className="mt-3"><Textarea value={proposal.prompt} onChange={(event) => updateProposal(proposal.id, { prompt: event.target.value })} rows={4} className="min-h-24 resize-y bg-[var(--app-bg-alt)]" /></SessionDeployField>
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <SessionDeployField label="Worktree mode"><select value={proposal.managedWorktree ? 'managed' : 'workspace'} onChange={(event) => updateProposal(proposal.id, { managedWorktree: event.target.value === 'managed' })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)]"><option value="workspace">Use workspace</option><option value="managed">Managed worktree</option></select></SessionDeployField>
+                <SessionDeployField label="Base branch"><input value={proposal.worktreeBaseBranch} disabled={!proposal.managedWorktree} onChange={(event) => updateProposal(proposal.id, { worktreeBaseBranch: event.target.value })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] disabled:opacity-50" placeholder="Current branch" /></SessionDeployField>
+                <SessionDeployField label="Branch suggestion"><input value={proposal.worktreeBranch} disabled={!proposal.managedWorktree} onChange={(event) => updateProposal(proposal.id, { worktreeBranch: event.target.value })} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] disabled:opacity-50" placeholder="Server generated" /></SessionDeployField>
+              </div>
+            </article>
+          ))}
+        </section>
+        {error ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
+      </div>
+    </ModalShell>
+  )
+}
+
+function SessionDeployField({ label, className, children }: { label: string; className?: string; children: React.ReactNode }) {
+  return <label className={cn('grid min-w-0 gap-1.5', className)}><span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{label}</span>{children}</label>
 }
 
 function SessionArchiveModal({
@@ -3173,6 +3309,9 @@ export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
   }
   if (kind === 'session-archive') {
     return <SessionArchiveModal {...props} />
+  }
+  if (kind === 'session-deploy') {
+    return <SessionDeployModal {...props} />
   }
   if (kind === 'ask-user') {
     return <AskUserModal {...props} />
