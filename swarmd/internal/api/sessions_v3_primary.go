@@ -335,6 +335,25 @@ func sessionsV3SystemSidechatID(parentSessionID, kind string) (string, string) {
 	return "system-sidechat-" + strings.ToLower(strings.TrimSpace(kind)) + "-" + hex.EncodeToString(sum[:16]), hex.EncodeToString(sum[:])
 }
 
+func sessionsV3SidechatInt64(value any) int64 {
+	switch typed := value.(type) {
+	case float64:
+		return int64(typed)
+	case int64:
+		return typed
+	case int:
+		return int64(typed)
+	case json.Number:
+		parsed, _ := typed.Int64()
+		return parsed
+	case string:
+		parsed, _ := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+		return parsed
+	default:
+		return 0
+	}
+}
+
 func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Request, principal identity.Principal, parentSessionID, kind string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -350,10 +369,9 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		return
 	}
 	var req struct {
-		PermissionID string          `json:"permission_id"`
-		PlanID       string          `json:"plan_id"`
-		PlanRevision int64           `json:"plan_revision"`
-		Plan         json.RawMessage `json:"plan"`
+		PermissionID string `json:"permission_id"`
+		PlanID       string `json:"plan_id"`
+		PlanRevision int64  `json:"plan_revision"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -365,8 +383,8 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		return
 	}
 	req.PermissionID, req.PlanID = strings.TrimSpace(req.PermissionID), strings.TrimSpace(req.PlanID)
-	if kind == "plan" && (req.PermissionID == "" || req.PlanID == "" || req.PlanRevision <= 0 || len(req.Plan) == 0 || !json.Valid(req.Plan)) {
-		writeError(w, http.StatusBadRequest, errors.New("permission_id, plan_id, positive plan_revision, and valid plan are required for Plan"))
+	if kind == "plan" && (req.PermissionID == "" || req.PlanID == "" || req.PlanRevision <= 0) {
+		writeError(w, http.StatusBadRequest, errors.New("permission_id, plan_id, and positive plan_revision are required for Plan"))
 		return
 	}
 	permissions, err := s.perm.ListPermissions(parentSessionID, 1000)
@@ -375,17 +393,35 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		return
 	}
 	bound := kind == "ai"
+	var planPermission pebblestore.PermissionRecord
 	for _, record := range permissions {
 		toolName := strings.TrimSpace(record.ToolName)
 		status := strings.TrimSpace(record.Status)
 		if strings.TrimSpace(record.ID) == req.PermissionID && (status == pebblestore.PermissionStatusPending || status == pebblestore.PermissionStatusApproved) && (toolName == "exit_plan_mode" || toolName == "plan_manage") {
 			bound = true
+			planPermission = record
 			break
 		}
 	}
 	if !bound {
 		writeError(w, http.StatusBadRequest, errors.New("permission does not belong to parent session"))
 		return
+	}
+	// The permission projection is authoritative until approval. Never attach
+	// client-supplied plan JSON to the reserved agent prompt.
+	var planContext map[string]any
+	if kind == "plan" {
+		if err := json.Unmarshal([]byte(planPermission.ToolArguments), &planContext); err != nil {
+			writeError(w, http.StatusConflict, fmt.Errorf("pending plan proposal payload is invalid: %w", err))
+			return
+		}
+		backendPlanID := strings.TrimSpace(firstNonEmpty(sessionsV3MapString(planContext, "plan_id"), sessionsV3MapString(planContext, "id")))
+		backendRevision := sessionsV3SidechatInt64(planContext["proposal_revision"])
+		if backendPlanID == "" || backendRevision <= 0 || planContext["document"] == nil {
+			writeError(w, http.StatusConflict, errors.New("pending plan proposal is missing plan_id, proposal_revision, or document"))
+			return
+		}
+		req.PlanID, req.PlanRevision = backendPlanID, backendRevision
 	}
 	sidecarID, bindingHash := sessionsV3SystemSidechatID(parentSessionID, kind)
 	clientRequestID := "system-sidechat:" + kind + ":" + bindingHash
@@ -394,7 +430,14 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		parentProfile = pebblestore.AgentProfile{}
 	}
 	profile := agentruntime.PlanSidechatAgentProfileForParent(parentProfile)
-	if kind == "ai" {
+	if kind == "plan" {
+		contextJSON, marshalErr := json.Marshal(planContext)
+		if marshalErr != nil {
+			writeError(w, http.StatusConflict, fmt.Errorf("encode pending plan context: %w", marshalErr))
+			return
+		}
+		profile.Prompt = agentruntime.PlanSidechatAgentPromptWithContext(string(contextJSON))
+	} else {
 		profile = agentruntime.AISidechatAgentProfileForParent(parentProfile)
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
@@ -406,6 +449,7 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 	metadata["system_sidechat"], metadata["system_sidechat_kind"], metadata["settings_locked"] = true, kind, true
 	if kind == "plan" {
 		metadata["plan_permission_id"], metadata["plan_id"], metadata["plan_revision"] = req.PermissionID, req.PlanID, req.PlanRevision
+		metadata["plan_context_source"] = "permission_projection"
 	}
 	metadata["originating_agent_name"] = firstNonEmpty(sessionsV3MetadataString(parent.Metadata, "resolved_agent_name"), sessionsV3MetadataString(parent.Metadata, "agent_name"), parentProfile.Name)
 	metadata["originating_provider"], metadata["originating_model"] = profile.Provider, profile.Model
@@ -439,15 +483,14 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusBadRequest, updateErr)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kind, "session_id": sidecarID, "parent_session_id": parentSessionID, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "provider": profile.Provider, "model": profile.Model, "replayed": updateResult.Replayed})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kind, "session_id": sidecarID, "parent_session_id": parentSessionID, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "provider": profile.Provider, "model": profile.Model, "runtime_swarm_id": sessionsV3MetadataString(parent.Metadata, "swarm_v3_runtime_swarm_id"), "replayed": updateResult.Replayed})
 		return
 	}
 	sidecar := pebblestore.SessionSnapshot{ID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: parent.WorkspacePath, WorkspaceName: parent.WorkspaceName, Title: title, Mode: sessionruntime.ModeAuto, Preference: preference, Metadata: metadata, CreatedAt: now, UpdatedAt: now}
 	payload, _ := json.Marshal(struct {
 		Parent, Permission, Plan string
 		Revision                 int64
-		Context                  json.RawMessage
-	}{parentSessionID, req.PermissionID, req.PlanID, req.PlanRevision, req.Plan})
+	}{parentSessionID, req.PermissionID, req.PlanID, req.PlanRevision})
 	payloadSum := sha256.Sum256(payload)
 	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: hex.EncodeToString(payloadSum[:]), RequestHash: hex.EncodeToString(payloadSum[:]), Kind: sessionruntime.SessionMutationCreateSession, Session: &sidecar, NowUnixMs: now})
 	if err != nil {
@@ -458,7 +501,7 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kind, "session_id": sidecarID, "parent_session_id": parentSessionID, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "originating_agent_name": metadata["originating_agent_name"], "provider": profile.Provider, "model": profile.Model, "replayed": result.Replayed})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kind, "session_id": sidecarID, "parent_session_id": parentSessionID, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "originating_agent_name": metadata["originating_agent_name"], "provider": profile.Provider, "model": profile.Model, "runtime_swarm_id": sessionsV3MetadataString(parent.Metadata, "swarm_v3_runtime_swarm_id"), "replayed": result.Replayed})
 }
 
 func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Request, principal identity.Principal) {

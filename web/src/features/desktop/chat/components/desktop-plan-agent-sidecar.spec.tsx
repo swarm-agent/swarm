@@ -48,12 +48,13 @@ const markup = renderToStaticMarkup(
 
 assert(markup.includes('data-embedded="true"'), "expected integrated plan sidebar");
 assert(
-  markup.includes("Ask me anything about the plan"),
-  "expected automatic plan guidance",
+  markup.includes("Ask about the plan or request changes conversationally"),
+  "expected plan-agent guidance",
 );
 assert(markup.includes("Plan &amp; AI"), "expected persistent tabbed sidebar");
 assert(markup.includes("Use this durable auto-only AI sidechat") === false, "inactive AI content should remain hidden");
 assert(markup.includes("Saved edits update the parent approval card live."), "plan edits should advertise live parent updates");
+assert(markup.includes("Send to Plan"), "idle real session should expose its send control");
 assert(
   !markup.includes("Parent conversation context for this plan review"),
   "raw parent context must not render",

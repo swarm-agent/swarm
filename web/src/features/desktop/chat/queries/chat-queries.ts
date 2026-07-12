@@ -1970,8 +1970,7 @@ export async function ensureSystemSidechat(input: {
   permissionId?: string;
   planId?: string;
   planRevision?: number;
-  plan?: unknown;
-}): Promise<{ sessionId: string; replayed: boolean; originatingAgentName: string; provider: string; model: string }> {
+}): Promise<{ sessionId: string; replayed: boolean; originatingAgentName: string; provider: string; model: string; runtimeSwarmId: string }> {
   const parentSessionId = input.parentSessionId.trim();
   const permissionId = input.permissionId?.trim() ?? "";
   const planId = input.planId?.trim() ?? "";
@@ -1985,6 +1984,7 @@ export async function ensureSystemSidechat(input: {
     originating_agent_name?: string;
     provider?: string;
     model?: string;
+    runtime_swarm_id?: string;
   }>(
     `/v3/sessions/${encodeURIComponent(parentSessionId)}/sidechats/${input.kind}`,
     {
@@ -1994,7 +1994,6 @@ export async function ensureSystemSidechat(input: {
         permission_id: permissionId,
         plan_id: planId,
         plan_revision: planRevision,
-        plan: input.plan,
       } : {}),
     },
   );
@@ -2006,6 +2005,7 @@ export async function ensureSystemSidechat(input: {
     originatingAgentName: String(response.originating_agent_name ?? "").trim(),
     provider: String(response.provider ?? "").trim(),
     model: String(response.model ?? "").trim(),
+    runtimeSwarmId: String(response.runtime_swarm_id ?? "").trim(),
   };
 }
 

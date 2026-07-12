@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bot, Loader2, Sparkles, X } from "lucide-react";
+import { Bot, Loader2, Square, Sparkles, X } from "lucide-react";
 import { Button } from "../../../../components/ui/button";
 import { Textarea } from "../../../../components/ui/textarea";
 import type { DesktopPermissionRecord } from "../../types/realtime";
@@ -8,6 +8,8 @@ import { ChatMarkdown } from "./chat-markdown";
 import { DesktopPlanExecutionSidebar, type DesktopPlanExecutionSidebarProps } from "./desktop-plan-execution-sidebar";
 import { ensureSystemSidechat, fetchSessionMessages, sendSessionMessage, type SystemSidechatKind } from "../queries/chat-queries";
 import type { ChatMessageRecord } from "../types/chat";
+import { stopSessionV3Run } from "../../session-v3/api";
+import { selectRenderedSessionMessages } from "../../state/desktop-v3-cache-selectors";
 import { requireDesktopV3RealtimeControllerReady } from "../../realtime/v3-realtime-controller";
 import { useDesktopV3CacheSelector } from "../../state/desktop-v3-cache-store";
 
@@ -26,11 +28,12 @@ interface SidechatState {
   sessionId: string;
   messages: ChatMessageRecord[];
   modelLabel: string;
+  runtimeSwarmId: string;
   busy: boolean;
   error: string | null;
 }
 
-const EMPTY_SIDECHAT: SidechatState = { sessionId: "", messages: [], modelLabel: "", busy: false, error: null };
+const EMPTY_SIDECHAT: SidechatState = { sessionId: "", messages: [], modelLabel: "", runtimeSwarmId: "", busy: false, error: null };
 
 function pendingProposalRevision(permission: DesktopPermissionRecord | null, document: StructuredPlanDocument | null): number {
   if (permission) {
@@ -70,6 +73,8 @@ export function DesktopPlanAgentSidecar({
     (state) => aiSessionId ? state.messagesBySession[aiSessionId]?.items ?? [] : [],
     (left, right) => left === right,
   );
+  const planRuns = useDesktopV3CacheSelector((state) => planSessionId ? selectRenderedSessionMessages(state, planSessionId).liveRuns : []);
+  const aiRuns = useDesktopV3CacheSelector((state) => aiSessionId ? selectRenderedSessionMessages(state, aiSessionId).liveRuns : []);
 
   useEffect(() => {
     const apply = (kind: SystemSidechatKind, snapshots: typeof planRealtimeMessages) => {
@@ -110,12 +115,11 @@ export function DesktopPlanAgentSidecar({
           permissionId: permission?.id,
           planId: document?.id || permission?.id,
           planRevision: proposalRevision,
-          plan: document,
         });
         if (cancelled) return;
         setSidechats((current) => ({
           ...current,
-          [kind]: { ...current[kind], sessionId: result.sessionId, modelLabel: result.model || modelLabel, busy: false, error: null },
+          [kind]: { ...current[kind], sessionId: result.sessionId, modelLabel: result.model || modelLabel, runtimeSwarmId: result.runtimeSwarmId, busy: false, error: null },
         }));
         const controller = await requireDesktopV3RealtimeControllerReady();
         await controller.ensureSessionConnected(result.sessionId);
@@ -133,10 +137,22 @@ export function DesktopPlanAgentSidecar({
   }, [document, modelLabel, parentSessionId, permission?.id, proposalRevision, refresh]);
 
   const selected = sidechats[activeTab];
+  const selectedRuns = activeTab === "plan" ? planRuns : aiRuns;
+  const activeRun = selectedRuns.find((run) => run.status === "running" || run.status === "pending_executor") ?? null;
   const visibleMessages = useMemo(
     () => selected.messages.filter((message) => message.role === "user" || message.role === "assistant"),
     [selected.messages],
   );
+
+  const stop = async () => {
+    if (!activeRun || !selected.sessionId || !selected.runtimeSwarmId) return;
+    setSidechats((current) => ({ ...current, [activeTab]: { ...current[activeTab], error: null } }));
+    try {
+      await stopSessionV3Run(selected.sessionId, { runId: activeRun.runId, targetSwarmId: selected.runtimeSwarmId });
+    } catch (cause) {
+      setSidechats((current) => ({ ...current, [activeTab]: { ...current[activeTab], error: cause instanceof Error ? cause.message : "Unable to stop run." } }));
+    }
+  };
 
   const send = async () => {
     const content = draft.trim();
@@ -187,11 +203,12 @@ export function DesktopPlanAgentSidecar({
           </div>
           {selected.busy && visibleMessages.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />Opening durable {activeTab === "plan" ? "Plan" : "AI"} sidechat…</div> : null}
           {visibleMessages.map((message) => <div key={message.id} className={message.role === "user" ? "ml-8 rounded-xl bg-[var(--app-surface-hover)] p-3 text-sm" : "mr-4 rounded-xl border border-[var(--app-border)] p-3 text-sm"}><ChatMarkdown content={message.content} /></div>)}
+          {activeRun?.assistantDraft?.content ? <div className="mr-4 rounded-xl border border-[var(--app-border)] p-3 text-sm"><ChatMarkdown content={activeRun.assistantDraft.content} /></div> : null}
           {selected.error ? <div role="alert" className="rounded-lg border border-[var(--app-danger)] p-3 text-sm text-[var(--app-danger)]">{selected.error}</div> : null}
         </div>
         <div className="space-y-2 border-t border-[var(--app-border)] p-4">
           <Textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={activeTab === "plan" ? "Ask about the plan or request changes…" : "Ask AI…"} disabled={selected.busy || !selected.sessionId} />
-          <Button type="button" variant="outline" className="w-full" disabled={selected.busy || !draft.trim() || !selected.sessionId} onClick={() => void send()}>{selected.busy ? "Waiting…" : `Send to ${activeTab === "plan" ? "Plan" : "AI"}`}</Button>
+          {activeRun ? <Button type="button" variant="destructive" className="w-full" disabled={!selected.runtimeSwarmId} onClick={() => void stop()}><Square size={14} /> Stop {activeTab === "plan" ? "Plan" : "AI"}</Button> : <Button type="button" variant="outline" className="w-full" disabled={selected.busy || !draft.trim() || !selected.sessionId} onClick={() => void send()}>{selected.busy ? "Waiting…" : `Send to ${activeTab === "plan" ? "Plan" : "AI"}`}</Button>}
         </div>
       </aside>
     </div>

@@ -29,6 +29,16 @@ func TestPlanSidechatInheritsModelWithoutInheritingCapabilities(t *testing.T) {
 	}
 }
 
+func TestPlanSidechatPromptAttachesAuthoritativePlanContext(t *testing.T) {
+	context := `{"plan_id":"plan-1","proposal_revision":4,"document":{"info":{"goal":"Ship it"}}}`
+	prompt := PlanSidechatAgentPromptWithContext(context)
+	for _, expected := range []string{"Authoritative pending plan context", context, "edit_pending_plan", "expected_revision", "never claim that no plan is available"} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("prompt missing %q: %s", expected, prompt)
+		}
+	}
+}
+
 func TestPlanSidechatIsRestrictedAndHidden(t *testing.T) {
 	profile := PlanSidechatAgentProfile()
 	if profile.Name != PlanSidechatAgentID || profile.Mode != ModeSubagent || !profile.Enabled {

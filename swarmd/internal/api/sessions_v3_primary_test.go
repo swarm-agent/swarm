@@ -50,6 +50,17 @@ func TestSessionsV3SystemSidechatIdentityIsStableAcrossProposalRevisions(t *test
 	}
 }
 
+func TestSessionsV3SidechatRevisionParsing(t *testing.T) {
+	for _, test := range []struct {
+		value any
+		want  int64
+	}{{float64(7), 7}, {json.Number("8"), 8}, {"9", 9}, {nil, 0}} {
+		if got := sessionsV3SidechatInt64(test.value); got != test.want {
+			t.Fatalf("sessionsV3SidechatInt64(%v) = %d, want %d", test.value, got, test.want)
+		}
+	}
+}
+
 func TestSessionsV3PrimaryHandlersDoNotUseRuntimeDispatchOrRoutes(t *testing.T) {
 	body, err := os.ReadFile("sessions_v3_primary.go")
 	if err != nil {
