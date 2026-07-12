@@ -7,6 +7,7 @@ import (
 )
 
 func TestExecutionEpochInitialAndConcurrentBoundaryAreAtomic(t *testing.T) {
+	telemetryBefore := SnapshotExecutionEpochTelemetry()
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	created, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "epoch-session", UserID: "user", AccountScopeID: "account", IdempotencyKey: "create", RequestHash: "create-hash", Kind: V3SessionMutationCreateSession, Session: &SessionSnapshot{ID: "epoch-session", WorkspacePath: "/workspace", WorkspaceName: "workspace"}, NowUnixMs: 100})
@@ -44,6 +45,13 @@ func TestExecutionEpochInitialAndConcurrentBoundaryAreAtomic(t *testing.T) {
 	if projection.LastEventSeq != 2 { t.Fatalf("last root seq = %d, want 2", projection.LastEventSeq) }
 	events, err := sessions.ListV3SessionEvents("epoch-session", 0, 10)
 	if err != nil || len(events) != 2 || events[1].EventType != ExecutionEpochBoundaryEventType { t.Fatalf("events=%+v err=%v", events, err) }
+	telemetryAfter := SnapshotExecutionEpochTelemetry()
+	if telemetryAfter.BoundaryCalls-telemetryBefore.BoundaryCalls != workers {
+		t.Fatalf("boundary telemetry calls = %d, want %d", telemetryAfter.BoundaryCalls-telemetryBefore.BoundaryCalls, workers)
+	}
+	if telemetryAfter.PointReads <= telemetryBefore.PointReads || telemetryAfter.DecodeCalls <= telemetryBefore.DecodeCalls || telemetryAfter.BatchCommits <= telemetryBefore.BatchCommits {
+		t.Fatalf("epoch telemetry did not observe point read/decode/batch: before=%+v after=%+v", telemetryBefore, telemetryAfter)
+	}
 }
 
 func TestExecutionEpochTracksRangeSealsAndRepairsBoundedIndex(t *testing.T) {

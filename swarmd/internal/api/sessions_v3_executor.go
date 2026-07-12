@@ -1261,7 +1261,9 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	} else {
 		sink = newSessionV3DurableProgressSink(e, job, cancelStream)
 	}
+	providerStart := time.Now()
 	loopResult, err := e.runProviderToolLoop(streamCtx, job, resolved, runner, baseReq, sink)
+	pebblestore.ObserveExecutionEpochProviderSend(providerStart)
 	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer flushCancel()
 	closeErr := sink.CloseAndFlush(flushCtx)
@@ -2642,6 +2644,8 @@ func (e *sessionV3Executor) sessionV3ProviderCheckpointRestartInput(ctx context.
 }
 
 func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3ExecutorJob) ([]pebblestore.MessageSnapshot, error) {
+	recoveryStart := time.Now()
+	defer pebblestore.ObserveExecutionEpochRecovery(recoveryStart)
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return nil, errors.New("v3 executor is not configured")
 	}
@@ -2667,7 +2671,9 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 	if afterSeq > 0 {
 		afterSeq--
 	}
+	iteratorStart := time.Now()
 	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, afterSeq, 500)
+	pebblestore.ObserveExecutionEpochIterator(iteratorStart, len(messages))
 	if err != nil {
 		return nil, err
 	}

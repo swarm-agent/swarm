@@ -125,7 +125,9 @@ func NewInitialExecutionEpoch(sessionID, userID, accountScopeID string, firstSeq
 }
 
 func setExecutionEpochInBatch(batch *pebble.Batch, epoch ExecutionEpoch, active bool) error {
+	encodeStart := time.Now()
 	payload, err := json.Marshal(epoch)
+	observeExecutionEpochEncode(encodeStart)
 	if err != nil {
 		return fmt.Errorf("marshal execution epoch: %w", err)
 	}
@@ -142,14 +144,30 @@ func setExecutionEpochInBatch(batch *pebble.Batch, epoch ExecutionEpoch, active 
 }
 
 func (s *SessionStore) GetExecutionEpoch(sessionID, epochID string) (ExecutionEpoch, bool, error) {
-	var epoch ExecutionEpoch
-	ok, err := s.store.GetJSON(KeyExecutionEpoch(strings.TrimSpace(sessionID), strings.TrimSpace(epochID)), &epoch)
-	return epoch, ok, err
+	return s.getExecutionEpochByKey(KeyExecutionEpoch(strings.TrimSpace(sessionID), strings.TrimSpace(epochID)))
 }
 func (s *SessionStore) GetActiveExecutionEpoch(sessionID string) (ExecutionEpoch, bool, error) {
+	return s.getExecutionEpochByKey(KeyExecutionEpochActive(strings.TrimSpace(sessionID)))
+}
+
+func (s *SessionStore) getExecutionEpochByKey(key string) (ExecutionEpoch, bool, error) {
 	var epoch ExecutionEpoch
-	ok, err := s.store.GetJSON(KeyExecutionEpochActive(strings.TrimSpace(sessionID)), &epoch)
-	return epoch, ok, err
+	readStart := time.Now()
+	payload, ok, err := s.store.GetBytes(key)
+	observeExecutionEpochPointRead(readStart)
+	if err != nil {
+		return epoch, false, fmt.Errorf("get json key %q: %w", key, err)
+	}
+	if !ok {
+		return epoch, false, nil
+	}
+	decodeStart := time.Now()
+	err = json.Unmarshal(payload, &epoch)
+	observeExecutionEpochDecode(decodeStart)
+	if err != nil {
+		return ExecutionEpoch{}, false, fmt.Errorf("unmarshal json key %q: %w", key, err)
+	}
+	return epoch, true, nil
 }
 
 // SealExecutionEpoch closes the named epoch at the durable root sequence high
@@ -242,6 +260,8 @@ func (s *SessionStore) RepairActiveExecutionEpoch(sessionID, epochID string) (Ex
 }
 
 func (s *SessionStore) BeginExecutionEpoch(input BeginExecutionEpochInput) (BeginExecutionEpochResult, error) {
+	boundaryStart := time.Now()
+	defer observeExecutionEpochBoundary(boundaryStart)
 	input.SessionID = strings.TrimSpace(input.SessionID)
 	input.AccountScopeID = strings.TrimSpace(input.AccountScopeID)
 	input.ClientRequestID = strings.TrimSpace(input.ClientRequestID)
@@ -401,7 +421,10 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 			return BeginExecutionEpochResult{}, err
 		}
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	commitStart := time.Now()
+	err = batch.Commit(pebble.Sync)
+	observeExecutionEpochBatchCommit(commitStart)
+	if err != nil {
 		return BeginExecutionEpochResult{}, err
 	}
 	committed = true
