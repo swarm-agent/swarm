@@ -163,12 +163,13 @@ func (s *SessionStore) SearchV3Sessions(options V3SessionSearchOptions) (result 
 	if err != nil {
 		return V3SessionSearchResult{}, err
 	}
+	metrics, err := v3LibraryMetricsFromReader(snapshot)
+	if err != nil {
+		return V3SessionSearchResult{}, err
+	}
 	filtered := result.Items[:0]
 	for i := range result.Items {
-		_, err = getJSONFromReader(snapshot, keyV3SessionLibraryMetricFor(result.Items[i].ID), &result.Items[i].LibraryMetric)
-		if err != nil {
-			return V3SessionSearchResult{}, err
-		}
+		result.Items[i].LibraryMetric = metrics[result.Items[i].ID]
 		result.Items[i].Attention, err = v3SessionAttentionFromReader(snapshot, result.Items[i].ID)
 		if err != nil {
 			return V3SessionSearchResult{}, err

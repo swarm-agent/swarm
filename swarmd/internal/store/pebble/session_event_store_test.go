@@ -417,7 +417,7 @@ func appendV3SessionMessageForStoreTest(t *testing.T, sessions *SessionStore, se
 	return result
 }
 
-func openV3SessionEventTestStore(t *testing.T) *Store {
+func openV3SessionEventTestStore(t testing.TB) *Store {
 	t.Helper()
 	store, err := Open(filepath.Join(t.TempDir(), "v3-sessions.pebble"))
 	if err != nil {

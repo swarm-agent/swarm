@@ -466,6 +466,10 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 	if len(normalizedIDs) == 0 {
 		return errors.New("at least one session id is required")
 	}
+	unlockSessions := s.store.sessionMutations.lockSessions(normalizedIDs...)
+	defer unlockSessions()
+	s.store.sessionMutations.libraryRepairMu.RLock()
+	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
 
 	existingByID := make(map[string]SessionSnapshot, len(normalizedIDs))
 	for _, sessionID := range normalizedIDs {
@@ -480,19 +484,33 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 		}
 	}
 
+	writeCount := 0
+	for _, sessionID := range normalizedIDs {
+		if existingByID[sessionID].ID != "" {
+			writeCount++
+		}
+	}
+	var reservedOutbox []uint64
+	reservationCommitted := false
+	if writeCount > 0 {
+		var err error
+		reservedOutbox, err = s.store.sessionMutations.reserveOutbox(s.store, writeCount)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if !reservationCommitted {
+				s.store.sessionMutations.abandonOutbox(reservedOutbox)
+			}
+		}()
+	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	currentOutboxSeq, err := s.readV3RealtimeOutboxSequence()
-	if err != nil {
-		return err
-	}
-	endpointSeq := currentOutboxSeq
-	removed := make(map[string]struct{}, len(normalizedIDs))
+	outboxIndex := 0
 	for _, sessionID := range normalizedIDs {
 		existing := existingByID[sessionID]
 		if existing.ID != "" {
 			if kind == "deleted" {
-				removed[sessionID] = struct{}{}
 				if err := s.purgeSessionContentInBatch(batch, existing); err != nil {
 					return err
 				}
@@ -509,7 +527,8 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 				return err
 			}
 			seq := currentSeq + 1
-			endpointSeq++
+			endpointSeq := reservedOutbox[outboxIndex]
+			outboxIndex++
 			now := time.Now().UnixMilli()
 			tombstone := V3SessionTombstone{
 				SessionID:      existing.ID,
@@ -581,8 +600,16 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 				if err := s.transitionV3SessionSearchLifecycleInBatch(batch, s.store.db, existing, true); err != nil {
 					return err
 				}
-			} else if err := removeV3SessionSearchIndexInBatch(batch, s.store.db, sessionID); err != nil {
-				return err
+				if err := s.updateV3SessionLibraryMetricInBatch(batch, existing, nil, true, false); err != nil {
+					return err
+				}
+			} else {
+				if err := removeV3SessionSearchIndexInBatch(batch, s.store.db, sessionID); err != nil {
+					return err
+				}
+				if err := s.updateV3SessionLibraryMetricInBatch(batch, existing, nil, false, true); err != nil {
+					return err
+				}
 			}
 		}
 		if err := batch.Delete([]byte(KeySession(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
@@ -611,17 +638,11 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 			}
 		}
 	}
-	if endpointSeq != currentOutboxSeq {
-		if err := batch.Set([]byte(KeyV3RealtimeOutboxSequence()), uint64ToBytes(endpointSeq), nil); err != nil {
-			return err
-		}
-	}
-	if kind == "deleted" {
-		if err := s.rebuildV3SessionLibraryIndexInBatch(batch, nil, nil, removed); err != nil {
-			return err
-		}
-	}
 	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	reservationCommitted = true
+	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
 		return err
 	}
 	v3SuccessfulBatchOperations.Add(1)

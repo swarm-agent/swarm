@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	v3SessionLibraryIndexVersion = 1
+	v3SessionLibraryIndexVersion = 2
 	keyV3SessionLibraryMeta      = "v3/session_library/meta"
 	keyV3SessionLibraryMetric    = "v3/session_library/metric/"
-	keyV3SessionLibrarySummary   = "v3/session_library/summary/"
+	keyV3SessionLibrarySummary   = "v3/session_library/summary/" // v1 repair cleanup only
 )
 
 type V3SessionLibraryMetric struct {
@@ -26,6 +26,13 @@ type V3SessionLibraryMetric struct {
 	ConversationUpdatedAt int64  `json:"conversation_updated_at"`
 	ConversationBytes     int64  `json:"conversation_logical_bytes"`
 	ConversationSessions  int    `json:"conversation_session_count"`
+
+	// Scope and lifecycle fields make every metric a self-contained contribution
+	// that can be folded into exact summaries from a consistent snapshot.
+	AccountScopeID string `json:"account_scope_id,omitempty"`
+	UserID         string `json:"user_id,omitempty"`
+	WorkspacePath  string `json:"workspace_path,omitempty"`
+	Archived       bool   `json:"archived,omitempty"`
 }
 
 type V3SessionLibrarySummary struct {
@@ -98,9 +105,19 @@ func (s *SessionStore) ensureV3SessionLibraryIndex() error {
 	} else if ok && meta.Version == v3SessionLibraryIndexVersion {
 		return nil
 	}
+
+	// A versioned repair is the only full-library rewrite. Exclude live incremental
+	// writers for the scan plus atomic replacement so it cannot erase their rows.
+	s.store.sessionMutations.libraryRepairMu.Lock()
+	defer s.store.sessionMutations.libraryRepairMu.Unlock()
+	if ok, err := s.store.GetJSON(keyV3SessionLibraryMeta, &meta); err != nil {
+		return err
+	} else if ok && meta.Version == v3SessionLibraryIndexVersion {
+		return nil
+	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	if err := s.rebuildV3SessionLibraryIndexInBatch(batch, nil, nil, nil); err != nil {
+	if err := s.rebuildV3SessionLibraryIndexInBatch(batch); err != nil {
 		return err
 	}
 	payload, _ := json.Marshal(v3SessionLibraryIndexMeta{Version: v3SessionLibraryIndexVersion})
@@ -110,16 +127,15 @@ func (s *SessionStore) ensureV3SessionLibraryIndex() error {
 	return batch.Commit(pebble.Sync)
 }
 
-func (s *SessionStore) rebuildV3SessionLibraryIndexInBatch(batch *pebble.Batch, override *SessionSnapshot, appended *MessageSnapshot, removed map[string]struct{}) error {
+// rebuildV3SessionLibraryIndexInBatch is reserved for versioned backfill/repair.
+func (s *SessionStore) rebuildV3SessionLibraryIndexInBatch(batch *pebble.Batch) error {
 	entries := map[string]v3LibrarySession{}
 	if err := iteratePrefixFromReader(s.store.db, SessionPrefix(), sessionRecentIndexScanLimit(), func(_ string, value []byte) error {
 		var session SessionSnapshot
 		if err := json.Unmarshal(value, &session); err != nil {
 			return err
 		}
-		if _, excluded := removed[session.ID]; !excluded {
-			entries[session.ID] = v3LibrarySession{session: normalizeSessionOwnership(session)}
-		}
+		entries[session.ID] = v3LibrarySession{session: normalizeSessionOwnership(session)}
 		return nil
 	}); err != nil {
 		return err
@@ -130,16 +146,11 @@ func (s *SessionStore) rebuildV3SessionLibraryIndexInBatch(batch *pebble.Batch, 
 			return err
 		}
 		if tombstone.Archived && !tombstone.Deleted {
-			if _, excluded := removed[tombstone.Session.ID]; !excluded {
-				entries[tombstone.Session.ID] = v3LibrarySession{session: normalizeSessionOwnership(tombstone.Session), archived: true}
-			}
+			entries[tombstone.Session.ID] = v3LibrarySession{session: normalizeSessionOwnership(tombstone.Session), archived: true}
 		}
 		return nil
 	}); err != nil {
 		return err
-	}
-	if override != nil {
-		entries[override.ID] = v3LibrarySession{session: normalizeSessionOwnership(*override)}
 	}
 	if err := batch.DeleteRange([]byte(keyV3SessionLibraryMetric), []byte(keyV3SessionLibraryMetric+"\xff"), nil); err != nil {
 		return err
@@ -147,93 +158,131 @@ func (s *SessionStore) rebuildV3SessionLibraryIndexInBatch(batch *pebble.Batch, 
 	if err := batch.DeleteRange([]byte(keyV3SessionLibrarySummary), []byte(keyV3SessionLibrarySummary+"\xff"), nil); err != nil {
 		return err
 	}
-
-	snapshots := make(map[string]SessionSnapshot, len(entries))
 	for id, entry := range entries {
-		snapshots[id] = entry.session
-	}
-	lineage := ResolveV3SessionLineage(snapshots)
-	rootUpdated := map[string]int64{}
-	rootBytes := map[string]int64{}
-	rootSessions := map[string]int{}
-	for id, entry := range entries {
-		var previous V3SessionLibraryMetric
-		_, _ = getJSONFromReader(s.store.db, keyV3SessionLibraryMetricFor(id), &previous)
-		logicalBytes := previous.LogicalBytes
-		if logicalBytes == 0 {
-			_ = scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: V3SessionMessagePrefix(id), Limit: sessionRecentIndexScanLimit()}, func(_ string, value []byte) (bool, error) { logicalBytes += int64(len(value)); return true, nil })
-		}
-		if appended != nil && appended.SessionID == id {
-			if payload, err := json.Marshal(appended); err == nil {
-				logicalBytes += int64(len(payload))
-			}
-		}
-		entry.bytes = logicalBytes
-		entries[id] = entry
-		root := lineage[id].RootSessionID
-		rootBytes[root] += logicalBytes
-		rootSessions[root]++
-		if entry.session.UpdatedAt > rootUpdated[root] {
-			rootUpdated[root] = entry.session.UpdatedAt
-		}
-	}
-	for id := range entries {
-		metric := lineage[id]
-		metric.LogicalBytes = entries[id].bytes
-		metric.ConversationUpdatedAt = rootUpdated[metric.RootSessionID]
-		metric.ConversationBytes = rootBytes[metric.RootSessionID]
-		metric.ConversationSessions = rootSessions[metric.RootSessionID]
-		lineage[id] = metric
-		payload, _ := json.Marshal(metric)
-		if err := batch.Set([]byte(keyV3SessionLibraryMetricFor(id)), payload, nil); err != nil {
+		var logicalBytes int64
+		if err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: V3SessionMessagePrefix(id), Limit: sessionRecentIndexScanLimit()}, func(_ string, value []byte) (bool, error) {
+			logicalBytes += int64(len(value))
+			return true, nil
+		}); err != nil {
 			return err
 		}
-	}
-
-	type scopeKey struct{ account, user, workspace string }
-	summaries := map[scopeKey]*V3SessionLibrarySummary{}
-	roots := map[scopeKey]map[string]bool{}
-	archivedRoots := map[scopeKey]map[string]bool{}
-	for id, entry := range entries {
-		metric := lineage[id]
-		for _, workspace := range []string{"", entry.session.WorkspacePath} {
-			key := scopeKey{entry.session.AccountScopeID, entry.session.UserID, workspace}
-			if summaries[key] == nil {
-				summaries[key] = &V3SessionLibrarySummary{}
-				roots[key] = map[string]bool{}
-				archivedRoots[key] = map[string]bool{}
-			}
-			summary := summaries[key]
-			summary.RawSessionCount++
-			summary.LogicalContentBytes += entry.bytes
-			if metric.ParentSessionID != "" {
-				summary.AgentChildCount++
-			}
-			if entry.archived {
-				archivedRoots[key][metric.RootSessionID] = true
-			} else {
-				roots[key][metric.RootSessionID] = true
-			}
-		}
-	}
-	for key, summary := range summaries {
-		summary.ActiveConversationCount = len(roots[key])
-		summary.ArchivedConversationCount = len(archivedRoots[key])
-		payload, _ := json.Marshal(summary)
-		if err := batch.Set([]byte(keyV3SessionLibrarySummaryFor(key.account, key.user, key.workspace)), payload, nil); err != nil {
+		metric := v3LibraryBaseMetric(entry.session, logicalBytes, entry.archived)
+		payload, _ := json.Marshal(metric)
+		if err := batch.Set([]byte(keyV3SessionLibraryMetricFor(id)), payload, nil); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+func v3LibraryBaseMetric(session SessionSnapshot, logicalBytes int64, archived bool) V3SessionLibraryMetric {
+	session = normalizeSessionOwnership(session)
+	return V3SessionLibraryMetric{
+		SessionID: session.ID, ParentSessionID: v3LibraryMetadataString(session.Metadata, "parent_session_id"),
+		RootSessionID: session.ID, LineageKind: v3LibraryMetadataString(session.Metadata, "lineage_kind"),
+		UpdatedAt: session.UpdatedAt, LogicalBytes: logicalBytes, AccountScopeID: session.AccountScopeID,
+		UserID: session.UserID, WorkspacePath: session.WorkspacePath, Archived: archived,
+	}
+}
+
+// updateV3SessionLibraryMetricInBatch changes exactly one session contribution.
+// Per-session mutation locking prevents lost byte increments; disjoint sessions
+// write disjoint keys and may enter Pebble's commit pipeline concurrently.
+func (s *SessionStore) updateV3SessionLibraryMetricInBatch(batch *pebble.Batch, session SessionSnapshot, appended *MessageSnapshot, archived, deleted bool) error {
+	key := keyV3SessionLibraryMetricFor(session.ID)
+	if deleted {
+		return batch.Delete([]byte(key), nil)
+	}
+	var previous V3SessionLibraryMetric
+	_, err := getJSONFromReader(s.store.db, key, &previous)
+	if err != nil {
+		return err
+	}
+	logicalBytes := previous.LogicalBytes
+	if appended != nil {
+		payload, err := json.Marshal(appended)
+		if err != nil {
+			return err
+		}
+		logicalBytes += int64(len(payload))
+	}
+	metric := v3LibraryBaseMetric(session, logicalBytes, archived)
+	payload, err := json.Marshal(metric)
+	if err != nil {
+		return err
+	}
+	return batch.Set([]byte(key), payload, nil)
+}
+
+func v3LibraryMetricsFromReader(reader pebble.Reader) (map[string]V3SessionLibraryMetric, error) {
+	metrics := map[string]V3SessionLibraryMetric{}
+	err := iteratePrefixFromReader(reader, keyV3SessionLibraryMetric, sessionRecentIndexScanLimit(), func(_ string, value []byte) error {
+		var metric V3SessionLibraryMetric
+		if err := json.Unmarshal(value, &metric); err != nil {
+			return err
+		}
+		metrics[metric.SessionID] = metric
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Resolve current lineage from contribution rows, so parent metadata changes
+	// immediately affect descendants without rewriting unrelated session rows.
+	for id, metric := range metrics {
+		metric.RootSessionID, metric.UnlinkedChild = id, false
+		if metric.ParentSessionID != "" {
+			seen, cursor := map[string]bool{id: true}, metric.ParentSessionID
+			for cursor != "" {
+				if seen[cursor] {
+					metric.UnlinkedChild = true
+					break
+				}
+				seen[cursor] = true
+				ancestor, ok := metrics[cursor]
+				if !ok {
+					metric.UnlinkedChild = true
+					break
+				}
+				metric.RootSessionID = cursor
+				cursor = ancestor.ParentSessionID
+			}
+		}
+		metrics[id] = metric
+	}
+	type aggregate struct {
+		bytes    int64
+		sessions int
+		updated  int64
+	}
+	aggregates := map[string]aggregate{}
+	for _, metric := range metrics {
+		a := aggregates[metric.RootSessionID]
+		a.bytes += metric.LogicalBytes
+		a.sessions++
+		if metric.UpdatedAt > a.updated {
+			a.updated = metric.UpdatedAt
+		}
+		aggregates[metric.RootSessionID] = a
+	}
+	for id, metric := range metrics {
+		a := aggregates[metric.RootSessionID]
+		metric.ConversationBytes, metric.ConversationSessions, metric.ConversationUpdatedAt = a.bytes, a.sessions, a.updated
+		metrics[id] = metric
+	}
+	return metrics, nil
+}
+
 func (s *SessionStore) GetV3SessionLibraryMetric(sessionID string) (V3SessionLibraryMetric, bool, error) {
 	if err := s.ensureV3SessionLibraryIndex(); err != nil {
 		return V3SessionLibraryMetric{}, false, err
 	}
-	var metric V3SessionLibraryMetric
-	ok, err := getJSONFromReader(s.store.db, keyV3SessionLibraryMetricFor(sessionID), &metric)
-	return metric, ok, err
+	metrics, err := v3LibraryMetricsFromReader(s.store.db)
+	if err != nil {
+		return V3SessionLibraryMetric{}, false, err
+	}
+	metric, ok := metrics[sessionID]
+	return metric, ok, nil
 }
 
 func (s *SessionStore) v3SessionLibrarySummary(reader pebble.Reader, options V3SessionSearchOptions) (V3SessionLibrarySummary, error) {
@@ -244,7 +293,28 @@ func (s *SessionStore) v3SessionLibrarySummary(reader pebble.Reader, options V3S
 	if !options.Global && len(options.WorkspacePaths) == 1 {
 		workspace = options.WorkspacePaths[0]
 	}
+	metrics, err := v3LibraryMetricsFromReader(reader)
+	if err != nil {
+		return V3SessionLibrarySummary{}, err
+	}
 	var summary V3SessionLibrarySummary
-	_, err := getJSONFromReader(reader, keyV3SessionLibrarySummaryFor(options.AccountScopeID, options.UserID, workspace), &summary)
-	return summary, err
+	activeRoots, archivedRoots := map[string]bool{}, map[string]bool{}
+	for _, metric := range metrics {
+		if metric.AccountScopeID != options.AccountScopeID || metric.UserID != options.UserID || (workspace != "" && metric.WorkspacePath != workspace) {
+			continue
+		}
+		summary.RawSessionCount++
+		summary.LogicalContentBytes += metric.LogicalBytes
+		if metric.ParentSessionID != "" {
+			summary.AgentChildCount++
+		}
+		if metric.Archived {
+			archivedRoots[metric.RootSessionID] = true
+		} else {
+			activeRoots[metric.RootSessionID] = true
+		}
+	}
+	summary.ActiveConversationCount = len(activeRoots)
+	summary.ArchivedConversationCount = len(archivedRoots)
+	return summary, nil
 }

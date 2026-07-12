@@ -13,8 +13,9 @@ import (
 )
 
 type Store struct {
-	db   *pebble.DB
-	path string
+	db               *pebble.DB
+	path             string
+	sessionMutations *sessionMutationCoordinator
 }
 
 func Open(path string) (*Store, error) {
@@ -33,7 +34,7 @@ func openWithOptions(path string, opts *pebble.Options) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open pebble db: %w", err)
 	}
-	return &Store{db: db, path: path}, nil
+	return &Store{db: db, path: path, sessionMutations: newSessionMutationCoordinator()}, nil
 }
 
 func (s *Store) Close() error {

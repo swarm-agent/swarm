@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,10 +44,7 @@ const (
 	v3RunStateIndexMigrationKey = "meta/migrations/v3-run-state-index-v1"
 )
 
-var (
-	ErrV3IdempotencyConflict = errors.New("v3 session idempotency conflict")
-	v3SessionMutationMu      sync.Mutex
-)
+var ErrV3IdempotencyConflict = errors.New("v3 session idempotency conflict")
 
 type V3SessionMutationInput struct {
 	SessionID            string                    `json:"session_id"`
@@ -489,8 +485,8 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		return V3SessionMutationResult{}, err
 	}
 
-	v3SessionMutationMu.Lock()
-	defer v3SessionMutationMu.Unlock()
+	unlockSession := s.store.sessionMutations.lockSessions(input.SessionID)
+	defer unlockSession()
 
 	idempotencyKey := KeyV3SessionOperationIdempotency(input.AccountScopeID, input.SessionID, input.Kind, input.ClientRequestID)
 	if existing, ok, err := s.getV3SessionIdempotencyRecordByKey(idempotencyKey); err != nil {
@@ -517,6 +513,10 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		return result, nil
 	}
 
+	// Live metric maintenance uses disjoint per-session keys. A shared repair
+	// lock excludes only the versioned full backfill, not unrelated commits.
+	s.store.sessionMutations.libraryRepairMu.RLock()
+	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
 	return s.applyFreshV3SessionMutation(input, idempotencyKey)
 }
 
@@ -542,12 +542,18 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			Actual:    currentSeq,
 		}
 	}
-	currentOutboxSeq, err := s.readV3RealtimeOutboxSequence()
+	reservedOutbox, err := s.store.sessionMutations.reserveOutbox(s.store, 1)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	reservationCommitted := false
+	defer func() {
+		if !reservationCommitted {
+			s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		}
+	}()
 	seq := currentSeq + 1
-	endpointSeq := currentOutboxSeq + 1
+	endpointSeq := reservedOutbox[0]
 	now := input.NowUnixMs
 	if now == 0 {
 		now = time.Now().UnixMilli()
@@ -690,9 +696,6 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err := batch.Set([]byte(KeyV3SessionEvent(input.SessionID, seq)), eventPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	if err := batch.Set([]byte(KeyV3RealtimeOutboxSequence()), uint64ToBytes(endpointSeq), nil); err != nil {
-		return V3SessionMutationResult{}, err
-	}
 	if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), realtimeOutboxPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -734,7 +737,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if messageProvided {
 			appendedMessage = &message
 		}
-		if err := s.rebuildV3SessionLibraryIndexInBatch(batch, &session, appendedMessage, nil); err != nil {
+		if err := s.updateV3SessionLibraryMetricInBatch(batch, session, appendedMessage, false, false); err != nil {
 			return V3SessionMutationResult{}, err
 		}
 	}
@@ -820,7 +823,14 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err := batch.Set([]byte(idempotencyStoreKey), idempotencyPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	if hook := s.store.sessionMutations.beforeDurableCommit; hook != nil {
+		hook(input.SessionID)
+	}
 	if err := batch.Commit(pebble.Sync); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	reservationCommitted = true
+	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
 		return V3SessionMutationResult{}, err
 	}
 	v3SuccessfulFreshMutations.Add(1)
@@ -1465,6 +1475,13 @@ func (s *SessionStore) CurrentV3RealtimeOutboxCursor() (string, error) {
 }
 
 func (s *SessionStore) ListV3RealtimeOutboxAfter(afterEndpointSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
+	publishedHead, err := s.readV3RealtimeOutboxSequence()
+	if err != nil {
+		return nil, err
+	}
+	if afterEndpointSeq >= publishedHead {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
 	if limit <= 0 {
 		limit = 500
 	}
@@ -1473,10 +1490,13 @@ func (s *SessionStore) ListV3RealtimeOutboxAfter(afterEndpointSeq uint64, limit 
 	}
 	out := make([]V3RealtimeOutboxRecord, 0, limit)
 	prefix := V3RealtimeOutboxPrefix()
-	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutbox(afterEndpointSeq + 1), Limit: limit}, func(_ string, value []byte) (bool, error) {
+	err = scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutbox(afterEndpointSeq + 1), Limit: limit}, func(_ string, value []byte) (bool, error) {
 		var record V3RealtimeOutboxRecord
 		if err := json.Unmarshal(value, &record); err != nil {
 			return false, err
+		}
+		if record.EndpointSeq > publishedHead {
+			return false, nil
 		}
 		if record.EndpointSeq <= afterEndpointSeq {
 			return true, nil
@@ -1528,12 +1548,22 @@ func (s *SessionStore) ListV3RealtimeOutboxForAuthScopeAfter(accountScopeID, use
 }
 
 func (s *SessionStore) listV3RealtimeOutboxForExactAuthScopeAfter(accountScopeID, userID string, afterEndpointSeq uint64, limit int) ([]V3RealtimeOutboxRecord, error) {
+	publishedHead, err := s.readV3RealtimeOutboxSequence()
+	if err != nil {
+		return nil, err
+	}
+	if afterEndpointSeq >= publishedHead {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
 	out := make([]V3RealtimeOutboxRecord, 0, limit)
 	prefix := V3RealtimeOutboxByAuthScopePrefix(accountScopeID, userID)
-	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutboxByAuthScope(accountScopeID, userID, afterEndpointSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
+	err = scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutboxByAuthScope(accountScopeID, userID, afterEndpointSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
 		record, err := s.resolveV3RealtimeOutboxValue(value)
 		if err != nil {
 			return false, err
+		}
+		if record.EndpointSeq > publishedHead {
+			return false, nil
 		}
 		if record.EndpointSeq <= afterEndpointSeq {
 			return true, nil
@@ -1552,6 +1582,13 @@ func (s *SessionStore) ListV3RealtimeOutboxForSessionAfterEndpoint(sessionID str
 	if sessionID == "" {
 		return nil, errors.New("session id is required")
 	}
+	publishedHead, err := s.readV3RealtimeOutboxSequence()
+	if err != nil {
+		return nil, err
+	}
+	if afterEndpointSeq >= publishedHead {
+		return []V3RealtimeOutboxRecord{}, nil
+	}
 	if limit <= 0 {
 		limit = 500
 	}
@@ -1560,10 +1597,13 @@ func (s *SessionStore) ListV3RealtimeOutboxForSessionAfterEndpoint(sessionID str
 	}
 	out := make([]V3RealtimeOutboxRecord, 0, limit)
 	prefix := V3RealtimeOutboxBySessionEndpointPrefix(sessionID)
-	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutboxBySessionEndpoint(sessionID, afterEndpointSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
+	err = scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: KeyV3RealtimeOutboxBySessionEndpoint(sessionID, afterEndpointSeq+1), Limit: limit}, func(_ string, value []byte) (bool, error) {
 		record, err := s.resolveV3RealtimeOutboxValue(value)
 		if err != nil {
 			return false, err
+		}
+		if record.EndpointSeq > publishedHead {
+			return false, nil
 		}
 		if record.EndpointSeq <= afterEndpointSeq || record.SessionID != sessionID {
 			return true, nil
