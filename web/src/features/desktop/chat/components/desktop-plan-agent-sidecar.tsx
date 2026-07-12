@@ -14,6 +14,7 @@ import {
   useDesktopV3StickyBottomScroll,
 } from "./desktop-v3-existing-conversation-pane";
 import { stopSessionV3Run } from "../../session-v3/api";
+import { DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME } from "./desktop-v3-agentic-composer";
 import { selectRenderedSessionMessages } from "../../state/desktop-v3-cache-selectors";
 import { requireDesktopV3RealtimeControllerReady } from "../../realtime/v3-realtime-controller";
 import { useDesktopV3CacheSelector } from "../../state/desktop-v3-cache-store";
@@ -275,9 +276,10 @@ export function DesktopPlanAgentSidecar({
           </div>
           {!isAtBottom && hasUnseenLatest ? <button type="button" aria-label="Jump to latest Plan message" title="Jump to latest Plan message" onClick={() => scrollToBottom("smooth")} className="absolute bottom-3 right-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] shadow-lg"><ArrowDown size={18} aria-hidden="true" /></button> : null}
         </div>
-        <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] p-4" data-testid="desktop-plan-composer">
-          <div className="relative min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
-            <div className="flex min-w-0 items-end gap-3 px-4 py-2 sm:py-3 lg:py-2.5">
+        <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-plan-composer">
+          <div className={DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME}>
+            <div className="relative min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
+              <div className="flex min-w-0 items-end gap-3 px-4 py-2 sm:py-3 lg:py-2.5">
               <Textarea
                 ref={textareaRef}
                 value={draft}
@@ -293,8 +295,8 @@ export function DesktopPlanAgentSidecar({
                 rows={1}
                 disabled={sidechat.busy || !sidechat.sessionId}
               />
-            </div>
-            <div className="flex items-center justify-end gap-2 border-t border-[var(--app-border)] px-4 py-2">
+              </div>
+              <div className="flex items-center justify-end gap-2 border-t border-[var(--app-border)] px-4 py-2">
               <button
                 type="button"
                 onClick={toggleDictation}
@@ -307,6 +309,7 @@ export function DesktopPlanAgentSidecar({
               <Button type="button" size="sm" className="h-10 w-10 shrink-0 rounded-xl p-0" disabled={activeRun ? !sidechat.runtimeSwarmId : sidechat.busy || !draft.trim() || !sidechat.sessionId} aria-label={activeRun ? "Stop Plan" : "Send to Plan"} onClick={() => activeRun ? void stop() : void send()}>
                 {activeRun ? <Square size={18} /> : sidechat.busy ? <Loader2 size={18} className="animate-spin" /> : <Send size={20} />}
               </Button>
+              </div>
             </div>
           </div>
         </div>
