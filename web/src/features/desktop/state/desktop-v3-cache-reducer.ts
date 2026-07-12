@@ -1127,7 +1127,22 @@ function applyExecutionEpochFromEvent(state: DesktopV3CacheState, event: CacheEv
     epoch_ordinal: boundary!.epoch_ordinal,
     session_id: event.sessionId,
   }
-  const existing = state.currentExecutionEpochBySession[event.sessionId]
+  const boundaryKind = boundary?.kind?.toLowerCase()
+  mergeCurrentExecutionEpoch(state, event.sessionId, {
+    ...incoming,
+    started_event_seq: incoming.started_event_seq
+      ?? (boundaryKind === 'started' || boundaryKind === 'begin' ? event.sessionEvent?.seq : undefined),
+    completed_event_seq: incoming.completed_event_seq
+      ?? (boundaryKind === 'completed' || boundaryKind === 'ended' ? event.sessionEvent?.seq : undefined),
+    status: incoming.status
+      ?? (boundaryKind === 'completed' || boundaryKind === 'ended'
+        ? 'completed'
+        : boundaryKind === 'started' || boundaryKind === 'begin' ? 'active' : undefined),
+  })
+}
+
+function mergeCurrentExecutionEpoch(state: DesktopV3CacheState, sessionId: string, incoming: V3ExecutionEpoch): void {
+  const existing = state.currentExecutionEpochBySession[sessionId]
   const incomingOrdinal = incoming.epoch_ordinal ?? 0
   const existingOrdinal = existing?.epoch_ordinal ?? 0
   if (existing) {
@@ -1136,17 +1151,11 @@ function applyExecutionEpochFromEvent(state: DesktopV3CacheState, event: CacheEv
     if (incomingOrdinal === existingOrdinal && existing.epoch_id !== incoming.epoch_id) return
   }
 
-  const boundaryKind = boundary?.kind?.toLowerCase()
-  state.currentExecutionEpochBySession[event.sessionId] = {
-    ...existing,
+  const sameEpoch = existing?.epoch_id === incoming.epoch_id
+  state.currentExecutionEpochBySession[sessionId] = {
+    ...(sameEpoch ? existing : undefined),
     ...incoming,
-    session_id: incoming.session_id || event.sessionId,
-    started_event_seq: incoming.started_event_seq
-      ?? (boundaryKind === 'started' || boundaryKind === 'begin' ? event.sessionEvent?.seq : existing?.started_event_seq),
-    completed_event_seq: incoming.completed_event_seq
-      ?? (boundaryKind === 'completed' || boundaryKind === 'ended' ? event.sessionEvent?.seq : existing?.completed_event_seq),
-    status: incoming.status
-      ?? (boundaryKind === 'completed' || boundaryKind === 'ended' ? 'completed' : existing?.status),
+    session_id: incoming.session_id || sessionId,
   }
 }
 
@@ -2161,10 +2170,11 @@ function applySessionViews(
     }
 
     state.sessionViewsById[sessionId] = { ...state.sessionViewsById[sessionId], ...view }
-    if (view.current_execution_epoch !== undefined) {
-      if (view.current_execution_epoch === null) delete state.currentExecutionEpochBySession[sessionId]
-      else state.currentExecutionEpochBySession[sessionId] = view.current_execution_epoch
+    if (view.current_execution_epoch) {
+      mergeCurrentExecutionEpoch(state, sessionId, view.current_execution_epoch)
     }
+    // A null recovery view may race a newer retained boundary. Boundaries are the
+    // authoritative way to advance or complete the cached epoch, so do not erase it.
     if (view.pending_permissions !== undefined) state.permissionsBySession[sessionId] = normalizeDesktopPendingPermissions(view.pending_permissions, sessionId)
     if (view.usage_summary !== undefined) state.usageBySession[sessionId] = view.usage_summary
     applyPlanSnapshotFromSessionView(state, sessionId, view)

@@ -183,11 +183,32 @@ export function decodeSessionEventPayload(event: V3SessionEvent): SessionEventPa
       ? JSON.parse(event.payload) as SessionEventPayload
       : event.payload as SessionEventPayload
   }
+
+  const payloadEpochId = typeof payload.epoch_id === 'string' ? payload.epoch_id.trim() : ''
+  const eventEpochId = event.epoch_id?.trim() || ''
+  const epochId = event.execution_epoch?.epoch_id?.trim() || payloadEpochId || eventEpochId
+  const payloadOrdinal = typeof payload.ordinal === 'number' ? payload.ordinal : undefined
+  const payloadParentEpochId = typeof payload.parent_epoch_id === 'string' ? payload.parent_epoch_id : undefined
+  const inferredEpoch = epochId
+    ? {
+        ...event.execution_epoch,
+        epoch_id: epochId,
+        epoch_ordinal: event.execution_epoch?.epoch_ordinal ?? payloadOrdinal,
+        session_id: event.session_id,
+      }
+    : undefined
+  const inferredBoundary = event.event_type === 'execution_epoch.began' && epochId
+    ? {
+        epoch_id: epochId,
+        epoch_ordinal: inferredEpoch?.epoch_ordinal,
+        kind: 'started',
+        parent_epoch_id: payloadParentEpochId,
+      }
+    : undefined
+
   return {
     ...payload,
-    execution_epoch: payload.execution_epoch ?? (event.execution_epoch
-      ? { ...event.execution_epoch, session_id: event.session_id }
-      : undefined),
-    execution_epoch_boundary: payload.execution_epoch_boundary ?? event.execution_epoch_boundary,
+    execution_epoch: payload.execution_epoch ?? inferredEpoch,
+    execution_epoch_boundary: payload.execution_epoch_boundary ?? event.execution_epoch_boundary ?? inferredBoundary,
   }
 }

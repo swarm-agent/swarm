@@ -1341,6 +1341,65 @@ test('execution epoch boundaries preserve one session and the root event orderin
   })
 
   assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.epoch_id, 'epoch-2')
+
+  applyRealtimeFrame(state, {
+    frame: {
+      kind: 'event',
+      session_id: sessionA.id,
+      event_type: 'execution_epoch.began',
+      event: {
+        id: 'evt-epoch-three',
+        session_id: sessionA.id,
+        seq: 23,
+        event_type: 'execution_epoch.began',
+        payload: {
+          epoch_id: 'epoch-3',
+          ordinal: 3,
+          parent_epoch_id: 'epoch-2',
+        },
+        ts_unix_ms: 23,
+        epoch_id: 'epoch-3',
+      },
+    },
+  })
+
+  assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.epoch_id, 'epoch-3')
+  assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.epoch_ordinal, 3)
+  assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.started_event_seq, 23)
+  assert.deepEqual(state.sessionOrderByScope[sidebarScopeId], initialSidebarOrder)
+  assert.deepEqual(state.eventsBySession[sessionA.id].slice(-3).map((event) => event.seq), [20, 22, 23])
+})
+
+test('execution epoch snapshot recovery cannot roll back a newer realtime epoch', () => {
+  const state = bootstrappedState()
+  applyCacheEvent(state, {
+    source: 'realtime',
+    sessionId: sessionA.id,
+    eventType: 'execution_epoch.began',
+    payload: {
+      execution_epoch: { epoch_id: 'epoch-4', epoch_ordinal: 4, session_id: sessionA.id },
+    },
+  })
+
+  const snapshot = hydrateSnapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA },
+    projections_by_session: { [sessionA.id]: projectionA },
+    session_views_by_id: {
+      [sessionA.id]: {
+        current_execution_epoch: { epoch_id: 'epoch-3', epoch_ordinal: 3, session_id: sessionA.id },
+      },
+    },
+    session_order: [sessionA.id],
+    selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+    sync_scope: {
+      ...hydrateSnapshotFixture().sync_scope,
+      resource_set: 'session_view',
+    },
+  })
+  applyHydrateSnapshot(state, snapshot, [sessionA.id])
+
+  assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.epoch_id, 'epoch-4')
+  assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.epoch_ordinal, 4)
 })
 
 test('permission realtime events update detail records while summary events own sidebar counts', () => {

@@ -114,6 +114,7 @@ export interface V3ExecutionEpoch extends V3ExecutionEpochRef {
 export interface V3ExecutionEpochBoundary extends V3ExecutionEpochRef {
   kind: string
   event_seq?: number
+  parent_epoch_id?: string
   previous_epoch_id?: string
 }
 
@@ -126,6 +127,7 @@ export interface V3SessionEvent {
   ts_unix_ms: number
   causation_id?: string
   correlation_id?: string
+  epoch_id?: string
   execution_epoch?: V3ExecutionEpochRef
   execution_epoch_boundary?: V3ExecutionEpochBoundary
 }
@@ -135,6 +137,7 @@ export interface V3SessionRunIntent {
   user_id?: string
   account_scope_id?: string
   run_id: string
+  epoch_id?: string
   status: string
   blocked_reason?: string
   created_at: number
@@ -488,6 +491,9 @@ export interface SessionEventPayload {
   message?: MessageSnapshot
   lifecycle?: unknown
   run_intent?: V3SessionRunIntent
+  epoch_id?: string
+  ordinal?: number
+  parent_epoch_id?: string
   execution_epoch?: V3ExecutionEpoch
   execution_epoch_boundary?: V3ExecutionEpochBoundary
   turn_usage?: unknown
