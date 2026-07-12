@@ -113,8 +113,14 @@ func KeyExecutionEpochActive(sessionID string) string {
 func KeyExecutionEpochOrdinal(sessionID string, ordinal uint64) string {
 	return fmt.Sprintf("v3/execution_epoch_by_ordinal/%s/%020d", keyPart(sessionID), ordinal)
 }
+func ExecutionEpochOrdinalPrefix(sessionID string) string {
+	return fmt.Sprintf("v3/execution_epoch_by_ordinal/%s/", keyPart(sessionID))
+}
 func KeyExecutionEpochBoundary(sessionID, planID, checkpointID string) string {
 	return fmt.Sprintf("v3/execution_epoch_boundary/%s/%s/%s", keyPart(sessionID), keyPart(planID), keyPart(checkpointID))
+}
+func ExecutionEpochBoundaryPrefix(sessionID string) string {
+	return fmt.Sprintf("v3/execution_epoch_boundary/%s/", keyPart(sessionID))
 }
 
 func NewInitialExecutionEpoch(sessionID, userID, accountScopeID string, firstSeq uint64, now int64) ExecutionEpoch {
@@ -248,6 +254,7 @@ func (s *SessionStore) RepairActiveExecutionEpoch(sessionID, epochID string) (Ex
 		return ExecutionEpoch{}, fmt.Errorf("execution epoch %q starts after root high watermark", epochID)
 	}
 	epoch.LastRootSeq = seq
+	epoch.UpdatedAt = time.Now().UnixMilli()
 	batch := s.store.NewBatch()
 	defer batch.Close()
 	if err := setExecutionEpochInBatch(batch, epoch, true); err != nil {
@@ -394,6 +401,12 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		}
 		if !ok {
 			run = V3SessionRunIntent{SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, RunID: strings.TrimSpace(input.RunID), Status: V3RunIntentPendingExecutor, CreatedAt: now}
+		}
+		if ok {
+			previousStatusKey := KeyV3SessionRunIntentStatus(run.Status, run.UpdatedAt, run.AccountScopeID, run.SessionID, run.RunID)
+			if err := batch.Delete([]byte(previousStatusKey), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+				return BeginExecutionEpochResult{}, err
+			}
 		}
 		run.EpochID = epoch.EpochID
 		run.PlanID = epoch.Boundary.PlanID

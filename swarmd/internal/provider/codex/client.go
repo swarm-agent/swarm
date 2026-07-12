@@ -466,7 +466,7 @@ func (c *Client) createResponseWithAuth(ctx context.Context, record pebblestore.
 	ctx = contextWithForceFreshProviderContext(ctx, forceFreshProviderContext)
 	ctx = contextWithCodexTransportContext(ctx, codexTransportContext{
 		PromptCacheKey:            codexPromptCacheKey(firstNonEmpty(req.ProviderCacheKey, req.ProviderLineageID)),
-		SessionAffinityKey:        codexSessionAffinityKey(firstNonEmpty(req.TransportAffinityKey, req.SessionAffinityKey, req.ProviderLineageID)),
+		SessionAffinityKey:        codexSessionAffinityKey(firstNonEmpty(req.SessionAffinityKey, req.TransportAffinityKey, req.ProviderLineageID)),
 		StartNewChain:             startNewChain,
 		AllowContinuation:         allowContinuation,
 		ReuseTransport:            req.ReuseTransport,
