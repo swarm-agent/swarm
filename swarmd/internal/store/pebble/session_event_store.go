@@ -316,16 +316,21 @@ func newV3RealtimeOutboxMembershipFromTombstone(tombstone V3SessionTombstone, no
 }
 
 type V3SessionRunIntent struct {
-	SessionID      string `json:"session_id"`
-	UserID         string `json:"user_id,omitempty"`
-	AccountScopeID string `json:"account_scope_id,omitempty"`
-	RunID          string `json:"run_id"`
-	Status         string `json:"status"`
-	BlockedReason  string `json:"blocked_reason,omitempty"`
-	CreatedAt      int64  `json:"created_at"`
-	UpdatedAt      int64  `json:"updated_at"`
-	EventSeq       uint64 `json:"event_seq"`
-	EpochID        string `json:"epoch_id,omitempty"`
+	SessionID       string `json:"session_id"`
+	UserID          string `json:"user_id,omitempty"`
+	AccountScopeID  string `json:"account_scope_id,omitempty"`
+	RunID           string `json:"run_id"`
+	Status          string `json:"status"`
+	BlockedReason   string `json:"blocked_reason,omitempty"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
+	EventSeq        uint64 `json:"event_seq"`
+	EpochID         string `json:"epoch_id,omitempty"`
+	PlanID          string `json:"plan_id,omitempty"`
+	CheckpointID    string `json:"checkpoint_id,omitempty"`
+	AttemptID       string `json:"attempt_id,omitempty"`
+	RunSessionID    string `json:"run_session_id,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
 }
 
 type V3SessionRunState struct {

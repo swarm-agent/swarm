@@ -20,11 +20,14 @@ type Request struct {
 	// SessionID is the stable durable Swarm session identity used for
 	// diagnostics/storage. Providers must not treat it as a cache/session
 	// affinity key; use ProviderCacheKey/SessionAffinityKey instead.
-	SessionID                     string
-	ProviderLineageID             string
-	ContextBranchID               string
-	ProviderCacheKey              string
-	SessionAffinityKey            string
+	SessionID          string
+	ProviderLineageID  string
+	ContextBranchID    string
+	ProviderCacheKey   string
+	SessionAffinityKey string
+	// TransportAffinityKey identifies a compatible reusable transport and must
+	// not be coupled to an execution epoch or provider continuation chain.
+	TransportAffinityKey          string
 	BoundaryReason                string
 	PreviousProviderLineageID     string
 	PreviousProviderID            string
@@ -36,21 +39,30 @@ type Request struct {
 	ProviderLineageStartMessageID string
 	ProviderLineageStartRunID     string
 	ProviderLineageStartGlobalSeq uint64
-	NativeContinuationAllowed     bool
-	ForceFreshProviderContext     bool
-	Model                         string
-	Thinking                      string
-	Instructions                  string
-	Input                         []map[string]any
-	Tools                         []ToolDefinition
-	ToolChoice                    string
-	ServiceTier                   string
-	ContextMode                   string
-	ContextWindow                 int
-	ModelCatalog                  any
-	ParallelToolCalls             bool
-	WorkspacePath                 string
-	ToolInvoker                   ToolInvoker
+	// Provider chain lifecycle is independent from transport lifecycle. A new
+	// chain clears provider continuation state, but may reuse a compatible healthy
+	// transport. ResetTransport always wins over ReuseTransport.
+	StartNewChain     bool
+	AllowContinuation bool
+	ReuseTransport    bool
+	ResetTransport    bool
+	// NativeContinuationAllowed and ForceFreshProviderContext are retained as
+	// inputs for callers not yet migrated to the explicit lifecycle policy.
+	NativeContinuationAllowed bool
+	ForceFreshProviderContext bool
+	Model                     string
+	Thinking                  string
+	Instructions              string
+	Input                     []map[string]any
+	Tools                     []ToolDefinition
+	ToolChoice                string
+	ServiceTier               string
+	ContextMode               string
+	ContextWindow             int
+	ModelCatalog              any
+	ParallelToolCalls         bool
+	WorkspacePath             string
+	ToolInvoker               ToolInvoker
 }
 
 func (r Request) EffectiveProviderCacheKey() string {

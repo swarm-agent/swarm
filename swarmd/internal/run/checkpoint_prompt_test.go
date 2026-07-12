@@ -100,27 +100,24 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	if strings.Contains(text, "old chat that must not appear") {
 		t.Fatalf("prompt leaked prior conversation: %s", text)
 	}
-	if !strings.Contains(text, `"status": "in_progress"`) {
-		t.Fatalf("prompt did not include started checkpoint state: %s", text)
+	if !strings.Contains(text, `"status": "pending"`) {
+		t.Fatalf("prompt did not preserve lifecycle-selected checkpoint state: %s", text)
 	}
 	plan, ok, err := svc.sessions.GetPlan(sessionID, "plan-cp")
 	if err != nil || !ok {
 		t.Fatalf("load patched plan ok=%v err=%v", ok, err)
 	}
-	if got := plan.Document.Checkpoints[1].Status; got != sessionruntime.PlanCheckpointStatusInProgress {
-		t.Fatalf("checkpoint status = %q, want in_progress", got)
+	if got := plan.Document.Checkpoints[1].Status; got != sessionruntime.PlanCheckpointStatusPending {
+		t.Fatalf("checkpoint status = %q, want pending lifecycle-selected state", got)
 	}
-	if got := plan.Document.Checkpoints[1].RunID; got != "run-cp" {
-		t.Fatalf("checkpoint run id = %q, want run-cp", got)
+	if got := plan.Document.Checkpoints[1].RunID; got != "" {
+		t.Fatalf("checkpoint prompt builder unexpectedly assigned run id %q", got)
 	}
-	if got := plan.Document.Checkpoints[1].SessionID; got != sessionID {
-		t.Fatalf("checkpoint session id = %q, want %q", got, sessionID)
+	if got := plan.Document.Checkpoints[1].SessionID; got != "" {
+		t.Fatalf("checkpoint prompt builder unexpectedly assigned session id %q", got)
 	}
-	if len(appliedMutations) != 1 {
-		t.Fatalf("applied mutation count = %d, want 1: %#v", len(appliedMutations), appliedMutations)
-	}
-	if appliedMutations[0].Kind != sessionruntime.SessionMutationSavePlan || appliedMutations[0].EventType != "session.plan.saved" {
-		t.Fatalf("first mutation = kind %q event %q", appliedMutations[0].Kind, appliedMutations[0].EventType)
+	if len(appliedMutations) != 0 {
+		t.Fatalf("checkpoint prompt builder applied mutations: %#v", appliedMutations)
 	}
 	messages, err := svc.sessions.ListMessages(sessionID, 0, 10)
 	if err != nil {
@@ -133,8 +130,8 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	if err != nil {
 		t.Fatalf("list realtime outbox: %v", err)
 	}
-	if len(outbox) != 1 || outbox[0].Event.EventType != "session.plan.saved" {
-		t.Fatalf("realtime outbox = %#v", outbox)
+	if len(outbox) != 0 {
+		t.Fatalf("checkpoint prompt builder unexpectedly wrote realtime outbox: %#v", outbox)
 	}
 }
 

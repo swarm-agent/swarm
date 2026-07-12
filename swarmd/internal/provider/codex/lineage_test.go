@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/gorilla/websocket"
+
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -412,6 +414,91 @@ func TestCodexFreshWebsocketPayloadDoesNotReusePreviousResponseEvenWithSameProvi
 	input := asSlice(fresh["input"])
 	if len(input) != 2 {
 		t.Fatalf("fresh websocket payload was made incremental: %#v", fresh["input"])
+	}
+}
+
+func TestCodexTransportAffinityIsIndependentFromEpochChain(t *testing.T) {
+	client := NewClient(nil)
+	for _, chainKey := range []string{"epoch-chain-a", "epoch-chain-b"} {
+		ctx := contextWithCodexTransportContext(context.Background(), codexTransportContext{
+			PromptCacheKey:     "stable-runtime-cache",
+			SessionAffinityKey: "transport-root-key",
+			StartNewChain:      true,
+			ReuseTransport:     true,
+		})
+		payload, _, _, err := client.codexWebsocketRequestPayload(ctx, Request{
+			ProviderCacheKey:     "stable-runtime-cache",
+			SessionAffinityKey:   chainKey,
+			TransportAffinityKey: "transport-root-key",
+			Model:                "gpt-5.3-codex",
+			StartNewChain:        true,
+			ReuseTransport:       true,
+			Input:                []map[string]any{{"role": "user", "content": chainKey}},
+		})
+		if err != nil {
+			t.Fatalf("build %s payload: %v", chainKey, err)
+		}
+		if _, ok := payload["previous_response_id"]; ok {
+			t.Fatalf("new epoch chain %s reused predecessor response: %#v", chainKey, payload)
+		}
+	}
+	if client.cachedWebsocketSession("transport-root-key") == nil {
+		t.Fatal("transport affinity did not select reusable root transport")
+	}
+}
+
+func TestCodexFirstEpochResponseBecomesContinuationBaseline(t *testing.T) {
+	client := NewClient(nil)
+	ctx := contextWithCodexTransportContext(context.Background(), codexTransportContext{
+		PromptCacheKey:     "stable-runtime-cache",
+		SessionAffinityKey: "transport-root-key",
+		AllowContinuation:  true,
+	})
+	session := client.cachedWebsocketSession("transport-root-key")
+	session.lastRequestProperties = map[string]any{
+		"model": "gpt-5.3-codex", "stream": true, "store": false,
+		"prompt_cache_key": "stable-runtime-cache",
+		"text":             map[string]any{"verbosity": defaultCodexTextVerbosity},
+	}
+	session.lastInputLen = 1
+	session.lastResponseID = "resp-first-in-epoch"
+
+	payload, _, _, err := client.codexWebsocketRequestPayload(ctx, Request{
+		ProviderCacheKey:     "stable-runtime-cache",
+		TransportAffinityKey: "transport-root-key",
+		Model:                "gpt-5.3-codex",
+		AllowContinuation:    true,
+		Input: []map[string]any{
+			{"role": "user", "content": "first epoch turn"},
+			{"role": "user", "content": "later epoch turn"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("continuation payload: %v", err)
+	}
+	if got := asString(payload["previous_response_id"]); got != "resp-first-in-epoch" {
+		t.Fatalf("previous_response_id = %q, want first response baseline", got)
+	}
+}
+
+func TestResetCachedWebsocketChainPreservesHealthyTransport(t *testing.T) {
+	conn := &websocket.Conn{}
+	session := &cachedWebsocketSession{
+		conn:                  conn,
+		lastPayload:           map[string]any{"model": "gpt-5.3-codex"},
+		lastRequestProperties: map[string]any{"model": "gpt-5.3-codex"},
+		lastInputLen:          2,
+		lastResponseID:        "resp-old-epoch",
+		lastOutput:            []any{"old"},
+	}
+
+	resetCachedWebsocketChainLocked(session)
+
+	if session.conn != conn {
+		t.Fatal("new chain reset healthy websocket transport")
+	}
+	if session.lastResponseID != "" || session.lastPayload != nil || session.lastRequestProperties != nil || session.lastInputLen != 0 || session.lastOutput != nil {
+		t.Fatalf("new chain retained provider continuation state: %#v", session)
 	}
 }
 

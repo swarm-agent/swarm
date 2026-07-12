@@ -1322,6 +1322,25 @@ test('execution epoch boundaries preserve one session and the root event orderin
     completed_event_seq: 22,
     status: 'completed',
   })
+
+  applyCacheEvent(state, {
+    source: 'realtime',
+    sessionId: sessionA.id,
+    eventType: 'execution_epoch.began',
+    sessionEvent: {
+      id: 'evt-stale-epoch',
+      session_id: sessionA.id,
+      seq: 19,
+      event_type: 'execution_epoch.began',
+      ts_unix_ms: 19,
+      payload: {},
+    },
+    payload: {
+      execution_epoch_boundary: { epoch_id: 'epoch-stale', kind: 'started' },
+    },
+  })
+
+  assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.epoch_id, 'epoch-2')
 })
 
 test('permission realtime events update detail records while summary events own sidebar counts', () => {

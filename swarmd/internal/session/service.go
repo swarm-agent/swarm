@@ -76,6 +76,34 @@ func (s *Service) Store() *pebblestore.SessionStore {
 	return s.store
 }
 
+func (s *Service) BeginExecutionEpoch(input pebblestore.BeginExecutionEpochInput) (pebblestore.BeginExecutionEpochResult, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.BeginExecutionEpochResult{}, errors.New("session service is not configured")
+	}
+	return s.store.BeginExecutionEpoch(input)
+}
+
+func (s *Service) GetExecutionEpoch(sessionID, epochID string) (pebblestore.ExecutionEpoch, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.ExecutionEpoch{}, false, errors.New("session service is not configured")
+	}
+	return s.store.GetExecutionEpoch(sessionID, epochID)
+}
+
+func (s *Service) GetActiveExecutionEpoch(sessionID string) (pebblestore.ExecutionEpoch, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.ExecutionEpoch{}, false, errors.New("session service is not configured")
+	}
+	return s.store.GetActiveExecutionEpoch(sessionID)
+}
+
+func (s *Service) GetV3SessionRunIntent(sessionID, runID string) (pebblestore.V3SessionRunIntent, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.V3SessionRunIntent{}, false, errors.New("session service is not configured")
+	}
+	return s.store.GetV3SessionRunIntent(sessionID, runID)
+}
+
 func (s *Service) SetHostedSync(sync HostedSessionSync) {
 	if s == nil {
 		return

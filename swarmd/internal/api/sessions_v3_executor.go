@@ -58,6 +58,7 @@ type sessionV3ExecutorJob struct {
 	Principal       identity.Principal
 	SessionID       string
 	RunID           string
+	EpochID         string
 	PlanID          string
 	CheckpointID    string
 	AttemptID       string
@@ -68,6 +69,23 @@ type sessionV3ExecutorRunState struct {
 	cancel   context.CancelFunc
 	canceled bool
 	reason   string
+}
+
+func sessionV3RunIntentForJob(job sessionV3ExecutorJob, status string, now int64) pebblestore.V3SessionRunIntent {
+	return pebblestore.V3SessionRunIntent{
+		SessionID:       strings.TrimSpace(job.SessionID),
+		UserID:          strings.TrimSpace(job.Principal.UserID),
+		AccountScopeID:  strings.TrimSpace(job.Principal.AccountScopeID),
+		RunID:           strings.TrimSpace(job.RunID),
+		Status:          strings.TrimSpace(status),
+		EpochID:         strings.TrimSpace(job.EpochID),
+		PlanID:          strings.TrimSpace(job.PlanID),
+		CheckpointID:    strings.TrimSpace(job.CheckpointID),
+		AttemptID:       strings.TrimSpace(job.AttemptID),
+		RunSessionID:    strings.TrimSpace(job.SessionID),
+		ParentSessionID: strings.TrimSpace(job.ParentSessionID),
+		UpdatedAt:       now,
+	}
 }
 
 type sessionV3Executor struct {
@@ -117,6 +135,7 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	}
 	job.SessionID = strings.TrimSpace(job.SessionID)
 	job.RunID = strings.TrimSpace(job.RunID)
+	job.EpochID = strings.TrimSpace(job.EpochID)
 	job.PlanID = strings.TrimSpace(job.PlanID)
 	job.CheckpointID = strings.TrimSpace(job.CheckpointID)
 	job.AttemptID = strings.TrimSpace(job.AttemptID)
@@ -299,8 +318,13 @@ func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
 				UserID:         intent.UserID,
 				AccountScopeID: intent.AccountScopeID,
 			},
-			SessionID: intent.SessionID,
-			RunID:     intent.RunID,
+			SessionID:       intent.SessionID,
+			RunID:           intent.RunID,
+			EpochID:         intent.EpochID,
+			PlanID:          intent.PlanID,
+			CheckpointID:    intent.CheckpointID,
+			AttemptID:       intent.AttemptID,
+			ParentSessionID: intent.ParentSessionID,
 		}
 		if strings.TrimSpace(job.Principal.UserID) == "" || strings.TrimSpace(job.Principal.AccountScopeID) == "" {
 			if session, ok, err := e.server.sessions.GetSession(intent.SessionID); err != nil {
@@ -471,15 +495,8 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 	}
 	now := time.Now().UnixMilli()
 	sanitizedReason := strings.TrimSpace(privacy.SanitizeText(reason))
-	intent := pebblestore.V3SessionRunIntent{
-		SessionID:      job.SessionID,
-		UserID:         job.Principal.UserID,
-		AccountScopeID: job.Principal.AccountScopeID,
-		RunID:          job.RunID,
-		Status:         status,
-		BlockedReason:  sanitizedReason,
-		UpdatedAt:      now,
-	}
+	intent := sessionV3RunIntentForJob(job, status, now)
+	intent.BlockedReason = sanitizedReason
 	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, status, sanitizedReason, eventType, "")
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
@@ -515,14 +532,7 @@ func (e *sessionV3Executor) recordRunPhase(job sessionV3ExecutorJob, phase RunPh
 		return sessionruntime.SessionMutationResult{}, errors.New("run phase event type is required")
 	}
 	now := time.Now().UnixMilli()
-	intent := pebblestore.V3SessionRunIntent{
-		SessionID:      job.SessionID,
-		UserID:         job.Principal.UserID,
-		AccountScopeID: job.Principal.AccountScopeID,
-		RunID:          job.RunID,
-		Status:         sessionruntime.RunIntentRunning,
-		UpdatedAt:      now,
-	}
+	intent := sessionV3RunIntentForJob(job, sessionruntime.RunIntentRunning, now)
 	payload := struct {
 		SessionID string                         `json:"session_id"`
 		RunID     string                         `json:"run_id"`
@@ -565,6 +575,7 @@ func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, progress
 	}
 	metadata := map[string]any{
 		"run_id":         job.RunID,
+		"epoch_id":       job.EpochID,
 		"stream_id":      progress.StreamID,
 		"operation":      "append",
 		"step":           progress.Step,
@@ -581,7 +592,7 @@ func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, progress
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentRunning, UpdatedAt: now}
+	intent := sessionV3RunIntentForJob(job, sessionruntime.RunIntentRunning, now)
 	hashMaterial := fmt.Sprintf("%d:%s:%d:%d:%s", deltaIndex, progress.StreamID, progress.OffsetStart, progress.OffsetEnd, progress.Text)
 	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", "session.assistant.delta", hashMaterial)
 	if err != nil {
@@ -630,6 +641,7 @@ func (e *sessionV3Executor) recordReasoningEvent(job sessionV3ExecutorJob, event
 		"path_id":       "run.v3.provider-reasoning.v1",
 		"type":          sessionV3ReasoningEventType,
 		"run_id":        strings.TrimSpace(job.RunID),
+		"epoch_id":      strings.TrimSpace(job.EpochID),
 		"step":          step,
 		"step_id":       sessionV3ProviderToolStepID(step),
 		"reasoning_id":  sessionV3ReasoningEventID(step, reasoningKey),
@@ -653,7 +665,7 @@ func (e *sessionV3Executor) recordReasoningEvent(job sessionV3ExecutorJob, event
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentRunning, UpdatedAt: now}
+	intent := sessionV3RunIntentForJob(job, sessionruntime.RunIntentRunning, now)
 	contentForHash := string(raw)
 	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", eventType, contentForHash)
 	if err != nil {
@@ -715,6 +727,8 @@ type sessionV3AssistantResponse struct {
 	ContextBranchID               string
 	ProviderCacheKey              string
 	SessionAffinityKey            string
+	TransportAffinityKey          string
+	EpochID                       string
 	BoundaryReason                string
 	PreviousProviderLineageID     string
 	PreviousProviderID            string
@@ -768,6 +782,12 @@ func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
 	}
 	if affinityKey := strings.TrimSpace(r.SessionAffinityKey); affinityKey != "" {
 		metadata["session_affinity_key"] = affinityKey
+	}
+	if transportKey := strings.TrimSpace(r.TransportAffinityKey); transportKey != "" {
+		metadata["transport_affinity_key"] = transportKey
+	}
+	if epochID := strings.TrimSpace(r.EpochID); epochID != "" {
+		metadata["epoch_id"] = epochID
 	}
 	if boundaryReason := strings.TrimSpace(r.BoundaryReason); boundaryReason != "" {
 		metadata["boundary_reason"] = boundaryReason
@@ -847,11 +867,7 @@ func (e *sessionV3Executor) completeRun(job sessionV3ExecutorJob, response sessi
 		Metadata:  response.metadata(job.RunID),
 	}
 	e.recordSessionV3Diagnostic(job, "session.diagnostic.backend.message", "backend.executor", "assistant-message-before-store", sessionV3MessageDiagnostic(message, response))
-	intent := pebblestore.V3SessionRunIntent{
-		RunID:     job.RunID,
-		Status:    sessionruntime.RunIntentCompleted,
-		UpdatedAt: now,
-	}
+	intent := sessionV3RunIntentForJob(job, sessionruntime.RunIntentCompleted, now)
 	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentCompleted, "", "session.assistant.completed", content)
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
@@ -894,7 +910,7 @@ func (e *sessionV3Executor) recordPreToolAssistantSegment(job sessionV3ExecutorJ
 		Metadata:  metadata,
 	}
 	e.recordSessionV3Diagnostic(job, "session.diagnostic.backend.message", "backend.executor", fmt.Sprintf("assistant-pre-tool-message-step-%d-before-store", step), sessionV3MessageDiagnostic(message, response))
-	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentRunning, UpdatedAt: now}
+	intent := sessionV3RunIntentForJob(job, sessionruntime.RunIntentRunning, now)
 	eventType := "session.message.appended"
 	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", eventType, fmt.Sprintf("%d:%s", step, content))
 	if err != nil {
@@ -1205,6 +1221,9 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	}
 	if checkpointRestartInput {
 		baseReq.BoundaryReason = sessionV3ProviderBoundaryReasonWithOverride(baseReq.BoundaryReason, "checkpoint_fresh_context")
+		baseReq.StartNewChain = true
+		baseReq.AllowContinuation = false
+		baseReq.ReuseTransport = true
 		baseReq.NativeContinuationAllowed = false
 		baseReq.ForceFreshProviderContext = true
 	} else if sessionV3ProviderRequiresBoundedHandoff(baseReq) {
@@ -1298,6 +1317,8 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		ContextBranchID:               loopResult.FinalRequest.ContextBranchID,
 		ProviderCacheKey:              loopResult.FinalRequest.ProviderCacheKey,
 		SessionAffinityKey:            loopResult.FinalRequest.SessionAffinityKey,
+		TransportAffinityKey:          loopResult.FinalRequest.TransportAffinityKey,
+		EpochID:                       job.EpochID,
 		BoundaryReason:                loopResult.FinalRequest.BoundaryReason,
 		PreviousProviderLineageID:     loopResult.FinalRequest.PreviousProviderLineageID,
 		PreviousProviderID:            loopResult.FinalRequest.PreviousProviderID,
@@ -1385,6 +1406,7 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 		ContextBranchID:               contextBranchID,
 		ProviderCacheKey:              providerCacheKey,
 		SessionAffinityKey:            sessionAffinityKey,
+		TransportAffinityKey:          sessionV3ProviderTransportAffinityKey(job, providerID, model),
 		BoundaryReason:                sessionV3ProviderBoundaryReason(job, previousLineageID, lineageID, checkpointScope),
 		PreviousProviderLineageID:     previousLineageID,
 		PreviousProviderID:            previousLineage.ProviderID,
@@ -1396,6 +1418,9 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 		ProviderLineageStartMessageID: lineageStart.StartMessageID,
 		ProviderLineageStartRunID:     lineageStart.StartRunID,
 		ProviderLineageStartGlobalSeq: lineageStart.StartGlobalSeq,
+		StartNewChain:                 checkpointFreshContext || !nativeContinuationAllowed,
+		AllowContinuation:             nativeContinuationAllowed,
+		ReuseTransport:                true,
 		NativeContinuationAllowed:     nativeContinuationAllowed,
 		ForceFreshProviderContext:     checkpointFreshContext || !nativeContinuationAllowed,
 		Model:                         model,
@@ -1907,6 +1932,18 @@ func sessionV3ProviderBoundaryReasonWithOverride(current, override string) strin
 	return current + "+" + override
 }
 
+func sessionV3ProviderTransportAffinityKey(job sessionV3ExecutorJob, providerID, model string) string {
+	// Transport compatibility is deliberately independent of the execution
+	// epoch and provider chain. Epoch boundaries rotate continuation/affinity
+	// state while a healthy socket for the same root session/provider/model can
+	// remain open.
+	return sessionV3ProviderScopedKey("transport", provideriface.ShortProviderLineageKey(
+		strings.TrimSpace(job.SessionID),
+		strings.ToLower(strings.TrimSpace(providerID)),
+		strings.TrimSpace(model),
+	))
+}
+
 func sessionV3ProviderScopedKey(prefix, lineageID string) string {
 	lineageID = strings.TrimSpace(lineageID)
 	if lineageID == "" {
@@ -2077,6 +2114,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				if !strings.Contains(strings.TrimSpace(baseReq.BoundaryReason), "checkpoint_fresh_context") {
 					baseReq.BoundaryReason = sessionV3ProviderBoundaryReasonWithOverride(baseReq.BoundaryReason, "restart_after_tool")
 				}
+				baseReq.StartNewChain = true
+				baseReq.AllowContinuation = false
+				baseReq.ResetTransport = true
 				baseReq.NativeContinuationAllowed = false
 				baseReq.ForceFreshProviderContext = true
 				continue
@@ -2102,6 +2142,8 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				ContextBranchID:               baseReq.ContextBranchID,
 				ProviderCacheKey:              baseReq.ProviderCacheKey,
 				SessionAffinityKey:            baseReq.SessionAffinityKey,
+				TransportAffinityKey:          baseReq.TransportAffinityKey,
+				EpochID:                       job.EpochID,
 				BoundaryReason:                baseReq.BoundaryReason,
 				PreviousProviderLineageID:     baseReq.PreviousProviderLineageID,
 				PreviousProviderID:            baseReq.PreviousProviderID,
@@ -2178,6 +2220,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			if !strings.Contains(strings.TrimSpace(baseReq.BoundaryReason), "checkpoint_fresh_context") {
 				baseReq.BoundaryReason = sessionV3ProviderBoundaryReasonWithOverride(baseReq.BoundaryReason, "restart_after_tool")
 			}
+			baseReq.StartNewChain = true
+			baseReq.AllowContinuation = false
+			baseReq.ResetTransport = true
 			baseReq.NativeContinuationAllowed = false
 			baseReq.ForceFreshProviderContext = true
 		}
@@ -2445,7 +2490,7 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 		return err
 	}
 	clientRequestID := sessionV3ProviderToolEventClientRequestID(eventType, job.RunID, step, callID, deltaIndex)
-	intent := pebblestore.V3SessionRunIntent{RunID: job.RunID, Status: sessionruntime.RunIntentRunning, UpdatedAt: now}
+	intent := sessionV3RunIntentForJob(job, sessionruntime.RunIntentRunning, now)
 	_, err = e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
@@ -2600,28 +2645,31 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return nil, errors.New("v3 executor is not configured")
 	}
-	session, ok, err := e.server.sessions.GetSession(job.SessionID)
+	epochID := strings.TrimSpace(job.EpochID)
+	if epochID == "" {
+		if intent, ok, err := e.server.sessions.GetV3SessionRunIntent(job.SessionID, job.RunID); err != nil {
+			return nil, err
+		} else if ok {
+			epochID = strings.TrimSpace(intent.EpochID)
+		}
+	}
+	if epochID == "" {
+		return nil, errors.New("v3 executor run has no execution epoch")
+	}
+	epoch, ok, err := e.server.sessions.GetExecutionEpoch(job.SessionID, epochID)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("session %q not found", job.SessionID)
+		return nil, fmt.Errorf("execution epoch %q not found", epochID)
 	}
-	limit := session.MessageCount + 8
-	if limit < 500 {
-		limit = 500
+	afterSeq := epoch.FirstRootSeq
+	if afterSeq > 0 {
+		afterSeq--
 	}
-	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, 0, limit)
+	messages, err := e.server.sessions.ListSessionMessages(job.SessionID, afterSeq, 500)
 	if err != nil {
 		return nil, err
-	}
-	if boundary, insertAt, boundaryErr := e.sessionV3ProviderPlanFreshContextBoundary(job, messages); boundaryErr != nil {
-		return nil, boundaryErr
-	} else if boundary != nil {
-		if insertAt < 0 || insertAt > len(messages) {
-			insertAt = len(messages)
-		}
-		messages = append(messages[:insertAt], append([]pebblestore.MessageSnapshot{*boundary}, messages[insertAt:]...)...)
 	}
 	return runruntime.CompactMessagesForProviderContext(messages, 500), nil
 }

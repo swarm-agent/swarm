@@ -80,6 +80,10 @@ type codexTransportContextKey struct{}
 type codexTransportContext struct {
 	PromptCacheKey            string
 	SessionAffinityKey        string
+	StartNewChain             bool
+	AllowContinuation         bool
+	ReuseTransport            bool
+	ResetTransport            bool
 	NativeContinuationAllowed bool
 	ForceFreshProviderContext bool
 	BoundaryReason            string
@@ -217,6 +221,7 @@ type Request struct {
 	ContextBranchID               string
 	ProviderCacheKey              string
 	SessionAffinityKey            string
+	TransportAffinityKey          string
 	BoundaryReason                string
 	PreviousProviderLineageID     string
 	PreviousProviderID            string
@@ -228,6 +233,10 @@ type Request struct {
 	ProviderLineageStartMessageID string
 	ProviderLineageStartRunID     string
 	ProviderLineageStartGlobalSeq uint64
+	StartNewChain                 bool
+	AllowContinuation             bool
+	ReuseTransport                bool
+	ResetTransport                bool
 	NativeContinuationAllowed     bool
 	ForceFreshProviderContext     bool
 	Model                         string
@@ -357,6 +366,17 @@ func (c *Client) cachedWebsocketSession(sessionID string) *cachedWebsocketSessio
 	return session
 }
 
+func resetCachedWebsocketChainLocked(session *cachedWebsocketSession) {
+	if session == nil {
+		return
+	}
+	session.lastPayload = nil
+	session.lastRequestProperties = nil
+	session.lastInputLen = 0
+	session.lastResponseID = ""
+	session.lastOutput = nil
+}
+
 func closeCachedWebsocketSessionLocked(session *cachedWebsocketSession) {
 	if session == nil {
 		return
@@ -365,11 +385,7 @@ func closeCachedWebsocketSessionLocked(session *cachedWebsocketSession) {
 		_ = session.conn.Close()
 		session.conn = nil
 	}
-	session.lastPayload = nil
-	session.lastRequestProperties = nil
-	session.lastInputLen = 0
-	session.lastResponseID = ""
-	session.lastOutput = nil
+	resetCachedWebsocketChainLocked(session)
 }
 
 func contextErr(ctx context.Context) error {
@@ -426,12 +442,18 @@ func (c *Client) createResponseWithAuth(ctx context.Context, record pebblestore.
 	if strings.TrimSpace(record.Provider) == "" {
 		record.Provider = "codex"
 	}
-	forceFreshProviderContext := req.ForceFreshProviderContext || !req.NativeContinuationAllowed
+	allowContinuation := req.AllowContinuation || req.NativeContinuationAllowed
+	startNewChain := req.StartNewChain || req.ForceFreshProviderContext || !allowContinuation
+	forceFreshProviderContext := startNewChain
 
 	ctx = contextWithForceFreshProviderContext(ctx, forceFreshProviderContext)
 	ctx = contextWithCodexTransportContext(ctx, codexTransportContext{
 		PromptCacheKey:            codexPromptCacheKey(firstNonEmpty(req.ProviderCacheKey, req.ProviderLineageID)),
-		SessionAffinityKey:        codexSessionAffinityKey(firstNonEmpty(req.SessionAffinityKey, req.ProviderLineageID)),
+		SessionAffinityKey:        codexSessionAffinityKey(firstNonEmpty(req.TransportAffinityKey, req.SessionAffinityKey, req.ProviderLineageID)),
+		StartNewChain:             startNewChain,
+		AllowContinuation:         allowContinuation,
+		ReuseTransport:            req.ReuseTransport,
+		ResetTransport:            req.ResetTransport,
 		NativeContinuationAllowed: req.NativeContinuationAllowed,
 		ForceFreshProviderContext: forceFreshProviderContext,
 		BoundaryReason:            strings.TrimSpace(req.BoundaryReason),
@@ -1227,11 +1249,15 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 	conn := (*websocket.Conn)(nil)
 	websocketReused := false
 	if session != nil {
-		if freshContext {
+		if transportContext.ResetTransport || (freshContext && !transportContext.ReuseTransport) {
 			closeCachedWebsocketSessionLocked(session)
 			if payloadPrepared && asString(requestPayload["previous_response_id"]) != "" {
 				return nil, 0, errWebsocketRetryFresh
 			}
+		} else if freshContext {
+			// A new provider chain must not inherit response lineage. Keep the
+			// compatible healthy socket, but clear only chain-scoped cache state.
+			resetCachedWebsocketChainLocked(session)
 		}
 		conn = session.conn
 		websocketReused = conn != nil

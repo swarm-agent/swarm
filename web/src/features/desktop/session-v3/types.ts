@@ -194,6 +194,12 @@ export interface SessionV3ProjectionWire {
 export interface SessionV3RunIntentWire {
   session_id?: string
   run_id?: string
+  epoch_id?: string
+  plan_id?: string
+  checkpoint_id?: string
+  attempt_id?: string
+  run_session_id?: string
+  parent_session_id?: string
   status?: string
   blocked_reason?: string
   created_at?: number
@@ -205,12 +211,29 @@ export interface SessionV3RunIntentWire {
   event_seq?: number
 }
 
+export interface SessionV3ExecutionEpochRefWire {
+  epoch_id: string
+  epoch_ordinal?: number
+  session_id?: string
+  status?: string
+  started_event_seq?: number
+  completed_event_seq?: number
+}
+
+export interface SessionV3ExecutionEpochBoundaryWire extends SessionV3ExecutionEpochRefWire {
+  kind?: string
+  parent_epoch_id?: string
+}
+
 export interface SessionV3EventWire {
   id?: string
   session_id?: string
   seq?: number
   event_type?: string
   ts_unix_ms?: number
+  epoch_id?: string
+  execution_epoch?: SessionV3ExecutionEpochRefWire
+  execution_epoch_boundary?: SessionV3ExecutionEpochBoundaryWire
   payload?: Record<string, unknown>
 }
 
@@ -316,6 +339,7 @@ export interface SessionV3RealtimeUnsubscribeWire {
 export interface SessionV3RealtimeLivePatchWire {
   session_id: string
   run_id: string
+  epoch_id?: string
   stream_id: string
   stream_kind: 'assistant_text'
   operation: 'append'

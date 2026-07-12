@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -84,41 +83,6 @@ func (s *Service) buildPlanCheckpointRunInput(sessionID, runID string, options R
 	}
 	if parentSessionID == "" {
 		parentSessionID = sessionID
-	}
-	startedAt := time.Now().UnixMilli()
-	patched, event, patchErr := s.sessions.PatchPlan(sessionID, sessionruntime.PlanPatchOptions{
-		PlanID: planID,
-		DocumentPatch: &sessionruntime.PlanDocumentPatch{
-			Operation:       "start_checkpoint",
-			CheckpointID:    checkpointID,
-			AttemptID:       attemptID,
-			RunID:           runID,
-			RunSessionID:    sessionID,
-			ParentSessionID: parentSessionID,
-			StartedAt:       startedAt,
-		},
-		Metadata: sessionruntime.PlanSaveMetadata{
-			UpdateSummary: "Started checkpoint run with fresh context",
-			UpdateScope:   checkpointID,
-			UpdateKind:    "checkpoint_start",
-			Checkpoint:    true,
-		},
-	})
-	if patchErr != nil {
-		return nil, true, patchErr
-	}
-	if err := s.persistPlanSavedV3Mutation(patched, event, options.ApplySessionMutation); err != nil {
-		return nil, true, fmt.Errorf("publish checkpoint start plan saved: %w", err)
-	}
-	if patched.Document != nil {
-		plan = patched
-		doc = patched.Document
-		idx = findPlanRunCheckpointIndex(doc.Checkpoints, checkpointID)
-		if idx < 0 {
-			return nil, true, fmt.Errorf("checkpoint %q was not found in patched plan", checkpointID)
-		}
-		checkpoint = doc.Checkpoints[idx]
-		attemptID = strings.TrimSpace(checkpoint.AttemptID)
 	}
 	payload := checkpointRunPromptPayload{
 		PlanID:           planID,

@@ -1130,9 +1130,13 @@ function applyExecutionEpochFromEvent(state: DesktopV3CacheState, event: CacheEv
   const existing = state.currentExecutionEpochBySession[event.sessionId]
   const incomingOrdinal = incoming.epoch_ordinal ?? 0
   const existingOrdinal = existing?.epoch_ordinal ?? 0
-  if (existing && incomingOrdinal > 0 && existingOrdinal > incomingOrdinal) return
+  if (existing) {
+    if (incomingOrdinal <= 0 && existing.epoch_id !== incoming.epoch_id) return
+    if (existingOrdinal > 0 && incomingOrdinal < existingOrdinal) return
+    if (incomingOrdinal === existingOrdinal && existing.epoch_id !== incoming.epoch_id) return
+  }
 
-  const boundaryKind = boundary?.kind.toLowerCase()
+  const boundaryKind = boundary?.kind?.toLowerCase()
   state.currentExecutionEpochBySession[event.sessionId] = {
     ...existing,
     ...incoming,
