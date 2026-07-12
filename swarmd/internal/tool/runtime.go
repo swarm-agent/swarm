@@ -196,6 +196,7 @@ type manageWorktreeWorkspaceService interface {
 
 type manageWorktreeConfigService interface {
 	GetConfig(workspacePath string) (worktreeruntime.Config, error)
+	InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
 }
 
 type manageOrchestrationPolicyService interface {
@@ -1070,11 +1071,11 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-worktree",
-			Description: "Inspect combined commits for the workspace worktree branch family; defaults to the configured branch prefix for the workspace (for example agent/ or foo/) and supports an optional branch_name override",
+			Description: "Recall durable Clone child lineage for the current parent session with refreshed Git status, or inspect combined commits for a workspace branch family. Recall supports sequential integration review without performing Git mutations.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":         map[string]any{"type": "string", "description": "Action: inspect|list"},
+					"action":         map[string]any{"type": "string", "description": "Action: inspect|list|recall"},
 					"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
 					"branch_name":    map[string]any{"type": "string", "description": "Optional worktree branch family/prefix override such as agent or foo"},
 					"limit":          map[string]any{"type": "integer", "description": "Page size for returned commits (default 25)"},
@@ -1264,7 +1265,7 @@ func (r *Runtime) Definitions() []Definition {
 					"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that the launch does not depend on unfinished child work."},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "The exact dependency-ready wave for one task approval. Do not paste JSON into prompt. Use Explorer for distinct research deliverables and Clone only for independent non-overlapping owned scopes. The current backend orchestration policy defines launch limits; available budget is never a target.",
+						"description": "The exact dependency-ready wave for one task approval. Do not paste JSON into prompt. Use Explorer for distinct research deliverables and Clone for implementation scopes created from the same parent HEAD on unique sibling worktrees. Intentional scope overlap is allowed and reported for sequential integration. The current backend orchestration policy defines launch limits; available budget is never a target.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
@@ -1275,7 +1276,7 @@ func (r *Runtime) Definitions() []Definition {
 								"role":                map[string]any{"type": "string", "description": "Alias for meta_prompt."},
 								"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 								"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to run in the current wave."},
-								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared non-overlapping files, directories, or research scope owned by this child."},
+								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or research scope for planning, review, and overlap warnings; intentional overlap is allowed."},
 								"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that this launch does not depend on another child's unfinished work."},
 							},
 							"additionalProperties": false,
@@ -6226,6 +6227,8 @@ func (r *Runtime) executeManageWorktree(scope WorkspaceScope, args map[string]an
 	switch action {
 	case "inspect", "list":
 		return r.manageWorktreeInspect(scope, args)
+	case "recall":
+		return r.manageWorktreeRecall(scope, args)
 	default:
 		return "", fmt.Errorf("manage-worktree action %q is unsupported", action)
 	}
@@ -6437,6 +6440,112 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		return "", fmt.Errorf("unsupported todo action %q", action)
 	}
 
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any) (string, error) {
+	if r == nil || r.sessions == nil || r.worktrees == nil {
+		return "", errors.New("manage-worktree recall requires session and worktree services")
+	}
+	parentSessionID := strings.TrimSpace(firstNonEmptyString(scope.SessionID, scope.Principal.SessionID))
+	if parentSessionID == "" {
+		return "", errors.New("manage-worktree recall requires current parent session_id")
+	}
+	parent, ok, err := r.sessions.GetSession(parentSessionID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("parent session %q not found", parentSessionID)
+	}
+	limit := asInt(args["limit"], 25)
+	if limit <= 0 {
+		limit = 25
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	cursor := asInt(args["cursor"], 0)
+	if cursor < 0 {
+		cursor = 0
+	}
+	launchMap, _ := parent.Metadata["task_launches"].(map[string]any)
+	children := make([]map[string]any, 0)
+	for callID, raw := range launchMap {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		rows := make([]any, 0)
+		switch typed := entry["launches"].(type) {
+		case []any:
+			rows = typed
+		case []map[string]any:
+			for _, row := range typed {
+				rows = append(rows, row)
+			}
+		}
+		for _, rawRow := range rows {
+			row, ok := rawRow.(map[string]any)
+			if !ok || !strings.EqualFold(strings.TrimSpace(asString(row["subagent"])), "clone") {
+				continue
+			}
+			child := make(map[string]any, len(row)+2)
+			for key, value := range row {
+				child[key] = value
+			}
+			child["task_call_id"] = callID
+			child["parent_session_id"] = parentSessionID
+			path := strings.TrimSpace(firstNonEmptyString(asString(row["worktree_root_path"]), asString(row["workspace_path"])))
+			if path != "" {
+				if state, inspectErr := r.worktrees.InspectTaskWorkspace(path); inspectErr != nil {
+					child["git_inspection_error"] = inspectErr.Error()
+				} else {
+					child["worktree_path"] = state.WorkspacePath
+					child["child_branch"] = state.BranchName
+					child["head_commit"] = state.HeadCommit
+					child["git_status"] = state.Status
+					child["worktree_clean"] = state.Clean
+				}
+			}
+			children = append(children, child)
+		}
+	}
+	sort.SliceStable(children, func(i, j int) bool {
+		leftCall, rightCall := asString(children[i]["task_call_id"]), asString(children[j]["task_call_id"])
+		if leftCall != rightCall {
+			return leftCall < rightCall
+		}
+		return asInt(children[i]["launch_index"], 0) < asInt(children[j]["launch_index"], 0)
+	})
+	total := len(children)
+	end := cursor + limit
+	if end > total {
+		end = total
+	}
+	page := []map[string]any{}
+	if cursor < total {
+		page = children[cursor:end]
+	}
+	nextCursor := 0
+	if end < total {
+		nextCursor = end
+	}
+	response := map[string]any{
+		"status": "ok", "action": "recall", "parent_session_id": parentSessionID,
+		"children": page, "total": total, "returned": len(page), "cursor": cursor, "limit": limit,
+		"next_cursor": nextCursor, "has_more": nextCursor > 0,
+		"integration": map[string]any{
+			"recommended_order": "task call order, then launch_index; after each separately approved integration, call recall again to refresh remaining child HEAD/status",
+			"conflict_policy":   "inspect each child diff against the updated parent; overlapping or conflicting changes remain unresolved child work and are never overwritten",
+			"git_permissions":   "cherry-pick, merge, commit, reset, and other risky Git mutations require separate permission approval",
+		},
+		"path_id": toolPathID("manage-worktree"), "details_truncated": false,
+	}
 	encoded, err := json.Marshal(response)
 	if err != nil {
 		return "", err
@@ -6753,53 +6862,6 @@ func manageAgentInstructionsText() string {
 	return "Use manage-agent to inspect and manage saved agents, custom tools, and subagent transcripts. Call inspect/list first, then get before mutating an agent profile. If the user asks to create an agent but does not specify the agent type/mode or execution mode, clarify before creating. Agent modes: primary agents are user-selectable in Desktop/TUI; subagent agents are usable by primary agents for task delegation and are also user-selectable in Desktop/TUI; background agents are for Flows and do not appear in the Desktop/TUI selector. Execution modes are explicit: runtime_mode=plan_auto means plan approval mode and forces exit_plan_mode_enabled=true; runtime_mode=read means direct read-only mode and forces exit_plan_mode_enabled=false; runtime_mode=readwrite means direct read/write mode and forces exit_plan_mode_enabled=false. Treat runtime_mode as authoritative for create/update. execution_setting is a legacy alias for direct read/readwrite only; do not use it with plan_auto and prefer runtime_mode for new changes. Tool presets are least-privilege grant suggestions and may imply a default direct mode, but they must not override an explicit user-requested runtime_mode. Use action=transcript/session_transcript with session_id from a task report_ref to read a child subagent transcript when inline task output was truncated or omitted. Inspect output includes tool_inventory.tools and tool_inventory.presets; each preset lists the concrete tools it grants. For create/update, prefer object-form `content`, set explicit `runtime_mode`, choose the smallest preset/bundle that fits the requested job, and avoid overscoping. Use explicit `tool_contract.tools.{tool}.enabled` overrides only when the user request needs narrower or slightly broader access than a preset; override names must come from tool_inventory.tools[].contract_name/name. Do not enable bash unless it is limited by explicit bash_prefixes. Do not use inherit_policy for model-created profiles. Custom tool actions use `content={name,kind,description?,command}` and assignment actions use top-level `agent` plus `tool_name`. Mutating actions return approval-ready previews unless confirm=true."
 }
 
-func (r *Runtime) manageAgentVirtualClone(scope WorkspaceScope) (map[string]any, error) {
-	if r == nil || r.sessions == nil {
-		return nil, errors.New("manage-agent Clone resolution requires an active session")
-	}
-	sessionID := strings.TrimSpace(firstNonEmptyString(scope.SessionID, scope.Principal.SessionID))
-	if sessionID == "" {
-		return nil, errors.New("manage-agent Clone resolution requires current session_id")
-	}
-	session, ok, err := r.sessions.GetSession(sessionID)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, fmt.Errorf("session %q not found", sessionID)
-	}
-	raw, ok := session.Metadata["agent_profile"]
-	if !ok || raw == nil {
-		return nil, errors.New("current session is missing trusted agent profile snapshot")
-	}
-	body, err := json.Marshal(raw)
-	if err != nil {
-		return nil, err
-	}
-	var profile pebblestore.AgentProfile
-	if err := json.Unmarshal(body, &profile); err != nil {
-		return nil, err
-	}
-	profile = pebblestore.NormalizeAgentProfile(profile)
-	runtimeMode := pebblestore.AgentProfileRuntimeMode(profile)
-	return map[string]any{
-		"name":                       "clone",
-		"display_name":               "Clone",
-		"kind":                       "virtual_parent_snapshot",
-		"virtual":                    true,
-		"editable":                   false,
-		"source_agent":               strings.TrimSpace(profile.Name),
-		"source_profile_mode":        strings.TrimSpace(profile.Mode),
-		"inherited_runtime_mode":     runtimeMode,
-		"current_child_session_mode": strings.TrimSpace(session.Mode),
-		"effective_capability": map[string]any{
-			"runtime_mode":   runtimeMode,
-			"tool_contract":  pebblestore.CloneAgentToolContract(profile.ToolContract),
-			"safety_overlay": []string{"task", "plan_manage", "exit_plan_mode", "ask_user", "manage_todos", "manage_agent"},
-		},
-	}, nil
-}
-
 func isReservedCloneName(args map[string]any) bool {
 	name := strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "agent"), manageAgentStringArg(args, "name")))
 	if content, err := manageAgentContentObject(args); err == nil {
@@ -6824,16 +6886,10 @@ func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
 	for _, definition := range state.CustomTools {
 		customTools = append(customTools, manageAgentCustomToolMap(definition))
 	}
-	virtualClone, cloneErr := r.manageAgentVirtualClone(scope)
-	virtualTargets := []map[string]any{}
-	if cloneErr == nil {
-		virtualTargets = append(virtualTargets, virtualClone)
-	}
 	response := map[string]any{
 		"status":            "ok",
 		"action":            "inspect",
 		"agents":            agents,
-		"virtual_targets":   virtualTargets,
 		"tool_inventory":    manageAgentToolInventoryMap(r.Definitions(), customTools),
 		"count":             len(agents),
 		"custom_tools":      customTools,
@@ -6864,13 +6920,6 @@ func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
 }
 
 func (r *Runtime) manageAgentGet(scope WorkspaceScope, args map[string]any) (string, error) {
-	if isReservedCloneName(args) {
-		clone, err := r.manageAgentVirtualClone(scope)
-		if err != nil {
-			return "", err
-		}
-		return manageAgentEncodeResponse(map[string]any{"status": "ok", "action": "get", "agent": clone, "path_id": toolPathID("manage-agent"), "summary": "resolved virtual Clone for current caller"})
-	}
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
 	}
@@ -6959,7 +7008,7 @@ func (r *Runtime) manageAgentSessionTranscript(scope WorkspaceScope, args map[st
 
 func (r *Runtime) manageAgentUpsert(scope WorkspaceScope, args map[string]any, mustExist, confirm bool) (string, error) {
 	if isReservedCloneName(args) {
-		return "", errors.New("agent name clone is reserved for the non-editable virtual parent snapshot")
+		return "", errors.New("agent name clone is reserved for the built-in parent-copying subagent")
 	}
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")
@@ -7047,7 +7096,7 @@ func (r *Runtime) manageAgentUpsert(scope WorkspaceScope, args map[string]any, m
 
 func (r *Runtime) manageAgentDelete(scope WorkspaceScope, args map[string]any, confirm bool) (string, error) {
 	if isReservedCloneName(args) {
-		return "", errors.New("agent name clone is reserved for the non-editable virtual parent snapshot")
+		return "", errors.New("agent name clone is reserved for the built-in parent-copying subagent")
 	}
 	if r == nil || r.agents == nil {
 		return "", errors.New("manage-agent service is not configured")

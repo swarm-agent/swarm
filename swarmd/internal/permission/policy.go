@@ -40,6 +40,11 @@ const (
 
 	SubagentOverBudgetAsk  SubagentOverBudgetAction = "ask"
 	SubagentOverBudgetDeny SubagentOverBudgetAction = "deny"
+
+	// These are validation safety bounds, not orchestration defaults. Account policy
+	// remains authoritative within them and can support substantial refactor waves.
+	MaxSubagentWaveSize = 256
+	MaxSubagentDepth    = 16
 )
 
 // SubagentPolicy is the single account-scoped delegation policy. Launches share one
@@ -60,8 +65,8 @@ func DefaultSubagentPolicy() SubagentPolicy {
 		AutomaticLaunchesPerParentRun: 5,
 		ActiveChildLimit:              5,
 		OverBudgetAction:              SubagentOverBudgetAsk,
-		AbsoluteWaveMaximum:           8,
-		MaxDepth:                      1,
+		AbsoluteWaveMaximum:           16,
+		MaxDepth:                      2,
 		RequireWriteIsolation:         true,
 	}
 }
@@ -83,17 +88,17 @@ func ValidateSubagentPolicy(policy SubagentPolicy) error {
 	if policy.ActiveChildLimit < 1 {
 		return fmt.Errorf("active child limit must be at least 1")
 	}
-	if policy.AbsoluteWaveMaximum < 1 || policy.AbsoluteWaveMaximum > 8 {
-		return fmt.Errorf("absolute wave maximum must be between 1 and 8")
+	if policy.AbsoluteWaveMaximum < 1 || policy.AbsoluteWaveMaximum > MaxSubagentWaveSize {
+		return fmt.Errorf("absolute wave maximum must be between 1 and %d", MaxSubagentWaveSize)
 	}
-	if policy.ActiveChildLimit > policy.AbsoluteWaveMaximum {
-		return fmt.Errorf("active child limit cannot exceed absolute wave maximum")
+	if policy.ActiveChildLimit > MaxSubagentWaveSize {
+		return fmt.Errorf("active child limit cannot exceed %d", MaxSubagentWaveSize)
 	}
-	if policy.AutomaticLaunchesPerParentRun > policy.AbsoluteWaveMaximum {
-		return fmt.Errorf("automatic launches per parent run cannot exceed absolute wave maximum")
+	if policy.AutomaticLaunchesPerParentRun > MaxSubagentWaveSize {
+		return fmt.Errorf("automatic launches per parent run cannot exceed %d", MaxSubagentWaveSize)
 	}
-	if policy.MaxDepth < 0 || policy.MaxDepth > 1 {
-		return fmt.Errorf("subagent delegation depth must be 0 or 1")
+	if policy.MaxDepth < 0 || policy.MaxDepth > MaxSubagentDepth {
+		return fmt.Errorf("subagent delegation depth must be between 0 and %d", MaxSubagentDepth)
 	}
 	return nil
 }

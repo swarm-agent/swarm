@@ -112,7 +112,9 @@ type Service struct {
 
 type worktreeService interface {
 	AttachBranch(workspacePath, sessionID, title string) (string, error)
-	AllocateTaskWorkspace(workspacePath, baseBranch, nameSeed string) (worktreeruntime.Allocation, error)
+	ResolveTaskBase(workspacePath string) (worktreeruntime.TaskBase, error)
+	AllocateTaskWorkspace(workspacePath string, base worktreeruntime.TaskBase, nameSeed string) (worktreeruntime.Allocation, error)
+	InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
 }
 
 type RunOptions struct {

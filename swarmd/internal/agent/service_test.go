@@ -196,8 +196,8 @@ func TestRestoreDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
 	if len(state.Profiles) == 0 {
 		t.Fatalf("RestoreDefaults() returned no profiles")
 	}
-	if got := state.ActiveSubagent["clone"]; got != "" {
-		t.Fatalf("active subagent clone = %q, want empty", got)
+	if got := state.ActiveSubagent["clone"]; got != "clone" {
+		t.Fatalf("active subagent clone = %q, want clone", got)
 	}
 
 	for _, name := range []string{"swarm", "explorer", "memory", "clone"} {
@@ -219,7 +219,7 @@ func TestRestoreDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
 	}
 }
 
-func TestEnsureDefaultsPreservesDeletedCloneUntilRestore(t *testing.T) {
+func TestEnsureDefaultsBackfillsDeletedBuiltInClone(t *testing.T) {
 	svc, agents := newTestService(t)
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
@@ -230,14 +230,15 @@ func TestEnsureDefaultsPreservesDeletedCloneUntilRestore(t *testing.T) {
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() after delete error = %v", err)
 	}
-	if _, ok, err := agents.GetProfile("clone"); err != nil || ok {
-		t.Fatalf("deleted clone should stay absent: ok=%v err=%v", ok, err)
-	}
-	if _, _, _, err := svc.RestoreDefaults(); err != nil {
-		t.Fatalf("RestoreDefaults() error = %v", err)
-	}
 	if _, ok, err := agents.GetProfile("clone"); err != nil || !ok {
-		t.Fatalf("restored clone missing: ok=%v err=%v", ok, err)
+		t.Fatalf("backfilled clone missing: ok=%v err=%v", ok, err)
+	}
+	assignments, err := agents.GetActiveSubagents(20)
+	if err != nil {
+		t.Fatalf("GetActiveSubagents() error = %v", err)
+	}
+	if got := assignments["clone"]; got != "clone" {
+		t.Fatalf("clone assignment = %q, want clone", got)
 	}
 }
 

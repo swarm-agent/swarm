@@ -74,6 +74,9 @@ const DECISION_OPTIONS = [
   { value: 'deny', label: 'Deny' },
 ] as const
 
+const MAX_SUBAGENT_WAVE_SIZE = 256
+const MAX_SUBAGENT_DEPTH = 16
+
 const KIND_OPTIONS = [
   { value: 'tool', label: 'Tool' },
   { value: 'bash-prefix', label: 'Bash prefix' },
@@ -189,7 +192,7 @@ export function PermissionsSettingsPage() {
   const [saving, setSaving] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [bypassPermissions, setBypassPermissionsState] = useState(false)
-  const [subagentPolicy, setSubagentPolicy] = useState<SubagentPolicy>({ mode: 'bounded', automatic_launches_per_parent_run: 5, active_child_limit: 5, over_budget_action: 'ask', absolute_wave_maximum: 8, max_depth: 1, require_write_isolation: true })
+  const [subagentPolicy, setSubagentPolicy] = useState<SubagentPolicy>({ mode: 'bounded', automatic_launches_per_parent_run: 5, active_child_limit: 5, over_budget_action: 'ask', absolute_wave_maximum: 16, max_depth: 2, require_write_isolation: true })
   const [subagentBusy, setSubagentBusy] = useState(false)
   const [bypassBusy, setBypassBusy] = useState(false)
   const [confirmBypassOpen, setConfirmBypassOpen] = useState(false)
@@ -405,11 +408,19 @@ export function PermissionsSettingsPage() {
             </label>
             <label className="grid min-w-0 gap-2">
               <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Automatic starts per run</span>
-              <Input className="min-w-0 w-full" type="number" min={0} max={subagentPolicy.absolute_wave_maximum} value={subagentPolicy.automatic_launches_per_parent_run} onChange={(event) => setSubagentPolicy((value) => ({ ...value, automatic_launches_per_parent_run: Number(event.target.value) }))} />
+              <Input className="min-w-0 w-full" type="number" min={0} max={MAX_SUBAGENT_WAVE_SIZE} value={subagentPolicy.automatic_launches_per_parent_run} onChange={(event) => setSubagentPolicy((value) => ({ ...value, automatic_launches_per_parent_run: Number(event.target.value) }))} />
             </label>
             <label className="grid min-w-0 gap-2">
               <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Running at once</span>
-              <Input className="min-w-0 w-full" type="number" min={1} max={subagentPolicy.absolute_wave_maximum} value={subagentPolicy.active_child_limit} onChange={(event) => setSubagentPolicy((value) => ({ ...value, active_child_limit: Number(event.target.value) }))} />
+              <Input className="min-w-0 w-full" type="number" min={1} max={MAX_SUBAGENT_WAVE_SIZE} value={subagentPolicy.active_child_limit} onChange={(event) => setSubagentPolicy((value) => ({ ...value, active_child_limit: Number(event.target.value) }))} />
+            </label>
+            <label className="grid min-w-0 gap-2">
+              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Largest single wave</span>
+              <Input className="min-w-0 w-full" type="number" min={1} max={MAX_SUBAGENT_WAVE_SIZE} value={subagentPolicy.absolute_wave_maximum} onChange={(event) => setSubagentPolicy((value) => ({ ...value, absolute_wave_maximum: Number(event.target.value) }))} />
+            </label>
+            <label className="grid min-w-0 gap-2">
+              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Delegation depth</span>
+              <Input className="min-w-0 w-full" type="number" min={0} max={MAX_SUBAGENT_DEPTH} value={subagentPolicy.max_depth} onChange={(event) => setSubagentPolicy((value) => ({ ...value, max_depth: Number(event.target.value) }))} />
             </label>
             <label className="grid min-w-0 gap-2">
               <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">When the limit is reached</span>
@@ -421,7 +432,9 @@ export function PermissionsSettingsPage() {
           </div>
           <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-3 text-xs leading-5 text-[var(--app-text-muted)]">
             <div><span className="font-medium text-[var(--app-text)]">Automatic launches per run:</span> The total number of child agents a parent can start without asking during one run.</div>
-            <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Children running at once:</span> The number of child agents that can be running at the same time.</div>
+            <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Children running at once:</span> The independent concurrency ceiling; completed children release capacity without restoring the cumulative automatic budget.</div>
+            <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Largest single wave:</span> The maximum children in one task call. It does not cap the cumulative budget or concurrency setting.</div>
+            <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Delegation depth:</span> How many nested generations may delegate; zero disables child delegation.</div>
           </div>
         </section>
 

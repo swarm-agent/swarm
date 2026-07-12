@@ -150,7 +150,7 @@ type taskLaunchManifestRow struct {
 	TargetWorkspacePath   string                         `json:"target_workspace_path,omitempty"`
 	TargetWorkspaceName   string                         `json:"target_workspace_name,omitempty"`
 	SourceArguments       map[string]any                 `json:"source_arguments,omitempty"`
-	VirtualTarget         bool                           `json:"virtual_target,omitempty"`
+	ParentCopy            bool                           `json:"parent_copy,omitempty"`
 	SourceAgentName       string                         `json:"source_agent_name,omitempty"`
 	SourceProfileMode     string                         `json:"source_profile_mode,omitempty"`
 	InheritedRuntimeMode  string                         `json:"inherited_runtime_mode,omitempty"`
@@ -1508,7 +1508,8 @@ func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnap
 		return pebblestore.AgentProfile{}, true, sourceName, err
 	}
 	profile.Name = "clone"
-	profile.Description = "Reserved virtual snapshot of parent agent " + sourceName
+	profile.Mode = "subagent"
+	profile.Description = "Built-in parent-copying subagent launched from " + sourceName
 	if profile.ToolContract != nil {
 		if profile.ToolContract.Tools == nil {
 			profile.ToolContract.Tools = make(map[string]pebblestore.AgentToolConfig)
@@ -1626,7 +1627,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 				"permission_session_id": strings.TrimSpace(sessionID),
 			},
 			SourceArguments:      cloneGenericMap(launch.SourceArguments),
-			VirtualTarget:        virtualTarget,
+			ParentCopy:           virtualTarget,
 			SourceAgentName:      sourceAgentName,
 			SourceProfileMode:    strings.TrimSpace(subagentProfile.Mode),
 			InheritedRuntimeMode: pebblestore.AgentProfileRuntimeMode(subagentProfile),

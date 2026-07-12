@@ -38,6 +38,7 @@ type taskLaunchPrepared struct {
 	ChildWorktreeRoot    string
 	ChildWorktreeBase    string
 	ChildWorktreeBranch  string
+	TaskBase             *worktreeruntime.TaskBase
 	LaunchStartedAtMS    int64
 }
 
@@ -57,6 +58,11 @@ type taskLaunchOutcome struct {
 	WorktreeRootPath   string
 	WorktreeBaseBranch string
 	WorktreeBranch     string
+	BaseCommit         string
+	ParentBranch       string
+	HeadCommit         string
+	GitStatus          string
+	WorktreeClean      bool
 	LaunchStartedAtMS  int64
 	CurrentTool        string
 	CurrentToolStarted int64
@@ -90,7 +96,7 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 	resolved := strings.TrimSpace(launch.SubagentProfile.Name)
 	requested := strings.TrimSpace(launch.RequestedSubagent)
 	metaPrompt := strings.TrimSpace(launch.MetaPrompt)
-	return taskLaunchOutcome{
+	outcome := taskLaunchOutcome{
 		LaunchIndex:        launch.LaunchIndex,
 		RequestedSubagent:  requested,
 		ResolvedSubagent:   resolved,
@@ -107,7 +113,13 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 		WorktreeBaseBranch: strings.TrimSpace(launch.ChildSession.WorktreeBaseBranch),
 		WorktreeBranch:     strings.TrimSpace(launch.ChildSession.WorktreeBranch),
 		LaunchStartedAtMS:  launch.LaunchStartedAtMS,
+		WorktreeClean:      true,
 	}
+	if launch.TaskBase != nil {
+		outcome.BaseCommit = strings.TrimSpace(launch.TaskBase.BaseCommit)
+		outcome.ParentBranch = strings.TrimSpace(launch.TaskBase.ParentBranch)
+	}
+	return outcome
 }
 
 func taskStreamStatusForPhase(phase string) string {
@@ -225,6 +237,11 @@ func buildTaskStreamLaunchPayload(launch taskLaunchOutcome, status, phase string
 		"worktree_enabled":           launch.WorktreeEnabled,
 		"worktree_root_path":         strings.TrimSpace(launch.WorktreeRootPath),
 		"worktree_branch":            strings.TrimSpace(launch.WorktreeBranch),
+		"parent_branch":              strings.TrimSpace(launch.ParentBranch),
+		"base_commit":                strings.TrimSpace(launch.BaseCommit),
+		"head_commit":                strings.TrimSpace(launch.HeadCommit),
+		"worktree_clean":             launch.WorktreeClean,
+		"git_status":                 strings.TrimSpace(launch.GitStatus),
 		"phase":                      phase,
 		"launch_started_at_ms":       launch.LaunchStartedAtMS,
 		"current_tool":               strings.TrimSpace(launch.CurrentTool),
@@ -315,6 +332,13 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"subagent_model":             strings.TrimSpace(launch.SubagentModel),
 		"child_session_id":           strings.TrimSpace(launch.ChildSessionID),
 		"child_mode":                 strings.TrimSpace(launch.ChildMode),
+		"workspace_path":             strings.TrimSpace(launch.WorkspacePath),
+		"worktree_branch":            strings.TrimSpace(launch.WorktreeBranch),
+		"parent_branch":              strings.TrimSpace(launch.ParentBranch),
+		"base_commit":                strings.TrimSpace(launch.BaseCommit),
+		"head_commit":                strings.TrimSpace(launch.HeadCommit),
+		"worktree_clean":             launch.WorktreeClean,
+		"git_status":                 strings.TrimSpace(launch.GitStatus),
 		"launch_started_at_ms":       launch.LaunchStartedAtMS,
 		"current_tool":               strings.TrimSpace(launch.CurrentTool),
 		"current_tool_started_at_ms": launch.CurrentToolStarted,
@@ -458,18 +482,29 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		if snapshotErr != nil {
 			return taskLaunchPrepared{}, snapshotErr
 		}
-		childMetadata["virtual_target"] = "clone"
+		childMetadata["parent_copy"] = true
 		childMetadata["source_agent_name"] = strings.TrimSpace(launch.SourceAgentName)
 		childMetadata["source_profile_mode"] = strings.TrimSpace(profileSnapshot.Mode)
 		childMetadata["inherited_runtime_mode"] = pebblestore.AgentProfileRuntimeMode(profileSnapshot)
 		childMetadata["agent_profile"] = profileSnapshot
+		if launch.TaskBase != nil {
+			childMetadata["repository_root"] = strings.TrimSpace(launch.TaskBase.RepoRoot)
+			childMetadata["parent_branch"] = strings.TrimSpace(launch.TaskBase.ParentBranch)
+			childMetadata["base_commit"] = strings.TrimSpace(launch.TaskBase.BaseCommit)
+		}
 	}
 	if lineageSource := strings.TrimSpace(targetedSubagentName); lineageSource != "" {
 		childMetadata["launch_source"] = "targeted_subagent"
 		childMetadata["targeted_subagent"] = lineageSource
 	}
-	if launch.VirtualTarget && parentSession.WorktreeEnabled && s.worktrees != nil {
-		allocation, allocErr := s.worktrees.AllocateTaskWorkspace(parentSession.WorkspacePath, firstNonEmptyString(parentSession.WorktreeBranch, parentSession.WorktreeBaseBranch), childSessionID)
+	if launch.VirtualTarget {
+		if s.worktrees == nil {
+			return taskLaunchPrepared{}, errors.New("task failed to allocate Clone worktree: worktree service is unavailable")
+		}
+		if launch.TaskBase == nil {
+			return taskLaunchPrepared{}, errors.New("task failed to allocate Clone worktree: parent Git state was not resolved")
+		}
+		allocation, allocErr := s.worktrees.AllocateTaskWorkspace(parentSession.WorkspacePath, *launch.TaskBase, childSessionID)
 		if allocErr != nil {
 			return taskLaunchPrepared{}, fmt.Errorf("task failed to allocate subagent worktree: %w", allocErr)
 		}
@@ -488,6 +523,11 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 
 	if childWorkspaceID != "" {
 		childMetadata["workspace_id"] = childWorkspaceID
+	}
+	if launch.VirtualTarget {
+		childMetadata["worktree_path"] = childWorktreeRootPath
+		childMetadata["child_branch"] = childWorktreeBranch
+		childMetadata["worktree_base_branch"] = childWorktreeBaseBranch
 	}
 	nowMS := time.Now().UnixMilli()
 	childSession := pebblestore.SessionSnapshot{
@@ -2665,7 +2705,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				return "", err
 			}
 			trustedProfiles[i] = &profile
-			trustedVirtualTargets[i] = row.VirtualTarget
+			trustedVirtualTargets[i] = row.ParentCopy
 			trustedSources[i] = strings.TrimSpace(row.SourceAgentName)
 		}
 	}
@@ -2676,10 +2716,19 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			cloneIndexes = append(cloneIndexes, i)
 		}
 	}
-	if len(cloneIndexes) > 1 {
-		if !parentSession.WorktreeEnabled || s.worktrees == nil {
-			return "", errors.New("concurrent write-capable clones require separate worktree isolation")
+	var cloneTaskBase *worktreeruntime.TaskBase
+	if len(cloneIndexes) > 0 {
+		if s.worktrees == nil {
+			return "", errors.New("write-capable clones require separate worktree isolation")
 		}
+		resolved, resolveErr := s.worktrees.ResolveTaskBase(parentSession.WorkspacePath)
+		if resolveErr != nil {
+			return "", fmt.Errorf("task failed to resolve parent Git state before Clone execution: %w", resolveErr)
+		}
+		cloneTaskBase = &resolved
+	}
+	collisionWarnings := make([]string, 0)
+	if len(cloneIndexes) > 1 {
 		for _, index := range cloneIndexes {
 			if len(launchSpecs[index].OwnedScope) == 0 {
 				return "", fmt.Errorf("task launches[%d] clone requires declared owned_scope", index)
@@ -2688,7 +2737,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		for left := 0; left < len(cloneIndexes); left++ {
 			for right := left + 1; right < len(cloneIndexes); right++ {
 				if taskOwnedScopesOverlap(launchSpecs[cloneIndexes[left]].OwnedScope, launchSpecs[cloneIndexes[right]].OwnedScope) {
-					return "", fmt.Errorf("concurrent clone owned scopes overlap between launches[%d] and launches[%d]", cloneIndexes[left], cloneIndexes[right])
+					collisionWarnings = append(collisionWarnings, fmt.Sprintf("owned scopes overlap between launches[%d] and launches[%d]; integrate these child commits sequentially and resolve conflicts explicitly", cloneIndexes[left], cloneIndexes[right]))
 				}
 			}
 		}
@@ -2708,6 +2757,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, taskLaunchPrepared{
 			LaunchIndex:       i + 1,
 			VirtualTarget:     trustedVirtualTargets[i],
+			TaskBase:          cloneTaskBase,
 			RequestedSubagent: requestedSubagent,
 			MetaPrompt:        metaPrompt,
 			AssignmentLabel:   spec.AssignmentLabel,
@@ -2744,6 +2794,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			"parallel_execution_mode": "all_at_once",
 			"launch_count":            len(launches),
 			"parent_session_id":       strings.TrimSpace(parentSession.ID),
+			"collision_warnings":      append([]string(nil), collisionWarnings...),
 		}
 		if len(launches) > 0 {
 			entry["subagent"] = strings.TrimSpace(launches[0].ResolvedSubagent)
@@ -2779,6 +2830,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"worktree_root_path":   strings.TrimSpace(launch.WorktreeRootPath),
 				"worktree_base_branch": strings.TrimSpace(launch.WorktreeBaseBranch),
 				"worktree_branch":      strings.TrimSpace(launch.WorktreeBranch),
+				"parent_branch":        strings.TrimSpace(launch.ParentBranch),
+				"base_commit":          strings.TrimSpace(launch.BaseCommit),
+				"head_commit":          strings.TrimSpace(launch.HeadCommit),
+				"worktree_clean":       launch.WorktreeClean,
+				"git_status":           strings.TrimSpace(launch.GitStatus),
 				"current_tool":         strings.TrimSpace(launch.CurrentTool),
 				"current_tool_ms":      currentToolMS,
 				"elapsed_ms":           elapsedMS,
@@ -2924,6 +2980,17 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 		})
 		if runErr != nil {
+			if launch.VirtualTarget && s.worktrees != nil {
+				if state, inspectErr := s.worktrees.InspectTaskWorkspace(outcome.WorkspacePath); inspectErr == nil {
+					outcome.WorktreeBranch = strings.TrimSpace(state.BranchName)
+					outcome.HeadCommit = strings.TrimSpace(state.HeadCommit)
+					outcome.GitStatus = strings.TrimSpace(state.Status)
+					outcome.WorktreeClean = state.Clean
+				} else {
+					outcome.GitStatus = "Git inspection failed: " + inspectErr.Error()
+					outcome.WorktreeClean = false
+				}
+			}
 			nowMS := time.Now().UnixMilli()
 			if outcome.LaunchStartedAtMS <= 0 {
 				outcome.LaunchStartedAtMS = nowMS
@@ -2961,6 +3028,22 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		outcome.ReportChars = len([]rune(report))
 		outcome.ReportExcerpt = report
 		outcome.ReportRef = reportRef
+		if launch.VirtualTarget && s.worktrees != nil {
+			state, inspectErr := s.worktrees.InspectTaskWorkspace(outcome.WorkspacePath)
+			if inspectErr != nil {
+				return outcome, fmt.Errorf("inspect Clone handoff Git state: %w", inspectErr)
+			}
+			outcome.WorktreeBranch = strings.TrimSpace(state.BranchName)
+			outcome.HeadCommit = strings.TrimSpace(state.HeadCommit)
+			outcome.GitStatus = strings.TrimSpace(state.Status)
+			outcome.WorktreeClean = state.Clean
+			if outcome.HeadCommit == "" {
+				return outcome, errors.New("Clone handoff is missing child HEAD commit")
+			}
+			if outcome.HeadCommit == outcome.BaseCommit && outcome.WorktreeClean {
+				return outcome, errors.New("implementation Clone completed without a commit or uncommitted work")
+			}
+		}
 		if outcome.ReportChars > taskReportDefaultChars {
 			outcome.ReportTruncated = true
 			outcome.ReportExcerpt = truncateRunes(report, taskReportDefaultChars)
@@ -3232,6 +3315,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 	b.WriteString("6. End with a `Relevant filepaths:` section listing the most important files and why each matters.\n")
 	b.WriteString("7. If essential files are still unknown, include an `Open questions / missing filepaths:` section with exact paths needed.\n")
 	b.WriteString("8. Keep the final response concise, factual, and implementation-focused.\n")
+	b.WriteString("9. For implementation Clone work, finish with a scoped commit. If commit permission is denied or work fails, explicitly report the uncommitted/failed state; the parent records live HEAD and status for later repair.\n")
 	return strings.TrimSpace(b.String())
 }
 

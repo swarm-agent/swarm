@@ -55,12 +55,27 @@ type Config struct {
 	UpdatedAt        int64  `json:"updated_at"`
 }
 
+type TaskBase struct {
+	RepoRoot     string `json:"repo_root"`
+	ParentBranch string `json:"parent_branch"`
+	BaseCommit   string `json:"base_commit"`
+}
+
 type Allocation struct {
 	WorkspacePath string `json:"workspace_path"`
 	RepoRoot      string `json:"repo_root"`
 	BaseBranch    string `json:"base_branch"`
+	BaseCommit    string `json:"base_commit,omitempty"`
 	BranchName    string `json:"branch_name,omitempty"`
 	WorkspaceID   string `json:"workspace_id,omitempty"`
+}
+
+type TaskWorkspaceState struct {
+	WorkspacePath string `json:"workspace_path"`
+	BranchName    string `json:"branch_name"`
+	HeadCommit    string `json:"head_commit"`
+	Status        string `json:"status"`
+	Clean         bool   `json:"clean"`
 }
 
 type ManagedWorktree struct {
@@ -278,23 +293,81 @@ func (s *Service) allocateSessionWorkspaceWithBranchMode(workspacePath string, u
 	}, nil
 }
 
-func (s *Service) AllocateTaskWorkspace(workspacePath, baseBranch, nameSeed string) (Allocation, error) {
+func (s *Service) ResolveTaskBase(workspacePath string) (TaskBase, error) {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return TaskBase{}, errors.New("workspace path is required")
+	}
+	repoRoot, err := resolveRepositoryRoot(workspacePath)
+	if err != nil {
+		return TaskBase{}, err
+	}
+	branch, err := currentBranch(workspacePath)
+	if err != nil {
+		return TaskBase{}, fmt.Errorf("detect current branch: %w", err)
+	}
+	if strings.TrimSpace(branch) == "" {
+		return TaskBase{}, errors.New("detect current branch: repository is in detached HEAD state")
+	}
+	commit, err := runGit(workspacePath, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return TaskBase{}, fmt.Errorf("resolve parent HEAD: %w", err)
+	}
+	if strings.TrimSpace(commit) == "" {
+		return TaskBase{}, errors.New("resolve parent HEAD: empty commit")
+	}
+	return TaskBase{RepoRoot: repoRoot, ParentBranch: branch, BaseCommit: commit}, nil
+}
+
+func (s *Service) InspectTaskWorkspace(workspacePath string) (TaskWorkspaceState, error) {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return TaskWorkspaceState{}, errors.New("workspace path is required")
+	}
+	branch, err := currentBranch(workspacePath)
+	if err != nil {
+		return TaskWorkspaceState{}, fmt.Errorf("detect task branch: %w", err)
+	}
+	head, err := runGit(workspacePath, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return TaskWorkspaceState{}, fmt.Errorf("resolve task HEAD: %w", err)
+	}
+	status, err := runGit(workspacePath, "status", "--short", "--untracked-files=all")
+	if err != nil {
+		return TaskWorkspaceState{}, fmt.Errorf("inspect task worktree status: %w", err)
+	}
+	status = strings.TrimSpace(status)
+	return TaskWorkspaceState{
+		WorkspacePath: workspacePath,
+		BranchName:    strings.TrimSpace(branch),
+		HeadCommit:    strings.TrimSpace(head),
+		Status:        status,
+		Clean:         status == "",
+	}, nil
+}
+
+func (s *Service) AllocateTaskWorkspace(workspacePath string, base TaskBase, nameSeed string) (Allocation, error) {
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
 		return Allocation{}, errors.New("workspace path is required")
 	}
-	baseBranch = strings.TrimSpace(baseBranch)
-	if baseBranch == "" {
-		branch, branchErr := currentBranch(workspacePath)
-		if branchErr != nil {
-			return Allocation{}, fmt.Errorf("detect current branch: %w", branchErr)
-		}
-		if strings.TrimSpace(branch) == "" {
-			return Allocation{}, errors.New("detect current branch: repository is in detached HEAD state; explicit base branch is required for task worktrees")
-		}
-		baseBranch = branch
+	if strings.TrimSpace(base.RepoRoot) == "" || strings.TrimSpace(base.ParentBranch) == "" || strings.TrimSpace(base.BaseCommit) == "" {
+		return Allocation{}, errors.New("task base requires repository root, parent branch, and base commit")
 	}
-	return s.allocateSessionWorkspace(workspacePath, false, baseBranch, "", nameSeed)
+	resolvedRoot, err := resolveRepositoryRoot(workspacePath)
+	if err != nil {
+		return Allocation{}, err
+	}
+	if !sameCleanPath(resolvedRoot, base.RepoRoot) {
+		return Allocation{}, fmt.Errorf("task base repository %q does not match workspace repository %q", base.RepoRoot, resolvedRoot)
+	}
+	allocation, err := s.allocateSessionWorkspace(workspacePath, false, base.BaseCommit, "", nameSeed)
+	if err != nil {
+		return Allocation{}, err
+	}
+	allocation.BaseBranch = strings.TrimSpace(base.ParentBranch)
+	allocation.BaseCommit = strings.TrimSpace(base.BaseCommit)
+	return allocation, nil
 }
 
 func (s *Service) ListManaged(workspacePath string) ([]ManagedWorktree, error) {

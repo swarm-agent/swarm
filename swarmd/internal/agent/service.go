@@ -229,6 +229,9 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 			profile.AutoModel = input.AutoModel
 			profile.AutoThinking = input.AutoThinking
 			result.Agents = append(result.Agents, name)
+		case "clone":
+			result.Agents = append(result.Agents, name)
+			result.Subagents = append(result.Subagents, name)
 		default:
 			if _, ok := utilityNames[name]; !ok {
 				continue
@@ -259,7 +262,7 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 		return DefaultModelHydrationResult{}, err
 	}
 	for purpose, profileName := range defaultSubagentAssignments() {
-		if _, ok := utilityNames[normalizeName(profileName)]; !ok {
+		if _, ok := utilityNames[normalizeName(profileName)]; !ok && !strings.EqualFold(profileName, "clone") {
 			continue
 		}
 		if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, profileName); err != nil {
@@ -345,6 +348,17 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 		}
 	}
 	if err := s.cleanupBuiltInParallelForAccountLocked(accountScopeID); err != nil {
+		return err
+	}
+	if current, ok, err := s.getProfileForAccountLocked(accountScopeID, "clone"); err != nil {
+		return err
+	} else if !ok || current.Mode != ModeSubagent || !current.Enabled {
+		profile, _ := defaultProfileByName("clone", now)
+		if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
+			return err
+		}
+	}
+	if err := s.setActiveSubagentForAccountLocked(accountScopeID, "clone", "clone"); err != nil {
 		return err
 	}
 
@@ -628,55 +642,6 @@ func oldDefaultClonePrompt() string {
 	return strings.TrimSpace("" +
 		"You are Clone, a fast implementation subagent mirroring Swarm behavior.\n" +
 		"Execute concrete file-change tasks and report exact edits with minimal narrative.")
-}
-
-func shouldRemoveBuiltInClone(profile pebblestore.AgentProfile) bool {
-	if strings.TrimSpace(profile.Name) != "clone" {
-		return false
-	}
-	if profile.Mode != ModeSubagent || !profile.Enabled {
-		return false
-	}
-	if strings.TrimSpace(profile.Description) != "Swarm clone" || strings.TrimSpace(profile.Prompt) != oldDefaultClonePrompt() {
-		return false
-	}
-	if strings.TrimSpace(profile.Provider) != "" || strings.TrimSpace(profile.Model) != "" || strings.TrimSpace(profile.Thinking) != "" {
-		return false
-	}
-	if strings.TrimSpace(profile.ModelMode) != "" || strings.TrimSpace(profile.PlanProvider) != "" || strings.TrimSpace(profile.PlanModel) != "" || strings.TrimSpace(profile.AutoProvider) != "" || strings.TrimSpace(profile.AutoModel) != "" {
-		return false
-	}
-	if pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModeReadWrite {
-		return false
-	}
-	return profile.ToolContract != nil && strings.TrimSpace(profile.ToolContract.Preset) == "read_write"
-}
-
-func (s *Service) cleanupBuiltInCloneForAccountLocked(accountScopeID string) error {
-	activeSubagents, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
-	if err != nil {
-		return err
-	}
-	if strings.EqualFold(strings.TrimSpace(activeSubagents["clone"]), "clone") {
-		if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, "clone"); err != nil {
-			return err
-		}
-	}
-	current, ok, err := s.getProfileForAccountLocked(accountScopeID, "clone")
-	if err != nil || !ok {
-		return err
-	}
-	if !shouldRemoveBuiltInClone(current) {
-		return nil
-	}
-	for purpose, assigned := range activeSubagents {
-		if strings.EqualFold(strings.TrimSpace(assigned), "clone") {
-			if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose); err != nil {
-				return err
-			}
-		}
-	}
-	return s.deleteProfileForAccountLocked(accountScopeID, "clone")
 }
 
 func (s *Service) ListState(limit int) (State, error) {
@@ -1648,9 +1613,6 @@ func (s *Service) restoreDefaultsForAccount(accountScopeID string) (State, int64
 			return State{}, 0, nil, err
 		}
 	}
-	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
-		return State{}, 0, nil, err
-	}
 
 	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
@@ -1763,9 +1725,6 @@ func (s *Service) resetDefaultsForAccount(accountScopeID string) (State, int64, 
 		if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, profileName); err != nil {
 			return State{}, 0, nil, err
 		}
-	}
-	if err := s.cleanupBuiltInCloneForAccountLocked(accountScopeID); err != nil {
-		return State{}, 0, nil, err
 	}
 
 	version, err := s.bumpVersionForAccountLocked(accountScopeID)
@@ -2235,6 +2194,7 @@ func defaultSubagentAssignments() map[string]string {
 	return map[string]string{
 		"explorer": "explorer",
 		"memory":   "memory",
+		"clone":    "clone",
 	}
 }
 

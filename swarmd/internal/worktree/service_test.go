@@ -12,6 +12,43 @@ import (
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
+func TestResolveTaskBaseUsesExactHEADFromLinkedWorktree(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+	if _, err := runGit(repo, "config", "user.email", "test@example.invalid"); err != nil {
+		t.Fatalf("configure email: %v", err)
+	}
+	if _, err := runGit(repo, "config", "user.name", "Test User"); err != nil {
+		t.Fatalf("configure name: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if _, err := runGit(repo, "add", "README.md"); err != nil {
+		t.Fatalf("add fixture: %v", err)
+	}
+	if _, err := runGit(repo, "commit", "-m", "base"); err != nil {
+		t.Fatalf("commit fixture: %v", err)
+	}
+	linked := filepath.Join(t.TempDir(), "linked")
+	if _, err := runGit(repo, "worktree", "add", "-b", "agent/refactor", linked, "HEAD"); err != nil {
+		t.Fatalf("add linked worktree: %v", err)
+	}
+	base, err := (&Service{}).ResolveTaskBase(linked)
+	if err != nil {
+		t.Fatalf("ResolveTaskBase: %v", err)
+	}
+	head, err := runGit(linked, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve fixture HEAD: %v", err)
+	}
+	if base.RepoRoot != repo || base.ParentBranch != "agent/refactor" || base.BaseCommit != head {
+		t.Fatalf("task base = %#v, want root=%q branch=agent/refactor commit=%q", base, repo, head)
+	}
+}
+
 func TestDeterministicSessionWorktreePathUsesPrivateWorktreeDataDir(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
 	dataHome := filepath.Join(t.TempDir(), "data")

@@ -423,13 +423,25 @@ func TestBuildTaskLaunchPermissionPayloadIncludesResolvedToolSummary(t *testing.
 type taskLaunchWorktreeStub struct {
 	allocations int
 	allocation  worktreeruntime.Allocation
+	taskBase    worktreeruntime.TaskBase
 }
 
 func (s *taskLaunchWorktreeStub) AttachBranch(_, _, _ string) (string, error) { return "", nil }
 
-func (s *taskLaunchWorktreeStub) AllocateTaskWorkspace(_, _, _ string) (worktreeruntime.Allocation, error) {
+func (s *taskLaunchWorktreeStub) ResolveTaskBase(_ string) (worktreeruntime.TaskBase, error) {
+	if strings.TrimSpace(s.taskBase.BaseCommit) == "" {
+		return worktreeruntime.TaskBase{RepoRoot: "/repo", ParentBranch: "dev", BaseCommit: "base-commit"}, nil
+	}
+	return s.taskBase, nil
+}
+
+func (s *taskLaunchWorktreeStub) AllocateTaskWorkspace(_ string, _ worktreeruntime.TaskBase, _ string) (worktreeruntime.Allocation, error) {
 	s.allocations++
 	return s.allocation, nil
+}
+
+func (s *taskLaunchWorktreeStub) InspectTaskWorkspace(path string) (worktreeruntime.TaskWorkspaceState, error) {
+	return worktreeruntime.TaskWorkspaceState{WorkspacePath: path, BranchName: s.allocation.BranchName, HeadCommit: s.taskBase.BaseCommit, Clean: true}, nil
 }
 
 func TestApprovedExplorerInheritsParentWorktreeScopeWithoutAllocation(t *testing.T) {
@@ -492,8 +504,12 @@ func TestApprovedCloneAllocatesIsolatedWorktreeScope(t *testing.T) {
 	if err != nil || !virtual {
 		t.Fatalf("resolve Clone profile: virtual=%t source=%q err=%v", virtual, source, err)
 	}
+	taskBase, err := stub.ResolveTaskBase(parent.WorkspacePath)
+	if err != nil {
+		t.Fatalf("resolve task base: %v", err)
+	}
 	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
-		LaunchIndex: 1, RequestedSubagent: "clone", MetaPrompt: "implement", VirtualTarget: virtual,
+		LaunchIndex: 1, RequestedSubagent: "clone", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase,
 	}, "implement", "", &profile, source, nil)
 	if err != nil {
 		t.Fatalf("prepare approved Clone: %v", err)
@@ -1241,7 +1257,7 @@ func stringSliceContains(values []string, want string) bool {
 	return false
 }
 
-func TestVirtualClonePermissionSnapshotsCurrentCaller(t *testing.T) {
+func TestClonePermissionSnapshotsCurrentCaller(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 	parent, ok, err := svc.sessions.GetSession(parentSessionID)
@@ -1268,7 +1284,7 @@ func TestVirtualClonePermissionSnapshotsCurrentCaller(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build Clone manifest: %v", err)
 	}
-	if len(manifest.Launches) != 1 || !manifest.Launches[0].VirtualTarget || manifest.Launches[0].SourceAgentName != "swarm" {
+	if len(manifest.Launches) != 1 || !manifest.Launches[0].ParentCopy || manifest.Launches[0].SourceAgentName != "swarm" {
 		t.Fatalf("Clone manifest = %#v", manifest.Launches)
 	}
 	if manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Prompt != "trusted parent prompt" || manifest.Launches[0].InheritedRuntimeMode != pebblestore.AgentRuntimeModePlanAuto {
@@ -1332,8 +1348,8 @@ func TestApprovedExplorerWaveManifestDigestSurvivesPermissionRoundTrip(t *testin
 		t.Fatalf("build Explorer manifest: %v", err)
 	}
 	for i, row := range manifest.Launches {
-		if row.VirtualTarget {
-			t.Fatalf("Explorer manifest launch %d incorrectly classified virtual: %#v", i, row)
+		if row.ParentCopy {
+			t.Fatalf("Explorer manifest launch %d incorrectly classified as a parent copy: %#v", i, row)
 		}
 		if row.ProfileSnapshot == nil {
 			t.Fatalf("Explorer manifest launch %d missing trusted profile snapshot", i)
