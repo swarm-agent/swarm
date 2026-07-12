@@ -290,12 +290,20 @@ export interface SessionDeployProposal {
   manifest: Record<string, unknown>
 }
 
+export interface SessionDeployWorkspace {
+  id: string
+  generation: number
+  path: string
+  name: string
+}
+
 export interface SessionDeployPermissionPayload {
   action: 'deploy'
   manifestVersion: number
   manifestDigest: string
   proposals: SessionDeployProposal[]
   allowedAgents: Array<{ name: string; mode: 'primary' | 'subagent' }>
+  allowedWorkspaces: SessionDeployWorkspace[]
   approvedArguments: Record<string, unknown>
 }
 
@@ -734,12 +742,27 @@ export function parseSessionDeployPermission(permission: DesktopPermissionRecord
       allowedAgentsByName.set(name.toLowerCase(), { name, mode })
     }
   })
+  const rawAllowedWorkspaces = Array.isArray(payload.allowed_workspaces) ? payload.allowed_workspaces : []
+  const allowedWorkspaces = rawAllowedWorkspaces.flatMap((entry): SessionDeployWorkspace[] => {
+    const workspace = asRecord(entry)
+    if (!workspace) return []
+    const id = mapStringArg(workspace, 'id')
+    const path = mapStringArg(workspace, 'path')
+    if (!id || !path) return []
+    return [{
+      id,
+      generation: mapNumberArg(workspace, 'generation'),
+      path,
+      name: mapStringArg(workspace, 'name'),
+    }]
+  })
   return {
     action: 'deploy',
     manifestVersion: mapNumberArg(payload, 'manifest_version'),
     manifestDigest: mapStringArg(payload, 'manifest_digest'),
     proposals,
     allowedAgents: [...allowedAgentsByName.values()],
+    allowedWorkspaces,
     approvedArguments,
   }
 }

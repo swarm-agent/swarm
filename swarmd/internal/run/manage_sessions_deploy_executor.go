@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/privacy"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -240,14 +241,43 @@ func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSession
 		if results[i].Status == "error" || results[i].Status == "replayed" {
 			continue
 		}
-		go func() {
-			_, _ = s.RunTurnWithOptions(context.Background(), item.session.ID, RunOptions{Prompt: item.proposal.Prompt, AgentName: item.profile.Name, TrustedAgentProfile: &item.profile, PermissionSessionID: item.session.ID, RunID: item.runID, Principal: principal, ApplySessionMutation: apply, SkipInitialUserMessage: true})
-		}()
+		go func(item prepared) {
+			_, runErr := s.RunTurnWithOptions(context.Background(), item.session.ID, RunOptions{Prompt: item.proposal.Prompt, AgentName: item.profile.Name, PermissionSessionID: item.session.ID, RunID: item.runID, Principal: principal, ApplySessionMutation: apply, SkipInitialUserMessage: true})
+			if runErr != nil {
+				s.recordManageSessionsDeployRunFailure(item.session, item.runID, principal, runErr, apply)
+			}
+		}(item)
 		results[i].Status = "started"
 	}
 	payload := map[string]any{"tool": "manage_sessions", "action": "deploy", "manifest_digest": digest, "selected_count": len(results), "results": results}
 	raw, err := json.Marshal(payload)
 	return string(raw), err
+}
+
+func (s *Service) recordManageSessionsDeployRunFailure(session pebblestore.SessionSnapshot, runID string, principal identity.Principal, runErr error, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) {
+	if runErr == nil || apply == nil {
+		return
+	}
+	reason := strings.TrimSpace(privacy.SanitizeText(runErr.Error()))
+	if reason == "" {
+		reason = "session deployment run failed before startup completed"
+	}
+	now := time.Now().UnixMilli()
+	message := pebblestore.MessageSnapshot{
+		ID:             deterministicDeployID(runID, session.ID, "failure-message"),
+		SessionID:      session.ID,
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		Role:           "system",
+		Content:        "[run-failed] The deployed session could not start.\n\n" + reason,
+		Metadata:       map[string]any{"source": "session_deploy", "message_kind": "run_failure", "run_id": runID, "synthetic": true, "visible": true},
+		CreatedAt:      now,
+	}
+	messageKey := "session-deploy:run-failure-message:" + runID
+	_, _ = apply(sessionruntime.SessionMutationInput{SessionID: session.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: messageKey, IdempotencyKey: messageKey, PayloadHash: messageKey, RequestHash: messageKey, Kind: sessionruntime.SessionMutationAppendMessage, EventType: "session.message.appended", Message: &message, NowUnixMs: now})
+	intent := pebblestore.V3SessionRunIntent{SessionID: session.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, RunID: runID, Status: sessionruntime.RunIntentFailed, BlockedReason: reason, UpdatedAt: now}
+	statusKey := "session-deploy:run-failed:" + runID
+	_, _ = apply(sessionruntime.SessionMutationInput{SessionID: session.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: statusKey, IdempotencyKey: statusKey, PayloadHash: statusKey, RequestHash: statusKey, Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.run.failed", RunIntent: &intent, NowUnixMs: now})
 }
 
 func deterministicDeployID(digest, proposalID, kind string) string {

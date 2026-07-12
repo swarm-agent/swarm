@@ -1,10 +1,13 @@
 package run
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -59,6 +62,7 @@ func TestManageSessionsDeployDigestStableAndBound(t *testing.T) {
 	}
 	manifest.ManifestDigest = "ignored"
 	manifest.ApprovedArguments = map[string]any{"ignored": true}
+	manifest.AllowedWorkspaces = []manageSessionsDeployWorkspace{{ID: "workspace", Generation: 2, Path: "/workspace", Name: "Workspace"}}
 	second, err := manageSessionsDeployDigest(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +111,25 @@ func TestDeterministicDeployIDStableAndProposalBound(t *testing.T) {
 	}
 	if first == deterministicDeployID("digest", "proposal-2", "session") {
 		t.Fatal("deterministic deploy id did not bind proposal")
+	}
+}
+
+func TestRecordManageSessionsDeployRunFailurePersistsMessageAndFailedIntent(t *testing.T) {
+	var mutations []sessionruntime.SessionMutationInput
+	apply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		mutations = append(mutations, input)
+		return sessionruntime.SessionMutationResult{}, nil
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "session"}
+	(&Service{}).recordManageSessionsDeployRunFailure(pebblestore.SessionSnapshot{ID: "session"}, "run-1", principal, errors.New("startup exploded"), apply)
+	if len(mutations) != 2 {
+		t.Fatalf("mutations = %d, want failure message and run status", len(mutations))
+	}
+	if mutations[0].Kind != sessionruntime.SessionMutationAppendMessage || mutations[0].Message == nil || !strings.Contains(mutations[0].Message.Content, "startup exploded") {
+		t.Fatalf("failure message mutation = %#v", mutations[0])
+	}
+	if mutations[1].Kind != sessionruntime.SessionMutationRecordRunIntent || mutations[1].RunIntent == nil || mutations[1].RunIntent.Status != sessionruntime.RunIntentFailed || mutations[1].RunIntent.BlockedReason != "startup exploded" {
+		t.Fatalf("failure intent mutation = %#v", mutations[1])
 	}
 }
 

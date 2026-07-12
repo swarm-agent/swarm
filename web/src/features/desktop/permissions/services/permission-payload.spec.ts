@@ -26,6 +26,7 @@ function testSessionDeployPermissionPayload(): void {
         { id: 'proposal-1', title: 'Primary', prompt: 'Do primary work', mode: 'auto', agent_name: 'swarm', agent_mode: 'primary', workspace_path: '/workspace', selected: true },
         { id: 'proposal-2', title: 'Explore', prompt: 'Investigate', mode: 'plan', agent_name: 'explorer', agent_mode: 'subagent', workspace_path: '/workspace', selected: true },
       ],
+      allowed_workspaces: [{ id: 'workspace-1', generation: 3, path: '/workspace', name: 'Workspace' }],
       approved_arguments: { action: 'deploy', manifest_digest: 'digest-1' },
     }),
   })
@@ -34,6 +35,7 @@ function testSessionDeployPermissionPayload(): void {
   assert(payload.proposals.length === 2, 'expected two deploy proposals')
   assert(payload.proposals[0]?.selected === true, 'expected server default selection')
   assert(payload.allowedAgents.map((agent) => `${agent.name}:${agent.mode}`).join(',') === 'swarm:primary,explorer:subagent', 'expected server-resolved agents')
+  assert(payload.allowedWorkspaces.length === 1 && payload.allowedWorkspaces[0]?.path === '/workspace' && payload.allowedWorkspaces[0]?.generation === 3, 'expected server-resolved workspace choices')
 }
 
 function makePermission(overrides: Partial<DesktopPermissionRecord> = {}): DesktopPermissionRecord {

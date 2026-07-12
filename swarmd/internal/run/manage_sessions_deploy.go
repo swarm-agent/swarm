@@ -41,15 +41,23 @@ type manageSessionsDeployProposal struct {
 	Selected            bool   `json:"selected"`
 }
 
+type manageSessionsDeployWorkspace struct {
+	ID         string `json:"id"`
+	Generation int64  `json:"generation"`
+	Path       string `json:"path"`
+	Name       string `json:"name,omitempty"`
+}
+
 type manageSessionsDeployManifest struct {
-	ManifestVersion   int                            `json:"manifest_version"`
-	Action            string                         `json:"action"`
-	ParentSessionID   string                         `json:"parent_session_id"`
-	AccountScopeID    string                         `json:"account_scope_id"`
-	UserID            string                         `json:"user_id"`
-	Proposals         []manageSessionsDeployProposal `json:"proposals"`
-	ManifestDigest    string                         `json:"manifest_digest"`
-	ApprovedArguments map[string]any                 `json:"approved_arguments"`
+	ManifestVersion   int                             `json:"manifest_version"`
+	Action            string                          `json:"action"`
+	ParentSessionID   string                          `json:"parent_session_id"`
+	AccountScopeID    string                          `json:"account_scope_id"`
+	UserID            string                          `json:"user_id"`
+	Proposals         []manageSessionsDeployProposal  `json:"proposals"`
+	AllowedWorkspaces []manageSessionsDeployWorkspace `json:"allowed_workspaces"`
+	ManifestDigest    string                          `json:"manifest_digest"`
+	ApprovedArguments map[string]any                  `json:"approved_arguments"`
 }
 
 type manageSessionsDeployInput struct {
@@ -161,7 +169,22 @@ func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.
 	}
 	canDelegate := callerContract.Tools["task"].Enabled
 
-	manifest := manageSessionsDeployManifest{ManifestVersion: manageSessionsDeployManifestVersion, Action: "deploy", ParentSessionID: parent.ID, AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, Proposals: make([]manageSessionsDeployProposal, 0, len(inputs))}
+	knownWorkspaces, err := s.workspace.ListKnownForPrincipal(principal, 2000)
+	if err != nil {
+		return manageSessionsDeployManifest{}, fmt.Errorf("list deployment workspaces: %w", err)
+	}
+	manifest := manageSessionsDeployManifest{
+		ManifestVersion:   manageSessionsDeployManifestVersion,
+		Action:            "deploy",
+		ParentSessionID:   parent.ID,
+		AccountScopeID:    parent.AccountScopeID,
+		UserID:            parent.UserID,
+		Proposals:         make([]manageSessionsDeployProposal, 0, len(inputs)),
+		AllowedWorkspaces: make([]manageSessionsDeployWorkspace, 0, len(knownWorkspaces)),
+	}
+	for _, workspace := range knownWorkspaces {
+		manifest.AllowedWorkspaces = append(manifest.AllowedWorkspaces, manageSessionsDeployWorkspace{ID: workspace.WorkspaceID, Generation: workspace.WorkspaceGeneration, Path: workspace.Path, Name: workspace.WorkspaceName})
+	}
 	for i, input := range inputs {
 		profile := active
 		if input.Agent != "" {
@@ -269,6 +292,9 @@ func validateManageSessionsDeployAgent(active, target pebblestore.AgentProfile, 
 func manageSessionsDeployDigest(manifest manageSessionsDeployManifest) (string, error) {
 	manifest.ManifestDigest = ""
 	manifest.ApprovedArguments = nil
+	// Workspace choices are server-resolved permission UI data, not deployment
+	// authority. The selected proposal's canonical binding is digest-bound.
+	manifest.AllowedWorkspaces = nil
 	raw, err := json.Marshal(manifest)
 	if err != nil {
 		return "", err

@@ -265,6 +265,10 @@ test('session deploy permission defaults to one selected proposal and never offe
       { id: 'proposal-1', title: 'Primary work', prompt: 'Ship the primary task', mode: 'auto', agent_name: 'swarm', agent_mode: 'primary', workspace_path: '/workspace', workspace_name: 'Workspace', selected: true },
       { id: 'proposal-2', title: 'Extra work', prompt: 'Investigate an extra task', mode: 'plan', agent_name: 'explorer', agent_mode: 'subagent', workspace_path: '/workspace', workspace_name: 'Workspace', selected: true },
     ],
+    allowed_workspaces: [
+      { id: 'workspace-1', generation: 2, path: '/workspace', name: 'Workspace' },
+      { id: 'workspace-2', generation: 1, path: '/another', name: 'Another workspace' },
+    ],
     approved_arguments: { action: 'deploy', manifest_version: 1, manifest_digest: 'digest-1' },
   }, 'manage-sessions'))
 
@@ -273,6 +277,8 @@ test('session deploy permission defaults to one selected proposal and never offe
   assert.equal((markup.match(/type="checkbox"/g) || []).length, 2)
   assert.equal((markup.match(/checked=""/g) || []).length, 1)
   assert.match(markup, /Deploy 1 session/)
+  assert.match(markup, /Another workspace/)
+  assert.doesNotMatch(markup, /value="\/workspace" readonly/)
   assert.doesNotMatch(markup, /Always Allow|Always Deny/)
 })
 
