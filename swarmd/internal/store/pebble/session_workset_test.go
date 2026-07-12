@@ -60,6 +60,7 @@ func TestBuildV3SessionWorksetExcludesNavigationHiddenSystemSidechats(t *testing
 	}
 	sidechat.Metadata = map[string]any{
 		"navigation_hidden": true,
+		"system_session":    true,
 		"system_sidechat":   true,
 		"lineage_kind":      "system_sidechat",
 		"parent_session_id": "parent",

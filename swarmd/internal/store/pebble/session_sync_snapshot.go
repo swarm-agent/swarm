@@ -86,6 +86,7 @@ type V3SyncSnapshotOptions struct {
 	IncludeActiveSessions              bool
 	IncludePinnedSidebarSessions       bool
 	IncludeUnresolvedSidebarSessions   bool
+	ExcludeNavigationHiddenSessions    bool
 	IncludeSessionView                 bool
 	IncludeActivePlan                  bool
 }
@@ -409,6 +410,9 @@ func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, option
 	byID := map[string]SessionSnapshot{}
 	order := []string{}
 	appendSession := func(session SessionSnapshot) {
+		if options.ExcludeNavigationHiddenSessions && v3SessionNavigationHidden(session) {
+			return
+		}
 		id := strings.TrimSpace(session.ID)
 		if id == "" {
 			return
@@ -568,6 +572,9 @@ func (s *SessionStore) selectV3RecentSyncSnapshotSessions(reader pebble.Reader, 
 			return true, nil
 		}
 		if !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
+			return true, nil
+		}
+		if options.ExcludeNavigationHiddenSessions && v3SessionNavigationHidden(session) {
 			return true, nil
 		}
 		sessions = append(sessions, session)
@@ -966,6 +973,9 @@ func v3SyncSnapshotTombstoneVisible(tombstone V3SessionTombstone, accountScopeID
 }
 
 func v3SyncSnapshotTombstoneVisibleForSelector(tombstone V3SessionTombstone, options V3SyncSnapshotOptions) bool {
+	if options.ExcludeNavigationHiddenSessions && v3SessionNavigationHidden(tombstone.Session) {
+		return false
+	}
 	if !v3SyncSnapshotTombstoneVisible(tombstone, options.AccountScopeID, options.UserID) {
 		return false
 	}

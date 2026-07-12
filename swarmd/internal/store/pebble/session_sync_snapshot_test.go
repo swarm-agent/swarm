@@ -9,6 +9,40 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
+func TestBuildV3SyncSnapshotExcludesSystemSessionsFromSidebarHydration(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "user-session", "user-1", "account-1", "/workspace/sidebar", 1000)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "plan-sidechat", "user-1", "account-1", "/workspace/sidebar", 2000)
+
+	planSidechat, ok, err := sessions.GetSession("plan-sidechat")
+	if err != nil || !ok {
+		t.Fatalf("load plan sidechat: ok=%t err=%v", ok, err)
+	}
+	planSidechat.Metadata = map[string]any{"system_session": true}
+	if err := sessions.UpdateSession(planSidechat); err != nil {
+		t.Fatalf("tag plan sidechat: %v", err)
+	}
+
+	snapshot, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{
+		AccountScopeID:                  "account-1",
+		UserID:                          "user-1",
+		WorkspacePath:                   "/workspace/sidebar",
+		RecentLimit:                     10,
+		ExcludeNavigationHiddenSessions: true,
+		History:                         V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build sidebar snapshot: %v", err)
+	}
+	if len(snapshot.SessionOrder) != 1 || snapshot.SessionOrder[0] != "user-session" {
+		t.Fatalf("sidebar snapshot sessions = %+v, want only user-session", snapshot.SessionOrder)
+	}
+	if _, leaked := snapshot.SessionsByID["plan-sidechat"]; leaked {
+		t.Fatal("system-tagged plan sidechat hydrated into sidebar snapshot")
+	}
+}
+
 func TestBuildV3SyncSnapshotOmitsAllSessionResourceMaps(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

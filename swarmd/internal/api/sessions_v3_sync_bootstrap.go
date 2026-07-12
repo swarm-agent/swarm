@@ -172,6 +172,7 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 			IncludeActiveSessions:            req.IncludeActive,
 			IncludePinnedSidebarSessions:     normalizeV3SyncSurface(req.Surface) == "desktop",
 			IncludeUnresolvedSidebarSessions: normalizeV3SyncSurface(req.Surface) == "desktop" && req.Resources.ActivePlan,
+			ExcludeNavigationHiddenSessions:  normalizeV3SyncSurface(req.Surface) == "desktop",
 		},
 		Principal:                         principal,
 		Surface:                           normalizeV3SyncSurface(req.Surface),

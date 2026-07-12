@@ -329,6 +329,26 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+func sessionsV3SystemSidechatMetadata(parentSessionID, kind string, profile pebblestore.AgentProfile) map[string]any {
+	return map[string]any{
+		"agent_name":             profile.Name,
+		"resolved_agent_name":    profile.Name,
+		"agent_mode":             profile.Mode,
+		"runtime_mode":           profile.RuntimeMode,
+		"exit_plan_mode_enabled": false,
+		"agent_profile":          profile,
+		"parent_session_id":      strings.TrimSpace(parentSessionID),
+		"lineage_kind":           "system_sidechat",
+		"presentation_kind":      "system_sidechat",
+		"navigation_hidden":      true,
+		"transient":              false,
+		"system_session":         true,
+		"system_sidechat":        true,
+		"system_sidechat_kind":   strings.ToLower(strings.TrimSpace(kind)),
+		"settings_locked":        true,
+	}
+}
+
 func sessionsV3SystemSidechatID(parentSessionID, kind string) (string, string) {
 	binding := strings.TrimSpace(parentSessionID) + "\x00" + strings.ToLower(strings.TrimSpace(kind))
 	sum := sha256.Sum256([]byte(binding))
@@ -441,12 +461,7 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		profile = agentruntime.AISidechatAgentProfileForParent(parentProfile)
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
-	metadata := make(map[string]any)
-	metadata["agent_name"], metadata["resolved_agent_name"], metadata["agent_mode"] = profile.Name, profile.Name, profile.Mode
-	metadata["runtime_mode"], metadata["exit_plan_mode_enabled"], metadata["agent_profile"] = profile.RuntimeMode, false, profile
-	metadata["parent_session_id"], metadata["lineage_kind"] = parentSessionID, "system_sidechat"
-	metadata["presentation_kind"], metadata["navigation_hidden"], metadata["transient"] = "system_sidechat", true, false
-	metadata["system_sidechat"], metadata["system_sidechat_kind"], metadata["settings_locked"] = true, kind, true
+	metadata := sessionsV3SystemSidechatMetadata(parentSessionID, kind, profile)
 	if kind == "plan" {
 		metadata["plan_permission_id"], metadata["plan_id"], metadata["plan_revision"] = req.PermissionID, req.PlanID, req.PlanRevision
 		metadata["plan_context_source"] = "permission_projection"
@@ -926,9 +941,6 @@ func (s *Server) handleSessionsV3PrimaryArchiveBatch(w http.ResponseWriter, r *h
 			writeSessionNotFound(w)
 			return
 		}
-		if s.rejectSystemSidechatMutation(w, session) {
-			return
-		}
 		sessions = append(sessions, session)
 	}
 	if len(sessions) == 0 {
@@ -958,10 +970,10 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 		writeSessionNotFound(w)
 		return
 	}
-	if s.rejectSystemSidechatMutation(w, session) {
+	kind = strings.TrimSpace(strings.ToLower(kind))
+	if kind != "archived" && s.rejectSystemSidechatMutation(w, session) {
 		return
 	}
-	kind = strings.TrimSpace(strings.ToLower(kind))
 	if kind == "deleted" {
 		if _, active, activeErr := s.sessions.GetSessionActiveRunIntent(session.ID); activeErr != nil {
 			writeError(w, http.StatusInternalServerError, activeErr)
@@ -1333,7 +1345,7 @@ func (s *Server) rejectSystemSidechatMutation(w http.ResponseWriter, session peb
 	if !sessionsV3SystemSidechat(session) {
 		return false
 	}
-	writeError(w, http.StatusConflict, errors.New("reserved system sidechat settings, mode, agent, archive, and plan lifecycle are parent-owned and locked"))
+	writeError(w, http.StatusConflict, errors.New("reserved system sidechat settings, mode, agent, and plan lifecycle are parent-owned and locked"))
 	return true
 }
 

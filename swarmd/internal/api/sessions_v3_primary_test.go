@@ -61,6 +61,64 @@ func TestSessionsV3SidechatRevisionParsing(t *testing.T) {
 	}
 }
 
+func TestSessionsV3SystemSidechatMetadataTagsPlanChatAsSystemHidden(t *testing.T) {
+	profile := pebblestore.AgentProfile{Name: "Plan", Mode: "subagent", RuntimeMode: "readwrite"}
+	metadata := sessionsV3SystemSidechatMetadata(" parent-session ", " PLAN ", profile)
+
+	if metadata["system_session"] != true || metadata["system_sidechat"] != true || metadata["navigation_hidden"] != true {
+		t.Fatalf("system sidechat visibility metadata = %+v", metadata)
+	}
+	if metadata["lineage_kind"] != "system_sidechat" || metadata["presentation_kind"] != "system_sidechat" || metadata["system_sidechat_kind"] != "plan" {
+		t.Fatalf("system sidechat identity metadata = %+v", metadata)
+	}
+	if metadata["parent_session_id"] != "parent-session" {
+		t.Fatalf("parent_session_id = %v, want parent-session", metadata["parent_session_id"])
+	}
+}
+
+func TestSessionsV3SystemSidechatArchiveBypassesMutationLock(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	principal := testPrincipal()
+	now := time.Now().UnixMilli()
+	sidechat := pebblestore.SessionSnapshot{
+		ID:             "system-sidechat-archive",
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		WorkspacePath:  "/workspace/system-sidechat-archive",
+		Title:          "AI",
+		Mode:           sessionruntime.ModeAuto,
+		Metadata:       map[string]any{"system_sidechat": true, "lineage_kind": "system_sidechat"},
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID: sidechat.ID, UserID: sidechat.UserID, AccountScopeID: sidechat.AccountScopeID,
+		ClientRequestID: "system-sidechat-archive-create", IdempotencyKey: "system-sidechat-archive-create",
+		PayloadHash: "system-sidechat-archive-create", RequestHash: "system-sidechat-archive-create",
+		Kind: sessionruntime.SessionMutationCreateSession, Session: &sidechat, NowUnixMs: now,
+	}); err != nil {
+		t.Fatalf("create system sidechat: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+sidechat.ID+"/archive", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("archive status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"archived":true`) {
+		t.Fatalf("archive response missing archived result: %s", rec.Body.String())
+	}
+
+	locked := httptest.NewRecorder()
+	if !server.rejectSystemSidechatMutation(locked, sidechat) {
+		t.Fatal("system sidechat mutation lock unexpectedly disabled")
+	}
+	if strings.Contains(locked.Body.String(), "archive") {
+		t.Fatalf("mutation lock still claims archive is locked: %s", locked.Body.String())
+	}
+}
+
 func TestSessionsV3PrimaryHandlersDoNotUseRuntimeDispatchOrRoutes(t *testing.T) {
 	body, err := os.ReadFile("sessions_v3_primary.go")
 	if err != nil {

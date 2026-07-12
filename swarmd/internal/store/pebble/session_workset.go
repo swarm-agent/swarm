@@ -498,6 +498,9 @@ func v3SessionNavigationHidden(session SessionSnapshot) bool {
 	if hidden, ok := session.Metadata["navigation_hidden"].(bool); ok && hidden {
 		return true
 	}
+	if system, ok := session.Metadata["system_session"].(bool); ok && system {
+		return true
+	}
 	if hidden, ok := session.Metadata["system_sidechat"].(bool); ok && hidden {
 		return true
 	}
