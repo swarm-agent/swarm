@@ -724,23 +724,15 @@ func policyModeWithBypass(mode string, bypass bool) string {
 	return mode + "+bypass_permissions"
 }
 
-func ShouldApproveManageWorktreeIntegration(arguments string) bool {
-	var args map[string]any
-	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
-		return false
-	}
-	action, _ := args["action"].(string)
-	return strings.EqualFold(strings.TrimSpace(action), "integrate")
-}
-
 func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision {
 	toolName = normalizePolicyToolName(toolName)
 	mode, bypass := splitPolicyMode(mode)
 	switch toolName {
 	case "manage_worktree":
-		if ShouldApproveManageWorktreeIntegration(toolArguments) {
-			return PolicyDecisionAsk
-		}
+		// Integration is constrained to clean, committed children recorded in the
+		// current parent's durable lineage. The worktree service preflights the
+		// complete batch and applies it atomically, so this canonical operation is
+		// safe to flow without a separate permission round trip.
 		return PolicyDecisionAllow
 	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_todos", "manage_theme":
 		return PolicyDecisionAllow

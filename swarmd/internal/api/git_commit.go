@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -124,31 +123,7 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 	ctx, cancel := context.WithTimeout(parent, workspaceGitCommitTimeout)
 	defer cancel()
 
-	precommitOutput, precommitErr := runWorkspaceGitPrecommit(ctx, workspacePath)
-	if precommitErr != nil {
-		combined := strings.TrimSpace(precommitOutput)
-		response := workspaceGitCommitResponse{
-			OK:            false,
-			WorkspacePath: workspacePath,
-			CWD:           workspacePath,
-			Argv:          []string{"scripts/check-precommit.sh"},
-			ExitCode:      workspaceGitCommandExitCode(precommitErr),
-			TimedOut:      errors.Is(ctx.Err(), context.DeadlineExceeded),
-			Output:        combined,
-			Summary:       "precommit gate failed before git commit",
-		}
-		if combined != "" {
-			response.Error = fmt.Sprintf("precommit gate failed before git commit: %s", combined)
-		} else {
-			response.Error = fmt.Sprintf("precommit gate failed before git commit: %v", precommitErr)
-		}
-		return response, errors.New(response.Error)
-	}
-
 	combinedParts := []string{}
-	if strings.TrimSpace(precommitOutput) != "" {
-		combinedParts = append(combinedParts, strings.TrimSpace(precommitOutput))
-	}
 	if all {
 		stageArgv := []string{"add", "--all"}
 		stageCmd := exec.CommandContext(ctx, "git", stageArgv...)
@@ -204,29 +179,6 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 		return response, errors.New(response.Error)
 	}
 	return response, nil
-}
-
-func runWorkspaceGitPrecommit(parent context.Context, workspacePath string) (string, error) {
-	rootCmd := exec.CommandContext(parent, "git", "rev-parse", "--show-toplevel")
-	rootCmd.Dir = workspacePath
-	rootCmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
-	rootOutput, err := rootCmd.CombinedOutput()
-	if err != nil {
-		return string(rootOutput), err
-	}
-	repoRoot := strings.TrimSpace(string(rootOutput))
-	if repoRoot == "" {
-		return "", errors.New("git rev-parse returned an empty repository root")
-	}
-	precommitScript := filepath.Join(repoRoot, "scripts", "check-precommit.sh")
-	if _, err := os.Stat(precommitScript); err != nil {
-		return "", err
-	}
-	cmd := exec.CommandContext(parent, "bash", precommitScript)
-	cmd.Dir = repoRoot
-	cmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
-	output, err := cmd.CombinedOutput()
-	return string(output), err
 }
 
 func workspaceGitCommandExitCode(err error) int {

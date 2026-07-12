@@ -105,6 +105,18 @@ type TaskIntegrationResult struct {
 	ResultingParentHead string `json:"resulting_parent_head"`
 }
 
+type TaskIntegrationConflictError struct {
+	Commit string `json:"commit"`
+	Detail string `json:"detail"`
+}
+
+func (e *TaskIntegrationConflictError) Error() string {
+	if e == nil {
+		return "integration conflict"
+	}
+	return fmt.Sprintf("integration conflict at commit %s: %s", e.Commit, e.Detail)
+}
+
 type ManagedWorktree struct {
 	Path        string `json:"path"`
 	WorkspaceID string `json:"workspace_id,omitempty"`
@@ -434,6 +446,9 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentHead string, 
 }
 
 func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPlan) (TaskIntegrationResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	current, err := s.PrepareTaskIntegration(parentPath, plan.ParentHead, integrationChildrenFromPlan(plan))
 	if err != nil {
 		return TaskIntegrationResult{}, err
@@ -443,14 +458,31 @@ func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPl
 	}
 	for _, commit := range current.Commits {
 		if _, err := runGit(parentPath, "cherry-pick", commit); err != nil {
-			return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("cherry-pick %s failed after preflight: %w", commit, err)
+			rollbackErr := rollbackTaskIntegration(parentPath, current.ParentHead)
+			if rollbackErr != nil {
+				return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("cherry-pick %s failed after preflight: %w; rollback failed: %v", commit, err, rollbackErr)
+			}
+			return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("cherry-pick %s failed after preflight; full batch rolled back: %w", commit, err)
 		}
 	}
 	head, err := runGit(parentPath, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
-		return TaskIntegrationResult{TaskIntegrationPlan: current}, err
+		if rollbackErr := rollbackTaskIntegration(parentPath, current.ParentHead); rollbackErr != nil {
+			return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("resolve integrated HEAD: %w; rollback failed: %v", err, rollbackErr)
+		}
+		return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("resolve integrated HEAD: %w; full batch rolled back", err)
 	}
 	return TaskIntegrationResult{TaskIntegrationPlan: current, ResultingParentHead: head}, nil
+}
+
+func rollbackTaskIntegration(parentPath, parentHead string) error {
+	// Abort clears sequencer/conflict state when cherry-pick reached it. It is
+	// harmless when Git failed before creating that state.
+	_, _ = runGit(parentPath, "cherry-pick", "--abort")
+	if _, err := runGit(parentPath, "reset", "--hard", parentHead); err != nil {
+		return fmt.Errorf("restore parent HEAD %s: %w", parentHead, err)
+	}
+	return nil
 }
 
 func integrationChildrenFromPlan(plan TaskIntegrationPlan) []TaskIntegrationChild {
@@ -486,7 +518,11 @@ func preflightCherryPick(parentPath, parentHead string, commits []string) error 
 		apply.Env = env
 		apply.Stdin = bytes.NewReader(data)
 		if out, err := apply.CombinedOutput(); err != nil {
-			return fmt.Errorf("integration conflict at commit %s: %s", commit, strings.TrimSpace(string(out)))
+			detail := strings.TrimSpace(string(out))
+			if detail == "" {
+				detail = err.Error()
+			}
+			return &TaskIntegrationConflictError{Commit: commit, Detail: detail}
 		}
 	}
 	return nil

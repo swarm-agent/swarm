@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,6 +174,53 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(repo, "child.txt")); err != nil {
 		t.Fatalf("integrated file: %v", err)
+	}
+}
+
+func TestPrepareTaskIntegrationPreflightsCompleteStackAndLeavesParentUnchangedOnConflict(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "config", "user.email", "test@example.invalid")
+	_, _ = runGit(repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "shared.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "add", "shared.txt")
+	_, _ = runGit(repo, "commit", "-m", "base")
+	base, _ := runGit(repo, "rev-parse", "HEAD")
+
+	makeChild := func(branch, content string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), branch)
+		if _, err := runGit(repo, "worktree", "add", "-b", "agent/"+branch, path, base); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "shared.txt"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := runGit(path, "commit", "-am", branch); err != nil {
+			t.Fatal(err)
+		}
+		head, _ := runGit(path, "rev-parse", "HEAD")
+		return head
+	}
+	first := makeChild("first", "first\n")
+	second := makeChild("second", "second\n")
+
+	_, err := (&Service{}).PrepareTaskIntegration(repo, base, []TaskIntegrationChild{
+		{SessionID: "first", BaseCommit: base, HeadCommit: first},
+		{SessionID: "second", BaseCommit: base, HeadCommit: second},
+	})
+	var conflict *TaskIntegrationConflictError
+	if !errors.As(err, &conflict) || conflict.Commit != second {
+		t.Fatalf("conflict = %#v, err = %v", conflict, err)
+	}
+	head, _ := runGit(repo, "rev-parse", "HEAD")
+	status, _ := runGit(repo, "status", "--short")
+	if head != base || strings.TrimSpace(status) != "" {
+		t.Fatalf("parent mutated during preflight: head=%s status=%q", head, status)
 	}
 }
 

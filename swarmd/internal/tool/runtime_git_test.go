@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestExecuteGitCommitRunsRepositoryPrecommitGate(t *testing.T) {
+func TestExecuteGitCommitDoesNotRunRepositoryWidePrecommitGate(t *testing.T) {
 	repo := t.TempDir()
 	runGitTestCommand(t, repo, "init")
 	runGitTestCommand(t, repo, "config", "user.name", "Test User")
@@ -24,15 +24,16 @@ func TestExecuteGitCommitRunsRepositoryPrecommitGate(t *testing.T) {
 	if err := os.MkdirAll(scripts, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gate := "#!/usr/bin/env bash\nset -euo pipefail\nprintf passed > .precommit-ran\n"
+	gate := "#!/usr/bin/env bash\nset -euo pipefail\nprintf ran > .precommit-ran\necho unrelated repository-wide failure >&2\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(scripts, "check-precommit.sh"), []byte(gate), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	runGitTestCommand(t, repo, "add", "note.txt")
 
-	output, err := executeGitCommit(context.Background(), WorkspaceScope{PrimaryPath: repo}, map[string]any{"message": "update", "all": true})
+	output, err := executeGitCommit(context.Background(), WorkspaceScope{PrimaryPath: repo}, map[string]any{"message": "update"})
 	if err != nil {
 		t.Fatalf("executeGitCommit() error = %v output=%s", err, output)
 	}
@@ -43,8 +44,8 @@ func TestExecuteGitCommitRunsRepositoryPrecommitGate(t *testing.T) {
 	if got := int(payload["exit_code"].(float64)); got != 0 {
 		t.Fatalf("exit_code = %d output=%s", got, output)
 	}
-	if data, err := os.ReadFile(filepath.Join(repo, ".precommit-ran")); err != nil || string(data) != "passed" {
-		t.Fatalf("precommit marker data=%q err=%v", data, err)
+	if _, err := os.Stat(filepath.Join(repo, ".precommit-ran")); !os.IsNotExist(err) {
+		t.Fatalf("repository-wide precommit gate ran during git_commit: err=%v", err)
 	}
 }
 

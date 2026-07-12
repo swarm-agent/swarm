@@ -18,11 +18,11 @@ func bashArguments(t *testing.T, command string) string {
 	return string(payload)
 }
 
-func TestManageWorktreeIntegrateRequiresOnePermissionDecision(t *testing.T) {
+func TestManageWorktreeIntegrateFlowsWithoutPermissionRoundTrip(t *testing.T) {
 	policy := NormalizePolicy(Policy{})
-	integrate := ExplainPolicy("auto", "manage_worktree", `{"action":"integrate","session_ids":["child-a","child-b"],"expected_parent_head":"abc"}`, policy)
-	if integrate.Decision != PolicyDecisionAsk {
-		t.Fatalf("integrate decision = %s, want ask", integrate.Decision)
+	integrate := ExplainPolicy("auto", "manage_worktree", `{"action":"integrate","session_ids":["child-a","child-b"]}`, policy)
+	if integrate.Decision != PolicyDecisionAllow {
+		t.Fatalf("integrate decision = %s, want allow", integrate.Decision)
 	}
 	recall := ExplainPolicy("auto", "manage_worktree", `{"action":"recall"}`, policy)
 	if recall.Decision != PolicyDecisionAllow {

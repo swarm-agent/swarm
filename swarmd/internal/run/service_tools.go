@@ -1203,11 +1203,8 @@ func (s *Service) executeManageThemeTool(sessionID string, call tool.Call, feedb
 	return output, nil
 }
 
-func (s *Service) executeManageWorktreeTool(ctx context.Context, sessionID string, call tool.Call, approvedArguments ...string) (string, error) {
+func (s *Service) executeManageWorktreeTool(ctx context.Context, sessionID string, call tool.Call, _ ...string) (string, error) {
 	arguments := strings.TrimSpace(call.Arguments)
-	if len(approvedArguments) > 0 && strings.TrimSpace(approvedArguments[0]) != "" && permission.ShouldApproveManageWorktreeIntegration(arguments) {
-		arguments = strings.TrimSpace(approvedArguments[0])
-	}
 	if arguments == "" {
 		arguments = "{}"
 	}

@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -645,24 +644,6 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 		}
 		return marshalPayload(payload)
 	case "manage_worktree":
-		if permission.ShouldApproveManageWorktreeIntegration(arguments) {
-			var previewArgs map[string]any
-			if err := json.Unmarshal([]byte(firstNonEmptyString(arguments, "{}")), &previewArgs); err != nil {
-				return "", fmt.Errorf("manage-worktree arguments invalid: %w", err)
-			}
-			previewArgs["preview"] = true
-			raw, err := json.Marshal(previewArgs)
-			if err != nil {
-				return "", err
-			}
-			previewCall := call
-			previewCall.Arguments = string(raw)
-			output, err := s.executeManageWorktreeTool(context.Background(), sessionID, previewCall)
-			if err != nil {
-				return "", err
-			}
-			return output, nil
-		}
 		return arguments, nil
 	case "manage_todos":
 		payload, err := s.buildManageTodosPermissionPayload(sessionID, call)
