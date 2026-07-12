@@ -55,6 +55,7 @@ assert(markup.includes("Plan &amp; AI"), "expected persistent tabbed sidebar");
 assert(markup.includes("Use this durable auto-only AI sidechat") === false, "inactive AI content should remain hidden");
 assert(markup.includes("Saved edits update the parent approval card live."), "plan edits should advertise live parent updates");
 assert(markup.includes("Send to Plan"), "idle real session should expose its send control");
+assert(!markup.includes("ChatMarkdown"), "sidechat must reuse canonical Desktop V3 render items rather than a custom message renderer");
 assert(
   !markup.includes("Parent conversation context for this plan review"),
   "raw parent context must not render",

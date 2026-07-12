@@ -98,7 +98,7 @@ export function DesktopInlinePlanReviewCard({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-primary)]">
-            Plan approval
+            Pending plan edit
           </div>
           <h2 className="mt-1 text-lg font-semibold text-[var(--app-text)]">
             {title}
@@ -137,10 +137,9 @@ export function DesktopInlinePlanReviewCard({
             type="button"
             variant="outline"
             disabled={loading}
-            className="xl:hidden"
             onClick={onOpenPlanAgent}
           >
-            Ask Plan Agent
+            Request another revision
           </Button>
         ) : null}
         <Button
@@ -149,14 +148,14 @@ export function DesktopInlinePlanReviewCard({
           disabled={loading}
           onClick={() => void resolve("deny")}
         >
-          Deny
+          Reject edit
         </Button>
         <Button
           type="button"
           disabled={loading}
           onClick={() => void resolve("approve")}
         >
-          Approve
+          Accept edit
         </Button>
       </div>
     </section>

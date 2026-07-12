@@ -508,7 +508,7 @@ function scrollFollowKeyPart(value: unknown): string {
   }
 }
 
-type DesktopV3RenderItem =
+export type DesktopV3RenderItem =
   | {
       type: "plan-break";
       message: MessageSnapshot;
@@ -2485,7 +2485,7 @@ export function DesktopV3ExistingConversationPane({
   );
 }
 
-const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
+export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   item,
   thinkingTagsEnabled,
   timerNow,
@@ -2849,7 +2849,7 @@ function DesktopV3LiveToolCall({
   return <DesktopV3ToolMessage content="" toolMessage={parsed} />;
 }
 
-function chatMessageToMessageSnapshot(
+export function chatMessageToMessageSnapshot(
   message: ChatMessageRecord,
 ): MessageSnapshot {
   return {

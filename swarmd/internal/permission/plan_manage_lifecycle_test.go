@@ -135,6 +135,32 @@ func TestAuthorizeToolCallKeepsRevisionAndNewPlanApprovalGated(t *testing.T) {
 	}
 }
 
+func TestReservedPlanSidechatEditDoesNotCreateGenericPermission(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "reserved-plan-sidechat.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	session, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{SessionID: "plan-sidechat", Mode: sessionruntime.ModeAuto, AccountScopeID: "account", WorkspacePath: t.TempDir(), WorkspaceName: "workspace", Preference: &pebblestore.ModelPreference{Provider: "test", Model: "test", Thinking: "medium"}, Metadata: map[string]any{"system_sidechat_kind": "plan", "lineage_kind": "system_sidechat"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(pebblestore.NewPermissionStore(store), events, nil)
+	svc.SetSessionResolver(sessions)
+	result, err := svc.AuthorizeToolCall(AuthorizationInput{SessionID: session.ID, AccountScopeID: "account", RunID: "run", CallID: "call", ToolName: "edit_pending_plan", ToolArguments: `{}`, Mode: "auto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision != AuthorizationApprove || result.Source != "system_sidechat" || result.Record != nil {
+		t.Fatalf("reserved plan edit should execute without generic permission: %+v", result)
+	}
+}
+
 func TestCreatePendingPlanProposalAddsCanonicalSidechatMetadata(t *testing.T) {
 	svc, sessionID, _, cleanup := newPermissionLifecycleTestService(t, "")
 	defer cleanup()

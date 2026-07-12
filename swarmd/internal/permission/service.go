@@ -393,6 +393,18 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 	if err != nil {
 		return AuthorizationResult{}, err
 	}
+	// The reserved Plan sidechat's only mutating capability edits the already-
+	// pending parent proposal. It must execute inline so the parent approval card,
+	// rather than a second generic permission prompt, remains the decision surface.
+	if normalizePolicyToolName(input.ToolName) == "edit_pending_plan" && s.sessions != nil {
+		session, found, lookupErr := s.sessions.GetSession(sessionID)
+		if lookupErr != nil {
+			return AuthorizationResult{}, lookupErr
+		}
+		if found && strings.EqualFold(mapStringAny(session.Metadata["system_sidechat_kind"]), "plan") && strings.EqualFold(mapStringAny(session.Metadata["lineage_kind"]), "system_sidechat") {
+			return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "reserved Plan sidechat edits remain pending for parent decision", Source: "system_sidechat"}, nil
+		}
+	}
 	effectiveMode := strings.TrimSpace(input.Mode)
 	// Explicit task denial remains restrictive. Evaluate it without the generic
 	// bypass flag, then apply orchestration limits before any bypass/allow path.

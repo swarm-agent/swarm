@@ -4,10 +4,11 @@ import { Button } from "../../../../components/ui/button";
 import { Textarea } from "../../../../components/ui/textarea";
 import type { DesktopPermissionRecord } from "../../types/realtime";
 import type { StructuredPlanDocument } from "./structured-plan-document";
-import { ChatMarkdown } from "./chat-markdown";
 import { DesktopPlanExecutionSidebar, type DesktopPlanExecutionSidebarProps } from "./desktop-plan-execution-sidebar";
-import { ensureSystemSidechat, fetchSessionMessages, sendSessionMessage, type SystemSidechatKind } from "../queries/chat-queries";
+import { ensureSystemSidechat, fetchSessionMessages, type SystemSidechatKind } from "../queries/chat-queries";
 import type { ChatMessageRecord } from "../types/chat";
+import { createDesktopV3ExistingMessageOperation, continueDesktopV3Conversation } from "../../session-v3/existing-session-flow";
+import { buildDesktopV3ConversationRenderItems, chatMessageToMessageSnapshot, DesktopV3RenderItemView } from "./desktop-v3-existing-conversation-pane";
 import { stopSessionV3Run } from "../../session-v3/api";
 import { selectRenderedSessionMessages } from "../../state/desktop-v3-cache-selectors";
 import { requireDesktopV3RealtimeControllerReady } from "../../realtime/v3-realtime-controller";
@@ -73,8 +74,8 @@ export function DesktopPlanAgentSidecar({
     (state) => aiSessionId ? state.messagesBySession[aiSessionId]?.items ?? [] : [],
     (left, right) => left === right,
   );
-  const planRuns = useDesktopV3CacheSelector((state) => planSessionId ? selectRenderedSessionMessages(state, planSessionId).liveRuns : []);
-  const aiRuns = useDesktopV3CacheSelector((state) => aiSessionId ? selectRenderedSessionMessages(state, aiSessionId).liveRuns : []);
+  const planRendered = useDesktopV3CacheSelector((state) => selectRenderedSessionMessages(state, planSessionId));
+  const aiRendered = useDesktopV3CacheSelector((state) => selectRenderedSessionMessages(state, aiSessionId));
 
   useEffect(() => {
     const apply = (kind: SystemSidechatKind, snapshots: typeof planRealtimeMessages) => {
@@ -137,12 +138,14 @@ export function DesktopPlanAgentSidecar({
   }, [document, modelLabel, parentSessionId, permission?.id, proposalRevision, refresh]);
 
   const selected = sidechats[activeTab];
-  const selectedRuns = activeTab === "plan" ? planRuns : aiRuns;
-  const activeRun = selectedRuns.find((run) => run.status === "running" || run.status === "pending_executor") ?? null;
-  const visibleMessages = useMemo(
-    () => selected.messages.filter((message) => message.role === "user" || message.role === "assistant"),
-    [selected.messages],
-  );
+  const selectedRendered = activeTab === "plan" ? planRendered : aiRendered;
+  const activeRun = selectedRendered.liveRuns.find((run) => run.status === "running" || run.status === "pending_executor") ?? null;
+  const renderItems = useMemo(() => buildDesktopV3ConversationRenderItems({
+    ...selectedRendered,
+    committed: selectedRendered.committed.length > 0
+      ? selectedRendered.committed
+      : selected.messages.map(chatMessageToMessageSnapshot),
+  }), [selected.messages, selectedRendered]);
 
   const stop = async () => {
     if (!activeRun || !selected.sessionId || !selected.runtimeSwarmId) return;
@@ -159,9 +162,9 @@ export function DesktopPlanAgentSidecar({
     if (!content || !selected.sessionId || selected.busy) return;
     setSidechats((current) => ({ ...current, [activeTab]: { ...current[activeTab], busy: true, error: null } }));
     try {
-      await sendSessionMessage(selected.sessionId, "user", content, null, { sessionApi: "v3" });
+      const operation = createDesktopV3ExistingMessageOperation({ sessionId: selected.sessionId, prompt: content });
       setDraft("");
-      await refresh(activeTab, selected.sessionId);
+      await continueDesktopV3Conversation(operation);
     } catch (cause) {
       setSidechats((current) => ({ ...current, [activeTab]: { ...current[activeTab], error: cause instanceof Error ? cause.message : "Message failed." } }));
     } finally {
@@ -201,9 +204,10 @@ export function DesktopPlanAgentSidecar({
           <div className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-3 text-sm leading-5">
             {activeTab === "plan" ? "Ask about the plan or request changes conversationally. Saved edits update the parent approval card live." : "Use this durable auto-only AI sidechat without leaving the parent conversation."}
           </div>
-          {selected.busy && visibleMessages.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />Opening durable {activeTab === "plan" ? "Plan" : "AI"} sidechat…</div> : null}
-          {visibleMessages.map((message) => <div key={message.id} className={message.role === "user" ? "ml-8 rounded-xl bg-[var(--app-surface-hover)] p-3 text-sm" : "mr-4 rounded-xl border border-[var(--app-border)] p-3 text-sm"}><ChatMarkdown content={message.content} /></div>)}
-          {activeRun?.assistantDraft?.content ? <div className="mr-4 rounded-xl border border-[var(--app-border)] p-3 text-sm"><ChatMarkdown content={activeRun.assistantDraft.content} /></div> : null}
+          {selected.busy && renderItems.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />Opening durable {activeTab === "plan" ? "Plan" : "AI"} sidechat…</div> : null}
+          <div className="flex min-w-0 flex-col gap-5">
+            {renderItems.map((item, index) => <DesktopV3RenderItemView key={`${item.type}:${"id" in item ? item.id : "message" in item ? item.message.id : index}`} item={item} thinkingTagsEnabled timerNow={Date.now()} index={index} />)}
+          </div>
           {selected.error ? <div role="alert" className="rounded-lg border border-[var(--app-danger)] p-3 text-sm text-[var(--app-danger)]">{selected.error}</div> : null}
         </div>
         <div className="space-y-2 border-t border-[var(--app-border)] p-4">
