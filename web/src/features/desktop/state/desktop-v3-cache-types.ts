@@ -72,6 +72,7 @@ export interface SessionSnapshot {
   message_count: number
   last_message_at: number
   lifecycle?: unknown
+  current_execution_epoch?: V3ExecutionEpoch | null
 }
 
 export interface MessageSnapshot {
@@ -84,6 +85,7 @@ export interface MessageSnapshot {
   content: string
   metadata?: Record<string, unknown>
   created_at: number
+  execution_epoch?: V3ExecutionEpochRef
 }
 
 export interface V3SessionProjection {
@@ -91,6 +93,28 @@ export interface V3SessionProjection {
   last_event_seq: number
   projection_high_watermark_seq: number
   updated_at: number
+}
+
+export interface V3ExecutionEpochRef {
+  epoch_id: string
+  epoch_ordinal?: number
+}
+
+export interface V3ExecutionEpoch extends V3ExecutionEpochRef {
+  session_id?: string
+  status?: string
+  started_event_seq?: number
+  completed_event_seq?: number
+  started_at?: number
+  completed_at?: number
+  previous_epoch_id?: string
+  trigger?: string
+}
+
+export interface V3ExecutionEpochBoundary extends V3ExecutionEpochRef {
+  kind: string
+  event_seq?: number
+  previous_epoch_id?: string
 }
 
 export interface V3SessionEvent {
@@ -102,6 +126,8 @@ export interface V3SessionEvent {
   ts_unix_ms: number
   causation_id?: string
   correlation_id?: string
+  execution_epoch?: V3ExecutionEpochRef
+  execution_epoch_boundary?: V3ExecutionEpochBoundary
 }
 
 export interface V3SessionRunIntent {
@@ -118,6 +144,7 @@ export interface V3SessionRunIntent {
   cumulative_duration_ms?: number
   updated_at: number
   event_seq: number
+  execution_epoch?: V3ExecutionEpochRef
 }
 
 export interface V3SessionRunState {
@@ -157,6 +184,7 @@ export interface DesktopV3AgenticSettings {
 
 export interface DesktopV3SessionView {
   agentic_settings?: DesktopV3AgenticSettings
+  current_execution_epoch?: V3ExecutionEpoch | null
   pending_permissions?: unknown[]
   usage_summary?: unknown
   current_run_state?: V3SessionRunState
@@ -460,6 +488,8 @@ export interface SessionEventPayload {
   message?: MessageSnapshot
   lifecycle?: unknown
   run_intent?: V3SessionRunIntent
+  execution_epoch?: V3ExecutionEpoch
+  execution_epoch_boundary?: V3ExecutionEpochBoundary
   turn_usage?: unknown
   usage_summary?: unknown
   tombstone?: V3SessionTombstone
@@ -782,6 +812,7 @@ export interface DesktopV3CacheState {
   evictedTranscriptsBySession: Record<string, number>
   runIntentsBySession: Record<string, Record<string, V3SessionRunIntent>>
   currentRunIntentBySession: Record<string, V3SessionRunIntent | undefined>
+  currentExecutionEpochBySession: Record<string, V3ExecutionEpoch | undefined>
   pendingUserByClientRequestId: Record<string, PendingUserMessage>
   liveRunsBySession: Record<string, Record<string, LiveRunOverlay>>
   subscriptionsById: Record<string, SubscriptionCache>

@@ -20,6 +20,7 @@ import type {
   SessionsReconnectResponse,
   SubscriptionCache,
   SyncSnapshotResponse,
+  V3ExecutionEpoch,
   V3SessionEvent,
   V3SessionProjection,
   V3SessionRunIntent,
@@ -79,6 +80,7 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     evictedTranscriptsBySession: {},
     runIntentsBySession: {},
     currentRunIntentBySession: {},
+    currentExecutionEpochBySession: {},
     pendingUserByClientRequestId: {},
     liveRunsBySession: {},
     subscriptionsById: {},
@@ -1062,6 +1064,8 @@ export function applyCacheEvent(
     upsertRunIntent(state, sessionId, payload.run_intent)
   }
 
+  applyExecutionEpochFromEvent(state, event)
+
   const reactivatingArchivedSession = Boolean(payload.message && payload.session && state.tombstonesBySession[sessionId]?.archived === true)
   if (reactivatingArchivedSession) {
     delete state.tombstonesBySession[sessionId]
@@ -1111,6 +1115,35 @@ export function applyCacheEvent(
   commitCompletedReasoningEvent(state, event)
 
   return state
+}
+
+function applyExecutionEpochFromEvent(state: DesktopV3CacheState, event: CacheEvent): void {
+  const epoch = event.payload.execution_epoch
+  const boundary = event.payload.execution_epoch_boundary
+  if (!epoch && !boundary) return
+
+  const incoming: V3ExecutionEpoch = epoch ?? {
+    epoch_id: boundary!.epoch_id,
+    epoch_ordinal: boundary!.epoch_ordinal,
+    session_id: event.sessionId,
+  }
+  const existing = state.currentExecutionEpochBySession[event.sessionId]
+  const incomingOrdinal = incoming.epoch_ordinal ?? 0
+  const existingOrdinal = existing?.epoch_ordinal ?? 0
+  if (existing && incomingOrdinal > 0 && existingOrdinal > incomingOrdinal) return
+
+  const boundaryKind = boundary?.kind.toLowerCase()
+  state.currentExecutionEpochBySession[event.sessionId] = {
+    ...existing,
+    ...incoming,
+    session_id: incoming.session_id || event.sessionId,
+    started_event_seq: incoming.started_event_seq
+      ?? (boundaryKind === 'started' || boundaryKind === 'begin' ? event.sessionEvent?.seq : existing?.started_event_seq),
+    completed_event_seq: incoming.completed_event_seq
+      ?? (boundaryKind === 'completed' || boundaryKind === 'ended' ? event.sessionEvent?.seq : existing?.completed_event_seq),
+    status: incoming.status
+      ?? (boundaryKind === 'completed' || boundaryKind === 'ended' ? 'completed' : existing?.status),
+  }
 }
 
 export function shouldRetainRealtimeEvent(eventType: string): boolean {
@@ -2124,6 +2157,10 @@ function applySessionViews(
     }
 
     state.sessionViewsById[sessionId] = { ...state.sessionViewsById[sessionId], ...view }
+    if (view.current_execution_epoch !== undefined) {
+      if (view.current_execution_epoch === null) delete state.currentExecutionEpochBySession[sessionId]
+      else state.currentExecutionEpochBySession[sessionId] = view.current_execution_epoch
+    }
     if (view.pending_permissions !== undefined) state.permissionsBySession[sessionId] = normalizeDesktopPendingPermissions(view.pending_permissions, sessionId)
     if (view.usage_summary !== undefined) state.usageBySession[sessionId] = view.usage_summary
     applyPlanSnapshotFromSessionView(state, sessionId, view)
@@ -2273,6 +2310,9 @@ function shouldReplayDurableHydratedEvent(eventType: string): boolean {
     case 'session.reasoning.completed':
     case 'session.reasoning.failed':
     case 'session.reasoning.error':
+    case 'session.execution_epoch.started':
+    case 'session.execution_epoch.completed':
+    case 'session.execution_epoch.boundary':
       return true
     default:
       return false

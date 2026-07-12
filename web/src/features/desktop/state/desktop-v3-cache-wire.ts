@@ -177,7 +177,17 @@ export function outboxRecordToCacheEvent(raw: V3RealtimeOutboxRecord): CacheEven
 }
 
 export function decodeSessionEventPayload(event: V3SessionEvent): SessionEventPayload {
-  if (!event.payload) return {}
-  if (typeof event.payload === 'string') return JSON.parse(event.payload) as SessionEventPayload
-  return event.payload as SessionEventPayload
+  let payload: SessionEventPayload = {}
+  if (event.payload) {
+    payload = typeof event.payload === 'string'
+      ? JSON.parse(event.payload) as SessionEventPayload
+      : event.payload as SessionEventPayload
+  }
+  return {
+    ...payload,
+    execution_epoch: payload.execution_epoch ?? (event.execution_epoch
+      ? { ...event.execution_epoch, session_id: event.session_id }
+      : undefined),
+    execution_epoch_boundary: payload.execution_epoch_boundary ?? event.execution_epoch_boundary,
+  }
 }

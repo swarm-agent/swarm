@@ -1274,6 +1274,55 @@ test('stored events dedupe by immutable session sequence even with different ids
   assert.deepEqual(state.eventsBySession[sessionA.id].map((event) => event.id), ['evt-second-id'])
 })
 
+test('execution epoch boundaries preserve one session and the root event ordering', () => {
+  const state = bootstrappedState()
+  const sidebarScopeId = snapshotFixture().scope_id
+  const initialSidebarOrder = [...(state.sessionOrderByScope[sidebarScopeId] ?? [])]
+
+  for (const event of [
+    {
+      id: 'evt-epoch-start',
+      session_id: sessionA.id,
+      seq: 20,
+      event_type: 'session.execution_epoch.started',
+      payload: {},
+      ts_unix_ms: 20,
+      execution_epoch: { epoch_id: 'epoch-2', epoch_ordinal: 2 },
+      execution_epoch_boundary: { epoch_id: 'epoch-2', epoch_ordinal: 2, kind: 'started' },
+    },
+    {
+      id: 'evt-epoch-complete',
+      session_id: sessionA.id,
+      seq: 22,
+      event_type: 'session.execution_epoch.completed',
+      payload: {},
+      ts_unix_ms: 22,
+      execution_epoch: { epoch_id: 'epoch-2', epoch_ordinal: 2 },
+      execution_epoch_boundary: { epoch_id: 'epoch-2', epoch_ordinal: 2, kind: 'completed' },
+    },
+  ] satisfies V3SessionEvent[]) {
+    applyRealtimeFrame(state, {
+      frame: {
+        kind: 'event',
+        session_id: sessionA.id,
+        event_type: event.event_type,
+        event,
+      },
+    })
+  }
+
+  assert.deepEqual(state.sessionOrderByScope[sidebarScopeId], initialSidebarOrder)
+  assert.equal(Object.keys(state.sessionsById).filter((id) => id === sessionA.id).length, 1)
+  assert.deepEqual(state.eventsBySession[sessionA.id].slice(-2).map((event) => event.seq), [20, 22])
+  assert.deepEqual(state.currentExecutionEpochBySession[sessionA.id], {
+    epoch_id: 'epoch-2',
+    epoch_ordinal: 2,
+    session_id: sessionA.id,
+    started_event_seq: 20,
+    completed_event_seq: 22,
+    status: 'completed',
+  })
+})
 
 test('permission realtime events update detail records while summary events own sidebar counts', () => {
   const state = bootstrappedState()
