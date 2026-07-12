@@ -191,7 +191,7 @@ func (r *Runtime) createManageImageThread(scope WorkspaceScope, args map[string]
 	}
 	workspaceName := filepath.Base(workspacePath)
 	if r != nil && r.workspace != nil {
-		if info, scopeErr := r.workspace.ScopeForPath(workspacePath); scopeErr == nil && strings.TrimSpace(info.WorkspaceName) != "" {
+		if info, scopeErr := r.workspace.ScopeForPathForPrincipal(scope.Principal, workspacePath); scopeErr == nil && strings.TrimSpace(info.WorkspaceName) != "" {
 			workspaceName = strings.TrimSpace(info.WorkspaceName)
 		}
 	}

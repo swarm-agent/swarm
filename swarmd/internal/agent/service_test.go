@@ -286,6 +286,38 @@ func TestEnsureDefaultsDoesNotRewriteExistingCloneProfileAndAssignments(t *testi
 	}
 }
 
+func TestEnsureDefaultsUpgradesLegacyCloneToolContract(t *testing.T) {
+	svc, agents := newTestService(t)
+	if err := svc.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+	profile, ok, err := agents.GetProfile("clone")
+	if err != nil || !ok {
+		t.Fatalf("GetProfile(clone) ok=%v err=%v", ok, err)
+	}
+	profile.ToolContract = defaultReadWriteSubagentToolContract()
+	if err := agents.PutProfile(profile); err != nil {
+		t.Fatalf("put legacy clone: %v", err)
+	}
+
+	if err := svc.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults() migration error = %v", err)
+	}
+	profile, ok, err = agents.GetProfile("clone")
+	if err != nil || !ok {
+		t.Fatalf("GetProfile(clone) after migration ok=%v err=%v", ok, err)
+	}
+	for _, name := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
+		cfg, exists := profile.ToolContract.Tools[name]
+		if !exists || cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("migrated clone tool %s = %+v, want explicitly enabled", name, cfg)
+		}
+	}
+	if cfg := profile.ToolContract.Tools["bash"]; cfg.Enabled == nil || *cfg.Enabled {
+		t.Fatalf("migrated clone bash = %+v, want explicitly disabled", cfg)
+	}
+}
+
 func TestEnsureDefaultsPreservesCustomizedCloneProfile(t *testing.T) {
 	svc, agents := newTestService(t)
 	if err := svc.EnsureDefaults(); err != nil {
@@ -300,8 +332,13 @@ func TestEnsureDefaultsPreservesCustomizedCloneProfile(t *testing.T) {
 		RuntimeMode:      pebblestore.AgentRuntimeModeReadWrite,
 		ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
 		Prompt:           "custom clone prompt",
-		ToolContract:     defaultReadWriteSubagentToolContract(),
-		Enabled:          true,
+		ToolContract: &pebblestore.AgentToolContract{
+			Preset: "read_write",
+			Tools: map[string]pebblestore.AgentToolConfig{
+				"git_commit": {Enabled: pebblestore.BoolPtr(false)},
+			},
+		},
+		Enabled: true,
 	}); err != nil {
 		t.Fatalf("put custom clone: %v", err)
 	}
@@ -321,6 +358,9 @@ func TestEnsureDefaultsPreservesCustomizedCloneProfile(t *testing.T) {
 	}
 	if profile.Description != "Custom clone" || profile.Provider != "codex" || profile.Model != "gpt-5.5" {
 		t.Fatalf("custom clone profile was changed: %+v", profile)
+	}
+	if cfg := profile.ToolContract.Tools["git_commit"]; cfg.Enabled == nil || *cfg.Enabled {
+		t.Fatalf("custom clone git_commit override was changed: %+v", profile.ToolContract)
 	}
 	assignments, err := agents.GetActiveSubagents(20)
 	if err != nil {

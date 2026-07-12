@@ -724,11 +724,25 @@ func policyModeWithBypass(mode string, bypass bool) string {
 	return mode + "+bypass_permissions"
 }
 
+func ShouldApproveManageWorktreeIntegration(arguments string) bool {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return false
+	}
+	action, _ := args["action"].(string)
+	return strings.EqualFold(strings.TrimSpace(action), "integrate")
+}
+
 func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision {
 	toolName = normalizePolicyToolName(toolName)
 	mode, bypass := splitPolicyMode(mode)
 	switch toolName {
-	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme":
+	case "manage_worktree":
+		if ShouldApproveManageWorktreeIntegration(toolArguments) {
+			return PolicyDecisionAsk
+		}
+		return PolicyDecisionAllow
+	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_todos", "manage_theme":
 		return PolicyDecisionAllow
 	case "manage_image":
 		if ShouldApproveManageImage(toolArguments) {

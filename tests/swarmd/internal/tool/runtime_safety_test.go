@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"swarm/packages/swarmd/internal/identity"
 )
 
 func TestToolRuntimeSafetyReadSuppressesBinaryPayload(t *testing.T) {
@@ -1005,7 +1007,8 @@ func TestToolRuntimeManageWorktreeInspectReturnsPaginatedCommitsForConfiguredBra
 	setupManageWorktreeTestRepo(t, workspace)
 	rt := NewRuntime(2)
 	rt.SetManageWorktreeServices(fakeManageWorktreeSessionService{}, fakeManageWorktreeWorkspaceService{current: manageWorktreeWorkspaceBinding{ResolvedPath: workspace, WorkspacePath: workspace, WorkspaceName: "demo"}, scope: manageWorktreeWorkspaceScopeInfo{WorkspacePath: workspace, WorkspaceName: "demo"}}, fakeManageWorktreeConfigService{config: manageWorktreeConfig{WorkspacePath: workspace, Enabled: true, BaseBranch: "main", BranchName: "agent", UpdatedAt: 123}})
-	results := rt.ExecuteBatch(context.Background(), workspace, []Call{{
+	scope := WorkspaceScope{PrimaryPath: workspace, Roots: []string{workspace}, SessionID: "parent-session", Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "parent-session"}}
+	output, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, Call{
 		CallID: "manage-worktree-inspect",
 		Name:   "manage-worktree",
 		Arguments: mustArgsJSON(t, map[string]any{
@@ -1013,14 +1016,11 @@ func TestToolRuntimeManageWorktreeInspectReturnsPaginatedCommitsForConfiguredBra
 			"limit":  10,
 			"cursor": 0,
 		}),
-	}})
-	if len(results) != 1 {
-		t.Fatalf("expected one result, got %d", len(results))
+	})
+	if err != nil {
+		t.Fatalf("unexpected manage-worktree error: %v", err)
 	}
-	if strings.TrimSpace(results[0].Error) != "" {
-		t.Fatalf("unexpected manage-worktree error: %s", results[0].Error)
-	}
-	decoded := decodeResultJSON(t, results[0].Output)
+	decoded := decodeResultJSON(t, output)
 	if got := mapString(t, decoded, "status"); got != "ok" {
 		t.Fatalf("status mismatch: got %q", got)
 	}
@@ -1073,7 +1073,8 @@ func TestToolRuntimeManageWorktreeInspectUsesBranchNameOverride(t *testing.T) {
 	setupManageWorktreeTestRepo(t, workspace)
 	rt := NewRuntime(2)
 	rt.SetManageWorktreeServices(fakeManageWorktreeSessionService{}, fakeManageWorktreeWorkspaceService{current: manageWorktreeWorkspaceBinding{ResolvedPath: workspace, WorkspacePath: workspace, WorkspaceName: "demo"}, scope: manageWorktreeWorkspaceScopeInfo{WorkspacePath: workspace, WorkspaceName: "demo"}}, fakeManageWorktreeConfigService{config: manageWorktreeConfig{WorkspacePath: workspace, Enabled: true, BaseBranch: "main", BranchName: "agent", UpdatedAt: 123}})
-	results := rt.ExecuteBatch(context.Background(), workspace, []Call{{
+	scope := WorkspaceScope{PrimaryPath: workspace, Roots: []string{workspace}, SessionID: "parent-session", Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "parent-session"}}
+	output, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, Call{
 		CallID: "manage-worktree-inspect-foo",
 		Name:   "manage-worktree",
 		Arguments: mustArgsJSON(t, map[string]any{
@@ -1081,14 +1082,11 @@ func TestToolRuntimeManageWorktreeInspectUsesBranchNameOverride(t *testing.T) {
 			"branch_name": "foo",
 			"limit":       1,
 		}),
-	}})
-	if len(results) != 1 {
-		t.Fatalf("expected one result, got %d", len(results))
+	})
+	if err != nil {
+		t.Fatalf("unexpected manage-worktree error: %v", err)
 	}
-	if strings.TrimSpace(results[0].Error) != "" {
-		t.Fatalf("unexpected manage-worktree error: %s", results[0].Error)
-	}
-	decoded := decodeResultJSON(t, results[0].Output)
+	decoded := decodeResultJSON(t, output)
 	if got := mapString(t, decoded, "branch_name"); got != "foo" {
 		t.Fatalf("branch_name = %q, want foo", got)
 	}
@@ -1162,15 +1160,15 @@ type fakeManageWorktreeWorkspaceService struct {
 	scope   manageWorktreeWorkspaceScopeInfo
 }
 
-func (f fakeManageWorktreeWorkspaceService) CurrentBinding() (manageWorktreeWorkspaceBinding, bool, error) {
+func (f fakeManageWorktreeWorkspaceService) CurrentBindingForPrincipal(principal identity.Principal) (manageWorktreeWorkspaceBinding, bool, error) {
 	return f.current, true, nil
 }
 
-func (f fakeManageWorktreeWorkspaceService) ScopeForPath(path string) (manageWorktreeWorkspaceScopeInfo, error) {
+func (f fakeManageWorktreeWorkspaceService) ScopeForPathForPrincipal(principal identity.Principal, path string) (manageWorktreeWorkspaceScopeInfo, error) {
 	return f.scope, nil
 }
 
-func (f fakeManageWorktreeWorkspaceService) ListKnown(limit int) ([]manageWorktreeWorkspaceEntry, error) {
+func (f fakeManageWorktreeWorkspaceService) ListKnownForPrincipal(principal identity.Principal, limit int) ([]manageWorktreeWorkspaceEntry, error) {
 	return []manageWorktreeWorkspaceEntry{{Path: f.scope.WorkspacePath, WorkspaceName: f.scope.WorkspaceName}}, nil
 }
 
@@ -1178,7 +1176,7 @@ type fakeManageWorktreeConfigService struct {
 	config manageWorktreeConfig
 }
 
-func (f fakeManageWorktreeConfigService) GetConfig(workspacePath string) (manageWorktreeConfig, error) {
+func (f fakeManageWorktreeConfigService) GetConfigForPrincipal(principal identity.Principal, workspacePath string) (manageWorktreeConfig, error) {
 	return f.config, nil
 }
 

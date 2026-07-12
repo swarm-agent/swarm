@@ -54,6 +54,7 @@ const (
 	defaultBashTimeout                  = 2 * time.Minute
 	maxBashTimeout                      = 30 * time.Minute
 	defaultGitTimeout                   = 20 * time.Second
+	defaultGitCommitTimeout             = 5 * time.Minute
 	defaultSearchTimeout                = 8 * time.Second
 	maxSearchTimeout                    = 45 * time.Second
 	defaultSearchResults                = 100
@@ -189,14 +190,17 @@ type manageSessionService interface {
 }
 
 type manageWorktreeWorkspaceService interface {
-	CurrentBinding() (workspaceruntime.Resolution, bool, error)
-	ScopeForPath(path string) (workspaceruntime.Scope, error)
-	ListKnown(limit int) ([]workspaceruntime.Entry, error)
+	CurrentBindingForPrincipal(principal identity.Principal) (workspaceruntime.Resolution, bool, error)
+	ScopeForPathForPrincipal(principal identity.Principal, path string) (workspaceruntime.Scope, error)
+	ListKnownForPrincipal(principal identity.Principal, limit int) ([]workspaceruntime.Entry, error)
 }
 
 type manageWorktreeConfigService interface {
-	GetConfig(workspacePath string) (worktreeruntime.Config, error)
+	GetConfigForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
 	InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
+	TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit string) (bool, error)
+	PrepareTaskIntegration(parentPath, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error)
+	ApplyTaskIntegration(parentPath string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error)
 }
 
 type manageOrchestrationPolicyService interface {
@@ -1085,15 +1089,19 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-worktree",
-			Description: "Recall durable Clone child lineage for the current parent session with refreshed Git status, or inspect combined commits for a workspace branch family. Recall supports sequential integration review without performing Git mutations.",
+			Description: "Recall durable Clone child lineage or integrate an explicitly selected committed child batch through one approval. Integration resolves only durable current-parent lineage, preflights the full deterministic batch, and fails closed on stale, dirty, invalid, or conflicting state.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":         map[string]any{"type": "string", "description": "Action: inspect|list|recall"},
-					"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
-					"branch_name":    map[string]any{"type": "string", "description": "Optional worktree branch family/prefix override such as agent or foo"},
-					"limit":          map[string]any{"type": "integer", "description": "Page size for returned commits (default 25)"},
-					"cursor":         map[string]any{"type": "integer", "description": "0-based result offset for pagination"},
+					"action":               map[string]any{"type": "string", "description": "Action: inspect|list|recall|integrate"},
+					"session_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selected Clone child session ids from durable current-parent lineage"},
+					"expected_parent_head": map[string]any{"type": "string", "description": "Required exact parent HEAD for integrate stale-state protection"},
+					"preview":              map[string]any{"type": "boolean", "description": "Preflight and return the complete approval-ready integration plan without mutation"},
+					"integration_plan":     map[string]any{"type": "object", "description": "Complete preflight manifest returned by preview and bound to the approved mutation"},
+					"workspace_path":       map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
+					"branch_name":          map[string]any{"type": "string", "description": "Optional worktree branch family/prefix override such as agent or foo"},
+					"limit":                map[string]any{"type": "integer", "description": "Page size for returned commits (default 25)"},
+					"cursor":               map[string]any{"type": "integer", "description": "0-based result offset for pagination"},
 				},
 				"required":             []string{"action"},
 				"additionalProperties": false,
@@ -1830,18 +1838,60 @@ func executeGitCommit(parent context.Context, scope WorkspaceScope, args map[str
 	if message == "" {
 		return "", errors.New("git_commit requires message")
 	}
+	if output, ran, err := runGitPrecommitGate(parent, scope.PrimaryPath); err != nil {
+		if strings.TrimSpace(output) != "" {
+			return output, fmt.Errorf("git_commit precommit gate failed: %w", err)
+		}
+		return "", fmt.Errorf("git_commit precommit gate failed: %w", err)
+	} else if ran && strings.TrimSpace(output) != "" {
+		// A successful gate is intentionally not returned separately: the commit
+		// remains the tool's single durable operation and follows it immediately.
+	}
 	argv := []string{"commit", "-m", message}
 	if asBool(args["all"]) {
 		argv = append(argv, "--all")
 	}
-	return executeGitCommand(parent, scope, "git_commit", argv)
+	return executeGitCommandWithTimeout(parent, scope, "git_commit", argv, defaultGitCommitTimeout)
+}
+
+// runGitPrecommitGate honors the repository-owned precommit contract when one
+// exists. Repositories without this conventional gate keep normal Git behavior.
+// The child needs no generic shell capability: git_commit owns this bounded step.
+func runGitPrecommitGate(parent context.Context, workspacePath string) (string, bool, error) {
+	rootCmd := exec.CommandContext(parent, "git", "rev-parse", "--show-toplevel")
+	rootCmd.Dir = workspacePath
+	rootCmd.Env = filteredGitEnv(os.Environ())
+	rootOutput, err := rootCmd.Output()
+	if err != nil {
+		return "", false, fmt.Errorf("resolve repository root: %w", err)
+	}
+	repoRoot := strings.TrimSpace(string(rootOutput))
+	if repoRoot == "" {
+		return "", false, errors.New("git rev-parse returned an empty repository root")
+	}
+	gatePath := filepath.Join(repoRoot, "scripts", "check-precommit.sh")
+	if _, err := os.Stat(gatePath); errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	} else if err != nil {
+		return "", false, err
+	}
+	ctx, cancel := context.WithTimeout(parent, defaultGitCommitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", gatePath)
+	cmd.Dir = repoRoot
+	cmd.Env = filteredGitEnv(os.Environ())
+	output, err := cmd.CombinedOutput()
+	return sanitizeForToolOutput(string(output)), true, err
 }
 
 func executeGitCommand(parent context.Context, scope WorkspaceScope, toolName string, argv []string) (string, error) {
+	return executeGitCommandWithTimeout(parent, scope, toolName, argv, defaultGitTimeout)
+}
+
+func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, toolName string, argv []string, timeout time.Duration) (string, error) {
 	if len(argv) == 0 {
 		return "", errors.New("git command is required")
 	}
-	timeout := defaultGitTimeout
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
@@ -6277,6 +6327,8 @@ func (r *Runtime) executeManageWorktree(scope WorkspaceScope, args map[string]an
 		return r.manageWorktreeInspect(scope, args)
 	case "recall":
 		return r.manageWorktreeRecall(scope, args)
+	case "integrate":
+		return r.manageWorktreeIntegrate(scope, args)
 	default:
 		return "", fmt.Errorf("manage-worktree action %q is unsupported", action)
 	}
@@ -6495,6 +6547,152 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 	return string(encoded), nil
 }
 
+func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]any) (string, error) {
+	if r == nil || r.sessions == nil || r.worktrees == nil {
+		return "", errors.New("manage-worktree integrate requires session and worktree services")
+	}
+	parentSessionID := strings.TrimSpace(firstNonEmptyString(scope.SessionID, scope.Principal.SessionID))
+	parent, ok, err := r.sessions.GetSession(parentSessionID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("parent session %q not found", parentSessionID)
+	}
+	var approvedPlan *worktreeruntime.TaskIntegrationPlan
+	if rawPlan, ok := args["integration_plan"]; ok {
+		raw, marshalErr := json.Marshal(rawPlan)
+		if marshalErr != nil {
+			return "", marshalErr
+		}
+		var decoded worktreeruntime.TaskIntegrationPlan
+		if unmarshalErr := json.Unmarshal(raw, &decoded); unmarshalErr != nil {
+			return "", fmt.Errorf("approved integration plan invalid: %w", unmarshalErr)
+		}
+		approvedPlan = &decoded
+	}
+	selected := asStringSlice(args["session_ids"])
+	if len(selected) == 0 && approvedPlan != nil {
+		for _, entry := range approvedPlan.Entries {
+			selected = append(selected, strings.TrimSpace(entry.SessionID))
+		}
+	}
+	if len(selected) == 0 {
+		return "", errors.New("integrate requires selected lineage session_ids or a preview integration_plan")
+	}
+	selectedSet := map[string]bool{}
+	for _, id := range selected {
+		id = strings.TrimSpace(id)
+		if id == "" || selectedSet[id] {
+			return "", fmt.Errorf("invalid or duplicate selected session_id %q", id)
+		}
+		selectedSet[id] = true
+	}
+	launchMap, _ := parent.Metadata["task_launches"].(map[string]any)
+	type candidate struct {
+		callID string
+		index  int
+		child  worktreeruntime.TaskIntegrationChild
+	}
+	candidates := make([]candidate, 0, len(selected))
+	for callID, raw := range launchMap {
+		entry, _ := raw.(map[string]any)
+		rows, _ := entry["launches"].([]any)
+		if typed, ok := entry["launches"].([]map[string]any); ok {
+			for _, row := range typed {
+				rows = append(rows, row)
+			}
+		}
+		for _, rawRow := range rows {
+			row, _ := rawRow.(map[string]any)
+			id := strings.TrimSpace(asString(row["child_session_id"]))
+			if !selectedSet[id] || !strings.EqualFold(asString(row["subagent"]), "clone") {
+				continue
+			}
+			path := strings.TrimSpace(firstNonEmptyString(asString(row["worktree_root_path"]), asString(row["workspace_path"])))
+			state, inspectErr := r.worktrees.InspectTaskWorkspace(path)
+			if inspectErr != nil {
+				return "", fmt.Errorf("inspect selected child %q: %w", id, inspectErr)
+			}
+			if !state.Clean {
+				return "", fmt.Errorf("selected child %q is dirty:\n%s", id, state.Status)
+			}
+			if state.BranchName != strings.TrimSpace(asString(row["worktree_branch"])) || state.HeadCommit != strings.TrimSpace(asString(row["head_commit"])) {
+				return "", fmt.Errorf("selected child %q no longer matches durable lineage", id)
+			}
+			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: strings.TrimSpace(asString(row["base_commit"])), HeadCommit: state.HeadCommit}})
+		}
+	}
+	if len(candidates) != len(selectedSet) {
+		return "", errors.New("one or more selected children are missing or unauthorized by durable parent lineage")
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].callID != candidates[j].callID {
+			return candidates[i].callID < candidates[j].callID
+		}
+		return candidates[i].index < candidates[j].index
+	})
+	children := make([]worktreeruntime.TaskIntegrationChild, 0, len(candidates))
+	for _, item := range candidates {
+		children = append(children, item.child)
+	}
+	parentPath, err := r.manageWorktreeResolveWorkspacePath(scope, "")
+	if err != nil {
+		return "", err
+	}
+	expectedParentHead := strings.TrimSpace(asString(args["expected_parent_head"]))
+	if expectedParentHead == "" && approvedPlan != nil {
+		expectedParentHead = strings.TrimSpace(approvedPlan.ParentHead)
+	}
+	if expectedParentHead == "" {
+		parentState, inspectErr := r.worktrees.InspectTaskWorkspace(parentPath)
+		if inspectErr != nil {
+			return "", fmt.Errorf("derive current parent HEAD from calling session workspace: %w", inspectErr)
+		}
+		expectedParentHead = parentState.HeadCommit
+	}
+	plan, err := r.worktrees.PrepareTaskIntegration(parentPath, expectedParentHead, children)
+	if err != nil {
+		return "", err
+	}
+	if asBool(args["preview"]) {
+		encoded, marshalErr := json.Marshal(map[string]any{
+			"action": "integrate", "session_ids": selected, "expected_parent_head": plan.ParentHead,
+			"preview": false, "integration_plan": plan,
+		})
+		if marshalErr != nil {
+			return "", marshalErr
+		}
+		return string(encoded), nil
+	}
+	if approvedPlan != nil {
+		approvedRaw, marshalErr := json.Marshal(approvedPlan)
+		if marshalErr != nil {
+			return "", marshalErr
+		}
+		currentRaw, marshalErr := json.Marshal(plan)
+		if marshalErr != nil {
+			return "", marshalErr
+		}
+		if !bytes.Equal(approvedRaw, currentRaw) {
+			return "", errors.New("approved integration plan became stale")
+		}
+	}
+	result, err := r.worktrees.ApplyTaskIntegration(parentPath, plan)
+	if err != nil {
+		return "", err
+	}
+	childStates := make(map[string]string, len(result.Entries))
+	for _, entry := range result.Entries {
+		childStates[entry.SessionID] = "integrated"
+	}
+	encoded, err := json.Marshal(map[string]any{"status": "ok", "action": "integrate", "parent_session_id": parentSessionID, "child_states": childStates, "resulting_parent_head": result.ResultingParentHead, "integration": result, "path_id": toolPathID("manage-worktree")})
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
 func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any) (string, error) {
 	if r == nil || r.sessions == nil || r.worktrees == nil {
 		return "", errors.New("manage-worktree recall requires session and worktree services")
@@ -6520,6 +6718,11 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 	cursor := asInt(args["cursor"], 0)
 	if cursor < 0 {
 		cursor = 0
+	}
+	parentPath, parentPathErr := r.manageWorktreeResolveWorkspacePath(scope, "")
+	parentState := worktreeruntime.TaskWorkspaceState{}
+	if parentPathErr == nil {
+		parentState, parentPathErr = r.worktrees.InspectTaskWorkspace(parentPath)
 	}
 	launchMap, _ := parent.Metadata["task_launches"].(map[string]any)
 	children := make([]map[string]any, 0)
@@ -6549,6 +6752,7 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 			child["task_call_id"] = callID
 			child["parent_session_id"] = parentSessionID
 			path := strings.TrimSpace(firstNonEmptyString(asString(row["worktree_root_path"]), asString(row["workspace_path"])))
+			childState := "blocked"
 			if path != "" {
 				if state, inspectErr := r.worktrees.InspectTaskWorkspace(path); inspectErr != nil {
 					child["git_inspection_error"] = inspectErr.Error()
@@ -6558,8 +6762,35 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 					child["head_commit"] = state.HeadCommit
 					child["git_status"] = state.Status
 					child["worktree_clean"] = state.Clean
+					recordedBranch := strings.TrimSpace(asString(row["worktree_branch"]))
+					recordedBase := strings.TrimSpace(asString(row["base_commit"]))
+					recordedHead := strings.TrimSpace(asString(row["head_commit"]))
+					switch {
+					case !state.Clean:
+						childState = "dirty-recoverable"
+					case recordedBranch == "" || recordedBase == "" || recordedHead == "" || recordedBase == recordedHead:
+						childState = "blocked"
+					case state.BranchName != recordedBranch || state.HeadCommit != recordedHead:
+						childState = "stale"
+					case parentPathErr != nil:
+						child["parent_git_inspection_error"] = parentPathErr.Error()
+						// Parent inspection affects integrated-vs-committed detection, not
+						// whether this clean child has a durable committed handoff.
+						childState = "committed"
+					default:
+						integrated, ancestryErr := r.worktrees.TaskCommitDescendsFrom(parentPath, recordedHead, parentState.HeadCommit)
+						if ancestryErr != nil {
+							child["integration_inspection_error"] = ancestryErr.Error()
+							childState = "blocked"
+						} else if integrated {
+							childState = "integrated"
+						} else {
+							childState = "committed"
+						}
+					}
 				}
 			}
+			child["child_state"] = childState
 			children = append(children, child)
 		}
 	}
@@ -6583,16 +6814,38 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 	if end < total {
 		nextCursor = end
 	}
+	integrationInfo := map[string]any{
+		"recommended_order": "review children in task call order then launch_index; submit the complete selected committed batch in one integrate call, then recall once to verify child states and resulting parent HEAD",
+		"state_labels":      []string{"committed", "dirty-recoverable", "integrated", "blocked", "stale", "conflicting"},
+		"conflict_policy":   "the complete deterministic batch is preflighted before mutation; stale, dirty, unauthorized, or conflicting work fails closed and is never overwritten or auto-committed",
+		"git_permissions":   "one reviewed manage_worktree integrate permission covers the declared batch; unrelated cherry-pick, merge, commit, reset, and other risky Git mutations still require separate permission",
+	}
+	committedIDs := make([]string, 0)
+	for _, child := range children {
+		if strings.EqualFold(asString(child["child_state"]), "committed") {
+			committedIDs = append(committedIDs, strings.TrimSpace(asString(child["child_session_id"])))
+		}
+	}
+	if len(committedIDs) > 0 {
+		previewOutput, previewErr := r.manageWorktreeIntegrate(scope, map[string]any{"session_ids": committedIDs, "preview": true})
+		if previewErr != nil {
+			integrationInfo["preflight_error"] = previewErr.Error()
+		} else {
+			var preview map[string]any
+			if err := json.Unmarshal([]byte(previewOutput), &preview); err != nil {
+				integrationInfo["preflight_error"] = fmt.Sprintf("decode integration preview: %v", err)
+			} else {
+				integrationInfo["integration_plan"] = preview["integration_plan"]
+				integrationInfo["integrate_request"] = preview
+			}
+		}
+	}
 	response := map[string]any{
 		"status": "ok", "action": "recall", "parent_session_id": parentSessionID,
 		"children": page, "total": total, "returned": len(page), "cursor": cursor, "limit": limit,
 		"next_cursor": nextCursor, "has_more": nextCursor > 0,
-		"integration": map[string]any{
-			"recommended_order": "task call order, then launch_index; after each separately approved integration, call recall again to refresh remaining child HEAD/status",
-			"conflict_policy":   "inspect each child diff against the updated parent; overlapping or conflicting changes remain unresolved child work and are never overwritten",
-			"git_permissions":   "cherry-pick, merge, commit, reset, and other risky Git mutations require separate permission approval",
-		},
-		"path_id": toolPathID("manage-worktree"), "details_truncated": false,
+		"integration": integrationInfo,
+		"path_id":     toolPathID("manage-worktree"), "details_truncated": false,
 	}
 	encoded, err := json.Marshal(response)
 	if err != nil {
@@ -6620,7 +6873,7 @@ func (r *Runtime) manageWorktreeInspect(scope WorkspaceScope, args map[string]an
 
 	config := manageWorktreeConfig{}
 	if r != nil && r.worktrees != nil {
-		cfg, cfgErr := r.worktrees.GetConfig(workspacePath)
+		cfg, cfgErr := r.worktrees.GetConfigForPrincipal(scope.Principal, workspacePath)
 		if cfgErr != nil {
 			return "", fmt.Errorf("manage-worktree get config failed: %w", cfgErr)
 		}
@@ -6629,7 +6882,7 @@ func (r *Runtime) manageWorktreeInspect(scope WorkspaceScope, args map[string]an
 
 	workspaceName := filepath.Base(strings.TrimSpace(workspacePath))
 	if r != nil && r.workspace != nil {
-		if info, scopeErr := r.workspace.ScopeForPath(workspacePath); scopeErr == nil {
+		if info, scopeErr := r.workspace.ScopeForPathForPrincipal(scope.Principal, workspacePath); scopeErr == nil {
 			if strings.TrimSpace(info.WorkspaceName) != "" {
 				workspaceName = strings.TrimSpace(info.WorkspaceName)
 			}
@@ -6801,13 +7054,26 @@ done`, branchGlob, branchGlob)
 }
 
 func (r *Runtime) manageWorktreeResolveWorkspacePath(scope WorkspaceScope, requested string) (string, error) {
+	if strings.TrimSpace(scope.SessionID) == "" {
+		return "", errors.New("manage-worktree calling context missing backend session_id")
+	}
+	if !scope.Principal.Valid() {
+		return "", errors.New("manage-worktree calling context missing authenticated principal")
+	}
 	if requested != "" {
 		return resolveWorkspacePath(scope, requested)
 	}
+	// The calling session is the authority for the parent workspace. The account's
+	// currently selected binding may change independently while a run is active.
+	if strings.TrimSpace(scope.PrimaryPath) != "" && strings.TrimSpace(scope.PrimaryPath) != "." {
+		return resolveWorkspacePath(scope, scope.PrimaryPath)
+	}
 	if r != nil && r.workspace != nil {
-		if current, ok, err := r.workspace.CurrentBinding(); err != nil {
-			return "", fmt.Errorf("manage-worktree resolve current workspace failed: %w", err)
-		} else if ok {
+		current, ok, err := r.workspace.CurrentBindingForPrincipal(scope.Principal)
+		if err != nil {
+			return "", fmt.Errorf("manage-worktree resolve current workspace from authenticated principal failed: %w", err)
+		}
+		if ok {
 			if path := strings.TrimSpace(current.ResolvedPath); path != "" {
 				return resolveWorkspacePath(scope, path)
 			}
@@ -6816,10 +7082,7 @@ func (r *Runtime) manageWorktreeResolveWorkspacePath(scope WorkspaceScope, reque
 			}
 		}
 	}
-	if strings.TrimSpace(scope.PrimaryPath) != "" {
-		return resolveWorkspacePath(scope, scope.PrimaryPath)
-	}
-	return normalizeScopePath(scope.PrimaryPath), nil
+	return "", errors.New("manage-worktree calling context missing parent workspace_path")
 }
 
 func (r *Runtime) manageWorktreeConfigMap(cfg manageWorktreeConfig) map[string]any {

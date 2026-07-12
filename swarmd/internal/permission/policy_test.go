@@ -18,6 +18,18 @@ func bashArguments(t *testing.T, command string) string {
 	return string(payload)
 }
 
+func TestManageWorktreeIntegrateRequiresOnePermissionDecision(t *testing.T) {
+	policy := NormalizePolicy(Policy{})
+	integrate := ExplainPolicy("auto", "manage_worktree", `{"action":"integrate","session_ids":["child-a","child-b"],"expected_parent_head":"abc"}`, policy)
+	if integrate.Decision != PolicyDecisionAsk {
+		t.Fatalf("integrate decision = %s, want ask", integrate.Decision)
+	}
+	recall := ExplainPolicy("auto", "manage_worktree", `{"action":"recall"}`, policy)
+	if recall.Decision != PolicyDecisionAllow {
+		t.Fatalf("recall decision = %s, want allow", recall.Decision)
+	}
+}
+
 func TestBashPrefixMatchesRelativeScriptPaths(t *testing.T) {
 	policy := NormalizePolicy(Policy{Rules: []PolicyRule{{
 		Kind:     PolicyRuleKindBashPrefix,

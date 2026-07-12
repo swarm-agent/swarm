@@ -14,7 +14,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 )
 
-const workspaceGitCommitTimeout = 30 * time.Second
+const workspaceGitCommitTimeout = 5 * time.Minute
 
 type workspaceGitCommitRequest struct {
 	WorkspacePath string `json:"workspace_path,omitempty"`
@@ -124,30 +124,30 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 	ctx, cancel := context.WithTimeout(parent, workspaceGitCommitTimeout)
 	defer cancel()
 
-	secretCheckOutput, secretCheckErr := runWorkspaceGitSecretCheck(ctx, workspacePath)
-	if secretCheckErr != nil {
-		combined := strings.TrimSpace(secretCheckOutput)
+	precommitOutput, precommitErr := runWorkspaceGitPrecommit(ctx, workspacePath)
+	if precommitErr != nil {
+		combined := strings.TrimSpace(precommitOutput)
 		response := workspaceGitCommitResponse{
 			OK:            false,
 			WorkspacePath: workspacePath,
 			CWD:           workspacePath,
-			Argv:          []string{"scripts/check-secrets.sh"},
-			ExitCode:      workspaceGitCommandExitCode(secretCheckErr),
+			Argv:          []string{"scripts/check-precommit.sh"},
+			ExitCode:      workspaceGitCommandExitCode(precommitErr),
 			TimedOut:      errors.Is(ctx.Err(), context.DeadlineExceeded),
 			Output:        combined,
-			Summary:       "secret check failed before git commit",
+			Summary:       "precommit gate failed before git commit",
 		}
 		if combined != "" {
-			response.Error = fmt.Sprintf("secret check failed before git commit: %s", combined)
+			response.Error = fmt.Sprintf("precommit gate failed before git commit: %s", combined)
 		} else {
-			response.Error = fmt.Sprintf("secret check failed before git commit: %v", secretCheckErr)
+			response.Error = fmt.Sprintf("precommit gate failed before git commit: %v", precommitErr)
 		}
 		return response, errors.New(response.Error)
 	}
 
 	combinedParts := []string{}
-	if strings.TrimSpace(secretCheckOutput) != "" {
-		combinedParts = append(combinedParts, strings.TrimSpace(secretCheckOutput))
+	if strings.TrimSpace(precommitOutput) != "" {
+		combinedParts = append(combinedParts, strings.TrimSpace(precommitOutput))
 	}
 	if all {
 		stageArgv := []string{"add", "--all"}
@@ -206,7 +206,7 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 	return response, nil
 }
 
-func runWorkspaceGitSecretCheck(parent context.Context, workspacePath string) (string, error) {
+func runWorkspaceGitPrecommit(parent context.Context, workspacePath string) (string, error) {
 	rootCmd := exec.CommandContext(parent, "git", "rev-parse", "--show-toplevel")
 	rootCmd.Dir = workspacePath
 	rootCmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
@@ -218,11 +218,11 @@ func runWorkspaceGitSecretCheck(parent context.Context, workspacePath string) (s
 	if repoRoot == "" {
 		return "", errors.New("git rev-parse returned an empty repository root")
 	}
-	secretCheckScript := filepath.Join(repoRoot, "scripts", "check-secrets.sh")
-	if _, err := os.Stat(secretCheckScript); err != nil {
+	precommitScript := filepath.Join(repoRoot, "scripts", "check-precommit.sh")
+	if _, err := os.Stat(precommitScript); err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(parent, "bash", secretCheckScript)
+	cmd := exec.CommandContext(parent, "bash", precommitScript)
 	cmd.Dir = repoRoot
 	cmd.Env = filteredWorkspaceGitCommitEnv(os.Environ())
 	output, err := cmd.CombinedOutput()

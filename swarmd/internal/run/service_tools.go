@@ -44,6 +44,7 @@ type taskLaunchPrepared struct {
 
 type taskLaunchOutcome struct {
 	LaunchIndex        int
+	VirtualTarget      bool
 	RequestedSubagent  string
 	ResolvedSubagent   string
 	MetaPrompt         string
@@ -98,6 +99,7 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 	metaPrompt := strings.TrimSpace(launch.MetaPrompt)
 	outcome := taskLaunchOutcome{
 		LaunchIndex:        launch.LaunchIndex,
+		VirtualTarget:      launch.VirtualTarget,
 		RequestedSubagent:  requested,
 		ResolvedSubagent:   resolved,
 		MetaPrompt:         metaPrompt,
@@ -894,7 +896,7 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		result.Output = output
 		return true, result, err
 	case "manage_worktree":
-		output, err := s.executeManageWorktreeTool(sessionID, call)
+		output, err := s.executeManageWorktreeTool(ctx, sessionID, call, approvedArguments)
 		result.Output = output
 		return true, result, err
 	case "manage_todos":
@@ -1201,8 +1203,11 @@ func (s *Service) executeManageThemeTool(sessionID string, call tool.Call, feedb
 	return output, nil
 }
 
-func (s *Service) executeManageWorktreeTool(sessionID string, call tool.Call) (string, error) {
+func (s *Service) executeManageWorktreeTool(ctx context.Context, sessionID string, call tool.Call, approvedArguments ...string) (string, error) {
 	arguments := strings.TrimSpace(call.Arguments)
+	if len(approvedArguments) > 0 && strings.TrimSpace(approvedArguments[0]) != "" && permission.ShouldApproveManageWorktreeIntegration(arguments) {
+		arguments = strings.TrimSpace(approvedArguments[0])
+	}
 	if arguments == "" {
 		arguments = "{}"
 	}
@@ -1214,14 +1219,25 @@ func (s *Service) executeManageWorktreeTool(sessionID string, call tool.Call) (s
 		return "", fmt.Errorf("session %q not found", sessionID)
 	}
 	scope := buildPermissionWorkspaceScope(session)
+	if principal, ok := identity.PrincipalFromContext(ctx); ok && principal.Valid() {
+		if strings.TrimSpace(principal.UserID) != strings.TrimSpace(session.UserID) || strings.TrimSpace(principal.AccountScopeID) != strings.TrimSpace(session.AccountScopeID) {
+			return "", errors.New("manage-worktree authenticated principal does not own the calling session")
+		}
+		principal.SessionID = strings.TrimSpace(session.ID)
+		scope.Principal = principal
+	}
+	if !scope.Principal.Valid() {
+		return "", errors.New("manage-worktree calling context missing authenticated principal")
+	}
+	executionCtx := identity.ContextWithPrincipal(context.Background(), scope.Principal)
 	if s.tools != nil {
-		output, err := s.tools.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: arguments})
+		output, err := s.tools.ExecuteForWorkspaceScopeWithRuntime(executionCtx, scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: arguments})
 		if err != nil {
 			return output, err
 		}
 		return output, nil
 	}
-	output, err := tool.ExecuteForWorkspaceScope(context.Background(), scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: arguments})
+	output, err := tool.ExecuteForWorkspaceScope(executionCtx, scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: arguments})
 	if err != nil {
 		return output, err
 	}
@@ -3100,11 +3116,24 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			outcome.HeadCommit = strings.TrimSpace(state.HeadCommit)
 			outcome.GitStatus = strings.TrimSpace(state.Status)
 			outcome.WorktreeClean = state.Clean
+			if strings.TrimSpace(outcome.WorktreeBranch) != strings.TrimSpace(launch.ChildSession.WorktreeBranch) {
+				return outcome, fmt.Errorf("Clone handoff branch %q does not match allocated branch %q", outcome.WorktreeBranch, launch.ChildSession.WorktreeBranch)
+			}
 			if outcome.HeadCommit == "" {
 				return outcome, errors.New("Clone handoff is missing child HEAD commit")
 			}
-			if outcome.HeadCommit == outcome.BaseCommit && outcome.WorktreeClean {
-				return outcome, errors.New("implementation Clone completed without a commit or uncommitted work")
+			if !outcome.WorktreeClean {
+				return outcome, fmt.Errorf("implementation Clone completed with uncommitted work; commit the changes before a successful handoff:\n%s", outcome.GitStatus)
+			}
+			if outcome.HeadCommit == outcome.BaseCommit {
+				return outcome, errors.New("implementation Clone completed without a commit")
+			}
+			descends, ancestryErr := s.worktrees.TaskCommitDescendsFrom(outcome.WorkspacePath, outcome.BaseCommit, outcome.HeadCommit)
+			if ancestryErr != nil {
+				return outcome, fmt.Errorf("validate Clone handoff ancestry: %w", ancestryErr)
+			}
+			if !descends {
+				return outcome, errors.New("Clone handoff HEAD does not descend from its recorded immutable base")
 			}
 		}
 		if outcome.ReportChars > taskReportDefaultChars {
@@ -3195,6 +3224,16 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		launch.Phase = launchPhase
 		launch.ReportTruncated = reportTruncated
 		launchPayload := buildTaskStreamLaunchPayload(launch, status, launchPhase, true)
+		if launch.VirtualTarget {
+			childState := "committed"
+			if status == "error" {
+				childState = "blocked"
+				if !launch.WorktreeClean && strings.TrimSpace(launch.GitStatus) != "" {
+					childState = "dirty-recoverable"
+				}
+			}
+			launchPayload["child_state"] = childState
+		}
 		launchPayload["session_id"] = strings.TrimSpace(launch.ChildSessionID)
 		launchPayload["mode"] = strings.TrimSpace(launch.ChildMode)
 		if reportExcerpt != "" {

@@ -64,8 +64,8 @@ func TestRunWorkspaceGitCommitBlocksWhenSecretCheckFails(t *testing.T) {
 	if result.OK {
 		t.Fatalf("secret-check failure result OK = true")
 	}
-	if result.Argv[0] != "scripts/check-secrets.sh" {
-		t.Fatalf("failure argv = %#v, want scripts/check-secrets.sh", result.Argv)
+	if result.Argv[0] != "scripts/check-precommit.sh" {
+		t.Fatalf("failure argv = %#v, want scripts/check-precommit.sh", result.Argv)
 	}
 	if !strings.Contains(result.Output, "possible private Tailscale tailnet URL found") {
 		t.Fatalf("failure output missing private tailnet diagnostic: %q", result.Output)
@@ -86,7 +86,7 @@ func initGitCommitTestRepo(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatalf("write initial file: %v", err)
 	}
-	runGitCommitTestCommand(t, repo, "add", "note.txt", "scripts/check-secrets.sh")
+	runGitCommitTestCommand(t, repo, "add", "note.txt", "scripts/check-precommit.sh")
 	runGitCommitTestCommand(t, repo, "commit", "-m", "chore: initial")
 	return repo
 }
@@ -99,7 +99,7 @@ func writeGitCommitTestSecretCheck(t *testing.T, repo string) {
 	}
 	script := `#!/usr/bin/env bash
 set -euo pipefail
-hits="$(grep -R -n -E --exclude-dir=.git --exclude='check-secrets.sh' 'tail[0-9a-z]{6,}\.ts\.net' . || true)"
+hits="$(grep -R -n -E --exclude-dir=.git --exclude='check-precommit.sh' 'tail[0-9a-z]{6,}\.ts\.net' . || true)"
 if [ -n "$hits" ]; then
   echo '[secret-check] FAIL: possible private Tailscale tailnet URL found:'
   echo "$hits"
@@ -107,7 +107,7 @@ if [ -n "$hits" ]; then
 fi
 echo '[test-secret-check] PASS'
 `
-	if err := os.WriteFile(filepath.Join(scriptDir, "check-secrets.sh"), []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(scriptDir, "check-precommit.sh"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write secret check script: %v", err)
 	}
 }

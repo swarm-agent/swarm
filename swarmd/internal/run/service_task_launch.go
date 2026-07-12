@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -644,6 +645,24 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 		}
 		return marshalPayload(payload)
 	case "manage_worktree":
+		if permission.ShouldApproveManageWorktreeIntegration(arguments) {
+			var previewArgs map[string]any
+			if err := json.Unmarshal([]byte(firstNonEmptyString(arguments, "{}")), &previewArgs); err != nil {
+				return "", fmt.Errorf("manage-worktree arguments invalid: %w", err)
+			}
+			previewArgs["preview"] = true
+			raw, err := json.Marshal(previewArgs)
+			if err != nil {
+				return "", err
+			}
+			previewCall := call
+			previewCall.Arguments = string(raw)
+			output, err := s.executeManageWorktreeTool(context.Background(), sessionID, previewCall)
+			if err != nil {
+				return "", err
+			}
+			return output, nil
+		}
 		return arguments, nil
 	case "manage_todos":
 		payload, err := s.buildManageTodosPermissionPayload(sessionID, call)
@@ -1496,12 +1515,20 @@ func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnap
 	profile.Name = "clone"
 	profile.Mode = "subagent"
 	profile.Description = "Built-in parent-copying subagent launched from " + sourceName
-	if profile.ToolContract != nil {
-		if profile.ToolContract.Tools == nil {
-			profile.ToolContract.Tools = make(map[string]pebblestore.AgentToolConfig)
-		}
-		profile.ToolContract.Tools["manage_sessions"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false)}
+	// A Clone gets the parent's implementation tools plus only the dedicated Git
+	// operations needed to inspect, stage, and commit in its session-bound worktree.
+	// Generic bash and orchestration remain disabled by the launch overlay.
+	if profile.ToolContract == nil {
+		profile.ToolContract = &pebblestore.AgentToolContract{Preset: "read_write"}
 	}
+	if profile.ToolContract.Tools == nil {
+		profile.ToolContract.Tools = make(map[string]pebblestore.AgentToolConfig)
+	}
+	for _, name := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
+		profile.ToolContract.Tools[name] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
+	}
+	profile.ToolContract.Tools["bash"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false)}
+	profile.ToolContract.Tools["manage_sessions"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false)}
 	return profile, true, sourceName, nil
 }
 

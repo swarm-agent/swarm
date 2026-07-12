@@ -440,6 +440,10 @@ func (s *taskLaunchWorktreeStub) AllocateTaskWorkspace(_ string, _ worktreerunti
 	return s.allocation, nil
 }
 
+func (s *taskLaunchWorktreeStub) TaskCommitDescendsFrom(_, baseCommit, headCommit string) (bool, error) {
+	return strings.TrimSpace(baseCommit) != "" && strings.TrimSpace(headCommit) != "" && baseCommit != headCommit, nil
+}
+
 func (s *taskLaunchWorktreeStub) InspectTaskWorkspace(path string) (worktreeruntime.TaskWorkspaceState, error) {
 	return worktreeruntime.TaskWorkspaceState{WorkspacePath: path, BranchName: s.allocation.BranchName, HeadCommit: s.taskBase.BaseCommit, Clean: true}, nil
 }
@@ -1300,6 +1304,15 @@ func TestClonePermissionSnapshotsCurrentCaller(t *testing.T) {
 	}
 	if manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Prompt != "trusted parent prompt" || manifest.Launches[0].InheritedRuntimeMode != pebblestore.AgentRuntimeModePlanAuto {
 		t.Fatalf("Clone snapshot = %#v", manifest.Launches[0])
+	}
+	cloneTools := manifest.Launches[0].ProfileSnapshot.ToolContract.Tools
+	for _, name := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
+		if cfg, ok := cloneTools[name]; !ok || cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Clone snapshot omitted enabled %s: %#v", name, cloneTools)
+		}
+	}
+	if cfg := cloneTools["bash"]; cfg.Enabled == nil || *cfg.Enabled {
+		t.Fatalf("Clone snapshot must disable generic bash: %#v", cloneTools)
 	}
 	if manifest.ManifestHash == "" || manifest.ApprovedArguments == nil {
 		t.Fatalf("Clone manifest binding missing: %#v", manifest)

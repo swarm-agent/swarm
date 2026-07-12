@@ -49,6 +49,151 @@ func TestResolveTaskBaseUsesExactHEADFromLinkedWorktree(t *testing.T) {
 	}
 }
 
+func TestResolveTaskBaseRejectsDirtyParentBeforeAllocation(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+	if _, err := runGit(repo, "config", "user.email", "test@example.invalid"); err != nil {
+		t.Fatalf("configure email: %v", err)
+	}
+	if _, err := runGit(repo, "config", "user.name", "Test User"); err != nil {
+		t.Fatalf("configure name: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if _, err := runGit(repo, "add", "tracked.txt"); err != nil {
+		t.Fatalf("add fixture: %v", err)
+	}
+	if _, err := runGit(repo, "commit", "-m", "base"); err != nil {
+		t.Fatalf("commit fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty fixture: %v", err)
+	}
+
+	_, err := (&Service{}).ResolveTaskBase(repo)
+	if err == nil || !strings.Contains(err.Error(), "parent worktree has uncommitted changes") || !strings.Contains(err.Error(), "commit or checkpoint") {
+		t.Fatalf("ResolveTaskBase dirty error = %v", err)
+	}
+}
+
+func TestTaskCommitDescendsFromRecordedBase(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+	if _, err := runGit(repo, "config", "user.email", "test@example.invalid"); err != nil {
+		t.Fatalf("configure email: %v", err)
+	}
+	if _, err := runGit(repo, "config", "user.name", "Test User"); err != nil {
+		t.Fatalf("configure name: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base: %v", err)
+	}
+	if _, err := runGit(repo, "add", "tracked.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(repo, "commit", "-m", "base"); err != nil {
+		t.Fatal(err)
+	}
+	base, err := runGit(repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("child\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(repo, "commit", "-am", "child"); err != nil {
+		t.Fatal(err)
+	}
+	head, err := runGit(repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := (&Service{}).TaskCommitDescendsFrom(repo, base, head)
+	if err != nil || !ok {
+		t.Fatalf("TaskCommitDescendsFrom = %t, %v", ok, err)
+	}
+	ok, err = (&Service{}).TaskCommitDescendsFrom(repo, head, base)
+	if err != nil || ok {
+		t.Fatalf("reverse TaskCommitDescendsFrom = %t, %v", ok, err)
+	}
+}
+
+func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "config", "user.email", "test@example.invalid")
+	_, _ = runGit(repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(repo, "add", "base.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(repo, "commit", "-m", "base"); err != nil {
+		t.Fatal(err)
+	}
+	base, _ := runGit(repo, "rev-parse", "HEAD")
+	childPath := filepath.Join(t.TempDir(), "child")
+	if _, err := runGit(repo, "worktree", "add", "-b", "agent/child", childPath, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(childPath, "child.txt"), []byte("child\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(childPath, "add", "child.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(childPath, "commit", "-m", "child"); err != nil {
+		t.Fatal(err)
+	}
+	head, _ := runGit(childPath, "rev-parse", "HEAD")
+
+	svc := &Service{}
+	plan, err := svc.PrepareTaskIntegration(repo, base, []TaskIntegrationChild{{SessionID: "child-session", BaseCommit: base, HeadCommit: head}})
+	if err != nil {
+		t.Fatalf("PrepareTaskIntegration: %v", err)
+	}
+	if len(plan.Commits) != 1 || plan.Commits[0] != head || len(plan.Entries) != 1 {
+		t.Fatalf("plan = %#v", plan)
+	}
+	result, err := svc.ApplyTaskIntegration(repo, plan)
+	if err != nil {
+		t.Fatalf("ApplyTaskIntegration: %v", err)
+	}
+	if result.ResultingParentHead == "" || result.ResultingParentHead == base {
+		t.Fatalf("result = %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "child.txt")); err != nil {
+		t.Fatalf("integrated file: %v", err)
+	}
+}
+
+func TestPrepareTaskIntegrationRejectsStaleParentHead(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "config", "user.email", "test@example.invalid")
+	_, _ = runGit(repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "add", "base.txt")
+	_, _ = runGit(repo, "commit", "-m", "base")
+	_, err := (&Service{}).PrepareTaskIntegration(repo, "stale", []TaskIntegrationChild{{SessionID: "child", BaseCommit: "base", HeadCommit: "head"}})
+	if err == nil || !strings.Contains(err.Error(), "stale parent HEAD") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestDeterministicSessionWorktreePathUsesPrivateWorktreeDataDir(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
 	dataHome := filepath.Join(t.TempDir(), "data")

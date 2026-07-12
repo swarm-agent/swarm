@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -202,11 +203,9 @@ func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.
 			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] execution mode: %w", i, err)
 		}
 		preference := applyAgentPreferenceOverridesForMode(parent.Preference, profile, input.Mode)
-		var bindingPath string
-		if input.WorkspacePath != "" {
-			bindingPath = input.WorkspacePath
-		} else {
-			bindingPath = parent.WorkspacePath
+		bindingPath, bindingPathErr := resolveManageSessionsDeployBindingPath(parent, input)
+		if bindingPathErr != nil {
+			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] workspace: %w", i, bindingPathErr)
 		}
 		workspace, err := s.workspace.ScopeForPathForPrincipal(principal, bindingPath)
 		if err != nil || !workspace.Matched {
@@ -238,6 +237,22 @@ func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.
 	selected := []string{manifest.Proposals[0].ID}
 	manifest.ApprovedArguments = map[string]any{"action": "deploy", "manifest_version": manifest.ManifestVersion, "manifest_digest": digest, "parent_session_id": manifest.ParentSessionID, "account_scope_id": manifest.AccountScopeID, "user_id": manifest.UserID, "selected_proposal_ids": selected, "proposals": manifest.Proposals}
 	return manifest, nil
+}
+
+func resolveManageSessionsDeployBindingPath(parent pebblestore.SessionSnapshot, input manageSessionsDeployInput) (string, error) {
+	if requested := strings.TrimSpace(input.WorkspacePath); requested != "" {
+		return requested, nil
+	}
+	if !input.Worktree && parent.WorktreeEnabled {
+		if source := strings.TrimSpace(mapString(parent.Metadata, "swarm_v3_source_workspace_path")); source != "" {
+			return source, nil
+		}
+		return "", errors.New("calling managed-worktree session is missing backend field swarm_v3_source_workspace_path")
+	}
+	if workspacePath := strings.TrimSpace(parent.WorkspacePath); workspacePath != "" {
+		return workspacePath, nil
+	}
+	return "", errors.New("calling session is missing backend field workspace_path")
 }
 
 func canonicalDeployWorktreeBranchSuffix(title, fallback string) string {

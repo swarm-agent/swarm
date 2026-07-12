@@ -87,6 +87,27 @@ func TestParseApprovedManageSessionsDeployRejectsEmptySelection(t *testing.T) {
 	}
 }
 
+func TestResolveManageSessionsDeployBindingPathUsesSourceWorkspaceForNonWorktreeDeploy(t *testing.T) {
+	parent := pebblestore.SessionSnapshot{WorkspacePath: "/managed/worktree", WorktreeEnabled: true, Metadata: map[string]any{"swarm_v3_source_workspace_path": "/bound/workspace"}}
+	path, err := resolveManageSessionsDeployBindingPath(parent, manageSessionsDeployInput{Worktree: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "/bound/workspace" {
+		t.Fatalf("path = %q, want source workspace", path)
+	}
+	if explicit, err := resolveManageSessionsDeployBindingPath(parent, manageSessionsDeployInput{WorkspacePath: "/explicit", Worktree: false}); err != nil || explicit != "/explicit" {
+		t.Fatalf("explicit path = %q, err = %v", explicit, err)
+	}
+}
+
+func TestResolveManageSessionsDeployBindingPathNamesMissingSourceField(t *testing.T) {
+	_, err := resolveManageSessionsDeployBindingPath(pebblestore.SessionSnapshot{WorkspacePath: "/managed/worktree", WorktreeEnabled: true}, manageSessionsDeployInput{Worktree: false})
+	if err == nil || !strings.Contains(err.Error(), "swarm_v3_source_workspace_path") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestCanonicalDeployWorktreeBranchUsesDesktopStylePrefixAndTitle(t *testing.T) {
 	if got := canonicalDeployWorktreeBranch("agent/<id>", canonicalDeployWorktreeBranchSuffix("Test: 2-checkpoint plan exit", "session-1")); got != "agent/test-2-checkpoint-plan-exit" {
 		t.Fatalf("branch = %q", got)

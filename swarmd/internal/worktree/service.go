@@ -78,6 +78,33 @@ type TaskWorkspaceState struct {
 	Clean         bool   `json:"clean"`
 }
 
+type TaskIntegrationChild struct {
+	SessionID   string   `json:"session_id"`
+	BaseCommit  string   `json:"base_commit"`
+	HeadCommit  string   `json:"head_commit"`
+	OwnedScopes []string `json:"owned_scopes,omitempty"`
+}
+
+type TaskIntegrationEntry struct {
+	SessionID  string   `json:"session_id"`
+	BaseCommit string   `json:"base_commit"`
+	HeadCommit string   `json:"head_commit"`
+	Commits    []string `json:"commits"`
+	Files      []string `json:"files"`
+}
+
+type TaskIntegrationPlan struct {
+	ParentHead string                 `json:"parent_head"`
+	Entries    []TaskIntegrationEntry `json:"entries"`
+	Commits    []string               `json:"commits"`
+	Overlaps   []string               `json:"overlaps,omitempty"`
+}
+
+type TaskIntegrationResult struct {
+	TaskIntegrationPlan
+	ResultingParentHead string `json:"resulting_parent_head"`
+}
+
 type ManagedWorktree struct {
 	Path        string `json:"path"`
 	WorkspaceID string `json:"workspace_id,omitempty"`
@@ -309,6 +336,13 @@ func (s *Service) ResolveTaskBase(workspacePath string) (TaskBase, error) {
 	if strings.TrimSpace(branch) == "" {
 		return TaskBase{}, errors.New("detect current branch: repository is in detached HEAD state")
 	}
+	status, err := runGit(workspacePath, "status", "--short", "--untracked-files=all")
+	if err != nil {
+		return TaskBase{}, fmt.Errorf("inspect parent worktree status: %w", err)
+	}
+	if status = strings.TrimSpace(status); status != "" {
+		return TaskBase{}, fmt.Errorf("parent worktree has uncommitted changes; commit or checkpoint required work before launching Clone:\n%s", status)
+	}
 	commit, err := runGit(workspacePath, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
 		return TaskBase{}, fmt.Errorf("resolve parent HEAD: %w", err)
@@ -317,6 +351,145 @@ func (s *Service) ResolveTaskBase(workspacePath string) (TaskBase, error) {
 		return TaskBase{}, errors.New("resolve parent HEAD: empty commit")
 	}
 	return TaskBase{RepoRoot: repoRoot, ParentBranch: branch, BaseCommit: commit}, nil
+}
+
+func (s *Service) TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit string) (bool, error) {
+	workspacePath = strings.TrimSpace(workspacePath)
+	baseCommit = strings.TrimSpace(baseCommit)
+	headCommit = strings.TrimSpace(headCommit)
+	if workspacePath == "" || baseCommit == "" || headCommit == "" {
+		return false, errors.New("workspace path, base commit, and head commit are required")
+	}
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", baseCommit, headCommit)
+	cmd.Dir = workspacePath
+	if output, err := cmd.CombinedOutput(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("validate task commit ancestry: %s", strings.TrimSpace(string(output)))
+	}
+	return true, nil
+}
+
+func (s *Service) PrepareTaskIntegration(parentPath, expectedParentHead string, children []TaskIntegrationChild) (TaskIntegrationPlan, error) {
+	parentPath = strings.TrimSpace(parentPath)
+	expectedParentHead = strings.TrimSpace(expectedParentHead)
+	if parentPath == "" || expectedParentHead == "" || len(children) == 0 {
+		return TaskIntegrationPlan{}, errors.New("parent path, expected parent HEAD, and at least one child are required")
+	}
+	state, err := s.InspectTaskWorkspace(parentPath)
+	if err != nil {
+		return TaskIntegrationPlan{}, fmt.Errorf("inspect parent worktree: %w", err)
+	}
+	if !state.Clean {
+		return TaskIntegrationPlan{}, fmt.Errorf("parent worktree is dirty:\n%s", state.Status)
+	}
+	if state.HeadCommit != expectedParentHead {
+		return TaskIntegrationPlan{}, fmt.Errorf("stale parent HEAD: expected %s, found %s", expectedParentHead, state.HeadCommit)
+	}
+	plan := TaskIntegrationPlan{ParentHead: state.HeadCommit}
+	owners := map[string]string{}
+	for _, child := range children {
+		child.SessionID = strings.TrimSpace(child.SessionID)
+		child.BaseCommit = strings.TrimSpace(child.BaseCommit)
+		child.HeadCommit = strings.TrimSpace(child.HeadCommit)
+		if child.SessionID == "" || child.BaseCommit == "" || child.HeadCommit == "" || child.BaseCommit == child.HeadCommit {
+			return TaskIntegrationPlan{}, fmt.Errorf("child %q has incomplete committed lineage", child.SessionID)
+		}
+		descends, ancestryErr := s.TaskCommitDescendsFrom(parentPath, child.BaseCommit, child.HeadCommit)
+		if ancestryErr != nil || !descends {
+			if ancestryErr != nil {
+				return TaskIntegrationPlan{}, ancestryErr
+			}
+			return TaskIntegrationPlan{}, fmt.Errorf("child %q HEAD does not descend from its recorded base", child.SessionID)
+		}
+		commitText, err := runGit(parentPath, "rev-list", "--reverse", child.BaseCommit+".."+child.HeadCommit)
+		if err != nil {
+			return TaskIntegrationPlan{}, fmt.Errorf("list child %q commits: %w", child.SessionID, err)
+		}
+		commits := strings.Fields(commitText)
+		if len(commits) == 0 {
+			return TaskIntegrationPlan{}, fmt.Errorf("child %q has no commits", child.SessionID)
+		}
+		fileText, err := runGit(parentPath, "diff", "--name-only", child.BaseCommit+".."+child.HeadCommit)
+		if err != nil {
+			return TaskIntegrationPlan{}, fmt.Errorf("list child %q files: %w", child.SessionID, err)
+		}
+		files := strings.Fields(fileText)
+		for _, file := range files {
+			if owner, ok := owners[file]; ok && owner != child.SessionID {
+				plan.Overlaps = append(plan.Overlaps, fmt.Sprintf("%s: %s, %s", file, owner, child.SessionID))
+			} else {
+				owners[file] = child.SessionID
+			}
+		}
+		plan.Entries = append(plan.Entries, TaskIntegrationEntry{SessionID: child.SessionID, BaseCommit: child.BaseCommit, HeadCommit: child.HeadCommit, Commits: commits, Files: files})
+		plan.Commits = append(plan.Commits, commits...)
+	}
+	if err := preflightCherryPick(parentPath, plan.ParentHead, plan.Commits); err != nil {
+		return TaskIntegrationPlan{}, err
+	}
+	return plan, nil
+}
+
+func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPlan) (TaskIntegrationResult, error) {
+	current, err := s.PrepareTaskIntegration(parentPath, plan.ParentHead, integrationChildrenFromPlan(plan))
+	if err != nil {
+		return TaskIntegrationResult{}, err
+	}
+	if strings.Join(current.Commits, "\x00") != strings.Join(plan.Commits, "\x00") {
+		return TaskIntegrationResult{}, errors.New("integration manifest became stale")
+	}
+	for _, commit := range current.Commits {
+		if _, err := runGit(parentPath, "cherry-pick", commit); err != nil {
+			return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("cherry-pick %s failed after preflight: %w", commit, err)
+		}
+	}
+	head, err := runGit(parentPath, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return TaskIntegrationResult{TaskIntegrationPlan: current}, err
+	}
+	return TaskIntegrationResult{TaskIntegrationPlan: current, ResultingParentHead: head}, nil
+}
+
+func integrationChildrenFromPlan(plan TaskIntegrationPlan) []TaskIntegrationChild {
+	out := make([]TaskIntegrationChild, 0, len(plan.Entries))
+	for _, entry := range plan.Entries {
+		out = append(out, TaskIntegrationChild{SessionID: entry.SessionID, BaseCommit: entry.BaseCommit, HeadCommit: entry.HeadCommit})
+	}
+	return out
+}
+
+func preflightCherryPick(parentPath, parentHead string, commits []string) error {
+	index, err := os.CreateTemp("", "swarm-integration-index-*")
+	if err != nil {
+		return fmt.Errorf("create integration preflight index: %w", err)
+	}
+	indexPath := index.Name()
+	_ = index.Close()
+	_ = os.Remove(indexPath)
+	defer os.Remove(indexPath)
+	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
+	cmd := exec.Command("git", "-C", parentPath, "read-tree", parentHead)
+	cmd.Env = env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("initialize integration preflight: %s", strings.TrimSpace(string(out)))
+	}
+	for _, commit := range commits {
+		patch := exec.Command("git", "-C", parentPath, "diff-tree", "--binary", "--full-index", "--no-commit-id", "-p", commit+"^", commit)
+		data, err := patch.Output()
+		if err != nil {
+			return fmt.Errorf("read commit %s patch: %w", commit, err)
+		}
+		apply := exec.Command("git", "-C", parentPath, "apply", "--cached", "--3way", "--whitespace=nowarn", "-")
+		apply.Env = env
+		apply.Stdin = bytes.NewReader(data)
+		if out, err := apply.CombinedOutput(); err != nil {
+			return fmt.Errorf("integration conflict at commit %s: %s", commit, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
 }
 
 func (s *Service) InspectTaskWorkspace(workspacePath string) (TaskWorkspaceState, error) {

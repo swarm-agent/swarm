@@ -582,6 +582,19 @@ func defaultReadWriteSubagentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "read_write"}
 }
 
+func defaultCloneToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{
+		Preset: "read_write",
+		Tools: map[string]pebblestore.AgentToolConfig{
+			"git_status": {Enabled: pebblestore.BoolPtr(true)},
+			"git_diff":   {Enabled: pebblestore.BoolPtr(true)},
+			"git_add":    {Enabled: pebblestore.BoolPtr(true)},
+			"git_commit": {Enabled: pebblestore.BoolPtr(true)},
+			"bash":       {Enabled: pebblestore.BoolPtr(false)},
+		},
+	}
+}
+
 func defaultMemoryToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{
 		Preset: "background_commit",
@@ -613,7 +626,7 @@ func builtInDefaultToolContract(name string) *pebblestore.AgentToolContract {
 	case "memory":
 		return defaultMemoryToolContract()
 	case "clone":
-		return defaultReadWriteSubagentToolContract()
+		return defaultCloneToolContract()
 	default:
 		return nil
 	}
@@ -636,6 +649,11 @@ func (s *Service) backfillBuiltInToolContractsForAccountLocked(accountScopeID st
 		if current.ToolContract == nil {
 			current.ToolContract = contract
 			changed = true
+		} else if normalizeName(current.Name) == "clone" && isLegacyDefaultCloneToolContract(current.ToolContract) {
+			// Existing built-ins used the bare read_write preset. Upgrade only that
+			// exact managed default so explicit user tool overrides remain authoritative.
+			current.ToolContract = contract
+			changed = true
 		} else if normalizeName(current.Name) == "swarm" {
 			if current.ToolContract.Tools == nil {
 				current.ToolContract.Tools = make(map[string]pebblestore.AgentToolConfig)
@@ -654,6 +672,10 @@ func (s *Service) backfillBuiltInToolContractsForAccountLocked(accountScopeID st
 		}
 	}
 	return nil
+}
+
+func isLegacyDefaultCloneToolContract(contract *pebblestore.AgentToolContract) bool {
+	return contract != nil && strings.TrimSpace(contract.Preset) == "read_write" && len(contract.Tools) == 0
 }
 
 func requireAgentToolContract(profile pebblestore.AgentProfile) error {
@@ -2316,7 +2338,7 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			ExecutionSetting:    pebblestore.AgentExecutionSettingReadWrite,
 			ExitPlanModeEnabled: pebblestore.BoolPtr(false),
 			Prompt:              "Clone mirrors the current parent agent at launch time.",
-			ToolContract:        defaultReadWriteSubagentToolContract(),
+			ToolContract:        defaultCloneToolContract(),
 			Enabled:             true,
 			UpdatedAt:           now,
 		},
