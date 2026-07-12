@@ -63,11 +63,11 @@ export function DesktopPlanAgentSidecar({
   const planSessionId = sidechats.plan.sessionId;
   const aiSessionId = sidechats.ai.sessionId;
   const planRealtimeMessages = useDesktopV3CacheSelector(
-    (state) => planSessionId ? state.messagesBySession[planSessionId] ?? [] : [],
+    (state) => planSessionId ? state.messagesBySession[planSessionId]?.items ?? [] : [],
     (left, right) => left === right,
   );
   const aiRealtimeMessages = useDesktopV3CacheSelector(
-    (state) => aiSessionId ? state.messagesBySession[aiSessionId] ?? [] : [],
+    (state) => aiSessionId ? state.messagesBySession[aiSessionId]?.items ?? [] : [],
     (left, right) => left === right,
   );
 

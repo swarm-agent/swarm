@@ -18,6 +18,7 @@ import {
   LoaderCircle,
   XCircle,
 } from "lucide-react";
+import { Button } from "../../../../components/ui/button";
 import { cn } from "../../../../lib/cn";
 import { ChatMarkdown } from "./chat-markdown";
 import {
