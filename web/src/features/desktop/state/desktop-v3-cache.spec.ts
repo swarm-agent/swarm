@@ -1370,6 +1370,74 @@ test('execution epoch boundaries preserve one session and the root event orderin
   assert.deepEqual(state.eventsBySession[sessionA.id].slice(-3).map((event) => event.seq), [20, 22, 23])
 })
 
+test('execution epoch reconnect replay cannot reopen or truncate a completed epoch', () => {
+  const state = bootstrappedState()
+  const completed: V3SessionEvent = {
+    id: 'evt-epoch-completed',
+    session_id: sessionA.id,
+    seq: 32,
+    event_type: 'session.execution_epoch.completed',
+    payload: {},
+    ts_unix_ms: 32,
+    execution_epoch: { epoch_id: 'epoch-5', epoch_ordinal: 5 },
+    execution_epoch_boundary: { epoch_id: 'epoch-5', epoch_ordinal: 5, kind: 'completed' },
+  }
+  applyRealtimeFrame(state, {
+    frame: {
+      kind: 'event',
+      session_id: sessionA.id,
+      endpoint_cursor: 'cursor-after-completion',
+      event_type: completed.event_type,
+      event: completed,
+    },
+  })
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA },
+    projections_by_session: { [sessionA.id]: { ...projectionA, last_event_seq: 32, projection_high_watermark_seq: 32 } },
+    session_views_by_id: {
+      [sessionA.id]: {
+        current_execution_epoch: {
+          epoch_id: 'epoch-5',
+          epoch_ordinal: 5,
+          session_id: sessionA.id,
+          status: 'active',
+          started_event_seq: 30,
+        },
+      },
+    },
+    events_by_session: {
+      [sessionA.id]: [{
+        id: 'evt-epoch-started',
+        session_id: sessionA.id,
+        seq: 30,
+        event_type: 'session.execution_epoch.started',
+        payload: {},
+        ts_unix_ms: 30,
+        execution_epoch: { epoch_id: 'epoch-5', epoch_ordinal: 5 },
+        execution_epoch_boundary: { epoch_id: 'epoch-5', epoch_ordinal: 5, kind: 'started' },
+      }],
+    },
+    session_order: [sessionA.id],
+    selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+    sync_scope: {
+      ...hydrateSnapshotFixture().sync_scope,
+      resource_set: 'session_view,events',
+    },
+  }), [sessionA.id])
+
+  assert.equal(state.realtime.endpointCursor, 'cursor-after-completion')
+  assert.deepEqual(state.currentExecutionEpochBySession[sessionA.id], {
+    epoch_id: 'epoch-5',
+    epoch_ordinal: 5,
+    session_id: sessionA.id,
+    started_event_seq: 30,
+    completed_event_seq: 32,
+    status: 'completed',
+  })
+  assert.equal(Object.keys(state.sessionsById).filter((id) => id === sessionA.id).length, 1)
+})
+
 test('execution epoch snapshot recovery cannot roll back a newer realtime epoch', () => {
   const state = bootstrappedState()
   applyCacheEvent(state, {

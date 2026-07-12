@@ -1152,10 +1152,20 @@ function mergeCurrentExecutionEpoch(state: DesktopV3CacheState, sessionId: strin
   }
 
   const sameEpoch = existing?.epoch_id === incoming.epoch_id
+  const completedEventSeq = sameEpoch
+    ? Math.max(existing?.completed_event_seq ?? 0, incoming.completed_event_seq ?? 0) || undefined
+    : incoming.completed_event_seq
+  const startedEventSeq = sameEpoch
+    ? existing?.started_event_seq ?? incoming.started_event_seq
+    : incoming.started_event_seq
+  const preserveCompleted = sameEpoch && existing?.status === 'completed' && incoming.status !== 'completed'
   state.currentExecutionEpochBySession[sessionId] = {
     ...(sameEpoch ? existing : undefined),
     ...incoming,
     session_id: incoming.session_id || sessionId,
+    started_event_seq: startedEventSeq,
+    completed_event_seq: completedEventSeq,
+    status: preserveCompleted ? existing.status : incoming.status ?? existing?.status,
   }
 }
 
