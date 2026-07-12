@@ -9,34 +9,34 @@ import (
 // execution-epoch path. Durations are cumulative so callers can derive rates
 // without placing session identifiers or transcript content in metrics.
 type ExecutionEpochTelemetry struct {
-	BoundaryCalls       uint64
-	BoundaryDuration    time.Duration
-	RecoveryCalls       uint64
-	RecoveryDuration    time.Duration
-	PointReads          uint64
-	PointReadDuration   time.Duration
-	DecodeCalls         uint64
-	DecodeDuration      time.Duration
-	IteratorReads       uint64
-	IteratorRecords     uint64
-	IteratorDuration    time.Duration
-	EncodeCalls         uint64
-	EncodeDuration      time.Duration
-	BatchCommits        uint64
-	BatchCommitDuration time.Duration
+	BoundaryCalls        uint64
+	BoundaryDuration     time.Duration
+	RecoveryCalls        uint64
+	RecoveryDuration     time.Duration
+	PointReads           uint64
+	PointReadDuration    time.Duration
+	DecodeCalls          uint64
+	DecodeDuration       time.Duration
+	IteratorReads        uint64
+	IteratorRecords      uint64
+	IteratorDuration     time.Duration
+	EncodeCalls          uint64
+	EncodeDuration       time.Duration
+	BatchCommits         uint64
+	BatchCommitDuration  time.Duration
 	ProviderSends        uint64
 	ProviderSendDuration time.Duration
 }
 
 var executionEpochTelemetry struct {
-	boundaryCalls, boundaryNanos     atomic.Uint64
-	recoveryCalls, recoveryNanos     atomic.Uint64
-	pointReads, pointReadNanos       atomic.Uint64
-	decodeCalls, decodeNanos         atomic.Uint64
+	boundaryCalls, boundaryNanos                  atomic.Uint64
+	recoveryCalls, recoveryNanos                  atomic.Uint64
+	pointReads, pointReadNanos                    atomic.Uint64
+	decodeCalls, decodeNanos                      atomic.Uint64
 	iteratorReads, iteratorRecords, iteratorNanos atomic.Uint64
-	encodeCalls, encodeNanos                       atomic.Uint64
-	batchCommits, batchCommitNanos                 atomic.Uint64
-	providerSends, providerSendNanos               atomic.Uint64
+	encodeCalls, encodeNanos                      atomic.Uint64
+	batchCommits, batchCommitNanos                atomic.Uint64
+	providerSends, providerSendNanos              atomic.Uint64
 }
 
 func SnapshotExecutionEpochTelemetry() ExecutionEpochTelemetry {
