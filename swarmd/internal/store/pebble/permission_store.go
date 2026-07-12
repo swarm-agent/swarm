@@ -40,6 +40,7 @@ type PermissionRecord struct {
 	ToolArguments       string `json:"tool_arguments"`
 	ToolCallArguments   string `json:"tool_call_arguments,omitempty"`
 	ApprovedArguments   string `json:"approved_arguments,omitempty"`
+	ProposalRevision    int64  `json:"proposal_revision,omitempty"`
 	Requirement         string `json:"requirement"`
 	Mode                string `json:"mode"`
 	Status              string `json:"status"`

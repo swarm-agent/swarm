@@ -10,11 +10,7 @@ import {
   parsePlanUpdatePermission,
   permissionKind,
 } from "../../permissions/services/permission-payload";
-import {
-  exitPlanExecutionArguments,
-  newPlanLifecycleApprovedArguments,
-  planLifecycleApprovedArguments,
-} from "../../permissions/components/desktop-permission-modal";
+import { exitPlanExecutionArguments } from "../../permissions/components/desktop-permission-modal";
 import { ChatMarkdown } from "./chat-markdown";
 
 export function structuredPlanDocumentFromPermission(
@@ -82,58 +78,11 @@ export function DesktopInlinePlanReviewCard({
     if (loading) return;
     setLoading(true);
     try {
-      let approvedArguments: Record<string, unknown> | undefined;
-      if (action === "approve") {
-        if (exitPayload) {
-          approvedArguments = {
-            ...exitPayload.approvedArguments,
-            plan_id:
-              exitPayload.planId ||
-              document?.id ||
-              exitPayload.approvedArguments.plan_id,
-            title:
-              exitPayload.title ||
-              document?.title ||
-              exitPayload.approvedArguments.title,
-            plan: exitPayload.body,
-            document:
-              exitPayload.document ?? exitPayload.approvedArguments.document,
-            ...exitPlanExecutionArguments(pauseForReview),
-          };
-        } else if (planPayload) {
-          switch (kind) {
-            case "plan-new-request":
-              approvedArguments = newPlanLifecycleApprovedArguments(
-                planPayload,
-                pauseForReview,
-              );
-              break;
-            case "plan-followup-request":
-              approvedArguments = planLifecycleApprovedArguments(
-                planPayload,
-                "request_followup_checkpoint",
-              );
-              break;
-            case "plan-revision-request":
-              approvedArguments = planLifecycleApprovedArguments(
-                planPayload,
-                "request_plan_revision",
-              );
-              break;
-            case "plan-amendment-request":
-              approvedArguments = planLifecycleApprovedArguments(
-                planPayload,
-                "amend_plan",
-              );
-              break;
-            default:
-              approvedArguments = planLifecycleApprovedArguments(
-                planPayload,
-                "save",
-              );
-          }
-        }
-      }
+      // The pending backend permission remains proposal authority. The client may
+      // only overlay execution policy, never replay a stale proposal document.
+      const approvedArguments = action === "approve" && supportsExecutionChoice
+        ? exitPlanExecutionArguments(pauseForReview)
+        : undefined;
       await onResolve(permission, action, "", approvedArguments);
     } finally {
       setLoading(false);

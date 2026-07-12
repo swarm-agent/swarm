@@ -328,6 +328,10 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	}
 	if permissionSvc, ok := permSvc.(*permission.Service); ok {
 		permissionSvc.SetSummaryRealtimePublisher(server.publishPermissionSummaryV3Realtime)
+		permissionSvc.SetPermissionRealtimePublisher(func(sessionID string, record pebblestore.PermissionRecord) error {
+			_, _, err := server.publishSessionV3PermissionUpdatedFromRecord(identity.Principal{}, sessionID, record)
+			return err
+		})
 	}
 	if notificationSvc, ok := notificationSvc.(*notification.Service); ok {
 		notificationSvc.SetRealtimePublisher(server.publishNotificationV3Realtime)
@@ -2592,7 +2596,13 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, listErr)
 			return
 		}
-		responseSessions, enrichErr := s.enrichSessionSummariesForList(sessions)
+		visibleSessions := sessions[:0]
+		for _, session := range sessions {
+			if !sessionsV3SystemSidechat(session) {
+				visibleSessions = append(visibleSessions, session)
+			}
+		}
+		responseSessions, enrichErr := s.enrichSessionSummariesForList(visibleSessions)
 		if enrichErr != nil {
 			writeError(w, http.StatusInternalServerError, enrichErr)
 			return

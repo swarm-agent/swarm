@@ -16,8 +16,9 @@ export interface DesktopPlanExecutionSidebarActionInput {
   checkpointId?: string;
 }
 
-interface DesktopPlanExecutionSidebarProps {
+export interface DesktopPlanExecutionSidebarProps {
   view: DesktopPlanExecutionView | null;
+  embedded?: boolean;
   busyAction?: string | null;
   canStop?: boolean;
   onAction?: (
@@ -599,6 +600,7 @@ function ActionsCard({
 export const DesktopPlanExecutionSidebar = memo(
   function DesktopPlanExecutionSidebar({
     view,
+    embedded = false,
     busyAction,
     canStop = false,
     onAction,
@@ -624,7 +626,9 @@ export const DesktopPlanExecutionSidebar = memo(
 
     return (
       <aside
-        className="hidden min-h-0 min-w-0 w-[360px] max-w-[360px] overflow-hidden border-l border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-4 xl:flex xl:flex-col xl:justify-center"
+        className={embedded
+          ? "min-h-0 min-w-0 w-full overflow-visible bg-[var(--app-surface)]"
+          : "hidden min-h-0 min-w-0 w-[360px] max-w-[360px] overflow-hidden border-l border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-4 xl:flex xl:flex-col xl:justify-center"}
         aria-label="Plan execution sidebar"
         data-testid="desktop-plan-execution-sidebar"
       >
@@ -645,7 +649,7 @@ export const DesktopPlanExecutionSidebar = memo(
             onEditPlan={onEditPlan}
           />
           {belowActions}
-          {onNewAutoChat ? (
+          {!embedded && onNewAutoChat ? (
             <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5">
               <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
                 AI helper

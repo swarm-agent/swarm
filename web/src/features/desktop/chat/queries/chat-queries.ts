@@ -1962,18 +1962,22 @@ export async function compactSessionV3(
   return mapV3CompactResponse(await response.json() as V3CompactResponseWire);
 }
 
-export async function createPlanReviewSidecar(input: {
+export type SystemSidechatKind = "plan" | "ai";
+
+export async function ensureSystemSidechat(input: {
   parentSessionId: string;
-  permissionId: string;
-  planId: string;
-  planRevision: number;
-  plan: unknown;
+  kind: SystemSidechatKind;
+  permissionId?: string;
+  planId?: string;
+  planRevision?: number;
+  plan?: unknown;
 }): Promise<{ sessionId: string; replayed: boolean; originatingAgentName: string; provider: string; model: string }> {
   const parentSessionId = input.parentSessionId.trim();
-  const permissionId = input.permissionId.trim();
-  const planId = input.planId.trim();
-  if (!parentSessionId || !permissionId || !planId || input.planRevision <= 0) {
-    throw new Error("Plan review sidecar requires a parent session, permission, plan, and positive revision.");
+  const permissionId = input.permissionId?.trim() ?? "";
+  const planId = input.planId?.trim() ?? "";
+  const planRevision = input.planRevision ?? 0;
+  if (!parentSessionId || (input.kind === "plan" && (!permissionId || !planId || planRevision <= 0))) {
+    throw new Error("Plan sidechat requires a parent session, permission, plan, and positive revision.");
   }
   const response = await requestJson<{
     session_id?: string;
@@ -1982,20 +1986,20 @@ export async function createPlanReviewSidecar(input: {
     provider?: string;
     model?: string;
   }>(
-    `/v3/sessions/${encodeURIComponent(parentSessionId)}/plan-review-sidecar`,
+    `/v3/sessions/${encodeURIComponent(parentSessionId)}/sidechats/${input.kind}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: JSON.stringify(input.kind === "plan" ? {
         permission_id: permissionId,
         plan_id: planId,
-        plan_revision: input.planRevision,
+        plan_revision: planRevision,
         plan: input.plan,
-      }),
+      } : {}),
     },
   );
   const sessionId = String(response.session_id ?? "").trim();
-  if (!sessionId) throw new Error("Plan review sidecar did not return a session id.");
+  if (!sessionId) throw new Error(`${input.kind === "plan" ? "Plan" : "AI"} sidechat did not return a session id.`);
   return {
     sessionId,
     replayed: response.replayed === true,

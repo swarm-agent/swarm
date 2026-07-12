@@ -1,144 +1,155 @@
-import { useCallback, useEffect, useState } from "react";
-import { Bot, Loader2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Bot, Loader2, Sparkles, X } from "lucide-react";
 import { Button } from "../../../../components/ui/button";
 import { Textarea } from "../../../../components/ui/textarea";
 import type { DesktopPermissionRecord } from "../../types/realtime";
 import type { StructuredPlanDocument } from "./structured-plan-document";
 import { ChatMarkdown } from "./chat-markdown";
-import {
-  createPlanReviewSidecar,
-  fetchSessionMessages,
-  sendSessionMessage,
-} from "../queries/chat-queries";
+import { DesktopPlanExecutionSidebar, type DesktopPlanExecutionSidebarProps } from "./desktop-plan-execution-sidebar";
+import { ensureSystemSidechat, fetchSessionMessages, sendSessionMessage, type SystemSidechatKind } from "../queries/chat-queries";
 import type { ChatMessageRecord } from "../types/chat";
+import { requireDesktopV3RealtimeControllerReady } from "../../realtime/v3-realtime-controller";
+import { useDesktopV3CacheSelector } from "../../state/desktop-v3-cache-store";
 
 interface DesktopPlanAgentSidecarProps {
   parentSessionId: string;
-  permission: DesktopPermissionRecord;
-  document: StructuredPlanDocument;
+  permission?: DesktopPermissionRecord | null;
+  document?: StructuredPlanDocument | null;
+  execution?: DesktopPlanExecutionSidebarProps;
   onClose?: () => void;
-  onSendChanges: (draft: string) => Promise<void>;
   embedded?: boolean;
   modelLabel?: string;
   mobileOpen?: boolean;
-  allowSendChanges?: boolean;
+}
+
+interface SidechatState {
+  sessionId: string;
+  messages: ChatMessageRecord[];
+  modelLabel: string;
+  busy: boolean;
+  error: string | null;
+}
+
+const EMPTY_SIDECHAT: SidechatState = { sessionId: "", messages: [], modelLabel: "", busy: false, error: null };
+
+function pendingProposalRevision(permission: DesktopPermissionRecord | null, document: StructuredPlanDocument | null): number {
+  if (permission) {
+    try {
+      const payload = JSON.parse(permission.toolArguments) as { proposal_revision?: unknown };
+      const revision = Number(payload.proposal_revision);
+      if (Number.isSafeInteger(revision) && revision > 0) return revision;
+    } catch {
+      // The permission projection can briefly contain older arguments during hydration.
+    }
+  }
+  return Math.max(1, Number.parseInt(document?.revisionId ?? "", 10) || 1);
 }
 
 export function DesktopPlanAgentSidecar({
   parentSessionId,
-  permission,
-  document,
+  permission = null,
+  document = null,
+  execution,
   onClose,
-  onSendChanges,
   embedded = false,
   modelLabel = "",
   mobileOpen = true,
-  allowSendChanges = true,
 }: DesktopPlanAgentSidecarProps) {
-  const [sessionId, setSessionId] = useState("");
-  const [messages, setMessages] = useState<ChatMessageRecord[]>([]);
-  const [originLabel, setOriginLabel] = useState("");
-  const [question, setQuestion] = useState("");
+  const [activeTab, setActiveTab] = useState<SystemSidechatKind>("plan");
+  const [sidechats, setSidechats] = useState<Record<SystemSidechatKind, SidechatState>>({ plan: EMPTY_SIDECHAT, ai: EMPTY_SIDECHAT });
   const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(true);
-  const [sendingChanges, setSendingChanges] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const hasPlan = Boolean(document && permission);
+  const proposalRevision = pendingProposalRevision(permission, document);
+  const planSessionId = sidechats.plan.sessionId;
+  const aiSessionId = sidechats.ai.sessionId;
+  const planRealtimeMessages = useDesktopV3CacheSelector(
+    (state) => planSessionId ? state.messagesBySession[planSessionId] ?? [] : [],
+    (left, right) => left === right,
+  );
+  const aiRealtimeMessages = useDesktopV3CacheSelector(
+    (state) => aiSessionId ? state.messagesBySession[aiSessionId] ?? [] : [],
+    (left, right) => left === right,
+  );
 
-  const refresh = useCallback(async (id: string) => {
-    const result = await fetchSessionMessages(id, undefined, 0, {
-      sessionApi: "v3",
-      tail: true,
-      limit: 100,
-    });
-    setMessages(result.messages);
-    const latestAssistant = [...result.messages]
-      .reverse()
-      .find((message) => message.role === "assistant");
-    if (latestAssistant?.content) setDraft(latestAssistant.content);
+  useEffect(() => {
+    const apply = (kind: SystemSidechatKind, snapshots: typeof planRealtimeMessages) => {
+      if (snapshots.length === 0) return;
+      setSidechats((current) => ({
+        ...current,
+        [kind]: {
+          ...current[kind],
+          messages: snapshots.map((message) => ({
+            id: message.id,
+            sessionId: message.session_id,
+            globalSeq: message.global_seq,
+            role: message.role,
+            content: message.content,
+            createdAt: message.created_at,
+          })),
+        },
+      }));
+    };
+    apply("plan", planRealtimeMessages);
+    apply("ai", aiRealtimeMessages);
+  }, [aiRealtimeMessages, planRealtimeMessages]);
+
+  const refresh = useCallback(async (kind: SystemSidechatKind, sessionId: string) => {
+    const result = await fetchSessionMessages(sessionId, undefined, 0, { sessionApi: "v3", tail: true, limit: 100 });
+    setSidechats((current) => ({ ...current, [kind]: { ...current[kind], messages: result.messages } }));
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    setBusy(true);
-    setError(null);
-    void createPlanReviewSidecar({
-      parentSessionId,
-      permissionId: permission.id,
-      planId: document.id || permission.id,
-      planRevision: Math.max(1, Number.parseInt(document.revisionId, 10) || 1),
-      plan: document,
-    })
-      .then(async (result) => {
+    const ensure = async (kind: SystemSidechatKind) => {
+      if (kind === "plan" && (!permission || !document)) return;
+      setSidechats((current) => ({ ...current, [kind]: { ...current[kind], busy: true, error: null } }));
+      try {
+        const result = await ensureSystemSidechat({
+          parentSessionId,
+          kind,
+          permissionId: permission?.id,
+          planId: document?.id || permission?.id,
+          planRevision: proposalRevision,
+          plan: document,
+        });
         if (cancelled) return;
-        setSessionId(result.sessionId);
-        setOriginLabel(
-          [result.originatingAgentName, result.model || modelLabel]
-            .filter(Boolean)
-            .join(" · "),
-        );
-        await refresh(result.sessionId);
-      })
-      .catch((cause) => {
-        if (!cancelled)
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : "Unable to open Plan Agent.",
-          );
-      })
-      .finally(() => {
-        if (!cancelled) setBusy(false);
-      });
-    return () => {
-      cancelled = true;
+        setSidechats((current) => ({
+          ...current,
+          [kind]: { ...current[kind], sessionId: result.sessionId, modelLabel: result.model || modelLabel, busy: false, error: null },
+        }));
+        const controller = await requireDesktopV3RealtimeControllerReady();
+        await controller.ensureSessionConnected(result.sessionId);
+        await refresh(kind, result.sessionId);
+      } catch (cause) {
+        if (!cancelled) setSidechats((current) => ({
+          ...current,
+          [kind]: { ...current[kind], busy: false, error: cause instanceof Error ? cause.message : `Unable to open ${kind === "plan" ? "Plan" : "AI"}.` },
+        }));
+      }
     };
-  }, [document, modelLabel, parentSessionId, permission.id, refresh]);
+    void ensure("ai");
+    void ensure("plan");
+    return () => { cancelled = true; };
+  }, [document, modelLabel, parentSessionId, permission?.id, proposalRevision, refresh]);
 
-  useEffect(() => {
-    if (!sessionId || busy) return;
-    const timer = window.setInterval(
-      () => void refresh(sessionId).catch(() => undefined),
-      1500,
-    );
-    return () => window.clearInterval(timer);
-  }, [busy, refresh, sessionId]);
+  const selected = sidechats[activeTab];
+  const visibleMessages = useMemo(
+    () => selected.messages.filter((message) => message.role === "user" || message.role === "assistant"),
+    [selected.messages],
+  );
 
-  const ask = async () => {
-    const content = question.trim();
-    if (!content || !sessionId || busy) return;
-    setBusy(true);
-    setError(null);
+  const send = async () => {
+    const content = draft.trim();
+    if (!content || !selected.sessionId || selected.busy) return;
+    setSidechats((current) => ({ ...current, [activeTab]: { ...current[activeTab], busy: true, error: null } }));
     try {
-      await sendSessionMessage(sessionId, "user", content, null, {
-        sessionApi: "v3",
-      });
-      setQuestion("");
-      await refresh(sessionId);
+      await sendSessionMessage(selected.sessionId, "user", content, null, { sessionApi: "v3" });
+      setDraft("");
+      await refresh(activeTab, selected.sessionId);
     } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Plan Agent could not answer.",
-      );
+      setSidechats((current) => ({ ...current, [activeTab]: { ...current[activeTab], error: cause instanceof Error ? cause.message : "Message failed." } }));
     } finally {
-      setBusy(false);
-    }
-  };
-
-  const sendChanges = async () => {
-    const reason = draft.trim();
-    if (!reason || sendingChanges) return;
-    setSendingChanges(true);
-    setError(null);
-    try {
-      await onSendChanges(reason);
-      onClose();
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "The plan proposal is no longer available.",
-      );
-    } finally {
-      setSendingChanges(false);
+      setSidechats((current) => ({ ...current, [activeTab]: { ...current[activeTab], busy: false } }));
     }
   };
 
@@ -155,105 +166,32 @@ export function DesktopPlanAgentSidecar({
       <aside className={embedded
         ? "absolute inset-x-0 bottom-0 flex max-h-[88vh] min-h-0 min-w-0 flex-col rounded-t-2xl bg-[var(--app-surface)] shadow-2xl xl:static xl:max-h-none xl:flex-1 xl:rounded-none xl:shadow-none"
         : "absolute inset-x-0 bottom-0 flex max-h-[88vh] flex-col rounded-t-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-2xl md:inset-y-0 md:right-0 md:max-h-none md:w-[28rem] md:rounded-none md:rounded-l-2xl"}>
-        <header className="flex items-center justify-between border-b border-[var(--app-border)] px-4 py-3">
-          <div className="flex items-center gap-2">
-            <Bot size={18} />
-            <div>
-              <div className="font-semibold">Plan Agent</div>
-              <div className="text-xs text-[var(--app-text-muted)]">
-                {originLabel || modelLabel
-                  ? `Plan Agent · ${originLabel || modelLabel}`
-                  : "Plan Agent"}
-              </div>
-            </div>
+        <header className="border-b border-[var(--app-border)] px-3 pt-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="font-semibold">Plan & AI</div>
+            {onClose ? <Button type="button" variant="ghost" size="sm" className={embedded ? "h-9 w-9 px-0 xl:hidden" : "h-9 w-9 px-0"} aria-label="Close Plan and AI" onClick={onClose}><X size={18} /></Button> : null}
           </div>
-          {onClose ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className={embedded ? "h-9 w-9 px-0 xl:hidden" : "h-9 w-9 px-0"}
-              aria-label="Close Plan Agent"
-              onClick={onClose}
-            >
-              <X size={18} />
-            </Button>
-          ) : null}
+          <div className="mt-2 flex gap-1" role="tablist" aria-label="Plan and AI sidechats">
+            {(["plan", "ai"] as const).map((kind) => (
+              <button key={kind} type="button" role="tab" aria-selected={activeTab === kind} className={`flex flex-1 items-center justify-center gap-2 border-b-2 px-3 py-2 text-sm font-medium ${activeTab === kind ? "border-[var(--app-primary)] text-[var(--app-primary)]" : "border-transparent text-[var(--app-text-muted)]"}`} onClick={() => setActiveTab(kind)}>
+                {kind === "plan" ? <Bot size={16} /> : <Sparkles size={16} />}{kind === "plan" ? "Plan" : "AI"}
+              </button>
+            ))}
+          </div>
         </header>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
-          <div className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-3 text-sm leading-5 text-[var(--app-text)]">
-            Ask me anything about the plan, or if you&apos;d like any changes made.
+          {activeTab === "plan" && execution ? <DesktopPlanExecutionSidebar {...execution} embedded /> : null}
+          {activeTab === "plan" && !hasPlan ? <div className="rounded-xl border border-[var(--app-border)] p-3 text-sm text-[var(--app-text-muted)]">The Plan conversation is retained here. A pending or active plan is required to bind it.</div> : null}
+          <div className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-3 text-sm leading-5">
+            {activeTab === "plan" ? "Ask about the plan or request changes conversationally. Saved edits update the parent approval card live." : "Use this durable auto-only AI sidechat without leaving the parent conversation."}
           </div>
-          {busy && messages.length === 0 ? (
-            <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]">
-              <Loader2 className="animate-spin" size={16} />
-              Opening durable plan review…
-            </div>
-          ) : null}
-          {messages.filter((message) => message.role === "user" || message.role === "assistant").map((message) => (
-            <div
-              key={message.id}
-              className={
-                message.role === "user"
-                  ? "ml-8 rounded-xl bg-[var(--app-surface-hover)] p-3 text-sm"
-                  : "mr-4 rounded-xl border border-[var(--app-border)] p-3 text-sm"
-              }
-            >
-              <ChatMarkdown content={message.content} />
-            </div>
-          ))}
-          {error ? (
-            <div
-              role="alert"
-              className="rounded-lg border border-[var(--app-danger)] p-3 text-sm text-[var(--app-danger)]"
-            >
-              {error}
-            </div>
-          ) : null}
+          {selected.busy && visibleMessages.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />Opening durable {activeTab === "plan" ? "Plan" : "AI"} sidechat…</div> : null}
+          {visibleMessages.map((message) => <div key={message.id} className={message.role === "user" ? "ml-8 rounded-xl bg-[var(--app-surface-hover)] p-3 text-sm" : "mr-4 rounded-xl border border-[var(--app-border)] p-3 text-sm"}><ChatMarkdown content={message.content} /></div>)}
+          {selected.error ? <div role="alert" className="rounded-lg border border-[var(--app-danger)] p-3 text-sm text-[var(--app-danger)]">{selected.error}</div> : null}
         </div>
-        <div className="space-y-3 border-t border-[var(--app-border)] p-4">
-          <Textarea
-            value={question}
-            onChange={(event) => setQuestion(event.target.value)}
-            placeholder="Ask about the plan or request changes…"
-            disabled={busy || !sessionId}
-          />
-          <Button
-            type="button"
-            variant="outline"
-            className="w-full"
-            disabled={busy || !question.trim() || !sessionId}
-            onClick={() => void ask()}
-          >
-            {busy ? "Waiting for Plan Agent…" : "Ask Plan Agent"}
-          </Button>
-          {draft && allowSendChanges ? (
-            <div className="space-y-2 border-t border-[var(--app-border)] pt-3">
-              <label
-                className="text-xs font-semibold text-[var(--app-text-muted)]"
-                htmlFor={`plan-agent-draft-${permission.id}`}
-              >
-                Draft changes for Swarm
-              </label>
-              <Textarea
-                id={`plan-agent-draft-${permission.id}`}
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                className="min-h-28"
-              />
-              <Button
-                type="button"
-                className="w-full"
-                disabled={sendingChanges || !draft.trim()}
-                onClick={() => void sendChanges()}
-              >
-                {sendingChanges ? "Sending…" : "Send changes to Swarm"}
-              </Button>
-              <p className="text-xs text-[var(--app-text-muted)]">
-                Sending changes explicitly returns this proposal to Swarm with the draft above.
-              </p>
-            </div>
-          ) : null}
+        <div className="space-y-2 border-t border-[var(--app-border)] p-4">
+          <Textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={activeTab === "plan" ? "Ask about the plan or request changes…" : "Ask AI…"} disabled={selected.busy || !selected.sessionId} />
+          <Button type="button" variant="outline" className="w-full" disabled={selected.busy || !draft.trim() || !selected.sessionId} onClick={() => void send()}>{selected.busy ? "Waiting…" : `Send to ${activeTab === "plan" ? "Plan" : "AI"}`}</Button>
         </div>
       </aside>
     </div>

@@ -7,15 +7,16 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestPlanReviewAgentInheritsModelWithoutInheritingCapabilities(t *testing.T) {
+func TestPlanSidechatInheritsModelWithoutInheritingCapabilities(t *testing.T) {
 	parent := pebblestore.AgentProfile{
 		Provider: "provider-a", Model: "model-a", Thinking: "high",
+		PlanProvider: "provider-plan", PlanModel: "model-plan", PlanThinking: "xhigh",
 		Prompt: "private parent prompt", RuntimeMode: pebblestore.AgentRuntimeModeReadWrite,
 		ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"write": {Enabled: pebblestore.BoolPtr(true)}}},
 	}
-	profile := PlanReviewAgentProfileForParent(parent)
-	if profile.Provider != parent.Provider || profile.Model != parent.Model || profile.Thinking != parent.Thinking {
-		t.Fatalf("model settings not inherited: %+v", profile)
+	profile := PlanSidechatAgentProfileForParent(parent)
+	if profile.Provider != parent.PlanProvider || profile.Model != parent.PlanModel || profile.Thinking != parent.PlanThinking {
+		t.Fatalf("plan model settings not selected: %+v", profile)
 	}
 	if profile.Prompt == parent.Prompt || strings.Contains(profile.Prompt, "private parent prompt") {
 		t.Fatalf("parent prompt leaked into review profile: %q", profile.Prompt)
@@ -28,13 +29,13 @@ func TestPlanReviewAgentInheritsModelWithoutInheritingCapabilities(t *testing.T)
 	}
 }
 
-func TestPlanReviewAgentIsRestrictedAndHidden(t *testing.T) {
-	profile := PlanReviewAgentProfile()
-	if profile.Name != PlanReviewAgentID || profile.Mode != ModeSubagent || !profile.Enabled {
-		t.Fatalf("unexpected plan review profile: %+v", profile)
+func TestPlanSidechatIsRestrictedAndHidden(t *testing.T) {
+	profile := PlanSidechatAgentProfile()
+	if profile.Name != PlanSidechatAgentID || profile.Mode != ModeSubagent || !profile.Enabled {
+		t.Fatalf("unexpected Plan sidechat profile: %+v", profile)
 	}
 	if profile.ExitPlanModeEnabled == nil || *profile.ExitPlanModeEnabled {
-		t.Fatal("plan review agent must not exit plan mode")
+		t.Fatal("Plan sidechat must not exit plan mode")
 	}
 	for _, name := range []string{"write", "edit", "bash", "task", "plan_manage", "ask_user", "exit_plan_mode", "manage_agent"} {
 		config, ok := profile.ToolContract.Tools[name]
@@ -42,7 +43,7 @@ func TestPlanReviewAgentIsRestrictedAndHidden(t *testing.T) {
 			t.Fatalf("tool %q must be explicitly disabled", name)
 		}
 	}
-	for _, name := range []string{"read", "search", "list"} {
+	for _, name := range []string{"read", "search", "list", "websearch", "webfetch", "edit_pending_plan"} {
 		config, ok := profile.ToolContract.Tools[name]
 		if !ok || config.Enabled == nil || !*config.Enabled {
 			t.Fatalf("tool %q must be enabled", name)
@@ -50,16 +51,33 @@ func TestPlanReviewAgentIsRestrictedAndHidden(t *testing.T) {
 	}
 
 	svc, agents := newTestService(t)
-	if _, err := svc.ResolvePlanReviewAgent(PlanReviewAgentID); err != nil {
+	if _, err := svc.ResolvePlanSidechatAgent(PlanSidechatAgentID); err != nil {
 		t.Fatalf("dedicated resolver: %v", err)
 	}
-	if _, ok, err := agents.GetProfile(PlanReviewAgentID); err != nil || ok {
+	if _, ok, err := agents.GetProfile(PlanSidechatAgentID); err != nil || ok {
 		t.Fatalf("reserved profile persisted ok=%v err=%v", ok, err)
 	}
-	if _, err := svc.ResolveAgent(PlanReviewAgentID); err == nil {
+	if _, err := svc.ResolveAgent(PlanSidechatAgentID); err == nil {
 		t.Fatal("reserved profile resolved through normal agent API")
 	}
-	if _, _, _, err := svc.Upsert(UpsertInput{Name: PlanReviewAgentID, Mode: ModeSubagent, Prompt: "replace"}); err == nil {
+	if _, _, _, err := svc.Upsert(UpsertInput{Name: PlanSidechatAgentID, Mode: ModeSubagent, Prompt: "replace"}); err == nil {
 		t.Fatal("reserved profile was mutable")
+	}
+}
+
+func TestReservedAISidechatUsesAutoModelAndDisablesPlanTransitions(t *testing.T) {
+	parent := pebblestore.AgentProfile{Provider: "single-provider", Model: "single-model", AutoProvider: "auto-provider", AutoModel: "auto-model", AutoThinking: "high", ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"write": {Enabled: pebblestore.BoolPtr(true)}, "plan_manage": {Enabled: pebblestore.BoolPtr(true)}}}}
+	profile := AISidechatAgentProfileForParent(parent)
+	if profile.Name != AISidechatAgentID || profile.Provider != "auto-provider" || profile.Model != "auto-model" || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
+		t.Fatalf("unexpected AI sidechat: %+v", profile)
+	}
+	for _, name := range []string{"plan_manage", "exit_plan_mode", "manage_agent", "ask_user"} {
+		if cfg := profile.ToolContract.Tools[name]; cfg.Enabled == nil || *cfg.Enabled {
+			t.Fatalf("%s must be disabled", name)
+		}
+	}
+	fallback := AISidechatAgentProfileForParent(pebblestore.AgentProfile{Provider: "single-provider", Model: "single-model"})
+	if fallback.Provider != "single-provider" || fallback.Model != "single-model" {
+		t.Fatalf("single-model fallback failed: %+v", fallback)
 	}
 }

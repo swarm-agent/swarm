@@ -48,6 +48,49 @@ func TestBuildV3SessionWorksetPaginatesRecentSessions(t *testing.T) {
 	}
 }
 
+func TestBuildV3SessionWorksetExcludesNavigationHiddenSystemSidechats(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3WorksetSessionForTest(t, sessions, "parent", "/workspace/sidechat", 1000)
+	createV3WorksetSessionForTest(t, sessions, "system-sidechat-plan", "/workspace/sidechat", 2000)
+
+	sidechat, ok, err := sessions.GetSession("system-sidechat-plan")
+	if err != nil || !ok {
+		t.Fatalf("load sidechat: ok=%t err=%v", ok, err)
+	}
+	sidechat.Metadata = map[string]any{
+		"navigation_hidden": true,
+		"system_sidechat":   true,
+		"lineage_kind":      "system_sidechat",
+		"parent_session_id": "parent",
+	}
+	if err := sessions.UpdateSession(sidechat); err != nil {
+		t.Fatalf("mark sidechat hidden: %v", err)
+	}
+
+	workset, err := sessions.BuildV3SessionWorkset(V3SessionWorksetOptions{
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		WorkspacePath:  "/workspace/sidechat",
+		RecentLimit:    10,
+		History:        V3SessionWorksetHistoryOptions{Mode: V3SessionWorksetHistoryModeNone},
+	})
+	if err != nil {
+		t.Fatalf("build workset: %v", err)
+	}
+	if got := workset.SessionOrder; len(got) != 1 || got[0] != "parent" {
+		t.Fatalf("hidden sidechat leaked into workset: %+v", got)
+	}
+
+	search, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "account-1", UserID: "user-1", Global: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("search sessions: %v", err)
+	}
+	if len(search.Items) != 1 || search.Items[0].ID != "parent" {
+		t.Fatalf("hidden sidechat leaked into search: %+v", search.Items)
+	}
+}
+
 func TestBuildV3SessionWorksetIncludesPinnedSessionsOutsideRecentLimit(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

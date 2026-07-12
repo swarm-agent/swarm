@@ -37,6 +37,19 @@ import (
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
+func TestSessionsV3SystemSidechatIdentityIsStableAcrossProposalRevisions(t *testing.T) {
+	first, firstHash := sessionsV3SystemSidechatID("parent-session", "plan")
+	second, secondHash := sessionsV3SystemSidechatID("parent-session", "plan")
+	ai, _ := sessionsV3SystemSidechatID("parent-session", "ai")
+	otherParent, _ := sessionsV3SystemSidechatID("other-parent", "plan")
+	if first != second || firstHash != secondHash {
+		t.Fatalf("stable Plan identity changed: %q/%q vs %q/%q", first, firstHash, second, secondHash)
+	}
+	if first == ai || first == otherParent {
+		t.Fatalf("sidechat identity collision: plan=%q ai=%q other=%q", first, ai, otherParent)
+	}
+}
+
 func TestSessionsV3PrimaryHandlersDoNotUseRuntimeDispatchOrRoutes(t *testing.T) {
 	body, err := os.ReadFile("sessions_v3_primary.go")
 	if err != nil {

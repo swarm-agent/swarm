@@ -39,6 +39,7 @@ type Service struct {
 	events                           *pebblestore.EventLog
 	publish                          func(pebblestore.EventEnvelope)
 	summaryRealtimePublish           func(sessionID string, summary pebblestore.PermissionSummary) error
+	permissionRealtimePublish        func(sessionID string, record pebblestore.PermissionRecord) error
 	sessions                         sessionLookup
 	followupCheckpointPolicyResolver func(accountScopeID string) (string, error)
 	hosted                           HostedPermissionSync
@@ -130,6 +131,18 @@ type ResolveResult struct {
 	SavedRule *PolicyRule
 }
 
+type PendingPlanProposalEditInput struct {
+	SessionID        string
+	PermissionID     string
+	ExpectedRevision int64
+	Document         *pebblestore.SessionPlanDocument
+}
+
+type PendingPlanProposalEditResult struct {
+	Record           pebblestore.PermissionRecord
+	ProposalRevision int64
+}
+
 type HostedPermissionSync interface {
 	CreatePending(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, input CreateInput) (pebblestore.PermissionRecord, error)
 	WaitForResolution(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, sessionID, permissionID string) (pebblestore.PermissionRecord, error)
@@ -162,6 +175,13 @@ func (s *Service) SetFollowupCheckpointPolicyResolver(resolver func(accountScope
 		return
 	}
 	s.followupCheckpointPolicyResolver = resolver
+}
+
+func (s *Service) SetPermissionRealtimePublisher(publish func(sessionID string, record pebblestore.PermissionRecord) error) {
+	if s == nil {
+		return
+	}
+	s.permissionRealtimePublish = publish
 }
 
 func (s *Service) SetSummaryRealtimePublisher(publish func(sessionID string, summary pebblestore.PermissionSummary) error) {
@@ -592,6 +612,9 @@ func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord
 	if record.Mode == "" {
 		record.Mode = "plan"
 	}
+	if isPendingPlanProposalRecord(record) {
+		record.ProposalRevision = 1
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -626,6 +649,106 @@ func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord
 	})
 	s.publishPermissionSummaryUpdatedLocked(sessionID, summary)
 	return record, nil
+}
+
+func (s *Service) EditPendingPlanProposal(input PendingPlanProposalEditInput) (PendingPlanProposalEditResult, error) {
+	sessionID := strings.TrimSpace(input.SessionID)
+	permissionID := strings.TrimSpace(input.PermissionID)
+	if sessionID == "" || permissionID == "" {
+		return PendingPlanProposalEditResult{}, errors.New("session id and permission id are required")
+	}
+	if input.ExpectedRevision <= 0 {
+		return PendingPlanProposalEditResult{}, errors.New("expected proposal revision must be positive")
+	}
+	if input.Document == nil {
+		return PendingPlanProposalEditResult{}, errors.New("structured plan document is required")
+	}
+
+	s.mu.Lock()
+	record, ok, err := s.store.GetPermission(sessionID, permissionID)
+	if err != nil {
+		s.mu.Unlock()
+		return PendingPlanProposalEditResult{}, err
+	}
+	if !ok {
+		s.mu.Unlock()
+		return PendingPlanProposalEditResult{}, fmt.Errorf("permission %q not found", permissionID)
+	}
+	if !strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending) || !isPendingPlanProposalRecord(record) {
+		s.mu.Unlock()
+		return PendingPlanProposalEditResult{}, errors.New("permission is not a recognized pending plan proposal")
+	}
+	currentRevision := record.ProposalRevision
+	if currentRevision <= 0 {
+		currentRevision = 1
+	}
+	if input.ExpectedRevision != currentRevision {
+		s.mu.Unlock()
+		return PendingPlanProposalEditResult{}, fmt.Errorf("pending plan proposal revision conflict: expected %d, current revision is %d", input.ExpectedRevision, currentRevision)
+	}
+
+	payload := parsePermissionJSONMap(record.ToolArguments)
+	approved, ok := payload["approved_arguments"].(map[string]any)
+	if !ok {
+		s.mu.Unlock()
+		return PendingPlanProposalEditResult{}, errors.New("pending plan proposal has no canonical approved arguments")
+	}
+	planID := strings.TrimSpace(firstNonEmptyPermissionString(stringValue(approved["plan_id"]), stringValue(payload["plan_id"]), input.Document.ID))
+	title := strings.TrimSpace(firstNonEmptyPermissionString(input.Document.Title, stringValue(approved["title"]), stringValue(payload["title"])))
+	canonical, err := sessionruntime.NormalizePlanDocumentForSave(planID, title, input.Document, nil)
+	if err != nil {
+		s.mu.Unlock()
+		return PendingPlanProposalEditResult{}, fmt.Errorf("canonicalize pending plan proposal: %w", err)
+	}
+	approved["document"] = canonical
+	approved["plan_id"] = canonical.ID
+	approved["title"] = canonical.Title
+	if display := strings.TrimSpace(firstNonEmptyPermissionString(canonical.DisplayText, canonical.RenderedText)); display != "" {
+		approved["plan"] = display
+	} else {
+		delete(approved, "plan")
+	}
+	payload["approved_arguments"] = approved
+	payload["document"] = canonical
+	payload["plan_id"] = canonical.ID
+	payload["title"] = canonical.Title
+	if plan, ok := approved["plan"]; ok {
+		payload["plan"] = plan
+	} else {
+		delete(payload, "plan")
+	}
+	payload["proposal_revision"] = currentRevision + 1
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		s.mu.Unlock()
+		return PendingPlanProposalEditResult{}, err
+	}
+	rawApproved, err := json.Marshal(approved)
+	if err != nil {
+		s.mu.Unlock()
+		return PendingPlanProposalEditResult{}, err
+	}
+	updated := record
+	updated.ToolArguments = permissionStoredArguments(string(rawPayload))
+	updated.ApprovedArguments = permissionStoredArguments(string(rawApproved))
+	updated.ProposalRevision = currentRevision + 1
+	updated.UpdatedAt = time.Now().UnixMilli()
+	if err := s.store.PutPermission(updated, &record); err != nil {
+		s.mu.Unlock()
+		return PendingPlanProposalEditResult{}, err
+	}
+	// Deliberately do not notify resolution waiters or detach the run wait: this
+	// mutation changes only the still-pending proposal.
+	s.syncNotification(updated, s.localSwarmID(), s.originSwarmIDForSession(sessionID), "permission.updated")
+	_, _ = s.emitLocked("session:"+sessionID, "permission.updated", sessionID, map[string]any{"permission": updated})
+	publisher := s.permissionRealtimePublish
+	s.mu.Unlock()
+	if publisher != nil {
+		if err := publisher(sessionID, updated); err != nil {
+			return PendingPlanProposalEditResult{}, err
+		}
+	}
+	return PendingPlanProposalEditResult{Record: updated, ProposalRevision: updated.ProposalRevision}, nil
 }
 
 func (s *Service) Resolve(sessionID, permissionID, action, reason string) (pebblestore.PermissionRecord, error) {
@@ -882,7 +1005,10 @@ func (s *Service) resolveLocked(sessionID, permissionID, action, reason, approve
 	}
 	updated.Decision = action
 	updated.Reason = strings.TrimSpace(reason)
-	updated.ApprovedArguments = sanitizeApprovedArguments(record.ToolName, action, approvedArguments, record.ToolArguments)
+	updated.ApprovedArguments, err = approvedArgumentsForResolution(record, action, approvedArguments)
+	if err != nil {
+		return pebblestore.PermissionRecord{}, false, err
+	}
 	updated.UpdatedAt = now
 	updated.ResolvedAt = now
 	updated.CompletedAt = now
@@ -1676,6 +1802,107 @@ func classifyPermissionReason(reason string) (kind string, chars int) {
 	default:
 		return "custom", chars
 	}
+}
+
+func isPendingPlanProposalRecord(record pebblestore.PermissionRecord) bool {
+	toolName := strings.ToLower(strings.TrimSpace(record.ToolName))
+	if toolName != "exit_plan_mode" && toolName != "plan_manage" {
+		return false
+	}
+	payload := parsePermissionJSONMap(record.ToolArguments)
+	if toolName == "exit_plan_mode" {
+		return strings.TrimSpace(stringValue(payload["path_id"])) == "permission.exit-plan-mode.v1"
+	}
+	action := strings.ToLower(strings.TrimSpace(stringValue(payload["action"])))
+	switch action {
+	case "request_new_plan", "request_plan_revision":
+		return true
+	default:
+		return false
+	}
+}
+
+func approvedArgumentsForResolution(record pebblestore.PermissionRecord, action, clientArguments string) (string, error) {
+	if !actionIsAllow(action) || !isPendingPlanProposalRecord(record) {
+		return sanitizeApprovedArguments(record.ToolName, action, clientArguments, record.ToolArguments), nil
+	}
+	canonical := approvedArgumentsFromToolArguments(record.ToolName, record.ToolArguments)
+	if canonical == "" {
+		return "", errors.New("pending plan proposal has no canonical approved arguments")
+	}
+	var backend map[string]any
+	if err := json.Unmarshal([]byte(canonical), &backend); err != nil {
+		return "", errors.New("pending plan proposal approved arguments are invalid")
+	}
+	clientArguments = strings.TrimSpace(clientArguments)
+	if clientArguments != "" {
+		var client map[string]any
+		if err := json.Unmarshal([]byte(clientArguments), &client); err != nil {
+			return "", errors.New("approved arguments must be a JSON object")
+		}
+		granularity, hasGranularity := client["execution_granularity"]
+		continuation, hasContinuation := client["continuation_policy"]
+		continueAutomatically, hasAutomatic := client["continue_automatically"]
+		if hasGranularity {
+			if _, ok := granularity.(string); !ok {
+				return "", errors.New("execution_granularity overlay must be a string")
+			}
+			backend["execution_granularity"] = granularity
+		}
+		if hasContinuation {
+			if _, ok := continuation.(string); !ok {
+				return "", errors.New("continuation_policy overlay must be a string")
+			}
+			backend["continuation_policy"] = continuation
+		}
+		if hasAutomatic {
+			if _, ok := continueAutomatically.(bool); !ok {
+				return "", errors.New("continue_automatically overlay must be boolean")
+			}
+			backend["continue_automatically"] = continueAutomatically
+		}
+		if hasGranularity || hasContinuation || hasAutomatic {
+			documentRaw, err := json.Marshal(backend["document"])
+			if err != nil {
+				return "", errors.New("pending plan proposal document is invalid")
+			}
+			var document pebblestore.SessionPlanDocument
+			if err := json.Unmarshal(documentRaw, &document); err != nil {
+				return "", errors.New("pending plan proposal document is invalid")
+			}
+			granularityText, _ := backend["execution_granularity"].(string)
+			continuationText, _ := backend["continuation_policy"].(string)
+			if automatic, ok := backend["continue_automatically"].(bool); ok {
+				if automatic {
+					continuationText = sessionruntime.PlanAcceptanceContinuationAutomatic
+				} else {
+					continuationText = sessionruntime.PlanAcceptanceContinuationReviewEachCheckpoint
+				}
+			}
+			if _, err := sessionruntime.ApplyPlanAcceptanceExecutionPolicy(&document, sessionruntime.PlanAcceptanceExecutionOptions{ExecutionGranularity: granularityText, ContinuationPolicy: continuationText}); err != nil {
+				return "", fmt.Errorf("unsupported execution policy overlay: %w", err)
+			}
+		}
+	}
+	raw, err := json.Marshal(backend)
+	if err != nil {
+		return "", err
+	}
+	return privacy.SanitizeJSONText(string(raw)), nil
+}
+
+func stringValue(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func firstNonEmptyPermissionString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func sanitizeApprovedArguments(toolName, action, approvedArguments, fallbackToolArguments string) string {

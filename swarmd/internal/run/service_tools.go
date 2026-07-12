@@ -909,6 +909,10 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		output, err := s.executePlanManageToolWithLifecycleRunContext(sessionID, call.Arguments, approvedArguments, applySessionMutation, lifecycleRun)
 		result.Output = output
 		return true, result, err
+	case "edit_pending_plan":
+		output, err := s.executeEditPendingPlanTool(sessionID, call.Arguments)
+		result.Output = output
+		return true, result, err
 	case "task":
 		principal, _ := identity.PrincipalFromContext(ctx)
 		output, err := s.executeTaskToolWithParsed(ctx, sessionID, sessionMode, step, call, emit, taskExecutionRequest{ApprovedArguments: approvedArguments, RunID: lifecycleRun.RunID, Principal: principal, ApplySessionMutation: applySessionMutation})
@@ -917,6 +921,58 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 	default:
 		return false, tool.Result{}, nil
 	}
+}
+
+func (s *Service) executeEditPendingPlanTool(sessionID, arguments string) (string, error) {
+	if s.permissions == nil || s.sessions == nil {
+		return "", errors.New("pending plan editing is not configured")
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("session %q not found", sessionID)
+	}
+	if !strings.EqualFold(mapString(session.Metadata, "system_sidechat_kind"), "plan") || !strings.EqualFold(mapString(session.Metadata, "lineage_kind"), "system_sidechat") {
+		return "", errors.New("edit_pending_plan is restricted to the reserved Plan sidechat")
+	}
+	parentID := strings.TrimSpace(mapString(session.Metadata, "parent_session_id"))
+	permissionID := strings.TrimSpace(mapString(session.Metadata, "plan_permission_id"))
+	if parentID == "" || permissionID == "" {
+		return "", errors.New("Plan sidechat is not bound to a pending proposal")
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(firstNonEmptyString(strings.TrimSpace(arguments), "{}")), &args); err != nil {
+		return "", fmt.Errorf("edit_pending_plan arguments invalid: %w", err)
+	}
+	expected := int64(0)
+	if value, ok := args["expected_revision"].(float64); ok {
+		expected = int64(value)
+	}
+	rawDocument, ok := args["document"]
+	if !ok {
+		return "", errors.New("edit_pending_plan requires document")
+	}
+	raw, err := json.Marshal(rawDocument)
+	if err != nil {
+		return "", err
+	}
+	var document pebblestore.SessionPlanDocument
+	if err := json.Unmarshal(raw, &document); err != nil {
+		return "", fmt.Errorf("edit_pending_plan document invalid: %w", err)
+	}
+	edited, err := s.permissions.EditPendingPlanProposal(permission.PendingPlanProposalEditInput{SessionID: parentID, PermissionID: permissionID, ExpectedRevision: expected, Document: &document})
+	if err != nil {
+		return "", err
+	}
+	var payload map[string]any
+	_ = json.Unmarshal([]byte(edited.Record.ToolArguments), &payload)
+	output, err := json.Marshal(map[string]any{"ok": true, "parent_session_id": parentID, "permission_id": permissionID, "proposal_revision": edited.ProposalRevision, "plan_id": payload["plan_id"], "document": payload["document"]})
+	if err != nil {
+		return "", err
+	}
+	return string(output), nil
 }
 
 func (s *Service) executeManageSkillTool(sessionID string, call tool.Call, feedback string) (string, error) {
@@ -3641,6 +3697,8 @@ func canonicalToolName(name string) string {
 		return "exit_plan_mode"
 	case "plan-manage", "plan_manage":
 		return "plan_manage"
+	case "edit-pending-plan", "edit_pending_plan":
+		return "edit_pending_plan"
 	case "skill-use", "skill_use":
 		return "skill_use"
 	case "manage-skill", "manage_skill":
@@ -3679,7 +3737,7 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	}
 
 	switch toolName {
-	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme", "manage_integrations":
+	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme", "manage_integrations", "edit_pending_plan":
 		return toolName, false
 	case "manage_sessions":
 		if permission.ShouldApproveManageSessionsArchive(arguments) {

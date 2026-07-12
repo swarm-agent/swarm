@@ -488,6 +488,20 @@ func (r *Runtime) Definitions() []Definition {
 		},
 		{
 			Type:        "function",
+			Name:        "edit_pending_plan",
+			Description: "Edit the pending plan proposal bound to the reserved Plan sidechat using optimistic concurrency",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"expected_revision": map[string]any{"type": "integer", "description": "Current pending proposal revision"},
+					"document":          map[string]any{"type": "object", "description": "Replacement structured plan document"},
+				},
+				"required":             []string{"expected_revision", "document"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
 			Name:        "write",
 			Description: "Write content to a file in the current workspace",
 			Parameters: map[string]any{

@@ -1,9 +1,12 @@
 package permission
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -129,6 +132,83 @@ func TestAuthorizeToolCallKeepsRevisionAndNewPlanApprovalGated(t *testing.T) {
 				t.Fatalf("authorization = %+v, want pending record", auth)
 			}
 		})
+	}
+}
+
+func TestPendingPlanProposalEditIsRevisionedAndApprovalUsesBackendDocument(t *testing.T) {
+	svc, sessionID, _, cleanup := newPermissionLifecycleTestService(t, "")
+	defer cleanup()
+	payload := `{"path_id":"permission.exit-plan-mode.v1","tool":"exit_plan_mode","plan_id":"plan-new","title":"Original","document":{"id":"plan-new","title":"Original","checkpoints":[{"id":"cp-1","title":"One","status":"pending"}]},"approved_arguments":{"plan_id":"plan-new","title":"Original","document":{"id":"plan-new","title":"Original","checkpoints":[{"id":"cp-1","title":"One","status":"pending"}]}}}`
+	record, err := svc.CreatePending(CreateInput{SessionID: sessionID, RunID: "run-plan", CallID: "call-plan", ToolName: "exit_plan_mode", ToolArguments: payload, Mode: sessionruntime.ModePlan})
+	if err != nil {
+		t.Fatalf("create pending proposal: %v", err)
+	}
+	if record.ProposalRevision != 1 {
+		t.Fatalf("initial revision = %d, want 1", record.ProposalRevision)
+	}
+	waitCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	waited := make(chan pebblestore.PermissionRecord, 1)
+	go func() {
+		resolved, _ := svc.WaitForResolution(waitCtx, sessionID, record.ID)
+		waited <- resolved
+	}()
+
+	published := make(chan pebblestore.PermissionRecord, 1)
+	svc.SetPermissionRealtimePublisher(func(gotSessionID string, got pebblestore.PermissionRecord) error {
+		if gotSessionID != sessionID {
+			t.Fatalf("published session = %q, want %q", gotSessionID, sessionID)
+		}
+		published <- got
+		return nil
+	})
+	editedDoc := &pebblestore.SessionPlanDocument{ID: "plan-new", Title: "Edited", Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Newest", Status: sessionruntime.PlanCheckpointStatusPending}}}
+	edited, err := svc.EditPendingPlanProposal(PendingPlanProposalEditInput{SessionID: sessionID, PermissionID: record.ID, ExpectedRevision: 1, Document: editedDoc})
+	if err != nil {
+		t.Fatalf("edit pending proposal: %v", err)
+	}
+	if edited.ProposalRevision != 2 || edited.Record.Status != pebblestore.PermissionStatusPending {
+		t.Fatalf("edited result = %+v", edited)
+	}
+	select {
+	case got := <-published:
+		if got.ID != record.ID || got.ProposalRevision != 2 {
+			t.Fatalf("published permission = %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("proposal edit was not published to parent realtime")
+	}
+	select {
+	case got := <-waited:
+		t.Fatalf("proposal edit resolved waiter unexpectedly: %+v", got)
+	default:
+	}
+	if _, err := svc.EditPendingPlanProposal(PendingPlanProposalEditInput{SessionID: sessionID, PermissionID: record.ID, ExpectedRevision: 1, Document: editedDoc}); err == nil {
+		t.Fatal("stale proposal edit unexpectedly succeeded")
+	}
+	staleClient := `{"title":"STALE","document":{"id":"plan-new","title":"STALE","checkpoints":[{"id":"cp-stale","title":"Stale","status":"pending"}]},"continuation_policy":"review_each_checkpoint"}`
+	resolved, err := svc.ResolveWithArguments(sessionID, record.ID, ActionAllowOnce, "approved", staleClient)
+	if err != nil {
+		t.Fatalf("approve edited proposal: %v", err)
+	}
+	var approved map[string]any
+	if err := json.Unmarshal([]byte(resolved.ApprovedArguments), &approved); err != nil {
+		t.Fatalf("decode approved arguments: %v", err)
+	}
+	if approved["title"] != "Edited" || approved["continuation_policy"] != "review_each_checkpoint" {
+		t.Fatalf("approved arguments = %#v", approved)
+	}
+	doc, _ := approved["document"].(map[string]any)
+	if doc["title"] != "Edited" {
+		t.Fatalf("approved document = %#v", doc)
+	}
+	select {
+	case got := <-waited:
+		if got.Status != pebblestore.PermissionStatusApproved {
+			t.Fatalf("waiter status = %q", got.Status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("approval did not resolve waiter")
 	}
 }
 

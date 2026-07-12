@@ -14,7 +14,7 @@ const permission: DesktopPermissionRecord = {
   runId: "run-1",
   callId: "call-1",
   toolName: "exit_plan_mode",
-  toolArguments: "{}",
+  toolArguments: JSON.stringify({ proposal_revision: 7 }),
   status: "pending",
   decision: "",
   reason: "",
@@ -43,7 +43,6 @@ const markup = renderToStaticMarkup(
     mobileOpen
     modelLabel="model-a"
     onClose={() => undefined}
-    onSendChanges={async () => undefined}
   />,
 );
 
@@ -52,7 +51,9 @@ assert(
   markup.includes("Ask me anything about the plan"),
   "expected automatic plan guidance",
 );
-assert(markup.includes("Plan Agent · model-a"), "expected originating model label");
+assert(markup.includes("Plan &amp; AI"), "expected persistent tabbed sidebar");
+assert(markup.includes("Use this durable auto-only AI sidechat") === false, "inactive AI content should remain hidden");
+assert(markup.includes("Saved edits update the parent approval card live."), "plan edits should advertise live parent updates");
 assert(
   !markup.includes("Parent conversation context for this plan review"),
   "raw parent context must not render",

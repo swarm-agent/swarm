@@ -491,7 +491,24 @@ func v3SessionWorksetSessionVisibleForWorkspaces(
 	return false
 }
 
+func v3SessionNavigationHidden(session SessionSnapshot) bool {
+	if session.Metadata == nil {
+		return false
+	}
+	if hidden, ok := session.Metadata["navigation_hidden"].(bool); ok && hidden {
+		return true
+	}
+	if hidden, ok := session.Metadata["system_sidechat"].(bool); ok && hidden {
+		return true
+	}
+	lineageKind, _ := session.Metadata["lineage_kind"].(string)
+	return strings.EqualFold(strings.TrimSpace(lineageKind), "system_sidechat")
+}
+
 func v3SessionWorksetSessionVisible(session SessionSnapshot, accountScopeID string, userID string, workspacePath string) bool {
+	if v3SessionNavigationHidden(session) {
+		return false
+	}
 	if strings.TrimSpace(accountScopeID) != "" {
 		if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(accountScopeID) {
 			return false
