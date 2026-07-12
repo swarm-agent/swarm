@@ -3,7 +3,9 @@ package run
 import (
 	"strings"
 	"testing"
+	"time"
 
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -62,6 +64,58 @@ func TestModeCapabilityInstructionsUseSessionModeWhenPlanModeEnabled(t *testing.
 	}
 	if strings.Contains(instructions, "Current execution mode:") {
 		t.Fatalf("plan-enabled instructions should not advertise static execution mode\n--- instructions ---\n%s", instructions)
+	}
+}
+
+func TestProviderRequestRuntimeContextUsesResolvedIdentityAndUTC(t *testing.T) {
+	now := time.Date(2026, time.July, 12, 9, 8, 7, 0, time.FixedZone("test", 2*60*60))
+	base := provideriface.Request{
+		ProviderLineageID: "stable-lineage",
+		ProviderCacheKey:  "stable-cache",
+		Model:             "gpt-5",
+		Instructions:      "base instructions",
+	}
+
+	req := base.WithRuntimeContext("codex", now)
+	for _, want := range []string{
+		"[request-runtime-context]",
+		"current_utc_time: 2026-07-12T07:08:07Z",
+		"current_provider: codex",
+		"current_model: gpt-5",
+	} {
+		if !strings.Contains(req.Instructions, want) {
+			t.Fatalf("runtime context missing %q:\n%s", want, req.Instructions)
+		}
+	}
+	if strings.Contains(req.Instructions, "provider_model_change:") {
+		t.Fatalf("normal request unexpectedly reports a model change:\n%s", req.Instructions)
+	}
+	if req.ProviderLineageID != base.ProviderLineageID || req.ProviderCacheKey != base.ProviderCacheKey {
+		t.Fatalf("runtime context changed stable lineage/cache identity: %#v", req)
+	}
+}
+
+func TestProviderRequestRuntimeContextReportsVerifiedModelChange(t *testing.T) {
+	req := provideriface.Request{
+		ProviderLineageID:         "new-lineage",
+		PreviousProviderLineageID: "old-lineage",
+		PreviousProviderID:        "anthropic",
+		PreviousModel:             "claude-sonnet-4",
+		NewProviderID:             "codex",
+		NewModel:                  "gpt-5",
+		Model:                     "gpt-5",
+	}.WithRuntimeContext("codex", time.Date(2026, time.July, 12, 7, 8, 7, 0, time.UTC))
+
+	for _, want := range []string{
+		"provider_model_change: The resolved provider/model changed for this request.",
+		"previous_provider: anthropic",
+		"previous_model: claude-sonnet-4",
+		"current_provider: codex",
+		"current_model: gpt-5",
+	} {
+		if !strings.Contains(req.Instructions, want) {
+			t.Fatalf("changed-model context missing %q:\n%s", want, req.Instructions)
+		}
 	}
 }
 

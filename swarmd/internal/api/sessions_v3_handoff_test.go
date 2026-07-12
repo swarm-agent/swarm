@@ -20,7 +20,7 @@ func TestSessionV3ProviderHandoffPacketBoundsLongTranscript(t *testing.T) {
 	messages = append(messages, pebblestore.MessageSnapshot{Role: "user", Content: "RECENT-HUGE-SENTINEL-" + strings.Repeat("y", 1000)})
 
 	exec := &sessionV3Executor{}
-	packet, err := exec.sessionV3ProviderHandoffPacket(sessionV3ExecutorJob{}, sessionV3ResolvedRuntime{Preference: pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5"}}, messages, provideriface.Request{BoundaryReason: "provider_model_runtime_handoff", PreviousProviderLineageID: "old-lineage", ProviderLineageID: "new-lineage", ContextBranchID: "branch"}, sessionV3ProviderHandoffCaps{TailMessages: 6, ToolOutputChars: 40, TotalChars: 6000})
+	packet, err := exec.sessionV3ProviderHandoffPacket(sessionV3ExecutorJob{}, sessionV3ResolvedRuntime{Preference: pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5"}}, messages, provideriface.Request{BoundaryReason: "provider_model_runtime_handoff", PreviousProviderLineageID: "old-lineage", PreviousProviderID: "anthropic", PreviousModel: "claude-sonnet-4", ProviderLineageID: "new-lineage", ContextBranchID: "branch", NewProviderID: "codex", NewModel: "gpt-5"}, sessionV3ProviderHandoffCaps{TailMessages: 6, ToolOutputChars: 40, TotalChars: 6000})
 	if err != nil {
 		t.Fatalf("handoff packet: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestSessionV3ProviderHandoffPacketBoundsLongTranscript(t *testing.T) {
 	if strings.Contains(packet, strings.Repeat("y", 500)) {
 		t.Fatalf("handoff packet replayed unbounded recent visible message: %s", packet)
 	}
-	for _, want := range []string{"[provider-handoff]", "Important compacted facts", "Recent user request", "Recent assistant answer", "RECENT-HUGE-SENTINEL", "read call_id=call_read", "[truncated"} {
+	for _, want := range []string{"[provider-handoff]", "previous_provider: anthropic", "previous_model: claude-sonnet-4", "new_provider: codex", "new_model: gpt-5", "Important compacted facts", "Recent user request", "Recent assistant answer", "RECENT-HUGE-SENTINEL", "read call_id=call_read", "[truncated"} {
 		if !strings.Contains(packet, want) {
 			t.Fatalf("handoff packet missing %q:\n%s", want, packet)
 		}

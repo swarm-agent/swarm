@@ -1817,6 +1817,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			"input":               input,
 		})
 
+		stepRequest = stepRequest.WithRuntimeContext(providerID, time.Now())
 		response, err := providerRunner.CreateResponseStreaming(runnerCtx, stepRequest, func(event provideriface.StreamEvent) {
 			if ctx.Err() != nil {
 				return

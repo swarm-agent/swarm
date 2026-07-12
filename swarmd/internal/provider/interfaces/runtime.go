@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
+	"time"
 )
 
 type ToolDefinition struct {
@@ -57,6 +59,44 @@ func (r Request) EffectiveProviderCacheKey() string {
 
 func (r Request) EffectiveSessionAffinityKey() string {
 	return strings.TrimSpace(firstNonEmpty(r.SessionAffinityKey, r.ProviderCacheKey, r.ProviderLineageID))
+}
+
+// WithRuntimeContext adds request-scoped, backend-authoritative model and time
+// context after stable lineage/cache keys have been resolved.
+func (r Request) WithRuntimeContext(providerID string, now time.Time) Request {
+	currentProvider := strings.TrimSpace(firstNonEmpty(r.NewProviderID, providerID))
+	currentModel := strings.TrimSpace(firstNonEmpty(r.NewModel, r.Model))
+	previousProvider := strings.TrimSpace(r.PreviousProviderID)
+	previousModel := strings.TrimSpace(r.PreviousModel)
+	identityChanged := strings.TrimSpace(r.PreviousProviderLineageID) != "" &&
+		previousProvider != "" && previousModel != "" &&
+		(!strings.EqualFold(previousProvider, currentProvider) || previousModel != currentModel)
+
+	contextBlock := RuntimeContextInstructions(currentProvider, currentModel, previousProvider, previousModel, identityChanged, now)
+	r.Instructions = strings.TrimSpace(strings.TrimSpace(r.Instructions) + "\n\n" + contextBlock)
+	return r
+}
+
+// RuntimeContextInstructions formats the canonical dynamic context supplied to
+// conversational provider requests. Callers must not include its timestamp in
+// lineage or provider-cache identity.
+func RuntimeContextInstructions(currentProvider, currentModel, previousProvider, previousModel string, identityChanged bool, now time.Time) string {
+	currentProvider = strings.TrimSpace(currentProvider)
+	currentModel = strings.TrimSpace(currentModel)
+	previousProvider = strings.TrimSpace(previousProvider)
+	previousModel = strings.TrimSpace(previousModel)
+	var b strings.Builder
+	b.WriteString("[request-runtime-context]\n")
+	b.WriteString("Backend-authoritative context for this provider request; do not infer or claim a different identity or time.\n")
+	fmt.Fprintf(&b, "- current_utc_time: %s\n", now.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, "- current_provider: %s\n", currentProvider)
+	fmt.Fprintf(&b, "- current_model: %s", currentModel)
+	if identityChanged {
+		b.WriteString("\n- provider_model_change: The resolved provider/model changed for this request.\n")
+		fmt.Fprintf(&b, "- previous_provider: %s\n", previousProvider)
+		fmt.Fprintf(&b, "- previous_model: %s", previousModel)
+	}
+	return b.String()
 }
 
 func ShortProviderLineageKey(parts ...string) string {

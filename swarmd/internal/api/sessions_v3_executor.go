@@ -1496,8 +1496,10 @@ func (e *sessionV3Executor) sessionV3ProviderHandoffPacket(job sessionV3Executor
 	appendLine("- previous_provider_lineage_id: " + strings.TrimSpace(req.PreviousProviderLineageID))
 	appendLine("- provider_lineage_id: " + strings.TrimSpace(req.ProviderLineageID))
 	appendLine("- context_branch_id: " + strings.TrimSpace(req.ContextBranchID))
-	appendLine("- target_provider: " + strings.TrimSpace(resolved.Preference.Provider))
-	appendLine("- target_model: " + strings.TrimSpace(resolved.Preference.Model))
+	appendLine("- previous_provider: " + strings.TrimSpace(req.PreviousProviderID))
+	appendLine("- previous_model: " + strings.TrimSpace(req.PreviousModel))
+	appendLine("- new_provider: " + strings.TrimSpace(req.NewProviderID))
+	appendLine("- new_model: " + strings.TrimSpace(req.NewModel))
 	appendLine("")
 	appendLine("Handoff summary:")
 	if summary := sessionV3LatestHandoffSummary(messages); summary != "" {
@@ -1976,6 +1978,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		req := baseReq
 		req.Input = append([]map[string]any(nil), input...)
 		req.ToolInvoker = toolInvoker
+		req = req.WithRuntimeContext(resolved.Preference.Provider, time.Now())
 		e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.request", "backend.provider", "request", map[string]any{
 			"provider": strings.ToLower(strings.TrimSpace(resolved.Preference.Provider)),
 			"model":    strings.TrimSpace(req.Model),
