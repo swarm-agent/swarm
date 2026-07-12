@@ -136,6 +136,25 @@ type Options struct {
 }
 
 func SnapshotForPath(ctx context.Context, path string, opts Options) (Snapshot, error) {
+	target := strings.TrimSpace(path)
+	if target == "" {
+		return Snapshot{WorkspacePath: target, RefreshedAt: time.Now()}, errors.New("workspace path is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, CommandTimeout)
+	defer cancel()
+	watchPaths, err := ResolveWatchPaths(ctx, target)
+	if err != nil {
+		return Snapshot{WorkspacePath: target, Branch: "-", RefreshedAt: time.Now()}, nil
+	}
+	return SnapshotForResolvedPaths(ctx, target, watchPaths, opts)
+}
+
+// SnapshotForResolvedPaths avoids rerunning the repository path queries when a
+// caller already owns a validated, stable watch-path resolution.
+func SnapshotForResolvedPaths(ctx context.Context, path string, watchPaths WatchPaths, opts Options) (Snapshot, error) {
 	started := time.Now()
 	target := strings.TrimSpace(path)
 	if target == "" {
@@ -146,11 +165,6 @@ func SnapshotForPath(ctx context.Context, path string, opts Options) (Snapshot, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, CommandTimeout)
 	defer cancel()
-
-	watchPaths, err := ResolveWatchPaths(ctx, target)
-	if err != nil {
-		return Snapshot{WorkspacePath: target, Branch: "-", RefreshedAt: time.Now(), DurationMS: time.Since(started).Milliseconds()}, nil
-	}
 	statusRaw, err := gitOutputContext(ctx, target, "status", "--porcelain=v2", "--branch", "--show-stash", "-z")
 	if err != nil {
 		return Snapshot{}, err

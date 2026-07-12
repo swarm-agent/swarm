@@ -53,9 +53,23 @@ export interface GitStatusResponse {
   status: GitSnapshot
 }
 
+export interface GitRealtimeDiagnostics {
+  backend: 'fsnotify' | 'polling' | string
+  watch_count: number
+  event_count: number
+  overflow_count: number
+  recrawl_count: number
+  refresh_count: number
+  last_event_at?: string
+  last_refresh_at?: string
+  fallback_reason?: string
+  refresh_duration_ms: number
+}
+
 export interface GitRealtimeResponse {
   ok: boolean
   workspace_path: string
   watch_token: string
   status: GitSnapshot
+  diagnostics: GitRealtimeDiagnostics
 }

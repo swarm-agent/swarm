@@ -33,12 +33,22 @@ export async function fetchGitStatus(workspacePath: string, recentLimit = 12, se
   return { ...response, status: normalizeGitSnapshot(response.status) }
 }
 
-export async function startGitRealtime(workspacePath: string, sessionId = ''): Promise<GitRealtimeResponse> {
+const gitRealtimeRequests = new Map<string, Promise<GitRealtimeResponse>>()
+
+export function startGitRealtime(workspacePath: string, sessionId = '', watchToken = ''): Promise<GitRealtimeResponse> {
   const params = new URLSearchParams()
   params.set('workspace_path', workspacePath)
   if (sessionId.trim()) params.set('session_id', sessionId.trim())
-  const response = await requestJson<GitRealtimeResponse>(`/v1/workspace/git/realtime?${params.toString()}`, { method: 'POST' })
-  return { ...response, status: normalizeGitSnapshot(response.status) }
+  if (watchToken.trim()) params.set('watch_token', watchToken.trim())
+  const endpoint = `/v1/workspace/git/realtime?${params.toString()}`
+  const existing = gitRealtimeRequests.get(endpoint)
+  if (existing) return existing
+
+  const request = requestJson<GitRealtimeResponse>(endpoint, { method: 'POST' })
+    .then((response) => ({ ...response, status: normalizeGitSnapshot(response.status) }))
+    .finally(() => { gitRealtimeRequests.delete(endpoint) })
+  gitRealtimeRequests.set(endpoint, request)
+  return request
 }
 
 export async function commitWorkspaceChanges(input: {

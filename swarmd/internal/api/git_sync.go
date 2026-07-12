@@ -132,6 +132,9 @@ func (s *Server) handleGitSyncApply(w http.ResponseWriter, r *http.Request) {
 	req.WorkspacePath = ""
 	req.DevRoot = ""
 	resp, err := applyGitSync(r.Context(), req)
+	if err == nil && resp.OK && s.gitRealtime != nil {
+		s.gitRealtime.signal(req.TargetPath)
+	}
 	if err != nil {
 		resp.OK = false
 		resp.Error = err.Error()

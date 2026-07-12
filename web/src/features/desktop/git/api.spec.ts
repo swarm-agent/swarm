@@ -40,6 +40,28 @@ test('git status APIs normalize null file lists and scope requests to the sessio
   ])
 })
 
+test('startGitRealtime coalesces duplicate in-flight cache-hit requests', async () => {
+  let resolveFetch!: (response: Response) => void
+  let calls = 0
+  globalThis.fetch = (async () => {
+    calls++
+    return new Promise<Response>((resolve) => { resolveFetch = resolve })
+  }) as typeof fetch
+
+  const first = startGitRealtime('/workspace/project', 'session-1', 'watch-1')
+  const second = startGitRealtime('/workspace/project', 'session-1', 'watch-1')
+  assert.equal(first, second)
+  assert.equal(calls, 1)
+
+  resolveFetch(new Response(JSON.stringify({
+    ok: true,
+    workspace_path: '/workspace/project',
+    watch_token: 'watch-1',
+    status: { workspace_path: '/workspace/project', has_git: true, clean: true, files: [] },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  await Promise.all([first, second])
+})
+
 test('commitWorkspaceChanges posts exact manual commit request to git commit API', async () => {
   let capturedInput: RequestInfo | URL | undefined
   let capturedInit: RequestInit | undefined

@@ -2694,24 +2694,39 @@ export function DesktopAppPage() {
     let cancelled = false
     let token = ''
     const refresh = async () => {
+      const startedAt = Date.now()
+      const requestedToken = token
       try {
-        const response = await startGitRealtime(selectedGitWorkspacePath, selectedGitSessionId)
+        const response = await startGitRealtime(selectedGitWorkspacePath, selectedGitSessionId, requestedToken)
         if (cancelled) return
-        if (response.watch_token !== token) {
+        if (response.watch_token !== requestedToken) {
           token = response.watch_token
           queryClient.setQueryData(gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId), { ok: true, status: response.status })
+        } else {
+          // A current daemon holds this request for the long-poll window. Keep a
+          // defensive floor for stale/nonconforming daemons that ignore the token
+          // so an immediate unchanged response cannot create a hot request loop.
+          const remaining = 1_000 - (Date.now() - startedAt)
+          if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining))
         }
         setGitRealtimeErrors((current) => {
           if (!current[selectedGitWorkspacePath]) return current
           const next = { ...current }; delete next[selectedGitWorkspacePath]; return next
         })
+        return true
       } catch (error) {
         if (!cancelled) setGitRealtimeErrors((current) => ({ ...current, [selectedGitWorkspacePath]: error instanceof Error ? error.message : String(error) }))
+        return false
       }
     }
-    void refresh()
-    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') void refresh() }, 1_000)
-    return () => { cancelled = true; window.clearInterval(timer) }
+    const poll = async () => {
+      while (!cancelled) {
+        const ok = document.visibilityState === 'visible' ? await refresh() : true
+        if (!cancelled) await new Promise((resolve) => window.setTimeout(resolve, document.visibilityState !== 'visible' ? 1_000 : ok ? 250 : 5_000))
+      }
+    }
+    void poll()
+    return () => { cancelled = true }
   }, [queryClient, selectedGitSessionId, selectedGitWorkspacePath])
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(
     mergedSidebarWorkspaceEntries.map((workspace) => ({

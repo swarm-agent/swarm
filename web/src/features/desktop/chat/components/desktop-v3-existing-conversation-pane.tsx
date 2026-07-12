@@ -2448,6 +2448,7 @@ export function DesktopV3ExistingConversationPane({
             onAction={stablePlanExecutionAction}
             onStop={stableStop}
             onEditPlan={stableOpenPlan}
+            belowActions={planSidebarBelowActions}
           />
         ) : null}
       </div>

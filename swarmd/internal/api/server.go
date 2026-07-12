@@ -340,6 +340,7 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		server.v3SessionExecutor = newSessionV3Executor(server)
 		server.planLifecycle = sessionruntime.NewPlanLifecycleService(sessionSvc)
 	}
+	server.gitRealtime = newGitRealtimeManager(server)
 	return server
 }
 

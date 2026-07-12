@@ -71,6 +71,9 @@ func (s *Server) writeGitCommitResponse(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	result, err := runWorkspaceGitCommit(r.Context(), workspacePath, message, req.All)
+	if result.OK && s.gitRealtime != nil {
+		s.gitRealtime.signal(workspacePath)
+	}
 	status := http.StatusOK
 	if err != nil {
 		status = http.StatusBadRequest
