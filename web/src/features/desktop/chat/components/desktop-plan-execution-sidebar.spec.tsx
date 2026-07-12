@@ -360,20 +360,18 @@ test("automatic checkpointed mode sidebar actions card explains continuation and
   assert.doesNotMatch(markup, /role="switch"/);
 });
 
-test("plan sidebar exposes a fixed Auto Agent helper chat", () => {
+test("accepted plan sidebar restores the original execution view without AI helpers", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
       view={view()}
       onAction={() => undefined}
-      onNewAutoChat={() => undefined}
-      onOpenPlanAgent={() => undefined}
     />,
   );
 
-  assert.match(markup, />Plan Agent</);
-  assert.match(markup, /New Auto Agent chat/);
-  assert.match(markup, /fixed Auto Agent and its normal permissions/);
-  assert.match(markup, /deployment, or follow-up work/);
+  assert.match(markup, />Plan</);
+  assert.doesNotMatch(markup, /Plan Agent/);
+  assert.doesNotMatch(markup, /New Auto Agent chat/);
+  assert.doesNotMatch(markup, /AI helper/);
 });
 
 test("blocked checkpoint sidebar shows unblock controls without automatic pause controls", () => {

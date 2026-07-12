@@ -51,8 +51,11 @@ assert(
   markup.includes("Ask about the plan or request changes conversationally"),
   "expected plan-agent guidance",
 );
-assert(markup.includes("Plan &amp; AI"), "expected persistent tabbed sidebar");
-assert(markup.includes("Use this durable auto-only AI sidechat") === false, "inactive AI content should remain hidden");
+assert(markup.includes(">Plan<"), "expected Plan-only sidebar heading");
+assert(!markup.includes("Plan &amp; AI"), "AI tabs must be absent from the MVP sidebar");
+assert(!markup.includes("Ask AI"), "AI sidechat controls must be absent");
+assert(markup.includes('data-testid="desktop-plan-agent-scroller"'), "Plan conversation should use the shared sticky-bottom scroller");
+assert(markup.includes("Jump to latest Plan message") === false, "jump control remains hidden while initially pinned");
 assert(markup.includes("Saved edits update the parent approval card live."), "plan edits should advertise live parent updates");
 assert(markup.includes("Send to Plan"), "idle real session should expose its send control");
 assert(!markup.includes("ChatMarkdown"), "sidechat must reuse canonical Desktop V3 render items rather than a custom message renderer");

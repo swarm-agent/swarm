@@ -607,8 +607,6 @@ export const DesktopPlanExecutionSidebar = memo(
     onStop: _onStop,
     onEditPlan,
     belowActions,
-    onNewAutoChat,
-    onOpenPlanAgent,
   }: DesktopPlanExecutionSidebarProps) {
     const document = view?.plan.document ?? null;
     if (!view || !document) return null;
@@ -633,6 +631,9 @@ export const DesktopPlanExecutionSidebar = memo(
         data-testid="desktop-plan-execution-sidebar"
       >
         <div className="grid min-w-0 max-w-full gap-3 overflow-hidden [&_*]:min-w-0">
+          {!embedded ? (
+            <div className="text-sm font-semibold text-[var(--app-text)]">Plan</div>
+          ) : null}
           <ActiveCheckpointCard
             view={view}
             checkpoints={checkpoints}
@@ -649,38 +650,6 @@ export const DesktopPlanExecutionSidebar = memo(
             onEditPlan={onEditPlan}
           />
           {belowActions}
-          {!embedded && onNewAutoChat ? (
-            <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
-                AI helper
-              </div>
-              {onOpenPlanAgent ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="mt-2 w-full rounded-lg"
-                  onClick={onOpenPlanAgent}
-                  title="Continue the Plan Agent conversation for this plan."
-                >
-                  Plan Agent
-                </Button>
-              ) : null}
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="mt-2 w-full rounded-lg"
-                onClick={onNewAutoChat}
-                title="Start a new chat with your fixed Auto Agent and its normal permissions. This plan chat stays available here."
-              >
-                New Auto Agent chat
-              </Button>
-              <p className="mt-2 text-[11px] leading-4 text-[var(--app-text-muted)]">
-                Use Auto Agent for final checks, deployment, or follow-up work without replacing this plan conversation.
-              </p>
-            </section>
-          ) : null}
         </div>
       </aside>
     );

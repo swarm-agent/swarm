@@ -136,7 +136,7 @@ import {
   structuredPlanDocumentFromPermission,
 } from "./desktop-inline-plan-review-card";
 import { DesktopPlanAgentSidecar } from "./desktop-plan-agent-sidecar";
-import type { DesktopPlanExecutionSidebarActionInput } from "./desktop-plan-execution-sidebar";
+import { DesktopPlanExecutionSidebar, type DesktopPlanExecutionSidebarActionInput } from "./desktop-plan-execution-sidebar";
 
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
@@ -576,7 +576,7 @@ function desktopV3BottomDistance(element: HTMLElement): number {
   );
 }
 
-function useDesktopV3StickyBottomScroll(options: {
+export function useDesktopV3StickyBottomScroll(options: {
   resetKey: string;
   itemCount: number;
   followKey?: string;
@@ -1283,12 +1283,6 @@ export function DesktopV3ExistingConversationPane({
     selectPendingPermissionsForSession,
     pendingPermissionsEqual,
   );
-  const sessionPlanPermissions = useDesktopV3CacheSelector(
-    (state) => [...(state.permissionsBySession[normalizedSessionId] ?? [])]
-      .filter(isPlanProposalPermission)
-      .sort((left, right) => right.updatedAt - left.updatedAt),
-    pendingPermissionsEqual,
-  );
   const pendingPlanPermissions = pendingPermissions.filter(
     isPlanProposalPermission,
   );
@@ -1303,21 +1297,6 @@ export function DesktopV3ExistingConversationPane({
       : null,
     [pendingPlanPermission],
   );
-  const retainedPlanReviewRef = useRef<{
-    permission: DesktopPermissionRecord;
-    document: NonNullable<typeof pendingPlanDocument>;
-  } | null>(null);
-  const latestPlanPermission = pendingPlanPermission ?? sessionPlanPermissions[0] ?? null;
-  const latestPlanDocument = latestPlanPermission
-    ? structuredPlanDocumentFromPermission(latestPlanPermission)
-    : null;
-  if (latestPlanPermission && latestPlanDocument) {
-    retainedPlanReviewRef.current = {
-      permission: latestPlanPermission,
-      document: latestPlanDocument,
-    };
-  }
-  const retainedPlanReview = retainedPlanReviewRef.current;
   const [planAgentMobileOpen, setPlanAgentMobileOpen] = useState(true);
   useEffect(() => {
     setPlanAgentMobileOpen(Boolean(pendingPlanPermission));
@@ -2373,14 +2352,14 @@ export function DesktopV3ExistingConversationPane({
                 <div aria-hidden="true" />
               </div>
             </div>
-            {showPlanSidebar && retainedPlanReview && !planAgentMobileOpen ? (
+            {pendingPlanDocument && pendingPlanPermission && !planAgentMobileOpen ? (
               <Button
                 type="button"
                 variant="outline"
                 className="absolute right-5 top-5 z-10 xl:hidden"
                 onClick={() => setPlanAgentMobileOpen(true)}
               >
-                Plan & AI
+                Plan
               </Button>
             ) : null}
             {!isAtBottom && hasUnseenLatest ? (
@@ -2450,24 +2429,25 @@ export function DesktopV3ExistingConversationPane({
           />
         </div>
 
-        {showPlanSidebar && retainedPlanReview ? (
+        {pendingPlanDocument && pendingPlanPermission ? (
           <DesktopPlanAgentSidecar
             parentSessionId={normalizedSessionId}
-            permission={pendingPlanPermission ?? retainedPlanReview.permission}
-            document={pendingPlanDocument ?? retainedPlanReview.document}
-            execution={planExecutionView ? {
-              view: planExecutionView,
-              busyAction: planExecutionBusyAction,
-              canStop: Boolean(currentRun),
-              onAction: stablePlanExecutionAction,
-              onStop: stableStop,
-              onEditPlan: stableOpenPlan,
-            } : undefined}
+            permission={pendingPlanPermission}
+            document={pendingPlanDocument}
             embedded
             mobileOpen={planAgentMobileOpen}
             modelLabel={preference.model}
             onClose={() => setPlanAgentMobileOpen(false)}
 
+          />
+        ) : showPlanExecutionSidebar && planExecutionView ? (
+          <DesktopPlanExecutionSidebar
+            view={planExecutionView}
+            busyAction={planExecutionBusyAction}
+            canStop={Boolean(currentRun)}
+            onAction={stablePlanExecutionAction}
+            onStop={stableStop}
+            onEditPlan={stableOpenPlan}
           />
         ) : null}
       </div>
