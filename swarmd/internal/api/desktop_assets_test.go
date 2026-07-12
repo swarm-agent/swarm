@@ -90,8 +90,8 @@ func TestServeDesktopAssetSetsServiceWorkerScopeHeaders(t *testing.T) {
 
 	resp := rec.Result()
 	defer resp.Body.Close()
-	if got := resp.Header.Get("Cache-Control"); got != desktopDocumentCacheControl {
-		t.Fatalf("Cache-Control = %q, want %q", got, desktopDocumentCacheControl)
+	if got := resp.Header.Get("Cache-Control"); got != desktopServiceWorkerCacheControl {
+		t.Fatalf("Cache-Control = %q, want %q", got, desktopServiceWorkerCacheControl)
 	}
 	if got := resp.Header.Get("Service-Worker-Allowed"); got != "/" {
 		t.Fatalf("Service-Worker-Allowed = %q, want /", got)
