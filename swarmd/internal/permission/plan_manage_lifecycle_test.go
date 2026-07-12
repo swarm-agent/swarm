@@ -180,8 +180,23 @@ func TestCreatePendingPlanProposalAddsCanonicalSidechatMetadata(t *testing.T) {
 	document, _ := got["document"].(map[string]any)
 	approved, _ := got["approved_arguments"].(map[string]any)
 	approvedDocument, _ := approved["document"].(map[string]any)
-	if document["id"] != planID || approved["plan_id"] != planID || approvedDocument["id"] != planID {
+	if document["id"] != planID || approvedDocument["id"] != planID {
 		t.Fatalf("canonical plan binding missing: plan_id=%q document=%#v approved=%#v", planID, document, approved)
+	}
+	if _, hasReplacementTarget := approved["plan_id"]; hasReplacementTarget {
+		t.Fatalf("new-plan approval must not treat the permission-derived proposal id as an existing replacement target: %#v", approved)
+	}
+
+	resolved, err := svc.Resolve(sessionID, record.ID, ActionAllowOnce, "approved")
+	if err != nil {
+		t.Fatalf("approve new-plan proposal: %v", err)
+	}
+	var resolvedArgs map[string]any
+	if err := json.Unmarshal([]byte(resolved.ApprovedArguments), &resolvedArgs); err != nil {
+		t.Fatalf("decode resolved arguments: %v", err)
+	}
+	if _, hasReplacementTarget := resolvedArgs["plan_id"]; hasReplacementTarget {
+		t.Fatalf("resolved new-plan arguments injected a nonexistent replacement target: %#v", resolvedArgs)
 	}
 }
 

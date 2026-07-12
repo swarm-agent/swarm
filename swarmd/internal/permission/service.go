@@ -643,7 +643,9 @@ func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord
 			payload["document"] = document
 		}
 		if approved, ok := payload["approved_arguments"].(map[string]any); ok {
-			approved["plan_id"] = planID
+			if !strings.EqualFold(strings.TrimSpace(stringValue(approved["action"])), "request_new_plan") {
+				approved["plan_id"] = planID
+			}
 			if document, ok := approved["document"].(map[string]any); ok {
 				document["id"] = planID
 				approved["document"] = document
@@ -747,7 +749,11 @@ func (s *Service) EditPendingPlanProposal(input PendingPlanProposalEditInput) (P
 		return PendingPlanProposalEditResult{}, fmt.Errorf("canonicalize pending plan proposal: %w", err)
 	}
 	approved["document"] = canonical
-	approved["plan_id"] = canonical.ID
+	if strings.EqualFold(strings.TrimSpace(stringValue(approved["action"])), "request_new_plan") {
+		delete(approved, "plan_id")
+	} else {
+		approved["plan_id"] = canonical.ID
+	}
 	approved["title"] = canonical.Title
 	if display := strings.TrimSpace(firstNonEmptyPermissionString(canonical.DisplayText, canonical.RenderedText)); display != "" {
 		approved["plan"] = display

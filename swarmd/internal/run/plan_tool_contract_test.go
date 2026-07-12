@@ -15,6 +15,8 @@ func TestPlanDocumentFromArgsAcceptsObjectAndJSONString(t *testing.T) {
 		"title": "Object Plan",
 		"info": map[string]any{
 			"goal":                "object document",
+			"scope":               []any{"backend", "plan tooling"},
+			"decisions":           "use canonical plan lifecycle",
 			"success_criteria":    []any{"persist criteria"},
 			"validation_strategy": []any{"go test ./swarmd/internal/run", "go test ./swarmd/internal/session"},
 		},
@@ -23,7 +25,7 @@ func TestPlanDocumentFromArgsAcceptsObjectAndJSONString(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse object document: %v", err)
 	}
-	if objectDoc == nil || objectDoc.ID != "plan-object" || objectDoc.Info.SuccessCriteria[0] != "persist criteria" || len(objectDoc.Checkpoints) != 1 {
+	if objectDoc == nil || objectDoc.ID != "plan-object" || objectDoc.Info.Scope != "backend; plan tooling" || len(objectDoc.Info.Decisions) != 1 || objectDoc.Info.Decisions[0] != "use canonical plan lifecycle" || objectDoc.Info.SuccessCriteria[0] != "persist criteria" || len(objectDoc.Checkpoints) != 1 {
 		t.Fatalf("object document = %#v", objectDoc)
 	}
 	if objectDoc.Info.ValidationStrategy != "go test ./swarmd/internal/run; go test ./swarmd/internal/session" {

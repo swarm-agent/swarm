@@ -40,6 +40,35 @@ func TestPlanManageDefinitionIncludesExplicitNewOverride(t *testing.T) {
 	}
 }
 
+func TestPlanToolDefinitionsExposeCanonicalInfoFieldTypes(t *testing.T) {
+	for _, toolName := range []string{"plan_manage", "exit_plan_mode"} {
+		definition := mustFindDefinition(t, toolName)
+		params, ok := definition.Parameters["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s properties type = %T", toolName, definition.Parameters["properties"])
+		}
+		document, ok := params["document"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s document property missing", toolName)
+		}
+		variants, _ := document["anyOf"].([]any)
+		if len(variants) == 0 {
+			t.Fatalf("%s document schema has no variants: %#v", toolName, document)
+		}
+		objectSchema, _ := variants[0].(map[string]any)
+		documentProperties, _ := objectSchema["properties"].(map[string]any)
+		infoSchema, _ := documentProperties["info"].(map[string]any)
+		infoProperties, _ := infoSchema["properties"].(map[string]any)
+		if infoProperties["scope"].(map[string]any)["type"] != "string" {
+			t.Fatalf("%s info.scope schema = %#v", toolName, infoProperties["scope"])
+		}
+		decisions := infoProperties["decisions"].(map[string]any)
+		if decisions["type"] != "array" || decisions["items"].(map[string]any)["type"] != "string" {
+			t.Fatalf("%s info.decisions schema = %#v", toolName, decisions)
+		}
+	}
+}
+
 func TestPlanManageDefinitionDirectsBlockedFollowupsToAtomicRecovery(t *testing.T) {
 	definition := mustFindDefinition(t, "plan_manage")
 	if !containsAll(definition.Description, "blocked plan", "request_followup_checkpoint", "do not call resolve_blocked_checkpoint first", "failed checkpoints remain stopped") {

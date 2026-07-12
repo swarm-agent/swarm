@@ -1156,7 +1156,7 @@ func (r *Runtime) Definitions() []Definition {
 				"properties": map[string]any{
 					"title":                  map[string]any{"type": "string", "description": "Final plan title. Optional when document.title is provided."},
 					"plan":                   map[string]any{"type": "string", "description": "Optional markdown/display text for export only; document is canonical. Include any last display-text updates here instead of first calling plan_manage save."},
-					"document":               map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument with info and checkpoints. This is the authoritative plan source saved on exit. A structured object is preferred; a JSON-encoded object string is also accepted for compatibility."},
+					"document":               map[string]any{"anyOf": []any{sessionPlanDocumentToolSchema(), map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument with info and checkpoints. This is the authoritative plan source saved on exit. In info, scope and validation_strategy are strings; decisions, relevant_files, constraints, assumptions, open_questions, and success_criteria are arrays of strings. A structured object is preferred; a JSON-encoded object string is also accepted for compatibility."},
 					"plan_id":                map[string]any{"type": "string", "description": "Existing active plan id to update and submit. Optional; when omitted, the current active plan is reused if one exists."},
 					"id":                     map[string]any{"type": "string", "description": "Alias for plan_id."},
 					"continuation_policy":    map[string]any{"type": "string", "description": "Recommended checkpoint continuation after approval: review_each_checkpoint/pause or automatic/continue_automatically. The user approval remains authoritative."},
@@ -1199,11 +1199,11 @@ func (r *Runtime) Definitions() []Definition {
 					"amend_future_checkpoints":   map[string]any{"type": "boolean", "description": "For amend_plan: allow replacing pending future checkpoints; when replace_from_checkpoint_id is omitted, the first pending future checkpoint is used."},
 					"override_stale":             map[string]any{"type": "boolean", "description": "For amend_plan only: explicitly allow amendment when base_revision is missing or stale."},
 					"checkpoint":                 map[string]any{"anyOf": []any{map[string]any{"type": "boolean"}, map[string]any{"type": "object"}}, "description": "Structured checkpoint object for checkpoint document operations, or boolean marker for checkpoint-style plan update metadata. With action=update_checkpoint/patch_checkpoint, only provided checkpoint object fields are merged and omitted fields are preserved; use fields such as status, tasks, notes, report, changed_files, and validation for agent progress/checklist tracking. With upsert_checkpoint/replace_checkpoint/set_checkpoint, the checkpoint object intentionally replaces the target checkpoint."},
-					"document":                   map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument with info and checkpoints. Prefer a structured object over markdown plan text; a JSON-encoded object string is also accepted for compatibility."},
+					"document":                   map[string]any{"anyOf": []any{sessionPlanDocumentToolSchema(), map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument with info and checkpoints. In info, scope and validation_strategy are strings; decisions, relevant_files, constraints, assumptions, open_questions, and success_criteria are arrays of strings. Prefer a structured object over markdown plan text; a JSON-encoded object string is also accepted for compatibility."},
 					"document_patch":             map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Atomic structured document patch for modular info/checkpoint edits. update_info and update_checkpoint merge only provided fields and preserve omitted fields; replace/set operations intentionally replace. A JSON-encoded object string is also accepted for compatibility."},
 					"document_operation":         map[string]any{"type": "string", "description": "Structured document operation alias, such as update_info, update_checkpoint, upsert_checkpoint, start_checkpoint, continue_checkpoint, complete_checkpoint, checkpoint_outcome, accept_checkpoint_review, restart_checkpoint, rewind_to_checkpoint, reorder_checkpoints, or set_active_checkpoint."},
 					"operations":                 map[string]any{"anyOf": []any{map[string]any{"type": "array", "items": map[string]any{"type": "object"}}, map[string]any{"type": "string"}}, "description": "Batch of structured document patch operations applied atomically. A JSON-encoded array string is also accepted for compatibility."},
-					"info":                       map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Structured plan info for update_info document patches. Modular fields: goal, scope, decisions, relevant_files/files, and validation_strategy/validation. update_info merges only provided fields; use replace_info/set_info only for intentional full info replacement. Legacy fields context, constraints, assumptions, open_questions, and success_criteria are still accepted for compatibility. A JSON-encoded object string is also accepted."},
+					"info":                       map[string]any{"anyOf": []any{sessionPlanInfoToolSchema(), map[string]any{"type": "string"}}, "description": "Structured plan info for update_info document patches. goal, scope, context, and validation_strategy/validation are strings; decisions, relevant_files/files, constraints, assumptions, open_questions, and success_criteria are arrays of strings. update_info merges only provided fields; use replace_info/set_info only for intentional full info replacement. A JSON-encoded object string is also accepted."},
 					"change_request":             map[string]any{"type": "string", "description": "Required for start_session_checkpoint and request_followup_checkpoint: verbatim full original user request text to copy into the session checkpoint payload. Do not summarize or synthesize; missing or compressed requests are rejected."},
 					"checkpoint_title":           map[string]any{"type": "string", "description": "Optional proposed title for the session checkpoint created by start_session_checkpoint or request_followup_checkpoint; use a concrete handoff title."},
 					"source_message_id":          map[string]any{"type": "string", "description": "Optional source message id for start_session_checkpoint or request_followup_checkpoint."},
@@ -1299,6 +1299,42 @@ func (r *Runtime) Definitions() []Definition {
 				"additionalProperties": false,
 			},
 		},
+	}
+}
+
+func sessionPlanDocumentToolSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":          map[string]any{"type": "string"},
+			"title":       map[string]any{"type": "string"},
+			"status":      map[string]any{"type": "string"},
+			"info":        sessionPlanInfoToolSchema(),
+			"checkpoints": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+		},
+		"additionalProperties": true,
+	}
+}
+
+func sessionPlanInfoToolSchema() map[string]any {
+	stringArray := func() map[string]any {
+		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"goal":                map[string]any{"type": "string"},
+			"scope":               map[string]any{"type": "string"},
+			"context":             map[string]any{"type": "string"},
+			"decisions":           stringArray(),
+			"constraints":         stringArray(),
+			"assumptions":         stringArray(),
+			"open_questions":      stringArray(),
+			"relevant_files":      stringArray(),
+			"success_criteria":    stringArray(),
+			"validation_strategy": map[string]any{"type": "string"},
+		},
+		"additionalProperties": true,
 	}
 }
 
