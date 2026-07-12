@@ -2677,6 +2677,24 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 	if err != nil {
 		return nil, err
 	}
+	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "post_checkpoint_followup") {
+		if activePlan, planOK, planErr := e.server.sessions.GetActivePlan(job.SessionID); planErr != nil {
+			return nil, planErr
+		} else if planOK {
+			summary := sessionV3PlanFreshContextBoundarySummary(activePlan, epoch.Boundary.CheckpointID, "")
+			if summary != "" {
+				content, metadata := runruntime.BuildProviderContextBoundaryMessage(summary, runruntime.ContextCompactionOriginPlanFreshContext, 1, &activePlan)
+				if metadata == nil {
+					metadata = map[string]any{}
+				}
+				metadata["source"] = "execution_epoch_boundary"
+				metadata["epoch_id"] = epoch.EpochID
+				metadata["checkpoint_id"] = epoch.Boundary.CheckpointID
+				metadata["synthetic"] = true
+				messages = append([]pebblestore.MessageSnapshot{{SessionID: job.SessionID, Role: "system", Content: content, Metadata: metadata}}, messages...)
+			}
+		}
+	}
 	return runruntime.CompactMessagesForProviderContext(messages, 500), nil
 }
 

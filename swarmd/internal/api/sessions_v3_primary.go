@@ -1190,6 +1190,23 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
+	var followupEpochID string
+	if plan, ok, planErr := s.sessions.GetActivePlan(sessionID); planErr != nil {
+		return sessionruntime.SessionMutationResult{}, nil, planErr
+	} else if ok && plan.Document != nil && plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), sessionruntime.PlanExecutionStateWaitingReview) {
+		epochResult, epochErr := s.sessions.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{
+			SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
+			ClientRequestID: "post-checkpoint-followup:" + clientRequestID, PayloadHash: payloadHash,
+			Reason: "post_checkpoint_followup", PlanID: strings.TrimSpace(plan.ID),
+			CheckpointID: strings.TrimSpace(plan.Document.ExecutionState.LastCheckpointID),
+			RunSessionID: sessionID, ParentSessionID: sessionID, NowUnixMs: now,
+		})
+		if epochErr != nil {
+			return sessionruntime.SessionMutationResult{}, nil, epochErr
+		}
+		followupEpochID = epochResult.Epoch.EpochID
+		runIntent.EpochID = followupEpochID
+	}
 	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       sessionID,
 		UserID:          principal.UserID,
