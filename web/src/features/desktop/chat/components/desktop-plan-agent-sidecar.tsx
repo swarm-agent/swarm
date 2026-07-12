@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowDown, Loader2, Square, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { ArrowDown, Loader2, Mic, Send, Square, X } from "lucide-react";
 import { Button } from "../../../../components/ui/button";
 import { Textarea } from "../../../../components/ui/textarea";
 import type { DesktopPermissionRecord } from "../../types/realtime";
@@ -39,6 +39,36 @@ interface SidechatState {
 
 const EMPTY_SIDECHAT: SidechatState = { sessionId: "", messages: [], modelLabel: "", runtimeSwarmId: "", busy: false, error: null };
 
+type SpeechRecognitionLike = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onend: (() => void) | null;
+  onerror: ((event: { error?: string; message?: string }) => void) | null;
+  onresult: ((event: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0?: { transcript: string } }> }) => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+};
+
+type SpeechRecognitionWindow = Window & typeof globalThis & {
+  SpeechRecognition?: new () => SpeechRecognitionLike;
+  webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+};
+
+function speechRecognitionConstructor(): (new () => SpeechRecognitionLike) | null {
+  if (typeof window === "undefined") return null;
+  const speechWindow = window as SpeechRecognitionWindow;
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
+}
+
+function appendDictation(base: string, addition: string): string {
+  const next = addition.replace(/\s+/g, " ").trim();
+  if (!next) return base;
+  const current = base.replace(/[ \t]+$/g, "");
+  return `${current}${current && !/[\s\n]$/.test(current) && !/^[,.;:!?]/.test(next) ? " " : ""}${next}`;
+}
+
 function pendingProposalRevision(permission: DesktopPermissionRecord, document: StructuredPlanDocument): number {
   try {
     const payload = JSON.parse(permission.toolArguments) as { proposal_revision?: unknown };
@@ -61,6 +91,11 @@ export function DesktopPlanAgentSidecar({
 }: DesktopPlanAgentSidecarProps) {
   const [sidechat, setSidechat] = useState<SidechatState>(EMPTY_SIDECHAT);
   const [draft, setDraft] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const dictationBaseRef = useRef("");
+  const [dictationSupported, setDictationSupported] = useState(false);
+  const [dictationEnabled, setDictationEnabled] = useState(false);
   const proposalRevision = pendingProposalRevision(permission, document);
   const realtimeMessages = useDesktopV3CacheSelector(
     (state) => sidechat.sessionId ? state.messagesBySession[sidechat.sessionId]?.items ?? [] : [],
@@ -112,6 +147,61 @@ export function DesktopPlanAgentSidecar({
     return () => { cancelled = true; };
   }, [document.id, modelLabel, parentSessionId, permission.id, proposalRevision, refresh]);
 
+  const resizeTextarea = useCallback((textarea: HTMLTextAreaElement | null) => {
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const viewportMaxHeight = typeof window === "undefined" ? 360 : Math.max(120, Math.floor(window.innerHeight * 0.5));
+    textarea.style.height = `${Math.min(textarea.scrollHeight, viewportMaxHeight)}px`;
+    textarea.style.overflowY = textarea.scrollHeight > viewportMaxHeight ? "auto" : "hidden";
+  }, []);
+
+  useEffect(() => resizeTextarea(textareaRef.current), [draft, resizeTextarea]);
+
+  useEffect(() => {
+    const Recognition = speechRecognitionConstructor();
+    setDictationSupported(Boolean(Recognition));
+    if (!Recognition) return;
+    const recognition = new Recognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = typeof navigator === "undefined" ? "en-US" : navigator.language || "en-US";
+    recognition.onresult = (event) => {
+      let transcript = "";
+      for (let index = 0; index < event.results.length; index += 1) {
+        transcript = appendDictation(transcript, event.results[index]?.[0]?.transcript ?? "");
+      }
+      setDraft(appendDictation(dictationBaseRef.current, transcript));
+    };
+    recognition.onerror = (event) => {
+      setDictationEnabled(false);
+      setSidechat((current) => ({ ...current, error: event.message || (event.error === "not-allowed" ? "Microphone permission was denied." : "Browser speech recognition failed.") }));
+    };
+    recognition.onend = () => setDictationEnabled(false);
+    recognitionRef.current = recognition;
+    return () => {
+      try { recognition.abort(); } catch { /* ignore browser recognition teardown races */ }
+      recognitionRef.current = null;
+    };
+  }, []);
+
+  const toggleDictation = useCallback(() => {
+    const recognition = recognitionRef.current;
+    if (!recognition || sidechat.busy || !sidechat.sessionId) return;
+    if (dictationEnabled) {
+      recognition.stop();
+      setDictationEnabled(false);
+      return;
+    }
+    dictationBaseRef.current = draft;
+    setSidechat((current) => ({ ...current, error: null }));
+    try {
+      recognition.start();
+      setDictationEnabled(true);
+    } catch (cause) {
+      setSidechat((current) => ({ ...current, error: cause instanceof Error ? cause.message : "Browser speech recognition failed to start." }));
+    }
+  }, [dictationEnabled, draft, sidechat.busy, sidechat.sessionId]);
+
   const activeRun = rendered.liveRuns.find((run) => run.status === "running" || run.status === "pending_executor") ?? null;
   const renderItems = useMemo(() => buildDesktopV3ConversationRenderItems({
     ...rendered,
@@ -139,12 +229,22 @@ export function DesktopPlanAgentSidecar({
     try {
       const operation = createDesktopV3ExistingMessageOperation({ sessionId: sidechat.sessionId, prompt: content });
       setDraft("");
+      if (dictationEnabled) {
+        try { recognitionRef.current?.abort(); } catch { /* ignore browser recognition shutdown races */ }
+        setDictationEnabled(false);
+      }
       await continueDesktopV3Conversation(operation);
     } catch (cause) {
       setSidechat((current) => ({ ...current, error: cause instanceof Error ? cause.message : "Message failed." }));
     } finally {
       setSidechat((current) => ({ ...current, busy: false }));
     }
+  };
+
+  const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    if (draft.trim() && !sidechat.busy && sidechat.sessionId) void send();
   };
 
   return (
@@ -175,9 +275,40 @@ export function DesktopPlanAgentSidecar({
           </div>
           {!isAtBottom && hasUnseenLatest ? <button type="button" aria-label="Jump to latest Plan message" title="Jump to latest Plan message" onClick={() => scrollToBottom("smooth")} className="absolute bottom-3 right-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] shadow-lg"><ArrowDown size={18} aria-hidden="true" /></button> : null}
         </div>
-        <div className="space-y-2 border-t border-[var(--app-border)] p-4">
-          <Textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask about the plan or request changes…" disabled={sidechat.busy || !sidechat.sessionId} />
-          {activeRun ? <Button type="button" variant="outline" className="w-full border-[var(--app-danger)] text-[var(--app-danger)]" disabled={!sidechat.runtimeSwarmId} onClick={() => void stop()}><Square size={14} /> Stop Plan</Button> : <Button type="button" variant="outline" className="w-full" disabled={sidechat.busy || !draft.trim() || !sidechat.sessionId} onClick={() => void send()}>{sidechat.busy ? "Waiting…" : "Send to Plan"}</Button>}
+        <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] p-4" data-testid="desktop-plan-composer">
+          <div className="relative min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
+            <div className="flex min-w-0 items-end gap-3 px-4 py-2 sm:py-3 lg:py-2.5">
+              <Textarea
+                ref={textareaRef}
+                value={draft}
+                onChange={(event) => {
+                  if (dictationEnabled) dictationBaseRef.current = event.target.value;
+                  setDraft(event.target.value);
+                  resizeTextarea(event.target);
+                }}
+                onKeyDown={handleComposerKeyDown}
+                placeholder="Ask about the plan or request changes…"
+                aria-label="Plan message"
+                className="max-h-[50vh] !min-h-[32px] flex-1 resize-none overflow-y-hidden !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]"
+                rows={1}
+                disabled={sidechat.busy || !sidechat.sessionId}
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-[var(--app-border)] px-4 py-2">
+              <button
+                type="button"
+                onClick={toggleDictation}
+                disabled={sidechat.busy || !sidechat.sessionId || !dictationSupported}
+                aria-pressed={dictationEnabled}
+                aria-label={dictationEnabled ? "Stop microphone dictation" : "Start microphone dictation"}
+                title={dictationSupported ? (dictationEnabled ? "Stop dictation" : "Start dictation") : "Speech recognition is not available in this browser"}
+                className={dictationEnabled ? "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)]" : "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"}
+              ><Mic size={17} className={dictationEnabled ? "animate-pulse" : undefined} /></button>
+              <Button type="button" size="sm" className="h-10 w-10 shrink-0 rounded-xl p-0" disabled={activeRun ? !sidechat.runtimeSwarmId : sidechat.busy || !draft.trim() || !sidechat.sessionId} aria-label={activeRun ? "Stop Plan" : "Send to Plan"} onClick={() => activeRun ? void stop() : void send()}>
+                {activeRun ? <Square size={18} /> : sidechat.busy ? <Loader2 size={18} className="animate-spin" /> : <Send size={20} />}
+              </Button>
+            </div>
+          </div>
         </div>
       </aside>
     </div>
