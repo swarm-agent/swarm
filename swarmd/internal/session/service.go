@@ -97,6 +97,20 @@ func (s *Service) GetActiveExecutionEpoch(sessionID string) (pebblestore.Executi
 	return s.store.GetActiveExecutionEpoch(sessionID)
 }
 
+func (s *Service) SealExecutionEpoch(input pebblestore.SealExecutionEpochInput) (pebblestore.ExecutionEpoch, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.ExecutionEpoch{}, errors.New("session service is not configured")
+	}
+	return s.store.SealExecutionEpoch(input)
+}
+
+func (s *Service) RepairActiveExecutionEpoch(sessionID, epochID string) (pebblestore.ExecutionEpoch, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.ExecutionEpoch{}, errors.New("session service is not configured")
+	}
+	return s.store.RepairActiveExecutionEpoch(sessionID, epochID)
+}
+
 func (s *Service) GetV3SessionRunIntent(sessionID, runID string) (pebblestore.V3SessionRunIntent, bool, error) {
 	if s == nil || s.store == nil {
 		return pebblestore.V3SessionRunIntent{}, false, errors.New("session service is not configured")

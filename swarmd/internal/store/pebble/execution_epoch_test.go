@@ -46,6 +46,42 @@ func TestExecutionEpochInitialAndConcurrentBoundaryAreAtomic(t *testing.T) {
 	if err != nil || len(events) != 2 || events[1].EventType != ExecutionEpochBoundaryEventType { t.Fatalf("events=%+v err=%v", events, err) }
 }
 
+func TestExecutionEpochTracksRangeSealsAndRepairsBoundedIndex(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	created, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "range-session", UserID: "user", AccountScopeID: "account", IdempotencyKey: "create", RequestHash: "create-hash", Kind: V3SessionMutationCreateSession, Session: &SessionSnapshot{ID: "range-session", WorkspacePath: "/workspace", WorkspaceName: "workspace"}, NowUnixMs: 100})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "range-session", UserID: "user", AccountScopeID: "account", IdempotencyKey: "message", RequestHash: "message-hash", Kind: V3SessionMutationAppendMessage, Message: &MessageSnapshot{ID: "m-1", SessionID: "range-session", Role: "user", Content: "current"}, NowUnixMs: 110})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	active, ok, err := sessions.GetActiveExecutionEpoch("range-session")
+	if err != nil || !ok || active.FirstRootSeq != created.Event.Seq || active.LastRootSeq != 2 {
+		t.Fatalf("active range ok=%v err=%v epoch=%+v", ok, err, active)
+	}
+	sealed, err := sessions.SealExecutionEpoch(SealExecutionEpochInput{SessionID: "range-session", EpochID: active.EpochID, NowUnixMs: 120})
+	if err != nil || sealed.Status != ExecutionEpochStatusSealed || sealed.LastRootSeq != 2 {
+		t.Fatalf("seal err=%v epoch=%+v", err, sealed)
+	}
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "range-session", EpochID: active.EpochID, UserID: "user", AccountScopeID: "account", IdempotencyKey: "late", RequestHash: "late-hash", Kind: V3SessionMutationAppendMessage, Message: &MessageSnapshot{ID: "m-late", SessionID: "range-session", Role: "assistant", Content: "late"}, NowUnixMs: 130}); err == nil {
+		t.Fatal("sealed epoch accepted a late mutation")
+	}
+
+	began, err := sessions.BeginExecutionEpoch(BeginExecutionEpochInput{SessionID: "range-session", UserID: "user", AccountScopeID: "account", ClientRequestID: "cp-2", PayloadHash: "cp-2-hash", CheckpointID: "cp-2", NowUnixMs: 140})
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := store.Delete(KeyExecutionEpochActive("range-session")); err != nil {
+		t.Fatalf("delete active index: %v", err)
+	}
+	repaired, err := sessions.RepairActiveExecutionEpoch("range-session", began.Epoch.EpochID)
+	if err != nil || repaired.EpochID != began.Epoch.EpochID || repaired.LastRootSeq != began.Event.Seq {
+		t.Fatalf("repair err=%v epoch=%+v", err, repaired)
+	}
+}
+
 func TestBeginExecutionEpochLazilyDescribesLegacyPrefixWithoutHistoryRead(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

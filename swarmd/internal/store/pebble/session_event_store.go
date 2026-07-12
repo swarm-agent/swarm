@@ -583,16 +583,27 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	seq := currentSeq + 1
 	epochID := strings.TrimSpace(input.EpochID)
 	var initialEpoch *ExecutionEpoch
+	var activeEpoch *ExecutionEpoch
 	if epochID == "" {
 		if active, ok, readErr := s.GetActiveExecutionEpoch(input.SessionID); readErr != nil {
 			return V3SessionMutationResult{}, readErr
 		} else if ok {
 			epochID = active.EpochID
+			activeEpoch = &active
 		} else if input.Kind == V3SessionMutationCreateSession {
 			epoch := NewInitialExecutionEpoch(input.SessionID, input.UserID, input.AccountScopeID, seq, input.NowUnixMs)
 			epochID = epoch.EpochID
 			initialEpoch = &epoch
 		}
+	} else {
+		epoch, ok, readErr := s.GetExecutionEpoch(input.SessionID, epochID)
+		if readErr != nil {
+			return V3SessionMutationResult{}, readErr
+		}
+		if !ok || epoch.Status != ExecutionEpochStatusActive {
+			return V3SessionMutationResult{}, fmt.Errorf("execution epoch %q is not active", epochID)
+		}
+		activeEpoch = &epoch
 	}
 	endpointSeq := reservedOutbox[0]
 	now := input.NowUnixMs
@@ -738,7 +749,17 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if initialEpoch != nil {
 		initialEpoch.CreatedAt = now
 		initialEpoch.UpdatedAt = now
+		initialEpoch.LastRootSeq = seq
 		if err := setExecutionEpochInBatch(batch, *initialEpoch, true); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	} else if activeEpoch != nil {
+		if activeEpoch.Status != ExecutionEpochStatusActive {
+			return V3SessionMutationResult{}, fmt.Errorf("execution epoch %q is not active", activeEpoch.EpochID)
+		}
+		activeEpoch.LastRootSeq = seq
+		activeEpoch.UpdatedAt = now
+		if err := setExecutionEpochInBatch(batch, *activeEpoch, true); err != nil {
 			return V3SessionMutationResult{}, err
 		}
 	}

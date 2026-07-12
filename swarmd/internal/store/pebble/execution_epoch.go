@@ -93,6 +93,14 @@ type BeginExecutionEpochResult struct {
 	Replayed    bool                   `json:"replayed,omitempty"`
 }
 
+// SealExecutionEpochInput names the epoch being sealed so a delayed executor
+// cannot accidentally seal a newer epoch for the same root session.
+type SealExecutionEpochInput struct {
+	SessionID string `json:"session_id"`
+	EpochID   string `json:"epoch_id"`
+	NowUnixMs int64  `json:"now_unix_ms,omitempty"`
+}
+
 func KeyExecutionEpoch(sessionID, epochID string) string {
 	return fmt.Sprintf("v3/execution_epoch/%s/%s", keyPart(sessionID), keyPart(epochID))
 }
@@ -142,6 +150,95 @@ func (s *SessionStore) GetActiveExecutionEpoch(sessionID string) (ExecutionEpoch
 	var epoch ExecutionEpoch
 	ok, err := s.store.GetJSON(KeyExecutionEpochActive(strings.TrimSpace(sessionID)), &epoch)
 	return epoch, ok, err
+}
+
+// SealExecutionEpoch closes the named epoch at the durable root sequence high
+// watermark. It performs constant work and never infers boundaries from messages.
+func (s *SessionStore) SealExecutionEpoch(input SealExecutionEpochInput) (ExecutionEpoch, error) {
+	input.SessionID = strings.TrimSpace(input.SessionID)
+	input.EpochID = strings.TrimSpace(input.EpochID)
+	if s == nil || s.store == nil {
+		return ExecutionEpoch{}, errors.New("session store is not configured")
+	}
+	if input.SessionID == "" || input.EpochID == "" {
+		return ExecutionEpoch{}, errors.New("session id and epoch id are required")
+	}
+	unlock := s.store.sessionMutations.lockSessions(input.SessionID)
+	defer unlock()
+	active, ok, err := s.GetActiveExecutionEpoch(input.SessionID)
+	if err != nil {
+		return ExecutionEpoch{}, err
+	}
+	if !ok || active.EpochID != input.EpochID {
+		return ExecutionEpoch{}, fmt.Errorf("execution epoch %q is not active", input.EpochID)
+	}
+	seq, err := s.readV3SessionSequence(input.SessionID)
+	if err != nil {
+		return ExecutionEpoch{}, err
+	}
+	if seq < active.FirstRootSeq {
+		return ExecutionEpoch{}, fmt.Errorf("execution epoch %q starts after root high watermark", input.EpochID)
+	}
+	now := input.NowUnixMs
+	if now == 0 {
+		now = time.Now().UnixMilli()
+	}
+	active.Status = ExecutionEpochStatusSealed
+	active.LastRootSeq = seq
+	active.UpdatedAt = now
+	active.SealedAt = now
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := setExecutionEpochInBatch(batch, active, true); err != nil {
+		return ExecutionEpoch{}, err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return ExecutionEpoch{}, err
+	}
+	return active, nil
+}
+
+// RepairActiveExecutionEpoch restores bounded indexes from an explicitly named
+// durable epoch. The caller supplies authority; this method does not scan or
+// infer an epoch from transcript content.
+func (s *SessionStore) RepairActiveExecutionEpoch(sessionID, epochID string) (ExecutionEpoch, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	epochID = strings.TrimSpace(epochID)
+	if s == nil || s.store == nil {
+		return ExecutionEpoch{}, errors.New("session store is not configured")
+	}
+	if sessionID == "" || epochID == "" {
+		return ExecutionEpoch{}, errors.New("session id and epoch id are required")
+	}
+	unlock := s.store.sessionMutations.lockSessions(sessionID)
+	defer unlock()
+	epoch, ok, err := s.GetExecutionEpoch(sessionID, epochID)
+	if err != nil {
+		return ExecutionEpoch{}, err
+	}
+	if !ok || epoch.SessionID != sessionID {
+		return ExecutionEpoch{}, fmt.Errorf("execution epoch %q not found", epochID)
+	}
+	if epoch.Status != ExecutionEpochStatusActive {
+		return ExecutionEpoch{}, fmt.Errorf("execution epoch %q is not active", epochID)
+	}
+	seq, err := s.readV3SessionSequence(sessionID)
+	if err != nil {
+		return ExecutionEpoch{}, err
+	}
+	if seq < epoch.FirstRootSeq {
+		return ExecutionEpoch{}, fmt.Errorf("execution epoch %q starts after root high watermark", epochID)
+	}
+	epoch.LastRootSeq = seq
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := setExecutionEpochInBatch(batch, epoch, true); err != nil {
+		return ExecutionEpoch{}, err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return ExecutionEpoch{}, err
+	}
+	return epoch, nil
 }
 
 func (s *SessionStore) BeginExecutionEpoch(input BeginExecutionEpochInput) (BeginExecutionEpochResult, error) {
