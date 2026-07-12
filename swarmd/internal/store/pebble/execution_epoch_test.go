@@ -1,0 +1,63 @@
+package pebblestore
+
+import (
+	"fmt"
+	"sync"
+	"testing"
+)
+
+func TestExecutionEpochInitialAndConcurrentBoundaryAreAtomic(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	created, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "epoch-session", UserID: "user", AccountScopeID: "account", IdempotencyKey: "create", RequestHash: "create-hash", Kind: V3SessionMutationCreateSession, Session: &SessionSnapshot{ID: "epoch-session", WorkspacePath: "/workspace", WorkspaceName: "workspace"}, NowUnixMs: 100})
+	if err != nil { t.Fatalf("create: %v", err) }
+	if created.Event.EpochID == "" { t.Fatal("create event has no epoch") }
+	initial, ok, err := sessions.GetActiveExecutionEpoch("epoch-session")
+	if err != nil || !ok || initial.Ordinal != 1 { t.Fatalf("initial epoch ok=%v err=%v epoch=%+v", ok, err, initial) }
+
+	const workers = 12
+	results := make(chan BeginExecutionEpochResult, workers)
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, err := sessions.BeginExecutionEpoch(BeginExecutionEpochInput{SessionID: "epoch-session", UserID: "user", AccountScopeID: "account", ClientRequestID: "cp-1", PayloadHash: "same", PlanID: "plan-1", CheckpointID: "cp-1", Reason: "checkpoint", NowUnixMs: 200})
+			if err != nil { errs <- err; return }
+			results <- result
+		}()
+	}
+	wg.Wait(); close(results); close(errs)
+	for err := range errs { t.Fatalf("begin epoch: %v", err) }
+	var epochID string
+	fresh := 0
+	for result := range results {
+		if epochID == "" { epochID = result.Epoch.EpochID }
+		if result.Epoch.EpochID != epochID { t.Fatalf("different epochs: %q != %q", result.Epoch.EpochID, epochID) }
+		if !result.Replayed { fresh++ }
+	}
+	if fresh != 1 { t.Fatalf("fresh boundaries = %d, want 1", fresh) }
+	active, ok, err := sessions.GetActiveExecutionEpoch("epoch-session")
+	if err != nil || !ok || active.Ordinal != 2 || active.ParentEpochID != initial.EpochID { t.Fatalf("active epoch ok=%v err=%v epoch=%+v", ok, err, active) }
+	projection, _, _ := sessions.GetV3SessionProjection("epoch-session")
+	if projection.LastEventSeq != 2 { t.Fatalf("last root seq = %d, want 2", projection.LastEventSeq) }
+	events, err := sessions.ListV3SessionEvents("epoch-session", 0, 10)
+	if err != nil || len(events) != 2 || events[1].EventType != ExecutionEpochBoundaryEventType { t.Fatalf("events=%+v err=%v", events, err) }
+}
+
+func TestBeginExecutionEpochLazilyDescribesLegacyPrefixWithoutHistoryRead(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	if err := sessions.CreateSession(SessionSnapshot{ID: "legacy-session", UserID: "user", AccountScopeID: "account", WorkspacePath: "/workspace", WorkspaceName: "workspace"}); err != nil {
+		t.Fatalf("create legacy session: %v", err)
+	}
+	for i := 1; i <= 3; i++ {
+		_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "legacy-session", UserID: "user", AccountScopeID: "account", IdempotencyKey: fmt.Sprintf("message-%d", i), RequestHash: fmt.Sprintf("hash-%d", i), Kind: V3SessionMutationAppendMessage, Message: &MessageSnapshot{ID: fmt.Sprintf("m-%d", i), SessionID: "legacy-session", Role: "user", Content: "legacy"}, NowUnixMs: int64(i)})
+		if err != nil { t.Fatalf("append %d: %v", i, err) }
+	}
+	result, err := sessions.BeginExecutionEpoch(BeginExecutionEpochInput{SessionID: "legacy-session", UserID: "user", AccountScopeID: "account", ClientRequestID: "boundary", PayloadHash: "boundary-hash", Reason: "legacy transition", NowUnixMs: 10})
+	if err != nil { t.Fatalf("begin epoch: %v", err) }
+	if result.Predecessor.Boundary.LegacyPrefix == nil || result.Predecessor.Boundary.LegacyPrefix.LastRootSeq != 3 { t.Fatalf("legacy predecessor = %+v", result.Predecessor) }
+	if result.Event.Seq != 4 || result.Epoch.FirstRootSeq != 4 { t.Fatalf("boundary event/epoch = %+v / %+v", result.Event, result.Epoch) }
+}

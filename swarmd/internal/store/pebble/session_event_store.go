@@ -64,6 +64,7 @@ type V3SessionMutationInput struct {
 	Message              *MessageSnapshot          `json:"message,omitempty"`
 	Lifecycle            *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
 	RunIntent            *V3SessionRunIntent       `json:"run_intent,omitempty"`
+	EpochID              string                    `json:"epoch_id,omitempty"`
 	TurnUsage            *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
 	ExpectedLastEventSeq *uint64                   `json:"expected_last_event_seq,omitempty"`
 	NowUnixMs            int64                     `json:"now_unix_ms,omitempty"`
@@ -163,6 +164,7 @@ type V3SessionEvent struct {
 	TsUnixMs      int64           `json:"ts_unix_ms"`
 	CausationID   string          `json:"causation_id,omitempty"`
 	CorrelationID string          `json:"correlation_id,omitempty"`
+	EpochID       string          `json:"epoch_id,omitempty"`
 }
 
 type V3SessionProjection struct {
@@ -323,6 +325,7 @@ type V3SessionRunIntent struct {
 	CreatedAt      int64  `json:"created_at"`
 	UpdatedAt      int64  `json:"updated_at"`
 	EventSeq       uint64 `json:"event_seq"`
+	EpochID        string `json:"epoch_id,omitempty"`
 }
 
 type V3SessionRunState struct {
@@ -573,6 +576,19 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		}
 	}()
 	seq := currentSeq + 1
+	epochID := strings.TrimSpace(input.EpochID)
+	var initialEpoch *ExecutionEpoch
+	if epochID == "" {
+		if active, ok, readErr := s.GetActiveExecutionEpoch(input.SessionID); readErr != nil {
+			return V3SessionMutationResult{}, readErr
+		} else if ok {
+			epochID = active.EpochID
+		} else if input.Kind == V3SessionMutationCreateSession {
+			epoch := NewInitialExecutionEpoch(input.SessionID, input.UserID, input.AccountScopeID, seq, input.NowUnixMs)
+			epochID = epoch.EpochID
+			initialEpoch = &epoch
+		}
+	}
 	endpointSeq := reservedOutbox[0]
 	now := input.NowUnixMs
 	if now == 0 {
@@ -582,6 +598,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	lifecycle, lifecycleProvided := prepareV3LifecycleForMutation(input, seq, now)
 	runIntent, runIntentProvided := prepareV3RunIntentForMutation(input, seq, now)
 	if runIntentProvided {
+		if strings.TrimSpace(runIntent.EpochID) == "" {
+			runIntent.EpochID = epochID
+		}
 		prepared, err := s.validateV3RunIntentTransition(input.SessionID, runIntent)
 		if err != nil {
 			return V3SessionMutationResult{}, err
@@ -624,6 +643,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		TsUnixMs:      now,
 		CausationID:   input.CausationID,
 		CorrelationID: input.CorrelationID,
+		EpochID:       epochID,
 	}
 	if event.ID == "" {
 		event.ID = fmt.Sprintf("v3evt_%s_%020d", input.SessionID, seq)
@@ -710,6 +730,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if initialEpoch != nil {
+		initialEpoch.CreatedAt = now
+		initialEpoch.UpdatedAt = now
+		if err := setExecutionEpochInBatch(batch, *initialEpoch, true); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if err := batch.Set([]byte(KeyV3SessionSequence(input.SessionID)), uint64ToBytes(seq), nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
