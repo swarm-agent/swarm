@@ -8,6 +8,14 @@ import (
 )
 
 func BenchmarkBeginExecutionEpochHistoryIndependence(b *testing.B) {
+	benchmarkBeginExecutionEpochHistoryIndependence(b, false)
+}
+
+func BenchmarkBeginExecutionEpochIndexedHistoryIndependence(b *testing.B) {
+	benchmarkBeginExecutionEpochHistoryIndependence(b, true)
+}
+
+func benchmarkBeginExecutionEpochHistoryIndependence(b *testing.B, indexed bool) {
 	for _, history := range []int{0, 1_000, 100_000} {
 		b.Run(fmt.Sprintf("history_%d", history), func(b *testing.B) {
 			store := openV3SessionEventTestStore(b)
@@ -17,6 +25,15 @@ func BenchmarkBeginExecutionEpochHistoryIndependence(b *testing.B) {
 				b.Fatalf("create session: %v", err)
 			}
 			seedExecutionEpochBenchmarkHistory(b, store, sessionID, history)
+			if indexed {
+				initial := NewInitialExecutionEpoch(sessionID, "user", "account", 1, 1)
+				if err := store.PutJSON(KeyExecutionEpoch(initial.SessionID, initial.EpochID), initial); err != nil {
+					b.Fatalf("seed initial epoch: %v", err)
+				}
+				if err := store.PutJSON(KeyExecutionEpochActive(initial.SessionID), initial); err != nil {
+					b.Fatalf("seed active epoch: %v", err)
+				}
+			}
 
 			before := SnapshotExecutionEpochTelemetry()
 			b.ReportAllocs()
@@ -32,10 +49,29 @@ func BenchmarkBeginExecutionEpochHistoryIndependence(b *testing.B) {
 			}
 			b.StopTimer()
 			after := SnapshotExecutionEpochTelemetry()
+			pointReads := after.PointReads - before.PointReads
+			decodes := after.DecodeCalls - before.DecodeCalls
+			iterators := after.IteratorReads - before.IteratorReads
+			commits := after.BatchCommits - before.BatchCommits
+			if iterators != 0 {
+				b.Fatalf("epoch acceptance used %d iterators, want none", iterators)
+			}
+			// Every acceptance performs one active-index point read. The indexed
+			// path decodes it every time; the legacy path misses only on its first
+			// acceptance and then uses the newly written active index.
+			wantPointReads := uint64(b.N)
+			wantDecodes := uint64(b.N)
+			if !indexed {
+				wantDecodes--
+			}
+			if pointReads != wantPointReads || decodes != wantDecodes || commits != uint64(b.N) {
+				b.Fatalf("non-fixed epoch operations: point_reads=%d decodes=%d commits=%d n=%d indexed=%v", pointReads, decodes, commits, b.N, indexed)
+			}
 			b.ReportMetric(float64(history), "history_records")
-			b.ReportMetric(float64(after.PointReads-before.PointReads)/float64(b.N), "epoch_point_reads/op")
-			b.ReportMetric(float64(after.IteratorReads-before.IteratorReads)/float64(b.N), "epoch_iterators/op")
-			b.ReportMetric(float64(after.BatchCommits-before.BatchCommits)/float64(b.N), "epoch_batch_commits/op")
+			b.ReportMetric(float64(pointReads)/float64(b.N), "epoch_point_reads/op")
+			b.ReportMetric(float64(decodes)/float64(b.N), "epoch_decodes/op")
+			b.ReportMetric(float64(iterators)/float64(b.N), "epoch_iterators/op")
+			b.ReportMetric(float64(commits)/float64(b.N), "epoch_batch_commits/op")
 		})
 	}
 }

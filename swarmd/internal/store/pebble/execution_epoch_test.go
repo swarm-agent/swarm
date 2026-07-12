@@ -117,6 +117,39 @@ func TestExecutionEpochTracksRangeSealsAndRepairsBoundedIndex(t *testing.T) {
 	}
 }
 
+func TestBeginExecutionEpochAcceptanceUsesFixedOperationsForLegacyAndIndexedPaths(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	if err := sessions.CreateSession(SessionSnapshot{ID: "fixed-work-session", UserID: "user", AccountScopeID: "account", WorkspacePath: "/workspace", WorkspaceName: "workspace"}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	seedExecutionEpochBenchmarkHistory(t, store, "fixed-work-session", 1_000)
+
+	assertOperations := func(name string, wantDecodes uint64, input BeginExecutionEpochInput) {
+		t.Helper()
+		before := SnapshotExecutionEpochTelemetry()
+		if _, err := sessions.BeginExecutionEpoch(input); err != nil {
+			t.Fatalf("%s begin epoch: %v", name, err)
+		}
+		after := SnapshotExecutionEpochTelemetry()
+		if got := after.PointReads - before.PointReads; got != 1 {
+			t.Fatalf("%s point reads = %d, want 1", name, got)
+		}
+		if got := after.DecodeCalls - before.DecodeCalls; got != wantDecodes {
+			t.Fatalf("%s decodes = %d, want %d", name, got, wantDecodes)
+		}
+		if got := after.IteratorReads - before.IteratorReads; got != 0 {
+			t.Fatalf("%s iterators = %d, want 0", name, got)
+		}
+		if got := after.BatchCommits - before.BatchCommits; got != 1 {
+			t.Fatalf("%s batch commits = %d, want 1", name, got)
+		}
+	}
+
+	assertOperations("legacy", 0, BeginExecutionEpochInput{SessionID: "fixed-work-session", UserID: "user", AccountScopeID: "account", ClientRequestID: "legacy-boundary", PayloadHash: "legacy-hash", Reason: "legacy"})
+	assertOperations("indexed", 1, BeginExecutionEpochInput{SessionID: "fixed-work-session", UserID: "user", AccountScopeID: "account", ClientRequestID: "indexed-boundary", PayloadHash: "indexed-hash", Reason: "indexed"})
+}
+
 func TestBeginExecutionEpochLazilyDescribesLegacyPrefixWithoutHistoryRead(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
