@@ -48,19 +48,15 @@ If this file conflicts with convenience, this file wins. If this file conflicts 
 
 ### Validation and Security Gates
 
-- Do not run tests or validation unless the user explicitly asks, except required commit/publish gates below.
+- Do not run tests or validation unless the user explicitly asks, except required push, pull-request, and publish gates below.
 - Never run full or broad test suites by default. Forbidden unless explicitly requested: `go test ./...`, `go test ./internal/...`, `cd swarmd && go test ./internal/run`, `cd swarmd && go test ./internal/api`, `cd swarmd && go test ./internal/...`, npm full-suite commands, or equivalent broad validation.
 - Internal package-wide Go suites are broad validation. Do not run them “just to be safe”; run only targeted Go tests such as `go test ./path/to/pkg -run TestSpecificCase` when the user has asked for validation and the test directly covers the change.
 - Multi-package test commands are broad validation unless the user named that exact command.
 - If validation is requested, prefer the narrowest named Go test or compile/check command that directly covers the changed code.
 - A user asking whether something is “ready to test” is not permission to run broad tests. Report safe next test options.
-- Vulnerability/CVE scanning is mandatory before every commit.
-- Immediately before any commit, run:
-
-```bash
-./scripts/check-precommit.sh
-```
-
+- Do not run `./scripts/check-precommit.sh` for routine local commits.
+- The protected-branch pre-push hook runs `./scripts/check-prepush.sh`, which invokes `./scripts/check-precommit.sh` before pushes to `dev` or `main`; do not bypass that hook.
+- Before opening or updating a pull request, run `./scripts/check-precommit.sh` once for the reviewed PR head. Pull requests targeting `dev` or `main`, and pushes to either branch, also run the checked-in dependency vulnerability workflow. Container-related changes run the checked-in container CVE workflow.
 - `./scripts/check-precommit.sh` includes path, secrets, policy, and vulnerability scans and must skip tests by default.
 - Before publishing any container/package artifact, run the appropriate checked-in publish gate. If the current gate is stale because runner packaging is being redesigned, stop and report that rather than publishing.
 - Never pass raw secrets on command lines. Use env-name flags consumed by checked-in harnesses.
