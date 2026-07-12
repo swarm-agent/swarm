@@ -2837,7 +2837,14 @@ func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScop
 	if name == "" {
 		return pebblestore.AgentProfile{}, errors.New("stored v3 agent profile is missing name")
 	}
-	current, ok, err := e.server.agents.GetProfileForAccount(strings.TrimSpace(accountScopeID), name)
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	// Built-in tool additions are backfilled per account. Existing accounts are
+	// not covered by the daemon's legacy unscoped startup reconciliation, so do
+	// the account-scoped reconciliation before resolving the mutable contract.
+	if err := e.server.agents.EnsureDefaultsForAccount(accountScopeID); err != nil {
+		return pebblestore.AgentProfile{}, fmt.Errorf("reconcile agent defaults for account: %w", err)
+	}
+	current, ok, err := e.server.agents.GetProfileForAccount(accountScopeID, name)
 	if err != nil {
 		return pebblestore.AgentProfile{}, err
 	}

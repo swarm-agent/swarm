@@ -135,8 +135,8 @@ func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSession
 		approved.Proposals[i] = proposal
 	}
 	manifest := manageSessionsDeployManifest{ManifestVersion: approved.ManifestVersion, Action: approved.Action, ParentSessionID: parent.ID, AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, Proposals: approved.Proposals}
-	// Rebind the digest after re-resolving every trust field. The client may edit only
-	// user-authorized fields; agent/runtime/model/workspace authority remains server-owned.
+	// Rebind the digest after re-resolving every trust field. Client edits are
+	// limited to user-authorized fields; resolved authority remains server-owned.
 	digest, err := manageSessionsDeployDigest(manifest)
 	if err != nil {
 		return "", fmt.Errorf("bind approved session deployment manifest: %w", err)

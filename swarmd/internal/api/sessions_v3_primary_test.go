@@ -881,6 +881,32 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 	}
 }
 
+func TestSessionsV3ExecutorBackfillsCurrentAccountAgentToolContract(t *testing.T) {
+	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "account-tool-backfill.pebble"))
+	defer func() { _ = closeStore() }()
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "account-tool-backfill-create", "account tool backfill", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	profile, ok, err := server.agents.GetProfileForAccount(testPrincipal().AccountScopeID, "swarm")
+	if err != nil || !ok {
+		t.Fatalf("GetProfileForAccount(swarm) ok=%v err=%v", ok, err)
+	}
+	delete(profile.ToolContract.Tools, "manage_sessions")
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{
+		Name: profile.Name, Mode: profile.Mode, Enabled: pebblestore.BoolPtr(profile.Enabled), Prompt: profile.Prompt, ToolContract: profile.ToolContract,
+	}); err != nil {
+		t.Fatalf("store legacy swarm profile: %v", err)
+	}
+	runner := installSessionsV3TestProvider(server, "backfilled provider response")
+	server.v3SessionExecutor = newSessionV3Executor(server)
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "account-tool-backfill-message", "use backfilled contract")
+	waitForSessionsV3MessageCount(t, server.sessions, created.ID, 2)
+	if runner.callCount != 1 {
+		t.Fatalf("provider call count = %d, want 1", runner.callCount)
+	}
+	if !sessionsV3ProviderRequestToolNames(runner.lastRequest.Tools)["manage-sessions"] {
+		t.Fatalf("provider tools = %v, want backfilled manage-sessions", sessionsV3ProviderRequestToolNames(runner.lastRequest.Tools))
+	}
+}
+
 func TestSessionsV3ExecutorUsesCurrentAgentToolContractWithStoredProfileSnapshot(t *testing.T) {
 	server, sessionSvc, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "stored-profile.pebble"))
 	defer func() { _ = closeStore() }()
