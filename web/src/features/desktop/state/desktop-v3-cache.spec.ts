@@ -1395,6 +1395,7 @@ test('execution epoch reconnect replay cannot reopen or truncate a completed epo
   applyHydrateSnapshot(state, hydrateSnapshotFixture({
     sessions_by_id: { [sessionA.id]: sessionA },
     projections_by_session: { [sessionA.id]: { ...projectionA, last_event_seq: 32, projection_high_watermark_seq: 32 } },
+    messages_by_session: {},
     session_views_by_id: {
       [sessionA.id]: {
         current_execution_epoch: {
@@ -1452,6 +1453,7 @@ test('execution epoch snapshot recovery cannot roll back a newer realtime epoch'
   const snapshot = hydrateSnapshotFixture({
     sessions_by_id: { [sessionA.id]: sessionA },
     projections_by_session: { [sessionA.id]: projectionA },
+    messages_by_session: {},
     session_views_by_id: {
       [sessionA.id]: {
         current_execution_epoch: { epoch_id: 'epoch-3', epoch_ordinal: 3, session_id: sessionA.id },
