@@ -83,6 +83,23 @@ func TestParseApprovedManageSessionsDeployRejectsEmptySelection(t *testing.T) {
 	}
 }
 
+func TestCanonicalDeployWorktreeBranchUsesDesktopStylePrefixAndTitle(t *testing.T) {
+	if got := canonicalDeployWorktreeBranch("agent/<id>", canonicalDeployWorktreeBranchSuffix("Test: 2-checkpoint plan exit", "session-1")); got != "agent/test-2-checkpoint-plan-exit" {
+		t.Fatalf("branch = %q", got)
+	}
+	if got := canonicalDeployWorktreeBranch("", canonicalDeployWorktreeBranchSuffix("", "session-2")); got != "agent/session-2" {
+		t.Fatalf("fallback branch = %q", got)
+	}
+}
+
+func TestDeploySessionNavigationUsesActualSourceWorkspace(t *testing.T) {
+	session := pebblestore.SessionSnapshot{ID: "session-1", WorkspacePath: "/data/worktrees/ws_fake", WorkspaceName: "ws_fake", Metadata: map[string]any{"swarm_v3_source_workspace_path": "/actual/workspace", "swarm_v3_source_workspace_name": "actual"}}
+	navigation := deploySessionNavigation(session)
+	if navigation["workspace_path"] != "/actual/workspace" || navigation["workspace_name"] != "actual" || navigation["href"] != "/actual/session-1" {
+		t.Fatalf("navigation = %#v", navigation)
+	}
+}
+
 func TestDeterministicDeployIDStableAndProposalBound(t *testing.T) {
 	first := deterministicDeployID("digest", "proposal-1", "session")
 	if first != deterministicDeployID("digest", "proposal-1", "session") {

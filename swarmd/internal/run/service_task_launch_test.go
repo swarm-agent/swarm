@@ -444,6 +444,15 @@ func (s *taskLaunchWorktreeStub) InspectTaskWorkspace(path string) (worktreerunt
 	return worktreeruntime.TaskWorkspaceState{WorkspacePath: path, BranchName: s.allocation.BranchName, HeadCommit: s.taskBase.BaseCommit, Clean: true}, nil
 }
 
+func (s *taskLaunchWorktreeStub) GetConfigForPrincipal(_ identity.Principal, workspacePath string) (worktreeruntime.Config, error) {
+	return worktreeruntime.Config{WorkspacePath: workspacePath, BranchName: "agent"}, nil
+}
+
+func (s *taskLaunchWorktreeStub) AllocateDetachedWorkspaceRequestedForPrincipal(_ identity.Principal, _, _, _, _ string) (worktreeruntime.Allocation, error) {
+	s.allocations++
+	return s.allocation, nil
+}
+
 func TestApprovedExplorerInheritsParentWorktreeScopeWithoutAllocation(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
@@ -477,7 +486,8 @@ func TestApprovedExplorerInheritsParentWorktreeScopeWithoutAllocation(t *testing
 		t.Fatalf("Explorer worktree facts = %#v, want inherited from %#v", child, parent)
 	}
 	assertStringSliceContains(t, child.TemporaryWorkspaceRoots, temporaryRoot)
-	scope, err := svc.resolveRunWorkspaceScope(child, identity.Principal{})
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	scope, err := svc.resolveRunWorkspaceScope(child, principal)
 	if err != nil {
 		t.Fatalf("resolve Explorer scope: %v", err)
 	}
@@ -521,7 +531,8 @@ func TestApprovedCloneAllocatesIsolatedWorktreeScope(t *testing.T) {
 	if len(child.TemporaryWorkspaceRoots) != 0 {
 		t.Fatalf("Clone inherited temporary roots: %v", child.TemporaryWorkspaceRoots)
 	}
-	scope, err := svc.resolveRunWorkspaceScope(child, identity.Principal{})
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	scope, err := svc.resolveRunWorkspaceScope(child, principal)
 	if err != nil {
 		t.Fatalf("resolve Clone scope: %v", err)
 	}

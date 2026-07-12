@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -185,22 +184,26 @@ func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSession
 			if s.worktrees == nil {
 				return "", fmt.Errorf("proposal %q requires the managed worktree service", proposal.ID)
 			}
-			baseBranch := strings.TrimSpace(proposal.WorktreeBaseBranch)
-			if baseBranch == "" {
-				baseBranch = parent.WorktreeBranch
+			branchName := strings.TrimSpace(proposal.WorktreeBranch)
+			if branchName == "" {
+				return "", fmt.Errorf("proposal %q requires a canonical worktree branch", proposal.ID)
 			}
-			allocation, err = s.worktrees.AllocateTaskWorkspace(workspacePath, baseBranch, sessionID)
+			allocation, err = s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, scope.WorkspacePath, sessionID, proposal.WorktreeBaseBranch, branchName)
 			if err != nil {
 				return "", fmt.Errorf("proposal %q allocate managed worktree: %w", proposal.ID, err)
 			}
-			workspacePath, workspaceName = allocation.WorkspacePath, filepath.Base(allocation.WorkspacePath)
+			workspacePath = allocation.WorkspacePath
+			workspaceName = scope.WorkspaceName
 		}
 		now := time.Now().UnixMilli()
 		title := strings.TrimSpace(proposal.Title)
 		if title == "" {
 			title = "New session"
 		}
-		metadata := map[string]any{"agent_profile": profile, "agent_name": profile.Name, "runtime_mode": proposal.RuntimeMode, "parent_session_id": parent.ID, "lineage_kind": "session_deploy", "deployment_manifest_digest": digest, "deployment_proposal_id": proposal.ID, "workspace_id": proposal.WorkspaceID}
+		metadata := map[string]any{"agent_profile": profile, "agent_name": profile.Name, "resolved_agent_name": profile.Name, "agent_mode": profile.Mode, "runtime_mode": proposal.RuntimeMode, "parent_session_id": parent.ID, "lineage_kind": "session_deploy", "deployment_manifest_digest": digest, "deployment_proposal_id": proposal.ID, "workspace_id": proposal.WorkspaceID, "swarm_v3_source_workspace_id": proposal.WorkspaceID, "swarm_v3_source_workspace_generation": fmt.Sprintf("%d", proposal.WorkspaceGeneration), "swarm_v3_source_workspace_name": scope.WorkspaceName, "swarm_v3_source_workspace_path": scope.WorkspacePath, "swarm_v3_runtime_workspace_path": workspacePath}
+		if proposal.ManagedWorktree {
+			metadata["workspace_id"] = allocation.WorkspaceID
+		}
 		snapshot := pebblestore.SessionSnapshot{ID: sessionID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, WorkspacePath: workspacePath, WorkspaceName: workspaceName, Title: title, Mode: proposal.Mode, Preference: pebblestore.ModelPreference{Provider: proposal.Provider, Model: proposal.Model, Thinking: proposal.Thinking}, Metadata: metadata, CreatedAt: now, UpdatedAt: now, WorktreeEnabled: proposal.ManagedWorktree, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName}
 		ready = append(ready, prepared{proposal: proposal, profile: profile, session: snapshot, runID: runID})
 	}
@@ -254,9 +257,11 @@ func deterministicDeployID(digest, proposalID, kind string) string {
 }
 
 func deploySessionNavigation(session pebblestore.SessionSnapshot) map[string]any {
-	slug := strings.ToLower(strings.Trim(filepath.Base(session.WorkspacePath), " /"))
+	workspacePath := firstNonEmptyString(mapString(session.Metadata, "swarm_v3_source_workspace_path"), session.WorkspacePath)
+	workspaceName := firstNonEmptyString(mapString(session.Metadata, "swarm_v3_source_workspace_name"), session.WorkspaceName)
+	slug := strings.ToLower(strings.Trim(workspaceName, " /"))
 	if slug == "" {
 		slug = "workspace"
 	}
-	return map[string]any{"kind": "session", "session_id": session.ID, "workspace_path": session.WorkspacePath, "workspace_name": session.WorkspaceName, "workspace_slug": slug, "href": "/" + slug + "/" + session.ID}
+	return map[string]any{"kind": "session", "session_id": session.ID, "workspace_path": workspacePath, "workspace_name": workspaceName, "workspace_slug": slug, "href": "/" + slug + "/" + session.ID}
 }

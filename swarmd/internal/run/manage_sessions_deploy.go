@@ -192,7 +192,20 @@ func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.
 			}
 			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] workspace: %w", i, err)
 		}
-		manifest.Proposals = append(manifest.Proposals, manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0})
+		proposal := manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0}
+		if input.Worktree {
+			if s.worktrees == nil {
+				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] requires the managed worktree service", i)
+			}
+			config, configErr := s.worktrees.GetConfigForPrincipal(principal, workspace.WorkspacePath)
+			if configErr != nil {
+				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] worktree settings: %w", i, configErr)
+			}
+			branchSuffix := canonicalDeployWorktreeBranchSuffix(input.Title, fmt.Sprintf("session-%d", i+1))
+			proposal.WorktreeBaseBranch = strings.TrimSpace(config.BaseBranch)
+			proposal.WorktreeBranch = canonicalDeployWorktreeBranch(config.BranchName, branchSuffix)
+		}
+		manifest.Proposals = append(manifest.Proposals, proposal)
 	}
 	digest, err := manageSessionsDeployDigest(manifest)
 	if err != nil {
@@ -202,6 +215,42 @@ func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.
 	selected := []string{manifest.Proposals[0].ID}
 	manifest.ApprovedArguments = map[string]any{"action": "deploy", "manifest_version": manifest.ManifestVersion, "manifest_digest": digest, "parent_session_id": manifest.ParentSessionID, "account_scope_id": manifest.AccountScopeID, "user_id": manifest.UserID, "selected_proposal_ids": selected, "proposals": manifest.Proposals}
 	return manifest, nil
+}
+
+func canonicalDeployWorktreeBranchSuffix(title, fallback string) string {
+	value := strings.ToLower(strings.TrimSpace(title))
+	var b strings.Builder
+	separator := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			separator = false
+			continue
+		}
+		if b.Len() > 0 && !separator {
+			b.WriteByte('-')
+			separator = true
+		}
+	}
+	value = strings.Trim(b.String(), "-")
+	if value == "" {
+		value = strings.Trim(strings.ToLower(strings.TrimSpace(fallback)), "-/")
+	}
+	if len(value) > 48 {
+		value = strings.Trim(value[:48], "-")
+	}
+	return value
+}
+
+func canonicalDeployWorktreeBranch(configuredPrefix, suffix string) string {
+	prefix := strings.Trim(strings.TrimSpace(configuredPrefix), "/")
+	if strings.HasSuffix(strings.ToLower(prefix), "/<id>") {
+		prefix = strings.Trim(prefix[:len(prefix)-len("/<id>")], "/")
+	}
+	if prefix == "" || strings.EqualFold(prefix, "<id>") {
+		prefix = "agent"
+	}
+	return prefix + "/" + strings.Trim(suffix, "/")
 }
 
 func validateManageSessionsDeployAgent(active, target pebblestore.AgentProfile, canDelegate bool) error {

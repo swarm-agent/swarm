@@ -115,6 +115,8 @@ type worktreeService interface {
 	ResolveTaskBase(workspacePath string) (worktreeruntime.TaskBase, error)
 	AllocateTaskWorkspace(workspacePath string, base worktreeruntime.TaskBase, nameSeed string) (worktreeruntime.Allocation, error)
 	InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
+	GetConfigForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
+	AllocateDetachedWorkspaceRequestedForPrincipal(principal identity.Principal, workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error)
 }
 
 type RunOptions struct {
