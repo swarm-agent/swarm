@@ -208,7 +208,7 @@ export function DesktopPlanAgentSidecar({
         </div>
         <div className="space-y-2 border-t border-[var(--app-border)] p-4">
           <Textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={activeTab === "plan" ? "Ask about the plan or request changes…" : "Ask AI…"} disabled={selected.busy || !selected.sessionId} />
-          {activeRun ? <Button type="button" variant="destructive" className="w-full" disabled={!selected.runtimeSwarmId} onClick={() => void stop()}><Square size={14} /> Stop {activeTab === "plan" ? "Plan" : "AI"}</Button> : <Button type="button" variant="outline" className="w-full" disabled={selected.busy || !draft.trim() || !selected.sessionId} onClick={() => void send()}>{selected.busy ? "Waiting…" : `Send to ${activeTab === "plan" ? "Plan" : "AI"}`}</Button>}
+          {activeRun ? <Button type="button" variant="outline" className="w-full border-[var(--app-danger)] text-[var(--app-danger)]" disabled={!selected.runtimeSwarmId} onClick={() => void stop()}><Square size={14} /> Stop {activeTab === "plan" ? "Plan" : "AI"}</Button> : <Button type="button" variant="outline" className="w-full" disabled={selected.busy || !draft.trim() || !selected.sessionId} onClick={() => void send()}>{selected.busy ? "Waiting…" : `Send to ${activeTab === "plan" ? "Plan" : "AI"}`}</Button>}
         </div>
       </aside>
     </div>
