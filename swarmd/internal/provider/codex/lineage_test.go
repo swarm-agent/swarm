@@ -481,7 +481,7 @@ func TestCodexFirstEpochResponseBecomesContinuationBaseline(t *testing.T) {
 	}
 }
 
-func TestResetCachedWebsocketChainPreservesHealthyTransport(t *testing.T) {
+func TestPrepareCachedWebsocketSessionNewChainReusesHealthyTransportWithoutLineage(t *testing.T) {
 	conn := &websocket.Conn{}
 	session := &cachedWebsocketSession{
 		conn:                  conn,
@@ -492,13 +492,38 @@ func TestResetCachedWebsocketChainPreservesHealthyTransport(t *testing.T) {
 		lastOutput:            []any{"old"},
 	}
 
-	resetCachedWebsocketChainLocked(session)
-
+	gotConn, reused, err := prepareCachedWebsocketSessionLocked(session, codexTransportContext{ReuseTransport: true}, true, true, map[string]any{"input": []any{"new epoch"}})
+	if err != nil {
+		t.Fatalf("prepare new chain: %v", err)
+	}
+	if gotConn != conn || !reused {
+		t.Fatalf("new chain did not reuse healthy websocket: conn=%p want=%p reused=%t", gotConn, conn, reused)
+	}
 	if session.conn != conn {
 		t.Fatal("new chain reset healthy websocket transport")
 	}
 	if session.lastResponseID != "" || session.lastPayload != nil || session.lastRequestProperties != nil || session.lastInputLen != 0 || session.lastOutput != nil {
 		t.Fatalf("new chain retained provider continuation state: %#v", session)
+	}
+}
+
+func TestPrepareCachedWebsocketSessionInEpochContinuationRetainsLineage(t *testing.T) {
+	conn := &websocket.Conn{}
+	session := &cachedWebsocketSession{
+		conn:           conn,
+		lastResponseID: "resp-in-epoch",
+		lastPayload:    map[string]any{"input": []any{"first turn"}},
+	}
+
+	gotConn, reused, err := prepareCachedWebsocketSessionLocked(session, codexTransportContext{ReuseTransport: true}, false, false, map[string]any{"input": []any{"second turn"}})
+	if err != nil {
+		t.Fatalf("prepare in-epoch continuation: %v", err)
+	}
+	if gotConn != conn || !reused {
+		t.Fatalf("in-epoch continuation did not reuse websocket: conn=%p want=%p reused=%t", gotConn, conn, reused)
+	}
+	if session.lastResponseID != "resp-in-epoch" {
+		t.Fatalf("in-epoch continuation lost response lineage: %q", session.lastResponseID)
 	}
 }
 

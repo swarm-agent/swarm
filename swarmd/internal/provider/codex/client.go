@@ -388,6 +388,23 @@ func closeCachedWebsocketSessionLocked(session *cachedWebsocketSession) {
 	resetCachedWebsocketChainLocked(session)
 }
 
+func prepareCachedWebsocketSessionLocked(session *cachedWebsocketSession, transport codexTransportContext, freshContext, payloadPrepared bool, requestPayload map[string]any) (*websocket.Conn, bool, error) {
+	if session == nil {
+		return nil, false, nil
+	}
+	if transport.ResetTransport || (freshContext && !transport.ReuseTransport) {
+		closeCachedWebsocketSessionLocked(session)
+		if payloadPrepared && asString(requestPayload["previous_response_id"]) != "" {
+			return nil, false, errWebsocketRetryFresh
+		}
+	} else if freshContext {
+		// A new provider chain must not inherit response lineage. Keep the
+		// compatible healthy socket, but clear only chain-scoped cache state.
+		resetCachedWebsocketChainLocked(session)
+	}
+	return session.conn, session.conn != nil, nil
+}
+
 func contextErr(ctx context.Context) error {
 	if ctx == nil {
 		return nil
@@ -1246,21 +1263,9 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		session.mu.Lock()
 		defer session.mu.Unlock()
 	}
-	conn := (*websocket.Conn)(nil)
-	websocketReused := false
-	if session != nil {
-		if transportContext.ResetTransport || (freshContext && !transportContext.ReuseTransport) {
-			closeCachedWebsocketSessionLocked(session)
-			if payloadPrepared && asString(requestPayload["previous_response_id"]) != "" {
-				return nil, 0, errWebsocketRetryFresh
-			}
-		} else if freshContext {
-			// A new provider chain must not inherit response lineage. Keep the
-			// compatible healthy socket, but clear only chain-scoped cache state.
-			resetCachedWebsocketChainLocked(session)
-		}
-		conn = session.conn
-		websocketReused = conn != nil
+	conn, websocketReused, err := prepareCachedWebsocketSessionLocked(session, transportContext, freshContext, payloadPrepared, requestPayload)
+	if err != nil {
+		return nil, 0, err
 	}
 	if conn == nil {
 		var failureBody map[string]any
