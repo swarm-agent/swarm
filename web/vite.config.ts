@@ -68,6 +68,11 @@ export default defineConfig({
         changeOrigin: false,
         ws: true,
       },
+      '/v2': {
+        target: backendTarget,
+        changeOrigin: false,
+        ws: true,
+      },
       '/v3': {
         target: backendTarget,
         changeOrigin: false,
