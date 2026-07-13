@@ -155,6 +155,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	codexClient := codex.NewClient(authStore)
 	toolRuntime := tool.NewRuntime(8)
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	if err := agentSvc.EnsureSystemAgentRegistry(); err != nil {
+		log.Printf("warning: system agent registry validation failed; Plan/AI sidechats will be unavailable until the daemon binary is corrected: %v", err)
+	}
 	modelCatalog := model.NewCatalogService(pebblestore.NewModelCatalogStore(store))
 	modelSvc := model.NewServiceWithFavorites(
 		pebblestore.NewModelStore(store),

@@ -163,6 +163,82 @@ func TestBeginExecutionEpochRejectsIndexCollisionsWithoutOverwrite(t *testing.T)
 	}
 }
 
+func TestBeginExecutionEpochAllowsDistinctRunsAfterSameCheckpoint(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "repeated-followup-session")
+
+	first, err := sessions.BeginExecutionEpoch(BeginExecutionEpochInput{
+		SessionID: "repeated-followup-session", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "followup-message-1", PayloadHash: "followup-hash-1",
+		Reason: "post_checkpoint_followup", PlanID: "plan-1", CheckpointID: "followup-1",
+		AttemptID: "followup-1:attempt-1", RunID: "run-followup-message-1",
+		TriggerMessage: &MessageSnapshot{ID: "followup-message-1", Role: "user", Content: "first reply"}, NowUnixMs: 200,
+	})
+	if err != nil {
+		t.Fatalf("begin first follow-up epoch: %v", err)
+	}
+	second, err := sessions.BeginExecutionEpoch(BeginExecutionEpochInput{
+		SessionID: "repeated-followup-session", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "followup-message-2", PayloadHash: "followup-hash-2",
+		Reason: "post_checkpoint_followup", PlanID: "plan-1", CheckpointID: "followup-1",
+		AttemptID: "followup-1:attempt-1", RunID: "run-followup-message-2",
+		TriggerMessage: &MessageSnapshot{ID: "followup-message-2", Role: "user", Content: "second reply"}, NowUnixMs: 300,
+	})
+	if err != nil {
+		t.Fatalf("begin second follow-up epoch: %v", err)
+	}
+	if second.Replayed || second.Epoch.EpochID == first.Epoch.EpochID || second.Epoch.Ordinal != first.Epoch.Ordinal+1 {
+		t.Fatalf("second follow-up did not create a distinct successor: first=%+v second=%+v", first.Epoch, second.Epoch)
+	}
+	if second.Epoch.Boundary.AttemptID != "followup-1:attempt-1" || second.Epoch.Boundary.RunID != "run-followup-message-2" {
+		t.Fatalf("second boundary identity = %+v", second.Epoch.Boundary)
+	}
+}
+
+func TestBeginExecutionEpochMigratesLegacyPostCheckpointBoundary(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "legacy-followup-session")
+
+	first, err := sessions.BeginExecutionEpoch(BeginExecutionEpochInput{
+		SessionID: "legacy-followup-session", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "legacy-followup-message-1", PayloadHash: "legacy-followup-hash-1",
+		Reason: "post_checkpoint_followup", PlanID: "plan-1", CheckpointID: "followup-1",
+		RunID: "run-legacy-followup-message-1", TriggerMessage: &MessageSnapshot{ID: "legacy-followup-message-1", Role: "user", Content: "first reply"}, NowUnixMs: 200,
+	})
+	if err != nil {
+		t.Fatalf("begin first follow-up epoch: %v", err)
+	}
+	newKey := KeyExecutionEpochBoundary(first.Epoch.SessionID, first.Epoch.Boundary.PlanID, first.Epoch.Boundary.CheckpointID, first.Epoch.Boundary.AttemptID, first.Epoch.Boundary.Reason, first.Epoch.Boundary.RunID)
+	legacyKey := executionEpochBoundaryLegacyKey(first.Epoch.SessionID, first.Epoch.Boundary.PlanID, first.Epoch.Boundary.CheckpointID, first.Epoch.Boundary.AttemptID, first.Epoch.Boundary.Reason)
+	batch := store.db.NewBatch()
+	defer batch.Close()
+	if err := batch.Delete([]byte(newKey), nil); err != nil {
+		t.Fatalf("delete new boundary index: %v", err)
+	}
+	if err := batch.Set([]byte(legacyKey), []byte(first.Epoch.EpochID), nil); err != nil {
+		t.Fatalf("seed legacy boundary index: %v", err)
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		t.Fatalf("commit legacy boundary fixture: %v", err)
+	}
+
+	second, err := sessions.BeginExecutionEpoch(BeginExecutionEpochInput{
+		SessionID: "legacy-followup-session", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "legacy-followup-message-2", PayloadHash: "legacy-followup-hash-2",
+		Reason: "post_checkpoint_followup", PlanID: "plan-1", CheckpointID: "followup-1",
+		RunID:          "run-legacy-followup-message-2",
+		TriggerMessage: &MessageSnapshot{ID: "legacy-followup-message-2", Role: "user", Content: "second reply"}, NowUnixMs: 300,
+	})
+	if err != nil {
+		t.Fatalf("begin successor after legacy boundary: %v", err)
+	}
+	if second.Epoch.EpochID == first.Epoch.EpochID || second.Epoch.ParentEpochID != first.Epoch.EpochID {
+		t.Fatalf("legacy successor identity: first=%+v second=%+v", first.Epoch, second.Epoch)
+	}
+}
+
 func TestBeginExecutionEpochFaultIsAllOrNothingAndTriggerIsAtomic(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

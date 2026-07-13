@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	modelruntime "swarm/packages/swarmd/internal/model"
 
 	"swarm/packages/swarmd/internal/privacy"
@@ -2952,7 +2953,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
-	agentProfile, err = e.resolveSessionV3CurrentAgentToolContract(session.AccountScopeID, agentProfile)
+	agentProfile, err = e.resolveSessionV3CurrentAgentToolContract(session.AccountScopeID, session.Metadata, agentProfile)
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
@@ -3011,7 +3012,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, ModelCatalog: catalogRecord, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
 }
 
-func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScopeID string, snapshot pebblestore.AgentProfile) (pebblestore.AgentProfile, error) {
+func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScopeID string, metadata map[string]any, snapshot pebblestore.AgentProfile) (pebblestore.AgentProfile, error) {
 	if e == nil || e.server == nil || e.server.agents == nil {
 		return pebblestore.AgentProfile{}, errors.New("agent service is not configured")
 	}
@@ -3019,6 +3020,41 @@ func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScop
 	if name == "" {
 		return pebblestore.AgentProfile{}, errors.New("stored v3 agent profile is missing name")
 	}
+
+	kind := strings.ToLower(strings.TrimSpace(sessionsV3MetadataString(metadata, "system_sidechat_kind")))
+	systemSidechat, _ := metadata["system_sidechat"].(bool)
+	lineageSystemSidechat := strings.EqualFold(strings.TrimSpace(sessionsV3MetadataString(metadata, "lineage_kind")), "system_sidechat")
+	hasSystemMetadata := systemSidechat || lineageSystemSidechat || kind != "" || strings.TrimSpace(sessionsV3MetadataString(metadata, "system_agent_id")) != ""
+	if hasSystemMetadata {
+		systemSession, _ := metadata["system_session"].(bool)
+		if !systemSidechat || !systemSession || !lineageSystemSidechat || kind == "" || strings.TrimSpace(sessionsV3MetadataString(metadata, "parent_session_id")) == "" {
+			return pebblestore.AgentProfile{}, errors.New("invalid system sidechat metadata")
+		}
+		registry, err := e.server.agents.SystemAgentRegistry()
+		if err != nil {
+			return pebblestore.AgentProfile{}, fmt.Errorf("system agent registry: %w", err)
+		}
+		definition, ok := registry.DefinitionBySidechatKind(kind)
+		if !ok {
+			return pebblestore.AgentProfile{}, fmt.Errorf("unknown system sidechat kind %q", kind)
+		}
+		for key, value := range map[string]string{
+			"agent profile":       name,
+			"agent_name":          sessionsV3MetadataString(metadata, "agent_name"),
+			"resolved_agent_name": sessionsV3MetadataString(metadata, "resolved_agent_name"),
+			"system_agent_id":     sessionsV3MetadataString(metadata, "system_agent_id"),
+		} {
+			value = strings.TrimSpace(value)
+			if value != "" && !strings.EqualFold(value, definition.ID) {
+				return pebblestore.AgentProfile{}, fmt.Errorf("system sidechat metadata mismatch: kind %q requires agent %q, but %s is %q", kind, definition.ID, key, value)
+			}
+		}
+		return e.server.agents.ReconcileSystemAgentSnapshot(definition.ID, snapshot)
+	}
+	if agentruntime.IsReservedSidechatAgentName(name) || strings.HasPrefix(strings.ToLower(name), "system-") {
+		return pebblestore.AgentProfile{}, fmt.Errorf("reserved system agent %q requires authenticated system sidechat metadata", name)
+	}
+
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	// Built-in tool additions are backfilled per account. Existing accounts are
 	// not covered by the daemon's legacy unscoped startup reconciliation, so do

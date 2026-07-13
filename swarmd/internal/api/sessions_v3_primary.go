@@ -345,6 +345,7 @@ func sessionsV3SystemSidechatMetadata(parentSessionID, kind string, profile pebb
 		"system_session":         true,
 		"system_sidechat":        true,
 		"system_sidechat_kind":   strings.ToLower(strings.TrimSpace(kind)),
+		"system_agent_id":        profile.Name,
 		"settings_locked":        true,
 	}
 }
@@ -449,7 +450,11 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		parentProfile = pebblestore.AgentProfile{}
 	}
-	profile := agentruntime.PlanSidechatAgentProfileForParent(parentProfile)
+	profile, err := s.agents.ResolveSystemSidechat(kind, parentProfile)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("resolve system sidechat %q: %w", kind, err))
+		return
+	}
 	if kind == "plan" {
 		contextJSON, marshalErr := json.Marshal(planContext)
 		if marshalErr != nil {
@@ -457,8 +462,6 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 			return
 		}
 		profile.Prompt = agentruntime.PlanSidechatAgentPromptWithContext(string(contextJSON))
-	} else {
-		profile = agentruntime.AISidechatAgentProfileForParent(parentProfile)
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
 	metadata := sessionsV3SystemSidechatMetadata(parentSessionID, kind, profile)
@@ -1199,6 +1202,7 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 			ClientRequestID: "post-checkpoint-followup:" + clientRequestID, PayloadHash: payloadHash,
 			Reason: "post_checkpoint_followup", PlanID: strings.TrimSpace(plan.ID),
 			CheckpointID: strings.TrimSpace(plan.Document.ExecutionState.LastCheckpointID),
+			AttemptID:    strings.TrimSpace(plan.Document.ExecutionState.LastAttemptID),
 			RunID:        runIntent.RunID, TriggerMessage: &message,
 			RunSessionID: sessionID, ParentSessionID: sessionID, NowUnixMs: now,
 		})

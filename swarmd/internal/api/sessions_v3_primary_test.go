@@ -68,11 +68,110 @@ func TestSessionsV3SystemSidechatMetadataTagsPlanChatAsSystemHidden(t *testing.T
 	if metadata["system_session"] != true || metadata["system_sidechat"] != true || metadata["navigation_hidden"] != true {
 		t.Fatalf("system sidechat visibility metadata = %+v", metadata)
 	}
-	if metadata["lineage_kind"] != "system_sidechat" || metadata["presentation_kind"] != "system_sidechat" || metadata["system_sidechat_kind"] != "plan" {
+	if metadata["lineage_kind"] != "system_sidechat" || metadata["presentation_kind"] != "system_sidechat" || metadata["system_sidechat_kind"] != "plan" || metadata["system_agent_id"] != profile.Name {
 		t.Fatalf("system sidechat identity metadata = %+v", metadata)
 	}
 	if metadata["parent_session_id"] != "parent-session" {
 		t.Fatalf("parent_session_id = %v, want parent-session", metadata["parent_session_id"])
+	}
+}
+
+func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing.T) {
+	t.Setenv("SWARM_API_NO_AUTH", "1")
+	storePath := filepath.Join(t.TempDir(), "system-sidechats-reopen.pebble")
+	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
+	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{
+		Name: "swarm", Mode: agentruntime.ModePrimary, Enabled: pebblestore.BoolPtr(true),
+		Provider: "test-provider", Model: "single-model", Thinking: "medium", ModelMode: "split",
+		PlanProvider: "test-provider", PlanModel: "plan-model", PlanThinking: "high",
+		AutoProvider: "test-provider", AutoModel: "auto-model", AutoThinking: "low",
+		Prompt: "Swarm test primary prompt", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+			"read": {Enabled: pebblestore.BoolPtr(true)}, "write": {Enabled: pebblestore.BoolPtr(true)},
+		}},
+	}); err != nil {
+		t.Fatalf("configure parent agent: %v", err)
+	}
+	parent := createSessionsV3PrimaryTestSessionWithPreference(t, server, "system-sidechat-parent", "system sidechat parent", pebblestore.ModelPreference{Provider: "test-provider", Model: "single-model", Thinking: "medium"})
+	planArgs := mustSessionsV3TestJSON(t, map[string]any{
+		"plan_id": "plan-sidechat-regression", "proposal_revision": 3,
+		"document": map[string]any{"info": map[string]any{"goal": "Prove Plan sidechat execution"}, "checkpoints": []any{}},
+	})
+	pending, err := server.perm.CreatePending(permission.CreateInput{
+		SessionID: parent.ID, RunID: "run-plan-proposal", CallID: "call-exit-plan", ToolName: "exit_plan_mode",
+		ToolArguments: planArgs, ToolCallArguments: planArgs, Requirement: "tool", Mode: sessionruntime.ModePlan,
+	})
+	if err != nil {
+		t.Fatalf("create pending plan permission: %v", err)
+	}
+	createSidechat := func(kind, body string) string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+parent.ID+"/sidechats/"+kind, bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("create %s sidechat status=%d body=%s", kind, rec.Code, rec.Body.String())
+		}
+		var response struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || strings.TrimSpace(response.SessionID) == "" {
+			t.Fatalf("decode %s sidechat response id=%q err=%v body=%s", kind, response.SessionID, err, rec.Body.String())
+		}
+		return response.SessionID
+	}
+	planID := createSidechat("plan", fmt.Sprintf(`{"permission_id":%q,"plan_id":"client-stale","plan_revision":1}`, pending.ID))
+	aiID := createSidechat("ai", `{}`)
+	for _, reserved := range []string{agentruntime.PlanSidechatAgentID, agentruntime.AISidechatAgentID} {
+		if _, ok, err := server.agents.GetProfileForAccount(testPrincipal().AccountScopeID, reserved); err != nil || ok {
+			t.Fatalf("reserved system agent row %q exists=%t err=%v", reserved, ok, err)
+		}
+	}
+	if err := closeStore(); err != nil {
+		t.Fatalf("close initial store: %v", err)
+	}
+
+	restarted, sessions, closeRestarted := newSessionsV3PrimaryAPITestServer(t, storePath)
+	defer func() { _ = closeRestarted() }()
+	runner := installSessionsV3TestProvider(restarted, "system sidechat response")
+	exec := newSessionV3Executor(restarted)
+	exec.startDelay = 0
+	restarted.v3SessionExecutor = exec
+	for _, test := range []struct {
+		kind, sessionID, agentID, model string
+		wantEditPendingPlan             bool
+	}{
+		{kind: "plan", sessionID: planID, agentID: agentruntime.PlanSidechatAgentID, model: "plan-model", wantEditPendingPlan: true},
+		{kind: "ai", sessionID: aiID, agentID: agentruntime.AISidechatAgentID, model: "auto-model"},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			stored, ok, err := sessions.GetSession(test.sessionID)
+			if err != nil || !ok {
+				t.Fatalf("reopen %s sidechat exists=%t err=%v", test.kind, ok, err)
+			}
+			if stored.Metadata["system_agent_id"] != test.agentID || stored.Metadata["system_sidechat_kind"] != test.kind {
+				t.Fatalf("reopened %s metadata=%+v", test.kind, stored.Metadata)
+			}
+			before := runner.callCount
+			postSessionsV3PrimaryTestMessage(t, restarted, test.sessionID, "system-sidechat-message-"+test.kind, "run "+test.kind+" sidechat")
+			waitForSessionsV3MessageCount(t, sessions, test.sessionID, 2)
+			if runner.callCount != before+1 {
+				t.Fatalf("%s provider calls=%d want=%d", test.kind, runner.callCount, before+1)
+			}
+			request := runner.requests[len(runner.requests)-1]
+			if request.Model != test.model || !strings.Contains(request.Instructions, "- name: "+test.agentID) {
+				t.Fatalf("%s request model=%q instructions=%q", test.kind, request.Model, request.Instructions)
+			}
+			tools := sessionsV3ProviderRequestToolNames(request.Tools)
+			if tools["edit_pending_plan"] != test.wantEditPendingPlan {
+				t.Fatalf("%s edit_pending_plan=%t tools=%v", test.kind, tools["edit_pending_plan"], tools)
+			}
+			if tools["exit_plan_mode"] || tools["plan_manage"] {
+				t.Fatalf("%s received forbidden lifecycle tools: %v", test.kind, tools)
+			}
+		})
 	}
 }
 

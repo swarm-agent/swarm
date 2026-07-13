@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/permission"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -25,6 +27,7 @@ type sessionsV3ProviderToolsRunner struct {
 	checkpointInputReturn      []map[string]any
 	checkpointInputReturnOK    bool
 	checkpointInputReturnOKSet bool
+	compiledProfiles           []pebblestore.AgentProfile
 }
 
 func (r *sessionsV3ProviderToolsRunner) RunTurn(context.Context, string, runruntime.RunRequest, runruntime.RunStartMeta) (runruntime.RunResult, error) {
@@ -57,7 +60,8 @@ func (r *sessionsV3ProviderToolsRunner) ResolveAgentToolContractForAccount(strin
 	return r.contract, nil, r.disabled, nil
 }
 
-func (r *sessionsV3ProviderToolsRunner) CompileStoredV3AgentToolContract(string, pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, map[string]bool, error) {
+func (r *sessionsV3ProviderToolsRunner) CompileStoredV3AgentToolContract(_ string, profile pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, map[string]bool, error) {
+	r.compiledProfiles = append(r.compiledProfiles, cloneSessionsV3AgentProfile(profile))
 	return r.contract, r.disabled, nil
 }
 
@@ -68,6 +72,151 @@ func (r *sessionsV3ProviderToolsRunner) BuildPlanCheckpointRunInput(_ string, _ 
 		return r.checkpointInputReturn, r.checkpointInputReturnOK, nil
 	}
 	return []map[string]any{{"role": "user", "content": "checkpoint"}}, true, nil
+}
+
+func TestSessionV3SystemSidechatResolutionUsesRegistryAndRejectsSpoofing(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "system-sidechat-resolution.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("event log: %v", err)
+	}
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	exec := &sessionV3Executor{server: &Server{agents: agents}}
+
+	for _, test := range []struct {
+		kind string
+		id   string
+	}{
+		{kind: agentruntime.SystemSidechatKindPlan, id: agentruntime.PlanSidechatAgentID},
+		{kind: agentruntime.SystemSidechatKindAI, id: agentruntime.AISidechatAgentID},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			snapshot, err := agents.ResolveSystemSidechat(test.kind, pebblestore.AgentProfile{Provider: "codex", Model: "parent-model"})
+			if err != nil {
+				t.Fatalf("materialize sidechat: %v", err)
+			}
+			if test.kind == agentruntime.SystemSidechatKindPlan {
+				snapshot.Prompt = agentruntime.PlanSidechatAgentPromptWithContext(`{"plan_id":"plan-1"}`)
+			}
+			// Simulate an old or tampered persisted snapshot. Reconciliation must
+			// retain dynamic context/model fields while restoring code-owned policy.
+			snapshot.RuntimeMode = pebblestore.AgentRuntimeModeReadWrite
+			snapshot.ExitPlanModeEnabled = pebblestore.BoolPtr(true)
+			snapshot.ToolContract = &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{
+				"exit_plan_mode": {Enabled: pebblestore.BoolPtr(true)},
+				"manage_agent":   {Enabled: pebblestore.BoolPtr(true)},
+			}}
+			metadata := sessionsV3SystemSidechatMetadata("parent-1", test.kind, snapshot)
+
+			resolved, err := exec.resolveSessionV3CurrentAgentToolContract("account-1", metadata, snapshot)
+			if err != nil {
+				t.Fatalf("resolve persisted system sidechat: %v", err)
+			}
+			if resolved.Name != test.id || resolved.ExitPlanModeEnabled == nil || *resolved.ExitPlanModeEnabled {
+				t.Fatalf("resolved identity/exit policy = %+v", resolved)
+			}
+			for _, toolName := range []string{"exit_plan_mode", "manage_agent"} {
+				state := resolved.ToolContract.Tools[toolName]
+				if state.Enabled == nil || *state.Enabled {
+					t.Fatalf("resolved %s policy = %+v, want explicitly disabled", toolName, state)
+				}
+			}
+			if resolved.Provider != "codex" || resolved.Model != "parent-model" {
+				t.Fatalf("resolved provider/model = %q/%q", resolved.Provider, resolved.Model)
+			}
+			if test.kind == agentruntime.SystemSidechatKindPlan && !strings.Contains(resolved.Prompt, `"plan_id":"plan-1"`) {
+				t.Fatalf("Plan prompt lost authoritative context: %q", resolved.Prompt)
+			}
+
+			runner := &sessionsV3ProviderToolsRunner{}
+			exec.server.runner = runner
+			if _, err := exec.resolveSessionV3ProviderTools("account-1", resolved); err != nil {
+				t.Fatalf("compile provider tools: %v", err)
+			}
+			if len(runner.compiledProfiles) != 1 {
+				t.Fatalf("compiled profile count = %d, want 1", len(runner.compiledProfiles))
+			}
+			compiled := runner.compiledProfiles[0]
+			if compiled.ExitPlanModeEnabled == nil || *compiled.ExitPlanModeEnabled {
+				t.Fatalf("provider compiler received enabled exit_plan_mode: %+v", compiled)
+			}
+			for _, toolName := range []string{"exit_plan_mode", "manage_agent"} {
+				state := compiled.ToolContract.Tools[toolName]
+				if state.Enabled == nil || *state.Enabled {
+					t.Fatalf("provider compiler received enabled %s: %+v", toolName, state)
+				}
+			}
+		})
+	}
+
+	plan, err := agents.ResolveSystemSidechat(agentruntime.SystemSidechatKindPlan, pebblestore.AgentProfile{})
+	if err != nil {
+		t.Fatalf("materialize Plan: %v", err)
+	}
+	ai, err := agents.ResolveSystemSidechat(agentruntime.SystemSidechatKindAI, pebblestore.AgentProfile{})
+	if err != nil {
+		t.Fatalf("materialize AI: %v", err)
+	}
+	for _, test := range []struct {
+		name     string
+		metadata map[string]any
+		snapshot pebblestore.AgentProfile
+		want     string
+	}{
+		{name: "reserved name without authority", metadata: nil, snapshot: plan, want: "requires authenticated system sidechat metadata"},
+		{name: "unknown reserved name without authority", metadata: nil, snapshot: pebblestore.AgentProfile{Name: "system-future", Enabled: true}, want: "requires authenticated system sidechat metadata"},
+		{name: "kind and name mismatch", metadata: sessionsV3SystemSidechatMetadata("parent-1", "plan", ai), snapshot: ai, want: "metadata mismatch"},
+		{name: "unknown future kind", metadata: sessionsV3SystemSidechatMetadata("parent-1", "future", pebblestore.AgentProfile{Name: "system-future", Enabled: true}), snapshot: pebblestore.AgentProfile{Name: "system-future", Enabled: true}, want: "unknown system sidechat kind"},
+		{name: "partial metadata", metadata: map[string]any{"system_sidechat": true, "system_sidechat_kind": "plan"}, snapshot: plan, want: "invalid system sidechat metadata"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := exec.resolveSessionV3CurrentAgentToolContract("account-1", test.metadata, test.snapshot)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestSessionV3OrdinaryAgentResolutionKeepsCurrentAccountToolContract(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ordinary-agent-resolution.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("event log: %v", err)
+	}
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	const accountScopeID = "account-ordinary"
+	if err := agents.EnsureDefaultsForAccount(accountScopeID); err != nil {
+		t.Fatalf("ensure defaults: %v", err)
+	}
+	current, ok, err := agents.GetProfileForAccount(accountScopeID, "explorer")
+	if err != nil || !ok {
+		t.Fatalf("get explorer: ok=%t err=%v", ok, err)
+	}
+	snapshot := current
+	snapshot.Prompt = "persisted session prompt"
+	snapshot.ToolContract = &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+		"bash": {Enabled: pebblestore.BoolPtr(true)},
+	}}
+	exec := &sessionV3Executor{server: &Server{agents: agents}}
+	resolved, err := exec.resolveSessionV3CurrentAgentToolContract(accountScopeID, nil, snapshot)
+	if err != nil {
+		t.Fatalf("resolve ordinary agent: %v", err)
+	}
+	if resolved.Prompt != snapshot.Prompt {
+		t.Fatalf("prompt = %q, want persisted snapshot prompt", resolved.Prompt)
+	}
+	if !reflect.DeepEqual(resolved.ToolContract, current.ToolContract) {
+		t.Fatalf("tool contract = %+v, want current account contract %+v", resolved.ToolContract, current.ToolContract)
+	}
 }
 
 func TestSessionV3ProviderCheckpointScopeFromFreshPayloadOverridesStaleJobScope(t *testing.T) {
