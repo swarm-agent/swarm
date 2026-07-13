@@ -7078,7 +7078,7 @@ func (r *Runtime) manageAgentOrchestrationPolicy(scope WorkspaceScope, args map[
 	if err != nil {
 		return "", err
 	}
-	return manageAgentEncodeResponse(map[string]any{"status": "ok", "action": "update_orchestration_policy", "before": before, "after": after})
+	return manageAgentEncodeResponse(map[string]any{"status": "ok", "action": "update_orchestration_policy", "applied": true, "before": before, "after": after})
 }
 
 func manageAgentInstructionsText() string {

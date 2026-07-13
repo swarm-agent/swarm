@@ -475,5 +475,25 @@ func validateV3RealtimeToolIdentity(eventType string, raw json.RawMessage) error
 			return errors.New("v3 realtime terminal tool event requires status")
 		}
 	}
+	if rawEffects, ok := payload["client_effects"]; ok {
+		if eventType != "session.tool.completed" {
+			return errors.New("v3 realtime client effects require session.tool.completed")
+		}
+		effects, ok := rawEffects.([]any)
+		if !ok || len(effects) == 0 {
+			return errors.New("v3 realtime client_effects must be a non-empty array")
+		}
+		for _, rawEffect := range effects {
+			effect, ok := rawEffect.(map[string]any)
+			if !ok {
+				return errors.New("v3 realtime client effect must be an object")
+			}
+			switch strings.TrimSpace(fmt.Sprint(effect["type"])) {
+			case "refresh_agents", "refresh_themes":
+			default:
+				return errors.New("v3 realtime client effect has unsupported type")
+			}
+		}
+	}
 	return nil
 }

@@ -3,6 +3,7 @@ import { DesktopV3RealtimeTransport, type DesktopV3RealtimeTransportStatus } fro
 import type { SessionV3RealtimeWorksetSubscriptionRequestWire } from '../session-v3/types'
 import { DesktopV3LivePatchCoordinator, createDefaultDesktopV3LivePatchCoordinatorDeps } from './v3-live-patch-coordinator'
 import { openDesktopV3RealtimeTransportSocket } from './client'
+import { DesktopV3ClientEffectRunner, type DesktopV3ClientEffectRunnerDeps } from './v3-client-effect-runner'
 import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
 import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, commitDesktopV3CacheSnapshot, subscribeDesktopV3Cache, type DesktopV3CacheMutation } from '../state/desktop-v3-cache-store'
@@ -48,6 +49,8 @@ interface DesktopV3RealtimeControllerDeps {
   openSocket?: (input: { endpointCursor: string }) => WebSocket | Promise<WebSocket>
   commitSnapshot?: (previousState: DesktopV3CacheState, nextState: DesktopV3CacheState, actions: DesktopV3CacheAction[]) => void
   streamCommit?: DesktopV3StreamCommitController
+  clientEffectRunner?: DesktopV3ClientEffectRunner
+  clientEffectRunnerDeps?: DesktopV3ClientEffectRunnerDeps
 }
 
 export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeController {
@@ -60,6 +63,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly transport: DesktopV3RealtimeTransport
   private readonly streamCommit: DesktopV3StreamCommitController
   private readonly livePatchCoordinator: DesktopV3LivePatchCoordinator
+  private readonly clientEffectRunner: DesktopV3ClientEffectRunner
   private readonly subscribingSessionIds = new Set<string>()
   private firstResumeSent?: Deferred<void>
   private startupCancellation?: Deferred<never>
@@ -89,6 +93,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       getSnapshot: this.getSnapshot,
       commitSnapshot: deps.commitSnapshot ?? commitDesktopV3CacheSnapshot,
     }))
+    this.clientEffectRunner = deps.clientEffectRunner ?? new DesktopV3ClientEffectRunner(deps.clientEffectRunnerDeps)
 
     this.transport = new DesktopV3RealtimeTransport({
       getEndpointCursor: () => this.getSnapshot().realtime.endpointCursor,
@@ -339,6 +344,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       this.livePatchCoordinator.beforeDurableFrame(frame)
       await commitDesktopV3StreamFrame(this.streamCommit, frame)
       this.livePatchCoordinator.afterDurableFrame(frame)
+      this.clientEffectRunner.accept(frame)
       if (frame.kind === 'event' || frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.updated' || frame.kind === 'workset.session.removed') {
         // Reconcile after durable state commits. Workset frames update transport
         // discovery state, and task tool event frames can expose delegated child

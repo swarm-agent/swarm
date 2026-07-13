@@ -17,6 +17,100 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
+func TestProviderManagedV3ClientEffectsOnlyForAppliedManageMutations(t *testing.T) {
+	tests := []struct {
+		name      string
+		eventType string
+		callName  string
+		result    tool.Result
+		wantType  string
+	}{
+		{name: "manage agent hyphen alias", eventType: "session.tool.completed", callName: "manage-agent", result: tool.Result{Output: `{"status":"ok","action":"update","applied":true}`}, wantType: providerManagedClientEffectRefreshAgents},
+		{name: "manage agent underscore alias", eventType: "session.tool.completed", callName: "manage_agent", result: tool.Result{Output: `{"status":"ok","action":"create_custom_tool","applied":true}`}, wantType: providerManagedClientEffectRefreshAgents},
+		{name: "manage theme hyphen alias", eventType: "session.tool.completed", callName: "manage-theme", result: tool.Result{Output: `{"status":"ok","action":"set","applied":true}`}, wantType: providerManagedClientEffectRefreshThemes},
+		{name: "manage theme underscore alias", eventType: "session.tool.completed", callName: "manage_theme", result: tool.Result{Output: `{"status":"ok","action":"delete","applied":true}`}, wantType: providerManagedClientEffectRefreshThemes},
+		{name: "result name is normalized", eventType: "session.tool.completed", callName: "tool", result: tool.Result{Name: "manage_theme", Output: `{"status":"ok","action":"update","applied":true}`}, wantType: providerManagedClientEffectRefreshThemes},
+		{name: "preview", eventType: "session.tool.completed", callName: "manage-agent", result: tool.Result{Output: `{"status":"proposed_update","action":"update"}`}},
+		{name: "read action", eventType: "session.tool.completed", callName: "manage-theme", result: tool.Result{Output: `{"status":"ok","action":"inspect"}`}},
+		{name: "applied without ok status", eventType: "session.tool.completed", callName: "manage-agent", result: tool.Result{Output: `{"status":"approval_required","action":"update","applied":true}`}},
+		{name: "failed result", eventType: "session.tool.failed", callName: "manage-agent", result: tool.Result{Output: `{"status":"ok","action":"update","applied":true}`, Error: "write failed"}},
+		{name: "cancelled result", eventType: "session.tool.cancelled", callName: "manage-theme", result: tool.Result{Output: `{"status":"ok","action":"set","applied":true}`, Error: "context canceled"}},
+		{name: "unrelated tool", eventType: "session.tool.completed", callName: "manage-skill", result: tool.Result{Output: `{"status":"ok","action":"update","applied":true}`}},
+		{name: "malformed output", eventType: "session.tool.completed", callName: "manage-agent", result: tool.Result{Output: "not json"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			effects := providerManagedV3ClientEffects(test.eventType, tool.Call{Name: test.callName}, test.result)
+			if test.wantType == "" {
+				if len(effects) != 0 {
+					t.Fatalf("effects = %#v, want none", effects)
+				}
+				return
+			}
+			if len(effects) != 1 || effects[0].Type != test.wantType {
+				t.Fatalf("effects = %#v, want one %q effect", effects, test.wantType)
+			}
+		})
+	}
+}
+
+func TestProviderManagedV3ToolEventPayloadCarriesTypedClientEffects(t *testing.T) {
+	call := tool.Call{CallID: "call-theme", Name: "manage-theme", Arguments: `{"action":"set","confirm":true}`}
+	result := tool.Result{CallID: call.CallID, Name: call.Name, Output: `{"status":"ok","action":"set","applied":true}`}
+	raw, err := providerManagedV3ToolEventPayload("session.tool.completed", providerToolInvokerConfig{runID: "run-theme", step: 2}, call, nil, result, 1234)
+	if err != nil {
+		t.Fatalf("build event payload: %v", err)
+	}
+	var payload struct {
+		Type          string                          `json:"type"`
+		Status        string                          `json:"status"`
+		ClientEffects []providerManagedV3ClientEffect `json:"client_effects"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode event payload: %v", err)
+	}
+	if payload.Type != "session.tool.completed" || payload.Status != "completed" {
+		t.Fatalf("terminal identity = type %q status %q", payload.Type, payload.Status)
+	}
+	if len(payload.ClientEffects) != 1 || payload.ClientEffects[0].Type != providerManagedClientEffectRefreshThemes {
+		t.Fatalf("client_effects = %#v", payload.ClientEffects)
+	}
+}
+
+func TestStoreProviderManagedToolResultV3PassesClientEffectsToSessionMutation(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
+	defer cleanup()
+	var captured sessionruntime.SessionMutationInput
+	config := providerToolInvokerConfig{
+		sessionID:         sessionID,
+		runID:             "run-agent-refresh",
+		step:              3,
+		providerManagedV3: true,
+		applySessionMutation: func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+			captured = input
+			return sessionruntime.SessionMutationResult{}, nil
+		},
+	}
+	call := tool.Call{CallID: "call-agent", Name: "manage_agent", Arguments: `{"action":"update","confirm":true}`}
+	result := tool.Result{CallID: call.CallID, Name: call.Name, Output: `{"status":"ok","action":"update","applied":true}`}
+	if err := svc.storeProviderManagedToolResultV3(config, call, nil, result); err != nil {
+		t.Fatalf("store provider tool result: %v", err)
+	}
+	if captured.EventType != "session.tool.completed" {
+		t.Fatalf("event type = %q", captured.EventType)
+	}
+	var payload struct {
+		ClientEffects []providerManagedV3ClientEffect `json:"client_effects"`
+	}
+	if err := json.Unmarshal(captured.EventPayload, &payload); err != nil {
+		t.Fatalf("decode captured event payload: %v", err)
+	}
+	if len(payload.ClientEffects) != 1 || payload.ClientEffects[0].Type != providerManagedClientEffectRefreshAgents {
+		t.Fatalf("captured client effects = %#v", payload.ClientEffects)
+	}
+}
+
 func TestProviderManagedV3ToolCallBypassesPermissionRequests(t *testing.T) {
 	workspace := t.TempDir()
 	path := filepath.Join(workspace, "note.txt")

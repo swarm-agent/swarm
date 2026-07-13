@@ -647,6 +647,15 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 	return nil
 }
 
+const (
+	providerManagedClientEffectRefreshAgents = "refresh_agents"
+	providerManagedClientEffectRefreshThemes = "refresh_themes"
+)
+
+type providerManagedV3ClientEffect struct {
+	Type string `json:"type"`
+}
+
 func providerManagedV3ToolEventPayload(eventType string, config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result, recordedAt int64) (json.RawMessage, error) {
 	step := config.step
 	if step <= 0 {
@@ -688,7 +697,32 @@ func providerManagedV3ToolEventPayload(eventType string, config providerToolInvo
 	if len(metadata) > 0 {
 		payload["metadata"] = cloneGenericMap(metadata)
 	}
+	if effects := providerManagedV3ClientEffects(eventType, call, result); len(effects) > 0 {
+		payload["client_effects"] = effects
+	}
 	return json.Marshal(payload)
+}
+
+func providerManagedV3ClientEffects(eventType string, call tool.Call, result tool.Result) []providerManagedV3ClientEffect {
+	if strings.TrimSpace(eventType) != "session.tool.completed" || strings.TrimSpace(result.Error) != "" {
+		return nil
+	}
+	resultPayload := decodeToolPayload(strings.TrimSpace(result.Output))
+	if resultPayload == nil || !mapBool(resultPayload, "applied") || !strings.EqualFold(strings.TrimSpace(mapString(resultPayload, "status")), "ok") {
+		return nil
+	}
+	toolName := canonicalToolName(result.Name)
+	if toolName != "manage_agent" && toolName != "manage_theme" {
+		toolName = canonicalToolName(call.Name)
+	}
+	switch toolName {
+	case "manage_agent":
+		return []providerManagedV3ClientEffect{{Type: providerManagedClientEffectRefreshAgents}}
+	case "manage_theme":
+		return []providerManagedV3ClientEffect{{Type: providerManagedClientEffectRefreshThemes}}
+	default:
+		return nil
+	}
 }
 
 func providerManagedV3ToolTerminalEventType(result tool.Result) string {

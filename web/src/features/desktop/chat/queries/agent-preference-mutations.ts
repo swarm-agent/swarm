@@ -72,6 +72,7 @@ export async function refreshAgentModelMutationCaches(queryClient: QueryClient):
     queryClient.invalidateQueries({ queryKey: draftModelQueryKey(), refetchType: 'inactive' }),
     queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey, refetchType: 'inactive' }),
     queryClient.invalidateQueries({ queryKey: agentSettingsStateQueryOptions().queryKey, refetchType: 'inactive' }),
+    queryClient.invalidateQueries({ queryKey: ['agent-tool-contract'], refetchType: 'active' }),
   ])
   return agentSettingsStateResult
 }

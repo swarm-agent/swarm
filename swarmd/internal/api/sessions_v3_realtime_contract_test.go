@@ -201,6 +201,38 @@ func TestV3RealtimeContractRejectsInvalidMessages(t *testing.T) {
 	}
 }
 
+func TestV3RealtimeContractAcceptsTypedClientEffectsOnCompletedToolEvents(t *testing.T) {
+	message := validV3RealtimeEventMessage(t)
+	message.EventType = "session.tool.completed"
+	message.Event.EventType = "session.tool.completed"
+	message.Event.Payload = json.RawMessage(`{"run_id":"run-1","step_id":"step-1","call_id":"call-1","tool_instance_id":"tool-1","tool_name":"manage_theme","recorded_at":1234,"status":"completed","client_effects":[{"type":"refresh_themes"}]}`)
+	if err := ValidateV3RealtimeMessage(message); err != nil {
+		t.Fatalf("valid typed client effects rejected: %v", err)
+	}
+}
+
+func TestV3RealtimeContractRejectsInvalidClientEffects(t *testing.T) {
+	tests := map[string]struct {
+		eventType string
+		payload   string
+	}{
+		"effect on failed event": {eventType: "session.tool.failed", payload: `{"run_id":"run-1","step_id":"step-1","call_id":"call-1","tool_instance_id":"tool-1","tool_name":"manage_theme","recorded_at":1234,"status":"failed","client_effects":[{"type":"refresh_themes"}]}`},
+		"empty effects":          {eventType: "session.tool.completed", payload: `{"run_id":"run-1","step_id":"step-1","call_id":"call-1","tool_instance_id":"tool-1","tool_name":"manage_theme","recorded_at":1234,"status":"completed","client_effects":[]}`},
+		"unknown effect":         {eventType: "session.tool.completed", payload: `{"run_id":"run-1","step_id":"step-1","call_id":"call-1","tool_instance_id":"tool-1","tool_name":"manage_theme","recorded_at":1234,"status":"completed","client_effects":[{"type":"reload_everything"}]}`},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			message := validV3RealtimeEventMessage(t)
+			message.EventType = test.eventType
+			message.Event.EventType = test.eventType
+			message.Event.Payload = json.RawMessage(test.payload)
+			if err := ValidateV3RealtimeMessage(message); err == nil {
+				t.Fatalf("invalid client effects passed validation")
+			}
+		})
+	}
+}
+
 func TestV3RealtimeSourceGuardRejectsOldTransportDependencies(t *testing.T) {
 	for _, file := range []string{"sessions_v3_realtime_contract.go", "sessions_v3_realtime_ws.go"} {
 		body, err := os.ReadFile(file)

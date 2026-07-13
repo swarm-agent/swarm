@@ -12,6 +12,49 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+type manageAgentOrchestrationPolicyStub struct{}
+
+func (manageAgentOrchestrationPolicyStub) CurrentSubagentPolicyForAccount(string) (map[string]any, error) {
+	return map[string]any{"mode": "bounded"}, nil
+}
+
+func (manageAgentOrchestrationPolicyStub) UpdateSubagentPolicyMapForAccount(_ string, input map[string]any) (map[string]any, error) {
+	return input, nil
+}
+
+func TestManageAgentOrchestrationPolicyAppliedMarker(t *testing.T) {
+	rt := NewRuntime(1)
+	rt.SetManageOrchestrationPolicyService(manageAgentOrchestrationPolicyStub{})
+	for _, test := range []struct {
+		name        string
+		confirm     bool
+		wantApplied bool
+	}{
+		{name: "preview", confirm: false, wantApplied: false},
+		{name: "applied", confirm: true, wantApplied: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			results := rt.ExecuteBatch(context.Background(), t.TempDir(), []Call{{
+				CallID: "manage-agent-policy-" + test.name,
+				Name:   "manage-agent",
+				Arguments: mustManageAgentArgsJSON(t, map[string]any{
+					"action":  "update_orchestration_policy",
+					"confirm": test.confirm,
+					"content": map[string]any{"mode": "bounded"},
+				}),
+			}})
+			if len(results) != 1 || strings.TrimSpace(results[0].Error) != "" {
+				t.Fatalf("result = %#v", results)
+			}
+			payload := decodeManageAgentResultJSON(t, results[0].Output)
+			applied, _ := payload["applied"].(bool)
+			if applied != test.wantApplied {
+				t.Fatalf("applied = %v, want %v; payload=%v", applied, test.wantApplied, payload)
+			}
+		})
+	}
+}
+
 func TestManageAgentCreateAcceptsBackgroundMode(t *testing.T) {
 	workspace := t.TempDir()
 	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))
