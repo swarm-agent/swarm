@@ -427,6 +427,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		return err
 	})
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
+	startV3SessionRetention(bgCtx, sessionSvc)
 
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	toolRuntime.SetManageSessionRealtimePublisher(apiServer.PublishCommittedV3RealtimeOutbox)

@@ -421,13 +421,10 @@ func (s *Server) v3RealtimeValidateEndpointCursor(conn *transportws.Conn, reques
 }
 
 func (s *Server) v3RealtimeOldestAvailableEndpointSeq() (uint64, error) {
-	if s != nil && s.v3RealtimeRetentionBoundary != nil {
-		return s.v3RealtimeRetentionBoundary()
+	if s == nil || s.sessions == nil {
+		return 0, nil
 	}
-	// Durable realtime outbox compaction is not active yet. A zero boundary means
-	// every committed endpoint cursor remains replayable; retention/compaction will
-	// wire this to the store-maintained oldest retained endpoint sequence.
-	return 0, nil
+	return s.sessions.OldestRetainedRealtimeOutboxRevision()
 }
 
 func (s *Server) v3RealtimeCatchUpEndpointCursor(conn *transportws.Conn, principal identity.Principal, scope v3SyncCursorScope, currentEndpointSeq, requestedEndpointSeq uint64, subs map[string]v3RealtimeSubscription, worksets map[string]v3RealtimeWorksetSubscription, emitZeroEventWatermark bool) (v3RealtimeAdvanceResult, bool) {

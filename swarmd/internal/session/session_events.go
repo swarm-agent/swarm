@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"time"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -185,6 +186,34 @@ func (s *Service) CurrentRealtimeOutboxRevision() (uint64, error) {
 		return 0, errors.New("session store is not configured")
 	}
 	return s.store.CurrentV3RealtimeOutboxRevision()
+}
+
+func (s *Service) OldestRetainedRealtimeOutboxRevision() (uint64, error) {
+	if s == nil || s.store == nil {
+		return 0, errors.New("session store is not configured")
+	}
+	return s.store.OldestRetainedV3RealtimeEndpointSeq()
+}
+
+func (s *Service) PutSessionMaintenanceState(state pebblestore.V3SessionMaintenanceState) error {
+	if s == nil || s.store == nil {
+		return errors.New("session store is not configured")
+	}
+	return s.store.PutV3SessionMaintenanceState(state)
+}
+
+func (s *Service) RunSessionRetentionPass(ctx context.Context, now time.Time, policy pebblestore.V3SessionRetentionPolicy) (pebblestore.V3SessionMaintenanceResult, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.V3SessionMaintenanceResult{}, errors.New("session store is not configured")
+	}
+	return s.store.RunV3SessionRetentionPass(ctx, now, policy)
+}
+
+func (s *Service) RunSessionSearchMigrationPass(ctx context.Context, now time.Time, maxSessions int) (pebblestore.V3SessionSearchMigrationResult, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.V3SessionSearchMigrationResult{}, errors.New("session store is not configured")
+	}
+	return s.store.RunV3SessionSearchMigrationPass(ctx, now, maxSessions)
 }
 
 func (s *Service) CurrentRealtimeOutboxCursor() (string, error) {

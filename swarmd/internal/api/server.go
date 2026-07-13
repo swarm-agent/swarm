@@ -89,7 +89,6 @@ type Server struct {
 	v3RealtimeOutbox            *v3RealtimeOutboxHub
 	v3LiveHub                   *v3LiveHub
 	v3LivePatchEnabled          bool
-	v3RealtimeRetentionBoundary func() (uint64, error)
 	v3SyncCursors               *v3SyncCursorKeyring
 	v3SessionExecutor           *sessionV3Executor
 	planLifecycle               *sessionruntime.PlanLifecycleService

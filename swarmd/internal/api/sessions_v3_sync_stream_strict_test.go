@@ -764,7 +764,7 @@ func TestSessionsV3SyncStreamRejectsMissingTailFromGlobalOutbox(t *testing.T) {
 }
 
 func TestSessionsV3SyncStreamRejectsAheadAndTooOldCursors(t *testing.T) {
-	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-stream-retention", "Sync Stream Retention", "/workspace/stream-retention")
 	principal := testPrincipal()
 	selector := sessionsV3SyncSelector{Kind: "global", Global: true}
@@ -789,7 +789,9 @@ func TestSessionsV3SyncStreamRejectsAheadAndTooOldCursors(t *testing.T) {
 	}
 
 	retentionBoundary := currentHead + 1
-	server.v3RealtimeRetentionBoundary = func() (uint64, error) { return retentionBoundary, nil }
+	if err := sessionSvc.PutSessionMaintenanceState(pebblestore.V3SessionMaintenanceState{OldestRetainedRealtimeEndpointSeq: retentionBoundary, RealtimePrunedThroughEndpointSeq: retentionBoundary - 1, UpdatedAtUnixMs: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
 	boundaryCursor, err := server.signV3SyncEndpointCursor(scope, currentHead)
 	if err != nil {
 		t.Fatalf("sign boundary cursor: %v", err)
@@ -802,7 +804,9 @@ func TestSessionsV3SyncStreamRejectsAheadAndTooOldCursors(t *testing.T) {
 	if boundaryRec.Code != http.StatusOK {
 		t.Fatalf("boundary cursor response status=%d body=%s, want replayable cursor oldest_available-1", boundaryRec.Code, boundaryRec.Body.String())
 	}
-	server.v3RealtimeRetentionBoundary = func() (uint64, error) { return currentHead + 2, nil }
+	if err := sessionSvc.PutSessionMaintenanceState(pebblestore.V3SessionMaintenanceState{OldestRetainedRealtimeEndpointSeq: currentHead + 2, RealtimePrunedThroughEndpointSeq: currentHead + 1, UpdatedAtUnixMs: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
 	tooOldCursor, err := server.signV3SyncEndpointCursor(scope, currentHead)
 	if err != nil {
 		t.Fatalf("sign too-old cursor: %v", err)

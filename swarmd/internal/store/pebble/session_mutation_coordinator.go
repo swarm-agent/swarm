@@ -38,6 +38,19 @@ type sessionMutationCoordinator struct {
 	// library rows concurrently while excluding the versioned full rebuild.
 	libraryRepairMu sync.RWMutex
 
+	// maintenanceMu serializes bounded retention passes. Each pass still commits
+	// its row deletions and durable resume state in one atomic Pebble batch.
+	maintenanceMu sync.Mutex
+
+	// beforeSessionMaintenanceCommit is a test seam immediately before the
+	// atomic retention batch commit. Returning an error must leave rows and
+	// maintenance progress unchanged.
+	beforeSessionMaintenanceCommit func() error
+
+	// beforeSearchMigrationCommit injects a failure before a per-session search
+	// rebuild and its durable migration cursor are committed atomically.
+	beforeSearchMigrationCommit func(sessionID string) error
+
 	// beforeDurableCommit is a test seam at the store commit boundary. Tests set
 	// it before starting workers and never mutate it concurrently.
 	beforeDurableCommit func(sessionID string)

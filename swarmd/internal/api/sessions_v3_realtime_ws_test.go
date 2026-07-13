@@ -391,10 +391,12 @@ func TestV3RealtimeEndpointCursorAheadFailsClosed(t *testing.T) {
 }
 
 func TestV3RealtimeNoCursorHelloStartsAtCurrentDurableHead(t *testing.T) {
-	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-hello-head", "create-realtime-hello-head")
 	httpServer := newV3RealtimeHTTPTestServer(t, server)
-	server.v3RealtimeRetentionBoundary = func() (uint64, error) { return created.RealtimeOutbox.EndpointSeq + 10, nil }
+	if err := sessionSvc.PutSessionMaintenanceState(pebblestore.V3SessionMaintenanceState{OldestRetainedRealtimeEndpointSeq: created.RealtimeOutbox.EndpointSeq + 10, RealtimePrunedThroughEndpointSeq: created.RealtimeOutbox.EndpointSeq + 9, UpdatedAtUnixMs: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
 
 	conn := dialV3RealtimeStream(t, httpServer.URL)
 	defer conn.Close()
@@ -432,20 +434,41 @@ func TestV3RealtimeSendMessageRejectsOutboundClientOnlyFrame(t *testing.T) {
 	}
 }
 
+func TestV3RealtimeReadsDurableOldestRetainedBoundary(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-durable-boundary", "create-realtime-durable-boundary")
+	boundary := created.RealtimeOutbox.EndpointSeq + 2
+	if err := sessionSvc.PutSessionMaintenanceState(pebblestore.V3SessionMaintenanceState{
+		OldestRetainedRealtimeEndpointSeq: boundary,
+		RealtimePrunedThroughEndpointSeq:  boundary - 1,
+		UpdatedAtUnixMs:                   time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := server.v3RealtimeOldestAvailableEndpointSeq()
+	if err != nil || got != boundary {
+		t.Fatalf("durable oldest retained boundary=%d err=%v, want %d", got, err, boundary)
+	}
+}
+
 func TestV3RealtimeEndpointCursorTooOldRequiresBootstrap(t *testing.T) {
-	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-too-old", "create-realtime-too-old")
 	currentHead := created.RealtimeOutbox.EndpointSeq
 	scope := v3SyncCursorScopeForRealtime(testPrincipal(), "desktop")
 	httpServer := newV3RealtimeHTTPTestServer(t, server)
 
-	server.v3RealtimeRetentionBoundary = func() (uint64, error) { return currentHead + 1, nil }
+	if err := sessionSvc.PutSessionMaintenanceState(pebblestore.V3SessionMaintenanceState{OldestRetainedRealtimeEndpointSeq: currentHead + 1, RealtimePrunedThroughEndpointSeq: currentHead, UpdatedAtUnixMs: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
 	if !server.v3RealtimeValidateEndpointCursor(nil, currentHead) {
 		t.Fatalf("boundary cursor oldest_available-1 should be replayable")
 	}
 
 	retentionBoundary := currentHead + 2
-	server.v3RealtimeRetentionBoundary = func() (uint64, error) { return retentionBoundary, nil }
+	if err := sessionSvc.PutSessionMaintenanceState(pebblestore.V3SessionMaintenanceState{OldestRetainedRealtimeEndpointSeq: retentionBoundary, RealtimePrunedThroughEndpointSeq: retentionBoundary - 1, UpdatedAtUnixMs: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
 	oldCursor, err := server.signV3SyncEndpointCursor(scope, currentHead)
 	if err != nil {
 		t.Fatalf("sign old cursor: %v", err)
