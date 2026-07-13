@@ -674,6 +674,7 @@ export interface PendingUserMessage {
   content: string
   metadata?: Record<string, unknown>
   createdAt: number
+  timelineSeq?: number
   status: 'pending' | 'failed'
   error?: string
 }

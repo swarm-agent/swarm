@@ -3296,6 +3296,34 @@ test('realtime workset removed preserves transcript after child discovery', () =
   assert.equal(state.messagesBySession['session-new'].items.length, 1)
 })
 
+test('pending user message is ordered after the active stream timeline', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.messagesBySession[sessionA.id] = {
+    items: [{ ...messageA1, global_seq: 7 }],
+    byMessageId: { [messageA1.id]: 0 },
+    byGlobalSeq: { '7': 0 },
+  }
+  state.liveRunsBySession[sessionA.id] = {
+    'run-active': {
+      sessionId: sessionA.id,
+      runId: 'run-active',
+      status: 'running',
+      toolCallsByCallId: {},
+      lastEventSeqSeen: 11,
+    },
+  }
+
+  upsertPendingUserMessage(state, {
+    sessionId: sessionA.id,
+    clientRequestId: 'client-next-turn',
+    messageId: 'message-next-turn',
+    content: 'next turn',
+    createdAt: 1_000_000,
+  })
+
+  assert.equal(state.pendingUserByClientRequestId['client-next-turn']?.timelineSeq, 12)
+})
+
 test('message mutation reconciles pending by client request and message id', () => {
   const state = createEmptyDesktopV3CacheState()
   upsertPendingUserMessage(state, {

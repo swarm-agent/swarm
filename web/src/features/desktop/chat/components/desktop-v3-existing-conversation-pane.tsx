@@ -819,7 +819,7 @@ function renderItemTimelineSeq(item: DesktopV3RenderItem): number {
     case "message":
       return numericTimelineSeq(item.timelineSeq ?? item.message.global_seq);
     case "pending-user":
-      return numericTimelineSeq(item.timelineSeq ?? item.message.createdAt);
+      return numericTimelineSeq(item.timelineSeq ?? item.message.timelineSeq);
     default:
       return numericTimelineSeq(item.timelineSeq);
   }
@@ -840,7 +840,7 @@ export function desktopV3RenderItemKey(item: DesktopV3RenderItem): string {
     case "message":
       return item.renderKey || item.message.id;
     case "pending-user":
-      return item.message.clientRequestId;
+      return item.message.messageId;
     default:
       return item.id;
   }
@@ -1107,8 +1107,13 @@ export function buildDesktopV3LiveRunRenderItems(
 export function buildDesktopV3ConversationRenderItems(
   renderedMessages: RenderedSessionMessages,
 ): DesktopV3RenderItem[] {
+  const pendingMessageIds = new Set(
+    renderedMessages.pendingUser.map((message) => message.messageId),
+  );
   const committedMessages = renderedMessages.committed.filter(
-    (message) => !isDesktopV3ManualCompactionAckMessage(message),
+    (message) =>
+      !isDesktopV3ManualCompactionAckMessage(message) &&
+      !pendingMessageIds.has(message.id),
   );
   const assistantMessages = canonicalContentSet(committedMessages, "assistant");
   const reasoningMessages = canonicalContentSet(committedMessages, "reasoning");
@@ -1130,7 +1135,7 @@ export function buildDesktopV3ConversationRenderItems(
     ...renderedMessages.pendingUser.map((message) => ({
       type: "pending-user" as const,
       message,
-      timelineSeq: message.createdAt,
+      timelineSeq: message.timelineSeq,
     })),
   ];
   for (const run of renderedMessages.liveRuns) {

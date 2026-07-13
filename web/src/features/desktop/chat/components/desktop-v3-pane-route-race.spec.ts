@@ -365,6 +365,82 @@ test('Desktop V3 committed tool message reuses matching live tool render key', (
 })
 
 
+test('Desktop V3 new user message follows the active stream instead of sorting by wall-clock time', () => {
+  const items = buildDesktopV3ConversationRenderItems({
+    committed: [{
+      id: 'msg-user-1',
+      session_id: 'session-a',
+      global_seq: 1,
+      role: 'user',
+      content: 'first turn',
+      created_at: 1,
+    }],
+    pendingUser: [{
+      clientRequestId: 'client-next-turn',
+      messageId: 'msg-next-turn',
+      sessionId: 'session-a',
+      role: 'user',
+      content: 'next turn',
+      createdAt: 1_000_000,
+      timelineSeq: 6,
+      status: 'pending',
+    }],
+    liveRuns: [{
+      sessionId: 'session-a',
+      runId: 'run-a',
+      status: 'running',
+      assistantDraft: { content: 'streaming answer', updatedAt: 50, timelineSeq: 5 },
+      toolCallsByCallId: {},
+      lastEventSeqSeen: 5,
+    }],
+    runIntents: [],
+  })
+
+  assert.deepEqual(items.map((item) => item.type), ['message', 'live-assistant', 'pending-user'])
+  assert.equal(desktopV3RenderItemKey(items[2]!), 'msg-next-turn')
+})
+
+test('Desktop V3 pending user keeps its render key when the canonical message arrives', () => {
+  const pendingItems = buildDesktopV3ConversationRenderItems({
+    committed: [],
+    pendingUser: [{
+      clientRequestId: 'client-next-turn',
+      messageId: 'msg-next-turn',
+      sessionId: 'session-a',
+      role: 'user',
+      content: 'next turn',
+      createdAt: 10,
+      timelineSeq: 2,
+      status: 'pending',
+    }],
+    liveRuns: [],
+    runIntents: [],
+  })
+  const committedMessage = {
+    id: 'msg-next-turn',
+    session_id: 'session-a',
+    global_seq: 2,
+    role: 'user' as const,
+    content: 'next turn',
+    created_at: 10,
+  }
+  const committedItems = buildDesktopV3ConversationRenderItems({
+    committed: [committedMessage],
+    pendingUser: [],
+    liveRuns: [],
+    runIntents: [],
+  })
+  const overlappingItems = buildDesktopV3ConversationRenderItems({
+    committed: [committedMessage],
+    pendingUser: pendingItems[0]?.type === 'pending-user' ? [pendingItems[0].message] : [],
+    liveRuns: [],
+    runIntents: [],
+  })
+
+  assert.equal(desktopV3RenderItemKey(pendingItems[0]!), desktopV3RenderItemKey(committedItems[0]!))
+  assert.deepEqual(overlappingItems.map((item) => item.type), ['pending-user'])
+})
+
 test('Desktop V3 live run render items preserve backend event order', () => {
   const items = buildDesktopV3LiveRunRenderItems({
     sessionId: 'session-a',

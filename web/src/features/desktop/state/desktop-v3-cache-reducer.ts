@@ -1010,6 +1010,33 @@ export function upsertPendingUserMessage(
     createdAt: number
   },
 ): DesktopV3CacheState {
+  const projection = state.projectionsBySession[input.sessionId]
+  const latestProjectionSeq = Math.max(
+    projection?.last_event_seq ?? 0,
+    projection?.projection_high_watermark_seq ?? 0,
+  )
+  const latestCommittedSeq = state.messagesBySession[input.sessionId]?.items.reduce(
+    (latest, message) => Math.max(latest, message.global_seq ?? 0),
+    0,
+  ) ?? 0
+  const latestLiveSeq = Object.values(state.liveRunsBySession[input.sessionId] ?? {}).reduce(
+    (latest, run) => Math.max(
+      latest,
+      run.lastEventSeqSeen ?? 0,
+      run.assistantDraft?.timelineSeq ?? 0,
+      ...(run.assistantSegments ?? []).map((segment) => segment.timelineSeq ?? 0),
+      ...Object.values(run.toolCallsByCallId).map((tool) => tool.timelineSeq ?? 0),
+      ...Object.values(run.reasoningByKey ?? {}).map((reasoning) => reasoning.timelineSeq ?? 0),
+      run.reasoning?.timelineSeq ?? 0,
+    ),
+    0,
+  )
+  const latestPendingSeq = Object.values(state.pendingUserByClientRequestId).reduce(
+    (latest, message) => message.sessionId === input.sessionId
+      ? Math.max(latest, message.timelineSeq ?? 0)
+      : latest,
+    0,
+  )
   const pending: PendingUserMessage = {
     clientRequestId: input.clientRequestId,
     messageId: input.messageId,
@@ -1018,6 +1045,12 @@ export function upsertPendingUserMessage(
     content: input.content,
     metadata: input.metadata,
     createdAt: input.createdAt,
+    timelineSeq: Math.max(
+      latestProjectionSeq,
+      latestCommittedSeq,
+      latestLiveSeq,
+      latestPendingSeq,
+    ) + 1,
     status: 'pending',
   }
   state.pendingUserByClientRequestId[input.clientRequestId] = pending

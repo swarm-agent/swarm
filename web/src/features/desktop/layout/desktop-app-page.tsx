@@ -280,6 +280,7 @@ function pendingUserMessagesEqual(left: RenderedSessionMessages['pendingUser'], 
       || a.sessionId !== b.sessionId
       || a.content !== b.content
       || a.createdAt !== b.createdAt
+      || a.timelineSeq !== b.timelineSeq
       || a.status !== b.status
       || a.error !== b.error) return false
   }
