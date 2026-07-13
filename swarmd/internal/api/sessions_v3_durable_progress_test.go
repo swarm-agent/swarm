@@ -58,11 +58,11 @@ func (w *sessionsV3DurableProgressRecordingWriter) RecordRunProgress(job session
 	return sessionruntime.SessionMutationResult{}, nil
 }
 
-func (w *sessionsV3DurableProgressRecordingWriter) RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, summary string) (sessionruntime.SessionMutationResult, error) {
+func (w *sessionsV3DurableProgressRecordingWriter) RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, deltaMode string, summary string) (sessionruntime.SessionMutationResult, error) {
 	w.maybeBlock()
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.reasoning = append(w.reasoning, eventType+":"+delta+":"+summary)
+	w.reasoning = append(w.reasoning, eventType+":"+delta+":"+deltaMode+":"+summary)
 	return sessionruntime.SessionMutationResult{}, nil
 }
 
@@ -132,7 +132,16 @@ func TestV3DurableProgressReasoningPersistsIncrementalChangesAndTerminalFlush(t 
 	if err := sink.TryReplaceReasoning(1, "reasoning-1", "alpha"); err != nil {
 		t.Fatal(err)
 	}
+	if err := sink.FlushBarrier(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if err := sink.TryReplaceReasoning(1, "reasoning-1", "alpha beta"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.FlushBarrier(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.TryReplaceReasoning(1, "reasoning-1", "corrected"); err != nil {
 		t.Fatal(err)
 	}
 	if err := sink.TryCompleteReasoning(1, "reasoning-1", "done"); err != nil {
@@ -144,10 +153,16 @@ func TestV3DurableProgressReasoningPersistsIncrementalChangesAndTerminalFlush(t 
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
 	joined := strings.Join(writer.reasoning, "|")
-	if !strings.Contains(joined, "session.reasoning.delta: beta:") || strings.Contains(joined, "session.reasoning.delta:alpha beta:") {
-		t.Fatalf("reasoning records = %q, want incremental second delta", joined)
+	if !strings.Contains(joined, "session.reasoning.delta:alpha:replace:") {
+		t.Fatalf("reasoning records = %q, want initial replacement", joined)
 	}
-	if !strings.Contains(joined, "session.reasoning.completed::done") {
+	if !strings.Contains(joined, "session.reasoning.delta: beta:append:") {
+		t.Fatalf("reasoning records = %q, want incremental suffix append", joined)
+	}
+	if !strings.Contains(joined, "session.reasoning.delta:corrected:replace:") {
+		t.Fatalf("reasoning records = %q, want explicit non-prefix replacement", joined)
+	}
+	if !strings.Contains(joined, "session.reasoning.completed:::done") {
 		t.Fatalf("reasoning records = %q, missing terminal completion", joined)
 	}
 }

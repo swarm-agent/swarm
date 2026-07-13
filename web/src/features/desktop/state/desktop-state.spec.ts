@@ -10,6 +10,7 @@ import {
 } from './desktop-state'
 import type { ChatMessageRecord } from '../chat/types/chat'
 import type { DesktopSessionRecord } from '../types/realtime'
+import { applyCanonicalReasoningEventToLiveHistory } from './live-reasoning-history'
 
 function session(id: string, updatedAt: number): DesktopSessionRecord {
   return {
@@ -160,6 +161,29 @@ test('scoped snapshot reconciliation removes stale persisted sessions missing fr
   assert.equal(reconciled.sessionsById[canonicalSession.id]?.live.status, 'running')
   assert.deepEqual(reconciled.messagesBySessionId[canonicalSession.id]?.map((record) => record.id), ['hot-message'])
   assert.equal(reconciled.sessionsById[otherWorkspaceSession.id]?.id, otherWorkspaceSession.id)
+})
+
+test('canonical reasoning history applies explicit deltas and legacy snapshots', () => {
+  const live = session('reasoning-deltas', 10).live
+
+  applyCanonicalReasoningEventToLiveHistory(live, {
+    run_id: 'run-1', step_id: 'step-1', reasoning_id: 'reasoning-1', delta: 'inspect', delta_mode: 'replace',
+  }, 'session.reasoning.delta', 10, 1)
+  applyCanonicalReasoningEventToLiveHistory(live, {
+    run_id: 'run-1', step_id: 'step-1', reasoning_id: 'reasoning-1', delta: ' files', delta_mode: 'append',
+  }, 'session.reasoning.delta', 11, 2)
+  assert.equal(live.reasoningHistory?.[0]?.text, 'inspect files')
+
+  applyCanonicalReasoningEventToLiveHistory(live, {
+    run_id: 'run-1', step_id: 'step-1', reasoning_id: 'reasoning-1', delta: 'legacy snapshot',
+  }, 'session.reasoning.delta', 12, 3)
+  assert.equal(live.reasoningHistory?.[0]?.text, 'legacy snapshot')
+
+  applyCanonicalReasoningEventToLiveHistory(live, {
+    run_id: 'run-1', step_id: 'step-1', reasoning_id: 'reasoning-1', summary: 'final summary',
+  }, 'session.reasoning.completed', 13, 4)
+  assert.equal(live.reasoningHistory?.[0]?.state, 'done')
+  assert.equal(live.reasoningHistory?.[0]?.summary, 'final summary')
 })
 
 test('durable session assistant reset preserves completed reasoning history', () => {

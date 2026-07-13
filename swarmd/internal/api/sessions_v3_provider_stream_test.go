@@ -60,12 +60,12 @@ func (w *sessionsV3BlockingDurableProgressWriter) RecordRunProgress(job sessionV
 	return w.base.RecordRunProgress(job, progress, deltaIndex)
 }
 
-func (w *sessionsV3BlockingDurableProgressWriter) RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, summary string) (sessionruntime.SessionMutationResult, error) {
+func (w *sessionsV3BlockingDurableProgressWriter) RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, deltaMode string, summary string) (sessionruntime.SessionMutationResult, error) {
 	w.blockFirst()
 	if w.base == nil {
 		return sessionruntime.SessionMutationResult{}, nil
 	}
-	return w.base.RecordReasoningEvent(job, eventType, step, eventIndex, reasoningKey, delta, summary)
+	return w.base.RecordReasoningEvent(job, eventType, step, eventIndex, reasoningKey, delta, deltaMode, summary)
 }
 
 func TestV3AssistantCallbackPublishesAllDeltasWhileDurableWriterIsBlocked(t *testing.T) {

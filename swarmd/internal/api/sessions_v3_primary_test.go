@@ -3949,13 +3949,14 @@ func TestSessionsV3ExecutorCoalescesProviderReasoningDeltas(t *testing.T) {
 		t.Fatalf("reasoning delta events = %d, want one coalesced event events=%+v", len(reasoningDeltas), events)
 	}
 	var payload struct {
-		Delta string `json:"delta"`
+		Delta     string `json:"delta"`
+		DeltaMode string `json:"delta_mode"`
 	}
 	if err := json.Unmarshal(reasoningDeltas[0].Payload, &payload); err != nil {
 		t.Fatalf("decode reasoning delta payload: %v", err)
 	}
-	if payload.Delta != "Inspecting files carefully" {
-		t.Fatalf("reasoning delta payload = %+v", payload)
+	if payload.Delta != "Inspecting files carefully" || payload.DeltaMode != "replace" {
+		t.Fatalf("reasoning delta payload = %+v, want initial replacement", payload)
 	}
 }
 
@@ -4006,15 +4007,16 @@ func TestSessionsV3ExecutorReasoningSnapshotSizeFlushUsesIncrementalChange(t *te
 			continue
 		}
 		var payload struct {
-			Delta string `json:"delta"`
+			Delta     string `json:"delta"`
+			DeltaMode string `json:"delta_mode"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			t.Fatalf("decode reasoning delta payload: %v", err)
 		}
-		got = append(got, payload.Delta)
+		got = append(got, payload.DeltaMode+":"+payload.Delta)
 	}
-	if len(got) != 2 || got[0] != baseSnapshot || got[1] != finalSnapshot {
-		t.Fatalf("reasoning snapshot deltas = %#v, want [%q %q]", got, baseSnapshot, finalSnapshot)
+	if len(got) != 2 || got[0] != "replace:"+baseSnapshot || got[1] != "append:bcd" {
+		t.Fatalf("reasoning deltas = %#v, want replacement then bounded suffix", got)
 	}
 }
 

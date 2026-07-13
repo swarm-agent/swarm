@@ -613,7 +613,7 @@ func sessionV3ReasoningEventID(step int, reasoningKey string) string {
 	return "reasoning_" + hex.EncodeToString(sum[:8])
 }
 
-func (e *sessionV3Executor) recordReasoningEvent(job sessionV3ExecutorJob, eventType string, step, eventIndex int, reasoningKey, delta, summary string) (sessionruntime.SessionMutationResult, error) {
+func (e *sessionV3Executor) recordReasoningEvent(job sessionV3ExecutorJob, eventType string, step, eventIndex int, reasoningKey, delta, deltaMode, summary string) (sessionruntime.SessionMutationResult, error) {
 	if e.isRunCanceled(job) {
 		return sessionruntime.SessionMutationResult{}, context.Canceled
 	}
@@ -645,7 +645,9 @@ func (e *sessionV3Executor) recordReasoningEvent(job sessionV3ExecutorJob, event
 	if eventIndex > 0 && eventType == "session.reasoning.delta" {
 		payload["delta_index"] = eventIndex
 		payload["delta_version"] = 2
-		payload["delta_mode"] = "append_or_replace"
+		if deltaMode == "append" || deltaMode == "replace" {
+			payload["delta_mode"] = deltaMode
+		}
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

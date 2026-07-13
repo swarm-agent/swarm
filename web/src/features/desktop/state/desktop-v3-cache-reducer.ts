@@ -3155,13 +3155,17 @@ function applyLiveReasoningOverlay(
   const isStarted = eventType === 'session.reasoning.started'
   const isCompleted = eventType === 'session.reasoning.completed'
   const isError = eventType === 'session.reasoning.failed' || eventType === 'session.reasoning.error'
-  const textSnapshot = stringValue(payload.text) || stringValue(payload.delta)
+  const explicitTextSnapshot = stringValue(payload.text)
+  const canonicalDelta = stringValue(payload.delta)
+  const deltaMode = stringValue(payload.delta_mode).trim()
   const textDelta = stringValue(payload.text_delta)
   const summarySnapshot = stringValue(payload.summary)
   const summaryDelta = stringValue(payload.summary_delta)
   const nextState: LiveRunReasoningOverlay['state'] = isError ? 'error' : isCompleted ? 'completed' : 'running'
   const nextSummary = summarySnapshot || (summaryDelta ? `${current.summary}${summaryDelta}` : current.summary)
-  const nextText = textSnapshot || (textDelta ? `${current.text}${textDelta}` : current.text)
+  const nextText = explicitTextSnapshot
+    || (canonicalDelta ? deltaMode === 'append' ? `${current.text}${canonicalDelta}` : canonicalDelta : '')
+    || (textDelta ? `${current.text}${textDelta}` : current.text)
   const next: LiveRunReasoningOverlay = {
     ...current,
     key,

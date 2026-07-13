@@ -35,7 +35,7 @@ type sessionV3AssistantProgress struct {
 type sessionV3DurableProgressWriter interface {
 	RecordRunPhase(job sessionV3ExecutorJob, phase RunPhase, eventType string) (sessionruntime.SessionMutationResult, error)
 	RecordRunProgress(job sessionV3ExecutorJob, progress sessionV3AssistantProgress, deltaIndex int) (sessionruntime.SessionMutationResult, error)
-	RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, summary string) (sessionruntime.SessionMutationResult, error)
+	RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, deltaMode string, summary string) (sessionruntime.SessionMutationResult, error)
 }
 
 type sessionV3ExecutorDurableProgressWriter struct {
@@ -50,8 +50,8 @@ func (w sessionV3ExecutorDurableProgressWriter) RecordRunProgress(job sessionV3E
 	return w.exec.recordRunProgress(job, progress, deltaIndex)
 }
 
-func (w sessionV3ExecutorDurableProgressWriter) RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, summary string) (sessionruntime.SessionMutationResult, error) {
-	return w.exec.recordReasoningEvent(job, eventType, step, eventIndex, reasoningKey, delta, summary)
+func (w sessionV3ExecutorDurableProgressWriter) RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, deltaMode string, summary string) (sessionruntime.SessionMutationResult, error) {
+	return w.exec.recordReasoningEvent(job, eventType, step, eventIndex, reasoningKey, delta, deltaMode, summary)
 }
 
 type sessionV3AssistantAcceptedEnd struct {
@@ -80,6 +80,8 @@ type sessionV3ReasoningProgressAggregate struct {
 	Step           int
 	ReasoningKey   string
 	Delta          string
+	DeltaMode      string
+	BaseSnapshot   string
 	Snapshot       string
 	Bytes          int
 	FirstPendingAt time.Time
@@ -311,7 +313,11 @@ func (s *sessionV3DurableProgressSink) TryReplaceReasoning(step int, reasoningKe
 	if agg != nil {
 		oldBytes = agg.Bytes
 	}
-	delta := sessionV3ReasoningChangedBytes(previous, snapshot)
+	baseSnapshot := previous
+	if agg != nil {
+		baseSnapshot = agg.BaseSnapshot
+	}
+	delta, deltaMode := sessionV3ReasoningChangedBytes(baseSnapshot, snapshot)
 	newBytes := len([]byte(delta))
 	additionalBytes := newBytes - oldBytes
 	if additionalBytes < 0 {
@@ -322,11 +328,12 @@ func (s *sessionV3DurableProgressSink) TryReplaceReasoning(step int, reasoningKe
 	}
 	if agg == nil {
 		s.nextOrder++
-		agg = &sessionV3ReasoningProgressAggregate{FirstOrder: s.nextOrder, Step: step, ReasoningKey: reasoningKey, FirstPendingAt: time.Now()}
+		agg = &sessionV3ReasoningProgressAggregate{FirstOrder: s.nextOrder, Step: step, ReasoningKey: reasoningKey, BaseSnapshot: baseSnapshot, FirstPendingAt: time.Now()}
 		s.currentReasoningByKey[reasoningKey] = agg
 	}
 	s.pendingBytes += newBytes - agg.Bytes
 	agg.Delta = delta
+	agg.DeltaMode = deltaMode
 	agg.Snapshot = snapshot
 	agg.Bytes = newBytes
 	s.acceptedReasoningSnapshot[reasoningKey] = snapshot
@@ -337,16 +344,13 @@ func (s *sessionV3DurableProgressSink) TryReplaceReasoning(step int, reasoningKe
 	return nil
 }
 
-func sessionV3ReasoningChangedBytes(previous, snapshot string) string {
-	if previous == "" {
-		return snapshot
+func sessionV3ReasoningChangedBytes(previous, snapshot string) (string, string) {
+	if previous != "" && strings.HasPrefix(snapshot, previous) {
+		return snapshot[len(previous):], "append"
 	}
-	if strings.HasPrefix(snapshot, previous) {
-		return snapshot[len(previous):]
-	}
-	// A provider may replace an earlier snapshot. Persist the replacement as an
-	// explicit incremental value; consumers distinguish it via delta_version.
-	return snapshot
+	// The first snapshot and provider corrections are replacements. Persisting
+	// only suffixes for prefix growth keeps the durable stream bounded.
+	return snapshot, "replace"
 }
 
 func (s *sessionV3DurableProgressSink) TryCompleteReasoning(step int, reasoningKey string, summary string) error {
@@ -710,18 +714,18 @@ func (s *sessionV3DurableProgressSink) persistEpoch(epoch sessionV3DurableProgre
 			s.reasoningDeltaIndexByKey[item.Reasoning.ReasoningKey]++
 			eventIndex := s.reasoningDeltaIndexByKey[item.Reasoning.ReasoningKey]
 			s.mu.Unlock()
-			if _, err := s.writer.RecordReasoningEvent(s.job, "session.reasoning.delta", item.Reasoning.Step, eventIndex, item.Reasoning.ReasoningKey, item.Reasoning.Delta, ""); err != nil {
+			if _, err := s.writer.RecordReasoningEvent(s.job, "session.reasoning.delta", item.Reasoning.Step, eventIndex, item.Reasoning.ReasoningKey, item.Reasoning.Delta, item.Reasoning.DeltaMode, ""); err != nil {
 				return err
 			}
 			s.mu.Lock()
 			s.reasoningPersistedCount++
 			s.mu.Unlock()
 		case sessionV3DurableProgressItemReasoningStarted:
-			if _, err := s.writer.RecordReasoningEvent(s.job, "session.reasoning.started", item.Step, 0, item.ReasoningKey, "", ""); err != nil {
+			if _, err := s.writer.RecordReasoningEvent(s.job, "session.reasoning.started", item.Step, 0, item.ReasoningKey, "", "", ""); err != nil {
 				return err
 			}
 		case sessionV3DurableProgressItemReasoningComplete:
-			if _, err := s.writer.RecordReasoningEvent(s.job, "session.reasoning.completed", item.Step, 0, item.ReasoningKey, "", item.Summary); err != nil {
+			if _, err := s.writer.RecordReasoningEvent(s.job, "session.reasoning.completed", item.Step, 0, item.ReasoningKey, "", "", item.Summary); err != nil {
 				return err
 			}
 		}

@@ -68,10 +68,12 @@ function upsertReasoningRecord(
   const isCompleted = eventType === 'session.reasoning.completed'
   const isErrored = eventType === 'session.reasoning.error' || eventType === 'session.reasoning.failed'
   const previousText = existing?.text ?? ''
-  // The V3 backend coalesces provider reasoning into snapshot deltas for the
-  // canonical session.reasoning.delta event. Replace the live text with the
-  // newest snapshot instead of appending, or the real stream duplicates text.
-  const nextText = delta || previousText
+  const deltaMode = stringField(payload, 'delta_mode')
+  // Explicit append events carry only the suffix since the last persisted
+  // snapshot. Replace events and legacy events are complete snapshots.
+  const nextText = delta
+    ? deltaMode === 'append' ? `${previousText}${delta}` : delta
+    : previousText
   const nextSummary = summary || existing?.summary || nextText
   const state: DesktopLiveReasoningRecord['state'] = isErrored ? 'error' : isCompleted ? 'done' : 'running'
   const record: DesktopLiveReasoningRecord = {

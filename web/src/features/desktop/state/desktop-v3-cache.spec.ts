@@ -1913,7 +1913,7 @@ test('Desktop V3 high-frequency deltas are not retained', () => {
   assert.equal(runs['run-high-tool'].toolCallsByCallId['call-1']?.outputText?.length, 10_000)
 })
 
-test('realtime reasoning deltas replace coalesced snapshots instead of appending each snapshot', () => {
+test('realtime reasoning deltas append suffixes and replace correction snapshots', () => {
   const state = bootstrappedState()
 
   applyRealtimeFrame(state, {
@@ -1925,20 +1925,29 @@ test('realtime reasoning deltas replace coalesced snapshots instead of appending
     frame: deltaFrame('session.reasoning.delta', {
       reasoning_key: 'summary-1',
       delta: 'inspect',
+      delta_mode: 'replace',
     }, 6, 'cursor-reasoning-delta-1'),
   })
   applyRealtimeFrame(state, {
     frame: deltaFrame('session.reasoning.delta', {
       reasoning_key: 'summary-1',
-      delta: 'inspect files',
+      delta: ' files',
+      delta_mode: 'append',
     }, 7, 'cursor-reasoning-delta-2'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'summary-1',
+      delta: 'corrected reasoning',
+      delta_mode: 'replace',
+    }, 8, 'cursor-reasoning-delta-3'),
   })
 
   const reasoning = state.liveRunsBySession[sessionA.id]['run-live'].reasoning
-  assert.equal(reasoning?.text, 'inspect files')
+  assert.equal(reasoning?.text, 'corrected reasoning')
   assert.equal(reasoning?.summary, '')
   assert.equal(reasoning?.timelineSeq, 5)
-  assert.equal(reasoning?.updatedSeq, 7)
+  assert.equal(reasoning?.updatedSeq, 8)
 })
 
 test('realtime stream objects retain backend ordering sequence on live overlays', () => {
