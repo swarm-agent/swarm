@@ -2710,7 +2710,7 @@ function applyLiveRunOverlayFromEvent(
     case 'session.reasoning.failed':
     case 'session.reasoning.error':
       if (liveRun.assistantDraft?.content) {
-        flushLiveAssistantDraftToSegment(liveRun)
+        flushLiveAssistantDraftToSegment(liveRun, eventSeq)
       }
       applyLiveReasoningOverlay(liveRun, payload, event.eventType, eventSeq, updatedAt)
       return
@@ -3253,9 +3253,19 @@ function appendLiveAssistantOverlaySegment(
   ]
 }
 
-function flushLiveAssistantDraftToSegment(liveRun: LiveRunOverlay): void {
-  const draft = liveRun.assistantDraft
+function flushLiveAssistantDraftToSegment(liveRun: LiveRunOverlay, precedingReasoningSeq?: number): void {
+  let draft = liveRun.assistantDraft
   if (!draft?.content.trim()) return
+  // Live patches are intentionally low-latency and can arrive before the durable
+  // reasoning event that authoritatively precedes them. Until the first durable
+  // assistant checkpoint, keep that speculative text after the reasoning event
+  // instead of freezing its provisional projection-derived sequence ahead of it.
+  if (precedingReasoningSeq && draft.streamId && (draft.durableOffsetEnd ?? 0) === 0) {
+    draft = {
+      ...draft,
+      timelineSeq: Math.max(draft.timelineSeq ?? 0, precedingReasoningSeq + 1),
+    }
+  }
   liveRun.assistantSegments = appendLiveAssistantOverlaySegment(liveRun, draft)
   delete liveRun.assistantDraft
 }

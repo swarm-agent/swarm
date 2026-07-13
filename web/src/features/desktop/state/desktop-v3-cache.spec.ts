@@ -1963,6 +1963,33 @@ test('realtime stream objects retain backend ordering sequence on live overlays'
   assert.equal(liveRun.assistantDraft?.timelineSeq, 5)
 })
 
+test('late durable reasoning keeps an earlier speculative assistant patch after Thinking', () => {
+  let state = bootstrappedState()
+  state = applyDesktopV3LivePatchBatch(state, [livePatch({
+    text: 'Let',
+    offset_start: 0,
+    offset_end: byteLength('Let'),
+  })])
+
+  const speculativeSeq = state.liveRunsBySession[sessionA.id]['run-live'].assistantDraft?.timelineSeq ?? 0
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'summary-1',
+      delta: 'The user is asking me to check the TUI.',
+      delta_mode: 'replace',
+    }, speculativeSeq + 5, 'cursor-late-reasoning'),
+  })
+
+  const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+    .filter((item) => item.type === 'live-assistant' || item.type === 'live-reasoning')
+    .map((item) => item.type === 'live-assistant' ? `assistant:${item.content}` : `reasoning:${item.text}`)
+
+  assert.deepEqual(rendered, [
+    'reasoning:The user is asking me to check the TUI.',
+    'assistant:Let',
+  ])
+})
+
 test('realtime provider tool construction events create live tool overlay while arguments stream', () => {
   const state = bootstrappedState()
 
