@@ -5164,19 +5164,20 @@ func (p *ChatPage) rebuildToolLifecycleViews() {
 		p.toolStream = append([]chatToolStreamEntry(nil), p.toolStream[drop:]...)
 	}
 
-	nextTimeline := make([]chatMessageItem, 0, len(p.timeline)+len(p.toolStream))
+	messages := make([]chatMessageItem, 0, len(p.timeline))
 	for _, item := range p.timeline {
 		if strings.EqualFold(strings.TrimSpace(item.Role), "tool") {
 			continue
 		}
-		nextTimeline = append(nextTimeline, item)
+		messages = append(messages, item)
 	}
+	tools := make([]chatMessageItem, 0, len(p.toolStream))
 	for _, entry := range p.toolStream {
 		text := formatUnifiedToolEntry(entry)
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		nextTimeline = append(nextTimeline, chatMessageItem{
+		tools = append(tools, chatMessageItem{
 			Role:      "tool",
 			Text:      text,
 			CreatedAt: entry.CreatedAt,
@@ -5184,12 +5185,7 @@ func (p *ChatPage) rebuildToolLifecycleViews() {
 			Metadata:  toolTimelineMetadata(entry),
 		})
 	}
-	sort.SliceStable(nextTimeline, func(i, j int) bool {
-		if nextTimeline[i].CreatedAt == nextTimeline[j].CreatedAt {
-			return timelineSortOrder(nextTimeline[i].Role) < timelineSortOrder(nextTimeline[j].Role)
-		}
-		return nextTimeline[i].CreatedAt < nextTimeline[j].CreatedAt
-	})
+	nextTimeline := mergeToolTimelineMessages(messages, tools)
 	if len(nextTimeline) > chatMaxTimelineMessages {
 		drop := len(nextTimeline) - chatMaxTimelineMessages
 		nextTimeline = append([]chatMessageItem(nil), nextTimeline[drop:]...)
@@ -5198,21 +5194,20 @@ func (p *ChatPage) rebuildToolLifecycleViews() {
 	p.resetTimelineRenderCache()
 }
 
-func timelineSortOrder(role string) int {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "user":
-		return 0
-	case "assistant":
-		return 1
-	case "reasoning":
-		return 2
-	case "tool":
-		return 3
-	case "system":
-		return 4
-	default:
-		return 5
+func mergeToolTimelineMessages(messages, tools []chatMessageItem) []chatMessageItem {
+	if len(tools) == 0 {
+		return messages
 	}
+	out := make([]chatMessageItem, 0, len(messages)+len(tools))
+	toolIndex := 0
+	for _, message := range messages {
+		for toolIndex < len(tools) && tools[toolIndex].CreatedAt < message.CreatedAt {
+			out = append(out, tools[toolIndex])
+			toolIndex++
+		}
+		out = append(out, message)
+	}
+	return append(out, tools[toolIndex:]...)
 }
 
 func (p *ChatPage) ensurePermissionSelection() {
