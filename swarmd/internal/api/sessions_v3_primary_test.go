@@ -6028,6 +6028,80 @@ func TestSessionsV3ProviderManagedPlanManageTerminalOutcomesUsePlanSavedOutbox(t
 	}
 }
 
+func TestSessionsV3ExecutorAutomaticCheckpointsUseDistinctEpochsAndRuns(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		checkpointID := fmt.Sprintf("cp-%d", runner.callCount)
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker for %s", checkpointID)
+		}
+		args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": checkpointID, "report": checkpointID + " complete", "result": "done"})
+		result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-" + checkpointID, Name: "plan_manage", Arguments: args})
+		if err != nil {
+			return provideriface.Response{}, err
+		}
+		if !result.RestartTurn {
+			return provideriface.Response{}, fmt.Errorf("%s completion did not request a fresh checkpoint run", checkpointID)
+		}
+		return provideriface.Response{RestartTurn: result.RestartTurn}, nil
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-auto-epochs-create", "provider auto epochs", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-auto-epochs", "Plan: automatic epochs", "## Plan: automatic epochs", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:  &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateIdle},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "First", Status: sessionruntime.PlanCheckpointStatusPending},
+			{ID: "cp-2", Title: "Second", Status: sessionruntime.PlanCheckpointStatusPending},
+		},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save automatic epoch plan: %v", err)
+	}
+	startInput := server.sessionsV3PlanModeRunInput(created.ID, "plan-auto-epochs", "cp-1")
+	startResult, err := server.planLifecycle.StartCheckpoint(startInput)
+	if err != nil {
+		t.Fatalf("start first checkpoint: %v", err)
+	}
+	if _, _, err := server.startSessionsV3PlanModeRun(testPrincipal(), created.ID, "start_checkpoint", startResult, false); err != nil {
+		t.Fatalf("enqueue first checkpoint: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		active, ok, err := sessionSvc.GetActivePlan(created.ID)
+		if err != nil {
+			t.Fatalf("get active plan: %v", err)
+		}
+		if ok && active.Document != nil && active.Document.ExecutionState != nil && active.Document.ExecutionState.Status == sessionruntime.PlanExecutionStateWaitingReview {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("automatic checkpoints did not reach final review: %#v", active.Document)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runner.callCount != 2 || len(runner.requests) != 2 {
+		t.Fatalf("provider calls = %d requests = %d, want one per checkpoint", runner.callCount, len(runner.requests))
+	}
+	intents, err := sessionSvc.ListSessionRunIntents(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list run intents: %v", err)
+	}
+	if len(intents) != 2 {
+		t.Fatalf("run intents = %+v, want two distinct checkpoint runs", intents)
+	}
+	if intents[0].RunID == intents[1].RunID || intents[0].EpochID == intents[1].EpochID || intents[0].CheckpointID == intents[1].CheckpointID {
+		t.Fatalf("checkpoint boundaries were reused: %+v", intents)
+	}
+	for i, req := range runner.requests {
+		if req.ExecutionEpochID == "" || req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+			t.Fatalf("request %d did not start a fresh checkpoint provider context: %+v", i+1, req)
+		}
+	}
+}
+
 func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()

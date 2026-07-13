@@ -431,7 +431,15 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		return
 	}
 	if response.LifecycleOnly {
-		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentCompleted, "", "session.assistant.completed")
+		if _, err := e.recordRunStatus(job, sessionruntime.RunIntentCompleted, "", "session.assistant.completed"); err != nil {
+			return
+		}
+		if response.StartNextCheckpoint {
+			if err := e.startNextCheckpointRun(job); err != nil {
+				log.Printf("warning: v3 session executor could not start next checkpoint after run %q for session %q: %v", job.RunID, job.SessionID, err)
+				_, _ = e.recordRunFailureSystemMessage(job, "automatic checkpoint advance failed: "+err.Error())
+			}
+		}
 		return
 	}
 	// Commit the fixed-size lineage authority before exposing the assistant
@@ -453,6 +461,41 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
 		return
 	}
+}
+
+func (e *sessionV3Executor) startNextCheckpointRun(job sessionV3ExecutorJob) error {
+	if e == nil || e.server == nil || e.server.sessions == nil || e.server.planLifecycle == nil {
+		return errors.New("v3 checkpoint auto-advance is not configured")
+	}
+	active, ok, err := e.server.sessions.GetActivePlan(job.SessionID)
+	if err != nil {
+		return err
+	}
+	if !ok || active.Document == nil {
+		return errors.New("v3 checkpoint auto-advance has no active plan")
+	}
+	summary := sessionruntime.SummarizePlanExecution(active.Document)
+	checkpointID := strings.TrimSpace(summary.NextCheckpointID)
+	if checkpointID == "" || !summary.AutoAdvanceAllowed || summary.ReviewRequired || summary.Blocked || summary.Failed || summary.PlanComplete {
+		return nil
+	}
+	input := e.server.sessionsV3PlanModeRunInput(job.SessionID, active.ID, checkpointID)
+	result, err := e.server.planLifecycle.StartCheckpoint(input)
+	if err != nil {
+		return err
+	}
+	runStart, _, err := e.server.startSessionsV3PlanModeRun(job.Principal, job.SessionID, "automatic_checkpoint_advance", result, false)
+	if err != nil {
+		return err
+	}
+	if runStart == nil || runStart.RunIntent == nil {
+		return errors.New("automatic checkpoint advance did not create a run intent")
+	}
+	e.finish(job)
+	if !e.EnqueueRun(sessionV3ExecutorJob{Principal: job.Principal, SessionID: job.SessionID, RunID: runStart.RunIntent.RunID, EpochID: runStart.RunIntent.EpochID, PlanID: active.ID, CheckpointID: checkpointID, AttemptID: runStart.AttemptID, ParentSessionID: job.SessionID}) {
+		return errors.New("automatic checkpoint advance could not enqueue the next run")
+	}
+	return nil
 }
 
 func (e *sessionV3Executor) recordRunFailureSystemMessage(job sessionV3ExecutorJob, reason string) (sessionruntime.SessionMutationResult, error) {
@@ -735,6 +778,7 @@ type sessionV3ResolvedRuntime struct {
 type sessionV3AssistantResponse struct {
 	Content                       string
 	LifecycleOnly                 bool
+	StartNextCheckpoint           bool
 	AgentName                     string
 	ResolvedAgentName             string
 	ExecutorKind                  string
@@ -1345,7 +1389,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		"result":   sessionV3ProviderResponseDiagnostic(response, loopResult.FinalContent, loopResult.DurableFlushCount),
 	})
 	if loopResult.TerminalPlanHandled {
-		return sessionV3AssistantResponse{LifecycleOnly: true}, nil
+		return sessionV3AssistantResponse{LifecycleOnly: true, StartNextCheckpoint: loopResult.StartNextCheckpoint}, nil
 	}
 	content := loopResult.FinalContent
 	if strings.TrimSpace(content) == "" {
@@ -2040,6 +2084,7 @@ type sessionV3ProviderLoopResult struct {
 	FinalStep           int
 	FinalOffsetEnd      uint64
 	TerminalPlanHandled bool
+	StartNextCheckpoint bool
 }
 
 func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, runner provideriface.Runner, baseReq provideriface.Request, sink *sessionV3DurableProgressSink) (sessionV3ProviderLoopResult, error) {
@@ -2152,6 +2197,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				if _, ok := e.sessionV3LatestTerminalPlanToolPayload(job); ok {
 					return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), TerminalPlanHandled: true}, nil
 				}
+				if e.sessionV3LatestCheckpointRunToolPayload(job) != nil {
+					return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), TerminalPlanHandled: true, StartNextCheckpoint: true}, nil
+				}
 				input, err = e.sessionV3ProviderRestartInput(ctx, job, resolved, "")
 				if err != nil {
 					return sessionV3ProviderLoopResult{}, err
@@ -2246,6 +2294,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if _, ok := sessionsV3ProviderTerminalPlanToolResult(toolResults); ok {
 			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), TerminalPlanHandled: true}, nil
 		}
+		if sessionsV3ProviderCheckpointRunToolResult(toolResults) {
+			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), TerminalPlanHandled: true, StartNextCheckpoint: true}, nil
+		}
 		if restartAfterTools {
 			restartCheckpointScope := sessionV3ProviderCheckpointScopeFromPayload(sessionV3ProviderJobCheckpointScope(job), sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(toolResults[len(toolResults)-1].Output, sessionsV3LatestFunctionCallOutput(input), toolResults[len(toolResults)-1].TextForModel))))
 			refreshed, err := e.resolveSessionV3Runtime(job)
@@ -2289,6 +2340,21 @@ type sessionV3ProviderTerminalPlanResult struct {
 	PlanID           string
 	PlanTitle        string
 	Summary          string
+}
+
+func sessionsV3ProviderCheckpointRunToolResult(results []provideriface.ToolExecutionResult) bool {
+	for i := len(results) - 1; i >= 0; i-- {
+		result := results[i]
+		toolName := strings.TrimSpace(result.Name)
+		if !strings.EqualFold(toolName, "plan_manage") && !strings.EqualFold(toolName, "exit_plan_mode") {
+			continue
+		}
+		payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel, result.Error)))
+		if strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+			return true
+		}
+	}
+	return false
 }
 
 func sessionsV3ProviderTerminalPlanToolResult(results []provideriface.ToolExecutionResult) (sessionV3ProviderTerminalPlanResult, bool) {
