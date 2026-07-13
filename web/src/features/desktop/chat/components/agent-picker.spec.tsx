@@ -47,7 +47,7 @@ test('agent picker is separate from mode and keeps canonical switching and setti
   assert.match(newPaneSource, /handleAgentSelect\(nextAgentName: string\)[\s\S]*setSelectedAgent\(normalizedAgentName\)/)
 })
 
-test('agent trigger shows emoji thinking and active priority metadata to the right of its name', () => {
+test('agent trigger shows text-only thinking and active priority metadata to the right of its name', () => {
   const markup = renderToStaticMarkup(
     <AgentPicker
       currentAgent="swarm"
@@ -58,10 +58,10 @@ test('agent trigger shows emoji thinking and active priority metadata to the rig
       onOpenSettings={() => {}}
     />,
   )
-  assert.match(markup, /Agent: Swarm, codex\/gpt-5.4 · 💡 high · ⚡ priority/)
+  assert.match(markup, /Agent: Swarm, codex\/gpt-5.4 · high · priority/)
   assert.match(markup, />Swarm</)
-  assert.match(markup, /data-testid="selected-agent-detail"[^>]*text-\[var\(--app-text-subtle\)\][^>]*\[font-variant-emoji:text\][^>]*>codex\/gpt-5.4 · 💡 high · ⚡ priority</)
-  assert.doesNotMatch(markup, /plan mode|auto mode/)
+  assert.match(markup, /data-testid="selected-agent-detail"[^>]*text-\[var\(--app-text-subtle\)\][^>]*>codex\/gpt-5.4 · high · priority</)
+  assert.doesNotMatch(markup, /💡|⚡|font-variant-emoji|plan mode|auto mode/)
 })
 
 test('agent trigger uses the active mode details for a split profile', () => {
@@ -80,8 +80,8 @@ test('agent trigger uses the active mode details for a split profile', () => {
     <AgentPicker currentAgent="reviewer" selectedPrimaryAgent="reviewer" agents={[split]} mode="plan" onSelect={() => {}} />,
   )
 
-  assert.match(markup, /reviewer[\s\S]*anthropic\/claude-sonnet-5 · 💡 high · ⚡ priority/)
-  assert.doesNotMatch(markup, /codex\/gpt-5.4 · 💡 medium · ⚡ fast/)
+  assert.match(markup, /reviewer[\s\S]*anthropic\/claude-sonnet-5 · high · priority/)
+  assert.doesNotMatch(markup, /codex\/gpt-5.4 · medium · fast|💡|⚡/)
 })
 
 test('agent trigger omits priority metadata when the service tier is inactive', () => {
@@ -94,21 +94,26 @@ test('agent trigger omits priority metadata when the service tier is inactive', 
     />,
   )
 
-  assert.match(markup, /codex\/gpt-5.4 · 💡 medium/)
-  assert.doesNotMatch(markup, /⚡|priority standard/)
+  assert.match(markup, /codex\/gpt-5.4 · medium/)
+  assert.doesNotMatch(markup, /💡|⚡|priority standard/)
 })
 
-test('production composer keeps style 3 and smaller microphone/send controls without temporary comparison code', () => {
+test('production composer keeps style 3 with comfortably sized controls and no temporary comparison code', () => {
   const composerSource = readFileSync(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
   const pickerSource = readFileSync(new URL('./agent-picker.tsx', import.meta.url), 'utf8')
   const modePickerSource = readFileSync(new URL('./mode-picker.tsx', import.meta.url), 'utf8')
 
   assert.doesNotMatch(composerSource, /temporary-composer-style-selector|COMPOSER_BAR_STYLE_OPTIONS|composerBarStyle|barStyle=/)
-  assert.match(composerSource, /border-y border-\[var\(--app-border-strong\)\] bg-transparent px-4 py-1/)
+  assert.match(composerSource, /border-y border-\[var\(--app-border-strong\)\] bg-transparent px-4 py-2/)
   assert.match(pickerSource, /border-b-2 border-transparent bg-transparent/)
   assert.match(modePickerSource, /border-b-2 border-transparent bg-transparent/)
   assert.match(composerSource, /<Mic size=\{15\}/)
   assert.match(composerSource, /<Send size=\{17\}/)
+  assert.match(composerSource, /h-9 w-9/)
+  assert.match(pickerSource, /min-h-9[\s\S]*px-3 py-2 text-xs/)
+  assert.match(modePickerSource, /min-h-9[\s\S]*px-3 py-2 text-xs/)
+  assert.match(modePickerSource, /onClick=\{\(\) => onSelect\(nextMode\)\}/)
+  assert.doesNotMatch(modePickerSource, /createPortal|ChevronDown|setOpen/)
   assert.match(composerSource, /onModeSelect\?\.\(nextMode\)/)
   assert.match(composerSource, /onAgentSelect\?\.\(agent\)/)
   assert.match(composerSource, /onCompact\?\.\(draft\)/)

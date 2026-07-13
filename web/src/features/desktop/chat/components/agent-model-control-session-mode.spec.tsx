@@ -9,8 +9,10 @@ const settingsSource = readFileSync(new URL('../../settings/agents/components/ag
 
 test('Auto/Plan is a separate left-side control rather than part of the agent picker', () => {
   assert.match(composerSource, /<ModePicker mode=\{mode\}[\s\S]*<AgentPicker/)
-  assert.match(composerSource, /triggerClassName="h-full shrink-0 border-r border-\[var\(--app-border\)\] px-2"/)
-  assert.match(modePickerSource, /aria-label=\{`Session mode: \$\{mode\}`\}/)
+  assert.match(composerSource, /triggerClassName="h-full shrink-0 px-2"/)
+  assert.match(modePickerSource, /aria-label=\{`Session mode: \$\{mode\}\. Switch to \$\{nextMode\}`\}/)
+  assert.match(modePickerSource, /onClick=\{\(\) => onSelect\(nextMode\)\}/)
+  assert.doesNotMatch(modePickerSource, /createPortal|ChevronDown|setOpen/)
   assert.doesNotMatch(pickerSource, /DesktopSessionMode|onModeSelect|Session mode for/)
 })
 

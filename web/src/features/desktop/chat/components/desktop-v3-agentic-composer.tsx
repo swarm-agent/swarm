@@ -624,7 +624,7 @@ export function DesktopV3AgenticComposer({
               Use ↑/↓ to choose a subagent, Tab or Enter to insert, then continue typing your task.
             </div>
           ) : null}
-          <div className="min-w-0 overflow-hidden border-y border-[var(--app-border-strong)] bg-transparent px-4 py-1 text-[11px]">
+          <div className="min-w-0 overflow-hidden border-y border-[var(--app-border-strong)] bg-transparent px-4 py-2 text-[11px]">
             <div className="hidden min-w-0 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {showModePicker ? (

@@ -49,22 +49,22 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
   const currentProfile = agents.find((agent) => agent.name === currentAgent) ?? selectedProfile
   const selectedAgentName = currentProfile?.name || currentAgent || selectedPrimaryAgent
   const displayLabel = currentProfile ? profileLabel(currentProfile) : (currentAgent === 'swarm' ? 'Swarm' : currentAgent || selectedPrimaryAgent || 'Agent')
-  const settingLabel = (provider: string, model: string, thinking: string, serviceTier: string) => {
+  const settingLabel = (provider: string, model: string, thinking: string, serviceTier: string, decorate = true) => {
     const normalizedServiceTier = serviceTier.trim().toLowerCase()
     const priorityActive = Boolean(normalizedServiceTier && !['standard', 'default', 'off', 'none'].includes(normalizedServiceTier))
     return [
       [provider.trim(), model.trim()].filter(Boolean).join('/') || 'Default model',
-      `💡 ${thinking.trim() || 'off'}`,
-      priorityActive ? `⚡ ${serviceTier.trim()}` : '',
+      `${decorate ? '💡 ' : ''}${thinking.trim() || 'off'}`,
+      priorityActive ? `${decorate ? '⚡ ' : ''}${serviceTier.trim()}` : '',
     ].filter(Boolean).join(' · ')
   }
-  const activeProfileModelLabel = (profile: AgentProfileRecord) => {
+  const activeProfileModelLabel = (profile: AgentProfileRecord, decorate = true) => {
     if (profile.modelMode !== 'split') {
-      return settingLabel(profile.provider, profile.model, profile.thinking, profile.autoServiceTier)
+      return settingLabel(profile.provider, profile.model, profile.thinking, profile.autoServiceTier, decorate)
     }
     return mode === 'plan'
-      ? settingLabel(profile.planProvider, profile.planModel, profile.planThinking, profile.planServiceTier)
-      : settingLabel(profile.autoProvider, profile.autoModel, profile.autoThinking, profile.autoServiceTier)
+      ? settingLabel(profile.planProvider, profile.planModel, profile.planThinking, profile.planServiceTier, decorate)
+      : settingLabel(profile.autoProvider, profile.autoModel, profile.autoThinking, profile.autoServiceTier, decorate)
   }
   const profileModelLabel = (profile: AgentProfileRecord) => profile.modelMode === 'split'
     ? [
@@ -72,7 +72,7 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
         `Auto ${settingLabel(profile.autoProvider, profile.autoModel, profile.autoThinking, profile.autoServiceTier)}`,
       ].join(' · ')
     : activeProfileModelLabel(profile)
-  const selectedAgentDetail = currentProfile ? activeProfileModelLabel(currentProfile) : ''
+  const selectedAgentDetail = currentProfile ? activeProfileModelLabel(currentProfile, false) : ''
 
   const updatePosition = useCallback(() => {
     if (!triggerRef.current || typeof window === 'undefined') {
@@ -258,18 +258,18 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={`Agent: ${displayLabel}${selectedAgentDetail ? `, ${selectedAgentDetail}` : ''}`}
-        className={`inline-flex min-w-0 items-center gap-1.5 rounded-none border-0 border-b-2 border-transparent bg-transparent px-2.5 py-1.5 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50 ${triggerClassName}`}
+        className={`inline-flex min-h-9 min-w-0 items-center gap-2 rounded-none border-0 border-b-2 border-transparent bg-transparent px-3 py-2 text-xs font-medium text-[var(--app-text-muted)] transition hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50 ${triggerClassName}`}
       >
         <span className="max-w-[100px] shrink-0 truncate font-semibold text-[var(--app-text)]">{displayLabel}</span>
         {selectedAgentDetail ? (
           <>
             <span aria-hidden="true" className="shrink-0 text-[var(--app-text-subtle)]">·</span>
-            <span data-testid="selected-agent-detail" className="min-w-0 max-w-[320px] truncate text-[10px] font-normal text-[var(--app-text-subtle)] [font-variant-emoji:text]">
+            <span data-testid="selected-agent-detail" className="min-w-0 max-w-[320px] truncate text-[11px] font-normal text-[var(--app-text-subtle)]">
               {selectedAgentDetail}
             </span>
           </>
         ) : null}
-        <ChevronDown size={12} className={`shrink-0 ${open ? 'rotate-180 transition-transform' : 'transition-transform'}`} />
+        <ChevronDown size={14} className={`shrink-0 ${open ? 'rotate-180 transition-transform' : 'transition-transform'}`} />
       </button>
       {dropdown}
     </div>
