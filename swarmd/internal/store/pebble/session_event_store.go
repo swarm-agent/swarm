@@ -348,6 +348,12 @@ type V3SessionRunState struct {
 	CumulativeDurationMs int64  `json:"cumulative_duration_ms,omitempty"`
 	UpdatedAt            int64  `json:"updated_at"`
 	EventSeq             uint64 `json:"event_seq"`
+	EpochID              string `json:"epoch_id,omitempty"`
+	PlanID               string `json:"plan_id,omitempty"`
+	CheckpointID         string `json:"checkpoint_id,omitempty"`
+	AttemptID            string `json:"attempt_id,omitempty"`
+	RunSessionID         string `json:"run_session_id,omitempty"`
+	ParentSessionID      string `json:"parent_session_id,omitempty"`
 }
 
 type V3SessionReplay struct {
@@ -1187,6 +1193,44 @@ func (s *SessionStore) ListV3SessionMessages(sessionID string, afterSeq uint64, 
 	return listV3SessionMessagesFromReader(s.store.db, sessionID, afterSeq, limit)
 }
 
+func listV3SessionMessagesRangeFromReader(reader pebble.Reader, sessionID string, firstSeq, lastSeq uint64, limit int) ([]MessageSnapshot, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	if firstSeq == 0 || lastSeq < firstSeq {
+		return nil, errors.New("valid inclusive message range is required")
+	}
+	if limit <= 0 {
+		span := lastSeq - firstSeq + 1
+		if span > uint64(^uint(0)>>1) {
+			return nil, errors.New("execution epoch message range is too large")
+		}
+		limit = int(span)
+	}
+	out := make([]MessageSnapshot, 0, limit)
+	prefix := V3SessionMessagePrefix(sessionID)
+	err := scanRangeFromReader(reader, scanRangeOptions{
+		Prefix:     prefix,
+		StartKey:   KeyV3SessionMessage(sessionID, firstSeq),
+		LowerBound: KeyV3SessionMessage(sessionID, firstSeq),
+		UpperBound: KeyV3SessionMessage(sessionID, lastSeq) + "\x00",
+		Limit:      limit,
+	}, func(_ string, value []byte) (bool, error) {
+		var message MessageSnapshot
+		if err := json.Unmarshal(value, &message); err != nil {
+			return false, err
+		}
+		if message.GlobalSeq < firstSeq || message.GlobalSeq > lastSeq {
+			return true, nil
+		}
+		message.Metadata = sanitizeMessageMetadata(message.Metadata)
+		out = append(out, message)
+		return len(out) < limit, nil
+	})
+	return out, err
+}
+
 func (s *SessionStore) ListV3SessionMessageTail(sessionID string, limit int) ([]MessageSnapshot, error) {
 	return listV3SessionMessageTailFromReader(s.store.db, sessionID, limit)
 }
@@ -1904,19 +1948,25 @@ func v3SessionRunStateFromIntent(intent V3SessionRunIntent) V3SessionRunState {
 		durationMs = v3SessionRunDurationMs(startedAt, completedAt)
 	}
 	return V3SessionRunState{
-		SessionID:      strings.TrimSpace(intent.SessionID),
-		UserID:         strings.TrimSpace(intent.UserID),
-		AccountScopeID: strings.TrimSpace(intent.AccountScopeID),
-		RunID:          strings.TrimSpace(intent.RunID),
-		Active:         isV3RunIntentActive(status),
-		Status:         status,
-		BlockedReason:  strings.TrimSpace(intent.BlockedReason),
-		CreatedAt:      intent.CreatedAt,
-		StartedAt:      startedAt,
-		CompletedAt:    completedAt,
-		DurationMs:     durationMs,
-		UpdatedAt:      updatedAt,
-		EventSeq:       intent.EventSeq,
+		SessionID:       strings.TrimSpace(intent.SessionID),
+		UserID:          strings.TrimSpace(intent.UserID),
+		AccountScopeID:  strings.TrimSpace(intent.AccountScopeID),
+		RunID:           strings.TrimSpace(intent.RunID),
+		Active:          isV3RunIntentActive(status),
+		Status:          status,
+		BlockedReason:   strings.TrimSpace(intent.BlockedReason),
+		CreatedAt:       intent.CreatedAt,
+		StartedAt:       startedAt,
+		CompletedAt:     completedAt,
+		DurationMs:      durationMs,
+		UpdatedAt:       updatedAt,
+		EventSeq:        intent.EventSeq,
+		EpochID:         strings.TrimSpace(intent.EpochID),
+		PlanID:          strings.TrimSpace(intent.PlanID),
+		CheckpointID:    strings.TrimSpace(intent.CheckpointID),
+		AttemptID:       strings.TrimSpace(intent.AttemptID),
+		RunSessionID:    strings.TrimSpace(intent.RunSessionID),
+		ParentSessionID: strings.TrimSpace(intent.ParentSessionID),
 	}
 }
 
@@ -1959,15 +2009,21 @@ func v3SessionRunDurationMs(startedAt, completedAt int64) int64 {
 
 func v3SessionRunIntentFromState(state V3SessionRunState) V3SessionRunIntent {
 	return V3SessionRunIntent{
-		SessionID:      strings.TrimSpace(state.SessionID),
-		UserID:         strings.TrimSpace(state.UserID),
-		AccountScopeID: strings.TrimSpace(state.AccountScopeID),
-		RunID:          strings.TrimSpace(state.RunID),
-		Status:         strings.TrimSpace(state.Status),
-		BlockedReason:  strings.TrimSpace(state.BlockedReason),
-		CreatedAt:      state.CreatedAt,
-		UpdatedAt:      state.UpdatedAt,
-		EventSeq:       state.EventSeq,
+		SessionID:       strings.TrimSpace(state.SessionID),
+		UserID:          strings.TrimSpace(state.UserID),
+		AccountScopeID:  strings.TrimSpace(state.AccountScopeID),
+		RunID:           strings.TrimSpace(state.RunID),
+		Status:          strings.TrimSpace(state.Status),
+		BlockedReason:   strings.TrimSpace(state.BlockedReason),
+		CreatedAt:       state.CreatedAt,
+		UpdatedAt:       state.UpdatedAt,
+		EventSeq:        state.EventSeq,
+		EpochID:         strings.TrimSpace(state.EpochID),
+		PlanID:          strings.TrimSpace(state.PlanID),
+		CheckpointID:    strings.TrimSpace(state.CheckpointID),
+		AttemptID:       strings.TrimSpace(state.AttemptID),
+		RunSessionID:    strings.TrimSpace(state.RunSessionID),
+		ParentSessionID: strings.TrimSpace(state.ParentSessionID),
 	}
 }
 

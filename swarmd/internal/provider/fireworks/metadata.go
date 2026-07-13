@@ -185,7 +185,11 @@ func ResolveServingTier(req provideriface.Request, cfg ServingConfig) requestSer
 		modelID = normalizeFireworksModelResourceName(cfg.ModelID)
 	}
 	requestedTier := NormalizeServiceTier(req.ServiceTier)
-	lineageKey := stableSessionAffinity(req.EffectiveSessionAffinityKey())
+	affinityKey := req.EffectiveSessionAffinityKey()
+	if epochID := strings.TrimSpace(req.ExecutionEpochID); epochID != "" {
+		affinityKey = provideriface.ShortProviderLineageKey("fireworks-epoch", epochID, affinityKey)
+	}
+	lineageKey := stableSessionAffinity(affinityKey)
 	resolution := requestServingResolution{
 		ModelID:                 modelID,
 		RequestedTier:           requestedTier,

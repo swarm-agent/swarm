@@ -131,15 +131,16 @@ func (s *Service) RunManualCompaction(ctx context.Context, sessionID string, inp
 	nextTitle, compactIndex := nextCompactSessionTitle(sessionSnapshot.Title)
 	result.CompactIndex = compactIndex
 	checkpoint := buildCompactionCheckpointMessage(compactedSummary, origin, compactIndex, compactedActivePlanLabel(activePlan))
-	checkpointMessage, _, checkpointMutation, appendErr := s.appendRunMessageWithMutation(runAppendMessageInput{SessionID: sessionID, Role: "system", Content: checkpoint, Metadata: compactedContextCheckpointMetadata(activePlan), RunID: runID, Step: step, LogicalKey: fmt.Sprintf("system:context_compaction:%d", compactIndex), Principal: principal, ApplySessionMutation: input.ApplySessionMutation})
+	checkpointMessage, epochResult, appendErr := s.beginCompactionExecutionEpoch(runAppendMessageInput{SessionID: sessionID, Role: "system", Content: checkpoint, Metadata: compactedContextCheckpointMetadata(activePlan), RunID: runID, Step: step, LogicalKey: fmt.Sprintf("system:context_compaction:%d", compactIndex), Principal: principal, ApplySessionMutation: input.ApplySessionMutation})
 	if appendErr != nil {
 		return ManualCompactionResult{}, fmt.Errorf("manual compact checkpoint append failed: %w", appendErr)
 	}
-	if checkpointMutation == nil || checkpointMutation.Message == nil || checkpointMutation.RealtimeOutbox == nil || checkpointMutation.RealtimeOutbox.EndpointSeq == 0 {
+	if epochResult.TriggerEvent == nil || epochResult.TriggerOutbox == nil || epochResult.TriggerOutbox.EndpointSeq == 0 {
 		return ManualCompactionResult{}, errors.New("manual compact checkpoint mutation did not return committed realtime outbox")
 	}
+	checkpointMutation := sessionruntime.SessionMutationResult{SessionID: sessionID, PrimarySeq: epochResult.TriggerEvent.Seq, FirstSeq: epochResult.TriggerEvent.Seq, LastSeq: epochResult.TriggerEvent.Seq, EventIDs: []string{epochResult.TriggerEvent.ID}, Event: *epochResult.TriggerEvent, Message: &checkpointMessage, Projection: epochResult.Projection, RealtimeOutbox: epochResult.TriggerOutbox, Replayed: epochResult.Replayed}
 	result.CheckpointMessage = checkpointMessage
-	result.CheckpointMutation = *checkpointMutation
+	result.CheckpointMutation = checkpointMutation
 
 	if titleMutation, titleErr := s.applyManualCompactionTitleMutation(sessionID, runID, nextTitle, principal, input.ApplySessionMutation); titleErr != nil {
 		return ManualCompactionResult{}, titleErr

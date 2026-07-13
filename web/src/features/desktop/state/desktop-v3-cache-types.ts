@@ -98,15 +98,22 @@ export interface V3SessionProjection {
 export interface V3ExecutionEpochRef {
   epoch_id: string
   epoch_ordinal?: number
+  ordinal?: number
 }
 
 export interface V3ExecutionEpoch extends V3ExecutionEpochRef {
   session_id?: string
   status?: string
+  first_root_seq?: number
+  last_root_seq?: number
   started_event_seq?: number
   completed_event_seq?: number
+  created_at?: number
+  updated_at?: number
+  sealed_at?: number
   started_at?: number
   completed_at?: number
+  parent_epoch_id?: string
   previous_epoch_id?: string
   trigger?: string
 }

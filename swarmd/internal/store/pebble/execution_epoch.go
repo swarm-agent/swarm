@@ -11,10 +11,11 @@ import (
 )
 
 const (
-	ExecutionEpochStatusActive           = "active"
-	ExecutionEpochStatusSealed           = "sealed"
-	ExecutionEpochBoundaryEventType      = "execution_epoch.began"
-	V3SessionMutationBeginExecutionEpoch = "execution_epoch.begin"
+	ExecutionEpochStatusActive             = "active"
+	ExecutionEpochStatusSealed             = "sealed"
+	ExecutionEpochBoundaryEventType        = "execution_epoch.began"
+	V3SessionMutationBeginExecutionEpoch   = "execution_epoch.begin"
+	ExecutionProviderLifecycleStateVersion = 1
 )
 
 // ExecutionEpoch is a bounded execution segment inside one durable V3 session.
@@ -65,6 +66,34 @@ type ExecutionProviderPolicy struct {
 	ContextMode string `json:"context_mode,omitempty"`
 }
 
+// ExecutionProviderLifecycleState is the fixed-size durable authority for one
+// epoch's provider lineage. It intentionally stores no transcript text and no
+// provider response identifier: response IDs from store=false calls are not
+// assumed to survive transport loss.
+type ExecutionProviderLifecycleState struct {
+	Version                       int    `json:"version"`
+	SessionID                     string `json:"session_id"`
+	EpochID                       string `json:"epoch_id"`
+	Provider                      string `json:"provider"`
+	Model                         string `json:"model"`
+	ConfigurationHash             string `json:"configuration_hash"`
+	ProviderLineageID             string `json:"provider_lineage_id"`
+	ContextBranchID               string `json:"context_branch_id"`
+	ProviderCacheKey              string `json:"provider_cache_key"`
+	SessionAffinityKey            string `json:"session_affinity_key"`
+	TransportAffinityKey          string `json:"transport_affinity_key"`
+	PreviousProviderLineageID     string `json:"previous_provider_lineage_id,omitempty"`
+	PreviousProvider              string `json:"previous_provider,omitempty"`
+	PreviousModel                 string `json:"previous_model,omitempty"`
+	BoundaryReason                string `json:"boundary_reason"`
+	HandoffSummaryMessageID       string `json:"handoff_summary_message_id,omitempty"`
+	HandoffSummaryGlobalSeq       uint64 `json:"handoff_summary_global_seq,omitempty"`
+	ProviderLineageStartMessageID string `json:"provider_lineage_start_message_id,omitempty"`
+	ProviderLineageStartRunID     string `json:"provider_lineage_start_run_id,omitempty"`
+	ProviderLineageStartGlobalSeq uint64 `json:"provider_lineage_start_global_seq,omitempty"`
+	UpdatedAt                     int64  `json:"updated_at"`
+}
+
 type BeginExecutionEpochInput struct {
 	SessionID       string                  `json:"session_id"`
 	UserID          string                  `json:"user_id,omitempty"`
@@ -79,18 +108,22 @@ type BeginExecutionEpochInput struct {
 	RunSessionID    string                  `json:"run_session_id,omitempty"`
 	ParentSessionID string                  `json:"parent_session_id,omitempty"`
 	SourceMessageID string                  `json:"source_message_id,omitempty"`
+	TriggerMessage  *MessageSnapshot        `json:"trigger_message,omitempty"`
+	SkipRunIntent   bool                    `json:"skip_run_intent,omitempty"`
 	ProviderPolicy  ExecutionProviderPolicy `json:"provider_policy,omitempty"`
 	RunID           string                  `json:"run_id,omitempty"`
 	NowUnixMs       int64                   `json:"now_unix_ms,omitempty"`
 }
 
 type BeginExecutionEpochResult struct {
-	Epoch       ExecutionEpoch         `json:"epoch"`
-	Predecessor ExecutionEpoch         `json:"predecessor"`
-	Event       V3SessionEvent         `json:"event"`
-	Projection  V3SessionProjection    `json:"projection"`
-	Outbox      V3RealtimeOutboxRecord `json:"realtime_outbox"`
-	Replayed    bool                   `json:"replayed,omitempty"`
+	Epoch         ExecutionEpoch          `json:"epoch"`
+	Predecessor   ExecutionEpoch          `json:"predecessor"`
+	Event         V3SessionEvent          `json:"event"`
+	Projection    V3SessionProjection     `json:"projection"`
+	Outbox        V3RealtimeOutboxRecord  `json:"realtime_outbox"`
+	TriggerEvent  *V3SessionEvent         `json:"trigger_event,omitempty"`
+	TriggerOutbox *V3RealtimeOutboxRecord `json:"trigger_realtime_outbox,omitempty"`
+	Replayed      bool                    `json:"replayed,omitempty"`
 }
 
 // SealExecutionEpochInput names the epoch being sealed so a delayed executor
@@ -110,14 +143,23 @@ func ExecutionEpochPrefix(sessionID string) string {
 func KeyExecutionEpochActive(sessionID string) string {
 	return fmt.Sprintf("v3/execution_epoch_active/%s", keyPart(sessionID))
 }
+func KeyExecutionEpochLatest(sessionID string) string {
+	return fmt.Sprintf("v3/execution_epoch_latest/%s", keyPart(sessionID))
+}
+func KeyExecutionProviderLifecycleState(sessionID, epochID string) string {
+	return fmt.Sprintf("v3/execution_provider_lifecycle/%s/%s", keyPart(sessionID), keyPart(epochID))
+}
+func ExecutionProviderLifecycleStatePrefix(sessionID string) string {
+	return fmt.Sprintf("v3/execution_provider_lifecycle/%s/", keyPart(sessionID))
+}
 func KeyExecutionEpochOrdinal(sessionID string, ordinal uint64) string {
 	return fmt.Sprintf("v3/execution_epoch_by_ordinal/%s/%020d", keyPart(sessionID), ordinal)
 }
 func ExecutionEpochOrdinalPrefix(sessionID string) string {
 	return fmt.Sprintf("v3/execution_epoch_by_ordinal/%s/", keyPart(sessionID))
 }
-func KeyExecutionEpochBoundary(sessionID, planID, checkpointID string) string {
-	return fmt.Sprintf("v3/execution_epoch_boundary/%s/%s/%s", keyPart(sessionID), keyPart(planID), keyPart(checkpointID))
+func KeyExecutionEpochBoundary(sessionID, planID, checkpointID, attemptID, reason string) string {
+	return fmt.Sprintf("v3/execution_epoch_boundary/%s/%s/%s/%s/%s", keyPart(sessionID), keyPart(planID), keyPart(checkpointID), keyPart(attemptID), keyPart(reason))
 }
 func ExecutionEpochBoundaryPrefix(sessionID string) string {
 	return fmt.Sprintf("v3/execution_epoch_boundary/%s/", keyPart(sessionID))
@@ -131,6 +173,12 @@ func NewInitialExecutionEpoch(sessionID, userID, accountScopeID string, firstSeq
 }
 
 func setExecutionEpochInBatch(batch *pebble.Batch, epoch ExecutionEpoch, active bool) error {
+	if epoch.SessionID == "" || epoch.EpochID == "" || epoch.Ordinal == 0 {
+		return errors.New("execution epoch session id, epoch id, and ordinal are required")
+	}
+	if active && epoch.Status != ExecutionEpochStatusActive {
+		return fmt.Errorf("execution epoch %q cannot be the active index with status %q", epoch.EpochID, epoch.Status)
+	}
 	encodeStart := time.Now()
 	payload, err := json.Marshal(epoch)
 	observeExecutionEpochEncode(encodeStart)
@@ -141,6 +189,9 @@ func setExecutionEpochInBatch(batch *pebble.Batch, epoch ExecutionEpoch, active 
 		return err
 	}
 	if err := batch.Set([]byte(KeyExecutionEpochOrdinal(epoch.SessionID, epoch.Ordinal)), []byte(epoch.EpochID), nil); err != nil {
+		return err
+	}
+	if err := batch.Set([]byte(KeyExecutionEpochLatest(epoch.SessionID)), payload, nil); err != nil {
 		return err
 	}
 	if active {
@@ -155,17 +206,32 @@ func (s *SessionStore) GetExecutionEpoch(sessionID, epochID string) (ExecutionEp
 func (s *SessionStore) GetActiveExecutionEpoch(sessionID string) (ExecutionEpoch, bool, error) {
 	return s.getExecutionEpochByKey(KeyExecutionEpochActive(strings.TrimSpace(sessionID)))
 }
+func (s *SessionStore) GetLatestExecutionEpoch(sessionID string) (ExecutionEpoch, bool, error) {
+	return s.getExecutionEpochByKey(KeyExecutionEpochLatest(strings.TrimSpace(sessionID)))
+}
+
+func (s *SessionStore) getLatestExecutionEpoch(sessionID string) (ExecutionEpoch, bool, error) {
+	return s.GetLatestExecutionEpoch(sessionID)
+}
 
 func (s *SessionStore) getExecutionEpochByKey(key string) (ExecutionEpoch, bool, error) {
+	return getExecutionEpochByKeyFromReader(s.store.db, key)
+}
+
+func getExecutionEpochByKeyFromReader(reader pebble.Reader, key string) (ExecutionEpoch, bool, error) {
 	var epoch ExecutionEpoch
 	readStart := time.Now()
-	payload, ok, err := s.store.GetBytes(key)
+	value, closer, err := reader.Get([]byte(key))
 	observeExecutionEpochPointRead(readStart)
+	if errors.Is(err, pebble.ErrNotFound) {
+		return epoch, false, nil
+	}
 	if err != nil {
 		return epoch, false, fmt.Errorf("get json key %q: %w", key, err)
 	}
-	if !ok {
-		return epoch, false, nil
+	payload := append([]byte(nil), value...)
+	if closeErr := closer.Close(); closeErr != nil {
+		return epoch, false, closeErr
 	}
 	decodeStart := time.Now()
 	err = json.Unmarshal(payload, &epoch)
@@ -174,6 +240,77 @@ func (s *SessionStore) getExecutionEpochByKey(key string) (ExecutionEpoch, bool,
 		return ExecutionEpoch{}, false, fmt.Errorf("unmarshal json key %q: %w", key, err)
 	}
 	return epoch, true, nil
+}
+
+func (s *SessionStore) GetExecutionProviderLifecycleState(sessionID, epochID string) (ExecutionProviderLifecycleState, bool, error) {
+	var state ExecutionProviderLifecycleState
+	sessionID = strings.TrimSpace(sessionID)
+	epochID = strings.TrimSpace(epochID)
+	if sessionID == "" || epochID == "" {
+		return state, false, errors.New("session id and epoch id are required")
+	}
+	ok, err := s.store.GetJSON(KeyExecutionProviderLifecycleState(sessionID, epochID), &state)
+	if err != nil || !ok {
+		return ExecutionProviderLifecycleState{}, ok, err
+	}
+	if state.Version != ExecutionProviderLifecycleStateVersion || state.SessionID != sessionID || state.EpochID != epochID {
+		return ExecutionProviderLifecycleState{}, false, fmt.Errorf("execution provider lifecycle state for epoch %q is incompatible", epochID)
+	}
+	return state, true, nil
+}
+
+func (s *SessionStore) PutExecutionProviderLifecycleState(state ExecutionProviderLifecycleState) error {
+	state.SessionID = strings.TrimSpace(state.SessionID)
+	state.EpochID = strings.TrimSpace(state.EpochID)
+	state.Provider = strings.ToLower(strings.TrimSpace(state.Provider))
+	state.Model = strings.TrimSpace(state.Model)
+	state.ConfigurationHash = strings.TrimSpace(state.ConfigurationHash)
+	state.ProviderLineageID = strings.TrimSpace(state.ProviderLineageID)
+	state.ContextBranchID = strings.TrimSpace(state.ContextBranchID)
+	if state.SessionID == "" || state.EpochID == "" || state.Provider == "" || state.Model == "" || state.ConfigurationHash == "" || state.ProviderLineageID == "" || state.ContextBranchID == "" {
+		return errors.New("execution provider lifecycle identity is incomplete")
+	}
+	if _, ok, err := s.GetExecutionEpoch(state.SessionID, state.EpochID); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("execution epoch %q not found", state.EpochID)
+	}
+	state.Version = ExecutionProviderLifecycleStateVersion
+	if state.UpdatedAt == 0 {
+		state.UpdatedAt = time.Now().UnixMilli()
+	}
+	return s.store.PutJSON(KeyExecutionProviderLifecycleState(state.SessionID, state.EpochID), state)
+}
+
+// ListExecutionEpochMessages reads the explicitly named epoch and its inclusive
+// message range from one Pebble snapshot. Both bounds are mandatory durable
+// authority, so a delayed sealed-epoch worker cannot observe later root writes.
+func (s *SessionStore) ListExecutionEpochMessages(sessionID, epochID string, limit int) (epoch ExecutionEpoch, messages []MessageSnapshot, err error) {
+	rangeStart := time.Now()
+	defer func() { ObserveExecutionEpochIterator(rangeStart, len(messages)) }()
+	sessionID = strings.TrimSpace(sessionID)
+	epochID = strings.TrimSpace(epochID)
+	if sessionID == "" || epochID == "" {
+		return ExecutionEpoch{}, nil, errors.New("session id and epoch id are required")
+	}
+	snapshot := s.store.db.NewSnapshot()
+	defer func() {
+		if closeErr := snapshot.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+	epoch, ok, err := getExecutionEpochByKeyFromReader(snapshot, KeyExecutionEpoch(sessionID, epochID))
+	if err != nil {
+		return ExecutionEpoch{}, nil, err
+	}
+	if !ok {
+		return ExecutionEpoch{}, nil, fmt.Errorf("execution epoch %q not found", epochID)
+	}
+	if epoch.FirstRootSeq == 0 || epoch.LastRootSeq < epoch.FirstRootSeq {
+		return ExecutionEpoch{}, nil, fmt.Errorf("execution epoch %q has invalid message bounds", epochID)
+	}
+	messages, err = listV3SessionMessagesRangeFromReader(snapshot, sessionID, epoch.FirstRootSeq, epoch.LastRootSeq, limit)
+	return epoch, messages, err
 }
 
 // SealExecutionEpoch closes the named epoch at the durable root sequence high
@@ -213,7 +350,10 @@ func (s *SessionStore) SealExecutionEpoch(input SealExecutionEpochInput) (Execut
 	active.SealedAt = now
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	if err := setExecutionEpochInBatch(batch, active, true); err != nil {
+	if err := setExecutionEpochInBatch(batch, active, false); err != nil {
+		return ExecutionEpoch{}, err
+	}
+	if err := batch.Delete([]byte(KeyExecutionEpochActive(input.SessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 		return ExecutionEpoch{}, err
 	}
 	if err := batch.Commit(pebble.Sync); err != nil {
@@ -292,15 +432,55 @@ func (s *SessionStore) BeginExecutionEpoch(input BeginExecutionEpochInput) (Begi
 		if err != nil || !exists {
 			return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch is unavailable: %w", err)
 		}
-		event, _, err := s.GetV3SessionEvent(input.SessionID, record.Result.LastSeq)
-		if err != nil {
+		event, eventOK, err := s.GetV3SessionEvent(input.SessionID, record.Result.FirstSeq)
+		if err != nil || !eventOK || event.EpochID != epoch.EpochID || event.EventType != ExecutionEpochBoundaryEventType {
+			return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch event is unavailable or inconsistent: %w", err)
+		}
+		currentProjection, projectionOK, err := s.GetV3SessionProjection(input.SessionID)
+		if err != nil || !projectionOK || currentProjection.LastEventSeq < event.Seq {
+			return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch projection is unavailable or inconsistent: %w", err)
+		}
+		predecessor, predecessorOK, err := s.GetExecutionEpoch(input.SessionID, epoch.ParentEpochID)
+		if err != nil || !predecessorOK || predecessor.Status != ExecutionEpochStatusSealed || predecessor.LastRootSeq+1 != epoch.FirstRootSeq {
+			return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch predecessor is unavailable or inconsistent: %w", err)
+		}
+		outboxReference, outboxOK, err := s.store.GetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, event.Seq))
+		if err != nil || !outboxOK {
+			return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch outbox is unavailable: %w", err)
+		}
+		outbox, err := s.resolveV3RealtimeOutboxValue(outboxReference)
+		if err != nil || outbox.Event.Seq != event.Seq {
+			return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch outbox is inconsistent: %w", err)
+		}
+		if outbox.Projection.LastEventSeq != event.Seq || outbox.Projection.ProjectionHighWatermarkSeq != event.Seq {
+			return BeginExecutionEpochResult{}, errors.New("replayed execution epoch outbox projection is inconsistent")
+		}
+		committedOutbox := []uint64{outbox.EndpointSeq}
+		projection := outbox.Projection
+		var triggerEvent *V3SessionEvent
+		var triggerOutbox *V3RealtimeOutboxRecord
+		if record.Result.LastSeq > record.Result.FirstSeq {
+			trigger, triggerOK, triggerErr := s.GetV3SessionEvent(input.SessionID, record.Result.LastSeq)
+			if triggerErr != nil || !triggerOK || trigger.EpochID != epoch.EpochID || trigger.EventType != "session.message.appended" {
+				return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch trigger is unavailable or inconsistent: %w", triggerErr)
+			}
+			triggerReference, triggerOutboxOK, triggerErr := s.store.GetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, trigger.Seq))
+			if triggerErr != nil || !triggerOutboxOK {
+				return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch trigger outbox is unavailable: %w", triggerErr)
+			}
+			triggerRecord, triggerErr := s.resolveV3RealtimeOutboxValue(triggerReference)
+			if triggerErr != nil || triggerRecord.Event.Seq != trigger.Seq || triggerRecord.Projection.LastEventSeq != trigger.Seq {
+				return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch trigger outbox is inconsistent: %w", triggerErr)
+			}
+			triggerEvent = &trigger
+			triggerOutbox = &triggerRecord
+			projection = triggerRecord.Projection
+			committedOutbox = append(committedOutbox, triggerRecord.EndpointSeq)
+		}
+		if err := s.store.sessionMutations.commitOutbox(s.store, committedOutbox); err != nil {
 			return BeginExecutionEpochResult{}, err
 		}
-		projection, _, err := s.GetV3SessionProjection(input.SessionID)
-		if err != nil {
-			return BeginExecutionEpochResult{}, err
-		}
-		return BeginExecutionEpochResult{Epoch: epoch, Event: event, Projection: projection, Replayed: true}, nil
+		return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox, Replayed: true}, nil
 	}
 	return s.beginFreshExecutionEpoch(input, idemKey)
 }
@@ -320,6 +500,21 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 	}
 	legacy := (*ExecutionEpochLegacyPrefix)(nil)
 	if !hasPredecessor {
+		latest, latestOK, latestErr := s.getLatestExecutionEpoch(input.SessionID)
+		if latestErr != nil {
+			return BeginExecutionEpochResult{}, latestErr
+		}
+		if latestOK {
+			if latest.Status != ExecutionEpochStatusSealed || latest.LastRootSeq != seq {
+				return BeginExecutionEpochResult{}, fmt.Errorf("latest execution epoch %q is inconsistent with root high watermark", latest.EpochID)
+			}
+			predecessor, hasPredecessor = latest, true
+		}
+	}
+	if hasPredecessor && predecessor.Status != ExecutionEpochStatusActive && predecessor.Status != ExecutionEpochStatusSealed {
+		return BeginExecutionEpochResult{}, fmt.Errorf("active execution epoch index points to %q with status %q", predecessor.EpochID, predecessor.Status)
+	}
+	if !hasPredecessor {
 		legacy, err = s.readLegacyEpochPrefix(input.SessionID, seq)
 		if err != nil {
 			return BeginExecutionEpochResult{}, err
@@ -329,7 +524,12 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		predecessor.Boundary.LegacyPrefix = legacy
 		predecessor.LastRootSeq = seq
 	}
+	triggerProvided := input.TriggerMessage != nil
 	boundarySeq := seq + 1
+	triggerSeq := uint64(0)
+	if triggerProvided {
+		triggerSeq = boundarySeq + 1
+	}
 	predecessor.Status = ExecutionEpochStatusSealed
 	predecessor.LastRootSeq = seq
 	predecessor.SealedAt = now
@@ -338,11 +538,37 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 	if epochID == "" {
 		epochID = fmt.Sprintf("epoch-%020d", predecessor.Ordinal+1)
 	}
-	epoch := ExecutionEpoch{EpochID: epochID, SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, ParentEpochID: predecessor.EpochID, Ordinal: predecessor.Ordinal + 1, Status: ExecutionEpochStatusActive, FirstRootSeq: boundarySeq, Boundary: ExecutionEpochBoundary{Reason: strings.TrimSpace(input.Reason), PlanID: strings.TrimSpace(input.PlanID), CheckpointID: strings.TrimSpace(input.CheckpointID), AttemptID: strings.TrimSpace(input.AttemptID), RunID: strings.TrimSpace(input.RunID), RunSessionID: strings.TrimSpace(input.RunSessionID), ParentSessionID: strings.TrimSpace(input.ParentSessionID), SourceMessageID: strings.TrimSpace(input.SourceMessageID), PredecessorLastRootSeq: seq}, ProviderPolicy: input.ProviderPolicy, CreatedAt: now, UpdatedAt: now}
+	epochLastSeq := boundarySeq
+	if triggerProvided {
+		epochLastSeq = triggerSeq
+	}
+	epoch := ExecutionEpoch{EpochID: epochID, SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, ParentEpochID: predecessor.EpochID, Ordinal: predecessor.Ordinal + 1, Status: ExecutionEpochStatusActive, FirstRootSeq: boundarySeq, LastRootSeq: epochLastSeq, Boundary: ExecutionEpochBoundary{Reason: strings.TrimSpace(input.Reason), PlanID: strings.TrimSpace(input.PlanID), CheckpointID: strings.TrimSpace(input.CheckpointID), AttemptID: strings.TrimSpace(input.AttemptID), RunID: strings.TrimSpace(input.RunID), RunSessionID: strings.TrimSpace(input.RunSessionID), ParentSessionID: strings.TrimSpace(input.ParentSessionID), SourceMessageID: strings.TrimSpace(input.SourceMessageID), PredecessorLastRootSeq: seq}, ProviderPolicy: input.ProviderPolicy, CreatedAt: now, UpdatedAt: now}
+	if existing, ok, getErr := s.GetExecutionEpoch(input.SessionID, epoch.EpochID); getErr != nil {
+		return BeginExecutionEpochResult{}, getErr
+	} else if ok {
+		return BeginExecutionEpochResult{}, fmt.Errorf("execution epoch id collision: %q already belongs to ordinal %d", existing.EpochID, existing.Ordinal)
+	}
+	if ordinalEpochID, ok, getErr := s.store.GetBytes(KeyExecutionEpochOrdinal(input.SessionID, epoch.Ordinal)); getErr != nil {
+		return BeginExecutionEpochResult{}, getErr
+	} else if ok {
+		return BeginExecutionEpochResult{}, fmt.Errorf("execution epoch ordinal collision: ordinal %d already maps to %q", epoch.Ordinal, string(ordinalEpochID))
+	}
+	if epoch.Boundary.PlanID != "" || epoch.Boundary.CheckpointID != "" {
+		boundaryKey := KeyExecutionEpochBoundary(input.SessionID, epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, epoch.Boundary.AttemptID, epoch.Boundary.Reason)
+		if boundaryEpochID, ok, getErr := s.store.GetBytes(boundaryKey); getErr != nil {
+			return BeginExecutionEpochResult{}, getErr
+		} else if ok {
+			return BeginExecutionEpochResult{}, fmt.Errorf("execution epoch boundary collision: plan %q checkpoint %q already maps to %q", epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, string(boundaryEpochID))
+		}
+	}
 	payload, _ := json.Marshal(map[string]any{"epoch_id": epoch.EpochID, "parent_epoch_id": epoch.ParentEpochID, "ordinal": epoch.Ordinal, "reason": epoch.Boundary.Reason, "plan_id": epoch.Boundary.PlanID, "checkpoint_id": epoch.Boundary.CheckpointID, "attempt_id": epoch.Boundary.AttemptID, "run_id": epoch.Boundary.RunID, "run_session_id": epoch.Boundary.RunSessionID, "parent_session_id": epoch.Boundary.ParentSessionID})
 	event := V3SessionEvent{ID: fmt.Sprintf("v3evt_%s_%020d", input.SessionID, boundarySeq), SessionID: input.SessionID, Seq: boundarySeq, EventType: ExecutionEpochBoundaryEventType, Payload: payload, TsUnixMs: now, EpochID: epoch.EpochID}
-	projection := V3SessionProjection{SessionID: input.SessionID, LastEventSeq: boundarySeq, ProjectionHighWatermarkSeq: boundarySeq, UpdatedAt: now}
-	reserved, err := s.store.sessionMutations.reserveOutbox(s.store, 1)
+	projection := V3SessionProjection{SessionID: input.SessionID, LastEventSeq: epochLastSeq, ProjectionHighWatermarkSeq: epochLastSeq, UpdatedAt: now}
+	outboxCount := 1
+	if triggerProvided {
+		outboxCount = 2
+	}
+	reserved, err := s.store.sessionMutations.reserveOutbox(s.store, outboxCount)
 	if err != nil {
 		return BeginExecutionEpochResult{}, err
 	}
@@ -352,13 +578,48 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 			s.store.sessionMutations.abandonOutbox(reserved)
 		}
 	}()
-	outbox := V3RealtimeOutboxRecord{EndpointSeq: reserved[0], EndpointCursor: V3RealtimeOutboxCursor(reserved[0]), SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, Event: event, Projection: projection, CreatedAt: now}
+	outbox := V3RealtimeOutboxRecord{EndpointSeq: reserved[0], EndpointCursor: V3RealtimeOutboxCursor(reserved[0]), SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, Event: event, Projection: V3SessionProjection{SessionID: input.SessionID, LastEventSeq: boundarySeq, ProjectionHighWatermarkSeq: boundarySeq, UpdatedAt: now}, CreatedAt: now}
+	var triggerMessage MessageSnapshot
+	var triggerEvent *V3SessionEvent
+	var triggerOutbox *V3RealtimeOutboxRecord
+	if triggerProvided {
+		triggerMessage = sanitizeMessageSnapshot(*input.TriggerMessage)
+		triggerMessage.SessionID = input.SessionID
+		triggerMessage.UserID = strings.TrimSpace(firstNonEmptyString(triggerMessage.UserID, input.UserID))
+		triggerMessage.AccountScopeID = strings.TrimSpace(firstNonEmptyString(triggerMessage.AccountScopeID, input.AccountScopeID))
+		triggerMessage.GlobalSeq = triggerSeq
+		if triggerMessage.ID == "" {
+			triggerMessage.ID = fmt.Sprintf("v3msg_%s_%020d", input.SessionID, triggerSeq)
+		}
+		if triggerMessage.Role == "" || triggerMessage.Content == "" {
+			return BeginExecutionEpochResult{}, errors.New("trigger message role and content are required")
+		}
+		if triggerMessage.CreatedAt == 0 {
+			triggerMessage.CreatedAt = now
+		}
+		triggerPayload, marshalErr := (V3SessionMutationInput{Kind: V3SessionMutationAppendMessage, Message: &triggerMessage}).v3EventPayload(triggerSeq, SessionSnapshot{}, triggerMessage, SessionLifecycleSnapshot{}, V3SessionRunIntent{}, SessionTurnUsageSnapshot{}, SessionUsageSummary{})
+		if marshalErr != nil {
+			return BeginExecutionEpochResult{}, marshalErr
+		}
+		trigger := V3SessionEvent{ID: fmt.Sprintf("v3evt_%s_%020d", input.SessionID, triggerSeq), SessionID: input.SessionID, Seq: triggerSeq, EventType: "session.message.appended", Payload: triggerPayload, TsUnixMs: now, EpochID: epoch.EpochID}
+		triggerEvent = &trigger
+		triggerRecord := V3RealtimeOutboxRecord{EndpointSeq: reserved[1], EndpointCursor: V3RealtimeOutboxCursor(reserved[1]), SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, Event: trigger, Projection: projection, CreatedAt: now}
+		triggerOutbox = &triggerRecord
+	}
 	if session, ok, getErr := s.GetSession(input.SessionID); getErr != nil {
 		return BeginExecutionEpochResult{}, getErr
 	} else if ok {
-		outbox.Membership = newV3RealtimeOutboxMembershipFromSession(session, now)
+		membership := newV3RealtimeOutboxMembershipFromSession(session, now)
+		outbox.Membership = membership
+		if triggerOutbox != nil {
+			triggerOutbox.Membership = membership
+		}
 	}
-	stored := V3SessionMutationStoredResult{SessionID: input.SessionID, RunID: epoch.EpochID, FirstSeq: boundarySeq, LastSeq: boundarySeq, EventIDs: []string{event.ID}, PayloadHash: input.PayloadHash, ResponseVersion: V3SessionMutationResponseVersion, ResponseStatus: V3SessionMutationStatusCompleted, EventType: event.EventType, LastEventSeq: boundarySeq, ProjectionHighWatermarkSeq: boundarySeq, AppliedAt: now}
+	eventIDs := []string{event.ID}
+	if triggerEvent != nil {
+		eventIDs = append(eventIDs, triggerEvent.ID)
+	}
+	stored := V3SessionMutationStoredResult{SessionID: input.SessionID, RunID: epoch.EpochID, FirstSeq: boundarySeq, LastSeq: epochLastSeq, EventIDs: eventIDs, PayloadHash: input.PayloadHash, ResponseVersion: V3SessionMutationResponseVersion, ResponseStatus: V3SessionMutationStatusCompleted, EventType: event.EventType, LastEventSeq: epochLastSeq, ProjectionHighWatermarkSeq: epochLastSeq, AppliedAt: now}
 	idem := V3SessionIdempotencyRecord{SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, Operation: V3SessionMutationBeginExecutionEpoch, ClientRequestID: input.ClientRequestID, Key: input.ClientRequestID, PayloadHash: input.PayloadHash, Kind: V3SessionMutationBeginExecutionEpoch, Status: V3SessionMutationStatusCompleted, Result: stored, CreatedAt: now, CompletedAt: now}
 	batch := s.store.NewBatch()
 	defer batch.Close()
@@ -369,7 +630,8 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		return BeginExecutionEpochResult{}, err
 	}
 	if epoch.Boundary.PlanID != "" || epoch.Boundary.CheckpointID != "" {
-		if err := batch.Set([]byte(KeyExecutionEpochBoundary(input.SessionID, epoch.Boundary.PlanID, epoch.Boundary.CheckpointID)), []byte(epoch.EpochID), nil); err != nil {
+		boundaryKey := KeyExecutionEpochBoundary(input.SessionID, epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, epoch.Boundary.AttemptID, epoch.Boundary.Reason)
+		if err := batch.Set([]byte(boundaryKey), []byte(epoch.EpochID), nil); err != nil {
 			return BeginExecutionEpochResult{}, err
 		}
 	}
@@ -391,10 +653,52 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 			return BeginExecutionEpochResult{}, err
 		}
 	}
-	if err := batch.Set([]byte(KeyV3SessionSequence(input.SessionID)), uint64ToBytes(boundarySeq), nil); err != nil {
+	if triggerEvent != nil && triggerOutbox != nil {
+		if session, ok, getErr := s.GetSession(input.SessionID); getErr != nil {
+			return BeginExecutionEpochResult{}, getErr
+		} else if !ok {
+			return BeginExecutionEpochResult{}, fmt.Errorf("session %q not found", input.SessionID)
+		} else {
+			session.MessageCount++
+			session.UpdatedAt = now
+			session.LastMessageAt = now
+			if err := s.setSessionInBatch(batch, session); err != nil {
+				return BeginExecutionEpochResult{}, err
+			}
+		}
+		triggerMessageRaw, marshalErr := json.Marshal(triggerMessage)
+		if marshalErr != nil {
+			return BeginExecutionEpochResult{}, marshalErr
+		}
+		triggerEventRaw, marshalErr := json.Marshal(*triggerEvent)
+		if marshalErr != nil {
+			return BeginExecutionEpochResult{}, marshalErr
+		}
+		triggerOutboxRaw, marshalErr := json.Marshal(*triggerOutbox)
+		if marshalErr != nil {
+			return BeginExecutionEpochResult{}, marshalErr
+		}
+		triggerRef, marshalErr := marshalV3RealtimeOutboxReference(*triggerOutbox)
+		if marshalErr != nil {
+			return BeginExecutionEpochResult{}, marshalErr
+		}
+		for key, value := range map[string][]byte{
+			KeyV3SessionMessage(input.SessionID, triggerSeq):                                              triggerMessageRaw,
+			KeyV3SessionEvent(input.SessionID, triggerSeq):                                                triggerEventRaw,
+			KeyV3RealtimeOutbox(triggerOutbox.EndpointSeq):                                                triggerOutboxRaw,
+			KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, triggerOutbox.EndpointSeq):              triggerRef,
+			KeyV3RealtimeOutboxBySessionSeq(input.SessionID, triggerSeq):                                  triggerRef,
+			KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, triggerOutbox.EndpointSeq): triggerRef,
+		} {
+			if err := batch.Set([]byte(key), value, nil); err != nil {
+				return BeginExecutionEpochResult{}, err
+			}
+		}
+	}
+	if err := batch.Set([]byte(KeyV3SessionSequence(input.SessionID)), uint64ToBytes(epochLastSeq), nil); err != nil {
 		return BeginExecutionEpochResult{}, err
 	}
-	if input.RunID != "" {
+	if input.RunID != "" && !input.SkipRunIntent {
 		run, ok, getErr := s.GetV3SessionRunIntent(input.SessionID, input.RunID)
 		if getErr != nil {
 			return BeginExecutionEpochResult{}, getErr
@@ -415,7 +719,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		run.RunSessionID = epoch.Boundary.RunSessionID
 		run.ParentSessionID = epoch.Boundary.ParentSessionID
 		run.UpdatedAt = now
-		run.EventSeq = boundarySeq
+		run.EventSeq = epochLastSeq
 		raw, marshalErr := json.Marshal(run)
 		if marshalErr != nil {
 			return BeginExecutionEpochResult{}, marshalErr
@@ -434,6 +738,11 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 			return BeginExecutionEpochResult{}, err
 		}
 	}
+	if hook := s.store.sessionMutations.beforeExecutionEpochCommit; hook != nil {
+		if err := hook(input.SessionID); err != nil {
+			return BeginExecutionEpochResult{}, err
+		}
+	}
 	commitStart := time.Now()
 	err = batch.Commit(pebble.Sync)
 	observeExecutionEpochBatchCommit(commitStart)
@@ -444,7 +753,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 	if err := s.store.sessionMutations.commitOutbox(s.store, reserved); err != nil {
 		return BeginExecutionEpochResult{}, err
 	}
-	return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox}, nil
+	return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox}, nil
 }
 
 func (s *SessionStore) readLegacyEpochPrefix(sessionID string, seq uint64) (*ExecutionEpochLegacyPrefix, error) {

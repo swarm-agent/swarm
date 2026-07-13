@@ -18,6 +18,9 @@ func (s *Server) applySessionV3PrimaryMutation(input sessionruntime.SessionMutat
 	if s == nil || s.sessions == nil {
 		return sessionruntime.SessionMutationResult{}, errors.New("sessions v3 service is not configured")
 	}
+	if strings.TrimSpace(input.EpochID) == "" && input.RunIntent != nil {
+		input.EpochID = strings.TrimSpace(input.RunIntent.EpochID)
+	}
 	s.recordV3StoreInputDiagnostic(input)
 	result, err := s.sessions.ApplySessionMutation(input)
 	if err != nil {

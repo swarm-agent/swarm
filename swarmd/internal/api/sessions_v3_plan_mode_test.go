@@ -372,7 +372,14 @@ func assertSessionsV3PlanModeQueuedRun(t *testing.T, payload map[string]any, ses
 	if err != nil || !ok {
 		t.Fatalf("active run intent: ok=%v err=%v", ok, err)
 	}
-	if intent.Status != sessionruntime.RunIntentPendingExecutor || strings.TrimSpace(intent.RunID) == "" {
-		t.Fatalf("intent = %#v, want pending executor with run id", intent)
+	if intent.Status != sessionruntime.RunIntentPendingExecutor || strings.TrimSpace(intent.RunID) == "" || strings.TrimSpace(intent.EpochID) == "" {
+		t.Fatalf("intent = %#v, want pending executor with run and epoch ids", intent)
+	}
+	epoch, ok, err := sessionSvc.GetActiveExecutionEpoch(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("active execution epoch: ok=%v err=%v", ok, err)
+	}
+	if epoch.EpochID != intent.EpochID || epoch.Boundary.CheckpointID != checkpointID || epoch.Boundary.AttemptID != intent.AttemptID || epoch.Boundary.RunID != intent.RunID {
+		t.Fatalf("epoch and intent disagree: epoch=%#v intent=%#v", epoch, intent)
 	}
 }

@@ -90,6 +90,27 @@ func (s *Service) GetExecutionEpoch(sessionID, epochID string) (pebblestore.Exec
 	return s.store.GetExecutionEpoch(sessionID, epochID)
 }
 
+func (s *Service) ListExecutionEpochMessages(sessionID, epochID string, limit int) (pebblestore.ExecutionEpoch, []pebblestore.MessageSnapshot, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.ExecutionEpoch{}, nil, errors.New("session service is not configured")
+	}
+	return s.store.ListExecutionEpochMessages(sessionID, epochID, limit)
+}
+
+func (s *Service) GetExecutionProviderLifecycleState(sessionID, epochID string) (pebblestore.ExecutionProviderLifecycleState, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.ExecutionProviderLifecycleState{}, false, errors.New("session service is not configured")
+	}
+	return s.store.GetExecutionProviderLifecycleState(sessionID, epochID)
+}
+
+func (s *Service) PutExecutionProviderLifecycleState(state pebblestore.ExecutionProviderLifecycleState) error {
+	if s == nil || s.store == nil {
+		return errors.New("session service is not configured")
+	}
+	return s.store.PutExecutionProviderLifecycleState(state)
+}
+
 func (s *Service) GetActiveExecutionEpoch(sessionID string) (pebblestore.ExecutionEpoch, bool, error) {
 	if s == nil || s.store == nil {
 		return pebblestore.ExecutionEpoch{}, false, errors.New("session service is not configured")

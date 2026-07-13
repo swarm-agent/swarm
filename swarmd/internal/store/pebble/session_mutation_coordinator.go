@@ -29,6 +29,10 @@ type sessionMutationCoordinator struct {
 	publishing        bool
 	publicationErr    error
 
+	// publishOutboxHead is a test seam for failures after the mutation batch is
+	// already durable but before the separately durable published head advances.
+	publishOutboxHead func(store *Store, target uint64) error
+
 	// libraryRepairMu allows unrelated live mutations to maintain disjoint
 	// library rows concurrently while excluding the versioned full rebuild.
 	libraryRepairMu sync.RWMutex
@@ -36,6 +40,9 @@ type sessionMutationCoordinator struct {
 	// beforeDurableCommit is a test seam at the store commit boundary. Tests set
 	// it before starting workers and never mutate it concurrently.
 	beforeDurableCommit func(sessionID string)
+	// beforeExecutionEpochCommit injects a pre-commit failure for the canonical
+	// compound epoch transition. Returning an error must leave no durable rows.
+	beforeExecutionEpochCommit func(sessionID string) error
 }
 
 func newSessionMutationCoordinator() *sessionMutationCoordinator {
@@ -137,9 +144,6 @@ func (c *sessionMutationCoordinator) reserveOutbox(store *Store, count int) ([]u
 	if err := c.initializeOutboxLocked(store); err != nil {
 		return nil, err
 	}
-	if c.publicationErr != nil {
-		return nil, c.publicationErr
-	}
 	reserved := make([]uint64, 0, count)
 	for seq := c.publishedHead + 1; len(reserved) < count; seq++ {
 		if c.allocated[seq] || c.committed[seq] {
@@ -172,11 +176,9 @@ func (c *sessionMutationCoordinator) commitOutbox(store *Store, seqs []uint64) e
 		delete(c.allocated, seq)
 		c.committed[seq] = true
 	}
-	if c.publicationErr != nil {
-		err := c.publicationErr
-		c.outboxMu.Unlock()
-		return err
-	}
+	// A prior head publication failure is recoverable. Durable outbox rows stay
+	// in committed and every later commit/replay gets another publication try.
+	c.publicationErr = nil
 	// A publisher already outside the mutex will recheck for newly completed
 	// contiguous rows before it relinquishes publication ownership.
 	if c.publishing {
@@ -199,7 +201,12 @@ func (c *sessionMutationCoordinator) commitOutbox(store *Store, seqs []uint64) e
 		}
 		c.outboxMu.Unlock()
 
-		err := store.db.Set([]byte(KeyV3RealtimeOutboxSequence()), uint64ToBytes(target), pebble.Sync)
+		var err error
+		if publish := c.publishOutboxHead; publish != nil {
+			err = publish(store, target)
+		} else {
+			err = store.db.Set([]byte(KeyV3RealtimeOutboxSequence()), uint64ToBytes(target), pebble.Sync)
+		}
 
 		c.outboxMu.Lock()
 		if err != nil {
@@ -209,6 +216,7 @@ func (c *sessionMutationCoordinator) commitOutbox(store *Store, seqs []uint64) e
 			c.outboxMu.Unlock()
 			return c.publicationErr
 		}
+		c.publicationErr = nil
 		c.publishedHead = target
 		for seq := range c.committed {
 			if seq <= target {

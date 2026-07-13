@@ -3092,8 +3092,9 @@ func TestSessionsV3PrimaryPlanModeStartCheckpointPreflightIsPrimaryOnlyAndAtomic
 	}
 
 	initialDoc := &pebblestore.SessionPlanDocument{
-		ID:    "plan-primary-preflight",
-		Title: "Plan primary preflight",
+		ID:     "plan-primary-preflight",
+		Title:  "Plan primary preflight",
+		Status: "approved",
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
 			Mode:  sessionruntime.PlanExecutionPolicyModeAutomatic,
 			Shape: sessionruntime.PlanExecutionShapeCheckpointed,
@@ -3105,7 +3106,7 @@ func TestSessionsV3PrimaryPlanModeStartCheckpointPreflightIsPrimaryOnlyAndAtomic
 			Order:  1,
 		}},
 	}
-	if _, _, err := sessionSvc.SavePlanWithMetadata(created.ID, initialDoc.ID, initialDoc.Title, "# Plan", "draft", "draft", true, sessionruntime.PlanSaveMetadata{Document: initialDoc}); err != nil {
+	if _, _, err := sessionSvc.SavePlanWithMetadata(created.ID, initialDoc.ID, initialDoc.Title, "# Plan", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: initialDoc}); err != nil {
 		t.Fatalf("save initial plan: %v", err)
 	}
 
@@ -5858,6 +5859,9 @@ func assertSessionsV3NoMessageAppendedActivePlanPayload(t *testing.T, sessionSvc
 
 func TestSessionsV3ProviderBaseRequestCheckpointCategoriesUseFreshCodexBoundary(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	providers := registry.New()
+	providers.RegisterRunner(&sessionsV3RecordingProviderRunner{id: "codex"})
+	server.providers = providers
 	exec := newSessionV3Executor(server)
 	server.v3SessionExecutor = exec
 	workspace := t.TempDir()
@@ -5902,7 +5906,7 @@ func TestSessionsV3ProviderBaseRequestCheckpointCategoriesUseFreshCodexBoundary(
 		{name: "terminal_blocked", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-blocked"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-blocked", CheckpointID: "cp-blocked", AttemptID: "cp-blocked:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
 		{name: "terminal_failed", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-failed"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-failed", CheckpointID: "cp-failed", AttemptID: "cp-failed:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
 	}
-	seenAffinity := map[string]string{}
+	var firstAffinity string
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := exec.sessionV3ProviderBaseRequestWithCheckpointScope(tc.job, resolved, input, tc.scope)
@@ -5921,16 +5925,20 @@ func TestSessionsV3ProviderBaseRequestCheckpointCategoriesUseFreshCodexBoundary(
 			if len(req.Input) != 1 || !sessionsV3ProviderInputContainsContentText(req.Input, "checkpoint payload") {
 				t.Fatalf("checkpoint request input = %+v, want bounded supplied payload", req.Input)
 			}
-			if prev, exists := seenAffinity[req.SessionAffinityKey]; exists {
-				t.Fatalf("session affinity key %q reused for %s and %s", req.SessionAffinityKey, prev, tc.name)
+			if firstAffinity == "" {
+				firstAffinity = req.SessionAffinityKey
+			} else if req.SessionAffinityKey != firstAffinity {
+				t.Fatalf("same durable epoch produced different affinity keys: first=%q %s=%q", firstAffinity, tc.name, req.SessionAffinityKey)
 			}
-			seenAffinity[req.SessionAffinityKey] = tc.name
 		})
 	}
 }
 
 func TestSessionsV3ProviderPostCheckpointFollowupUsesNativeContinuation(t *testing.T) {
-	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	providers := registry.New()
+	providers.RegisterRunner(&sessionsV3RecordingProviderRunner{id: "codex"})
+	server.providers = providers
 	exec := newSessionV3Executor(server)
 	server.v3SessionExecutor = exec
 	workspace := t.TempDir()
@@ -5943,38 +5951,38 @@ func TestSessionsV3ProviderPostCheckpointFollowupUsesNativeContinuation(t *testi
 		Instructions: "Swarm prompt",
 		ToolChoice:   "none",
 	}
-	previousLineageID := provideriface.ShortProviderLineageKey(
-		created.ID,
-		"checkpoint-branch",
-		"codex",
-		"gpt-5.3-codex",
-		resolved.Instructions,
-		sessionV3ProviderToolsLineageHash(resolved.Tools),
-		strings.TrimSpace(created.Mode),
-		strings.TrimSpace(resolved.AgentProfile.Name),
-		strings.TrimSpace(resolved.AgentProfile.Mode),
-		strings.TrimSpace(resolved.AgentProfile.RuntimeMode),
-		strings.TrimSpace(resolved.AgentProfile.ExecutionSetting),
-		"",
-		"",
-	)
-	appendSessionsV3PrimaryTestSystemMessage(t, server, created.ID, "provider-post-checkpoint-followup-lineage", "fresh checkpoint finalized", map[string]any{
-		"provider_lineage_id": previousLineageID,
-		"context_branch_id":   "checkpoint-branch",
-		"boundary_reason":     "checkpoint_fresh_context",
-		"provider":            "codex",
-		"model":               "gpt-5.3-codex",
-		"run_id":              "run-finalize",
-	})
-	req, err := exec.sessionV3ProviderBaseRequest(sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-followup"}, resolved, []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "normal follow-up"}}}})
+	epoch, ok, err := sessionSvc.GetActiveExecutionEpoch(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get active execution epoch: ok=%t err=%v", ok, err)
+	}
+	configurationHash := provideriface.ShortProviderLineageKey("codex", "gpt-5.3-codex", resolved.Instructions, sessionV3ProviderToolsLineageHash(resolved.Tools), strings.TrimSpace(created.Mode), strings.TrimSpace(resolved.AgentProfile.Name), strings.TrimSpace(resolved.AgentProfile.Mode), strings.TrimSpace(resolved.AgentProfile.RuntimeMode), strings.TrimSpace(resolved.AgentProfile.ExecutionSetting), strings.TrimSpace(resolved.Preference.Thinking), strings.TrimSpace(resolved.Preference.ServiceTier), strings.TrimSpace(resolved.Preference.ContextMode))
+	previousLineageID := provideriface.ShortProviderLineageKey(created.ID, epoch.EpochID, configurationHash)
+	if err := sessionSvc.PutExecutionProviderLifecycleState(pebblestore.ExecutionProviderLifecycleState{
+		SessionID:                     created.ID,
+		EpochID:                       epoch.EpochID,
+		Provider:                      "codex",
+		Model:                         "gpt-5.3-codex",
+		ConfigurationHash:             configurationHash,
+		ProviderLineageID:             previousLineageID,
+		ContextBranchID:               provideriface.ShortProviderLineageKey("epoch", created.ID, epoch.EpochID),
+		ProviderCacheKey:              sessionV3ProviderScopedKey("cache", epoch.EpochID+"-"+previousLineageID),
+		SessionAffinityKey:            sessionV3ProviderScopedKey("affinity", epoch.EpochID+"-"+previousLineageID),
+		BoundaryReason:                "checkpoint_fresh_context",
+		ProviderLineageStartMessageID: "provider-post-checkpoint-followup-lineage",
+		ProviderLineageStartRunID:     "run-finalize",
+		UpdatedAt:                     time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("put provider lifecycle state: %v", err)
+	}
+	req, err := exec.sessionV3ProviderBaseRequest(sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-followup", EpochID: epoch.EpochID}, resolved, []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "normal follow-up"}}}})
 	if err != nil {
 		t.Fatalf("base request: %v", err)
 	}
 	if req.BoundaryReason != "session_turn" || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
 		t.Fatalf("post-checkpoint follow-up flags = boundary %q native %t fresh %t, want same-lineage session_turn", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
 	}
-	if req.ProviderLineageID != previousLineageID || req.ContextBranchID != "checkpoint-branch" {
-		t.Fatalf("post-checkpoint follow-up lineage = %q branch %q, want continued checkpoint lineage %q", req.ProviderLineageID, req.ContextBranchID, previousLineageID)
+	if req.ProviderLineageID != previousLineageID || req.ContextBranchID != provideriface.ShortProviderLineageKey("epoch", created.ID, epoch.EpochID) {
+		t.Fatalf("post-checkpoint follow-up lineage = %q branch %q, want continued epoch lineage %q", req.ProviderLineageID, req.ContextBranchID, previousLineageID)
 	}
 }
 
@@ -6082,7 +6090,7 @@ func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing
 	}
 }
 
-func TestSessionsV3MessagesForProviderLineageTrimsToLatestCompactionBoundary(t *testing.T) {
+func TestSessionsV3MessagesForProviderLineageDoesNotInferBoundaryFromTranscript(t *testing.T) {
 	messages := []pebblestore.MessageSnapshot{
 		{Role: "user", Content: "old raw transcript before compact"},
 		{Role: "system", Content: "[context-compact] origin=overflow index=1\nold summary"},
@@ -6093,18 +6101,19 @@ func TestSessionsV3MessagesForProviderLineageTrimsToLatestCompactionBoundary(t *
 	}
 
 	bounded := sessionsV3MessagesForProviderLineage(messages, "same-lineage", true)
-	if len(bounded) != 2 {
-		t.Fatalf("bounded messages length = %d, want latest compact boundary plus follow-up: %+v", len(bounded), bounded)
+	if len(bounded) != len(messages) {
+		t.Fatalf("provider lineage helper inferred a boundary from transcript text or metadata: got %d messages, want %d: %+v", len(bounded), len(messages), bounded)
 	}
-	if !strings.Contains(bounded[0].Content, "origin=plan_fresh_context") || bounded[1].Content != "normal follow-up after checkpoint" {
-		t.Fatalf("bounded messages = %+v, want plan fresh boundary and follow-up", bounded)
+	for i := range messages {
+		if bounded[i].Content != messages[i].Content {
+			t.Fatalf("provider lineage helper changed explicitly supplied epoch message %d: got %q want %q", i, bounded[i].Content, messages[i].Content)
+		}
 	}
 	input := sessionsV3ProviderInputForLineage(messages, "same-lineage", true)
-	if sessionsV3ProviderInputContainsContentText(input, "checkpoint raw tool transcript") || sessionsV3ProviderInputContainsContentText(input, "large hidden tool result") {
-		t.Fatalf("same-lineage bounded input leaked checkpoint raw/tool transcript: %+v", input)
-	}
-	if !sessionsV3ProviderInputContainsContentText(input, "bounded checkpoint summary") || !sessionsV3ProviderInputContainsContentText(input, "normal follow-up after checkpoint") {
-		t.Fatalf("same-lineage bounded input missing boundary summary/follow-up: %+v", input)
+	for _, want := range []string{"old raw transcript before compact", "checkpoint raw tool transcript", "bounded checkpoint summary", "normal follow-up after checkpoint"} {
+		if !sessionsV3ProviderInputContainsContentText(input, want) {
+			t.Fatalf("explicit epoch input dropped %q after interpreting transcript markers as authority: %+v", want, input)
+		}
 	}
 }
 
@@ -6131,8 +6140,8 @@ func TestSessionsV3ExecutorFollowUpAfterAutomaticCheckpointUsesFreshContextBound
 			}
 			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
 		case 2:
-			if req.BoundaryReason != "session_turn" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
-				return provideriface.Response{}, fmt.Errorf("post-checkpoint follow-up lineage flags = boundary %q native %t fresh %t, want bounded fresh context after lifecycle-only completion", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			if req.BoundaryReason != "epoch_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
+				return provideriface.Response{}, fmt.Errorf("post-checkpoint follow-up lineage flags = boundary %q native %t fresh %t, want a fresh provider chain in the new post-checkpoint epoch", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
 			}
 			if sessionsV3ProviderInputContainsContentText(req.Input, oldPrompt) {
 				return provideriface.Response{}, fmt.Errorf("follow-up provider input leaked old raw transcript: %+v", req.Input)
@@ -6480,7 +6489,7 @@ func postSessionsV3CompactTestRequest(t *testing.T, server *Server, sessionID, c
 	waitForSessionsV3SpecificRunIntentStatus(t, server.sessions, sessionID, resp.RunIntent.RunID, sessionruntime.RunIntentCompleted)
 }
 
-func TestSessionsV3ProviderLineageMetadataPersistsAcrossModelHandoff(t *testing.T) {
+func TestSessionsV3ProviderLineageMetadataPersistsAcrossModelHandoffLegacyTranscriptIgnored(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	runner := &sessionsV3RecordingProviderRunner{text: "assistant answer"}
 	providers := registry.New()
@@ -6547,11 +6556,11 @@ func TestSessionsV3ProviderLineageMetadataPersistsAcrossModelHandoff(t *testing.
 	if got := sessionV3MetadataString(secondAssistant.Metadata, "new_model"); got != "model-b" {
 		t.Fatalf("new model = %q metadata=%+v", got, secondAssistant.Metadata)
 	}
-	if got := sessionV3MetadataString(secondAssistant.Metadata, "handoff_summary_message_id"); got != strings.TrimSpace(summary.ID) {
-		t.Fatalf("handoff summary id = %q, want %q metadata=%+v", got, summary.ID, secondAssistant.Metadata)
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "handoff_summary_message_id"); got != "" {
+		t.Fatalf("transcript-derived handoff summary id must be empty, got %q metadata=%+v", got, secondAssistant.Metadata)
 	}
-	if got := sessionV3MetadataString(secondAssistant.Metadata, "provider_lineage_start_message_id"); got != "" {
-		t.Fatalf("new lineage start message should be empty before first persisted response, got %q", got)
+	if got := sessionV3MetadataString(secondAssistant.Metadata, "provider_lineage_start_message_id"); got == "" {
+		t.Fatal("durable lifecycle state did not retain the prior lineage start message")
 	}
 	if runner.lastRequest.SessionID != created.ID {
 		t.Fatalf("durable session changed across provider handoff: got %q want %q", runner.lastRequest.SessionID, created.ID)
@@ -6565,7 +6574,7 @@ func TestSessionsV3ProviderLineageMetadataPersistsAcrossModelHandoff(t *testing.
 	if runner.lastRequest.ProviderCacheKey == created.ID || runner.lastRequest.SessionAffinityKey == created.ID || !strings.Contains(runner.lastRequest.ProviderCacheKey, secondLineage) || !strings.Contains(runner.lastRequest.SessionAffinityKey, secondLineage) {
 		t.Fatalf("handoff request reused durable session/cache identity: cache=%q affinity=%q session=%q lineage=%q", runner.lastRequest.ProviderCacheKey, runner.lastRequest.SessionAffinityKey, created.ID, secondLineage)
 	}
-	for _, want := range []string{"[provider-handoff]", "First turn summary", "second turn"} {
+	for _, want := range []string{"[provider-handoff]", "No compacted summary is available", "second turn"} {
 		if !sessionsV3ProviderInputContainsContentText(runner.lastRequest.Input, want) {
 			t.Fatalf("handoff input missing %q: %+v", want, runner.lastRequest.Input)
 		}
@@ -7050,6 +7059,36 @@ func sessionsV3ProviderRequestToolNames(tools []provideriface.ToolDefinition) ma
 	return out
 }
 
+type sessionsV3UndeclaredLifecycleRunner struct {
+	id string
+}
+
+func (r sessionsV3UndeclaredLifecycleRunner) ID() string { return r.id }
+func (r sessionsV3UndeclaredLifecycleRunner) CreateResponse(context.Context, provideriface.Request) (provideriface.Response, error) {
+	return provideriface.Response{}, nil
+}
+func (r sessionsV3UndeclaredLifecycleRunner) CreateResponseStreaming(context.Context, provideriface.Request, func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	return provideriface.Response{}, nil
+}
+
+func TestSessionsV3ProviderBaseRequestFailsClosedWithoutLifecycleCapability(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	providers := registry.New()
+	providers.RegisterRunner(sessionsV3UndeclaredLifecycleRunner{id: "unknown-provider"})
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-lifecycle-fail-closed-create", "provider lifecycle fail closed", workspace, pebblestore.ModelPreference{Provider: "unknown-provider", Model: "test-model", Thinking: "medium"})
+	_, err := exec.sessionV3ProviderBaseRequest(sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-unknown"}, sessionV3ResolvedRuntime{
+		Session: created, Preference: pebblestore.ModelPreference{Provider: "unknown-provider", Model: "test-model", Thinking: "medium"},
+		AgentProfile: pebblestore.AgentProfile{Name: "swarm", Mode: string(agentruntime.ModePrimary), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto},
+		Scope:        tool.WorkspaceScope{PrimaryPath: workspace}, Instructions: "Swarm prompt", ToolChoice: "none",
+	}, []map[string]any{{"role": "user", "content": "epoch input"}})
+	if err == nil || !strings.Contains(err.Error(), "no declared execution epoch lifecycle capability") {
+		t.Fatalf("base request error = %v, want fail-closed lifecycle capability error", err)
+	}
+}
+
 type sessionsV3RecordingProviderRunner struct {
 	mu            sync.Mutex
 	id            string
@@ -7070,6 +7109,9 @@ func (r *sessionsV3RecordingProviderRunner) ID() string {
 		return strings.TrimSpace(r.id)
 	}
 	return "test-provider"
+}
+func (r *sessionsV3RecordingProviderRunner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
+	return provideriface.ExecutionEpochLifecycleCapabilities{ContextMode: provideriface.ExecutionEpochContextResponsesChain, TransportReusable: true}
 }
 func (r *sessionsV3RecordingProviderRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	return r.CreateResponseStreaming(ctx, req, nil)

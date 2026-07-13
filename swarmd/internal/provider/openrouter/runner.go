@@ -28,6 +28,13 @@ func (r *Runner) ID() string {
 	return "openrouter"
 }
 
+func (r *Runner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
+	return provideriface.ExecutionEpochLifecycleCapabilities{
+		ContextMode:                provideriface.ExecutionEpochContextStatelessFullInput,
+		EpochScopedSessionAffinity: true,
+	}
+}
+
 func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	return r.createResponse(ctx, req)
 }
@@ -229,6 +236,9 @@ func openRouterSessionID(req provideriface.Request) string {
 	key := strings.TrimSpace(firstNonEmpty(req.SessionAffinityKey, req.ProviderCacheKey, req.ProviderLineageID))
 	if key == "" {
 		return ""
+	}
+	if epochID := strings.TrimSpace(req.ExecutionEpochID); epochID != "" {
+		key = provideriface.ShortProviderLineageKey("openrouter-epoch", epochID, key)
 	}
 	return "swarm-lineage-" + key
 }

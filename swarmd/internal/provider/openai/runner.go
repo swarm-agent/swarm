@@ -27,6 +27,15 @@ func (r *Runner) ID() string {
 	return "openai"
 }
 
+func (r *Runner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
+	return provideriface.ExecutionEpochLifecycleCapabilities{
+		ContextMode:                provideriface.ExecutionEpochContextResponsesChain,
+		EpochScopedCacheKey:        true,
+		EpochScopedSessionAffinity: true,
+		TransportReusable:          true,
+	}
+}
+
 func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	if r == nil || r.client == nil {
 		return provideriface.Response{}, errors.New("openai runner client is not configured")

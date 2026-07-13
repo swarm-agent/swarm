@@ -96,6 +96,19 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 		maxOutputTokens = agentModelPolicy.MaxOutputTokens
 	}
 
+	var currentExecutionEpoch *sessionsV3ExecutionEpochView
+	if epoch, ok, err := s.sessions.GetActiveExecutionEpoch(session.ID); err != nil {
+		return sessionsV3SessionView{}, err
+	} else if ok {
+		epochCopy := sessionsV3ExecutionEpochViewFromStore(epoch)
+		currentExecutionEpoch = &epochCopy
+	} else if epoch, ok, err := s.sessions.Store().GetLatestExecutionEpoch(session.ID); err != nil {
+		return sessionsV3SessionView{}, err
+	} else if ok {
+		epochCopy := sessionsV3ExecutionEpochViewFromStore(epoch)
+		currentExecutionEpoch = &epochCopy
+	}
+
 	var hasActivePlan *bool
 	var activePlan *pebblestore.SessionPlanSnapshot
 	if includeActivePlan {
@@ -121,12 +134,28 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 			MaxOutputTokens:     maxOutputTokens,
 			ProjectionSeq:       projection.LastEventSeq,
 		},
-		PendingPermissions: pendingPermissions,
-		UsageSummary:       usageSummary,
-		CurrentRunState:    currentRunState,
-		HasActivePlan:      hasActivePlan,
-		ActivePlan:         activePlan,
+		CurrentExecutionEpoch: currentExecutionEpoch,
+		PendingPermissions:    pendingPermissions,
+		UsageSummary:          usageSummary,
+		CurrentRunState:       currentRunState,
+		HasActivePlan:         hasActivePlan,
+		ActivePlan:            activePlan,
 	}, nil
+}
+
+func sessionsV3ExecutionEpochViewFromStore(epoch pebblestore.ExecutionEpoch) sessionsV3ExecutionEpochView {
+	return sessionsV3ExecutionEpochView{
+		EpochID:       epoch.EpochID,
+		SessionID:     epoch.SessionID,
+		ParentEpochID: epoch.ParentEpochID,
+		Ordinal:       epoch.Ordinal,
+		Status:        epoch.Status,
+		FirstRootSeq:  epoch.FirstRootSeq,
+		LastRootSeq:   epoch.LastRootSeq,
+		CreatedAt:     epoch.CreatedAt,
+		UpdatedAt:     epoch.UpdatedAt,
+		SealedAt:      epoch.SealedAt,
+	}
 }
 
 func (s *Server) sessionsV3SyncActivePlanForSession(sessionID string) (pebblestore.SessionPlanSnapshot, bool, error) {

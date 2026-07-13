@@ -46,7 +46,7 @@ import {
 } from './desktop-v3-cache.backend-fixtures'
 import { isDesktopV3SessionTailReady, selectDesktopPlanExecutionView, selectDesktopSidebarRows, selectDesktopV3HydratedTranscriptDiagnostics, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
 import { buildDesktopV3ConversationRenderItems, isDesktopV3ManualCompactionAckMessage } from '../chat/components/desktop-v3-existing-conversation-pane'
-import type { CacheEvent, DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, SessionSnapshot, V3SessionEvent, V3SessionProjection } from './desktop-v3-cache-types'
+import type { CacheEvent, DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, SessionSnapshot, V3ExecutionEpoch, V3SessionEvent, V3SessionProjection } from './desktop-v3-cache-types'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 
 const encoder = new TextEncoder()
@@ -1056,7 +1056,7 @@ test('older active run intent cannot revive current intent after terminal state'
   assert.equal(state.currentRunIntentBySession[sessionA.id], undefined)
   assert.equal(state.runIntentsBySession[sessionA.id]?.[runIntentA.run_id]?.status, 'completed')
   assert.equal(state.runIntentsBySession[sessionA.id]?.[runIntentA.run_id]?.event_seq, 5)
-  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id]?.status, 'completed')
+  assert.equal(state.liveRunsBySession[sessionA.id]?.[runIntentA.run_id], undefined)
 })
 
 test('hydrate requested tombstone without run-intent key clears stale run state', () => {
@@ -1470,6 +1470,44 @@ test('execution epoch snapshot recovery cannot roll back a newer realtime epoch'
 
   assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.epoch_id, 'epoch-4')
   assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.epoch_ordinal, 4)
+})
+
+test('execution epoch hydration covers active sealed delayed stale completed and legacy states', () => {
+  const state = bootstrappedState()
+  const sidebarScopeId = snapshotFixture().scope_id
+  const initialSidebarOrder = [...(state.sessionOrderByScope[sidebarScopeId] ?? [])]
+
+  const hydrateEpoch = (epoch: V3ExecutionEpoch) => {
+    applyHydrateSnapshot(state, hydrateSnapshotFixture({
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      messages_by_session: {},
+      session_views_by_id: { [sessionA.id]: { current_execution_epoch: epoch } },
+      session_order: [sessionA.id],
+      selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+      sync_scope: { ...hydrateSnapshotFixture().sync_scope, resource_set: 'session_view' },
+    }), [sessionA.id])
+  }
+
+  hydrateEpoch({ epoch_id: 'epoch-active', ordinal: 2, session_id: sessionA.id, status: 'active', first_root_seq: 10, last_root_seq: 12 })
+  assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.epoch_id, 'epoch-active')
+  assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.epoch_ordinal, 2)
+
+  hydrateEpoch({ epoch_id: 'epoch-sealed', ordinal: 3, session_id: sessionA.id, status: 'sealed', first_root_seq: 13, last_root_seq: 20, sealed_at: 20 })
+  hydrateEpoch({ epoch_id: 'epoch-sealed', ordinal: 3, session_id: sessionA.id, status: 'active' })
+  assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.status, 'sealed')
+
+  // A delayed snapshot for an older epoch and an ordinal-free legacy payload are stale.
+  hydrateEpoch({ epoch_id: 'epoch-delayed', ordinal: 2, session_id: sessionA.id, status: 'active' })
+  hydrateEpoch({ epoch_id: 'legacy-epoch', session_id: sessionA.id, status: 'active' })
+  assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.epoch_id, 'epoch-sealed')
+
+  hydrateEpoch({ epoch_id: 'epoch-completed', ordinal: 4, session_id: sessionA.id, status: 'completed', completed_event_seq: 30 })
+  hydrateEpoch({ epoch_id: 'epoch-completed', ordinal: 4, session_id: sessionA.id, status: 'active', started_event_seq: 28 })
+  assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.status, 'completed')
+  assert.equal(state.currentExecutionEpochBySession[sessionA.id]?.completed_event_seq, 30)
+  assert.deepEqual(state.sessionOrderByScope[sidebarScopeId], initialSidebarOrder)
+  assert.equal(Object.keys(state.sessionsById).filter((id) => id === sessionA.id).length, 1)
 })
 
 test('permission realtime events update detail records while summary events own sidebar counts', () => {

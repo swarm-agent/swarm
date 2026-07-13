@@ -66,6 +66,7 @@ type Client struct {
 	earlyExpiry     time.Duration
 	sendWSFn        func(context.Context, pebblestore.CodexAuthRecord, []byte, func(StreamEvent)) (map[string]any, int, error)
 	responsesAPIURL string
+	responsesWSURL  string
 	wsMu            sync.Mutex
 	wsSessions      map[string]*cachedWebsocketSession
 }
@@ -382,6 +383,7 @@ func closeCachedWebsocketSessionLocked(session *cachedWebsocketSession) {
 		return
 	}
 	if session.conn != nil {
+		pebblestore.ObserveExecutionEpochSocketReset()
 		_ = session.conn.Close()
 		session.conn = nil
 	}
@@ -401,6 +403,9 @@ func prepareCachedWebsocketSessionLocked(session *cachedWebsocketSession, transp
 		// A new provider chain must not inherit response lineage. Keep the
 		// compatible healthy socket, but clear only chain-scoped cache state.
 		resetCachedWebsocketChainLocked(session)
+	}
+	if session.conn != nil {
+		pebblestore.ObserveExecutionEpochSocketReuse()
 	}
 	return session.conn, session.conn != nil, nil
 }
@@ -459,22 +464,7 @@ func (c *Client) createResponseWithAuth(ctx context.Context, record pebblestore.
 	if strings.TrimSpace(record.Provider) == "" {
 		record.Provider = "codex"
 	}
-	allowContinuation := req.AllowContinuation || req.NativeContinuationAllowed
-	startNewChain := req.StartNewChain || req.ForceFreshProviderContext || !allowContinuation
-	forceFreshProviderContext := startNewChain
-
-	ctx = contextWithForceFreshProviderContext(ctx, forceFreshProviderContext)
-	ctx = contextWithCodexTransportContext(ctx, codexTransportContext{
-		PromptCacheKey:            codexPromptCacheKey(firstNonEmpty(req.ProviderCacheKey, req.ProviderLineageID)),
-		SessionAffinityKey:        codexSessionAffinityKey(firstNonEmpty(req.SessionAffinityKey, req.TransportAffinityKey, req.ProviderLineageID)),
-		StartNewChain:             startNewChain,
-		AllowContinuation:         allowContinuation,
-		ReuseTransport:            req.ReuseTransport,
-		ResetTransport:            req.ResetTransport,
-		NativeContinuationAllowed: req.NativeContinuationAllowed,
-		ForceFreshProviderContext: forceFreshProviderContext,
-		BoundaryReason:            strings.TrimSpace(req.BoundaryReason),
-	})
+	ctx = c.contextWithResponsesLifecycle(ctx, record, req, false)
 	decoded, statusCode, err := c.sendRequest(ctx, record, req, onEvent)
 	if err != nil {
 		return Response{}, err
@@ -489,6 +479,10 @@ func (c *Client) createResponseWithAuth(ctx context.Context, record pebblestore.
 		if err != nil {
 			return Response{}, fmt.Errorf("persist refreshed codex oauth: %w", err)
 		}
+		// The refreshed credential must never continue on the socket that rejected
+		// its predecessor. Rebuild compatibility identity and force a redial while
+		// preserving the request's fresh/full-input policy.
+		ctx = c.contextWithResponsesLifecycle(ctx, record, req, true)
 		decoded, statusCode, err = c.sendRequest(ctx, record, req, onEvent)
 		if err != nil {
 			return Response{}, err
@@ -507,6 +501,63 @@ func (c *Client) createResponseWithAuth(ctx context.Context, record pebblestore.
 	}
 
 	return parseResponse(decoded), nil
+}
+
+func (c *Client) contextWithResponsesLifecycle(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, resetTransport bool) context.Context {
+	allowContinuation := req.AllowContinuation || req.NativeContinuationAllowed
+	startNewChain := req.StartNewChain || req.ForceFreshProviderContext || !allowContinuation
+	forceFreshProviderContext := startNewChain
+	ctx = contextWithForceFreshProviderContext(ctx, forceFreshProviderContext)
+	return contextWithCodexTransportContext(ctx, codexTransportContext{
+		PromptCacheKey:            codexPromptCacheKey(firstNonEmpty(req.ProviderCacheKey, req.ProviderLineageID)),
+		SessionAffinityKey:        c.responsesTransportCompatibilityKey(record, req),
+		StartNewChain:             startNewChain,
+		AllowContinuation:         allowContinuation,
+		ReuseTransport:            req.ReuseTransport,
+		ResetTransport:            resetTransport || req.ResetTransport,
+		NativeContinuationAllowed: req.NativeContinuationAllowed,
+		ForceFreshProviderContext: forceFreshProviderContext,
+		BoundaryReason:            strings.TrimSpace(req.BoundaryReason),
+	})
+}
+
+func (c *Client) responsesTransportCompatibilityKey(record pebblestore.CodexAuthRecord, req Request) string {
+	providerID := strings.ToLower(strings.TrimSpace(record.Provider))
+	if providerID == "" {
+		providerID = "codex"
+	}
+	credentialVersion := ""
+	if record.Type != pebblestore.CodexAuthTypeOAuth {
+		// API-key rotation under a stable credential record must not retain a
+		// socket authenticated by the old key. Only the digest enters the key.
+		sum := sha256.Sum256([]byte(strings.TrimSpace(record.APIKey)))
+		credentialVersion = fmt.Sprintf("%x", sum[:8])
+	}
+	return codexSessionAffinityKey(provideriface.ShortProviderLineageKey(
+		"responses.websocket.transport.v1",
+		firstNonEmpty(req.TransportAffinityKey, req.SessionAffinityKey, req.ProviderLineageID),
+		providerID,
+		strings.TrimSpace(req.Model),
+		strings.TrimSpace(record.Type),
+		strings.TrimSpace(record.AccountScopeID),
+		strings.TrimSpace(record.ID),
+		strings.TrimSpace(record.AccountID),
+		credentialVersion,
+		c.responsesEndpointForRecord(record),
+	))
+}
+
+func (c *Client) responsesEndpointForRecord(record pebblestore.CodexAuthRecord) string {
+	if c != nil && strings.TrimSpace(c.responsesWSURL) != "" {
+		return strings.TrimSpace(c.responsesWSURL)
+	}
+	if record.Type == pebblestore.CodexAuthTypeOAuth {
+		return responsesURL
+	}
+	if c != nil && strings.TrimSpace(c.responsesAPIURL) != "" {
+		return strings.TrimSpace(c.responsesAPIURL)
+	}
+	return openAIResponsesURL
 }
 
 func (c *Client) ensureAuth(ctx context.Context) (pebblestore.CodexAuthRecord, error) {
@@ -857,7 +908,7 @@ func reasoningPayloadForRequest(req Request) map[string]any {
 }
 
 func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (map[string]any, int, error) {
-	if record.Type != pebblestore.CodexAuthTypeOAuth || c.sendWSFn != nil {
+	if c.sendWSFn != nil {
 		payload, _, err := buildRequestPayloadWithOptions(req)
 		if err != nil {
 			return nil, 0, err
@@ -893,6 +944,9 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 				}
 				continue
 			}
+			if record.Type != pebblestore.CodexAuthTypeOAuth && !errors.Is(wsErr, errWebsocketStreamStarted) {
+				return c.sendOpenAIResponsesRequest(ctx, record, req, streamEmitter.emit)
+			}
 			return nil, 0, wsErr
 		}
 		if ctxErr := contextErr(ctx); ctxErr != nil {
@@ -904,7 +958,13 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 			}
 			continue
 		}
+		if record.Type != pebblestore.CodexAuthTypeOAuth && openAIWebsocketShouldFallbackHTTP(wsStatus) {
+			return c.sendOpenAIResponsesRequest(ctx, record, req, streamEmitter.emit)
+		}
 		return annotateRetryAttempts(annotateCodexTransportMetadata(wsDecoded, codexTransportWebsocket, true), attempt), wsStatus, nil
+	}
+	if record.Type != pebblestore.CodexAuthTypeOAuth {
+		return c.sendOpenAIResponsesRequest(ctx, record, req, streamEmitter.emit)
 	}
 	return map[string]any{
 		"raw_body":       "",
@@ -980,6 +1040,26 @@ func shouldRetryTransportStatus(statusCode int, decoded map[string]any) bool {
 	default:
 		return statusCode >= http.StatusInternalServerError && statusCode <= 599
 	}
+}
+
+func openAIWebsocketShouldFallbackHTTP(statusCode int) bool {
+	if statusCode == 0 {
+		return true
+	}
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusUpgradeRequired, http.StatusNotImplemented:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) sendOpenAIResponsesRequest(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (map[string]any, int, error) {
+	payload, _, err := buildRequestPayloadWithOptions(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	return c.sendOpenAIResponses(ctx, record, payload, onEvent)
 }
 
 func (c *Client) sendOpenAIResponses(ctx context.Context, record pebblestore.CodexAuthRecord, payload []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {
@@ -1176,8 +1256,8 @@ func mergeRetriedReasoningSummary(current, attempt string) (string, string, bool
 	return merged, merged, true
 }
 
-func responsesWebsocketURL() (string, error) {
-	parsed, err := url.Parse(responsesURL)
+func (c *Client) responsesWebsocketURL(record pebblestore.CodexAuthRecord) (string, error) {
+	parsed, err := url.Parse(c.responsesEndpointForRecord(record))
 	if err != nil {
 		return "", fmt.Errorf("parse responses url: %w", err)
 	}
@@ -1249,7 +1329,7 @@ func (c *Client) sendWebsocketRequest(ctx context.Context, record pebblestore.Co
 }
 
 func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexAuthRecord, requestPayload map[string]any, requestProperties map[string]any, requestInputLen int, payloadPrepared bool, onEvent func(StreamEvent)) (map[string]any, int, error) {
-	wsURL, err := responsesWebsocketURL()
+	wsURL, err := c.responsesWebsocketURL(record)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1440,7 +1520,9 @@ func dialCodexWebsocket(ctx context.Context, wsURL string, headers http.Header) 
 		EnableCompression: true,
 	}
 
+	dialStart := time.Now()
 	conn, resp, err := dialer.DialContext(ctx, wsURL, headers)
+	pebblestore.ObserveExecutionEpochSocketDial(dialStart)
 	if err != nil {
 		if resp != nil {
 			defer resp.Body.Close()
@@ -1749,12 +1831,18 @@ func extractSessionIDFromPayload(payload []byte) string {
 func buildCodexTransportHeaders(record pebblestore.CodexAuthRecord, transport codexTransportContext) http.Header {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+bearerToken(record))
-	headers.Set(originatorHeader, defaultOriginatorHeaderValue)
-	headers.Set(userAgentHeader, defaultCodexTransportUserAgent)
 	headers.Set(openAIBetaHeader, responsesWebsocketBetaHeaderV2)
+	if record.Type == pebblestore.CodexAuthTypeOAuth {
+		headers.Set(originatorHeader, defaultOriginatorHeaderValue)
+		headers.Set(userAgentHeader, defaultCodexTransportUserAgent)
+	} else {
+		headers.Set(userAgentHeader, defaultOpenAITransportUserAgent)
+	}
 	if sessionID := strings.TrimSpace(transport.SessionAffinityKey); sessionID != "" {
 		headers.Set("session_id", sessionID)
-		headers.Set("x-codex-window-id", sessionID)
+		if record.Type == pebblestore.CodexAuthTypeOAuth {
+			headers.Set("x-codex-window-id", sessionID)
+		}
 	}
 	if record.Type == pebblestore.CodexAuthTypeOAuth && strings.TrimSpace(record.AccountID) != "" {
 		headers.Set(chatGPTAccountIDHeader, strings.TrimSpace(record.AccountID))

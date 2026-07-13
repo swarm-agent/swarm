@@ -666,7 +666,7 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 		SessionTurnUsagePrefix(session.ID), SessionTurnUsageByAccountPrefix(session.AccountScopeID, session.ID),
 		PermissionPrefix(session.ID), PermissionPendingPrefix(session.ID), RunWaitPrefix(session.ID), RunPermissionPrefix(session.ID, ""),
 		V3SessionEventPrefix(session.ID), V3SessionMessagePrefix(session.ID), V3SessionRunIntentPrefix(session.ID),
-		ExecutionEpochPrefix(session.ID), ExecutionEpochOrdinalPrefix(session.ID), ExecutionEpochBoundaryPrefix(session.ID),
+		ExecutionEpochPrefix(session.ID), ExecutionEpochOrdinalPrefix(session.ID), ExecutionEpochBoundaryPrefix(session.ID), ExecutionProviderLifecycleStatePrefix(session.ID),
 		V3SessionIdempotencyPrefix(session.AccountScopeID, session.ID), V3RealtimeOutboxBySessionEndpointPrefix(session.ID), V3RealtimeOutboxBySessionSeqPrefix(session.ID),
 	} {
 		if err := deletePrefixInBatch(batch, prefix); err != nil {
@@ -676,7 +676,7 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 	for _, key := range []string{
 		KeySessionExecutionV2(session.ID), KeySessionExecutionV2ByAccount(session.AccountScopeID, session.ID),
 		KeySessionUsageSummary(session.ID), KeySessionUsageSummaryByAccount(session.AccountScopeID, session.ID),
-		KeyV3SessionSequence(session.ID), KeyV3SessionProjection(session.ID), KeyV3SessionRunIntentActive(session.ID), KeyExecutionEpochActive(session.ID),
+		KeyV3SessionSequence(session.ID), KeyV3SessionProjection(session.ID), KeyV3SessionRunIntentActive(session.ID), KeyExecutionEpochActive(session.ID), KeyExecutionEpochLatest(session.ID),
 	} {
 		if err := batch.Delete([]byte(key), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 			return err

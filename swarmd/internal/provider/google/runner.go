@@ -132,6 +132,12 @@ func (r *Runner) ID() string {
 	return "google"
 }
 
+func (r *Runner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
+	return provideriface.ExecutionEpochLifecycleCapabilities{
+		ContextMode: provideriface.ExecutionEpochContextStatelessFullInput,
+	}
+}
+
 func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	return r.createResponse(ctx, req)
 }

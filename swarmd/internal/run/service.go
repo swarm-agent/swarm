@@ -90,7 +90,10 @@ const (
 
 var sessionTitleWordPattern = regexp.MustCompile(sessionTitleWordExtractionRegexp)
 var sessionCompactTitleSuffixPattern = regexp.MustCompile(`(?i)\s*\(compact\s*#\s*([0-9]+)\)\s*$`)
-var contextCompactionCheckpointIndexPattern = regexp.MustCompile(`\bindex=([0-9]+)\b`)
+var (
+	contextCompactionCheckpointIndexPattern = regexp.MustCompile(`\bindex=([0-9]+)\b`)
+	contextCompactionOriginPattern          = regexp.MustCompile(`\borigin=([a-z0-9_-]+)\b`)
+)
 
 type Service struct {
 	sessions     *sessionruntime.Service
@@ -2808,14 +2811,12 @@ func (s *Service) applyContextCompactionArtifacts(sessionID, compactSummary, ori
 	if strings.TrimSpace(appendInput.LogicalKey) == "" {
 		appendInput.LogicalKey = fmt.Sprintf("system:context_compaction:%d", compactIndex)
 	}
-	checkpointMessage, _, checkpointEvent, err := s.appendRunMessage(appendInput)
+	checkpointMessage, epochResult, err := s.beginCompactionExecutionEpoch(appendInput)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	events := make([]pebblestore.EventEnvelope, 0, 3)
-	if checkpointEvent != nil {
-		events = append(events, *checkpointEvent)
-	}
+	_ = epochResult
 	if emit != nil {
 		emit(StreamEvent{Type: StreamEventMessageStored, Step: step, Message: &checkpointMessage})
 	}
@@ -2868,6 +2869,62 @@ func (s *Service) applyContextCompactionArtifacts(sessionID, compactSummary, ori
 
 	emitMemoryCompactionStatus(emit, step, memoryCompactionOriginLabel(origin))
 	return &resetSummaryCopy, compactIndex, events, nil
+}
+
+func (s *Service) beginCompactionExecutionEpoch(input runAppendMessageInput) (pebblestore.MessageSnapshot, pebblestore.BeginExecutionEpochResult, error) {
+	if s == nil || s.sessions == nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.BeginExecutionEpochResult{}, errors.New("session service is not configured")
+	}
+	sessionID := strings.TrimSpace(input.SessionID)
+	role := strings.ToLower(strings.TrimSpace(input.Role))
+	content := strings.TrimSpace(input.Content)
+	if sessionID == "" || role == "" || content == "" {
+		return pebblestore.MessageSnapshot{}, pebblestore.BeginExecutionEpochResult{}, errors.New("compaction epoch requires session, role, and checkpoint content")
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.BeginExecutionEpochResult{}, err
+	}
+	if !ok {
+		return pebblestore.MessageSnapshot{}, pebblestore.BeginExecutionEpochResult{}, fmt.Errorf("session %q not found", sessionID)
+	}
+	principal := input.Principal
+	if strings.TrimSpace(principal.UserID) == "" {
+		principal.UserID = strings.TrimSpace(session.UserID)
+	}
+	if strings.TrimSpace(principal.AccountScopeID) == "" {
+		principal.AccountScopeID = strings.TrimSpace(session.AccountScopeID)
+	}
+	logicalKey := strings.TrimSpace(input.LogicalKey)
+	if logicalKey == "" {
+		logicalKey = "system:context_compaction"
+	}
+	runID := strings.TrimSpace(input.RunID)
+	now := time.Now().UnixMilli()
+	message := pebblestore.MessageSnapshot{ID: runMessageV3ID(sessionID, runID, logicalKey, role), SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Role: role, Content: content, Metadata: cloneGenericMap(input.Metadata), CreatedAt: now}
+	payloadHash, err := runMessageV3PayloadHash(sessionID, runID, logicalKey, input.Step, role, content, message.Metadata)
+	if err != nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.BeginExecutionEpochResult{}, err
+	}
+	origin := strings.TrimSpace(mapString(message.Metadata, "context_compaction_origin"))
+	if origin == "" {
+		if match := contextCompactionOriginPattern.FindStringSubmatch(content); len(match) == 2 {
+			origin = strings.TrimSpace(match[1])
+		}
+	}
+	if origin == "" {
+		origin = "unknown"
+	}
+	clientRequestID := "context-compaction-epoch:" + runMessageV3ClientRequestID(sessionID, runID, logicalKey)
+	result, err := s.sessions.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, PayloadHash: payloadHash, Reason: "context_compaction_" + origin, CheckpointID: message.ID, RunID: runID, RunSessionID: sessionID, ParentSessionID: sessionID, TriggerMessage: &message, SkipRunIntent: true, NowUnixMs: now})
+	if err != nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.BeginExecutionEpochResult{}, err
+	}
+	if result.TriggerEvent == nil || result.TriggerOutbox == nil {
+		return pebblestore.MessageSnapshot{}, pebblestore.BeginExecutionEpochResult{}, errors.New("compaction epoch did not commit its checkpoint trigger")
+	}
+	message.GlobalSeq = result.TriggerEvent.Seq
+	return message, result, nil
 }
 
 func nextCompactSessionTitle(current string) (string, int) {

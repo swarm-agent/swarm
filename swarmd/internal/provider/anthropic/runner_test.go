@@ -11,6 +11,29 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
+func TestAnthropicExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
+	lifecycle := (&Runner{}).ExecutionEpochLifecycle()
+	if lifecycle.ContextMode != provideriface.ExecutionEpochContextStatelessFullInput || !lifecycle.Valid() {
+		t.Fatalf("lifecycle = %+v, want valid stateless full-input mode", lifecycle)
+	}
+	input := []map[string]any{
+		{"role": "user", "content": "epoch user"},
+		{"role": "assistant", "content": "epoch assistant"},
+		{"role": "user", "content": "epoch follow-up"},
+	}
+	messages, err := buildAnthropicMessages(input)
+	if err != nil {
+		t.Fatalf("build messages: %v", err)
+	}
+	encoded := mustMarshalJSON(t, messages)
+	for _, text := range []string{"epoch user", "epoch assistant", "epoch follow-up"} {
+		assertContains(t, encoded, text)
+	}
+	for _, forbidden := range []string{"previous_response_id", "conversation", "predecessor"} {
+		assertNotContains(t, encoded, forbidden)
+	}
+}
+
 func TestSanitizeAnthropicToolSchemaTransformsComplexUnions(t *testing.T) {
 	schema, err := sanitizeAnthropicToolSchema(map[string]any{
 		"type": "object",

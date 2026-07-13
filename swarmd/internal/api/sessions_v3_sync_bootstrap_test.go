@@ -814,6 +814,9 @@ func TestSessionsV3SyncHydrateReturnsSessionView(t *testing.T) {
 	if !ok {
 		t.Fatalf("hydrate missing session view: %+v", payload.SessionViewsByID)
 	}
+	if view.CurrentExecutionEpoch == nil || view.CurrentExecutionEpoch.SessionID != created.ID || view.CurrentExecutionEpoch.Status != pebblestore.ExecutionEpochStatusActive || view.CurrentExecutionEpoch.Ordinal != 1 {
+		t.Fatalf("hydrate current execution epoch = %+v", view.CurrentExecutionEpoch)
+	}
 	if view.AgenticSettings.Mode == "" || view.AgenticSettings.ProjectionSeq == 0 {
 		t.Fatalf("session view missing agentic settings: %+v", view.AgenticSettings)
 	}
@@ -834,6 +837,36 @@ func TestSessionsV3SyncHydrateReturnsSessionView(t *testing.T) {
 	}
 	if view.HasActivePlan == nil || !*view.HasActivePlan || view.ActivePlan == nil || view.ActivePlan.ID != "sync-view-plan" {
 		t.Fatalf("session view active plan = has:%v plan:%+v", view.HasActivePlan, view.ActivePlan)
+	}
+}
+
+func TestSessionsV3SyncHydrateReturnsLatestSealedExecutionEpoch(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "sync-hydrate-sealed-epoch", "Sync Hydrate Sealed Epoch")
+	active, ok, err := sessionSvc.GetActiveExecutionEpoch(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get active epoch: ok=%v err=%v", ok, err)
+	}
+	if _, err := sessionSvc.Store().SealExecutionEpoch(pebblestore.SealExecutionEpochInput{SessionID: created.ID, EpochID: active.EpochID}); err != nil {
+		t.Fatalf("seal epoch: %v", err)
+	}
+	body := bytes.NewBufferString(`{"surface":"desktop","session_ids":["` + created.ID + `"],"resources":{"session_view":true}}`)
+	req := httptest.NewRequest(http.MethodPost, V3SyncHydratePath, body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hydrate status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		SessionViewsByID map[string]sessionsV3SessionView `json:"session_views_by_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode hydrate response: %v", err)
+	}
+	epoch := payload.SessionViewsByID[created.ID].CurrentExecutionEpoch
+	if epoch == nil || epoch.EpochID != active.EpochID || epoch.Status != pebblestore.ExecutionEpochStatusSealed || epoch.LastRootSeq == 0 {
+		t.Fatalf("hydrate sealed epoch = %+v", epoch)
 	}
 }
 

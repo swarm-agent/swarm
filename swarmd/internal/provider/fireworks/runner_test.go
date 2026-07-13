@@ -1,6 +1,8 @@
 package fireworks
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -71,6 +73,33 @@ func TestSanitizeFireworksToolParametersDefaultsEmptyObjectSchema(t *testing.T) 
 	}
 	if len(properties) != 0 {
 		t.Fatalf("properties = %#v, want empty", properties)
+	}
+}
+
+func TestFireworksExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
+	payload := buildChatCompletionRequest(provideriface.Request{
+		Model:        "accounts/fireworks/models/test",
+		Instructions: "current instructions",
+		Input: []map[string]any{
+			{"role": "user", "content": "epoch user"},
+			{"role": "assistant", "content": "epoch assistant"},
+			{"role": "user", "content": "epoch follow-up"},
+		},
+	})
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	body := string(encoded)
+	for _, text := range []string{"current instructions", "epoch user", "epoch assistant", "epoch follow-up"} {
+		if !strings.Contains(body, text) {
+			t.Fatalf("payload missing %q: %s", text, body)
+		}
+	}
+	for _, forbidden := range []string{"previous_response_id", "conversation", "predecessor"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("payload contains stateful continuation field %q: %s", forbidden, body)
+		}
 	}
 }
 
@@ -232,8 +261,12 @@ func TestResolveServingTierUsesProviderNativeFireworksSemantics(t *testing.T) {
 }
 
 func TestResolveServingTierUsesLineageScopedCacheKeys(t *testing.T) {
-	first := ResolveServingTier(provideriface.Request{SessionID: "durable-session", SessionAffinityKey: "lineage-a", Model: "accounts/fireworks/models/glm-5p1"}, ServingConfig{})
-	second := ResolveServingTier(provideriface.Request{SessionID: "durable-session", SessionAffinityKey: "lineage-b", Model: "accounts/fireworks/models/glm-5p1"}, ServingConfig{})
+	lifecycle := (&Runner{}).ExecutionEpochLifecycle()
+	if lifecycle.ContextMode != provideriface.ExecutionEpochContextStatelessFullInput || !lifecycle.EpochScopedCacheKey || !lifecycle.EpochScopedSessionAffinity || !lifecycle.Valid() {
+		t.Fatalf("lifecycle = %+v, want valid stateless epoch-scoped cache and affinity", lifecycle)
+	}
+	first := ResolveServingTier(provideriface.Request{SessionID: "durable-session", ExecutionEpochID: "epoch-a", SessionAffinityKey: "epoch-a-lineage", Model: "accounts/fireworks/models/glm-5p1"}, ServingConfig{})
+	second := ResolveServingTier(provideriface.Request{SessionID: "durable-session", ExecutionEpochID: "epoch-b", SessionAffinityKey: "epoch-b-lineage", Model: "accounts/fireworks/models/glm-5p1"}, ServingConfig{})
 	if first.SessionAffinity == "" || first.PromptCacheIsolationKey == "" {
 		t.Fatalf("lineage scoped keys missing: %+v", first)
 	}
@@ -246,11 +279,11 @@ func TestResolveServingTierUsesLineageScopedCacheKeys(t *testing.T) {
 	if first.SessionAffinity == stableSessionAffinity("durable-session") {
 		t.Fatalf("session affinity used raw durable session id: %q", first.SessionAffinity)
 	}
-	stable := ResolveServingTier(provideriface.Request{SessionID: "durable-session", SessionAffinityKey: "lineage-a", Model: "accounts/fireworks/models/glm-5p1"}, ServingConfig{})
+	stable := ResolveServingTier(provideriface.Request{SessionID: "durable-session", ExecutionEpochID: "epoch-a", SessionAffinityKey: "epoch-a-lineage", Model: "accounts/fireworks/models/glm-5p1"}, ServingConfig{})
 	if stable.SessionAffinity != first.SessionAffinity || stable.PromptCacheIsolationKey != first.PromptCacheIsolationKey {
 		t.Fatalf("same lineage did not keep stable cache keys: first=%+v stable=%+v", first, stable)
 	}
-	checkpoint := ResolveServingTier(provideriface.Request{SessionID: "durable-session", SessionAffinityKey: "checkpoint-lineage", Model: "accounts/fireworks/models/glm-5p1"}, ServingConfig{})
+	checkpoint := ResolveServingTier(provideriface.Request{SessionID: "durable-session", ExecutionEpochID: "epoch-c", SessionAffinityKey: "epoch-c-lineage", Model: "accounts/fireworks/models/glm-5p1"}, ServingConfig{})
 	if checkpoint.SessionAffinity == first.SessionAffinity || checkpoint.PromptCacheIsolationKey == first.PromptCacheIsolationKey {
 		t.Fatalf("checkpoint boundary reused previous lineage cache keys: first=%+v checkpoint=%+v", first, checkpoint)
 	}

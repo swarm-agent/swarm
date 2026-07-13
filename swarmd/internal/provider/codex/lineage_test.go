@@ -3,12 +3,44 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gorilla/websocket"
 
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func TestCodexAndOpenAIRunnerRequestConversionPreservesExplicitEpochLifecycle(t *testing.T) {
+	request := provideriface.Request{
+		SessionID:                 "durable-session",
+		ProviderLineageID:         "epoch-lineage",
+		ExecutionEpochID:          "epoch-2",
+		ProviderCacheKey:          "cache-epoch-2",
+		SessionAffinityKey:        "chain-epoch-2",
+		TransportAffinityKey:      "transport-root",
+		StartNewChain:             true,
+		AllowContinuation:         false,
+		ReuseTransport:            true,
+		ResetTransport:            false,
+		ForceFreshProviderContext: true,
+		Model:                     "gpt-5.4",
+	}
+	converted := ToRequest(request)
+	if converted.ProviderLineageID != request.ProviderLineageID || converted.ProviderCacheKey != request.ProviderCacheKey || converted.SessionAffinityKey != request.SessionAffinityKey || converted.TransportAffinityKey != request.TransportAffinityKey {
+		t.Fatalf("runner conversion lost epoch keys: %+v", converted)
+	}
+	if !converted.StartNewChain || converted.AllowContinuation || !converted.ReuseTransport || converted.ResetTransport || !converted.ForceFreshProviderContext {
+		t.Fatalf("runner conversion lost lifecycle policy: %+v", converted)
+	}
+}
 
 func TestBuildRequestPayloadUsesProviderCacheKeyNotDurableSessionID(t *testing.T) {
 	payload, err := buildRequestPayload(Request{
@@ -574,6 +606,181 @@ func TestCodexOutboundShapeDiagnosticsAreSafeAndCountNativeInput(t *testing.T) {
 	}
 	if event.Extra["input_items"] != 2 || event.Extra["input_text_chars"] != 40 || event.Extra["native_input_items"] != 1 || event.Extra["encrypted_input_items"] != 1 {
 		t.Fatalf("diagnostic input shape = %+v", event.Extra)
+	}
+}
+
+func TestResponsesSameEpochContinuationUsesMatchingLocalChainOtherwiseFullInput(t *testing.T) {
+	client := NewClient(nil)
+	session := client.cachedWebsocketSession("transport-key")
+	session.lastRequestProperties = map[string]any{
+		"model":            "gpt-5.4",
+		"stream":           true,
+		"store":            false,
+		"prompt_cache_key": "cache-epoch-a",
+		"text":             map[string]any{"verbosity": defaultCodexTextVerbosity},
+	}
+	session.lastInputLen = 1
+	session.lastResponseID = "resp-epoch-a"
+	session.lastOutput = []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "answer"}}}}
+	ctx := contextWithCodexTransportContext(context.Background(), codexTransportContext{SessionAffinityKey: "transport-key", AllowContinuation: true})
+	fullInput := []map[string]any{
+		{"role": "user", "content": "first"},
+		{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "answer"}}},
+		{"role": "user", "content": "second"},
+	}
+	matching, _, _, err := client.codexWebsocketRequestPayload(ctx, Request{ProviderCacheKey: "cache-epoch-a", Model: "gpt-5.4", AllowContinuation: true, Input: fullInput})
+	if err != nil {
+		t.Fatalf("matching chain payload: %v", err)
+	}
+	if got := asString(matching["previous_response_id"]); got != "resp-epoch-a" || len(asSlice(matching["input"])) != 1 {
+		t.Fatalf("matching chain payload = %#v, want response ID and one-item delta", matching)
+	}
+	mismatched, _, _, err := client.codexWebsocketRequestPayload(ctx, Request{ProviderCacheKey: "cache-epoch-b", Model: "gpt-5.4", AllowContinuation: true, Input: fullInput})
+	if err != nil {
+		t.Fatalf("mismatched chain payload: %v", err)
+	}
+	if _, ok := mismatched["previous_response_id"]; ok {
+		t.Fatalf("mismatched local chain reused response ID: %#v", mismatched)
+	}
+	if got := reflect.ValueOf(mismatched["input"]); !got.IsValid() || got.Len() != len(fullInput) {
+		t.Fatalf("mismatched local chain input = %#v, want full input", mismatched["input"])
+	}
+}
+
+func TestResponsesTransportCompatibilityKeySeparatesCredentialsProviderModelAndEndpointNotEpoch(t *testing.T) {
+	client := NewClient(nil)
+	baseRecord := pebblestore.CodexAuthRecord{Provider: "codex", Type: pebblestore.CodexAuthTypeOAuth, AccountScopeID: "account-a", ID: "credential-a", AccountID: "chatgpt-a"}
+	baseReq := Request{TransportAffinityKey: "root-session", SessionAffinityKey: "epoch-chain-a", ProviderLineageID: "lineage-a", Model: "gpt-5.3-codex"}
+	base := client.responsesTransportCompatibilityKey(baseRecord, baseReq)
+	if base == "" {
+		t.Fatal("compatibility key is empty")
+	}
+	epochChanged := baseReq
+	epochChanged.SessionAffinityKey = "epoch-chain-b"
+	epochChanged.ProviderLineageID = "lineage-b"
+	if got := client.responsesTransportCompatibilityKey(baseRecord, epochChanged); got != base {
+		t.Fatalf("epoch rotated transport compatibility key: %q != %q", got, base)
+	}
+	cases := []struct {
+		name   string
+		record pebblestore.CodexAuthRecord
+		req    Request
+		client *Client
+	}{
+		{name: "account", record: pebblestore.CodexAuthRecord{Provider: "codex", Type: pebblestore.CodexAuthTypeOAuth, AccountScopeID: "account-b", ID: "credential-a", AccountID: "chatgpt-a"}, req: baseReq, client: client},
+		{name: "provider", record: pebblestore.CodexAuthRecord{Provider: "openai", Type: pebblestore.CodexAuthTypeAPI, AccountScopeID: "account-a", ID: "credential-a", APIKey: "key-a"}, req: baseReq, client: client},
+		{name: "model", record: baseRecord, req: Request{TransportAffinityKey: "root-session", Model: "gpt-5.4-codex"}, client: client},
+		{name: "endpoint", record: baseRecord, req: baseReq, client: &Client{responsesWSURL: "wss://example.test/v1/responses"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.client.responsesTransportCompatibilityKey(tc.record, tc.req); got == base {
+				t.Fatalf("incompatible %s reused transport key %q", tc.name, got)
+			}
+		})
+	}
+	apiReq := Request{TransportAffinityKey: "root-session", Model: "gpt-5.4"}
+	apiA := pebblestore.CodexAuthRecord{Provider: "openai", Type: pebblestore.CodexAuthTypeAPI, AccountScopeID: "account-a", ID: "credential-a", APIKey: "key-a"}
+	apiB := apiA
+	apiB.APIKey = "key-b"
+	if client.responsesTransportCompatibilityKey(apiA, apiReq) == client.responsesTransportCompatibilityKey(apiB, apiReq) {
+		t.Fatal("rotated API key reused transport compatibility identity")
+	}
+}
+
+func TestOpenAIAPIKeyResponsesWebsocketFreshEpochReusesSocketAndRotatesChain(t *testing.T) {
+	var connections atomic.Int32
+	var payloadsMu sync.Mutex
+	var payloads []map[string]any
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "Bearer sk-test" && auth != "Bearer sk-rotated" {
+			t.Errorf("Authorization = %q", auth)
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		connections.Add(1)
+		defer conn.Close()
+		for {
+			_, encoded, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(encoded, &payload); err != nil {
+				t.Errorf("decode request: %v", err)
+				return
+			}
+			payloadsMu.Lock()
+			payloads = append(payloads, payload)
+			responseNumber := len(payloads)
+			payloadsMu.Unlock()
+			completed := map[string]any{"type": "response.completed", "response": map[string]any{"id": fmt.Sprintf("resp-%d", responseNumber), "model": "gpt-5.4", "output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": fmt.Sprintf("answer-%d", responseNumber)}}}}}}
+			if err := conn.WriteJSON(completed); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(nil)
+	client.responsesWSURL = "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	record := pebblestore.CodexAuthRecord{Provider: "openai", Type: pebblestore.CodexAuthTypeAPI, AccountScopeID: "account-a", ID: "credential-a", APIKey: "sk-test"}
+	inputA := []map[string]any{{"role": "user", "content": "epoch-a-full"}}
+	inputB := []map[string]any{{"role": "user", "content": "epoch-b-full"}}
+	for i, tc := range []struct {
+		lineage string
+		cache   string
+		input   []map[string]any
+		apiKey  string
+	}{{"lineage-a", "cache-a", inputA, "sk-test"}, {"lineage-b", "cache-b", inputB, "sk-test"}, {"lineage-c", "cache-c", []map[string]any{{"role": "user", "content": "epoch-c-full"}}, "sk-rotated"}} {
+		record.APIKey = tc.apiKey
+		response, err := client.CreateResponseWithAuth(context.Background(), record, Request{
+			ProviderLineageID:         tc.lineage,
+			ProviderCacheKey:          tc.cache,
+			SessionAffinityKey:        "chain-" + tc.lineage,
+			TransportAffinityKey:      "root-session",
+			StartNewChain:             true,
+			ReuseTransport:            true,
+			ForceFreshProviderContext: true,
+			Model:                     "gpt-5.4",
+			Input:                     tc.input,
+		})
+		if err != nil {
+			t.Fatalf("request %d: %v", i+1, err)
+		}
+		if response.ID == "" {
+			t.Fatalf("request %d returned empty response id", i+1)
+		}
+	}
+	if got := connections.Load(); got != 2 {
+		t.Fatalf("websocket connections = %d, want reuse for compatible epochs and redial after API-key rotation", got)
+	}
+	payloadsMu.Lock()
+	defer payloadsMu.Unlock()
+	if len(payloads) != 3 {
+		t.Fatalf("payload count = %d, want 3", len(payloads))
+	}
+	for i, payload := range payloads {
+		if _, ok := payload["previous_response_id"]; ok {
+			t.Fatalf("fresh epoch payload %d reused previous_response_id: %#v", i+1, payload)
+		}
+		if _, ok := payload["conversation"]; ok {
+			t.Fatalf("fresh epoch payload %d set conversation: %#v", i+1, payload)
+		}
+		input := asSlice(payload["input"])
+		if len(input) != 1 {
+			t.Fatalf("fresh epoch payload %d input = %#v, want full single item", i+1, input)
+		}
+	}
+	seenCacheKeys := map[string]struct{}{}
+	for _, payload := range payloads {
+		seenCacheKeys[asString(payload["prompt_cache_key"])] = struct{}{}
+	}
+	if len(seenCacheKeys) != len(payloads) {
+		t.Fatalf("fresh epochs reused prompt cache identity: %#v", payloads)
 	}
 }
 

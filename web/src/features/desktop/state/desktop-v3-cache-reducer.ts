@@ -1143,8 +1143,8 @@ function applyExecutionEpochFromEvent(state: DesktopV3CacheState, event: CacheEv
 
 function mergeCurrentExecutionEpoch(state: DesktopV3CacheState, sessionId: string, incoming: V3ExecutionEpoch): void {
   const existing = state.currentExecutionEpochBySession[sessionId]
-  const incomingOrdinal = incoming.epoch_ordinal ?? 0
-  const existingOrdinal = existing?.epoch_ordinal ?? 0
+  const incomingOrdinal = incoming.epoch_ordinal ?? incoming.ordinal ?? 0
+  const existingOrdinal = existing?.epoch_ordinal ?? existing?.ordinal ?? 0
   if (existing) {
     if (incomingOrdinal <= 0 && existing.epoch_id !== incoming.epoch_id) return
     if (existingOrdinal > 0 && incomingOrdinal < existingOrdinal) return
@@ -1158,14 +1158,17 @@ function mergeCurrentExecutionEpoch(state: DesktopV3CacheState, sessionId: strin
   const startedEventSeq = sameEpoch
     ? existing?.started_event_seq ?? incoming.started_event_seq
     : incoming.started_event_seq
-  const preserveCompleted = sameEpoch && existing?.status === 'completed' && incoming.status !== 'completed'
+  const existingTerminal = existing?.status === 'completed' || existing?.status === 'sealed'
+  const incomingTerminal = incoming.status === 'completed' || incoming.status === 'sealed'
+  const preserveTerminal = sameEpoch && existingTerminal && !incomingTerminal
   state.currentExecutionEpochBySession[sessionId] = {
     ...(sameEpoch ? existing : undefined),
     ...incoming,
+    epoch_ordinal: incomingOrdinal || incoming.epoch_ordinal,
     session_id: incoming.session_id || sessionId,
     started_event_seq: startedEventSeq,
     completed_event_seq: completedEventSeq,
-    status: preserveCompleted ? existing.status : incoming.status ?? existing?.status,
+    status: preserveTerminal ? existing.status : incoming.status ?? existing?.status,
   }
 }
 

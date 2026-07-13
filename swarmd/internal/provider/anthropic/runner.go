@@ -34,6 +34,12 @@ func (r *Runner) ID() string {
 	return "anthropic"
 }
 
+func (r *Runner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
+	return provideriface.ExecutionEpochLifecycleCapabilities{
+		ContextMode: provideriface.ExecutionEpochContextStatelessFullInput,
+	}
+}
+
 func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	if r == nil || r.authStore == nil {
 		return provideriface.Response{}, errors.New("anthropic runner auth store is not configured")

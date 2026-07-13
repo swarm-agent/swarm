@@ -710,12 +710,34 @@ func decodeSessionsV3PlanModeRequest(r *http.Request, dst any) error {
 }
 
 func (s *Server) sessionsV3PlanModeRunInput(sessionID, planID, checkpointID string) sessionruntime.PlanLifecycleExecutionInput {
-	runID := sessionsV3PlanModeRunID(sessionID, planID, checkpointID)
-	return sessionruntime.PlanLifecycleExecutionInput{SessionID: sessionID, PlanID: strings.TrimSpace(planID), CheckpointID: strings.TrimSpace(checkpointID), RunID: runID, RunSessionID: sessionID, ParentSessionID: sessionID, StartedAt: time.Now().UnixMilli()}
+	attemptOrdinal := 1
+	resolvedPlanID := strings.TrimSpace(planID)
+	resolvedCheckpointID := strings.TrimSpace(checkpointID)
+	if s != nil && s.sessions != nil {
+		if plan, ok, err := s.sessions.GetActivePlan(strings.TrimSpace(sessionID)); err == nil && ok {
+			if resolvedPlanID == "" {
+				resolvedPlanID = strings.TrimSpace(plan.ID)
+			}
+			if plan.Document != nil {
+				if resolvedCheckpointID == "" {
+					resolvedCheckpointID = strings.TrimSpace(plan.Document.ActiveCheckpointID)
+				}
+				for _, checkpoint := range plan.Document.Checkpoints {
+					if strings.TrimSpace(checkpoint.ID) == resolvedCheckpointID {
+						attemptOrdinal = len(checkpoint.Attempts) + 1
+						break
+					}
+				}
+			}
+		}
+	}
+	attemptID := fmt.Sprintf("%s:attempt-%d", resolvedCheckpointID, attemptOrdinal)
+	runID := sessionsV3PlanModeRunID(sessionID, resolvedPlanID, resolvedCheckpointID, attemptID)
+	return sessionruntime.PlanLifecycleExecutionInput{SessionID: sessionID, PlanID: resolvedPlanID, CheckpointID: resolvedCheckpointID, AttemptID: attemptID, RunID: runID, RunSessionID: sessionID, ParentSessionID: sessionID, StartedAt: time.Now().UnixMilli()}
 }
 
-func sessionsV3PlanModeRunID(sessionID, planID, checkpointID string) string {
-	seed := fmt.Sprintf("%s\x00%s\x00%s\x00%d", strings.TrimSpace(sessionID), strings.TrimSpace(planID), strings.TrimSpace(checkpointID), time.Now().UnixNano())
+func sessionsV3PlanModeRunID(sessionID, planID, checkpointID, attemptID string) string {
+	seed := strings.Join([]string{strings.TrimSpace(sessionID), strings.TrimSpace(planID), strings.TrimSpace(checkpointID), strings.TrimSpace(attemptID)}, "\x00")
 	sum := sha256.Sum256([]byte(seed))
 	return "desktop-v3-run:" + hex.EncodeToString(sum[:16])
 }

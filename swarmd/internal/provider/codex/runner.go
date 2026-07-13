@@ -21,6 +21,15 @@ func (r *Runner) ID() string {
 	return "codex"
 }
 
+func (r *Runner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
+	return provideriface.ExecutionEpochLifecycleCapabilities{
+		ContextMode:                provideriface.ExecutionEpochContextResponsesChain,
+		EpochScopedCacheKey:        true,
+		EpochScopedSessionAffinity: true,
+		TransportReusable:          true,
+	}
+}
+
 func (r *Runner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	if r.client == nil {
 		return provideriface.Response{}, errors.New("codex runner client is not configured")

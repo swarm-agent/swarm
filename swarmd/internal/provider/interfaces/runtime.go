@@ -20,11 +20,13 @@ type Request struct {
 	// SessionID is the stable durable Swarm session identity used for
 	// diagnostics/storage. Providers must not treat it as a cache/session
 	// affinity key; use ProviderCacheKey/SessionAffinityKey instead.
-	SessionID          string
-	ProviderLineageID  string
-	ContextBranchID    string
-	ProviderCacheKey   string
-	SessionAffinityKey string
+	SessionID                 string
+	ProviderLineageID         string
+	ExecutionEpochID          string
+	ProviderConfigurationHash string
+	ContextBranchID           string
+	ProviderCacheKey          string
+	SessionAffinityKey        string
 	// TransportAffinityKey identifies a compatible reusable transport and must
 	// not be coupled to an execution epoch or provider continuation chain.
 	TransportAffinityKey          string
@@ -256,4 +258,39 @@ type Runner interface {
 	ID() string
 	CreateResponse(ctx context.Context, req Request) (Response, error)
 	CreateResponseStreaming(ctx context.Context, req Request, onEvent func(StreamEvent)) (Response, error)
+}
+
+type ExecutionEpochContextMode string
+
+const (
+	// ExecutionEpochContextStatelessFullInput sends the complete, explicitly
+	// selected epoch input on every request and carries no provider continuation
+	// object between calls.
+	ExecutionEpochContextStatelessFullInput ExecutionEpochContextMode = "stateless_full_input"
+	// ExecutionEpochContextResponsesChain permits provider-native continuation
+	// only inside one execution epoch. A new epoch always starts a new chain.
+	ExecutionEpochContextResponsesChain ExecutionEpochContextMode = "responses_chain"
+)
+
+type ExecutionEpochLifecycleCapabilities struct {
+	ContextMode                ExecutionEpochContextMode
+	EpochScopedCacheKey        bool
+	EpochScopedSessionAffinity bool
+	TransportReusable          bool
+}
+
+func (c ExecutionEpochLifecycleCapabilities) Valid() bool {
+	switch c.ContextMode {
+	case ExecutionEpochContextStatelessFullInput, ExecutionEpochContextResponsesChain:
+		return true
+	default:
+		return false
+	}
+}
+
+// ExecutionEpochLifecycleRunner requires every conversational runner to declare
+// how provider context, caches, affinity, and transport behave at epoch
+// boundaries. Callers must fail closed when the declaration is absent or invalid.
+type ExecutionEpochLifecycleRunner interface {
+	ExecutionEpochLifecycle() ExecutionEpochLifecycleCapabilities
 }

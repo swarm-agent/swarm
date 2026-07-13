@@ -538,13 +538,27 @@ type sessionsV3AgenticSettings struct {
 	ProjectionSeq       uint64                      `json:"projection_seq"`
 }
 
+type sessionsV3ExecutionEpochView struct {
+	EpochID       string `json:"epoch_id"`
+	SessionID     string `json:"session_id"`
+	ParentEpochID string `json:"parent_epoch_id,omitempty"`
+	Ordinal       uint64 `json:"ordinal"`
+	Status        string `json:"status"`
+	FirstRootSeq  uint64 `json:"first_root_seq"`
+	LastRootSeq   uint64 `json:"last_root_seq,omitempty"`
+	CreatedAt     int64  `json:"created_at"`
+	UpdatedAt     int64  `json:"updated_at"`
+	SealedAt      int64  `json:"sealed_at,omitempty"`
+}
+
 type sessionsV3SessionView struct {
-	AgenticSettings    sessionsV3AgenticSettings        `json:"agentic_settings"`
-	PendingPermissions []pebblestore.PermissionRecord   `json:"pending_permissions"`
-	UsageSummary       *pebblestore.SessionUsageSummary `json:"usage_summary,omitempty"`
-	CurrentRunState    *pebblestore.V3SessionRunState   `json:"current_run_state,omitempty"`
-	HasActivePlan      *bool                            `json:"has_active_plan,omitempty"`
-	ActivePlan         *pebblestore.SessionPlanSnapshot `json:"active_plan,omitempty"`
+	AgenticSettings       sessionsV3AgenticSettings        `json:"agentic_settings"`
+	CurrentExecutionEpoch *sessionsV3ExecutionEpochView    `json:"current_execution_epoch,omitempty"`
+	PendingPermissions    []pebblestore.PermissionRecord   `json:"pending_permissions"`
+	UsageSummary          *pebblestore.SessionUsageSummary `json:"usage_summary,omitempty"`
+	CurrentRunState       *pebblestore.V3SessionRunState   `json:"current_run_state,omitempty"`
+	HasActivePlan         *bool                            `json:"has_active_plan,omitempty"`
+	ActivePlan            *pebblestore.SessionPlanSnapshot `json:"active_plan,omitempty"`
 }
 
 type sessionsV3PermissionSummary struct {

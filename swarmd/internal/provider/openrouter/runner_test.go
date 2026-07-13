@@ -1,7 +1,9 @@
 package openrouter
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -9,22 +11,66 @@ import (
 )
 
 func TestBuildChatCompletionRequestUsesLineageScopedSessionID(t *testing.T) {
+	lifecycle := (&Runner{}).ExecutionEpochLifecycle()
+	if lifecycle.ContextMode != provideriface.ExecutionEpochContextStatelessFullInput || !lifecycle.EpochScopedSessionAffinity || !lifecycle.Valid() {
+		t.Fatalf("lifecycle = %+v, want valid stateless epoch-scoped affinity", lifecycle)
+	}
 	payload := buildChatCompletionRequest(provideriface.Request{
 		SessionID:          "durable-session",
-		ProviderLineageID:  "provider-lineage",
-		ProviderCacheKey:   "cache-lineage",
-		SessionAffinityKey: "affinity-lineage",
+		ExecutionEpochID:   "epoch-a",
+		ProviderLineageID:  "provider-lineage-a",
+		ProviderCacheKey:   "cache-epoch-a",
+		SessionAffinityKey: "affinity-epoch-a",
 		Model:              "openai/gpt-test",
 		Input: []map[string]any{{
 			"role":    "user",
 			"content": "hello",
 		}},
 	})
-	if payload.SessionID != "swarm-lineage-affinity-lineage" {
-		t.Fatalf("session_id = %q, want lineage-scoped affinity key", payload.SessionID)
+	wantSessionID := "swarm-lineage-" + provideriface.ShortProviderLineageKey("openrouter-epoch", "epoch-a", "affinity-epoch-a")
+	if payload.SessionID != wantSessionID {
+		t.Fatalf("session_id = %q, want epoch-scoped affinity key %q", payload.SessionID, wantSessionID)
+	}
+	otherEpoch := buildChatCompletionRequest(provideriface.Request{
+		SessionID:          "durable-session",
+		ExecutionEpochID:   "epoch-b",
+		ProviderLineageID:  "provider-lineage-b",
+		SessionAffinityKey: "affinity-epoch-b",
+		Model:              "openai/gpt-test",
+		Input:              []map[string]any{{"role": "user", "content": "hello"}},
+	})
+	if otherEpoch.SessionID == payload.SessionID {
+		t.Fatalf("new epoch reused sticky session_id %q", payload.SessionID)
 	}
 	if payload.SessionID == "durable-session" {
 		t.Fatalf("session_id used raw durable session id")
+	}
+}
+
+func TestOpenRouterExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
+	payload := buildChatCompletionRequest(provideriface.Request{
+		Model:        "openai/gpt-test",
+		Instructions: "current instructions",
+		Input: []map[string]any{
+			{"role": "user", "content": "epoch user"},
+			{"role": "assistant", "content": "epoch assistant"},
+			{"role": "user", "content": "epoch follow-up"},
+		},
+	})
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	body := string(encoded)
+	for _, text := range []string{"current instructions", "epoch user", "epoch assistant", "epoch follow-up"} {
+		if !strings.Contains(body, text) {
+			t.Fatalf("payload missing %q: %s", text, body)
+		}
+	}
+	for _, forbidden := range []string{"previous_response_id", "conversation", "predecessor"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("payload contains stateful continuation field %q: %s", forbidden, body)
+		}
 	}
 }
 

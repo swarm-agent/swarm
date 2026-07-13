@@ -10,6 +10,36 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestGoogleExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
+	lifecycle := (&Runner{}).ExecutionEpochLifecycle()
+	if lifecycle.ContextMode != provideriface.ExecutionEpochContextStatelessFullInput || !lifecycle.Valid() {
+		t.Fatalf("lifecycle = %+v, want valid stateless full-input mode", lifecycle)
+	}
+	payload := buildGoogleRequest(provideriface.Request{
+		Instructions: "current instructions",
+		Input: []map[string]any{
+			{"role": "user", "content": "epoch user"},
+			{"role": "assistant", "content": "epoch assistant"},
+			{"role": "user", "content": "epoch follow-up"},
+		},
+	})
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	body := string(encoded)
+	for _, text := range []string{"current instructions", "epoch user", "epoch assistant", "epoch follow-up"} {
+		if !strings.Contains(body, text) {
+			t.Fatalf("payload missing %q: %s", text, body)
+		}
+	}
+	for _, forbidden := range []string{"previous_response_id", "conversation", "predecessor"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("payload contains stateful continuation field %q: %s", forbidden, body)
+		}
+	}
+}
+
 func TestGoogleThinkingConfigUsesCatalogThinkingLevelMapping(t *testing.T) {
 	cfg := googleThinkingConfigForRequest(provideriface.Request{
 		Model:    "gemini-3.5-flash",

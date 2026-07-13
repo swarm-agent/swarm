@@ -1190,7 +1190,7 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
-	var followupEpochID string
+	var followupEpoch *pebblestore.BeginExecutionEpochResult
 	if plan, ok, planErr := s.sessions.GetActivePlan(sessionID); planErr != nil {
 		return sessionruntime.SessionMutationResult{}, nil, planErr
 	} else if ok && plan.Document != nil && plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), sessionruntime.PlanExecutionStateWaitingReview) {
@@ -1199,27 +1199,44 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 			ClientRequestID: "post-checkpoint-followup:" + clientRequestID, PayloadHash: payloadHash,
 			Reason: "post_checkpoint_followup", PlanID: strings.TrimSpace(plan.ID),
 			CheckpointID: strings.TrimSpace(plan.Document.ExecutionState.LastCheckpointID),
+			RunID:        runIntent.RunID, TriggerMessage: &message,
 			RunSessionID: sessionID, ParentSessionID: sessionID, NowUnixMs: now,
 		})
 		if epochErr != nil {
 			return sessionruntime.SessionMutationResult{}, nil, epochErr
 		}
-		followupEpochID = epochResult.Epoch.EpochID
-		runIntent.EpochID = followupEpochID
+		followupEpoch = &epochResult
+		runIntent.EpochID = epochResult.Epoch.EpochID
 	}
-	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-		SessionID:       sessionID,
-		UserID:          principal.UserID,
-		AccountScopeID:  principal.AccountScopeID,
-		ClientRequestID: clientRequestID,
-		IdempotencyKey:  clientRequestID,
-		PayloadHash:     payloadHash,
-		RequestHash:     payloadHash,
-		Kind:            sessionruntime.SessionMutationAppendMessage,
-		Message:         &message,
-		RunIntent:       runIntent,
-		NowUnixMs:       now,
-	})
+	var result sessionruntime.SessionMutationResult
+	if followupEpoch != nil {
+		epochResult := *followupEpoch
+		if epochResult.TriggerEvent == nil || epochResult.TriggerOutbox == nil {
+			return result, nil, errors.New("execution epoch replay is missing its compound trigger message")
+		}
+		intent, ok, intentErr := s.sessions.GetV3SessionRunIntent(sessionID, runIntent.RunID)
+		if intentErr != nil {
+			return result, nil, intentErr
+		}
+		if !ok {
+			return result, nil, errors.New("execution epoch did not persist its trigger run intent")
+		}
+		result = sessionruntime.SessionMutationResult{SessionID: sessionID, PrimarySeq: epochResult.TriggerEvent.Seq, FirstSeq: epochResult.TriggerEvent.Seq, LastSeq: epochResult.TriggerEvent.Seq, EventIDs: []string{epochResult.TriggerEvent.ID}, PayloadHash: payloadHash, Event: *epochResult.TriggerEvent, Message: &message, RunIntent: &intent, Projection: epochResult.Projection, RealtimeOutbox: epochResult.TriggerOutbox, Replayed: epochResult.Replayed}
+	} else {
+		result, err = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+			SessionID:       sessionID,
+			UserID:          principal.UserID,
+			AccountScopeID:  principal.AccountScopeID,
+			ClientRequestID: clientRequestID,
+			IdempotencyKey:  clientRequestID,
+			PayloadHash:     payloadHash,
+			RequestHash:     payloadHash,
+			Kind:            sessionruntime.SessionMutationAppendMessage,
+			Message:         &message,
+			RunIntent:       runIntent,
+			NowUnixMs:       now,
+		})
+	}
 	if err != nil {
 		return result, nil, err
 	}
