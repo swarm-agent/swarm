@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	v3SessionLibraryIndexVersion = 2
+	v3SessionLibraryIndexVersion = 3
 	keyV3SessionLibraryMeta      = "v3/session_library/meta"
 	keyV3SessionLibraryMetric    = "v3/session_library/metric/"
 	keyV3SessionLibrarySummary   = "v3/session_library/summary/" // v1 repair cleanup only
@@ -29,10 +29,11 @@ type V3SessionLibraryMetric struct {
 
 	// Scope and lifecycle fields make every metric a self-contained contribution
 	// that can be folded into exact summaries from a consistent snapshot.
-	AccountScopeID string `json:"account_scope_id,omitempty"`
-	UserID         string `json:"user_id,omitempty"`
-	WorkspacePath  string `json:"workspace_path,omitempty"`
-	Archived       bool   `json:"archived,omitempty"`
+	AccountScopeID   string `json:"account_scope_id,omitempty"`
+	UserID           string `json:"user_id,omitempty"`
+	WorkspacePath    string `json:"workspace_path,omitempty"`
+	Archived         bool   `json:"archived,omitempty"`
+	NavigationHidden bool   `json:"navigation_hidden,omitempty"`
 }
 
 type V3SessionLibrarySummary struct {
@@ -182,6 +183,7 @@ func v3LibraryBaseMetric(session SessionSnapshot, logicalBytes int64, archived b
 		RootSessionID: session.ID, LineageKind: v3LibraryMetadataString(session.Metadata, "lineage_kind"),
 		UpdatedAt: session.UpdatedAt, LogicalBytes: logicalBytes, AccountScopeID: session.AccountScopeID,
 		UserID: session.UserID, WorkspacePath: session.WorkspacePath, Archived: archived,
+		NavigationHidden: V3SessionNavigationHidden(session),
 	}
 }
 
@@ -300,6 +302,9 @@ func (s *SessionStore) v3SessionLibrarySummary(reader pebble.Reader, options V3S
 	var summary V3SessionLibrarySummary
 	activeRoots, archivedRoots := map[string]bool{}, map[string]bool{}
 	for _, metric := range metrics {
+		if metric.NavigationHidden {
+			continue
+		}
 		if metric.AccountScopeID != options.AccountScopeID || metric.UserID != options.UserID || (workspace != "" && metric.WorkspacePath != workspace) {
 			continue
 		}

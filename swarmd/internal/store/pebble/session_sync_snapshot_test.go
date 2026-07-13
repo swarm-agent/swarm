@@ -43,6 +43,56 @@ func TestBuildV3SyncSnapshotExcludesSystemSessionsFromSidebarHydration(t *testin
 	}
 }
 
+func TestBuildV3SyncSnapshotNavigationHiddenSecondarySelectorsAndExplicitHydrate(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SyncSnapshotSessionForUserTest(t, sessions, "hidden", "user-1", "account-1", "/workspace/sidebar", 2000)
+	hidden, ok, err := sessions.GetSession("hidden")
+	if err != nil || !ok {
+		t.Fatalf("load hidden: ok=%t err=%v", ok, err)
+	}
+	hidden.Metadata = map[string]any{"system_sidechat": true, "swarm_v3_desktop_sidebar_pinned": true}
+	if err := sessions.UpdateSession(hidden); err != nil {
+		t.Fatalf("tag hidden: %v", err)
+	}
+	if err := sessions.PutPlan(SessionPlanSnapshot{
+		ID: "hidden-plan", SessionID: "hidden", UserID: "user-1", AccountScopeID: "account-1",
+		Status: "running", ApprovalState: "approved", Active: true, CreatedAt: 2000, UpdatedAt: 2000,
+		Document: &SessionPlanDocument{ID: "hidden-plan", Status: "running", ExecutionState: &SessionPlanExecutionState{Status: "in_progress"}},
+	}); err != nil {
+		t.Fatalf("put hidden plan: %v", err)
+	}
+	if err := sessions.SetActivePlan("hidden", "hidden-plan", 2000); err != nil {
+		t.Fatalf("activate hidden plan: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*V3SyncSnapshotOptions){
+		"pinned":     func(o *V3SyncSnapshotOptions) { o.IncludePinnedSidebarSessions = true },
+		"active":     func(o *V3SyncSnapshotOptions) { o.IncludeActiveSessions = true },
+		"unresolved": func(o *V3SyncSnapshotOptions) { o.IncludeUnresolvedSidebarSessions = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			options := V3SyncSnapshotOptions{AccountScopeID: "account-1", UserID: "user-1", ExcludeNavigationHiddenSessions: true, History: V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone}}
+			mutate(&options)
+			snapshot, err := sessions.BuildV3SyncSnapshot(options)
+			if err != nil {
+				t.Fatalf("build snapshot: %v", err)
+			}
+			if _, leaked := snapshot.SessionsByID["hidden"]; leaked {
+				t.Fatalf("hidden session leaked: %+v", snapshot.SessionOrder)
+			}
+		})
+	}
+
+	hydrated, err := sessions.BuildV3SyncSnapshot(V3SyncSnapshotOptions{AccountScopeID: "account-1", UserID: "user-1", SessionIDs: []string{"hidden"}, ExcludeNavigationHiddenSessions: true, History: V3SyncSnapshotHistoryOptions{Mode: V3SyncSnapshotHistoryModeNone}})
+	if err != nil {
+		t.Fatalf("hydrate hidden: %v", err)
+	}
+	if _, ok := hydrated.SessionsByID["hidden"]; !ok {
+		t.Fatal("explicit hidden session hydrate was rejected")
+	}
+}
+
 func TestBuildV3SyncSnapshotOmitsAllSessionResourceMaps(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

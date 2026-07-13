@@ -409,8 +409,8 @@ func mergeV3SyncSessionBundle(result *V3SyncSnapshotResult, bundle V3SyncSnapsho
 func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, options V3SyncSnapshotOptions) ([]SessionSnapshot, V3SyncSnapshotPagination, error) {
 	byID := map[string]SessionSnapshot{}
 	order := []string{}
-	appendSession := func(session SessionSnapshot) {
-		if options.ExcludeNavigationHiddenSessions && v3SessionNavigationHidden(session) {
+	appendSession := func(session SessionSnapshot, excludeNavigationHidden bool) {
+		if excludeNavigationHidden && V3SessionNavigationHidden(session) {
 			return
 		}
 		id := strings.TrimSpace(session.ID)
@@ -446,7 +446,8 @@ func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, option
 		if options.RestrictSessionIDsToWorkspacePaths && !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
 			continue
 		}
-		appendSession(session)
+		// Explicit session-ID hydration remains available to parent-owned sidecars.
+		appendSession(session, false)
 	}
 	if options.Global {
 		global, err := s.selectV3GlobalSyncSnapshotSessions(reader, options)
@@ -454,7 +455,7 @@ func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, option
 			return nil, V3SyncSnapshotPagination{}, err
 		}
 		for _, session := range global {
-			appendSession(session)
+			appendSession(session, options.ExcludeNavigationHiddenSessions)
 		}
 	}
 	pagination := V3SyncSnapshotPagination{}
@@ -465,7 +466,7 @@ func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, option
 		}
 		pagination = page
 		for _, session := range recent {
-			appendSession(session)
+			appendSession(session, options.ExcludeNavigationHiddenSessions)
 		}
 	}
 	if options.IncludePinnedSidebarSessions {
@@ -474,7 +475,7 @@ func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, option
 			return nil, V3SyncSnapshotPagination{}, err
 		}
 		for _, session := range pinned {
-			appendSession(session)
+			appendSession(session, options.ExcludeNavigationHiddenSessions)
 		}
 	}
 	if options.IncludeUnresolvedSidebarSessions {
@@ -483,7 +484,7 @@ func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, option
 			return nil, V3SyncSnapshotPagination{}, err
 		}
 		for _, session := range unresolved {
-			appendSession(session)
+			appendSession(session, options.ExcludeNavigationHiddenSessions)
 		}
 	}
 	if options.IncludeActiveSessions {
@@ -492,7 +493,7 @@ func (s *SessionStore) selectV3SyncSnapshotSessions(reader pebble.Reader, option
 			return nil, V3SyncSnapshotPagination{}, err
 		}
 		for _, session := range active {
-			appendSession(session)
+			appendSession(session, options.ExcludeNavigationHiddenSessions)
 		}
 	}
 	selected := make([]SessionSnapshot, 0, len(order))
@@ -574,7 +575,7 @@ func (s *SessionStore) selectV3RecentSyncSnapshotSessions(reader pebble.Reader, 
 		if !v3SyncSnapshotSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
 			return true, nil
 		}
-		if options.ExcludeNavigationHiddenSessions && v3SessionNavigationHidden(session) {
+		if options.ExcludeNavigationHiddenSessions && V3SessionNavigationHidden(session) {
 			return true, nil
 		}
 		sessions = append(sessions, session)
@@ -973,7 +974,7 @@ func v3SyncSnapshotTombstoneVisible(tombstone V3SessionTombstone, accountScopeID
 }
 
 func v3SyncSnapshotTombstoneVisibleForSelector(tombstone V3SessionTombstone, options V3SyncSnapshotOptions) bool {
-	if options.ExcludeNavigationHiddenSessions && v3SessionNavigationHidden(tombstone.Session) {
+	if options.ExcludeNavigationHiddenSessions && len(options.SessionIDs) == 0 && V3SessionNavigationHidden(tombstone.Session) {
 		return false
 	}
 	if !v3SyncSnapshotTombstoneVisible(tombstone, options.AccountScopeID, options.UserID) {

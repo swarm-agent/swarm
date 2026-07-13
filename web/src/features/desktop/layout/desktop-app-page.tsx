@@ -60,6 +60,7 @@ import { fetchAndApplyDesktopV3PlanSnapshot } from '../state/desktop-v3-session-
 import { archiveDesktopV3Sessions, jumpDesktopPlanToRevisionCheckpoint, restartDesktopPlanFromRevision, restoreDesktopPlanRevision, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned, updateSessionV3Title } from '../session-v3/api'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
+import { isDesktopV3NavigationHiddenRecord } from '../state/desktop-v3-session-visibility'
 import { clearNotifications, updateNotification } from '../notifications/api'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
@@ -2618,6 +2619,9 @@ export function DesktopAppPage() {
   }, [workspaceLayout])
 
   const desktopInitialHydrate = useDesktopV3CacheSelector((state) => state.desktopInitialHydrate)
+  const routeSessionNavigationHidden = useDesktopV3CacheSelector((state) => (
+    routeSessionId ? isDesktopV3NavigationHiddenRecord(state.sessionsById[routeSessionId]) : false
+  ))
   const selectedDesktopV3Messages = useDesktopV3CacheSelector((state) => (
     routeSessionId ? selectRenderedSessionMessages(state, routeSessionId) : EMPTY_DESKTOP_V3_RENDERED_MESSAGES
   ), desktopV3RenderedMessagesEqual)
@@ -2637,6 +2641,12 @@ export function DesktopAppPage() {
     if (!sessionId) return
     void selectAndHydrateDesktopV3Session(sessionId)
   }, [routeSessionId])
+
+  useEffect(() => {
+    if (!routeSessionNavigationHidden || !routeWorkspaceSlug) return
+    dispatchDesktopV3Cache(selectSession(undefined))
+    void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
+  }, [navigate, routeSessionNavigationHidden, routeWorkspaceSlug])
 
   useEffect(() => {
     if (routeSessionId.trim()) return
@@ -2785,8 +2795,8 @@ export function DesktopAppPage() {
     activeChatSessionIdRef.current = routeSessionId
   }, [routeSessionId])
 
-  const routeReadinessStatus = 'idle'
-  const routeSessionUnavailable = false
+  const routeReadinessStatus = routeSessionNavigationHidden ? 'navigation_hidden' : 'idle'
+  const routeSessionUnavailable = routeSessionNavigationHidden
 
   useEffect(() => {
     if (!selectedWorkspacePath) {

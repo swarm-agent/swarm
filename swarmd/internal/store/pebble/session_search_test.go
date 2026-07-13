@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -61,6 +62,50 @@ func TestSearchV3SessionsQueryMessageCountAndArchived(t *testing.T) {
 	}
 	if len(result.Items) != 1 || result.Items[0].ID != "query-archived" || result.Items[0].MessageCount != 1 || !result.Items[0].Archived {
 		t.Fatalf("archived query result = %+v", result.Items)
+	}
+}
+
+func TestSearchV3SessionsExcludesNavigationHiddenMarkersAndSummary(t *testing.T) {
+	markers := []map[string]any{
+		{"navigation_hidden": true},
+		{"system_session": true},
+		{"system_sidechat": true},
+		{"lineage_kind": "system_sidechat"},
+	}
+	for name, options := range map[string]V3SessionSearchOptions{
+		"recent":   {AccountScopeID: "acct-1", UserID: "user-1", Global: true, Limit: 50},
+		"query":    {AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "sharedneedle", Limit: 50},
+		"archived": {AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "sharedneedle", ArchivedMode: "only", Limit: 50},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := openV3SessionEventTestStore(t)
+			sessions := NewSessionStore(store)
+			createSearchTestSession(t, sessions, SessionSnapshot{ID: "visible", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: t.TempDir(), Title: "sharedneedle visible", CreatedAt: 1000, UpdatedAt: 1000})
+			for i, marker := range markers {
+				id := fmt.Sprintf("hidden-%d", i)
+				createSearchTestSession(t, sessions, SessionSnapshot{ID: id, UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: t.TempDir(), Title: "sharedneedle hidden", Metadata: marker, CreatedAt: int64(2000 + i), UpdatedAt: int64(2000 + i)})
+				if name == "archived" {
+					if err := sessions.ArchiveSession(id); err != nil {
+						t.Fatalf("archive %s: %v", id, err)
+					}
+				}
+			}
+			if name == "archived" {
+				if err := sessions.ArchiveSession("visible"); err != nil {
+					t.Fatalf("archive visible: %v", err)
+				}
+			}
+			result, err := sessions.SearchV3Sessions(options)
+			if err != nil {
+				t.Fatalf("search: %v", err)
+			}
+			if len(result.Items) != 1 || result.Items[0].ID != "visible" {
+				t.Fatalf("items = %+v", result.Items)
+			}
+			if result.Summary.RawSessionCount != 1 {
+				t.Fatalf("summary = %+v", result.Summary)
+			}
+		})
 	}
 }
 

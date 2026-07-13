@@ -269,9 +269,29 @@ func newV3RealtimeOutboxMembershipFromSession(session SessionSnapshot, now int64
 		WorkspaceName:           strings.TrimSpace(session.WorkspaceName),
 		WorktreeRootPath:        strings.TrimSpace(session.WorktreeRootPath),
 		TemporaryWorkspaceRoots: append([]string(nil), session.TemporaryWorkspaceRoots...),
-		Metadata:                cloneSessionMetadataMap(session.Metadata),
+		Metadata:                v3RealtimeMembershipMetadata(session.Metadata),
 		CapturedAt:              now,
 	}
+}
+
+func v3RealtimeMembershipMetadata(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for _, key := range []string{
+		"navigation_hidden", "system_session", "system_sidechat", "lineage_kind",
+		"swarm_v3_source_workspace_path", "swarm_v2_source_workspace_path",
+		"swarm_v3_tui_cwd_path", "swarm_v3_tui_original_cwd_path", "swarm_v3_tui_worktree_path",
+	} {
+		if value, ok := metadata[key]; ok {
+			out[key] = cloneSessionMetadataValue(value)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func newV3RealtimeOutboxMembershipFromTombstone(tombstone V3SessionTombstone, now int64) *V3RealtimeOutboxMembership {

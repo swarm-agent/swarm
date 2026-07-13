@@ -15,10 +15,33 @@ import (
 
 	gorillaws "github.com/gorilla/websocket"
 
+	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	transportws "swarm/packages/swarmd/internal/transport/ws"
 )
+
+func TestV3RealtimeWorksetsExcludeNavigationHiddenSessions(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	selector := V3RealtimeWorksetSelector{Kind: "global", Global: true}
+	for name, metadata := range map[string]map[string]any{
+		"navigation_hidden": {"navigation_hidden": true},
+		"system_session":    {"system_session": true},
+		"system_sidechat":   {"system_sidechat": true},
+		"lineage_kind":      {"lineage_kind": "system_sidechat"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			session := pebblestore.SessionSnapshot{ID: "hidden", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Metadata: metadata}
+			if v3RealtimeSessionMatchesWorksetSelector(principal, session, selector) {
+				t.Fatal("navigation-hidden session matched Desktop workset")
+			}
+		})
+	}
+	visible := pebblestore.SessionSnapshot{ID: "visible", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+	if !v3RealtimeSessionMatchesWorksetSelector(principal, visible, selector) {
+		t.Fatal("visible session did not match global workset")
+	}
+}
 
 func TestV3RealtimeArchivedSessionSubscriptionAllowsReactivationSendPath(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)

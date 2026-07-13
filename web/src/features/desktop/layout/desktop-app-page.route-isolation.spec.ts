@@ -68,6 +68,15 @@ test('Desktop V3 route split keeps Path A and Path B source boundaries separate'
   assert.doesNotMatch(existingPane, /new-session-flow/)
 })
 
+test('Desktop V3 ordinary route redirects after a hydrated system sidechat is classified', async () => {
+  const source = await readDesktopAppPage()
+
+  assert.match(source, /isDesktopV3NavigationHiddenRecord\(state\.sessionsById\[routeSessionId\]\)/)
+  assert.match(source, /if \(!routeSessionNavigationHidden \|\| !routeWorkspaceSlug\) return/)
+  assert.match(source, /navigate\(\{ to: '\/\$workspaceSlug', params: \{ workspaceSlug: routeWorkspaceSlug \} \}\)/)
+  assert.match(source, /const routeSessionUnavailable = routeSessionNavigationHidden/)
+})
+
 test('Desktop V3 route selection stays isolated from runtime ownership', async () => {
   const source = await readDesktopAppPage()
 

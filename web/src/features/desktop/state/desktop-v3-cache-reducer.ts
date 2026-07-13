@@ -33,6 +33,7 @@ import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktopPendingPermissions, normalizeDesktopPermissionSummary, normalizeDesktopPermissionSummaries, safeString } from '../permissions/services/desktop-permission-normalization'
 import { normalizeDesktopSessionPlan } from '../chat/services/session-plan-record'
 import { decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
+import { isDesktopV3NavigationHiddenRecord } from './desktop-v3-session-visibility'
 
 export const DESKTOP_V3_MAX_RETAINED_BACKGROUND_TRANSCRIPTS = 5
 
@@ -375,7 +376,7 @@ export function applySnapshot(
   writeSyncScope(state, snapshot)
   upsertSessions(state, snapshot.sessions_by_id)
   mergeRecord(state.projectionsBySession, snapshot.projections_by_session)
-  state.sessionOrderByScope[snapshot.scope_id] = removeTombstonedIds(state, snapshot.session_order ?? [])
+  state.sessionOrderByScope[snapshot.scope_id] = navigationVisibleSessionIds(state, removeTombstonedIds(state, snapshot.session_order ?? []))
   applyTombstonesBySession(state, snapshot.tombstones_by_session)
   if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'run_intents')) {
     const authoritativeRunIntentSessionIds = new Set([
@@ -464,7 +465,7 @@ export function applyHydrate(
       && hydrateResponseCanApplyHistory(state, sessionId)) {
       record.needsHydrate = false
     }
-    if (sidebarScopeId && record?.kind === 'full' && !state.tombstonesBySession[sessionId]) {
+    if (sidebarScopeId && record?.kind === 'full' && !isDesktopV3NavigationHiddenRecord(record) && !state.tombstonesBySession[sessionId]) {
       state.sessionOrderByScope[sidebarScopeId] = prependUnique(state.sessionOrderByScope[sidebarScopeId] ?? [], sessionId)
       const workset = state.worksetsById[sidebarScopeId]
       if (workset) {
@@ -695,15 +696,20 @@ export function applyReconnectSnapshot(
 
   for (const workset of raw.worksets ?? []) {
     const id = worksetId(workset as unknown as Record<string, unknown>)
-    if (id) state.worksetsById[id] = { ...state.worksetsById[id], ...workset }
+    if (id) {
+      state.worksetsById[id] = { ...state.worksetsById[id], ...workset }
+      state.worksetsById[id].sessionIds = navigationVisibleSessionIds(state, state.worksetsById[id].sessionIds ?? [])
+      state.worksetsById[id].inactiveSessionIds = navigationVisibleSessionIds(state, state.worksetsById[id].inactiveSessionIds ?? [])
+    }
   }
 
   if (raw.workset_id) {
-    state.sessionOrderByScope[raw.workset_id] = [...(raw.session_order ?? [])]
+    const visibleSessionOrder = navigationVisibleSessionIds(state, raw.session_order ?? [])
+    state.sessionOrderByScope[raw.workset_id] = visibleSessionOrder
     state.worksetsById[raw.workset_id] = {
       ...state.worksetsById[raw.workset_id],
       workset_id: raw.workset_id,
-      sessionIds: [...(raw.session_order ?? [])],
+      sessionIds: visibleSessionOrder,
     }
   }
 
@@ -1525,6 +1531,20 @@ function applyTombstonesBySession(
   }
 }
 
+function navigationVisibleSessionIds(state: DesktopV3CacheState, sessionIds: string[]): string[] {
+  return sessionIds.filter((sessionId) => !isDesktopV3NavigationHiddenRecord(state.sessionsById[sessionId]))
+}
+
+function removeSessionFromNavigationMembership(state: DesktopV3CacheState, sessionId: string): void {
+  for (const [scopeId, order] of Object.entries(state.sessionOrderByScope)) {
+    state.sessionOrderByScope[scopeId] = order.filter((id) => id !== sessionId)
+  }
+  for (const workset of Object.values(state.worksetsById)) {
+    workset.sessionIds = (workset.sessionIds ?? []).filter((id) => id !== sessionId)
+    workset.inactiveSessionIds = (workset.inactiveSessionIds ?? []).filter((id) => id !== sessionId)
+  }
+}
+
 export function applyWorksetSessionDiscovered(
   state: DesktopV3CacheState,
   frame: RealtimeMessage,
@@ -1543,6 +1563,11 @@ export function applyWorksetSessionDiscovered(
       discoveredByWorksetId: discoveredWorksetId,
       discoveredAt: Date.now(),
     }
+  }
+
+  if (isDesktopV3NavigationHiddenRecord(state.sessionsById[sessionId])) {
+    removeSessionFromNavigationMembership(state, sessionId)
+    return
   }
 
   const scopeIds = new Set<string>([discoveredWorksetId])
@@ -1603,6 +1628,12 @@ export function applyWorksetSessionUpdated(
       discoveredByWorksetId: worksetIdValue,
       discoveredAt: Date.now(),
     }
+  }
+
+  if (isDesktopV3NavigationHiddenRecord(state.sessionsById[sessionId])) {
+    removeSessionFromNavigationMembership(state, sessionId)
+    state.realtime.endpointCursor = frame.endpoint_cursor ?? state.realtime.endpointCursor
+    return
   }
 
   const scopeIds = new Set<string>([worksetIdValue])

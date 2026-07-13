@@ -821,6 +821,9 @@ func canonicalV3RealtimeWorksetResources(resources []string) ([]string, error) {
 }
 
 func v3RealtimeSessionMatchesWorksetSelector(principal identity.Principal, session pebblestore.SessionSnapshot, selector V3RealtimeWorksetSelector) bool {
+	if pebblestore.V3SessionNavigationHidden(session) {
+		return false
+	}
 	if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
 		return false
 	}

@@ -2,6 +2,7 @@ import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopS
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
+import { isDesktopV3NavigationHiddenRecord, isDesktopV3NavigationHiddenSession } from './desktop-v3-session-visibility'
 
 export type DesktopV3SidebarRowType = 'plan_session' | 'single_chat'
 export type DesktopV3SidebarPlanStatusLabel = 'RUNNING' | 'REVIEW' | 'BLOCKED' | 'QUEUED'
@@ -126,7 +127,7 @@ export function selectDesktopSidebarRows(state: DesktopV3CacheState, scopeId = s
   for (const sessionId of selectSessionOrder(state, resolvedScopeId)) {
     if (state.tombstonesBySession[sessionId]) continue
     const record = state.sessionsById[sessionId]
-    if (!record) continue
+    if (!record || isDesktopV3NavigationHiddenRecord(record)) continue
     const planState = buildDesktopSidebarPlanState(state, sessionId)
     rows.push({
       sessionId,
@@ -169,7 +170,7 @@ export function selectDesktopSidebarGroupedRows(state: DesktopV3CacheState, scop
 function selectArchivedDesktopSidebarRows(state: DesktopV3CacheState): DesktopV3SidebarRow[] {
   const rows: DesktopV3SidebarRow[] = []
   for (const tombstone of Object.values(state.tombstonesBySession)) {
-    if (!isArchivedTombstone(tombstone) || !tombstone.session) continue
+    if (!isArchivedTombstone(tombstone) || !tombstone.session || isDesktopV3NavigationHiddenSession(tombstone.session)) continue
     const sessionId = tombstone.session_id || tombstone.session.id
     if (!sessionId) continue
     const record: SessionCacheRecord = { kind: 'full', session: tombstone.session, needsHydrate: false }

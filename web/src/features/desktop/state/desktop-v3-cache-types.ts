@@ -63,6 +63,10 @@ export interface SessionSnapshot {
   worktree_base_branch?: string
   worktree_branch?: string
   metadata?: Record<string, unknown>
+  navigation_hidden?: boolean
+  system_session?: boolean
+  system_sidechat?: boolean
+  lineage_kind?: string
   created_at: number
   updated_at: number
   message_count: number

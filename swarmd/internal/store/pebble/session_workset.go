@@ -491,7 +491,10 @@ func v3SessionWorksetSessionVisibleForWorkspaces(
 	return false
 }
 
-func v3SessionNavigationHidden(session SessionSnapshot) bool {
+// V3SessionNavigationHidden is the canonical user-navigation visibility predicate.
+// Direct session-ID APIs may still access matching sessions; list, search, sync
+// membership, and realtime worksets must exclude them.
+func V3SessionNavigationHidden(session SessionSnapshot) bool {
 	if session.Metadata == nil {
 		return false
 	}
@@ -509,7 +512,7 @@ func v3SessionNavigationHidden(session SessionSnapshot) bool {
 }
 
 func v3SessionWorksetSessionVisible(session SessionSnapshot, accountScopeID string, userID string, workspacePath string) bool {
-	if v3SessionNavigationHidden(session) {
+	if V3SessionNavigationHidden(session) {
 		return false
 	}
 	if strings.TrimSpace(accountScopeID) != "" {
