@@ -30,7 +30,7 @@ func TestSessionV3ProviderHandoffPacketBoundsLongTranscript(t *testing.T) {
 	if strings.Contains(packet, strings.Repeat("y", 500)) {
 		t.Fatalf("handoff packet replayed unbounded recent visible message: %s", packet)
 	}
-	for _, want := range []string{"[provider-handoff]", "previous_provider: anthropic", "previous_model: claude-sonnet-4", "new_provider: codex", "new_model: gpt-5", "Important compacted facts", "Recent user request", "Recent assistant answer", "RECENT-HUGE-SENTINEL", "read call_id=call_read", "[truncated"} {
+	for _, want := range []string{"[provider-handoff]", "target_provider: codex", "target_model: gpt-5", "previous_provider: anthropic", "previous_model: claude-sonnet-4", "new_provider: codex", "new_model: gpt-5", "Important compacted facts", "Recent user request", "Recent assistant answer", "RECENT-HUGE-SENTINEL", "read call_id=call_read", "[truncated"} {
 		if !strings.Contains(packet, want) {
 			t.Fatalf("handoff packet missing %q:\n%s", want, packet)
 		}

@@ -1496,6 +1496,8 @@ func (e *sessionV3Executor) sessionV3ProviderHandoffPacket(job sessionV3Executor
 	appendLine("- previous_provider_lineage_id: " + strings.TrimSpace(req.PreviousProviderLineageID))
 	appendLine("- provider_lineage_id: " + strings.TrimSpace(req.ProviderLineageID))
 	appendLine("- context_branch_id: " + strings.TrimSpace(req.ContextBranchID))
+	appendLine("- target_provider: " + strings.TrimSpace(resolved.Preference.Provider))
+	appendLine("- target_model: " + strings.TrimSpace(resolved.Preference.Model))
 	appendLine("- previous_provider: " + strings.TrimSpace(req.PreviousProviderID))
 	appendLine("- previous_model: " + strings.TrimSpace(req.PreviousModel))
 	appendLine("- new_provider: " + strings.TrimSpace(req.NewProviderID))
