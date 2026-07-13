@@ -419,6 +419,7 @@ function agentProfile(overrides: Partial<AgentProfileRecord>): AgentProfileRecor
     autoServiceTier: '',
     prompt: '',
     runtimeMode: 'plan_auto',
+    defaultSessionMode: 'plan',
     executionSetting: '',
     exitPlanModeEnabled: true,
     toolScope: null,

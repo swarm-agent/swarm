@@ -44,3 +44,11 @@ assert.match(
   /<option value="single">Single model<\/option>[\s\S]*<option value="split" disabled=\{!splitModelAllowed\}>Split plan\/auto models<\/option>/,
   'Agents settings model-mode selector must offer only Single and gated Split choices',
 )
+
+assert.match(
+  source,
+  /Default session mode[\s\S]*value=\{form\.defaultSessionMode\}[\s\S]*<option value="plan">Plan<\/option>[\s\S]*<option value="auto">Auto<\/option>/,
+  'Agents settings must expose each profile default session mode',
+)
+
+assert.match(source, /default_session_mode: input\.defaultSessionMode/, 'save payload must persist the per-agent default session mode')

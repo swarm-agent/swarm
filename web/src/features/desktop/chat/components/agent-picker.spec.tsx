@@ -25,6 +25,7 @@ function profile(name: string, overrides: Partial<AgentProfileRecord> = {}): Age
     autoServiceTier: '',
     prompt: '',
     runtimeMode: '',
+    defaultSessionMode: 'plan',
     executionSetting: '',
     exitPlanModeEnabled: false,
     enabled: true,

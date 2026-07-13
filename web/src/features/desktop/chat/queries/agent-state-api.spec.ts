@@ -24,6 +24,7 @@ async function withFetchStub(
           thinking: 'medium',
           prompt: 'large settings-only prompt',
           runtime_mode: 'plan_auto',
+          default_session_mode: 'auto',
           execution_setting: '',
           exit_plan_mode_enabled: true,
           tool_contract: { preset: 'read_write' },
@@ -57,6 +58,7 @@ test('Desktop chat agent-state fetch uses lean summary view', async () => {
     assert.equal(String(calls[0]?.input), '/v2/agents?limit=200&view=summary')
     assert.equal(state.profiles[0]?.name, 'swarm')
     assert.equal(state.profiles[0]?.prompt, 'large settings-only prompt')
+    assert.equal(state.profiles[0]?.defaultSessionMode, 'auto')
     assert.equal(state.profiles[0]?.toolContract?.preset, 'read_write')
   })
 })

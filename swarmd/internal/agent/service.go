@@ -114,6 +114,7 @@ type UpsertInput struct {
 	AutoServiceTier     string                         `json:"auto_service_tier"`
 	Prompt              string                         `json:"prompt"`
 	RuntimeMode         string                         `json:"runtime_mode"`
+	DefaultSessionMode  string                         `json:"default_session_mode"`
 	ExecutionSetting    string                         `json:"execution_setting"`
 	ExitPlanModeEnabled *bool                          `json:"exit_plan_mode_enabled"`
 	ToolScope           *pebblestore.AgentToolScope    `json:"tool_scope"`
@@ -1397,6 +1398,9 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		if strings.TrimSpace(profile.RuntimeMode) == "" {
 			profile.RuntimeMode = existing.RuntimeMode
 		}
+		if strings.TrimSpace(profile.DefaultSessionMode) == "" {
+			profile.DefaultSessionMode = existing.DefaultSessionMode
+		}
 		if strings.TrimSpace(profile.ExecutionSetting) == "" {
 			profile.ExecutionSetting = existing.ExecutionSetting
 		}
@@ -2224,6 +2228,7 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			Name:                "swarm",
 			Mode:                ModePrimary,
 			RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
+			DefaultSessionMode:  pebblestore.AgentDefaultSessionModePlan,
 			Description:         "Primary orchestrator",
 			Provider:            "",
 			Model:               "",
@@ -2370,6 +2375,10 @@ func normalizeUpsertInput(input UpsertInput) (pebblestore.AgentProfile, error) {
 	if strings.TrimSpace(input.RuntimeMode) != "" && runtimeMode == "" {
 		return pebblestore.AgentProfile{}, fmt.Errorf("invalid runtime_mode %q", input.RuntimeMode)
 	}
+	defaultSessionMode := pebblestore.NormalizeAgentDefaultSessionMode(input.DefaultSessionMode)
+	if strings.TrimSpace(input.DefaultSessionMode) != "" && defaultSessionMode == "" {
+		return pebblestore.AgentProfile{}, fmt.Errorf("invalid default_session_mode %q", input.DefaultSessionMode)
+	}
 	executionSetting := pebblestore.NormalizeAgentExecutionSetting(input.ExecutionSetting)
 	if strings.TrimSpace(input.ExecutionSetting) != "" && executionSetting == "" {
 		return pebblestore.AgentProfile{}, fmt.Errorf("invalid execution_setting %q", input.ExecutionSetting)
@@ -2398,6 +2407,7 @@ func normalizeUpsertInput(input UpsertInput) (pebblestore.AgentProfile, error) {
 		AutoServiceTier:     pebblestore.NormalizeModelServiceTier(input.AutoServiceTier),
 		Prompt:              strings.TrimSpace(input.Prompt),
 		RuntimeMode:         runtimeMode,
+		DefaultSessionMode:  defaultSessionMode,
 		ExecutionSetting:    executionSetting,
 		ExitPlanModeEnabled: pebblestore.CloneBoolPtr(input.ExitPlanModeEnabled),
 		ToolScope:           toolScope,

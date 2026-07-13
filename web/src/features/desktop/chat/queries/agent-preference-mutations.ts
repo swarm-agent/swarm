@@ -37,6 +37,7 @@ function agentPayload(profile: AgentProfileRecord, patch: Partial<AgentProfileRe
     auto_service_tier: next.autoServiceTier,
     prompt: next.prompt,
     runtime_mode: runtimeMode,
+    default_session_mode: next.defaultSessionMode,
     execution_setting: runtimeMode === 'plan_auto' ? '' : runtimeMode,
     exit_plan_mode_enabled: runtimeMode === 'plan_auto',
     tool_contract: next.toolContract

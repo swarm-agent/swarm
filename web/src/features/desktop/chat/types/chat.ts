@@ -1,3 +1,5 @@
+import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
+
 export interface ChatMessageRecord {
   id: string;
   sessionId: string;
@@ -230,6 +232,7 @@ export interface AgentProfileRecord {
   autoServiceTier: string;
   prompt: string;
   runtimeMode: "plan_auto" | "read" | "readwrite" | "";
+  defaultSessionMode: DesktopSessionMode;
   executionSetting: "read" | "readwrite" | "";
   exitPlanModeEnabled: boolean;
   toolScope: AgentToolScopeRecord | null;

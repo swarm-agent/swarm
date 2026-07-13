@@ -6,6 +6,7 @@ import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settin
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 
 export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
+  | 'defaultSessionMode'
   | 'modelMode'
   | 'provider'
   | 'model'
@@ -266,6 +267,7 @@ export function AgentModelControl({
   const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
   const [draftAgentName, setDraftAgentName] = useState(activeProfile?.name ?? selectedPrimaryAgent)
   const draftProfile = selectableAgents.find((agent) => agent.name === draftAgentName) ?? activeProfile
+  const [draftSessionMode, setDraftSessionMode] = useState<DesktopSessionMode>(() => activeProfile?.defaultSessionMode ?? mode)
   const [draftMode, setDraftMode] = useState<DraftMode>(() => selectedDraftMode(activeProfile))
   const [singleDraft, setSingleDraft] = useState<ModelDraft>(() => singleDraftFromProfile(activeProfile, selectedModel, selectedServiceTier, selectedThinking))
   const [planDraft, setPlanDraft] = useState<ModelDraft>(() => splitDraftFromProfile(activeProfile, 'plan', selectedModel, selectedServiceTier, selectedThinking))
@@ -284,7 +286,6 @@ export function AgentModelControl({
     ]
     return sections.filter((section) => section.profiles.length > 0)
   }, [selectableAgents])
-  const pricingLabel = selectedModel ? formatModelPricing(selectedModel.pricing) : ''
   const selectedModelLabel = selectedModel
     ? `${selectedModel.provider}/${displayModelName(selectedModel.provider, selectedModel.model, selectedModel.contextMode)}`
     : 'No resolved model'
@@ -304,15 +305,17 @@ export function AgentModelControl({
       ?? selectableAgents.find((agent) => agent.name === selectedPrimaryAgent)
       ?? activeProfile
     setDraftAgentName(profile?.name ?? selectedPrimaryAgent)
+    setDraftSessionMode(profile?.defaultSessionMode ?? mode)
     setDraftMode(selectedDraftMode(profile))
     setSingleDraft(singleDraftFromProfile(profile, selectedModel, selectedServiceTier, selectedThinking))
     setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier, selectedThinking))
     setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier, selectedThinking))
     setError(null)
-  }, [activeProfile, initialAgentName, open, selectableAgents, selectedModel, selectedPrimaryAgent, selectedServiceTier, selectedThinking])
+  }, [activeProfile, initialAgentName, mode, open, selectableAgents, selectedModel, selectedPrimaryAgent, selectedServiceTier, selectedThinking])
 
   function chooseAgent(profile: AgentProfileRecord) {
     setDraftAgentName(profile.name)
+    setDraftSessionMode(profile.defaultSessionMode)
     setDraftMode(selectedDraftMode(profile))
     setSingleDraft(singleDraftFromProfile(profile, selectedModel, selectedServiceTier, selectedThinking))
     setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier, selectedThinking))
@@ -338,7 +341,10 @@ export function AgentModelControl({
     const profile = draftProfile
     if (!profile || saving || busy) return
     const normalizedDraftMode: DraftMode = draftMode === 'split' && !isPlanCapableAgent(profile) ? 'single' : draftMode
-    const agentPatch = buildPatch(normalizedDraftMode, singleDraft, planDraft, autoDraft, modelOptions)
+    const agentPatch = {
+      ...buildPatch(normalizedDraftMode, singleDraft, planDraft, autoDraft, modelOptions),
+      defaultSessionMode: draftSessionMode,
+    }
     const action: AgentModelControlAction = normalizedDraftMode === 'single'
       ? { kind: 'single', agentPatch }
       : { kind: 'split', agentPatch }
@@ -406,10 +412,18 @@ export function AgentModelControl({
           </div>
 
           <div className="min-h-0 overflow-y-auto p-5">
-            <div className="grid gap-3 sm:grid-cols-3">
-              <SummaryCard label="Session mode" value={mode} />
-              <SummaryCard label="Runtime" value={runtimeLabel(draftProfile)} />
-              <SummaryCard label="Current resolved model" value={selectedModelLabel} detail={pricingLabel} />
+            <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Default session mode</div>
+                  <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Choose how new sessions start for this agent. You can still switch Plan/Auto in the composer.</div>
+                </div>
+                <div role="group" aria-label="Default session mode" className="grid grid-cols-2 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-bg)] p-1">
+                  <CompactChoice selected={draftSessionMode === 'plan'} label="Plan" onClick={() => setDraftSessionMode('plan')} />
+                  <CompactChoice selected={draftSessionMode === 'auto'} label="Auto" onClick={() => setDraftSessionMode('auto')} />
+                </div>
+              </div>
+              <div className="mt-3 text-[11px] text-[var(--app-text-subtle)]">Runtime: {runtimeLabel(draftProfile)}. Current session: {mode}.</div>
             </div>
 
             <div className="mt-4 border-y border-[var(--app-border)] py-3">
@@ -481,16 +495,6 @@ export function AgentModelControl({
         </button>
       ) : null}
       {modal}
-    </div>
-  )
-}
-
-function SummaryCard({ label, value, detail = '' }: { label: string; value: string; detail?: string }) {
-  return (
-    <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-[11px]">
-      <div className="font-semibold text-[var(--app-text-subtle)]">{label}</div>
-      <div className="mt-1 break-words text-[var(--app-text)]">{value || '—'}</div>
-      {detail ? <div className="mt-1 text-[var(--app-text-muted)]">{detail}</div> : null}
     </div>
   )
 }

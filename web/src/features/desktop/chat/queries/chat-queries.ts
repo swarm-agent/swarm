@@ -551,6 +551,7 @@ type AgentStateWire = {
       auto_service_tier?: string;
       prompt?: string;
       runtime_mode?: string;
+      default_session_mode?: string;
       execution_setting?: string;
       exit_plan_mode_enabled?: boolean;
       tool_scope?: {
@@ -594,6 +595,7 @@ type RestoreAgentDefaultsWire = {
     auto_service_tier?: string;
     prompt?: string;
     runtime_mode?: string;
+    default_session_mode?: string;
     execution_setting?: string;
     exit_plan_mode_enabled?: boolean;
     enabled?: boolean;
@@ -1506,6 +1508,11 @@ function mapAgentStateResponse(response: AgentStateWire): AgentStateRecord {
               ? raw
               : "";
           })() as "plan_auto" | "read" | "readwrite" | "",
+          defaultSessionMode: (() => {
+            const saved = String(profile.default_session_mode ?? "").trim().toLowerCase();
+            if (saved === "plan" || saved === "auto") return saved;
+            return String(profile.runtime_mode ?? "").trim().toLowerCase() === "plan_auto" ? "plan" : "auto";
+          })(),
           executionSetting: (() => {
             const raw = String(profile.execution_setting ?? "")
               .trim()
@@ -1661,6 +1668,11 @@ function mapAgentDefaultsState(
               ? raw
               : "";
           })() as "plan_auto" | "read" | "readwrite" | "",
+          defaultSessionMode: (() => {
+            const saved = String(profile.default_session_mode ?? "").trim().toLowerCase();
+            if (saved === "plan" || saved === "auto") return saved;
+            return String(profile.runtime_mode ?? "").trim().toLowerCase() === "plan_auto" ? "plan" : "auto";
+          })(),
           executionSetting: (() => {
             const raw = String(profile.execution_setting ?? "")
               .trim()

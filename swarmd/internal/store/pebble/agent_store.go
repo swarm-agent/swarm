@@ -13,6 +13,9 @@ const (
 	AgentRuntimeModeRead      = "read"
 	AgentRuntimeModeReadWrite = "readwrite"
 
+	AgentDefaultSessionModePlan = "plan"
+	AgentDefaultSessionModeAuto = "auto"
+
 	AgentExecutionSettingRead      = AgentRuntimeModeRead
 	AgentExecutionSettingReadWrite = AgentRuntimeModeReadWrite
 
@@ -56,6 +59,7 @@ type AgentProfile struct {
 	AutoServiceTier     string             `json:"auto_service_tier,omitempty"`
 	Prompt              string             `json:"prompt"`
 	RuntimeMode         string             `json:"runtime_mode,omitempty"`
+	DefaultSessionMode  string             `json:"default_session_mode,omitempty"`
 	ExecutionSetting    string             `json:"execution_setting,omitempty"`
 	ExitPlanModeEnabled *bool              `json:"exit_plan_mode_enabled,omitempty"`
 	ToolScope           *AgentToolScope    `json:"tool_scope,omitempty"`
@@ -96,6 +100,27 @@ func NormalizeAgentRuntimeMode(value string) string {
 	default:
 		return ""
 	}
+}
+
+func NormalizeAgentDefaultSessionMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case AgentDefaultSessionModePlan:
+		return AgentDefaultSessionModePlan
+	case AgentDefaultSessionModeAuto:
+		return AgentDefaultSessionModeAuto
+	default:
+		return ""
+	}
+}
+
+func AgentProfileDefaultSessionMode(profile AgentProfile) string {
+	if mode := NormalizeAgentDefaultSessionMode(profile.DefaultSessionMode); mode != "" {
+		return mode
+	}
+	if AgentProfileRuntimeMode(profile) == AgentRuntimeModePlanAuto {
+		return AgentDefaultSessionModePlan
+	}
+	return AgentDefaultSessionModeAuto
 }
 
 func NormalizeAgentExecutionSetting(value string) string {
@@ -397,6 +422,7 @@ func NormalizeAgentProfile(profile AgentProfile) AgentProfile {
 	profile.AutoServiceTier = NormalizeModelServiceTier(profile.AutoServiceTier)
 	profile.Prompt = strings.TrimSpace(profile.Prompt)
 	profile.RuntimeMode = NormalizeAgentRuntimeMode(profile.RuntimeMode)
+	profile.DefaultSessionMode = NormalizeAgentDefaultSessionMode(profile.DefaultSessionMode)
 	profile.ExecutionSetting = NormalizeAgentExecutionSetting(profile.ExecutionSetting)
 	profile.ToolScope = NormalizeAgentToolScope(profile.ToolScope)
 	profile.ToolContract = NormalizeAgentToolContract(profile.ToolContract)
@@ -429,6 +455,7 @@ func NormalizeAgentProfile(profile AgentProfile) AgentProfile {
 			profile.ExecutionSetting = ""
 		}
 	}
+	profile.DefaultSessionMode = AgentProfileDefaultSessionMode(profile)
 	if AgentModelMode(profile) == "split" && AgentSupportsSplitModel(profile) {
 		profile.Provider = ""
 		profile.Model = ""

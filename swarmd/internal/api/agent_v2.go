@@ -170,22 +170,23 @@ func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
 	for _, profile := range state.Profiles {
 		profile = pebblestore.NormalizeAgentProfile(profile)
 		profiles = append(profiles, compactAgentProfileForDesktop{
-			Name:            profile.Name,
-			Mode:            profile.Mode,
-			Provider:        profile.Provider,
-			Model:           profile.Model,
-			Thinking:        profile.Thinking,
-			ModelMode:       profile.ModelMode,
-			PlanProvider:    profile.PlanProvider,
-			PlanModel:       profile.PlanModel,
-			PlanThinking:    profile.PlanThinking,
-			PlanServiceTier: profile.PlanServiceTier,
-			AutoProvider:    profile.AutoProvider,
-			AutoModel:       profile.AutoModel,
-			AutoThinking:    profile.AutoThinking,
-			AutoServiceTier: profile.AutoServiceTier,
-			RuntimeMode:     pebblestore.AgentProfileRuntimeMode(profile),
-			Enabled:         profile.Enabled,
+			Name:               profile.Name,
+			Mode:               profile.Mode,
+			Provider:           profile.Provider,
+			Model:              profile.Model,
+			Thinking:           profile.Thinking,
+			ModelMode:          profile.ModelMode,
+			PlanProvider:       profile.PlanProvider,
+			PlanModel:          profile.PlanModel,
+			PlanThinking:       profile.PlanThinking,
+			PlanServiceTier:    profile.PlanServiceTier,
+			AutoProvider:       profile.AutoProvider,
+			AutoModel:          profile.AutoModel,
+			AutoThinking:       profile.AutoThinking,
+			AutoServiceTier:    profile.AutoServiceTier,
+			RuntimeMode:        pebblestore.AgentProfileRuntimeMode(profile),
+			DefaultSessionMode: pebblestore.AgentProfileDefaultSessionMode(profile),
+			Enabled:            profile.Enabled,
 		})
 	}
 	return map[string]any{
@@ -197,22 +198,23 @@ func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
 }
 
 type compactAgentProfileForDesktop struct {
-	Name            string `json:"name"`
-	Mode            string `json:"mode"`
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	Thinking        string `json:"thinking"`
-	ModelMode       string `json:"model_mode,omitempty"`
-	PlanProvider    string `json:"plan_provider,omitempty"`
-	PlanModel       string `json:"plan_model,omitempty"`
-	PlanThinking    string `json:"plan_thinking,omitempty"`
-	PlanServiceTier string `json:"plan_service_tier,omitempty"`
-	AutoProvider    string `json:"auto_provider,omitempty"`
-	AutoModel       string `json:"auto_model,omitempty"`
-	AutoThinking    string `json:"auto_thinking,omitempty"`
-	AutoServiceTier string `json:"auto_service_tier,omitempty"`
-	RuntimeMode     string `json:"runtime_mode,omitempty"`
-	Enabled         bool   `json:"enabled"`
+	Name               string `json:"name"`
+	Mode               string `json:"mode"`
+	Provider           string `json:"provider"`
+	Model              string `json:"model"`
+	Thinking           string `json:"thinking"`
+	ModelMode          string `json:"model_mode,omitempty"`
+	PlanProvider       string `json:"plan_provider,omitempty"`
+	PlanModel          string `json:"plan_model,omitempty"`
+	PlanThinking       string `json:"plan_thinking,omitempty"`
+	PlanServiceTier    string `json:"plan_service_tier,omitempty"`
+	AutoProvider       string `json:"auto_provider,omitempty"`
+	AutoModel          string `json:"auto_model,omitempty"`
+	AutoThinking       string `json:"auto_thinking,omitempty"`
+	AutoServiceTier    string `json:"auto_service_tier,omitempty"`
+	RuntimeMode        string `json:"runtime_mode,omitempty"`
+	DefaultSessionMode string `json:"default_session_mode,omitempty"`
+	Enabled            bool   `json:"enabled"`
 }
 
 func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Request) {
@@ -496,6 +498,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			AutoServiceTier     *string                                 `json:"auto_service_tier"`
 			Prompt              string                                  `json:"prompt"`
 			RuntimeMode         string                                  `json:"runtime_mode"`
+			DefaultSessionMode  string                                  `json:"default_session_mode"`
 			ExecutionSetting    string                                  `json:"execution_setting"`
 			ExitPlanModeEnabled *bool                                   `json:"exit_plan_mode_enabled"`
 			ToolContract        *pebblestore.AgentToolContract          `json:"tool_contract"`
@@ -589,6 +592,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			AutoServiceTierSet:  req.AutoServiceTier != nil,
 			Prompt:              req.Prompt,
 			RuntimeMode:         req.RuntimeMode,
+			DefaultSessionMode:  req.DefaultSessionMode,
 			ExecutionSetting:    req.ExecutionSetting,
 			ExitPlanModeEnabled: req.ExitPlanModeEnabled,
 			ToolContract:        req.ToolContract,

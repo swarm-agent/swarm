@@ -556,6 +556,9 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if strings.TrimSpace(req.Mode) == "" {
+		req.Mode = pebblestore.AgentProfileDefaultSessionMode(resolvedAgent.Profile)
+	}
 	workspacePath := binding.SourceWorkspacePath
 	workspaceName := binding.SourceWorkspaceName
 	if workspaceName == "" {
@@ -3396,6 +3399,7 @@ func sessionsV3CreateServerMetadata(clientMetadata map[string]any, agent session
 	metadata["resolved_agent_name"] = agent.ResolvedName
 	metadata["agent_mode"] = agent.Mode
 	metadata["runtime_mode"] = agent.RuntimeMode
+	metadata["default_session_mode"] = pebblestore.AgentProfileDefaultSessionMode(agent.Profile)
 	metadata["exit_plan_mode_enabled"] = agent.ExitPlanModeEnabled
 	metadata["agent_profile"] = cloneSessionsV3AgentProfile(agent.Profile)
 	metadata["swarm_v3_execution_class"] = sessionruntime.SessionExecutionClassPrimary
@@ -3422,13 +3426,14 @@ func sessionsV3AgentSwitchMetadata(current map[string]any, agent sessionsV3Resol
 	if metadata == nil {
 		metadata = make(map[string]any, 8)
 	}
-	for _, key := range []string{"agent_name", "agent_profile", "resolved_agent_name", "agent_mode", "runtime_mode", "exit_plan_mode_enabled", "tool_contract_preset", "subagent", "requested_subagent"} {
+	for _, key := range []string{"agent_name", "agent_profile", "resolved_agent_name", "agent_mode", "runtime_mode", "default_session_mode", "exit_plan_mode_enabled", "tool_contract_preset", "subagent", "requested_subagent"} {
 		delete(metadata, key)
 	}
 	metadata["agent_name"] = agent.Name
 	metadata["resolved_agent_name"] = agent.ResolvedName
 	metadata["agent_mode"] = agent.Mode
 	metadata["runtime_mode"] = agent.RuntimeMode
+	metadata["default_session_mode"] = pebblestore.AgentProfileDefaultSessionMode(agent.Profile)
 	metadata["exit_plan_mode_enabled"] = agent.ExitPlanModeEnabled
 	metadata["agent_profile"] = cloneSessionsV3AgentProfile(agent.Profile)
 	if agent.ToolContractPreset != "" {

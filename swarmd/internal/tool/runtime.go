@@ -960,6 +960,7 @@ func (r *Runtime) Definitions() []Definition {
 									"thinking":               map[string]any{"type": "string"},
 									"prompt":                 map[string]any{"type": "string"},
 									"runtime_mode":           map[string]any{"type": "string", "description": "Authoritative execution mode: plan_auto|read|readwrite"},
+									"default_session_mode":   map[string]any{"type": "string", "description": "Default mode for new sessions: plan|auto"},
 									"execution_setting":      map[string]any{"type": "string", "description": "legacy alias for read|readwrite direct runtime only; prefer runtime_mode"},
 									"exit_plan_mode_enabled": map[string]any{"type": "boolean", "description": "Derived from runtime_mode: true for plan_auto, false for read/readwrite"},
 									"enabled":                map[string]any{"type": "boolean"},
@@ -7951,12 +7952,13 @@ func manageAgentUpsertInputFromArgs(args map[string]any) (agentruntime.UpsertInp
 		return agentruntime.UpsertInput{}, errors.New("manage-agent requires agent or name")
 	}
 	input := agentruntime.UpsertInput{
-		Name:             name,
-		Mode:             strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "mode"), manageAgentStringArg(content, "mode"))),
-		Description:      strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "description"), manageAgentStringArg(content, "description"))),
-		Prompt:           strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "prompt"), manageAgentStringArg(content, "prompt"))),
-		RuntimeMode:      strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "runtime_mode"), manageAgentStringArg(content, "runtime_mode"))),
-		ExecutionSetting: strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "execution_setting"), manageAgentStringArg(content, "execution_setting"))),
+		Name:               name,
+		Mode:               strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "mode"), manageAgentStringArg(content, "mode"))),
+		Description:        strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "description"), manageAgentStringArg(content, "description"))),
+		Prompt:             strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "prompt"), manageAgentStringArg(content, "prompt"))),
+		RuntimeMode:        strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "runtime_mode"), manageAgentStringArg(content, "runtime_mode"))),
+		DefaultSessionMode: strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "default_session_mode"), manageAgentStringArg(content, "default_session_mode"))),
+		ExecutionSetting:   strings.TrimSpace(firstNonEmptyString(manageAgentStringArg(args, "execution_setting"), manageAgentStringArg(content, "execution_setting"))),
 	}
 	if value, ok := manageAgentValue(args, content, "provider"); ok {
 		input.Provider = strings.TrimSpace(asString(value))
@@ -8486,6 +8488,7 @@ func manageAgentProfileMap(profile pebblestore.AgentProfile, activePrimary bool,
 		"thinking":                    strings.TrimSpace(profile.Thinking),
 		"prompt":                      strings.TrimSpace(profile.Prompt),
 		"runtime_mode":                pebblestore.AgentProfileRuntimeMode(profile),
+		"default_session_mode":        pebblestore.AgentProfileDefaultSessionMode(profile),
 		"execution_setting":           strings.TrimSpace(profile.ExecutionSetting),
 		"effective_execution_setting": manageAgentEffectiveExecutionSetting(profile),
 		"exit_plan_mode_enabled":      pebblestore.AgentExitPlanModeEnabled(profile),

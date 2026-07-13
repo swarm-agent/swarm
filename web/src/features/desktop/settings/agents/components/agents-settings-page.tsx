@@ -51,6 +51,7 @@ interface AgentFormState {
   autoServiceTier: string;
   prompt: string;
   runtimeMode: "plan_auto" | "read" | "readwrite" | "";
+  defaultSessionMode: "plan" | "auto";
   executionSetting: "read" | "readwrite" | "";
   exitPlanModeEnabled: boolean;
   toolContractPreset: string;
@@ -509,6 +510,7 @@ function emptyAgentForm(): AgentFormState {
     autoServiceTier: "",
     prompt: "",
     runtimeMode: "readwrite",
+    defaultSessionMode: "auto",
     executionSetting: "readwrite",
     exitPlanModeEnabled: false,
     toolContractPreset: "",
@@ -920,6 +922,7 @@ function profileToForm(
     autoServiceTier: profile.autoServiceTier,
     prompt: profile.prompt,
     runtimeMode: profile.exitPlanModeEnabled ? "plan_auto" : profile.runtimeMode,
+    defaultSessionMode: profile.defaultSessionMode,
     executionSetting: profile.exitPlanModeEnabled ? "" : profile.executionSetting,
     exitPlanModeEnabled: profile.exitPlanModeEnabled || profile.runtimeMode === "plan_auto",
     toolContractPreset:
@@ -989,6 +992,7 @@ async function upsertAgent(input: AgentFormState): Promise<string> {
         auto_service_tier: input.autoServiceTier,
         prompt: input.prompt,
         runtime_mode: resolvedExecutionMode,
+        default_session_mode: input.defaultSessionMode,
         execution_setting:
           resolvedExecutionMode === "plan_auto" ? "" : resolvedExecutionMode,
         exit_plan_mode_enabled: resolvedExecutionMode === "plan_auto",
@@ -2716,6 +2720,31 @@ export function AgentsSettingsPage() {
                   </div>
                 </>
               )}
+
+              <div className="flex items-start border-t border-[var(--app-border)] px-4 py-3">
+                <label className="w-1/4 shrink-0 pt-2 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
+                  Default session mode
+                </label>
+                <div className="min-w-0 flex-1 space-y-2 text-sm text-[var(--app-text)]">
+                  <div className="relative">
+                    <select
+                      value={form.defaultSessionMode}
+                      onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                        setForm((current) => ({ ...current, defaultSessionMode: event.target.value === "auto" ? "auto" : "plan" }))
+                      }
+                      disabled={busy}
+                      className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                    >
+                      <option value="plan">Plan</option>
+                      <option value="auto">Auto</option>
+                    </select>
+                    <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+                  </div>
+                  <p className="text-xs leading-5 text-[var(--app-text-muted)]">
+                    New sessions created with this agent start here. The session can still switch between Plan and Auto later.
+                  </p>
+                </div>
+              </div>
 
               <div className="flex items-start border-t border-[var(--app-border)] px-4 py-3">
                 <label className="w-1/4 shrink-0 pt-2 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">

@@ -212,6 +212,13 @@ export function DesktopV3NewSessionPane({
   }, [agentNameProp, agentState.activePrimary])
 
   useEffect(() => {
+    if (modeManuallySelectedRef.current) return
+    const profile = agentState.profiles.find((candidate) => candidate.name === selectedAgent)
+    if (!profile) return
+    setMode(profile.defaultSessionMode)
+  }, [agentState.profiles, selectedAgent])
+
+  useEffect(() => {
     if (!starting) return
     const timer = window.setInterval(() => setTimerNow(Date.now()), 250)
     return () => window.clearInterval(timer)
@@ -309,6 +316,12 @@ export function DesktopV3NewSessionPane({
     if (!normalizedAgentName) return
     agentManuallySelectedRef.current = true
     setSelectedAgent(normalizedAgentName)
+    const nextProfile = agentState.profiles.find((candidate) => candidate.name === normalizedAgentName)
+    if (nextProfile) {
+      modeManuallySelectedRef.current = false
+      setMode(nextProfile.defaultSessionMode)
+      onModeChange?.(nextProfile.defaultSessionMode)
+    }
     const nextLock = resolveDesktopV3AgentModelLock(agentState.profiles, normalizedAgentName, mode)
     if (nextLock.locked) {
       setPreference((current) => preferenceFromAgentModelLock(nextLock, current, modelOptions))
