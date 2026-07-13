@@ -12,6 +12,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMatchRoute, useNavigate } from "@tanstack/react-router";
 import {
   ArrowDown,
+  ArrowRight,
   CheckCircle2,
   CircleAlert,
   Loader2,
@@ -517,10 +518,19 @@ export type DesktopV3RenderItem =
       timelineSeq?: number;
     }
   | {
+      type: "plan-checkpoint-handoff";
+      message: MessageSnapshot;
+      headline: string;
+      body: string;
+      summary: string;
+      timelineSeq?: number;
+    }
+  | {
       type: "plan-final-handoff";
       message: MessageSnapshot;
       headline: string;
       body: string;
+      summary: string;
       timelineSeq?: number;
     }
   | {
@@ -528,6 +538,7 @@ export type DesktopV3RenderItem =
       message: MessageSnapshot;
       headline: string;
       body: string;
+      summary: string;
       timelineSeq?: number;
     }
   | {
@@ -834,6 +845,7 @@ function committedToolRenderKey(message: MessageSnapshot): string {
 export function desktopV3RenderItemKey(item: DesktopV3RenderItem): string {
   switch (item.type) {
     case "plan-break":
+    case "plan-checkpoint-handoff":
     case "plan-final-handoff":
     case "plan-blocked-handoff":
       return item.message.id;
@@ -954,6 +966,24 @@ export function isDesktopV3PlanExecutionBreakMessage(
   );
 }
 
+export function isDesktopV3PlanCheckpointHandoffMessage(
+  message: MessageSnapshot,
+): boolean {
+  if ((message.role || "").trim().toLowerCase() !== "system") return false;
+  const metadataSource =
+    typeof message.metadata?.source === "string"
+      ? message.metadata.source.trim().toLowerCase()
+      : "";
+  const metadataKind =
+    typeof message.metadata?.kind === "string"
+      ? message.metadata.kind.trim().toLowerCase()
+      : "";
+  return (
+    metadataSource === "plan_execution_checkpoint_handoff" ||
+    metadataKind === "plan_checkpoint_handoff"
+  );
+}
+
 export function isDesktopV3PlanFinalHandoffMessage(
   message: MessageSnapshot,
 ): boolean {
@@ -1007,32 +1037,111 @@ function buildDesktopV3PlanExecutionBreakItem(
   };
 }
 
-function buildDesktopV3PlanFinalHandoffItem(
-  message: MessageSnapshot,
-): Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }> {
-  const lines = message.content.split(/\r?\n/);
-  const headline =
-    lines.find((line) => line.trim())?.trim() || "Final checkpoint handoff";
-  const headlineIndex = lines.findIndex((line) => line.trim());
-  const bodyLines = headlineIndex >= 0 ? lines.slice(headlineIndex + 1) : [];
-  const body = bodyLines.join("\n").trim() || message.content.trim();
+const HANDOFF_SUMMARY_OPEN_TAG = "<swarm-handoff-summary>";
+const HANDOFF_SUMMARY_CLOSE_TAG = "</swarm-handoff-summary>";
+
+export interface DesktopV3HandoffSummaryParts {
+  body: string;
+  summary: string;
+}
+
+function desktopV3MarkdownFenceRanges(content: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const lines = content.match(/.*(?:\r?\n|$)/g) ?? [];
+  let offset = 0;
+  let open: { marker: "`" | "~"; length: number; start: number } | null = null;
+  for (const line of lines) {
+    const lineWithoutEnding = line.replace(/\r?\n$/, "");
+    const fence = lineWithoutEnding.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (fence) {
+      const marker = fence[1][0] as "`" | "~";
+      if (!open) {
+        open = { marker, length: fence[1].length, start: offset };
+      } else if (marker === open.marker && fence[1].length >= open.length) {
+        ranges.push([open.start, offset + line.length]);
+        open = null;
+      }
+    }
+    offset += line.length;
+  }
+  if (open) ranges.push([open.start, content.length]);
+  return ranges;
+}
+
+function desktopV3TagOffsetsOutsideFences(
+  content: string,
+  tag: string,
+  ranges: Array<[number, number]>,
+): number[] {
+  const offsets: number[] = [];
+  let cursor = 0;
+  while (cursor < content.length) {
+    const offset = content.indexOf(tag, cursor);
+    if (offset < 0) break;
+    if (!ranges.some(([start, end]) => offset >= start && offset < end)) {
+      offsets.push(offset);
+    }
+    cursor = offset + tag.length;
+  }
+  return offsets;
+}
+
+export function parseDesktopV3HandoffSummary(
+  content: string,
+): DesktopV3HandoffSummaryParts {
+  const fallback = { body: content, summary: "" };
+  const fenceRanges = desktopV3MarkdownFenceRanges(content);
+  const opens = desktopV3TagOffsetsOutsideFences(
+    content,
+    HANDOFF_SUMMARY_OPEN_TAG,
+    fenceRanges,
+  );
+  const closes = desktopV3TagOffsetsOutsideFences(
+    content,
+    HANDOFF_SUMMARY_CLOSE_TAG,
+    fenceRanges,
+  );
+  if (opens.length !== 1 || closes.length !== 1) return fallback;
+  const open = opens[0];
+  const close = closes[0];
+  const summaryStart = open + HANDOFF_SUMMARY_OPEN_TAG.length;
+  if (close < summaryStart) return fallback;
+  const summary = content.slice(summaryStart, close).trim();
+  if (!summary) return fallback;
+  const before = content.slice(0, open).trimEnd();
+  const after = content
+    .slice(close + HANDOFF_SUMMARY_CLOSE_TAG.length)
+    .trimStart();
   return {
-    type: "plan-final-handoff",
-    message,
-    headline,
-    body,
-    timelineSeq: message.global_seq,
+    body: [before, after].filter(Boolean).join("\n\n"),
+    summary,
   };
 }
 
-function buildDesktopV3PlanBlockedHandoffItem(
+type DesktopV3PlanHandoffType =
+  | "plan-checkpoint-handoff"
+  | "plan-final-handoff"
+  | "plan-blocked-handoff";
+
+function buildDesktopV3PlanHandoffItem(
   message: MessageSnapshot,
-): Extract<DesktopV3RenderItem, { type: "plan-blocked-handoff" }> {
-  const item = buildDesktopV3PlanFinalHandoffItem(message);
+  type: DesktopV3PlanHandoffType,
+): Extract<DesktopV3RenderItem, { type: DesktopV3PlanHandoffType }> {
+  const lines = message.content.split(/\r?\n/);
+  const headline =
+    lines.find((line) => line.trim())?.trim() || "Checkpoint handoff";
+  const headlineIndex = lines.findIndex((line) => line.trim());
+  const bodyLines = headlineIndex >= 0 ? lines.slice(headlineIndex + 1) : [];
+  const rawBody = bodyLines.join("\n").trim() || message.content.trim();
+  const parsed = parseDesktopV3HandoffSummary(rawBody);
   return {
-    ...item,
-    type: "plan-blocked-handoff",
-  };
+    type,
+    message,
+    headline,
+    body: parsed.body,
+    summary: parsed.summary,
+    timelineSeq: message.global_seq,
+  } as Extract<DesktopV3RenderItem, { type: DesktopV3PlanHandoffType }>;
 }
 
 export function buildDesktopV3LiveRunRenderItems(
@@ -1121,10 +1230,12 @@ export function buildDesktopV3ConversationRenderItems(
     ...committedMessages.map((message) =>
       isDesktopV3PlanExecutionBreakMessage(message)
         ? buildDesktopV3PlanExecutionBreakItem(message)
-        : isDesktopV3PlanFinalHandoffMessage(message)
-          ? buildDesktopV3PlanFinalHandoffItem(message)
-          : isDesktopV3PlanBlockedHandoffMessage(message)
-            ? buildDesktopV3PlanBlockedHandoffItem(message)
+        : isDesktopV3PlanCheckpointHandoffMessage(message)
+          ? buildDesktopV3PlanHandoffItem(message, "plan-checkpoint-handoff")
+          : isDesktopV3PlanFinalHandoffMessage(message)
+            ? buildDesktopV3PlanHandoffItem(message, "plan-final-handoff")
+            : isDesktopV3PlanBlockedHandoffMessage(message)
+              ? buildDesktopV3PlanHandoffItem(message, "plan-blocked-handoff")
             : {
                 type: "message" as const,
                 message,
@@ -2508,6 +2619,8 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   switch (item.type) {
     case "plan-break":
       return <DesktopV3PlanExecutionBreak item={item} />;
+    case "plan-checkpoint-handoff":
+      return <DesktopV3PlanCheckpointHandoff item={item} />;
     case "plan-final-handoff":
       return <DesktopV3PlanFinalHandoff item={item} />;
     case "plan-blocked-handoff":
@@ -2569,6 +2682,20 @@ function DesktopV3PlanExecutionBreak({
   );
 }
 
+function DesktopV3PlanCheckpointHandoff({
+  item,
+}: {
+  item: Extract<DesktopV3RenderItem, { type: "plan-checkpoint-handoff" }>;
+}) {
+  return (
+    <DesktopV3PlanHandoff
+      item={item}
+      icon={<ArrowRight size={12} className="text-[var(--app-primary)]" />}
+      testId="desktop-v3-plan-checkpoint-handoff"
+    />
+  );
+}
+
 function DesktopV3PlanFinalHandoff({
   item,
 }: {
@@ -2604,7 +2731,12 @@ function DesktopV3PlanHandoff({
 }: {
   item: Extract<
     DesktopV3RenderItem,
-    { type: "plan-final-handoff" | "plan-blocked-handoff" }
+    {
+      type:
+        | "plan-checkpoint-handoff"
+        | "plan-final-handoff"
+        | "plan-blocked-handoff";
+    }
   >;
   icon: ReactNode;
   testId: string;
@@ -2616,6 +2748,18 @@ function DesktopV3PlanHandoff({
           {icon}
           {item.headline}
         </div>
+        {item.summary ? (
+          <section
+            aria-label="At a glance"
+            className="mb-3 rounded-xl border border-[var(--app-border-active)] bg-[var(--app-surface-subtle)] px-3 py-2.5"
+            data-testid={`${testId}-summary`}
+          >
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-primary)]">
+              At a glance
+            </div>
+            <ChatMarkdown content={item.summary} />
+          </section>
+        ) : null}
         {item.body ? <ChatMarkdown content={item.body} /> : null}
       </div>
     </div>

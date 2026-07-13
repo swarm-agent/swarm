@@ -8,6 +8,7 @@ import (
 )
 
 const PlanExecutionLifecycleMessageSource = "plan_execution_lifecycle"
+const PlanExecutionCheckpointHandoffMessageSource = "plan_execution_checkpoint_handoff"
 const PlanExecutionFinalHandoffMessageSource = "plan_execution_final_handoff"
 const PlanExecutionBlockedHandoffMessageSource = "plan_execution_blocked_handoff"
 
@@ -328,6 +329,49 @@ func inferPlanExecutionNextAction(summary sessionruntime.PlanExecutionSummary) s
 	return ""
 }
 
+func BuildPlanExecutionCheckpointHandoffSystemMessage(input PlanExecutionLifecycleMessageInput) (PlanExecutionLifecycleMessage, bool) {
+	action := strings.TrimSpace(input.Action)
+	if !planLifecycleActionCompleted(action) || input.Plan.Document == nil {
+		return PlanExecutionLifecycleMessage{}, false
+	}
+	doc := input.Plan.Document
+	summary := sessionruntime.SummarizePlanExecution(doc)
+	nextAction := stringFromPlanPayload(input.Payload, "next_action")
+	if nextAction == "" {
+		nextAction = inferPlanExecutionNextAction(summary)
+	}
+	if nextAction != "run_checkpoint_with_fresh_context" || strings.TrimSpace(doc.ExecutionPolicy.Mode) != sessionruntime.PlanExecutionPolicyModeAutomatic {
+		return PlanExecutionLifecycleMessage{}, false
+	}
+	checkpointID := planLifecycleCheckpointID(action, doc, summary, input.Payload)
+	nextCheckpointID := strings.TrimSpace(summary.NextCheckpointID)
+	if nextCheckpointID == "" {
+		nextCheckpointID = stringFromPlanPayload(input.Payload, "next_checkpoint_id")
+	}
+	if checkpointID == "" || nextCheckpointID == "" || checkpointID == nextCheckpointID {
+		return PlanExecutionLifecycleMessage{}, false
+	}
+	checkpointTitle := planLifecycleCheckpointTitle(doc, checkpointID)
+	nextCheckpointTitle := planLifecycleCheckpointTitle(doc, nextCheckpointID)
+	lines := []string{
+		"Checkpoint handoff",
+		"",
+		"Completed: " + planLifecycleCheckpointLabel(checkpointID, checkpointTitle),
+		"Next: " + planLifecycleCheckpointLabel(nextCheckpointID, nextCheckpointTitle),
+		"Context: Starting the next checkpoint with fresh context.",
+	}
+	if detailLines := planLifecycleOutcomeDetailLines(input.Payload, true); len(detailLines) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, detailLines...)
+	}
+	metadata := planExecutionHandoffMetadata(input, action, doc, checkpointID, checkpointTitle, nextAction, PlanExecutionCheckpointHandoffMessageSource, "plan_checkpoint_handoff")
+	metadata["next_checkpoint_id"] = nextCheckpointID
+	metadata["next_checkpoint_title"] = nextCheckpointTitle
+	metadata["fresh_context"] = true
+	metadata["outcome"] = sessionruntime.PlanCheckpointStatusCompleted
+	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
+}
+
 func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMessageInput) (PlanExecutionLifecycleMessage, bool) {
 	action := strings.TrimSpace(input.Action)
 	if !planLifecycleActionCompleted(action) || input.Plan.Document == nil {
@@ -406,10 +450,15 @@ func planExecutionHandoffMetadata(input PlanExecutionLifecycleMessageInput, acti
 	}
 	if doc.ExecutionState != nil {
 		metadata["execution_status"] = strings.TrimSpace(doc.ExecutionState.Status)
-		metadata["attempt_id"] = strings.TrimSpace(firstNonEmptyString(doc.ExecutionState.ActiveAttemptID, doc.ExecutionState.LastAttemptID))
-		metadata["run_id"] = strings.TrimSpace(doc.ExecutionState.CurrentRunID)
-		metadata["run_session_id"] = strings.TrimSpace(doc.ExecutionState.CurrentSessionID)
+		metadata["attempt_id"] = strings.TrimSpace(firstNonEmptyString(stringFromPlanPayload(input.Payload, "attempt_id"), doc.ExecutionState.ActiveAttemptID, doc.ExecutionState.LastAttemptID))
+		metadata["run_id"] = strings.TrimSpace(firstNonEmptyString(stringFromPlanPayload(input.Payload, "run_id"), doc.ExecutionState.CurrentRunID))
+		metadata["run_session_id"] = strings.TrimSpace(firstNonEmptyString(stringFromPlanPayload(input.Payload, "run_session_id"), doc.ExecutionState.CurrentSessionID))
+	} else {
+		metadata["attempt_id"] = stringFromPlanPayload(input.Payload, "attempt_id")
+		metadata["run_id"] = stringFromPlanPayload(input.Payload, "run_id")
+		metadata["run_session_id"] = stringFromPlanPayload(input.Payload, "run_session_id")
 	}
+	metadata["parent_session_id"] = stringFromPlanPayload(input.Payload, "parent_session_id")
 	return metadata
 }
 
@@ -434,6 +483,13 @@ func planLifecycleOutcomeDetailLines(payload map[string]any, markdown bool) []st
 	}
 	appendSection("Report", stringFromPlanPayload(payload, "report"))
 	appendSection("Result", stringFromPlanPayload(payload, "result"))
+	if changedFiles := stringsFromPlanPayload(payload, "changed_files"); len(changedFiles) > 0 {
+		changedFilesText := strings.Join(changedFiles, "; ")
+		if markdown {
+			changedFilesText = planLifecycleMarkdownValidationList(changedFiles)
+		}
+		appendSection("Changed files", changedFilesText)
+	}
 	if validation := stringsFromPlanPayload(payload, "validation"); len(validation) > 0 {
 		validationText := strings.Join(validation, "; ")
 		if markdown {

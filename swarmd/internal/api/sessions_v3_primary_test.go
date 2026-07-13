@@ -6199,6 +6199,23 @@ func TestSessionsV3ExecutorAutomaticCheckpointsUseDistinctEpochsAndRuns(t *testi
 			t.Fatalf("request %d did not start a fresh checkpoint provider context: %+v", i+1, req)
 		}
 	}
+	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list automatic checkpoint messages: %v", err)
+	}
+	if len(messages) != 5 || messages[0].Role != "tool" || messages[1].Role != "system" || messages[2].Role != "tool" || messages[3].Role != "system" || messages[4].Role != "system" {
+		t.Fatalf("automatic checkpoint message order = %+v", messages)
+	}
+	if messages[1].Metadata["source"] != runruntime.PlanExecutionCheckpointHandoffMessageSource || messages[1].Metadata["kind"] != "plan_checkpoint_handoff" || messages[1].Metadata["checkpoint_id"] != "cp-1" || messages[1].Metadata["next_checkpoint_id"] != "cp-2" || messages[1].Metadata["next_action"] != "run_checkpoint_with_fresh_context" || messages[1].Metadata["fresh_context"] != true {
+		t.Fatalf("automatic checkpoint handoff metadata = %+v", messages[1].Metadata)
+	}
+	if !strings.Contains(messages[1].Content, "Completed: Checkpoint 1 — First") || !strings.Contains(messages[1].Content, "Next: Checkpoint 2 — Second") || !strings.Contains(messages[1].Content, "Report: cp-1 complete") || !strings.Contains(messages[1].Content, "Context: Starting the next checkpoint with fresh context.") {
+		t.Fatalf("automatic checkpoint handoff content = %q", messages[1].Content)
+	}
+	if messages[3].Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || messages[4].Metadata["source"] != runruntime.PlanExecutionFinalHandoffMessageSource {
+		t.Fatalf("automatic checkpoint terminal message semantics changed: %+v", messages)
+	}
+	assertSessionsV3NoMessageAppendedActivePlanPayload(t, sessionSvc, created.ID)
 }
 
 func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing.T) {

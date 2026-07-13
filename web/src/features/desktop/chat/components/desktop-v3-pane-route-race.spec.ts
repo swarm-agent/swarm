@@ -1,13 +1,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 
 import {
   buildDesktopV3ConversationRenderItems,
   buildDesktopV3LiveRunRenderItems,
   desktopV3RenderItemKey,
+  DesktopV3RenderItemView,
   isDesktopV3PlanBlockedHandoffMessage,
+  isDesktopV3PlanCheckpointHandoffMessage,
   isDesktopV3PlanExecutionBreakMessage,
   isDesktopV3PlanFinalHandoffMessage,
+  parseDesktopV3HandoffSummary,
   completeDesktopV3ExistingMessage,
   resolveDesktopV3StopRunRequest,
 } from './desktop-v3-existing-conversation-pane'
@@ -253,6 +258,69 @@ test('Desktop V3 plan lifecycle messages render as conversation breaks', () => {
 })
 
 
+test('Desktop V3 intermediate checkpoint handoff preserves global sequence and uses message rendering', () => {
+  const laterMessage = {
+    id: 'assistant-after-handoff',
+    session_id: 'session-a',
+    global_seq: 12,
+    role: 'assistant',
+    content: 'Next checkpoint started.',
+    created_at: 12,
+  }
+  const handoff = {
+    id: 'plan-handoff-checkpoint',
+    session_id: 'session-a',
+    global_seq: 11,
+    role: 'system',
+    content: 'Checkpoint handoff\n\nReport:\n- API complete\nResult: continuing',
+    metadata: { source: 'plan_execution_checkpoint_handoff', kind: 'plan_checkpoint_handoff' },
+    created_at: 11,
+  }
+
+  assert.equal(isDesktopV3PlanExecutionBreakMessage(handoff), false)
+  assert.equal(isDesktopV3PlanCheckpointHandoffMessage(handoff), true)
+  const items = buildDesktopV3ConversationRenderItems({
+    committed: [laterMessage, handoff],
+    pendingUser: [],
+    liveRuns: [],
+    runIntents: [],
+  })
+  assert.deepEqual(items.map((item) => item.type), ['plan-checkpoint-handoff', 'message'])
+  assert.equal(items[0]?.timelineSeq, 11)
+  if (items[0]?.type === 'plan-checkpoint-handoff') {
+    const markup = renderToStaticMarkup(createElement(DesktopV3RenderItemView, {
+      item: items[0], thinkingTagsEnabled: true, timerNow: 0, index: 0,
+    }))
+    assert.match(markup, /data-testid="desktop-v3-plan-checkpoint-handoff"/)
+    assert.doesNotMatch(markup, /desktop-v3-plan-execution-break/)
+    assert.match(markup, /API complete/)
+  }
+})
+
+
+test('Desktop V3 handoff summary parser extracts one valid block without mutating source content', () => {
+  const content = 'Report:\n- full detail\n\n<swarm-handoff-summary>\n**Done** — ship it.\n</swarm-handoff-summary>\n\nValidation:\n- reviewed'
+  const parsed = parseDesktopV3HandoffSummary(content)
+  assert.equal(parsed.summary, '**Done** — ship it.')
+  assert.equal(parsed.body, 'Report:\n- full detail\n\nValidation:\n- reviewed')
+  assert.equal(content.includes('<swarm-handoff-summary>'), true)
+})
+
+
+test('Desktop V3 handoff summary parser keeps absent malformed duplicated and fenced contracts readable', () => {
+  const cases = [
+    'Report only',
+    'Before <swarm-handoff-summary>unfinished',
+    '<swarm-handoff-summary>one</swarm-handoff-summary>\n<swarm-handoff-summary>two</swarm-handoff-summary>',
+    '```xml\n<swarm-handoff-summary>example</swarm-handoff-summary>\n```\nReport remains',
+    '~~~\n<swarm-handoff-summary>example</swarm-handoff-summary>\n~~~',
+  ]
+  for (const content of cases) {
+    assert.deepEqual(parseDesktopV3HandoffSummary(content), { body: content, summary: '' })
+  }
+})
+
+
 test('Desktop V3 final checkpoint handoff renders separately after lifecycle break', () => {
   const lifecycle = {
     id: 'plan-break-final',
@@ -268,8 +336,12 @@ test('Desktop V3 final checkpoint handoff renders separately after lifecycle bre
     session_id: 'session-a',
     global_seq: 8,
     role: 'system',
-    content: 'Final checkpoint handoff\n\nThe last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it.\n\nReport:\n## Summary\n- rendered separately\nResult: **done**\nValidation:\n- focused render regression',
-    metadata: { source: 'plan_execution_final_handoff', kind: 'plan_final_checkpoint_handoff' },
+    content: 'Final checkpoint handoff\n\nThe last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it.\n\n<swarm-handoff-summary>\n**Done** — ready to review.\n</swarm-handoff-summary>\n\nReport:\n## Summary\n- rendered separately\nResult: **done**\nValidation:\n- focused render regression',
+    metadata: {
+      source: 'plan_execution_final_handoff',
+      kind: 'plan_final_checkpoint_handoff',
+      recommendation: { decision: 'ship', action: 'review', reason: 'complete', action_state: 'ready' },
+    },
     created_at: 8,
   }
 
@@ -283,10 +355,21 @@ test('Desktop V3 final checkpoint handoff renders separately after lifecycle bre
   }
   if (items[1]?.type === 'plan-final-handoff') {
     assert.equal(items[1].headline, 'Final checkpoint handoff')
+    assert.equal(items[1].summary, '**Done** — ready to review.')
     assert.match(items[1].body, /Report:\n## Summary\n- rendered separately/)
     assert.match(items[1].body, /Result: \*\*done\*\*/)
     assert.match(items[1].body, /Validation:\n- focused render regression/)
+    assert.doesNotMatch(items[1].body, /swarm-handoff-summary/)
     assert.doesNotMatch(items[1].body, /Markdown is supported in this handoff/)
+    assert.equal(items[1].message.content, handoff.content)
+    assert.deepEqual(items[1].message.metadata?.recommendation, handoff.metadata.recommendation)
+    const markup = renderToStaticMarkup(createElement(DesktopV3RenderItemView, {
+      item: items[1], thinkingTagsEnabled: true, timerNow: 0, index: 1,
+    }))
+    assert.match(markup, /aria-label="At a glance"/)
+    assert.equal((markup.match(/>At a glance</g) ?? []).length, 1)
+    assert.match(markup, /<strong>Done<\/strong> — ready to review/)
+    assert.doesNotMatch(markup, /swarm-handoff-summary/)
   }
 })
 
@@ -309,6 +392,7 @@ test('Desktop V3 blocked checkpoint handoff renders as one standalone handoff', 
   assert.deepEqual(items.map((item) => item.type), ['plan-blocked-handoff'])
   if (items[0]?.type === 'plan-blocked-handoff') {
     assert.equal(items[0].headline, 'Blocked checkpoint handoff')
+    assert.equal(items[0].summary, '')
     assert.match(items[0].body, /Status: BLOCKED/)
     assert.match(items[0].body, /Plan: Demo plan/)
     assert.match(items[0].body, /Checkpoint: Checkpoint 1 — API/)
@@ -316,6 +400,11 @@ test('Desktop V3 blocked checkpoint handoff renders as one standalone handoff', 
     assert.match(items[0].body, /Report:\n## Blocker\n- waiting on dependency/)
     assert.match(items[0].body, /Result: blocked/)
     assert.match(items[0].body, /Validation:\n- not run; blocked by dependency/)
+    const markup = renderToStaticMarkup(createElement(DesktopV3RenderItemView, {
+      item: items[0], thinkingTagsEnabled: true, timerNow: 0, index: 0,
+    }))
+    assert.match(markup, /data-testid="desktop-v3-plan-blocked-handoff"/)
+    assert.doesNotMatch(markup, /At a glance/)
   }
 })
 

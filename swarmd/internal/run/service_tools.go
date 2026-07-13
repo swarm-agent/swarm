@@ -2158,11 +2158,25 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 			if documentPatch.Recommendation != nil {
 				payload["recommendation"] = documentPatch.Recommendation
 			}
+			for key, value := range map[string]string{
+				"checkpoint_id":     documentPatch.CheckpointID,
+				"attempt_id":        documentPatch.AttemptID,
+				"run_id":            documentPatch.RunID,
+				"run_session_id":    documentPatch.RunSessionID,
+				"parent_session_id": documentPatch.ParentSessionID,
+			} {
+				if trimmed := strings.TrimSpace(value); trimmed != "" {
+					payload[key] = trimmed
+				}
+			}
 			if strings.TrimSpace(documentPatch.Report) != "" {
 				payload["report"] = strings.TrimSpace(documentPatch.Report)
 			}
 			if strings.TrimSpace(documentPatch.Result) != "" {
 				payload["result"] = strings.TrimSpace(documentPatch.Result)
+			}
+			if len(documentPatch.ChangedFiles) > 0 {
+				payload["changed_files"] = trimStringSliceForPrompt(documentPatch.ChangedFiles)
 			}
 			if len(documentPatch.Validation) > 0 {
 				payload["validation"] = trimStringSliceForPrompt(documentPatch.Validation)

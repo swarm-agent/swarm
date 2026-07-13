@@ -314,7 +314,7 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 		t.Fatalf("start checkpoint should only add plan saved mutation, count = %d: %#v", len(appliedMutations), appliedMutations)
 	}
 
-	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"done"}`, "", applyMutation)
+	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-1","attempt_id":"attempt-1","run_id":"run-1","run_session_id":"child-session","parent_session_id":"parent-session","report":"## Outcome\n- backend handoff ready","result":"checkpoint complete","changed_files":["swarmd/internal/run/plan_lifecycle_message.go"],"validation":["focused contract review"]}`, "", applyMutation)
 	if err != nil {
 		t.Fatalf("complete checkpoint: %v output=%s", err, raw)
 	}
@@ -329,7 +329,27 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
 		t.Fatalf("append complete lifecycle: %v", err)
 	}
-	assertLifecycleMessage(0, "complete_checkpoint", "run_checkpoint_with_fresh_context", 3, "Checkpoint complete — Automatic mode", "Plan: Lifecycle Actions", "Completed: Checkpoint 1 — Model", "Next: Checkpoint 2 — API", "Context: Starting the next checkpoint with fresh context.")
+	firstCompletionRaw := raw
+	messages, err := sessionSvc.ListSessionMessages(sessionID, 0, 20)
+	if err != nil {
+		t.Fatalf("list checkpoint handoff messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != "system" || messages[0].Metadata["source"] != PlanExecutionCheckpointHandoffMessageSource || messages[0].Metadata["kind"] != "plan_checkpoint_handoff" {
+		t.Fatalf("automatic completion handoff metadata/order = %#v", messages)
+	}
+	for key, want := range map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "next_checkpoint_id": "cp-2", "next_action": "run_checkpoint_with_fresh_context", "fresh_context": true, "outcome": sessionruntime.PlanCheckpointStatusCompleted, "attempt_id": "attempt-1", "run_id": "run-1", "run_session_id": "child-session", "parent_session_id": "parent-session"} {
+		if messages[0].Metadata[key] != want {
+			t.Fatalf("automatic completion handoff metadata[%q] = %#v, want %#v: %#v", key, messages[0].Metadata[key], want, messages[0].Metadata)
+		}
+	}
+	for _, want := range []string{"Checkpoint handoff", "Completed: Checkpoint 1 — Model", "Next: Checkpoint 2 — API", "Context: Starting the next checkpoint with fresh context.", "Report:\n## Outcome\n- backend handoff ready", "Result: checkpoint complete", "Changed files:\n- swarmd/internal/run/plan_lifecycle_message.go", "Validation:\n- focused contract review"} {
+		if !strings.Contains(messages[0].Content, want) {
+			t.Fatalf("automatic completion handoff missing %q: %q", want, messages[0].Content)
+		}
+	}
+	if len(appliedMutations) <= 3 || appliedMutations[3].Kind != sessionruntime.SessionMutationAppendMessage || appliedMutations[3].Message == nil || appliedMutations[3].Message.Metadata["source"] != PlanExecutionCheckpointHandoffMessageSource {
+		t.Fatalf("automatic completion handoff mutation ordering = %#v", appliedMutations)
+	}
 
 	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"start_checkpoint","attempt_id":"attempt-2","run_id":"run-2","run_session_id":"child-session-2","parent_session_id":"parent-session","started_at":2345}`, "", applyMutation)
 	if err != nil {
@@ -347,7 +367,7 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 		t.Fatalf("append final lifecycle: %v", err)
 	}
 	assertLifecycleMessage(1, "complete_checkpoint", "await_review", 6, "All checkpoints complete; review required — Automatic mode", "Completed: Checkpoint 2 — API", "Next: all checkpoints are complete; waiting for user review.")
-	messages, err := sessionSvc.ListSessionMessages(sessionID, 0, 20)
+	messages, err = sessionSvc.ListSessionMessages(sessionID, 0, 20)
 	if err != nil {
 		t.Fatalf("list messages after final handoff: %v", err)
 	}
@@ -392,6 +412,17 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 		t.Fatalf("append resolve blocked lifecycle: %v", err)
 	}
 	assertLifecycleMessage(3, "resolve_blocked_checkpoint", "run_checkpoint_with_fresh_context", 9, "Blocked checkpoint resolved; starting next checkpoint — Automatic mode", "Resolved: Checkpoint a — Blocked", "Checkpoint: Checkpoint b — Next", "Context: Starting the next checkpoint with fresh context.")
+
+	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: firstCompletionRaw}, applyMutation); err != nil {
+		t.Fatalf("reappend automatic completion handoff: %v", err)
+	}
+	messages, err = sessionSvc.ListSessionMessages(sessionID, 0, 20)
+	if err != nil {
+		t.Fatalf("list messages after idempotent handoff replay: %v", err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("idempotent handoff replay appended a duplicate message: %#v", messages)
+	}
 
 	outbox, err := sessionSvc.ListRealtimeOutboxForSessionAfterSeq(sessionID, 0, 20)
 	if err != nil {

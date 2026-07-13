@@ -13,6 +13,9 @@ func (s *Service) appendPlanExecutionLifecycleSystemMessage(sessionID, action st
 	if blockedHandoff, ok := BuildBlockedPlanExecutionHandoffSystemMessage(handoffInput); ok {
 		return s.appendPlanExecutionSystemMessage(sessionID, plan, blockedHandoff, planBlockedHandoffMessageLogicalKey(action, plan, payload), "plan execution blocked handoff", applySessionMutation)
 	}
+	if checkpointHandoff, ok := BuildPlanExecutionCheckpointHandoffSystemMessage(handoffInput); ok {
+		return s.appendPlanExecutionSystemMessage(sessionID, plan, checkpointHandoff, planCheckpointHandoffMessageLogicalKey(action, plan, payload), "plan execution checkpoint handoff", applySessionMutation)
+	}
 	message, ok := BuildPlanExecutionLifecycleSystemMessage(handoffInput)
 	if !ok {
 		return nil
@@ -73,6 +76,10 @@ func planLifecycleMessageRunID(plan pebblestore.SessionPlanSnapshot) string {
 
 func planLifecycleMessageLogicalKey(action string, plan pebblestore.SessionPlanSnapshot, payload map[string]any) string {
 	return strings.Join(planExecutionMessageLogicalKeyParts("plan_execution", action, plan, payload), ":")
+}
+
+func planCheckpointHandoffMessageLogicalKey(action string, plan pebblestore.SessionPlanSnapshot, payload map[string]any) string {
+	return strings.Join(planExecutionMessageLogicalKeyParts("plan_checkpoint_handoff", action, plan, payload), ":")
 }
 
 func planFinalHandoffMessageLogicalKey(action string, plan pebblestore.SessionPlanSnapshot, payload map[string]any) string {
