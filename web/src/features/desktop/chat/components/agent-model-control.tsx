@@ -46,6 +46,8 @@ interface AgentModelControlProps {
   onOpenAgentSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
   busy?: boolean
+  showTrigger?: boolean
+  initialAgentName?: string
 }
 
 type DraftMode = 'single' | 'split'
@@ -254,6 +256,8 @@ export function AgentModelControl({
   onOpenAgentSettings,
   onConfirmAgentSettings,
   busy = false,
+  showTrigger = true,
+  initialAgentName = '',
 }: AgentModelControlProps) {
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -296,14 +300,16 @@ export function AgentModelControl({
 
   useEffect(() => {
     if (!open) return
-    const profile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? activeProfile
+    const profile = selectableAgents.find((agent) => agent.name === initialAgentName)
+      ?? selectableAgents.find((agent) => agent.name === selectedPrimaryAgent)
+      ?? activeProfile
     setDraftAgentName(profile?.name ?? selectedPrimaryAgent)
     setDraftMode(selectedDraftMode(profile))
     setSingleDraft(singleDraftFromProfile(profile, selectedModel, selectedServiceTier, selectedThinking))
     setPlanDraft(splitDraftFromProfile(profile, 'plan', selectedModel, selectedServiceTier, selectedThinking))
     setAutoDraft(splitDraftFromProfile(profile, 'auto', selectedModel, selectedServiceTier, selectedThinking))
     setError(null)
-  }, [activeProfile, open, selectableAgents, selectedModel, selectedPrimaryAgent, selectedServiceTier, selectedThinking])
+  }, [activeProfile, initialAgentName, open, selectableAgents, selectedModel, selectedPrimaryAgent, selectedServiceTier, selectedThinking])
 
   function chooseAgent(profile: AgentProfileRecord) {
     setDraftAgentName(profile.name)
@@ -450,28 +456,30 @@ export function AgentModelControl({
   ) : null
 
   return (
-    <div className="inline-flex min-w-0 items-center">
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        title={triggerDetail ? `Open agent setup: ${triggerDetail}` : 'Open agent setup'}
-        className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-      >
-        <Settings2 size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
-        <span className="shrink-0 text-[var(--app-text)]">Setup</span>
-        <span className="hidden min-w-0 max-w-[260px] items-center gap-1 truncate text-[var(--app-text-muted)] min-[1120px]:inline-flex">
-          {selectedModel ? (
-            <>
-              <span className="truncate">{selectedModelLabel}</span>
-              <Lightbulb size={12} className="shrink-0 text-[var(--app-text-subtle)]" />
-              <span>{normalizedSelectedThinking}</span>
-              {selectedServiceTierSupported ? <SelectedServiceTierIcon size={12} className="shrink-0 text-[var(--app-text-subtle)]" /> : null}
-              {selectedServiceTierSupported ? <span>{selectedServiceTierLabel}</span> : null}
-            </>
-          ) : (triggerDetail || modelBehaviorLabel(activeProfile))}
-        </span>
-        <ChevronDown size={12} className="shrink-0" />
-      </button>
+    <div className={showTrigger ? 'inline-flex min-w-0 items-center' : 'contents'}>
+      {showTrigger ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          title={triggerDetail ? `Open agent setup: ${triggerDetail}` : 'Open agent setup'}
+          className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+        >
+          <Settings2 size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
+          <span className="shrink-0 text-[var(--app-text)]">Setup</span>
+          <span className="hidden min-w-0 max-w-[260px] items-center gap-1 truncate text-[var(--app-text-muted)] min-[1120px]:inline-flex">
+            {selectedModel ? (
+              <>
+                <span className="truncate">{selectedModelLabel}</span>
+                <Lightbulb size={12} className="shrink-0 text-[var(--app-text-subtle)]" />
+                <span>{normalizedSelectedThinking}</span>
+                {selectedServiceTierSupported ? <SelectedServiceTierIcon size={12} className="shrink-0 text-[var(--app-text-subtle)]" /> : null}
+                {selectedServiceTierSupported ? <span>{selectedServiceTierLabel}</span> : null}
+              </>
+            ) : (triggerDetail || modelBehaviorLabel(activeProfile))}
+          </span>
+          <ChevronDown size={12} className="shrink-0" />
+        </button>
+      ) : null}
       {modal}
     </div>
   )

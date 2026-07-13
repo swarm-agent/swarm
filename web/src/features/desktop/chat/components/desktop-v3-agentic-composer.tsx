@@ -11,7 +11,7 @@ import {
   mentionPaletteQuery,
   normalizeMentionSubagents,
 } from '../services/subagent-mentions'
-import type { AgentModelControlConfirmInput } from './agent-model-control'
+import { AgentModelControl, type AgentModelControlConfirmInput } from './agent-model-control'
 import { AgentPicker } from './agent-picker'
 import { ModePicker } from './mode-picker'
 import { DesktopMentionPanel } from './desktop-mention-panel'
@@ -178,11 +178,21 @@ export function DesktopV3AgenticComposer({
   currentAgent,
   selectedPrimaryAgent,
   agents,
+  modelOptions,
+  selectedModelKey,
+  selectedServiceTier = '',
+  agentSettingsOpenSignal = 0,
+  modelPickerDisabled = false,
+  modelPickerDisabledReason = '',
+  modelLockNotice = '',
+  modelControlDetail = '',
   onOpenAgentSettings,
   onAgentSelect,
   needsAuth = false,
   onOpenAuthSettings,
+  onConfirmAgentSettings,
   agentModelControlBusy = false,
+  thinking,
   thinkingTagsEnabled,
   onThinkingTagsToggle,
   thinkingTagsBusy = false,
@@ -214,6 +224,8 @@ export function DesktopV3AgenticComposer({
   const [dictationError, setDictationError] = useState<string | null>(null)
   const [slashSelectionIndex, setSlashSelectionIndex] = useState(0)
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
+  const [agentSetupOpenSignal, setAgentSetupOpenSignal] = useState(0)
+  const [agentSetupInitialAgent, setAgentSetupInitialAgent] = useState('')
 
   const composerDisabled = disabled
   const showDictationButton = true
@@ -227,6 +239,13 @@ export function DesktopV3AgenticComposer({
   const slashCommands = useMemo(() => slashPalette.matches.filter((command) => command.state === 'ready'), [slashPalette.matches])
   const mentionPaletteIsActive = useMemo(() => mentionPaletteActive(draft, mentionSubagents), [draft, mentionSubagents])
   const mentionPaletteMatches = useMemo(() => chatMentionCandidates(mentionPaletteQuery(draft), mentionSubagents), [draft, mentionSubagents])
+  const selectedModel = useMemo(() => modelOptions.find((option) => option.key === selectedModelKey) ?? null, [modelOptions, selectedModelKey])
+  const selectedThinking = thinking.trim() || 'off'
+  const effectiveAgentSetupOpenSignal = agentSettingsOpenSignal + agentSetupOpenSignal
+  const openAgentSetup = useCallback((agent?: string) => {
+    setAgentSetupInitialAgent(agent?.trim() || currentAgent)
+    setAgentSetupOpenSignal((current) => current + 1)
+  }, [currentAgent])
   const dictationComposer = dictationEnabled
     ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
     : draft
@@ -471,7 +490,7 @@ export function DesktopV3AgenticComposer({
     if (command.state !== 'ready') return
     void onSlashCommand?.(command, draft)
     if (command.action.kind === 'open-model-picker' || command.action.kind === 'toggle-fast') {
-      onOpenAgentSettings?.(currentAgent)
+      openAgentSetup(currentAgent)
       onDraftChange('')
       return
     }
@@ -481,7 +500,7 @@ export function DesktopV3AgenticComposer({
       return
     }
     if (!slashPalette.hasArguments) onDraftChange('')
-  }, [currentAgent, draft, onCompact, onDraftChange, onOpenAgentSettings, onSlashCommand, slashPalette.hasArguments])
+  }, [currentAgent, draft, onCompact, onDraftChange, onSlashCommand, openAgentSetup, slashPalette.hasArguments])
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (mentionPaletteIsActive && mentionPaletteMatches.length > 0) {
@@ -630,7 +649,7 @@ export function DesktopV3AgenticComposer({
                 {showModePicker ? (
                   <>
                     <ModePicker mode={mode} onSelect={(nextMode) => onModeSelect?.(nextMode)} disabled={!onModeSelect || composerDisabled} />
-                    <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={onOpenAgentSettings} disabled={composerDisabled || agentModelControlBusy} dropdownAlign="left" />
+                    <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} disabled={composerDisabled || agentModelControlBusy} />
                   </>
                 ) : executionLabel ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
@@ -664,7 +683,7 @@ export function DesktopV3AgenticComposer({
                   {showModePicker ? (
                     <>
                       <ModePicker mode={mode} onSelect={(nextMode) => onModeSelect?.(nextMode)} disabled={!onModeSelect || composerDisabled} triggerClassName="h-full shrink-0 px-2" />
-                      <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={onOpenAgentSettings} disabled={composerDisabled || agentModelControlBusy} dropdownAlign="left" triggerClassName="w-full justify-between px-1.5 py-1.5" />
+                      <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={openAgentSetup} disabled={composerDisabled || agentModelControlBusy} triggerClassName="w-full justify-between px-1.5 py-1.5" />
                     </>
                   ) : (
                     <span className="min-w-0 truncate px-2 text-[11px] font-semibold text-[var(--app-text)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
@@ -680,6 +699,25 @@ export function DesktopV3AgenticComposer({
           </div>
         </div>
       </div>
+      <AgentModelControl
+        currentAgent={currentAgent}
+        selectedPrimaryAgent={selectedPrimaryAgent}
+        agents={selectableAgents}
+        mode={mode}
+        selectedModel={selectedModel}
+        selectedServiceTier={selectedServiceTier}
+        selectedThinking={selectedThinking}
+        modelOptions={modelOptions}
+        modelLocked={modelPickerDisabled || Boolean(modelLockNotice.trim())}
+        modelLockNotice={modelPickerDisabledReason || modelLockNotice}
+        triggerDetail={modelControlDetail}
+        openSignal={effectiveAgentSetupOpenSignal}
+        initialAgentName={agentSetupInitialAgent}
+        onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSetupInitialAgent || currentAgent) : undefined}
+        onConfirmAgentSettings={onConfirmAgentSettings}
+        busy={agentModelControlBusy}
+        showTrigger={false}
+      />
     </div>
   )
 }

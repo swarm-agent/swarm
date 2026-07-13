@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Check, Settings2 } from 'lucide-react'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
@@ -12,32 +12,21 @@ interface AgentPickerProps {
   onSelect: (agent: string) => void | Promise<void>
   onOpenSettings?: (agent: string) => void
   disabled?: boolean
-  dropdownAlign?: 'left' | 'right'
   triggerClassName?: string
 }
 
 const DROPDOWN_VIEWPORT_GUTTER = 8
 const MOBILE_DROPDOWN_BREAKPOINT = 640
+const DESKTOP_DROPDOWN_WIDTH = 480
 
-export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode = 'auto', onSelect, onOpenSettings, disabled = false, dropdownAlign = 'right', triggerClassName = '' }: AgentPickerProps) {
+export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode = 'auto', onSelect, onOpenSettings, disabled = false, triggerClassName = '' }: AgentPickerProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
+  const pointerAnchorRef = useRef<{ x: number; y: number } | null>(null)
   const [position, setPosition] = useState<{ top?: number; bottom?: number; left?: number; right?: number; minWidth: number; width?: number; maxWidth: number; maxHeight: number } | null>(null)
 
   const profileLabel = (profile: AgentProfileRecord) => profile.name === 'swarm' ? 'Swarm' : profile.name
-  const profileModeLabel = (profile: AgentProfileRecord) => {
-    switch (profile.mode) {
-      case 'primary':
-        return 'Primary'
-      case 'subagent':
-        return 'Subagent'
-      case 'background':
-        return 'Background'
-      default:
-        return profile.mode || 'Agent'
-    }
-  }
   const agentMode = (profile: AgentProfileRecord) => (profile.mode || 'primary').trim().toLowerCase()
   const primaryAgents = agents.filter((profile) => agentMode(profile) === 'primary')
   const subagentAgents = agents.filter((profile) => agentMode(profile) === 'subagent')
@@ -49,30 +38,30 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
   const currentProfile = agents.find((agent) => agent.name === currentAgent) ?? selectedProfile
   const selectedAgentName = currentProfile?.name || currentAgent || selectedPrimaryAgent
   const displayLabel = currentProfile ? profileLabel(currentProfile) : (currentAgent === 'swarm' ? 'Swarm' : currentAgent || selectedPrimaryAgent || 'Agent')
-  const settingLabel = (provider: string, model: string, thinking: string, serviceTier: string, decorate = true) => {
+  const settingLabel = (provider: string, model: string, thinking: string, serviceTier: string) => {
     const normalizedServiceTier = serviceTier.trim().toLowerCase()
     const priorityActive = Boolean(normalizedServiceTier && !['standard', 'default', 'off', 'none'].includes(normalizedServiceTier))
     return [
       [provider.trim(), model.trim()].filter(Boolean).join('/') || 'Default model',
-      `${decorate ? '💡 ' : ''}${thinking.trim() || 'off'}`,
-      priorityActive ? `${decorate ? '⚡ ' : ''}${serviceTier.trim()}` : '',
+      thinking.trim() || 'off',
+      priorityActive ? serviceTier.trim() : '',
     ].filter(Boolean).join(' · ')
   }
-  const activeProfileModelLabel = (profile: AgentProfileRecord, decorate = true) => {
+  const activeProfileModelLabel = (profile: AgentProfileRecord) => {
     if (profile.modelMode !== 'split') {
-      return settingLabel(profile.provider, profile.model, profile.thinking, profile.autoServiceTier, decorate)
+      return settingLabel(profile.provider, profile.model, profile.thinking, profile.autoServiceTier)
     }
     return mode === 'plan'
-      ? settingLabel(profile.planProvider, profile.planModel, profile.planThinking, profile.planServiceTier, decorate)
-      : settingLabel(profile.autoProvider, profile.autoModel, profile.autoThinking, profile.autoServiceTier, decorate)
+      ? settingLabel(profile.planProvider, profile.planModel, profile.planThinking, profile.planServiceTier)
+      : settingLabel(profile.autoProvider, profile.autoModel, profile.autoThinking, profile.autoServiceTier)
   }
-  const profileModelLabel = (profile: AgentProfileRecord) => profile.modelMode === 'split'
+  const profileModelLabels = (profile: AgentProfileRecord) => profile.modelMode === 'split'
     ? [
         `Plan ${settingLabel(profile.planProvider, profile.planModel, profile.planThinking, profile.planServiceTier)}`,
         `Auto ${settingLabel(profile.autoProvider, profile.autoModel, profile.autoThinking, profile.autoServiceTier)}`,
-      ].join(' · ')
-    : activeProfileModelLabel(profile)
-  const selectedAgentDetail = currentProfile ? activeProfileModelLabel(currentProfile, false) : ''
+      ]
+    : [activeProfileModelLabel(profile)]
+  const selectedAgentDetail = currentProfile ? activeProfileModelLabel(currentProfile) : ''
 
   const updatePosition = useCallback(() => {
     if (!triggerRef.current || typeof window === 'undefined') {
@@ -85,31 +74,37 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
     const viewportHeight = window.visualViewport?.height ?? window.innerHeight
     const mobile = viewportWidth < MOBILE_DROPDOWN_BREAKPOINT
     const maxWidth = Math.max(160, viewportWidth - DROPDOWN_VIEWPORT_GUTTER * 2)
+    const pointerAnchor = pointerAnchorRef.current
+    const anchorX = pointerAnchor?.x ?? rect.left + rect.width / 2
+    const anchorY = pointerAnchor?.y ?? rect.top
 
     if (mobile) {
-      const top = Math.min(rect.bottom + DROPDOWN_VIEWPORT_GUTTER, viewportHeight - 140)
       setPosition({
-        top,
+        bottom: Math.max(DROPDOWN_VIEWPORT_GUTTER, viewportHeight - anchorY + DROPDOWN_VIEWPORT_GUTTER),
         left: DROPDOWN_VIEWPORT_GUTTER,
-        minWidth: Math.min(rect.width, maxWidth),
+        minWidth: maxWidth,
         width: maxWidth,
         maxWidth,
-        maxHeight: Math.max(120, viewportHeight - top - DROPDOWN_VIEWPORT_GUTTER),
+        maxHeight: Math.max(0, Math.min(320, anchorY - DROPDOWN_VIEWPORT_GUTTER * 2)),
       })
       return
     }
 
+    const width = Math.min(Math.max(300, rect.width), DESKTOP_DROPDOWN_WIDTH, maxWidth)
+    const left = Math.min(
+      Math.max(DROPDOWN_VIEWPORT_GUTTER, anchorX - width / 2),
+      viewportWidth - width - DROPDOWN_VIEWPORT_GUTTER,
+    )
+
     setPosition({
-      bottom: Math.max(DROPDOWN_VIEWPORT_GUTTER, viewportHeight - rect.top + DROPDOWN_VIEWPORT_GUTTER),
-      left: dropdownAlign === 'left'
-        ? Math.min(Math.max(DROPDOWN_VIEWPORT_GUTTER, rect.left), Math.max(DROPDOWN_VIEWPORT_GUTTER, viewportWidth - maxWidth - DROPDOWN_VIEWPORT_GUTTER))
-        : undefined,
-      right: dropdownAlign === 'right' ? Math.max(DROPDOWN_VIEWPORT_GUTTER, viewportWidth - rect.right) : undefined,
-      minWidth: Math.min(rect.width, maxWidth),
+      bottom: Math.max(DROPDOWN_VIEWPORT_GUTTER, viewportHeight - anchorY + DROPDOWN_VIEWPORT_GUTTER),
+      left,
+      minWidth: width,
+      width,
       maxWidth,
-      maxHeight: Math.max(180, Math.min(320, rect.top - DROPDOWN_VIEWPORT_GUTTER * 2)),
+      maxHeight: Math.max(0, Math.min(320, anchorY - DROPDOWN_VIEWPORT_GUTTER * 2)),
     })
-  }, [dropdownAlign])
+  }, [])
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) {
@@ -155,12 +150,27 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
     }
   }, [open])
 
+  const handleTriggerClick = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
+    setOpen((wasOpen) => {
+      if (wasOpen) {
+        pointerAnchorRef.current = null
+        return false
+      }
+      pointerAnchorRef.current = event.detail > 0
+        ? { x: event.clientX, y: event.clientY }
+        : null
+      return true
+    })
+  }, [])
+
   const handleSelect = useCallback(async (value: string) => {
     await onSelect(value)
+    pointerAnchorRef.current = null
     setOpen(false)
   }, [onSelect])
 
   const handleOpenSettings = useCallback((value: string) => {
+    pointerAnchorRef.current = null
     setOpen(false)
     onOpenSettings?.(value)
   }, [onOpenSettings])
@@ -193,53 +203,61 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
               { label: 'Subagent', profiles: subagentAgents },
               { label: 'Other', profiles: otherAgents },
             ].filter((section) => section.profiles.length > 0).map((section, sectionIndex) => (
-              <div
+              <section
                 key={section.label}
-                className={sectionIndex === 0 ? '' : 'mt-1 border-t border-[var(--app-border)] pt-1'}
+                aria-label={`${section.label} agents`}
+                className={`px-2 py-2 ${
+                  sectionIndex === 0 ? '' : 'border-t border-[var(--app-border)]'
+                }`}
               >
-                <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
+                <div className="px-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
                   {section.label}
                 </div>
-                {section.profiles.map((profile) => {
-                  const isSelected = profile.name === selectedAgentName
-                  return (
-                    <div
-                      key={profile.name}
-                      className={`group flex w-full items-stretch transition ${
-                        isSelected
-                          ? 'bg-[var(--app-surface-subtle)] text-[var(--app-text)]'
-                          : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'
-                      }`}
-                    >
-                      <button type="button" onClick={() => handleSelect(profile.name)} className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5 text-left text-sm" aria-label={`Switch to ${profileLabel(profile)}`}>
-                        {isSelected ? (
-                          <Check size={14} className="shrink-0 text-[var(--app-primary)]" />
-                        ) : (
-                          <span className="w-[14px] shrink-0" />
-                        )}
-                        <span className="min-w-0 flex-1">
-                          <span className="block break-words font-medium leading-snug">{profileLabel(profile)}</span>
-                          <span className="mt-0.5 block max-w-[20rem] truncate text-[10px] text-[var(--app-text-subtle)] [font-variant-emoji:text]">{profileModelLabel(profile)}</span>
-                        </span>
-                        <span className="mt-0.5 shrink-0 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)]">
-                          {profileModeLabel(profile)}
-                        </span>
-                      </button>
-                      {onOpenSettings ? (
-                        <button
-                          type="button"
-                          onClick={() => handleOpenSettings(profile.name)}
-                          aria-label={`Open settings for ${profileLabel(profile)}`}
-                          title={`Open ${profileLabel(profile)} settings`}
-                          className="m-1.5 inline-flex w-8 shrink-0 items-center justify-center rounded-md text-[var(--app-text-subtle)] opacity-70 transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)] focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
-                        >
-                          <Settings2 size={14} />
+                <div className="w-full overflow-hidden rounded-lg border border-[var(--app-border)]">
+                  {section.profiles.map((profile, profileIndex) => {
+                    const isSelected = profile.name === selectedAgentName
+                    return (
+                      <div
+                        key={profile.name}
+                        className={`group flex w-full items-stretch transition ${
+                          profileIndex === 0 ? '' : 'border-t border-[var(--app-border)]'
+                        } ${
+                          isSelected
+                            ? 'bg-[var(--app-surface-subtle)] text-[var(--app-text)]'
+                            : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'
+                        }`}
+                      >
+                        <button type="button" onClick={() => handleSelect(profile.name)} className="flex min-w-0 flex-1 items-start gap-2.5 px-3 py-2.5 text-left text-sm" aria-label={`Switch to ${profileLabel(profile)}`}>
+                          {isSelected ? (
+                            <Check size={14} className="mt-0.5 shrink-0 text-[var(--app-primary)]" />
+                          ) : (
+                            <span className="w-[14px] shrink-0" />
+                          )}
+                          <span className="min-w-0 flex-1">
+                            <span className="block break-words font-medium leading-5 text-[var(--app-text)]">{profileLabel(profile)}</span>
+                            <span className="mt-0.5 block break-words text-[10px] leading-4 text-[var(--app-text-subtle)]">
+                              {profileModelLabels(profile).map((label) => (
+                                <span key={label} className="block">{label}</span>
+                              ))}
+                            </span>
+                          </span>
                         </button>
-                      ) : null}
-                    </div>
-                  )
-                })}
-              </div>
+                        {onOpenSettings ? (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenSettings(profile.name)}
+                            aria-label={`Open settings for ${profileLabel(profile)}`}
+                            title={`Open ${profileLabel(profile)} settings`}
+                            className="m-1.5 inline-flex w-8 shrink-0 items-center justify-center rounded-md text-[var(--app-text-subtle)] opacity-70 transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)] focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                          >
+                            <Settings2 size={14} />
+                          </button>
+                        ) : null}
+                      </div>
+                    )
+                  })}
+                </div>
+              </section>
             ))}
           </div>
         </div>
@@ -253,7 +271,7 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
       <button
         ref={triggerRef}
         type="button"
-        onClick={() => setOpen((prev) => !prev)}
+        onClick={handleTriggerClick}
         disabled={disabled}
         aria-expanded={open}
         aria-haspopup="menu"
