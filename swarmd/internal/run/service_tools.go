@@ -1544,6 +1544,9 @@ func (s *Service) prepareExitPlanModeLifecycleInput(sessionID, arguments, feedba
 	if err != nil {
 		return sessionruntime.PlanLifecyclePlanInput{}, nil, "", err
 	}
+	if document == nil {
+		return sessionruntime.PlanLifecyclePlanInput{}, nil, "", errors.New("exit_plan_mode requires an explicit structured document; plan text and an existing saved plan are display context only")
+	}
 	planID := strings.TrimSpace(firstNonEmptyString(mapString(args, "plan_id"), mapString(args, "planID"), mapString(args, "id")))
 	title := strings.TrimSpace(mapString(args, "title"))
 	plan := strings.TrimSpace(mapString(args, "plan"))
@@ -1571,9 +1574,6 @@ func (s *Service) prepareExitPlanModeLifecycleInput(sessionID, arguments, feedba
 			if plan == "" {
 				plan = strings.TrimSpace(active.Plan)
 			}
-			if document == nil {
-				document = active.Document
-			}
 		}
 	} else if existing, ok, err := s.sessions.GetPlan(sessionID, planID); err != nil {
 		return sessionruntime.PlanLifecyclePlanInput{}, nil, "", fmt.Errorf("exit_plan_mode failed to inspect plan: %w", err)
@@ -1583,9 +1583,6 @@ func (s *Service) prepareExitPlanModeLifecycleInput(sessionID, arguments, feedba
 		}
 		if plan == "" {
 			plan = strings.TrimSpace(existing.Plan)
-		}
-		if document == nil {
-			document = existing.Document
 		}
 	}
 	if planID == "" {

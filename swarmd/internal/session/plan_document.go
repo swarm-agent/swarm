@@ -70,6 +70,105 @@ func NormalizePlanDocumentForSave(planID, title string, incoming, existing *pebb
 	return doc, nil
 }
 
+// ExecutablePlanValidationIssue identifies one field that prevents a plan
+// document from being approved or started. Draft documents intentionally use
+// ValidatePlanDocument instead and may remain incomplete.
+type ExecutablePlanValidationIssue struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+// ExecutablePlanValidationError reports every actionable defect in an
+// approval-bearing plan document so callers can return one useful retry prompt.
+type ExecutablePlanValidationError struct {
+	Issues []ExecutablePlanValidationIssue `json:"issues"`
+}
+
+func (e *ExecutablePlanValidationError) Error() string {
+	if e == nil || len(e.Issues) == 0 {
+		return "executable plan document is invalid"
+	}
+	parts := make([]string, 0, len(e.Issues))
+	for _, issue := range e.Issues {
+		parts = append(parts, issue.Field+": "+issue.Message)
+	}
+	return "executable plan document is invalid: " + strings.Join(parts, "; ")
+}
+
+// ValidateExecutablePlanDocument applies the strict contract for a plan that
+// is about to cross an approval or execution boundary. It never normalizes or
+// synthesizes content; callers must submit the exact structured plan they want
+// the user to approve. ValidatePlanDocument remains the looser draft validator.
+func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error {
+	validationErr := &ExecutablePlanValidationError{}
+	add := func(field, message string) {
+		validationErr.Issues = append(validationErr.Issues, ExecutablePlanValidationIssue{Field: field, Message: message})
+	}
+	if doc == nil {
+		add("document", "structured document is required")
+		return validationErr
+	}
+	if strings.TrimSpace(doc.Title) == "" {
+		add("title", "plan title is required")
+	}
+	if strings.TrimSpace(doc.Info.Goal) == "" {
+		add("info.goal", "plan goal is required")
+	}
+	if len(doc.Checkpoints) == 0 {
+		add("checkpoints", "at least one checkpoint is required")
+	}
+
+	seenIDs := make(map[string]struct{}, len(doc.Checkpoints))
+	pendingIDs := make(map[string]struct{}, len(doc.Checkpoints))
+	firstPendingID := ""
+	for i, checkpoint := range doc.Checkpoints {
+		prefix := fmt.Sprintf("checkpoints[%d]", i)
+		id := strings.TrimSpace(checkpoint.ID)
+		if id == "" {
+			add(prefix+".id", "checkpoint id is required")
+		} else if _, exists := seenIDs[id]; exists {
+			add(prefix+".id", fmt.Sprintf("checkpoint id %q is duplicated", id))
+		} else {
+			seenIDs[id] = struct{}{}
+		}
+		if strings.TrimSpace(checkpoint.Title) == "" {
+			add(prefix+".title", "checkpoint title is required")
+		}
+		if strings.TrimSpace(checkpoint.Objective) == "" && len(trimStringSlice(checkpoint.Tasks)) == 0 {
+			add(prefix+".objective", "checkpoint objective or at least one concrete task is required")
+		}
+		if len(trimStringSlice(checkpoint.AcceptanceCriteria)) == 0 {
+			add(prefix+".acceptance_criteria", "at least one acceptance criterion is required")
+		}
+		if checkpoint.Order != i+1 {
+			add(prefix+".order", fmt.Sprintf("checkpoint order must be %d", i+1))
+		}
+		if !isValidPlanCheckpointStatus(checkpoint.Status) {
+			add(prefix+".status", fmt.Sprintf("checkpoint status %q is not supported", checkpoint.Status))
+		}
+		if checkpoint.Status == PlanCheckpointStatusPending && id != "" {
+			pendingIDs[id] = struct{}{}
+			if firstPendingID == "" {
+				firstPendingID = id
+			}
+		}
+	}
+
+	activeID := strings.TrimSpace(doc.ActiveCheckpointID)
+	if firstPendingID == "" {
+		add("active_checkpoint_id", "a pending checkpoint is required for execution")
+	} else if activeID != "" {
+		if _, ok := pendingIDs[activeID]; !ok {
+			add("active_checkpoint_id", fmt.Sprintf("must identify a pending checkpoint; got %q", activeID))
+		}
+	} // An empty active id resolves deterministically to the first pending checkpoint.
+
+	if len(validationErr.Issues) > 0 {
+		return validationErr
+	}
+	return nil
+}
+
 func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 	if doc == nil {
 		return nil

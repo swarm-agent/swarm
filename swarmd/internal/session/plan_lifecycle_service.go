@@ -198,6 +198,9 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 	title := strings.TrimSpace(input.Title)
 	planText := strings.TrimSpace(input.Plan)
 	document := clonePlanLifecycleDocument(input.Document)
+	if document == nil {
+		return PlanLifecycleResult{}, errors.New("submit plan for approval requires an explicit structured document; plan text and an existing saved plan are display context only")
+	}
 	if planID == "" {
 		if document != nil && strings.TrimSpace(document.ID) != "" {
 			planID = strings.TrimSpace(document.ID)
@@ -211,9 +214,6 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 			if planText == "" {
 				planText = strings.TrimSpace(active.Plan)
 			}
-			if document == nil {
-				document = clonePlanLifecycleDocument(active.Document)
-			}
 		}
 	} else if existing, ok, err := s.sessions.GetPlan(session.ID, planID); err != nil {
 		return PlanLifecycleResult{}, err
@@ -224,9 +224,6 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 		if planText == "" {
 			planText = strings.TrimSpace(existing.Plan)
 		}
-		if document == nil {
-			document = clonePlanLifecycleDocument(existing.Document)
-		}
 	}
 	if title == "" && document != nil {
 		title = strings.TrimSpace(document.Title)
@@ -236,9 +233,6 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 	}
 	if planText == "" && document != nil {
 		planText = strings.TrimSpace(firstNonBlank(document.DisplayText, document.RenderedText))
-	}
-	if planText == "" && document == nil {
-		return PlanLifecycleResult{}, errors.New("submit plan for approval requires plan or document")
 	}
 	if planText == "" {
 		planText = "# " + title
@@ -259,6 +253,9 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 		}
 		document.Status = "approved"
 		document.ExecutionOrigin = PlanExecutionOriginApprovedPlan
+	}
+	if err := ValidateExecutablePlanDocument(document); err != nil {
+		return PlanLifecycleResult{}, err
 	}
 	saved, planEvent, err := s.sessions.SavePlanWithMetadata(session.ID, planID, title, planText, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: "exit plan mode submission", UpdateScope: "plan", UpdateKind: "exit_plan_mode", Document: document})
 	if err != nil {
@@ -411,6 +408,9 @@ func (s *PlanLifecycleService) StartSessionCheckpoint(input PlanLifecycleSession
 		}},
 		ActiveCheckpointID: checkpointID,
 	}
+	if err := ValidateExecutablePlanDocument(doc); err != nil {
+		return PlanLifecycleResult{}, err
+	}
 	if err := requireCheckpointRunnable(doc, checkpointID); err != nil {
 		return PlanLifecycleResult{}, err
 	}
@@ -492,7 +492,7 @@ func (s *PlanLifecycleService) RequestPlanRevision(input PlanLifecycleProposalIn
 	doc := clonePlanLifecycleDocument(input.Document)
 	planText := strings.TrimSpace(input.Plan)
 	if doc == nil {
-		doc = state.doc
+		return PlanLifecycleResult{}, errors.New("request_plan_revision requires an explicit structured document before approval")
 	}
 	if planText == "" {
 		planText = state.plan.Plan
@@ -504,6 +504,9 @@ func (s *PlanLifecycleService) RequestPlanRevision(input PlanLifecycleProposalIn
 	doc.ID = state.plan.ID
 	doc.Title = title
 	doc.Status = "pending_approval"
+	if err := ValidateExecutablePlanDocument(doc); err != nil {
+		return PlanLifecycleResult{}, err
+	}
 	saved, event, err := s.sessions.SavePlanWithMetadata(state.session.ID, state.plan.ID, title, planText, "pending_approval", "pending", true, PlanSaveMetadata{UpdateSummary: firstNonBlank(strings.TrimSpace(input.Reason), "Plan revision proposal pending approval"), UpdateScope: "plan", UpdateKind: "request_plan_revision", Document: doc})
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -556,6 +559,9 @@ func (s *PlanLifecycleService) AmendPlan(input PlanLifecycleAmendmentInput) (Pla
 	doc.ID = state.plan.ID
 	doc.Title = title
 	doc.Status = strings.TrimSpace(firstNonBlank(state.doc.Status, state.plan.Status))
+	if err := ValidateExecutablePlanDocument(doc); err != nil {
+		return PlanLifecycleResult{}, err
+	}
 	planText := strings.TrimSpace(input.Plan)
 	if planText == "" {
 		planText = strings.TrimSpace(firstNonBlank(proposed.DisplayText, proposed.RenderedText, state.plan.Plan))
@@ -765,6 +771,10 @@ func (s *PlanLifecycleService) RequestNewPlan(input PlanLifecycleProposalInput) 
 			doc.ID = ""
 			doc.Status = "pending_approval"
 		}
+	}
+
+	if err := ValidateExecutablePlanDocument(doc); err != nil {
+		return PlanLifecycleResult{}, err
 	}
 
 	if input.ApprovalConfirmed {
@@ -980,7 +990,13 @@ func (s *PlanLifecycleService) approvePlanWithPolicy(input PlanLifecycleExecutio
 			options.ContinuationPolicy = PlanAcceptanceContinuationReviewEachCheckpoint
 		}
 	}
+	if err := ValidateExecutablePlanDocument(state.doc); err != nil {
+		return PlanLifecycleResult{}, err
+	}
 	if _, err := ApplyPlanAcceptanceExecutionPolicy(state.doc, options); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	if err := ValidateExecutablePlanDocument(state.doc); err != nil {
 		return PlanLifecycleResult{}, err
 	}
 	state.doc.Status = "approved"
@@ -1002,7 +1018,13 @@ func (s *PlanLifecycleService) approveAndStartCheckpoint(input PlanLifecycleExec
 			options.ContinuationPolicy = PlanAcceptanceContinuationReviewEachCheckpoint
 		}
 	}
+	if err := ValidateExecutablePlanDocument(state.doc); err != nil {
+		return PlanLifecycleResult{}, err
+	}
 	if _, err := ApplyPlanAcceptanceExecutionPolicy(state.doc, options); err != nil {
+		return PlanLifecycleResult{}, err
+	}
+	if err := ValidateExecutablePlanDocument(state.doc); err != nil {
 		return PlanLifecycleResult{}, err
 	}
 	state.doc.Status = "approved"
@@ -1042,6 +1064,9 @@ func (s *PlanLifecycleService) startCheckpoint(input PlanLifecycleExecutionInput
 		summary := SummarizePlanExecution(state.doc)
 		checkpointID = strings.TrimSpace(summary.NextCheckpointID)
 	}
+	if err := ValidateExecutablePlanDocument(state.doc); err != nil {
+		return PlanLifecycleResult{}, err
+	}
 	if err := requireCheckpointRunnable(state.doc, checkpointID); err != nil {
 		return PlanLifecycleResult{}, err
 	}
@@ -1049,6 +1074,9 @@ func (s *PlanLifecycleService) startCheckpoint(input PlanLifecycleExecutionInput
 }
 
 func (s *PlanLifecycleService) applyCheckpointStartAndSave(state planLifecycleState, input PlanLifecycleExecutionInput, checkpointID, action, summary, status, approvalState string) (PlanLifecycleResult, error) {
+	if err := ValidateExecutablePlanDocument(state.doc); err != nil {
+		return PlanLifecycleResult{}, err
+	}
 	startedAt := input.StartedAt
 	if startedAt <= 0 {
 		startedAt = time.Now().UnixMilli()

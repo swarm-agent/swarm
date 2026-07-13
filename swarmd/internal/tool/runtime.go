@@ -1155,25 +1155,26 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "exit_plan_mode",
-			Description: "Submit the final structured plan for approval so the session can leave plan mode and continue execution. Pass the canonical SessionPlanDocument in document; markdown plan text is only a display/export fallback. When plan_id is omitted the active plan is reused when one exists.",
+			Description: "Submit the final structured executable plan for approval so the session can leave plan mode and continue execution. document is required and must contain at least one complete checkpoint; markdown plan text is display/export only and can never substitute for document. The backend revalidates the exact approved document before persistence, mode changes, or execution.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"title":                  map[string]any{"type": "string", "description": "Final plan title. Optional when document.title is provided."},
 					"plan":                   map[string]any{"type": "string", "description": "Optional markdown/display text for export only; document is canonical. Include any last display-text updates here instead of first calling plan_manage save."},
-					"document":               map[string]any{"anyOf": []any{sessionPlanDocumentToolSchema(), map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument with info and checkpoints. This is the authoritative plan source saved on exit. In info, scope and validation_strategy are strings; decisions, relevant_files, constraints, assumptions, open_questions, and success_criteria are arrays of strings. A structured object is preferred; a JSON-encoded object string is also accepted for compatibility."},
+					"document":               sessionExecutablePlanDocumentToolSchema(),
 					"plan_id":                map[string]any{"type": "string", "description": "Existing active plan id to update and submit. Optional; when omitted, the current active plan is reused if one exists."},
 					"id":                     map[string]any{"type": "string", "description": "Alias for plan_id."},
 					"continuation_policy":    map[string]any{"type": "string", "description": "Recommended checkpoint continuation after approval: review_each_checkpoint/pause or automatic/continue_automatically. The user approval remains authoritative."},
 					"continue_automatically": map[string]any{"type": "boolean", "description": "Recommended checkpoint continuation after approval: true auto-continues completed checkpoints; false pauses for review. The user approval remains authoritative."},
 				},
+				"required":             []string{"document"},
 				"additionalProperties": false,
 			},
 		},
 		{
 			Type:        "function",
 			Name:        "plan_manage",
-			Description: "Manage the canonical structured session plan, agent execution progress, and typed plan lifecycle changes (list/get/get-active/save/patch/update_section/update_info/checkpoint execution operations/start_session_checkpoint/request_followup_checkpoint/request_plan_revision/amend_plan/request_new_plan/set-active/new/history). document is the authoritative SessionPlanDocument; markdown plan text is display/export only. In auto mode with no active plan, use start_session_checkpoint for a clear bounded task: it creates an approved one-checkpoint active plan, immediately starts that checkpoint, and returns the fresh-context run request. For broad/uncertain/multi-phase auto-mode work with no active plan, use request_new_plan with a structured document as the single approval-request path; approval applies an approved runnable plan and returns the fresh-context start path. Do not create a draft/pending shell with new/save first. save is a legacy full-document replacement; active approved/running whole-plan edits should use amend_plan with base_revision and explicit future-checkpoint scope, request_followup_checkpoint, request_plan_revision, or request_new_plan instead. patch/update_section/document_patch perform targeted partial edits for draft/legacy cases. amend_plan creates a meaningful whole-plan definition revision, rejects stale base_revision unless override_stale=true, and protects completed/current runtime state while replacing pending future checkpoints. request_followup_checkpoint appends exactly one ordered session checkpoint from the exact change_request text (legacy action name; it does not imply related follow-up semantics); on a blocked plan call it directly, because the same action atomically marks the blocked checkpoint completed/review-approved as superseded, inserts the new checkpoint after it, and continues according to policy—do not call resolve_blocked_checkpoint first; failed checkpoints remain stopped; when creating one, copy the full original user request into change_request and include a self-contained handoff via title, tasks, acceptance_criteria, and notes so the fresh checkpoint run does not lose material context; request_plan_revision and request_new_plan create approval-gated proposals. Do not use manage_todos for agent self-tracking. For checkpointed execution, put final report/changed_files/validation/result on the terminal checkpoint action; use update_checkpoint only for meaningful intermediate state, not routine checkpoint completion notes. A successful complete_checkpoint call atomically completes all unresolved typed subtasks; do not call complete_subtask repeatedly first. approve_and_start applies user-owned execution choices and returns the fresh-context run request; restart_checkpoint and rewind_to_checkpoint reset execution state; resolve_blocked_checkpoint clears a blocked checkpoint without restarting and can start the next checkpoint; start_checkpoint/continue_checkpoint mark the next checkpoint in_progress; complete_checkpoint/checkpoint_outcome/mark_needs_review/mark_blocked/mark_failed update deterministic execution state. update_info merges only provided modular info sections and update_checkpoint merges only provided checkpoint fields. upsert_checkpoint intentionally replaces the target checkpoint object. new is only for an empty draft shell and is refused when an active plan exists unless override=true.",
+			Description: "Manage the canonical structured session plan, agent execution progress, and typed plan lifecycle changes (list/get/get-active/save/patch/update_section/update_info/checkpoint execution operations/start_session_checkpoint/request_followup_checkpoint/request_plan_revision/amend_plan/request_new_plan/set-active/new/history). document is the authoritative SessionPlanDocument; markdown plan text is display/export only. In auto mode with no active plan, use start_session_checkpoint for a clear bounded task: it creates an approved one-checkpoint active plan, immediately starts that checkpoint, and returns the fresh-context run request. For broad/uncertain/multi-phase auto-mode work with no active plan, use request_new_plan with a structured document as the single approval-request path; approval applies an approved runnable plan and returns the fresh-context start path. Do not create a draft/pending shell with new/save first. save is a legacy full-document replacement; active approved/running whole-plan edits should use amend_plan with base_revision and explicit future-checkpoint scope, request_followup_checkpoint, request_plan_revision, or request_new_plan instead. patch/update_section/document_patch perform targeted partial edits for draft/legacy cases. amend_plan creates a meaningful whole-plan definition revision, rejects stale base_revision unless override_stale=true, and protects completed/current runtime state while replacing pending future checkpoints. request_followup_checkpoint appends exactly one ordered session checkpoint from the exact change_request text (legacy action name; it does not imply related follow-up semantics); on a blocked plan call it directly, because the same action atomically marks the blocked checkpoint completed/review-approved as superseded, inserts the new checkpoint after it, and continues according to policy—do not call resolve_blocked_checkpoint first; failed checkpoints remain stopped; when creating one, copy the full original user request into change_request and include a self-contained handoff via title, tasks, acceptance_criteria, and notes so the fresh checkpoint run does not lose material context; request_plan_revision and request_new_plan create approval-gated proposals. Every approval-bearing action requires an explicit complete document with at least one runnable checkpoint; markdown-only, empty, and partially specified plans are rejected, and the backend remains authoritative. Do not use manage_todos for agent self-tracking. For checkpointed execution, put final report/changed_files/validation/result on the terminal checkpoint action; use update_checkpoint only for meaningful intermediate state, not routine checkpoint completion notes. A successful complete_checkpoint call atomically completes all unresolved typed subtasks; do not call complete_subtask repeatedly first. approve_and_start applies user-owned execution choices and returns the fresh-context run request; restart_checkpoint and rewind_to_checkpoint reset execution state; resolve_blocked_checkpoint clears a blocked checkpoint without restarting and can start the next checkpoint; start_checkpoint/continue_checkpoint mark the next checkpoint in_progress; complete_checkpoint/checkpoint_outcome/mark_needs_review/mark_blocked/mark_failed update deterministic execution state. update_info merges only provided modular info sections and update_checkpoint merges only provided checkpoint fields. upsert_checkpoint intentionally replaces the target checkpoint object. new is only for an empty draft shell and is refused when an active plan exists unless override=true.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1204,7 +1205,7 @@ func (r *Runtime) Definitions() []Definition {
 					"amend_future_checkpoints":   map[string]any{"type": "boolean", "description": "For amend_plan: allow replacing pending future checkpoints; when replace_from_checkpoint_id is omitted, the first pending future checkpoint is used."},
 					"override_stale":             map[string]any{"type": "boolean", "description": "For amend_plan only: explicitly allow amendment when base_revision is missing or stale."},
 					"checkpoint":                 map[string]any{"anyOf": []any{map[string]any{"type": "boolean"}, map[string]any{"type": "object"}}, "description": "Structured checkpoint object for checkpoint document operations, or boolean marker for checkpoint-style plan update metadata. With action=update_checkpoint/patch_checkpoint, only provided checkpoint object fields are merged and omitted fields are preserved; use fields such as status, tasks, notes, report, changed_files, and validation for agent progress/checklist tracking. With upsert_checkpoint/replace_checkpoint/set_checkpoint, the checkpoint object intentionally replaces the target checkpoint."},
-					"document":                   map[string]any{"anyOf": []any{sessionPlanDocumentToolSchema(), map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument with info and checkpoints. In info, scope and validation_strategy are strings; decisions, relevant_files, constraints, assumptions, open_questions, and success_criteria are arrays of strings. Prefer a structured object over markdown plan text; a JSON-encoded object string is also accepted for compatibility."},
+					"document":                   map[string]any{"anyOf": []any{sessionPlanDocumentToolSchema(), map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument. For approval-bearing actions (request_new_plan, request_plan_revision, amend_plan), an explicit object with title, info.goal, and at least one complete ordered pending checkpoint is required; markdown-only and partial documents are rejected. Draft mutation actions retain the looser document shape."},
 					"document_patch":             map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Atomic structured document patch for modular info/checkpoint edits. update_info and update_checkpoint merge only provided fields and preserve omitted fields; replace/set operations intentionally replace. A JSON-encoded object string is also accepted for compatibility."},
 					"document_operation":         map[string]any{"type": "string", "description": "Structured document operation alias, such as update_info, update_checkpoint, upsert_checkpoint, start_checkpoint, continue_checkpoint, complete_checkpoint, checkpoint_outcome, accept_checkpoint_review, restart_checkpoint, rewind_to_checkpoint, reorder_checkpoints, or set_active_checkpoint."},
 					"operations":                 map[string]any{"anyOf": []any{map[string]any{"type": "array", "items": map[string]any{"type": "object"}}, map[string]any{"type": "string"}}, "description": "Batch of structured document patch operations applied atomically. A JSON-encoded array string is also accepted for compatibility."},
@@ -1315,7 +1316,52 @@ func sessionPlanDocumentToolSchema() map[string]any {
 			"title":       map[string]any{"type": "string"},
 			"status":      map[string]any{"type": "string"},
 			"info":        sessionPlanInfoToolSchema(),
-			"checkpoints": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+			"checkpoints": map[string]any{"type": "array", "items": sessionPlanCheckpointToolSchema()},
+		},
+		"additionalProperties": true,
+	}
+}
+
+func sessionExecutablePlanDocumentToolSchema() map[string]any {
+	schema := sessionPlanDocumentToolSchema()
+	schema["required"] = []string{"title", "info", "checkpoints"}
+	properties := schema["properties"].(map[string]any)
+	properties["info"] = sessionExecutablePlanInfoToolSchema()
+	properties["checkpoints"] = map[string]any{
+		"type":        "array",
+		"minItems":    1,
+		"items":       sessionPlanCheckpointToolSchema(),
+		"description": "At least one complete ordered checkpoint is required. Each checkpoint requires id, title, status, order, acceptance_criteria, and either objective or concrete tasks.",
+	}
+	return schema
+}
+
+func sessionExecutablePlanInfoToolSchema() map[string]any {
+	schema := sessionPlanInfoToolSchema()
+	schema["required"] = []string{"goal"}
+	return schema
+}
+
+func sessionPlanCheckpointToolSchema() map[string]any {
+	stringArray := func() map[string]any {
+		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":                  map[string]any{"type": "string"},
+			"title":               map[string]any{"type": "string"},
+			"status":              map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed", "needs_review", "blocked", "failed"}},
+			"order":               map[string]any{"type": "integer", "minimum": 1},
+			"objective":           map[string]any{"type": "string"},
+			"tasks":               stringArray(),
+			"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}},
+			"notes":               map[string]any{"type": "string"},
+		},
+		"required": []string{"id", "title", "status", "order", "acceptance_criteria"},
+		"anyOf": []any{
+			map[string]any{"required": []string{"objective"}},
+			map[string]any{"required": []string{"tasks"}},
 		},
 		"additionalProperties": true,
 	}

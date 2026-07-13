@@ -708,15 +708,18 @@ func (s *Service) buildExitPlanModePermissionPayload(sessionID string, call tool
 		if planBody == "" {
 			planBody = strings.TrimSpace(existing.Plan)
 		}
-		if document == nil {
-			document = existing.Document
-		}
+	}
+	if document == nil {
+		return nil, errors.New("exit_plan_mode requires an explicit structured document; plan text and an existing saved plan are display context only")
 	}
 	if document != nil {
 		documentClone := *document
 		documentClone.ID = strings.TrimSpace(firstNonEmptyString(planID, documentClone.ID))
 		documentClone.Title = strings.TrimSpace(firstNonEmptyString(title, documentClone.Title))
 		document = &documentClone
+	}
+	if err := sessionruntime.ValidateExecutablePlanDocument(document); err != nil {
+		return nil, err
 	}
 
 	executionRecommendation, err := normalizeExitPlanModeExecutionRecommendation(args, document)
@@ -994,8 +997,8 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 		if err != nil {
 			return planManagePermissionPayload{}, false, err
 		}
-		if planBody == "" && requestNewPlanDocument == nil {
-			return planManagePermissionPayload{}, false, errors.New("request_new_plan requires a structured document or plan text before approval")
+		if requestNewPlanDocument == nil {
+			return planManagePermissionPayload{}, false, errors.New("request_new_plan requires an explicit structured document before approval; plan text is display context only")
 		}
 	}
 	planID := strings.TrimSpace(mapString(args, "plan_id"))
@@ -1031,13 +1034,17 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 			return planManagePermissionPayload{}, false, nil
 		}
 		document := requestNewPlanDocument
+		if err := sessionruntime.ValidateExecutablePlanDocument(document); err != nil {
+			return planManagePermissionPayload{}, false, err
+		}
 		approved := map[string]any{"action": action, "approval_confirmed": true}
 		for key, value := range args {
 			switch key {
-			case "title", "plan", "document", "reason", "update_summary", "summary", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically":
+			case "title", "plan", "reason", "update_summary", "summary", "execution_granularity", "granularity", "execution_shape", "shape", "continuation_policy", "continuation", "mode", "continue_automatically":
 				approved[key] = value
 			}
 		}
+		approved["document"] = document
 		applyRequestNewPlanExecutionDefaults(approved)
 		return planManagePermissionPayload{
 			PathID:            "tool.plan-new-request.v1",
@@ -1157,6 +1164,14 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 			previewDocument = amendedPreview
 		}
 	}
+	if action == "request_plan_revision" || action == "amend_plan" || action == "request_new_plan" || action == "approve_and_start" {
+		if document == nil && action != "approve_and_start" {
+			return planManagePermissionPayload{}, false, fmt.Errorf("%s requires an explicit structured document before approval", action)
+		}
+		if err := sessionruntime.ValidateExecutablePlanDocument(previewDocument); err != nil {
+			return planManagePermissionPayload{}, false, err
+		}
+	}
 	payload := planManagePermissionPayload{
 		PathID:             "tool.plan-manage-update.v1",
 		Title:              title,
@@ -1221,6 +1236,11 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 				}
 			}
 		}
+	}
+	if action == "request_plan_revision" || action == "amend_plan" || action == "request_new_plan" {
+		// Preserve the exact canonical document that was validated for the
+		// permission round-trip instead of copying an unvalidated raw argument.
+		payload.ApprovedArguments["document"] = previewDocument
 	}
 	if changeRequest != "" {
 		payload.ApprovedArguments["change_request"] = changeRequest
