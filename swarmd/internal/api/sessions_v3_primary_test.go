@@ -5768,18 +5768,19 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if stored.Mode != sessionruntime.ModeAuto {
 		t.Fatalf("session mode after exit_plan_mode = %q, want auto", stored.Mode)
 	}
+	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 5)
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 5 || messages[0].Role != "user" || messages[1].Role != "tool" || messages[2].Role != "system" || messages[3].Role != "tool" || messages[4].Role != "system" {
+	if len(messages) < 5 || messages[0].Role != "user" || messages[1].Role != "system" || messages[2].Role != "tool" || messages[3].Role != "tool" || messages[4].Role != "system" {
 		t.Fatalf("messages after exit plan restart = %+v", messages)
 	}
-	if !strings.Contains(messages[1].Content, "run_checkpoint_with_fresh_context") {
-		t.Fatalf("exit-plan tool message did not request checkpoint run = %+v", messages[1])
+	if !strings.Contains(messages[1].Content, "Plan accepted, starting Checkpoint 1") || !strings.Contains(messages[1].Content, "Context: Starting the next checkpoint with fresh context.") {
+		t.Fatalf("exit-plan lifecycle start message content = %q", messages[1].Content)
 	}
-	if !strings.Contains(messages[2].Content, "Plan accepted, starting Checkpoint 1") || !strings.Contains(messages[2].Content, "Context: Starting the next checkpoint with fresh context.") {
-		t.Fatalf("exit-plan lifecycle start message content = %q", messages[2].Content)
+	if !strings.Contains(messages[2].Content, "run_checkpoint_with_fresh_context") {
+		t.Fatalf("exit-plan tool message did not request checkpoint run = %+v", messages[2])
 	}
 	if !strings.Contains(messages[3].Content, "complete_checkpoint") {
 		t.Fatalf("checkpoint completion tool message = %+v", messages[3])

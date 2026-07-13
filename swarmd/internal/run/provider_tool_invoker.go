@@ -502,6 +502,11 @@ func (s *Service) appendPlanLifecycleMessageForToolResult(sessionID string, call
 	}
 	toolName := strings.TrimSpace(call.Name)
 	if strings.EqualFold(toolName, "exit_plan_mode") {
+		// Native V3 exit-plan acceptance commits its lifecycle break message in
+		// the canonical acceptance transaction. Legacy invokers still append it.
+		if applySessionMutation != nil {
+			return nil
+		}
 		return s.appendExitPlanModeLifecycleMessage(sessionID, payload, applySessionMutation)
 	}
 	if !strings.EqualFold(toolName, "plan_manage") {

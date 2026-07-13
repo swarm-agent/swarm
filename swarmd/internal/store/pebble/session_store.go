@@ -416,8 +416,10 @@ func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
 	if err := replaceSessionRecentIndexInBatch(batch, previous, &session); err != nil {
 		return err
 	}
-	if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, nil); err != nil {
-		return err
+	if previous == nil || v3SessionSearchMetadataChanged(*previous, session) {
+		if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, nil); err != nil {
+			return err
+		}
 	}
 	return batch.Commit(pebble.Sync)
 }

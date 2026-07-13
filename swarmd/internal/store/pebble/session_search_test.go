@@ -2,9 +2,35 @@ package pebblestore
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 )
+
+func TestSearchV3SessionsRecentPaginationMergesActiveAndArchived(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	workspace := t.TempDir()
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "recent-active-old", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspace, Title: "Active old", CreatedAt: 1000, UpdatedAt: 1000})
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "recent-active-new", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspace, Title: "Active new", CreatedAt: 3000, UpdatedAt: 3000})
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "recent-archived-newest", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: workspace, Title: "Archived newest", CreatedAt: 4000, UpdatedAt: 4000})
+	if err := sessions.ArchiveSession("recent-archived-newest"); err != nil {
+		t.Fatalf("archive newest: %v", err)
+	}
+
+	result, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, ArchivedMode: "include", Limit: 1})
+	if err != nil {
+		t.Fatalf("search mixed recent: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "recent-archived-newest" || !result.Items[0].Archived || !result.Pagination.HasMore {
+		t.Fatalf("mixed recent first page = %+v pagination=%+v", result.Items, result.Pagination)
+	}
+	result, err = sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, ArchivedMode: "include", BeforeUpdatedAt: result.Pagination.NextBeforeUpdatedAt, BeforeSessionID: result.Pagination.NextBeforeSessionID, Limit: 1})
+	if err != nil {
+		t.Fatalf("search mixed recent page 2: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "recent-active-new" || result.Items[0].Archived {
+		t.Fatalf("mixed recent second page = %+v", result.Items)
+	}
+}
 
 func TestSearchV3SessionsRecentPaginationAndFilters(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
@@ -131,13 +157,8 @@ func TestArchiveSessionTransitionsExistingSearchRecordsWithoutReadingMessages(t 
 	if ok, err := store.GetJSON(keyV3SessionSearchMeta("transition-archive"), &after); err != nil || !ok {
 		t.Fatalf("load search metadata after archive ok=%v err=%v", ok, err)
 	}
-	if len(after.Keys) != len(before.Keys) {
-		t.Fatalf("search key count changed during lifecycle transition: before=%d after=%d", len(before.Keys), len(after.Keys))
-	}
-	for _, key := range after.Keys {
-		if !strings.Contains(key, "/archived/") {
-			t.Fatalf("search key was not moved to archived namespace: %q", key)
-		}
+	if after.Version != before.Version || len(after.MetadataTokens) != len(before.MetadataTokens) {
+		t.Fatalf("archive rewrote stable search metadata: before=%+v after=%+v", before, after)
 	}
 	result, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "needle", ArchivedMode: "only", Limit: 10})
 	if err != nil {
@@ -145,6 +166,45 @@ func TestArchiveSessionTransitionsExistingSearchRecordsWithoutReadingMessages(t 
 	}
 	if len(result.Items) != 1 || result.Items[0].ID != "transition-archive" || len(result.Items[0].Snippets) == 0 || result.Items[0].Snippets[0].Text != "retained message needle" {
 		t.Fatalf("archived search did not retain message snippet: %+v", result.Items)
+	}
+}
+
+func TestSessionSearchTelemetryIdentifiesAcceptanceAmplificationSubsteps(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "telemetry-rekey", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: t.TempDir(), Title: "Telemetry", CreatedAt: 1000, UpdatedAt: 1000})
+	appendSearchTestMessage(t, sessions, "telemetry-rekey", "user-1", "acct-1", "alpha beta gamma", 2000)
+
+	before := SnapshotV3PlanAcceptanceTelemetry()
+	session, ok, err := sessions.GetSession("telemetry-rekey")
+	if err != nil || !ok {
+		t.Fatalf("get session: ok=%v err=%v", ok, err)
+	}
+	session.Mode = "auto"
+	session.UpdatedAt++
+	if err := sessions.UpdateSession(session); err != nil {
+		t.Fatalf("update session: %v", err)
+	}
+	metrics := DeltaV3PlanAcceptanceTelemetry(SnapshotV3PlanAcceptanceTelemetry(), before)
+	if metrics.MessageRowsScanned != 0 || metrics.SearchFullRebuilds != 0 || metrics.SearchAllTokenRekeys != 0 || metrics.SearchPostingsSet != 0 {
+		t.Fatalf("mode-only update touched search content: %+v", metrics)
+	}
+
+	before = SnapshotV3PlanAcceptanceTelemetry()
+	appendSearchTestMessage(t, sessions, "telemetry-rekey", "user-1", "acct-1", "delta epsilon", 3000)
+	metrics = DeltaV3PlanAcceptanceTelemetry(SnapshotV3PlanAcceptanceTelemetry(), before)
+	if metrics.MessageRowsScanned != 0 || metrics.SearchFullRebuilds != 0 || metrics.SearchAllTokenRekeys != 0 {
+		t.Fatalf("incremental append was history-dependent: %+v", metrics)
+	}
+	if metrics.SearchPostingsRead != 0 || metrics.SearchPostingsDeleted != 0 || metrics.SearchPostingsSet != 2 {
+		t.Fatalf("incremental append posting operations = %+v, want exactly the two new tokens", metrics)
+	}
+
+	if err := ValidateV3PlanAcceptanceFixedPath(V3PlanAcceptanceTelemetry{PebbleCommits: 2}, 2); err != nil {
+		t.Fatalf("bounded fixed-path threshold rejected valid metrics: %v", err)
+	}
+	if err := ValidateV3PlanAcceptanceFixedPath(V3PlanAcceptanceTelemetry{MessageRowsScanned: 1, PebbleCommits: 2}, 2); err == nil {
+		t.Fatal("fixed-path threshold accepted a historical message scan")
 	}
 }
 

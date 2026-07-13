@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -168,6 +169,10 @@ func (c *sessionMutationCoordinator) abandonOutbox(seqs []uint64) {
 // separately durable published head only across a contiguous set of rows. The
 // coordinator mutex is never held while Pebble waits for Sync.
 func (c *sessionMutationCoordinator) commitOutbox(store *Store, seqs []uint64) error {
+	return c.commitOutboxObserved(store, seqs, nil)
+}
+
+func (c *sessionMutationCoordinator) commitOutboxObserved(store *Store, seqs []uint64, observe func(logicalBytes int, duration time.Duration)) error {
 	if len(seqs) == 0 {
 		return nil
 	}
@@ -202,10 +207,18 @@ func (c *sessionMutationCoordinator) commitOutbox(store *Store, seqs []uint64) e
 		c.outboxMu.Unlock()
 
 		var err error
+		logicalBytes := 0
+		startedAt := time.Now()
 		if publish := c.publishOutboxHead; publish != nil {
 			err = publish(store, target)
 		} else {
-			err = store.db.Set([]byte(KeyV3RealtimeOutboxSequence()), uint64ToBytes(target), pebble.Sync)
+			key := []byte(KeyV3RealtimeOutboxSequence())
+			value := uint64ToBytes(target)
+			logicalBytes = len(key) + len(value)
+			err = store.db.Set(key, value, pebble.Sync)
+		}
+		if err == nil && observe != nil {
+			observe(logicalBytes, time.Since(startedAt))
 		}
 
 		c.outboxMu.Lock()

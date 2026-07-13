@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -264,7 +265,13 @@ func (s *Server) handleSessionV3PrimaryPlanModeSubmitPlan(w http.ResponseWriter,
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.planLifecycle.SubmitPlanForApproval(sessionruntime.PlanLifecyclePlanInput{SessionID: sessionID, PlanID: planID, Title: req.Title, Plan: req.Plan, Document: req.Document, AgentCanSubmit: true, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically})
+	result, err := s.planLifecycle.SubmitPlanForApproval(sessionruntime.PlanLifecyclePlanInput{SessionID: sessionID, PlanID: planID, Title: req.Title, Plan: req.Plan, Document: req.Document, AgentCanSubmit: true, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically, ApplySessionMutation: s.applySessionV3PrimaryMutation, BuildLifecycleMessage: func(plan pebblestore.SessionPlanSnapshot, summary sessionruntime.PlanExecutionSummary) *pebblestore.MessageSnapshot {
+		message, ok := runruntime.BuildPlanExecutionLifecycleSystemMessage(runruntime.PlanExecutionLifecycleMessageInput{Action: "approve_and_start", Plan: plan, Payload: map[string]any{"action": "approve_and_start", "checkpoint_id": summary.NextCheckpointID, "next_checkpoint_id": summary.NextCheckpointID, "next_action": "run_checkpoint_with_fresh_context"}})
+		if !ok {
+			return nil
+		}
+		return &pebblestore.MessageSnapshot{Role: "system", Content: message.Content, Metadata: message.Metadata}
+	}})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -844,7 +851,10 @@ func (s *Server) resolveSessionsV3FollowupCheckpointPolicy(result sessionruntime
 }
 
 func (s *Server) finishSessionsV3PlanModeLifecycle(w http.ResponseWriter, principal identity.Principal, sessionID, transition string, result sessionruntime.PlanLifecycleResult, runStart *sessionsV3PlanModeRunStart) {
-	if runStart == nil {
+	if result.V3Mutation != nil {
+		// Native V3 lifecycle commits already contain ordered durable events and
+		// outbox rows; replaying legacy envelopes would duplicate them.
+	} else if runStart == nil {
 		if err := s.publishPlanLifecycleResult(result); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

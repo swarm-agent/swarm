@@ -43,14 +43,25 @@ func (s *Server) publishCommittedSessionV3MutationInputResult(input sessionrunti
 	if result.Replayed || result.Event.Seq == 0 {
 		return nil
 	}
-	if result.RealtimeOutbox == nil || result.RealtimeOutbox.EndpointSeq == 0 {
-		return errors.New("committed v3 session mutation is missing durable realtime outbox record")
-	}
-	if sessionV3IsDiagnosticEventType(result.Event.EventType) {
-		return nil
-	}
-	if err := s.publishCommittedV3RealtimeOutbox(*result.RealtimeOutbox); err != nil {
-		log.Printf("warning: v3 realtime outbox wake failed after durable commit session=%q endpoint_seq=%d: %v", result.SessionID, result.RealtimeOutbox.EndpointSeq, err)
+	if len(result.RealtimeOutboxes) > 0 {
+		for _, outbox := range result.RealtimeOutboxes {
+			if sessionV3IsDiagnosticEventType(outbox.Event.EventType) {
+				continue
+			}
+			if err := s.publishCommittedV3RealtimeOutbox(outbox); err != nil {
+				log.Printf("warning: v3 realtime outbox wake failed after durable commit session=%q endpoint_seq=%d: %v", result.SessionID, outbox.EndpointSeq, err)
+			}
+		}
+	} else {
+		if result.RealtimeOutbox == nil || result.RealtimeOutbox.EndpointSeq == 0 {
+			return errors.New("committed v3 session mutation is missing durable realtime outbox record")
+		}
+		if sessionV3IsDiagnosticEventType(result.Event.EventType) {
+			return nil
+		}
+		if err := s.publishCommittedV3RealtimeOutbox(*result.RealtimeOutbox); err != nil {
+			log.Printf("warning: v3 realtime outbox wake failed after durable commit session=%q endpoint_seq=%d: %v", result.SessionID, result.RealtimeOutbox.EndpointSeq, err)
+		}
 	}
 	s.maybeStartCommittedSessionV3TitleFlow(input, result)
 	return nil

@@ -3228,6 +3228,103 @@ test('Desktop V3 open transport rejects pending connect on auth denied and stop'
   await assert.rejects(stopped, /test stop rejection/i)
 })
 
+test('Desktop V3 cursor-gap recovery reapplies authoritative plan and mode state', async () => {
+  let state = readyControllerState()
+  state.realtime.endpointCursor = 'cursor-before-gap'
+  state.sessionsById[sessionA.id] = {
+    kind: 'full',
+    session: { ...sessionA, mode: 'plan' },
+    needsHydrate: false,
+  }
+  state.selectedSessionId = sessionA.id
+  const sockets: FakeWebSocket[] = []
+  let reconnectCount = 0
+  const recoveredPlan = {
+    id: 'recovered-plan',
+    title: 'Recovered plan',
+    plan: '# Recovered',
+    status: 'approved',
+    approval_state: 'approved',
+    updated_at: 20,
+    document: {
+      id: 'recovered-plan',
+      title: 'Recovered plan',
+      status: 'approved',
+      checkpoints: [{ id: 'cp-1', title: 'Recovered checkpoint', status: 'in_progress' }],
+      active_checkpoint_id: 'cp-1',
+    },
+  }
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action: DesktopV3CacheAction) => {
+      state = desktopV3CacheReducer(state, action)
+    },
+    subscribe: () => () => {},
+    ensureSession: async () => ({}),
+    reconnect: async () => {
+      reconnectCount += 1
+      return reconnectFixture({
+        snapshot_endpoint_cursor: 'cursor-after-gap',
+        sessions_by_id: { [sessionA.id]: { ...sessionA, mode: 'auto', updated_at: 20 } },
+        projections_by_session: { [sessionA.id]: { ...projectionA, last_event_seq: 20, projection_high_watermark_seq: 20, updated_at: 20 } },
+        run_intents_by_session: {},
+        current_run_intent_by_session: {},
+        session_order: [sessionA.id],
+        session_views_by_id: {
+          [sessionA.id]: {
+            agentic_settings: { mode: 'auto', agent_name: 'swarm', resolved_agent_name: 'swarm' },
+            has_active_plan: true,
+            active_plan: recoveredPlan,
+          },
+        },
+        realtime: {
+          stream_path: '/v3/realtime/stream',
+          resume: {
+            protocol: 'v3.realtime',
+            protocol_version: 1,
+            kind: 'resume',
+            endpoint_cursor: 'cursor-after-gap',
+            subscriptions: [{ subscription_id: 'sub-a', session_id: sessionA.id }],
+            worksets: [{
+              workset_id: 'workset-1',
+              subscription_id: 'workset-sub-1',
+              selector: { kind: 'global', global: true },
+              resources: ['active_plan', 'session_view', 'sessions'],
+              auto_subscribe_sessions: true,
+            }],
+          },
+        },
+      })
+    },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start(sessionA.id)
+    ready.catch(() => undefined)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+
+    sockets[0].emit({ protocol: 'v3.realtime', protocol_version: 1, kind: 'cursor.error', error: 'gap', bootstrap_required: false })
+    await waitFor(() => reconnectCount === 1)
+    await waitFor(() => state.plansBySession[sessionA.id]?.id === 'recovered-plan')
+
+    const record = state.sessionsById[sessionA.id]
+    assert.equal(record?.kind, 'full')
+    if (record?.kind === 'full') assert.equal(record.session.mode, 'auto')
+    assert.equal(state.hasActivePlanBySession[sessionA.id], true)
+    assert.equal(state.plansBySession[sessionA.id]?.document?.activeCheckpointId, 'cp-1')
+  } finally {
+    controller.stop()
+  }
+})
+
+
 test('Desktop V3 recovery still calls HTTP reconnect after cursor.error', async () => {
   let state = readyControllerState()
   state.realtime.endpointCursor = 'cursor-bootstrap'

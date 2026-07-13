@@ -42,6 +42,9 @@ type PlanLifecyclePlanInput struct {
 	ExecutionGranularity  string
 	ContinuationPolicy    string
 	ContinueAutomatically *bool
+	ApplySessionMutation  func(SessionMutationInput) (SessionMutationResult, error)
+	ModeEventFields       map[string]any
+	BuildLifecycleMessage func(pebblestore.SessionPlanSnapshot, PlanExecutionSummary) *pebblestore.MessageSnapshot
 }
 
 type PlanLifecycleFollowupCheckpointInput struct {
@@ -160,9 +163,12 @@ type PlanLifecycleResult struct {
 	AttemptID    string
 	Action       string
 	Message      string
+	ModeChanged  bool
+	V3Mutation   *SessionMutationResult
 }
 
 func (s *PlanLifecycleService) EnterPlanMode(sessionID string) (PlanLifecycleResult, error) {
+	pebblestore.ObserveV3PlanLifecycleMutation()
 	if err := s.requireConfigured(); err != nil {
 		return PlanLifecycleResult{}, err
 	}
@@ -181,6 +187,7 @@ func (s *PlanLifecycleService) EnterPlanMode(sessionID string) (PlanLifecycleRes
 }
 
 func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInput) (PlanLifecycleResult, error) {
+	pebblestore.ObserveV3PlanLifecycleMutation()
 	if err := s.requireConfigured(); err != nil {
 		return PlanLifecycleResult{}, err
 	}
@@ -257,6 +264,20 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 	if err := ValidateExecutablePlanDocument(document); err != nil {
 		return PlanLifecycleResult{}, err
 	}
+	if input.ApplySessionMutation != nil {
+		committed, err := s.sessions.CommitV3PlanAcceptance(PlanAcceptanceCommitInput{Session: session, PlanID: planID, Title: title, Plan: planText, Document: document, ApplySessionMutation: input.ApplySessionMutation, ModeEventFields: input.ModeEventFields, BuildLifecycleMessage: input.BuildLifecycleMessage})
+		if err != nil {
+			return PlanLifecycleResult{}, err
+		}
+		summary := SummarizePlanExecution(committed.Plan.Document)
+		checkpointID := ""
+		if summary.AutoAdvanceAllowed && !summary.PlanComplete && !summary.ReviewRequired && !summary.Blocked && !summary.Failed {
+			checkpointID = strings.TrimSpace(summary.NextCheckpointID)
+		}
+		return PlanLifecycleResult{Session: committed.Session, Plan: committed.Plan, Summary: summary, CheckpointID: checkpointID, Action: "submit_plan_for_approval", Message: "structured plan saved, approved; mode switched to auto", ModeChanged: true, V3Mutation: &committed.Mutation}, nil
+	}
+	// Transitional non-V3 adapters retain the legacy persistence path until they
+	// can supply the canonical V3 mutation boundary.
 	saved, planEvent, err := s.sessions.SavePlanWithMetadata(session.ID, planID, title, planText, "approved", "approved", true, PlanSaveMetadata{UpdateSummary: "exit plan mode submission", UpdateScope: "plan", UpdateKind: "exit_plan_mode", Document: document})
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -270,10 +291,11 @@ func (s *PlanLifecycleService) SubmitPlanForApproval(input PlanLifecyclePlanInpu
 	if summary.AutoAdvanceAllowed && !summary.PlanComplete && !summary.ReviewRequired && !summary.Blocked && !summary.Failed {
 		checkpointID = strings.TrimSpace(summary.NextCheckpointID)
 	}
-	return PlanLifecycleResult{Session: updated, Plan: saved, PlanEvent: planEvent, ModeEvent: modeEvent, Summary: summary, CheckpointID: checkpointID, Action: "submit_plan_for_approval", Message: "structured plan saved, approved; mode switched to auto"}, nil
+	return PlanLifecycleResult{Session: updated, Plan: saved, PlanEvent: planEvent, ModeEvent: modeEvent, Summary: summary, CheckpointID: checkpointID, Action: "submit_plan_for_approval", Message: "structured plan saved, approved; mode switched to auto", ModeChanged: modeEvent != nil}, nil
 }
 
 func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFollowupCheckpointInput) (PlanLifecycleResult, error) {
+	pebblestore.ObserveV3PlanLifecycleMutation()
 	state, err := s.loadApprovedPlan(input.SessionID, input.PlanID, "request_followup_checkpoint")
 	if err != nil {
 		return PlanLifecycleResult{}, err
@@ -354,6 +376,7 @@ func (s *PlanLifecycleService) RequestFollowupCheckpoint(input PlanLifecycleFoll
 }
 
 func (s *PlanLifecycleService) StartSessionCheckpoint(input PlanLifecycleSessionCheckpointInput) (PlanLifecycleResult, error) {
+	pebblestore.ObserveV3PlanLifecycleMutation()
 	if err := s.requireConfigured(); err != nil {
 		return PlanLifecycleResult{}, err
 	}

@@ -1486,6 +1486,23 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		return marshalExitPlanModeRejectionPayload(input, userMessage, "not_in_plan_mode", "exit_plan_mode rejected: session not in plan mode; use plan_manage save to update the active plan instead", []string{"Do not call exit_plan_mode from auto. To update the active plan instead, use plan_manage save."})
 	}
 
+	input.ApplySessionMutation = applySessionMutation
+	input.BuildLifecycleMessage = func(plan pebblestore.SessionPlanSnapshot, summary sessionruntime.PlanExecutionSummary) *pebblestore.MessageSnapshot {
+		message, ok := BuildPlanExecutionLifecycleSystemMessage(PlanExecutionLifecycleMessageInput{Action: "approve_and_start", Plan: plan, Payload: map[string]any{"action": "approve_and_start", "checkpoint_id": summary.NextCheckpointID, "next_checkpoint_id": summary.NextCheckpointID, "next_action": "run_checkpoint_with_fresh_context"}})
+		if !ok {
+			return nil
+		}
+		return &pebblestore.MessageSnapshot{Role: "system", Content: message.Content, Metadata: message.Metadata}
+	}
+	if applySessionMutation != nil {
+		if current, ok, getErr := s.sessions.GetSession(sessionID); getErr == nil && ok {
+			current.Mode = sessionruntime.ModeAuto
+			preference, contextWindow, maxOutputTokens, policy, resolveErr := s.resolvePlanLifecycleModePreference(sessionruntime.PlanLifecycleResult{Session: current})
+			if resolveErr == nil && strings.TrimSpace(preference.Provider) != "" && strings.TrimSpace(preference.Model) != "" {
+				input.ModeEventFields = map[string]any{"preference": preference, "context_window": contextWindow, "max_output_tokens": maxOutputTokens, "agent_model_policy": policy, "swarm_conf_v3_diagnostics_enabled": os.Getenv("SWARM_V3_DIAGNOSTICS") == "1"}
+			}
+		}
+	}
 	lifecycleResult, lifecycleErr := sessionruntime.NewPlanLifecycleService(s.sessions).SubmitPlanForApproval(input)
 	if lifecycleErr != nil {
 		return "", fmt.Errorf("exit_plan_mode failed to submit plan: %w", lifecycleErr)
@@ -1649,7 +1666,7 @@ func marshalExitPlanModeApprovedPayload(result sessionruntime.PlanLifecycleResul
 		"document":                savedPlan.Document,
 		"approval_state":          "approved",
 		"requested_modifications": []string{},
-		"mode_changed":            result.ModeEvent != nil,
+		"mode_changed":            result.ModeChanged || result.ModeEvent != nil,
 		"target_mode":             sessionruntime.ModeAuto,
 		"user_message":            userMessage,
 		"path_id":                 "tool.exit-plan-mode.v3",
@@ -1670,6 +1687,9 @@ func marshalExitPlanModeApprovedPayload(result sessionruntime.PlanLifecycleResul
 }
 
 func (s *Service) persistPlanLifecycleResult(result sessionruntime.PlanLifecycleResult, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
+	if result.V3Mutation != nil {
+		return nil
+	}
 	if err := s.persistPlanSavedV3Mutation(result.Plan, result.PlanEvent, applySessionMutation); err != nil {
 		return fmt.Errorf("publish plan saved: %w", err)
 	}

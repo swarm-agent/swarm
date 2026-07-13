@@ -25,6 +25,7 @@ const (
 	V3SessionMutationUpdateSettings   = "session.settings.update"
 	V3SessionMutationUpdateTitle      = "session.title.update"
 	V3SessionMutationSavePlan         = "plan.save"
+	V3SessionMutationAcceptPlan       = "plan.accept"
 	V3SessionMutationDeleteSession    = "session.delete"
 	V3SessionMutationArchiveSession   = "session.archive"
 
@@ -64,6 +65,7 @@ type V3SessionMutationInput struct {
 	Message              *MessageSnapshot          `json:"message,omitempty"`
 	Lifecycle            *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
 	RunIntent            *V3SessionRunIntent       `json:"run_intent,omitempty"`
+	PlanAcceptance       *V3PlanAcceptanceMutation `json:"plan_acceptance,omitempty"`
 	EpochID              string                    `json:"epoch_id,omitempty"`
 	TurnUsage            *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
 	ExpectedLastEventSeq *uint64                   `json:"expected_last_event_seq,omitempty"`
@@ -71,28 +73,31 @@ type V3SessionMutationInput struct {
 }
 
 type V3SessionMutationResult struct {
-	SessionID       string                     `json:"session_id"`
-	PrimarySeq      uint64                     `json:"primary_seq"`
-	FirstSeq        uint64                     `json:"first_seq"`
-	LastSeq         uint64                     `json:"last_seq"`
-	EventIDs        []string                   `json:"event_ids"`
-	PayloadHash     string                     `json:"payload_hash"`
-	ResponseVersion string                     `json:"response_version,omitempty"`
-	ResponseStatus  string                     `json:"response_status,omitempty"`
-	ResponseBody    json.RawMessage            `json:"response_body,omitempty"`
-	Conflict        *V3SessionMutationConflict `json:"conflict,omitempty"`
-	Error           *V3SessionMutationError    `json:"error,omitempty"`
-	Event           V3SessionEvent             `json:"event"`
-	Session         *SessionSnapshot           `json:"session,omitempty"`
-	Message         *MessageSnapshot           `json:"message,omitempty"`
-	Lifecycle       *SessionLifecycleSnapshot  `json:"lifecycle,omitempty"`
-	RunIntent       *V3SessionRunIntent        `json:"run_intent,omitempty"`
-	TurnUsage       *SessionTurnUsageSnapshot  `json:"turn_usage,omitempty"`
-	UsageSummary    *SessionUsageSummary       `json:"usage_summary,omitempty"`
-	Projection      V3SessionProjection        `json:"projection"`
-	Idempotency     V3SessionIdempotencyRecord `json:"idempotency"`
-	RealtimeOutbox  *V3RealtimeOutboxRecord    `json:"realtime_outbox,omitempty"`
-	Replayed        bool                       `json:"replayed,omitempty"`
+	SessionID        string                     `json:"session_id"`
+	PrimarySeq       uint64                     `json:"primary_seq"`
+	FirstSeq         uint64                     `json:"first_seq"`
+	LastSeq          uint64                     `json:"last_seq"`
+	EventIDs         []string                   `json:"event_ids"`
+	PayloadHash      string                     `json:"payload_hash"`
+	ResponseVersion  string                     `json:"response_version,omitempty"`
+	ResponseStatus   string                     `json:"response_status,omitempty"`
+	ResponseBody     json.RawMessage            `json:"response_body,omitempty"`
+	Conflict         *V3SessionMutationConflict `json:"conflict,omitempty"`
+	Error            *V3SessionMutationError    `json:"error,omitempty"`
+	Event            V3SessionEvent             `json:"event"`
+	Session          *SessionSnapshot           `json:"session,omitempty"`
+	Message          *MessageSnapshot           `json:"message,omitempty"`
+	Lifecycle        *SessionLifecycleSnapshot  `json:"lifecycle,omitempty"`
+	RunIntent        *V3SessionRunIntent        `json:"run_intent,omitempty"`
+	TurnUsage        *SessionTurnUsageSnapshot  `json:"turn_usage,omitempty"`
+	UsageSummary     *SessionUsageSummary       `json:"usage_summary,omitempty"`
+	Projection       V3SessionProjection        `json:"projection"`
+	Idempotency      V3SessionIdempotencyRecord `json:"idempotency"`
+	RealtimeOutbox   *V3RealtimeOutboxRecord    `json:"realtime_outbox,omitempty"`
+	Events           []V3SessionEvent           `json:"events,omitempty"`
+	RealtimeOutboxes []V3RealtimeOutboxRecord   `json:"realtime_outboxes,omitempty"`
+	Plan             *SessionPlanSnapshot       `json:"plan,omitempty"`
+	Replayed         bool                       `json:"replayed,omitempty"`
 }
 
 type V3SessionMutationStoredResult struct {
@@ -519,10 +524,15 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		return V3SessionMutationResult{}, err
 	}
 
+	if input.Kind == V3SessionMutationAcceptPlan {
+		return s.applyV3PlanAcceptanceMutation(input)
+	}
+
 	unlockSession := s.store.sessionMutations.lockSessions(input.SessionID)
 	defer unlockSession()
 
 	idempotencyKey := KeyV3SessionOperationIdempotency(input.AccountScopeID, input.SessionID, input.Kind, input.ClientRequestID)
+
 	if existing, ok, err := s.getV3SessionIdempotencyRecordByKey(idempotencyKey); err != nil {
 		return V3SessionMutationResult{}, err
 	} else if ok {
@@ -799,16 +809,12 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 				return V3SessionMutationResult{}, err
 			}
 		}
-		if messageProvided && !sessionProvided && !archivedReactivation {
+		if messageProvided {
 			if err := s.appendV3SessionSearchMessageInBatch(batch, s.store.db, session, false, message); err != nil {
 				return V3SessionMutationResult{}, err
 			}
-		} else {
-			var extraMessages []MessageSnapshot
-			if messageProvided {
-				extraMessages = []MessageSnapshot{message}
-			}
-			if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, extraMessages); err != nil {
+		} else if sessionProvided && v3SessionMutationChangesSearchMetadata(input.Kind) {
+			if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, nil); err != nil {
 				return V3SessionMutationResult{}, err
 			}
 		}
@@ -2512,6 +2518,8 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 	case V3SessionMutationUpdateTitle:
 		return "session.title.updated"
 	case V3SessionMutationSavePlan:
+		return "session.plan.saved"
+	case V3SessionMutationAcceptPlan:
 		return "session.plan.saved"
 	default:
 		return input.Kind

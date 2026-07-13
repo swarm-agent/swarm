@@ -15,9 +15,12 @@ import (
 )
 
 const (
-	v3SessionSearchIndexVersion     = 2
+	v3SessionSearchIndexVersion     = 3
 	keyV3SessionSearchIndexMeta     = "v3/session_search_index/meta"
 	keyV3SessionSearchMetaPrefix    = "v3/session_search_meta/"
+	keyV3SessionSearchPostingPrefix = "v3/session_search_posting/"
+	// keyV3SessionSearchAccountPrefix is the read-only v2 compatibility index.
+	// New postings are session-prefixed and never contain volatile UpdatedAt.
 	keyV3SessionSearchAccountPrefix = "v3/session_search/account/"
 	v3SessionSearchArchivedExclude  = "exclude"
 	v3SessionSearchArchivedInclude  = "include"
@@ -110,8 +113,12 @@ type v3SessionSearchIndexMeta struct {
 }
 
 type v3SessionSearchSessionMeta struct {
-	SessionID string   `json:"session_id"`
-	Keys      []string `json:"keys"`
+	SessionID      string   `json:"session_id"`
+	Version        int      `json:"version,omitempty"`
+	MetadataTokens []string `json:"metadata_tokens,omitempty"`
+	// Keys contains v2 posting keys during bounded, per-session compatibility.
+	// It is never extended by v3 writes and can be dropped without rebuilding.
+	Keys []string `json:"keys,omitempty"`
 }
 
 type v3SessionSearchIndexRecord struct {
@@ -254,8 +261,8 @@ func (s *SessionStore) searchV3SessionsRecentFromReader(reader pebble.Reader, op
 			}
 		}
 	}
-	if options.ArchivedMode != v3SessionSearchArchivedExclude && len(items) <= options.Limit {
-		archived, err := s.searchV3ArchivedRecentFromReader(reader, options, options.Limit+1-len(items))
+	if options.ArchivedMode != v3SessionSearchArchivedExclude {
+		archived, err := s.searchV3ArchivedRecentFromReader(reader, options, options.Limit+1)
 		if err != nil {
 			return V3SessionSearchResult{}, err
 		}
@@ -275,69 +282,75 @@ func (s *SessionStore) searchV3SessionsQueryFromReader(reader pebble.Reader, opt
 	if len(queryTokens) == 0 {
 		return s.searchV3SessionsRecentFromReader(reader, options)
 	}
-	prefixes := []string{}
-	for _, tokens := range queryTokens {
-		prefixes = append(prefixes, v3SessionSearchPrefixesForOptions(options, tokens[0])...)
-	}
-	startOrder := ""
-	if options.BeforeUpdatedAt != nil {
-		startOrder = sessionRecentIndexOrderPart(*options.BeforeUpdatedAt, options.BeforeSessionID) + "\x00"
-	}
-	itemsByID := map[string]V3SessionSearchItem{}
-	seenKeys := map[string]struct{}{}
-	for _, prefix := range prefixes {
-		startKey := ""
-		if startOrder != "" {
-			startKey = prefix + startOrder
-		}
-		err := scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, StartKey: startKey, Limit: sessionRecentIndexScanLimit()}, func(_ string, value []byte) (bool, error) {
-			var record v3SessionSearchIndexRecord
-			if err := json.Unmarshal(value, &record); err != nil {
-				return false, fmt.Errorf("decode session search record: %w", err)
-			}
-			record.SessionID = strings.TrimSpace(record.SessionID)
-			if record.SessionID == "" {
-				return true, nil
-			}
-			if _, ok := seenKeys[record.SessionID]; !ok {
-				seenKeys[record.SessionID] = struct{}{}
-			}
-			item, ok, err := s.searchV3ItemForRecord(reader, record, options)
+
+	// Search membership is stable and session-prefixed. Recency and archive
+	// ordering belong to the existing recent/tombstone indexes, so query search
+	// walks those indexes and performs bounded point lookups for each token.
+	items := make([]V3SessionSearchItem, 0, options.Limit+1)
+	visitSession := func(session SessionSnapshot, archived bool) error {
+		var snippets []V3SessionSearchSnippet
+		matched := false
+		for _, tokens := range queryTokens {
+			querySnippets, ok, err := v3SessionSearchSessionHasTokens(reader, session.ID, tokens)
 			if err != nil {
-				return false, err
+				return err
 			}
-			if !ok {
-				return true, nil
+			if ok {
+				matched = true
+				snippets = mergeV3SessionSearchSnippets(snippets, querySnippets)
 			}
-			matched := false
-			for _, tokens := range queryTokens {
-				ok, verifyErr := v3SessionSearchRecordHasTokens(reader, record.SessionID, record.Archived, tokens)
-				if verifyErr != nil {
-					return false, verifyErr
+		}
+		if matched {
+			items = append(items, v3SessionSearchItemFromSession(session, archived, false, snippets))
+		}
+		return nil
+	}
+	if options.ArchivedMode != v3SessionSearchArchivedOnly {
+		prefix := sessionRecentIndexPrefixForSearch(options)
+		startKey := sessionRecentIndexStartAfter(prefix, options.BeforeUpdatedAt, options.BeforeSessionID)
+		err := scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, StartKey: startKey, Limit: sessionRecentIndexScanLimit()}, func(_ string, value []byte) (bool, error) {
+			session, ok, err := s.getSessionFromReader(reader, strings.TrimSpace(string(value)))
+			if err != nil || !ok {
+				return err == nil, err
+			}
+			if v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) && v3SessionSearchDateVisible(session.UpdatedAt, options) {
+				if err := visitSession(session, false); err != nil {
+					return false, err
 				}
-				if ok {
-					matched = true
-					break
-				}
 			}
-			if !matched {
-				return true, nil
-			}
-			if existing, ok := itemsByID[item.ID]; ok {
-				existing.Snippets = mergeV3SessionSearchSnippets(existing.Snippets, item.Snippets)
-				itemsByID[item.ID] = existing
-			} else {
-				itemsByID[item.ID] = item
-			}
-			return len(itemsByID) <= options.Limit, nil
+			return len(items) <= options.Limit, nil
 		})
 		if err != nil {
 			return V3SessionSearchResult{}, err
 		}
 	}
-	items := make([]V3SessionSearchItem, 0, len(itemsByID))
-	for _, item := range itemsByID {
-		items = append(items, item)
+	if options.ArchivedMode != v3SessionSearchArchivedExclude {
+		prefix := V3SessionTombstoneByAccountUserPrefix(options.AccountScopeID, options.UserID)
+		if len(options.WorkspacePaths) == 1 {
+			prefix = V3SessionTombstoneByAccountUserWorkspacePrefix(options.AccountScopeID, options.UserID, options.WorkspacePaths[0])
+		}
+		startKey := sessionRecentIndexStartAfter(prefix, options.BeforeUpdatedAt, options.BeforeSessionID)
+		archivedMatches := 0
+		err := scanRangeFromReader(reader, scanRangeOptions{Prefix: prefix, StartKey: startKey, Limit: sessionRecentIndexScanLimit()}, func(_ string, value []byte) (bool, error) {
+			var tombstone V3SessionTombstone
+			if err := json.Unmarshal(value, &tombstone); err != nil {
+				return false, fmt.Errorf("decode session tombstone: %w", err)
+			}
+			session := normalizeSessionOwnership(tombstone.Session)
+			if tombstone.Archived && v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) && v3SessionSearchDateVisible(session.UpdatedAt, options) {
+				before := len(items)
+				if err := visitSession(session, true); err != nil {
+					return false, err
+				}
+				if len(items) > before {
+					archivedMatches++
+				}
+			}
+			return archivedMatches <= options.Limit, nil
+		})
+		if err != nil {
+			return V3SessionSearchResult{}, err
+		}
 	}
 	sort.SliceStable(items, func(i, j int) bool { return v3SessionSearchLess(items[i], items[j]) })
 	return paginateV3SessionSearchItems(items, options.Limit), nil
@@ -442,40 +455,14 @@ func (s *SessionStore) ensureV3SessionSearchIndex() error {
 	} else if ok && meta.Version == v3SessionSearchIndexVersion {
 		return nil
 	}
-	batch := s.store.NewBatch()
-	defer batch.Close()
-	if err := deleteV3SessionSearchIndexKeysFromReader(batch, s.store.db); err != nil {
-		return err
-	}
-	if err := iteratePrefixFromReader(s.store.db, SessionPrefix(), sessionRecentIndexScanLimit(), func(_ string, value []byte) error {
-		var session SessionSnapshot
-		if err := json.Unmarshal(value, &session); err != nil {
-			return fmt.Errorf("decode session for search index backfill: %w", err)
-		}
-		return s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, normalizeSessionOwnership(session), false, nil)
-	}); err != nil {
-		return err
-	}
-	if err := iteratePrefixFromReader(s.store.db, V3SessionTombstonePrefix(), sessionRecentIndexScanLimit(), func(_ string, value []byte) error {
-		var tombstone V3SessionTombstone
-		if err := json.Unmarshal(value, &tombstone); err != nil {
-			return fmt.Errorf("decode tombstone for search index backfill: %w", err)
-		}
-		if !tombstone.Archived || tombstone.Session.ID == "" {
-			return nil
-		}
-		return s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, normalizeSessionOwnership(tombstone.Session), true, nil)
-	}); err != nil {
-		return err
-	}
+	// v3 migration is intentionally O(1): old postings remain readable only as
+	// compatibility data until an individual session is next mutated. No search
+	// request may trigger a global session/message backfill.
 	payload, err := json.Marshal(v3SessionSearchIndexMeta{Version: v3SessionSearchIndexVersion, IndexedAt: time.Now().UnixMilli()})
 	if err != nil {
 		return err
 	}
-	if err := batch.Set([]byte(keyV3SessionSearchIndexMeta), payload, nil); err != nil {
-		return err
-	}
-	return batch.Commit(pebble.Sync)
+	return s.store.db.Set([]byte(keyV3SessionSearchIndexMeta), payload, pebble.Sync)
 }
 
 func deleteV3SessionSearchIndexKeysFromReader(batch *pebble.Batch, reader pebble.Reader) error {
@@ -498,41 +485,52 @@ func (s *SessionStore) replaceV3SessionSearchIndexInBatch(batch *pebble.Batch, r
 		return nil
 	}
 	var previous v3SessionSearchSessionMeta
-	if ok, err := getJSONFromReader(reader, keyV3SessionSearchMeta(session.ID), &previous); err != nil {
+	if _, err := getJSONFromReader(reader, keyV3SessionSearchMeta(session.ID), &previous); err != nil {
 		return err
-	} else if ok {
-		for _, key := range previous.Keys {
-			if err := batch.Delete([]byte(key), nil); err != nil {
+	}
+	// Retain v2 compatibility postings during the bounded migration window.
+	// They are lifecycle-neutral at read time and are purged by session prefix
+	// deletion; ordinary mutations never rewrite the complete legacy set.
+	oldTokens := make(map[string]struct{}, len(previous.MetadataTokens))
+	for _, token := range previous.MetadataTokens {
+		oldTokens[token] = struct{}{}
+	}
+	newTokens := v3SessionSearchMetadataTokens(session)
+	for token := range oldTokens {
+		if _, keep := newTokens[token]; !keep {
+			if err := batch.Delete([]byte(keyV3SessionSearchPosting(session.ID, "metadata", token)), nil); err != nil {
 				return err
 			}
 		}
 	}
-	keys, err := v3SessionSearchIndexEntriesForSession(reader, session, archived, extraMessages)
-	if err != nil {
-		return err
-	}
-	for key, record := range keys {
+	for token, record := range newTokens {
 		payload, err := json.Marshal(record)
 		if err != nil {
 			return err
 		}
-		if err := batch.Set([]byte(key), payload, nil); err != nil {
+		observeV3SearchPostingSet(keyV3SessionSearchPosting(session.ID, "metadata", token), payload)
+		if err := batch.Set([]byte(keyV3SessionSearchPosting(session.ID, "metadata", token)), payload, nil); err != nil {
 			return err
 		}
 	}
-	metaKeys := make([]string, 0, len(keys))
-	for key := range keys {
-		metaKeys = append(metaKeys, key)
+	for _, message := range extraMessages {
+		if err := appendV3SessionSearchMessagePostingsInBatch(batch, session.ID, message); err != nil {
+			return err
+		}
 	}
-	sort.Strings(metaKeys)
-	payload, err := json.Marshal(v3SessionSearchSessionMeta{SessionID: session.ID, Keys: metaKeys})
+	metadataTokens := make([]string, 0, len(newTokens))
+	for token := range newTokens {
+		metadataTokens = append(metadataTokens, token)
+	}
+	sort.Strings(metadataTokens)
+	payload, err := json.Marshal(v3SessionSearchSessionMeta{SessionID: session.ID, Version: v3SessionSearchIndexVersion, MetadataTokens: metadataTokens, Keys: previous.Keys})
 	if err != nil {
 		return err
 	}
 	return batch.Set([]byte(keyV3SessionSearchMeta(session.ID)), payload, nil)
 }
 
-func (s *SessionStore) transitionV3SessionSearchLifecycleInBatch(batch *pebble.Batch, reader pebble.Reader, session SessionSnapshot, archived bool) error {
+func (s *SessionStore) transitionV3SessionSearchLifecycleInBatchV2(batch *pebble.Batch, reader pebble.Reader, session SessionSnapshot, archived bool) error {
 	if batch == nil || reader == nil {
 		return errors.New("session search index transition requires batch and reader")
 	}
@@ -557,8 +555,10 @@ func (s *SessionStore) transitionV3SessionSearchLifecycleInBatch(batch *pebble.B
 	}
 	moved := make([]movedRecord, 0, len(previous.Keys))
 	seen := make(map[string]struct{}, len(previous.Keys))
+	observeV3SearchAllTokenRekey()
 	for _, oldKey := range previous.Keys {
 		var record v3SessionSearchIndexRecord
+		observeV3SearchPostingRead()
 		found, readErr := getJSONFromReader(reader, oldKey, &record)
 		if readErr != nil {
 			return readErr
@@ -577,6 +577,7 @@ func (s *SessionStore) transitionV3SessionSearchLifecycleInBatch(batch *pebble.B
 
 	metaKeys := make([]string, 0, len(moved))
 	for _, item := range moved {
+		observeV3SearchPostingDeleted(item.oldKey)
 		if err := batch.Delete([]byte(item.oldKey), nil); err != nil {
 			return err
 		}
@@ -584,6 +585,7 @@ func (s *SessionStore) transitionV3SessionSearchLifecycleInBatch(batch *pebble.B
 		if err != nil {
 			return err
 		}
+		observeV3SearchPostingSet(item.newKey, payload)
 		if err := batch.Set([]byte(item.newKey), payload, nil); err != nil {
 			return err
 		}
@@ -613,7 +615,7 @@ func v3SessionSearchKeyWithLifecycle(key, accountScopeID string, archived bool, 
 	return fmt.Sprintf("%s%s/%s/%s/%s", keyV3SessionSearchAccountPrefix, parts[0], state, parts[2], sessionRecentIndexOrderPart(updatedAt, sessionID)), true
 }
 
-func (s *SessionStore) appendV3SessionSearchMessageInBatch(batch *pebble.Batch, reader pebble.Reader, session SessionSnapshot, archived bool, message MessageSnapshot) error {
+func (s *SessionStore) appendV3SessionSearchMessageInBatchV2(batch *pebble.Batch, reader pebble.Reader, session SessionSnapshot, archived bool, message MessageSnapshot) error {
 	if batch == nil || reader == nil {
 		return errors.New("session search index update requires batch and reader")
 	}
@@ -628,13 +630,16 @@ func (s *SessionStore) appendV3SessionSearchMessageInBatch(batch *pebble.Batch, 
 		return s.replaceV3SessionSearchIndexInBatch(batch, reader, session, archived, []MessageSnapshot{message})
 	}
 	keys := make(map[string]v3SessionSearchIndexRecord, len(previous.Keys))
+	observeV3SearchAllTokenRekey()
 	for _, key := range previous.Keys {
 		var record v3SessionSearchIndexRecord
+		observeV3SearchPostingRead()
 		if ok, err := getJSONFromReader(reader, key, &record); err != nil {
 			return err
 		} else if !ok {
 			continue
 		}
+		observeV3SearchPostingDeleted(key)
 		if err := batch.Delete([]byte(key), nil); err != nil {
 			return err
 		}
@@ -657,6 +662,7 @@ func (s *SessionStore) appendV3SessionSearchMessageInBatch(batch *pebble.Batch, 
 		if err != nil {
 			return err
 		}
+		observeV3SearchPostingSet(key, payload)
 		if err := batch.Set([]byte(key), payload, nil); err != nil {
 			return err
 		}
@@ -673,6 +679,126 @@ func (s *SessionStore) appendV3SessionSearchMessageInBatch(batch *pebble.Batch, 
 	return batch.Set([]byte(keyV3SessionSearchMeta(session.ID)), payload, nil)
 }
 
+func (s *SessionStore) appendV3SessionSearchMessageInBatch(batch *pebble.Batch, reader pebble.Reader, session SessionSnapshot, archived bool, message MessageSnapshot) error {
+	if batch == nil || reader == nil {
+		return errors.New("session search index update requires batch and reader")
+	}
+	session = normalizeSessionOwnership(session)
+	if session.ID == "" || session.AccountScopeID == "" {
+		return nil
+	}
+	var meta v3SessionSearchSessionMeta
+	if ok, err := getJSONFromReader(reader, keyV3SessionSearchMeta(session.ID), &meta); err != nil {
+		return err
+	} else if !ok || meta.Version != v3SessionSearchIndexVersion {
+		// Per-session migration is bounded to metadata. Historical message rows are
+		// never scanned on an ordinary append; subsequent messages build v3
+		// postings incrementally.
+		if err := s.replaceV3SessionSearchIndexInBatch(batch, reader, session, archived, nil); err != nil {
+			return err
+		}
+	}
+	return appendV3SessionSearchMessagePostingsInBatch(batch, session.ID, message)
+}
+
+func appendV3SessionSearchMessagePostingsInBatch(batch *pebble.Batch, sessionID string, message MessageSnapshot) error {
+	for _, token := range v3SessionSearchTokens(message.Content) {
+		key := keyV3SessionSearchPosting(sessionID, "message", token)
+		record := v3SessionSearchIndexRecord{SessionID: sessionID, Snippet: &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, GlobalSeq: message.GlobalSeq, Text: matchCenteredV3SessionSearchSnippet(message.Content, token), CreatedAt: message.CreatedAt}}
+		payload, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		observeV3SearchPostingSet(key, payload)
+		if err := batch.Set([]byte(key), payload, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func v3SessionSearchMetadataTokens(session SessionSnapshot) map[string]v3SessionSearchIndexRecord {
+	entries := map[string]v3SessionSearchIndexRecord{}
+	add := func(text string, snippet *V3SessionSearchSnippet) {
+		for _, token := range v3SessionSearchTokens(text) {
+			centered := snippet
+			if snippet != nil {
+				copy := *snippet
+				copy.Text = matchCenteredV3SessionSearchSnippet(text, token)
+				centered = &copy
+			}
+			entries[token] = v3SessionSearchIndexRecord{SessionID: session.ID, Snippet: centered}
+		}
+	}
+	add(session.Title, &V3SessionSearchSnippet{Source: "title", Text: session.Title, CreatedAt: session.CreatedAt})
+	add(session.WorkspaceName, nil)
+	add(session.WorkspacePath, nil)
+	return entries
+}
+
+func keyV3SessionSearchPosting(sessionID, source, token string) string {
+	return fmt.Sprintf("%s%s/%s/%s", keyV3SessionSearchPostingPrefix, keyPart(sessionID), keyPart(source), keyPart(token))
+}
+
+func v3SessionSearchPostingPrefix(sessionID string) string {
+	return fmt.Sprintf("%s%s/", keyV3SessionSearchPostingPrefix, keyPart(sessionID))
+}
+
+func v3SessionSearchSessionHasTokens(reader pebble.Reader, sessionID string, tokens []string) ([]V3SessionSearchSnippet, bool, error) {
+	var meta v3SessionSearchSessionMeta
+	metaOK, err := getJSONFromReader(reader, keyV3SessionSearchMeta(sessionID), &meta)
+	if err != nil {
+		return nil, false, err
+	}
+	var snippets []V3SessionSearchSnippet
+	for _, token := range tokens {
+		var record v3SessionSearchIndexRecord
+		ok, err := getJSONFromReader(reader, keyV3SessionSearchPosting(sessionID, "message", token), &record)
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			ok, err = getJSONFromReader(reader, keyV3SessionSearchPosting(sessionID, "metadata", token), &record)
+			if err != nil {
+				return nil, false, err
+			}
+		}
+		if !ok && metaOK {
+			legacyKey, found := v3SessionSearchLegacyKeyForToken(meta.Keys, token)
+			if found {
+				ok, err = getJSONFromReader(reader, legacyKey, &record)
+				if err != nil {
+					return nil, false, err
+				}
+			}
+		}
+		if !ok {
+			return nil, false, nil
+		}
+		snippets = mergeV3SessionSearchSnippets(snippets, snippetList(record.Snippet))
+	}
+	return snippets, true, nil
+}
+
+func v3SessionSearchLegacyKeyForToken(keys []string, token string) (string, bool) {
+	tokenPart := keyPart(token)
+	for _, key := range keys {
+		rest, ok := strings.CutPrefix(key, keyV3SessionSearchAccountPrefix)
+		if !ok {
+			continue
+		}
+		parts := strings.SplitN(rest, "/", 4)
+		if len(parts) == 4 && parts[2] == tokenPart {
+			return key, true
+		}
+	}
+	return "", false
+}
+
+func sessionRecentIndexPrefixForSearch(options V3SessionSearchOptions) string {
+	return sessionRecentIndexPrefixForWorkset(V3SessionWorksetOptions{AccountScopeID: options.AccountScopeID, UserID: options.UserID, Global: options.Global, WorkspacePath: options.WorkspacePath, WorkspacePaths: options.WorkspacePaths})
+}
+
 func v3SessionSearchKeyWithUpdatedOrder(key string, updatedAt int64, sessionID string) (string, bool) {
 	rest, ok := strings.CutPrefix(key, keyV3SessionSearchAccountPrefix)
 	if !ok {
@@ -686,60 +812,41 @@ func v3SessionSearchKeyWithUpdatedOrder(key string, updatedAt int64, sessionID s
 }
 
 func removeV3SessionSearchIndexInBatch(batch *pebble.Batch, reader pebble.Reader, sessionID string) error {
-	var previous v3SessionSearchSessionMeta
-	if ok, err := getJSONFromReader(reader, keyV3SessionSearchMeta(sessionID), &previous); err != nil {
-		return err
-	} else if ok {
-		for _, key := range previous.Keys {
-			if err := batch.Delete([]byte(key), nil); err != nil {
-				return err
-			}
-		}
+	if batch == nil || reader == nil {
+		return errors.New("session search index delete requires batch and reader")
 	}
-	if err := batch.Delete([]byte(keyV3SessionSearchMeta(sessionID)), nil); err != nil {
+	// Stable v3 postings are session-prefixed, making purge one bounded range
+	// tombstone rather than one delete per token. Legacy v2 keys become
+	// unreachable when their per-session metadata is removed.
+	if err := deletePrefixInBatch(batch, v3SessionSearchPostingPrefix(sessionID)); err != nil {
 		return err
+	}
+	return batch.Delete([]byte(keyV3SessionSearchMeta(sessionID)), nil)
+}
+
+func (s *SessionStore) transitionV3SessionSearchLifecycleInBatch(batch *pebble.Batch, reader pebble.Reader, session SessionSnapshot, archived bool) error {
+	// Posting membership is lifecycle-neutral. Archive ordering and visibility are
+	// represented by the tombstone/recent indexes, so no token is moved here.
+	var meta v3SessionSearchSessionMeta
+	if ok, err := getJSONFromReader(reader, keyV3SessionSearchMeta(session.ID), &meta); err != nil {
+		return err
+	} else if !ok || meta.Version != v3SessionSearchIndexVersion {
+		return s.replaceV3SessionSearchIndexInBatch(batch, reader, session, archived, nil)
 	}
 	return nil
 }
 
-func v3SessionSearchIndexEntriesForSession(reader pebble.Reader, session SessionSnapshot, archived bool, extraMessages []MessageSnapshot) (map[string]v3SessionSearchIndexRecord, error) {
-	entries := map[string]v3SessionSearchIndexRecord{}
-	add := func(text string, snippet *V3SessionSearchSnippet) {
-		for _, token := range v3SessionSearchTokens(text) {
-			key := keyV3SessionSearchAccount(session.AccountScopeID, archived, token, session.UpdatedAt, session.ID)
-			if _, ok := entries[key]; !ok {
-				centered := snippet
-				if snippet != nil {
-					copy := *snippet
-					copy.Text = matchCenteredV3SessionSearchSnippet(text, token)
-					centered = &copy
-				}
-				entries[key] = v3SessionSearchIndexRecord{SessionID: session.ID, Archived: archived, Snippet: centered}
-			}
-		}
+func v3SessionSearchMetadataChanged(previous, next SessionSnapshot) bool {
+	return previous.Title != next.Title || previous.WorkspaceName != next.WorkspaceName || previous.WorkspacePath != next.WorkspacePath
+}
+
+func v3SessionMutationChangesSearchMetadata(kind string) bool {
+	switch kind {
+	case V3SessionMutationCreateSession, V3SessionMutationUpdateTitle:
+		return true
+	default:
+		return false
 	}
-	add(session.Title, &V3SessionSearchSnippet{Source: "title", Text: session.Title, CreatedAt: session.CreatedAt})
-	add(session.WorkspaceName, nil)
-	add(session.WorkspacePath, nil)
-	messages := append([]MessageSnapshot(nil), extraMessages...)
-	if reader != nil {
-		err := scanRangeFromReader(reader, scanRangeOptions{Prefix: V3SessionMessagePrefix(session.ID), Limit: sessionRecentIndexScanLimit()}, func(_ string, value []byte) (bool, error) {
-			var message MessageSnapshot
-			if err := json.Unmarshal(value, &message); err != nil {
-				return false, err
-			}
-			messages = append(messages, message)
-			return true, nil
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-	for _, message := range messages {
-		snippet := &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, GlobalSeq: message.GlobalSeq, CreatedAt: message.CreatedAt}
-		add(message.Content, snippet)
-	}
-	return entries, nil
 }
 
 func keyV3SessionSearchMeta(sessionID string) string {
@@ -894,7 +1001,7 @@ func matchCenteredV3SessionSearchSnippet(text, token string) string {
 	return string(runes[start : start+v3SessionSearchSnippetMaxRunes])
 }
 
-func v3SessionSearchRecordHasTokens(reader pebble.Reader, sessionID string, archived bool, tokens []string) (bool, error) {
+func v3SessionSearchRecordHasTokensV2(reader pebble.Reader, sessionID string, archived bool, tokens []string) (bool, error) {
 	var meta v3SessionSearchSessionMeta
 	ok, err := getJSONFromReader(reader, keyV3SessionSearchMeta(sessionID), &meta)
 	if err != nil || !ok {

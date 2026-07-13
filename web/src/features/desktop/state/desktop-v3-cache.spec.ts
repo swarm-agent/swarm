@@ -389,6 +389,56 @@ test('planSnapshot.apply true exposes Desktop plan execution view for live plan 
 })
 
 
+test('exit_plan_mode committed realtime events update plan and mode without a snapshot read', () => {
+  const state = bootstrappedState()
+  const planSavedEvent: V3SessionEvent = {
+    id: 'evt-plan-accepted',
+    session_id: sessionA.id,
+    seq: 10,
+    event_type: 'session.plan.saved',
+    payload: {
+      session_id: sessionA.id,
+      has_active_plan: true,
+      active_plan: {
+        id: 'accepted-plan',
+        title: 'Accepted plan',
+        plan: '# Accepted',
+        status: 'approved',
+        approval_state: 'approved',
+        updated_at: 10,
+        document: {
+          id: 'accepted-plan',
+          title: 'Accepted plan',
+          status: 'approved',
+          checkpoints: [{ id: 'cp-1', title: 'Start', status: 'in_progress' }],
+          active_checkpoint_id: 'cp-1',
+        },
+      },
+    },
+    ts_unix_ms: 10,
+  }
+  const modeUpdatedEvent: V3SessionEvent = {
+    id: 'evt-mode-auto',
+    session_id: sessionA.id,
+    seq: 11,
+    event_type: 'session.mode.updated',
+    payload: { session_id: sessionA.id, mode: 'auto', updated_at: 11 },
+    ts_unix_ms: 11,
+  }
+
+  applyRealtimeFrame(state, { frame: eventFrame(planSavedEvent.event_type, planSavedEvent, 'cursor-plan') })
+  applyRealtimeFrame(state, { frame: eventFrame(modeUpdatedEvent.event_type, modeUpdatedEvent, 'cursor-mode') })
+
+  const view = selectDesktopPlanExecutionView(state, sessionA.id)
+  assert.equal(view?.plan.id, 'accepted-plan')
+  assert.equal(view?.activeCheckpointId, 'cp-1')
+  const record = state.sessionsById[sessionA.id]
+  assert.equal(record?.kind, 'full')
+  if (record?.kind === 'full') assert.equal(record.session.mode, 'auto')
+  assert.equal(state.realtime.endpointCursor, 'cursor-mode')
+})
+
+
 test('session.plan.saved realtime event hydrates Desktop plan execution view from durable payload', () => {
   const state = createEmptyDesktopV3CacheState()
   applyRealtimeFrame(state, { frame: eventFrame('session.plan.saved', {
