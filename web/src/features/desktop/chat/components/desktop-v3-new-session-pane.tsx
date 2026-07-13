@@ -304,6 +304,17 @@ export function DesktopV3NewSessionPane({
   )
   const runStatusModel = starting ? { kind: 'starting' as const, label: 'Starting', active: true } : null
 
+  function handleAgentSelect(nextAgentName: string) {
+    const normalizedAgentName = nextAgentName.trim()
+    if (!normalizedAgentName) return
+    agentManuallySelectedRef.current = true
+    setSelectedAgent(normalizedAgentName)
+    const nextLock = resolveDesktopV3AgentModelLock(agentState.profiles, normalizedAgentName, mode)
+    if (nextLock.locked) {
+      setPreference((current) => preferenceFromAgentModelLock(nextLock, current, modelOptions))
+    }
+  }
+
   function handleModeSelect(nextMode: DesktopSessionMode) {
     modeManuallySelectedRef.current = true
     setMode(nextMode)
@@ -337,11 +348,12 @@ export function DesktopV3NewSessionPane({
   }
 
   function handleOpenAgentSettings() {
+    const search = { tab: 'agents' }
     if (routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab: 'agents' } })
+      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search })
       return
     }
-    void navigate({ to: '/settings', search: { tab: 'agents' } })
+    void navigate({ to: '/settings', search })
   }
 
   function handleOpenAuthSettings() {
@@ -495,6 +507,7 @@ export function DesktopV3NewSessionPane({
         modelLockNotice={selectedAgentModelLock.locked ? selectedAgentModelLock.disabledReason : ''}
         modelControlDetail={modelControlDetail({ locked: selectedAgentModelLock.locked, customized: selectedAgentModelLock.customized, modelLabel: selectedModelOption?.label || preference.model, thinking: preference.thinking, serviceTier: serviceTierFromPreference(preference) })}
         onOpenAgentSettings={handleOpenAgentSettings}
+        onAgentSelect={handleAgentSelect}
         needsAuth={needsAuth}
         onOpenAuthSettings={handleOpenAuthSettings}
         onConfirmAgentSettings={handleConfirmAgentSettings}

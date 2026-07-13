@@ -6,11 +6,13 @@ import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settin
 interface ModePickerProps {
   mode: DesktopSessionMode
   onSelect: (mode: DesktopSessionMode) => void
+  disabled?: boolean
+  triggerClassName?: string
 }
 
 const DROPDOWN_WIDTH = 180
 
-export function ModePicker({ mode, onSelect }: ModePickerProps) {
+export function ModePicker({ mode, onSelect, disabled = false, triggerClassName = '' }: ModePickerProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
@@ -136,7 +138,9 @@ export function ModePicker({ mode, onSelect }: ModePickerProps) {
         ref={triggerRef}
         type="button"
         onClick={() => setOpen((prev) => !prev)}
-        className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition"
+        disabled={disabled}
+        aria-label={`Session mode: ${mode}`}
+        className={`inline-flex min-w-0 items-center gap-1.5 rounded-none border-0 border-b-2 border-transparent bg-transparent px-2.5 py-1.5 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50 ${triggerClassName}`}
       >
         <ModeIcon size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
         <span className="uppercase tracking-wider font-semibold text-[var(--app-primary)]">{mode}</span>

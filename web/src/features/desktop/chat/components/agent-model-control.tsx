@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Bot, Check, ChevronDown, Cpu, ExternalLink, GitBranch, Lightbulb, Lock, Zap, ZapOff } from 'lucide-react'
+import { Check, ChevronDown, Cpu, ExternalLink, GitBranch, Lightbulb, Lock, Settings2, Zap, ZapOff } from 'lucide-react'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
@@ -358,11 +358,11 @@ export function AgentModelControl({
 
   const modal = open ? createPortal(
     <div className="fixed inset-0 z-[9999] flex items-end justify-center bg-black/50 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Agent and model settings">
-      <div className="flex max-h-[min(94vh,880px)] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl">
+      <div className="flex max-h-[min(94vh,880px)] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl">
         <div className="flex items-start justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4">
           <div className="min-w-0">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent setup</div>
-            <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">{draftProfile?.name || currentAgent || 'Agent'}</div>
+            <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">{draftProfile ? agentLabel(draftProfile) : currentAgent === 'swarm' ? 'Swarm' : currentAgent || 'Agent'}</div>
             <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Changes are staged here and saved to the agent profile only when confirmed.</div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -387,7 +387,6 @@ export function AgentModelControl({
                     return (
                       <button key={profile.name} type="button" onClick={() => chooseAgent(profile)} className={`flex w-full items-start gap-2 px-3 py-2.5 text-left text-sm transition ${selected ? 'bg-[var(--app-surface-subtle)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
                         {selected ? <Check size={14} className="mt-0.5 shrink-0 text-[var(--app-primary)]" /> : <span className="mt-0.5 w-[14px] shrink-0" />}
-                        <Bot size={14} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
                         <span className="min-w-0 flex-1">
                           <span className="block truncate font-medium">{agentLabel(profile)}</span>
                           <span className="mt-0.5 block truncate text-[11px] text-[var(--app-text-subtle)]">{modelBehaviorLabel(profile)} · {agentModeLabel(profile)}</span>
@@ -407,12 +406,18 @@ export function AgentModelControl({
               <SummaryCard label="Current resolved model" value={selectedModelLabel} detail={pricingLabel} />
             </div>
 
-            <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                <ModeButton selected={effectiveDraftMode === 'single'} title="Single" description="Use one explicit model for this agent." onClick={() => setDraftMode('single')} />
-                <ModeButton selected={effectiveDraftMode === 'split'} title="Split" description={splitModeAllowed ? 'Use explicit separate plan and auto models.' : 'Available only for plan-capable agents.'} onClick={() => { if (splitModeAllowed) setDraftMode('split') }} disabled={!splitModeAllowed} />
+            <div className="mt-4 border-y border-[var(--app-border)] py-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent model policy</div>
+                  <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Use one model everywhere or separate plan and auto models.</div>
+                </div>
+                <div role="group" aria-label="Agent model policy" className="grid w-full shrink-0 grid-cols-2 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-bg)] p-1 sm:w-64">
+                  <CompactChoice selected={effectiveDraftMode === 'single'} label="Single" onClick={() => setDraftMode('single')} />
+                  <CompactChoice selected={effectiveDraftMode === 'split'} label="Split" onClick={() => { if (splitModeAllowed) setDraftMode('split') }} disabled={!splitModeAllowed} />
+                </div>
               </div>
+              {!splitModeAllowed ? <div className="mt-2 text-[11px] text-[var(--app-text-subtle)]">Split policy is available only for plan-capable agents.</div> : null}
               {modelLocked ? (
                 <div className="mt-3 flex gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-[11px] text-[var(--app-text-muted)]">
                   <Lock size={13} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
@@ -449,11 +454,11 @@ export function AgentModelControl({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        title={triggerDetail ? `Open model settings for ${currentAgent || selectedPrimaryAgent || 'Agent'}: ${triggerDetail}` : 'Open agent and model setup'}
+        title={triggerDetail ? `Open agent setup: ${triggerDetail}` : 'Open agent setup'}
         className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
       >
-        <Bot size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
-        <span className="max-w-[110px] truncate text-[var(--app-text)]">{currentAgent || selectedPrimaryAgent || 'Agent'}</span>
+        <Settings2 size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
+        <span className="shrink-0 text-[var(--app-text)]">Setup</span>
         <span className="hidden min-w-0 max-w-[260px] items-center gap-1 truncate text-[var(--app-text-muted)] min-[1120px]:inline-flex">
           {selectedModel ? (
             <>
@@ -482,11 +487,16 @@ function SummaryCard({ label, value, detail = '' }: { label: string; value: stri
   )
 }
 
-function ModeButton({ selected, title, description, onClick, disabled = false }: { selected: boolean; title: string; description: string; onClick: () => void; disabled?: boolean }) {
+function CompactChoice({ selected, label, onClick, disabled = false }: { selected: boolean; label: string; onClick: () => void; disabled?: boolean }) {
   return (
-    <button type="button" onClick={onClick} disabled={disabled} className={`rounded-xl border px-3 py-2 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${selected ? 'border-[var(--app-border-accent)] bg-[var(--app-primary-soft)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}>
-      <span className="flex items-center gap-2 text-sm font-semibold">{selected ? <Check size={14} className="text-[var(--app-primary)]" /> : null}{title}</span>
-      <span className="mt-1 block text-[11px] leading-4">{description}</span>
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded px-4 py-2 text-sm font-semibold capitalize transition disabled:cursor-not-allowed disabled:opacity-45 ${selected ? 'bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-sm' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}
+    >
+      {label}
     </button>
   )
 }

@@ -523,25 +523,24 @@ function agentRuntimeSummary(profile: AgentProfileRecord): string {
   return runtimeModeLabel(mode);
 }
 
+function agentModelSettingsSummary(provider: string, model: string, thinking: string, serviceTier: string, fallback: string): string {
+  const modelLabel = provider.trim() && model.trim() ? `${provider.trim()}/${model.trim()}` : fallback;
+  const normalizedTier = serviceTier.trim();
+  const fastLabel = normalizedTier === "fast" ? "on" : normalizedTier || "off";
+  return `${modelLabel} · Thinking: ${thinking.trim() || "off"} · Fast: ${fastLabel}`;
+}
+
 function agentProviderModelSummary(
   profile: AgentProfileRecord,
   fallback = "No model configured",
 ): string {
   if (profile.modelMode === "split") {
-    const planProvider = profile.planProvider.trim();
-    const planModel = profile.planModel.trim();
-    const autoProvider = profile.autoProvider.trim();
-    const autoModel = profile.autoModel.trim();
-    if (planProvider && planModel && autoProvider && autoModel) {
-      return `Plan ${planProvider}/${planModel} → Auto ${autoProvider}/${autoModel}`;
-    }
+    return [
+      `Plan ${agentModelSettingsSummary(profile.planProvider, profile.planModel, profile.planThinking, profile.planServiceTier, fallback)}`,
+      `Auto ${agentModelSettingsSummary(profile.autoProvider, profile.autoModel, profile.autoThinking, profile.autoServiceTier, fallback)}`,
+    ].join(" → ");
   }
-  const provider = profile.provider.trim();
-  const model = profile.model.trim();
-  if (provider && model) {
-    return `${provider}/${model}`;
-  }
-  return fallback;
+  return agentModelSettingsSummary(profile.provider, profile.model, profile.thinking, profile.autoServiceTier, fallback);
 }
 
 function formatCurrentDefaultModel(preview: ProviderDefaultsPreviewRecord | null): string {
@@ -851,7 +850,7 @@ function SplitModelSection({
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Service tier</label>
+          <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">Fast / service tier</label>
           <div className="relative min-w-0 flex-1">
             <select
               value={normalizedServiceTier}
@@ -2136,7 +2135,7 @@ export function AgentsSettingsPage() {
               Agents
             </h1>
             <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-              Manage desktop and TUI agent profiles.
+              Canonical desktop and TUI agent profiles, including the saved thinking level and fast service tier.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -2248,7 +2247,7 @@ export function AgentsSettingsPage() {
                           />
                         )}
                       </div>
-                      <span className="w-full truncate text-xs font-medium text-[var(--app-text-muted)]">
+                      <span className="w-full break-words text-xs font-medium leading-5 text-[var(--app-text-muted)]">
                         {agentProviderModelSummary(profile)}
                       </span>
                       <span className="mt-1 w-full truncate text-[11px] text-[var(--app-text-muted)] opacity-80">
@@ -2288,7 +2287,7 @@ export function AgentsSettingsPage() {
                           </span>
                         ) : null}
                       </div>
-                      <span className="w-full truncate text-xs font-medium text-[var(--app-text-muted)]">
+                      <span className="w-full break-words text-xs font-medium leading-5 text-[var(--app-text-muted)]">
                         {utilityTagged
                           ? agentProviderModelSummary(profile, utilityLabel)
                           : agentProviderModelSummary(profile)}
@@ -2322,7 +2321,7 @@ export function AgentsSettingsPage() {
                       <div className="mb-0.5 w-full truncate font-semibold text-[var(--app-text)]">
                         {profile.name}
                       </div>
-                      <span className="w-full truncate text-xs font-medium text-[var(--app-text-muted)]">
+                      <span className="w-full break-words text-xs font-medium leading-5 text-[var(--app-text-muted)]">
                         {agentProviderModelSummary(profile)}
                       </span>
                       <span className="mt-1 w-full truncate text-[11px] text-[var(--app-text-muted)] opacity-80">
@@ -2689,7 +2688,7 @@ export function AgentsSettingsPage() {
 
                   <div className="flex items-center px-4 py-3">
                     <label className="w-1/4 shrink-0 text-xs font-bold uppercase tracking-widest text-[var(--app-text-muted)]">
-                      Service tier
+                      Fast / service tier
                     </label>
                     <div className="relative w-full">
                       <select

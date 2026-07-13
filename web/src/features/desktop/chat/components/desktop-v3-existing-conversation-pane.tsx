@@ -1677,15 +1677,16 @@ export function DesktopV3ExistingConversationPane({
   }, [mode, modeCommand, onModeChange, onModeCommandHandled]);
 
   function handleOpenAgentSettings() {
+    const search = { tab: "agents", ...(normalizedSessionId ? { returnSessionId: normalizedSessionId } : {}) };
     if (routeWorkspaceSlug) {
       void navigate({
         to: "/$workspaceSlug/settings",
         params: { workspaceSlug: routeWorkspaceSlug },
-        search: { tab: "agents" },
+        search,
       });
       return;
     }
-    void navigate({ to: "/settings", search: { tab: "agents" } });
+    void navigate({ to: "/settings", search });
   }
 
   function handleOpenAuthSettings() {
@@ -1698,6 +1699,28 @@ export function DesktopV3ExistingConversationPane({
       return;
     }
     void navigate({ to: "/settings", search: { tab: "auth" } });
+  }
+
+  async function handleAgentSelect(nextAgentName: string) {
+    const normalizedAgentName = nextAgentName.trim();
+    if (!normalizedSessionId || !normalizedAgentName || normalizedAgentName === selectedAgent.trim()) return;
+    setSendError(null);
+    try {
+      const agentResponse = await updateSessionV3Agent(normalizedSessionId, normalizedAgentName);
+      dispatchDesktopV3Cache({
+        type: "mutation.sessionSettingsResult",
+        raw: sessionV3AgentSettingsMutationResponse(agentResponse, normalizedSessionId),
+      });
+      setSelectedAgent(normalizedAgentName);
+      localSettingsDirtyRef.current.agent = false;
+      const nextLock = resolveDesktopV3AgentModelLock(agentState.profiles, normalizedAgentName, mode);
+      if (nextLock.locked) {
+        setPreference((current) => preferenceFromAgentModelLock(nextLock, current, modelOptions));
+      }
+    } catch (error) {
+      if (mountedRef.current) setSendError(error instanceof Error ? error.message : "Failed to switch agent");
+      throw error;
+    }
   }
 
   function handleModeSelect(nextMode: DesktopSessionMode) {
@@ -2411,6 +2434,7 @@ export function DesktopV3ExistingConversationPane({
               serviceTier: serviceTierFromPreference(preference),
             })}
             onOpenAgentSettings={handleOpenAgentSettings}
+            onAgentSelect={handleAgentSelect}
             needsAuth={needsAuth}
             onOpenAuthSettings={handleOpenAuthSettings}
             onConfirmAgentSettings={handleConfirmAgentSettings}

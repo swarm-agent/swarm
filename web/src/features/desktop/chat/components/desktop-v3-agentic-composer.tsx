@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
-import { AlertTriangle, ChevronsUp, Lightbulb, LoaderCircle, Mic, Minimize2, NotepadText, Send, Settings2, Square, Zap, ZapOff } from 'lucide-react'
+import { AlertTriangle, LoaderCircle, Mic, Minimize2, Send, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { AgentProfileRecord, ModelOptionRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
-import { modelServiceTierOptions, normalizeModelServiceTier, supportsModelServiceTier } from '../services/model-options'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
 import {
   chatMentionCandidates,
@@ -12,7 +11,9 @@ import {
   mentionPaletteQuery,
   normalizeMentionSubagents,
 } from '../services/subagent-mentions'
-import { AgentModelControl, type AgentModelControlConfirmInput } from './agent-model-control'
+import type { AgentModelControlConfirmInput } from './agent-model-control'
+import { AgentPicker } from './agent-picker'
+import { ModePicker } from './mode-picker'
 import { DesktopMentionPanel } from './desktop-mention-panel'
 import { DesktopSlashCommandPanel } from './desktop-slash-command-panel'
 
@@ -101,10 +102,6 @@ function speechRecognitionErrorMessage(error: string, message = ''): string {
   }
 }
 
-function normalizeThinking(value: string): string {
-  return value.trim() || 'off'
-}
-
 function clampContextUsagePercent(value?: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 0
   return Math.max(0, Math.min(100, value))
@@ -138,7 +135,8 @@ export interface DesktopV3AgenticComposerProps {
   modelPickerDisabledReason?: string
   modelLockNotice?: string
   modelControlDetail?: string
-  onOpenAgentSettings?: () => void
+  onOpenAgentSettings?: (agent?: string) => void
+  onAgentSelect?: (agent: string) => void | Promise<void>
   needsAuth?: boolean
   onOpenAuthSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
@@ -180,20 +178,11 @@ export function DesktopV3AgenticComposer({
   currentAgent,
   selectedPrimaryAgent,
   agents,
-  modelOptions,
-  selectedModelKey,
-  selectedServiceTier = '',
-  agentSettingsOpenSignal = 0,
-  modelPickerDisabled = false,
-  modelPickerDisabledReason = '',
-  modelLockNotice = '',
-  modelControlDetail = '',
   onOpenAgentSettings,
+  onAgentSelect,
   needsAuth = false,
   onOpenAuthSettings,
-  onConfirmAgentSettings,
   agentModelControlBusy = false,
-  thinking,
   thinkingTagsEnabled,
   onThinkingTagsToggle,
   thinkingTagsBusy = false,
@@ -225,7 +214,6 @@ export function DesktopV3AgenticComposer({
   const [dictationError, setDictationError] = useState<string | null>(null)
   const [slashSelectionIndex, setSlashSelectionIndex] = useState(0)
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
-  const [internalAgentSettingsSignal, setInternalAgentSettingsSignal] = useState(0)
 
   const composerDisabled = disabled
   const showDictationButton = true
@@ -239,17 +227,6 @@ export function DesktopV3AgenticComposer({
   const slashCommands = useMemo(() => slashPalette.matches.filter((command) => command.state === 'ready'), [slashPalette.matches])
   const mentionPaletteIsActive = useMemo(() => mentionPaletteActive(draft, mentionSubagents), [draft, mentionSubagents])
   const mentionPaletteMatches = useMemo(() => chatMentionCandidates(mentionPaletteQuery(draft), mentionSubagents), [draft, mentionSubagents])
-  const selectedModel = useMemo(() => modelOptions.find((option) => option.key === selectedModelKey) ?? null, [modelOptions, selectedModelKey])
-  const modelPickerLocked = modelPickerDisabled || Boolean(modelLockNotice.trim())
-  const modelPickerReason = modelPickerDisabledReason || modelLockNotice
-  const normalizedThinking = normalizeThinking(thinking)
-  const serviceTierSupported = selectedModel ? supportsModelServiceTier(selectedModel.provider, selectedModel.model, selectedModel) : false
-  const normalizedServiceTier = selectedModel ? normalizeModelServiceTier(selectedModel.provider, selectedServiceTier) : ''
-  const selectedServiceTierLabel = selectedModel && normalizedServiceTier
-    ? (modelServiceTierOptions(selectedModel.provider, selectedModel.model, selectedModel).find((option) => option.value === normalizedServiceTier)?.label ?? normalizedServiceTier)
-    : 'standard'
-  const ModeIcon = mode === 'plan' ? NotepadText : ChevronsUp
-  const effectiveAgentSettingsSignal = agentSettingsOpenSignal + internalAgentSettingsSignal
   const dictationComposer = dictationEnabled
     ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
     : draft
@@ -494,7 +471,7 @@ export function DesktopV3AgenticComposer({
     if (command.state !== 'ready') return
     void onSlashCommand?.(command, draft)
     if (command.action.kind === 'open-model-picker' || command.action.kind === 'toggle-fast') {
-      setInternalAgentSettingsSignal((current) => current + 1)
+      onOpenAgentSettings?.(currentAgent)
       onDraftChange('')
       return
     }
@@ -504,7 +481,7 @@ export function DesktopV3AgenticComposer({
       return
     }
     if (!slashPalette.hasArguments) onDraftChange('')
-  }, [draft, onCompact, onDraftChange, onSlashCommand, slashPalette.hasArguments])
+  }, [currentAgent, draft, onCompact, onDraftChange, onOpenAgentSettings, onSlashCommand, slashPalette.hasArguments])
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (mentionPaletteIsActive && mentionPaletteMatches.length > 0) {
@@ -576,10 +553,10 @@ export function DesktopV3AgenticComposer({
       aria-label={dictationEnabled ? 'Stop microphone dictation' : 'Start microphone dictation'}
       title={dictationSupported ? (dictationEnabled ? 'Stop dictation' : 'Start dictation') : 'Speech recognition is not available in this browser'}
       className={dictationEnabled
-        ? 'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-sm transition hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-50'
-        : 'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] text-[var(--app-text-muted)] shadow-sm transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50'}
+        ? 'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-sm transition hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-50'
+        : 'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-surface)] text-[var(--app-text-muted)] shadow-sm transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50'}
     >
-      <Mic size={17} className={dictationListening ? 'animate-pulse' : undefined} />
+      <Mic size={15} className={dictationListening ? 'animate-pulse' : undefined} />
     </button>
   ) : null
 
@@ -592,8 +569,8 @@ export function DesktopV3AgenticComposer({
       aria-label={contextTooltip || 'Compact conversation'}
       style={mobile ? mobileContextProgressStyle : undefined}
       className={mobile
-        ? 'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full p-[2px] text-[9px] font-semibold uppercase tracking-wide text-[var(--app-primary)] shadow-sm transition hover:scale-[1.03] disabled:cursor-not-allowed disabled:opacity-50'
-        : 'inline-flex min-h-6 items-center gap-1 rounded-full bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium tabular-nums text-[var(--app-text)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50'}
+        ? 'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-none border-b-2 border-[var(--app-border-accent)] p-[2px] text-[9px] font-semibold uppercase tracking-wide text-[var(--app-primary)] shadow-sm transition hover:scale-[1.03] disabled:cursor-not-allowed disabled:opacity-50'
+        : 'inline-flex min-h-7 min-w-0 items-center gap-1 rounded-none border-0 border-b-2 border-transparent bg-transparent px-2 text-[11px] font-medium tabular-nums text-[var(--app-text)] transition hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50'}
     >
       {mobile ? (
         <span className="flex h-full w-full items-center justify-center rounded-full bg-[var(--app-bg-alt)]">{mobileContextUsageLabel}</span>
@@ -605,14 +582,6 @@ export function DesktopV3AgenticComposer({
       )}
     </button>
   )
-
-  const modelSummary = selectedModel?.label || selectedModel?.model || 'Model'
-  const settingsSummary = `${modelSummary} · thinking ${normalizedThinking}${serviceTierSupported ? ` · tier ${selectedServiceTierLabel}` : ''}`
-
-  function handleModeToggle() {
-    if (!onModeSelect) return
-    onModeSelect(mode === 'plan' ? 'auto' : 'plan')
-  }
 
   return (
     <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-v3-agentic-composer">
@@ -655,21 +624,20 @@ export function DesktopV3AgenticComposer({
               Use ↑/↓ to choose a subagent, Tab or Enter to insert, then continue typing your task.
             </div>
           ) : null}
-          <div className="min-w-0 overflow-hidden border-t border-[var(--app-border)] px-4 py-2 text-[11px]">
+          <div className="min-w-0 overflow-hidden border-y border-[var(--app-border-strong)] bg-transparent px-4 py-1 text-[11px]">
             <div className="hidden min-w-0 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {showModePicker ? (
-                  <button type="button" onClick={handleModeToggle} disabled={!onModeSelect || composerDisabled} title="Toggle plan/auto mode" className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--app-primary)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50">
-                    <ModeIcon size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
-                    {mode}
-                  </button>
+                  <>
+                    <ModePicker mode={mode} onSelect={(nextMode) => onModeSelect?.(nextMode)} disabled={!onModeSelect || composerDisabled} />
+                    <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={onOpenAgentSettings} disabled={composerDisabled || agentModelControlBusy} dropdownAlign="left" />
+                  </>
                 ) : executionLabel ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
                     <span className="text-[var(--app-text-subtle)]">Execution:</span>
                     <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">{executionLabel}</span>
                   </span>
                 ) : null}
-                {showModePicker ? <AgentModelControl currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} selectedModel={selectedModel} selectedServiceTier={selectedServiceTier} selectedThinking={normalizedThinking} modelOptions={modelOptions} modelLocked={modelPickerLocked} modelLockNotice={modelPickerReason} triggerDetail={modelControlDetail || settingsSummary} openSignal={effectiveAgentSettingsSignal} onOpenAgentSettings={onOpenAgentSettings} onConfirmAgentSettings={onConfirmAgentSettings} busy={agentModelControlBusy} /> : null}
                 {needsAuth ? (
                   <button type="button" onClick={onOpenAuthSettings} disabled={!onOpenAuthSettings} className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1 text-[11px] font-semibold text-[var(--app-warning)] transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60" title="Open auth settings to add a provider credential">
                     <AlertTriangle size={13} className="shrink-0" />
@@ -685,47 +653,27 @@ export function DesktopV3AgenticComposer({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
-                <Button size="sm" className="h-10 w-10 shrink-0 rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
-                  {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <Send size={20} />}
+                <Button size="sm" className="h-9 w-9 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                  {canStop ? <Square size={16} /> : busy ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={17} />}
                 </Button>
               </div>
             </div>
             <div className="flex w-full min-w-0 min-[1000px]:hidden">
-              <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_40px_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_40px_40px] sm:gap-2">
-                <div className="flex h-10 min-w-0 overflow-hidden rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] shadow-sm">
+              <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_36px_36px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_36px_36px] sm:gap-2">
+                <div className="flex h-10 min-w-0 items-center overflow-hidden rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] px-1.5 shadow-sm">
                   {showModePicker ? (
-                    <button type="button" onClick={handleModeToggle} disabled={!onModeSelect || composerDisabled} className="inline-flex h-full shrink-0 items-center gap-1 border-r border-[var(--app-border)] px-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-primary)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50" title="Toggle plan/auto mode">
-                      <ModeIcon size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
-                      {mode}
-                    </button>
-                  ) : null}
-                  <button type="button" onClick={() => setInternalAgentSettingsSignal((current) => current + 1)} className="flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-hidden px-2 text-left transition hover:bg-[var(--app-surface-hover)]" title="Open agent defaults and model settings">
-                    <Settings2 size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
-                    <span className="flex min-w-0 flex-col leading-tight">
-                      <span className="truncate text-[11px] font-medium text-[var(--app-text)] sm:text-[12px]">{currentAgent}</span>
-                      <span className="flex min-w-0 items-center gap-1 truncate text-[10px] text-[var(--app-text-muted)]">
-                        {needsAuth ? (
-                          <span className="inline-flex min-w-0 items-center gap-1 truncate font-semibold text-[var(--app-warning)]">
-                            <AlertTriangle size={10} className="shrink-0" />
-                            <span className="truncate">Needs auth!</span>
-                          </span>
-                        ) : (
-                          <>
-                            <span className="truncate">{modelSummary}</span>
-                            <Lightbulb size={10} className="shrink-0" />
-                            <span>{normalizedThinking}</span>
-                            {serviceTierSupported ? (normalizedServiceTier ? <Zap size={10} className="shrink-0" /> : <ZapOff size={10} className="shrink-0" />) : null}
-                            {serviceTierSupported ? <span>{selectedServiceTierLabel}</span> : null}
-                          </>
-                        )}
-                      </span>
-                    </span>
-                  </button>
+                    <>
+                      <ModePicker mode={mode} onSelect={(nextMode) => onModeSelect?.(nextMode)} disabled={!onModeSelect || composerDisabled} triggerClassName="h-full shrink-0 px-2" />
+                      <AgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} mode={mode} onSelect={(agent) => onAgentSelect?.(agent)} onOpenSettings={onOpenAgentSettings} disabled={composerDisabled || agentModelControlBusy} dropdownAlign="left" triggerClassName="w-full justify-between px-1.5 py-1.5" />
+                    </>
+                  ) : (
+                    <span className="min-w-0 truncate px-2 text-[11px] font-semibold text-[var(--app-text)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
+                  )}
                 </div>
                 {compactButton(true)}
                 {dictationButton()}
-                <Button size="sm" className="h-10 w-10 shrink-0 rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
-                  {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <Send size={20} />}
+                <Button size="sm" className="h-9 w-9 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                  {canStop ? <Square size={16} /> : busy ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={17} />}
                 </Button>
               </div>
             </div>
