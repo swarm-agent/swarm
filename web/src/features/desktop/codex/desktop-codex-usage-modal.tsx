@@ -103,6 +103,8 @@ export function DesktopCodexUsageModal({ open, onOpenChange, onOpenAuthSettings 
   if (!open) return null
   const authRequired = `${usageError ?? ''} ${creditsError ?? ''}`.toLowerCase().includes('oauth')
   const initialLoading = !usage && !credits && !usageError && !creditsError
+  const weeklyWindow = [usage?.rate_limit?.primary_window, usage?.rate_limit?.secondary_window]
+    .find((window) => window?.limit_window_seconds === 7 * 24 * 60 * 60)
   return (
     <Dialog role="dialog" aria-modal="true" aria-label="Codex usage" className="z-[85] p-3 sm:p-6">
       <DialogBackdrop onClick={() => onOpenChange(false)} />
@@ -119,10 +121,7 @@ export function DesktopCodexUsageModal({ open, onOpenChange, onOpenAuthSettings 
           ) : (
             <>
           {usageError ? <Card className="mb-4 border-[var(--app-error)] p-4 text-sm text-[var(--app-error)]">Usage could not be loaded: {usageError} <Button className="ml-2" variant="secondary" size="sm" onClick={authRequired ? onOpenAuthSettings : () => void refresh()}>{authRequired ? 'Open Auth settings' : 'Retry'}</Button></Card> : null}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <LimitCard window={usage?.rate_limit?.primary_window} fallback="Primary" />
-            <LimitCard window={usage?.rate_limit?.secondary_window} fallback="Secondary" />
-          </div>
+          <LimitCard window={weeklyWindow} fallback="Weekly" />
           <div className="mt-7 flex items-baseline justify-between gap-3"><h3 className="text-base font-semibold text-[var(--app-text)]">Usage-limit resets</h3><span className="text-xs text-[var(--app-text-muted)]">{credits?.available_count ?? usage?.rate_limit_reset_credits?.available_count ?? 0} available</span></div>
           {creditsError ? <Card className="mt-3 border-[var(--app-error)] p-4 text-sm text-[var(--app-error)]">Resets could not be loaded: {creditsError} <Button className="ml-2" variant="secondary" size="sm" onClick={authRequired ? onOpenAuthSettings : () => void refresh()}>{authRequired ? 'Open Auth settings' : 'Retry'}</Button></Card> : null}
           {!creditsError && !loading && sortedCredits.length === 0 ? <Card className="mt-3 p-5 text-sm text-[var(--app-text-muted)]">No reset credits are available for this account.</Card> : null}
