@@ -310,6 +310,18 @@ func TestParseChatCompletionResponseExtractsReasoningContent(t *testing.T) {
 	}
 }
 
+func TestFireworksReasoningSnapshotsDeclareReplaceMode(t *testing.T) {
+	var events []provideriface.StreamEvent
+	emitFireworksReasoningSnapshot(func(event provideriface.StreamEvent) { events = append(events, event) }, fireworksReasoningKey(0), "Plan: inspect")
+	if len(events) != 1 {
+		t.Fatalf("reasoning events = %d, want 1", len(events))
+	}
+	event := events[0]
+	if event.Delta != "Plan: inspect" || event.DeltaMode != provideriface.StreamEventDeltaModeReplace || event.ReasoningKey != "fireworks-reasoning" {
+		t.Fatalf("reasoning event contract = %#v", event)
+	}
+}
+
 func TestFireworksStreamStateAccumulatesReasoningContent(t *testing.T) {
 	state := newFireworksStreamState()
 	state.apply(chatCompletionChunk{Choices: []chatCompletionChoice{{

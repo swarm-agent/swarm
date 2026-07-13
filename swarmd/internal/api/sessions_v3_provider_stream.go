@@ -175,13 +175,29 @@ func (s *sessionV3ProviderStreamState) handleReasoningLocked(event provideriface
 			return
 		}
 	}
-	previous := strings.TrimSpace(s.reasoningByKey[reasoningKey])
-	next := sessionV3MergeReasoningSnapshotOrChunk(previous, event.Delta)
+	previous := s.reasoningByKey[reasoningKey]
+	next := sessionV3ApplyReasoningUpdate(previous, event.Delta, event.DeltaMode)
 	if next == "" || next == previous {
 		return
 	}
 	s.reasoningByKey[reasoningKey] = next
 	s.progressErr = s.sink.TryReplaceReasoning(s.tracker.Step, reasoningKey, next)
+}
+
+func sessionV3ApplyReasoningUpdate(previous, incoming string, mode provideriface.StreamEventDeltaMode) string {
+	if incoming == "" {
+		return previous
+	}
+	switch mode {
+	case provideriface.StreamEventDeltaModeAppend:
+		return previous + incoming
+	case provideriface.StreamEventDeltaModeReplace:
+		return strings.TrimSpace(incoming)
+	default:
+		// Legacy adapters emitted untyped snapshots. Keep their historical
+		// containment behavior rather than guessing append/replace from timing.
+		return sessionV3MergeReasoningSnapshotOrChunk(previous, incoming)
+	}
 }
 
 func (s *sessionV3ProviderStreamState) FinishStep() error {

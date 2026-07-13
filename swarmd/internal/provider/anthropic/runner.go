@@ -110,7 +110,7 @@ func (s *anthropicStreamState) HandleEvent(event anthropicapi.MessageStreamEvent
 			if thinking := block.Thinking; strings.TrimSpace(thinking) != "" {
 				next := s.appendThinking(variant.Index, thinking)
 				if onEvent != nil {
-					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: next, ReasoningKey: anthropicReasoningKey(variant.Index)})
+					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: next, DeltaMode: provideriface.StreamEventDeltaModeReplace, ReasoningKey: anthropicReasoningKey(variant.Index)})
 				}
 			}
 		}
@@ -131,7 +131,7 @@ func (s *anthropicStreamState) HandleEvent(event anthropicapi.MessageStreamEvent
 			if strings.TrimSpace(delta.Thinking) != "" {
 				next := s.appendThinking(variant.Index, delta.Thinking)
 				if onEvent != nil {
-					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: next, ReasoningKey: reasoningKey})
+					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: next, DeltaMode: provideriface.StreamEventDeltaModeReplace, ReasoningKey: reasoningKey})
 				}
 			}
 		case anthropicapi.SignatureDelta:

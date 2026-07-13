@@ -197,7 +197,14 @@ type AssistantMessage struct {
 
 type StreamEventType string
 
+// StreamEventDeltaMode makes the provider adapter's text operation explicit.
+// Reasoning summary events must set append for raw chunks or replace for full snapshots.
+type StreamEventDeltaMode string
+
 const (
+	StreamEventDeltaModeAppend  StreamEventDeltaMode = "append"
+	StreamEventDeltaModeReplace StreamEventDeltaMode = "replace"
+
 	StreamEventOutputTextDelta       StreamEventType = "response.output_text.delta"
 	StreamEventReasoningSummaryDelta StreamEventType = "response.reasoning_summary_text.delta"
 	StreamEventAssistantCommentary   StreamEventType = "response.assistant_commentary.delta"
@@ -214,6 +221,7 @@ const (
 type StreamEvent struct {
 	Type         StreamEventType
 	Delta        string
+	DeltaMode    StreamEventDeltaMode
 	Phase        AssistantPhase
 	ReasoningKey string
 

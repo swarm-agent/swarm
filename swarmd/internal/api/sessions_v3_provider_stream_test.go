@@ -68,6 +68,18 @@ func (w *sessionsV3BlockingDurableProgressWriter) RecordReasoningEvent(job sessi
 	return w.base.RecordReasoningEvent(job, eventType, step, eventIndex, reasoningKey, delta, deltaMode, summary)
 }
 
+func TestV3ReasoningUpdatesUseExplicitProviderDeltaMode(t *testing.T) {
+	if got := sessionV3ApplyReasoningUpdate("The model is thin", "king fast", provideriface.StreamEventDeltaModeAppend); got != "The model is thinking fast" {
+		t.Fatalf("append update = %q, want exact concatenation", got)
+	}
+	if got := sessionV3ApplyReasoningUpdate("The model is thinking fast", "Corrected summary", provideriface.StreamEventDeltaModeReplace); got != "Corrected summary" {
+		t.Fatalf("replace update = %q, want exact snapshot", got)
+	}
+	if got := sessionV3ApplyReasoningUpdate("thinking through files", "thinking", ""); got != "thinking through files" {
+		t.Fatalf("legacy update = %q, want contained snapshot preserved", got)
+	}
+}
+
 func TestV3AssistantCallbackPublishesAllDeltasWhileDurableWriterIsBlocked(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "callback-live-blocked-create", "callback live blocked", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})

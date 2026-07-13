@@ -133,7 +133,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 			if choice.Delta.ReasoningContent != "" {
 				reasoningKey := fireworksReasoningKey(choice.Index)
 				reasoningByKey[reasoningKey] += choice.Delta.ReasoningContent
-				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: reasoningByKey[reasoningKey], ReasoningKey: reasoningKey})
+				emitFireworksReasoningSnapshot(onEvent, reasoningKey, reasoningByKey[reasoningKey])
 			}
 			if choice.Delta.Content != "" {
 				onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: choice.Delta.Content})
@@ -158,6 +158,18 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 		result.Model = modelID
 	}
 	return result, nil
+}
+
+func emitFireworksReasoningSnapshot(onEvent func(provideriface.StreamEvent), reasoningKey, snapshot string) {
+	if onEvent == nil || snapshot == "" {
+		return
+	}
+	onEvent(provideriface.StreamEvent{
+		Type:         provideriface.StreamEventReasoningSummaryDelta,
+		Delta:        snapshot,
+		DeltaMode:    provideriface.StreamEventDeltaModeReplace,
+		ReasoningKey: reasoningKey,
+	})
 }
 
 func (r *Runner) activeCredential(ctx context.Context) (pebblestore.AuthCredentialRecord, error) {

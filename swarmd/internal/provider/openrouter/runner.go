@@ -80,6 +80,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	}
 	payload := buildChatCompletionRequest(req)
 	toolState := newOpenRouterToolCallConstructionState()
+	reasoningByKey := make(map[string]string, 4)
 	decoded, err := r.client.CreateChatCompletionStream(ctx, record.APIKey, payload, func(chunk chatCompletionChunk) error {
 		for _, choice := range chunk.Choices {
 			if choice.Delta != nil {
@@ -87,7 +88,9 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: choice.Delta.Content})
 				}
 				if choice.Delta.Reasoning != "" && onEvent != nil {
-					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: choice.Delta.Reasoning, ReasoningKey: openRouterReasoningKey(choice.Index)})
+					reasoningKey := openRouterReasoningKey(choice.Index)
+					reasoningByKey[reasoningKey] += choice.Delta.Reasoning
+					emitOpenRouterReasoningSnapshot(onEvent, reasoningKey, reasoningByKey[reasoningKey])
 				}
 			}
 		}
@@ -105,6 +108,18 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 		result.Model = modelID
 	}
 	return result, nil
+}
+
+func emitOpenRouterReasoningSnapshot(onEvent func(provideriface.StreamEvent), reasoningKey, snapshot string) {
+	if onEvent == nil || snapshot == "" {
+		return
+	}
+	onEvent(provideriface.StreamEvent{
+		Type:         provideriface.StreamEventReasoningSummaryDelta,
+		Delta:        snapshot,
+		DeltaMode:    provideriface.StreamEventDeltaModeReplace,
+		ReasoningKey: reasoningKey,
+	})
 }
 
 func (r *Runner) activeCredential(ctx context.Context) (pebblestore.AuthCredentialRecord, error) {

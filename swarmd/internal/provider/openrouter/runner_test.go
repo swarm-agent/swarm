@@ -103,6 +103,28 @@ func TestParseUsagePreservesOpenRouterDetails(t *testing.T) {
 	}
 }
 
+func TestOpenRouterReasoningChunksEmitExplicitSnapshots(t *testing.T) {
+	var events []provideriface.StreamEvent
+	emit := func(event provideriface.StreamEvent) { events = append(events, event) }
+	reasoningKey := openRouterReasoningKey(0)
+	var snapshot string
+	for _, chunk := range []string{"The model is thin", "king fast"} {
+		snapshot += chunk
+		emitOpenRouterReasoningSnapshot(emit, reasoningKey, snapshot)
+	}
+	if len(events) != 2 {
+		t.Fatalf("reasoning events = %d, want 2", len(events))
+	}
+	if events[0].Delta != "The model is thin" || events[1].Delta != "The model is thinking fast" {
+		t.Fatalf("reasoning snapshots = %#v", events)
+	}
+	for _, event := range events {
+		if event.DeltaMode != provideriface.StreamEventDeltaModeReplace || event.ReasoningKey != reasoningKey {
+			t.Fatalf("reasoning event contract = %#v", event)
+		}
+	}
+}
+
 func TestOpenRouterStreamingToolCallConstructionEvents(t *testing.T) {
 	state := newOpenRouterToolCallConstructionState()
 	events := make([]provideriface.StreamEvent, 0, 3)

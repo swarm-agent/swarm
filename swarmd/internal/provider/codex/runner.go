@@ -65,6 +65,7 @@ func ToProviderStreamEventCallback(onEvent func(provideriface.StreamEvent)) func
 			onEvent(provideriface.StreamEvent{
 				Type:         provideriface.StreamEventReasoningSummaryDelta,
 				Delta:        event.Delta,
+				DeltaMode:    provideriface.StreamEventDeltaModeReplace,
 				ReasoningKey: event.ReasoningKey,
 			})
 		case StreamEventToolCallStarted:
