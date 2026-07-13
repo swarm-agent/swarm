@@ -494,7 +494,15 @@ func integrationChildrenFromPlan(plan TaskIntegrationPlan) []TaskIntegrationChil
 }
 
 func preflightCherryPick(parentPath, parentHead string, commits []string) error {
-	index, err := os.CreateTemp("", "swarm-integration-index-*")
+	gitDir, err := runGit(parentPath, "rev-parse", "--git-dir")
+	if err != nil {
+		return fmt.Errorf("resolve git directory for integration preflight: %w", err)
+	}
+	gitDir, err = resolveGitPath(parentPath, gitDir)
+	if err != nil {
+		return fmt.Errorf("resolve integration preflight git directory path: %w", err)
+	}
+	index, err := os.CreateTemp(gitDir, "swarm-integration-index-*")
 	if err != nil {
 		return fmt.Errorf("create integration preflight index: %w", err)
 	}
