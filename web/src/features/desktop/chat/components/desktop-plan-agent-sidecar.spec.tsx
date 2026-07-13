@@ -56,6 +56,7 @@ assert.match(markup, /Saved edits update the parent approval card live\./, "plan
 assert.match(markup, /aria-label="Send to Plan"/, "idle real session should expose its send control");
 assert.match(markup, /aria-label="Start microphone dictation"/, "Plan composer should expose the canonical microphone affordance");
 assert.match(markup, /data-testid="desktop-plan-composer"/, "expected dedicated Plan composer wrapper");
+assert.match(markup, /border-t[^\"]*bg-\[var\(--app-surface\)\][^\"]*pb-1\.5[^\"]*data-testid="desktop-plan-composer"/, "Plan composer background should include extra bottom breathing room");
 assert.match(markup, /!min-h-\[32px\][\s\S]*sm:!min-h-\[56px\][\s\S]*lg:!min-h-\[52px\]/, "Plan input should use canonical chat baseline heights");
 assert.match(markup, /max-h-\[50vh\][\s\S]*resize-none[\s\S]*overflow-y-hidden/, "Plan input should grow upward before scrolling");
 assert.doesNotMatch(markup, /ChatMarkdown/, "sidechat must reuse canonical Desktop V3 render items rather than a custom message renderer");

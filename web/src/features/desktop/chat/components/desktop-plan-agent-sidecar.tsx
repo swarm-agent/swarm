@@ -276,7 +276,7 @@ export function DesktopPlanAgentSidecar({
           </div>
           {!isAtBottom && hasUnseenLatest ? <button type="button" aria-label="Jump to latest Plan message" title="Jump to latest Plan message" onClick={() => scrollToBottom("smooth")} className="absolute bottom-3 right-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] shadow-lg"><ArrowDown size={18} aria-hidden="true" /></button> : null}
         </div>
-        <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-plan-composer">
+        <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] pb-1.5" data-testid="desktop-plan-composer">
           <div className={DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME}>
             <div className="relative min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
               <div className="flex min-w-0 items-end gap-3 px-4 py-2 sm:py-3 lg:py-2.5">
