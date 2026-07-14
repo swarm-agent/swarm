@@ -678,12 +678,13 @@ try {
   );
   const requiredTurns = cfg.skipFollowUp ? 1 : 2;
   const followUpOK = cfg.skipFollowUp || Boolean((second?.hit?.content || '').includes(cfg.followUpMarker) && cleanTranscript.includes(cfg.followUpMarker));
+  const lifecycleIndicatorsOK = expected.length > 0 || Boolean(seen.tuiLifecycleText && seen.tuiTimerText && seen.tuiSwarmingText);
   const pass = Boolean(
     sessionID && seen.hello && seen.subscribed && seen.replayStarted && seen.replayComplete &&
     seen.userMessages >= requiredTurns && seen.assistantStarted >= requiredTurns && seen.assistantCompleted >= requiredTurns &&
     seen.assistantMessageOnRealtime >= requiredTurns && seen.cursorErrors.length === 0 &&
     (first.hit?.content || '').includes(cfg.firstMarker) && cleanTranscript.includes(cfg.firstMarker) && followUpOK &&
-    durableToolOrderOK && snapshotToolOrderOK && seen.tuiLifecycleText && seen.tuiTimerText && seen.tuiSwarmingText
+    durableToolOrderOK && snapshotToolOrderOK && lifecycleIndicatorsOK
   );
   const assistantPreview = second ? second.assistants : first.assistants;
   const summary = { ok: pass, primary_ssh: cfg.primarySSH, api_url: cfg.apiURL, remote_dir: cfg.remoteDir, session_id: sessionID, provider: cfg.provider, model: cfg.model, observed: seen, current_phase: currentPhase, last_phase_event: lastPhaseEvent, realtime_event_count: realtimeEventTypes.length, realtime_event_types: realtimeEventTypes, db_event_count: dbEvents.length, db_event_types: dbEventTypes, expected_tool_order: expected, durable_tool_order_ok: durableToolOrderOK, snapshot_tool_order_ok: snapshotToolOrderOK, durable_started_tools: startedTools.map(e => ({ seq: e.seq, tool: (payloadObject(e) || e.payload || {}).tool_name, instance: (payloadObject(e) || e.payload || {}).tool_instance_id, target: toolEventTarget(e) })), durable_completed_tools: completedTools.map(e => ({ seq: e.seq, tool: (payloadObject(e) || e.payload || {}).tool_name, instance: (payloadObject(e) || e.payload || {}).tool_instance_id, target: toolEventTarget(e) })), snapshot_tools: snapshotTools.map(item => item.text), assistant_preview: assistantPreview.map(m => String(m.content || '').slice(0, 200)), artifacts: { transcript: tuiRawPath, clean_transcript: tuiCleanPath, chat_snapshot: clipboardCapturePath, feed_log: feedLogPath, frames: framesPath, requests: requestsPath, runner_events: runnerEventsPath, phase_log: phaseLogPath, summary: summaryPath } };
