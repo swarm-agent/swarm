@@ -272,7 +272,7 @@ test('Desktop V3 intermediate checkpoint handoff preserves global sequence and u
     session_id: 'session-a',
     global_seq: 11,
     role: 'system',
-    content: 'Checkpoint handoff\n\nReport:\n- API complete\nResult: continuing',
+    content: 'Checkpoint handoff\n\nReport:\n- API complete\n\n<swarm-handoff-summary>\nAPI complete; continuing to the next checkpoint.\n</swarm-handoff-summary>\n\nResult: continuing',
     metadata: { source: 'plan_execution_checkpoint_handoff', kind: 'plan_checkpoint_handoff' },
     created_at: 11,
   }
@@ -293,16 +293,20 @@ test('Desktop V3 intermediate checkpoint handoff preserves global sequence and u
     }))
     assert.match(markup, /data-testid="desktop-v3-plan-checkpoint-handoff"/)
     assert.doesNotMatch(markup, /desktop-v3-plan-execution-break/)
+    assert.equal(items[0].summary, 'API complete; continuing to the next checkpoint.')
+    assert.doesNotMatch(items[0].body, /swarm-handoff-summary/)
+    assert.match(markup, /data-testid="desktop-v3-plan-checkpoint-handoff-summary"/)
+    assert.match(markup, /At a glance/)
     assert.match(markup, /API complete/)
   }
 })
 
 
-test('Desktop V3 handoff summary parser extracts one valid block without mutating source content', () => {
-  const content = 'Report:\n- full detail\n\n<swarm-handoff-summary>\n**Done** — ship it.\n</swarm-handoff-summary>\n\nValidation:\n- reviewed'
+test('Desktop V3 handoff summary parser extracts the copied durable followup shape without mutating source content', () => {
+  const content = 'The last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it.\n\nReport:\n## Outcome\nThis durable report contains exactly one non-empty `<swarm-handoff-summary>` block near the bottom.\n\n<swarm-handoff-summary>\n**Outcome:** Follow-up checkpoint `followup-3` is ready for review.\n\n**Next action:** Review the final handoff.\n</swarm-handoff-summary>\n\nResult: checkpoint completed successfully\n\nValidation:\n- Confirmed the report contains exactly one non-empty <swarm-handoff-summary> block.'
   const parsed = parseDesktopV3HandoffSummary(content)
-  assert.equal(parsed.summary, '**Done** — ship it.')
-  assert.equal(parsed.body, 'Report:\n- full detail\n\nValidation:\n- reviewed')
+  assert.equal(parsed.summary, '**Outcome:** Follow-up checkpoint `followup-3` is ready for review.\n\n**Next action:** Review the final handoff.')
+  assert.equal(parsed.body, 'The last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it.\n\nReport:\n## Outcome\nThis durable report contains exactly one non-empty `<swarm-handoff-summary>` block near the bottom.\n\nResult: checkpoint completed successfully\n\nValidation:\n- Confirmed the report contains exactly one non-empty <swarm-handoff-summary> block.')
   assert.equal(content.includes('<swarm-handoff-summary>'), true)
 })
 
@@ -311,7 +315,7 @@ test('Desktop V3 handoff summary parser keeps absent malformed duplicated and fe
   const cases = [
     'Report only',
     'Before <swarm-handoff-summary>unfinished',
-    '<swarm-handoff-summary>one</swarm-handoff-summary>\n<swarm-handoff-summary>two</swarm-handoff-summary>',
+    '<swarm-handoff-summary>\none\n</swarm-handoff-summary>\n<swarm-handoff-summary>\ntwo\n</swarm-handoff-summary>',
     '```xml\n<swarm-handoff-summary>example</swarm-handoff-summary>\n```\nReport remains',
     '~~~\n<swarm-handoff-summary>example</swarm-handoff-summary>\n~~~',
   ]
@@ -334,12 +338,13 @@ test('Desktop V3 final checkpoint handoff renders separately after lifecycle bre
   const handoff = {
     id: 'plan-handoff-final',
     session_id: 'session-a',
-    global_seq: 8,
+    global_seq: 401,
     role: 'system',
-    content: 'Final checkpoint handoff\n\nThe last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it.\n\n<swarm-handoff-summary>\n**Done** — ready to review.\n</swarm-handoff-summary>\n\nReport:\n## Summary\n- rendered separately\nResult: **done**\nValidation:\n- focused render regression',
+    content: 'Final checkpoint handoff\n\nThe last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it.\n\nReport:\n## Outcome\nThis durable report contains exactly one non-empty `<swarm-handoff-summary>` block near the bottom.\n\n<swarm-handoff-summary>\n**Done** — ready to review.\n</swarm-handoff-summary>\n\nResult: **done**\nValidation:\n- Confirmed the report contains exactly one non-empty <swarm-handoff-summary> block.',
     metadata: {
       source: 'plan_execution_final_handoff',
       kind: 'plan_final_checkpoint_handoff',
+      checkpoint_id: 'followup-3',
       recommendation: { decision: 'ship', action: 'review', reason: 'complete', action_state: 'ready' },
     },
     created_at: 8,
@@ -356,10 +361,16 @@ test('Desktop V3 final checkpoint handoff renders separately after lifecycle bre
   if (items[1]?.type === 'plan-final-handoff') {
     assert.equal(items[1].headline, 'Final checkpoint handoff')
     assert.equal(items[1].summary, '**Done** — ready to review.')
-    assert.match(items[1].body, /Report:\n## Summary\n- rendered separately/)
+    assert.match(items[1].body, /Report:\n## Outcome/)
+    assert.match(items[1].body, /This durable report contains exactly one non-empty `<swarm-handoff-summary>` block/)
     assert.match(items[1].body, /Result: \*\*done\*\*/)
-    assert.match(items[1].body, /Validation:\n- focused render regression/)
-    assert.doesNotMatch(items[1].body, /swarm-handoff-summary/)
+    assert.match(items[1].body, /Validation:\n- Confirmed the report contains exactly one non-empty <swarm-handoff-summary> block\./)
+    assert.equal(
+      items[1].body
+        .split(/\r?\n/)
+        .some((line) => line.trim() === '<swarm-handoff-summary>' || line.trim() === '</swarm-handoff-summary>'),
+      false,
+    )
     assert.doesNotMatch(items[1].body, /Markdown is supported in this handoff/)
     assert.equal(items[1].message.content, handoff.content)
     assert.deepEqual(items[1].message.metadata?.recommendation, handoff.metadata.recommendation)
@@ -369,7 +380,7 @@ test('Desktop V3 final checkpoint handoff renders separately after lifecycle bre
     assert.match(markup, /aria-label="At a glance"/)
     assert.equal((markup.match(/>At a glance</g) ?? []).length, 1)
     assert.match(markup, /<strong>Done<\/strong> — ready to review/)
-    assert.doesNotMatch(markup, /swarm-handoff-summary/)
+    assert.equal((markup.match(/data-testid="desktop-v3-plan-final-handoff-summary"/g) ?? []).length, 1)
   }
 })
 

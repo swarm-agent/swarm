@@ -1073,14 +1073,18 @@ function desktopV3TagOffsetsOutsideFences(
   ranges: Array<[number, number]>,
 ): number[] {
   const offsets: number[] = [];
-  let cursor = 0;
-  while (cursor < content.length) {
-    const offset = content.indexOf(tag, cursor);
-    if (offset < 0) break;
-    if (!ranges.some(([start, end]) => offset >= start && offset < end)) {
+  let lineStart = 0;
+  for (const line of content.match(/.*(?:\r?\n|$)/g) ?? []) {
+    const lineWithoutEnding = line.replace(/\r?\n$/, "");
+    const leadingWhitespace = lineWithoutEnding.length - lineWithoutEnding.trimStart().length;
+    const offset = lineStart + leadingWhitespace;
+    if (
+      lineWithoutEnding.trim() === tag &&
+      !ranges.some(([start, end]) => offset >= start && offset < end)
+    ) {
       offsets.push(offset);
     }
-    cursor = offset + tag.length;
+    lineStart += line.length;
   }
   return offsets;
 }

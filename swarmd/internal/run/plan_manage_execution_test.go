@@ -416,6 +416,10 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if !ok || !strings.Contains(followupLifecycle.Content, "Follow-up checkpoint complete; review required — Automatic mode") || !strings.Contains(followupLifecycle.Content, "Next: waiting for checkpoint review.") || strings.Contains(followupLifecycle.Content, "Report:") {
 		t.Fatalf("follow-up final lifecycle message = %#v", followupLifecycle)
 	}
+	followupCheckpointHandoff, ok := BuildPlanExecutionCheckpointHandoffSystemMessage(followupInput)
+	if ok {
+		t.Fatalf("follow-up final-review transition must not also emit a generic checkpoint handoff: %#v", followupCheckpointHandoff)
+	}
 	followupHandoff, ok := BuildFinalPlanExecutionHandoffSystemMessage(followupInput)
 	if !ok || followupHandoff.Metadata["source"] != PlanExecutionFinalHandoffMessageSource || followupHandoff.Metadata["kind"] != "plan_final_checkpoint_handoff" || followupHandoff.Metadata["checkpoint_id"] != "followup-2.5" {
 		t.Fatalf("follow-up final handoff metadata = %#v", followupHandoff)
