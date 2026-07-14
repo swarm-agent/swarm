@@ -1,6 +1,7 @@
 package run
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -332,6 +333,11 @@ func PrepareToolOutputForModel(call tool.Call, result tool.Result) string {
 func prepareToolOutputForModel(call tool.Call, result tool.Result) string {
 	output := strings.TrimSpace(result.Output)
 	errorText := strings.TrimSpace(result.Error)
+	if errorText == "" && len(output) > maxToolInputBytes {
+		if compact, ok := prepareLargeReadToolOutputForModel(call, result, output); ok {
+			return compact
+		}
+	}
 	if errorText == "" && (output == "" || len(output) <= maxToolInputBytes) {
 		return output
 	}
@@ -397,6 +403,128 @@ func prepareToolOutputForModel(call tool.Call, result tool.Result) string {
 		}
 	}
 	return string(encoded)
+}
+
+type readToolModelSource struct {
+	Path               string          `json:"path"`
+	Bytes              int             `json:"bytes"`
+	LineStart          int             `json:"line_start"`
+	MaxLines           int             `json:"max_lines"`
+	Count              int             `json:"count"`
+	NextLineStart      int             `json:"next_line_start"`
+	EOF                bool            `json:"eof"`
+	Truncated          bool            `json:"truncated"`
+	LineTextTruncated  bool            `json:"line_text_truncated"`
+	BinarySuppressed   bool            `json:"binary_suppressed"`
+	Lines              json.RawMessage `json:"lines"`
+	PathID             string          `json:"path_id"`
+	Summary            string          `json:"summary"`
+	DetailsTruncated   bool            `json:"details_truncated"`
+	Safety             json.RawMessage `json:"safety"`
+	PromptInjectionTag string          `json:"prompt_injection_tag"`
+}
+
+type readToolModelLine struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
+
+// prepareLargeReadToolOutputForModel keeps read pagination and safety metadata
+// explicit while retaining only a bounded, line-addressable prefix for the
+// provider. The full result remains in durable tool history and realtime data.
+func prepareLargeReadToolOutputForModel(call tool.Call, result tool.Result, output string) (string, bool) {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = strings.TrimSpace(result.Name)
+	}
+	if !strings.EqualFold(name, "read") {
+		return "", false
+	}
+
+	var source readToolModelSource
+	if err := json.Unmarshal([]byte(output), &source); err != nil || source.Count < 0 || len(source.Lines) == 0 {
+		return "", false
+	}
+	lines, retainedContentBytes, retainedTextTruncated := boundedReadToolModelLines(source.Lines, maxToolInputPreview)
+	retainedStart, retainedEnd := 0, 0
+	if len(lines) > 0 {
+		retainedStart = lines[0].Line
+		retainedEnd = lines[len(lines)-1].Line
+	}
+	allReturnedLinesRetained := len(lines) == source.Count && !retainedTextTruncated
+	payload := map[string]any{
+		"path_id":                      "run.tool-output.read.v1",
+		"tool_path_id":                 source.PathID,
+		"tool":                         "read",
+		"call_id":                      strings.TrimSpace(result.CallID),
+		"truncated_for_model":          !allReturnedLinesRetained,
+		"original_bytes":               len(output),
+		"returned_content_bytes":       source.Bytes,
+		"retained_content_bytes":       retainedContentBytes,
+		"path":                         source.Path,
+		"line_start":                   source.LineStart,
+		"max_lines":                    source.MaxLines,
+		"returned_line_count":          source.Count,
+		"next_line_start":              source.NextLineStart,
+		"eof":                          source.EOF,
+		"read_truncated":               source.Truncated,
+		"line_text_truncated":          source.LineTextTruncated,
+		"binary_suppressed":            source.BinarySuppressed,
+		"retained_line_start":          retainedStart,
+		"retained_line_end":            retainedEnd,
+		"retained_line_count":          len(lines),
+		"all_returned_lines_retained":  allReturnedLinesRetained,
+		"retained_line_text_truncated": retainedTextTruncated,
+		"lines":                        lines,
+		"summary":                      source.Summary,
+		"details_truncated":            source.DetailsTruncated,
+		"prompt_injection_tag":         source.PromptInjectionTag,
+		"hint":                         "Continue with line_start=next_line_start, or rerun with a narrower line range when omitted lines are needed.",
+	}
+	if len(source.Safety) > 0 && string(source.Safety) != "null" {
+		payload["safety"] = source.Safety
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
+func boundedReadToolModelLines(raw json.RawMessage, maxContentRunes int) ([]readToolModelLine, int, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('[') {
+		return nil, 0, false
+	}
+	if maxContentRunes <= 0 {
+		return nil, 0, true
+	}
+	lines := make([]readToolModelLine, 0, 16)
+	retainedBytes := 0
+	retainedRunes := 0
+	textTruncated := false
+	for decoder.More() {
+		var line readToolModelLine
+		if err := decoder.Decode(&line); err != nil {
+			return nil, 0, false
+		}
+		remaining := maxContentRunes - retainedRunes
+		if remaining <= 0 {
+			break
+		}
+		original := line.Text
+		line.Text = truncateRunes(line.Text, remaining)
+		if line.Text != original {
+			textTruncated = true
+		}
+		lines = append(lines, line)
+		retainedBytes += len(line.Text)
+		retainedRunes += len([]rune(line.Text))
+		if retainedRunes >= maxContentRunes {
+			break
+		}
+	}
+	return lines, retainedBytes, textTruncated
 }
 
 func toolHistoryStructuredPayload(name, output, arguments string) (string, bool) {

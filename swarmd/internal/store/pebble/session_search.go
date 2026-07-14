@@ -706,9 +706,10 @@ func (s *SessionStore) appendV3SessionSearchMessageInBatch(batch *pebble.Batch, 
 }
 
 func appendV3SessionSearchMessagePostingsInBatch(batch *pebble.Batch, sessionID string, message MessageSnapshot) error {
-	for _, token := range v3SessionSearchTokens(message.Content) {
+	searchContent := v3SessionSearchMessageContent(message)
+	for _, token := range v3SessionSearchTokens(searchContent) {
 		key := keyV3SessionSearchPosting(sessionID, "message", token)
-		record := v3SessionSearchIndexRecord{SessionID: sessionID, Snippet: &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, GlobalSeq: message.GlobalSeq, Text: matchCenteredV3SessionSearchSnippet(message.Content, token), CreatedAt: message.CreatedAt}}
+		record := v3SessionSearchIndexRecord{SessionID: sessionID, Snippet: &V3SessionSearchSnippet{Source: "message", Role: message.Role, MessageID: message.ID, GlobalSeq: message.GlobalSeq, Text: matchCenteredV3SessionSearchSnippet(searchContent, token), CreatedAt: message.CreatedAt}}
 		payload, err := json.Marshal(record)
 		if err != nil {
 			return err
@@ -719,6 +720,16 @@ func appendV3SessionSearchMessagePostingsInBatch(batch *pebble.Batch, sessionID 
 		}
 	}
 	return nil
+}
+
+func v3SessionSearchMessageContent(message MessageSnapshot) string {
+	content := message.Content
+	if strings.EqualFold(strings.TrimSpace(message.Role), "tool") && message.Metadata != nil {
+		if bounded, ok := message.Metadata["search_index_content"].(string); ok && strings.TrimSpace(bounded) != "" {
+			return bounded
+		}
+	}
+	return content
 }
 
 func v3SessionSearchMetadataTokens(session SessionSnapshot) map[string]v3SessionSearchIndexRecord {

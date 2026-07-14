@@ -208,6 +208,44 @@ func TestSessionSearchTelemetryIdentifiesAcceptanceAmplificationSubsteps(t *test
 	}
 }
 
+func TestSessionSearchToolMessageUsesExplicitBoundedIndexContent(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: "bounded-tool-search", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: t.TempDir(), Title: "Search", CreatedAt: 1000, UpdatedAt: 1000})
+	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		Kind:            V3SessionMutationAppendMessage,
+		SessionID:       "bounded-tool-search",
+		UserID:          "user-1",
+		AccountScopeID:  "acct-1",
+		ClientRequestID: "bounded-tool-message",
+		PayloadHash:     "bounded-tool-message-hash",
+		NowUnixMs:       2000,
+		Message: &MessageSnapshot{
+			Role:     "tool",
+			Content:  `{"output":"durable-only-needle"}`,
+			Metadata: map[string]any{"search_index_content": `{"summary":"bounded-index-needle"}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("append bounded tool message: %v", err)
+	}
+	bounded, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "bounded-index-needle", Limit: 10})
+	if err != nil || len(bounded.Items) != 1 || bounded.Items[0].ID != "bounded-tool-search" {
+		t.Fatalf("bounded index search items=%+v err=%v", bounded.Items, err)
+	}
+	durableOnly, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "durable-only-needle", Limit: 10})
+	if err != nil {
+		t.Fatalf("search durable-only content: %v", err)
+	}
+	if len(durableOnly.Items) != 0 {
+		t.Fatalf("full durable tool output leaked into search postings: %+v", durableOnly.Items)
+	}
+	messages, err := sessions.ListV3SessionMessages("bounded-tool-search", 0, 10)
+	if err != nil || len(messages) != 1 || messages[0].Content != `{"output":"durable-only-needle"}` {
+		t.Fatalf("durable tool message changed: messages=%+v err=%v", messages, err)
+	}
+}
+
 func TestSearchV3SessionsTokensAcrossMessagesAndCenteredSnippet(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

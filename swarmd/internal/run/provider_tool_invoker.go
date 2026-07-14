@@ -603,6 +603,12 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 		principal = identity.Principal{Type: identity.PrincipalTypeUser, UserID: session.UserID, AccountScopeID: session.AccountScopeID}
 	}
 	messageMetadata := providerManagedV3ToolMessageMetadata(config, call, metadata, result)
+	if strings.EqualFold(strings.TrimSpace(call.Name), "read") && len(strings.TrimSpace(result.Output)) > maxToolInputBytes {
+		// Session search needs a representative tool result, not thousands of
+		// unique line-number postings. Keep durable history/realtime content full,
+		// but index the existing read completion summary only.
+		messageMetadata["search_index_content"] = formatToolCompletedOutput(call, result)
+	}
 	content, err := formatV3ProviderManagedToolResultRecord(call, messageMetadata, result)
 	if err != nil {
 		return fmt.Errorf("marshal v3 provider tool result record: %w", err)

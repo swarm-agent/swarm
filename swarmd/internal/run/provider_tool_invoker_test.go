@@ -477,7 +477,7 @@ func TestProviderManagedLegacyToolCallStillRequestsPermission(t *testing.T) {
 	}
 }
 
-func newProviderManagedV3PermissionTestService(t *testing.T, workspace string) (*Service, string, *permission.Service, func()) {
+func newProviderManagedV3PermissionTestService(t testing.TB, workspace string) (*Service, string, *permission.Service, func()) {
 	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "state.pebble"))
 	if err != nil {
