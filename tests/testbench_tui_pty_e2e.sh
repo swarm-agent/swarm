@@ -17,7 +17,11 @@ Options:
   --remote-dir <path>         Remote swarm-go checkout. Default: auto-discover
   --session-id <id>           Existing V3 session to open in TUI. Default: create one through live API
   --prompt <text>             First prompt. Default: asks for TUI_E2E_HELLO_OK
+  --first-marker <text>       Required first-turn assistant marker. Default: TUI_E2E_HELLO_OK
   --follow-up <text>          Follow-up prompt. Default: asks for TUI_E2E_FOLLOWUP_OK
+  --follow-up-marker <text>   Required follow-up marker. Default: TUI_E2E_FOLLOWUP_OK
+  --skip-follow-up            Run only the first turn
+  --expected-tool-order <csv> Require exact TUI tool order, e.g. read:AGENTS.md,read:go.mod
   --provider <provider>       Provider for created session. Default: fireworks
   --model <model>             Model for created session. Default: accounts/fireworks/models/kimi-k2p6
   --thinking <level>          Thinking setting. Default: low
@@ -43,7 +47,11 @@ API_URL="${SWARM_PRIMARY_API_URL:-http://127.0.0.1:7781}"
 REMOTE_DIR="${SWARM_TUI_E2E_REMOTE_DIR:-}"
 SESSION_ID="${SWARM_TUI_E2E_SESSION_ID:-}"
 PROMPT="${SWARM_TUI_E2E_PROMPT:-Real TUI E2E first turn. Reply with exactly TUI_E2E_HELLO_OK and do not call tools.}"
+FIRST_MARKER="${SWARM_TUI_E2E_FIRST_MARKER:-TUI_E2E_HELLO_OK}"
 FOLLOW_UP="${SWARM_TUI_E2E_FOLLOW_UP:-Real TUI E2E follow-up. Reply with exactly TUI_E2E_FOLLOWUP_OK and do not call tools.}"
+FOLLOW_UP_MARKER="${SWARM_TUI_E2E_FOLLOW_UP_MARKER:-TUI_E2E_FOLLOWUP_OK}"
+SKIP_FOLLOW_UP="${SWARM_TUI_E2E_SKIP_FOLLOW_UP:-false}"
+EXPECTED_TOOL_ORDER="${SWARM_TUI_E2E_EXPECTED_TOOL_ORDER:-}"
 PROVIDER="${SWARM_TUI_E2E_PROVIDER:-fireworks}"
 MODEL="${SWARM_TUI_E2E_MODEL:-accounts/fireworks/models/kimi-k2p6}"
 THINKING="${SWARM_TUI_E2E_THINKING:-low}"
@@ -66,7 +74,11 @@ while [[ $# -gt 0 ]]; do
     --remote-dir) REMOTE_DIR="${2:-}"; shift 2 ;;
     --session-id) SESSION_ID="${2:-}"; shift 2 ;;
     --prompt) PROMPT="${2:-}"; shift 2 ;;
+    --first-marker) FIRST_MARKER="${2:-}"; shift 2 ;;
     --follow-up|--followup) FOLLOW_UP="${2:-}"; shift 2 ;;
+    --follow-up-marker) FOLLOW_UP_MARKER="${2:-}"; shift 2 ;;
+    --skip-follow-up) SKIP_FOLLOW_UP="true"; shift ;;
+    --expected-tool-order) EXPECTED_TOOL_ORDER="${2:-}"; shift 2 ;;
     --provider) PROVIDER="${2:-}"; shift 2 ;;
     --model) MODEL="${2:-}"; shift 2 ;;
     --thinking) THINKING="${2:-}"; shift 2 ;;
@@ -96,6 +108,10 @@ if [[ -z "${OVERALL_TIMEOUT_SECONDS}" ]]; then
 fi
 [[ "${OVERALL_TIMEOUT_SECONDS}" =~ ^[0-9]+$ && "${OVERALL_TIMEOUT_SECONDS}" -gt 0 ]] || fail "--overall-timeout-seconds must be a positive integer"
 [[ -n "${TUI_BIN}" ]] || fail "--tui-bin is required"
+[[ -n "${FIRST_MARKER}" ]] || fail "--first-marker is required"
+if [[ "${SKIP_FOLLOW_UP}" != "true" ]]; then
+  [[ -n "${FOLLOW_UP_MARKER}" ]] || fail "--follow-up-marker is required unless --skip-follow-up is set"
+fi
 # The Node runner owns the real overall timeout so it can write per-phase artifacts
 # before exiting 124. Give the outer SSH timeout a cleanup cushion instead of
 # killing the runner at the exact same instant and losing evidence.
@@ -136,6 +152,8 @@ const tuiCleanPath = path.join(artifactDir, 'tui.cleaned.txt');
 const feedLogPath = path.join(artifactDir, 'pty-feed.log');
 const tuiStdoutPath = path.join(artifactDir, 'script.stdout');
 const tuiStderrPath = path.join(artifactDir, 'script.stderr');
+const clipboardCapturePath = path.join(artifactDir, 'chat-snapshot.txt');
+const helperBinDir = path.join(artifactDir, 'bin');
 fs.writeFileSync(framesPath, '');
 fs.writeFileSync(requestsPath, '');
 fs.writeFileSync(feedLogPath, '');
@@ -207,7 +225,7 @@ function writeEvidenceSummary(ok, error = '') {
       script_stdout: fileTail(tuiStdoutPath),
       script_stderr: fileTail(tuiStderrPath),
     },
-    artifacts: { transcript: tuiRawPath, clean_transcript: tuiCleanPath, feed_log: feedLogPath, frames: framesPath, requests: requestsPath, runner_events: runnerEventsPath, phase_log: phaseLogPath, summary: summaryPath }
+    artifacts: { transcript: tuiRawPath, clean_transcript: tuiCleanPath, chat_snapshot: clipboardCapturePath, feed_log: feedLogPath, frames: framesPath, requests: requestsPath, runner_events: runnerEventsPath, phase_log: phaseLogPath, summary: summaryPath }
   };
   fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2));
   return summary;
@@ -456,6 +474,36 @@ async function stopTUI(reason = 'stop') {
   logPhase('tui.stop.end', { reason, exit_code: tuiProc.exitCode, signal_code: tuiProc.signalCode, killed: tuiProc.killed });
 }
 function terminalEvent(type) { return ['session.assistant.completed', 'session.assistant.failed', 'session.run.completed', 'session.run.failed', 'session.run.cancelled', 'session.run.expired', 'session.run.interrupted'].includes(type); }
+function parseSnapshotTimeline(raw) {
+  const lines = String(raw || '').replaceAll('\r\n', '\n').split('\n');
+  const start = lines.findIndex(line => line.startsWith('timeline_messages:'));
+  if (start < 0) return [];
+  const items = [];
+  let current = null;
+  for (const line of lines.slice(start + 1)) {
+    const header = line.match(/^(\d+)\. \[[^\]]+\] (\S+)\s*$/);
+    if (header) {
+      if (current) items.push(current);
+      current = { index: Number(header[1]), role: header[2], lines: [] };
+      continue;
+    }
+    if (current && /^\s{3}/.test(line)) current.lines.push(line.trim());
+  }
+  if (current) items.push(current);
+  return items.map(item => ({ ...item, text: item.lines.join('\n').trim() }));
+}
+function expectedTools(raw) {
+  return String(raw || '').split(',').map(value => value.trim()).filter(Boolean).map(value => {
+    const colon = value.indexOf(':');
+    return colon < 0 ? { tool: value, target: '' } : { tool: value.slice(0, colon).trim(), target: value.slice(colon + 1).trim() };
+  });
+}
+function toolEventTarget(event) {
+  const payload = payloadObject(event) || event?.payload || {};
+  let args = payload.arguments || {};
+  if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = { raw: args }; } }
+  return String(args.path || args.query || args.command || args.raw || '');
+}
 
 let token = '', sessionID = cfg.sessionID || '', realtime = null, tuiProc = null;
 const realtimeEventTypes = [];
@@ -524,6 +572,8 @@ try {
   endPhase({ subscription_id: subscribe.subscription_id });
 
   beginPhase('tui.launch.prepare');
+  fs.mkdirSync(helperBinDir, { recursive: true });
+  fs.writeFileSync(path.join(helperBinDir, 'wl-copy'), '#!/usr/bin/env bash\nset -euo pipefail\ncat > "${SWARM_E2E_CLIPBOARD_CAPTURE:?}"\n', { mode: 0o755 });
   const envLines = [
     '#!/usr/bin/env bash',
     'set -euo pipefail',
@@ -531,6 +581,8 @@ try {
     `cd ${JSON.stringify(cfg.remoteDir)}`,
     `export SWARMD_URL=${JSON.stringify(cfg.apiURL)}`,
     `export SWARMD_TOKEN=${JSON.stringify(token)}`,
+    `export SWARM_E2E_CLIPBOARD_CAPTURE=${JSON.stringify(clipboardCapturePath)}`,
+    `export PATH=${JSON.stringify(helperBinDir)}:"$PATH"`,
     'export TERM=xterm-256color',
     'export SWARM_LANE=dev',
     'export SWARM_ROOT="$PWD"',
@@ -566,18 +618,23 @@ try {
   beginPhase('turn.first');
   feedPTY(`${cfg.prompt}\r`, `sent first prompt: ${cfg.prompt}`);
   await waitTranscriptContains([cfg.prompt], 'first prompt echo', phaseTimeoutMs).catch(() => null);
-  const first = await waitForAssistantMarker(sessionID, 'TUI_E2E_HELLO_OK', 1, 'after.first');
-  await waitTranscriptContains(['TUI_E2E_HELLO_OK'], 'first assistant marker', phaseTimeoutMs);
+  const first = await waitForAssistantMarker(sessionID, cfg.firstMarker, 1, 'after.first');
+  await waitTranscriptContains([cfg.firstMarker], 'first assistant marker', phaseTimeoutMs);
   await waitTranscriptMatches([/(working|thinking|streaming response|winding up|running)\s+([0-9]+m)?[0-9]+s|working|thinking|streaming response|winding up/i], 'run lifecycle status', phaseTimeoutMs).then(() => { seen.tuiLifecycleText = true; seen.tuiTimerText = true; }).catch(() => null);
   await waitTranscriptMatches([/Swarming|swarming|\[a:|swarm/i], 'swarming indicator', phaseTimeoutMs).then(() => { seen.tuiSwarmingText = true; }).catch(() => null);
-  endPhase({ assistant_marker: 'TUI_E2E_HELLO_OK', assistant_count: first.assistants.length, transcript_tail: fileTail(tuiCleanPath, 2000) });
+  feedPTY('/copy\r', 'capture authoritative chat snapshot');
+  await waitFor(() => fs.existsSync(clipboardCapturePath) && fs.statSync(clipboardCapturePath).size > 0, phaseTimeoutMs, 'chat snapshot capture');
+  endPhase({ assistant_marker: cfg.firstMarker, assistant_count: first.assistants.length, chat_snapshot_tail: fileTail(clipboardCapturePath, 3000), transcript_tail: fileTail(tuiCleanPath, 2000) });
 
-  beginPhase('turn.followup');
-  feedPTY(`${cfg.followUp}\r`, `sent follow-up prompt: ${cfg.followUp}`);
-  await waitTranscriptContains([cfg.followUp], 'follow-up prompt echo', phaseTimeoutMs).catch(() => null);
-  const second = await waitForAssistantMarker(sessionID, 'TUI_E2E_FOLLOWUP_OK', Math.max(2, first.assistants.length + 1), 'after.followup');
-  await waitTranscriptContains(['TUI_E2E_FOLLOWUP_OK'], 'follow-up assistant marker', phaseTimeoutMs);
-  endPhase({ assistant_marker: 'TUI_E2E_FOLLOWUP_OK', assistant_count: second.assistants.length, transcript_tail: fileTail(tuiCleanPath, 2000) });
+  let second = null;
+  if (!cfg.skipFollowUp) {
+    beginPhase('turn.followup');
+    feedPTY(`${cfg.followUp}\r`, `sent follow-up prompt: ${cfg.followUp}`);
+    await waitTranscriptContains([cfg.followUp], 'follow-up prompt echo', phaseTimeoutMs).catch(() => null);
+    second = await waitForAssistantMarker(sessionID, cfg.followUpMarker, Math.max(2, first.assistants.length + 1), 'after.followup');
+    await waitTranscriptContains([cfg.followUpMarker], 'follow-up assistant marker', phaseTimeoutMs);
+    endPhase({ assistant_marker: cfg.followUpMarker, assistant_count: second.assistants.length, transcript_tail: fileTail(tuiCleanPath, 2000) });
+  }
 
   beginPhase('tui.shutdown');
   await stopTUI('done; sent /quit');
@@ -593,16 +650,43 @@ try {
 
   beginPhase('evidence.events');
   const events = await apiJSON('GET', `/v3/sessions/${encodeURIComponent(sessionID)}/events?after_seq=0&limit=1000`, token, undefined, 'events.replay.after');
-  const dbEventTypes = (events.events || []).map(e => e.event_type);
+  const dbEvents = events.events || [];
+  const dbEventTypes = dbEvents.map(e => e.event_type);
+  const expected = expectedTools(cfg.expectedToolOrder);
+  const startedTools = dbEvents.filter(e => e.event_type === 'session.tool.started');
+  const completedTools = dbEvents.filter(e => e.event_type === 'session.tool.completed');
+  const assistantCompleted = dbEvents.find(e => e.event_type === 'session.assistant.completed');
+  const snapshotTimeline = parseSnapshotTimeline(fs.readFileSync(clipboardCapturePath, 'utf8'));
+  const snapshotTools = snapshotTimeline.filter(item => item.role === 'tool');
+  const durableToolOrderOK = expected.length === 0 || Boolean(
+    startedTools.length === expected.length && completedTools.length === expected.length &&
+    expected.every((want, i) => {
+      const startedPayload = payloadObject(startedTools[i]) || startedTools[i]?.payload || {};
+      const completedPayload = payloadObject(completedTools[i]) || completedTools[i]?.payload || {};
+      return String(startedPayload.tool_name || '') === want.tool && String(completedPayload.tool_name || '') === want.tool &&
+        (!want.target || (toolEventTarget(startedTools[i]).includes(want.target) && toolEventTarget(completedTools[i]).includes(want.target))) &&
+        startedPayload.tool_instance_id && startedPayload.tool_instance_id === completedPayload.tool_instance_id &&
+        Number(startedTools[i].seq) < Number(completedTools[i].seq) &&
+        (i === 0 || Number(completedTools[i - 1].seq) < Number(startedTools[i].seq));
+    }) && Number(completedTools.at(-1)?.seq || 0) < Number(assistantCompleted?.seq || 0)
+  );
+  const snapshotToolOrderOK = expected.length === 0 || Boolean(
+    snapshotTools.length === expected.length && expected.every((want, i) => {
+      const text = snapshotTools[i]?.text || '';
+      return text.toLowerCase().includes(want.tool.toLowerCase()) && (!want.target || text.includes(want.target));
+    })
+  );
+  const requiredTurns = cfg.skipFollowUp ? 1 : 2;
+  const followUpOK = cfg.skipFollowUp || Boolean((second?.hit?.content || '').includes(cfg.followUpMarker) && cleanTranscript.includes(cfg.followUpMarker));
   const pass = Boolean(
     sessionID && seen.hello && seen.subscribed && seen.replayStarted && seen.replayComplete &&
-    seen.userMessages >= 2 && seen.assistantStarted >= 2 && seen.assistantCompleted >= 2 &&
-    seen.assistantMessageOnRealtime >= 2 && seen.cursorErrors.length === 0 &&
-    (first.hit?.content || '').includes('TUI_E2E_HELLO_OK') && (second.hit?.content || '').includes('TUI_E2E_FOLLOWUP_OK') &&
-    cleanTranscript.includes('TUI_E2E_HELLO_OK') && cleanTranscript.includes('TUI_E2E_FOLLOWUP_OK') &&
-    seen.tuiLifecycleText && seen.tuiTimerText && seen.tuiSwarmingText
+    seen.userMessages >= requiredTurns && seen.assistantStarted >= requiredTurns && seen.assistantCompleted >= requiredTurns &&
+    seen.assistantMessageOnRealtime >= requiredTurns && seen.cursorErrors.length === 0 &&
+    (first.hit?.content || '').includes(cfg.firstMarker) && cleanTranscript.includes(cfg.firstMarker) && followUpOK &&
+    durableToolOrderOK && snapshotToolOrderOK && seen.tuiLifecycleText && seen.tuiTimerText && seen.tuiSwarmingText
   );
-  const summary = { ok: pass, primary_ssh: cfg.primarySSH, api_url: cfg.apiURL, remote_dir: cfg.remoteDir, session_id: sessionID, provider: cfg.provider, model: cfg.model, observed: seen, current_phase: currentPhase, last_phase_event: lastPhaseEvent, realtime_event_count: realtimeEventTypes.length, realtime_event_types: realtimeEventTypes, db_event_count: events.events?.length ?? 0, db_event_types: dbEventTypes, assistant_preview: second.assistants.map(m => String(m.content || '').slice(0, 200)), artifacts: { transcript: tuiRawPath, clean_transcript: tuiCleanPath, feed_log: feedLogPath, frames: framesPath, requests: requestsPath, runner_events: runnerEventsPath, phase_log: phaseLogPath, summary: summaryPath } };
+  const assistantPreview = second ? second.assistants : first.assistants;
+  const summary = { ok: pass, primary_ssh: cfg.primarySSH, api_url: cfg.apiURL, remote_dir: cfg.remoteDir, session_id: sessionID, provider: cfg.provider, model: cfg.model, observed: seen, current_phase: currentPhase, last_phase_event: lastPhaseEvent, realtime_event_count: realtimeEventTypes.length, realtime_event_types: realtimeEventTypes, db_event_count: dbEvents.length, db_event_types: dbEventTypes, expected_tool_order: expected, durable_tool_order_ok: durableToolOrderOK, snapshot_tool_order_ok: snapshotToolOrderOK, durable_started_tools: startedTools.map(e => ({ seq: e.seq, tool: (payloadObject(e) || e.payload || {}).tool_name, instance: (payloadObject(e) || e.payload || {}).tool_instance_id, target: toolEventTarget(e) })), durable_completed_tools: completedTools.map(e => ({ seq: e.seq, tool: (payloadObject(e) || e.payload || {}).tool_name, instance: (payloadObject(e) || e.payload || {}).tool_instance_id, target: toolEventTarget(e) })), snapshot_tools: snapshotTools.map(item => item.text), assistant_preview: assistantPreview.map(m => String(m.content || '').slice(0, 200)), artifacts: { transcript: tuiRawPath, clean_transcript: tuiCleanPath, chat_snapshot: clipboardCapturePath, feed_log: feedLogPath, frames: framesPath, requests: requestsPath, runner_events: runnerEventsPath, phase_log: phaseLogPath, summary: summaryPath } };
   fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2));
   endPhase({ pass, realtime_event_count: realtimeEventTypes.length, db_event_count: events.events?.length ?? 0 });
   emit({ stage: 'final.summary', ...summary, realtime_event_types: undefined, db_event_types: undefined });
@@ -620,9 +704,9 @@ try {
 NODE
 
 CONFIG_LOCAL="${ARTIFACT_DIR}/config.json"
-python3 - "$CONFIG_LOCAL" "$PRIMARY_SSH" "$API_URL" "$REMOTE_DIR" "$SESSION_ID" "$PROMPT" "$FOLLOW_UP" "$PROVIDER" "$MODEL" "$THINKING" "$AGENT_NAME" "$TIMEOUT_SECONDS" "$OVERALL_TIMEOUT_SECONDS" "$TUI_BIN" <<'PY'
+python3 - "$CONFIG_LOCAL" "$PRIMARY_SSH" "$API_URL" "$REMOTE_DIR" "$SESSION_ID" "$PROMPT" "$FIRST_MARKER" "$FOLLOW_UP" "$FOLLOW_UP_MARKER" "$SKIP_FOLLOW_UP" "$EXPECTED_TOOL_ORDER" "$PROVIDER" "$MODEL" "$THINKING" "$AGENT_NAME" "$TIMEOUT_SECONDS" "$OVERALL_TIMEOUT_SECONDS" "$TUI_BIN" <<'PY'
 import json, sys
-path, primary, api, remote_dir, session_id, prompt, follow_up, provider, model, thinking, agent, timeout, overall_timeout, tui_bin = sys.argv[1:]
+path, primary, api, remote_dir, session_id, prompt, first_marker, follow_up, follow_up_marker, skip_follow_up, expected_tool_order, provider, model, thinking, agent, timeout, overall_timeout, tui_bin = sys.argv[1:]
 with open(path, 'w', encoding='utf-8') as f:
     json.dump({
         'primarySSH': primary,
@@ -630,7 +714,11 @@ with open(path, 'w', encoding='utf-8') as f:
         'remoteDir': remote_dir,
         'sessionID': session_id,
         'prompt': prompt,
+        'firstMarker': first_marker,
         'followUp': follow_up,
+        'followUpMarker': follow_up_marker,
+        'skipFollowUp': skip_follow_up == 'true',
+        'expectedToolOrder': expected_tool_order,
         'provider': provider,
         'model': model,
         'thinking': thinking,
@@ -689,7 +777,7 @@ if [[ "${remote_status}" != "0" ]]; then
   exit "${remote_status}"
 fi
 [[ -f "${SUMMARY_JSON}" ]] || fail "remote run succeeded but summary was not copied back"
-jq '{ok, primary_ssh, api_url, remote_dir, session_id, provider, model, observed, realtime_event_count, db_event_count, assistant_preview, artifacts}' "${SUMMARY_JSON}"
+jq '{ok, primary_ssh, api_url, remote_dir, session_id, provider, model, observed, realtime_event_count, db_event_count, expected_tool_order, durable_tool_order_ok, snapshot_tool_order_ok, durable_started_tools, durable_completed_tools, snapshot_tools, assistant_preview, artifacts}' "${SUMMARY_JSON}"
 log "PASS"
 log "transcript: ${ARTIFACT_DIR}/remote-artifacts/tui.cleaned.txt"
 log "frames: ${ARTIFACT_DIR}/remote-artifacts/realtime-frames.ndjson"
