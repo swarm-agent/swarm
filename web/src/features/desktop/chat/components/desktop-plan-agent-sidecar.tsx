@@ -150,6 +150,11 @@ export function DesktopPlanAgentSidecar({
 
   const resizeTextarea = useCallback((textarea: HTMLTextAreaElement | null) => {
     if (!textarea) return;
+    if (!textarea.value) {
+      textarea.style.removeProperty("height");
+      textarea.style.overflowY = "hidden";
+      return;
+    }
     textarea.style.height = "auto";
     const viewportMaxHeight = typeof window === "undefined" ? 360 : Math.max(120, Math.floor(window.innerHeight * 0.5));
     textarea.style.height = `${Math.min(textarea.scrollHeight, viewportMaxHeight)}px`;
@@ -276,39 +281,41 @@ export function DesktopPlanAgentSidecar({
           </div>
           {!isAtBottom && hasUnseenLatest ? <button type="button" aria-label="Jump to latest Plan message" title="Jump to latest Plan message" onClick={() => scrollToBottom("smooth")} className="absolute bottom-3 right-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] shadow-lg"><ArrowDown size={18} aria-hidden="true" /></button> : null}
         </div>
-        <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] pb-1.5" data-testid="desktop-plan-composer">
+        <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-plan-composer">
           <div className={DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME}>
             <div className="relative min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
               <div className="flex min-w-0 items-end gap-3 px-4 py-2 sm:py-3 lg:py-2.5">
-              <Textarea
-                ref={textareaRef}
-                value={draft}
-                onChange={(event) => {
-                  if (dictationEnabled) dictationBaseRef.current = event.target.value;
-                  setDraft(event.target.value);
-                  resizeTextarea(event.target);
-                }}
-                onKeyDown={handleComposerKeyDown}
-                placeholder="Ask about the plan or request changes…"
-                aria-label="Plan message"
-                className="max-h-[50vh] !min-h-[32px] flex-1 resize-none overflow-y-hidden !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]"
-                rows={1}
-                disabled={sidechat.busy || !sidechat.sessionId}
-              />
+                <div className="min-w-0 flex-1">
+                  <Textarea
+                    ref={textareaRef}
+                    value={draft}
+                    onChange={(event) => {
+                      if (dictationEnabled) dictationBaseRef.current = event.target.value;
+                      setDraft(event.target.value);
+                      resizeTextarea(event.target);
+                    }}
+                    onKeyDown={handleComposerKeyDown}
+                    placeholder="Ask about the plan or request changes…"
+                    aria-label="Plan message"
+                    className="max-h-[50vh] !min-h-[32px] resize-none overflow-y-hidden !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]"
+                    rows={1}
+                    disabled={sidechat.busy || !sidechat.sessionId}
+                  />
+                </div>
               </div>
-              <div className="flex items-center justify-end gap-2 border-t border-[var(--app-border)] px-4 py-2">
-              <button
-                type="button"
-                onClick={toggleDictation}
-                disabled={sidechat.busy || !sidechat.sessionId || !dictationSupported}
-                aria-pressed={dictationEnabled}
-                aria-label={dictationEnabled ? "Stop microphone dictation" : "Start microphone dictation"}
-                title={dictationSupported ? (dictationEnabled ? "Stop dictation" : "Start dictation") : "Speech recognition is not available in this browser"}
-                className={dictationEnabled ? "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)]" : "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"}
-              ><Mic size={17} className={dictationEnabled ? "animate-pulse" : undefined} /></button>
-              <Button type="button" size="sm" className="h-10 w-10 shrink-0 rounded-xl p-0" disabled={activeRun ? !sidechat.runtimeSwarmId : sidechat.busy || !draft.trim() || !sidechat.sessionId} aria-label={activeRun ? "Stop Plan" : "Send to Plan"} onClick={() => activeRun ? void stop() : void send()}>
-                {activeRun ? <Square size={18} /> : sidechat.busy ? <Loader2 size={18} className="animate-spin" /> : <Send size={20} />}
-              </Button>
+              <div className="flex items-center justify-end gap-2 border-y border-[var(--app-border-strong)] px-4 py-2">
+                <button
+                  type="button"
+                  onClick={toggleDictation}
+                  disabled={sidechat.busy || !sidechat.sessionId || !dictationSupported}
+                  aria-pressed={dictationEnabled}
+                  aria-label={dictationEnabled ? "Stop microphone dictation" : "Start microphone dictation"}
+                  title={dictationSupported ? (dictationEnabled ? "Stop dictation" : "Start dictation") : "Speech recognition is not available in this browser"}
+                  className={dictationEnabled ? "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)]" : "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-surface)] text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"}
+                ><Mic size={15} className={dictationEnabled ? "animate-pulse" : undefined} /></button>
+                <Button type="button" size="sm" className="h-9 w-9 shrink-0 rounded-lg p-0" disabled={activeRun ? !sidechat.runtimeSwarmId : sidechat.busy || !draft.trim() || !sidechat.sessionId} aria-label={activeRun ? "Stop Plan" : "Send to Plan"} onClick={() => activeRun ? void stop() : void send()}>
+                  {activeRun ? <Square size={16} /> : sidechat.busy ? <Loader2 size={16} className="animate-spin" /> : <Send size={17} />}
+                </Button>
               </div>
             </div>
           </div>

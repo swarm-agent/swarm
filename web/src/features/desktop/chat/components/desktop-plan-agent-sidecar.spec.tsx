@@ -56,7 +56,9 @@ assert.match(markup, /Saved edits update the parent approval card live\./, "plan
 assert.match(markup, /aria-label="Send to Plan"/, "idle real session should expose its send control");
 assert.match(markup, /aria-label="Start microphone dictation"/, "Plan composer should expose the canonical microphone affordance");
 assert.match(markup, /data-testid="desktop-plan-composer"/, "expected dedicated Plan composer wrapper");
-assert.match(markup, /border-t[^\"]*bg-\[var\(--app-surface\)\][^\"]*pb-1\.5[^\"]*data-testid="desktop-plan-composer"/, "Plan composer background should include extra bottom breathing room");
+assert.match(markup, /border-t[^\"]*bg-\[var\(--app-surface\)\][^\"]*data-testid="desktop-plan-composer"/, "Plan composer should share the canonical chat composer boundary");
+assert.doesNotMatch(markup, /data-testid="desktop-plan-composer"[^>]*pb-1\.5/, "Plan composer should not be taller than the canonical chat composer");
+assert.match(markup, /border-y border-\[var\(--app-border-strong\)\][^\"]*px-4 py-2/, "Plan composer control separator should align with the canonical chat composer control line");
 assert.match(markup, /!min-h-\[32px\][\s\S]*sm:!min-h-\[56px\][\s\S]*lg:!min-h-\[52px\]/, "Plan input should use canonical chat baseline heights");
 assert.match(markup, /max-h-\[50vh\][\s\S]*resize-none[\s\S]*overflow-y-hidden/, "Plan input should grow upward before scrolling");
 assert.doesNotMatch(markup, /ChatMarkdown/, "sidechat must reuse canonical Desktop V3 render items rather than a custom message renderer");
@@ -64,7 +66,7 @@ assert.doesNotMatch(markup, /Parent conversation context for this plan review/, 
 
 const source = readFileSync(fileURLToPath(new URL("./desktop-plan-agent-sidecar.tsx", import.meta.url)), "utf8");
 assert.match(source, /event\.key !== "Enter" \|\| event\.shiftKey \|\| event\.nativeEvent\.isComposing/, "Enter should submit while Shift+Enter and IME composition preserve multiline input");
-assert.match(source, /textarea\.style\.height = "auto"[\s\S]*Math\.min\(textarea\.scrollHeight, viewportMaxHeight\)/, "Plan textarea should auto-grow from its content height");
+assert.match(source, /if \(!textarea\.value\)[\s\S]*removeProperty\("height"\)[\s\S]*textarea\.style\.height = "auto"[\s\S]*Math\.min\(textarea\.scrollHeight, viewportMaxHeight\)/, "Plan textarea should keep its baseline while empty and auto-grow only from typed content");
 assert.match(source, /speechRecognitionConstructor\(\)[\s\S]*recognition\.onresult[\s\S]*setDraft\(appendDictation/, "Plan microphone should feed browser dictation into the draft");
 
 console.log("desktop plan agent sidecar tests passed");
