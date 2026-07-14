@@ -35,6 +35,19 @@ func TestExecuteCommand_HelpPopulatesOverlay(t *testing.T) {
 	}
 }
 
+func TestExecuteCommand_MCPRequiresActiveExaAPIKey(t *testing.T) {
+	a := newCommandTestApp()
+	a.executeCommand("/mcp")
+
+	got := a.home.Status()
+	if !strings.Contains(got, "Exa web access requires an active Exa API key") {
+		t.Fatalf("status = %q, want active Exa API key requirement", got)
+	}
+	if strings.Contains(got, "free Exa MCP") {
+		t.Fatalf("status = %q, must not advertise free Exa MCP access", got)
+	}
+}
+
 func TestExecuteCommand_UnknownCommandSetsStatus(t *testing.T) {
 	a := newCommandTestApp()
 	a.executeCommand("/definitely-not-a-command")
@@ -463,8 +476,11 @@ func TestExecuteCommand_MCPDeferredFromChatKeepsChatRoute(t *testing.T) {
 		t.Fatalf("MCPModalVisible() = true, want deferred status only")
 	}
 	got := a.home.Status()
-	if !strings.Contains(got, "MCP management is deferred") || !strings.Contains(got, "free Exa MCP") {
-		t.Fatalf("status = %q, want deferred free Exa MCP message", got)
+	if !strings.Contains(got, "MCP management is deferred") || !strings.Contains(got, "active Exa API key") {
+		t.Fatalf("status = %q, want deferred MCP and active Exa API key message", got)
+	}
+	if strings.Contains(got, "free Exa MCP") {
+		t.Fatalf("status = %q, must not advertise free Exa MCP access", got)
 	}
 }
 

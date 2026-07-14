@@ -18,15 +18,13 @@ import (
 )
 
 type Adapter struct {
-	authStore          *pebblestore.AuthStore
-	mcpEnabledResolver func(context.Context) (bool, error)
-	httpClient         *http.Client
+	authStore  *pebblestore.AuthStore
+	httpClient *http.Client
 }
 
-func NewAdapter(authStore *pebblestore.AuthStore, mcpEnabledResolver func(context.Context) (bool, error)) *Adapter {
+func NewAdapter(authStore *pebblestore.AuthStore) *Adapter {
 	return &Adapter{
-		authStore:          authStore,
-		mcpEnabledResolver: mcpEnabledResolver,
+		authStore: authStore,
 		httpClient: &http.Client{
 			Timeout: 6 * time.Second,
 		},
@@ -73,24 +71,10 @@ func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 			AuthMethods: exaAuthMethods(),
 		}, nil
 	}
-	if a.mcpEnabledResolver != nil {
-		enabled, err := a.mcpEnabledResolver(ctx)
-		if err != nil {
-			return provideriface.Status{}, err
-		}
-		if enabled {
-			return provideriface.Status{
-				ID:          "exa",
-				Ready:       true,
-				RunReason:   "search-only provider (no model runner)",
-				AuthMethods: exaAuthMethods(),
-			}, nil
-		}
-	}
 	return provideriface.Status{
 		ID:          "exa",
 		Ready:       false,
-		Reason:      "missing exa api key (or enable exa mcp server)",
+		Reason:      "missing active Exa API key; add one in Settings > Providers or run /auth key exa <api_key>",
 		RunReason:   "search-only provider (no model runner)",
 		AuthMethods: exaAuthMethods(),
 	}, nil
@@ -212,7 +196,7 @@ func exaAuthMethods() []provideriface.AuthMethod {
 			ID:             "api",
 			Label:          "API key",
 			CredentialType: "api",
-			Description:    "Use an Exa API key.",
+			Description:    "Adding and activating an Exa API key opts in to Exa-hosted web search and page retrieval. Queries and selected URLs are sent to Exa, results return to the agent/model context, and your browser profile is not used.",
 		},
 	}
 }

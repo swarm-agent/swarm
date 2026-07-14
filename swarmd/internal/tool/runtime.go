@@ -166,7 +166,6 @@ type ExaRuntimeConfig struct {
 	APIKey      string
 	SearchURL   string
 	ContentsURL string
-	MCPURL      string
 }
 
 type WorkspaceScope struct {
@@ -633,7 +632,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "websearch",
-			Description: "Run Exa /search with optional parallel multi-query fan-out and optional nested contents retrieval",
+			Description: "Run Exa /search using an active account-scoped Exa API key; sends queries and optional selected URLs to Exa and returns results to the agent/model context without using a browser profile",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -691,7 +690,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "webfetch",
-			Description: "Fetch content for selected URLs through Exa /contents using the current Exa contents request contract",
+			Description: "Fetch selected URLs through Exa /contents using an active account-scoped Exa API key; sends those URLs to Exa and returns results to the agent/model context without using a browser profile",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -750,7 +749,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "webdownload",
-			Description: "Download full URL contents via Exa /contents to files when context would be too large; omitted output_dir uses the managed private workspace cache",
+			Description: "Download full URL contents via Exa /contents using an active account-scoped Exa API key; sends selected URLs to Exa without using a browser profile, and omitted output_dir uses the managed private workspace cache",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -3775,28 +3774,6 @@ type exaSearchRequestOptions struct {
 	Contents           *exaContentsRequestOptions
 }
 
-type mcpErrorEnvelope struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-type mcpToolContentItem struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-type mcpToolResultEnvelope struct {
-	Content []mcpToolContentItem `json:"content"`
-	IsError bool                 `json:"isError"`
-}
-
-type mcpToolCallEnvelope struct {
-	JSONRPC string                 `json:"jsonrpc"`
-	ID      any                    `json:"id"`
-	Result  *mcpToolResultEnvelope `json:"result,omitempty"`
-	Error   *mcpErrorEnvelope      `json:"error,omitempty"`
-}
-
 func (r *Runtime) executeWebSearch(parent context.Context, args map[string]any) (string, error) {
 	if parent == nil {
 		parent = context.Background()
@@ -3985,7 +3962,6 @@ func (r *Runtime) executeWebSearch(parent context.Context, args map[string]any) 
 		"prompt_injection_tag":  "tool_output_untrusted",
 		"exa_search_endpoint":   strings.TrimSpace(config.SearchURL),
 		"exa_contents_endpoint": strings.TrimSpace(config.ContentsURL),
-		"exa_mcp_endpoint":      strings.TrimSpace(config.MCPURL),
 		"contents_requested":    contentsOptions != nil,
 		"parallel_query_fanout": maxParallel,
 		"additional_queries":    additionalQueries,
@@ -4112,7 +4088,6 @@ func (r *Runtime) executeWebFetch(parent context.Context, args map[string]any) (
 		"prompt_injection_tag":      "tool_output_untrusted",
 		"exa_search_endpoint":       strings.TrimSpace(config.SearchURL),
 		"exa_contents_endpoint":     strings.TrimSpace(config.ContentsURL),
-		"exa_mcp_endpoint":          strings.TrimSpace(config.MCPURL),
 		"allowed_exa_endpoints":     []string{"/search", "/contents"},
 		"answer_endpoint_supported": false,
 		"request_id":                strings.TrimSpace(decoded.RequestID),
@@ -4277,7 +4252,6 @@ func (r *Runtime) executeWebDownload(parent context.Context, scope WorkspaceScop
 		"prompt_injection_tag":      "tool_output_untrusted",
 		"exa_search_endpoint":       strings.TrimSpace(config.SearchURL),
 		"exa_contents_endpoint":     strings.TrimSpace(config.ContentsURL),
-		"exa_mcp_endpoint":          strings.TrimSpace(config.MCPURL),
 		"allowed_exa_endpoints":     []string{"/search", "/contents"},
 		"answer_endpoint_supported": false,
 	}
@@ -4391,40 +4365,17 @@ func slugifyFilenameComponent(value string) string {
 
 func (r *Runtime) resolveExaConfig(ctx context.Context) (ExaRuntimeConfig, error) {
 	if r == nil || r.exaConfigResolver == nil {
-		return ExaRuntimeConfig{}, errors.New("websearch is not configured; exa resolver unavailable")
+		return ExaRuntimeConfig{}, errors.New("Exa web access requires an active API key, but the account credential resolver is unavailable")
 	}
 	config, err := r.exaConfigResolver(ctx)
 	if err != nil {
 		return ExaRuntimeConfig{}, err
 	}
-	if !config.Enabled {
-		return ExaRuntimeConfig{}, errors.New("exa websearch is unavailable: configure /auth key exa <api_key>; built-in free Exa MCP search is unavailable")
-	}
-	config.Source = strings.ToLower(strings.TrimSpace(config.Source))
 	config.APIKey = strings.TrimSpace(config.APIKey)
-	config.MCPURL = strings.TrimSpace(config.MCPURL)
-	if config.Source == "" {
-		switch {
-		case config.APIKey != "":
-			config.Source = "api_key"
-		case config.MCPURL != "":
-			config.Source = "mcp"
-		default:
-			return ExaRuntimeConfig{}, errors.New("exa source is unavailable: configure /auth key exa <api_key>; built-in free Exa MCP search is unavailable")
-		}
+	if !config.Enabled || config.APIKey == "" {
+		return ExaRuntimeConfig{}, errors.New("Exa web access requires an active API key; add one in Settings > Providers or run /auth key exa <api_key>")
 	}
-	if config.Source != "mcp" && config.Source != "api_key" {
-		return ExaRuntimeConfig{}, fmt.Errorf("invalid exa source %q", config.Source)
-	}
-	if config.Source == "api_key" && config.APIKey == "" {
-		return ExaRuntimeConfig{}, errors.New("exa api key is missing for API-key mode (run /auth key exa <api_key>)")
-	}
-	if config.Source == "mcp" && config.MCPURL == "" {
-		return ExaRuntimeConfig{}, errors.New("built-in free Exa MCP endpoint is missing")
-	}
-	if config.APIKey == "" {
-		config.Source = "mcp"
-	}
+	config.Source = "api_key"
 	config.SearchURL = strings.TrimSpace(config.SearchURL)
 	if config.SearchURL == "" {
 		config.SearchURL = defaultExaSearchURL
@@ -4441,17 +4392,6 @@ func (r *Runtime) exaSearch(ctx context.Context, config ExaRuntimeConfig, option
 	if options.Query == "" {
 		return exaSearchResponse{}, errors.New("query is required")
 	}
-	if strings.EqualFold(strings.TrimSpace(config.Source), "mcp") {
-		hits, err := r.exaSearchViaMCP(ctx, config, options.Query, options.NumResults, options.SearchType)
-		if err != nil {
-			return exaSearchResponse{}, err
-		}
-		return exaSearchResponse{
-			ResolvedSearchType: normalizeMCPExaSearchType(options.SearchType),
-			Results:            convertSearchHitsToExaResults(hits),
-		}, nil
-	}
-
 	payload := map[string]any{
 		"query":      options.Query,
 		"numResults": options.NumResults,
@@ -4518,9 +4458,6 @@ func (r *Runtime) exaContents(ctx context.Context, config ExaRuntimeConfig, urls
 	if len(urls) == 0 {
 		return exaContentsResponse{}, errors.New("urls are required")
 	}
-	if strings.EqualFold(strings.TrimSpace(config.Source), "mcp") {
-		return r.exaContentsViaMCP(ctx, config, urls, options)
-	}
 	payload := map[string]any{
 		"urls": urls,
 	}
@@ -4533,399 +4470,13 @@ func (r *Runtime) exaContents(ctx context.Context, config ExaRuntimeConfig, urls
 	return decoded, nil
 }
 
-func (r *Runtime) exaSearchViaMCP(ctx context.Context, config ExaRuntimeConfig, query string, maxResults int, searchType string) ([]webSearchHit, error) {
-	mcpURL := strings.TrimSpace(config.MCPURL)
-	if mcpURL == "" {
-		return nil, errors.New("exa mcp endpoint is not configured")
-	}
-	args := map[string]any{
-		"query":      query,
-		"numResults": maxResults,
-		"type":       normalizeMCPExaSearchType(searchType),
-	}
-	textOutput, err := r.doMCPToolCall(ctx, mcpURL, "web_search_exa", args)
-	if err != nil {
-		return nil, err
-	}
-	hits := parseMCPExaSearchHits(textOutput, maxResults)
-	if len(hits) == 0 {
-		return nil, errors.New("exa mcp websearch returned no URL results")
-	}
-	return hits, nil
-}
-
-func (r *Runtime) exaContentsViaMCP(ctx context.Context, config ExaRuntimeConfig, urls []string, options exaContentsRequestOptions) (exaContentsResponse, error) {
-	mcpURL := strings.TrimSpace(config.MCPURL)
-	if mcpURL == "" {
-		return exaContentsResponse{}, errors.New("exa mcp endpoint is not configured")
-	}
-	args := map[string]any{
-		"urls": urls,
-	}
-	maxCharacters := mcpExaFetchMaxCharacters(options)
-	if maxCharacters > 0 {
-		args["maxCharacters"] = maxCharacters
-	}
-	textOutput, err := r.doMCPToolCall(ctx, mcpURL, "web_fetch_exa", args)
-	if err != nil {
-		return exaContentsResponse{}, err
-	}
-	results, statuses := parseMCPExaContentResults(textOutput, urls)
-	if len(results) == 0 && len(statuses) == 0 {
-		return exaContentsResponse{}, errors.New("exa mcp webfetch returned no content")
-	}
-	return exaContentsResponse{
-		Results:  results,
-		Statuses: statuses,
-	}, nil
-}
-
-func normalizeMCPExaSearchType(searchType string) string {
-	switch strings.ToLower(strings.TrimSpace(searchType)) {
-	case "fast", "instant":
-		return "fast"
-	default:
-		return "auto"
-	}
-}
-
-func parseMCPExaContentResults(raw string, requestedURLs []string) ([]exaContentResult, []exaContentStatus) {
-	text := strings.TrimSpace(sanitizeForToolOutput(raw))
-	if text == "" {
-		return nil, nil
-	}
-	sections := splitMCPMarkdownSections(text)
-	if len(sections) == 0 {
-		sections = []string{text}
-	}
-	results := make([]exaContentResult, 0, len(sections))
-	statuses := make([]exaContentStatus, 0)
-	seenURLs := make(map[string]struct{}, len(sections))
-	for _, section := range sections {
-		result := parseMCPExaContentSection(section)
-		if strings.TrimSpace(result.Error) != "" {
-			statuses = append(statuses, exaContentStatus{
-				ID:     firstNonEmptyString(result.URL, result.ID),
-				Status: "error",
-				Source: "mcp",
-				Error:  &exaContentStatusErr{Tag: strings.TrimSpace(result.Error)},
-			})
-			continue
-		}
-		result.URL = strings.TrimSpace(result.URL)
-		if result.URL == "" && len(requestedURLs) == 1 {
-			result.URL = strings.TrimSpace(requestedURLs[0])
-		}
-		if result.URL == "" && strings.TrimSpace(result.Text) == "" {
-			continue
-		}
-		key := strings.ToLower(result.URL)
-		if key != "" {
-			if _, ok := seenURLs[key]; ok {
-				continue
-			}
-			seenURLs[key] = struct{}{}
-		}
-		if result.ID == "" {
-			result.ID = result.URL
-		}
-		results = append(results, result)
-	}
-	return results, statuses
-}
-
-func splitMCPMarkdownSections(text string) []string {
-	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
-	sections := make([]string, 0, 4)
-	var current []string
-	flush := func() {
-		section := strings.TrimSpace(strings.Join(current, "\n"))
-		if section != "" {
-			sections = append(sections, section)
-		}
-		current = nil
-	}
-	for _, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "# ") {
-			flush()
-		}
-		current = append(current, line)
-	}
-	flush()
-	return sections
-}
-
-func parseMCPExaContentSection(section string) exaContentResult {
-	lines := strings.Split(strings.ReplaceAll(section, "\r\n", "\n"), "\n")
-	result := exaContentResult{}
-	var body []string
-	inBody := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "Error fetching ") {
-			message := strings.TrimSpace(strings.TrimPrefix(trimmed, "Error fetching "))
-			if splitAt := strings.LastIndex(message, ": "); splitAt >= 0 {
-				result.URL = strings.TrimSpace(message[:splitAt])
-				result.ID = result.URL
-				result.Error = strings.TrimSpace(message[splitAt+2:])
-			} else {
-				result.Error = message
-			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "# ") && result.Title == "" && !inBody {
-			result.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
-			continue
-		}
-		if strings.HasPrefix(trimmed, "URL:") && !inBody {
-			result.URL = strings.TrimSpace(strings.TrimPrefix(trimmed, "URL:"))
-			result.ID = result.URL
-			continue
-		}
-		if strings.HasPrefix(trimmed, "Published:") && !inBody {
-			result.PublishedDate = strings.TrimSpace(strings.TrimPrefix(trimmed, "Published:"))
-			continue
-		}
-		if strings.HasPrefix(trimmed, "Author:") && !inBody {
-			result.Author = strings.TrimSpace(strings.TrimPrefix(trimmed, "Author:"))
-			continue
-		}
-		if trimmed == "" && !inBody {
-			if result.Title != "" || result.URL != "" || result.PublishedDate != "" || result.Author != "" {
-				inBody = true
-			}
-			continue
-		}
-		inBody = true
-		body = append(body, line)
-	}
-	result.Title = strings.TrimSpace(sanitizeForToolOutput(result.Title))
-	result.Author = strings.TrimSpace(result.Author)
-	result.PublishedDate = strings.TrimSpace(result.PublishedDate)
-	result.Text = strings.TrimSpace(sanitizeForToolOutput(strings.Join(body, "\n")))
-	if result.Title == "(no title)" {
-		result.Title = ""
-	}
-	return result
-}
-
-func mcpExaFetchMaxCharacters(options exaContentsRequestOptions) int {
-	switch text := options.Text.(type) {
-	case map[string]any:
-		return asInt(text["max_characters"], 0)
-	case map[string]string:
-		return asInt(text["max_characters"], 0)
-	case exaContentsTextOptions:
-		return text.MaxCharacters
-	case *exaContentsTextOptions:
-		if text != nil {
-			return text.MaxCharacters
-		}
-	}
-	return 0
-}
-
-func parseMCPExaSearchHits(raw string, maxResults int) []webSearchHit {
-	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
-	out := make([]webSearchHit, 0, maxResults)
-	seen := make(map[string]struct{}, maxResults)
-	current := webSearchHit{}
-	hasCurrent := false
-	flush := func() {
-		if !hasCurrent {
-			return
-		}
-		current.URL = strings.TrimSpace(current.URL)
-		if current.URL != "" {
-			key := strings.ToLower(current.URL)
-			if _, ok := seen[key]; !ok {
-				seen[key] = struct{}{}
-				current.Title = strings.TrimSpace(sanitizeForToolOutput(current.Title))
-				current.Author = strings.TrimSpace(current.Author)
-				current.PublishedDate = strings.TrimSpace(current.PublishedDate)
-				out = append(out, current)
-			}
-		}
-		current = webSearchHit{}
-		hasCurrent = false
-	}
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(trimmed, "Title:"):
-			if hasCurrent {
-				flush()
-				if maxResults > 0 && len(out) >= maxResults {
-					return out[:maxResults]
-				}
-			}
-			current.Title = strings.TrimSpace(strings.TrimPrefix(trimmed, "Title:"))
-			hasCurrent = true
-		case strings.HasPrefix(trimmed, "URL:"):
-			current.URL = strings.TrimSpace(strings.TrimPrefix(trimmed, "URL:"))
-			hasCurrent = true
-		case strings.HasPrefix(trimmed, "Author:"):
-			current.Author = strings.TrimSpace(strings.TrimPrefix(trimmed, "Author:"))
-			hasCurrent = true
-		case strings.HasPrefix(trimmed, "Published Date:"):
-			current.PublishedDate = strings.TrimSpace(strings.TrimPrefix(trimmed, "Published Date:"))
-			hasCurrent = true
-		case trimmed == "":
-			if hasCurrent && strings.TrimSpace(current.URL) != "" {
-				flush()
-				if maxResults > 0 && len(out) >= maxResults {
-					return out[:maxResults]
-				}
-			}
-		}
-	}
-	flush()
-	if maxResults > 0 && len(out) > maxResults {
-		return out[:maxResults]
-	}
-	return out
-}
-
-func (r *Runtime) doMCPToolCall(ctx context.Context, endpoint, toolName string, args map[string]any) (string, error) {
-	if r == nil {
-		return "", errors.New("runtime is not configured")
-	}
-	endpoint = strings.TrimSpace(endpoint)
-	if endpoint == "" {
-		return "", errors.New("mcp endpoint is required")
-	}
-	payload := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      "swarm-exa-tool-call",
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      strings.TrimSpace(toolName),
-			"arguments": args,
-		},
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("marshal mcp request: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-
-	client := r.httpClient
-	if client == nil {
-		client = &http.Client{Timeout: maxWebFetchTimeout + 5*time.Second}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxWebResponseBytes))
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode >= http.StatusBadRequest {
-		trimmed := strings.TrimSpace(sanitizeForToolOutput(string(raw)))
-		trimmed, _ = clampRunesWithEllipsis(trimmed, 500)
-		if trimmed == "" {
-			return "", fmt.Errorf("mcp request failed status=%d", resp.StatusCode)
-		}
-		return "", fmt.Errorf("mcp request failed status=%d body=%s", resp.StatusCode, trimmed)
-	}
-	return parseMCPToolCallOutput(raw, resp.Header.Get("Content-Type"))
-}
-
-func parseMCPToolCallOutput(raw []byte, contentType string) (string, error) {
-	envelope, err := decodeMCPToolEnvelope(raw, contentType)
-	if err != nil {
-		return "", err
-	}
-	if envelope.Error != nil {
-		msg := strings.TrimSpace(envelope.Error.Message)
-		if msg == "" {
-			msg = "mcp tool call failed"
-		}
-		return "", errors.New(msg)
-	}
-	if envelope.Result == nil {
-		return "", errors.New("mcp tool call returned empty result")
-	}
-	var textParts []string
-	for _, item := range envelope.Result.Content {
-		if !strings.EqualFold(strings.TrimSpace(item.Type), "text") {
-			continue
-		}
-		text := strings.TrimSpace(item.Text)
-		if text == "" {
-			continue
-		}
-		textParts = append(textParts, text)
-	}
-	if len(textParts) == 0 {
-		return "", errors.New("mcp tool call returned no text output")
-	}
-	out := strings.TrimSpace(strings.Join(textParts, "\n"))
-	if envelope.Result.IsError {
-		if out == "" {
-			out = "mcp tool call failed"
-		}
-		return "", errors.New(out)
-	}
-	return out, nil
-}
-
-func decodeMCPToolEnvelope(raw []byte, contentType string) (mcpToolCallEnvelope, error) {
-	var envelope mcpToolCallEnvelope
-	contentType = strings.ToLower(strings.TrimSpace(contentType))
-	if strings.Contains(contentType, "application/json") {
-		if err := json.Unmarshal(raw, &envelope); err != nil {
-			return mcpToolCallEnvelope{}, fmt.Errorf("decode mcp json response: %w", err)
-		}
-		return envelope, nil
-	}
-
-	scanner := bufio.NewScanner(bytes.NewReader(raw))
-	scanner.Buffer(make([]byte, 0, 4096), maxWebResponseBytes)
-	candidates := make([]string, 0, 8)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "" {
-			continue
-		}
-		candidates = append(candidates, payload)
-	}
-	if err := scanner.Err(); err != nil {
-		return mcpToolCallEnvelope{}, fmt.Errorf("decode mcp event stream: %w", err)
-	}
-	for i := len(candidates) - 1; i >= 0; i-- {
-		payload := candidates[i]
-		if strings.EqualFold(payload, "[done]") {
-			continue
-		}
-		if err := json.Unmarshal([]byte(payload), &envelope); err == nil {
-			return envelope, nil
-		}
-	}
-	trimmed := strings.TrimSpace(sanitizeForToolOutput(string(raw)))
-	trimmed, _ = clampRunesWithEllipsis(trimmed, 500)
-	if trimmed == "" {
-		return mcpToolCallEnvelope{}, errors.New("mcp response did not include a parseable JSON payload")
-	}
-	return mcpToolCallEnvelope{}, fmt.Errorf("mcp response did not include a parseable JSON payload: %s", trimmed)
-}
-
 func (r *Runtime) doExaRequest(ctx context.Context, endpoint, apiKey string, payload map[string]any, out any) error {
 	if r == nil {
 		return errors.New("runtime is not configured")
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return errors.New("Exa web access requires an active API key; add one in Settings > Providers or run /auth key exa <api_key>")
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -4936,7 +4487,7 @@ func (r *Runtime) doExaRequest(ctx context.Context, endpoint, apiKey string, pay
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", strings.TrimSpace(apiKey))
+	req.Header.Set("x-api-key", apiKey)
 
 	client := r.httpClient
 	if client == nil {
@@ -5534,24 +5085,6 @@ func exaExtrasOptionToRequest(raw map[string]any) map[string]any {
 	}
 	if len(out) == 0 {
 		return nil
-	}
-	return out
-}
-
-func convertSearchHitsToExaResults(hits []webSearchHit) []exaSearchResult {
-	if len(hits) == 0 {
-		return nil
-	}
-	out := make([]exaSearchResult, 0, len(hits))
-	for _, hit := range hits {
-		out = append(out, exaSearchResult{
-			ID:            strings.TrimSpace(hit.ID),
-			URL:           strings.TrimSpace(hit.URL),
-			Title:         strings.TrimSpace(hit.Title),
-			PublishedDate: strings.TrimSpace(hit.PublishedDate),
-			Author:        strings.TrimSpace(hit.Author),
-			Score:         hit.Score,
-		})
 	}
 	return out
 }

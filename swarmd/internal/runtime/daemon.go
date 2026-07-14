@@ -308,14 +308,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageIntegrationService(integrationSvc)
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	toolRuntime.SetExaConfigResolver(func(ctx context.Context) (tool.ExaRuntimeConfig, error) {
-		mcpConfig, err := mcpSvc.ResolveExaRuntimeConfig()
-		if err != nil {
-			return tool.ExaRuntimeConfig{}, err
-		}
 		cfg := tool.ExaRuntimeConfig{
 			SearchURL:   "https://api.exa.ai/search",
 			ContentsURL: "https://api.exa.ai/contents",
-			MCPURL:      strings.TrimSpace(mcpConfig.URL),
 		}
 		principal, principalOK := identityruntime.PrincipalFromContext(ctx)
 		if !principalOK {
@@ -331,12 +326,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		if cfg.APIKey != "" {
 			cfg.Enabled = true
 			cfg.Source = "api_key"
-			return cfg, nil
-		}
-		if mcpConfig.Enabled {
-			cfg.Enabled = true
-			cfg.Source = "mcp"
-			return cfg, nil
 		}
 		return cfg, nil
 	})
@@ -352,13 +341,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		google.NewAdapter(authStore),
 		openai.NewAdapter(authStore),
 		openrouter.NewAdapter(authStore),
-		exaprovider.NewAdapter(authStore, func(context.Context) (bool, error) {
-			mcpConfig, err := mcpSvc.ResolveExaRuntimeConfig()
-			if err != nil {
-				return false, err
-			}
-			return mcpConfig.Enabled, nil
-		}),
+		exaprovider.NewAdapter(authStore),
 	)
 	providers.RegisterRunner(anthropic.NewRunner(authStore))
 	// Copilot runner registration is disabled with the adapter above; leave the

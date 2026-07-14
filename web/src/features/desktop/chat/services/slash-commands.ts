@@ -133,7 +133,7 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     aliases: [],
     hint: 'MCP management is deferred until Swarm Sync integration',
     actionLabel: 'Deferred',
-    tips: ['Free Exa MCP search stays built in', 'Use an Exa API key for webfetch/deep fetch', 'Coming later'],
+    tips: ['Generic MCP management is coming later', 'Exa web access requires an active Exa API key', 'Add one in Settings → Providers'],
     state: 'coming-soon',
     action: { kind: 'show-help' },
   },

@@ -40,12 +40,13 @@ function testFastCommandIsReady(): void {
   assert(palette.exactMatch?.state === 'ready', 'expected /fast exact match to be ready')
 }
 
-function testMCPCommandIsDeferredButFreeExaSearchRemains(): void {
+function testMCPCommandIsDeferredAndExaRequiresAPIKey(): void {
   const mcp = getDesktopSlashCommands().find((command) => command.id === 'mcp')
   assert(Boolean(mcp), 'expected /mcp command to exist')
   assert(mcp?.state === 'coming-soon', 'expected /mcp command to remain deferred')
   assert(mcp?.hint.includes('Swarm Sync'), 'expected /mcp hint to mention Swarm Sync')
-  assert(mcp?.tips.some((tip) => tip.includes('Free Exa MCP search')), 'expected /mcp tips to mention free Exa MCP search')
+  assert(mcp?.tips.some((tip) => tip.includes('active Exa API key')), 'expected /mcp tips to require an active Exa API key')
+  assert(mcp?.tips.every((tip) => !tip.includes('Free Exa MCP search')), 'expected /mcp tips not to advertise free Exa MCP search')
 }
 
 function testKeybindingsWarnsAboutDesktopShortcuts(): void {
@@ -62,7 +63,7 @@ function main(): void {
   testSlashPaletteMatchesPlan()
   testCodexOpensUsageWithoutChangingModels()
   testFastCommandIsReady()
-  testMCPCommandIsDeferredButFreeExaSearchRemains()
+  testMCPCommandIsDeferredAndExaRequiresAPIKey()
   testKeybindingsWarnsAboutDesktopShortcuts()
   console.log('slash-commands tests passed')
 }

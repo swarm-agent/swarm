@@ -115,7 +115,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/help", Hint: "Show command help"},
 		{Command: "/home", Hint: "Return to home without ending the chat session"},
 		{Command: "/keybinds", Hint: "Open keybindings modal", QuickTips: []string{"/keybinds list", "/keybinds reset [all]"}},
-		{Command: "/mcp", Hint: "MCP management is deferred until Swarm Sync integration", QuickTips: []string{"Exa search can use the built-in free Exa MCP server", "Use /auth key exa <api_key> for webfetch/deep fetch"}},
+		{Command: "/mcp", Hint: "MCP management is deferred until Swarm Sync integration", QuickTips: []string{"Generic MCP management is coming later", "Exa web access requires an active Exa API key", "Use /auth key exa <api_key>"}},
 		{Command: "/mode", Hint: "Set the default mode for new chats", QuickTips: []string{"/mode auto", "/mode plan", "/mode status"}},
 		{Command: "/models", Hint: "Open model manager modal (favorites + provider catalog)"},
 		{Command: "/mouse", Hint: "Toggle mouse click capture", QuickTips: []string{"/mouse toggle", "/mouse status"}},
@@ -2191,7 +2191,7 @@ func (a *App) showHelp() {
 		"/workspace save [path|#n]   (open workspace setup)",
 		"/add-dir [path]   (open workspace linked-directory flow)",
 		"/workspace scan [query]",
-		"/mcp   (deferred: MCP management needs Swarm Sync; Exa search can use the built-in free Exa MCP server)",
+		"/mcp   (deferred: generic MCP management needs Swarm Sync; Exa web access requires an active API key)",
 		"/output   (open full bash output viewer)",
 		"/permissions [on|off]   (toggle global permission prompts)",
 		"/permissions show   (show global permission policy)",
@@ -6883,7 +6883,7 @@ func (a *App) handleAddDirectoryCommand(args []string) {
 
 func (a *App) handleMCPCommand(args []string) {
 	a.home.ClearCommandOverlay()
-	a.home.SetStatus("MCP management is deferred until Swarm Sync integration; Exa search can use the built-in free Exa MCP server")
+	a.home.SetStatus("MCP management is deferred until Swarm Sync integration; Exa web access requires an active Exa API key (use /auth key exa <api_key>)")
 }
 
 func (a *App) handleWorktreesCommand(args []string) {
