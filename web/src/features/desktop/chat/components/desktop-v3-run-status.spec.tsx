@@ -58,6 +58,8 @@ test('checkpoint timer continues from cumulative duration across backend runs', 
   assert.match(markup, /1:35/)
   assert.doesNotMatch(markup, /0:05/)
   assert.doesNotMatch(markup, /\(1:35\)/)
+  assert.match(markup, /w-20/)
+  assert.match(markup, /w-\[8ch\]/)
   assert.match(markup, /Checkpoint timer continues across checkpoint runs/)
 })
 
@@ -82,9 +84,11 @@ test('terminal timer uses exact backend cumulative duration', () => {
 
   const markup = renderToStaticMarkup(<DesktopV3RunStatusPill model={model} now={999_000} />)
   assert.match(markup, /Completed/)
-  assert.match(markup, /0:05/)
-  assert.doesNotMatch(markup, /Total</)
-  assert.match(markup, /\(1:35\)/)
+  assert.match(markup, /1:35/)
+  assert.doesNotMatch(markup, />0:05</)
+  assert.doesNotMatch(markup, /\(1:35\)/)
+  assert.match(markup, /Loop timer: 0:05/)
+  assert.equal(formatDesktopV3RunTimerLabel(model!, 999_000), '1:35')
 })
 
 test('terminal timer can render exact stored run duration without local timestamps', () => {

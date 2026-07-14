@@ -189,23 +189,18 @@ export function formatDesktopV3CurrentRunTimer(model: DesktopV3RunStatusModel, n
 export const DESKTOP_V3_RUN_TIMER_TOOLTIP = 'Checkpoint timer continues across checkpoint runs. Overall timer is cumulative agent run time for this session.'
 
 export function formatDesktopV3RunTimerLabel(model: DesktopV3RunStatusModel, now: number): string {
-  const runTimer = formatDesktopV3CurrentRunTimer(model, now)
-  const totalTimer = formatDesktopV3RunTimer(model, now)
-  const showTotalTimer = Boolean(totalTimer && totalTimer !== runTimer && duration(model.cumulativeDurationMs) !== undefined)
-  if (!runTimer) return totalTimer
-  return showTotalTimer ? `${runTimer} (${totalTimer})` : runTimer
+  return formatDesktopV3RunTimer(model, now)
 }
 
 export function DesktopV3RunStatusPill({ model, now, className }: { model: DesktopV3RunStatusModel | null; now: number; className?: string }) {
   if (!model) return null
   const runTimer = formatDesktopV3CurrentRunTimer(model, now)
   const totalTimer = formatDesktopV3RunTimer(model, now)
-  const showTotalTimer = Boolean(totalTimer && totalTimer !== runTimer && duration(model.cumulativeDurationMs) !== undefined)
   const title = [
     model.label,
-    runTimer ? `Loop timer: ${runTimer}` : '',
-    showTotalTimer ? `Overall timer: ${totalTimer}` : '',
-    runTimer ? DESKTOP_V3_RUN_TIMER_TOOLTIP : '',
+    runTimer && runTimer !== totalTimer ? `Loop timer: ${runTimer}` : '',
+    totalTimer ? `Checkpoint timer: ${totalTimer}` : '',
+    totalTimer ? DESKTOP_V3_RUN_TIMER_TOOLTIP : '',
   ].filter(Boolean).join(' · ')
   return (
     <div
@@ -217,11 +212,10 @@ export function DesktopV3RunStatusPill({ model, now, className }: { model: Deskt
       data-testid="desktop-v3-run-status-pill"
       title={title || model.label}
     >
-      <span className="truncate">{model.label}</span>
-      {runTimer ? (
-        <span className="shrink-0 tabular-nums text-[var(--app-text)]">
-          {runTimer}
-          {showTotalTimer ? <span className="text-[var(--app-text-subtle)]"> ({totalTimer})</span> : null}
+      <span className="w-20 shrink-0 truncate text-center">{model.label}</span>
+      {totalTimer ? (
+        <span className="w-[8ch] shrink-0 text-right tabular-nums text-[var(--app-text)]">
+          {totalTimer}
         </span>
       ) : null}
     </div>
