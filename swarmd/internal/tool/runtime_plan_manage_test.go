@@ -6,6 +6,25 @@ import (
 	"testing"
 )
 
+func TestEditPendingPlanDefinitionRequiresNativeStructuredDocument(t *testing.T) {
+	definition := mustFindDefinition(t, "edit_pending_plan")
+	if !containsAll(definition.Description, "native structured JSON object", "never as serialized/quoted JSON text") {
+		t.Fatalf("edit_pending_plan description does not reject stringified documents: %q", definition.Description)
+	}
+	params, ok := definition.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("edit_pending_plan properties type = %T", definition.Parameters["properties"])
+	}
+	expectedRevision := params["expected_revision"].(map[string]any)
+	if expectedRevision["type"] != "integer" || !containsAll(expectedRevision["description"].(string), "integer", "not a quoted string") {
+		t.Fatalf("expected_revision contract = %#v", expectedRevision)
+	}
+	document := params["document"].(map[string]any)
+	if document["type"] != "object" || !containsAll(document["description"].(string), "native JSON object", "do not pass JSON text", "quoted/stringified JSON") {
+		t.Fatalf("document contract = %#v", document)
+	}
+}
+
 func TestPlanManageDefinitionIncludesExplicitNewOverride(t *testing.T) {
 	definition := mustFindDefinition(t, "plan_manage")
 	if definition.Description == "" {

@@ -32,10 +32,17 @@ func TestPlanSidechatInheritsModelWithoutInheritingCapabilities(t *testing.T) {
 func TestPlanSidechatPromptAttachesAuthoritativePlanContext(t *testing.T) {
 	context := `{"plan_id":"plan-1","proposal_revision":4,"document":{"info":{"goal":"Ship it"}}}`
 	prompt := PlanSidechatAgentPromptWithContext(context)
-	for _, expected := range []string{"Authoritative pending plan context", context, "edit_pending_plan", "expected_revision", "never claim that no plan is available"} {
+	for _, expected := range []string{
+		"Authoritative pending plan context", context, "edit_pending_plan", "never claim that no plan is available",
+		"document must be a native JSON object", "never pass document as JSON text", "quoted/stringified JSON",
+		`{"expected_revision":4,"document":{"title":"Plan: example"`,
+	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("prompt missing %q: %s", expected, prompt)
 		}
+	}
+	if strings.Contains(prompt, `"expected_revision":"4"`) || strings.Contains(prompt, `"document":"{`) {
+		t.Fatalf("prompt example stringifies structured arguments: %s", prompt)
 	}
 }
 

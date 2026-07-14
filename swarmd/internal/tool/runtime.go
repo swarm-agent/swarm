@@ -501,12 +501,12 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "edit_pending_plan",
-			Description: "Edit the pending plan proposal bound to the reserved Plan sidechat using optimistic concurrency",
+			Description: "Edit the pending plan proposal bound to the reserved Plan sidechat using optimistic concurrency. Pass document as a native structured JSON object, never as serialized/quoted JSON text.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"expected_revision": map[string]any{"type": "integer", "description": "Current pending proposal revision"},
-					"document":          map[string]any{"type": "object", "description": "Replacement structured plan document"},
+					"expected_revision": map[string]any{"type": "integer", "description": "Current pending proposal revision as an integer, not a quoted string"},
+					"document":          map[string]any{"type": "object", "description": "Complete replacement structured plan supplied directly as a native JSON object; do not pass JSON text, quoted/stringified JSON, markdown, or a wrapper string"},
 				},
 				"required":             []string{"expected_revision", "document"},
 				"additionalProperties": false,
