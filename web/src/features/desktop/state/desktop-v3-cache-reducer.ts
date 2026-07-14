@@ -1546,22 +1546,37 @@ export function upsertRunIntent(
     return
   }
 
-  byRunId[runIntent.run_id] = runIntent
+  const priorCumulativeDurationMs = Object.values(byRunId).reduce<number | undefined>((maximum, intent) => {
+    const candidate = intent.cumulative_duration_ms
+    if (typeof candidate !== 'number' || !Number.isFinite(candidate) || candidate < 0) return maximum
+    return maximum === undefined ? candidate : Math.max(maximum, candidate)
+  }, undefined)
+  const enrichedRunIntent: V3SessionRunIntent = {
+    ...runIntent,
+    started_at: runIntent.started_at ?? existing?.started_at,
+    completed_at: runIntent.completed_at ?? existing?.completed_at,
+    duration_ms: runIntent.duration_ms ?? existing?.duration_ms,
+    cumulative_duration_ms: runIntent.cumulative_duration_ms
+      ?? existing?.cumulative_duration_ms
+      ?? priorCumulativeDurationMs,
+  }
+
+  byRunId[runIntent.run_id] = enrichedRunIntent
   state.runIntentsBySession[sessionId] = byRunId
 
-  if (ACTIVE_RUN_INTENT_STATUSES.has(runIntent.status)) {
-    state.currentRunIntentBySession[sessionId] = runIntent
-  } else if (TERMINAL_RUN_INTENT_STATUSES.has(runIntent.status)
-    && state.currentRunIntentBySession[sessionId]?.run_id === runIntent.run_id) {
+  if (ACTIVE_RUN_INTENT_STATUSES.has(enrichedRunIntent.status)) {
+    state.currentRunIntentBySession[sessionId] = enrichedRunIntent
+  } else if (TERMINAL_RUN_INTENT_STATUSES.has(enrichedRunIntent.status)
+    && state.currentRunIntentBySession[sessionId]?.run_id === enrichedRunIntent.run_id) {
     delete state.currentRunIntentBySession[sessionId]
   }
 
   const liveRuns = state.liveRunsBySession[sessionId] ?? {}
-  const liveRun = liveRuns[runIntent.run_id] ?? createLiveRunOverlay(sessionId, runIntent.run_id)
-  liveRun.status = normalizeLiveRunStatus(runIntent.status)
-  liveRuns[runIntent.run_id] = liveRun
+  const liveRun = liveRuns[enrichedRunIntent.run_id] ?? createLiveRunOverlay(sessionId, enrichedRunIntent.run_id)
+  liveRun.status = normalizeLiveRunStatus(enrichedRunIntent.status)
+  liveRuns[enrichedRunIntent.run_id] = liveRun
   state.liveRunsBySession[sessionId] = liveRuns
-  cleanupTerminalLiveRunIfCanonicalized(state, sessionId, runIntent.run_id, runIntent.status)
+  cleanupTerminalLiveRunIfCanonicalized(state, sessionId, enrichedRunIntent.run_id, enrichedRunIntent.status)
 }
 
 function restoreSessionToSidebar(state: DesktopV3CacheState, sessionId: string): void {

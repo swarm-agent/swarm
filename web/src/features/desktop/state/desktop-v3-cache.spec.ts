@@ -3237,6 +3237,80 @@ test('realtime workset discovered applies child session shell and running state 
   assert.equal(state.realtime.endpointCursor, undefined)
 })
 
+test('run intent transitions carry durable cumulative timing until current_run_state arrives', () => {
+  const state = createEmptyDesktopV3CacheState()
+  applyCacheEvent(state, {
+    sessionId: sessionA.id,
+    eventType: 'session.assistant.completed',
+    payload: {
+      run_intent: {
+        ...runIntentA,
+        run_id: 'run-first',
+        status: 'completed',
+        duration_ms: 90_000,
+        cumulative_duration_ms: 90_000,
+        event_seq: 8,
+        updated_at: 100_000,
+      },
+    },
+  })
+  applyCacheEvent(state, {
+    sessionId: sessionA.id,
+    eventType: 'session.message.appended',
+    payload: {
+      run_intent: {
+        ...runIntentA,
+        run_id: 'run-second',
+        status: 'pending_executor',
+        created_at: 120_000,
+        updated_at: 120_000,
+        event_seq: 9,
+      },
+    },
+  })
+
+  const rendered = selectRenderedSessionMessages(state, sessionA.id)
+  assert.equal(rendered.currentRunIntent?.run_id, 'run-second')
+  assert.equal(rendered.currentRunIntent?.cumulative_duration_ms, 90_000)
+  assert.equal(rendered.latestRunIntent?.cumulative_duration_ms, 90_000)
+})
+
+test('same-run realtime updates preserve current_run_state timing fields', () => {
+  const state = createEmptyDesktopV3CacheState()
+  applyMessageMutationResult(state, messageMutationFixture({
+    run_intent: { ...runIntentA, started_at: undefined, cumulative_duration_ms: undefined },
+    current_run_state: {
+      session_id: sessionA.id,
+      run_id: runIntentA.run_id,
+      active: true,
+      status: 'pending_executor',
+      created_at: 120_000,
+      started_at: 120_000,
+      cumulative_duration_ms: 90_000,
+      updated_at: 120_000,
+      event_seq: 9,
+    },
+  }), 'client-timing', messageA1.id)
+
+  applyCacheEvent(state, {
+    sessionId: sessionA.id,
+    eventType: 'session.assistant.started',
+    payload: {
+      run_intent: {
+        ...runIntentA,
+        status: 'running',
+        created_at: 120_000,
+        updated_at: 121_000,
+        event_seq: 10,
+      },
+    },
+  })
+
+  const rendered = selectRenderedSessionMessages(state, sessionA.id)
+  assert.equal(rendered.currentRunIntent?.started_at, 120_000)
+  assert.equal(rendered.currentRunIntent?.cumulative_duration_ms, 90_000)
+})
+
 test('current_run_state preserves backend timing fields in current and latest run models', () => {
   const state = createEmptyDesktopV3CacheState()
   applyBootstrapSnapshot(state, snapshotFixture({
