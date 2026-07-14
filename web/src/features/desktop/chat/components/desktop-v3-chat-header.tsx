@@ -150,7 +150,7 @@ export function DesktopV3ChatHeader({
                 </span>
               ) : null}
               {mobileRunTimerLabel ? (
-                <span className="w-[8ch] shrink-0 justify-self-end text-right tabular-nums text-[var(--app-text)]" title={runStatus?.label}>
+                <span className="shrink-0 justify-self-end tabular-nums text-[var(--app-text)]" title={runStatus?.label}>
                   {mobileRunTimerLabel}
                 </span>
               ) : null}
