@@ -177,6 +177,7 @@ type WorkspaceScope struct {
 
 type manageSessionService interface {
 	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
+	GetActivePlan(sessionID string) (pebblestore.SessionPlanSnapshot, bool, error)
 	ListMessages(sessionID string, afterGlobalSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
 	ListTopSessionsByWorkspace(workspacePaths []string, perWorkspaceLimit int) ([]pebblestore.WorkspaceSessionList, error)
 	SearchSessions(pebblestore.V3SessionSearchOptions) (pebblestore.V3SessionSearchResult, error)
@@ -184,6 +185,7 @@ type manageSessionService interface {
 	ListSessionMessageTail(sessionID string, limit int) ([]pebblestore.MessageSnapshot, error)
 	ListSessionMessagesBefore(sessionID string, beforeSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
 	ArchiveSessionsWithEventsIfUnchanged(sessionIDs []string, expectedUpdatedAt map[string]int64) ([]*pebblestore.EventEnvelope, error)
+	ReactivateArchivedSessionsIfUnchanged(sessionIDs []string, expectedUpdatedAt map[string]int64) error
 	CurrentRealtimeOutboxRevision() (uint64, error)
 	LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID string, endpointSeq uint64) (pebblestore.V3RealtimeOutboxRecord, bool, error)
 }
@@ -346,6 +348,11 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 		return scope
 	}
 	if strings.TrimSpace(override.PrimaryPath) == "" && len(override.Roots) == 0 {
+		// Some control-plane tools deliberately omit path roots and authorize from
+		// the durable principal/session identity instead. Preserve that identity
+		// while retaining the caller's normalized path scope.
+		scope.SessionID = strings.TrimSpace(override.SessionID)
+		scope.Principal = override.Principal
 		return scope
 	}
 	normalized := normalizeWorkspaceScope(override.PrimaryPath, override.Roots)

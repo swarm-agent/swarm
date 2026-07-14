@@ -480,7 +480,10 @@ func (e *sessionV3Executor) startNextCheckpointRun(job sessionV3ExecutorJob) err
 	if checkpointID == "" || !summary.AutoAdvanceAllowed || summary.ReviewRequired || summary.Blocked || summary.Failed || summary.PlanComplete {
 		return nil
 	}
-	input := e.server.sessionsV3PlanModeRunInput(job.SessionID, active.ID, checkpointID)
+	input, err := e.server.sessionsV3PlanModeRunInput(job.SessionID, active.ID, checkpointID)
+	if err != nil {
+		return err
+	}
 	result, err := e.server.planLifecycle.StartCheckpoint(input)
 	if err != nil {
 		return err

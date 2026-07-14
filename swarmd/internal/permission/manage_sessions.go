@@ -21,12 +21,14 @@ func ShouldApproveManageSessionsDeploy(arguments string) bool {
 	return ManageSessionsAction(arguments) == "deploy"
 }
 
+func ShouldApproveManageSessionsCommit(arguments string) bool {
+	return ManageSessionsAction(arguments) == "commit"
+}
+
 func ShouldApproveManageSessionsArchive(arguments string) bool {
-	var payload struct {
-		Action string `json:"action"`
-	}
-	if json.Unmarshal([]byte(arguments), &payload) != nil {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(payload.Action), "archive")
+	return ManageSessionsAction(arguments) == "archive"
+}
+
+func ShouldApproveManageSessionsUnarchive(arguments string) bool {
+	return ManageSessionsAction(arguments) == "unarchive"
 }

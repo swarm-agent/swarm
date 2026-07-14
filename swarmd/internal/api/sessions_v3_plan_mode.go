@@ -309,7 +309,11 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartPlanAutomatic(w http.Respons
 		writeError(w, status, err)
 		return
 	}
-	input := s.sessionsV3PlanModeRunInput(sessionID, planID, strings.TrimSpace(req.CheckpointID))
+	input, err := s.sessionsV3PlanModeRunInput(sessionID, planID, strings.TrimSpace(req.CheckpointID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	input.ContinuationPolicy = req.ContinuationPolicy
 	input.ContinueAutomatically = req.ContinueAutomatically
 	result, err := s.planLifecycle.ApproveAndStartPlanAutomatic(input)
@@ -338,7 +342,11 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartPlanCheckpointed(w http.Resp
 		writeError(w, status, err)
 		return
 	}
-	input := s.sessionsV3PlanModeRunInput(sessionID, planID, strings.TrimSpace(req.CheckpointID))
+	input, err := s.sessionsV3PlanModeRunInput(sessionID, planID, strings.TrimSpace(req.CheckpointID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	input.ContinuationPolicy = req.ContinuationPolicy
 	input.ContinueAutomatically = req.ContinueAutomatically
 	result, err := s.planLifecycle.ApproveAndStartPlanCheckpointed(input)
@@ -384,7 +392,11 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartSessionCheckpoint(w http.Res
 		writeError(w, status, err)
 		return
 	}
-	input := s.sessionsV3PlanModeRunInput(sessionID, "", checkpointID)
+	input, err := s.sessionsV3PlanModeRunInput(sessionID, "", checkpointID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	result, err := s.planLifecycle.StartSessionCheckpoint(sessionruntime.PlanLifecycleSessionCheckpointInput{SessionID: sessionID, ChangeRequest: req.ChangeRequest, UserRequest: firstNonEmptyString(req.UserRequest, req.Request), Title: firstNonEmptyString(req.CheckpointTitle, req.Title), CheckpointID: checkpointID, Tasks: req.Tasks, AcceptanceCriteria: req.AcceptanceCriteria, Notes: req.Notes, SourceMessageID: req.SourceMessageID, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -411,7 +423,11 @@ func (s *Server) handleSessionV3PrimaryPlanModeRequestFollowupCheckpoint(w http.
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	input := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, "")
+	input, err := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	result, err := s.planLifecycle.RequestFollowupCheckpoint(sessionruntime.PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: req.PlanID, ChangeRequest: req.ChangeRequest, UserRequest: firstNonEmptyString(req.UserRequest, req.Request), Title: firstNonEmptyString(req.CheckpointTitle, req.Title), Tasks: req.Tasks, AcceptanceCriteria: req.AcceptanceCriteria, Notes: req.Notes, SourceMessageID: req.SourceMessageID, GlobalDefaultPolicy: req.FollowupCheckpointPolicy, ApprovalConfirmed: true, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -475,7 +491,11 @@ func (s *Server) handleSessionV3PrimaryPlanModeRestoreRevision(w http.ResponseWr
 			writeError(w, status, err)
 			return
 		}
-		runInput := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, req.CheckpointID)
+		runInput, runInputErr := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, req.CheckpointID)
+		if runInputErr != nil {
+			writeError(w, http.StatusInternalServerError, runInputErr)
+			return
+		}
 		input.RunID = runInput.RunID
 		input.RunSessionID = runInput.RunSessionID
 		input.ParentSessionID = runInput.ParentSessionID
@@ -576,7 +596,11 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartCheckpointWithMethod(w http.
 		writeError(w, status, err)
 		return
 	}
-	input := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, checkpointID)
+	input, err := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, checkpointID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	result, err := method(input)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -631,7 +655,11 @@ func (s *Server) handleSessionV3PrimaryPlanModeResolveBlockedCheckpoint(w http.R
 			return
 		}
 	}
-	input := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, checkpointID)
+	input, err := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, checkpointID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	input.Result = req.Result
 	input.Notes = req.Notes
 	input.ReviewedAt = req.ReviewedAt
@@ -666,7 +694,11 @@ func (s *Server) handleSessionV3PrimaryPlanModeResetCheckpointWithMethod(w http.
 		writeError(w, status, err)
 		return
 	}
-	input := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, checkpointID)
+	input, err := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, checkpointID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	result, err := method(input)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -716,7 +748,7 @@ func decodeSessionsV3PlanModeRequest(r *http.Request, dst any) error {
 	return nil
 }
 
-func (s *Server) sessionsV3PlanModeRunInput(sessionID, planID, checkpointID string) sessionruntime.PlanLifecycleExecutionInput {
+func (s *Server) sessionsV3PlanModeRunInput(sessionID, planID, checkpointID string) (sessionruntime.PlanLifecycleExecutionInput, error) {
 	attemptOrdinal := 1
 	resolvedPlanID := strings.TrimSpace(planID)
 	resolvedCheckpointID := strings.TrimSpace(checkpointID)
@@ -738,9 +770,21 @@ func (s *Server) sessionsV3PlanModeRunInput(sessionID, planID, checkpointID stri
 			}
 		}
 	}
-	attemptID := fmt.Sprintf("%s:attempt-%d", resolvedCheckpointID, attemptOrdinal)
-	runID := sessionsV3PlanModeRunID(sessionID, resolvedPlanID, resolvedCheckpointID, attemptID)
-	return sessionruntime.PlanLifecycleExecutionInput{SessionID: sessionID, PlanID: resolvedPlanID, CheckpointID: resolvedCheckpointID, AttemptID: attemptID, RunID: runID, RunSessionID: sessionID, ParentSessionID: sessionID, StartedAt: time.Now().UnixMilli()}
+	for {
+		attemptID := fmt.Sprintf("%s:attempt-%d", resolvedCheckpointID, attemptOrdinal)
+		runID := sessionsV3PlanModeRunID(sessionID, resolvedPlanID, resolvedCheckpointID, attemptID)
+		if s == nil || s.sessions == nil {
+			return sessionruntime.PlanLifecycleExecutionInput{SessionID: sessionID, PlanID: resolvedPlanID, CheckpointID: resolvedCheckpointID, AttemptID: attemptID, RunID: runID, RunSessionID: sessionID, ParentSessionID: sessionID, StartedAt: time.Now().UnixMilli()}, nil
+		}
+		_, exists, err := s.sessions.GetV3SessionRunIntent(strings.TrimSpace(sessionID), runID)
+		if err != nil {
+			return sessionruntime.PlanLifecycleExecutionInput{}, fmt.Errorf("check checkpoint run id uniqueness: %w", err)
+		}
+		if !exists {
+			return sessionruntime.PlanLifecycleExecutionInput{SessionID: sessionID, PlanID: resolvedPlanID, CheckpointID: resolvedCheckpointID, AttemptID: attemptID, RunID: runID, RunSessionID: sessionID, ParentSessionID: sessionID, StartedAt: time.Now().UnixMilli()}, nil
+		}
+		attemptOrdinal++
+	}
 }
 
 func sessionsV3PlanModeRunID(sessionID, planID, checkpointID, attemptID string) string {

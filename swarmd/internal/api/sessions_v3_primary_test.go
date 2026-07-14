@@ -6175,7 +6175,10 @@ func TestSessionsV3ExecutorAutomaticCheckpointsUseDistinctEpochsAndRuns(t *testi
 	if err != nil {
 		t.Fatalf("save automatic epoch plan: %v", err)
 	}
-	startInput := server.sessionsV3PlanModeRunInput(created.ID, "plan-auto-epochs", "cp-1")
+	startInput, err := server.sessionsV3PlanModeRunInput(created.ID, "plan-auto-epochs", "cp-1")
+	if err != nil {
+		t.Fatalf("build plan run input: %v", err)
+	}
 	startResult, err := server.planLifecycle.StartCheckpoint(startInput)
 	if err != nil {
 		t.Fatalf("start first checkpoint: %v", err)
@@ -6232,6 +6235,120 @@ func TestSessionsV3ExecutorAutomaticCheckpointsUseDistinctEpochsAndRuns(t *testi
 		t.Fatalf("automatic checkpoint terminal message semantics changed: %+v", messages)
 	}
 	assertSessionsV3NoMessageAppendedActivePlanPayload(t, sessionSvc, created.ID)
+}
+
+func TestSessionsV3ExecutorProviderManagedStartCheckpointDefersToAutomaticRun(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	runner := &sessionsV3RecordingProviderRunner{}
+	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, errors.New("missing provider-managed tool invoker")
+		}
+		switch runner.callCount {
+		case 1:
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-start-cp-1", Name: "plan_manage", Arguments: `{"action":"start_checkpoint","checkpoint_id":"cp-1"}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" || !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("checkpoint start did not request a fresh run: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: true}, nil
+		case 2:
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-cp-1", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"implemented","result":"done"}`})
+			if err != nil {
+				return provideriface.Response{}, err
+			}
+			if result.Error != "" || !result.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("checkpoint completion did not terminate the checkpoint run: %+v", result)
+			}
+			return provideriface.Response{RestartTurn: true}, nil
+		default:
+			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
+		}
+	}
+	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-managed-start-create", "provider managed start", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-provider-managed-start", "Provider-managed start", "## Provider-managed start", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Title: "Provider-managed start",
+		Info:  pebblestore.SessionPlanInfo{Goal: "Run the pending checkpoint with fresh provider context."},
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode:  sessionruntime.PlanExecutionPolicyModeAutomatic,
+			Shape: sessionruntime.PlanExecutionShapeCheckpointed,
+		},
+		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateIdle},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID:                 "cp-1",
+			Title:              "Implement",
+			Objective:          "Implement the requested change.",
+			AcceptanceCriteria: []string{"The requested change is implemented."},
+			Order:              1,
+			Status:             sessionruntime.PlanCheckpointStatusPending,
+		}},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save provider-managed start plan: %v", err)
+	}
+
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-managed-start-message", "continue")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		active, ok, getErr := sessionSvc.GetActivePlan(created.ID)
+		if getErr != nil {
+			t.Fatalf("get active plan: %v", getErr)
+		}
+		if ok && active.Document != nil && active.Document.ExecutionState != nil && active.Document.ExecutionState.Status == sessionruntime.PlanExecutionStateWaitingReview {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("provider-managed checkpoint start did not complete: calls=%d plan=%+v", runner.callCount, active.Document)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runner.callCount != 2 {
+		t.Fatalf("provider calls = %d, want initiating turn plus fresh checkpoint run", runner.callCount)
+	}
+	intents, err := sessionSvc.ListSessionRunIntents(created.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("list run intents: %v", err)
+	}
+	if len(intents) != 2 || intents[0].RunID == intents[1].RunID {
+		t.Fatalf("run intents = %+v, want distinct initiating and checkpoint runs", intents)
+	}
+}
+
+func TestSessionsV3PlanModeRunInputSkipsDurableRunIDCollision(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "plan-run-id-collision-create", "plan run id collision", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	oldRunID := sessionsV3PlanModeRunID(created.ID, "plan-1", "followup-2", "followup-2:attempt-1")
+	payloadHash, err := sessionV3ExecutorPayloadHash(created.ID, oldRunID, sessionruntime.RunIntentPendingExecutor, "", "session.assistant.queued", "")
+	if err != nil {
+		t.Fatalf("payload hash: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       created.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  testPrincipal().AccountScopeID,
+		ClientRequestID: "plan-run-id-collision",
+		IdempotencyKey:  "plan-run-id-collision",
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.assistant.queued",
+		RunIntent:       &pebblestore.V3SessionRunIntent{RunID: oldRunID, Status: sessionruntime.RunIntentPendingExecutor},
+		NowUnixMs:       time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("record colliding run intent: %v", err)
+	}
+
+	input, err := server.sessionsV3PlanModeRunInput(created.ID, "plan-1", "followup-2")
+	if err != nil {
+		t.Fatalf("build collision-free run input: %v", err)
+	}
+	if input.AttemptID != "followup-2:attempt-2" || input.RunID == oldRunID {
+		t.Fatalf("run input reused durable identity: %#v", input)
+	}
 }
 
 func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing.T) {

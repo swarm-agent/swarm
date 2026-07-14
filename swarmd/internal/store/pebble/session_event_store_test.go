@@ -711,6 +711,91 @@ func TestArchiveSessionsBatchCreatesOrderedTombstonesEventsAndOutbox(t *testing.
 	}
 }
 
+func TestReactivateArchivedSessionsRestoresBatchWithoutAppendingMessage(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	ids := []string{"session-unarchive-a", "session-unarchive-b"}
+	for _, id := range ids {
+		createV3SessionForTest(t, sessions, id)
+	}
+	if err := sessions.ArchiveSessions(ids); err != nil {
+		t.Fatalf("archive sessions: %v", err)
+	}
+	versions := map[string]int64{}
+	for _, id := range ids {
+		tombstone, ok, err := sessions.GetV3SessionTombstone(id)
+		if err != nil || !ok {
+			t.Fatalf("load tombstone %s ok=%v err=%v", id, ok, err)
+		}
+		versions[id] = tombstone.UpdatedAt
+	}
+	if err := sessions.ReactivateArchivedSessions(ids, versions); err != nil {
+		t.Fatalf("reactivate archived sessions: %v", err)
+	}
+	for _, id := range ids {
+		session, ok, err := sessions.GetSession(id)
+		if err != nil || !ok || session.MessageCount != 0 {
+			t.Fatalf("restored session %s = %+v ok=%v err=%v", id, session, ok, err)
+		}
+		if _, found, err := sessions.GetV3SessionTombstone(id); err != nil || found {
+			t.Fatalf("restored tombstone %s found=%v err=%v", id, found, err)
+		}
+		events, err := sessions.ListV3SessionEvents(id, 0, 10)
+		if err != nil || len(events) != 3 || events[2].EventType != "session.reactivated" {
+			t.Fatalf("restored events %s = %+v err=%v", id, events, err)
+		}
+	}
+	search, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "account-1", UserID: "user-1", Global: true, Query: "unarchive", Limit: 10})
+	if err != nil || len(search.Items) != 2 || search.Items[0].Archived || search.Items[1].Archived {
+		t.Fatalf("restored search = %+v err=%v", search.Items, err)
+	}
+	outbox, err := sessions.ListV3RealtimeOutboxAfter(0, 20)
+	if err != nil {
+		t.Fatalf("list outbox: %v", err)
+	}
+	reactivated := 0
+	for _, record := range outbox {
+		if record.Event.EventType == "session.reactivated" {
+			reactivated++
+			if record.Membership == nil || record.Membership.TombstoneKind != "" {
+				t.Fatalf("reactivated membership = %+v", record.Membership)
+			}
+		}
+	}
+	if reactivated != 2 {
+		t.Fatalf("reactivated outbox count = %d", reactivated)
+	}
+}
+
+func TestReactivateArchivedSessionsRejectsStaleBatchAtomically(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	ids := []string{"session-unarchive-stale-a", "session-unarchive-stale-b"}
+	for _, id := range ids {
+		createV3SessionForTest(t, sessions, id)
+	}
+	if err := sessions.ArchiveSessions(ids); err != nil {
+		t.Fatal(err)
+	}
+	versions := map[string]int64{}
+	for _, id := range ids {
+		tombstone, ok, err := sessions.GetV3SessionTombstone(id)
+		if err != nil || !ok {
+			t.Fatalf("tombstone %s ok=%v err=%v", id, ok, err)
+		}
+		versions[id] = tombstone.UpdatedAt
+	}
+	versions[ids[1]]--
+	if err := sessions.ReactivateArchivedSessions(ids, versions); err == nil {
+		t.Fatal("expected stale batch error")
+	}
+	for _, id := range ids {
+		if _, ok, err := sessions.GetSession(id); err != nil || ok {
+			t.Fatalf("stale batch restored %s ok=%v err=%v", id, ok, err)
+		}
+	}
+}
+
 func TestApplyV3SessionMutationRealtimeOutboxIsAtomicAndOrdered(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

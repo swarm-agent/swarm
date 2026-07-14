@@ -715,7 +715,8 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 		switch auth.Decision {
 		case permission.AuthorizationApprove:
 			decisions[i].Approved = true
-			if canonicalToolName(toolCalls[i].Name) == "task" {
+			canonical := canonicalToolName(toolCalls[i].Name)
+			if canonical == "task" || (canonical == "manage_sessions" && isCanonicalManageSessionsMutation(permission.ManageSessionsAction(toolCalls[i].Arguments))) {
 				var permissionPayload map[string]any
 				if json.Unmarshal([]byte(permissionArguments), &permissionPayload) == nil {
 					if approved, ok := permissionPayload["approved_arguments"].(map[string]any); ok {
@@ -904,12 +905,25 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		result.Output = output
 		return true, result, err
 	case "manage_sessions":
-		if permission.ManageSessionsAction(call.Arguments) != "deploy" {
+		switch permission.ManageSessionsAction(call.Arguments) {
+		case "deploy":
+			output, err := s.executeManageSessionsDeploy(ctx, sessionID, call, approvedArguments, applySessionMutation)
+			result.Output = output
+			return true, result, err
+		case "commit":
+			output, err := s.executeManageSessionsCommit(ctx, sessionID, call, approvedArguments)
+			result.Output = output
+			return true, result, err
+		case "archive", "unarchive":
+			if strings.TrimSpace(approvedArguments) == "" {
+				return true, result, errors.New("manage-sessions mutation requires approved canonical arguments")
+			}
+			output, err := s.executeManageSessionsCanonicalMutation(ctx, sessionID, call, approvedArguments)
+			result.Output = output
+			return true, result, err
+		default:
 			return false, tool.Result{}, nil
 		}
-		output, err := s.executeManageSessionsDeploy(ctx, sessionID, call, approvedArguments, applySessionMutation)
-		result.Output = output
-		return true, result, err
 	case "exit_plan_mode":
 		output, err := s.executeExitPlanModeTool(sessionID, sessionMode, agentProfile, call.Arguments, approvedArguments, applySessionMutation)
 		result.Output = output
@@ -2153,6 +2167,24 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		if documentPatch != nil && documentPatch.Operation == "" {
 			documentPatch.Operation = action
 		}
+		if lifecycleRun.Inline && (action == "start_checkpoint" || action == "continue_checkpoint") {
+			plan, err := s.prepareProviderManagedCheckpointStart(sessionID, planID, documentPatch)
+			if err != nil {
+				return "", err
+			}
+			payload := map[string]any{
+				"tool":                      "plan_manage",
+				"action":                    action,
+				"status":                    "ok",
+				"plan":                      plan,
+				"checkpoint_start_deferred": true,
+				"path_id":                   "tool.plan-manage.v3",
+				"summary":                   "validated checkpoint start; the executor will assign fresh run ownership",
+				"details_truncated":         false,
+			}
+			addPlanExecutionPayloadFields(payload, action, plan.Document)
+			return marshalPlanManagePayload(payload)
+		}
 		var activate *bool
 		if _, hasActivate := args["activate"]; hasActivate {
 			value := mapBool(args, "activate")
@@ -2580,6 +2612,43 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		}
 	}
 	return marshalPlanManagePayload(payload)
+}
+
+func (s *Service) prepareProviderManagedCheckpointStart(sessionID, planID string, patch *sessionruntime.PlanDocumentPatch) (pebblestore.SessionPlanSnapshot, error) {
+	var (
+		plan pebblestore.SessionPlanSnapshot
+		ok   bool
+		err  error
+	)
+	if strings.TrimSpace(planID) == "" {
+		plan, ok, err = s.sessions.GetActivePlan(sessionID)
+	} else {
+		plan, ok, err = s.sessions.GetPlan(sessionID, planID)
+	}
+	if err != nil {
+		return pebblestore.SessionPlanSnapshot{}, err
+	}
+	if !ok || plan.Document == nil {
+		return pebblestore.SessionPlanSnapshot{}, errors.New("checkpoint start requires an active structured plan")
+	}
+	if !strings.EqualFold(strings.TrimSpace(plan.ApprovalState), "approved") {
+		return pebblestore.SessionPlanSnapshot{}, errors.New("checkpoint start requires an approved plan")
+	}
+	preview, err := clonePlanDocumentForExecutionAction(plan.Document)
+	if err != nil {
+		return pebblestore.SessionPlanSnapshot{}, err
+	}
+	if err := sessionruntime.ValidateExecutablePlanDocument(preview); err != nil {
+		return pebblestore.SessionPlanSnapshot{}, err
+	}
+	checkpointID := ""
+	if patch != nil {
+		checkpointID = strings.TrimSpace(patch.CheckpointID)
+	}
+	if _, err := sessionruntime.ApplyPlanCheckpointStart(preview, sessionruntime.PlanCheckpointStartOptions{CheckpointID: checkpointID}); err != nil {
+		return pebblestore.SessionPlanSnapshot{}, err
+	}
+	return plan, nil
 }
 
 func planCheckpointRunRequestPayload(planID, checkpointID, attemptID string) map[string]any {
@@ -3817,8 +3886,14 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 		if permission.ShouldApproveManageSessionsDeploy(arguments) {
 			return "session_deploy", true
 		}
+		if permission.ShouldApproveManageSessionsCommit(arguments) {
+			return "session_commit", true
+		}
 		if permission.ShouldApproveManageSessionsArchive(arguments) {
 			return "session_archive", true
+		}
+		if permission.ShouldApproveManageSessionsUnarchive(arguments) {
+			return "session_unarchive", true
 		}
 		return toolName, false
 	case "manage_image":

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
-import { Copy, Check, AlertCircle, Archive, CalendarClock, ChevronDown, Folder, Rocket, LockKeyhole, Server, type LucideIcon } from 'lucide-react'
+import { Copy, Check, AlertCircle, Archive, CalendarClock, ChevronDown, Folder, GitCommit, Rocket, LockKeyhole, Server, type LucideIcon } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -28,6 +28,7 @@ import {
   parseExitPlanPermission,
   parseManageTodosPermission,
   parseSessionArchivePermission,
+  parseSessionCommitPermission,
   parseSessionDeployPermission,
   type SessionDeployProposal,
   parseManageImagePermission,
@@ -1668,6 +1669,48 @@ function SessionDeployField({ label, className, children }: { label: string; cla
   return <label className={cn('grid min-w-0 gap-1.5', className)}><span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{label}</span>{children}</label>
 }
 
+function SessionCommitModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+  useEffect(() => {
+    if (open) { setNote(''); setLoading(false) }
+  }, [open, permission?.id])
+  if (!permission) return null
+  const payload = parseSessionCommitPermission(permission)
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always' | 'always_deny') => {
+    setLoading(true)
+    try {
+      const approved = (action === 'approve' || action === 'approve_always') && Object.keys(payload.approvedArguments).length > 0
+        ? payload.approvedArguments
+        : undefined
+      await onResolve(action, note.trim(), approved)
+    } finally { setLoading(false) }
+  }
+  return (
+    <ModalShell open={open} title="Commit session changes?" subtitle="Review each exact commit message and attributed file before Git is mutated" pendingCount={pendingCount} sessionMode={sessionMode}
+      widthClassName="w-full sm:w-[min(820px,calc(100vw-48px))]" bodyClassName="overflow-y-auto"
+      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} onAlwaysAllow={() => void resolve('approve_always')} onAlwaysDeny={() => void resolve('always_deny')} showPersistentActions approveLabel={payload.commits.length === 1 ? 'Approve commit' : `Approve ${payload.commits.length} commits`} note={note} onNoteChange={setNote} noteLabel="Message to agent" />}
+      onOpenChange={onOpenChange} onPrimaryShortcut={() => void resolve('approve')} onDenyShortcut={() => void resolve('deny')} shortcutsDisabled={loading}>
+      <section className="grid gap-3" aria-label="Session commits">
+        {payload.commits.length === 0 ? <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">No valid commit details were provided.</div> : payload.commits.map((commit, index) => (
+          <article key={`${index}:${commit.repository}:${commit.message}`} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 shadow-sm">
+            <div className="flex items-start gap-3"><span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[var(--app-primary-soft)] text-[var(--app-primary)]"><GitCommit className="size-4" aria-hidden="true" /></span><div className="min-w-0"><h3 className="font-semibold text-[var(--app-text)]">Commit {index + 1}</h3><p className="mt-1 whitespace-pre-wrap break-words text-sm text-[var(--app-text)]">{commit.message || 'No commit message'}</p></div></div>
+            {commit.repository ? <div className="mt-3 break-all font-mono text-xs text-[var(--app-text-muted)]">{commit.repository}</div> : null}
+            <ul className="mt-3 grid gap-1.5" aria-label={`Changed files for commit ${index + 1}`}>{commit.files.map((file) => <li key={file} className="break-all rounded-lg bg-[var(--app-bg-alt)] px-3 py-2 font-mono text-xs text-[var(--app-text)]">{file}</li>)}</ul>
+          </article>
+        ))}
+      </section>
+    </ModalShell>
+  )
+}
+
 function SessionArchiveModal({
   permission,
   open,
@@ -1691,26 +1734,25 @@ function SessionArchiveModal({
   }
 
   const payload = parseSessionArchivePermission(permission)
-  const resolve = async (action: 'approve' | 'deny') => {
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always' | 'always_deny') => {
     setLoading(true)
     try {
-      await onResolve(
-        action,
-        note.trim(),
-        action === 'approve' && Object.keys(payload.approvedArguments).length > 0
-          ? payload.approvedArguments
-          : undefined,
-      )
+      const approved = (action === 'approve' || action === 'approve_always') && Object.keys(payload.approvedArguments).length > 0
+        ? payload.approvedArguments
+        : undefined
+      await onResolve(action, note.trim(), approved)
     } finally {
       setLoading(false)
     }
   }
+  const unarchive = payload.action === 'unarchive'
+  const verb = unarchive ? 'Unarchive' : 'Archive'
 
   return (
     <ModalShell
       open={open}
-      title="Archive sessions?"
-      subtitle="Review the sessions that will be removed from your active workspace view"
+      title={`${verb} sessions?`}
+      subtitle={unarchive ? 'Review the durable sessions that will be restored to your workspace view' : 'Review the sessions that will be removed from your active workspace view'}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
       widthClassName="w-full sm:w-[min(760px,calc(100vw-48px))]"
@@ -1720,7 +1762,10 @@ function SessionArchiveModal({
           loading={loading}
           onApprove={() => void resolve('approve')}
           onDeny={() => void resolve('deny')}
-          approveLabel={payload.sessions.length === 1 ? 'Archive session' : `Archive ${payload.sessions.length} sessions`}
+          onAlwaysAllow={() => void resolve('approve_always')}
+          onAlwaysDeny={() => void resolve('always_deny')}
+          showPersistentActions
+          approveLabel={payload.sessions.length === 1 ? `${verb} session` : `${verb} ${payload.sessions.length} sessions`}
           note={note}
           onNoteChange={setNote}
           noteLabel="Message to agent"
@@ -1739,11 +1784,11 @@ function SessionArchiveModal({
           </span>
           <div className="min-w-0">
             <div className="font-semibold text-[var(--app-text)]">{payload.sessions.length} {payload.sessions.length === 1 ? 'session' : 'sessions'} selected</div>
-            <p className="mt-1 text-sm leading-5 text-[var(--app-text-muted)]">Archived sessions stay in durable history and can be found later. This does not delete their messages.</p>
+            <p className="mt-1 text-sm leading-5 text-[var(--app-text-muted)]">{unarchive ? 'Unarchived sessions return to the active workspace view with their durable messages and history intact.' : 'Archived sessions stay in durable history and can be found later. This does not delete their messages.'}</p>
           </div>
         </div>
 
-        <section className="grid gap-2.5" aria-label="Sessions to archive">
+        <section className="grid gap-2.5" aria-label={unarchive ? 'Sessions to unarchive' : 'Sessions to archive'}>
           {payload.sessions.length === 0 ? (
             <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-5 text-sm text-[var(--app-text-muted)]">No session details were provided.</div>
           ) : payload.sessions.map((session, index) => (
@@ -3231,7 +3276,7 @@ function AgentChangeModal({
 
 function genericPermissionSupportsPersistentActions(permission: DesktopPermissionRecord): boolean {
   const toolName = permissionDisplayToolName(permission.toolName)
-  return toolName !== 'ask-user' && toolName !== 'exit_plan_mode'
+  return toolName !== 'ask-user' && toolName !== 'exit_plan_mode' && toolName !== 'manage_sessions'
 }
 
 interface PermissionExplainResponse {
@@ -3307,7 +3352,10 @@ export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
   if (kind === 'manage-todos') {
     return <ManageTodosModal {...props} />
   }
-  if (kind === 'session-archive') {
+  if (kind === 'session-commit') {
+    return <SessionCommitModal {...props} />
+  }
+  if (kind === 'session-archive' || kind === 'session-unarchive') {
     return <SessionArchiveModal {...props} />
   }
   if (kind === 'session-deploy') {

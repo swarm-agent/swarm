@@ -74,6 +74,19 @@ const DECISION_OPTIONS = [
   { value: 'deny', label: 'Deny' },
 ] as const
 
+const SESSION_MUTATION_POLICIES = [
+  { tool: 'session_commit', title: 'Session commits', description: 'Create Git commits only for approved session-attributed files.' },
+  { tool: 'session_archive', title: 'Session archives', description: 'Move active sessions into durable archive history.' },
+  { tool: 'session_unarchive', title: 'Session unarchives', description: 'Restore archived sessions to the active workspace view.' },
+] as const
+
+type SessionMutationDecision = 'ask' | 'allow' | 'deny'
+
+export function sessionMutationDecision(rules: PermissionRule[], tool: string): SessionMutationDecision {
+  const rule = rules.find((candidate) => normalizeRuleKind(candidate.kind) === 'tool' && candidate.tool?.trim().toLowerCase() === tool)
+  return rule?.decision === 'allow' || rule?.decision === 'deny' ? rule.decision : 'ask'
+}
+
 const MAX_SUBAGENT_WAVE_SIZE = 256
 const MAX_SUBAGENT_DEPTH = 16
 
@@ -197,6 +210,7 @@ export function PermissionsSettingsPage() {
   const [bypassBusy, setBypassBusy] = useState(false)
   const [confirmBypassOpen, setConfirmBypassOpen] = useState(false)
   const [busyRuleID, setBusyRuleID] = useState<string | null>(null)
+  const [busyMutationTool, setBusyMutationTool] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [decision, setDecision] = useState<'allow' | 'ask' | 'deny'>('allow')
@@ -277,6 +291,25 @@ export function PermissionsSettingsPage() {
       setError(err instanceof Error ? err.message : 'Failed to save permission rule')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleSessionMutationPolicy = async (tool: string, next: SessionMutationDecision) => {
+    setBusyMutationTool(tool)
+    setError(null)
+    setStatus(null)
+    try {
+      const matching = policy.rules.filter((rule) => normalizeRuleKind(rule.kind) === 'tool' && rule.tool?.trim().toLowerCase() === tool)
+      for (const rule of matching) await deletePermissionRule(rule.id)
+      if (next !== 'ask') await createPermissionRule({ decision: next, kind: 'tool', value: tool })
+      const result = await fetchPermissionPolicy()
+      setPolicy(result.policy)
+      setStatus(`${SESSION_MUTATION_POLICIES.find((entry) => entry.tool === tool)?.title || tool}: ${next === 'ask' ? 'Ask every time' : next === 'allow' ? 'Always allow' : 'Always deny'}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update session mutation policy')
+      await load()
+    } finally {
+      setBusyMutationTool(null)
     }
   }
 
@@ -435,6 +468,24 @@ export function PermissionsSettingsPage() {
             <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Children running at once:</span> The independent concurrency ceiling; completed children release capacity without restoring the cumulative automatic budget.</div>
             <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Largest single wave:</span> The maximum children in one task call. It does not cap the cumulative budget or concurrency setting.</div>
             <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Delegation depth:</span> How many nested generations may delegate; zero disables child delegation.</div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-5 shadow-sm">
+          <div className="text-sm font-semibold text-[var(--app-text)]">Session mutations</div>
+          <div className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">Each operation has an isolated persistent identity. A generic <span className="font-mono">manage_sessions</span> rule does not authorize commits, archives, or unarchives.</div>
+          <div className="mt-4 grid gap-3">
+            {SESSION_MUTATION_POLICIES.map((item) => {
+              const selected = sessionMutationDecision(policy.rules, item.tool)
+              return (
+                <label key={item.tool} className="flex flex-col gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <span className="min-w-0"><span className="block text-sm font-medium text-[var(--app-text)]">{item.title}</span><span className="mt-1 block text-xs text-[var(--app-text-muted)]">{item.description}</span></span>
+                  <select aria-label={`${item.title} policy`} value={selected} disabled={loading || busyMutationTool === item.tool} onChange={(event) => void handleSessionMutationPolicy(item.tool, event.target.value as SessionMutationDecision)} className="h-10 w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm sm:w-44">
+                    <option value="ask">Ask every time</option><option value="allow">Always allow</option><option value="deny">Always deny</option>
+                  </select>
+                </label>
+              )
+            })}
           </div>
         </section>
 

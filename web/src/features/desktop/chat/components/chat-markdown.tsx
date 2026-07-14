@@ -1021,8 +1021,14 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
   }) : [];
   const messages = Array.isArray(output.messages) ? output.messages : [];
   const archivedIds = Array.isArray(output.archived_session_ids) ? output.archived_session_ids.filter((id): id is string => typeof id === "string") : [];
-  const title = action === "deploy" ? "Session deployment" : action === "search" ? "Session search" : action === "list" ? "Your sessions" : action === "read_messages" ? "Session context" : action === "git_status" ? "Worktree status" : action === "archive" ? "Sessions archived" : action === "inspect" ? "Session manager" : "Session details";
-  const HeaderIcon = action === "search" ? Search : action === "archive" ? Archive : action === "read_messages" ? MessageSquareText : action === "git_status" ? GitBranch : Layers3;
+  const commits = Array.isArray(output.commits) ? output.commits.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const commit = entry as Record<string, unknown>;
+    return [{ sessionId: typeof commit.session_id === "string" ? commit.session_id : "", message: typeof commit.message === "string" ? commit.message : "", hash: typeof commit.commit_hash === "string" ? commit.commit_hash : "", files: Array.isArray(commit.files) ? commit.files.filter((file): file is string => typeof file === "string") : [] }];
+  }) : [];
+  const unarchivedIds = Array.isArray(output.unarchived_session_ids) ? output.unarchived_session_ids.filter((id): id is string => typeof id === "string") : [];
+  const title = action === "deploy" ? "Session deployment" : action === "search" ? "Session search" : action === "list" ? "Your sessions" : action === "read_messages" ? "Session context" : action === "git_status" ? "Worktree status" : action === "archive" ? "Sessions archived" : action === "unarchive" ? "Sessions unarchived" : action === "commit" ? "Session commits ready for testing" : action === "inspect" ? "Session manager" : "Session details";
+  const HeaderIcon = action === "search" ? Search : action === "archive" || action === "unarchive" ? Archive : action === "read_messages" ? MessageSquareText : action === "git_status" ? GitBranch : Layers3;
 
   return (
     <section className="mt-2 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[linear-gradient(145deg,color-mix(in_srgb,var(--app-primary)_8%,var(--app-surface)),var(--app-surface)_45%)] shadow-[0_12px_35px_rgba(0,0,0,0.08)]">
@@ -1055,7 +1061,9 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
       })}</div> : null}
       {failedDeployments.length > 0 ? <div className="grid gap-2 border-t border-[var(--app-border)] p-3">{failedDeployments.map((failure, index) => <div key={`${failure.proposal}:${index}`} className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]"><span className="font-semibold">{failure.proposal} failed:</span> {failure.error}</div>)}</div> : null}
       {archivedIds.length > 0 ? <div className="p-4 text-xs text-[var(--app-text-muted)]">Archived {archivedIds.length} {archivedIds.length === 1 ? "session" : "sessions"} durably.</div> : null}
-      {action === "inspect" ? <div className="p-4 text-xs leading-5 text-[var(--app-text-muted)]">Search and read are bounded for efficient context. All actions are available without approval except archive.</div> : null}
+      {commits.length > 0 ? <div className="grid gap-2 border-t border-[var(--app-border)] p-3">{commits.map((commit, index) => <article key={`${commit.hash}:${index}`} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs"><div className="font-semibold text-[var(--app-text)]">{commit.message || `Commit ${index + 1}`}</div><div className="mt-1 font-mono text-[var(--app-text-muted)]">{commit.hash}</div>{commit.files.length > 0 ? <div className="mt-2 text-[var(--app-text-muted)]">{commit.files.length} changed {commit.files.length === 1 ? "file" : "files"} · session remains in needs review</div> : null}</article>)}</div> : null}
+      {unarchivedIds.length > 0 ? <div className="p-4 text-xs text-[var(--app-text-muted)]">Unarchived {unarchivedIds.length} {unarchivedIds.length === 1 ? "session" : "sessions"} durably.</div> : null}
+      {action === "inspect" ? <div className="p-4 text-xs leading-5 text-[var(--app-text-muted)]">Search and read are bounded for efficient context. Archive and unarchive require approval.</div> : null}
     </section>
   );
 }

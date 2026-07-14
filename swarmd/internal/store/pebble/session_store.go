@@ -440,6 +440,160 @@ func (s *SessionStore) ArchiveSessions(sessionIDs []string) error {
 	return s.tombstoneSessions(sessionIDs, "archived")
 }
 
+// ReactivateArchivedSessions restores a complete archived-session batch in one
+// durable commit. Callers must preflight tombstone versions while holding their
+// service mutation lock; this store method repeats the expected-version check
+// under the per-session mutation locks immediately before writing.
+func (s *SessionStore) ReactivateArchivedSessions(sessionIDs []string, expectedUpdatedAt map[string]int64) error {
+	if s == nil || s.store == nil {
+		return errors.New("session store is not configured")
+	}
+	normalizedIDs := make([]string, 0, len(sessionIDs))
+	seen := make(map[string]struct{}, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" {
+			return errors.New("session id is required")
+		}
+		if _, exists := seen[sessionID]; exists {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+		normalizedIDs = append(normalizedIDs, sessionID)
+	}
+	if len(normalizedIDs) == 0 {
+		return errors.New("at least one session id is required")
+	}
+	if len(expectedUpdatedAt) == 0 {
+		return errors.New("expected tombstone versions are required")
+	}
+	unlockSessions := s.store.sessionMutations.lockSessions(normalizedIDs...)
+	defer unlockSessions()
+	s.store.sessionMutations.libraryRepairMu.RLock()
+	defer s.store.sessionMutations.libraryRepairMu.RUnlock()
+
+	tombstones := make([]V3SessionTombstone, 0, len(normalizedIDs))
+	for _, sessionID := range normalizedIDs {
+		if _, active, err := s.GetSession(sessionID); err != nil {
+			return err
+		} else if active {
+			return fmt.Errorf("session %q is not archived", sessionID)
+		}
+		tombstone, ok, err := s.GetV3SessionTombstone(sessionID)
+		if err != nil {
+			return err
+		}
+		expected, hasExpected := expectedUpdatedAt[sessionID]
+		if !ok || !tombstone.Archived || tombstone.Deleted || tombstone.Session.ID == "" {
+			return fmt.Errorf("session %q is not an archived, restorable session", sessionID)
+		}
+		if !hasExpected || expected == 0 || tombstone.UpdatedAt != expected {
+			return fmt.Errorf("session %q changed after unarchive preview", sessionID)
+		}
+		tombstones = append(tombstones, tombstone)
+	}
+
+	reservedOutbox, err := s.store.sessionMutations.reserveOutbox(s.store, len(tombstones))
+	if err != nil {
+		return err
+	}
+	reservationCommitted := false
+	defer func() {
+		if !reservationCommitted {
+			s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		}
+	}()
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	for i, tombstone := range tombstones {
+		session := normalizeSessionOwnership(tombstone.Session)
+		currentSeq, err := s.readV3SessionSequence(session.ID)
+		if err != nil {
+			return err
+		}
+		seq, endpointSeq, now := currentSeq+1, reservedOutbox[i], time.Now().UnixMilli()
+		payload, err := json.Marshal(v3SessionEventReplayPayload{SessionID: session.ID, Seq: seq, Kind: V3SessionMutationReactivateSession, Session: &session})
+		if err != nil {
+			return err
+		}
+		event := V3SessionEvent{ID: fmt.Sprintf("v3evt_%s_%020d", session.ID, seq), SessionID: session.ID, Seq: seq, EventType: "session.reactivated", Payload: payload, TsUnixMs: now}
+		projection := V3SessionProjection{SessionID: session.ID, LastEventSeq: seq, ProjectionHighWatermarkSeq: seq, UpdatedAt: now}
+		eventPayload, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		projectionPayload, err := json.Marshal(projection)
+		if err != nil {
+			return err
+		}
+		outbox := V3RealtimeOutboxRecord{EndpointSeq: endpointSeq, EndpointCursor: V3RealtimeOutboxCursor(endpointSeq), SessionID: session.ID, UserID: session.UserID, AccountScopeID: session.AccountScopeID, Membership: newV3RealtimeOutboxMembershipFromSession(session, now), Event: event, Projection: projection, CreatedAt: now}
+		outboxPayload, err := json.Marshal(outbox)
+		if err != nil {
+			return err
+		}
+		outboxRef, err := marshalV3RealtimeOutboxReference(outbox)
+		if err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3SessionSequence(session.ID)), uint64ToBytes(seq), nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3SessionEvent(session.ID, seq)), eventPayload, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3SessionProjection(session.ID)), projectionPayload, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), outboxPayload, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(session.ID, endpointSeq)), outboxRef, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(session.ID, seq)), outboxRef, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(session.AccountScopeID, session.UserID, endpointSeq)), outboxRef, nil); err != nil {
+			return err
+		}
+		if err := s.setSessionInBatch(batch, session); err != nil {
+			return err
+		}
+		if session.Lifecycle != nil {
+			lifecyclePayload, err := json.Marshal(session.Lifecycle)
+			if err != nil {
+				return err
+			}
+			if err := batch.Set([]byte(KeySessionLifecycle(session.ID)), lifecyclePayload, nil); err != nil {
+				return err
+			}
+			if session.AccountScopeID != "" {
+				if err := batch.Set([]byte(KeySessionLifecycleByAccount(session.AccountScopeID, session.ID)), []byte(session.ID), nil); err != nil {
+					return err
+				}
+			}
+		}
+		if err := removeV3SessionTombstoneInBatch(batch, tombstone); err != nil {
+			return err
+		}
+		if err := s.transitionV3SessionSearchLifecycleInBatch(batch, s.store.db, session, false); err != nil {
+			return err
+		}
+		if err := s.updateV3SessionLibraryMetricInBatch(batch, session, nil, false, false); err != nil {
+			return err
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	reservationCommitted = true
+	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
+		return err
+	}
+	v3SuccessfulBatchOperations.Add(1)
+	return nil
+}
+
 func (s *SessionStore) tombstoneSession(sessionID, kind string) error {
 	return s.tombstoneSessions([]string{sessionID}, kind)
 }
@@ -624,15 +778,19 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 			if err := batch.Delete([]byte(KeySessionLifecycleByAccount(existing.AccountScopeID, sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 				return err
 			}
-			if err := batch.Delete([]byte(KeySessionPlanActiveByAccount(existing.AccountScopeID, sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
-				return err
+			if kind == "deleted" {
+				if err := batch.Delete([]byte(KeySessionPlanActiveByAccount(existing.AccountScopeID, sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+					return err
+				}
 			}
 		}
 		if err := batch.Delete([]byte(KeySessionLifecycle(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 			return err
 		}
-		if err := batch.Delete([]byte(KeySessionPlanActive(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
-			return err
+		if kind == "deleted" {
+			if err := batch.Delete([]byte(KeySessionPlanActive(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+				return err
+			}
 		}
 		if existing.ID != "" {
 			if err := replaceSessionRecentIndexInBatch(batch, &existing, nil); err != nil {

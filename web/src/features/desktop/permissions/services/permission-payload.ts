@@ -269,8 +269,20 @@ export interface SessionArchivePermissionItem {
 }
 
 export interface SessionArchivePermissionPayload {
-  action: string
+  action: 'archive' | 'unarchive'
   sessions: SessionArchivePermissionItem[]
+  approvedArguments: Record<string, unknown>
+}
+
+export interface SessionCommitPermissionItem {
+  message: string
+  repository: string
+  files: string[]
+}
+
+export interface SessionCommitPermissionPayload {
+  action: 'commit'
+  commits: SessionCommitPermissionItem[]
   approvedArguments: Record<string, unknown>
 }
 
@@ -307,7 +319,7 @@ export interface SessionDeployPermissionPayload {
   approvedArguments: Record<string, unknown>
 }
 
-export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-revision-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'session-archive' | 'session-deploy' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image'
+export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-revision-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'session-commit' | 'session-archive' | 'session-unarchive' | 'session-deploy' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image'
 
 function decodePermissionArguments(raw: string): Record<string, unknown> | null {
   const trimmed = raw.trim()
@@ -601,8 +613,14 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
     case 'manage_todos':
       return 'manage-todos'
     case 'manage_sessions':
+      if (requirement === 'session_commit') {
+        return 'session-commit'
+      }
       if (requirement === 'session_archive') {
         return 'session-archive'
+      }
+      if (requirement === 'session_unarchive') {
+        return 'session-unarchive'
       }
       if (requirement === 'session_deploy') {
         return 'session-deploy'
@@ -673,6 +691,33 @@ export function permissionRequirementLabel(raw: unknown): string {
   }
 }
 
+export function parseSessionCommitPermission(permission: DesktopPermissionRecord): SessionCommitPermissionPayload {
+  const payload = decodePermissionArguments(permission.toolArguments) ?? {}
+  const manifest = mapObjectArg(payload, 'manifest')
+  const rawCommits = Array.isArray(manifest.commits) ? manifest.commits : []
+  const commits = rawCommits.flatMap((entry): SessionCommitPermissionItem[] => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
+    const commit = entry as Record<string, unknown>
+    const rawFiles = Array.isArray(commit.files) ? commit.files : []
+    const files = rawFiles.flatMap((file): string[] => {
+      if (typeof file === 'string') return file.trim() ? [file.trim()] : []
+      if (!file || typeof file !== 'object' || Array.isArray(file)) return []
+      const path = mapStringArg(file as Record<string, unknown>, 'path')
+      return path ? [path] : []
+    })
+    return [{
+      message: mapStringArg(commit, 'message'),
+      repository: mapStringArg(commit, 'repository'),
+      files,
+    }]
+  })
+  return {
+    action: 'commit',
+    commits,
+    approvedArguments: mapObjectArg(payload, 'approved_arguments'),
+  }
+}
+
 export function parseSessionArchivePermission(permission: DesktopPermissionRecord): SessionArchivePermissionPayload {
   const payload = decodePermissionArguments(permission.toolArguments) ?? {}
   const rawSessions = Array.isArray(payload.sessions) ? payload.sessions : []
@@ -693,7 +738,7 @@ export function parseSessionArchivePermission(permission: DesktopPermissionRecor
   })
 
   return {
-    action: mapStringArg(payload, 'action') || 'archive',
+    action: mapStringArg(payload, 'action').toLowerCase() === 'unarchive' ? 'unarchive' : 'archive',
     sessions,
     approvedArguments: mapObjectArg(payload, 'approved_arguments'),
   }

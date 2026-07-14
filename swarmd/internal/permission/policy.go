@@ -177,7 +177,7 @@ func ExplainPolicy(mode, toolName, toolArguments string, policy Policy) PolicyEx
 	}
 	// Session deployment is always a fresh user decision. It intentionally runs
 	// before explicit allow rules and generic permission bypass.
-	if ctx.ToolName == "manage_sessions" && ShouldApproveManageSessionsDeploy(toolArguments) {
+	if ctx.ToolName == "session_deploy" {
 		return PolicyExplain{Decision: PolicyDecisionAsk, Source: "builtin", Reason: "session deployment always requires fresh user approval", ToolName: ctx.ToolName}
 	}
 	if explain, ok := explainExplicitRule(ctx, policy); ok {
@@ -232,6 +232,21 @@ func previewPolicyRule(rule PolicyRule) string {
 func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	toolName = normalizePolicyToolName(toolName)
 	toolArguments = strings.TrimSpace(toolArguments)
+	// Session mutations are separate policy capabilities even though they share the
+	// manage_sessions transport tool. This prevents a generic manage_sessions rule,
+	// or a rule for another mutation, from authorizing this action.
+	if toolName == "manage_sessions" {
+		switch {
+		case ShouldApproveManageSessionsDeploy(toolArguments):
+			toolName = "session_deploy"
+		case ShouldApproveManageSessionsCommit(toolArguments):
+			toolName = "session_commit"
+		case ShouldApproveManageSessionsArchive(toolArguments):
+			toolName = "session_archive"
+		case ShouldApproveManageSessionsUnarchive(toolArguments):
+			toolName = "session_unarchive"
+		}
+	}
 	ctx := policyEvalContext{
 		ToolName:       toolName,
 		ToolArguments:  toolArguments,
@@ -742,13 +757,9 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		}
 		return PolicyDecisionAllow
 	case "manage_sessions":
-		if ShouldApproveManageSessionsDeploy(toolArguments) {
-			return PolicyDecisionAsk
-		}
-		if ShouldApproveManageSessionsArchive(toolArguments) {
-			return PolicyDecisionAsk
-		}
 		return PolicyDecisionAllow
+	case "session_deploy", "session_commit", "session_archive", "session_unarchive":
+		return PolicyDecisionAsk
 	case "plan_manage":
 		if PlanManageLifecycleRequirement(toolArguments) != "" {
 			return PolicyDecisionAsk

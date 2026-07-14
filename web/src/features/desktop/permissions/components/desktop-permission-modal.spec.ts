@@ -282,6 +282,29 @@ test('session deploy permission defaults to one selected proposal and never offe
   assert.doesNotMatch(markup, /Always Allow|Always Deny/)
 })
 
+test('session commit permission renders exact commits and persistent choices', () => {
+  const markup = renderPermission(planLifecyclePermission('session_commit', {
+    action: 'commit', manifest: { commits: [{ message: 'Ship exact files', repository: '/workspace', files: [{ path: 'web/src/app.tsx', fingerprint: 'secret' }] }] }, approved_arguments: { action: 'commit', manifest: { version: 1 } },
+  }, 'manage_sessions'))
+  assert.match(markup, /Commit session changes\?/)
+  assert.match(markup, /Ship exact files/)
+  assert.match(markup, /web\/src\/app.tsx/)
+  assert.match(markup, /Always Allow/)
+  assert.match(markup, /Always Deny/)
+  assert.doesNotMatch(markup, /fingerprint|secret/)
+})
+
+test('session unarchive permission renders human-readable restored sessions and persistent choices', () => {
+  const markup = renderPermission(planLifecyclePermission('session_unarchive', {
+    action: 'unarchive', sessions: [{ state: 'archived', title: 'Restore session', updated_at: 1783764535576, workspace_name: 'swarm-go' }], approved_arguments: { action: 'unarchive', session_ids: ['opaque-session-id'] },
+  }, 'manage_sessions'))
+  assert.match(markup, /Unarchive sessions\?/)
+  assert.match(markup, /Restore session/)
+  assert.match(markup, /Always Allow/)
+  assert.match(markup, /Always Deny/)
+  assert.doesNotMatch(markup, /opaque-session-id/)
+})
+
 test('session archive permission renders polished session cards instead of raw JSON', () => {
   const markup = renderPermission(planLifecyclePermission('session_archive', {
     action: 'archive',
@@ -304,6 +327,8 @@ test('session archive permission renders polished session cards instead of raw J
   assert.match(markup, /Needs Review/)
   assert.match(markup, /Updated/)
   assert.match(markup, /Archive 2 sessions/)
+  assert.match(markup, /Always Allow/)
+  assert.match(markup, /Always Deny/)
   assert.doesNotMatch(markup, /opaque-session-id/)
   assert.doesNotMatch(markup, /expected_updated_at_by_id/)
   assert.doesNotMatch(markup, /\[\s*\{&quot;state&quot;/)

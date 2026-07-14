@@ -563,6 +563,57 @@ func (s *Service) ArchiveSessionsWithEventsIfUnchanged(sessionIDs []string, expe
 	return s.tombstoneSessionsWithEventsExpected(sessionIDs, "archived", expectedUpdatedAt)
 }
 
+// ReactivateArchivedSessionsIfUnchanged restores the entire archived batch only
+// when every tombstone still has the mutation version observed by the caller.
+func (s *Service) ReactivateArchivedSessionsIfUnchanged(sessionIDs []string, expectedUpdatedAt map[string]int64) error {
+	if s == nil || s.store == nil {
+		return errors.New("session service is not configured")
+	}
+	if len(expectedUpdatedAt) == 0 {
+		return errors.New("expected tombstone versions are required")
+	}
+	normalizedIDs := make([]string, 0, len(sessionIDs))
+	seen := make(map[string]struct{}, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" {
+			return errors.New("session id is required")
+		}
+		if _, exists := seen[sessionID]; exists {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+		normalizedIDs = append(normalizedIDs, sessionID)
+	}
+	if len(normalizedIDs) == 0 {
+		return errors.New("at least one session id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sessionID := range normalizedIDs {
+		if _, active, err := s.store.GetSession(sessionID); err != nil {
+			return err
+		} else if active {
+			return fmt.Errorf("session %q is active, not archived", sessionID)
+		}
+		tombstone, ok, err := s.store.GetV3SessionTombstone(sessionID)
+		if err != nil {
+			return err
+		}
+		expected, hasExpected := expectedUpdatedAt[sessionID]
+		if !ok || !tombstone.Archived || tombstone.Deleted || tombstone.Session.ID == "" {
+			return fmt.Errorf("session %q is not an archived, restorable session", sessionID)
+		}
+		if !hasExpected || expected == 0 || tombstone.UpdatedAt != expected {
+			return fmt.Errorf("session %q changed after unarchive preview", sessionID)
+		}
+		if lifecycle := tombstone.Session.Lifecycle; lifecycle != nil && lifecycle.Active {
+			return fmt.Errorf("cannot unarchive session %q with active run state", sessionID)
+		}
+	}
+	return s.store.ReactivateArchivedSessions(normalizedIDs, expectedUpdatedAt)
+}
+
 func (s *Service) tombstoneSessionWithEvent(sessionID, kind string) (*pebblestore.EventEnvelope, error) {
 	events, err := s.tombstoneSessionsWithEvents([]string{sessionID}, kind)
 	if err != nil || len(events) == 0 {

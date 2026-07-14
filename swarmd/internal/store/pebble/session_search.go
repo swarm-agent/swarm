@@ -370,7 +370,9 @@ func (s *SessionStore) searchV3ItemForRecord(reader pebble.Reader, record v3Sess
 		if !v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) || !v3SessionSearchDateVisible(session.UpdatedAt, options) {
 			return V3SessionSearchItem{}, false, nil
 		}
-		return v3SessionSearchItemFromSession(session, true, false, snippetList(record.Snippet)), true, nil
+		item := v3SessionSearchItemFromSession(session, true, false, snippetList(record.Snippet))
+		item.UpdatedAt = tombstone.UpdatedAt
+		return item, true, nil
 	}
 	if options.ArchivedMode == v3SessionSearchArchivedOnly {
 		return V3SessionSearchItem{}, false, nil
@@ -407,7 +409,9 @@ func (s *SessionStore) searchV3ArchivedRecentFromReader(reader pebble.Reader, op
 		if !v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) || !v3SessionSearchDateVisible(session.UpdatedAt, options) {
 			return true, nil
 		}
-		items = append(items, v3SessionSearchItemFromSession(session, true, false, nil))
+		item := v3SessionSearchItemFromSession(session, true, false, nil)
+		item.UpdatedAt = tombstone.UpdatedAt
+		items = append(items, item)
 		return len(items) < limit, nil
 	})
 	return items, err

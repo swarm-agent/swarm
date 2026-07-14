@@ -633,6 +633,68 @@ func TestExecutePlanManageStartAndContinueCheckpoint(t *testing.T) {
 	}
 }
 
+func TestExecutePlanManageProviderManagedStartDefersDurableTransition(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-provider-start", "Provider start", "# Provider start", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Title: "Provider start",
+		Info:  pebblestore.SessionPlanInfo{Goal: "Start the pending checkpoint in a fresh run."},
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{
+			Mode:  sessionruntime.PlanExecutionPolicyModeAutomatic,
+			Shape: sessionruntime.PlanExecutionShapeCheckpointed,
+		},
+		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateIdle},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID:                 "cp-1",
+			Title:              "Implement",
+			Objective:          "Implement the requested change.",
+			AcceptanceCriteria: []string{"The change is implemented."},
+			Order:              1,
+			Status:             sessionruntime.PlanCheckpointStatusPending,
+		}},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save provider-managed plan: %v", err)
+	}
+
+	raw, err := runSvc.executePlanManageToolWithLifecycleRunContext(sessionID, `{"action":"start_checkpoint","checkpoint_id":"cp-1"}`, "", nil, planLifecycleRunContext{
+		RunID:           "parent-run",
+		RunSessionID:    sessionID,
+		ParentSessionID: sessionID,
+		Inline:          true,
+	})
+	if err != nil {
+		t.Fatalf("prepare provider-managed checkpoint start: %v", err)
+	}
+	var payload struct {
+		Action                  string `json:"action"`
+		CheckpointID            string `json:"checkpoint_id"`
+		NextAction              string `json:"next_action"`
+		CheckpointStartDeferred bool   `json:"checkpoint_start_deferred"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode provider-managed start payload: %v", err)
+	}
+	if payload.Action != "start_checkpoint" || payload.CheckpointID != "cp-1" || payload.NextAction != "run_checkpoint_with_fresh_context" || !payload.CheckpointStartDeferred {
+		t.Fatalf("provider-managed start payload = %+v", payload)
+	}
+
+	active, ok, err := sessionSvc.GetActivePlan(sessionID)
+	if err != nil || !ok || active.Document == nil {
+		t.Fatalf("get active plan after deferred start: ok=%v err=%v plan=%+v", ok, err, active)
+	}
+	checkpoint := active.Document.Checkpoints[0]
+	if checkpoint.Status != sessionruntime.PlanCheckpointStatusPending || checkpoint.AttemptID != "" || checkpoint.RunID != "" || len(checkpoint.Attempts) != 0 {
+		t.Fatalf("deferred start mutated checkpoint = %+v", checkpoint)
+	}
+	if active.Document.ExecutionState == nil || active.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateIdle || active.Document.ExecutionState.CurrentRunID != "" {
+		t.Fatalf("deferred start mutated execution state = %+v", active.Document.ExecutionState)
+	}
+}
+
 func TestExecutePlanManageApproveAndStartAppliesExecutionPolicy(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()

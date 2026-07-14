@@ -3,6 +3,7 @@ import {
   parseAgentChangePermission,
   parseManageTodosPermission,
   parseSessionArchivePermission,
+  parseSessionCommitPermission,
   parseSessionDeployPermission,
   parseExitPlanPermission,
   parsePlanUpdatePermission,
@@ -573,7 +574,27 @@ function testGenericBashPermissionFormatsCommandAsCodeBlock(): void {
   assert(!body.includes(`\`${command}\``), 'expected wrapping backticks to be removed')
 }
 
-function testManageSessionsArchiveShowsHydratedFactsOnly(): void {
+function testManageSessionsMutationPayloads(): void {
+  const commit = makePermission({
+    toolName: 'manage_sessions', requirement: 'session_commit',
+    toolArguments: JSON.stringify({ action: 'commit', manifest: { commits: [{ message: 'Ship session work', repository: '/workspace', files: [{ path: 'web/src/app.tsx', fingerprint: 'hidden' }] }] }, approved_arguments: { action: 'commit', manifest: { version: 1 } } }),
+  })
+  assert(permissionKind(commit) === 'session-commit', 'expected dedicated commit kind')
+  const commitPayload = parseSessionCommitPermission(commit)
+  assert(commitPayload.commits[0]?.message === 'Ship session work', 'expected commit message')
+  assert(commitPayload.commits[0]?.files[0] === 'web/src/app.tsx', 'expected exact changed file')
+
+  const unarchive = makePermission({
+    toolName: 'manage_sessions', requirement: 'session_unarchive',
+    toolArguments: JSON.stringify({ action: 'unarchive', sessions: [{ title: 'Restore me', workspace_name: 'Swarm', state: 'archived', updated_at: 12 }], approved_arguments: { action: 'unarchive', session_ids: ['opaque'] } }),
+  })
+  assert(permissionKind(unarchive) === 'session-unarchive', 'expected dedicated unarchive kind')
+  const unarchivePayload = parseSessionArchivePermission(unarchive)
+  assert(unarchivePayload.action === 'unarchive', 'expected unarchive action')
+  assert(unarchivePayload.sessions[0]?.title === 'Restore me', 'expected restored session facts')
+}
+
+function testManageSessionsArchiveShowsHydratedFactsOnly() {
   const firstId = '3797e357-ef14-4983-aa70-625efb8be323'
   const permission = makePermission({
     toolName: 'manage_sessions',
@@ -650,6 +671,7 @@ function main(): void {
   testPlanUpdateDiffPreviewPreservesAllDiffRows()
   testPlanUpdateDiffPreviewFallsBackToCompleteBeforeAfterRows()
   testGenericBashPermissionFormatsCommandAsCodeBlock()
+  testManageSessionsMutationPayloads()
   testManageSessionsArchiveShowsHydratedFactsOnly()
   testSessionDeployPermissionPayload()
   testManageTodosBatchParsing()

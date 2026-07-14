@@ -1599,8 +1599,14 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 		if ShouldApproveManageSessionsDeploy(toolArguments) {
 			return "session_deploy"
 		}
+		if ShouldApproveManageSessionsCommit(toolArguments) {
+			return "session_commit"
+		}
 		if ShouldApproveManageSessionsArchive(toolArguments) {
 			return "session_archive"
+		}
+		if ShouldApproveManageSessionsUnarchive(toolArguments) {
+			return "session_unarchive"
 		}
 		return "manage_sessions"
 	case "":

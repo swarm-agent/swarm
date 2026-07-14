@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -18,6 +19,7 @@ func TestManageSessionsArchivePermissionHydratesFactsAndPreservesArguments(t *te
 		WorkspacePath:  t.TempDir(),
 		WorkspaceName:  "Swarm",
 		Mode:           sessionruntime.ModeAuto,
+		Preference:     &pebblestore.ModelPreference{Provider: "codex", Model: "test-model", Thinking: "medium"},
 	})
 	if err != nil {
 		t.Fatalf("create first session: %v", err)
@@ -28,6 +30,7 @@ func TestManageSessionsArchivePermissionHydratesFactsAndPreservesArguments(t *te
 		WorkspacePath:  t.TempDir(),
 		WorkspaceName:  "Desktop",
 		Mode:           sessionruntime.ModeAuto,
+		Preference:     &pebblestore.ModelPreference{Provider: "codex", Model: "test-model", Thinking: "medium"},
 	})
 	if err != nil {
 		t.Fatalf("create second session: %v", err)

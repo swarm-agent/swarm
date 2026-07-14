@@ -1,10 +1,12 @@
 package run
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -34,7 +36,10 @@ func (s *Service) buildManageSessionsPermissionPayload(sessionID string, call to
 		}
 		return payload, nil
 	}
-	if action != "archive" {
+	if action == "commit" {
+		return s.buildManageSessionsCommitPermissionPayload(sessionID, args)
+	}
+	if action != "archive" && action != "unarchive" {
 		return args, nil
 	}
 	if s == nil || s.sessions == nil {
@@ -50,8 +55,10 @@ func (s *Service) buildManageSessionsPermissionPayload(sessionID string, call to
 
 	ids := manageSessionsPermissionIDs(args)
 	facts := make([]any, 0, len(ids))
+	expectedVersions := make(map[string]any, len(ids))
 	for _, id := range ids {
 		target, found, err := s.sessions.GetSession(id)
+		mutationVersion := target.UpdatedAt
 		if err != nil {
 			return nil, err
 		}
@@ -60,19 +67,33 @@ func (s *Service) buildManageSessionsPermissionPayload(sessionID string, call to
 			if tombstoneErr != nil {
 				return nil, tombstoneErr
 			}
-			if !archived || !tombstone.Archived {
+			if !archived || !tombstone.Archived || tombstone.Deleted {
 				return nil, fmt.Errorf("session not found")
 			}
 			target = tombstone.Session
+			mutationVersion = tombstone.UpdatedAt
 		}
 		if target.AccountScopeID != owner.AccountScopeID || target.UserID != owner.UserID {
 			return nil, fmt.Errorf("session not found")
 		}
+		if action == "archive" && !found {
+			return nil, fmt.Errorf("session %s is already archived", id)
+		}
+		if action == "unarchive" && found {
+			return nil, fmt.Errorf("session %s is not archived", id)
+		}
+		expectedVersions[id] = mutationVersion
+		state := manageSessionsPermissionState(target.Lifecycle)
+		if !found {
+			state = "archived"
+		}
 		fact := map[string]any{
+			"session_id":     target.ID,
 			"title":          target.Title,
 			"workspace_name": target.WorkspaceName,
-			"state":          manageSessionsPermissionState(target.Lifecycle),
-			"updated_at":     target.UpdatedAt,
+			"workspace_path": target.WorkspacePath,
+			"state":          state,
+			"updated_at":     mutationVersion,
 		}
 		if branch := strings.TrimSpace(target.WorktreeBranch); branch != "" {
 			fact["worktree_branch"] = branch
@@ -80,11 +101,82 @@ func (s *Service) buildManageSessionsPermissionPayload(sessionID string, call to
 		facts = append(facts, fact)
 	}
 
+	approved := map[string]any{
+		"action":                    action,
+		"session_ids":               append([]string(nil), ids...),
+		"expected_updated_at_by_id": expectedVersions,
+	}
 	return map[string]any{
-		"action":             "archive",
+		"action":             action,
 		"sessions":           facts,
-		"approved_arguments": cloneGenericMap(args),
+		"approved_arguments": approved,
 	}, nil
+}
+
+func (s *Service) buildManageSessionsCommitPermissionPayload(sessionID string, args map[string]any) (map[string]any, error) {
+	if s == nil || s.sessions == nil || s.tools == nil {
+		return nil, fmt.Errorf("manage-sessions commit services are not configured")
+	}
+	owner, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("session %q not found", sessionID)
+	}
+	principal := identity.Principal{AccountScopeID: owner.AccountScopeID, UserID: owner.UserID}
+	scope := tool.ManageSessionsCommitScope(owner, principal)
+	payload, err := s.tools.PrepareManageSessionsCommitManifest(context.Background(), scope, args)
+	if err != nil {
+		return nil, err
+	}
+	approved := cloneGenericMap(payload)
+	payload["approved_arguments"] = approved
+	payload["path_id"] = "permission.session-commit.v1"
+	payload["tool"] = "manage_sessions"
+	return payload, nil
+}
+
+func isCanonicalManageSessionsMutation(action string) bool {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "commit", "archive", "unarchive":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) executeManageSessionsCanonicalMutation(ctx context.Context, sessionID string, call tool.Call, approvedArguments string) (string, error) {
+	if s == nil || s.sessions == nil || s.tools == nil {
+		return "", fmt.Errorf("manage-sessions mutation services are not configured")
+	}
+	owner, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("session %q not found", sessionID)
+	}
+	principal := identity.Principal{AccountScopeID: owner.AccountScopeID, UserID: owner.UserID}
+	return s.tools.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.ManageSessionsCommitScope(owner, principal), tool.Call{CallID: call.CallID, Name: call.Name, Arguments: approvedArguments})
+}
+
+func (s *Service) executeManageSessionsCommit(ctx context.Context, sessionID string, call tool.Call, approvedArguments string) (string, error) {
+	if s == nil || s.sessions == nil || s.tools == nil {
+		return "", fmt.Errorf("manage-sessions commit services are not configured")
+	}
+	if strings.TrimSpace(approvedArguments) == "" {
+		return "", fmt.Errorf("manage-sessions commit requires approved canonical arguments")
+	}
+	owner, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("session %q not found", sessionID)
+	}
+	principal := identity.Principal{AccountScopeID: owner.AccountScopeID, UserID: owner.UserID}
+	return s.tools.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.ManageSessionsCommitScope(owner, principal), tool.Call{CallID: call.CallID, Name: call.Name, Arguments: approvedArguments})
 }
 
 func manageSessionsPermissionIDs(args map[string]any) []string {
