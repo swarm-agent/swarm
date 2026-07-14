@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
@@ -32,6 +33,8 @@ import {
 } from '../../session-v3/new-session-flow'
 import type { DesktopChatRoute } from '../services/chat-routing'
 import type { AgentProfileRecord } from '../types/chat'
+
+const conversationPaneSource = readFileSync(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
 
 const route: DesktopChatRoute = {
   id: 'swarm:swarm-self:binding:binding-self',
@@ -498,6 +501,79 @@ test('Desktop V3 new user message follows the active stream instead of sorting b
 
   assert.deepEqual(items.map((item) => item.type), ['message', 'live-assistant', 'pending-user'])
   assert.equal(desktopV3RenderItemKey(items[2]!), 'msg-next-turn')
+})
+
+test('Desktop V3 paused run resend stays ordered through commit and delayed stale-run updates', () => {
+  const oldRun = {
+    sessionId: 'session-a',
+    runId: 'run-paused',
+    status: 'cancelled' as const,
+    assistantDraft: { content: 'old paused answer', updatedAt: 20, timelineSeq: 2 },
+    toolCallsByCallId: {},
+    lastEventSeqSeen: 2,
+  }
+  const pendingUser = {
+    clientRequestId: 'client-after-pause',
+    messageId: 'msg-after-pause',
+    sessionId: 'session-a',
+    role: 'user' as const,
+    content: 'continue after pause',
+    createdAt: 30,
+    timelineSeq: 3,
+    status: 'pending' as const,
+  }
+  const pendingItems = buildDesktopV3ConversationRenderItems({
+    committed: [{
+      id: 'msg-initial', session_id: 'session-a', global_seq: 1,
+      role: 'user', content: 'initial', created_at: 1,
+    }],
+    pendingUser: [pendingUser],
+    liveRuns: [oldRun],
+    runIntents: [],
+  })
+  const committedMessage = {
+    id: pendingUser.messageId,
+    session_id: 'session-a',
+    global_seq: 3,
+    role: 'user' as const,
+    content: pendingUser.content,
+    created_at: pendingUser.createdAt,
+  }
+  const committedItems = buildDesktopV3ConversationRenderItems({
+    committed: [{
+      id: 'msg-initial', session_id: 'session-a', global_seq: 1,
+      role: 'user', content: 'initial', created_at: 1,
+    }, committedMessage],
+    pendingUser: [],
+    liveRuns: [{
+      ...oldRun,
+      assistantDraft: { content: 'delayed old-run update', updatedAt: 40, timelineSeq: 2 },
+      lastEventSeqSeen: 4,
+    }],
+    runIntents: [],
+  })
+
+  assert.deepEqual(pendingItems.map((item) => item.type), ['message', 'live-assistant', 'pending-user'])
+  assert.deepEqual(committedItems.map((item) => item.type), ['message', 'live-assistant', 'message'])
+  assert.equal(desktopV3RenderItemKey(pendingItems.at(-1)!), pendingUser.messageId)
+  assert.equal(desktopV3RenderItemKey(committedItems.at(-1)!), pendingUser.messageId)
+  assert.equal(committedItems.at(-1)?.type, 'message')
+})
+
+test('Desktop V3 sticky-bottom lifecycle has no passive force-follow reattachment path', () => {
+  const hookStart = conversationPaneSource.indexOf('export function useDesktopV3StickyBottomScroll')
+  const hookEnd = conversationPaneSource.indexOf('function numericTimelineSeq', hookStart)
+  assert.ok(hookStart >= 0 && hookEnd > hookStart, 'expected sticky-bottom hook source')
+  const hookSource = conversationPaneSource.slice(hookStart, hookEnd)
+
+  assert.doesNotMatch(hookSource, /forceFollow|ACTIVITY_FOLLOW_MS|lastScrollEventAtRef/)
+  assert.match(hookSource, /scheduleAutoFollow\(\{ forceUnseen: true \}\)/)
+  assert.match(hookSource, /userDetachedRef\.current = true/)
+  assert.match(hookSource, /cancelScheduledScroll\(\)/)
+  assert.match(hookSource, /\["ArrowUp", "PageUp", "Home"\]\.includes\(event\.key\)/)
+  assert.match(hookSource, /userDetachedRef\.current = false/)
+  assert.match(conversationPaneSource, /scrollToBottom\("smooth"\)/)
+  assert.match(conversationPaneSource, /preserveScrollPositionForPrepend\(\)/)
 })
 
 test('Desktop V3 pending user keeps its render key when the canonical message arrives', () => {

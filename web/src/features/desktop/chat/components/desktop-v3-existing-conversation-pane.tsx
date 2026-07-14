@@ -575,9 +575,8 @@ type DesktopV3ScrollBehavior = "auto" | "smooth";
 
 const DESKTOP_V3_BOTTOM_BUFFER_PX = 140;
 const DESKTOP_V3_HISTORY_AUTOLOAD_TOP_PX = 320;
-const DESKTOP_V3_ACTIVITY_FOLLOW_MS = 30_000;
-const DESKTOP_V3_RESIZE_FOLLOW_MS = 750;
-const DESKTOP_V3_USER_SCROLL_INTENT_MS = 600;
+const DESKTOP_V3_EXACT_BOTTOM_PX = 1;
+const DESKTOP_V3_SMOOTH_FOLLOW_MS = 1_200;
 
 function desktopV3BottomDistance(element: HTMLElement): number {
   return Math.max(
@@ -596,10 +595,9 @@ export function useDesktopV3StickyBottomScroll(options: {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const autoFollowRef = useRef(true);
+  const userDetachedRef = useRef(false);
   const suppressAutoFollowOnceRef = useRef(false);
   const smoothFollowUntilRef = useRef(0);
-  const forceFollowUntilRef = useRef(0);
-  const lastScrollEventAtRef = useRef(0);
   const frameRef = useRef<number | null>(null);
   const lastScrollHeightRef = useRef(0);
   const preserveTopAnchorRef = useRef<{
@@ -617,42 +615,46 @@ export function useDesktopV3StickyBottomScroll(options: {
 
   const setPinnedStateFromElement = useCallback(
     (element: HTMLElement) => {
-      const pinned = desktopV3BottomDistance(element) <= bottomBufferPx;
-      const now = Date.now();
+      const bottomDistance = desktopV3BottomDistance(element);
+      const pinned = bottomDistance <= bottomBufferPx;
+      const reachedExactBottom = bottomDistance <= DESKTOP_V3_EXACT_BOTTOM_PX;
       const keepFollowingSmoothJump =
-        !pinned && smoothFollowUntilRef.current > now;
-      const keepFollowingActiveContent =
-        !pinned && forceFollowUntilRef.current > now;
-      autoFollowRef.current =
-        pinned || keepFollowingSmoothJump || keepFollowingActiveContent;
-      setIsAtBottom(
-        pinned || keepFollowingSmoothJump || keepFollowingActiveContent,
-      );
-      if (pinned || keepFollowingActiveContent) setHasUnseenLatest(false);
-      return pinned;
+        !pinned && smoothFollowUntilRef.current > Date.now();
+      if (reachedExactBottom) userDetachedRef.current = false;
+      const attached =
+        keepFollowingSmoothJump ||
+        (pinned && (!userDetachedRef.current || reachedExactBottom));
+      autoFollowRef.current = attached;
+      setIsAtBottom(attached);
+      if (attached) setHasUnseenLatest(false);
+      return attached;
     },
     [bottomBufferPx],
   );
 
+  const detachForUserScrollIntent = useCallback(() => {
+    const element = scrollContainerRef.current;
+    userDetachedRef.current = true;
+    autoFollowRef.current = false;
+    smoothFollowUntilRef.current = 0;
+    cancelScheduledScroll();
+    if (element) {
+      element.scrollTo({ top: element.scrollTop, behavior: "auto" });
+    }
+    setIsAtBottom(false);
+  }, [cancelScheduledScroll]);
+
   const pinToLatest = useCallback(
-    (
-      options: { behavior?: DesktopV3ScrollBehavior; followMs?: number } = {},
-    ) => {
+    (options: { behavior?: DesktopV3ScrollBehavior } = {}) => {
       const element = scrollContainerRef.current;
-      const now = Date.now();
+      userDetachedRef.current = false;
       autoFollowRef.current = true;
-      forceFollowUntilRef.current = Math.max(
-        forceFollowUntilRef.current,
-        now + (options.followMs ?? DESKTOP_V3_ACTIVITY_FOLLOW_MS),
-      );
       setIsAtBottom(true);
       setHasUnseenLatest(false);
       if (!element) return;
       if (options.behavior === "smooth") {
-        smoothFollowUntilRef.current = Math.max(
-          smoothFollowUntilRef.current,
-          now + 1200,
-        );
+        smoothFollowUntilRef.current =
+          Date.now() + DESKTOP_V3_SMOOTH_FOLLOW_MS;
         element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
         return;
       }
@@ -664,7 +666,7 @@ export function useDesktopV3StickyBottomScroll(options: {
 
   const scrollToBottom = useCallback(
     (behavior: DesktopV3ScrollBehavior = "auto") => {
-      pinToLatest({ behavior, followMs: DESKTOP_V3_ACTIVITY_FOLLOW_MS });
+      pinToLatest({ behavior });
     },
     [pinToLatest],
   );
@@ -677,18 +679,14 @@ export function useDesktopV3StickyBottomScroll(options: {
       scrollTop: element.scrollTop,
     };
     suppressAutoFollowOnceRef.current = true;
+    userDetachedRef.current = true;
     autoFollowRef.current = false;
-    forceFollowUntilRef.current = 0;
-  }, []);
+    smoothFollowUntilRef.current = 0;
+    cancelScheduledScroll();
+  }, [cancelScheduledScroll]);
 
   const scheduleAutoFollow = useCallback(
-    (
-      scheduleOptions: {
-        forceUnseen?: boolean;
-        forceFollow?: boolean;
-        followMs?: number;
-      } = {},
-    ) => {
+    (scheduleOptions: { forceUnseen?: boolean } = {}) => {
       const element = scrollContainerRef.current;
       const nextScrollHeight = element?.scrollHeight ?? 0;
       const contentAdvanced =
@@ -697,12 +695,6 @@ export function useDesktopV3StickyBottomScroll(options: {
       lastScrollHeightRef.current = nextScrollHeight;
       if (suppressAutoFollowOnceRef.current) {
         suppressAutoFollowOnceRef.current = false;
-        return;
-      }
-      if (scheduleOptions.forceFollow) {
-        pinToLatest({
-          followMs: scheduleOptions.followMs ?? DESKTOP_V3_ACTIVITY_FOLLOW_MS,
-        });
         return;
       }
       if (!autoFollowRef.current) {
@@ -714,9 +706,7 @@ export function useDesktopV3StickyBottomScroll(options: {
       frameRef.current = window.requestAnimationFrame(() => {
         frameRef.current = null;
         if (!autoFollowRef.current) return;
-        pinToLatest({
-          followMs: scheduleOptions.followMs ?? DESKTOP_V3_RESIZE_FOLLOW_MS,
-        });
+        pinToLatest();
       });
     },
     [pinToLatest],
@@ -725,28 +715,56 @@ export function useDesktopV3StickyBottomScroll(options: {
   useEffect(() => {
     const element = scrollContainerRef.current;
     if (!element) return;
-    const handleScroll = () => {
-      const now = Date.now();
-      const recentProgrammaticFollow =
-        forceFollowUntilRef.current > now &&
-        now - lastScrollEventAtRef.current <= DESKTOP_V3_USER_SCROLL_INTENT_MS;
-      lastScrollEventAtRef.current = now;
-      const pinned = desktopV3BottomDistance(element) <= bottomBufferPx;
-      if (!pinned && !recentProgrammaticFollow) {
-        forceFollowUntilRef.current = 0;
+    let lastTouchY: number | null = null;
+    const handleScroll = () => setPinnedStateFromElement(element);
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) detachForUserScrollIntent();
+    };
+    const handlePointerDown = () => detachForUserScrollIntent();
+    const handleTouchStart = (event: TouchEvent) => {
+      lastTouchY = event.touches[0]?.clientY ?? null;
+    };
+    const handleTouchMove = (event: TouchEvent) => {
+      const nextTouchY = event.touches[0]?.clientY ?? null;
+      if (lastTouchY !== null && nextTouchY !== null && nextTouchY > lastTouchY) {
+        detachForUserScrollIntent();
       }
-      setPinnedStateFromElement(element);
+      lastTouchY = nextTouchY;
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!["ArrowUp", "PageUp", "Home"].includes(event.key)) return;
+      const activeElement = document.activeElement;
+      if (
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement ||
+        activeElement?.getAttribute("contenteditable") === "true"
+      )
+        return;
+      detachForUserScrollIntent();
     };
     handleScroll();
     element.addEventListener("scroll", handleScroll, { passive: true });
-    return () => element.removeEventListener("scroll", handleScroll);
-  }, [bottomBufferPx, setPinnedStateFromElement]);
+    element.addEventListener("wheel", handleWheel, { passive: true });
+    element.addEventListener("pointerdown", handlePointerDown, { passive: true });
+    element.addEventListener("touchstart", handleTouchStart, { passive: true });
+    element.addEventListener("touchmove", handleTouchMove, { passive: true });
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      element.removeEventListener("scroll", handleScroll);
+      element.removeEventListener("wheel", handleWheel);
+      element.removeEventListener("pointerdown", handlePointerDown);
+      element.removeEventListener("touchstart", handleTouchStart);
+      element.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [detachForUserScrollIntent, setPinnedStateFromElement]);
 
   useEffect(() => {
     autoFollowRef.current = true;
+    userDetachedRef.current = false;
     preserveTopAnchorRef.current = null;
     suppressAutoFollowOnceRef.current = false;
-    forceFollowUntilRef.current = 0;
+    smoothFollowUntilRef.current = 0;
     lastScrollHeightRef.current = scrollContainerRef.current?.scrollHeight ?? 0;
     setIsAtBottom(true);
     setHasUnseenLatest(false);
@@ -772,11 +790,7 @@ export function useDesktopV3StickyBottomScroll(options: {
 
   useEffect(() => {
     if (!options.followKey) return;
-    scheduleAutoFollow({
-      forceFollow: true,
-      forceUnseen: true,
-      followMs: DESKTOP_V3_ACTIVITY_FOLLOW_MS,
-    });
+    scheduleAutoFollow({ forceUnseen: true });
   }, [options.followKey, scheduleAutoFollow]);
 
   useEffect(() => {
