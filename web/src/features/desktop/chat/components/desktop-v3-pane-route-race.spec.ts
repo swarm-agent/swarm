@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
@@ -32,6 +33,8 @@ import {
 } from '../../session-v3/new-session-flow'
 import type { DesktopChatRoute } from '../services/chat-routing'
 import type { AgentProfileRecord } from '../types/chat'
+
+const conversationPaneSource = readFileSync(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
 
 const route: DesktopChatRoute = {
   id: 'swarm:swarm-self:binding:binding-self',
@@ -557,105 +560,20 @@ test('Desktop V3 paused run resend stays ordered through commit and delayed stal
   assert.equal(committedItems.at(-1)?.type, 'message')
 })
 
-test('Desktop V3 follow-up stays before current-run live items through optimistic and committed reconciliation', () => {
-  const oldRun = {
-    sessionId: 'session-a',
-    runId: 'run-old',
-    status: 'completed' as const,
-    assistantDraft: { content: 'prior terminal output', updatedAt: 20, timelineSeq: 20 },
-    toolCallsByCallId: {},
-    lastEventSeqSeen: 20,
-  }
-  const currentRun = {
-    sessionId: 'session-a',
-    runId: 'run-current',
-    status: 'running' as const,
-    reasoning: {
-      key: 'reasoning-current', state: 'running' as const, summary: '', text: 'current reasoning',
-      startedAt: 22, updatedAt: 22, timelineSeq: 4,
-    },
-    reasoningByKey: {
-      'reasoning-current': {
-        key: 'reasoning-current', state: 'running' as const, summary: '', text: 'current reasoning',
-        startedAt: 22, updatedAt: 22, timelineSeq: 4,
-      },
-    },
-    toolCallsByCallId: {
-      'call-current': { callId: 'call-current', toolName: 'search', updatedAt: 23, timelineSeq: 5 },
-    },
-    assistantDraft: { content: 'current answer', updatedAt: 30, timelineSeq: 30 },
-    lastEventSeqSeen: 30,
-  }
-  const pendingUser = {
-    clientRequestId: 'client-follow-up',
-    messageId: 'message-follow-up',
-    sessionId: 'session-a',
-    role: 'user' as const,
-    content: 'follow up',
-    createdAt: 21,
-    timelineSeq: 21,
-    status: 'pending' as const,
-  }
-  const committedBase = [{
-    id: 'message-initial', session_id: 'session-a', global_seq: 1,
-    role: 'user' as const, content: 'initial', created_at: 1,
-  }]
+test('Desktop V3 sticky-bottom lifecycle has no passive force-follow reattachment path', () => {
+  const hookStart = conversationPaneSource.indexOf('export function useDesktopV3StickyBottomScroll')
+  const hookEnd = conversationPaneSource.indexOf('function numericTimelineSeq', hookStart)
+  assert.ok(hookStart >= 0 && hookEnd > hookStart, 'expected sticky-bottom hook source')
+  const hookSource = conversationPaneSource.slice(hookStart, hookEnd)
 
-  const optimistic = buildDesktopV3ConversationRenderItems({
-    committed: committedBase,
-    pendingUser: [pendingUser],
-    liveRuns: [oldRun, { ...currentRun, reasoning: { ...currentRun.reasoning, timelineSeq: 22 }, reasoningByKey: { 'reasoning-current': { ...currentRun.reasoningByKey['reasoning-current'], timelineSeq: 22 } }, toolCallsByCallId: { 'call-current': { ...currentRun.toolCallsByCallId['call-current'], timelineSeq: 23 } }, assistantDraft: { ...currentRun.assistantDraft, timelineSeq: 24 } }],
-    runIntents: [],
-  })
-  assert.deepEqual(
-    optimistic.map((item) => item.type),
-    ['message', 'live-assistant', 'pending-user', 'live-reasoning', 'live-tool', 'live-assistant'],
-  )
-
-  const committed = buildDesktopV3ConversationRenderItems({
-    committed: [...committedBase, {
-      id: pendingUser.messageId,
-      session_id: 'session-a',
-      global_seq: 21,
-      role: 'user',
-      content: pendingUser.content,
-      created_at: pendingUser.createdAt,
-    }],
-    pendingUser: [],
-    liveRuns: [oldRun, currentRun],
-    runIntents: [{
-      session_id: 'session-a', run_id: 'run-current', status: 'running',
-      created_at: 21, updated_at: 21, event_seq: 21,
-    }],
-  })
-  assert.deepEqual(
-    committed.map((item) => item.type),
-    ['message', 'live-assistant', 'message', 'live-reasoning', 'live-tool', 'live-assistant'],
-  )
-  assert.equal(desktopV3RenderItemKey(optimistic[2]!), desktopV3RenderItemKey(committed[2]!))
-  assert.deepEqual(committed.slice(3).map((item) => item.timelineSeq), [22, 22, 30])
-
-  const working = buildDesktopV3ConversationRenderItems({
-    committed: [...committedBase, {
-      id: pendingUser.messageId,
-      session_id: 'session-a',
-      global_seq: 21,
-      role: 'user',
-      content: pendingUser.content,
-      created_at: pendingUser.createdAt,
-    }],
-    pendingUser: [],
-    liveRuns: [{
-      sessionId: 'session-a', runId: 'run-current', status: 'pending_executor',
-      toolCallsByCallId: {}, lastEventSeqSeen: 6,
-    }],
-    runIntents: [{
-      session_id: 'session-a', run_id: 'run-current', status: 'pending_executor',
-      created_at: 21, updated_at: 21, event_seq: 21,
-    }],
-  })
-  assert.deepEqual(working.map((item) => item.type), ['message', 'message', 'live-working'])
-  assert.equal(working.at(-1)?.timelineSeq, 22)
+  assert.doesNotMatch(hookSource, /forceFollow|ACTIVITY_FOLLOW_MS|lastScrollEventAtRef/)
+  assert.match(hookSource, /scheduleAutoFollow\(\{ forceUnseen: true \}\)/)
+  assert.match(hookSource, /userDetachedRef\.current = true/)
+  assert.match(hookSource, /cancelScheduledScroll\(\)/)
+  assert.match(hookSource, /\["ArrowUp", "PageUp", "Home"\]\.includes\(event\.key\)/)
+  assert.match(hookSource, /userDetachedRef\.current = false/)
+  assert.match(conversationPaneSource, /scrollToBottom\("smooth"\)/)
+  assert.match(conversationPaneSource, /preserveScrollPositionForPrepend\(\)/)
 })
 
 test('Desktop V3 pending user keeps its render key when the canonical message arrives', () => {

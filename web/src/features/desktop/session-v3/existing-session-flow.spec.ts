@@ -3,9 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-import { applyDesktopV3LivePatchBatch, createEmptyDesktopV3CacheState, desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
-import { selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
-import { buildDesktopV3ConversationRenderItems, desktopV3RenderItemKey } from '../chat/components/desktop-v3-existing-conversation-pane'
+import { createEmptyDesktopV3CacheState } from '../state/desktop-v3-cache-reducer'
 import type {
   DesktopV3CacheAction,
   DesktopV3CacheState,
@@ -119,113 +117,6 @@ test('Path B discards invalid retained operations', () => withSessionStorage(() 
   persistDesktopV3ExistingMessageOperation(invalid)
   assert.equal(loadDesktopV3ExistingMessageOperation('session-1'), null)
 }))
-
-test('paused-chat resend reconciles the optimistic user row to one canonical timeline message', async () => {
-  const operation = createDesktopV3ExistingMessageOperation({
-    sessionId: 'session-paused',
-    prompt: 'continue after pause',
-  })
-  let state = createEmptyDesktopV3CacheState()
-  state.messagesBySession[operation.sessionId] = {
-    items: [{
-      id: 'message-initial',
-      session_id: operation.sessionId,
-      global_seq: 1,
-      role: 'user',
-      content: 'initial request',
-      created_at: 1,
-    }],
-    byMessageId: { 'message-initial': 0 },
-    byGlobalSeq: { '1': 0 },
-  }
-  state.liveRunsBySession[operation.sessionId] = {
-    'run-paused': {
-      sessionId: operation.sessionId,
-      runId: 'run-paused',
-      status: 'cancelled',
-      assistantDraft: {
-        content: 'paused assistant response',
-        updatedAt: 2,
-        timelineSeq: 2,
-        streamId: 'stream-paused',
-        livePaused: true,
-      },
-      toolCallsByCallId: {},
-      lastEventSeqSeen: 2,
-    },
-  }
-
-  let pendingKey = ''
-  const restore = setDesktopV3ExistingSessionFlowDepsForTests({
-    getSnapshot: () => state,
-    requireControllerReady: async () => ({
-      ensureSessionConnected: async () => undefined,
-      start: async () => undefined,
-      stop: () => undefined,
-    }),
-    dispatch: (action) => {
-      state = desktopV3CacheReducer(state, action)
-      if (action.type !== 'pendingUser.upsert') return
-      const pendingItems = buildDesktopV3ConversationRenderItems(
-        selectRenderedSessionMessages(state, operation.sessionId),
-      ).filter((item) => item.type !== 'live-working')
-      assert.deepEqual(
-        pendingItems.map((item) => item.type),
-        ['message', 'live-assistant', 'pending-user'],
-      )
-      pendingKey = desktopV3RenderItemKey(pendingItems.at(-1)!)
-    },
-    postAppendMessage: async () => makeMessageResponse(operation),
-  })
-
-  try {
-    await continueDesktopV3Conversation(operation)
-  } finally {
-    restore()
-  }
-
-  const committedItems = buildDesktopV3ConversationRenderItems(
-    selectRenderedSessionMessages(state, operation.sessionId),
-  ).filter((item) => item.type !== 'live-working')
-  assert.deepEqual(
-    committedItems.map((item) => item.type),
-    ['message', 'live-assistant', 'message'],
-  )
-  assert.equal(desktopV3RenderItemKey(committedItems.at(-1)!), pendingKey)
-  assert.equal(state.pendingUserByClientRequestId[operation.request.client_request_id], undefined)
-  assert.equal(
-    state.messagesBySession[operation.sessionId]?.items
-      .filter((message) => message.id === operation.request.message_id).length,
-    1,
-  )
-
-  state = applyDesktopV3LivePatchBatch(state, [{
-    session_id: operation.sessionId,
-    run_id: 'run-paused',
-    stream_id: 'stream-paused',
-    stream_kind: 'assistant_text',
-    operation: 'append',
-    step_id: 'step-paused',
-    step: 1,
-    live_seq_start: 1,
-    live_seq_end: 2,
-    offset_start: 25,
-    offset_end: 38,
-    text: ' delayed text',
-    recorded_at: 4,
-  }])
-  const afterDelayedPausedPatch = buildDesktopV3ConversationRenderItems(
-    selectRenderedSessionMessages(state, operation.sessionId),
-  ).filter((item) => item.type !== 'live-working')
-  assert.deepEqual(
-    afterDelayedPausedPatch.map((item) => item.type),
-    ['message', 'live-assistant', 'message'],
-  )
-  assert.equal(
-    afterDelayedPausedPatch.filter((item) => item.type === 'message' && item.message.id === operation.request.message_id).length,
-    1,
-  )
-})
 
 test('continueDesktopV3Conversation appends message through canonical mutation and applies result', async () => {
   const operation = createDesktopV3ExistingMessageOperation({

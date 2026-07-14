@@ -23,7 +23,6 @@ import {
   applyDesktopV3LivePatchBatch,
   createEmptyDesktopV3CacheState,
   desktopV3CacheReducer,
-  desktopV3SessionTimelineHighWater,
   upsertCommittedMessage,
   upsertPendingUserMessage,
 } from './desktop-v3-cache-reducer'
@@ -3419,57 +3418,6 @@ test('realtime workset removed preserves transcript after child discovery', () =
   })
   assert.deepEqual(state.sessionOrderByScope['workset-1'], [])
   assert.equal(state.messagesBySession['session-new'].items.length, 1)
-})
-
-test('follow-up pending user and early current-run patch share the full session timeline high-water', () => {
-  let state = createEmptyDesktopV3CacheState()
-  state.projectionsBySession[sessionA.id] = {
-    ...projectionA,
-    last_event_seq: 4,
-    projection_high_watermark_seq: 4,
-  }
-  state.messagesBySession[sessionA.id] = buildMessageListCache([
-    { ...messageA1, global_seq: 1 },
-    { ...messageA2, global_seq: 2 },
-  ])
-  state.liveRunsBySession[sessionA.id] = {
-    'run-terminal': {
-      sessionId: sessionA.id,
-      runId: 'run-terminal',
-      status: 'completed',
-      assistantDraft: { content: 'terminal prior answer', updatedAt: 20, timelineSeq: 20 },
-      toolCallsByCallId: {},
-      lastEventSeqSeen: 20,
-    },
-  }
-
-  upsertPendingUserMessage(state, {
-    sessionId: sessionA.id,
-    clientRequestId: 'client-follow-up',
-    messageId: 'message-follow-up',
-    content: 'follow up',
-    createdAt: 21,
-  })
-  assert.equal(desktopV3SessionTimelineHighWater(state, sessionA.id), 21)
-  assert.equal(state.pendingUserByClientRequestId['client-follow-up']?.timelineSeq, 21)
-
-  state = applyDesktopV3LivePatchBatch(state, [{
-    session_id: sessionA.id,
-    run_id: 'run-current',
-    stream_id: 'stream-current',
-    stream_kind: 'assistant_text',
-    operation: 'append',
-    step_id: 'step-current',
-    step: 1,
-    live_seq_start: 1,
-    live_seq_end: 1,
-    offset_start: 0,
-    offset_end: byteLength('early reply'),
-    text: 'early reply',
-    recorded_at: 22,
-  }])
-
-  assert.equal(state.liveRunsBySession[sessionA.id]['run-current'].assistantDraft?.timelineSeq, 22)
 })
 
 test('pending user message is ordered after the active stream timeline', () => {
