@@ -617,11 +617,11 @@ try {
 
   beginPhase('turn.first');
   feedPTY(`${cfg.prompt}\r`, `sent first prompt: ${cfg.prompt}`);
-  await waitTranscriptContains([cfg.prompt], 'first prompt echo', phaseTimeoutMs).catch(() => null);
+  await waitTranscriptContains([cfg.prompt], 'first prompt echo', Math.min(3000, phaseTimeoutMs)).catch(() => null);
   const first = await waitForAssistantMarker(sessionID, cfg.firstMarker, 1, 'after.first');
   await waitTranscriptContains([cfg.firstMarker], 'first assistant marker', phaseTimeoutMs);
-  await waitTranscriptMatches([/(working|thinking|streaming response|winding up|running)\s+([0-9]+m)?[0-9]+s|working|thinking|streaming response|winding up/i], 'run lifecycle status', phaseTimeoutMs).then(() => { seen.tuiLifecycleText = true; seen.tuiTimerText = true; }).catch(() => null);
-  await waitTranscriptMatches([/Swarming|swarming|\[a:|swarm/i], 'swarming indicator', phaseTimeoutMs).then(() => { seen.tuiSwarmingText = true; }).catch(() => null);
+  await waitTranscriptMatches([/(working|thinking|streaming response|winding up|running)\s+([0-9]+m)?[0-9]+s|working|thinking|streaming response|winding up/i], 'run lifecycle status', Math.min(5000, phaseTimeoutMs)).then(() => { seen.tuiLifecycleText = true; seen.tuiTimerText = true; }).catch(() => null);
+  await waitTranscriptMatches([/Swarming|swarming|\[a:|swarm/i], 'swarming indicator', Math.min(5000, phaseTimeoutMs)).then(() => { seen.tuiSwarmingText = true; }).catch(() => null);
   feedPTY('/copy\r', 'capture authoritative chat snapshot');
   await waitFor(() => fs.existsSync(clipboardCapturePath) && fs.statSync(clipboardCapturePath).size > 0, phaseTimeoutMs, 'chat snapshot capture');
   endPhase({ assistant_marker: cfg.firstMarker, assistant_count: first.assistants.length, chat_snapshot_tail: fileTail(clipboardCapturePath, 3000), transcript_tail: fileTail(tuiCleanPath, 2000) });
@@ -630,7 +630,7 @@ try {
   if (!cfg.skipFollowUp) {
     beginPhase('turn.followup');
     feedPTY(`${cfg.followUp}\r`, `sent follow-up prompt: ${cfg.followUp}`);
-    await waitTranscriptContains([cfg.followUp], 'follow-up prompt echo', phaseTimeoutMs).catch(() => null);
+    await waitTranscriptContains([cfg.followUp], 'follow-up prompt echo', Math.min(3000, phaseTimeoutMs)).catch(() => null);
     second = await waitForAssistantMarker(sessionID, cfg.followUpMarker, Math.max(2, first.assistants.length + 1), 'after.followup');
     await waitTranscriptContains([cfg.followUpMarker], 'follow-up assistant marker', phaseTimeoutMs);
     endPhase({ assistant_marker: cfg.followUpMarker, assistant_count: second.assistants.length, transcript_tail: fileTail(tuiCleanPath, 2000) });
