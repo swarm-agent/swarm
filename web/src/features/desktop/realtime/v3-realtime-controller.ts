@@ -51,6 +51,7 @@ interface DesktopV3RealtimeControllerDeps {
   streamCommit?: DesktopV3StreamCommitController
   clientEffectRunner?: DesktopV3ClientEffectRunner
   clientEffectRunnerDeps?: DesktopV3ClientEffectRunnerDeps
+  onDesiredSessionsReconciled?: () => void
 }
 
 export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeController {
@@ -65,6 +66,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   private readonly livePatchCoordinator: DesktopV3LivePatchCoordinator
   private readonly clientEffectRunner: DesktopV3ClientEffectRunner
   private readonly subscribingSessionIds = new Set<string>()
+  private readonly onDesiredSessionsReconciled?: () => void
+  private reconciliationTimer?: ReturnType<typeof setTimeout>
   private firstResumeSent?: Deferred<void>
   private startupCancellation?: Deferred<never>
   private unsubscribeCache?: () => void
@@ -94,6 +97,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       commitSnapshot: deps.commitSnapshot ?? commitDesktopV3CacheSnapshot,
     }))
     this.clientEffectRunner = deps.clientEffectRunner ?? new DesktopV3ClientEffectRunner(deps.clientEffectRunnerDeps)
+    this.onDesiredSessionsReconciled = deps.onDesiredSessionsReconciled
 
     this.transport = new DesktopV3RealtimeTransport({
       getEndpointCursor: () => this.getSnapshot().realtime.endpointCursor,
@@ -175,6 +179,10 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.unsubscribeCache = undefined
     this.startPromise = undefined
     this.subscribingSessionIds.clear()
+    if (this.reconciliationTimer !== undefined) {
+      clearTimeout(this.reconciliationTimer)
+      this.reconciliationTimer = undefined
+    }
     this.firstResumeSent?.resolve()
     this.firstResumeSent = undefined
     this.livePatchCoordinator.dispose()
@@ -203,9 +211,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       })
     } finally {
       this.subscribingSessionIds.delete(sessionId)
-      setTimeout(() => {
-        if (!this.stopped) this.reconcileDesiredSessionConnections()
-      }, 0)
+      this.scheduleDesiredSessionReconciliation()
     }
   }
 
@@ -234,9 +240,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
     this.unsubscribeCache?.()
     this.unsubscribeCache = this.subscribe(() => {
-      this.reconcileDesiredSessionConnections()
+      this.scheduleDesiredSessionReconciliation()
     })
-    this.reconcileDesiredSessionConnections()
 
     await this.awaitUnlessStopped(this.transport.start())
     await this.waitForFirstResumeSent()
@@ -310,8 +315,9 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
     const state = this.getSnapshot()
     addRecoverySubscription(selectedSessionId)
+    const terminalTaskChildSessionIDs = terminalTaskChildRealtimeSessionIds(state)
     for (const sessionId of activeRealtimeSessionIds(state)) {
-      addRecoverySubscription(sessionId)
+      if (sessionId === selectedSessionId || !terminalTaskChildSessionIDs.has(sessionId)) addRecoverySubscription(sessionId)
     }
     for (const sessionId of taskChildRealtimeSessionIds(state)) {
       addRecoverySubscription(sessionId)
@@ -321,7 +327,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       addRecoverySubscription(pending.sessionId)
     }
     for (const sessionId of this.subscribingSessionIds) {
-      addRecoverySubscription(sessionId)
+      if (!terminalTaskChildSessionIDs.has(sessionId)) addRecoverySubscription(sessionId)
     }
 
     resume.subscriptions = Array.from(subscriptions.values())
@@ -346,12 +352,9 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       this.livePatchCoordinator.afterDurableFrame(frame)
       this.clientEffectRunner.accept(frame)
       if (frame.kind === 'event' || frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.updated' || frame.kind === 'workset.session.removed') {
-        // Reconcile after durable state commits. Workset frames update transport
-        // discovery state, and task tool event frames can expose delegated child
-        // V3 session IDs that must become direct session subscriptions.
-        setTimeout(() => {
-          if (!this.stopped) this.reconcileDesiredSessionConnections()
-        }, 0)
+        // Cache listeners and this post-commit path can observe the same frame.
+        // Coalesce both signals so an event burst performs one reconciliation.
+        this.scheduleDesiredSessionReconciliation()
       }
     } catch (error) {
       this.livePatchCoordinator.resetGeneration(0)
@@ -373,8 +376,17 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.transport.reopenFromDurableCursor('Desktop V3 runtime store commit failed')
   }
 
+  private scheduleDesiredSessionReconciliation(): void {
+    if (this.stopped || this.reconciliationTimer !== undefined) return
+    this.reconciliationTimer = setTimeout(() => {
+      this.reconciliationTimer = undefined
+      this.reconcileDesiredSessionConnections()
+    }, 0)
+  }
+
   private reconcileDesiredSessionConnections(): void {
     if (this.stopped) return
+    this.onDesiredSessionsReconciled?.()
     const state = this.getSnapshot()
     const desired = new Set<string>()
     const addDesired = (sessionId: string | null | undefined) => {
@@ -384,8 +396,9 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
 
     addDesired(state.selectedSessionId)
 
+    const terminalTaskChildSessionIDs = terminalTaskChildRealtimeSessionIds(state)
     for (const sessionId of activeRealtimeSessionIds(state)) {
-      addDesired(sessionId)
+      if (sessionId === state.selectedSessionId?.trim() || !terminalTaskChildSessionIDs.has(sessionId)) addDesired(sessionId)
     }
 
     for (const sessionId of taskChildRealtimeSessionIds(state)) {
@@ -397,7 +410,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     }
 
     for (const sessionId of this.subscribingSessionIds) {
-      addDesired(sessionId)
+      if (!terminalTaskChildSessionIDs.has(sessionId)) addDesired(sessionId)
     }
 
     const diagnostics = this.transport.diagnostics()
@@ -502,6 +515,9 @@ export function buildDesktopV3InitialRealtimeResume(
     ? undefined
     : preferredSessionId?.trim() || state.selectedSessionId?.trim()
   const activeSessionIDs = activeRealtimeSessionIds(state)
+  for (const sessionId of terminalTaskChildRealtimeSessionIds(state)) {
+    if (sessionId !== selectedSessionId) activeSessionIDs.delete(sessionId)
+  }
   const taskChildSessionIDs = taskChildRealtimeSessionIds(state)
 
   const sessionOrder = state.sessionOrderByScope[sidebarScopeId] ?? []
@@ -563,92 +579,35 @@ export function activeRealtimeSessionIds(state: DesktopV3CacheState): Set<string
 }
 
 export function taskChildRealtimeSessionIds(state: DesktopV3CacheState): Set<string> {
-  const childSessionIDs = new Set<string>()
+  return taskChildRealtimeSessionState(state).active
+}
+
+function terminalTaskChildRealtimeSessionIds(state: DesktopV3CacheState): Set<string> {
+  return taskChildRealtimeSessionState(state).terminal
+}
+
+function taskChildRealtimeSessionState(state: DesktopV3CacheState): { active: Set<string>; terminal: Set<string> } {
+  const active = new Set<string>()
+  const terminal = new Set<string>()
 
   for (const runs of Object.values(state.liveRunsBySession)) {
     for (const run of Object.values(runs)) {
-      const parentRunActive = ACTIVE_INTENT_STATUSES.has(run.status.trim().toLowerCase())
       for (const tool of Object.values(run.toolCallsByCallId)) {
-        if (tool.taskStream) collectTaskStreamChildSessionIds(tool.taskStream, childSessionIDs, parentRunActive)
-        const payload = parseTaskPayloadFromToolText(tool.outputText)
-        if (payload) collectTaskPayloadChildSessionIds(payload, childSessionIDs, parentRunActive)
+        const taskStream = tool.taskStream
+        if (!taskStream) continue
+        for (const launchKey of taskStream.launchOrder) {
+          const launch = taskStream.launchesByKey[launchKey]
+          if (!launch) continue
+          const destination = isTerminalTaskStatus(realtimeStringValue(launch.status)) ? terminal : active
+          addRealtimeSessionID(destination, launch.child_session_id)
+          addRealtimeSessionID(destination, launch.session_id)
+        }
       }
     }
   }
 
-  for (const record of Object.values(state.sessionsById)) {
-    if (record.kind !== 'full') continue
-    const taskLaunches = realtimeRecordValue(record.session.metadata?.task_launches)
-    if (!taskLaunches) continue
-    for (const launch of Object.values(taskLaunches)) {
-      const payload = realtimeRecordValue(launch)
-      if (payload) collectTaskPayloadChildSessionIds(payload, childSessionIDs, false)
-    }
-  }
-
-  for (const list of Object.values(state.messagesBySession)) {
-    for (const message of list.items) {
-      const payload = parseTaskPayloadFromToolText(message.content)
-      if (payload) collectTaskPayloadChildSessionIds(payload, childSessionIDs, false)
-    }
-  }
-
-  return childSessionIDs
-}
-
-function parseTaskPayloadFromToolText(text: string | undefined): Record<string, unknown> | undefined {
-  const direct = parseRealtimeJsonRecord(text)
-  if (!direct) return undefined
-  if (isTaskPayloadRecord(direct)) return direct
-
-  const wrappedTool = firstRealtimeString(direct.tool, direct.tool_name)
-  if (wrappedTool.trim().toLowerCase() !== 'task') return undefined
-  for (const key of ['output', 'completed_output']) {
-    const nested = parseRealtimeJsonRecord(realtimeStringValue(direct[key]))
-    if (nested && isTaskPayloadRecord(nested)) return nested
-  }
-  return undefined
-}
-
-function isTaskPayloadRecord(value: Record<string, unknown>): boolean {
-  const tool = realtimeStringValue(value.tool).trim().toLowerCase()
-  const pathID = realtimeStringValue(value.path_id)
-  if (tool !== 'task') return false
-  return pathID === 'tool.task.stream.v1' || pathID === 'tool.task.v1'
-}
-
-function collectTaskPayloadChildSessionIds(payload: Record<string, unknown>, childSessionIDs: Set<string>, includeTerminal: boolean): void {
-  if (!includeTerminal && !taskPayloadHasActiveLaunch(payload)) return
-  addRealtimeSessionID(childSessionIDs, payload.child_session_id)
-  addRealtimeSessionID(childSessionIDs, payload.session_id)
-  for (const launch of realtimeRecordArray(payload.launches)) {
-    addRealtimeSessionID(childSessionIDs, launch.child_session_id)
-    addRealtimeSessionID(childSessionIDs, launch.session_id)
-  }
-}
-
-function collectTaskStreamChildSessionIds(
-  taskStream: NonNullable<DesktopV3CacheState['liveRunsBySession'][string][string]['toolCallsByCallId'][string]['taskStream']>,
-  childSessionIDs: Set<string>,
-  includeTerminal: boolean,
-): void {
-  for (const launchKey of taskStream.launchOrder) {
-    const launch = taskStream.launchesByKey[launchKey]
-    if (!launch) continue
-    if (!includeTerminal && isTerminalTaskStatus(realtimeStringValue(launch.status))) continue
-    addRealtimeSessionID(childSessionIDs, launch.child_session_id)
-    addRealtimeSessionID(childSessionIDs, launch.session_id)
-  }
-}
-
-function taskPayloadHasActiveLaunch(payload: Record<string, unknown>): boolean {
-  const topLevelStatus = realtimeStringValue(payload.status)
-  if (topLevelStatus && isTerminalTaskStatus(topLevelStatus)) return false
-  const launches = realtimeRecordArray(payload.launches)
-  if (launches.length > 0) {
-    return launches.some((launch) => !isTerminalTaskStatus(realtimeStringValue(launch.status)))
-  }
-  return !topLevelStatus || !isTerminalTaskStatus(topLevelStatus)
+  for (const sessionId of active) terminal.delete(sessionId)
+  return { active, terminal }
 }
 
 function isTerminalTaskStatus(status: string): boolean {
@@ -673,36 +632,8 @@ function addRealtimeSessionID(sessionIDs: Set<string>, value: unknown): void {
   if (sessionID) sessionIDs.add(sessionID)
 }
 
-function firstRealtimeString(...values: unknown[]): string {
-  for (const value of values) {
-    const text = realtimeStringValue(value).trim()
-    if (text) return text
-  }
-  return ''
-}
-
 function realtimeStringValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
-}
-
-function realtimeRecordValue(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
-}
-
-function realtimeRecordArray(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value)
-    ? value.map((item) => realtimeRecordValue(item)).filter((item): item is Record<string, unknown> => Boolean(item))
-    : []
-}
-
-function parseRealtimeJsonRecord(value: string | undefined): Record<string, unknown> | undefined {
-  const trimmed = value?.trim() ?? ''
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return undefined
-  try {
-    return realtimeRecordValue(JSON.parse(trimmed) as unknown)
-  } catch {
-    return undefined
-  }
 }
 
 export function cloneDesktopV3SyncSelector(selector: SyncSelector): SyncSelector {

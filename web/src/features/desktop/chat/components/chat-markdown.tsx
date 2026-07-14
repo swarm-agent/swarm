@@ -514,7 +514,7 @@ function taskRowKey(row: TaskToolRow, index: number): string {
   return row.launchKey?.trim() || row.childSessionId.trim() || `launch-index:${row.launchIndex || index + 1}`;
 }
 
-const TASK_ELAPSED_TICK_MS = 100;
+export const TASK_ELAPSED_TICK_MS = 1_000;
 
 let taskElapsedNow = Date.now();
 let taskElapsedIntervalId: number | null = null;

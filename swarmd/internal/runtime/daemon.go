@@ -90,6 +90,7 @@ type Daemon struct {
 	copilot                   *copilot.Manager
 	deployContainers          *deployruntime.Service
 	remoteDeploys             *remotedeploy.Service
+	toolRuntime               *tool.Runtime
 	localTransportRuntimeName string
 	localTransportBaseURL     string
 	localTransportSocketPath  string
@@ -464,6 +465,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		copilot:                   copilotManager,
 		deployContainers:          deployContainerSvc,
 		remoteDeploys:             remoteDeploySvc,
+		toolRuntime:               toolRuntime,
 		localTransportRuntimeName: localTransportRuntimeName,
 	}
 	apiServer.SetShutdownHandler(func(reason string) {
@@ -573,6 +575,12 @@ func (d *Daemon) cleanup() error {
 		if d.bgCancel != nil {
 			d.bgCancel()
 			d.bgCancel = nil
+		}
+		if d.toolRuntime != nil {
+			if err := d.toolRuntime.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close tool runtime: %w", err))
+			}
+			d.toolRuntime = nil
 		}
 		if d.notificationService != nil {
 			d.notificationService.CloseWebPushDispatcher()

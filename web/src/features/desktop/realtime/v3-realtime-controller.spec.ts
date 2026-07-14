@@ -759,6 +759,159 @@ test('Desktop V3 subscribes child sessions from parent task stream payload', asy
 })
 
 
+test('Desktop V3 child discovery uses normalized live state and ignores historical message JSON', () => {
+  const state = readyControllerState()
+  const activeChild = 'child-live-active'
+  const terminalChild = 'child-live-terminal'
+  state.liveRunsBySession[sessionA.id] = {
+    'parent-run': {
+      sessionId: sessionA.id,
+      runId: 'parent-run',
+      status: 'running',
+      toolCallsByCallId: {
+        'call-task': {
+          callId: 'call-task',
+          toolName: 'task',
+          outputText: JSON.stringify({ tool: 'task', path_id: 'tool.task.stream.v1', status: 'running', child_session_id: 'child-output-history' }),
+          updatedAt: 2,
+          taskStream: {
+            pathId: 'tool.task.stream.v2',
+            streamVersion: 2,
+            status: 'running',
+            updatedAt: 2,
+            launchOrder: [activeChild, terminalChild],
+            launchesByKey: {
+              [activeChild]: { status: 'running', child_session_id: activeChild },
+              [terminalChild]: { status: 'completed', child_session_id: terminalChild },
+            },
+          },
+        },
+      },
+    },
+  }
+  state.messagesBySession[sessionA.id] = buildMessageListCache([{
+    ...messageA1,
+    content: JSON.stringify({ tool: 'task', path_id: 'tool.task.stream.v1', status: 'running', child_session_id: 'child-message-history' }),
+  }])
+
+  assert.deepEqual([...taskChildRealtimeSessionIds(state)], [activeChild])
+})
+
+
+test('Desktop V3 child reconciliation unsubscribes a terminal child while retaining an active sibling', async () => {
+  let state = readyControllerState()
+  state.selectedSessionId = sessionA.id
+  const terminalChild = 'child-terminal-now'
+  const activeChild = 'child-still-active'
+  const listeners = new Set<(mutation?: unknown) => void>()
+  const sockets: FakeWebSocket[] = []
+  const taskStream = {
+    pathId: 'tool.task.stream.v2',
+    streamVersion: 2,
+    status: 'running',
+    updatedAt: 2,
+    launchOrder: [terminalChild, activeChild],
+    launchesByKey: {
+      [terminalChild]: { status: 'running', child_session_id: terminalChild },
+      [activeChild]: { status: 'running', child_session_id: activeChild },
+    },
+  }
+  state.liveRunsBySession[sessionA.id] = {
+    'parent-run': {
+      sessionId: sessionA.id,
+      runId: 'parent-run',
+      status: 'running',
+      toolCallsByCallId: {
+        'call-task': { callId: 'call-task', toolName: 'task', updatedAt: 2, taskStream },
+      },
+    },
+  }
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action) => { state = desktopV3CacheReducer(state, action) },
+    subscribe: (listener) => {
+      listeners.add(listener as (mutation?: unknown) => void)
+      return () => listeners.delete(listener as (mutation?: unknown) => void)
+    },
+    ensureSession: async () => ({}),
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start(sessionA.id)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    const resume = sockets[0].sent[0] as RealtimeMessage
+    assert.deepEqual(resume.subscriptions?.map((subscription) => subscription.session_id), [sessionA.id, activeChild, terminalChild])
+    sockets[0].sent = []
+
+    taskStream.launchesByKey[terminalChild] = { status: 'completed', child_session_id: terminalChild }
+    state.currentRunIntentBySession[terminalChild] = {
+      session_id: terminalChild,
+      run_id: 'stale-child-intent',
+      status: 'running',
+      created_at: 1,
+      updated_at: 1,
+      event_seq: 1,
+    }
+    state = { ...state, liveRunsBySession: { ...state.liveRunsBySession } }
+    for (const listener of listeners) listener()
+
+    await waitFor(() => sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'unsubscribe.session' && (frame as RealtimeMessage).session_id === terminalChild))
+    assert.equal(sockets[0].sent.some((frame) => (frame as RealtimeMessage).kind === 'unsubscribe.session' && (frame as RealtimeMessage).session_id === activeChild), false)
+  } finally {
+    controller.stop()
+  }
+})
+
+
+test('Desktop V3 desired-session reconciliation coalesces cache event bursts', async () => {
+  let state = readyControllerState()
+  const sockets: FakeWebSocket[] = []
+  const listeners = new Set<(mutation?: unknown) => void>()
+  let reconciliationCount = 0
+  const controller = new DesktopV3RealtimeControllerRuntime({
+    getSnapshot: () => state,
+    dispatch: (action) => { state = desktopV3CacheReducer(state, action) },
+    subscribe: (listener) => {
+      listeners.add(listener as (mutation?: unknown) => void)
+      return () => listeners.delete(listener as (mutation?: unknown) => void)
+    },
+    ensureSession: async () => ({}),
+    onDesiredSessionsReconciled: () => { reconciliationCount += 1 },
+    openSocket: () => {
+      const socket = new FakeWebSocket()
+      sockets.push(socket)
+      return socket as unknown as WebSocket
+    },
+  })
+
+  try {
+    const ready = controller.start(null)
+    await waitFor(() => sockets.length === 1)
+    sockets[0].open()
+    await ready
+    await flushAsyncWork()
+    reconciliationCount = 0
+
+    for (const listener of listeners) {
+      listener()
+      listener()
+      listener()
+    }
+    await flushAsyncWork()
+    assert.equal(reconciliationCount, 1)
+  } finally {
+    controller.stop()
+  }
+})
+
+
 test('Desktop V3 auto-discovered session updates metadata without transcript hydrate', async () => {
   let state = readyControllerState()
   const sockets: FakeWebSocket[] = []

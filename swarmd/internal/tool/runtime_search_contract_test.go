@@ -54,7 +54,7 @@ func TestSearchRuntimeHandlesWhitespaceSeparatedMultiPath(t *testing.T) {
 	repoRoot := searchEvalRepoRoot(t)
 	scope := WorkspaceScope{PrimaryPath: repoRoot, Roots: []string{repoRoot}}
 	args, err := json.Marshal(map[string]any{
-		"queries":     []string{"NewWorkspaceStore", "executeSearchContentQuery"},
+		"queries":     []string{"NewWorkspaceStore", "executeSearch(parent"},
 		"path":        "swarmd/internal/store/pebble swarmd/internal/tool",
 		"include":     "*.go",
 		"max_results": 12,

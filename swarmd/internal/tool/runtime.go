@@ -158,6 +158,7 @@ type Runtime struct {
 	imageGen             manageImageService
 	imageThreads         manageImageThreadService
 	integrations         manageIntegrationService
+	searchCoordinator    *SearchCoordinator
 }
 
 type ExaRuntimeConfig struct {
@@ -396,7 +397,8 @@ func NewRuntime(maxParallel int) *Runtime {
 		maxParallel = 4
 	}
 	return &Runtime{
-		maxParallel: maxParallel,
+		maxParallel:       maxParallel,
+		searchCoordinator: NewSearchCoordinator(defaultSearchResidentRoots),
 		httpClient: &http.Client{
 			Timeout: maxWebFetchTimeout + 5*time.Second,
 		},
@@ -2041,8 +2043,10 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 		targetInclude := searchTargetInclude(target, include)
 		timeout := resolveSearchTimeout(args["timeout_ms"])
 		ctx, cancel := context.WithTimeout(parent, timeout)
-		helperResp, err := executeSearchHelper(ctx, searchipc.Request{
-			SearchRoot:        root,
+		indexRoot, targetPath := selectResidentSearchScope(scope, target)
+		helperResp, err := r.searchCoordinator.Execute(ctx, searchipc.Request{
+			IndexRoot:         indexRoot,
+			TargetPath:        targetPath,
 			Operation:         "content",
 			Queries:           queries,
 			Include:           targetInclude,
@@ -2130,8 +2134,10 @@ func (r *Runtime) executeFind(parent context.Context, scope WorkspaceScope, args
 		targetInclude := searchTargetInclude(target, include)
 		timeout := resolveSearchTimeout(args["timeout_ms"])
 		ctx, cancel := context.WithTimeout(parent, timeout)
-		helperResp, err := executeSearchHelper(ctx, searchipc.Request{
-			SearchRoot:    root,
+		indexRoot, targetPath := selectResidentSearchScope(scope, target)
+		helperResp, err := r.searchCoordinator.Execute(ctx, searchipc.Request{
+			IndexRoot:     indexRoot,
+			TargetPath:    targetPath,
 			Operation:     mode,
 			Queries:       queries,
 			Include:       targetInclude,
@@ -2174,6 +2180,35 @@ func (r *Runtime) executeFind(parent context.Context, scope WorkspaceScope, args
 		payload["find_warnings"] = formatSearchQueryErrors(rootErrors)
 	}
 	return encodeSearchPayload(payload)
+}
+
+func (r *Runtime) Close() error {
+	if r == nil || r.searchCoordinator == nil {
+		return nil
+	}
+	return r.searchCoordinator.Close()
+}
+
+func selectResidentSearchScope(scope WorkspaceScope, target searchTarget) (string, string) {
+	targetPath := target.Root
+	if strings.TrimSpace(target.FileName) != "" {
+		targetPath = filepath.Join(target.Root, target.FileName)
+	}
+	best := ""
+	for _, authorized := range append([]string{scope.PrimaryPath}, scope.Roots...) {
+		authorized = filepath.Clean(strings.TrimSpace(authorized))
+		rel, err := filepath.Rel(authorized, targetPath)
+		if authorized == "" || err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if best == "" || len(authorized) < len(best) {
+			best = authorized
+		}
+	}
+	if best == "" {
+		best = target.Root
+	}
+	return best, targetPath
 }
 
 func executeSearchHelper(ctx context.Context, req searchipc.Request) (searchipc.Response, error) {

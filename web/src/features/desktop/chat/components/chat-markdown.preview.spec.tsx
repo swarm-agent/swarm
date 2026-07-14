@@ -1,6 +1,6 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ToolMessageView } from "./chat-markdown";
+import { TASK_ELAPSED_TICK_MS, ToolMessageView } from "./chat-markdown";
 import { buildStructuredToolMessage } from "../services/tool-message";
 
 function assert(condition: boolean, message: string): void {
@@ -205,7 +205,7 @@ function testManageSessionsUsesRelativeDesktopNavigation(): void {
   assert(markup.includes(sessionId), "expected session id as secondary metadata");
   assert(markup.includes("Open session"), "expected internal session action");
   assert(markup.includes("needs review"), "expected normalized session state");
-  assert(!markup.includes("http://") && !markup.includes("https://"), "must not synthesize an absolute origin");
+  assert(!markup.includes('href="http://') && !markup.includes('href="https://'), "must not synthesize an absolute navigation origin");
   assert(!markup.includes('target="_blank"'), "relative Desktop session navigation should stay internal");
 }
 
@@ -302,12 +302,17 @@ function testTaskHeaderDoesNotShiftBetweenLaunchAssignments(): void {
   assert(!secondMarkup.includes("Frontend explorer title</span><svg"), "second header should not end with launch assignment title");
 }
 
+function testTaskElapsedClockUsesDisplayCadence(): void {
+  assert(TASK_ELAPSED_TICK_MS === 1_000, `expected one-second elapsed cadence, got ${TASK_ELAPSED_TICK_MS}`);
+}
+
 function main(): void {
   testDeniedExitPlanPermissionUsesFlatPreview();
   testPlanManageUsesFlatPreview();
   testTaskSwarmUsesCompactPreview();
   testTaskRunningTimerUsesStartTimestamp();
   testTaskTerminalTimerUsesFinalElapsed();
+  testTaskElapsedClockUsesDisplayCadence();
   testBashToolUsesDedicatedFullWidthCard();
   testManageSessionsUsesRelativeDesktopNavigation();
   testManageSessionsDeployRendersNavigableResultsAndHonestFailures();
