@@ -26,6 +26,9 @@ func TestCommitV3PlanAcceptanceIsAtomicOrderedAndIdempotent(t *testing.T) {
 	if first.Mutation.Replayed || len(first.Mutation.Events) != 2 || len(first.Mutation.RealtimeOutboxes) != 2 {
 		t.Fatalf("unexpected fresh acceptance mutation: %+v", first.Mutation)
 	}
+	if first.Session.Title != doc.Title {
+		t.Fatalf("accepted session title = %q, want plan title %q", first.Session.Title, doc.Title)
+	}
 	want := []string{"session.plan.saved", "session.mode.updated"}
 	for i, event := range first.Mutation.Events {
 		if event.EventType != want[i] || event.Seq != first.Mutation.FirstSeq+uint64(i) {
