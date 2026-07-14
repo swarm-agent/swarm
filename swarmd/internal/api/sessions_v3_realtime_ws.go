@@ -550,6 +550,26 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 	subscription, subscribed := advanced.Subscriptions[record.SessionID]
 	removeAutoSubscriptionAfterDelivery := false
 	if !subscribed {
+		if strings.TrimSpace(record.Event.EventType) == "session.archived" {
+			matchedWorksetIDs, matched := s.v3RealtimeMatchedWorksetIDsForRecord(principal, record, worksets)
+			if !matched {
+				return advanced, true, false
+			}
+			for _, workset := range orderedV3RealtimeWorksets(worksets) {
+				if _, ok := matchedWorksetIDs[workset.WorksetID]; !ok {
+					continue
+				}
+				if !s.sendV3RealtimeWorksetSessionFrame(conn, V3RealtimeKindWorksetSessionRemoved, workset, v3RealtimeSubscription{}, record, scope) {
+					return advanced, false, false
+				}
+				advanced.LastSentEndpointSeq = record.EndpointSeq
+			}
+			if !s.sendV3RealtimeOutboxEvent(conn, record, scope) {
+				return advanced, false, false
+			}
+			advanced.LastSentEndpointSeq = record.EndpointSeq
+			return advanced, true, true
+		}
 		match, ok := s.v3RealtimeMatchRecordWorkset(principal, record, worksets)
 		if !ok {
 			return advanced, true, false
@@ -979,6 +999,19 @@ func (s *Server) sendV3RealtimeWorksetSessionFrame(conn *transportws.Conn, kind 
 		if summary, ok := v3RealtimePermissionSummaryFromRecord(record); ok {
 			message.PermissionSummary = &summary
 		}
+	}
+	if kind == V3RealtimeKindWorksetSessionRemoved && strings.TrimSpace(record.Event.EventType) == "session.archived" {
+		var payload struct {
+			Tombstone *pebblestore.V3SessionTombstone `json:"tombstone,omitempty"`
+		}
+		if err := json.Unmarshal(record.Event.Payload, &payload); err != nil || payload.Tombstone == nil {
+			if err == nil {
+				err = errors.New("archive tombstone is missing")
+			}
+			_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(record.SessionID, "archive_tombstone_decode_failed", err.Error(), record.EndpointSeq-1, record.EndpointSeq))
+			return false
+		}
+		message.Tombstone = payload.Tombstone
 	}
 	if kind == V3RealtimeKindWorksetSessionUpdated || kind == V3RealtimeKindWorksetSessionDiscovered {
 		if session, ok := s.v3RealtimeSessionSnapshotForRecord(record); ok {

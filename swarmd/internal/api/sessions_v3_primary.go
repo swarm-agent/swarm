@@ -926,6 +926,10 @@ func (s *Server) handleSessionsV3PrimaryArchiveBatch(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, errors.New("session_ids is required"))
 		return
 	}
+	if len(req.SessionIDs) > sessionruntime.MaxArchiveSessionBatch {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("archive supports at most %d sessions per call", sessionruntime.MaxArchiveSessionBatch))
+		return
+	}
 	sessions := make([]pebblestore.SessionSnapshot, 0, len(req.SessionIDs))
 	seen := make(map[string]struct{}, len(req.SessionIDs))
 	for _, rawID := range req.SessionIDs {

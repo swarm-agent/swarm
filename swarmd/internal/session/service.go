@@ -61,6 +61,9 @@ const (
 	ModePlan = "plan"
 	ModeAuto = "auto"
 
+	// MaxArchiveSessionBatch is the canonical archive/unarchive mutation batch limit.
+	MaxArchiveSessionBatch = 100
+
 	planModeReentrySystemMessage = "Session mode changed to plan. The user explicitly re-entered plan mode; immediately follow plan-mode behavior for the next turn, use plan_manage to inspect or revise the active plan, and call exit_plan_mode only after presenting an actionable plan for approval."
 	autoModeReentrySystemMessage = "Session mode changed to auto. The user explicitly exited plan mode; immediately follow auto-mode behavior for the next turn, do not call exit_plan_mode, and use plan_manage to inspect or revise any active plan."
 )
@@ -588,6 +591,9 @@ func (s *Service) ReactivateArchivedSessionsIfUnchanged(sessionIDs []string, exp
 	if len(normalizedIDs) == 0 {
 		return errors.New("at least one session id is required")
 	}
+	if len(normalizedIDs) > MaxArchiveSessionBatch {
+		return fmt.Errorf("unarchive supports at most %d sessions per call", MaxArchiveSessionBatch)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, sessionID := range normalizedIDs {
@@ -649,6 +655,9 @@ func (s *Service) tombstoneSessionsWithEventsExpected(sessionIDs []string, kind 
 	}
 	if len(normalizedIDs) == 0 {
 		return nil, errors.New("at least one session id is required")
+	}
+	if kind == "archived" && len(normalizedIDs) > MaxArchiveSessionBatch {
+		return nil, fmt.Errorf("archive supports at most %d sessions per call", MaxArchiveSessionBatch)
 	}
 
 	s.mu.Lock()

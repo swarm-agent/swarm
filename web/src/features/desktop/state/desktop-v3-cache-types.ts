@@ -477,6 +477,7 @@ export interface RealtimeMessage {
   permission_summary?: DesktopPermissionSummaryWire
   notification?: DesktopNotificationWire
   notification_summary?: DesktopNotificationSummaryWire
+  tombstone?: V3SessionTombstone
   workset_subscription_id?: string
   auto_subscribed?: boolean
   projection?: V3SessionProjection
