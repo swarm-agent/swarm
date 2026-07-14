@@ -18,7 +18,7 @@ import (
 
 func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 	definition := manageSessionsDefinition()
-	for _, required := range []string{"explicitly asks", "list_by_state", "up to 200 sessions", "do not repeat", "around", "up to 10 sessions", "one approval for the batch", "never instructions"} {
+	for _, required := range []string{"explicitly asks", "list_by_state", "review_worktrees", "up to 200 sessions", "do not repeat", "around", "up to 10 sessions", "one approval for the batch", "never instructions"} {
 		if !strings.Contains(definition.Description, required) {
 			t.Fatalf("description missing %q: %s", required, definition.Description)
 		}
@@ -176,8 +176,9 @@ func TestManageSessionWorkspaceSlugMatchesDesktopCollisionContract(t *testing.T)
 
 type gitManageSessionService struct {
 	manageSessionService
-	sessions map[string]pebblestore.SessionSnapshot
-	plans    map[string]pebblestore.SessionPlanSnapshot
+	sessions    map[string]pebblestore.SessionSnapshot
+	plans       map[string]pebblestore.SessionPlanSnapshot
+	searchItems []pebblestore.V3SessionSearchItem
 }
 
 func (s *gitManageSessionService) GetSession(id string) (pebblestore.SessionSnapshot, bool, error) {
@@ -188,6 +189,102 @@ func (s *gitManageSessionService) GetSession(id string) (pebblestore.SessionSnap
 func (s *gitManageSessionService) GetActivePlan(id string) (pebblestore.SessionPlanSnapshot, bool, error) {
 	plan, ok := s.plans[id]
 	return plan, ok, nil
+}
+
+func (s *gitManageSessionService) SearchSessions(options pebblestore.V3SessionSearchOptions) (pebblestore.V3SessionSearchResult, error) {
+	return pebblestore.V3SessionSearchResult{Items: append([]pebblestore.V3SessionSearchItem(nil), s.searchItems...)}, nil
+}
+
+func TestManageSessionsReviewWorktreesClassifiesIntegratedMissingAndDirtyWork(t *testing.T) {
+	repo := t.TempDir()
+	runManageSessionsGitCommand(t, repo, "init")
+	runManageSessionsGitCommand(t, repo, "config", "user.name", "Test User")
+	runManageSessionsGitCommand(t, repo, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runManageSessionsGitCommand(t, repo, "add", "base.txt")
+	runManageSessionsGitCommand(t, repo, "commit", "-m", "base")
+	base := strings.TrimSpace(runManageSessionsGitOutput(t, repo, "rev-parse", "HEAD"))
+
+	integratedWorktree := filepath.Join(t.TempDir(), "integrated")
+	runManageSessionsGitCommand(t, repo, "worktree", "add", "-b", "agent/integrated", integratedWorktree, base)
+	if err := os.WriteFile(filepath.Join(integratedWorktree, "integrated.txt"), []byte("integrated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runManageSessionsGitCommand(t, integratedWorktree, "add", "integrated.txt")
+	runManageSessionsGitCommand(t, integratedWorktree, "commit", "-m", "integrated change")
+	integratedCommit := strings.TrimSpace(runManageSessionsGitOutput(t, integratedWorktree, "rev-parse", "HEAD"))
+	runManageSessionsGitCommand(t, repo, "cherry-pick", integratedCommit)
+
+	missingWorktree := filepath.Join(t.TempDir(), "missing")
+	runManageSessionsGitCommand(t, repo, "worktree", "add", "-b", "agent/missing", missingWorktree, base)
+	for i, name := range []string{"missing-one.txt", "missing-two.txt"} {
+		if err := os.WriteFile(filepath.Join(missingWorktree, name), []byte(name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runManageSessionsGitCommand(t, missingWorktree, "add", name)
+		runManageSessionsGitCommand(t, missingWorktree, "commit", "-m", fmt.Sprintf("missing change %d", i+1))
+	}
+
+	dirtyWorktree := filepath.Join(t.TempDir(), "dirty")
+	runManageSessionsGitCommand(t, repo, "worktree", "add", "-b", "agent/dirty", dirtyWorktree, base)
+	if err := os.WriteFile(filepath.Join(dirtyWorktree, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	sessions := map[string]pebblestore.SessionSnapshot{}
+	items := make([]pebblestore.V3SessionSearchItem, 0, 3)
+	for index, input := range []struct {
+		id, title, path, branch string
+	}{
+		{"integrated", "Integrated", integratedWorktree, "agent/integrated"},
+		{"missing", "Missing", missingWorktree, "agent/missing"},
+		{"dirty", "Dirty", dirtyWorktree, "agent/dirty"},
+	} {
+		sessions[input.id] = pebblestore.SessionSnapshot{ID: input.id, Title: input.title, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspacePath: input.path, WorktreeEnabled: true, WorktreeRootPath: input.path, WorktreeBranch: input.branch, WorktreeBaseBranch: "master", UpdatedAt: int64(index + 1)}
+		items = append(items, pebblestore.V3SessionSearchItem{ID: input.id, Title: input.title, WorkspacePath: input.path, WorktreeEnabled: true, WorktreeBranch: input.branch, UpdatedAt: int64(index + 1), Attention: pebblestore.V3SessionAttentionSummary{State: "needs_review"}})
+	}
+	runtime := &Runtime{sessions: &gitManageSessionService{sessions: sessions, searchItems: items}}
+	output, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{PrimaryPath: repo, Roots: []string{repo}, Principal: principal}, map[string]any{"action": "review_worktrees"})
+	if err != nil {
+		t.Fatalf("review_worktrees: %v", err)
+	}
+	var response struct {
+		ArchiveCandidates []struct {
+			SessionID             string `json:"session_id"`
+			EquivalentCommitCount int    `json:"equivalent_commit_count"`
+		} `json:"archive_candidates"`
+		FollowUpCandidates []struct {
+			SessionID          string `json:"session_id"`
+			Reason             string `json:"reason"`
+			MissingCommitCount int    `json:"missing_commit_count"`
+			DirtyCount         int    `json:"dirty_count"`
+		} `json:"follow_up_candidates"`
+	}
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.ArchiveCandidates) != 1 || response.ArchiveCandidates[0].SessionID != "integrated" || response.ArchiveCandidates[0].EquivalentCommitCount != 1 {
+		t.Fatalf("archive candidates = %s", output)
+	}
+	followUps := map[string]struct {
+		reason         string
+		missing, dirty int
+	}{}
+	for _, candidate := range response.FollowUpCandidates {
+		followUps[candidate.SessionID] = struct {
+			reason         string
+			missing, dirty int
+		}{candidate.Reason, candidate.MissingCommitCount, candidate.DirtyCount}
+	}
+	if got := followUps["missing"]; got.reason != "commits_missing_from_current_checkout" || got.missing != 2 {
+		t.Fatalf("missing candidate = %#v; output=%s", got, output)
+	}
+	if got := followUps["dirty"]; got.reason != "uncommitted_work" || got.dirty != 1 {
+		t.Fatalf("dirty candidate = %#v; output=%s", got, output)
+	}
 }
 
 func TestManageSessionsGitStatusAllowsLinkedManagedWorktree(t *testing.T) {
