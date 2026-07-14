@@ -124,7 +124,7 @@ func (s *Service) buildManageSessionsCommitPermissionPayload(sessionID string, a
 	if !ok {
 		return nil, fmt.Errorf("session %q not found", sessionID)
 	}
-	principal := identity.Principal{AccountScopeID: owner.AccountScopeID, UserID: owner.UserID}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: owner.AccountScopeID, UserID: owner.UserID, SessionID: owner.ID, AccountScopeSource: identity.AccountScopeSourceSession}
 	scope := tool.ManageSessionsCommitScope(owner, principal)
 	payload, err := s.tools.PrepareManageSessionsCommitManifest(context.Background(), scope, args)
 	if err != nil {
@@ -157,7 +157,7 @@ func (s *Service) executeManageSessionsCanonicalMutation(ctx context.Context, se
 	if !ok {
 		return "", fmt.Errorf("session %q not found", sessionID)
 	}
-	principal := identity.Principal{AccountScopeID: owner.AccountScopeID, UserID: owner.UserID}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: owner.AccountScopeID, UserID: owner.UserID, SessionID: owner.ID, AccountScopeSource: identity.AccountScopeSourceSession}
 	return s.tools.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.ManageSessionsCommitScope(owner, principal), tool.Call{CallID: call.CallID, Name: call.Name, Arguments: approvedArguments})
 }
 
@@ -175,7 +175,7 @@ func (s *Service) executeManageSessionsCommit(ctx context.Context, sessionID str
 	if !ok {
 		return "", fmt.Errorf("session %q not found", sessionID)
 	}
-	principal := identity.Principal{AccountScopeID: owner.AccountScopeID, UserID: owner.UserID}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: owner.AccountScopeID, UserID: owner.UserID, SessionID: owner.ID, AccountScopeSource: identity.AccountScopeSourceSession}
 	return s.tools.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.ManageSessionsCommitScope(owner, principal), tool.Call{CallID: call.CallID, Name: call.Name, Arguments: approvedArguments})
 }
 
