@@ -45,7 +45,7 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 
 	checkpointLabel := planLifecycleCheckpointLabel(checkpointID, checkpointTitle)
 	modeLabel := planLifecycleModeLabel(doc.ExecutionPolicy)
-	lines := []string{planLifecycleHeadline(action, doc, summary, nextAction, modeLabel)}
+	lines := []string{planLifecycleHeadline(action, checkpointID, doc, summary, nextAction, modeLabel)}
 	bodyLines := make([]string, 0, 4)
 	if planLabel := planLifecyclePlanLabel(input.Plan, doc); planLabel != "" {
 		bodyLines = append(bodyLines, "Plan: "+planLabel)
@@ -65,9 +65,10 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	if nextCheckpointID != "" && nextCheckpointID != checkpointID && nextAction != "await_review" && nextAction != "stopped" && nextAction != "plan_complete" {
 		bodyLines = append(bodyLines, "Next: "+planLifecycleCheckpointLabel(nextCheckpointID, nextCheckpointTitle))
 	}
-	finalReview := nextAction == "await_review" && allPlanLifecycleCheckpointsCompleted(doc)
+	finalHandoff := planLifecycleFinalHandoffRequired(nextAction, checkpointID, doc)
+	allCheckpointsComplete := allPlanLifecycleCheckpointsCompleted(doc)
 	if nextAction == "await_review" {
-		if finalReview {
+		if allCheckpointsComplete {
 			bodyLines = append(bodyLines, "Next: all checkpoints are complete; waiting for user review.")
 			if recommendation := planLifecycleRecommendation(doc, checkpointID); recommendation != nil {
 				bodyLines = append(bodyLines, "Recommendation: "+recommendation.Decision+" — "+recommendation.Action+" ("+recommendation.ActionState+"). "+recommendation.Reason)
@@ -80,7 +81,7 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	} else if nextAction == "plan_complete" {
 		bodyLines = append(bodyLines, "Next: plan complete.")
 	}
-	if !finalReview && isPlanExecutionOutcomeMessageAction(action) && action != "mark_blocked" {
+	if !finalHandoff && isPlanExecutionOutcomeMessageAction(action) && action != "mark_blocked" {
 		bodyLines = append(bodyLines, planLifecycleOutcomeDetailLines(input.Payload, false)...)
 	}
 	if len(bodyLines) > 0 {
@@ -147,7 +148,7 @@ func isPlanExecutionOutcomeMessageAction(action string) bool {
 	}
 }
 
-func planLifecycleHeadline(action string, doc *pebblestore.SessionPlanDocument, summary sessionruntime.PlanExecutionSummary, nextAction, modeLabel string) string {
+func planLifecycleHeadline(action, checkpointID string, doc *pebblestore.SessionPlanDocument, summary sessionruntime.PlanExecutionSummary, nextAction, modeLabel string) string {
 	base := "Plan execution updated"
 	if action == "approve_and_start" && nextAction == "run_checkpoint_with_fresh_context" && strings.TrimSpace(summary.NextCheckpointID) != "" {
 		return "Plan accepted, starting " + planLifecycleCheckpointLabel(summary.NextCheckpointID, "")
@@ -184,6 +185,8 @@ func planLifecycleHeadline(action string, doc *pebblestore.SessionPlanDocument, 
 	case "complete_checkpoint", "checkpoint_outcome":
 		if nextAction == "await_review" && allPlanLifecycleCheckpointsCompleted(doc) {
 			base = "All checkpoints complete; review required"
+		} else if planLifecycleFinalHandoffRequired(nextAction, checkpointID, doc) {
+			base = "Follow-up checkpoint complete; review required"
 		} else if summary.PlanComplete || nextAction == "plan_complete" {
 			base = "Plan complete"
 		} else {
@@ -253,6 +256,16 @@ func planLifecycleActionCompleted(action string) bool {
 	default:
 		return false
 	}
+}
+
+func planLifecycleFinalHandoffRequired(nextAction, checkpointID string, doc *pebblestore.SessionPlanDocument) bool {
+	if strings.TrimSpace(nextAction) != "await_review" {
+		return false
+	}
+	if allPlanLifecycleCheckpointsCompleted(doc) {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(checkpointID)), "followup-")
 }
 
 func allPlanLifecycleCheckpointsCompleted(doc *pebblestore.SessionPlanDocument) bool {
@@ -383,15 +396,19 @@ func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMes
 	if nextAction == "" {
 		nextAction = inferPlanExecutionNextAction(summary)
 	}
-	if nextAction != "await_review" || !allPlanLifecycleCheckpointsCompleted(doc) {
+	checkpointID := planLifecycleCheckpointID(action, doc, summary, input.Payload)
+	if !planLifecycleFinalHandoffRequired(nextAction, checkpointID, doc) {
 		return PlanExecutionLifecycleMessage{}, false
 	}
-	checkpointID := planLifecycleCheckpointID(action, doc, summary, input.Payload)
 	checkpointTitle := planLifecycleCheckpointTitle(doc, checkpointID)
+	completionNotice := "The last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it."
+	if !allPlanLifecycleCheckpointsCompleted(doc) {
+		completionNotice = "The follow-up checkpoint is complete and waiting for review. No additional checkpoint will start until that review is resolved."
+	}
 	lines := []string{
 		"Final checkpoint handoff",
 		"",
-		"The last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it.",
+		completionNotice,
 	}
 	if detailLines := planLifecycleOutcomeDetailLines(input.Payload, true); len(detailLines) > 0 {
 		lines = append(lines, "")

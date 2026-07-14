@@ -392,6 +392,40 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 		t.Fatalf("final handoff mutation ordering = %#v", appliedMutations)
 	}
 
+	followupInput := PlanExecutionLifecycleMessageInput{
+		Action: "complete_checkpoint",
+		Plan: pebblestore.SessionPlanSnapshot{ID: "plan-followup-final", Title: "Follow-up final", Document: &pebblestore.SessionPlanDocument{
+			ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+			Checkpoints: []pebblestore.SessionPlanCheckpoint{
+				{ID: "cp-1", Title: "Original", Status: sessionruntime.PlanCheckpointStatusCompleted},
+				{ID: "followup-2.5", Title: "Run rebuilt matrix", Status: sessionruntime.PlanCheckpointStatusCompleted},
+				{ID: "cp-3", Title: "Deferred", Status: sessionruntime.PlanCheckpointStatusPending},
+			},
+			ActiveCheckpointID: "followup-2.5",
+			ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview, LastCheckpointID: "followup-2.5", LastOutcome: sessionruntime.PlanCheckpointStatusCompleted},
+		}},
+		Payload: map[string]any{
+			"next_action":   "await_review",
+			"report":        "## Matrix\n- live actions passed",
+			"result":        "all acceptance criteria met",
+			"changed_files": []any{"swarmd/internal/run/plan_lifecycle_message.go"},
+			"validation":    []any{"durable matrix passed"},
+		},
+	}
+	followupLifecycle, ok := BuildPlanExecutionLifecycleSystemMessage(followupInput)
+	if !ok || !strings.Contains(followupLifecycle.Content, "Follow-up checkpoint complete; review required — Automatic mode") || !strings.Contains(followupLifecycle.Content, "Next: waiting for checkpoint review.") || strings.Contains(followupLifecycle.Content, "Report:") {
+		t.Fatalf("follow-up final lifecycle message = %#v", followupLifecycle)
+	}
+	followupHandoff, ok := BuildFinalPlanExecutionHandoffSystemMessage(followupInput)
+	if !ok || followupHandoff.Metadata["source"] != PlanExecutionFinalHandoffMessageSource || followupHandoff.Metadata["kind"] != "plan_final_checkpoint_handoff" || followupHandoff.Metadata["checkpoint_id"] != "followup-2.5" {
+		t.Fatalf("follow-up final handoff metadata = %#v", followupHandoff)
+	}
+	for _, want := range []string{"Final checkpoint handoff", "follow-up checkpoint is complete and waiting for review", "Report:\n## Matrix\n- live actions passed", "Result: all acceptance criteria met", "Changed files:\n- swarmd/internal/run/plan_lifecycle_message.go", "Validation:\n- durable matrix passed"} {
+		if !strings.Contains(followupHandoff.Content, want) {
+			t.Fatalf("follow-up final handoff missing %q: %q", want, followupHandoff.Content)
+		}
+	}
+
 	_, _, err = sessionSvc.SavePlanWithMetadata(sessionID, "plan-blocked-lifecycle", "Plan: Blocked Lifecycle", "# Blocked", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
