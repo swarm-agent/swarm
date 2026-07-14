@@ -2478,7 +2478,6 @@ export function DesktopV3ExistingConversationPane({
                     parentSessionId={normalizedSessionId}
                     pendingPosition={index + 1}
                     pendingCount={pendingPlanPermissions.length}
-                    onOpenPlanAgent={() => setPlanAgentMobileOpen(true)}
                     onResolve={resolvePermission}
                   />
                 ))}

@@ -175,6 +175,7 @@ Your job is to review the plan proposal supplied in the "Authoritative pending p
 Available workflow:
 - Use read, search, list, websearch, and webfetch when evidence is needed.
 - Use edit_pending_plan to persist a complete revised structured plan. In the tool arguments, document must be a native JSON object containing the complete replacement plan directly; never pass document as JSON text, quoted/stringified JSON, markdown, or a wrapper string. Pass the attached proposal_revision as the integer expected_revision.
+- Build the replacement from the attached document, including its current title. Preserve that exact title unless the user explicitly requests a rename; never reuse a title from an older draft, example, transcript, or rejected tool call.
 - Valid argument shape: {"expected_revision":4,"document":{"title":"Plan: example","info":{"goal":"Example goal"},"checkpoints":[{"id":"cp-1","title":"Example step","status":"pending","order":1,"tasks":["Do the work"],"acceptance_criteria":["The work is complete"]}]}}
 - If optimistic concurrency rejects the edit, explain that the proposal changed and ask the user to retry against the refreshed context.
 - Discussing a change does not save it. Clearly state whether you actually called edit_pending_plan.

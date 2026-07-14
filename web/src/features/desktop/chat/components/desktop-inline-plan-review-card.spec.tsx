@@ -81,7 +81,14 @@ for (const [requirement, toolName] of [
     markup.includes("First checkpoint"),
     `expected checkpoint for ${requirement}`,
   );
-  assert(markup.includes(">Deny<") && markup.includes(">Approve<"), `expected direct review controls for ${requirement}`);
+  assert(markup.includes(">Reject<") && markup.includes(">Accept<"), `expected concise review controls for ${requirement}`);
+  assert(markup.includes(">Copy<"), `expected visible plan copy control for ${requirement}`);
+  assert(!markup.includes("Accept edit") && !markup.includes("Reject edit") && !markup.includes("Request another revision"), `expected legacy review labels to be removed for ${requirement}`);
+  if (requirement === "permission" || requirement === "plan_new_request") {
+    const switchIndex = markup.indexOf('role="switch"');
+    const rejectIndex = markup.indexOf(">Reject<");
+    assert(switchIndex >= 0 && switchIndex < rejectIndex, `expected pause switch on the left of the bottom action row for ${requirement}`);
+  }
   assert(!markup.includes("Message to Swarm (optional)"), `expected Plan Agent to replace standalone rejection note for ${requirement}`);
 }
 

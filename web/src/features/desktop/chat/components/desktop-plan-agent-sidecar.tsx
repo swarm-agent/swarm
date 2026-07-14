@@ -295,7 +295,7 @@ export function DesktopPlanAgentSidecar({
                       resizeTextarea(event.target);
                     }}
                     onKeyDown={handleComposerKeyDown}
-                    placeholder="Ask about the plan or request changes…"
+                    placeholder="Talk to your plan"
                     aria-label="Plan message"
                     className="max-h-[50vh] !min-h-[32px] resize-none overflow-y-hidden !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]"
                     rows={1}

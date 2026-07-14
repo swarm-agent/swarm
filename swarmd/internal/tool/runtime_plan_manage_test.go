@@ -8,7 +8,7 @@ import (
 
 func TestEditPendingPlanDefinitionRequiresNativeStructuredDocument(t *testing.T) {
 	definition := mustFindDefinition(t, "edit_pending_plan")
-	if !containsAll(definition.Description, "native structured JSON object", "never as serialized/quoted JSON text") {
+	if !containsAll(definition.Description, "native structured JSON object", "never as serialized/quoted JSON text", "authoritative attached document", "preserve its current title") {
 		t.Fatalf("edit_pending_plan description does not reject stringified documents: %q", definition.Description)
 	}
 	params, ok := definition.Parameters["properties"].(map[string]any)
@@ -20,7 +20,7 @@ func TestEditPendingPlanDefinitionRequiresNativeStructuredDocument(t *testing.T)
 		t.Fatalf("expected_revision contract = %#v", expectedRevision)
 	}
 	document := params["document"].(map[string]any)
-	if document["type"] != "object" || !containsAll(document["description"].(string), "native JSON object", "do not pass JSON text", "quoted/stringified JSON") {
+	if document["type"] != "object" || !containsAll(document["description"].(string), "native JSON object", "do not pass JSON text", "quoted/stringified JSON", "current title", "unless the user explicitly requests a rename") {
 		t.Fatalf("document contract = %#v", document)
 	}
 }

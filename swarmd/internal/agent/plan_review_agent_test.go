@@ -35,6 +35,7 @@ func TestPlanSidechatPromptAttachesAuthoritativePlanContext(t *testing.T) {
 	for _, expected := range []string{
 		"Authoritative pending plan context", context, "edit_pending_plan", "never claim that no plan is available",
 		"document must be a native JSON object", "never pass document as JSON text", "quoted/stringified JSON",
+		"including its current title", "Preserve that exact title", "never reuse a title from an older draft",
 		`{"expected_revision":4,"document":{"title":"Plan: example"`,
 	} {
 		if !strings.Contains(prompt, expected) {
