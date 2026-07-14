@@ -999,6 +999,47 @@ function applyMutationOutboxEvent(
   })
 }
 
+export function desktopV3SessionTimelineHighWater(
+  state: DesktopV3CacheState,
+  sessionId: string,
+): number {
+  const projection = state.projectionsBySession[sessionId]
+  let highWater = Math.max(
+    projection?.last_event_seq ?? 0,
+    projection?.projection_high_watermark_seq ?? 0,
+  )
+  for (const message of state.messagesBySession[sessionId]?.items ?? []) {
+    highWater = Math.max(highWater, finiteNumberValue(message.global_seq) ?? 0)
+  }
+  for (const pending of Object.values(state.pendingUserByClientRequestId)) {
+    if (pending.sessionId === sessionId) {
+      highWater = Math.max(highWater, finiteNumberValue(pending.timelineSeq) ?? 0)
+    }
+  }
+  for (const runIntent of Object.values(state.runIntentsBySession[sessionId] ?? {})) {
+    highWater = Math.max(highWater, finiteNumberValue(runIntent.event_seq) ?? 0)
+  }
+  highWater = Math.max(
+    highWater,
+    finiteNumberValue(state.currentRunIntentBySession[sessionId]?.event_seq) ?? 0,
+  )
+  for (const run of Object.values(state.liveRunsBySession[sessionId] ?? {})) {
+    highWater = Math.max(highWater, finiteNumberValue(run.lastEventSeqSeen) ?? 0)
+    highWater = Math.max(highWater, finiteNumberValue(run.assistantDraft?.timelineSeq) ?? 0)
+    for (const segment of run.assistantSegments ?? []) {
+      highWater = Math.max(highWater, finiteNumberValue(segment.timelineSeq) ?? 0)
+    }
+    for (const tool of Object.values(run.toolCallsByCallId)) {
+      highWater = Math.max(highWater, finiteNumberValue(tool.timelineSeq) ?? 0)
+    }
+    for (const reasoning of Object.values(run.reasoningByKey ?? {})) {
+      highWater = Math.max(highWater, finiteNumberValue(reasoning.timelineSeq) ?? 0)
+    }
+    highWater = Math.max(highWater, finiteNumberValue(run.reasoning?.timelineSeq) ?? 0)
+  }
+  return highWater
+}
+
 export function upsertPendingUserMessage(
   state: DesktopV3CacheState,
   input: {
@@ -1010,33 +1051,6 @@ export function upsertPendingUserMessage(
     createdAt: number
   },
 ): DesktopV3CacheState {
-  const projection = state.projectionsBySession[input.sessionId]
-  const latestProjectionSeq = Math.max(
-    projection?.last_event_seq ?? 0,
-    projection?.projection_high_watermark_seq ?? 0,
-  )
-  const latestCommittedSeq = state.messagesBySession[input.sessionId]?.items.reduce(
-    (latest, message) => Math.max(latest, message.global_seq ?? 0),
-    0,
-  ) ?? 0
-  const latestLiveSeq = Object.values(state.liveRunsBySession[input.sessionId] ?? {}).reduce(
-    (latest, run) => Math.max(
-      latest,
-      run.lastEventSeqSeen ?? 0,
-      run.assistantDraft?.timelineSeq ?? 0,
-      ...(run.assistantSegments ?? []).map((segment) => segment.timelineSeq ?? 0),
-      ...Object.values(run.toolCallsByCallId).map((tool) => tool.timelineSeq ?? 0),
-      ...Object.values(run.reasoningByKey ?? {}).map((reasoning) => reasoning.timelineSeq ?? 0),
-      run.reasoning?.timelineSeq ?? 0,
-    ),
-    0,
-  )
-  const latestPendingSeq = Object.values(state.pendingUserByClientRequestId).reduce(
-    (latest, message) => message.sessionId === input.sessionId
-      ? Math.max(latest, message.timelineSeq ?? 0)
-      : latest,
-    0,
-  )
   const pending: PendingUserMessage = {
     clientRequestId: input.clientRequestId,
     messageId: input.messageId,
@@ -1045,12 +1059,7 @@ export function upsertPendingUserMessage(
     content: input.content,
     metadata: input.metadata,
     createdAt: input.createdAt,
-    timelineSeq: Math.max(
-      latestProjectionSeq,
-      latestCommittedSeq,
-      latestLiveSeq,
-      latestPendingSeq,
-    ) + 1,
+    timelineSeq: desktopV3SessionTimelineHighWater(state, input.sessionId) + 1,
     status: 'pending',
   }
   state.pendingUserByClientRequestId[input.clientRequestId] = pending
@@ -3174,20 +3183,9 @@ function applyLivePatchToRun(state: DesktopV3CacheState, run: LiveRunOverlay, pa
 }
 
 function resolveLiveAssistantTimelineSeq(state: DesktopV3CacheState, run: LiveRunOverlay, sessionId: string): number {
-  let latestCommittedSeq = 0
-  for (const message of state.messagesBySession[sessionId]?.items ?? []) {
-    latestCommittedSeq = Math.max(latestCommittedSeq, finiteNumberValue(message.global_seq) ?? 0)
-  }
-  const runIntentSeq = state.runIntentsBySession[sessionId]?.[run.runId]?.event_seq ?? 0
-  const currentRunIntentSeq = state.currentRunIntentBySession[sessionId]?.event_seq ?? 0
-  const projection = state.projectionsBySession[sessionId]
   return Math.max(
-    latestCommittedSeq,
-    runIntentSeq,
-    currentRunIntentSeq,
-    projection?.last_event_seq ?? 0,
-    projection?.projection_high_watermark_seq ?? 0,
-    run.lastEventSeqSeen ?? 0,
+    desktopV3SessionTimelineHighWater(state, sessionId),
+    finiteNumberValue(run.lastEventSeqSeen) ?? 0,
   ) + 1
 }
 

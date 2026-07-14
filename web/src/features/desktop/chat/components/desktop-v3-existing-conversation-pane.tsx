@@ -1166,6 +1166,7 @@ export function buildDesktopV3LiveRunRenderItems(
   options: {
     assistantMessages?: Set<string>;
     reasoningMessages?: Set<string>;
+    minimumTimelineSeq?: number;
   } = {},
 ): DesktopV3RenderItem[] {
   const items: DesktopV3RenderItem[] = [];
@@ -1227,7 +1228,13 @@ export function buildDesktopV3LiveRunRenderItems(
       timelineSeq: (run.lastEventSeqSeen ?? 0) + 1,
     });
   }
-  return orderDesktopV3LiveRenderItems(items);
+  const ordered = orderDesktopV3LiveRenderItems(items);
+  const minimumTimelineSeq = numericTimelineSeq(options.minimumTimelineSeq);
+  if (minimumTimelineSeq === 0) return ordered;
+  return ordered.map((item) => ({
+    ...item,
+    timelineSeq: Math.max(renderItemTimelineSeq(item), minimumTimelineSeq),
+  }));
 }
 
 export function buildDesktopV3ConversationRenderItems(
@@ -1243,6 +1250,21 @@ export function buildDesktopV3ConversationRenderItems(
   );
   const assistantMessages = canonicalContentSet(committedMessages, "assistant");
   const reasoningMessages = canonicalContentSet(committedMessages, "reasoning");
+  const runIntentTimelineByRunId = new Map<string, number>();
+  for (const intent of renderedMessages.runIntents) {
+    const eventSeq = numericTimelineSeq(intent.event_seq);
+    if (eventSeq > 0) runIntentTimelineByRunId.set(intent.run_id, eventSeq + 1);
+  }
+  const currentRunIntent = renderedMessages.currentRunIntent;
+  if (currentRunIntent) {
+    const eventSeq = numericTimelineSeq(currentRunIntent.event_seq);
+    if (eventSeq > 0) {
+      runIntentTimelineByRunId.set(
+        currentRunIntent.run_id,
+        Math.max(runIntentTimelineByRunId.get(currentRunIntent.run_id) ?? 0, eventSeq + 1),
+      );
+    }
+  }
   const items: DesktopV3RenderItem[] = [
     ...committedMessages.map((message) =>
       isDesktopV3PlanExecutionBreakMessage(message)
@@ -1271,6 +1293,7 @@ export function buildDesktopV3ConversationRenderItems(
       ...buildDesktopV3LiveRunRenderItems(run, {
         assistantMessages,
         reasoningMessages,
+        minimumTimelineSeq: runIntentTimelineByRunId.get(run.runId),
       }),
     );
   }
