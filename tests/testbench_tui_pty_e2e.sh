@@ -757,7 +757,7 @@ SWARM_E2E_CONFIG="${remote_dir}/config.json" node "${remote_dir}/remote-tui-runn
 REMOTE
 
 mkdir -p -- "${ARTIFACT_DIR}/remote-artifacts"
-timeout -k 2s 10s scp -q -r "${SSH_OPTS[@]}" "${PRIMARY_SSH}:${REMOTE_WORK_DIR}/artifacts/." "${ARTIFACT_DIR}/remote-artifacts/" 2>"${ARTIFACT_DIR}/scp-artifacts.stderr" || true
+timeout -k 2s 60s scp -q -r "${SSH_OPTS[@]}" "${PRIMARY_SSH}:${REMOTE_WORK_DIR}/artifacts/." "${ARTIFACT_DIR}/remote-artifacts/" 2>"${ARTIFACT_DIR}/scp-artifacts.stderr" || true
 if [[ -f "${ARTIFACT_DIR}/remote-artifacts/summary.json" ]]; then
   cp -- "${ARTIFACT_DIR}/remote-artifacts/summary.json" "${SUMMARY_JSON}"
 fi
