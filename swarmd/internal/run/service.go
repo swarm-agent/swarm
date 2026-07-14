@@ -3025,7 +3025,7 @@ func compactedActivePlanLabel(activePlan *pebblestore.SessionPlanSnapshot) strin
 	}
 }
 
-func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, assistantDraft string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, preferV3Messages bool, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
+func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, _ string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, preferV3Messages bool, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
 	toolStream := newMemoryCompactionToolStream(emit, step, origin, attempt)
 	if len(streamOut) > 0 && streamOut[0] != nil {
 		*streamOut[0] = toolStream
@@ -3086,15 +3086,9 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		finishFailure(err)
 		return "", err
 	}
-	activePlan, planErr := s.activePlanForCompaction(sessionID)
-	if planErr != nil {
-		err := fmt.Errorf("load active plan for compaction: %w", planErr)
-		finishFailure(err)
-		return "", err
-	}
 	compactIndex := nextMemoryCompactionIndex(messages)
 	toolStream.SetCompactIndex(compactIndex)
-	transcript := buildMemoryCompactionTranscript(messages, assistantDraft)
+	transcript := buildMemoryCompactionTranscript(messages)
 	if strings.TrimSpace(transcript) == "" {
 		err := errors.New("memory compaction transcript is empty")
 		finishFailure(err)
@@ -3114,9 +3108,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		Index:          1,
 		Total:          1,
 		Origin:         origin,
-		AssistantDraft: assistantDraft,
 		CompactIndex:   compactIndex,
-		ActivePlan:     activePlan,
 	})
 	oneShotTokens := estimateMemoryCompactionTokens(instructions, oneShotPrompt)
 	runCompactionDebugEvent("memory_compaction_start", map[string]any{
@@ -3233,9 +3225,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				Index:          i + 1,
 				Total:          len(chunks),
 				Origin:         origin,
-				AssistantDraft: assistantDraft,
 				CompactIndex:   compactIndex,
-				ActivePlan:     activePlan,
 			})
 			chunkResult, reqErr := executeMemoryCompactionRequest(ctx, runner, modelName, thinking, preference.ContextMode, instructions, promptText, contextWindow, summaryMaxRunes, func(message string) {
 				emitProgress(chunkStatus + "; " + strings.TrimSpace(message))
@@ -3339,27 +3329,32 @@ func (s *Service) listRunMessages(sessionID string, afterSeq uint64, limit int, 
 	return s.sessions.ListMessages(sessionID, afterSeq, limit)
 }
 
-func buildMemoryCompactionTranscript(messages []pebblestore.MessageSnapshot, assistantDraft string) string {
-	entries := make([]string, 0, len(messages)+1)
+func buildMemoryCompactionTranscript(messages []pebblestore.MessageSnapshot) string {
+	entries := make([]string, 0, len(messages))
 	for _, message := range messages {
 		content := strings.TrimSpace(message.Content)
-		if content == "" {
-			continue
-		}
-		if isManualCompactionAcknowledgement(message) {
+		if content == "" || isManualCompactionAcknowledgement(message) {
 			continue
 		}
 		role := strings.ToLower(strings.TrimSpace(message.Role))
-		if role == "system" && isToolDBDebugMessage(content) {
+		switch role {
+		case "user":
+			if shouldDropSensitiveConversationMessage(message) {
+				continue
+			}
+		case "assistant":
+		case "system":
+			// The latest compact recap replaces older visible conversation history.
+			// Keep that single boundary as an assistant recap, but never send other
+			// system/runtime messages to Memory.
+			if !isCompactionCheckpointMessage(content) {
+				continue
+			}
+			role = "assistant"
+		default:
 			continue
 		}
-		if role == "" {
-			role = "user"
-		}
-		entries = append(entries, fmt.Sprintf("[seq:%d role:%s]\n%s", message.GlobalSeq, role, content))
-	}
-	if draft := strings.TrimSpace(assistantDraft); draft != "" {
-		entries = append(entries, "[role:assistant_draft]\n"+draft)
+		entries = append(entries, role+":\n"+content)
 	}
 	return strings.TrimSpace(strings.Join(entries, "\n\n"))
 }
@@ -3468,9 +3463,7 @@ type memoryCompactionPromptOptions struct {
 	Index          int
 	Total          int
 	Origin         string
-	AssistantDraft string
 	CompactIndex   int
-	ActivePlan     *pebblestore.SessionPlanSnapshot
 }
 
 func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
@@ -3506,27 +3499,9 @@ func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
 			lines = append(lines, "Manual compact note/instructions:", runPrompt)
 		}
 	case contextCompactionOriginThreshold:
-		lines = append(lines,
-			"Current run user prompt:",
-			runPrompt,
-			"Formulate the continuation as a clear problem statement for the next main-agent step, with the compacted-away evidence embedded in the recap.",
-		)
+		lines = append(lines, "Formulate the continuation as a clear problem statement for the next main-agent step, with the compacted-away evidence embedded in the recap.")
 	case contextCompactionOriginOverflow:
-		lines = append(lines,
-			"Current run user prompt:",
-			runPrompt,
-			"The provider overflow means the previous agent may have stopped mid-thought or mid-action. Preserve in-progress intent and tell the resumed agent exactly what to do next.",
-		)
-		if strings.TrimSpace(options.AssistantDraft) != "" {
-			lines = append(lines, "An assistant draft was captured at overflow time and is included in the transcript as [role:assistant_draft]; treat it as in-progress work, not a completed final answer.")
-		}
-	}
-	if activePlanText := compactedActivePlanText(options.ActivePlan); activePlanText != "" {
-		lines = append(lines,
-			"Active session plan at compaction time:",
-			activePlanText,
-			"When the transcript shows plan items or checklist steps were completed, mention that the resumed agent should mark/update them after compaction.",
-		)
+		lines = append(lines, "The provider overflow means the previous agent may have stopped mid-thought or mid-action. Preserve in-progress intent and tell the resumed agent exactly what to do next.")
 	}
 	if total > 1 {
 		lines = append(lines,
@@ -3545,7 +3520,7 @@ func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
 			rollingSummary,
 		)
 	}
-	lines = append(lines, "Return the full compact summary now. Preserve explicit constraints, tool outcomes, filepaths/locations, plan state, and the exact next action.")
+	lines = append(lines, "Return the full compact summary now. Preserve the goal, explicit constraints, decisions, completed work, and exact next action that are stated in the visible conversation.")
 	return strings.TrimSpace(strings.Join(lines, "\n\n"))
 }
 

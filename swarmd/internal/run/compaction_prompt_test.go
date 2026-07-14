@@ -56,26 +56,28 @@ func TestBuildMemoryCompactionPromptManualNoNoteLaterCompact(t *testing.T) {
 	}
 }
 
-func TestBuildMemoryCompactionPromptOverflowIncludesDraftAndPlan(t *testing.T) {
-	plan := &pebblestore.SessionPlanSnapshot{ID: "plan_1", Title: "Ship fix", Plan: "# Plan\n1. Patch\n2. Test"}
+func TestBuildMemoryCompactionPromptOverflowUsesVisibleTranscriptOnly(t *testing.T) {
 	prompt := buildMemoryCompactionPrompt(memoryCompactionPromptOptions{
-		RunPrompt:      "fix compact overflow",
-		Chunk:          "[seq:1 role:user]\nfix compact overflow\n\n[role:assistant_draft]\nstarted patch",
-		Origin:         contextCompactionOriginOverflow,
-		AssistantDraft: "started patch",
-		CompactIndex:   2,
-		ActivePlan:     plan,
+		RunPrompt:    "fix compact overflow",
+		Chunk:        "user:\nfix compact overflow\n\nassistant:\nstarted patch",
+		Origin:       contextCompactionOriginOverflow,
+		CompactIndex: 2,
 	})
 	for _, want := range []string{
 		"exceeded the model context window",
 		"may have stopped mid-thought or mid-action",
-		"assistant draft was captured",
-		"Active session plan at compaction time",
-		"Plan ID: plan_1",
-		"mark/update them after compaction",
+		"user:\nfix compact overflow",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("overflow prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unwanted := range []string{
+		"Current run user prompt:",
+		"Active session plan at compaction time:",
+	} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("overflow prompt included non-conversation context %q:\n%s", unwanted, prompt)
 		}
 	}
 }
@@ -120,6 +122,41 @@ func TestBuildManualCompactionAssistantTextIncludesUserVisibleRecap(t *testing.T
 	}
 }
 
+func TestMemoryCompactionTranscriptIncludesOnlyUserVisibleConversation(t *testing.T) {
+	messages := []pebblestore.MessageSnapshot{
+		{GlobalSeq: 1, Role: "system", Content: "runtime contract and tool policy"},
+		{GlobalSeq: 2, Role: "user", Content: "fix the memory context"},
+		{GlobalSeq: 3, Role: "reasoning", Content: "private reasoning summary"},
+		{GlobalSeq: 4, Role: "tool", Content: "large internal tool dump"},
+		{GlobalSeq: 5, Role: "assistant", Content: "I found the oversized context path."},
+		{GlobalSeq: 6, Role: "system", Content: "[context-compact] index=2 origin=threshold\n\nCompacted recap:\nprior visible recap"},
+		{GlobalSeq: 7, Role: "user", Content: "/auth secret", Metadata: map[string]any{"source": "command"}},
+	}
+
+	transcript := buildMemoryCompactionTranscript(messages)
+	for _, want := range []string{
+		"user:\nfix the memory context",
+		"assistant:\nI found the oversized context path.",
+		"assistant:\n[context-compact] index=2 origin=threshold",
+	} {
+		if !strings.Contains(transcript, want) {
+			t.Fatalf("memory transcript missing %q:\n%s", want, transcript)
+		}
+	}
+	for _, unwanted := range []string{
+		"runtime contract and tool policy",
+		"private reasoning summary",
+		"large internal tool dump",
+		"/auth secret",
+		"seq:",
+		"role:",
+	} {
+		if strings.Contains(transcript, unwanted) {
+			t.Fatalf("memory transcript included internal context %q:\n%s", unwanted, transcript)
+		}
+	}
+}
+
 func TestManualCompactionAcknowledgementExcludedFromModelContext(t *testing.T) {
 	messages := []pebblestore.MessageSnapshot{
 		{Role: "system", Content: "[context-compact] index=3 origin=manual\n\nCompacted recap:\nsummary"},
@@ -127,7 +164,7 @@ func TestManualCompactionAcknowledgementExcludedFromModelContext(t *testing.T) {
 		{Role: "user", Content: "continue"},
 	}
 
-	transcript := buildMemoryCompactionTranscript(messages, "")
+	transcript := buildMemoryCompactionTranscript(messages)
 	if strings.Contains(transcript, "Manual context compact complete") {
 		t.Fatalf("manual compact acknowledgement leaked into compaction transcript:\n%s", transcript)
 	}
