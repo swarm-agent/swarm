@@ -253,6 +253,93 @@ func renderLinesContainStyle(lines []chatRenderLine, style tcell.Style) bool {
 	return false
 }
 
+func TestV3ToolLifecycleMessagesUpdateOneTimelineEntryWithActualResult(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-test"})
+	messages := []ChatMessageRecord{
+		{
+			ID:        "event-started",
+			SessionID: "session-test",
+			GlobalSeq: 2,
+			Role:      "tool",
+			Content:   `{"type":"session.tool.started","tool_name":"read","call_id":"call-read","tool_instance_id":"step-1:call-read","arguments":"{\"path\":\"facts.go\"}","status":"started"}`,
+			Metadata:  map[string]any{"v3_tool_event": true},
+			CreatedAt: 200,
+		},
+		{
+			ID:        "assistant-progress",
+			SessionID: "session-test",
+			GlobalSeq: 3,
+			Role:      "assistant",
+			Content:   "checking the result",
+			CreatedAt: 300,
+		},
+		{
+			ID:        "event-completed",
+			SessionID: "session-test",
+			GlobalSeq: 4,
+			Role:      "tool",
+			Content:   `{"type":"session.tool.completed","tool_name":"read","call_id":"call-read","tool_instance_id":"step-1:call-read","output":"actual result line","raw_output":"actual result line","status":"completed","duration_ms":21}`,
+			Metadata:  map[string]any{"v3_tool_event": true},
+			CreatedAt: 400,
+		},
+	}
+
+	page.SetMessages(messages)
+	if len(page.toolStream) != 1 {
+		t.Fatalf("tool lifecycle should reduce to one stream entry, got %#v", page.toolStream)
+	}
+	entry := page.toolStream[0]
+	if entry.EntryKey != "step-1:call-read" || entry.State != "done" || entry.Output != "actual result line" || entry.DurationMS != 21 {
+		t.Fatalf("reduced tool result = %#v", entry)
+	}
+	managed := make([]chatMessageItem, 0, len(page.timeline))
+	for _, item := range page.timeline {
+		if isManagedToolTimelineMessage(item) {
+			managed = append(managed, item)
+		}
+	}
+	if len(managed) != 1 || managed[0].ToolState != "done" {
+		t.Fatalf("managed timeline did not render completed tool state: %#v", managed)
+	}
+	if len(page.timeline) != 2 || page.timeline[0].Role != "tool" || page.timeline[1].Role != "assistant" {
+		t.Fatalf("tool lifecycle lost its authoritative position around assistant text: %#v", page.timeline)
+	}
+	payload, _ := managed[0].Metadata[chatToolTimelinePayloadMetadataKey].(string)
+	if !strings.Contains(payload, "actual result line") {
+		t.Fatalf("managed timeline omitted actual result payload: %#v", managed)
+	}
+
+	page.SetMessages(messages)
+	managed = managed[:0]
+	for _, item := range page.timeline {
+		if isManagedToolTimelineMessage(item) {
+			managed = append(managed, item)
+		}
+	}
+	if len(page.toolStream) != 1 || len(managed) != 1 {
+		t.Fatalf("hydrated replacement duplicated tool lifecycle: tools=%#v timeline=%#v", page.toolStream, page.timeline)
+	}
+}
+
+func TestV3ToolFailedMessageRendersActualError(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-test"})
+	page.SetMessages([]ChatMessageRecord{{
+		ID:        "event-failed",
+		SessionID: "session-test",
+		GlobalSeq: 2,
+		Role:      "tool",
+		Content:   `{"type":"session.tool.failed","tool_name":"read","call_id":"call-read","tool_instance_id":"step-1:call-read","error":"permission denied by provider","status":"failed"}`,
+		Metadata:  map[string]any{"v3_tool_event": true},
+		CreatedAt: 200,
+	}})
+	if len(page.toolStream) != 1 || page.toolStream[0].State != "error" || page.toolStream[0].Error != "permission denied by provider" {
+		t.Fatalf("failed tool entry = %#v", page.toolStream)
+	}
+	if len(page.timeline) != 1 || !strings.Contains(page.timeline[0].Text, "permission denied by provider") {
+		t.Fatalf("failed tool timeline omitted error: %#v", page.timeline)
+	}
+}
+
 func TestParseToolStreamEntryMapsV3ProviderToolResult(t *testing.T) {
 	content := `{"path_id":"run.v3.provider-tool-result.v1","type":"tool.completed","tool_name":"read","call_id":"call-shared","tool_instance_id":"step-7:call-shared","arguments":"{\"path\":\"facts.go\"}","output":"{\"count\":1,\"lines\":[{\"line\":12,\"text\":\"hello world\"}]}","completed_output":"{\"count\":1,\"lines\":[{\"line\":12,\"text\":\"hello world\"}]}","duration_ms":42}`
 

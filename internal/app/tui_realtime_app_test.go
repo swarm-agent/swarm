@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,71 @@ import (
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
 )
+
+func TestTUIV3ToolEventsProjectInAuthoritativeOrderWithoutStoredDuplicate(t *testing.T) {
+	toolInstanceID := "step-1:call-read"
+	messages := []client.SessionMessage{
+		{ID: "msg-user", SessionID: "session-1", GlobalSeq: 1, Role: "user", Content: "inspect it", CreatedAt: 100},
+		{ID: "msg-assistant-progress", SessionID: "session-1", GlobalSeq: 3, Role: "assistant", Content: "checking", CreatedAt: 300},
+		{
+			ID:        "msg-tool",
+			SessionID: "session-1",
+			GlobalSeq: 5,
+			Role:      "tool",
+			Content:   `{"path_id":"run.v3.provider-tool-result.v1","tool_name":"read","call_id":"call-read","tool_instance_id":"step-1:call-read","completed_output":"actual result"}`,
+			Metadata:  map[string]any{"tool_instance_id": toolInstanceID},
+			CreatedAt: 500,
+		},
+		{ID: "msg-assistant-done", SessionID: "session-1", GlobalSeq: 6, Role: "assistant", Content: "done", CreatedAt: 600},
+	}
+	events := []client.SessionV3Event{
+		toolRealtimeEvent("event-started", 2, 200, "session.tool.started", map[string]any{
+			"run_id": "run-1", "tool_name": "read", "call_id": "call-read", "tool_instance_id": toolInstanceID, "arguments": `{"path":"facts.go"}`, "status": "started",
+		}),
+		toolRealtimeEvent("event-delta", 4, 400, "session.tool.delta", map[string]any{
+			"run_id": "run-1", "tool_name": "read", "call_id": "call-read", "tool_instance_id": toolInstanceID, "output": "partial result",
+		}),
+		toolRealtimeEvent("event-completed", 5, 500, "session.tool.completed", map[string]any{
+			"run_id": "run-1", "tool_name": "read", "call_id": "call-read", "tool_instance_id": toolInstanceID, "output": "actual result", "raw_output": "actual result", "status": "completed", "duration_ms": 27,
+		}),
+	}
+
+	got := chatMessagesFromClient(messages, events)
+	if ids := chatMessageRecordIDs(got); !reflect.DeepEqual(ids, []string{
+		"msg-user",
+		"v3-tool-event:event-started",
+		"msg-assistant-progress",
+		"v3-tool-event:event-delta",
+		"v3-tool-event:event-completed",
+		"msg-assistant-done",
+	}) {
+		t.Fatalf("projected timeline ids = %#v", ids)
+	}
+	for _, message := range got {
+		if message.ID == "msg-tool" {
+			t.Fatalf("durable terminal tool message duplicated projected lifecycle: %#v", got)
+		}
+	}
+	if !strings.Contains(got[4].Content, "actual result") {
+		t.Fatalf("completed event omitted actual output: %#v", got[4])
+	}
+	if replay := chatMessagesFromClient(messages, events); !reflect.DeepEqual(replay, got) {
+		t.Fatalf("idempotent projection changed across replay:\nfirst=%#v\nreplay=%#v", got, replay)
+	}
+}
+
+func toolRealtimeEvent(id string, seq uint64, at int64, eventType string, payload map[string]any) client.SessionV3Event {
+	raw, _ := json.Marshal(payload)
+	return client.SessionV3Event{ID: id, SessionID: "session-1", Seq: seq, EventType: eventType, Payload: raw, TsUnixMS: at}
+}
+
+func chatMessageRecordIDs(messages []ui.ChatMessageRecord) []string {
+	ids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		ids = append(ids, message.ID)
+	}
+	return ids
+}
 
 func TestTUIRealtimeModePreferenceSurvivesPendingResponseProjection(t *testing.T) {
 	store := newTUISessionStore()

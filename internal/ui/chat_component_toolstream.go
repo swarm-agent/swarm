@@ -74,10 +74,13 @@ func parseToolHistoryStreamEntry(raw string, createdAt int64) (chatToolStreamEnt
 		return chatToolStreamEntry{}, false
 	}
 	pathID := strings.TrimSpace(jsonString(payload, "path_id"))
+	eventType := strings.ToLower(strings.TrimSpace(jsonString(payload, "type")))
 	toolNameKey := "tool"
 	switch {
 	case strings.EqualFold(pathID, "run.tool-history.v2"):
 	case strings.EqualFold(pathID, "run.v3.provider-tool-result.v1"):
+		toolNameKey = "tool_name"
+	case isV3ToolLifecycleEventType(eventType):
 		toolNameKey = "tool_name"
 	default:
 		return chatToolStreamEntry{}, false
@@ -88,12 +91,28 @@ func parseToolHistoryStreamEntry(raw string, createdAt int64) (chatToolStreamEnt
 		toolName = "tool"
 	}
 	output := strings.TrimSpace(jsonString(payload, "completed_output"))
-	rawOutput := strings.TrimSpace(jsonString(payload, "output"))
+	rawOutput := strings.TrimSpace(jsonString(payload, "raw_output"))
+	if rawOutput == "" {
+		rawOutput = strings.TrimSpace(jsonString(payload, "output"))
+	}
 	if output == "" {
-		output = rawOutput
+		output = strings.TrimSpace(jsonString(payload, "output"))
 	}
 	if rawOutput == "" {
 		rawOutput = output
+	}
+	state := strings.TrimSpace(jsonString(payload, "status"))
+	if state == "" {
+		switch eventType {
+		case "session.tool.started":
+			state = "running"
+		case "session.tool.delta":
+			state = "running"
+		case "session.tool.failed", "session.tool.cancelled", "session.tool.canceled":
+			state = "error"
+		default:
+			state = "done"
+		}
 	}
 	entry := chatToolStreamEntry{
 		EntryKey:   strings.TrimSpace(jsonString(payload, "tool_instance_id")),
@@ -103,7 +122,7 @@ func parseToolHistoryStreamEntry(raw string, createdAt int64) (chatToolStreamEnt
 		Raw:        rawOutput,
 		Error:      strings.TrimSpace(jsonString(payload, "error")),
 		CreatedAt:  createdAt,
-		State:      "done",
+		State:      state,
 		DurationMS: int64(jsonInt(payload, "duration_ms")),
 	}
 	if args := strings.TrimSpace(jsonString(payload, "arguments")); args != "" {
@@ -123,6 +142,15 @@ func parseToolHistoryStreamEntry(raw string, createdAt int64) (chatToolStreamEnt
 	}
 	entry.State = normalizedToolState(entry)
 	return entry, true
+}
+
+func isV3ToolLifecycleEventType(eventType string) bool {
+	switch strings.ToLower(strings.TrimSpace(eventType)) {
+	case "session.tool.started", "session.tool.delta", "session.tool.completed", "session.tool.failed", "session.tool.cancelled", "session.tool.canceled":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseDelimitedField(raw string, key string, nextKeys ...string) string {
@@ -997,7 +1025,7 @@ func normalizedToolState(entry chatToolStreamEntry) string {
 	switch state {
 	case "waiting_approval", "queued", "pending":
 		return "pending"
-	case "running":
+	case "started", "running":
 		return "running"
 	case "failed", "cancelled", "canceled", "skipped", "error":
 		return "error"

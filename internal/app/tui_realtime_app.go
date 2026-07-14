@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -478,7 +480,7 @@ func (a *App) applyTUISessionStoreToChat(sessionID string) {
 	if snapshot.AgentModelPolicy.ContextWindow > 0 {
 		a.chat.SetContextWindow(snapshot.AgentModelPolicy.ContextWindow)
 	}
-	a.chat.SetMessages(chatMessagesFromClient(snapshot.Messages))
+	a.chat.SetMessages(chatMessagesFromClient(snapshot.Messages, snapshot.Events))
 	a.chat.SetUsageSummary(convertClientUsageSummary(snapshot.UsageSummary))
 	var activePlan client.SessionPlan
 	for _, plan := range snapshot.Plans {
@@ -590,15 +592,107 @@ func chatSessionPlanFromClient(plan client.SessionPlan) ui.ChatSessionPlan {
 	return ui.ChatSessionPlan{ID: strings.TrimSpace(plan.ID), Title: strings.TrimSpace(plan.Title), Plan: plan.Plan, Document: plan.Document, Status: strings.TrimSpace(plan.Status), ApprovalState: strings.TrimSpace(plan.ApprovalState), Active: plan.Active, CreatedAt: plan.CreatedAt, UpdatedAt: plan.UpdatedAt, PriorTitle: strings.TrimSpace(plan.PriorTitle), PriorPlan: plan.PriorPlan, DiffLines: append([]string(nil), plan.DiffLines...), UpdateSummary: strings.TrimSpace(plan.UpdateSummary), UpdateScope: strings.TrimSpace(plan.UpdateScope), UpdateKind: strings.TrimSpace(plan.UpdateKind), Version: plan.Version, ParentRevision: plan.ParentRevision, Checkpoint: plan.Checkpoint}
 }
 
-func chatMessagesFromClient(messages []client.SessionMessage) []ui.ChatMessageRecord {
-	if len(messages) == 0 {
-		return nil
+func chatMessagesFromClient(messages []client.SessionMessage, events []client.SessionV3Event) []ui.ChatMessageRecord {
+	out := make([]ui.ChatMessageRecord, 0, len(messages)+len(events))
+	eventToolInstances := make(map[string]struct{})
+	toolEventMessages := make([]ui.ChatMessageRecord, 0, len(events))
+	for _, event := range events {
+		message, instanceID, ok := chatToolMessageFromV3Event(event)
+		if !ok {
+			continue
+		}
+		if instanceID != "" {
+			eventToolInstances[instanceID] = struct{}{}
+		}
+		toolEventMessages = append(toolEventMessages, message)
 	}
-	out := make([]ui.ChatMessageRecord, 0, len(messages))
 	for _, message := range messages {
+		if instanceID := clientToolMessageInstanceID(message); instanceID != "" {
+			if _, projected := eventToolInstances[instanceID]; projected {
+				continue
+			}
+		}
 		out = append(out, convertClientMessage(message))
 	}
+	out = append(out, toolEventMessages...)
+	sort.SliceStable(out, func(i, j int) bool {
+		left, right := out[i], out[j]
+		if left.GlobalSeq != right.GlobalSeq {
+			if left.GlobalSeq == 0 {
+				return false
+			}
+			if right.GlobalSeq == 0 {
+				return true
+			}
+			return left.GlobalSeq < right.GlobalSeq
+		}
+		if left.CreatedAt != right.CreatedAt {
+			if left.CreatedAt == 0 {
+				return false
+			}
+			if right.CreatedAt == 0 {
+				return true
+			}
+			return left.CreatedAt < right.CreatedAt
+		}
+		return strings.TrimSpace(left.ID) < strings.TrimSpace(right.ID)
+	})
 	return out
+}
+
+func chatToolMessageFromV3Event(event client.SessionV3Event) (ui.ChatMessageRecord, string, bool) {
+	eventType := strings.ToLower(strings.TrimSpace(event.EventType))
+	switch eventType {
+	case "session.tool.started", "session.tool.delta", "session.tool.completed", "session.tool.failed", "session.tool.cancelled", "session.tool.canceled":
+	default:
+		return ui.ChatMessageRecord{}, "", false
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(event.Payload, &payload); err != nil || payload == nil {
+		return ui.ChatMessageRecord{}, "", false
+	}
+	payload["type"] = eventType
+	content, err := json.Marshal(payload)
+	if err != nil {
+		return ui.ChatMessageRecord{}, "", false
+	}
+	createdAt := event.TsUnixMS
+	if createdAt <= 0 {
+		switch value := payload["recorded_at"].(type) {
+		case float64:
+			createdAt = int64(value)
+		case int64:
+			createdAt = value
+		case int:
+			createdAt = int64(value)
+		}
+	}
+	instanceID, _ := payload["tool_instance_id"].(string)
+	return ui.ChatMessageRecord{
+		ID:        "v3-tool-event:" + strings.TrimSpace(event.ID),
+		SessionID: strings.TrimSpace(event.SessionID),
+		GlobalSeq: event.Seq,
+		Role:      "tool",
+		Content:   string(content),
+		Metadata:  map[string]any{"v3_tool_event": true},
+		CreatedAt: createdAt,
+	}, strings.TrimSpace(instanceID), true
+}
+
+func clientToolMessageInstanceID(message client.SessionMessage) string {
+	if !strings.EqualFold(strings.TrimSpace(message.Role), "tool") {
+		return ""
+	}
+	if instanceID, _ := message.Metadata["tool_instance_id"].(string); strings.TrimSpace(instanceID) != "" {
+		return strings.TrimSpace(instanceID)
+	}
+	var payload map[string]any
+	if json.Unmarshal([]byte(message.Content), &payload) != nil {
+		return ""
+	}
+	instanceID, _ := payload["tool_instance_id"].(string)
+	return strings.TrimSpace(instanceID)
 }
 
 func chatLifecycleFromClient(lifecycle *client.SessionLifecycleSnapshot) ui.ChatSessionLifecycle {

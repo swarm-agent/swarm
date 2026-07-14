@@ -2978,6 +2978,10 @@ func (p *ChatPage) ingestMessageRecord(message ChatMessageRecord) {
 		if shouldSuppressHistoricalToolEntry(entry) {
 			return
 		}
+		if isV3ToolEventMessage(message) {
+			p.ingestV3ToolEventMessage(entry)
+			return
+		}
 		entry.EntryKey = historicalToolEntryKey(message, entry)
 		p.upsertToolStreamEntry(entry)
 		entry = p.latestToolStreamEntryForEntry(entry)
@@ -3000,6 +3004,35 @@ func (p *ChatPage) ingestMessageRecord(message ChatMessageRecord) {
 
 func isToolDBDebugMessage(content string) bool {
 	return false
+}
+
+func isV3ToolEventMessage(message ChatMessageRecord) bool {
+	value, _ := message.Metadata["v3_tool_event"].(bool)
+	return value
+}
+
+func (p *ChatPage) ingestV3ToolEventMessage(entry chatToolStreamEntry) {
+	if p == nil {
+		return
+	}
+	if p.streamedTools == nil {
+		p.streamedTools = make(map[string]struct{}, 16)
+	}
+	state := normalizedToolState(entry)
+	entry.State = state
+	p.upsertToolStreamEntry(entry)
+	entry = p.latestToolStreamEntryForEntry(entry)
+	if isBashToolName(entry.ToolName) {
+		if isTerminalToolState(state) {
+			p.finishInlineBashOutput(entry)
+		} else {
+			p.maybeStartInlineBashOutput(entry)
+		}
+	}
+	p.upsertManagedToolTimelineMessage(entry, toolTimelineCreatedAt(entry))
+	if isTerminalToolState(state) {
+		p.streamedTools[toolReplayDedupKey(entry)] = struct{}{}
+	}
 }
 
 func (p *ChatPage) SetHeaderVisible(show bool) {
@@ -3322,6 +3355,13 @@ func (p *ChatPage) upsertManagedToolTimelineMessage(entry chatToolStreamEntry, c
 	}
 	p.ensureTimelineRenderCacheLen()
 	p.bumpTimelineRenderGeneration()
+}
+
+func toolTimelineCreatedAt(entry chatToolStreamEntry) int64 {
+	if entry.StartedAt > 0 {
+		return entry.StartedAt
+	}
+	return entry.CreatedAt
 }
 
 func toolTimelineMessageDurationMS(message chatMessageItem) int64 {
@@ -5180,7 +5220,7 @@ func (p *ChatPage) rebuildToolLifecycleViews() {
 		tools = append(tools, chatMessageItem{
 			Role:      "tool",
 			Text:      text,
-			CreatedAt: entry.CreatedAt,
+			CreatedAt: toolTimelineCreatedAt(entry),
 			ToolState: normalizedToolState(entry),
 			Metadata:  toolTimelineMetadata(entry),
 		})
