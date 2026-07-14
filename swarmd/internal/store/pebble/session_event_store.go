@@ -322,21 +322,25 @@ func newV3RealtimeOutboxMembershipFromTombstone(tombstone V3SessionTombstone, no
 }
 
 type V3SessionRunIntent struct {
-	SessionID       string `json:"session_id"`
-	UserID          string `json:"user_id,omitempty"`
-	AccountScopeID  string `json:"account_scope_id,omitempty"`
-	RunID           string `json:"run_id"`
-	Status          string `json:"status"`
-	BlockedReason   string `json:"blocked_reason,omitempty"`
-	CreatedAt       int64  `json:"created_at"`
-	UpdatedAt       int64  `json:"updated_at"`
-	EventSeq        uint64 `json:"event_seq"`
-	EpochID         string `json:"epoch_id,omitempty"`
-	PlanID          string `json:"plan_id,omitempty"`
-	CheckpointID    string `json:"checkpoint_id,omitempty"`
-	AttemptID       string `json:"attempt_id,omitempty"`
-	RunSessionID    string `json:"run_session_id,omitempty"`
-	ParentSessionID string `json:"parent_session_id,omitempty"`
+	SessionID            string `json:"session_id"`
+	UserID               string `json:"user_id,omitempty"`
+	AccountScopeID       string `json:"account_scope_id,omitempty"`
+	RunID                string `json:"run_id"`
+	Status               string `json:"status"`
+	BlockedReason        string `json:"blocked_reason,omitempty"`
+	CreatedAt            int64  `json:"created_at"`
+	StartedAt            int64  `json:"started_at,omitempty"`
+	CompletedAt          int64  `json:"completed_at,omitempty"`
+	DurationMs           int64  `json:"duration_ms,omitempty"`
+	CumulativeDurationMs int64  `json:"cumulative_duration_ms,omitempty"`
+	UpdatedAt            int64  `json:"updated_at"`
+	EventSeq             uint64 `json:"event_seq"`
+	EpochID              string `json:"epoch_id,omitempty"`
+	PlanID               string `json:"plan_id,omitempty"`
+	CheckpointID         string `json:"checkpoint_id,omitempty"`
+	AttemptID            string `json:"attempt_id,omitempty"`
+	RunSessionID         string `json:"run_session_id,omitempty"`
+	ParentSessionID      string `json:"parent_session_id,omitempty"`
 }
 
 type V3SessionRunState struct {
@@ -630,6 +634,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 
 	lifecycle, lifecycleProvided := prepareV3LifecycleForMutation(input, seq, now)
 	runIntent, runIntentProvided := prepareV3RunIntentForMutation(input, seq, now)
+	var previousRunIntent V3SessionRunIntent
+	var previousRunIntentOK bool
+	var previousRunState V3SessionRunState
+	var previousRunStateOK bool
 	if runIntentProvided {
 		if strings.TrimSpace(runIntent.EpochID) == "" {
 			runIntent.EpochID = epochID
@@ -639,6 +647,16 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, err
 		}
 		runIntent = prepared
+		previousRunIntent, previousRunIntentOK, err = s.GetV3SessionRunIntent(runIntent.SessionID, runIntent.RunID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		previousRunState, previousRunStateOK, err = s.GetV3SessionRunState(runIntent.SessionID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		nextRunState := v3SessionRunStateWithPreviousTiming(v3SessionRunStateFromIntent(runIntent), previousRunState, previousRunStateOK)
+		runIntent = v3SessionRunIntentWithStateTiming(runIntent, nextRunState)
 	}
 	session, sessionProvided, err := s.prepareV3SessionForMutation(input, seq, now)
 	if err != nil {
@@ -877,14 +895,6 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		}
 	}
 	if runIntentProvided {
-		previousRunIntent, previousRunIntentOK, err := s.GetV3SessionRunIntent(runIntent.SessionID, runIntent.RunID)
-		if err != nil {
-			return V3SessionMutationResult{}, err
-		}
-		previousRunState, previousRunStateOK, err := s.GetV3SessionRunState(runIntent.SessionID)
-		if err != nil {
-			return V3SessionMutationResult{}, err
-		}
 		runPayload, err := json.Marshal(runIntent)
 		if err != nil {
 			return V3SessionMutationResult{}, fmt.Errorf("marshal v3 run intent %q: %w", runIntent.RunID, err)
@@ -2015,7 +2025,7 @@ func v3SessionRunDurationMs(startedAt, completedAt int64) int64 {
 }
 
 func v3SessionRunIntentFromState(state V3SessionRunState) V3SessionRunIntent {
-	return V3SessionRunIntent{
+	return v3SessionRunIntentWithStateTiming(V3SessionRunIntent{
 		SessionID:       strings.TrimSpace(state.SessionID),
 		UserID:          strings.TrimSpace(state.UserID),
 		AccountScopeID:  strings.TrimSpace(state.AccountScopeID),
@@ -2031,7 +2041,15 @@ func v3SessionRunIntentFromState(state V3SessionRunState) V3SessionRunIntent {
 		AttemptID:       strings.TrimSpace(state.AttemptID),
 		RunSessionID:    strings.TrimSpace(state.RunSessionID),
 		ParentSessionID: strings.TrimSpace(state.ParentSessionID),
-	}
+	}, state)
+}
+
+func v3SessionRunIntentWithStateTiming(intent V3SessionRunIntent, state V3SessionRunState) V3SessionRunIntent {
+	intent.StartedAt = state.StartedAt
+	intent.CompletedAt = state.CompletedAt
+	intent.DurationMs = state.DurationMs
+	intent.CumulativeDurationMs = state.CumulativeDurationMs
+	return intent
 }
 
 func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming V3SessionRunIntent) (V3SessionRunIntent, error) {

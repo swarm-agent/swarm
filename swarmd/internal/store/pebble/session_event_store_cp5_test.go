@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -299,6 +300,42 @@ func TestV3RunStatePersistsSequentialRunTiming(t *testing.T) {
 	}
 	if terminalSecond.Active || terminalSecond.RunID != "run-timing-2" || terminalSecond.StartedAt != 7000 || terminalSecond.CompletedAt != 10000 || terminalSecond.DurationMs != 3000 || terminalSecond.CumulativeDurationMs != 6000 {
 		t.Fatalf("second terminal state = %+v", terminalSecond)
+	}
+	storedSecond, ok, err := sessions.GetV3SessionRunIntent("session-run-timing", "run-timing-2")
+	if err != nil || !ok {
+		t.Fatalf("load second stored intent ok=%v err=%v", ok, err)
+	}
+	if storedSecond.StartedAt != 7000 || storedSecond.CompletedAt != 10000 || storedSecond.DurationMs != 3000 || storedSecond.CumulativeDurationMs != 6000 {
+		t.Fatalf("second stored intent timing = %+v", storedSecond)
+	}
+	outbox, err := sessions.ListV3RealtimeOutboxForSessionAfterSeq("session-run-timing", 0, 100)
+	if err != nil {
+		t.Fatalf("list run timing outbox: %v", err)
+	}
+	var streamedPendingSecond V3SessionRunIntent
+	var streamedTerminalSecond V3SessionRunIntent
+	for _, record := range outbox {
+		var payload struct {
+			RunIntent V3SessionRunIntent `json:"run_intent"`
+		}
+		if err := json.Unmarshal(record.Event.Payload, &payload); err != nil {
+			t.Fatalf("decode run timing payload: %v", err)
+		}
+		if payload.RunIntent.RunID != "run-timing-2" {
+			continue
+		}
+		switch payload.RunIntent.Status {
+		case V3RunIntentPendingExecutor:
+			streamedPendingSecond = payload.RunIntent
+		case V3RunIntentFailed:
+			streamedTerminalSecond = payload.RunIntent
+		}
+	}
+	if streamedPendingSecond.StartedAt != 7000 || streamedPendingSecond.CompletedAt != 0 || streamedPendingSecond.DurationMs != 0 || streamedPendingSecond.CumulativeDurationMs != 3000 {
+		t.Fatalf("second pending streamed intent timing = %+v", streamedPendingSecond)
+	}
+	if streamedTerminalSecond.StartedAt != 7000 || streamedTerminalSecond.CompletedAt != 10000 || streamedTerminalSecond.DurationMs != 3000 || streamedTerminalSecond.CumulativeDurationMs != 6000 {
+		t.Fatalf("second terminal streamed intent timing = %+v", streamedTerminalSecond)
 	}
 }
 
