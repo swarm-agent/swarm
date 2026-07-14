@@ -2098,6 +2098,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	input := append([]map[string]any(nil), baseReq.Input...)
 	identicalCalls := sessionV3ProviderIdenticalToolCallTracker{}
 	finalizingPlanTerminal := false
+	runtimeContextAt := time.Now()
 	for step := 1; ; step++ {
 		toolsEnabled := len(baseReq.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none")
 		var toolInvoker provideriface.ToolInvoker
@@ -2111,7 +2112,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		req := baseReq
 		req.Input = append([]map[string]any(nil), input...)
 		req.ToolInvoker = toolInvoker
-		req = req.WithRuntimeContext(resolved.Preference.Provider, time.Now())
+		// Runtime context is part of the provider request properties and therefore
+		// must remain byte-stable while this epoch's response chain is active.
+		req = req.WithRuntimeContext(resolved.Preference.Provider, runtimeContextAt)
 		e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.request", "backend.provider", "request", map[string]any{
 			"provider": strings.ToLower(strings.TrimSpace(resolved.Preference.Provider)),
 			"model":    strings.TrimSpace(req.Model),
@@ -2329,8 +2332,34 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			baseReq.ResetTransport = true
 			baseReq.NativeContinuationAllowed = false
 			baseReq.ForceFreshProviderContext = true
+		} else {
+			baseReq = sessionV3ProviderContinuationRequest(baseReq, runner)
 		}
 	}
+}
+
+func sessionV3ProviderContinuationRequest(req provideriface.Request, runner provideriface.Runner) provideriface.Request {
+	if strings.TrimSpace(req.ExecutionEpochID) == "" || strings.TrimSpace(req.ProviderLineageID) == "" || runner == nil {
+		return req
+	}
+	declared, ok := runner.(provideriface.ExecutionEpochLifecycleRunner)
+	if !ok {
+		return req
+	}
+	lifecycle := declared.ExecutionEpochLifecycle()
+	if lifecycle.ContextMode != provideriface.ExecutionEpochContextResponsesChain {
+		return req
+	}
+	// The first request in an epoch is deliberately fresh. Once it succeeds,
+	// subsequent tool-loop requests continue that same provider chain. A later
+	// restart or epoch transition rebuilds the base request and makes it fresh
+	// again before this promotion can happen.
+	req.StartNewChain = false
+	req.AllowContinuation = true
+	req.ResetTransport = false
+	req.NativeContinuationAllowed = true
+	req.ForceFreshProviderContext = false
+	return req
 }
 
 type sessionV3ProviderTerminalPlanResult struct {

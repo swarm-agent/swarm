@@ -5382,6 +5382,21 @@ func TestSessionsV3ExecutorCarriesFullContinuationHistoryAcrossMultipleToolSteps
 	if len(runner.requests) != 3 || len(runner.requests[2].Input) != 5 {
 		t.Fatalf("final continuation input = %+v, want full user plus two structured function_call/function_call_output pairs", runner.requests)
 	}
+	firstRequest := runner.requests[0]
+	if !firstRequest.StartNewChain || firstRequest.AllowContinuation || firstRequest.NativeContinuationAllowed || !firstRequest.ForceFreshProviderContext {
+		t.Fatalf("initial epoch request lifecycle = start_new=%t allow=%t native=%t fresh=%t, want one fresh chain start", firstRequest.StartNewChain, firstRequest.AllowContinuation, firstRequest.NativeContinuationAllowed, firstRequest.ForceFreshProviderContext)
+	}
+	if firstRequest.Instructions == "" || firstRequest.ProviderCacheKey == "" {
+		t.Fatalf("initial epoch request missing stable instructions/cache key")
+	}
+	for i, req := range runner.requests[1:] {
+		if req.StartNewChain || !req.AllowContinuation || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
+			t.Fatalf("continuation request %d lifecycle = start_new=%t allow=%t native=%t fresh=%t, want same-epoch continuation", i+2, req.StartNewChain, req.AllowContinuation, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+		}
+		if req.Instructions != firstRequest.Instructions || req.ProviderCacheKey != firstRequest.ProviderCacheKey {
+			t.Fatalf("continuation request %d changed cacheable properties: instructions_equal=%t cache_key=%q want=%q", i+2, req.Instructions == firstRequest.Instructions, req.ProviderCacheKey, firstRequest.ProviderCacheKey)
+		}
+	}
 	finalInput := runner.requests[2].Input
 	if !sessionsV3ProviderInputHasTopLevelType(finalInput, "function_call") || !sessionsV3ProviderInputHasTopLevelType(finalInput, "function_call_output") || sessionsV3ProviderInputContainsContentText(finalInput, "[tool result]") {
 		t.Fatalf("final continuation input = %+v, want structured tool reinjection without stringified tool result text", finalInput)

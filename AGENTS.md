@@ -93,6 +93,7 @@ If this file conflicts with convenience, this file wins. If this file conflicts 
   - `internal/launcher/launcher.go` and `internal/launcher/system_paths.go` — launcher/install paths.
   - `swarmd/internal/runtime/daemon.go` — local transport socket and API startup config usage.
 - Current Linux daemon defaults are intentional product defaults: config `/etc/swarmd/swarm.conf`, data `/var/lib/swarmd`, cache `/var/cache/swarmd`, runtime `/run/swarmd`, logs `/var/log/swarmd`.
+- Remote operations must never replace a canonical daemon config in a way that changes its ownership or leaves it unreadable or unwritable by the configured service account. Before any privileged config write, record the existing owner, group, and mode; preserve them during the write or explicitly restore them afterward. For private config files such as `/etc/swarmd/swarm.conf`, keep the service-account owner and group and mode `0600` unless the checked-in installer or service contract explicitly requires different metadata.
 - Do not diagnose daemon config from old paths such as `~/.config/swarm/swarm.conf`, `~/.swarm/swarm.conf`, `/etc/swarm/swarm.conf`, or `/usr/local/etc/swarm/swarm.conf` unless code explicitly supports them.
 - `/workspaces` is workspace discovery/container-era path context only; never use it alone to infer architecture or storage authority.
 

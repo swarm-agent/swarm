@@ -1550,6 +1550,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return true, nil
 	}
 
+	runtimeContextAt := time.Now()
 	for step := 1; ; step++ {
 		if err := ctx.Err(); err != nil {
 			if runErr != nil {
@@ -1820,7 +1821,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			"input":               input,
 		})
 
-		stepRequest = stepRequest.WithRuntimeContext(providerID, time.Now())
+		// Keep request properties stable across one provider tool loop so native
+		// continuation and prompt caching can reuse the growing prefix.
+		stepRequest = stepRequest.WithRuntimeContext(providerID, runtimeContextAt)
 		response, err := providerRunner.CreateResponseStreaming(runnerCtx, stepRequest, func(event provideriface.StreamEvent) {
 			if ctx.Err() != nil {
 				return
