@@ -1337,7 +1337,17 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
-	if checkpointRestartInput {
+	if forceCommittedContext {
+		// Overflow compaction is a hard provider boundary. The compacted epoch is
+		// the complete continuation context, so neither response lineage nor the
+		// websocket that carried the overflowing chain may be reused.
+		baseReq.StartNewChain = true
+		baseReq.AllowContinuation = false
+		baseReq.ReuseTransport = false
+		baseReq.ResetTransport = true
+		baseReq.NativeContinuationAllowed = false
+		baseReq.ForceFreshProviderContext = true
+	} else if checkpointRestartInput {
 		baseReq.BoundaryReason = sessionV3ProviderBoundaryReasonWithOverride(baseReq.BoundaryReason, "checkpoint_fresh_context")
 		baseReq.StartNewChain = true
 		baseReq.AllowContinuation = false

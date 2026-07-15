@@ -5141,6 +5141,16 @@ func TestSessionsV3ExecutorContinuesAfterOverflowCompaction(t *testing.T) {
 	if runner.callCount != 3 {
 		t.Fatalf("provider call count = %d, want overflow attempt, compact, continuation", runner.callCount)
 	}
+	runner.mu.Lock()
+	requests := append([]provideriface.Request(nil), runner.requests...)
+	runner.mu.Unlock()
+	if len(requests) != 3 {
+		t.Fatalf("provider requests = %d, want overflow attempt, compact, continuation", len(requests))
+	}
+	continuation := requests[2]
+	if !continuation.StartNewChain || continuation.AllowContinuation || continuation.ReuseTransport || !continuation.ResetTransport || continuation.NativeContinuationAllowed || !continuation.ForceFreshProviderContext {
+		t.Fatalf("overflow continuation lifecycle = start_new=%t allow=%t reuse_transport=%t reset_transport=%t native=%t fresh=%t, want a fresh provider chain on a new transport", continuation.StartNewChain, continuation.AllowContinuation, continuation.ReuseTransport, continuation.ResetTransport, continuation.NativeContinuationAllowed, continuation.ForceFreshProviderContext)
+	}
 }
 
 func TestSessionsV3CompactEndpointRunsManualCompactAndResetsUsage(t *testing.T) {
