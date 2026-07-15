@@ -2,10 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
-import type { RealtimeMessage } from './desktop-v3-cache-types'
 import { buildSidebarSessionTree, desktopSessionRecordFromV3SidebarRow, desktopSidebarWorkspacePathForSession } from '../layout/desktop-app-page'
 import { selectDesktopSidebarGroupedRows, selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
-import { realtimeFrameToActions, selectSession } from './desktop-v3-cache-wire'
+import { selectSession } from './desktop-v3-cache-wire'
 import { hydrateResponseToAction } from './desktop-v3-cache-wire'
 import { hydrateSnapshotFixture, messageA1, messageB1, projectionA, projectionB, runIntentA, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
 
@@ -223,7 +222,7 @@ test('Desktop V3 sidebar derives plan row state, checkpoint progress, and explic
   assert.deepEqual(grouped.archived, [])
 })
 
-test('Desktop V3 sidebar excludes archived and deleted tombstones', () => {
+test('Desktop V3 sidebar derives archived rows from archived tombstones only', () => {
   const state = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
   state.sessionOrderByScope['scope-a'] = [sessionA.id, sessionB.id]
@@ -234,7 +233,7 @@ test('Desktop V3 sidebar excludes archived and deleted tombstones', () => {
     kind: 'archived',
     archived: true,
     updated_at: 50,
-    session: sessionA,
+    session: { ...sessionA, title: 'Archived A' },
   }
   state.tombstonesBySession[sessionB.id] = {
     session_id: sessionB.id,
@@ -245,45 +244,21 @@ test('Desktop V3 sidebar excludes archived and deleted tombstones', () => {
   }
 
   const rows = selectDesktopSidebarRows(state)
-  assert.deepEqual(rows, [])
+  assert.deepEqual(rows.map((row) => row.sessionId), [sessionA.id])
+  assert.equal(rows[0].sidebarGroup, 'archived')
 
   const grouped = selectDesktopSidebarGroupedRows(state)
   assert.deepEqual(grouped.needs_review, [])
   assert.deepEqual(grouped.in_progress, [])
   assert.deepEqual(grouped.active_chats, [])
-  assert.deepEqual(grouped.archived, [])
+  assert.deepEqual(grouped.archived.map((row) => row.sessionId), [sessionA.id])
+
+  const archivedRecord = desktopSessionRecordFromV3SidebarRow(grouped.archived[0])
+  assert.equal(archivedRecord.title, 'Archived A')
+  assert.equal(archivedRecord.metadata?.swarm_v3_sidebar_group, 'archived')
 })
 
-test('live V3 archive workset removal immediately removes the sidebar row', () => {
-  const state = createEmptyDesktopV3CacheState()
-  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
-  state.sessionOrderByScope['scope-a'] = [sessionA.id, sessionB.id]
-  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
-  state.sessionsById[sessionB.id] = { kind: 'full', session: sessionB, needsHydrate: false }
-  state.worksetsById['scope-a'] = { workset_id: 'scope-a', sessionIds: [sessionA.id, sessionB.id], inactiveSessionIds: [] }
-
-  const frame = {
-    kind: 'workset.session.removed',
-    workset_id: 'scope-a',
-    session_id: sessionA.id,
-    event_type: 'session.archived',
-    endpoint_cursor: 'cursor-archive',
-    tombstone: {
-      session_id: sessionA.id,
-      kind: 'archived',
-      archived: true,
-      updated_at: 75,
-      session: sessionA,
-    },
-  }
-  for (const action of realtimeFrameToActions(frame as RealtimeMessage)) desktopV3CacheReducer(state, action)
-
-  assert.deepEqual(state.sessionOrderByScope['scope-a'], [sessionB.id])
-  assert.equal(state.tombstonesBySession[sessionA.id]?.archived, true)
-  assert.deepEqual(selectDesktopSidebarRows(state).map((row) => row.sessionId), [sessionB.id])
-})
-
-test('archive mutation result removes sidebar row while retaining tombstone metadata', () => {
+test('archive mutation result moves sidebar row into Archived with cached session metadata', () => {
   const state = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
   state.sessionOrderByScope['scope-a'] = [sessionA.id, sessionB.id]
@@ -327,7 +302,13 @@ test('archive mutation result removes sidebar row while retaining tombstone meta
   const grouped = selectDesktopSidebarGroupedRows(state)
   assert.deepEqual(grouped.active_chats.map((row) => row.sessionId), [sessionB.id])
   assert.deepEqual(grouped.in_progress, [])
-  assert.deepEqual(grouped.archived, [])
+  assert.deepEqual(grouped.archived.map((row) => row.sessionId), [sessionA.id])
+
+  const archivedRecord = desktopSessionRecordFromV3SidebarRow(grouped.archived[0])
+  assert.equal(archivedRecord.title, 'Cached Session A')
+  assert.equal(archivedRecord.workspacePath, '/workspace/cached')
+  assert.equal(archivedRecord.workspaceName, 'cached-workspace')
+  assert.equal(archivedRecord.metadata?.swarm_v3_sidebar_group, 'archived')
 })
 
 test('bulk archive mutation cleans several sessions from collections in one reducer pass', () => {
@@ -372,7 +353,7 @@ test('bulk archive mutation cleans several sessions from collections in one redu
   assert.deepEqual(state.worksetsById['scope-a'].inactiveSessionIds, [sessionA.id, sessionB.id])
   assert.equal(state.liveRunsBySession[sessionA.id], undefined)
   assert.equal(state.liveRunsBySession[sessionB.id], undefined)
-  assert.deepEqual(selectDesktopSidebarGroupedRows(state).archived, [])
+  assert.deepEqual(selectDesktopSidebarGroupedRows(state).archived.map((row) => row.sessionId).sort(), [sessionA.id, sessionB.id].sort())
 })
 
 test('archive mutation and realtime tombstone ordering is idempotent without repeated collection cleanup', () => {

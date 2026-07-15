@@ -62,7 +62,16 @@ test("archiveDesktopV3Sessions posts to the batch archive endpoint and applies t
     ]);
     const grouped = selectDesktopSidebarGroupedRows(state);
     assert.deepEqual(grouped.active_chats, []);
-    assert.deepEqual(grouped.archived, []);
+    assert.deepEqual(
+      grouped.archived.map((row) => row.sessionId),
+      [sessionA.id],
+    );
+    assert.equal(
+      grouped.archived[0].record.kind === "full"
+        ? grouped.archived[0].record.session.title
+        : "",
+      "Cached title",
+    );
   } finally {
     globalThis.fetch = originalFetch;
     resetDesktopV3CacheForTests();

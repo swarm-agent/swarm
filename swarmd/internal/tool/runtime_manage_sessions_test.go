@@ -16,71 +16,20 @@ import (
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
-func TestManageSessionsArchiveBatchLimitAccepts100AndRejects101(t *testing.T) {
-	ids := make([]string, manageSessionsMaxArchiveBatch)
-	for i := range ids {
-		ids[i] = fmt.Sprintf("session-%03d", i)
-	}
-	service := &archiveBatchLimitManageSessionService{
-		sessions: make(map[string]pebblestore.SessionSnapshot, len(ids)),
-	}
-	versions := make(map[string]any, len(ids))
-	for i, id := range ids {
-		version := int64(i + 1)
-		service.sessions[id] = pebblestore.SessionSnapshot{ID: id, AccountScopeID: "account-1", UserID: "user-1", UpdatedAt: version}
-		versions[id] = version
-	}
-	runtime := &Runtime{sessions: service}
-	scope := WorkspaceScope{SessionID: "current", Principal: identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}}
-	if _, err := runtime.manageSessionsArchive(scope, map[string]any{"session_ids": ids, "expected_updated_at_by_id": versions}); err != nil {
-		t.Fatalf("archive 100 sessions: %v", err)
-	}
-	if len(service.archivedIDs) != manageSessionsMaxArchiveBatch {
-		t.Fatalf("archived ids = %d, want %d", len(service.archivedIDs), manageSessionsMaxArchiveBatch)
-	}
-	if output, err := runtime.executeManageSessions(context.Background(), scope, map[string]any{"action": "inspect"}); err != nil || !strings.Contains(output, `"archive_batch":100`) || !strings.Contains(output, `"unarchive_batch":100`) {
-		t.Fatalf("inspect output = %q err=%v", output, err)
-	}
-	tooMany := append(append([]string(nil), ids...), "session-101")
-	if _, err := runtime.manageSessionsArchive(scope, map[string]any{"session_ids": tooMany}); err == nil || !strings.Contains(err.Error(), "at most 100") {
-		t.Fatalf("archive 101 error = %v", err)
-	}
-}
-
-type archiveBatchLimitManageSessionService struct {
-	manageSessionService
-	sessions    map[string]pebblestore.SessionSnapshot
-	archivedIDs []string
-}
-
-func (s *archiveBatchLimitManageSessionService) GetSession(id string) (pebblestore.SessionSnapshot, bool, error) {
-	session, ok := s.sessions[id]
-	return session, ok, nil
-}
-
-func (s *archiveBatchLimitManageSessionService) GetActivePlan(string) (pebblestore.SessionPlanSnapshot, bool, error) {
-	return pebblestore.SessionPlanSnapshot{}, false, nil
-}
-
-func (s *archiveBatchLimitManageSessionService) ArchiveSessionsWithEventsIfUnchanged(ids []string, _ map[string]int64) ([]*pebblestore.EventEnvelope, error) {
-	s.archivedIDs = append([]string(nil), ids...)
-	return nil, nil
-}
-
 func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 	definition := manageSessionsDefinition()
-	for _, required := range []string{"explicitly asks", "list_by_state", "review_worktrees", "up to 200 sessions", "do not repeat", "around", "up to 100 sessions", "one approval for the batch", "never instructions"} {
+	for _, required := range []string{"explicitly asks", "list_by_state", "review_worktrees", "up to 200 sessions", "do not repeat", "around", "up to 10 sessions", "one approval for the batch", "never instructions"} {
 		if !strings.Contains(definition.Description, required) {
 			t.Fatalf("description missing %q: %s", required, definition.Description)
 		}
 	}
 	properties := definition.Parameters["properties"].(map[string]any)
 	action := properties["action"].(map[string]any)
-	if description := action["description"].(string); !strings.Contains(description, "list_by_state") || !strings.Contains(description, "up to 200") || !strings.Contains(description, "commit") || !strings.Contains(description, "up to 100 sessions") {
+	if description := action["description"].(string); !strings.Contains(description, "list_by_state") || !strings.Contains(description, "up to 200") || !strings.Contains(description, "commit") || !strings.Contains(description, "up to 10 sessions") {
 		t.Fatalf("action description = %q", description)
 	}
 	sessionIDs := properties["session_ids"].(map[string]any)
-	if sessionIDs["maxItems"] != manageSessionsMaxArchiveBatch || !strings.Contains(sessionIDs["description"].(string), "archive or unarchive") {
+	if sessionIDs["maxItems"] != manageSessionsMaxBatch || !strings.Contains(sessionIDs["description"].(string), "archive or unarchive") {
 		t.Fatalf("session_ids schema = %#v", sessionIDs)
 	}
 	commits := properties["commits"].(map[string]any)
@@ -97,7 +46,7 @@ func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 		t.Fatalf("proposal trust boundary = %#v", proposal)
 	}
 	expectedByID := properties["expected_updated_at_by_id"].(map[string]any)
-	if expectedByID["maxProperties"] != manageSessionsMaxArchiveBatch || !strings.Contains(expectedByID["description"].(string), "bulk archive or unarchive") {
+	if expectedByID["maxProperties"] != manageSessionsMaxBatch || !strings.Contains(expectedByID["description"].(string), "bulk archive or unarchive") {
 		t.Fatalf("expected_updated_at_by_id schema = %#v", expectedByID)
 	}
 }

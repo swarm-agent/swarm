@@ -89,7 +89,6 @@ type V3RealtimeMessage struct {
 	PermissionSummary          *sessionsV3PermissionSummary           `json:"permission_summary,omitempty"`
 	Notification               *pebblestore.NotificationRecord        `json:"notification,omitempty"`
 	NotificationSummary        *pebblestore.NotificationSummary       `json:"notification_summary,omitempty"`
-	Tombstone                  *pebblestore.V3SessionTombstone        `json:"tombstone,omitempty"`
 	ErrorCode                  string                                 `json:"error_code,omitempty"`
 	Error                      string                                 `json:"error,omitempty"`
 	Reason                     string                                 `json:"reason,omitempty"`
@@ -439,11 +438,6 @@ func validateV3RealtimeWorksetSessionMessage(message V3RealtimeMessage) error {
 	}
 	if strings.TrimSpace(message.EventType) == "" {
 		return fmt.Errorf("v3 realtime %s requires event_type", message.Kind)
-	}
-	if message.Kind == V3RealtimeKindWorksetSessionRemoved && message.EventType == "session.archived" {
-		if message.Tombstone == nil || message.Tombstone.Kind != "archived" || !message.Tombstone.Archived || message.Tombstone.Deleted {
-			return errors.New("v3 realtime archived workset removal requires archived tombstone")
-		}
 	}
 	return nil
 }

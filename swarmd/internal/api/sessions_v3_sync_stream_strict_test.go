@@ -471,25 +471,6 @@ func TestSessionsV3PrimaryBatchArchiveRouteArchivesMultipleSessions(t *testing.T
 	}
 }
 
-func TestSessionsV3PrimaryBatchArchiveRouteRejectsMoreThan100Sessions(t *testing.T) {
-	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	ids := make([]string, sessionruntime.MaxArchiveSessionBatch+1)
-	for i := range ids {
-		ids[i] = fmt.Sprintf("session-%03d", i)
-	}
-	body, err := json.Marshal(map[string]any{"session_ids": ids})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodPost, "/v3/sessions:archive", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "at most 100") {
-		t.Fatalf("archive 101 status=%d body=%s", rec.Code, rec.Body.String())
-	}
-}
-
 func TestSessionsV3SyncStreamWorkspaceUsesDurableMembershipForRunIntentRecord(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	principal := testPrincipal()

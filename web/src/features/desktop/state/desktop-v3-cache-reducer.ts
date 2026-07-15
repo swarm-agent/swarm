@@ -1822,10 +1822,6 @@ export function applyWorksetSessionRemoved(state: DesktopV3CacheState, frame: Re
   const sessionId = stringField(frame.session_id)
   if (!worksetIdValue || !sessionId) return
 
-  if (frame.event_type === 'session.archived' && frame.tombstone) {
-    applyTombstonesBySession(state, { [sessionId]: frame.tombstone })
-  }
-
   state.sessionOrderByScope[worksetIdValue] = (state.sessionOrderByScope[worksetIdValue] ?? []).filter((id) => id !== sessionId)
   if (state.desktopSidebarBootstrap.scopeId) {
     const scopeId = state.desktopSidebarBootstrap.scopeId

@@ -392,14 +392,6 @@ export interface SessionV3RealtimeFrameWire {
   rev?: number
   prevRev?: number
   event_type?: string
-  tombstone?: {
-    session_id?: string
-    kind?: string
-    archived?: boolean
-    deleted?: boolean
-    updated_at?: number
-    session?: SessionV3SessionWire
-  }
   event?: {
     id?: string
     session_id?: string

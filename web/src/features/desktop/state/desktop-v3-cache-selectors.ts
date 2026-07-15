@@ -150,6 +150,7 @@ export function selectDesktopSidebarRows(state: DesktopV3CacheState, scopeId = s
       branchLabel: desktopSidebarBranchLabel(record),
     })
   }
+  rows.push(...selectArchivedDesktopSidebarRows(state))
   return rows
 }
 
@@ -164,6 +165,37 @@ export function selectDesktopSidebarGroupedRows(state: DesktopV3CacheState, scop
     grouped[row.sidebarGroup].push(row)
   }
   return grouped
+}
+
+function selectArchivedDesktopSidebarRows(state: DesktopV3CacheState): DesktopV3SidebarRow[] {
+  const rows: DesktopV3SidebarRow[] = []
+  for (const tombstone of Object.values(state.tombstonesBySession)) {
+    if (!isArchivedTombstone(tombstone) || !tombstone.session || isDesktopV3NavigationHiddenSession(tombstone.session)) continue
+    const sessionId = tombstone.session_id || tombstone.session.id
+    if (!sessionId) continue
+    const record: SessionCacheRecord = { kind: 'full', session: tombstone.session, needsHydrate: false }
+    rows.push({
+      sessionId,
+      record: cloneSessionCacheRecord(record),
+      projection: state.projectionsBySession[sessionId] ? { ...state.projectionsBySession[sessionId] } : undefined,
+      tombstone: { ...tombstone },
+      runIntents: {},
+      currentRunIntent: undefined,
+      pendingPermissions: [],
+      permissionSummary: undefined,
+      pendingPermissionCount: 0,
+      hasActivePlan: false,
+      rowType: 'single_chat',
+      sidebarGroup: 'archived',
+      branchLabel: desktopSidebarBranchLabel(record),
+    })
+  }
+  return rows.sort((left, right) => {
+    const leftUpdated = left.tombstone?.updated_at ?? (left.record.kind === 'full' ? left.record.session.updated_at : 0)
+    const rightUpdated = right.tombstone?.updated_at ?? (right.record.kind === 'full' ? right.record.session.updated_at : 0)
+    if (leftUpdated !== rightUpdated) return rightUpdated - leftUpdated
+    return left.sessionId.localeCompare(right.sessionId)
+  })
 }
 
 function isArchivedTombstone(tombstone: V3SessionTombstone | undefined): boolean {

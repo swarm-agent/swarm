@@ -908,67 +908,6 @@ func TestV3RealtimeWorksetAutoSubscribeDeliversSubsequentEvents(t *testing.T) {
 	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindEvent, created.SessionID, appendResult.Event.Seq)
 }
 
-func TestV3RealtimeWorksetArchiveSendsRemovalWithTombstone(t *testing.T) {
-	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-archive", "create-realtime-workset-archive")
-
-	httpServer := newV3RealtimeHTTPTestServer(t, server)
-	conn := dialV3RealtimeStream(t, httpServer.URL)
-	defer conn.Close()
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, 0), Worksets: []V3RealtimeWorksetSubscriptionRequest{v3RealtimeGlobalWorksetRequestForTest()}})
-	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindWorksetSessionDiscovered, created.SessionID, 0)
-	assertV3RealtimeFrame(t, readV3RealtimeFrame(t, conn), V3RealtimeKindEvent, created.SessionID, created.Event.Seq)
-
-	archiveReq := httptest.NewRequest(http.MethodPost, "/v3/sessions:archive", strings.NewReader(`{"session_ids":["`+created.SessionID+`"]}`))
-	archiveReq.Header.Set("Content-Type", "application/json")
-	archiveRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(archiveRec, withTestPrincipal(archiveReq))
-	if archiveRec.Code != http.StatusOK {
-		t.Fatalf("archive status = %d body=%s", archiveRec.Code, archiveRec.Body.String())
-	}
-
-	removed := readV3RealtimeFrame(t, conn)
-	assertV3RealtimeFrame(t, removed, V3RealtimeKindWorksetSessionRemoved, created.SessionID, 0)
-	if removed.EventType != "session.archived" || removed.Tombstone == nil || removed.Tombstone.Kind != "archived" || !removed.Tombstone.Archived || removed.Tombstone.Deleted {
-		t.Fatalf("archive removal frame = %+v", removed)
-	}
-	event := readV3RealtimeFrame(t, conn)
-	assertV3RealtimeFrame(t, event, V3RealtimeKindEvent, created.SessionID, created.Event.Seq+1)
-	if event.EventType != "session.archived" {
-		t.Fatalf("archive event frame = %+v", event)
-	}
-}
-
-func TestV3RealtimeWorksetArchiveWithoutExplicitSessionSubscriptionSendsRemoval(t *testing.T) {
-	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-archive-no-sub", "create-realtime-workset-archive-no-sub")
-	httpServer := newV3RealtimeHTTPTestServer(t, server)
-	conn := dialV3RealtimeStream(t, httpServer.URL)
-	defer conn.Close()
-	workset := v3RealtimeGlobalWorksetRequestForTest()
-	workset.AutoSubscribeSessions = false
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), Worksets: []V3RealtimeWorksetSubscriptionRequest{workset}})
-	time.Sleep(10 * time.Millisecond)
-
-	archiveReq := httptest.NewRequest(http.MethodPost, "/v3/sessions:archive", strings.NewReader(`{"session_ids":["`+created.SessionID+`"]}`))
-	archiveReq.Header.Set("Content-Type", "application/json")
-	archiveRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(archiveRec, withTestPrincipal(archiveReq))
-	if archiveRec.Code != http.StatusOK {
-		t.Fatalf("archive status = %d body=%s", archiveRec.Code, archiveRec.Body.String())
-	}
-	removed := readV3RealtimeFrame(t, conn)
-	assertV3RealtimeFrame(t, removed, V3RealtimeKindWorksetSessionRemoved, created.SessionID, 0)
-	if removed.Tombstone == nil || !removed.Tombstone.Archived {
-		t.Fatalf("archive removal frame = %+v", removed)
-	}
-	event := readV3RealtimeFrame(t, conn)
-	assertV3RealtimeFrame(t, event, V3RealtimeKindEvent, created.SessionID, created.Event.Seq+1)
-	if event.EventType != "session.archived" {
-		t.Fatalf("archive event frame = %+v", event)
-	}
-}
-
 func TestV3RealtimeWorksetVisibilityChangedInDiscoversAndAutoSubscribes(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-visibility-in", "create-realtime-workset-visibility-in")

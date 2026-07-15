@@ -79,7 +79,7 @@ test('reconnect and realtime discovered/updated remove hidden sessions from navi
   assert.deepEqual(selectDesktopSidebarRows(state), [])
 })
 
-test('archived sessions are excluded by the final sidebar selector', () => {
+test('archived hidden sessions are excluded by the final sidebar selector', () => {
   const state = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'sidebar' }
   state.sessionOrderByScope.sidebar = []
@@ -88,5 +88,5 @@ test('archived sessions are excluded by the final sidebar selector', () => {
     visible: { session_id: sessionA.id, archived: true, session: sessionA },
   }
 
-  assert.deepEqual(selectDesktopSidebarRows(state), [])
+  assert.deepEqual(selectDesktopSidebarRows(state).map((row) => row.sessionId), [sessionA.id])
 })
