@@ -580,21 +580,6 @@ func (s *runStreamState) removeSubscriberLocked(subscriberID string) {
 }
 
 func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
-	remoteTarget, _, err := s.routedSessionTargetOrFailClosed(principal, sessionID)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	if remoteTarget != nil {
-		if err := s.proxyRequestToSwarmTarget(w, r, *remoteTarget); err != nil {
-			if errors.Is(err, transportws.ErrUpgradeRequired) {
-				writeError(w, http.StatusUpgradeRequired, errors.New("websocket upgrade required"))
-				return
-			}
-			writeError(w, http.StatusBadGateway, err)
-		}
-		return
-	}
 	if s.runner == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
 		return
@@ -886,17 +871,6 @@ func (s *Server) handleSessionV3PrimaryRunStreamControl(w http.ResponseWriter, r
 }
 
 func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
-	remoteTarget, _, err := s.routedSessionTargetOrFailClosed(principal, sessionID)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	if remoteTarget != nil {
-		if err := s.proxyRequestToSwarmTarget(w, r, *remoteTarget); err != nil {
-			writeError(w, http.StatusBadGateway, err)
-		}
-		return
-	}
 	s.handleSessionV3PrimaryRunStreamControl(w, r, sessionID, principal)
 }
 

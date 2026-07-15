@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -16,11 +15,7 @@ import (
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
-const (
-	sessionsV2EndpointPrimary = "primary"
-
-	runtimeSessionOpenHTTPTimeout = 30 * time.Second
-)
+const sessionsV2EndpointPrimary = "primary"
 
 type sessionsV2Error struct {
 	status int
@@ -169,40 +164,16 @@ func runtimeSessionOpenRequestFromFrozenExecution(execution pebblestore.SessionE
 	}
 }
 
-func (s *Server) dispatchRuntimeSessionV2Open(r *http.Request, principal identity.Principal, execution sessionruntime.SessionExecution, req sessionruntime.RuntimeSessionOpenRequest) (sessionruntime.RuntimeSessionOpenResponse, error) {
+func (s *Server) dispatchRuntimeSessionV2Open(r *http.Request, _ identity.Principal, execution sessionruntime.SessionExecution, req sessionruntime.RuntimeSessionOpenRequest) (sessionruntime.RuntimeSessionOpenResponse, error) {
 	localNode, localOK, err := s.swarmLocalNode()
 	if err != nil {
 		return sessionruntime.RuntimeSessionOpenResponse{}, err
 	}
 	localSwarmID := strings.TrimSpace(localNode.SwarmID)
-	if localOK && strings.EqualFold(localSwarmID, strings.TrimSpace(execution.RuntimeSwarmID)) {
-		return s.openRuntimeSessionV2(r, req)
+	if !localOK || !strings.EqualFold(localSwarmID, strings.TrimSpace(execution.RuntimeSwarmID)) {
+		return sessionruntime.RuntimeSessionOpenResponse{}, sessionV2AuthorityNotFound("runtime session %q is not local", execution.RuntimeSwarmID)
 	}
-	conn, ok := s.ResolveAuthorityConnection(principal.AccountScopeID, execution.RuntimeSwarmID)
-	if !ok || strings.TrimSpace(conn.endpoint()) == "" {
-		return sessionruntime.RuntimeSessionOpenResponse{}, sessionV2AuthorityNotFound("runtime session authority connection for %q was not found", execution.RuntimeSwarmID)
-	}
-	if strings.EqualFold(conn.TransportKind, authorityConnectionTransportLocal) {
-		return sessionruntime.RuntimeSessionOpenResponse{}, sessionV2StaleAuthority("runtime session authority connection for %q resolved local transport for non-local runtime", execution.RuntimeSwarmID)
-	}
-	if s.swarm == nil || localSwarmID == "" {
-		return sessionruntime.RuntimeSessionOpenResponse{}, sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", execution.RuntimeSwarmID)
-	}
-	peerToken, ok, err := s.swarm.OutgoingPeerAuthToken(strings.TrimSpace(execution.RuntimeSwarmID))
-	if err != nil {
-		return sessionruntime.RuntimeSessionOpenResponse{}, err
-	}
-	if !ok || strings.TrimSpace(peerToken) == "" {
-		return sessionruntime.RuntimeSessionOpenResponse{}, sessionV2AuthorityNotFound("runtime session peer authority for %q is not configured", execution.RuntimeSwarmID)
-	}
-	endpoint := strings.TrimRight(conn.endpoint(), "/") + runtimeSessionsV2OpenPath
-	client := &http.Client{Timeout: runtimeSessionOpenHTTPTimeout}
-	var resp sessionruntime.RuntimeSessionOpenResponse
-	headers := map[string]string{peerAuthSwarmIDHeader: localSwarmID, peerAuthTokenHeader: peerToken}
-	if err := remoteSwarmJSONRequestWithClientAndHeaders(http.MethodPost, endpoint, req, &resp, client, headers); err != nil {
-		return sessionruntime.RuntimeSessionOpenResponse{}, sessionV2StaleAuthority("runtime session open failed: %v", err)
-	}
-	return resp, nil
+	return s.openRuntimeSessionV2(r, req)
 }
 
 type runtimeSessionV2MirrorIngestionOptions struct {

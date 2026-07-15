@@ -1,9 +1,6 @@
 package api
 
 import (
-	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -100,16 +97,6 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 	swarmTargets, currentTarget, err := s.swarmTargetsForRequest(r)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if currentTarget != nil && !strings.EqualFold(strings.TrimSpace(currentTarget.Relationship), "self") {
-		if strings.TrimSpace(currentTarget.BackendURL) == "" {
-			writeError(w, http.StatusBadGateway, errors.New("selected swarm target is missing backend_url"))
-			return
-		}
-		if err := s.handleWorkspaceOverviewForRemoteTarget(w, r, *currentTarget); err != nil {
-			writeError(w, http.StatusBadGateway, err)
-		}
 		return
 	}
 	if s.workspace == nil {
@@ -260,59 +247,6 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		TotalWorkspaces:  totalWorkspaces,
 		SwarmTarget:      currentTarget,
 	})
-}
-
-func (s *Server) handleWorkspaceOverviewForRemoteTarget(w http.ResponseWriter, r *http.Request, currentTarget swarmTarget) error {
-	if s.swarm == nil {
-		return errors.New("swarm service not configured")
-	}
-	cfg, err := s.loadStartupConfig()
-	if err != nil {
-		return err
-	}
-	state, err := s.currentSwarmState(cfg)
-	if err != nil {
-		return err
-	}
-	peerToken, err := s.outgoingPeerAuthTokenForTarget(r, currentTarget)
-	if err != nil {
-		return err
-	}
-	endpoint, err := cloneURLWithQuery(strings.TrimRight(currentTarget.BackendURL, "/")+"/v1/workspace/overview", r.URL.Query())
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header = cloneHeaderExcludingAuth(r.Header)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set(peerAuthSwarmIDHeader, strings.TrimSpace(state.Node.SwarmID))
-	req.Header.Set(peerAuthTokenHeader, peerToken)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var remoteErr struct {
-			Error string `json:"error"`
-		}
-		_ = json.Unmarshal(payload, &remoteErr)
-		return errors.New(firstNonEmpty(strings.TrimSpace(remoteErr.Error), resp.Status))
-	}
-	var decoded workspaceOverviewResponse
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return err
-	}
-	decoded.SwarmTarget = &currentTarget
-	writeJSON(w, http.StatusOK, decoded)
-	return nil
 }
 
 func (s *Server) workspaceOverviewSessionsByWorkspace(groups []pebblestore.WorkspaceSessionList, permissionLimit int) (map[string][]workspaceOverviewSession, error) {
