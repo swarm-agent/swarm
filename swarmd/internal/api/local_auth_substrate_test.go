@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,7 +11,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/notification"
@@ -272,70 +270,6 @@ func TestDesktopProtectedAPIRejectsMissingDesktopSessionAndAttachToken(t *testin
 	}
 }
 
-func TestSwarmEnrollAllowsInviteTokenWithoutAttachToken(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-
-	body := bytes.NewBufferString(`{"invite_token":"invite-123","child_swarm_id":"child-1","child_name":"Child","child_public_key":"pub-key"}`)
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/swarm/enroll", body)
-	req.RemoteAddr = "198.51.100.20:7777"
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("swarm enroll without attach token status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-}
-
-func TestSwarmEnrollRejectsMissingInviteTokenAndAttachToken(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-
-	body := bytes.NewBufferString(`{"child_swarm_id":"child-1","child_name":"Child","child_public_key":"pub-key"}`)
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/swarm/enroll", body)
-	req.RemoteAddr = "198.51.100.20:7777"
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("swarm enroll missing invite token status = %d, want %d, body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
-	}
-}
-
-func TestSwarmRemotePairingRequestRequiresAuthOffTailnet(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.Child = false
-		cfg.SwarmName = "Manager A"
-		cfg.TailscaleURL = "https://manager-a.example.ts.net"
-	})
-
-	managerPublicKey, _, managerFingerprint, err := swarmruntime.GenerateNodeKeypair()
-	if err != nil {
-		t.Fatalf("generate manager keypair: %v", err)
-	}
-	managedPublicKey, _, managedFingerprint, err := swarmruntime.GenerateNodeKeypair()
-	if err != nil {
-		t.Fatalf("generate managed keypair: %v", err)
-	}
-	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", PublicKey: managerPublicKey, Fingerprint: managerFingerprint}}}
-	offer := mustManagedPairingOfferForTest(t, managedPublicKey, managedFingerprint)
-	raw, err := json.Marshal(swarmRemotePairingRequest{InviteToken: offer.Token, ManagerSwarmID: "manager-swarm-1", ManagerEndpoint: "https://manager-a.example.ts.net", Offer: offer, CeremonyCode: offer.Ceremony.Code})
-	if err != nil {
-		t.Fatalf("marshal remote pairing request: %v", err)
-	}
-	body := bytes.NewBuffer(raw)
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/swarm/remote-pairing/request", body)
-	req.RemoteAddr = "198.51.100.20:7777"
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("swarm remote pairing request off-tailnet status = %d, want %d, body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
-	}
-}
-
 func newLocalAuthTestServer(t *testing.T) *Server {
 	t.Helper()
 
@@ -414,7 +348,6 @@ type fakeLocalAuthSwarmCalls struct {
 type fakeLocalAuthSwarmService struct {
 	state                  swarmruntime.LocalState
 	outgoingPeerAuthTokens map[string]string
-	detachCalls            *int
 	calls                  *fakeLocalAuthSwarmCalls
 }
 
@@ -470,53 +403,3 @@ func (f fakeLocalAuthSwarmService) RemoveGroupMember(swarmruntime.RemoveGroupMem
 	return nil
 }
 
-func (f fakeLocalAuthSwarmService) CreateInvite(input swarmruntime.CreateInviteInput) (swarmruntime.Invite, error) {
-	token := strings.TrimSpace(input.Token)
-	if token == "" {
-		token = "invite-token-1"
-	}
-	return swarmruntime.Invite{ID: "invite-1", Token: token, PrimarySwarmID: input.PrimarySwarmID, PrimaryName: input.PrimaryName, GroupID: input.GroupID, TransportMode: input.TransportMode, ExpiresAt: time.Now().Add(input.TTL).Unix(), CreatedAt: time.Now().Unix(), UpdatedAt: time.Now().Unix()}, nil
-}
-
-func (f fakeLocalAuthSwarmService) SubmitEnrollment(input swarmruntime.SubmitEnrollmentInput) (swarmruntime.Enrollment, error) {
-	return swarmruntime.Enrollment{ID: "enroll-1", InviteToken: input.InviteToken, PrimarySwarmID: input.PrimarySwarmID, GroupID: input.GroupID, ChildSwarmID: input.ChildSwarmID, ChildName: input.ChildName, Status: swarmruntime.EnrollmentStatusPending}, nil
-}
-
-func (f fakeLocalAuthSwarmService) ListPendingEnrollments(int) ([]swarmruntime.Enrollment, error) {
-	return nil, nil
-}
-
-func (f fakeLocalAuthSwarmService) DecideEnrollment(input swarmruntime.DecideEnrollmentInput) (swarmruntime.Enrollment, []swarmruntime.TrustedPeer, error) {
-	status := swarmruntime.EnrollmentStatusRejected
-	if input.Approve {
-		status = swarmruntime.EnrollmentStatusApproved
-	}
-	return swarmruntime.Enrollment{ID: input.EnrollmentID, Status: status}, nil, nil
-}
-
-func (f fakeLocalAuthSwarmService) PrepareRemoteBootstrapParentPeer(swarmruntime.PrepareRemoteBootstrapParentPeerInput) error {
-	return nil
-}
-
-func (f fakeLocalAuthSwarmService) ApproveManagedPairing(input swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error) {
-	return swarmruntime.PairingState{PairingState: startupconfig.PairingStatePaired, ParentSwarmID: input.ManagerSwarmID}, nil
-}
-
-func (f fakeLocalAuthSwarmService) TrustManagedPeer(swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error) {
-	return swarmruntime.TrustedPeer{}, nil
-}
-
-func (f fakeLocalAuthSwarmService) RemoveManagedPeer(input swarmruntime.RemoveManagedPeerInput) (swarmruntime.RemoveManagedPeerResult, error) {
-	return swarmruntime.RemoveManagedPeerResult{ManagedSwarmID: input.ManagedSwarmID, RemovedTrustedPeer: true}, nil
-}
-
-func (f fakeLocalAuthSwarmService) UpdateLocalPairingFromConfig(startupconfig.FileConfig, []swarmruntime.TransportSummary) (swarmruntime.PairingState, error) {
-	return swarmruntime.PairingState{}, nil
-}
-
-func (f fakeLocalAuthSwarmService) DetachToStandalone(string) error {
-	if f.detachCalls != nil {
-		(*f.detachCalls)++
-	}
-	return nil
-}

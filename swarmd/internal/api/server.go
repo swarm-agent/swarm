@@ -112,7 +112,6 @@ type Server struct {
 	containerProfiles           containerProfileService
 	deployContainers            deployContainerService
 	remoteDeploys               remoteDeployService
-	remotePairingPending        map[string]swarmRemotePairingPendingRequest
 	swarmNodes                  *pebblestore.SwarmNodeStore
 	update                      *update.Service
 	topology                    *topologyruntime.Service
@@ -145,7 +144,6 @@ type Server struct {
 	swarmStore                *pebblestore.SwarmStore
 	swarmMirror               *pebblestore.SwarmMirrorStore
 	mirrorSyncStarted         atomic.Bool
-	remoteCandidateProbePorts []int
 }
 
 type codexAccountClient interface {
@@ -176,16 +174,6 @@ type swarmService interface {
 	ValidateIncomingPeerAuth(swarmID, rawToken string) (bool, error)
 	UpsertGroupMember(input swarmruntime.UpsertGroupMemberInput) (swarmruntime.GroupMember, error)
 	RemoveGroupMember(input swarmruntime.RemoveGroupMemberInput) error
-	CreateInvite(input swarmruntime.CreateInviteInput) (swarmruntime.Invite, error)
-	SubmitEnrollment(input swarmruntime.SubmitEnrollmentInput) (swarmruntime.Enrollment, error)
-	ListPendingEnrollments(limit int) ([]swarmruntime.Enrollment, error)
-	DecideEnrollment(input swarmruntime.DecideEnrollmentInput) (swarmruntime.Enrollment, []swarmruntime.TrustedPeer, error)
-	PrepareRemoteBootstrapParentPeer(input swarmruntime.PrepareRemoteBootstrapParentPeerInput) error
-	ApproveManagedPairing(input swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error)
-	TrustManagedPeer(input swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error)
-	RemoveManagedPeer(input swarmruntime.RemoveManagedPeerInput) (swarmruntime.RemoveManagedPeerResult, error)
-	UpdateLocalPairingFromConfig(cfg startupconfig.FileConfig, transports []swarmruntime.TransportSummary) (swarmruntime.PairingState, error)
-	DetachToStandalone(localSwarmID string) error
 }
 
 type containerProfileService interface {
@@ -316,7 +304,6 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		startedAt:            time.Now(),
 		codexOAuthSessions:   make(map[string]*codexOAuthSession),
 		desktopLocalSessions: newDesktopLocalSessionManager(),
-		remotePairingPending: make(map[string]swarmRemotePairingPendingRequest),
 		gitRealtime:          nil,
 		authorityConnections: newAuthorityConnectionRegistry(),
 		runCtx:               runCtx,
@@ -649,8 +636,8 @@ func (s *Server) LocalTransportHandler() http.Handler {
 }
 
 func hostedSessionHostBackendURL(cfg startupconfig.FileConfig) string {
-	if endpoint := canonicalRemoteSwarmEndpoint(cfg, onboardingResponse{}); endpoint != "" {
-		return endpoint
+	if endpoint := strings.TrimSpace(cfg.TailscaleURL); endpoint != "" {
+		return normalizeRemoteSwarmEndpoint(endpoint)
 	}
 	host := strings.TrimSpace(cfg.AdvertiseHost)
 	if host == "" {

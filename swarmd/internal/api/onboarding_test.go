@@ -3,7 +3,6 @@ package api
 import (
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,29 +73,6 @@ func TestTailscaleServeCommandUsesDesktopPort(t *testing.T) {
 	}
 }
 
-func TestRequireTailscaleServeReadyForPairingRejectsMissingServe(t *testing.T) {
-	cfg := startupconfig.FileConfig{Host: "127.0.0.1", DesktopPort: 5555}
-	err := requireTailscaleServeReadyForPairing(cfg, onboardingResponse{Tailscale: onboardingTailscalePayload{TailnetURL: "https://host.tailnet.example", Serve: onboardingTailscaleServePayload{Command: tailscaleServeCommand(cfg)}}})
-	if err == nil {
-		t.Fatal("expected missing Tailscale Serve to reject pairing")
-	}
-	if !strings.Contains(err.Error(), "tailscale serve --bg http://127.0.0.1:5555") {
-		t.Fatalf("error = %q, want serve command", err.Error())
-	}
-}
-
-func TestRequireTailscaleServeReadyForPairingAcceptsDesktopServe(t *testing.T) {
-	cfg := startupconfig.FileConfig{Host: "127.0.0.1", DesktopPort: 5555}
-	serve := detectTailscaleServe(cfg, onboardingTailscalePayload{})
-	serve.Configured = true
-	serve.Ready = true
-	serve.Mode = "desktop"
-	serve.ProxyTarget = "http://127.0.0.1:5555"
-	if err := requireTailscaleServeReadyForPairing(cfg, onboardingResponse{Tailscale: onboardingTailscalePayload{Available: true, Connected: true, Serve: serve}}); err != nil {
-		t.Fatalf("ready Tailscale Serve rejected: %v", err)
-	}
-}
-
 func TestDetectedCurrentSwarmStateTransportsUsesTailscaleOnly(t *testing.T) {
 	transports := detectedCurrentSwarmStateTransports(startupconfig.FileConfig{
 		AdvertiseHost: "192.0.2.10",
@@ -145,7 +121,7 @@ func onboardingStringPtr(value string) *string {
 	return &value
 }
 
-func TestOnboardingResponseDetectsTailscaleServeBeforeManagedHostingEnabled(t *testing.T) {
+func TestOnboardingResponseDetectsTailscaleServe(t *testing.T) {
 	dir := t.TempDir()
 	writeFakeTailscale(t, dir, `
 case "$1 $2 $3" in
@@ -180,7 +156,7 @@ esac
 		t.Fatalf("tailnet url = %q, want detected live URL", status.Tailscale.TailnetURL)
 	}
 	if !status.Tailscale.Serve.Ready || status.Tailscale.Serve.Mode != "desktop" {
-		t.Fatalf("serve status = %#v, want ready desktop before managed hosting is enabled", status.Tailscale.Serve)
+		t.Fatalf("serve status = %#v, want ready desktop", status.Tailscale.Serve)
 	}
 }
 
@@ -271,43 +247,3 @@ func writeFakeTailscale(t *testing.T, dir, script string) {
 	}
 }
 
-func TestHTTPClientForTailscaleOutboundProxyUsesConfiguredProxy(t *testing.T) {
-	t.Setenv("SWARM_TAILSCALE_OUTBOUND_PROXY", "http://127.0.0.1:1055")
-
-	client, err := httpClientForTailscaleOutboundProxy("https://dev-hel1.tailnet.ts.net", []onboardingTransportPayload{{
-		Kind: startupconfig.NetworkModeTailscale,
-	}})
-	if err != nil {
-		t.Fatalf("httpClientForTailscaleOutboundProxy returned error: %v", err)
-	}
-	if client == nil {
-		t.Fatal("expected proxy client")
-	}
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("expected *http.Transport, got %T", client.Transport)
-	}
-	req, err := http.NewRequest(http.MethodGet, "https://dev-hel1.tailnet.ts.net/readyz", nil)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	proxyURL, err := transport.Proxy(req)
-	if err != nil {
-		t.Fatalf("proxy lookup: %v", err)
-	}
-	if proxyURL == nil || proxyURL.String() != "http://127.0.0.1:1055" {
-		t.Fatalf("proxy url = %#v, want http://127.0.0.1:1055", proxyURL)
-	}
-}
-
-func TestHTTPClientForTailscaleOutboundProxySkipsNonTailscaleEndpoints(t *testing.T) {
-	t.Setenv("SWARM_TAILSCALE_OUTBOUND_PROXY", "http://127.0.0.1:1055")
-
-	client, err := httpClientForTailscaleOutboundProxy("https://api.openai.com", nil)
-	if err != nil {
-		t.Fatalf("httpClientForTailscaleOutboundProxy returned error: %v", err)
-	}
-	if client != nil {
-		t.Fatalf("expected no proxy client for non-tailscale endpoint, got %#v", client)
-	}
-}

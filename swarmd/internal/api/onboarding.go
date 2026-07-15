@@ -95,23 +95,6 @@ type onboardingTailscalePayload struct {
 	Serve        onboardingTailscaleServePayload `json:"serve"`
 }
 
-type onboardingDiscoveredSwarmPayload struct {
-	ID                   string                       `json:"id,omitempty"`
-	Name                 string                       `json:"name,omitempty"`
-	Role                 string                       `json:"role,omitempty"`
-	Endpoint             string                       `json:"endpoint,omitempty"`
-	TailnetURL           string                       `json:"tailnet_url,omitempty"`
-	DNSName              string                       `json:"dns_name,omitempty"`
-	IPs                  []string                     `json:"ips,omitempty"`
-	Online               bool                         `json:"online"`
-	Source               string                       `json:"source,omitempty"`
-	Running              bool                         `json:"running"`
-	InCurrentGroup       bool                         `json:"in_current_group,omitempty"`
-	CurrentRelationship  string                       `json:"current_relationship,omitempty"`
-	TransportMode        string                       `json:"transport_mode,omitempty"`
-	RendezvousTransports []onboardingTransportPayload `json:"rendezvous_transports,omitempty"`
-}
-
 type onboardingResponse struct {
 	OK              bool                        `json:"ok"`
 	NeedsOnboarding bool                        `json:"needs_onboarding"`
@@ -182,73 +165,6 @@ type tailscaleServeWebStatusWire struct {
 
 type tailscaleServeHandlerWire struct {
 	Proxy string `json:"Proxy"`
-}
-
-type remoteSwarmDiscoverySeed struct {
-	Source        string
-	Name          string
-	Endpoint      string
-	TailnetURL    string
-	DNSName       string
-	IPs           []string
-	Online        bool
-	Probe         bool
-	TransportMode string
-	Transports    []onboardingTransportPayload
-}
-
-func discoverTailscaleSwarmSeeds(tailscaleStatus *tailscaleStatusWire) []remoteSwarmDiscoverySeed {
-	if tailscaleStatus == nil || len(tailscaleStatus.Peer) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(tailscaleStatus.Peer))
-	for key := range tailscaleStatus.Peer {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	seeds := make([]remoteSwarmDiscoverySeed, 0, len(keys))
-	for _, key := range keys {
-		peer := tailscaleStatus.Peer[key]
-		if peer.Self {
-			continue
-		}
-		dnsName := strings.TrimSuffix(strings.TrimSpace(peer.DNSName), ".")
-		ips := dedupeTransportStrings(peer.TailscaleIPs)
-		transports := []onboardingTransportPayload{{
-			Kind:    startupconfig.NetworkModeTailscale,
-			Primary: firstNonEmptyTransport(dnsName, firstString(ips)),
-			All:     dedupeTransportStrings(append([]string{dnsName}, ips...)),
-		}}
-		seeds = append(seeds, remoteSwarmDiscoverySeed{
-			Source:        startupconfig.NetworkModeTailscale,
-			Name:          tailscalePeerDisplayName(dnsName),
-			Endpoint:      remoteSwarmProbeEndpoint(startupconfig.NetworkModeTailscale, dnsName, ips),
-			TailnetURL:    tailscalePeerURL(dnsName),
-			DNSName:       dnsName,
-			IPs:           ips,
-			Online:        peer.Online || peer.Active,
-			Probe:         peer.Online || peer.Active,
-			TransportMode: startupconfig.NetworkModeTailscale,
-			Transports:    transports,
-		})
-	}
-	return seeds
-}
-
-func fetchRemoteSwarmDiscovery(seed remoteSwarmDiscoverySeed) (swarmDiscoveryResponse, error) {
-	var remote swarmDiscoveryResponse
-	if err := getRemoteSwarmJSONWithTransportFallback(seed.Endpoint, "/v1/swarm/discovery", seed.Transports, &remote); err != nil {
-		return swarmDiscoveryResponse{}, err
-	}
-	return remote, nil
-}
-
-func remoteSwarmProbeEndpoint(mode, dnsName string, ips []string) string {
-	dnsName = strings.TrimSpace(dnsName)
-	if dnsName != "" {
-		return normalizeRemoteSwarmEndpoint(dnsName)
-	}
-	return ""
 }
 
 func tailscalePeerDisplayName(dnsName string) string {
@@ -423,9 +339,6 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 	} else {
 		response.Tailscale.Serve = expectedTailscaleServe(cfg, response.Tailscale)
 	}
-	// Keep first-launch onboarding fast: remote swarm discovery probes peers and
-	// should not block the initial setup screen. Discovery can be loaded by
-	// explicit swarm-management screens instead of the base onboarding status.
 	return response, nil
 }
 
@@ -1068,7 +981,7 @@ func detectTailscaleServe(cfg startupconfig.FileConfig, tailscale onboardingTail
 	}
 	payload.Configured = true
 	payload.Mode = classifyTailscaleServeMode(proxyTarget, payload.ExpectedDesktopProxy, payload.ExpectedAPIProxy, payload.ExpectedPeerTransportProxy)
-	payload.Ready = tailscaleServeModePairingReady(payload.Mode)
+	payload.Ready = tailscaleServeModeReady(payload.Mode)
 	return payload
 }
 
@@ -1168,7 +1081,7 @@ func classifyTailscaleServeMode(proxyTarget, desktopProxy, apiProxy, peerProxy s
 	}
 }
 
-func tailscaleServeModePairingReady(mode string) bool {
+func tailscaleServeModeReady(mode string) bool {
 	switch strings.TrimSpace(mode) {
 	case "desktop", "api":
 		return true
@@ -1186,33 +1099,6 @@ func tailscaleServeCommand(cfg startupconfig.FileConfig) string {
 		return ""
 	}
 	return "tailscale serve --bg " + target
-}
-
-func tailscaleServePairingError(serve onboardingTailscaleServePayload) error {
-	command := strings.TrimSpace(serve.Command)
-	if command == "" {
-		command = "tailscale serve --bg http://127.0.0.1:5555"
-	}
-	if strings.TrimSpace(serve.Error) != "" {
-		return fmt.Errorf("this requester is not ready for Link Swarm because Tailscale Serve status could not be checked: %s. Run `%s` on this host, then press Link again", strings.TrimSpace(serve.Error), command)
-	}
-	if !serve.Configured {
-		return fmt.Errorf("this requester is not ready for Link Swarm because its Tailscale URL is not being served. Run `%s` on this host, then press Link again", command)
-	}
-	return fmt.Errorf("this requester is not ready for Link Swarm because Tailscale Serve points to %q instead of the Swarm desktop/API port. Run `%s` on this host, then press Link again", strings.TrimSpace(serve.ProxyTarget), command)
-}
-
-func requireTailscaleServeReadyForPairing(cfg startupconfig.FileConfig, status onboardingResponse) error {
-	if canonicalRemoteSwarmEndpoint(cfg, status) == "" {
-		return nil
-	}
-	if !status.Tailscale.Available || strings.TrimSpace(status.Tailscale.Error) != "" || !status.Tailscale.Connected {
-		return tailscaleServePairingError(status.Tailscale.Serve)
-	}
-	if status.Tailscale.Serve.Ready {
-		return nil
-	}
-	return tailscaleServePairingError(status.Tailscale.Serve)
 }
 
 func detectTailscaleWithStatus() (onboardingTailscalePayload, *tailscaleStatusWire) {
