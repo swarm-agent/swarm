@@ -136,7 +136,10 @@ import {
   structuredPlanDocumentFromPermission,
 } from "./desktop-inline-plan-review-card";
 import { DesktopPlanAgentSidecar } from "./desktop-plan-agent-sidecar";
-import { DesktopPlanExecutionSidebar, type DesktopPlanExecutionSidebarActionInput } from "./desktop-plan-execution-sidebar";
+import {
+  DesktopPlanExecutionSidebar,
+  type DesktopPlanExecutionSidebarActionInput,
+} from "./desktop-plan-execution-sidebar";
 
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
@@ -2900,13 +2903,14 @@ function DesktopV3ToolMessage({
   toolMessage: StructuredToolMessage | null;
   thinkingTagsEnabled?: boolean;
 }) {
-  const isBash = toolMessage?.tool.trim().toLowerCase() === "bash";
+  const toolName = toolMessage?.tool.trim().toLowerCase();
+  const usesFullWidthCard = toolName === "bash" || toolName === "task";
   return (
     <div className="flex justify-start">
       <div
         className={cn(
           "min-w-0",
-          isBash ? "w-full max-w-full" : "max-w-[calc(100%-2rem)]",
+          usesFullWidthCard ? "w-full max-w-full" : "max-w-[calc(100%-2rem)]",
         )}
       >
         <ChatMarkdown
