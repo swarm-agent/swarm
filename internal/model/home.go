@@ -62,7 +62,6 @@ type SessionSummary struct {
 	PendingPermissionCount     int
 	Lifecycle                  *client.SessionLifecycleSnapshot
 	ActiveRunIntent            *client.SessionV3RunIntent
-	SessionExecution           *client.SessionExecutionV2
 	Preference                 client.ModelPreference
 	WorktreeEnabled            bool
 	WorktreeRootPath           string

@@ -23,7 +23,6 @@ func sessionWorkspaceScopeIndexPaths(session SessionSnapshot) []string {
 	appendPath(session.WorkspacePath)
 	appendPath(session.WorktreeRootPath)
 	appendPath(sessionMetadataString(session.Metadata, "swarm_v3_source_workspace_path"))
-	appendPath(sessionMetadataString(session.Metadata, "swarm_v2_source_workspace_path"))
 	appendPath(sessionMetadataString(session.Metadata, "swarm_v3_tui_cwd_path"))
 	appendPath(sessionMetadataString(session.Metadata, "swarm_v3_tui_original_cwd_path"))
 	return paths

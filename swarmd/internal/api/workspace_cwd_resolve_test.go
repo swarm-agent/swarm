@@ -96,7 +96,6 @@ func TestWorkspaceCWDResolveKnownWorkspaceUsesTopologyBindingsIgnoringSelectedTa
 		SwarmID:        "managed-swarm-1",
 		Name:           "Managed Desk",
 		Relationship:   "managed",
-		BackendURL:     "https://managed.example.test",
 	}); err != nil {
 		t.Fatalf("upsert topology runtime: %v", err)
 	}
@@ -186,7 +185,6 @@ func TestWorkspaceCWDResolveIncludesLocalContainerBindingWhenSourceGenerationIsS
 		SwarmID:              "container-swarm",
 		Name:                 "check2",
 		Relationship:         swarmruntime.RelationshipChild,
-		BackendURL:           "https://container.example.test",
 		Status:               "online",
 		OwnerHostSwarmID:     "host-swarm-id",
 		OwnerHostContainerID: "host-container-1",

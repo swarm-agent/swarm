@@ -556,6 +556,7 @@ func (f fakeAgentAPISwarmService) ListPendingEnrollments(int) ([]swarmruntime.En
 func (f fakeAgentAPISwarmService) DecideEnrollment(input swarmruntime.DecideEnrollmentInput) (swarmruntime.Enrollment, []swarmruntime.TrustedPeer, error) {
 	return swarmruntime.Enrollment{}, nil, nil
 }
+
 type resolvedToolContractResponse struct {
 	OK              bool                                 `json:"ok"`
 	Agent           string                               `json:"agent"`

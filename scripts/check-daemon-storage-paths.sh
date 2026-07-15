@@ -58,7 +58,6 @@ filter_allowed() {
     -e '^internal/launcher/system_paths\.go:.*os\.CreateTemp\("", "swarmd-config-\*"\)' \
     -e '^scripts/lib-lane\.sh:[0-9]+:.*(swarm_xdg_|XDG_|\.local/state|\.local/share|\.config|migrate_legacy)' \
     -e '^deploy/container-mvp/(entrypoint\.sh|Containerfile\.base):.*(-u XDG_|/root|/home|/workspaces|/tmp|must not be under a user home|~|mkdir -p|VOLUME)' \
-    -e '^swarmd/internal/deploy/service\.go:.*(workspaceruntime|/v1/deploy/container/workspaces/bootstrap|/workspaces)' \
     -e '^swarmd/internal/localcontainers/service\.go:.*(workspaceruntime|/workspaces)' \
     -e '^swarmd/internal/worktree/service\.go:.*(workspaceruntime|migrateLegacyConfig|MigrateLegacyGlobalConfig)' \
     -e '^swarmd/internal/tool/runtime\.go:.*workspaceruntime' \

@@ -312,11 +312,11 @@ function mapOverviewSession(session: WorkspaceOverviewSessionWire, preferRuntime
     ? session.metadata as Record<string, unknown>
     : undefined
   const workspacePath = String(session.workspace_path ?? '').trim()
-  const sourceWorkspacePath = typeof metadata?.swarm_v2_source_workspace_path === 'string'
-    ? metadata.swarm_v2_source_workspace_path.trim()
+  const sourceWorkspacePath = typeof metadata?.swarm_v3_source_workspace_path === 'string'
+    ? metadata.swarm_v3_source_workspace_path.trim()
     : ''
-  const runtimeWorkspacePath = typeof metadata?.swarm_v2_runtime_workspace_path === 'string'
-    ? metadata.swarm_v2_runtime_workspace_path.trim()
+  const runtimeWorkspacePath = typeof metadata?.swarm_v3_runtime_workspace_path === 'string'
+    ? metadata.swarm_v3_runtime_workspace_path.trim()
     : ''
   const worktreeEnabled = Boolean(session.worktree_enabled)
   const worktreeRootPath = String(session.worktree_root_path ?? '').trim()

@@ -112,4 +112,3 @@ func TestOnboardingAllowsSensitiveMetadataWithDesktopSession(t *testing.T) {
 		t.Fatalf("expected peer_transport_port to remain visible, got %d", status.Config.PeerTransportPort)
 	}
 }
-

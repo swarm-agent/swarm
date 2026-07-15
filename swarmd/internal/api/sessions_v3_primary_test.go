@@ -3904,11 +3904,9 @@ func newSessionsV3PrimaryAPITestServer(t *testing.T, storePath string) (*Server,
 	permissionSvc.SetSessionResolver(sessionSvc)
 	runSvc := runruntime.NewService(sessionSvc, modelSvc, providers, tool.NewRuntime(1), permissionSvc, agentSvc, nil, nil)
 	server := NewServer(nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
-	routeStore := pebblestore.NewSessionRouteStore(store)
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
-	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore, nil, nil, routeStore, pebblestore.NewWorkspaceStore(store)))
-	server.SetSessionRouteStore(routeStore)
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore, nil, nil, pebblestore.NewWorkspaceStore(store)))
 	server.SetSwarmStore(swarmStore)
 	server.v3SessionExecutor = nil
 	closeStore := func() error {

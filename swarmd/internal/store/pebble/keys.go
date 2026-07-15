@@ -71,9 +71,6 @@ const (
 	KeySwarmGroupBySwarmPrefix                     = "swarm/group_membership_by_swarm/"
 	KeySwarmContainerProfilePrefix                 = "swarm/container_profile/"
 	KeySwarmContainerProfileByAccountPrefix        = "swarm/container_profile_by_account/"
-	KeySwarmNodePrefix                             = "swarm/node/"
-	KeyDeployContainerPrefix                       = "deploy/container/"
-	KeyDeployContainerByAccountPrefix              = "deploy/container_by_account/"
 	KeySwarmDesktopTargetCurrent                   = "swarm/desktop_target/current" // legacy global current target; retained for explicit migration only.
 	KeySwarmDesktopTargetCurrentAccountPrefix      = "swarm/desktop_target/current_by_account/"
 	KeyTopologyRuntimePrefix                       = "topology/runtime/" // legacy global prefix; retained for explicit migration only.
@@ -87,8 +84,6 @@ const (
 	KeyTopologyWorkspaceBindingPrefix              = "topology/workspace_binding/" // legacy global prefix; retained for explicit migration only.
 	KeyTopologyWorkspaceBindingAccountPrefix       = "topology/workspace_binding_by_account/"
 	KeyTopologyWorkspaceBindingActiveAccountPrefix = "topology/workspace_binding_active_by_account/"
-	KeyTopologySessionRoutePrefix                  = "topology/session_route/" // legacy global prefix; retained for explicit migration only.
-	KeyTopologySessionRouteAccountPrefix           = "topology/session_route_by_account/"
 	KeyTopologyMigrationStatusPrefix               = "topology/migration_status/"
 	KeyNotificationPrefix                          = "notification/"
 	KeyNotificationBySwarmPrefix                   = "notification_by_swarm/"
@@ -320,14 +315,6 @@ func KeySessionByAccount(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("session_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
 }
 
-func KeySessionExecutionV2(sessionID string) string {
-	return fmt.Sprintf("session_execution_v2/%s", keyPart(sessionID))
-}
-
-func KeySessionExecutionV2ByAccount(accountScopeID, sessionID string) string {
-	return fmt.Sprintf("session_execution_v2_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
-}
-
 func SessionByAccountPrefix(accountScopeID string) string {
 	part := keyPart(accountScopeID)
 	if part == "" {
@@ -474,14 +461,6 @@ func sessionRecentDescSessionIDPart(sessionID string) string {
 	return b.String()
 }
 
-func KeySessionRoute(sessionID string) string {
-	return fmt.Sprintf("session_route/%s", keyPart(sessionID))
-}
-
-func SessionRoutePrefix() string {
-	return "session_route/"
-}
-
 func KeySwarmDesktopTargetCurrentForAccount(accountScopeID string) string {
 	return KeySwarmDesktopTargetCurrentAccountPrefix + keyPart(accountScopeID)
 }
@@ -596,26 +575,6 @@ func TopologyWorkspaceBindingPrefixForAccount(accountScopeID string) string {
 
 func KeyTopologyWorkspaceBindingActiveForAccount(accountScopeID, sourceWorkspaceID, runtimeSwarmID string) string {
 	return fmt.Sprintf("%s%s/%s/%s", KeyTopologyWorkspaceBindingActiveAccountPrefix, keyPart(accountScopeID), keyPart(sourceWorkspaceID), keyPart(runtimeSwarmID))
-}
-
-func KeyTopologySessionRoute(sessionID string) string {
-	return KeyTopologySessionRoutePrefix + keyPart(sessionID)
-}
-
-func TopologySessionRoutePrefix() string {
-	return KeyTopologySessionRoutePrefix
-}
-
-func KeyTopologySessionRouteForAccount(accountScopeID, sessionID string) string {
-	return fmt.Sprintf("%s%s/%s", KeyTopologySessionRouteAccountPrefix, keyPart(accountScopeID), keyPart(sessionID))
-}
-
-func TopologySessionRoutePrefixForAccount(accountScopeID string) string {
-	accountPart := keyPart(accountScopeID)
-	if accountPart == "" {
-		return KeyTopologySessionRouteAccountPrefix
-	}
-	return fmt.Sprintf("%s%s/", KeyTopologySessionRouteAccountPrefix, accountPart)
 }
 
 func KeyTopologyMigrationStatus(statusID string) string {
@@ -1738,18 +1697,6 @@ func KeySwarmContainerProfileByAccount(accountScopeID, profileID string) string 
 	return fmt.Sprintf("%s%s/%s", KeySwarmContainerProfileByAccountPrefix, keyPart(accountScopeID), keyPart(profileID))
 }
 
-func KeySwarmNode(swarmID string) string {
-	return KeySwarmNodePrefix + keyPart(swarmID)
-}
-
-func KeyDeployContainer(deploymentID string) string {
-	return KeyDeployContainerPrefix + keyPart(deploymentID)
-}
-
-func KeyDeployContainerByAccount(accountScopeID, deploymentID string) string {
-	return fmt.Sprintf("%s%s/%s", KeyDeployContainerByAccountPrefix, keyPart(accountScopeID), keyPart(deploymentID))
-}
-
 func SwarmContainerProfilePrefix() string {
 	return KeySwarmContainerProfilePrefix
 }
@@ -1760,22 +1707,6 @@ func SwarmContainerProfileByAccountPrefix(accountScopeID string) string {
 		return KeySwarmContainerProfileByAccountPrefix
 	}
 	return fmt.Sprintf("%s%s/", KeySwarmContainerProfileByAccountPrefix, accountPart)
-}
-
-func SwarmNodePrefix() string {
-	return KeySwarmNodePrefix
-}
-
-func DeployContainerPrefix() string {
-	return KeyDeployContainerPrefix
-}
-
-func DeployContainerByAccountPrefix(accountScopeID string) string {
-	accountPart := keyPart(accountScopeID)
-	if accountPart == "" {
-		return KeyDeployContainerByAccountPrefix
-	}
-	return fmt.Sprintf("%s%s/", KeyDeployContainerByAccountPrefix, accountPart)
 }
 
 func AgentActiveSubagentPrefix() string {

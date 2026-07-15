@@ -2927,7 +2927,6 @@ func (a *App) openChatSessionWithWorktree(titleSeed, initialPrompt, worktreeBran
 		Title:                      strings.TrimSpace(session.Title),
 		Mode:                       strings.TrimSpace(session.Mode),
 		Metadata:                   cloneMetadataMap(session.Metadata),
-		SessionExecution:           cloneSessionExecutionV2(session.SessionExecution),
 		Preference:                 session.Preference,
 		WorktreeEnabled:            session.WorktreeEnabled,
 		WorktreeRootPath:           strings.TrimSpace(session.WorktreeRootPath),
@@ -3054,7 +3053,6 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		Metadata:                   cloneMetadataMap(summary.Metadata),
 		PendingPermissionCount:     summary.PendingPermissionCount,
 		Lifecycle:                  cloneClientSessionLifecycle(summary.Lifecycle),
-		SessionExecution:           cloneSessionExecutionV2(summary.SessionExecution),
 		SessionAPI:                 strings.TrimSpace(summary.SessionAPI),
 		LastEventSeq:               summary.LastEventSeq,
 		ProjectionHighWatermarkSeq: summary.ProjectionHighWatermarkSeq,
@@ -4090,8 +4088,8 @@ func (a *App) commitExecutionContext(summary model.SessionSummary) *client.RunEx
 }
 
 func (a *App) createBackgroundCommitSession(ctx context.Context, parentSessionID string, parentSummary model.SessionSummary, instructions string) (model.SessionSummary, error) {
-	workspaceBindingID := firstNonEmpty(sessionExecutionWorkspaceBindingID(parentSummary), consumeStringMetadata(parentSummary.Metadata, "local_workspace_binding_id"))
-	swarmID := sessionExecutionRuntimeSwarmID(parentSummary)
+	workspaceBindingID := firstNonEmpty(consumeStringMetadata(parentSummary.Metadata, "swarm_v3_workspace_binding_id"), consumeStringMetadata(parentSummary.Metadata, "local_workspace_binding_id"))
+	swarmID := consumeStringMetadata(parentSummary.Metadata, "swarm_v3_runtime_swarm_id")
 	if workspaceBindingID == "" {
 		return model.SessionSummary{}, errors.New("workspace binding id is required")
 	}
@@ -4279,14 +4277,6 @@ func v3RunIntentSessionLifecycle(sessionID string, intent *client.SessionV3RunIn
 	}
 }
 
-func cloneSessionExecutionV2(execution *client.SessionExecutionV2) *client.SessionExecutionV2 {
-	if execution == nil {
-		return nil
-	}
-	copy := *execution
-	return &copy
-}
-
 func targetSwarmIDForV3Session(metadata map[string]any, target *model.SwarmTarget) string {
 	if value := consumeStringMetadata(metadata, "swarm_v3_runtime_swarm_id"); value != "" {
 		return value
@@ -4298,34 +4288,6 @@ func targetSwarmIDForV3Session(metadata map[string]any, target *model.SwarmTarge
 		return strings.TrimSpace(target.SwarmID)
 	}
 	return ""
-}
-
-func sessionExecutionRuntimeSwarmID(summary model.SessionSummary) string {
-	if summary.SessionExecution == nil {
-		return ""
-	}
-	return strings.TrimSpace(summary.SessionExecution.RuntimeSwarmID)
-}
-
-func sessionExecutionRuntimeKind(summary model.SessionSummary) string {
-	if summary.SessionExecution == nil {
-		return ""
-	}
-	return strings.TrimSpace(summary.SessionExecution.RuntimeKind)
-}
-
-func sessionExecutionClass(summary model.SessionSummary) string {
-	if summary.SessionExecution == nil {
-		return ""
-	}
-	return strings.TrimSpace(summary.SessionExecution.ExecutionClass)
-}
-
-func sessionExecutionWorkspaceBindingID(summary model.SessionSummary) string {
-	if summary.SessionExecution == nil {
-		return ""
-	}
-	return strings.TrimSpace(summary.SessionExecution.WorkspaceBindingID)
 }
 
 func mergeClientModelPreference(current, incoming client.ModelPreference) client.ModelPreference {
@@ -4382,9 +4344,6 @@ func mergeHomeSessionSummary(current, incoming model.SessionSummary) model.Sessi
 			merged.Lifecycle = lifecycle
 		}
 	}
-	if incoming.SessionExecution != nil {
-		merged.SessionExecution = cloneSessionExecutionV2(incoming.SessionExecution)
-	}
 	if value := strings.TrimSpace(incoming.SessionAPI); value != "" {
 		merged.SessionAPI = value
 	}
@@ -4411,7 +4370,6 @@ func modelSessionSummaryFromClient(record client.SessionSummary) model.SessionSu
 		Metadata:                   cloneMetadataMap(record.Metadata),
 		PendingPermissionCount:     record.PendingPermissionCount,
 		Lifecycle:                  cloneClientSessionLifecycle(record.Lifecycle),
-		SessionExecution:           cloneSessionExecutionV2(record.SessionExecution),
 		Preference:                 mergeClientModelPreference(client.ModelPreference{}, record.Preference),
 		WorktreeEnabled:            record.WorktreeEnabled,
 		WorktreeRootPath:           strings.TrimSpace(record.WorktreeRootPath),
@@ -8687,14 +8645,10 @@ func (a *App) sessionRouteFromMetadata(workspacePath string, metadata map[string
 		}
 	}
 
-	if route, ok := a.v2SessionRouteFromMetadata(workspacePath, metadata); ok {
-		return route, true
-	}
-
-	hostWorkspacePath := consumeStringMetadata(metadata, "swarm_routed_host_workspace_path")
-	runtimeWorkspacePath := consumeStringMetadata(metadata, "swarm_routed_runtime_workspace_path")
-	workspaceBindingID := firstNonEmpty(consumeStringMetadata(metadata, "swarm_routed_workspace_binding_id"), consumeStringMetadata(metadata, "route_workspace_binding_id"))
-	childSwarmID := consumeStringMetadata(metadata, "swarm_routed_child_swarm_id")
+	hostWorkspacePath := firstNonEmpty(consumeStringMetadata(metadata, "swarm_v3_source_workspace_path"), workspacePath)
+	runtimeWorkspacePath := consumeStringMetadata(metadata, "swarm_v3_runtime_workspace_path")
+	workspaceBindingID := firstNonEmpty(consumeStringMetadata(metadata, "swarm_v3_workspace_binding_id"), consumeStringMetadata(metadata, "local_workspace_binding_id"))
+	childSwarmID := consumeStringMetadata(metadata, "swarm_v3_runtime_swarm_id")
 	if a == nil {
 		routes := buildChatRoutesForWorkspaces(nil, firstNonEmpty(hostWorkspacePath, workspacePath))
 		for _, route := range routes {
@@ -8731,52 +8685,6 @@ func (a *App) sessionRouteFromMetadata(workspacePath string, metadata map[string
 		return model.ChatRoute{ID: routeID, Label: routeIDSwarmLabel(routeID)}, true
 	}
 	return model.ChatRoute{}, false
-}
-
-func (a *App) v2SessionRouteFromMetadata(workspacePath string, metadata map[string]any) (model.ChatRoute, bool) {
-	executionClass := strings.ToLower(consumeStringMetadata(metadata, "swarm_v2_execution_class"))
-	runtimeSwarmID := consumeStringMetadata(metadata, "swarm_v2_runtime_swarm_id")
-	workspaceBindingID := firstNonEmpty(consumeStringMetadata(metadata, "swarm_v2_workspace_binding_id"), consumeStringMetadata(metadata, "local_workspace_binding_id"))
-	if executionClass == "" || runtimeSwarmID == "" || workspaceBindingID == "" {
-		return model.ChatRoute{}, false
-	}
-	targetKind := consumeStringMetadata(metadata, "swarm_v2_runtime_kind")
-	targetRelationship := ""
-	switch executionClass {
-	case "primary":
-		targetRelationship = "self"
-		if targetKind == "" {
-			targetKind = "host"
-		}
-	case "local_container":
-		targetRelationship = "child"
-		if targetKind == "" {
-			targetKind = "container"
-		}
-	default:
-		return model.ChatRoute{}, false
-	}
-	runtimeWorkspacePath := consumeStringMetadata(metadata, "swarm_v2_runtime_workspace_path")
-	hostWorkspacePath := firstNonEmpty(consumeStringMetadata(metadata, "swarm_v2_source_workspace_path"), workspacePath)
-	route := model.ChatRoute{
-		ID:                   "swarm:" + runtimeSwarmID + ":binding:" + workspaceBindingID,
-		Label:                runtimeSwarmID,
-		SwarmID:              runtimeSwarmID,
-		WorkspaceBindingID:   workspaceBindingID,
-		HostWorkspacePath:    hostWorkspacePath,
-		RuntimeWorkspacePath: runtimeWorkspacePath,
-		TargetKind:           targetKind,
-		TargetRelationship:   targetRelationship,
-	}
-	if a == nil {
-		return route, true
-	}
-	for _, candidate := range a.homeModel.ChatRoutes {
-		if strings.TrimSpace(candidate.WorkspaceBindingID) == workspaceBindingID && strings.TrimSpace(candidate.SwarmID) == runtimeSwarmID {
-			return candidate, true
-		}
-	}
-	return route, true
 }
 
 func routeIDSwarmLabel(routeID string) string {

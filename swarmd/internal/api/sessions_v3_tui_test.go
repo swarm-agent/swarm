@@ -36,9 +36,7 @@ func TestSessionsV3TUIDirectoryCreateOpenAndWorkset(t *testing.T) {
 	if created.Projection.LastEventSeq != 1 || created.Mutation.Event.EventType != "session.created" {
 		t.Fatalf("projection/mutation = %+v %+v", created.Projection, created.Mutation)
 	}
-	if _, ok, err := sessionSvc.Store().GetSessionExecutionV2(created.Session.ID); err != nil || ok {
-		t.Fatalf("v2 execution ok=%t err=%v, want none", ok, err)
-	}
+
 	if routes, err := routeStore.List(10); err != nil || len(routes) != 0 {
 		t.Fatalf("routes = %+v err=%v, want none", routes, err)
 	}

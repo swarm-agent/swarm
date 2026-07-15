@@ -19,19 +19,6 @@ export function sessionMetadataString(metadata: Record<string, unknown> | null |
   return metadata && typeof metadata[key] === 'string' ? metadata[key].trim() : ''
 }
 
-export function sessionMetadataBoolean(metadata: Record<string, unknown> | null | undefined, key: string): boolean | undefined {
-  const value = metadata?.[key]
-  if (typeof value === 'boolean') {
-    return value
-  }
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase()
-    if (normalized === 'true') return true
-    if (normalized === 'false') return false
-  }
-  return undefined
-}
-
 export function sessionWorkspaceFactsFromMetadata(metadata: Record<string, unknown> | null | undefined): {
   sourceWorkspacePath: string
   runtimeWorkspacePath: string
@@ -39,10 +26,10 @@ export function sessionWorkspaceFactsFromMetadata(metadata: Record<string, unkno
   worktreeRootPath: string
 } {
   return {
-    sourceWorkspacePath: sessionMetadataString(metadata, 'swarm_v2_source_workspace_path'),
-    runtimeWorkspacePath: sessionMetadataString(metadata, 'swarm_v2_runtime_workspace_path'),
-    worktreeEnabled: sessionMetadataBoolean(metadata, 'swarm_v2_worktree_enabled'),
-    worktreeRootPath: sessionMetadataString(metadata, 'swarm_v2_worktree_root_path'),
+    sourceWorkspacePath: sessionMetadataString(metadata, 'swarm_v3_source_workspace_path'),
+    runtimeWorkspacePath: sessionMetadataString(metadata, 'swarm_v3_runtime_workspace_path'),
+    worktreeEnabled: undefined,
+    worktreeRootPath: '',
   }
 }
 

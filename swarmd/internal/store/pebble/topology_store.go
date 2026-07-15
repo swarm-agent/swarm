@@ -30,7 +30,6 @@ type TopologyRuntimeRecord struct {
 	Name                 string   `json:"name"`
 	Role                 string   `json:"role,omitempty"`
 	Relationship         string   `json:"relationship,omitempty"`
-	BackendURL           string   `json:"backend_url,omitempty"`
 	DesktopURL           string   `json:"desktop_url,omitempty"`
 	Status               string   `json:"status,omitempty"`
 	Transport            string   `json:"transport,omitempty"`
@@ -64,16 +63,15 @@ type TopologyHostContainerRecord struct {
 }
 
 type TopologyAttachmentRecord struct {
-	AttachmentID          string `json:"attachment_id"`
-	UserID                string `json:"user_id,omitempty"`
-	AccountScopeID        string `json:"account_scope_id,omitempty"`
-	HostContainerID       string `json:"host_container_id"`
-	RuntimeSwarmID        string `json:"runtime_swarm_id"`
-	State                 string `json:"state,omitempty"`
-	DeploymentID          string `json:"deployment_id,omitempty"`
-	LastError             string `json:"last_error,omitempty"`
-	CreatedAt             int64  `json:"created_at"`
-	UpdatedAt             int64  `json:"updated_at"`
+	AttachmentID    string `json:"attachment_id"`
+	UserID          string `json:"user_id,omitempty"`
+	AccountScopeID  string `json:"account_scope_id,omitempty"`
+	HostContainerID string `json:"host_container_id"`
+	RuntimeSwarmID  string `json:"runtime_swarm_id"`
+	State           string `json:"state,omitempty"`
+	LastError       string `json:"last_error,omitempty"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
 }
 
 type TopologyWorkspaceBindingRecord struct {
@@ -105,23 +103,6 @@ type TopologyWorkspaceBindingRecord struct {
 	UpdatedAt                       int64                    `json:"updated_at"`
 }
 
-type TopologySessionRouteRecord struct {
-	SessionID            string `json:"session_id"`
-	UserID               string `json:"user_id,omitempty"`
-	AccountScopeID       string `json:"account_scope_id,omitempty"`
-	RuntimeSwarmID       string `json:"runtime_swarm_id,omitempty"`
-	HostSwarmID          string `json:"host_swarm_id,omitempty"`
-	HostContainerID      string `json:"host_container_id,omitempty"`
-	WorkspaceBindingID   string `json:"workspace_binding_id,omitempty"`
-	BackendURL           string `json:"backend_url,omitempty"`
-	HostWorkspacePath    string `json:"host_workspace_path,omitempty"`
-	RuntimeWorkspacePath string `json:"runtime_workspace_path,omitempty"`
-	PlacementGeneration  int    `json:"placement_generation,omitempty"`
-	BindingGeneration    int    `json:"binding_generation,omitempty"`
-	CreatedAt            int64  `json:"created_at"`
-	UpdatedAt            int64  `json:"updated_at"`
-}
-
 type TopologyMigrationStatusRecord struct {
 	ID                    string `json:"id"`
 	Version               string `json:"version"`
@@ -130,7 +111,6 @@ type TopologyMigrationStatusRecord struct {
 	HostContainerCount    int    `json:"host_container_count"`
 	AttachmentCount       int    `json:"attachment_count"`
 	WorkspaceBindingCount int    `json:"workspace_binding_count"`
-	SessionRouteCount     int    `json:"session_route_count"`
 }
 
 type TopologySnapshot struct {
@@ -139,7 +119,6 @@ type TopologySnapshot struct {
 	HostContainers    []TopologyHostContainerRecord    `json:"host_containers,omitempty"`
 	Attachments       []TopologyAttachmentRecord       `json:"attachments,omitempty"`
 	WorkspaceBindings []TopologyWorkspaceBindingRecord `json:"workspace_bindings,omitempty"`
-	SessionRoutes     []TopologySessionRouteRecord     `json:"session_routes,omitempty"`
 	MigrationStatus   TopologyMigrationStatusRecord    `json:"migration_status"`
 }
 
@@ -163,7 +142,6 @@ func (s *TopologyStore) ReplaceSnapshot(snapshot TopologySnapshot) error {
 	snapshot.HostContainers = normalizeTopologyHostContainerRecords(snapshot.HostContainers)
 	snapshot.Attachments = normalizeTopologyAttachmentRecords(snapshot.Attachments)
 	snapshot.WorkspaceBindings = normalizeTopologyWorkspaceBindingRecords(snapshot.WorkspaceBindings)
-	snapshot.SessionRoutes = normalizeTopologySessionRouteRecords(snapshot.SessionRoutes)
 	snapshot.MigrationStatus = normalizeTopologyMigrationStatusRecord(snapshot.MigrationStatus)
 	batch := s.store.NewBatch()
 	defer batch.Close()
@@ -173,7 +151,6 @@ func (s *TopologyStore) ReplaceSnapshot(snapshot TopologySnapshot) error {
 		TopologyHostContainerPrefix(),
 		TopologyAttachmentPrefix(),
 		TopologyWorkspaceBindingPrefix(),
-		TopologySessionRoutePrefix(),
 		TopologyMigrationStatusPrefix(),
 	} {
 		if err := s.deletePrefixWithBatch(batch, prefix); err != nil {
@@ -225,15 +202,6 @@ func (s *TopologyStore) ReplaceSnapshot(snapshot TopologySnapshot) error {
 			return err
 		}
 	}
-	for _, record := range snapshot.SessionRoutes {
-		payload, err := json.Marshal(record)
-		if err != nil {
-			return fmt.Errorf("marshal topology session route %q: %w", record.SessionID, err)
-		}
-		if err := batch.Set([]byte(KeyTopologySessionRoute(record.SessionID)), payload, nil); err != nil {
-			return err
-		}
-	}
 	payload, err := json.Marshal(snapshot.MigrationStatus)
 	if err != nil {
 		return fmt.Errorf("marshal topology migration status %q: %w", snapshot.MigrationStatus.ID, err)
@@ -268,10 +236,6 @@ func (s *TopologyStore) Snapshot() (TopologySnapshot, error) {
 	if err != nil {
 		return TopologySnapshot{}, err
 	}
-	sessionRoutes, err := s.ListSessionRoutes(100000)
-	if err != nil {
-		return TopologySnapshot{}, err
-	}
 	migrationStatus, _, err := s.GetMigrationStatus(DefaultTopologyMigrationStatusID)
 	if err != nil {
 		return TopologySnapshot{}, err
@@ -282,7 +246,6 @@ func (s *TopologyStore) Snapshot() (TopologySnapshot, error) {
 		HostContainers:    hostContainers,
 		Attachments:       attachments,
 		WorkspaceBindings: workspaceBindings,
-		SessionRoutes:     sessionRoutes,
 		MigrationStatus:   migrationStatus,
 	}, nil
 }
@@ -620,70 +583,6 @@ func (s *TopologyStore) DeleteWorkspaceBinding(bindingID string) error {
 	return err
 }
 
-func (s *TopologyStore) ListSessionRoutes(limit int) ([]TopologySessionRouteRecord, error) {
-	return s.listTopologySessionRouteRecords(limit)
-}
-
-func (s *TopologyStore) GetSessionRoute(sessionID string) (TopologySessionRouteRecord, bool, error) {
-	if s == nil || s.store == nil {
-		return TopologySessionRouteRecord{}, false, nil
-	}
-	sessionID = normalizeTopologyKeyValue(sessionID)
-	if sessionID == "" {
-		return TopologySessionRouteRecord{}, false, errors.New("topology session id is required")
-	}
-	var record TopologySessionRouteRecord
-	ok, err := s.store.GetJSON(KeyTopologySessionRoute(sessionID), &record)
-	if err != nil {
-		return TopologySessionRouteRecord{}, false, err
-	}
-	if !ok {
-		return TopologySessionRouteRecord{}, false, nil
-	}
-	record = normalizeTopologySessionRouteRecord(record)
-	if record.SessionID == "" {
-		record.SessionID = sessionID
-	}
-	return record, true, nil
-}
-
-func (s *TopologyStore) PutSessionRoute(record TopologySessionRouteRecord) (TopologySessionRouteRecord, error) {
-	if s == nil || s.store == nil {
-		return TopologySessionRouteRecord{}, errors.New("topology store is not configured")
-	}
-	record = normalizeTopologySessionRouteRecord(record)
-	if record.SessionID == "" {
-		return TopologySessionRouteRecord{}, errors.New("topology session id is required")
-	}
-	now := time.Now().UnixMilli()
-	if record.CreatedAt <= 0 {
-		record.CreatedAt = now
-	}
-	record.UpdatedAt = now
-	if err := s.store.PutJSON(KeyTopologySessionRoute(record.SessionID), record); err != nil {
-		return TopologySessionRouteRecord{}, err
-	}
-	if _, err := s.refreshMigrationStatus(); err != nil {
-		return TopologySessionRouteRecord{}, err
-	}
-	return record, nil
-}
-
-func (s *TopologyStore) DeleteSessionRoute(sessionID string) error {
-	if s == nil || s.store == nil {
-		return errors.New("topology store is not configured")
-	}
-	sessionID = normalizeTopologyKeyValue(sessionID)
-	if sessionID == "" {
-		return errors.New("topology session id is required")
-	}
-	if err := s.store.Delete(KeyTopologySessionRoute(sessionID)); err != nil {
-		return err
-	}
-	_, err := s.refreshMigrationStatus()
-	return err
-}
-
 func (s *TopologyStore) GetMigrationStatus(id string) (TopologyMigrationStatusRecord, bool, error) {
 	if s == nil || s.store == nil {
 		return TopologyMigrationStatusRecord{}, false, nil
@@ -761,14 +660,6 @@ func (s *TopologyStore) refreshMigrationStatus() (TopologyMigrationStatusRecord,
 	if err != nil {
 		return TopologyMigrationStatusRecord{}, err
 	}
-	sessionRoutes, err := s.ListSessionRoutes(100000)
-	if err != nil {
-		return TopologyMigrationStatusRecord{}, err
-	}
-	accountSessionRouteCount, err := s.countTopologyJSONRecordsWithPrefix(KeyTopologySessionRouteAccountPrefix)
-	if err != nil {
-		return TopologyMigrationStatusRecord{}, err
-	}
 	return s.PutMigrationStatus(TopologyMigrationStatusRecord{
 		ID:                    DefaultTopologyMigrationStatusID,
 		Version:               TopologySnapshotVersion,
@@ -777,7 +668,6 @@ func (s *TopologyStore) refreshMigrationStatus() (TopologyMigrationStatusRecord,
 		HostContainerCount:    len(hostContainers) + accountHostContainerCount,
 		AttachmentCount:       len(attachments) + accountAttachmentCount,
 		WorkspaceBindingCount: len(workspaceBindings) + accountWorkspaceBindingCount,
-		SessionRouteCount:     len(sessionRoutes) + accountSessionRouteCount,
 	})
 }
 
@@ -944,41 +834,6 @@ func (s *TopologyStore) listTopologyWorkspaceBindingRecords(limit int) ([]Topolo
 	return out, nil
 }
 
-func (s *TopologyStore) listTopologySessionRouteRecords(limit int) ([]TopologySessionRouteRecord, error) {
-	if s == nil || s.store == nil {
-		return nil, nil
-	}
-	if limit <= 0 {
-		limit = 200
-	}
-	out := make([]TopologySessionRouteRecord, 0, min(limit, 16))
-	err := s.store.IteratePrefix(TopologySessionRoutePrefix(), limit, func(key string, value []byte) error {
-		var record TopologySessionRouteRecord
-		if err := json.Unmarshal(value, &record); err != nil {
-			return fmt.Errorf("decode topology session route: %w", err)
-		}
-		record = normalizeTopologySessionRouteRecord(record)
-		if record.SessionID == "" {
-			record.SessionID = decodeTopologyKeyValue(key, TopologySessionRoutePrefix())
-		}
-		if record.SessionID == "" {
-			return nil
-		}
-		out = append(out, record)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].UpdatedAt == out[j].UpdatedAt {
-			return strings.ToLower(out[i].SessionID) < strings.ToLower(out[j].SessionID)
-		}
-		return out[i].UpdatedAt > out[j].UpdatedAt
-	})
-	return out, nil
-}
-
 func (s *TopologyStore) deletePrefixWithBatch(batch *pebble.Batch, prefix string) error {
 	iter, err := s.store.db.NewIter(nil)
 	if err != nil {
@@ -1024,7 +879,6 @@ func normalizeTopologyRuntimeRecord(record TopologyRuntimeRecord) TopologyRuntim
 	record.Name = strings.TrimSpace(record.Name)
 	record.Role = strings.ToLower(strings.TrimSpace(record.Role))
 	record.Relationship = strings.ToLower(strings.TrimSpace(record.Relationship))
-	record.BackendURL = strings.TrimSpace(record.BackendURL)
 	record.DesktopURL = strings.TrimSpace(record.DesktopURL)
 	record.Status = strings.ToLower(strings.TrimSpace(record.Status))
 	record.Transport = strings.ToLower(strings.TrimSpace(record.Transport))
@@ -1108,7 +962,6 @@ func normalizeTopologyAttachmentRecord(record TopologyAttachmentRecord) Topology
 	record.HostContainerID = strings.TrimSpace(record.HostContainerID)
 	record.RuntimeSwarmID = strings.TrimSpace(record.RuntimeSwarmID)
 	record.State = strings.ToLower(strings.TrimSpace(record.State))
-	record.DeploymentID = strings.TrimSpace(record.DeploymentID)
 	record.LastError = strings.TrimSpace(record.LastError)
 	record.CreatedAt, record.UpdatedAt = normalizeTopologyTimestamps(record.CreatedAt, record.UpdatedAt)
 	return record
@@ -1170,49 +1023,6 @@ func normalizeTopologyWorkspaceBindingRecord(record TopologyWorkspaceBindingReco
 	return record
 }
 
-func normalizeTopologySessionRouteRecords(records []TopologySessionRouteRecord) []TopologySessionRouteRecord {
-	if len(records) == 0 {
-		return nil
-	}
-	out := make([]TopologySessionRouteRecord, 0, len(records))
-	seen := make(map[string]struct{}, len(records))
-	for _, raw := range records {
-		record := normalizeTopologySessionRouteRecord(raw)
-		if record.SessionID == "" {
-			continue
-		}
-		if _, ok := seen[record.SessionID]; ok {
-			continue
-		}
-		seen[record.SessionID] = struct{}{}
-		out = append(out, record)
-	}
-	return out
-}
-
-func normalizeTopologySessionRouteRecord(record TopologySessionRouteRecord) TopologySessionRouteRecord {
-	record.SessionID = normalizeTopologyKeyValue(record.SessionID)
-	record.UserID = strings.TrimSpace(record.UserID)
-	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
-	record.RuntimeSwarmID = strings.TrimSpace(record.RuntimeSwarmID)
-	record.HostSwarmID = strings.TrimSpace(record.HostSwarmID)
-	record.HostContainerID = strings.TrimSpace(record.HostContainerID)
-	record.WorkspaceBindingID = strings.TrimSpace(record.WorkspaceBindingID)
-	// CP6 SessionExecution topology records may decode legacy route-authority
-	// fields, but must not persist transport or host-path authority.
-	record.BackendURL = ""
-	record.HostWorkspacePath = ""
-	record.RuntimeWorkspacePath = strings.TrimSpace(record.RuntimeWorkspacePath)
-	if record.PlacementGeneration < 0 {
-		record.PlacementGeneration = 0
-	}
-	if record.BindingGeneration < 0 {
-		record.BindingGeneration = 0
-	}
-	record.CreatedAt, record.UpdatedAt = normalizeTopologyTimestamps(record.CreatedAt, record.UpdatedAt)
-	return record
-}
-
 func normalizeTopologyMigrationStatusRecord(record TopologyMigrationStatusRecord) TopologyMigrationStatusRecord {
 	record.ID = normalizeTopologyKeyValue(record.ID)
 	if record.ID == "" {
@@ -1233,9 +1043,6 @@ func normalizeTopologyMigrationStatusRecord(record TopologyMigrationStatusRecord
 	}
 	if record.WorkspaceBindingCount < 0 {
 		record.WorkspaceBindingCount = 0
-	}
-	if record.SessionRouteCount < 0 {
-		record.SessionRouteCount = 0
 	}
 	return record
 }

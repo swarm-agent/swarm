@@ -956,7 +956,6 @@ func cloneClientSessionSummary(in client.SessionSummary) client.SessionSummary {
 	out := in
 	out.Metadata = cloneMetadataMap(in.Metadata)
 	out.Lifecycle = cloneClientSessionLifecycle(in.Lifecycle)
-	out.SessionExecution = cloneSessionExecutionV2(in.SessionExecution)
 	return out
 }
 
@@ -1010,7 +1009,6 @@ func cloneModelSessionSummaries(in []model.SessionSummary) []model.SessionSummar
 	for i := range out {
 		out[i].Metadata = cloneMetadataMap(out[i].Metadata)
 		out[i].Lifecycle = cloneClientSessionLifecycle(out[i].Lifecycle)
-		out[i].SessionExecution = cloneSessionExecutionV2(out[i].SessionExecution)
 	}
 	return out
 }

@@ -44,7 +44,7 @@ async function withFetchStub(
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ input, init })
     const url = String(input)
-    if (url === '/v3/sessions' || url === '/v2/sessions/local-containers') {
+    if (url === '/v3/sessions') {
       const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
       const primary = url === '/v3/sessions'
       return new Response(JSON.stringify({
@@ -219,7 +219,6 @@ test('metadata sanitization preserves annotations and removes route authority ke
         target_swarm_id: 'forbidden-target',
         next_hop_swarm_id: 'forbidden-next-hop',
         swarm_route_label: 'forbidden-route',
-        swarm_v2_execution_id: 'forbidden-v2',
         local_workspace_binding_id: 'forbidden-local-binding',
         owner_transport: 'forbidden-transport',
         custom_routing_hint: 'forbidden-routing-looking-key',

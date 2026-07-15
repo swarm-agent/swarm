@@ -26,7 +26,6 @@ func TestSwarmTopologySnapshotReturnsCanonicalRuntimes(t *testing.T) {
 		AccountScopeID:       testAccountScopeID,
 		Name:                 "Child One",
 		Relationship:         "child",
-		BackendURL:           "https://retired-backend.example.test",
 		DesktopURL:           "https://retired-desktop.example.test",
 		OwnerHostSwarmID:     "retired-owner",
 		OwnerHostContainerID: "retired-container",
@@ -34,7 +33,7 @@ func TestSwarmTopologySnapshotReturnsCanonicalRuntimes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("put runtime: %v", err)
 	}
-	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil)
+	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil)
 	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologySvc)
 

@@ -53,7 +53,7 @@ func TestWorkspaceOverviewIncludesTopologyRoutesFromWorkspaceBindings(t *testing
 	}
 	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{
 		UserID:         testPrincipal().UserID,
-		AccountScopeID: testPrincipal().AccountScopeID, SwarmID: "host-swarm-id", Name: "host-swarm", Relationship: "self", BackendURL: "https://host.example.test", ObservedSources: []string{pebblestore.TopologyRuntimeSourceDeployContainer}}); err != nil {
+		AccountScopeID: testPrincipal().AccountScopeID, SwarmID: "host-swarm-id", Name: "host-swarm", Relationship: "self", ObservedSources: []string{"swarm_local_node"}}); err != nil {
 		t.Fatalf("upsert host topology runtime: %v", err)
 	}
 	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{
@@ -62,10 +62,9 @@ func TestWorkspaceOverviewIncludesTopologyRoutesFromWorkspaceBindings(t *testing
 		SwarmID:              "managed-swarm-1",
 		Name:                 "managed-host",
 		Relationship:         "managed",
-		BackendURL:           "https://managed.example.test",
 		OwnerHostSwarmID:     "host-swarm-id",
 		OwnerHostContainerID: "container-1",
-		ObservedSources:      []string{pebblestore.TopologyRuntimeSourceDeployContainer},
+		ObservedSources:      []string{"swarm_trusted_peer"},
 	}); err != nil {
 		t.Fatalf("upsert topology runtime: %v", err)
 	}
@@ -133,9 +132,6 @@ func TestWorkspaceOverviewIncludesTopologyRoutesFromWorkspaceBindings(t *testing
 	}
 	if route.HostSwarmName != "host-swarm" {
 		t.Fatalf("host swarm name=%q route=%+v", route.HostSwarmName, route)
-	}
-	if len(response.Workspaces[0].ReplicationLinks) != 0 {
-		t.Fatalf("test must prove topology routes do not come from legacy replication links: %+v", response.Workspaces[0].ReplicationLinks)
 	}
 }
 
@@ -352,7 +348,7 @@ func TestWorkspaceOverviewSkipsOfflineChildEvenWhenOwnerHostIsSelectable(t *test
 	if err != nil || !ok {
 		t.Fatalf("get workspace entry ok=%t err=%v", ok, err)
 	}
-	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "offline-child", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "Offline Child", Relationship: "child", BackendURL: "http://127.0.0.1:7782", OwnerHostSwarmID: "owner-swarm"}); err != nil {
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "offline-child", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "Offline Child", Relationship: "child", OwnerHostSwarmID: "owner-swarm"}); err != nil {
 		t.Fatalf("upsert offline child runtime: %v", err)
 	}
 	if _, err := topologyStore.PutWorkspaceBindingForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
@@ -461,8 +457,8 @@ func workspaceOverviewTopologyRouteForBindingTest(t *testing.T, server *Server, 
 	t.Helper()
 	route, ok := server.workspaceOverviewTopologyRouteForBinding(
 		binding,
-		swarmTarget{SwarmID: binding.DestinationRuntimeSwarmID, Name: "managed-host", Relationship: swarmruntime.RelationshipManaged, Kind: "host", BackendURL: "https://managed.example.test", Online: true, Selectable: true},
-		pebblestore.TopologyRuntimeRecord{SwarmID: binding.DestinationRuntimeSwarmID, Name: "managed-host", Relationship: "managed", BackendURL: "https://managed.example.test"},
+		swarmTarget{SwarmID: binding.DestinationRuntimeSwarmID, Name: "managed-host", Relationship: swarmruntime.RelationshipManaged, Kind: "host", Online: true, Selectable: true},
+		pebblestore.TopologyRuntimeRecord{SwarmID: binding.DestinationRuntimeSwarmID, Name: "managed-host", Relationship: "managed"},
 		map[string]swarmTarget{"host-swarm-id": {SwarmID: "host-swarm-id", Name: "host-swarm"}},
 		workspacePath,
 		workspacePath,
@@ -527,7 +523,7 @@ func newWorkspaceOverviewTopologyTestServer(t *testing.T) (*Server, string, *peb
 		t.Fatalf("new event log: %v", err)
 	}
 	server := NewServer(nil, nil, nil, workspaceOverviewNoopRunService{}, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
-	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, workspaceStore))
+	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, workspaceStore))
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
 	cfg.SwarmName = "host-swarm"

@@ -6,9 +6,7 @@ import (
 )
 
 const (
-	TopologyRuntimeSourceDeployContainer           = "deploy_container"
 	TopologyHostContainerSourceSwarmLocalContainer = "swarm_local_container"
-	TopologyHostContainerSourceDeployContainer     = "deploy_container"
 )
 
 func CanonicalTopologyHostContainerID(hostSwarmID, runtimeContainerRef string) string {
@@ -253,12 +251,6 @@ func RemoveTopologyRuntimeObservedSourceForAccount(topology *TopologyStore, acco
 	if len(record.ObservedSources) == 0 {
 		return topology.DeleteRuntimeForAccount(accountScopeID, swarmID)
 	}
-	switch source {
-	case topologyRuntimeSourceNode:
-		record.BackendURL = ""
-		record.DesktopURL = ""
-		record.Status = ""
-	}
 	_, err = topology.PutRuntimeForAccount(accountScopeID, record)
 	return err
 }
@@ -351,7 +343,6 @@ func mergeTopologyAttachmentRecord(existing, incoming TopologyAttachmentRecord) 
 	incoming.HostContainerID = firstNonEmpty(incoming.HostContainerID, existing.HostContainerID)
 	incoming.RuntimeSwarmID = firstNonEmpty(incoming.RuntimeSwarmID, existing.RuntimeSwarmID)
 	incoming.State = firstNonEmpty(incoming.State, existing.State)
-	incoming.DeploymentID = firstNonEmpty(incoming.DeploymentID, existing.DeploymentID)
 	incoming.LastError = firstNonEmpty(incoming.LastError, existing.LastError)
 	if existing.CreatedAt > 0 && (incoming.CreatedAt <= 0 || existing.CreatedAt < incoming.CreatedAt) {
 		incoming.CreatedAt = existing.CreatedAt

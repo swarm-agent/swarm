@@ -31,20 +31,19 @@ type SwarmLocalNodeRecord struct {
 // Retired pairing record types carry no persistence behavior; they remain
 // source-compatible until the API cleanup removes stale interface references.
 type SwarmLocalPairingRecord struct {
-	PairingState                   string
-	ParentSwarmID                  string
-	UserID                         string
-	AccountScopeID                 string
-	ActiveInviteID                 string
-	LastEnrollmentID               string
-	LastDecision                   string
-	LastDecisionReason             string
-	LastUpdatedByRole              string
-	RendezvousTransports           []SwarmTransportRecord
-	WorkspaceBootstrapDeploymentID string
-	WorkspaceBootstrapAt           int64
-	CreatedAt                      int64
-	UpdatedAt                      int64
+	PairingState         string
+	ParentSwarmID        string
+	UserID               string
+	AccountScopeID       string
+	ActiveInviteID       string
+	LastEnrollmentID     string
+	LastDecision         string
+	LastDecisionReason   string
+	LastUpdatedByRole    string
+	RendezvousTransports []SwarmTransportRecord
+	WorkspaceBootstrapAt int64
+	CreatedAt            int64
+	UpdatedAt            int64
 }
 type SwarmInviteRecord struct {
 	ID                   string

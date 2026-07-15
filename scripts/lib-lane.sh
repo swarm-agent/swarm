@@ -277,20 +277,6 @@ tailscale_url =
 peer_transport_port = 7791
 parent_swarm_id =
 pairing_state =
-deploy_container_enabled = false
-deploy_container_host_driven = false
-deploy_container_sync_enabled = false
-deploy_container_sync_mode =
-deploy_container_sync_modules =
-deploy_container_sync_owner_swarm_id =
-deploy_container_sync_credential_url =
-deploy_container_sync_agent_url =
-deploy_container_deployment_id =
-deploy_container_host_api_base_url =
-deploy_container_host_desktop_url =
-deploy_container_local_transport_socket_path =
-deploy_container_bootstrap_secret =
-deploy_container_verification_code =
 EOF
 }
 
@@ -313,8 +299,7 @@ swarm_startup_config_remove_obsolete_keys() {
       raw_key = trim(substr($0, 1, split_pos - 1))
       if (raw_key == "startup" "_mode" ||
           raw_key == "swarm" "_mode" ||
-          raw_key == "deploy_container_sync_skill_url" ||
-          raw_key == "deploy_container_sync_permission_url") {
+          raw_key ~ ("^deploy_" "container_")) {
         next
       }
       print
@@ -574,74 +559,6 @@ pairing_state =
 EOF
   fi
 
-  if ! swarm_startup_config_has_key deploy_container_enabled; then
-    cat >>"${config_path}" <<'EOF'
-
-# Deploy/container child attach bootstrap payload.
-deploy_container_enabled = false
-deploy_container_host_driven = false
-deploy_container_sync_enabled = false
-deploy_container_sync_mode =
-deploy_container_sync_modules =
-deploy_container_sync_owner_swarm_id =
-deploy_container_sync_credential_url =
-deploy_container_sync_agent_url =
-deploy_container_deployment_id =
-deploy_container_host_api_base_url =
-deploy_container_host_desktop_url =
-deploy_container_local_transport_socket_path =
-deploy_container_bootstrap_secret =
-deploy_container_verification_code =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_host_driven; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_host_driven = false
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_sync_enabled; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_sync_enabled = false
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_sync_mode; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_sync_mode =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_sync_modules; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_sync_modules =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_sync_owner_swarm_id; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_sync_owner_swarm_id =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_sync_credential_url; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_sync_credential_url =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_sync_agent_url; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_sync_agent_url =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key deploy_container_local_transport_socket_path; then
-    cat >>"${config_path}" <<'EOF'
-deploy_container_local_transport_socket_path =
-EOF
-  fi
 }
 
 swarm_startup_config_validate() {
@@ -682,37 +599,12 @@ swarm_startup_config_validate() {
       valid["peer_transport_port"] = 1
       valid["parent_swarm_id"] = 1
       valid["pairing_state"] = 1
-      valid["deploy_container_enabled"] = 1
-      valid["deploy_container_host_driven"] = 1
-      valid["deploy_container_sync_enabled"] = 1
-      valid["deploy_container_sync_mode"] = 1
-      valid["deploy_container_sync_modules"] = 1
-      valid["deploy_container_sync_owner_swarm_id"] = 1
-      valid["deploy_container_sync_credential_url"] = 1
-      valid["deploy_container_sync_agent_url"] = 1
-      valid["deploy_container_deployment_id"] = 1
-      valid["deploy_container_host_api_base_url"] = 1
-      valid["deploy_container_host_desktop_url"] = 1
-      valid["deploy_container_local_transport_socket_path"] = 1
-      valid["deploy_container_bootstrap_secret"] = 1
-      valid["deploy_container_verification_code"] = 1
       allow_empty["swarm_name"] = 1
       allow_empty["dev_root"] = 1
       allow_empty["advertise_host"] = 1
       allow_empty["tailscale_url"] = 1
       allow_empty["parent_swarm_id"] = 1
       allow_empty["pairing_state"] = 1
-      allow_empty["deploy_container_sync_mode"] = 1
-      allow_empty["deploy_container_sync_modules"] = 1
-      allow_empty["deploy_container_sync_owner_swarm_id"] = 1
-      allow_empty["deploy_container_sync_credential_url"] = 1
-      allow_empty["deploy_container_sync_agent_url"] = 1
-      allow_empty["deploy_container_deployment_id"] = 1
-      allow_empty["deploy_container_host_api_base_url"] = 1
-      allow_empty["deploy_container_host_desktop_url"] = 1
-      allow_empty["deploy_container_local_transport_socket_path"] = 1
-      allow_empty["deploy_container_bootstrap_secret"] = 1
-      allow_empty["deploy_container_verification_code"] = 1
     }
     /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
     {
@@ -734,8 +626,7 @@ swarm_startup_config_validate() {
           raw_key == "onboarding_state" ||
           raw_key == "network_mode" ||
           raw_key == "tailscale_transport_port" ||
-          raw_key == "deploy_container_sync_skill_url" ||
-          raw_key == "deploy_container_sync_permission_url") {
+          raw_key ~ ("^deploy_" "container_")) {
         next
       }
       if (raw_key == "mode" && raw_value != "lan" && raw_value != "tailscale") {
@@ -814,45 +705,6 @@ swarm_startup_config_validate() {
       if (!("pairing_state" in seen)) {
         fail(sprintf("invalid startup config %s: missing pairing_state", config_path))
       }
-      if (!("deploy_container_enabled" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_enabled", config_path))
-      }
-      if (!("deploy_container_sync_enabled" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_sync_enabled", config_path))
-      }
-      if (!("deploy_container_sync_mode" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_sync_mode", config_path))
-      }
-      if (!("deploy_container_sync_modules" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_sync_modules", config_path))
-      }
-      if (!("deploy_container_sync_owner_swarm_id" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_sync_owner_swarm_id", config_path))
-      }
-      if (!("deploy_container_sync_credential_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_sync_credential_url", config_path))
-      }
-      if (!("deploy_container_sync_agent_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_sync_agent_url", config_path))
-      }
-      if (!("deploy_container_deployment_id" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_deployment_id", config_path))
-      }
-      if (!("deploy_container_host_api_base_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_host_api_base_url", config_path))
-      }
-      if (!("deploy_container_host_desktop_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_host_desktop_url", config_path))
-      }
-      if (!("deploy_container_local_transport_socket_path" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_local_transport_socket_path", config_path))
-      }
-      if (!("deploy_container_bootstrap_secret" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_bootstrap_secret", config_path))
-      }
-      if (!("deploy_container_verification_code" in seen)) {
-        fail(sprintf("invalid startup config %s: missing deploy_container_verification_code", config_path))
-      }
       if (values["dev_mode"] != "true" && values["dev_mode"] != "false") {
         fail(sprintf("invalid startup config %s: dev_mode must be true or false", config_path))
       }
@@ -905,17 +757,6 @@ swarm_startup_config_validate() {
           values["pairing_state"] != "paired" &&
           values["pairing_state"] != "rejected") {
         fail(sprintf("invalid startup config %s: pairing_state must be empty or a known state", config_path))
-      }
-      if (values["deploy_container_enabled"] != "true" && values["deploy_container_enabled"] != "false") {
-        fail(sprintf("invalid startup config %s: deploy_container_enabled must be true or false", config_path))
-      }
-      if ("deploy_container_host_driven" in seen &&
-          values["deploy_container_host_driven"] != "true" &&
-          values["deploy_container_host_driven"] != "false") {
-        fail(sprintf("invalid startup config %s: deploy_container_host_driven must be true or false", config_path))
-      }
-      if (values["deploy_container_sync_enabled"] != "true" && values["deploy_container_sync_enabled"] != "false") {
-        fail(sprintf("invalid startup config %s: deploy_container_sync_enabled must be true or false", config_path))
       }
       port_num = values["port"] + 0
       if (port_num < 1 || port_num > 65535) {

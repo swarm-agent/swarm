@@ -16,9 +16,9 @@ import (
 var errAccountOwnedWorkspaceRequired = errors.New("account-owned workspace path is required")
 
 type Service struct {
-	store                      *pebblestore.WorkspaceStore
-	events                     *pebblestore.EventLog
-	publish                    func(pebblestore.EventEnvelope)
+	store   *pebblestore.WorkspaceStore
+	events  *pebblestore.EventLog
+	publish func(pebblestore.EventEnvelope)
 }
 
 type Resolution struct {
@@ -34,35 +34,34 @@ type Resolution struct {
 }
 
 type Entry struct {
-	Path                    string                                 `json:"path"`
-	WorkspaceID             string                                 `json:"workspace_id,omitempty"`
-	WorkspaceGeneration     int64                                  `json:"workspace_generation,omitempty"`
-	State                   string                                 `json:"state,omitempty"`
-	LocalWorkspaceBindingID string                                 `json:"local_workspace_binding_id,omitempty"`
-	WorkspaceName           string                                 `json:"workspace_name"`
-	ThemeID                 string                                 `json:"theme_id,omitempty"`
-	Directories             []string                               `json:"directories"`
-	IsGitRepo               bool                                   `json:"is_git_repo"`
-	ReplicationLinks        []pebblestore.WorkspaceReplicationLink `json:"replication_links,omitempty"`
-	SortIndex               int                                    `json:"sort_index"`
-	AddedAt                 int64                                  `json:"added_at"`
-	UpdatedAt               int64                                  `json:"updated_at"`
-	LastSelectedAt          int64                                  `json:"last_selected_at"`
-	Active                  bool                                   `json:"active"`
-	WorktreeEnabled         bool                                   `json:"worktree_enabled"`
+	Path                    string   `json:"path"`
+	WorkspaceID             string   `json:"workspace_id,omitempty"`
+	WorkspaceGeneration     int64    `json:"workspace_generation,omitempty"`
+	State                   string   `json:"state,omitempty"`
+	LocalWorkspaceBindingID string   `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceName           string   `json:"workspace_name"`
+	ThemeID                 string   `json:"theme_id,omitempty"`
+	Directories             []string `json:"directories"`
+	IsGitRepo               bool     `json:"is_git_repo"`
+	SortIndex               int      `json:"sort_index"`
+	AddedAt                 int64    `json:"added_at"`
+	UpdatedAt               int64    `json:"updated_at"`
+	LastSelectedAt          int64    `json:"last_selected_at"`
+	Active                  bool     `json:"active"`
+	WorktreeEnabled         bool     `json:"worktree_enabled"`
 }
 
 type Scope struct {
-	RequestedPath          string   `json:"requested_path"`
-	ResolvedPath           string   `json:"resolved_path"`
-	WorkspaceID            string   `json:"workspace_id,omitempty"`
-	WorkspaceGeneration    int64    `json:"workspace_generation,omitempty"`
-	WorkspaceState         string   `json:"workspace_state,omitempty"`
-	WorkspacePath          string   `json:"workspace_path"`
-	WorkspaceName          string   `json:"workspace_name"`
-	ThemeID                string   `json:"theme_id,omitempty"`
-	Directories            []string `json:"directories"`
-	Matched                bool     `json:"matched"`
+	RequestedPath       string   `json:"requested_path"`
+	ResolvedPath        string   `json:"resolved_path"`
+	WorkspaceID         string   `json:"workspace_id,omitempty"`
+	WorkspaceGeneration int64    `json:"workspace_generation,omitempty"`
+	WorkspaceState      string   `json:"workspace_state,omitempty"`
+	WorkspacePath       string   `json:"workspace_path"`
+	WorkspaceName       string   `json:"workspace_name"`
+	ThemeID             string   `json:"theme_id,omitempty"`
+	Directories         []string `json:"directories"`
+	Matched             bool     `json:"matched"`
 }
 
 type BrowseEntry struct {
@@ -484,7 +483,6 @@ func (s *Service) ListKnown(limit int) ([]Entry, error) {
 			ThemeID:             normalizeWorkspaceThemeID(entry.ThemeID),
 			Directories:         append([]string(nil), entry.Directories...),
 			IsGitRepo:           isGitRepo,
-			ReplicationLinks:    append([]pebblestore.WorkspaceReplicationLink(nil), entry.ReplicationLinks...),
 			SortIndex:           entry.SortIndex,
 			AddedAt:             entry.AddedAt,
 			UpdatedAt:           entry.UpdatedAt,
@@ -524,7 +522,6 @@ func (s *Service) ListKnownForPrincipal(principal identity.Principal, limit int)
 			ThemeID:             normalizeWorkspaceThemeID(entry.ThemeID),
 			Directories:         append([]string(nil), entry.Directories...),
 			IsGitRepo:           isGitRepo,
-			ReplicationLinks:    append([]pebblestore.WorkspaceReplicationLink(nil), entry.ReplicationLinks...),
 			SortIndex:           entry.SortIndex,
 			AddedAt:             entry.AddedAt,
 			UpdatedAt:           entry.UpdatedAt,
@@ -1008,14 +1005,14 @@ func pathWithinRoot(root, target string) bool {
 
 func resolutionFromScope(requestedPath string, scope Scope) Resolution {
 	return Resolution{
-		RequestedPath:          requestedPath,
-		ResolvedPath:           scope.ResolvedPath,
-		WorkspaceID:            scope.WorkspaceID,
-		WorkspaceGeneration:    scope.WorkspaceGeneration,
-		WorkspaceState:         scope.WorkspaceState,
-		WorkspacePath:          scope.WorkspacePath,
-		WorkspaceName:          scope.WorkspaceName,
-		ThemeID:                scope.ThemeID,
+		RequestedPath:       requestedPath,
+		ResolvedPath:        scope.ResolvedPath,
+		WorkspaceID:         scope.WorkspaceID,
+		WorkspaceGeneration: scope.WorkspaceGeneration,
+		WorkspaceState:      scope.WorkspaceState,
+		WorkspacePath:       scope.WorkspacePath,
+		WorkspaceName:       scope.WorkspaceName,
+		ThemeID:             scope.ThemeID,
 	}
 }
 
@@ -1025,14 +1022,14 @@ func resolutionForEntry(requestedPath, resolvedPath string, entry pebblestore.Wo
 
 func resolutionForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceID string, workspaceGeneration int64, workspaceState, workspaceName, themeID string) Resolution {
 	return Resolution{
-		RequestedPath:          requestedPath,
-		ResolvedPath:           resolvedPath,
-		WorkspaceID:            workspaceID,
-		WorkspaceGeneration:    workspaceGeneration,
-		WorkspaceState:         workspaceState,
-		WorkspacePath:          workspacePath,
-		WorkspaceName:          workspaceName,
-		ThemeID:                themeID,
+		RequestedPath:       requestedPath,
+		ResolvedPath:        resolvedPath,
+		WorkspaceID:         workspaceID,
+		WorkspaceGeneration: workspaceGeneration,
+		WorkspaceState:      workspaceState,
+		WorkspacePath:       workspacePath,
+		WorkspaceName:       workspaceName,
+		ThemeID:             themeID,
 	}
 }
 
@@ -1042,16 +1039,15 @@ func scopeForEntry(requestedPath, resolvedPath string, entry pebblestore.Workspa
 
 func scopeForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceID string, workspaceGeneration int64, workspaceState, workspaceName, themeID string, directories []string, matched bool) Scope {
 	return Scope{
-		RequestedPath:          requestedPath,
-		ResolvedPath:           resolvedPath,
-		WorkspaceID:            workspaceID,
-		WorkspaceGeneration:    workspaceGeneration,
-		WorkspaceState:         workspaceState,
-		WorkspacePath:          workspacePath,
-		WorkspaceName:          workspaceName,
-		ThemeID:                themeID,
-		Directories:            directories,
-		Matched:                matched,
+		RequestedPath:       requestedPath,
+		ResolvedPath:        resolvedPath,
+		WorkspaceID:         workspaceID,
+		WorkspaceGeneration: workspaceGeneration,
+		WorkspaceState:      workspaceState,
+		WorkspacePath:       workspacePath,
+		WorkspaceName:       workspaceName,
+		ThemeID:             themeID,
+		Directories:         directories,
+		Matched:             matched,
 	}
 }
-

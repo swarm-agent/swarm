@@ -39,17 +39,12 @@ func (s *TopologyStore) SnapshotForAccount(accountScopeID string) (TopologySnaps
 	if err != nil {
 		return TopologySnapshot{}, err
 	}
-	sessionRoutes, err := s.ListSessionRoutesForAccount(accountScopeID, 100000)
-	if err != nil {
-		return TopologySnapshot{}, err
-	}
 	return TopologySnapshot{
 		Runtimes:          runtimes,
 		RuntimePlacements: runtimePlacements,
 		HostContainers:    hostContainers,
 		Attachments:       attachments,
 		WorkspaceBindings: workspaceBindings,
-		SessionRoutes:     sessionRoutes,
 		MigrationStatus: TopologyMigrationStatusRecord{
 			ID:                    DefaultTopologyMigrationStatusID,
 			Version:               TopologySnapshotVersion,
@@ -58,7 +53,6 @@ func (s *TopologyStore) SnapshotForAccount(accountScopeID string) (TopologySnaps
 			HostContainerCount:    len(hostContainers),
 			AttachmentCount:       len(attachments),
 			WorkspaceBindingCount: len(workspaceBindings),
-			SessionRouteCount:     len(sessionRoutes),
 		},
 	}, nil
 }
@@ -79,7 +73,6 @@ func (s *TopologyStore) ReplaceSnapshotForAccount(accountScopeID string, snapsho
 	snapshot.HostContainers = normalizeTopologyHostContainerRecords(snapshot.HostContainers)
 	snapshot.Attachments = normalizeTopologyAttachmentRecords(snapshot.Attachments)
 	snapshot.WorkspaceBindings = normalizeTopologyWorkspaceBindingRecords(snapshot.WorkspaceBindings)
-	snapshot.SessionRoutes = normalizeTopologySessionRouteRecords(snapshot.SessionRoutes)
 	for i := range snapshot.Runtimes {
 		if snapshot.Runtimes[i], err = enforceTopologyRuntimeAccount(accountScopeID, snapshot.Runtimes[i]); err != nil {
 			return err
@@ -111,11 +104,6 @@ func (s *TopologyStore) ReplaceSnapshotForAccount(accountScopeID string, snapsho
 			return err
 		}
 	}
-	for i := range snapshot.SessionRoutes {
-		if snapshot.SessionRoutes[i], err = enforceTopologySessionRouteAccount(accountScopeID, snapshot.SessionRoutes[i]); err != nil {
-			return err
-		}
-	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
 	for _, prefix := range []string{
@@ -124,7 +112,6 @@ func (s *TopologyStore) ReplaceSnapshotForAccount(accountScopeID string, snapsho
 		TopologyHostContainerPrefixForAccount(accountScopeID),
 		TopologyAttachmentPrefixForAccount(accountScopeID),
 		TopologyWorkspaceBindingPrefixForAccount(accountScopeID),
-		TopologySessionRoutePrefixForAccount(accountScopeID),
 	} {
 		if err := s.deletePrefixWithBatch(batch, prefix); err != nil {
 			return err
@@ -153,11 +140,6 @@ func (s *TopologyStore) ReplaceSnapshotForAccount(accountScopeID string, snapsho
 	for _, record := range snapshot.WorkspaceBindings {
 		if err := setTopologyBatchJSON(batch, KeyTopologyWorkspaceBindingForAccount(accountScopeID, record.BindingID), record); err != nil {
 			return fmt.Errorf("marshal topology workspace binding %q: %w", record.BindingID, err)
-		}
-	}
-	for _, record := range snapshot.SessionRoutes {
-		if err := setTopologyBatchJSON(batch, KeyTopologySessionRouteForAccount(accountScopeID, record.SessionID), record); err != nil {
-			return fmt.Errorf("marshal topology session route %q: %w", record.SessionID, err)
 		}
 	}
 	return batch.Commit(nil)
@@ -570,79 +552,6 @@ func (s *TopologyStore) DeleteWorkspaceBindingForAccount(accountScopeID, binding
 	return batch.Commit(pebble.Sync)
 }
 
-func (s *TopologyStore) ListSessionRoutesForAccount(accountScopeID string, limit int) ([]TopologySessionRouteRecord, error) {
-	accountScopeID, err := requireTopologyAccountScopeID(accountScopeID)
-	if err != nil {
-		return nil, err
-	}
-	return s.listTopologySessionRouteRecordsForAccount(accountScopeID, limit)
-}
-
-func (s *TopologyStore) GetSessionRouteForAccount(accountScopeID, sessionID string) (TopologySessionRouteRecord, bool, error) {
-	accountScopeID, err := requireTopologyAccountScopeID(accountScopeID)
-	if err != nil {
-		return TopologySessionRouteRecord{}, false, err
-	}
-	if s == nil || s.store == nil {
-		return TopologySessionRouteRecord{}, false, errors.New("topology store is not configured")
-	}
-	sessionID = normalizeTopologyKeyValue(sessionID)
-	if sessionID == "" {
-		return TopologySessionRouteRecord{}, false, errors.New("topology session id is required")
-	}
-	var record TopologySessionRouteRecord
-	ok, err := s.store.GetJSON(KeyTopologySessionRouteForAccount(accountScopeID, sessionID), &record)
-	if err != nil || !ok {
-		return TopologySessionRouteRecord{}, ok, err
-	}
-	record = normalizeTopologySessionRouteRecord(record)
-	if record.SessionID == "" {
-		record.SessionID = sessionID
-	}
-	record, err = enforceTopologySessionRouteAccount(accountScopeID, record)
-	if err != nil {
-		return TopologySessionRouteRecord{}, false, err
-	}
-	return record, true, nil
-}
-
-func (s *TopologyStore) PutSessionRouteForAccount(accountScopeID string, record TopologySessionRouteRecord) (TopologySessionRouteRecord, error) {
-	if s == nil || s.store == nil {
-		return TopologySessionRouteRecord{}, errors.New("topology store is not configured")
-	}
-	accountScopeID, err := requireTopologyAccountScopeID(accountScopeID)
-	if err != nil {
-		return TopologySessionRouteRecord{}, err
-	}
-	record = normalizeTopologySessionRouteRecord(record)
-	if record.SessionID == "" {
-		return TopologySessionRouteRecord{}, errors.New("topology session id is required")
-	}
-	if record, err = enforceTopologySessionRouteAccount(accountScopeID, record); err != nil {
-		return TopologySessionRouteRecord{}, err
-	}
-	record.CreatedAt, record.UpdatedAt = nextTopologyWriteTimestamps(record.CreatedAt)
-	if err := s.store.PutJSON(KeyTopologySessionRouteForAccount(accountScopeID, record.SessionID), record); err != nil {
-		return TopologySessionRouteRecord{}, err
-	}
-	return record, nil
-}
-
-func (s *TopologyStore) DeleteSessionRouteForAccount(accountScopeID, sessionID string) error {
-	accountScopeID, err := requireTopologyAccountScopeID(accountScopeID)
-	if err != nil {
-		return err
-	}
-	if s == nil || s.store == nil {
-		return errors.New("topology store is not configured")
-	}
-	sessionID = normalizeTopologyKeyValue(sessionID)
-	if sessionID == "" {
-		return errors.New("topology session id is required")
-	}
-	return s.store.Delete(KeyTopologySessionRouteForAccount(accountScopeID, sessionID))
-}
-
 func (s *TopologyStore) listTopologyRuntimeRecordsForAccount(accountScopeID string, limit int) ([]TopologyRuntimeRecord, error) {
 	out, err := listTopologyRecordsForAccount(s, TopologyRuntimePrefixForAccount(accountScopeID), func(key string, value []byte) (TopologyRuntimeRecord, bool, error) {
 		var record TopologyRuntimeRecord
@@ -759,35 +668,6 @@ func (s *TopologyStore) listTopologyWorkspaceBindingRecordsForAccount(accountSco
 	return out, nil
 }
 
-func (s *TopologyStore) listTopologySessionRouteRecordsForAccount(accountScopeID string, limit int) ([]TopologySessionRouteRecord, error) {
-	out, err := listTopologyRecordsForAccount(s, TopologySessionRoutePrefixForAccount(accountScopeID), func(key string, value []byte) (TopologySessionRouteRecord, bool, error) {
-		var record TopologySessionRouteRecord
-		if err := json.Unmarshal(value, &record); err != nil {
-			return TopologySessionRouteRecord{}, false, fmt.Errorf("decode topology session route: %w", err)
-		}
-		record = normalizeTopologySessionRouteRecord(record)
-		if record.SessionID == "" {
-			record.SessionID = decodeTopologyKeyValue(key, TopologySessionRoutePrefixForAccount(accountScopeID))
-		}
-		if record.SessionID == "" {
-			return TopologySessionRouteRecord{}, false, nil
-		}
-		var err error
-		record, err = enforceTopologySessionRouteAccount(accountScopeID, record)
-		return record, err == nil, err
-	}, limit)
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].UpdatedAt == out[j].UpdatedAt {
-			return strings.ToLower(out[i].SessionID) < strings.ToLower(out[j].SessionID)
-		}
-		return out[i].UpdatedAt > out[j].UpdatedAt
-	})
-	return out, nil
-}
-
 func listTopologyRecordsForAccount[T any](s *TopologyStore, prefix string, decode func(key string, value []byte) (T, bool, error), limit int) ([]T, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("topology store is not configured")
@@ -868,15 +748,6 @@ func enforceTopologyAttachmentAccount(accountScopeID string, record TopologyAtta
 func enforceTopologyWorkspaceBindingAccount(accountScopeID string, record TopologyWorkspaceBindingRecord) (TopologyWorkspaceBindingRecord, error) {
 	if err := validateTopologyRecordAccount(accountScopeID, record.UserID, record.AccountScopeID); err != nil {
 		return TopologyWorkspaceBindingRecord{}, err
-	}
-	record.AccountScopeID = strings.TrimSpace(accountScopeID)
-	record.UserID = strings.TrimSpace(record.UserID)
-	return record, nil
-}
-
-func enforceTopologySessionRouteAccount(accountScopeID string, record TopologySessionRouteRecord) (TopologySessionRouteRecord, error) {
-	if err := validateTopologyRecordAccount(accountScopeID, record.UserID, record.AccountScopeID); err != nil {
-		return TopologySessionRouteRecord{}, err
 	}
 	record.AccountScopeID = strings.TrimSpace(accountScopeID)
 	record.UserID = strings.TrimSpace(record.UserID)

@@ -107,5 +107,3 @@ func remoteSwarmJSONRequestWithClientAndHeaders(method, endpoint string, payload
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
-
-

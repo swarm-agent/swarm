@@ -148,16 +148,7 @@ start_swarmd() {
   if is_true "${SWARM_CONTAINER_OFFLINE}"; then
     offline_state="yes"
   fi
-  child_cfg_state="no"
-  if [ -n "${SWARM_CHILD_STARTUP_CONFIG:-}" ]; then
-    child_cfg_state="yes"
-  fi
   echo "[swarm-container] listen=${SWARMD_LISTEN} desktop_port=${SWARM_DESKTOP_PORT} offline=${offline_state}"
-  echo "[swarm-container] child startup config env present=${child_cfg_state}"
-  if [ -n "${SWARM_CHILD_STARTUP_CONFIG:-}" ]; then
-    echo "[swarm-container] child bootstrap summary deployment_id=$(child_cfg_value deploy_container_deployment_id) swarm_name=$(child_cfg_value swarm_name) parent_swarm_id=$(child_cfg_value parent_swarm_id) pairing_state=$(child_cfg_value pairing_state)"
-    echo "[swarm-container] child bootstrap endpoints host_api_base_url=$(child_cfg_value deploy_container_host_api_base_url) host_desktop_url=$(child_cfg_value deploy_container_host_desktop_url) advertise_host=$(child_cfg_value advertise_host) advertise_port=$(child_cfg_value advertise_port) desktop_port=$(child_cfg_value desktop_port) local_transport_socket_path=$(child_cfg_value deploy_container_local_transport_socket_path)"
-  fi
   echo "[swarm-container] starting swarmd"
   swarmd_bin="${SWARM_RUNTIME_BIN:-/usr/local/bin/swarmd}"
   set -- \

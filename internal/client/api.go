@@ -381,28 +381,28 @@ type AgentUpsertRequest struct {
 }
 
 type WorkspaceResolution struct {
-	RequestedPath       string                     `json:"requested_path"`
-	ResolvedPath        string                     `json:"resolved_path"`
-	WorkspaceID         string                     `json:"workspace_id,omitempty"`
-	WorkspaceGeneration int64                      `json:"workspace_generation,omitempty"`
-	WorkspaceState      string                     `json:"workspace_state,omitempty"`
-	WorkspacePath       string                     `json:"workspace_path"`
-	WorkspaceName       string                     `json:"workspace_name"`
-	ThemeID             string                     `json:"theme_id,omitempty"`
+	RequestedPath       string `json:"requested_path"`
+	ResolvedPath        string `json:"resolved_path"`
+	WorkspaceID         string `json:"workspace_id,omitempty"`
+	WorkspaceGeneration int64  `json:"workspace_generation,omitempty"`
+	WorkspaceState      string `json:"workspace_state,omitempty"`
+	WorkspacePath       string `json:"workspace_path"`
+	WorkspaceName       string `json:"workspace_name"`
+	ThemeID             string `json:"theme_id,omitempty"`
 }
 
 type WorkspaceTopologyRoute struct {
-	RouteID              string                   `json:"route_id"`
-	WorkspaceBindingID   string                   `json:"workspace_binding_id"`
-	RuntimeSwarmID       string                   `json:"runtime_swarm_id"`
-	RuntimeSwarmName     string                   `json:"runtime_swarm_name,omitempty"`
-	RuntimeKind          string                   `json:"runtime_kind,omitempty"`
-	RuntimeRelationship  string                   `json:"runtime_relationship,omitempty"`
-	HostWorkspacePath    string                   `json:"host_workspace_path"`
-	HostWorkspaceName    string                   `json:"host_workspace_name,omitempty"`
-	RuntimeWorkspacePath string                   `json:"runtime_workspace_path"`
-	TUIPrimaryCWD        bool                     `json:"tui_primary_cwd,omitempty"`
-	UnavailableReason    string                   `json:"unavailable_reason,omitempty"`
+	RouteID              string `json:"route_id"`
+	WorkspaceBindingID   string `json:"workspace_binding_id"`
+	RuntimeSwarmID       string `json:"runtime_swarm_id"`
+	RuntimeSwarmName     string `json:"runtime_swarm_name,omitempty"`
+	RuntimeKind          string `json:"runtime_kind,omitempty"`
+	RuntimeRelationship  string `json:"runtime_relationship,omitempty"`
+	HostWorkspacePath    string `json:"host_workspace_path"`
+	HostWorkspaceName    string `json:"host_workspace_name,omitempty"`
+	RuntimeWorkspacePath string `json:"runtime_workspace_path"`
+	TUIPrimaryCWD        bool   `json:"tui_primary_cwd,omitempty"`
+	UnavailableReason    string `json:"unavailable_reason,omitempty"`
 }
 
 type WorkspaceOverviewSwarmTarget struct {
@@ -417,20 +417,20 @@ type WorkspaceOverviewSwarmTarget struct {
 }
 
 type WorkspaceEntry struct {
-	Path                    string                     `json:"path"`
-	WorkspaceID             string                     `json:"workspace_id,omitempty"`
-	WorkspaceGeneration     int64                      `json:"workspace_generation,omitempty"`
-	State                   string                     `json:"state,omitempty"`
-	LocalWorkspaceBindingID string                     `json:"local_workspace_binding_id,omitempty"`
-	WorkspaceName           string                     `json:"workspace_name"`
-	ThemeID                 string                     `json:"theme_id,omitempty"`
-	Directories             []string                   `json:"directories"`
-	IsGitRepo               bool                       `json:"is_git_repo"`
-	SortIndex               int                        `json:"sort_index"`
-	AddedAt                 int64                      `json:"added_at"`
-	UpdatedAt               int64                      `json:"updated_at"`
-	LastSelectedAt          int64                      `json:"last_selected_at"`
-	Active                  bool                       `json:"active"`
+	Path                    string   `json:"path"`
+	WorkspaceID             string   `json:"workspace_id,omitempty"`
+	WorkspaceGeneration     int64    `json:"workspace_generation,omitempty"`
+	State                   string   `json:"state,omitempty"`
+	LocalWorkspaceBindingID string   `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceName           string   `json:"workspace_name"`
+	ThemeID                 string   `json:"theme_id,omitempty"`
+	Directories             []string `json:"directories"`
+	IsGitRepo               bool     `json:"is_git_repo"`
+	SortIndex               int      `json:"sort_index"`
+	AddedAt                 int64    `json:"added_at"`
+	UpdatedAt               int64    `json:"updated_at"`
+	LastSelectedAt          int64    `json:"last_selected_at"`
+	Active                  bool     `json:"active"`
 }
 
 type WorkspaceOverviewWorkspace struct {
@@ -504,25 +504,6 @@ type SessionLifecycleSnapshot struct {
 	OwnerTransport string `json:"owner_transport,omitempty"`
 }
 
-type SessionExecutionV2 struct {
-	SessionID                 string `json:"session_id,omitempty"`
-	ExecutionClass            string `json:"execution_class"`
-	RuntimeSwarmID            string `json:"runtime_swarm_id"`
-	RuntimeKind               string `json:"runtime_kind"`
-	AuthorityHostSwarmID      string `json:"authority_host_swarm_id"`
-	AuthorityContainerID      string `json:"authority_container_id,omitempty"`
-	WorkspaceBindingID        string `json:"workspace_binding_id"`
-	SourceWorkspaceID         string `json:"source_workspace_id"`
-	SourceWorkspaceGeneration int64  `json:"source_workspace_generation"`
-	SourceWorkspaceName       string `json:"source_workspace_name,omitempty"`
-	SourceWorkspacePath       string `json:"source_workspace_path"`
-	RuntimeWorkspacePath      string `json:"runtime_workspace_path"`
-	PlacementGeneration       int    `json:"placement_generation"`
-	BindingGeneration         int    `json:"binding_generation"`
-	CreatedAt                 int64  `json:"created_at,omitempty"`
-	UpdatedAt                 int64  `json:"updated_at,omitempty"`
-}
-
 type SessionCreateOptions struct {
 	Title                    string
 	WorkspacePath            string
@@ -577,7 +558,6 @@ type SessionSummary struct {
 	LastMessageAt              int64                     `json:"last_message_at"`
 	PendingPermissionCount     int                       `json:"pending_permission_count"`
 	Lifecycle                  *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
-	SessionExecution           *SessionExecutionV2       `json:"session_execution,omitempty"`
 	SessionAPI                 string                    `json:"session_api,omitempty"`
 	LastEventSeq               uint64                    `json:"last_event_seq,omitempty"`
 	ProjectionHighWatermarkSeq uint64                    `json:"projection_high_watermark_seq,omitempty"`
@@ -1200,7 +1180,7 @@ type UISwarmingSettings struct {
 // - UISwarmSettings is for the user-editable machine name shared by TUI /swarm and desktop settings.
 // Do not merge these concepts in future edits.
 type UISwarmSettings struct {
-	Name             string   `json:"name,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
 type UISettings struct {
@@ -1470,7 +1450,7 @@ func New(baseURL string) *API {
 	return &API{
 		baseURL: baseURL,
 		// Do not set a global client timeout here. Long-running requests such as
-		// /v2/sessions/{id}/run must be controlled by per-request context deadlines.
+		// Session runs must be controlled by per-request context deadlines.
 		http: &http.Client{},
 	}
 }
@@ -2756,11 +2736,11 @@ func (c *API) ListSessionsForCWD(ctx context.Context, limit int, cwd string) ([]
 }
 
 func (c *API) ListSessionsForExactCWD(ctx context.Context, limit int, cwd string) ([]SessionSummary, error) {
-	return c.listSessionsV2(ctx, limit, "cwd", cwd)
+	return c.listSessionsV1ForPath(ctx, limit, cwd, true)
 }
 
 func (c *API) ListSessionsForWorkspaceBinding(ctx context.Context, limit int, workspaceBindingID string) ([]SessionSummary, error) {
-	return c.listSessionsV2(ctx, limit, "workspace_binding_id", workspaceBindingID)
+	return c.ListSessionsV3(ctx, limit)
 }
 
 func (c *API) listSessionsV1ForPath(ctx context.Context, limit int, cwd string, exact bool) ([]SessionSummary, error) {
@@ -2782,43 +2762,6 @@ func (c *API) listSessionsV1ForPath(ctx context.Context, limit int, cwd string, 
 		return nil, err
 	}
 	return resp.Sessions, nil
-}
-
-func (c *API) listSessionsV2(ctx context.Context, limit int, mode, value string) ([]SessionSummary, error) {
-	mode = strings.TrimSpace(mode)
-	value = strings.TrimSpace(value)
-	if mode != "cwd" && mode != "workspace_binding_id" {
-		return nil, fmt.Errorf("unsupported sessions v2 list mode %q", mode)
-	}
-	if value == "" {
-		return nil, fmt.Errorf("sessions v2 list %s is required", mode)
-	}
-	if limit <= 0 {
-		limit = 100
-	}
-	query := url.Values{}
-	query.Set("limit", strconv.Itoa(limit))
-	query.Set(mode, value)
-	path := "/v2/sessions?" + query.Encode()
-	var resp struct {
-		OK       bool             `json:"ok"`
-		Sessions []SessionSummary `json:"sessions"`
-	}
-	if err := c.getJSON(ctx, path, &resp, true); err != nil {
-		return nil, err
-	}
-	return resp.Sessions, nil
-}
-
-func sessionV2LifecyclePath(sessionID, suffix string) string {
-	path := "/v2/sessions/" + url.PathEscape(strings.TrimSpace(sessionID))
-	if suffix = strings.TrimSpace(suffix); suffix != "" {
-		if !strings.HasPrefix(suffix, "/") {
-			suffix = "/" + suffix
-		}
-		path += suffix
-	}
-	return path
 }
 
 func sessionV3PrimaryPath(sessionID, suffix string) string {
@@ -3206,107 +3149,23 @@ func (c *API) SendSessionV3Message(ctx context.Context, sessionID string, option
 }
 
 func (c *API) GetSession(ctx context.Context, sessionID string) (SessionSummary, error) {
-	path := sessionV2LifecyclePath(sessionID, "")
-	var resp struct {
-		OK      bool           `json:"ok"`
-		Session SessionSummary `json:"session"`
-	}
-	if err := c.getJSON(ctx, path, &resp, true); err != nil {
-		return SessionSummary{}, err
-	}
-	return resp.Session, nil
-}
-
-func (c *API) CreateSession(ctx context.Context, title, workspacePath, workspaceName string, preference ModelPreference) (SessionSummary, error) {
-	return SessionSummary{}, errors.New("create session requires sessions v2 swarm_id and workspace_binding_id")
-}
-
-func sessionCreateEndpoint(options SessionCreateOptions) (string, error) {
-	executionClass := strings.ToLower(strings.TrimSpace(options.ExecutionClass))
-	targetKind := strings.ToLower(strings.TrimSpace(options.TargetKind))
-	targetRelationship := strings.ToLower(strings.TrimSpace(options.TargetRelationship))
-
-	if executionClass == "local_container" || executionClass == "local-container" {
-		return "", errors.New("sessions v2 local-container create endpoint has been retired")
-	}
-	if executionClass == "primary" {
-		return "/v2/sessions/primary", nil
-	}
-	if targetKind == "container" || targetKind == "local_container" || targetKind == "local-container" {
-		return "", errors.New("sessions v2 local-container create endpoint has been retired")
-	}
-	if targetRelationship == "child" {
-		return "", errors.New("sessions v2 child target create endpoint has been retired")
-	}
-	return "/v2/sessions/primary", nil
-}
-
-func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreateOptions) (SessionSummary, error) {
-	metadata := options.Metadata
-	if metadata == nil {
-		metadata = map[string]any{}
-	}
-	mode := strings.ToLower(strings.TrimSpace(options.Mode))
-	if mode != "auto" {
-		mode = "plan"
-	}
-	agentName := strings.TrimSpace(options.AgentName)
-	if agentName == "" {
-		agentName = "swarm"
-	}
-	worktreeMode := strings.ToLower(strings.TrimSpace(options.WorktreeMode))
-	if worktreeMode == "" || worktreeMode == "inherit" {
-		worktreeMode = "off"
-	}
-	req := map[string]any{
-		"swarm_id":      strings.TrimSpace(options.SwarmID),
-		"title":         strings.TrimSpace(options.Title),
-		"mode":          mode,
-		"agent_name":    agentName,
-		"metadata":      metadata,
-		"worktree_mode": worktreeMode,
-		"preference": map[string]string{
-			"provider":     strings.TrimSpace(options.Preference.Provider),
-			"model":        strings.TrimSpace(options.Preference.Model),
-			"thinking":     strings.TrimSpace(options.Preference.Thinking),
-			"service_tier": strings.TrimSpace(options.Preference.ServiceTier),
-			"context_mode": strings.TrimSpace(options.Preference.ContextMode),
-		},
-	}
-	if bindingID := strings.TrimSpace(options.WorkspaceBindingID); bindingID != "" {
-		req["workspace_binding_id"] = bindingID
-	} else if options.TUIPrimaryCWD {
-		req["workspace_path"] = strings.TrimSpace(options.WorkspacePath)
-	}
-	if worktreeMode == "on" {
-		if options.WorktreeUseCurrentBranch != nil {
-			req["worktree_use_current_branch"] = *options.WorktreeUseCurrentBranch
-		}
-		if baseBranch := strings.TrimSpace(options.WorktreeBaseBranch); baseBranch != "" {
-			req["worktree_base_branch"] = baseBranch
-		}
-		if branchName := strings.TrimSpace(options.WorktreeBranchName); branchName != "" {
-			req["worktree_branch_name"] = branchName
-		}
-	}
-	endpoint, err := sessionCreateEndpoint(options)
+	hydrated, err := c.GetSessionV3(ctx, sessionID)
 	if err != nil {
 		return SessionSummary{}, err
 	}
-	var resp struct {
-		OK               bool               `json:"ok"`
-		Session          SessionSummary     `json:"session"`
-		SessionExecution SessionExecutionV2 `json:"session_execution"`
-		Warning          string             `json:"warning,omitempty"`
-	}
-	if err := c.postJSON(ctx, endpoint, req, &resp, true); err != nil {
+	return hydrated.Session, nil
+}
+
+func (c *API) CreateSession(ctx context.Context, title, workspacePath, workspaceName string, preference ModelPreference) (SessionSummary, error) {
+	return SessionSummary{}, errors.New("create session requires swarm_id and workspace_binding_id")
+}
+
+func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreateOptions) (SessionSummary, error) {
+	hydrated, err := c.CreateSessionV3WithOptions(ctx, options)
+	if err != nil {
 		return SessionSummary{}, err
 	}
-	resp.Session.Warning = strings.TrimSpace(resp.Warning)
-	if strings.TrimSpace(resp.SessionExecution.RuntimeSwarmID) != "" || strings.TrimSpace(resp.SessionExecution.WorkspaceBindingID) != "" {
-		resp.Session.SessionExecution = &resp.SessionExecution
-	}
-	return resp.Session, nil
+	return hydrated.Session, nil
 }
 
 func (c *API) ListSessionMessages(ctx context.Context, sessionID string, afterSeq uint64, limit int) ([]SessionMessage, error) {
@@ -3323,7 +3182,7 @@ func (c *API) ListSessionMessages(ctx context.Context, sessionID string, afterSe
 		query.Set("after_seq", strconv.FormatUint(afterSeq, 10))
 	}
 	query.Set("limit", strconv.Itoa(limit))
-	path := sessionV2LifecyclePath(sessionID, "messages") + "?" + query.Encode()
+	path := sessionV3PrimaryPath(sessionID, "messages") + "?" + query.Encode()
 
 	var resp struct {
 		OK        bool             `json:"ok"`
@@ -3344,7 +3203,7 @@ func (c *API) GetSessionUsage(ctx context.Context, sessionID string, limit int) 
 	if limit <= 0 {
 		limit = 50
 	}
-	path := sessionV2LifecyclePath(sessionID, "usage") + "?limit=" + strconv.Itoa(limit)
+	path := sessionV3PrimaryPath(sessionID, "usage") + "?limit=" + strconv.Itoa(limit)
 	var resp struct {
 		OK              bool                `json:"ok"`
 		SessionID       string              `json:"session_id"`
@@ -3374,7 +3233,7 @@ func (c *API) GetSessionMode(ctx context.Context, sessionID string) (string, err
 	if sessionID == "" {
 		return "", errors.New("session id is required")
 	}
-	path := sessionV2LifecyclePath(sessionID, "mode")
+	path := sessionV3PrimaryPath(sessionID, "mode")
 	var resp struct {
 		OK        bool   `json:"ok"`
 		SessionID string `json:"session_id"`
@@ -3402,7 +3261,7 @@ func (c *API) SetSessionMode(ctx context.Context, sessionID, mode string) (strin
 	req := map[string]string{
 		"mode": strings.TrimSpace(mode),
 	}
-	path := sessionV2LifecyclePath(sessionID, "mode")
+	path := sessionV3PrimaryPath(sessionID, "mode")
 	var resp struct {
 		OK        bool   `json:"ok"`
 		SessionID string `json:"session_id"`
@@ -3430,7 +3289,7 @@ func (c *API) SetSessionV3Mode(ctx context.Context, sessionID, mode string) (str
 }
 
 func (c *API) UpdateSessionMetadata(ctx context.Context, sessionID string, metadata map[string]any) (SessionSummary, error) {
-	path := sessionV2LifecyclePath(sessionID, "metadata")
+	path := sessionV3PrimaryPath(sessionID, "metadata")
 	payload := map[string]any{
 		"metadata": metadata,
 	}
@@ -3449,7 +3308,7 @@ func (c *API) GetSessionCodexConfig(ctx context.Context, sessionID string) (Sess
 	if sessionID == "" {
 		return SessionCodexConfig{}, errors.New("session id is required")
 	}
-	path := sessionV2LifecyclePath(sessionID, "codex")
+	path := sessionV3PrimaryPath(sessionID, "codex")
 	var resp struct {
 		OK                     bool   `json:"ok"`
 		SessionID              string `json:"session_id"`
@@ -3477,7 +3336,7 @@ func (c *API) UpdateSessionCodexConfig(ctx context.Context, sessionID string, re
 	if sessionID == "" {
 		return SessionCodexConfig{}, errors.New("session id is required")
 	}
-	path := sessionV2LifecyclePath(sessionID, "codex")
+	path := sessionV3PrimaryPath(sessionID, "codex")
 	var resp struct {
 		OK                     bool   `json:"ok"`
 		SessionID              string `json:"session_id"`
@@ -3505,7 +3364,7 @@ func (c *API) GetSessionPreference(ctx context.Context, sessionID string) (Model
 	if sessionID == "" {
 		return ModelResolved{}, errors.New("session id is required")
 	}
-	path := sessionV2LifecyclePath(sessionID, "preference")
+	path := sessionV3PrimaryPath(sessionID, "preference")
 	var resolved ModelResolved
 	if err := c.getJSON(ctx, path, &resolved, true); err != nil {
 		return ModelResolved{}, err
@@ -3526,7 +3385,7 @@ func (c *API) SetSessionPreference(ctx context.Context, sessionID string, req ma
 	if sessionID == "" {
 		return ModelResolved{}, errors.New("session id is required")
 	}
-	path := sessionV2LifecyclePath(sessionID, "preference")
+	path := sessionV3PrimaryPath(sessionID, "preference")
 	var resolved ModelResolved
 	if err := c.postJSON(ctx, path, req, &resolved, true); err != nil {
 		return ModelResolved{}, err
@@ -3554,7 +3413,7 @@ func (c *API) ListSessionPlans(ctx context.Context, sessionID string, limit int)
 	if limit <= 0 {
 		limit = 100
 	}
-	path := sessionV2LifecyclePath(sessionID, "plans") + "?limit=" + strconv.Itoa(limit)
+	path := sessionV3PrimaryPath(sessionID, "plans") + "?limit=" + strconv.Itoa(limit)
 	var resp struct {
 		OK           bool          `json:"ok"`
 		SessionID    string        `json:"session_id"`
@@ -3580,7 +3439,7 @@ func (c *API) ListSessionPlanHistory(ctx context.Context, sessionID, planID stri
 	if limit <= 0 {
 		limit = 100
 	}
-	path := sessionV2LifecyclePath(sessionID, "plans/"+url.PathEscape(planID)+"/history") + "?limit=" + strconv.Itoa(limit)
+	path := sessionV3PrimaryPath(sessionID, "plans/"+url.PathEscape(planID)+"/history") + "?limit=" + strconv.Itoa(limit)
 	var resp struct {
 		OK        bool          `json:"ok"`
 		SessionID string        `json:"session_id"`
@@ -3603,7 +3462,7 @@ func (c *API) GetSessionPlan(ctx context.Context, sessionID, planID string) (Ses
 	if planID == "" {
 		return SessionPlan{}, errors.New("plan id is required")
 	}
-	path := sessionV2LifecyclePath(sessionID, "plans/"+url.PathEscape(planID))
+	path := sessionV3PrimaryPath(sessionID, "plans/"+url.PathEscape(planID))
 	var resp struct {
 		OK        bool        `json:"ok"`
 		SessionID string      `json:"session_id"`
@@ -3620,7 +3479,7 @@ func (c *API) GetActiveSessionPlan(ctx context.Context, sessionID string) (Sessi
 	if sessionID == "" {
 		return SessionPlan{}, false, errors.New("session id is required")
 	}
-	path := sessionV2LifecyclePath(sessionID, "plans/active")
+	path := sessionV3PrimaryPath(sessionID, "plans/active")
 	var resp struct {
 		OK         bool        `json:"ok"`
 		SessionID  string      `json:"session_id"`
@@ -3795,7 +3654,7 @@ func (c *API) SaveSessionPlan(ctx context.Context, sessionID string, req Session
 	if sessionID == "" {
 		return SessionPlan{}, errors.New("session id is required")
 	}
-	path := sessionV2LifecyclePath(sessionID, "plans")
+	path := sessionV3PrimaryPath(sessionID, "plans")
 	var resp struct {
 		OK        bool        `json:"ok"`
 		SessionID string      `json:"session_id"`
@@ -3816,7 +3675,7 @@ func (c *API) SetActiveSessionPlan(ctx context.Context, sessionID, planID string
 	if planID == "" {
 		return SessionPlan{}, errors.New("plan id is required")
 	}
-	path := sessionV2LifecyclePath(sessionID, "plans/active")
+	path := sessionV3PrimaryPath(sessionID, "plans/active")
 	req := map[string]string{"plan_id": planID}
 	var resp struct {
 		OK         bool        `json:"ok"`
@@ -3958,7 +3817,7 @@ func (c *API) RunSessionWithOptions(ctx context.Context, sessionID, prompt, agen
 	}
 
 	req := runSessionV2Request(prompt, agentName, instructions, options)
-	path := sessionV2LifecyclePath(sessionID, "run")
+	path := sessionV3PrimaryPath(sessionID, "run")
 	var resp struct {
 		OK     bool             `json:"ok"`
 		Result SessionRunResult `json:"result"`
@@ -3986,29 +3845,12 @@ func (c *API) StopSessionRun(ctx context.Context, sessionID, runID string) error
 	if err != nil {
 		return fmt.Errorf("resolve session execution for stop: %w", err)
 	}
-	if strings.EqualFold(strings.TrimSpace(session.SessionAPI), "v3") {
-		targetSwarmID := ""
-		if session.SessionExecution != nil {
-			targetSwarmID = strings.TrimSpace(session.SessionExecution.RuntimeSwarmID)
-		}
-		if targetSwarmID == "" {
-			return errors.New("primary stop swarm target is not configured")
-		}
-		return c.StopSessionV3Run(ctx, sessionID, runID, targetSwarmID, "")
+	targetSwarmID, _ := session.Metadata["swarm_v3_runtime_swarm_id"].(string)
+	targetSwarmID = strings.TrimSpace(targetSwarmID)
+	if targetSwarmID == "" {
+		return errors.New("session swarm target is not configured")
 	}
-	if session.SessionExecution != nil {
-		switch strings.TrimSpace(session.SessionExecution.ExecutionClass) {
-		case "primary":
-			targetSwarmID := strings.TrimSpace(session.SessionExecution.RuntimeSwarmID)
-			if targetSwarmID == "" {
-				return errors.New("primary stop swarm target is not configured")
-			}
-			return c.StopPrimarySessionRun(ctx, sessionID, runID, targetSwarmID)
-		case "local_container":
-			return errors.New("sessions v2 local-container stop endpoint has been retired")
-		}
-	}
-	return errors.New("session execution class is not available for stop")
+	return c.StopSessionV3Run(ctx, sessionID, runID, targetSwarmID, "")
 }
 
 func (c *API) StopSessionV3Run(ctx context.Context, sessionID, runID, targetSwarmID, reason string) error {
@@ -4031,27 +3873,6 @@ func (c *API) StopSessionV3Run(ctx context.Context, sessionID, runID, targetSwar
 	return c.postJSON(ctx, sessionV3PrimaryPath(sessionID, "run/stop"), body, nil, true)
 }
 
-func (c *API) StopPrimarySessionRun(ctx context.Context, sessionID, runID, targetSwarmID string) error {
-	sessionID = strings.TrimSpace(sessionID)
-	runID = strings.TrimSpace(runID)
-	targetSwarmID = strings.TrimSpace(targetSwarmID)
-	if sessionID == "" {
-		return errors.New("session id is required")
-	}
-	if runID == "" {
-		return errors.New("run id is required")
-	}
-	if targetSwarmID == "" {
-		return errors.New("target swarm id is required")
-	}
-	path := sessionV2LifecyclePath(sessionID, "run/stop/primary")
-	return c.postJSON(ctx, path, map[string]any{
-		"type":            "run.stop",
-		"target_swarm_id": targetSwarmID,
-		"run_id":          runID,
-	}, nil, true)
-}
-
 func (c *API) RunSessionStreamWithOptions(ctx context.Context, sessionID, prompt, agentName, instructions string, options RunSessionOptions, onEvent func(SessionRunStreamEvent)) (SessionRunResult, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -4069,7 +3890,7 @@ func (c *API) RunSessionStreamWithOptions(ctx context.Context, sessionID, prompt
 		defer cancel()
 	}
 
-	path := sessionV2LifecyclePath(sessionID, "run/stream")
+	path := sessionV3PrimaryPath(sessionID, "run/stream")
 	connect := func() (*wsClientConn, error) {
 		baseURL, _, socketPath := c.requestTarget()
 		return dialDaemonWS(ctx, baseURL, c.Token(), socketPath, path, "")
@@ -4200,7 +4021,7 @@ func (c *API) StartBackgroundSessionRun(ctx context.Context, sessionID, prompt, 
 	req := runSessionV2Request(prompt, agentName, instructions, options)
 	req["type"] = "run.start"
 
-	path := sessionV2LifecyclePath(sessionID, "run/stream")
+	path := sessionV3PrimaryPath(sessionID, "run/stream")
 	var resp BackgroundRunAccepted
 	if err := c.postJSON(ctx, path, req, &resp, true); err != nil {
 		return BackgroundRunAccepted{}, err
@@ -4235,7 +4056,7 @@ func (c *API) persistRunStreamClientError(sessionID, stage string, runErr error)
 		"role":    "system",
 		"content": content,
 	}
-	path := sessionV2LifecyclePath(sessionID, "messages")
+	path := sessionV3PrimaryPath(sessionID, "messages")
 	ctx, cancel := context.WithTimeout(context.Background(), streamErrorLogTimeout)
 	defer cancel()
 
@@ -4325,7 +4146,7 @@ func (c *API) request(ctx context.Context, method, path string, payload any, att
 			req.Header.Set("X-Swarm-Token", token)
 		}
 	}
-	if method == http.MethodPost && path == "/v2/sessions/primary" {
+	if method == http.MethodPost && path == "/v3/sessions" {
 		req.Header.Set("X-Swarm-Client", "swarmtui")
 	}
 

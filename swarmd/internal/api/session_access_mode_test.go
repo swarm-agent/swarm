@@ -20,6 +20,7 @@ func TestSessionBindingWriteAccessRejectsReadOnlyBinding(t *testing.T) {
 		WorkspaceName:  "workspace",
 		Mode:           sessionruntime.ModeAuto,
 		Preference:     &pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5", Thinking: "medium"},
+		Metadata:       map[string]any{"swarm_v3_workspace_binding_id": "binding-access-mode"},
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -39,6 +40,7 @@ func TestSessionBindingWriteAccessAllowsReadWriteBinding(t *testing.T) {
 		WorkspaceName:  "workspace",
 		Mode:           sessionruntime.ModeAuto,
 		Preference:     &pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5", Thinking: "medium"},
+		Metadata:       map[string]any{"swarm_v3_workspace_binding_id": "binding-access-mode"},
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -62,8 +64,7 @@ func newSessionAccessModeTestServer(t *testing.T, accessMode string) (*Server, *
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	server := NewServer(nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, nil, nil, events, stream.NewHub(events))
 	topologyStore := pebblestore.NewTopologyStore(store)
-	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil))
-	server.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil))
 	accountID := testPrincipal().AccountScopeID
 	userID := testPrincipal().UserID
 	if _, err := topologyStore.PutRuntimeForAccount(accountID, pebblestore.TopologyRuntimeRecord{SwarmID: "local-swarm", AccountScopeID: accountID, UserID: userID, Name: "local", Status: "online"}); err != nil {
@@ -104,31 +105,6 @@ func newSessionAccessModeTestServer(t *testing.T, accessMode string) (*Server, *
 	if err != nil {
 		t.Fatalf("put binding: %v", err)
 	}
-	if _, err := server.sessionRoutes.Put(pebblestore.SessionRouteRecord{
-		SessionID:            "session-read-only",
-		UserID:               userID,
-		AccountScopeID:       accountID,
-		ChildSwarmID:         "local-swarm",
-		HostSwarmID:          "local-swarm",
-		RuntimeWorkspacePath: "/runtime/workspace",
-		WorkspaceBindingID:   binding.BindingID,
-		PlacementGeneration:  1,
-		BindingGeneration:    1,
-	}); err != nil {
-		t.Fatalf("put read-only route: %v", err)
-	}
-	if _, err := server.sessionRoutes.Put(pebblestore.SessionRouteRecord{
-		SessionID:            "session-read-write",
-		UserID:               userID,
-		AccountScopeID:       accountID,
-		ChildSwarmID:         "local-swarm",
-		HostSwarmID:          "local-swarm",
-		RuntimeWorkspacePath: "/runtime/workspace",
-		WorkspaceBindingID:   binding.BindingID,
-		PlacementGeneration:  1,
-		BindingGeneration:    1,
-	}); err != nil {
-		t.Fatalf("put read-write route: %v", err)
-	}
+	_ = binding
 	return server, sessionSvc
 }

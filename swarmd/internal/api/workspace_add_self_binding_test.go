@@ -166,7 +166,7 @@ func newWorkspaceAddSelfBindingTestServer(t *testing.T, withLocalNode bool) (*Se
 			t.Fatalf("put local placement: %v", err)
 		}
 	}
-	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore, nil, nil, nil, workspaceStore))
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore, nil, nil, workspaceStore))
 	return server, topologyStore
 }
 

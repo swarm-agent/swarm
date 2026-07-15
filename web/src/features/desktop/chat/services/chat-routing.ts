@@ -151,17 +151,6 @@ function sessionMetadataString(metadata: Record<string, unknown> | null | undefi
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function inferV2TargetRelationship(metadata: Record<string, unknown> | null | undefined): string {
-  const executionClass = sessionMetadataString(metadata, 'swarm_v2_execution_class').toLowerCase()
-  if (executionClass === 'local_container') {
-    return 'child'
-  }
-  if (executionClass === 'primary') {
-    return 'self'
-  }
-  return ''
-}
-
 function inferV3TargetRelationship(metadata: Record<string, unknown> | null | undefined): string {
   const executionClass = sessionMetadataString(metadata, 'swarm_v3_execution_class').toLowerCase()
   if (executionClass === 'primary') {
@@ -201,34 +190,7 @@ export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecor
     }
   }
 
-  const metadataSwarmId = sessionMetadataString(metadata, 'swarm_v2_runtime_swarm_id')
-  const runtimeWorkspacePath = session?.runtimeWorkspacePath?.trim()
-    || sessionMetadataString(metadata, 'swarm_v2_runtime_workspace_path')
-  const workspaceBindingId = sessionMetadataString(metadata, 'swarm_v2_workspace_binding_id') || sessionMetadataString(metadata, 'local_workspace_binding_id')
-  const workspaceName = sessionMetadataString(metadata, 'swarm_v2_source_workspace_name') || session?.workspaceName?.trim() || ''
-  if (!metadataSwarmId || !workspaceBindingId) {
-    return null
-  }
-  const id = desktopChatRouteID(metadataSwarmId, workspaceName, workspaceBindingId)
-  if (!id) {
-    return null
-  }
-  const label = metadataSwarmId
-  return {
-    id,
-    label,
-    swarmId: metadataSwarmId,
-    targetKind: sessionMetadataString(metadata, 'swarm_v2_runtime_kind'),
-    targetRelationship: inferV2TargetRelationship(metadata),
-    hostSwarmId: sessionMetadataString(metadata, 'swarm_v2_authority_host_swarm_id'),
-    hostSwarmName: '',
-    hostWorkspacePath: sessionMetadataString(metadata, 'swarm_v2_source_workspace_path') || session?.workspacePath?.trim() || '',
-    hostWorkspaceName: workspaceName,
-    runtimeWorkspacePath,
-    workspaceBindingId,
-    workspaceName,
-    targetSwarmName: label,
-  }
+  return null
 }
 
 export function resolveDesktopChatRouteFromSession(

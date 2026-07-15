@@ -67,31 +67,6 @@ type V3SessionTombstone struct {
 	Session        SessionSnapshot `json:"session,omitempty"`
 }
 
-type SessionExecutionV2Record struct {
-	SessionID                 string `json:"session_id"`
-	UserID                    string `json:"user_id,omitempty"`
-	AccountScopeID            string `json:"account_scope_id,omitempty"`
-	ExecutionClass            string `json:"execution_class"`
-	RuntimeSwarmID            string `json:"runtime_swarm_id"`
-	RuntimeKind               string `json:"runtime_kind"`
-	AuthorityHostSwarmID      string `json:"authority_host_swarm_id"`
-	AuthorityContainerID      string `json:"authority_container_id,omitempty"`
-	WorkspaceBindingID        string `json:"workspace_binding_id"`
-	SourceWorkspaceID         string `json:"source_workspace_id"`
-	SourceWorkspaceGeneration int64  `json:"source_workspace_generation"`
-	SourceWorkspaceName       string `json:"source_workspace_name,omitempty"`
-	SourceWorkspacePath       string `json:"source_workspace_path"`
-	RuntimeWorkspacePath      string `json:"runtime_workspace_path"`
-	WorktreeEnabled           bool   `json:"worktree_enabled,omitempty"`
-	WorktreeRootPath          string `json:"worktree_root_path,omitempty"`
-	WorktreeBaseBranch        string `json:"worktree_base_branch,omitempty"`
-	WorktreeBranch            string `json:"worktree_branch,omitempty"`
-	PlacementGeneration       int    `json:"placement_generation"`
-	BindingGeneration         int    `json:"binding_generation"`
-	CreatedAt                 int64  `json:"created_at"`
-	UpdatedAt                 int64  `json:"updated_at"`
-}
-
 type MessageSnapshot struct {
 	ID             string         `json:"id"`
 	SessionID      string         `json:"session_id"`
@@ -316,65 +291,6 @@ func (s *SessionStore) CreateSessionForAccount(session SessionSnapshot, userID, 
 		return errors.New("account scope id is required")
 	}
 	return s.CreateSession(session)
-}
-
-func (s *SessionStore) CreateSessionWithExecutionV2(session SessionSnapshot, execution SessionExecutionV2Record) error {
-	if s == nil || s.store == nil {
-		return errors.New("session store is not configured")
-	}
-	session = normalizeSessionOwnership(session)
-	execution.SessionID = strings.TrimSpace(firstNonEmpty(execution.SessionID, session.ID))
-	execution.UserID = strings.TrimSpace(firstNonEmpty(execution.UserID, session.UserID))
-	execution.AccountScopeID = strings.TrimSpace(firstNonEmpty(execution.AccountScopeID, session.AccountScopeID))
-	if strings.TrimSpace(session.ID) == "" || execution.SessionID == "" || execution.SessionID != strings.TrimSpace(session.ID) {
-		return errors.New("session execution v2 session id must match session")
-	}
-	if execution.AccountScopeID == "" {
-		return errors.New("session execution v2 account scope id is required")
-	}
-	payload, err := json.Marshal(session)
-	if err != nil {
-		return fmt.Errorf("marshal session %q: %w", session.ID, err)
-	}
-	execPayload, err := json.Marshal(execution)
-	if err != nil {
-		return fmt.Errorf("marshal session execution v2 %q: %w", session.ID, err)
-	}
-	batch := s.store.NewBatch()
-	defer batch.Close()
-	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
-		return err
-	}
-	if session.AccountScopeID != "" {
-		if err := batch.Set([]byte(KeySessionByAccount(session.AccountScopeID, session.ID)), []byte(session.ID), nil); err != nil {
-			return err
-		}
-	}
-	if err := replaceSessionRecentIndexInBatch(batch, nil, &session); err != nil {
-		return err
-	}
-	if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, nil); err != nil {
-		return err
-	}
-	if err := batch.Set([]byte(KeySessionExecutionV2(session.ID)), execPayload, nil); err != nil {
-		return err
-	}
-	if err := batch.Set([]byte(KeySessionExecutionV2ByAccount(execution.AccountScopeID, session.ID)), []byte(session.ID), nil); err != nil {
-		return err
-	}
-	return batch.Commit(pebble.Sync)
-}
-
-func (s *SessionStore) GetSessionExecutionV2(sessionID string) (SessionExecutionV2Record, bool, error) {
-	var execution SessionExecutionV2Record
-	if s == nil || s.store == nil {
-		return SessionExecutionV2Record{}, false, errors.New("session store is not configured")
-	}
-	ok, err := s.store.GetJSON(KeySessionExecutionV2(strings.TrimSpace(sessionID)), &execution)
-	if err != nil || !ok {
-		return SessionExecutionV2Record{}, ok, err
-	}
-	return execution, true, nil
 }
 
 func (s *SessionStore) UpdateSessionForAccount(session SessionSnapshot, userID, accountScopeID string) error {
@@ -834,7 +750,6 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 		}
 	}
 	for _, key := range []string{
-		KeySessionExecutionV2(session.ID), KeySessionExecutionV2ByAccount(session.AccountScopeID, session.ID),
 		KeySessionUsageSummary(session.ID), KeySessionUsageSummaryByAccount(session.AccountScopeID, session.ID),
 		KeyV3SessionSequence(session.ID), KeyV3SessionProjection(session.ID), KeyV3SessionRunIntentActive(session.ID), KeyExecutionEpochActive(session.ID), KeyExecutionEpochLatest(session.ID),
 	} {
@@ -1125,18 +1040,13 @@ func (s *SessionStore) ListSessionsForAccountWorkspaceBindings(accountScopeID, s
 		if !ok || strings.TrimSpace(session.AccountScopeID) != accountScopeID {
 			return nil
 		}
-		include := false
-		if execution, executionOK, err := s.GetSessionExecutionV2(sessionID); err != nil {
-			return err
-		} else if executionOK && strings.TrimSpace(execution.AccountScopeID) == accountScopeID {
-			if sourceWorkspaceID != "" && strings.TrimSpace(execution.SourceWorkspaceID) == sourceWorkspaceID {
-				include = true
+		include := sourceWorkspaceID != "" && strings.TrimSpace(sessionMetadataString(session.Metadata, "swarm_v3_source_workspace_id")) == sourceWorkspaceID
+		if !include && len(bindingSet) > 0 {
+			bindingID := strings.TrimSpace(sessionMetadataString(session.Metadata, "swarm_v3_workspace_binding_id"))
+			if bindingID == "" {
+				bindingID = strings.TrimSpace(sessionMetadataString(session.Metadata, "local_workspace_binding_id"))
 			}
-			if !include && len(bindingSet) > 0 {
-				if _, ok := bindingSet[strings.TrimSpace(execution.WorkspaceBindingID)]; ok {
-					include = true
-				}
-			}
+			_, include = bindingSet[bindingID]
 		}
 		if !include && normalizedFallbackScope != "" {
 			include = sessionMatchesWorkspaceScope(session, normalizedFallbackScope)

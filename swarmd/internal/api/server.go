@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -15,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"swarm-refactor/swarmtui/pkg/startupconfig"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/auth"
@@ -97,7 +101,6 @@ type Server struct {
 	update                      *update.Service
 	topology                    *topologyruntime.Service
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
-	sessionRoutes               *pebblestore.SessionRouteStore
 	videoThreads                *pebblestore.VideoThreadStore
 	imageThreads                *pebblestore.ImageThreadStore
 	imageGen                    *imagegen.Service
@@ -422,13 +425,6 @@ func (s *Server) SetSwarmDesktopTargetSelectionStore(store *pebblestore.SwarmDes
 		return
 	}
 	s.swarmDesktopTargetSelection = store
-}
-
-func (s *Server) SetSessionRouteStore(store *pebblestore.SessionRouteStore) {
-	if s == nil {
-		return
-	}
-	s.sessionRoutes = store
 }
 
 func (s *Server) SetShutdownHandler(handler func(reason string)) {
@@ -2394,14 +2390,6 @@ func (s *Server) deleteSessionAndRoutes(sessionID string) error {
 		return nil
 	}
 	var failures []string
-	if err := s.deleteTopologySessionRoute(sessionID); err != nil {
-		failures = append(failures, "delete topology session route: "+err.Error())
-	}
-	if s.sessionRoutes != nil {
-		if err := s.sessionRoutes.Delete(sessionID); err != nil {
-			failures = append(failures, "delete session route: "+err.Error())
-		}
-	}
 	if s.sessions != nil {
 		if event, err := s.sessions.DeleteSessionWithEvent(sessionID); err != nil {
 			failures = append(failures, "delete session: "+err.Error())

@@ -246,4 +246,3 @@ func writeFakeTailscale(t *testing.T, dir, script string) {
 		t.Fatalf("write fake tailscale: %v", err)
 	}
 }
-

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/notification"
@@ -402,4 +403,3 @@ func (f fakeLocalAuthSwarmService) UpsertGroupMember(swarmruntime.UpsertGroupMem
 func (f fakeLocalAuthSwarmService) RemoveGroupMember(swarmruntime.RemoveGroupMemberInput) error {
 	return nil
 }
-

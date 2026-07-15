@@ -213,14 +213,13 @@ func New(cfg config.Config) (*Daemon, error) {
 	swarmSvc := swarmruntime.NewService(swarmStore, events, hub.Publish)
 	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
 	workspaceSvc.SetEventPublisher(events, hub.Publish)
-	swarmNodeStore := pebblestore.NewSwarmNodeStore(store, topologyStore)
 	identityStore := pebblestore.NewIdentityStore(store)
 	identitySvc := identityruntime.NewService(identityStore)
 	identitySessionSvc := identityruntime.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(secretStore))
 	agentSvc.SetEventPublisher(hub.Publish)
 	authSvc.SetEventPublisher(hub.Publish)
 	modelSvc.SetEventPublisher(hub.Publish)
-	topologySvc := topologyruntime.NewService(topologyStore, swarmStore, swarmNodeStore, nil, pebblestore.NewSessionRouteStore(store), pebblestore.NewWorkspaceStore(store))
+	topologySvc := topologyruntime.NewService(topologyStore, swarmStore)
 	worktreeSvc := worktreeruntime.NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, events)
 	mcpSvc := mcpruntime.NewService(pebblestore.NewMCPStore(store), events)
 	securitySvc := security.NewService(pebblestore.NewClientAuthStore(store), events)
@@ -347,14 +346,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("seed mcp defaults: %w", err)
 	}
-	if removed, err := workspaceSvc.PurgeAllReplicationLinks(); err != nil {
-		_ = secretStore.Close()
-		_ = store.Close()
-		_ = lk.Release()
-		return nil, fmt.Errorf("purge legacy workspace replication links: %w", err)
-	} else if removed > 0 {
-		log.Printf("purged %d legacy workspace replication links; canonical topology workspace bindings are authoritative", removed)
-	}
 	if _, err := topologySvc.EnsureSnapshot(); err != nil {
 		_ = secretStore.Close()
 		_ = store.Close()
@@ -394,7 +385,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetUISettingsService(uiSettingsSvc)
 	apiServer.SetPlanLifecycleService(planLifecycleSvc)
 	apiServer.SetSwarmDesktopTargetSelectionStore(swarmDesktopTargetSelectionStore)
-	apiServer.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))
 	apiServer.SetVideoThreadStore(pebblestore.NewVideoThreadStore(store))
 	imageThreadStore := pebblestore.NewImageThreadStore(store)
 	imageGenSvc := imagegen.NewService(codexClient, authStore, imageThreadStore)

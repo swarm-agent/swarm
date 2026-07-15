@@ -415,7 +415,7 @@ func sessionsV3TUICreateServerMetadata(clientMetadata map[string]any, agent sess
 	metadata["runtime_mode"] = agent.RuntimeMode
 	metadata["exit_plan_mode_enabled"] = agent.ExitPlanModeEnabled
 	metadata["agent_profile"] = cloneSessionsV3AgentProfile(agent.Profile)
-	metadata["swarm_v3_execution_class"] = sessionruntime.SessionExecutionClassPrimary
+	metadata["swarm_v3_execution_class"] = "primary"
 	metadata["swarm_v3_runtime_swarm_id"] = strings.TrimSpace(runtimeSwarmID)
 	metadata["swarm_v3_runtime_kind"] = pebblestore.TopologyRuntimeKindHost
 	metadata["swarm_v3_authority_host_swarm_id"] = strings.TrimSpace(runtimeSwarmID)

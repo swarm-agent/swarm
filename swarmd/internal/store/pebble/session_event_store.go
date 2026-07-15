@@ -289,7 +289,7 @@ func v3RealtimeMembershipMetadata(metadata map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, key := range []string{
 		"navigation_hidden", "system_session", "system_sidechat", "lineage_kind",
-		"swarm_v3_source_workspace_path", "swarm_v2_source_workspace_path",
+		"swarm_v3_source_workspace_path",
 		"swarm_v3_tui_cwd_path", "swarm_v3_tui_original_cwd_path", "swarm_v3_tui_worktree_path",
 	} {
 		if value, ok := metadata[key]; ok {

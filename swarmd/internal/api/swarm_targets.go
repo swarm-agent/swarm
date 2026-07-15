@@ -17,13 +17,11 @@ type swarmTarget struct {
 	Name            string                 `json:"name"`
 	Relationship    string                 `json:"relationship"`
 	Kind            string                 `json:"kind"`
-	DeploymentID    string                 `json:"deployment_id,omitempty"`
 	HostSwarmID     string                 `json:"host_swarm_id,omitempty"`
 	WorkspaceRoutes []targetWorkspaceRoute `json:"-"`
 	Online          bool                   `json:"online"`
 	Selectable      bool                   `json:"selectable"`
 	Current         bool                   `json:"current"`
-	BackendURL      string                 `json:"-"`
 }
 
 type swarmTargetsResponse struct {
@@ -399,23 +397,17 @@ func mapTopologyRuntimeTarget(item pebblestore.TopologyRuntimeRecord) (swarmTarg
 
 func mapTopologyRuntimeTargetWithPlacement(item pebblestore.TopologyRuntimeRecord, placement pebblestore.TopologyRuntimePlacementRecord) (swarmTarget, bool) {
 	swarmID := strings.TrimSpace(item.SwarmID)
-	backendURL := strings.TrimSpace(item.BackendURL)
 	if swarmID == "" {
 		return swarmTarget{}, false
 	}
 	status := strings.TrimSpace(item.Status)
 	online := status == "" || swarmNodeStatusOnline(status)
 	hostSwarmID := firstNonEmpty(strings.TrimSpace(placement.AuthorityHostSwarmID), strings.TrimSpace(item.OwnerHostSwarmID))
-	hostContainerID := firstNonEmpty(strings.TrimSpace(placement.AuthorityContainerID), strings.TrimSpace(item.OwnerHostContainerID))
 	kind := strings.TrimSpace(item.Transport)
 	if kind == "" {
 		switch strings.ToLower(strings.TrimSpace(item.Relationship)) {
 		case swarmruntime.RelationshipChild:
-			if hostSwarmID != "" {
-				kind = "mirrored"
-			} else {
-				kind = "remote"
-			}
+			kind = "container"
 		default:
 			kind = strings.TrimSpace(item.Relationship)
 		}
@@ -425,11 +417,8 @@ func mapTopologyRuntimeTargetWithPlacement(item pebblestore.TopologyRuntimeRecor
 		Name:         firstNonEmpty(strings.TrimSpace(item.Name), swarmID),
 		Relationship: strings.TrimSpace(item.Relationship),
 		Kind:         kind,
-		DeploymentID: hostContainerID,
 		HostSwarmID:  hostSwarmID,
 		Online:       online,
 		Selectable:   online,
-		BackendURL:   backendURL,
 	}, true
 }
-

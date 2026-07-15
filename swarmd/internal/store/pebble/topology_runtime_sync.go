@@ -5,10 +5,7 @@ import (
 	"strings"
 )
 
-const (
-	topologyRuntimeSourceLocalNode = "swarm_local_node"
-	topologyRuntimeSourceNode      = "swarm_node"
-)
+const topologyRuntimeSourceLocalNode = "swarm_local_node"
 
 func syncTopologyRuntimeFromLocalNode(topology *TopologyStore, record SwarmLocalNodeRecord) error {
 	if topology == nil {
@@ -26,30 +23,6 @@ func syncTopologyRuntimeFromLocalNode(topology *TopologyStore, record SwarmLocal
 		UpdatedAt:       record.UpdatedAt,
 	}
 	return UpsertTopologyRuntimeRecord(topology, incoming)
-}
-
-func syncTopologyRuntimeFromNode(topology *TopologyStore, record SwarmNodeRecord) error {
-	if topology == nil {
-		return nil
-	}
-	incoming := TopologyRuntimeRecord{
-		SwarmID:         strings.TrimSpace(record.SwarmID),
-		Name:            firstNonEmpty(record.Name, record.SwarmID),
-		Role:            strings.ToLower(strings.TrimSpace(record.Role)),
-		Relationship:    topologyRelationshipFromSwarmNodeRole(record.Role),
-		BackendURL:      strings.TrimSpace(record.BackendURL),
-		DesktopURL:      strings.TrimSpace(record.DesktopURL),
-		Status:          strings.ToLower(strings.TrimSpace(record.Status)),
-		Transport:       strings.ToLower(strings.TrimSpace(record.Transport)),
-		ObservedSources: []string{topologyRuntimeSourceNode},
-		CreatedAt:       record.CreatedAt,
-		UpdatedAt:       record.UpdatedAt,
-	}
-	return UpsertTopologyRuntimeRecord(topology, incoming)
-}
-
-func removeTopologyRuntimeNodeObservation(topology *TopologyStore, swarmID string) error {
-	return removeTopologyRuntimeObservedSource(topology, swarmID, topologyRuntimeSourceNode)
 }
 
 func UpsertTopologyRuntimeRecord(topology *TopologyStore, incoming TopologyRuntimeRecord) error {
@@ -160,7 +133,6 @@ func mergeTopologyRuntimeRecord(existing, incoming TopologyRuntimeRecord) Topolo
 	incoming.Name = firstNonEmpty(incoming.Name, existing.Name, incoming.SwarmID)
 	incoming.Role = firstNonEmpty(incoming.Role, existing.Role)
 	incoming.Relationship = mergeTopologyRuntimeRelationship(existing.Relationship, incoming.Relationship)
-	incoming.BackendURL = firstNonEmpty(incoming.BackendURL, existing.BackendURL)
 	incoming.DesktopURL = firstNonEmpty(incoming.DesktopURL, existing.DesktopURL)
 	incoming.Status = firstNonEmpty(incoming.Status, existing.Status)
 	incoming.Transport = firstNonEmpty(incoming.Transport, existing.Transport)
@@ -193,12 +165,6 @@ func removeTopologyRuntimeObservedSource(topology *TopologyStore, swarmID, sourc
 	record.ObservedSources = removeTopologyObservedSource(record.ObservedSources, source)
 	if len(record.ObservedSources) == 0 {
 		return topology.DeleteRuntime(swarmID)
-	}
-	switch source {
-	case topologyRuntimeSourceNode:
-		record.BackendURL = ""
-		record.DesktopURL = ""
-		record.Status = ""
 	}
 	_, err = topology.PutRuntime(record)
 	return err
@@ -240,15 +206,6 @@ func mergeTopologyRuntimeRelationship(existing, incoming string) string {
 		return incoming
 	}
 	return existing
-}
-
-func topologyRelationshipFromSwarmNodeRole(role string) string {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "managed", "manager", "child", "self":
-		return strings.ToLower(strings.TrimSpace(role))
-	default:
-		return ""
-	}
 }
 
 func topologyTransportFromSwarmTransports(transports []SwarmTransportRecord) string {

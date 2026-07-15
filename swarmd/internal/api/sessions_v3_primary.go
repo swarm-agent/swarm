@@ -3406,7 +3406,7 @@ func sessionsV3CreateServerMetadata(clientMetadata map[string]any, agent session
 	metadata["default_session_mode"] = pebblestore.AgentProfileDefaultSessionMode(agent.Profile)
 	metadata["exit_plan_mode_enabled"] = agent.ExitPlanModeEnabled
 	metadata["agent_profile"] = cloneSessionsV3AgentProfile(agent.Profile)
-	metadata["swarm_v3_execution_class"] = sessionruntime.SessionExecutionClassPrimary
+	metadata["swarm_v3_execution_class"] = "primary"
 	metadata["swarm_v3_runtime_swarm_id"] = binding.RuntimeSwarmID
 	metadata["swarm_v3_runtime_kind"] = pebblestore.TopologyRuntimeKindHost
 	metadata["swarm_v3_authority_host_swarm_id"] = binding.RuntimeSwarmID
@@ -3624,14 +3624,6 @@ func isProtectedSessionsV3MetadataKey(key string) bool {
 		"route",
 		"routes",
 		"topology",
-		"swarm_v2_execution_class",
-		"swarm_v2_runtime_swarm_id",
-		"swarm_v2_runtime_kind",
-		"swarm_v2_authority_host_swarm_id",
-		"swarm_v2_authority_container_id",
-		"swarm_v2_source_workspace_path",
-		"swarm_v2_runtime_workspace_path",
-		"swarm_v2_workspace_binding_id",
 		"swarm_v3_execution_class",
 		"swarm_v3_runtime_swarm_id",
 		"swarm_v3_runtime_kind",

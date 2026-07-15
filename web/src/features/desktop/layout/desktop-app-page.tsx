@@ -498,7 +498,6 @@ export function desktopSidebarWorkspacePathForSession(
   }
 
   const sourceWorkspacePath = metadataStringValue(session.metadata, 'swarm_v3_source_workspace_path')
-    || metadataStringValue(session.metadata, 'swarm_v2_source_workspace_path')
   if (sourceWorkspacePath) return sourceWorkspacePath
 
   return session.workspacePath.trim()
@@ -518,7 +517,6 @@ export function desktopRouteWorkspacePathForSession(
 
   const candidates = [
     metadataStringValue(session.metadata, 'swarm_v3_source_workspace_path'),
-    metadataStringValue(session.metadata, 'swarm_v2_source_workspace_path'),
     session.workspacePath.trim(),
   ]
   return candidates.find((path) => path && knownWorkspacePaths.has(path)) ?? ''

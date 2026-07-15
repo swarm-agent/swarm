@@ -866,7 +866,6 @@ func v3RealtimeSessionMatchesWorksetSelector(principal identity.Principal, sessi
 		strings.TrimSpace(session.WorkspacePath),
 		strings.TrimSpace(session.WorktreeRootPath),
 		sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_path"),
-		sessionsV3MetadataString(session.Metadata, "swarm_v2_source_workspace_path"),
 		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_cwd_path"),
 		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_original_cwd_path"),
 		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_worktree_path"),

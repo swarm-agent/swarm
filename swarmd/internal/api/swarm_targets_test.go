@@ -64,7 +64,7 @@ func TestSwarmTargetsForRequestIncludesTopologyRuntime(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	topologyStore := pebblestore.NewTopologyStore(store)
-	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "runtime-1", AccountScopeID: testPrincipal().AccountScopeID, UserID: testPrincipal().UserID, Name: "Runtime One", Relationship: "child", BackendURL: "http://runtime.example.test", Status: "online"}); err != nil {
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "runtime-1", AccountScopeID: testPrincipal().AccountScopeID, UserID: testPrincipal().UserID, Name: "Runtime One", Relationship: "child", Status: "online"}); err != nil {
 		t.Fatalf("upsert runtime: %v", err)
 	}
 	server := &Server{

@@ -20,6 +20,11 @@ func TestManagedHostingResidueRemoved(t *testing.T) {
 		"scripts/diagnose-remote-deploy-live.sh",
 		"tests/swarmd/remote_deploy_e2e.sh",
 		"tests/swarmd/remote_deploy_recovery_e2e.sh",
+		"swarmd/internal/deploy",
+		"swarmd/internal/store/pebble/deploy_container_store.go",
+		"swarmd/internal/workspace/replication.go",
+		"scripts/rebuild-container-remote.sh",
+		"tests/swarmd/live_prod_update_e2e.sh",
 	} {
 		if _, err := os.Stat(filepath.Join(root, path)); err == nil {
 			t.Errorf("retired managed-hosting artifact remains: %s", path)
@@ -41,17 +46,6 @@ func TestManagedHostingResidueRemoved(t *testing.T) {
 		},
 		"docs/swarm-harness-vm.md": {
 			"remote_deploy_e2e.sh",
-		},
-		"tests/swarmd/live_prod_update_e2e.sh": {
-			"remote_deploy_enabled",
-			"remote_deploy_session_id",
-			"remote_deploy_host_api_base_url",
-			"remote_deploy_sync_enabled",
-		},
-		"tests/swarmd/local_replicate_e2e.sh": {
-			"remote_deploy_enabled",
-			"remote_deploy_session_id",
-			"remote_deploy_host_api_base_url",
 		},
 	}
 	for path, forbiddenMarkers := range checks {

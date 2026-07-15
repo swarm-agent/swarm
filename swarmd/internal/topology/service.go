@@ -12,30 +12,12 @@ import (
 const SnapshotVersion = pebblestore.TopologySnapshotVersion
 
 type Service struct {
-	topologyStore  *pebblestore.TopologyStore
-	swarmStore     *pebblestore.SwarmStore
-	swarmNodes     *pebblestore.SwarmNodeStore
-	deployments    *pebblestore.DeployContainerStore
-	sessionRoutes  *pebblestore.SessionRouteStore
-	workspaceStore *pebblestore.WorkspaceStore
+	topologyStore *pebblestore.TopologyStore
+	swarmStore    *pebblestore.SwarmStore
 }
 
-func NewService(
-	topologyStore *pebblestore.TopologyStore,
-	swarmStore *pebblestore.SwarmStore,
-	swarmNodes *pebblestore.SwarmNodeStore,
-	deployments *pebblestore.DeployContainerStore,
-	sessionRoutes *pebblestore.SessionRouteStore,
-	workspaceStore *pebblestore.WorkspaceStore,
-) *Service {
-	return &Service{
-		topologyStore:  topologyStore,
-		swarmStore:     swarmStore,
-		swarmNodes:     swarmNodes,
-		deployments:    deployments,
-		sessionRoutes:  sessionRoutes,
-		workspaceStore: workspaceStore,
-	}
+func NewService(topologyStore *pebblestore.TopologyStore, swarmStore *pebblestore.SwarmStore, _ ...any) *Service {
+	return &Service{topologyStore: topologyStore, swarmStore: swarmStore}
 }
 
 func (s *Service) Rebuild() (pebblestore.TopologyMigrationStatusRecord, error) {
@@ -345,59 +327,6 @@ func (s *Service) PutWorkspaceBindingForAccount(accountScopeID string, record pe
 	return s.topologyStore.PutWorkspaceBindingForAccount(accountScopeID, record)
 }
 
-func (s *Service) UpsertSessionRoute(record pebblestore.SessionRouteRecord) (pebblestore.TopologySessionRouteRecord, error) {
-	return s.UpsertSessionRouteForAccount(strings.TrimSpace(record.AccountScopeID), record)
-}
-
-func (s *Service) UpsertSessionRouteForAccount(accountScopeID string, record pebblestore.SessionRouteRecord) (pebblestore.TopologySessionRouteRecord, error) {
-	if s == nil || s.topologyStore == nil {
-		return pebblestore.TopologySessionRouteRecord{}, fmt.Errorf("topology service is not configured")
-	}
-	accountScopeID = strings.TrimSpace(accountScopeID)
-	if accountScopeID == "" {
-		return pebblestore.TopologySessionRouteRecord{}, fmt.Errorf("account scope id is required")
-	}
-	bindings, err := s.buildWorkspaceBindingsForAccount(accountScopeID)
-	if err != nil {
-		return pebblestore.TopologySessionRouteRecord{}, err
-	}
-	bindingID := strings.TrimSpace(record.WorkspaceBindingID)
-	route := pebblestore.TopologySessionRouteRecord{
-		SessionID:            strings.TrimSpace(record.SessionID),
-		UserID:               strings.TrimSpace(record.UserID),
-		AccountScopeID:       accountScopeID,
-		RuntimeSwarmID:       strings.TrimSpace(record.ChildSwarmID),
-		HostSwarmID:          strings.TrimSpace(record.HostSwarmID),
-		HostContainerID:      strings.TrimSpace(record.HostContainerID),
-		WorkspaceBindingID:   bindingID,
-		RuntimeWorkspacePath: strings.TrimSpace(record.RuntimeWorkspacePath),
-		PlacementGeneration:  record.PlacementGeneration,
-		BindingGeneration:    record.BindingGeneration,
-		CreatedAt:            record.CreatedAt,
-		UpdatedAt:            record.UpdatedAt,
-	}
-	runtime, err := s.lookupRuntimeForSessionRouteForAccount(accountScopeID, route.RuntimeSwarmID)
-	if err != nil {
-		return pebblestore.TopologySessionRouteRecord{}, err
-	}
-	enrichTopologySessionRouteFromBinding(&route, findWorkspaceBindingByID(bindings, bindingID), runtime)
-	return s.topologyStore.PutSessionRouteForAccount(accountScopeID, route)
-}
-
-func (s *Service) DeleteSessionRoute(sessionID string) error {
-	if s == nil || s.topologyStore == nil {
-		return fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.DeleteSessionRoute(sessionID)
-}
-
-func (s *Service) DeleteSessionRouteForAccount(accountScopeID, sessionID string) error {
-	if s == nil || s.topologyStore == nil {
-		return fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.DeleteSessionRouteForAccount(accountScopeID, sessionID)
-}
-
 func (s *Service) DeleteWorkspaceBinding(bindingID string) error {
 	if s == nil || s.topologyStore == nil {
 		return fmt.Errorf("topology service is not configured")
@@ -519,20 +448,6 @@ func (s *Service) ListWorkspaceBindingsBySourcePathForAccount(accountScopeID, so
 	return s.topologyStore.ListWorkspaceBindingsBySourcePathForAccount(accountScopeID, sourceWorkspacePath, limit)
 }
 
-func (s *Service) GetSessionRoute(sessionID string) (pebblestore.TopologySessionRouteRecord, bool, error) {
-	if s == nil || s.topologyStore == nil {
-		return pebblestore.TopologySessionRouteRecord{}, false, fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.GetSessionRoute(sessionID)
-}
-
-func (s *Service) GetSessionRouteForAccount(accountScopeID, sessionID string) (pebblestore.TopologySessionRouteRecord, bool, error) {
-	if s == nil || s.topologyStore == nil {
-		return pebblestore.TopologySessionRouteRecord{}, false, fmt.Errorf("topology service is not configured")
-	}
-	return s.topologyStore.GetSessionRouteForAccount(accountScopeID, sessionID)
-}
-
 func (s *Service) GetRuntime(swarmID string) (pebblestore.TopologyRuntimeRecord, bool, error) {
 	if s == nil || s.topologyStore == nil {
 		return pebblestore.TopologyRuntimeRecord{}, false, fmt.Errorf("topology service is not configured")
@@ -614,100 +529,10 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 		}
 	}
 
-	if s.swarmNodes != nil {
-		nodes, err := s.swarmNodes.List(100000)
-		if err != nil {
-			return pebblestore.TopologySnapshot{}, err
-		}
-		for _, node := range nodes {
-			mergeRuntime(runtimeMap, pebblestore.TopologyRuntimeRecord{
-				SwarmID:         node.SwarmID,
-				Name:            firstNonEmpty(node.Name, node.SwarmID),
-				Role:            node.Role,
-				Relationship:    normalizeNodeRelationship(node.Role),
-				BackendURL:      node.BackendURL,
-				DesktopURL:      node.DesktopURL,
-				Status:          node.Status,
-				Transport:       node.Transport,
-				ObservedSources: []string{"swarm_node"},
-				CreatedAt:       node.CreatedAt,
-				UpdatedAt:       node.UpdatedAt,
-			})
-		}
-	}
-
-	if s.deployments != nil {
-		deployments, err := s.deployments.List(100000)
-		if err != nil {
-			return pebblestore.TopologySnapshot{}, err
-		}
-		for _, deployment := range deployments {
-			hostSwarmID := firstNonEmpty(strings.TrimSpace(deployment.HostSwarmID), localSwarmID, "local")
-			runtimeContainerRef := firstNonEmpty(strings.TrimSpace(deployment.ContainerID), strings.TrimSpace(deployment.ContainerName), strings.TrimSpace(deployment.ID))
-			hostContainerID := firstNonEmpty(strings.TrimSpace(deployment.HostContainerID), canonicalHostContainerID(hostSwarmID, runtimeContainerRef))
-			mergeHostContainer(hostContainerMap, pebblestore.TopologyHostContainerRecord{
-				HostContainerID:     hostContainerID,
-				HostSwarmID:         hostSwarmID,
-				RuntimeContainerRef: runtimeContainerRef,
-				Name:                firstNonEmpty(deployment.Name, deployment.ContainerName, deployment.ID),
-				ContainerName:       firstNonEmpty(deployment.ContainerName, deployment.Name, deployment.ID),
-				ContainerID:         deployment.ContainerID,
-				Runtime:             deployment.Runtime,
-				Image:               deployment.Image,
-				Status:              firstNonEmpty(deployment.AttachStatus, deployment.Status),
-				HostAPIBaseURL:      firstNonEmpty(deployment.HostAPIBaseURL, deployment.HostBackendURL),
-				HostPort:            deployment.BackendHostPort,
-				RuntimePort:         deployment.DesktopHostPort,
-				ObservedSources:     []string{"deploy_container"},
-				CreatedAt:           deployment.CreatedAt,
-				UpdatedAt:           deployment.UpdatedAt,
-			})
-			if strings.TrimSpace(deployment.ChildSwarmID) != "" {
-				mergeRuntimePlacement(runtimePlacementMap, pebblestore.TopologyRuntimePlacementRecord{
-					RuntimeSwarmID:       deployment.ChildSwarmID,
-					AuthorityHostSwarmID: hostSwarmID,
-					AuthorityContainerID: hostContainerID,
-					RuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
-					CreatedAt:            deployment.CreatedAt,
-					UpdatedAt:            deployment.UpdatedAt,
-				})
-				mergeRuntime(runtimeMap, pebblestore.TopologyRuntimeRecord{
-					SwarmID:              deployment.ChildSwarmID,
-					Name:                 firstNonEmpty(deployment.ChildDisplayName, deployment.Name, deployment.ChildSwarmID),
-					Role:                 "child",
-					Relationship:         "child",
-					BackendURL:           deployment.ChildBackendURL,
-					DesktopURL:           deployment.ChildDesktopURL,
-					Status:               firstNonEmpty(deployment.AttachStatus, deployment.Status),
-					OwnerHostSwarmID:     hostSwarmID,
-					OwnerHostContainerID: hostContainerID,
-					ObservedSources:      []string{"deploy_container"},
-					CreatedAt:            deployment.CreatedAt,
-					UpdatedAt:            deployment.UpdatedAt,
-				})
-				attachmentID := canonicalAttachmentID(hostContainerID, deployment.ChildSwarmID)
-				mergeAttachment(attachmentMap, pebblestore.TopologyAttachmentRecord{
-					AttachmentID:    attachmentID,
-					HostContainerID: hostContainerID,
-					RuntimeSwarmID:  deployment.ChildSwarmID,
-					State:           firstNonEmpty(deployment.AttachStatus, deployment.Status),
-					DeploymentID:    deployment.ID,
-					CreatedAt:       deployment.CreatedAt,
-					UpdatedAt:       deployment.UpdatedAt,
-				})
-			}
-		}
-	}
-
 	workspaceBindings, err := s.buildWorkspaceBindings()
 	if err != nil {
 		return pebblestore.TopologySnapshot{}, err
 	}
-	sessionRouteRecords, err := s.buildSessionRoutes(workspaceBindings, runtimeMap)
-	if err != nil {
-		return pebblestore.TopologySnapshot{}, err
-	}
-
 	for _, runtime := range runtimeMap {
 		if _, ok := runtimePlacementMap[runtime.SwarmID]; ok {
 			continue
@@ -735,7 +560,6 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 	sortTopologyHostContainers(hostContainers)
 	sortTopologyAttachments(attachments)
 	sortTopologyWorkspaceBindings(workspaceBindings)
-	sortTopologySessionRoutes(sessionRouteRecords)
 
 	migrationStatus := pebblestore.TopologyMigrationStatusRecord{
 		ID:                    pebblestore.DefaultTopologyMigrationStatusID,
@@ -745,7 +569,6 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 		HostContainerCount:    len(hostContainers),
 		AttachmentCount:       len(attachments),
 		WorkspaceBindingCount: len(workspaceBindings),
-		SessionRouteCount:     len(sessionRouteRecords),
 	}
 	return pebblestore.TopologySnapshot{
 		Runtimes:          runtimes,
@@ -753,7 +576,6 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 		HostContainers:    hostContainers,
 		Attachments:       attachments,
 		WorkspaceBindings: workspaceBindings,
-		SessionRoutes:     sessionRouteRecords,
 		MigrationStatus:   migrationStatus,
 	}, nil
 }
@@ -805,178 +627,6 @@ func (s *Service) buildWorkspaceBindings() ([]pebblestore.TopologyWorkspaceBindi
 	return s.topologyStore.ListWorkspaceBindings(100000)
 }
 
-func (s *Service) buildWorkspaceBindingsForAccount(accountScopeID string) ([]pebblestore.TopologyWorkspaceBindingRecord, error) {
-	if s == nil || s.topologyStore == nil {
-		return nil, nil
-	}
-	return s.topologyStore.ListWorkspaceBindingsForAccount(accountScopeID, 100000)
-}
-
-func (s *Service) buildSessionRoutes(bindings []pebblestore.TopologyWorkspaceBindingRecord, runtimes map[string]pebblestore.TopologyRuntimeRecord) ([]pebblestore.TopologySessionRouteRecord, error) {
-	if s == nil || s.sessionRoutes == nil {
-		return nil, nil
-	}
-	routes, err := s.sessionRoutes.List(100000)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]pebblestore.TopologySessionRouteRecord, 0, len(routes))
-	for _, route := range routes {
-		bindingID := strings.TrimSpace(route.WorkspaceBindingID)
-		record := pebblestore.TopologySessionRouteRecord{
-			SessionID:            strings.TrimSpace(route.SessionID),
-			RuntimeSwarmID:       strings.TrimSpace(route.ChildSwarmID),
-			HostSwarmID:          strings.TrimSpace(route.HostSwarmID),
-			HostContainerID:      strings.TrimSpace(route.HostContainerID),
-			WorkspaceBindingID:   bindingID,
-			RuntimeWorkspacePath: strings.TrimSpace(route.RuntimeWorkspacePath),
-			PlacementGeneration:  route.PlacementGeneration,
-			BindingGeneration:    route.BindingGeneration,
-			CreatedAt:            route.CreatedAt,
-			UpdatedAt:            route.UpdatedAt,
-		}
-		enrichTopologySessionRouteFromBinding(&record, findWorkspaceBindingByID(bindings, bindingID), findRuntimeBySwarmID(runtimes, record.RuntimeSwarmID))
-		out = append(out, record)
-	}
-	return out, nil
-}
-
-func findWorkspaceBindingByID(bindings []pebblestore.TopologyWorkspaceBindingRecord, bindingID string) pebblestore.TopologyWorkspaceBindingRecord {
-	bindingID = strings.TrimSpace(bindingID)
-	if bindingID == "" {
-		return pebblestore.TopologyWorkspaceBindingRecord{}
-	}
-	for _, binding := range bindings {
-		if strings.EqualFold(strings.TrimSpace(binding.BindingID), bindingID) {
-			return binding
-		}
-	}
-	return pebblestore.TopologyWorkspaceBindingRecord{}
-}
-
-func findRuntimeBySwarmID(runtimes map[string]pebblestore.TopologyRuntimeRecord, swarmID string) pebblestore.TopologyRuntimeRecord {
-	swarmID = strings.TrimSpace(swarmID)
-	if swarmID == "" {
-		return pebblestore.TopologyRuntimeRecord{}
-	}
-	for key, runtime := range runtimes {
-		if strings.EqualFold(strings.TrimSpace(key), swarmID) || strings.EqualFold(strings.TrimSpace(runtime.SwarmID), swarmID) {
-			return runtime
-		}
-	}
-	return pebblestore.TopologyRuntimeRecord{}
-}
-
-func (s *Service) lookupRuntimeForSessionRoute(swarmID string) (pebblestore.TopologyRuntimeRecord, error) {
-	if s == nil || s.topologyStore == nil {
-		return pebblestore.TopologyRuntimeRecord{}, nil
-	}
-	swarmID = strings.TrimSpace(swarmID)
-	if swarmID == "" {
-		return pebblestore.TopologyRuntimeRecord{}, nil
-	}
-	runtime, ok, err := s.topologyStore.GetRuntime(swarmID)
-	if err != nil {
-		return runtime, err
-	}
-	if !ok {
-		return s.runtimeFromDeployments(swarmID)
-	}
-	if strings.TrimSpace(runtime.OwnerHostSwarmID) != "" && strings.TrimSpace(runtime.OwnerHostContainerID) != "" {
-		return runtime, nil
-	}
-	fallback, err := s.runtimeFromDeployments(swarmID)
-	if err != nil {
-		return pebblestore.TopologyRuntimeRecord{}, err
-	}
-	runtime.OwnerHostSwarmID = firstNonEmpty(runtime.OwnerHostSwarmID, fallback.OwnerHostSwarmID)
-	runtime.OwnerHostContainerID = firstNonEmpty(runtime.OwnerHostContainerID, fallback.OwnerHostContainerID)
-	return runtime, nil
-}
-
-func (s *Service) lookupRuntimeForSessionRouteForAccount(accountScopeID, swarmID string) (pebblestore.TopologyRuntimeRecord, error) {
-	if s == nil || s.topologyStore == nil {
-		return pebblestore.TopologyRuntimeRecord{}, nil
-	}
-	swarmID = strings.TrimSpace(swarmID)
-	if swarmID == "" {
-		return pebblestore.TopologyRuntimeRecord{}, nil
-	}
-	runtime, ok, err := s.topologyStore.GetRuntimeForAccount(accountScopeID, swarmID)
-	if err != nil || !ok {
-		return runtime, err
-	}
-	return runtime, nil
-}
-
-func (s *Service) runtimeFromDeployments(swarmID string) (pebblestore.TopologyRuntimeRecord, error) {
-	if s == nil || s.deployments == nil {
-		return pebblestore.TopologyRuntimeRecord{}, nil
-	}
-	swarmID = strings.TrimSpace(swarmID)
-	if swarmID == "" {
-		return pebblestore.TopologyRuntimeRecord{}, nil
-	}
-	deployments, err := s.deployments.List(100000)
-	if err != nil {
-		return pebblestore.TopologyRuntimeRecord{}, err
-	}
-	for _, deployment := range deployments {
-		if !strings.EqualFold(strings.TrimSpace(deployment.ChildSwarmID), swarmID) {
-			continue
-		}
-		hostSwarmID := strings.TrimSpace(deployment.HostSwarmID)
-		hostContainerID := strings.TrimSpace(deployment.HostContainerID)
-		if hostContainerID == "" {
-			runtimeContainerRef := firstNonEmpty(strings.TrimSpace(deployment.ContainerID), strings.TrimSpace(deployment.ContainerName), strings.TrimSpace(deployment.ID))
-			hostContainerID = canonicalHostContainerID(hostSwarmID, runtimeContainerRef)
-		}
-		return pebblestore.TopologyRuntimeRecord{
-			SwarmID:              strings.TrimSpace(deployment.ChildSwarmID),
-			Name:                 firstNonEmpty(deployment.ChildDisplayName, deployment.Name, deployment.ChildSwarmID),
-			Role:                 "child",
-			Relationship:         "child",
-			BackendURL:           deployment.ChildBackendURL,
-			DesktopURL:           deployment.ChildDesktopURL,
-			Status:               firstNonEmpty(deployment.AttachStatus, deployment.Status),
-			OwnerHostSwarmID:     hostSwarmID,
-			OwnerHostContainerID: hostContainerID,
-			ObservedSources:      []string{"deploy_container"},
-			CreatedAt:            deployment.CreatedAt,
-			UpdatedAt:            deployment.UpdatedAt,
-		}, nil
-	}
-	return pebblestore.TopologyRuntimeRecord{}, nil
-}
-
-func enrichTopologySessionRouteFromBinding(route *pebblestore.TopologySessionRouteRecord, binding pebblestore.TopologyWorkspaceBindingRecord, runtime pebblestore.TopologyRuntimeRecord) {
-	if route == nil {
-		return
-	}
-	bindingPresent := strings.TrimSpace(binding.BindingID) != ""
-	if strings.TrimSpace(route.HostSwarmID) == "" && bindingPresent {
-		route.HostSwarmID = strings.TrimSpace(binding.DestinationHostSwarmID)
-	}
-	if strings.TrimSpace(route.HostSwarmID) == "" {
-		route.HostSwarmID = strings.TrimSpace(runtime.OwnerHostSwarmID)
-	}
-	if strings.TrimSpace(route.HostContainerID) == "" && bindingPresent {
-		route.HostContainerID = strings.TrimSpace(binding.DestinationContainerID)
-	}
-	if strings.TrimSpace(route.HostContainerID) == "" {
-		route.HostContainerID = strings.TrimSpace(runtime.OwnerHostContainerID)
-	}
-	if strings.TrimSpace(route.RuntimeWorkspacePath) == "" && bindingPresent {
-		route.RuntimeWorkspacePath = strings.TrimSpace(binding.DestinationWorkspacePath)
-	}
-	if route.PlacementGeneration <= 0 && bindingPresent {
-		route.PlacementGeneration = binding.PlacementGeneration
-	}
-	if route.BindingGeneration <= 0 && bindingPresent {
-		route.BindingGeneration = binding.BindingGeneration
-	}
-}
-
 func mergeRuntime(dst map[string]pebblestore.TopologyRuntimeRecord, incoming pebblestore.TopologyRuntimeRecord) {
 	incoming = normalizeRuntime(incoming)
 	if incoming.SwarmID == "" {
@@ -990,7 +640,6 @@ func mergeRuntime(dst map[string]pebblestore.TopologyRuntimeRecord, incoming peb
 	existing.Name = firstNonEmpty(existing.Name, incoming.Name, incoming.SwarmID)
 	existing.Role = firstNonEmpty(existing.Role, incoming.Role)
 	existing.Relationship = chooseRelationship(existing.Relationship, incoming.Relationship)
-	existing.BackendURL = firstNonEmpty(existing.BackendURL, incoming.BackendURL)
 	existing.DesktopURL = firstNonEmpty(existing.DesktopURL, incoming.DesktopURL)
 	existing.Status = firstNonEmpty(existing.Status, incoming.Status)
 	existing.Transport = firstNonEmpty(existing.Transport, incoming.Transport)
@@ -1023,63 +672,12 @@ func mergeRuntimePlacement(dst map[string]pebblestore.TopologyRuntimePlacementRe
 	dst[incoming.RuntimeSwarmID] = existing
 }
 
-func mergeHostContainer(dst map[string]pebblestore.TopologyHostContainerRecord, incoming pebblestore.TopologyHostContainerRecord) {
-	incoming = normalizeHostContainer(incoming)
-	if incoming.HostContainerID == "" {
-		return
-	}
-	existing, ok := dst[incoming.HostContainerID]
-	if !ok {
-		dst[incoming.HostContainerID] = incoming
-		return
-	}
-	existing.HostSwarmID = firstNonEmpty(existing.HostSwarmID, incoming.HostSwarmID)
-	existing.RuntimeContainerRef = firstNonEmpty(existing.RuntimeContainerRef, incoming.RuntimeContainerRef)
-	existing.Name = firstNonEmpty(existing.Name, incoming.Name, incoming.HostContainerID)
-	existing.ContainerName = firstNonEmpty(existing.ContainerName, incoming.ContainerName)
-	existing.ContainerID = firstNonEmpty(existing.ContainerID, incoming.ContainerID)
-	existing.Runtime = firstNonEmpty(existing.Runtime, incoming.Runtime)
-	existing.Image = firstNonEmpty(existing.Image, incoming.Image)
-	existing.Status = firstNonEmpty(existing.Status, incoming.Status)
-	existing.HostAPIBaseURL = firstNonEmpty(existing.HostAPIBaseURL, incoming.HostAPIBaseURL)
-	existing.HostPort = maxInt(existing.HostPort, incoming.HostPort)
-	existing.RuntimePort = maxInt(existing.RuntimePort, incoming.RuntimePort)
-	if len(existing.Mounts) == 0 {
-		existing.Mounts = incoming.Mounts
-	}
-	existing.ObservedSources = appendDedup(existing.ObservedSources, incoming.ObservedSources...)
-	existing.CreatedAt = minPositive(existing.CreatedAt, incoming.CreatedAt)
-	existing.UpdatedAt = maxInt64(existing.UpdatedAt, incoming.UpdatedAt)
-	dst[incoming.HostContainerID] = existing
-}
-
-func mergeAttachment(dst map[string]pebblestore.TopologyAttachmentRecord, incoming pebblestore.TopologyAttachmentRecord) {
-	incoming = normalizeAttachment(incoming)
-	if incoming.AttachmentID == "" {
-		return
-	}
-	existing, ok := dst[incoming.AttachmentID]
-	if !ok {
-		dst[incoming.AttachmentID] = incoming
-		return
-	}
-	existing.HostContainerID = firstNonEmpty(existing.HostContainerID, incoming.HostContainerID)
-	existing.RuntimeSwarmID = firstNonEmpty(existing.RuntimeSwarmID, incoming.RuntimeSwarmID)
-	existing.State = firstNonEmpty(existing.State, incoming.State)
-	existing.DeploymentID = firstNonEmpty(existing.DeploymentID, incoming.DeploymentID)
-	existing.LastError = firstNonEmpty(existing.LastError, incoming.LastError)
-	existing.CreatedAt = minPositive(existing.CreatedAt, incoming.CreatedAt)
-	existing.UpdatedAt = maxInt64(existing.UpdatedAt, incoming.UpdatedAt)
-	dst[incoming.AttachmentID] = existing
-}
-
 func normalizeRuntime(record pebblestore.TopologyRuntimeRecord) pebblestore.TopologyRuntimeRecord {
 	record.Name = firstNonEmpty(strings.TrimSpace(record.Name), strings.TrimSpace(record.SwarmID))
 	record.Role = strings.ToLower(strings.TrimSpace(record.Role))
 	record.Relationship = strings.ToLower(strings.TrimSpace(record.Relationship))
 	record.Status = strings.ToLower(strings.TrimSpace(record.Status))
 	record.Transport = strings.ToLower(strings.TrimSpace(record.Transport))
-	record.BackendURL = ""
 	record.DesktopURL = strings.TrimSpace(record.DesktopURL)
 	record.OwnerHostSwarmID = strings.TrimSpace(record.OwnerHostSwarmID)
 	record.OwnerHostContainerID = strings.TrimSpace(record.OwnerHostContainerID)
@@ -1110,41 +708,6 @@ func normalizeRuntimePlacement(record pebblestore.TopologyRuntimePlacementRecord
 	}
 	if record.UpdatedAt < 0 {
 		record.UpdatedAt = 0
-	}
-	return record
-}
-
-func normalizeHostContainer(record pebblestore.TopologyHostContainerRecord) pebblestore.TopologyHostContainerRecord {
-	record.HostSwarmID = strings.TrimSpace(record.HostSwarmID)
-	record.RuntimeContainerRef = strings.TrimSpace(record.RuntimeContainerRef)
-	record.Name = firstNonEmpty(strings.TrimSpace(record.Name), strings.TrimSpace(record.ContainerName), strings.TrimSpace(record.ContainerID), strings.TrimSpace(record.HostContainerID))
-	record.ContainerName = strings.TrimSpace(record.ContainerName)
-	record.ContainerID = strings.TrimSpace(record.ContainerID)
-	record.Runtime = strings.ToLower(strings.TrimSpace(record.Runtime))
-	record.Image = strings.TrimSpace(record.Image)
-	record.Status = strings.ToLower(strings.TrimSpace(record.Status))
-	record.HostAPIBaseURL = strings.TrimSpace(record.HostAPIBaseURL)
-	record.ObservedSources = appendDedup(nil, record.ObservedSources...)
-	if record.CreatedAt <= 0 {
-		record.CreatedAt = time.Now().UnixMilli()
-	}
-	if record.UpdatedAt <= 0 {
-		record.UpdatedAt = record.CreatedAt
-	}
-	return record
-}
-
-func normalizeAttachment(record pebblestore.TopologyAttachmentRecord) pebblestore.TopologyAttachmentRecord {
-	record.HostContainerID = strings.TrimSpace(record.HostContainerID)
-	record.RuntimeSwarmID = strings.TrimSpace(record.RuntimeSwarmID)
-	record.State = strings.ToLower(strings.TrimSpace(record.State))
-	record.DeploymentID = strings.TrimSpace(record.DeploymentID)
-	record.LastError = strings.TrimSpace(record.LastError)
-	if record.CreatedAt <= 0 {
-		record.CreatedAt = time.Now().UnixMilli()
-	}
-	if record.UpdatedAt <= 0 {
-		record.UpdatedAt = record.CreatedAt
 	}
 	return record
 }
@@ -1241,43 +804,6 @@ func chooseRelationship(existing, incoming string) string {
 	return incoming
 }
 
-func normalizeNodeRelationship(role string) string {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "managed", "manager", "child", "self":
-		return strings.ToLower(strings.TrimSpace(role))
-	default:
-		return ""
-	}
-}
-
-func canonicalHostContainerID(hostSwarmID, runtimeContainerRef string) string {
-	hostSwarmID = strings.TrimSpace(hostSwarmID)
-	runtimeContainerRef = strings.TrimSpace(runtimeContainerRef)
-	if hostSwarmID == "" || runtimeContainerRef == "" {
-		return ""
-	}
-	return fmt.Sprintf("%s:%s", hostSwarmID, strings.ToLower(runtimeContainerRef))
-}
-
-func canonicalAttachmentID(hostContainerID, runtimeSwarmID string) string {
-	hostContainerID = strings.TrimSpace(hostContainerID)
-	runtimeSwarmID = strings.TrimSpace(runtimeSwarmID)
-	if hostContainerID == "" || runtimeSwarmID == "" {
-		return ""
-	}
-	return fmt.Sprintf("%s=>%s", hostContainerID, runtimeSwarmID)
-}
-
-func canonicalWorkspaceBindingID(sourceWorkspacePath, targetSwarmID, targetWorkspacePath, targetKind string) string {
-	parts := []string{
-		strings.ToLower(strings.TrimSpace(sourceWorkspacePath)),
-		strings.ToLower(strings.TrimSpace(targetSwarmID)),
-		strings.ToLower(strings.TrimSpace(targetWorkspacePath)),
-		strings.ToLower(strings.TrimSpace(targetKind)),
-	}
-	return strings.Join(parts, "|")
-}
-
 func sortTopologyRuntimes(records []pebblestore.TopologyRuntimeRecord) {
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].UpdatedAt == records[j].UpdatedAt {
@@ -1318,15 +844,6 @@ func sortTopologyWorkspaceBindings(records []pebblestore.TopologyWorkspaceBindin
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].UpdatedAt == records[j].UpdatedAt {
 			return strings.ToLower(records[i].BindingID) < strings.ToLower(records[j].BindingID)
-		}
-		return records[i].UpdatedAt > records[j].UpdatedAt
-	})
-}
-
-func sortTopologySessionRoutes(records []pebblestore.TopologySessionRouteRecord) {
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].UpdatedAt == records[j].UpdatedAt {
-			return strings.ToLower(records[i].SessionID) < strings.ToLower(records[j].SessionID)
 		}
 		return records[i].UpdatedAt > records[j].UpdatedAt
 	})
