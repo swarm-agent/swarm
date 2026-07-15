@@ -793,10 +793,6 @@ deploy_container_host_desktop_url =
 deploy_container_local_transport_socket_path =
 deploy_container_bootstrap_secret =
 deploy_container_verification_code =
-remote_deploy_enabled = false
-remote_deploy_session_id =
-remote_deploy_host_api_base_url =
-remote_deploy_host_desktop_url =
 EOF
 }
 

@@ -22,7 +22,6 @@ scan_paths=(
   "swarmd/internal/imagegen"
   "swarmd/internal/imagegen.go"
   "swarmd/internal/localcontainers"
-  "swarmd/internal/remotedeploy"
   "swarmd/internal/run"
   "swarmd/internal/tool"
   "swarmd/internal/worktree"
@@ -50,7 +49,7 @@ filter_allowed() {
   # - lib-lane.sh still exposes lane metadata helpers for CLI/harness compatibility; daemon roots below in the same file are system paths.
   # - container entrypoint unsets XDG variables and rejects /root, /home, /workspaces, and /tmp storage paths.
   # - appstorage.go intentionally resolves XDG_DATA_HOME/UserHomeDir only for user-owned git worktree checkout storage.
-  # - local deploy/remotedeploy workspace strings are mount targets or API route names, not Swarm-owned daemon storage roots.
+  # - local deploy workspace strings are mount targets or API route names, not Swarm-owned daemon storage roots.
   grep -Ev \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
     -e '^internal/launcher/launcher\.go:.*(legacy|Legacy|XDG_STATE_HOME|XDG_DATA_HOME|UserHomeDir|UserConfigDir|\.local|\.config|resolve legacy|stat legacy|startupCWD|Getwd)' \
@@ -60,7 +59,6 @@ filter_allowed() {
     -e '^scripts/lib-lane\.sh:[0-9]+:.*(swarm_xdg_|XDG_|\.local/state|\.local/share|\.config|migrate_legacy)' \
     -e '^deploy/container-mvp/(entrypoint\.sh|Containerfile\.base):.*(-u XDG_|/root|/home|/workspaces|/tmp|must not be under a user home|~|mkdir -p|VOLUME)' \
     -e '^swarmd/internal/deploy/service\.go:.*(workspaceruntime|/v1/deploy/container/workspaces/bootstrap|/workspaces)' \
-    -e '^swarmd/internal/remotedeploy/service\.go:.*(workspaceruntime|startupCWD|/workspaces|resolveRemoteDeployBuildRoot)' \
     -e '^swarmd/internal/localcontainers/service\.go:.*(workspaceruntime|/workspaces)' \
     -e '^swarmd/internal/worktree/service\.go:.*(workspaceruntime|migrateLegacyConfig|MigrateLegacyGlobalConfig)' \
     -e '^swarmd/internal/tool/runtime\.go:.*workspaceruntime' \
@@ -69,7 +67,7 @@ filter_allowed() {
     -e '^swarmd/internal/store/pebble/(keys|auth_store|auth_vault|worktree_store)\.go:.*(legacy|migrat|Migrate)' \
     -e '^swarmd/internal/store/pebble/swarm_container_profile_store\.go:.*mount\.TargetPath = "/workspace/' \
     -e '^pkg/startupconfig/config\.go:.*migrate startup config' \
-    -e '^(internal/launcher/(launcher|update)\.go|swarmd/internal/(imagegen|remotedeploy)/service\.go):.*(os\.Rename|copyDir|copyDir\(|CopyDir)' \
+    -e '^(internal/launcher/(launcher|update)\.go|swarmd/internal/imagegen/service\.go):.*(os\.Rename|copyDir|copyDir\(|CopyDir)' \
     || true
 }
 
@@ -89,14 +87,14 @@ if [[ -n "${forbidden_home_hits}" ]]; then
   echo "${forbidden_home_hits}"
 fi
 
-forbidden_workspace_hits="$(run_scan '(/workspaces|/workspace|\./tmp|tmp/remote-deploy|tmp/remote-deploy-ui|tmp/flows|startupCWD|WorkingDirectory=\$|WorkingDirectory=\.|MkdirTemp\(""|CreateTemp\(""|os\.TempDir\(\))')"
+forbidden_workspace_hits="$(run_scan '(/workspaces|/workspace|\./tmp|tmp/flows|startupCWD|WorkingDirectory=\$|WorkingDirectory=\.|MkdirTemp\(""|CreateTemp\(""|os\.TempDir\(\))')"
 if [[ -n "${forbidden_workspace_hits}" ]]; then
   has_failures=1
   echo "[storage-path-check] FAIL: daemon/runtime storage code references workspace, OS temp, or relative temp defaults outside the explicit allowlist:"
   echo "${forbidden_workspace_hits}"
 fi
 
-legacy_remote_hits="$(run_scan '(/var/lib/swarm/rd|/var/lib/swarm/remote-deploy|swarm/rd|remoteRootForHome|remote_root/xdg|run-remote-child\.pid.*remote_root|SWARMD_LOCK_PATH=\$swarmd_state_dir)')"
+legacy_remote_hits="$(run_scan '(/var/lib/swarm/rd|swarm/rd|remoteRootForHome|remote_root/xdg|run-remote-child\.pid.*remote_root|SWARMD_LOCK_PATH=\$swarmd_state_dir)')"
 if [[ -n "${legacy_remote_hits}" ]]; then
   has_failures=1
   echo "[storage-path-check] FAIL: remote/container storage code references legacy data-root runtime paths:"

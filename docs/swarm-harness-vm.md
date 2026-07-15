@@ -1,6 +1,6 @@
 # Swarm harness VM
 
-`swarm-harness` is the canonical isolated Linux guest for local container, attach, managed-sync, and replicate testing.
+`swarm-harness` is the canonical isolated Linux guest for local container, attach, sync, and replicate testing.
 
 Use it when the main workstation Swarm is already running or when fixed local harness ports would collide with your normal machine state.
 
@@ -235,5 +235,4 @@ If you want to throw away guest changes but keep the cached reusable baseline:
 - `tests/swarmd/local_replicate_e2e.sh`
 - `tests/swarmd/local_replicate_recovery_e2e.sh`
 - `tests/swarmd/topology_e2e.sh`
-- `tests/swarmd/remote_deploy_e2e.sh`
 - `AGENTS.md`

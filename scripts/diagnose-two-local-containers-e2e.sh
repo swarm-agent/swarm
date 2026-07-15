@@ -6,28 +6,28 @@ usage() {
 Usage: scripts/diagnose-two-local-containers-e2e.sh [options]
 
 Focused live E2E diagnostic: create two local containers on the primary host and
-two local containers on an already linked managed host, then verify all four child
+two local containers on an already linked target host, then verify all four child
 targets become online/selectable with workspace bindings.
 
 Required runtime inputs:
   --primary-ssh <alias> or SWARM_PRIMARY_SSH
-  --managed-ssh <alias> or SWARM_MANAGED_SSH
+  --target-ssh <alias> or SWARM_TARGET_SSH
   --primary-url defaults to http://127.0.0.1:7781 when running on the primary host
 
 Options:
   --primary-url <url>              Primary swarmd API URL. Default: http://127.0.0.1:7781
   --primary-ssh <alias>            Primary SSH alias used for rebuild/key checks. Use local/self when running on primary. Required.
-  --managed-ssh <alias>            Managed host SSH alias. Required.
-  --managed-swarm-id <id>          Managed host swarm_id. Optional if --managed-name resolves it.
-  --managed-name <name>            Managed host display name. If omitted, tries --managed-ssh, then a single online non-self target.
+  --target-ssh <alias>            Selected target host SSH alias. Required.
+  --target-swarm-id <id>          Selected target host swarm_id. Optional if --target-name resolves it.
+  --target-name <name>            Selected target host display name. If omitted, tries --target-ssh, then a single online non-self target.
   --source-workspace-path <path>   Source workspace path on the primary/controller. Default: current directory.
   --container-prefix <name>        Container name prefix. Default: two-local-diag-<timestamp>
   --primary-count <n>              Primary-host local containers to create. Default: 2
-  --managed-count <n>              Managed-host local containers to create. Default: 2
+  --target-count <n>              Target-host local containers to create. Default: 2
   --runtime <podman|docker>        Optional requested runtime passed to replicate.
   --artifact-dir <path>            Evidence directory. Default: tmp/two-local-containers-diagnostics/<timestamp>
   --from-zero                      Rebuild both hosts from zero before running (destructive remote DB reset).
-  --link-command <command>         Command to run after --from-zero if managed target is absent.
+  --link-command <command>         Command to run after --from-zero if target host is absent.
   --fireworks-key-path <path>      Fireworks key path checked on primary SSH host. Enables the key check.
   --check-fireworks-key            Require --fireworks-key-path/SWARM_FIREWORKS_KEY_PATH to exist and be non-empty.
   --skip-fireworks-key-check       Do not check for the Fireworks key.
@@ -41,8 +41,8 @@ Options:
   --help                          Show this help.
 
 Environment equivalents:
-  SWARM_PRIMARY_URL, SWARM_PRIMARY_SSH, SWARM_MANAGED_SSH,
-  SWARM_MANAGED_SWARM_ID, SWARM_MANAGED_NAME, SWARM_SOURCE_WORKSPACE_PATH,
+  SWARM_PRIMARY_URL, SWARM_PRIMARY_SSH, SWARM_TARGET_SSH,
+  SWARM_TARGET_SWARM_ID, SWARM_TARGET_NAME, SWARM_SOURCE_WORKSPACE_PATH,
   SWARM_TWO_LOCAL_CONTAINER_PREFIX, SWARM_TWO_LOCAL_ARTIFACT_DIR,
   SWARM_FIREWORKS_KEY_PATH, SWARM_TWO_LOCAL_AI_PROOF, SWARM_TWO_LOCAL_AI_PROVIDER,
   SWARM_TWO_LOCAL_AI_MODEL, SWARM_TWO_LOCAL_AI_THINKING
@@ -61,13 +61,13 @@ is_local_target() { [[ -z "${1:-}" || "${1:-}" == "local" || "${1:-}" == "localh
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PRIMARY_URL="${SWARM_PRIMARY_URL:-http://127.0.0.1:7781}"
 PRIMARY_SSH="${SWARM_PRIMARY_SSH:-}"
-MANAGED_SSH="${SWARM_MANAGED_SSH:-}"
-MANAGED_SWARM_ID="${SWARM_MANAGED_SWARM_ID:-}"
-MANAGED_NAME="${SWARM_MANAGED_NAME:-}"
+TARGET_SSH="${SWARM_TARGET_SSH:-}"
+TARGET_SWARM_ID="${SWARM_TARGET_SWARM_ID:-}"
+TARGET_NAME="${SWARM_TARGET_NAME:-}"
 SOURCE_WORKSPACE_PATH="${SWARM_SOURCE_WORKSPACE_PATH:-${ROOT_DIR}}"
 CONTAINER_PREFIX="${SWARM_TWO_LOCAL_CONTAINER_PREFIX:-two-local-diag-$(date +%Y%m%d-%H%M%S)}"
 PRIMARY_COUNT="${SWARM_TWO_LOCAL_PRIMARY_COUNT:-2}"
-MANAGED_COUNT="${SWARM_TWO_LOCAL_MANAGED_COUNT:-2}"
+TARGET_COUNT="${SWARM_TWO_LOCAL_TARGET_COUNT:-2}"
 RUNTIME="${SWARM_TWO_LOCAL_RUNTIME:-}"
 ARTIFACT_DIR="${SWARM_TWO_LOCAL_ARTIFACT_DIR:-}"
 TIMEOUT_SECONDS="${SWARM_TWO_LOCAL_TIMEOUT_SECONDS:-180}"
@@ -92,13 +92,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --primary-url) PRIMARY_URL="${2:-}"; shift 2 ;;
     --primary-ssh) PRIMARY_SSH="${2:-}"; shift 2 ;;
-    --managed-ssh) MANAGED_SSH="${2:-}"; shift 2 ;;
-    --managed-swarm-id) MANAGED_SWARM_ID="${2:-}"; shift 2 ;;
-    --managed-name) MANAGED_NAME="${2:-}"; shift 2 ;;
+    --target-ssh) TARGET_SSH="${2:-}"; shift 2 ;;
+    --target-swarm-id) TARGET_SWARM_ID="${2:-}"; shift 2 ;;
+    --target-name) TARGET_NAME="${2:-}"; shift 2 ;;
     --source-workspace-path|--workspace) SOURCE_WORKSPACE_PATH="${2:-}"; shift 2 ;;
     --container-prefix) CONTAINER_PREFIX="${2:-}"; shift 2 ;;
     --primary-count) PRIMARY_COUNT="${2:-}"; shift 2 ;;
-    --managed-count) MANAGED_COUNT="${2:-}"; shift 2 ;;
+    --target-count) TARGET_COUNT="${2:-}"; shift 2 ;;
     --runtime) RUNTIME="${2:-}"; shift 2 ;;
     --artifact-dir) ARTIFACT_DIR="${2:-}"; shift 2 ;;
     --timeout-seconds) TIMEOUT_SECONDS="${2:-}"; shift 2 ;;
@@ -122,11 +122,11 @@ require_command curl
 require_command jq
 require_command ssh
 [[ "${PRIMARY_COUNT}" =~ ^[0-9]+$ && "${PRIMARY_COUNT}" -gt 0 ]] || fail "--primary-count must be a positive integer"
-[[ "${MANAGED_COUNT}" =~ ^[0-9]+$ && "${MANAGED_COUNT}" -gt 0 ]] || fail "--managed-count must be a positive integer"
+[[ "${TARGET_COUNT}" =~ ^[0-9]+$ && "${TARGET_COUNT}" -gt 0 ]] || fail "--target-count must be a positive integer"
 [[ "${TIMEOUT_SECONDS}" =~ ^[0-9]+$ && "${TIMEOUT_SECONDS}" -gt 0 ]] || fail "--timeout-seconds must be a positive integer"
 [[ "${AI_TIMEOUT_SECONDS}" =~ ^[0-9]+$ && "${AI_TIMEOUT_SECONDS}" -gt 0 ]] || fail "--ai-timeout-seconds must be a positive integer"
 [[ -n "${PRIMARY_SSH}" ]] || fail "--primary-ssh is required"
-[[ -n "${MANAGED_SSH}" ]] || fail "--managed-ssh is required"
+[[ -n "${TARGET_SSH}" ]] || fail "--target-ssh is required"
 [[ -n "${SOURCE_WORKSPACE_PATH}" ]] || fail "--source-workspace-path is required"
 PRIMARY_URL="${PRIMARY_URL%/}"
 if [[ -z "${ARTIFACT_DIR}" ]]; then
@@ -214,41 +214,41 @@ maybe_from_zero() {
   fi
   log "from-zero rebuild: ${PRIMARY_SSH}"
   "${ROOT_DIR}/scripts/ssh-fast-test.sh" "${PRIMARY_SSH}" --from-zero
-  log "from-zero rebuild: ${MANAGED_SSH}"
-  "${ROOT_DIR}/scripts/ssh-fast-test.sh" "${MANAGED_SSH}" --from-zero
+  log "from-zero rebuild: ${TARGET_SSH}"
+  "${ROOT_DIR}/scripts/ssh-fast-test.sh" "${TARGET_SSH}" --from-zero
 }
 
-resolve_managed_target() {
+resolve_target_host() {
   local targets_file="${ARTIFACT_DIR}/targets_before.json"
   api_json GET "/v1/swarm/targets" "" "${targets_file}" 30
-  if [[ -n "${MANAGED_SWARM_ID}" ]]; then
-    jq -c --arg id "${MANAGED_SWARM_ID}" '.targets[]? | select((.swarm_id // "") == $id)' "${targets_file}" | head -n 1 | jq '.' >"${ARTIFACT_DIR}/managed_target.json"
-  elif [[ -n "${MANAGED_NAME}" ]]; then
-    jq -c --arg name "${MANAGED_NAME}" '.targets[]? | select((.name // "") == $name)' "${targets_file}" | head -n 1 | jq '.' >"${ARTIFACT_DIR}/managed_target.json"
+  if [[ -n "${TARGET_SWARM_ID}" ]]; then
+    jq -c --arg id "${TARGET_SWARM_ID}" '.targets[]? | select((.swarm_id // "") == $id)' "${targets_file}" | head -n 1 | jq '.' >"${ARTIFACT_DIR}/target_host.json"
+  elif [[ -n "${TARGET_NAME}" ]]; then
+    jq -c --arg name "${TARGET_NAME}" '.targets[]? | select((.name // "") == $name)' "${targets_file}" | head -n 1 | jq '.' >"${ARTIFACT_DIR}/target_host.json"
   else
-    jq -c --arg name "${MANAGED_SSH}" '.targets[]? | select((.name // "") == $name)' "${targets_file}" | head -n 1 | jq '.' >"${ARTIFACT_DIR}/managed_target.json"
-    if [[ ! -s "${ARTIFACT_DIR}/managed_target.json" ]]; then
+    jq -c --arg name "${TARGET_SSH}" '.targets[]? | select((.name // "") == $name)' "${targets_file}" | head -n 1 | jq '.' >"${ARTIFACT_DIR}/target_host.json"
+    if [[ ! -s "${ARTIFACT_DIR}/target_host.json" ]]; then
       local count
       count="$(jq -r '[.targets[]? | select((.online // false) == true and (.selectable // false) == true and ((.kind // "") != "self") and ((.kind // "") != "local"))] | length' "${targets_file}")"
       if [[ "${count}" == "1" ]]; then
-        jq -c '.targets[]? | select((.online // false) == true and (.selectable // false) == true and ((.kind // "") != "self") and ((.kind // "") != "local"))' "${targets_file}" | head -n 1 | jq '.' >"${ARTIFACT_DIR}/managed_target.json"
+        jq -c '.targets[]? | select((.online // false) == true and (.selectable // false) == true and ((.kind // "") != "self") and ((.kind // "") != "local"))' "${targets_file}" | head -n 1 | jq '.' >"${ARTIFACT_DIR}/target_host.json"
       fi
     fi
   fi
-  if [[ ! -s "${ARTIFACT_DIR}/managed_target.json" && -n "${LINK_COMMAND}" ]]; then
-    log "managed target not found; running link command"
+  if [[ ! -s "${ARTIFACT_DIR}/target_host.json" && -n "${LINK_COMMAND}" ]]; then
+    log "target host not found; running link command"
     bash -lc "${LINK_COMMAND}" | tee "${ARTIFACT_DIR}/link_command.log"
     api_json GET "/v1/swarm/targets" "" "${targets_file}" 30
-    resolve_managed_target
+    resolve_target_host
     return 0
   fi
-  [[ -s "${ARTIFACT_DIR}/managed_target.json" ]] || fail "managed target not found; pass --managed-swarm-id/--managed-name, or provide --link-command after --from-zero"
-  MANAGED_SWARM_ID="$(json_get "${ARTIFACT_DIR}/managed_target.json" '.swarm_id // empty')"
-  MANAGED_NAME="$(json_get "${ARTIFACT_DIR}/managed_target.json" '.name // empty')"
-  [[ -n "${MANAGED_SWARM_ID}" ]] || fail "managed target missing swarm_id"
-  [[ "$(json_get "${ARTIFACT_DIR}/managed_target.json" '.online // false')" == "true" ]] || fail "managed target ${MANAGED_SWARM_ID} is not online"
-  [[ "$(json_get "${ARTIFACT_DIR}/managed_target.json" '.selectable // false')" == "true" ]] || fail "managed target ${MANAGED_SWARM_ID} is not selectable"
-  log "managed target: name=${MANAGED_NAME:-<empty>} swarm_id=${MANAGED_SWARM_ID}"
+  [[ -s "${ARTIFACT_DIR}/target_host.json" ]] || fail "target host not found; pass --target-swarm-id/--target-name, or provide --link-command after --from-zero"
+  TARGET_SWARM_ID="$(json_get "${ARTIFACT_DIR}/target_host.json" '.swarm_id // empty')"
+  TARGET_NAME="$(json_get "${ARTIFACT_DIR}/target_host.json" '.name // empty')"
+  [[ -n "${TARGET_SWARM_ID}" ]] || fail "target host missing swarm_id"
+  [[ "$(json_get "${ARTIFACT_DIR}/target_host.json" '.online // false')" == "true" ]] || fail "target host ${TARGET_SWARM_ID} is not online"
+  [[ "$(json_get "${ARTIFACT_DIR}/target_host.json" '.selectable // false')" == "true" ]] || fail "target host ${TARGET_SWARM_ID} is not selectable"
+  log "target host: name=${TARGET_NAME:-<empty>} swarm_id=${TARGET_SWARM_ID}"
 }
 
 create_container() {
@@ -280,8 +280,8 @@ create_container() {
   [[ -n "${runtime_workspace_path}" ]] || fail "${name} missing runtime workspace path"
   [[ -n "${binding_id}" ]] || fail "${name} missing workspace binding id"
   [[ "${destination_runtime_swarm_id}" == "${child_swarm_id}" ]] || fail "${name} binding runtime swarm mismatch"
-  if [[ "${location}" == "managed" ]]; then
-    [[ "${destination_host_swarm_id}" == "${MANAGED_SWARM_ID}" ]] || fail "${name} destination_host_swarm_id=${destination_host_swarm_id}, expected ${MANAGED_SWARM_ID}"
+  if [[ "${location}" == "target" ]]; then
+    [[ "${destination_host_swarm_id}" == "${TARGET_SWARM_ID}" ]] || fail "${name} destination_host_swarm_id=${destination_host_swarm_id}, expected ${TARGET_SWARM_ID}"
   fi
   CREATED_DEPLOYMENTS+=("${deployment_id}")
   CREATED_CHILDREN+=("${child_swarm_id}")
@@ -385,13 +385,13 @@ set -euo pipefail
 if command -v podman >/dev/null 2>&1; then podman ps -a --format '{{.ID}} {{.Names}} {{.Status}}'; elif command -v docker >/dev/null 2>&1; then docker ps -a --format '{{.ID}} {{.Names}} {{.Status}}'; else echo 'no runtime'; fi
 REMOTE_PS
   fi
-  if is_local_target "${MANAGED_SSH}"; then
-    bash -s >"${ARTIFACT_DIR}/managed_runtime_ps.txt" 2>&1 <<'REMOTE_PS' || true
+  if is_local_target "${TARGET_SSH}"; then
+    bash -s >"${ARTIFACT_DIR}/target_runtime_ps.txt" 2>&1 <<'REMOTE_PS' || true
 set -euo pipefail
 if command -v podman >/dev/null 2>&1; then podman ps -a --format '{{.ID}} {{.Names}} {{.Status}}'; elif command -v docker >/dev/null 2>&1; then docker ps -a --format '{{.ID}} {{.Names}} {{.Status}}'; else echo 'no runtime'; fi
 REMOTE_PS
   else
-    ssh "${MANAGED_SSH}" 'bash -s' >"${ARTIFACT_DIR}/managed_runtime_ps.txt" 2>&1 <<'REMOTE_PS' || true
+    ssh "${TARGET_SSH}" 'bash -s' >"${ARTIFACT_DIR}/target_runtime_ps.txt" 2>&1 <<'REMOTE_PS' || true
 set -euo pipefail
 if command -v podman >/dev/null 2>&1; then podman ps -a --format '{{.ID}} {{.Names}} {{.Status}}'; elif command -v docker >/dev/null 2>&1; then docker ps -a --format '{{.ID}} {{.Names}} {{.Status}}'; else echo 'no runtime'; fi
 REMOTE_PS
@@ -402,35 +402,35 @@ maybe_from_zero
 check_fireworks_key
 api_json GET "/v1/auth/desktop/session" "" "${ARTIFACT_DIR}/desktop_session.json" 20
 api_json GET "/readyz" "" "${ARTIFACT_DIR}/readyz.json" 20
-resolve_managed_target
+resolve_target_host
 api_json GET "/v1/swarm/topology" "" "${ARTIFACT_DIR}/topology_before.json" 30
 
 for ((i = 1; i <= PRIMARY_COUNT; i++)); do
   create_container primary "${i}" ""
 done
-for ((i = 1; i <= MANAGED_COUNT; i++)); do
-  create_container managed "${i}" "${MANAGED_SWARM_ID}"
+for ((i = 1; i <= TARGET_COUNT; i++)); do
+  create_container target "${i}" "${TARGET_SWARM_ID}"
 done
 
 capture_runtime_ps
 summary_items="${ARTIFACT_DIR}/summary_items.json"
 : >"${summary_items}"
-for item in "${ARTIFACT_DIR}"/primary-*/summary.json "${ARTIFACT_DIR}"/managed-*/summary.json; do
+for item in "${ARTIFACT_DIR}"/primary-*/summary.json "${ARTIFACT_DIR}"/target-*/summary.json; do
   [[ -f "${item}" ]] || continue
   cat "${item}" >>"${summary_items}"
   printf '\n' >>"${summary_items}"
 done
 jq -s \
   --arg primary_ssh "${PRIMARY_SSH}" \
-  --arg managed_ssh "${MANAGED_SSH}" \
-  --arg managed_swarm_id "${MANAGED_SWARM_ID}" \
-  --arg managed_name "${MANAGED_NAME}" \
+  --arg target_ssh "${TARGET_SSH}" \
+  --arg target_swarm_id "${TARGET_SWARM_ID}" \
+  --arg target_name "${TARGET_NAME}" \
   --arg source_workspace_path "${SOURCE_WORKSPACE_PATH}" \
   --arg artifact_dir "${ARTIFACT_DIR}" \
   --arg ai_proof "${AI_PROOF}" \
   --arg ai_provider "${AI_PROVIDER}" \
   --arg ai_model "${AI_MODEL}" \
-  '{ok:true,primary_ssh:$primary_ssh,managed_ssh:$managed_ssh,managed_swarm_id:$managed_swarm_id,managed_name:$managed_name,source_workspace_path:$source_workspace_path,artifact_dir:$artifact_dir,ai_proof:($ai_proof == "true"),ai_provider:$ai_provider,ai_model:$ai_model,containers:.}' \
+  '{ok:true,primary_ssh:$primary_ssh,target_ssh:$target_ssh,target_swarm_id:$target_swarm_id,target_name:$target_name,source_workspace_path:$source_workspace_path,artifact_dir:$artifact_dir,ai_proof:($ai_proof == "true"),ai_provider:$ai_provider,ai_model:$ai_model,containers:.}' \
   "${summary_items}" >"${ARTIFACT_DIR}/summary.json"
 
 log "PASS two-local-containers diagnostic"

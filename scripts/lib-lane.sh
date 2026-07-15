@@ -291,14 +291,6 @@ deploy_container_host_desktop_url =
 deploy_container_local_transport_socket_path =
 deploy_container_bootstrap_secret =
 deploy_container_verification_code =
-remote_deploy_enabled = false
-remote_deploy_session_id =
-remote_deploy_host_api_base_url =
-remote_deploy_host_desktop_url =
-remote_deploy_sync_enabled = false
-remote_deploy_sync_mode =
-remote_deploy_sync_owner_swarm_id =
-remote_deploy_sync_credential_url =
 EOF
 }
 
@@ -321,12 +313,6 @@ swarm_startup_config_remove_obsolete_keys() {
       raw_key = trim(substr($0, 1, split_pos - 1))
       if (raw_key == "startup" "_mode" ||
           raw_key == "swarm" "_mode" ||
-          raw_key == "managed_host_sync_mode" ||
-          raw_key == "managed_host_sync_modules" ||
-          raw_key == "managed_host_sync_owner_swarm_id" ||
-          raw_key == "managed_host_sync_host_api_base_url" ||
-          raw_key == "managed_host_sync_credential_url" ||
-          raw_key == "managed_host_sync_agent_url" ||
           raw_key == "deploy_container_sync_skill_url" ||
           raw_key == "deploy_container_sync_permission_url") {
         next
@@ -656,45 +642,6 @@ EOF
 deploy_container_local_transport_socket_path =
 EOF
   fi
-
-  if ! swarm_startup_config_has_key remote_deploy_enabled; then
-    cat >>"${config_path}" <<'EOF'
-
-# Remote deploy child bootstrap payload.
-remote_deploy_enabled = false
-remote_deploy_session_id =
-remote_deploy_host_api_base_url =
-remote_deploy_host_desktop_url =
-remote_deploy_sync_enabled = false
-remote_deploy_sync_mode =
-remote_deploy_sync_owner_swarm_id =
-remote_deploy_sync_credential_url =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key remote_deploy_sync_enabled; then
-    cat >>"${config_path}" <<'EOF'
-remote_deploy_sync_enabled = false
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key remote_deploy_sync_mode; then
-    cat >>"${config_path}" <<'EOF'
-remote_deploy_sync_mode =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key remote_deploy_sync_owner_swarm_id; then
-    cat >>"${config_path}" <<'EOF'
-remote_deploy_sync_owner_swarm_id =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key remote_deploy_sync_credential_url; then
-    cat >>"${config_path}" <<'EOF'
-remote_deploy_sync_credential_url =
-EOF
-  fi
 }
 
 swarm_startup_config_validate() {
@@ -749,14 +696,6 @@ swarm_startup_config_validate() {
       valid["deploy_container_local_transport_socket_path"] = 1
       valid["deploy_container_bootstrap_secret"] = 1
       valid["deploy_container_verification_code"] = 1
-      valid["remote_deploy_enabled"] = 1
-      valid["remote_deploy_session_id"] = 1
-      valid["remote_deploy_host_api_base_url"] = 1
-      valid["remote_deploy_host_desktop_url"] = 1
-      valid["remote_deploy_sync_enabled"] = 1
-      valid["remote_deploy_sync_mode"] = 1
-      valid["remote_deploy_sync_owner_swarm_id"] = 1
-      valid["remote_deploy_sync_credential_url"] = 1
       allow_empty["swarm_name"] = 1
       allow_empty["dev_root"] = 1
       allow_empty["advertise_host"] = 1
@@ -774,12 +713,6 @@ swarm_startup_config_validate() {
       allow_empty["deploy_container_local_transport_socket_path"] = 1
       allow_empty["deploy_container_bootstrap_secret"] = 1
       allow_empty["deploy_container_verification_code"] = 1
-      allow_empty["remote_deploy_session_id"] = 1
-      allow_empty["remote_deploy_host_api_base_url"] = 1
-      allow_empty["remote_deploy_host_desktop_url"] = 1
-      allow_empty["remote_deploy_sync_mode"] = 1
-      allow_empty["remote_deploy_sync_owner_swarm_id"] = 1
-      allow_empty["remote_deploy_sync_credential_url"] = 1
     }
     /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
     {
@@ -801,12 +734,6 @@ swarm_startup_config_validate() {
           raw_key == "onboarding_state" ||
           raw_key == "network_mode" ||
           raw_key == "tailscale_transport_port" ||
-          raw_key == "managed_host_sync_mode" ||
-          raw_key == "managed_host_sync_modules" ||
-          raw_key == "managed_host_sync_owner_swarm_id" ||
-          raw_key == "managed_host_sync_host_api_base_url" ||
-          raw_key == "managed_host_sync_credential_url" ||
-          raw_key == "managed_host_sync_agent_url" ||
           raw_key == "deploy_container_sync_skill_url" ||
           raw_key == "deploy_container_sync_permission_url") {
         next
@@ -926,30 +853,6 @@ swarm_startup_config_validate() {
       if (!("deploy_container_verification_code" in seen)) {
         fail(sprintf("invalid startup config %s: missing deploy_container_verification_code", config_path))
       }
-      if (!("remote_deploy_enabled" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_enabled", config_path))
-      }
-      if (!("remote_deploy_session_id" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_session_id", config_path))
-      }
-      if (!("remote_deploy_host_api_base_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_host_api_base_url", config_path))
-      }
-      if (!("remote_deploy_host_desktop_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_host_desktop_url", config_path))
-      }
-      if (!("remote_deploy_sync_enabled" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_sync_enabled", config_path))
-      }
-      if (!("remote_deploy_sync_mode" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_sync_mode", config_path))
-      }
-      if (!("remote_deploy_sync_owner_swarm_id" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_sync_owner_swarm_id", config_path))
-      }
-      if (!("remote_deploy_sync_credential_url" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_sync_credential_url", config_path))
-      }
       if (values["dev_mode"] != "true" && values["dev_mode"] != "false") {
         fail(sprintf("invalid startup config %s: dev_mode must be true or false", config_path))
       }
@@ -1013,12 +916,6 @@ swarm_startup_config_validate() {
       }
       if (values["deploy_container_sync_enabled"] != "true" && values["deploy_container_sync_enabled"] != "false") {
         fail(sprintf("invalid startup config %s: deploy_container_sync_enabled must be true or false", config_path))
-      }
-      if (values["remote_deploy_enabled"] != "true" && values["remote_deploy_enabled"] != "false") {
-        fail(sprintf("invalid startup config %s: remote_deploy_enabled must be true or false", config_path))
-      }
-      if (values["remote_deploy_sync_enabled"] != "true" && values["remote_deploy_sync_enabled"] != "false") {
-        fail(sprintf("invalid startup config %s: remote_deploy_sync_enabled must be true or false", config_path))
       }
       port_num = values["port"] + 0
       if (port_num < 1 || port_num > 65535) {

@@ -102,14 +102,14 @@ Do not move production daemon state into home, XDG, workspace, `.local`, or ad-h
 
 ## Regression guardrails
 
-This checkpoint is narrow. We are not redesigning topology, agents, sessions, permissions, or remote deploy.
+This checkpoint is narrow. We are not redesigning topology, agents, sessions, or permissions.
 
 Avoid these regressions:
 
 1. **Do not create a new mode to replace the old modes.** Remove `interactive` and `box` as product startup modes. The normal product lifecycle is just the installed always-on daemon.
 2. **Do not keep "box mode" as user-facing language.** The daemon may technically behave like the old always-on path, but users and config should not see or choose `box`.
 3. **Do not let controller exit manage daemon lifecycle.** TUI/Desktop quit or force-quit only closes the controller. It must not ask whether to keep running in the background, and it must not stop the daemon.
-4. **Do not break real topology/bootstrap concepts.** Keep child, swarm networking, remote deploy, managed host, and container bootstrap behavior. Only remove the startup-mode split.
+4. **Do not break real topology/bootstrap concepts.** Keep child, swarm networking, and container bootstrap behavior. Only remove the startup-mode split.
 5. **Do not update config in only one layer.** Go config, shell config generation/validation, tests, VM scripts, and E2Es must stop writing/requiring `startup_mode` together.
 6. **Do not leave hidden unmanaged production fallback behavior.** If the installed daemon is not running, CLI should guide the user to `swarm install`/`swarm start`, not silently recreate interactive mode.
 

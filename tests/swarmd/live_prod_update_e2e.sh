@@ -327,14 +327,6 @@ deploy_container_host_desktop_url =
 deploy_container_local_transport_socket_path =
 deploy_container_bootstrap_secret =
 deploy_container_verification_code =
-remote_deploy_enabled = false
-remote_deploy_session_id =
-remote_deploy_host_api_base_url =
-remote_deploy_host_desktop_url =
-remote_deploy_sync_enabled = false
-remote_deploy_sync_mode =
-remote_deploy_sync_owner_swarm_id =
-remote_deploy_sync_credential_url =
 EOF
   safe_copy_file_artifact "${HOST_STARTUP_CONFIG}" "startup-config.txt"
 }
