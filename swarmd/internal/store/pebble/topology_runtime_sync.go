@@ -6,9 +6,8 @@ import (
 )
 
 const (
-	topologyRuntimeSourceLocalNode   = "swarm_local_node"
-	topologyRuntimeSourceTrustedPeer = "swarm_trusted_peer"
-	topologyRuntimeSourceNode        = "swarm_node"
+	topologyRuntimeSourceLocalNode = "swarm_local_node"
+	topologyRuntimeSourceNode      = "swarm_node"
 )
 
 func syncTopologyRuntimeFromLocalNode(topology *TopologyStore, record SwarmLocalNodeRecord) error {
@@ -23,23 +22,6 @@ func syncTopologyRuntimeFromLocalNode(topology *TopologyStore, record SwarmLocal
 		Status:          "online",
 		Transport:       topologyTransportFromSwarmTransports(record.Transports),
 		ObservedSources: []string{topologyRuntimeSourceLocalNode},
-		CreatedAt:       record.CreatedAt,
-		UpdatedAt:       record.UpdatedAt,
-	}
-	return UpsertTopologyRuntimeRecord(topology, incoming)
-}
-
-func syncTopologyRuntimeFromTrustedPeer(topology *TopologyStore, record SwarmTrustedPeerRecord) error {
-	if topology == nil {
-		return nil
-	}
-	incoming := TopologyRuntimeRecord{
-		SwarmID:         strings.TrimSpace(record.SwarmID),
-		Name:            firstNonEmpty(record.Name, record.SwarmID),
-		Role:            strings.ToLower(strings.TrimSpace(record.Role)),
-		Relationship:    strings.ToLower(strings.TrimSpace(record.Relationship)),
-		Transport:       strings.ToLower(strings.TrimSpace(record.TransportMode)),
-		ObservedSources: []string{topologyRuntimeSourceTrustedPeer},
 		CreatedAt:       record.CreatedAt,
 		UpdatedAt:       record.UpdatedAt,
 	}
@@ -64,10 +46,6 @@ func syncTopologyRuntimeFromNode(topology *TopologyStore, record SwarmNodeRecord
 		UpdatedAt:       record.UpdatedAt,
 	}
 	return UpsertTopologyRuntimeRecord(topology, incoming)
-}
-
-func removeTopologyRuntimeTrustedPeer(topology *TopologyStore, swarmID string) error {
-	return removeTopologyRuntimeObservedSource(topology, swarmID, topologyRuntimeSourceTrustedPeer)
 }
 
 func removeTopologyRuntimeNodeObservation(topology *TopologyStore, swarmID string) error {
@@ -221,13 +199,6 @@ func removeTopologyRuntimeObservedSource(topology *TopologyStore, swarmID, sourc
 		record.BackendURL = ""
 		record.DesktopURL = ""
 		record.Status = ""
-	case topologyRuntimeSourceTrustedPeer:
-		if strings.EqualFold(strings.TrimSpace(record.Relationship), "self") {
-			break
-		}
-		if !topologyObservedSourcePresent(record.ObservedSources, topologyRuntimeSourceNode) {
-			record.Relationship = ""
-		}
 	}
 	_, err = topology.PutRuntime(record)
 	return err

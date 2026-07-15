@@ -2,8 +2,6 @@ package swarm
 
 import (
 	"testing"
-
-	"swarm-refactor/swarmtui/pkg/startupconfig"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -84,50 +82,11 @@ func TestEnsureLocalStateIgnoresManagedRoleInputWhenDBUnpaired(t *testing.T) {
 	if state.Node.Role != bootstrapRoleMaster {
 		t.Fatalf("role from clean DB with managed input = %q, want %q", state.Node.Role, bootstrapRoleMaster)
 	}
-	if state.Pairing.PairingState != "unpaired" || state.Pairing.ParentSwarmID != "" {
-		t.Fatalf("pairing = %+v, want standalone/unpaired", state.Pairing)
-	}
-
 	stored, ok, err := swarmStore.GetLocalNode()
 	if err != nil || !ok {
 		t.Fatalf("get local node ok=%t err=%v", ok, err)
 	}
 	if stored.Role != bootstrapRoleMaster {
 		t.Fatalf("stored role = %q, want %q", stored.Role, bootstrapRoleMaster)
-	}
-}
-
-func TestEnsureLocalStateKeepsPrimaryRoleWhenLegacyPairingIsPaired(t *testing.T) {
-	store, err := pebblestore.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	swarmStore := pebblestore.NewSwarmStore(store)
-	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{
-		SwarmID: "local-swarm",
-		Name:    "Local",
-		Role:    RelationshipManaged,
-	}); err != nil {
-		t.Fatalf("put local node: %v", err)
-	}
-	if _, err := swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{
-		PairingState:      startupconfig.PairingStatePaired,
-		ParentSwarmID:     "legacy-manager",
-		LastUpdatedByRole: RelationshipManaged,
-	}); err != nil {
-		t.Fatalf("put local pairing: %v", err)
-	}
-
-	state, err := NewService(swarmStore, nil, nil).EnsureLocalState(EnsureLocalStateInput{})
-	if err != nil {
-		t.Fatalf("ensure local state: %v", err)
-	}
-	if state.Node.Role != bootstrapRoleMaster {
-		t.Fatalf("role with legacy pairing = %q, want %q", state.Node.Role, bootstrapRoleMaster)
-	}
-	if state.Node.SwarmID != "local-swarm" || state.Node.Name != "Local" {
-		t.Fatalf("stable local identity changed: %+v", state.Node)
 	}
 }

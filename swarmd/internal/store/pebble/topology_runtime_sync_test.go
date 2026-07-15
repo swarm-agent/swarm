@@ -51,7 +51,7 @@ func TestSwarmNodeStoreSyncsCanonicalRuntime(t *testing.T) {
 	}
 }
 
-func TestSwarmStoreSyncsCanonicalRuntimeSources(t *testing.T) {
+func TestSwarmStoreSyncsCanonicalLocalRuntime(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "swarm-store-topology.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -71,15 +71,6 @@ func TestSwarmStoreSyncsCanonicalRuntimeSources(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("put local node: %v", err)
 	}
-	if _, err := swarms.PutTrustedPeer(SwarmTrustedPeerRecord{
-		SwarmID:       "self-1",
-		Name:          "Primary",
-		Relationship:  "manager",
-		TransportMode: "tailscale",
-	}); err != nil {
-		t.Fatalf("put trusted peer: %v", err)
-	}
-
 	runtimeRecord, ok, err := topology.GetRuntime("self-1")
 	if err != nil || !ok {
 		t.Fatalf("get runtime ok=%t err=%v", ok, err)
@@ -92,22 +83,5 @@ func TestSwarmStoreSyncsCanonicalRuntimeSources(t *testing.T) {
 	}
 	if !topologyObservedSourcePresent(runtimeRecord.ObservedSources, topologyRuntimeSourceLocalNode) {
 		t.Fatalf("missing local source: %+v", runtimeRecord.ObservedSources)
-	}
-	if !topologyObservedSourcePresent(runtimeRecord.ObservedSources, topologyRuntimeSourceTrustedPeer) {
-		t.Fatalf("missing trusted peer source: %+v", runtimeRecord.ObservedSources)
-	}
-
-	if err := swarms.DeleteTrustedPeer("self-1"); err != nil {
-		t.Fatalf("delete trusted peer: %v", err)
-	}
-	runtimeRecord, ok, err = topology.GetRuntime("self-1")
-	if err != nil || !ok {
-		t.Fatalf("get runtime after trusted peer delete ok=%t err=%v", ok, err)
-	}
-	if runtimeRecord.Relationship != "self" {
-		t.Fatalf("runtime relationship after trusted peer delete = %q", runtimeRecord.Relationship)
-	}
-	if topologyObservedSourcePresent(runtimeRecord.ObservedSources, topologyRuntimeSourceTrustedPeer) {
-		t.Fatalf("trusted peer source still present: %+v", runtimeRecord.ObservedSources)
 	}
 }

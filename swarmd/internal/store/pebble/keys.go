@@ -65,7 +65,6 @@ const (
 	KeyAgentVersion                                = "agent/version" // legacy global agent version; retained for explicit migration/system fallback only.
 	KeyAgentVersionAccountPrefix                   = "agent/version_by_account/"
 	KeySwarmLocalNodeDefault                       = "swarm/local_node/default"
-	KeySwarmLocalPairingDefault                    = "swarm/local_pairing/default"
 	KeySwarmCurrentGroupDefault                    = "swarm/current_group/default"
 	KeySwarmGroupPrefix                            = "swarm/group/"
 	KeySwarmGroupMembershipPrefix                  = "swarm/group_membership/"
@@ -75,10 +74,6 @@ const (
 	KeySwarmNodePrefix                             = "swarm/node/"
 	KeyDeployContainerPrefix                       = "deploy/container/"
 	KeyDeployContainerByAccountPrefix              = "deploy/container_by_account/"
-	KeySwarmInvitePrefix                           = "swarm/invite/"
-	KeySwarmInviteTokenPrefix                      = "swarm/invite_token/"
-	KeySwarmEnrollmentPrefix                       = "swarm/enrollment/"
-	KeySwarmTrustedPeerPrefix                      = "swarm/trusted_peer/"
 	KeySwarmDesktopTargetCurrent                   = "swarm/desktop_target/current" // legacy global current target; retained for explicit migration only.
 	KeySwarmDesktopTargetCurrentAccountPrefix      = "swarm/desktop_target/current_by_account/"
 	KeyTopologyRuntimePrefix                       = "topology/runtime/" // legacy global prefix; retained for explicit migration only.
@@ -95,11 +90,6 @@ const (
 	KeyTopologySessionRoutePrefix                  = "topology/session_route/" // legacy global prefix; retained for explicit migration only.
 	KeyTopologySessionRouteAccountPrefix           = "topology/session_route_by_account/"
 	KeyTopologyMigrationStatusPrefix               = "topology/migration_status/"
-	KeySwarmMirrorLocalSeq                         = "swarm/mirror/local/seq"
-	KeySwarmMirrorLocalEventPrefix                 = "swarm/mirror/local/event/"
-	KeySwarmMirrorLocalResourcePrefix              = "swarm/mirror/local/resource/"
-	KeySwarmMirrorRemoteCursorPrefix               = "swarm/mirror/remote/cursor/"
-	KeySwarmMirrorRemoteResourcePrefix             = "swarm/mirror/remote/resource/"
 	KeyNotificationPrefix                          = "notification/"
 	KeyNotificationBySwarmPrefix                   = "notification_by_swarm/"
 	KeyNotificationByAccountSwarmPrefix            = "notification_by_account_swarm/"
@@ -1740,10 +1730,6 @@ func IntegrationWorkspaceSessionUpdatedPrefixForAccount(accountScopeID, workspac
 	return fmt.Sprintf("%s%s/%s/", KeyIntegrationWorkspaceSessionUpdatedPrefix, accountPart, workspacePart)
 }
 
-func KeySwarmInvite(inviteID string) string {
-	return KeySwarmInvitePrefix + keyPart(inviteID)
-}
-
 func KeySwarmContainerProfile(profileID string) string {
 	return KeySwarmContainerProfilePrefix + keyPart(profileID)
 }
@@ -1790,54 +1776,6 @@ func DeployContainerByAccountPrefix(accountScopeID string) string {
 		return KeyDeployContainerByAccountPrefix
 	}
 	return fmt.Sprintf("%s%s/", KeyDeployContainerByAccountPrefix, accountPart)
-}
-
-func KeySwarmMirrorLocalEvent(sequence uint64) string {
-	return fmt.Sprintf("%s%020d", KeySwarmMirrorLocalEventPrefix, sequence)
-}
-
-func KeySwarmMirrorLocalResource(kind, id string) string {
-	return fmt.Sprintf("%s%s/%s", KeySwarmMirrorLocalResourcePrefix, keyPart(kind), keyPart(id))
-}
-
-func SwarmMirrorLocalResourcePrefix() string {
-	return KeySwarmMirrorLocalResourcePrefix
-}
-
-func KeySwarmMirrorRemoteCursor(managedSwarmID string) string {
-	return KeySwarmMirrorRemoteCursorPrefix + keyPart(managedSwarmID)
-}
-
-func KeySwarmMirrorRemoteResource(managedSwarmID, kind, id string) string {
-	return fmt.Sprintf("%s%s/%s/%s", KeySwarmMirrorRemoteResourcePrefix, keyPart(managedSwarmID), keyPart(kind), keyPart(id))
-}
-
-func SwarmMirrorRemoteResourcePrefix() string {
-	return KeySwarmMirrorRemoteResourcePrefix
-}
-
-func KeySwarmMirrorRemoteResourcePrefixForSwarm(managedSwarmID string) string {
-	return KeySwarmMirrorRemoteResourcePrefix + keyPart(managedSwarmID) + "/"
-}
-
-func KeySwarmInviteToken(token string) string {
-	return KeySwarmInviteTokenPrefix + keyPart(token)
-}
-
-func KeySwarmEnrollment(enrollmentID string) string {
-	return KeySwarmEnrollmentPrefix + keyPart(enrollmentID)
-}
-
-func SwarmEnrollmentPrefix() string {
-	return KeySwarmEnrollmentPrefix
-}
-
-func KeySwarmTrustedPeer(swarmID string) string {
-	return KeySwarmTrustedPeerPrefix + keyPart(swarmID)
-}
-
-func SwarmTrustedPeerPrefix() string {
-	return KeySwarmTrustedPeerPrefix
 }
 
 func AgentActiveSubagentPrefix() string {

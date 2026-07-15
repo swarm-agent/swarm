@@ -258,13 +258,6 @@ func RemoveTopologyRuntimeObservedSourceForAccount(topology *TopologyStore, acco
 		record.BackendURL = ""
 		record.DesktopURL = ""
 		record.Status = ""
-	case topologyRuntimeSourceTrustedPeer:
-		if strings.EqualFold(strings.TrimSpace(record.Relationship), "self") {
-			break
-		}
-		if !topologyObservedSourcePresent(record.ObservedSources, topologyRuntimeSourceNode) {
-			record.Relationship = ""
-		}
 	}
 	_, err = topology.PutRuntimeForAccount(accountScopeID, record)
 	return err
