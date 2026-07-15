@@ -44,7 +44,6 @@ type manageSessionsDeployProposal struct {
 
 type manageSessionsDeployWorkspace struct {
 	ID         string `json:"id"`
-	BindingID  string `json:"binding_id,omitempty"`
 	Generation int64  `json:"generation"`
 	Path       string `json:"path"`
 	Name       string `json:"name,omitempty"`
@@ -185,7 +184,7 @@ func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.
 		AllowedWorkspaces: make([]manageSessionsDeployWorkspace, 0, len(knownWorkspaces)),
 	}
 	for _, workspace := range knownWorkspaces {
-		manifest.AllowedWorkspaces = append(manifest.AllowedWorkspaces, manageSessionsDeployWorkspace{ID: workspace.WorkspaceID, BindingID: workspace.LocalWorkspaceBindingID, Generation: workspace.WorkspaceGeneration, Path: workspace.Path, Name: workspace.WorkspaceName})
+		manifest.AllowedWorkspaces = append(manifest.AllowedWorkspaces, manageSessionsDeployWorkspace{ID: workspace.WorkspaceID, Generation: workspace.WorkspaceGeneration, Path: workspace.Path, Name: workspace.WorkspaceName})
 	}
 	for i, input := range inputs {
 		profile := active
@@ -215,14 +214,7 @@ func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.
 			}
 			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] workspace: %w", i, err)
 		}
-		bindingID := ""
-		for _, known := range knownWorkspaces {
-			if known.WorkspaceID == workspace.WorkspaceID && known.WorkspaceGeneration == workspace.WorkspaceGeneration {
-				bindingID = known.LocalWorkspaceBindingID
-				break
-			}
-		}
-		proposal := manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, WorkspaceID: workspace.WorkspaceID, WorkspaceBindingID: bindingID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0}
+		proposal := manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0}
 		if input.Worktree {
 			if s.worktrees == nil {
 				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] requires the managed worktree service", i)

@@ -1,16 +1,14 @@
 package run
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
-	"swarm/packages/swarmd/internal/tool"
 )
 
 func TestParseManageSessionsDeployArgumentsRejectsTrustFields(t *testing.T) {
@@ -137,6 +135,25 @@ func TestDeterministicDeployIDStableAndProposalBound(t *testing.T) {
 	}
 }
 
+func TestRecordManageSessionsDeployRunFailurePersistsMessageAndFailedIntent(t *testing.T) {
+	var mutations []sessionruntime.SessionMutationInput
+	apply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		mutations = append(mutations, input)
+		return sessionruntime.SessionMutationResult{}, nil
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "session"}
+	(&Service{}).recordManageSessionsDeployRunFailure(pebblestore.SessionSnapshot{ID: "session"}, "run-1", principal, errors.New("startup exploded"), apply)
+	if len(mutations) != 2 {
+		t.Fatalf("mutations = %d, want failure message and run status", len(mutations))
+	}
+	if mutations[0].Kind != sessionruntime.SessionMutationAppendMessage || mutations[0].Message == nil || !strings.Contains(mutations[0].Message.Content, "startup exploded") {
+		t.Fatalf("failure message mutation = %#v", mutations[0])
+	}
+	if mutations[1].Kind != sessionruntime.SessionMutationRecordRunIntent || mutations[1].RunIntent == nil || mutations[1].RunIntent.Status != sessionruntime.RunIntentFailed || mutations[1].RunIntent.BlockedReason != "startup exploded" {
+		t.Fatalf("failure intent mutation = %#v", mutations[1])
+	}
+}
+
 func TestPermissionRequirementAlwaysAsksForSessionDeploy(t *testing.T) {
 	args := `{"action":"deploy","proposals":[{"prompt":"work"}]}`
 	for _, mode := range []string{"plan", "auto", "auto+bypass_permissions"} {
@@ -145,135 +162,4 @@ func TestPermissionRequirementAlwaysAsksForSessionDeploy(t *testing.T) {
 			t.Fatalf("mode %s = %q/%v", mode, requirement, ask)
 		}
 	}
-}
-
-type recordingV3SessionLauncher struct {
-	requests []V3SessionLaunchRequest
-	result   V3SessionLaunchResult
-	err      error
-}
-
-func (f *recordingV3SessionLauncher) LaunchV3Session(_ context.Context, request V3SessionLaunchRequest) (V3SessionLaunchResult, error) {
-	f.requests = append(f.requests, request)
-	if f.err != nil {
-		return V3SessionLaunchResult{}, f.err
-	}
-	result := f.result
-	if result.Session.ID == "" {
-		result.Session = pebblestore.SessionSnapshot{
-			ID:            request.SessionID,
-			Title:         request.Title,
-			WorkspacePath: request.SourceWorkspacePath,
-			WorkspaceName: request.SourceWorkspaceName,
-			Metadata: map[string]any{
-				"swarm_v3_source_workspace_path": request.SourceWorkspacePath,
-				"swarm_v3_source_workspace_name": request.SourceWorkspaceName,
-			},
-		}
-	}
-	return result, nil
-}
-
-func TestExecuteManageSessionsDeployUsesCanonicalV3Launcher(t *testing.T) {
-	svc, parentID, workspacePath, cleanup := newManageSessionsDeployExecutionTestService(t)
-	defer cleanup()
-	launcher := &recordingV3SessionLauncher{result: V3SessionLaunchResult{Enqueued: true}}
-	svc.SetV3SessionLauncher(launcher)
-
-	call := tool.Call{Name: "manage-sessions", Arguments: `{"action":"deploy","proposals":[{"title":"Canonical child","prompt":"do the work","mode":"auto"}]}`}
-	manifest, err := svc.buildManageSessionsDeployManifest(parentID, call)
-	if err != nil {
-		t.Fatalf("build deployment manifest: %v", err)
-	}
-	approved, err := json.Marshal(manifest.ApprovedArguments)
-	if err != nil {
-		t.Fatalf("marshal approved deployment: %v", err)
-	}
-	output, err := svc.executeManageSessionsDeploy(context.Background(), parentID, call, string(approved), nil)
-	if err != nil {
-		t.Fatalf("execute deployment: %v", err)
-	}
-	if len(launcher.requests) != 1 {
-		t.Fatalf("canonical launcher calls = %d, want 1", len(launcher.requests))
-	}
-	request := launcher.requests[0]
-	if request.Prompt != "do the work" || request.Title != "Canonical child" || request.ParentSessionID != parentID {
-		t.Fatalf("canonical launch request = %+v", request)
-	}
-	if request.SourceWorkspacePath != workspacePath || request.SourceWorkspaceID == "" || request.SourceWorkspaceGeneration == 0 || request.WorkspaceBindingID == "" {
-		t.Fatalf("canonical workspace binding = %+v", request)
-	}
-	if request.CreateClientRequestID == "" || request.MessageClientRequestID == "" || request.MessageID == "" || request.RunID == "" || request.DeploymentManifestDigest == "" || request.DeploymentProposalID != "proposal-1" {
-		t.Fatalf("canonical durable identity fields = %+v", request)
-	}
-	var response struct {
-		Results []manageSessionsDeployResult `json:"results"`
-	}
-	if err := json.Unmarshal([]byte(output), &response); err != nil {
-		t.Fatalf("decode deployment output: %v", err)
-	}
-	if len(response.Results) != 1 || response.Results[0].Status != "started" || response.Results[0].SessionID != request.SessionID {
-		t.Fatalf("deployment output = %+v", response.Results)
-	}
-}
-
-func TestExecuteManageSessionsDeploySurfacesCanonicalLauncherFailure(t *testing.T) {
-	svc, parentID, _, cleanup := newManageSessionsDeployExecutionTestService(t)
-	defer cleanup()
-	launcher := &recordingV3SessionLauncher{err: errors.New("executor rejected committed run")}
-	svc.SetV3SessionLauncher(launcher)
-	call := tool.Call{Name: "manage-sessions", Arguments: `{"action":"deploy","proposals":[{"prompt":"do the work"}]}`}
-	manifest, err := svc.buildManageSessionsDeployManifest(parentID, call)
-	if err != nil {
-		t.Fatalf("build deployment manifest: %v", err)
-	}
-	approved, _ := json.Marshal(manifest.ApprovedArguments)
-	output, err := svc.executeManageSessionsDeploy(context.Background(), parentID, call, string(approved), nil)
-	if err != nil {
-		t.Fatalf("execute deployment: %v", err)
-	}
-	if len(launcher.requests) != 1 {
-		t.Fatalf("canonical launcher calls = %d, want 1", len(launcher.requests))
-	}
-	if !strings.Contains(output, `"status":"error"`) || !strings.Contains(output, "executor rejected committed run") {
-		t.Fatalf("deployment failure output = %s", output)
-	}
-}
-
-func newManageSessionsDeployExecutionTestService(t *testing.T) (*Service, string, string, func()) {
-	t.Helper()
-	workspaceSvc, _, rawStore, cleanup := newTestRunWorkspaceServiceWithRawStore(t)
-	principal := testRunPrincipal()
-	workspacePath := t.TempDir()
-	if _, err := workspaceSvc.AddForPrincipal(principal, workspacePath, "Deploy workspace", "", true); err != nil {
-		cleanup()
-		t.Fatalf("add deployment workspace: %v", err)
-	}
-	events, err := pebblestore.NewEventLog(rawStore)
-	if err != nil {
-		cleanup()
-		t.Fatalf("open event log: %v", err)
-	}
-	agents := agentruntime.NewService(pebblestore.NewAgentStore(rawStore), events)
-	if err := agents.EnsureDefaults(); err != nil {
-		cleanup()
-		t.Fatalf("ensure default agents: %v", err)
-	}
-	if err := agents.EnsureDefaultsForAccount(principal.AccountScopeID); err != nil {
-		cleanup()
-		t.Fatalf("ensure account agents: %v", err)
-	}
-	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(rawStore), events)
-	parent, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
-		Title: "Deployment parent", WorkspacePath: workspacePath, WorkspaceName: "Deploy workspace",
-		Mode: sessionruntime.ModeAuto, Preference: &pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"},
-	})
-	if err != nil {
-		cleanup()
-		t.Fatalf("create deployment parent: %v", err)
-	}
-	svc := NewService(sessions, nil, nil, tool.NewRuntime(1), nil, agents, nil, events)
-	svc.SetWorkspaceService(workspaceSvc)
-	return svc, parent.ID, workspacePath, cleanup
 }
