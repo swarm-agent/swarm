@@ -13,7 +13,6 @@ import (
 	"sync"
 	"testing"
 
-	"swarm-refactor/swarmtui/pkg/startupconfig"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
@@ -557,23 +556,6 @@ func (f fakeAgentAPISwarmService) ListPendingEnrollments(int) ([]swarmruntime.En
 func (f fakeAgentAPISwarmService) DecideEnrollment(input swarmruntime.DecideEnrollmentInput) (swarmruntime.Enrollment, []swarmruntime.TrustedPeer, error) {
 	return swarmruntime.Enrollment{}, nil, nil
 }
-func (f fakeAgentAPISwarmService) PrepareRemoteBootstrapParentPeer(input swarmruntime.PrepareRemoteBootstrapParentPeerInput) error {
-	return nil
-}
-func (f fakeAgentAPISwarmService) ApproveManagedPairing(input swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error) {
-	return swarmruntime.PairingState{}, nil
-}
-func (f fakeAgentAPISwarmService) TrustManagedPeer(input swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error) {
-	return swarmruntime.TrustedPeer{}, nil
-}
-func (f fakeAgentAPISwarmService) RemoveManagedPeer(input swarmruntime.RemoveManagedPeerInput) (swarmruntime.RemoveManagedPeerResult, error) {
-	return swarmruntime.RemoveManagedPeerResult{}, nil
-}
-func (f fakeAgentAPISwarmService) UpdateLocalPairingFromConfig(cfg startupconfig.FileConfig, transports []swarmruntime.TransportSummary) (swarmruntime.PairingState, error) {
-	return swarmruntime.PairingState{}, nil
-}
-func (f fakeAgentAPISwarmService) DetachToStandalone(string) error { return nil }
-
 type resolvedToolContractResponse struct {
 	OK              bool                                 `json:"ok"`
 	Agent           string                               `json:"agent"`

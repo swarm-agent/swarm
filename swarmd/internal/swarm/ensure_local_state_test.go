@@ -97,7 +97,7 @@ func TestEnsureLocalStateIgnoresManagedRoleInputWhenDBUnpaired(t *testing.T) {
 	}
 }
 
-func TestUpdateLocalPairingFromConfigDoesNotSeedCleanDB(t *testing.T) {
+func TestEnsureLocalStateKeepsPrimaryRoleWhenLegacyPairingIsPaired(t *testing.T) {
 	store, err := pebblestore.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -105,61 +105,29 @@ func TestUpdateLocalPairingFromConfigDoesNotSeedCleanDB(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	swarmStore := pebblestore.NewSwarmStore(store)
-	svc := NewService(swarmStore, nil, nil)
+	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{
+		SwarmID: "local-swarm",
+		Name:    "Local",
+		Role:    RelationshipManaged,
+	}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	if _, err := swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{
+		PairingState:      startupconfig.PairingStatePaired,
+		ParentSwarmID:     "legacy-manager",
+		LastUpdatedByRole: RelationshipManaged,
+	}); err != nil {
+		t.Fatalf("put local pairing: %v", err)
+	}
 
-	state, err := svc.UpdateLocalPairingFromConfig(startupconfig.FileConfig{
-		Child:         true,
-		SwarmRole:     startupconfig.SwarmRoleManaged,
-		ParentSwarmID: "stale-manager",
-		PairingState:  startupconfig.PairingStatePaired,
-	}, []TransportSummary{{Kind: startupconfig.NetworkModeTailscale, Primary: "https://stale-manager.example"}})
+	state, err := NewService(swarmStore, nil, nil).EnsureLocalState(EnsureLocalStateInput{})
 	if err != nil {
-		t.Fatalf("update pairing from config: %v", err)
+		t.Fatalf("ensure local state: %v", err)
 	}
-	if state.PairingState != startupconfig.PairingStateUnpaired || state.ParentSwarmID != "" {
-		t.Fatalf("pairing state = %+v, want standalone/unpaired", state)
+	if state.Node.Role != bootstrapRoleMaster {
+		t.Fatalf("role with legacy pairing = %q, want %q", state.Node.Role, bootstrapRoleMaster)
 	}
-	if _, ok, err := swarmStore.GetLocalPairing(); err != nil || ok {
-		t.Fatalf("local pairing was seeded from config ok=%t err=%v", ok, err)
-	}
-}
-
-func TestUpdateLocalPairingFromConfigDoesNotMutateExistingDBState(t *testing.T) {
-	store, err := pebblestore.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	swarmStore := pebblestore.NewSwarmStore(store)
-	original, err := swarmStore.PutLocalPairing(pebblestore.SwarmLocalPairingRecord{
-		PairingState:         startupconfig.PairingStatePaired,
-		ParentSwarmID:        "db-manager",
-		LastUpdatedByRole:    "managed",
-		RendezvousTransports: []pebblestore.SwarmTransportRecord{{Kind: startupconfig.NetworkModeTailscale, Primary: "https://db-manager.example"}},
-	})
-	if err != nil {
-		t.Fatalf("put pairing: %v", err)
-	}
-	svc := NewService(swarmStore, nil, nil)
-
-	state, err := svc.UpdateLocalPairingFromConfig(startupconfig.FileConfig{
-		Child:         false,
-		SwarmRole:     "",
-		ParentSwarmID: "stale-config-manager",
-		PairingState:  startupconfig.PairingStateUnpaired,
-	}, []TransportSummary{{Kind: startupconfig.NetworkModeTailscale, Primary: "https://stale-config.example"}})
-	if err != nil {
-		t.Fatalf("update pairing from config: %v", err)
-	}
-	if state.PairingState != original.PairingState || state.ParentSwarmID != original.ParentSwarmID {
-		t.Fatalf("pairing state = %+v, want DB state from %+v", state, original)
-	}
-	stored, ok, err := swarmStore.GetLocalPairing()
-	if err != nil || !ok {
-		t.Fatalf("get local pairing ok=%t err=%v", ok, err)
-	}
-	if stored.ParentSwarmID != original.ParentSwarmID || stored.RendezvousTransports[0].Primary != original.RendezvousTransports[0].Primary {
-		t.Fatalf("stored pairing was mutated by config: got %+v want %+v", stored, original)
+	if state.Node.SwarmID != "local-swarm" || state.Node.Name != "Local" {
+		t.Fatalf("stable local identity changed: %+v", state.Node)
 	}
 }

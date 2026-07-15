@@ -188,50 +188,6 @@ type DecideEnrollmentInput struct {
 	IncomingPeerAuthToken string
 }
 
-type PrepareRemoteBootstrapParentPeerInput struct {
-	ParentSwarmID         string
-	ParentName            string
-	ParentPublicKey       string
-	ParentFingerprint     string
-	TransportMode         string
-	RendezvousTransports  []TransportSummary
-	OutgoingPeerAuthToken string
-	IncomingPeerAuthToken string
-}
-
-type ApproveManagedPairingInput struct {
-	ManagerSwarmID        string
-	ManagerName           string
-	ManagerPublicKey      string
-	ManagerFingerprint    string
-	TransportMode         string
-	RendezvousTransports  []TransportSummary
-	OutgoingPeerAuthToken string
-	IncomingPeerAuthToken string
-}
-
-type TrustManagedPeerInput struct {
-	ManagedSwarmID        string
-	ManagedName           string
-	ManagedRole           string
-	ManagedPublicKey      string
-	ManagedFingerprint    string
-	TransportMode         string
-	RendezvousTransports  []TransportSummary
-	OutgoingPeerAuthToken string
-	IncomingPeerAuthToken string
-}
-
-type RemoveManagedPeerInput struct {
-	ManagedSwarmID string
-}
-
-type RemoveManagedPeerResult struct {
-	ManagedSwarmID          string `json:"managed_swarm_id"`
-	RemovedTrustedPeer      bool   `json:"removed_trusted_peer"`
-	RemovedGroupMemberships int    `json:"removed_group_memberships"`
-}
-
 func NewService(store *pebblestore.SwarmStore, events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) *Service {
 	return &Service{store: store, events: events, publish: publish}
 }
@@ -295,163 +251,6 @@ func (s *Service) OutgoingPeerAuthToken(swarmID string) (string, bool, error) {
 	return token, true, nil
 }
 
-func (s *Service) PrepareRemoteBootstrapParentPeer(input PrepareRemoteBootstrapParentPeerInput) error {
-	if s == nil || s.store == nil {
-		return errors.New("swarm service is not configured")
-	}
-	parentSwarmID := strings.TrimSpace(input.ParentSwarmID)
-	if parentSwarmID == "" {
-		return errors.New("parent swarm id is required")
-	}
-	existing, _, err := s.store.GetTrustedPeer(parentSwarmID)
-	if err != nil {
-		return err
-	}
-	transports := toStoreTransports(input.RendezvousTransports)
-	if len(transports) == 0 {
-		transports = existing.RendezvousTransports
-	}
-	incomingPeerAuthHash := strings.TrimSpace(existing.IncomingPeerAuthHash)
-	if token := strings.TrimSpace(input.IncomingPeerAuthToken); token != "" {
-		incomingPeerAuthHash = HashPeerAuthToken(token)
-	}
-	approvedAt := existing.ApprovedAt
-	if approvedAt <= 0 {
-		approvedAt = time.Now().UnixMilli()
-	}
-	_, err = s.store.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{
-		SwarmID:               parentSwarmID,
-		Name:                  firstNonEmpty(strings.TrimSpace(input.ParentName), existing.Name, "Manager"),
-		Role:                  firstNonEmpty(existing.Role, "manager"),
-		PublicKey:             firstNonEmpty(strings.TrimSpace(input.ParentPublicKey), existing.PublicKey),
-		Fingerprint:           firstNonEmpty(strings.TrimSpace(input.ParentFingerprint), existing.Fingerprint),
-		Relationship:          RelationshipManager,
-		ParentSwarmID:         "",
-		TransportMode:         firstNonEmpty(strings.TrimSpace(input.TransportMode), existing.TransportMode, startupconfig.NetworkModeTailscale),
-		RendezvousTransports:  transports,
-		OutgoingPeerAuthToken: firstNonEmpty(strings.TrimSpace(input.OutgoingPeerAuthToken), existing.OutgoingPeerAuthToken),
-		IncomingPeerAuthHash:  incomingPeerAuthHash,
-		ApprovedAt:            approvedAt,
-	})
-	return err
-}
-
-func (s *Service) ApproveManagedPairing(input ApproveManagedPairingInput) (PairingState, error) {
-	if s == nil || s.store == nil {
-		return PairingState{}, errors.New("swarm service is not configured")
-	}
-	managerSwarmID := strings.TrimSpace(input.ManagerSwarmID)
-	if managerSwarmID == "" {
-		return PairingState{}, errors.New("manager swarm id is required")
-	}
-	if err := s.PrepareRemoteBootstrapParentPeer(PrepareRemoteBootstrapParentPeerInput{
-		ParentSwarmID:         managerSwarmID,
-		ParentName:            input.ManagerName,
-		ParentPublicKey:       input.ManagerPublicKey,
-		ParentFingerprint:     input.ManagerFingerprint,
-		TransportMode:         input.TransportMode,
-		RendezvousTransports:  input.RendezvousTransports,
-		OutgoingPeerAuthToken: strings.TrimSpace(input.OutgoingPeerAuthToken),
-		IncomingPeerAuthToken: strings.TrimSpace(input.IncomingPeerAuthToken),
-	}); err != nil {
-		return PairingState{}, err
-	}
-	record, ok, err := s.store.GetLocalPairing()
-	if err != nil {
-		return PairingState{}, err
-	}
-	if !ok {
-		record = pebblestore.SwarmLocalPairingRecord{}
-	}
-	record.PairingState = startupconfig.PairingStatePaired
-	record.ParentSwarmID = managerSwarmID
-	record.LastUpdatedByRole = "managed"
-	if transports := toStoreTransports(input.RendezvousTransports); len(transports) > 0 {
-		record.RendezvousTransports = transports
-	}
-	record, err = s.store.PutLocalPairing(record)
-	if err != nil {
-		return PairingState{}, err
-	}
-	return toPairingState(record), nil
-}
-
-func (s *Service) TrustManagedPeer(input TrustManagedPeerInput) (TrustedPeer, error) {
-	if s == nil || s.store == nil {
-		return TrustedPeer{}, errors.New("swarm service is not configured")
-	}
-	managedSwarmID := strings.TrimSpace(input.ManagedSwarmID)
-	if managedSwarmID == "" {
-		return TrustedPeer{}, errors.New("managed swarm id is required")
-	}
-	existing, _, err := s.store.GetTrustedPeer(managedSwarmID)
-	if err != nil {
-		return TrustedPeer{}, err
-	}
-	transports := toStoreTransports(input.RendezvousTransports)
-	if len(transports) == 0 {
-		transports = existing.RendezvousTransports
-	}
-	incomingPeerAuthHash := strings.TrimSpace(existing.IncomingPeerAuthHash)
-	if token := strings.TrimSpace(input.IncomingPeerAuthToken); token != "" {
-		incomingPeerAuthHash = HashPeerAuthToken(token)
-	}
-	approvedAt := existing.ApprovedAt
-	if approvedAt <= 0 {
-		approvedAt = time.Now().UnixMilli()
-	}
-	role := firstNonEmpty(strings.TrimSpace(input.ManagedRole), existing.Role, RelationshipManaged)
-	peer, err := s.store.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{
-		SwarmID:               managedSwarmID,
-		Name:                  firstNonEmpty(strings.TrimSpace(input.ManagedName), existing.Name, "Managed swarm"),
-		Role:                  role,
-		PublicKey:             firstNonEmpty(strings.TrimSpace(input.ManagedPublicKey), existing.PublicKey),
-		Fingerprint:           firstNonEmpty(strings.TrimSpace(input.ManagedFingerprint), existing.Fingerprint),
-		Relationship:          RelationshipManaged,
-		ParentSwarmID:         "",
-		TransportMode:         firstNonEmpty(strings.TrimSpace(input.TransportMode), existing.TransportMode, startupconfig.NetworkModeTailscale),
-		RendezvousTransports:  transports,
-		OutgoingPeerAuthToken: firstNonEmpty(strings.TrimSpace(input.OutgoingPeerAuthToken), existing.OutgoingPeerAuthToken),
-		IncomingPeerAuthHash:  incomingPeerAuthHash,
-		ApprovedAt:            approvedAt,
-	})
-	if err != nil {
-		return TrustedPeer{}, err
-	}
-	return toTrustedPeer(peer), nil
-}
-
-func (s *Service) RemoveManagedPeer(input RemoveManagedPeerInput) (RemoveManagedPeerResult, error) {
-	if s == nil || s.store == nil {
-		return RemoveManagedPeerResult{}, errors.New("swarm service is not configured")
-	}
-	managedSwarmID := strings.TrimSpace(input.ManagedSwarmID)
-	if managedSwarmID == "" {
-		return RemoveManagedPeerResult{}, errors.New("managed swarm id is required")
-	}
-	result := RemoveManagedPeerResult{ManagedSwarmID: managedSwarmID}
-	if _, ok, err := s.store.GetTrustedPeer(managedSwarmID); err != nil {
-		return result, err
-	} else if ok {
-		if err := s.store.DeleteTrustedPeer(managedSwarmID); err != nil {
-			return result, err
-		}
-		result.RemovedTrustedPeer = true
-	}
-	memberships, err := s.store.ListGroupMembershipsBySwarm(managedSwarmID, 100000)
-	if err != nil {
-		return result, err
-	}
-	for _, membership := range memberships {
-		if err := s.store.DeleteGroupMembership(membership.GroupID, membership.SwarmID); err != nil {
-			return result, err
-		}
-		result.RemovedGroupMemberships++
-	}
-	_, _ = s.appendEvent("swarm:pairing", "swarm.managed_peer.removed", managedSwarmID, result)
-	return result, nil
-}
-
 func (s *Service) ValidateIncomingPeerAuth(swarmID, rawToken string) (bool, error) {
 	if s == nil || s.store == nil {
 		return false, errors.New("swarm service is not configured")
@@ -497,9 +296,7 @@ func (s *Service) EnsureLocalState(input EnsureLocalStateInput) (LocalState, err
 	if strings.TrimSpace(nodeRecord.Name) == "" {
 		nodeRecord.Name = strings.TrimSpace(input.Name)
 	}
-	if strings.TrimSpace(nodeRecord.Role) == "" {
-		nodeRecord.Role = bootstrapRoleMaster
-	}
+	nodeRecord.Role = bootstrapRoleMaster
 	publicKey := firstNonEmpty(strings.TrimSpace(input.PublicKey), strings.TrimSpace(nodeRecord.PublicKey))
 	privateKey := firstNonEmpty(strings.TrimSpace(input.PrivateKey), strings.TrimSpace(nodeRecord.PrivateKey))
 	fingerprint := firstNonEmpty(strings.TrimSpace(input.Fingerprint), strings.TrimSpace(nodeRecord.Fingerprint))
@@ -538,17 +335,6 @@ func (s *Service) EnsureLocalState(input EnsureLocalStateInput) (LocalState, err
 	if !ok {
 		pairingRecord = pebblestore.SwarmLocalPairingRecord{PairingState: startupconfig.PairingStateUnpaired, LastUpdatedByRole: bootstrapRoleMaster}
 		pairingRecord, err = s.store.PutLocalPairing(pairingRecord)
-		if err != nil {
-			return LocalState{}, err
-		}
-	}
-	desiredRole := bootstrapRoleMaster
-	if strings.EqualFold(strings.TrimSpace(pairingRecord.PairingState), startupconfig.PairingStatePaired) && strings.TrimSpace(pairingRecord.ParentSwarmID) != "" {
-		desiredRole = RelationshipManaged
-	}
-	if !strings.EqualFold(strings.TrimSpace(nodeRecord.Role), desiredRole) {
-		nodeRecord.Role = desiredRole
-		nodeRecord, err = s.store.PutLocalNode(nodeRecord)
 		if err != nil {
 			return LocalState{}, err
 		}
@@ -925,94 +711,6 @@ func (s *Service) DecideEnrollment(input DecideEnrollmentInput) (Enrollment, []T
 		_, _ = s.appendEvent("swarm:pairing", "swarm.enrollment.rejected", record.ID, record)
 	}
 	return toEnrollment(record), trustedPeers, nil
-}
-
-func (s *Service) UpdateLocalPairingFromConfig(_ startupconfig.FileConfig, _ []TransportSummary) (PairingState, error) {
-	if s == nil || s.store == nil {
-		return PairingState{}, errors.New("swarm service is not configured")
-	}
-	record, ok, err := s.store.GetLocalPairing()
-	if err != nil {
-		return PairingState{}, err
-	}
-	if !ok {
-		return PairingState{PairingState: startupconfig.PairingStateUnpaired, LastUpdatedByRole: bootstrapRoleMaster}, nil
-	}
-	if strings.TrimSpace(record.PairingState) == "" {
-		record.PairingState = startupconfig.PairingStateUnpaired
-	}
-	return toPairingState(record), nil
-}
-
-func (s *Service) DetachToStandalone(localSwarmID string) error {
-	if s == nil || s.store == nil {
-		return errors.New("swarm service is not configured")
-	}
-	localSwarmID = strings.TrimSpace(localSwarmID)
-
-	pairingRecord, ok, err := s.store.GetLocalPairing()
-	if err != nil {
-		return err
-	}
-	if !ok {
-		pairingRecord = pebblestore.SwarmLocalPairingRecord{}
-	}
-	pairingRecord.PairingState = startupconfig.PairingStateUnpaired
-	pairingRecord.ParentSwarmID = ""
-	pairingRecord.UserID = ""
-	pairingRecord.AccountScopeID = ""
-	pairingRecord.ActiveInviteID = ""
-	pairingRecord.LastEnrollmentID = ""
-	pairingRecord.LastDecision = ""
-	pairingRecord.LastDecisionReason = ""
-	pairingRecord.LastUpdatedByRole = bootstrapRoleMaster
-	pairingRecord.RendezvousTransports = nil
-	pairingRecord.WorkspaceBootstrapDeploymentID = ""
-	pairingRecord.WorkspaceBootstrapAt = 0
-	pairingRecord.ManagedAuthOwnerSwarmID = ""
-	pairingRecord.ManagedAuthSnapshotHash = ""
-	pairingRecord.ManagedAuthAppliedAt = 0
-	pairingRecord.ManagedAuthLastAttemptAt = 0
-	pairingRecord.ManagedAuthLastError = ""
-	if _, err := s.store.PutLocalPairing(pairingRecord); err != nil {
-		return err
-	}
-
-	trustedPeers, err := s.store.ListTrustedPeers(500)
-	if err != nil {
-		return err
-	}
-	for _, peer := range trustedPeers {
-		if localSwarmID != "" && strings.EqualFold(strings.TrimSpace(peer.SwarmID), localSwarmID) {
-			continue
-		}
-		if err := s.store.DeleteTrustedPeer(peer.SwarmID); err != nil {
-			return err
-		}
-	}
-	if localSwarmID != "" {
-		memberships, err := s.store.ListGroupMembershipsBySwarm(localSwarmID, 100000)
-		if err != nil {
-			return err
-		}
-		currentGroupID, currentSet, err := s.store.GetCurrentGroupID()
-		if err != nil {
-			return err
-		}
-		for _, membership := range memberships {
-			if err := s.store.DeleteGroupMembership(membership.GroupID, membership.SwarmID); err != nil {
-				return err
-			}
-			if currentSet && strings.EqualFold(strings.TrimSpace(currentGroupID), strings.TrimSpace(membership.GroupID)) {
-				if err := s.store.DeleteCurrentGroupID(); err != nil {
-					return err
-				}
-				currentSet = false
-			}
-		}
-	}
-	_, _ = s.appendEvent("swarm:pairing", "swarm.detached.standalone", localSwarmID, map[string]any{"swarm_id": localSwarmID})
-	return nil
 }
 
 func (s *Service) appendEvent(streamName, eventType, entityID string, payload any) (*pebblestore.EventEnvelope, error) {

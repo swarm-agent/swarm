@@ -994,30 +994,6 @@ func (f fakeReplicateSwarmService) DecideEnrollment(swarmruntime.DecideEnrollmen
 	return swarmruntime.Enrollment{}, nil, nil
 }
 
-func (f fakeReplicateSwarmService) PrepareRemoteBootstrapParentPeer(swarmruntime.PrepareRemoteBootstrapParentPeerInput) error {
-	return nil
-}
-
-func (f fakeReplicateSwarmService) ApproveManagedPairing(swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error) {
-	return swarmruntime.PairingState{}, nil
-}
-
-func (f fakeReplicateSwarmService) TrustManagedPeer(swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error) {
-	return swarmruntime.TrustedPeer{}, nil
-}
-
-func (f fakeReplicateSwarmService) RemoveManagedPeer(swarmruntime.RemoveManagedPeerInput) (swarmruntime.RemoveManagedPeerResult, error) {
-	return swarmruntime.RemoveManagedPeerResult{}, nil
-}
-
-func (f fakeReplicateSwarmService) UpdateLocalPairingFromConfig(startupconfig.FileConfig, []swarmruntime.TransportSummary) (swarmruntime.PairingState, error) {
-	return swarmruntime.PairingState{}, nil
-}
-
-func (f fakeReplicateSwarmService) DetachToStandalone(string) error {
-	return nil
-}
-
 var (
 	_ deployContainerService = (*fakeReplicateDeployService)(nil)
 	_ swarmService           = fakeReplicateSwarmService{}
