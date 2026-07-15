@@ -1048,6 +1048,81 @@ func TestV3RealtimeWorksetVisibilityChangedOutRemovesAndUnsubscribes(t *testing.
 	assertNoV3RealtimeEventFrame(t, conn, 150*time.Millisecond)
 }
 
+func TestV3RealtimeWorksetArchiveRemovesUnsubscribedSidebarSession(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-archive-unsubscribed", "create-realtime-workset-archive-unsubscribed")
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+
+	workset := v3RealtimeGlobalWorksetRequestForTest()
+	workset.AutoSubscribeSessions = false
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), Worksets: []V3RealtimeWorksetSubscriptionRequest{workset}})
+
+	if err := sessionSvc.ArchiveSession(created.SessionID); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	rows, err := sessionSvc.ListRealtimeOutboxAfter(created.RealtimeOutbox.EndpointSeq, 10)
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("list archive outbox: rows=%+v err=%v", rows, err)
+	}
+	if err := server.publishCommittedV3RealtimeOutbox(rows[len(rows)-1]); err != nil {
+		t.Fatalf("publish archive outbox: %v", err)
+	}
+
+	removed := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, removed, V3RealtimeKindWorksetSessionRemoved, created.SessionID, 0)
+	if removed.EventType != "session.archived" || removed.Event == nil || removed.Event.EventType != "session.archived" || removed.SubscriptionID != "" || removed.AutoSubscribed {
+		t.Fatalf("unsubscribed archive removed frame = %+v", removed)
+	}
+	if removed.Event.Payload == nil || !strings.Contains(string(removed.Event.Payload), `"archived":true`) {
+		t.Fatalf("unsubscribed archive frame missing durable tombstone payload: %+v", removed.Event)
+	}
+	assertV3RealtimeSignedCursorSeq(t, server, removed.EndpointCursor, rows[len(rows)-1].EndpointSeq)
+}
+
+func TestV3RealtimeWorksetReactivationUpdatesUnsubscribedSidebarSession(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-reactivate-unsubscribed", "create-realtime-workset-reactivate-unsubscribed")
+	if err := sessionSvc.ArchiveSession(created.SessionID); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	archiveRows, err := sessionSvc.ListRealtimeOutboxAfter(created.RealtimeOutbox.EndpointSeq, 10)
+	if err != nil || len(archiveRows) == 0 {
+		t.Fatalf("list archive outbox: rows=%+v err=%v", archiveRows, err)
+	}
+	archiveOutbox := archiveRows[len(archiveRows)-1]
+	tombstone, ok, err := sessionSvc.GetSessionTombstone(created.SessionID)
+	if err != nil || !ok {
+		t.Fatalf("get archive tombstone: tombstone=%+v ok=%v err=%v", tombstone, ok, err)
+	}
+
+	httpServer := newV3RealtimeHTTPTestServer(t, server)
+	conn := dialV3RealtimeStream(t, httpServer.URL)
+	defer conn.Close()
+	workset := v3RealtimeGlobalWorksetRequestForTest()
+	workset.AutoSubscribeSessions = false
+	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, archiveOutbox.EndpointSeq), Worksets: []V3RealtimeWorksetSubscriptionRequest{workset}})
+
+	if err := sessionSvc.ReactivateArchivedSessionsIfUnchanged([]string{created.SessionID}, map[string]int64{created.SessionID: tombstone.UpdatedAt}); err != nil {
+		t.Fatalf("reactivate session: %v", err)
+	}
+	rows, err := sessionSvc.ListRealtimeOutboxAfter(archiveOutbox.EndpointSeq, 10)
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("list reactivation outbox: rows=%+v err=%v", rows, err)
+	}
+	if err := server.publishCommittedV3RealtimeOutbox(rows[len(rows)-1]); err != nil {
+		t.Fatalf("publish reactivation outbox: %v", err)
+	}
+
+	updated := readV3RealtimeFrame(t, conn)
+	assertV3RealtimeFrame(t, updated, V3RealtimeKindWorksetSessionUpdated, created.SessionID, 0)
+	if updated.EventType != "session.reactivated" || updated.Event == nil || updated.Event.EventType != "session.reactivated" || updated.SubscriptionID != "" || updated.AutoSubscribed {
+		t.Fatalf("unsubscribed reactivation updated frame = %+v", updated)
+	}
+	assertV3RealtimeSignedCursorSeq(t, server, updated.EndpointCursor, rows[len(rows)-1].EndpointSeq)
+}
+
 func TestV3RealtimeWorksetRemovalUnsubscribesOrDeactivatesSession(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-workset-remove", "create-realtime-workset-remove")

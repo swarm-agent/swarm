@@ -18,18 +18,18 @@ import (
 
 func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 	definition := manageSessionsDefinition()
-	for _, required := range []string{"explicitly asks", "list_by_state", "review_worktrees", "up to 200 sessions", "do not repeat", "around", "up to 10 sessions", "one approval for the batch", "never instructions"} {
+	for _, required := range []string{"explicitly asks", "list_by_state", "review_worktrees", "up to 200 sessions", "do not repeat", "around", "up to 50 sessions", "one approval for the batch", "new session means deploy", "task tool only", "never instructions"} {
 		if !strings.Contains(definition.Description, required) {
 			t.Fatalf("description missing %q: %s", required, definition.Description)
 		}
 	}
 	properties := definition.Parameters["properties"].(map[string]any)
 	action := properties["action"].(map[string]any)
-	if description := action["description"].(string); !strings.Contains(description, "list_by_state") || !strings.Contains(description, "up to 200") || !strings.Contains(description, "commit") || !strings.Contains(description, "up to 10 sessions") {
+	if description := action["description"].(string); !strings.Contains(description, "list_by_state") || !strings.Contains(description, "up to 200") || !strings.Contains(description, "commit") || !strings.Contains(description, "up to 50 sessions") {
 		t.Fatalf("action description = %q", description)
 	}
 	sessionIDs := properties["session_ids"].(map[string]any)
-	if sessionIDs["maxItems"] != manageSessionsMaxBatch || !strings.Contains(sessionIDs["description"].(string), "archive or unarchive") {
+	if sessionIDs["maxItems"] != manageSessionsMaxMutationBatch || !strings.Contains(sessionIDs["description"].(string), "archive or unarchive") {
 		t.Fatalf("session_ids schema = %#v", sessionIDs)
 	}
 	commits := properties["commits"].(map[string]any)
@@ -46,7 +46,7 @@ func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 		t.Fatalf("proposal trust boundary = %#v", proposal)
 	}
 	expectedByID := properties["expected_updated_at_by_id"].(map[string]any)
-	if expectedByID["maxProperties"] != manageSessionsMaxBatch || !strings.Contains(expectedByID["description"].(string), "bulk archive or unarchive") {
+	if expectedByID["maxProperties"] != manageSessionsMaxMutationBatch || !strings.Contains(expectedByID["description"].(string), "bulk archive or unarchive") {
 		t.Fatalf("expected_updated_at_by_id schema = %#v", expectedByID)
 	}
 }
@@ -72,6 +72,20 @@ func (s *pagingManageSessionService) SearchSessions(options pebblestore.V3Sessio
 		result.Pagination = pebblestore.V3SessionSearchPagination{HasMore: true, NextCursor: base64.RawURLEncoding.EncodeToString(payload)}
 	}
 	return result, nil
+}
+
+func TestManageSessionsArchiveAndUnarchiveRejectOnlyAboveFifty(t *testing.T) {
+	ids := make([]any, 0, manageSessionsMaxMutationBatch+1)
+	for i := 0; i <= manageSessionsMaxMutationBatch; i++ {
+		ids = append(ids, fmt.Sprintf("session-%d", i))
+	}
+	runtime := &Runtime{sessions: &gitManageSessionService{}}
+	for _, action := range []string{"archive", "unarchive"} {
+		_, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{}, map[string]any{"action": action, "session_ids": ids})
+		if err == nil || !strings.Contains(err.Error(), "at most 50 sessions") {
+			t.Fatalf("%s error = %v", action, err)
+		}
+	}
 }
 
 func TestManageSessionsListByStateAutoPagesBoundedResults(t *testing.T) {

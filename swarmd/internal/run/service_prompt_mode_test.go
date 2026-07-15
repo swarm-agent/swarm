@@ -135,6 +135,9 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 		"On a blocked plan, call request_followup_checkpoint directly",
 		"do not call resolve_blocked_checkpoint first",
 		"Failed checkpoints remain stopped",
+		"use manage-sessions deploy; do not use the task tool",
+		"explicitly asks to use subagents",
+		"names the agent or agents to run",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("master harness prompt missing %q\n--- prompt ---\n%s", want, prompt)

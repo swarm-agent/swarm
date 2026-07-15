@@ -1250,7 +1250,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate a distinct research question to Explorer or an independent, dependency-ready owned scope to Clone. Keep cohesive work direct. Put child launches in the structured launches array; each launch states its assignment, deliverable, concurrency reason, owned scope, and dependency evidence for review.",
+			Description: "Delegate a distinct research question to Explorer or an independent, dependency-ready owned scope to Clone. Use this only when the user explicitly asks for subagents, asks for Explorer or Clone, or names the agent or agents to run. A generic request to create, make, start, or open a new session means a durable session via manage-sessions deploy, not this task tool. Keep cohesive work direct. Put child launches in the structured launches array; each launch states its assignment, deliverable, concurrency reason, owned scope, and dependency evidence for review.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

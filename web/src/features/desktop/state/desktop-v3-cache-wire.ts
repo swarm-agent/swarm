@@ -86,13 +86,13 @@ export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAc
       return [{ type: 'realtime.applyNotificationResource', frame }]
 
     case 'workset.session.discovered':
-      return [{ type: 'realtime.worksetSessionDiscovered', frame }]
+      return worksetFrameToActions(frame, { type: 'realtime.worksetSessionDiscovered', frame })
 
     case 'workset.session.updated':
-      return [{ type: 'realtime.worksetSessionUpdated', frame }]
+      return worksetFrameToActions(frame, { type: 'realtime.worksetSessionUpdated', frame })
 
     case 'workset.session.removed':
-      return [{ type: 'realtime.worksetSessionRemoved', frame }]
+      return worksetFrameToActions(frame, { type: 'realtime.worksetSessionRemoved', frame })
 
     case 'cursor.error':
       return [{ type: 'realtime.cursorError', frame }]
@@ -110,6 +110,19 @@ export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAc
     default:
       return [{ type: 'realtime.unknownFrame', frame }]
   }
+}
+
+function worksetFrameToActions(frame: RealtimeMessage, membershipAction: DesktopV3CacheAction): DesktopV3CacheAction[] {
+  const actions: DesktopV3CacheAction[] = []
+  if (frame.event) {
+    actions.push({
+      type: 'realtime.applyEvent',
+      event: normalizeRealtimeEventFrame(frame),
+      endpointCursor: frame.endpoint_cursor,
+    })
+  }
+  actions.push(membershipAction)
+  return actions
 }
 
 export function sessionCreateResponseToAction(

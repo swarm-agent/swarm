@@ -550,6 +550,24 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 	subscription, subscribed := advanced.Subscriptions[record.SessionID]
 	removeAutoSubscriptionAfterDelivery := false
 	if !subscribed {
+		if v3RealtimeRecordRemovesFromWorkset(record) {
+			session, ok := s.v3RealtimeSessionSnapshotForRecord(record)
+			if !ok {
+				return advanced, true, false
+			}
+			delivered := false
+			for _, workset := range orderedV3RealtimeWorksets(worksets) {
+				if !v3RealtimeSessionMatchesWorksetSelector(principal, session, workset.Selector) || !v3RealtimeWorksetIncludesRecordResource(workset, record) {
+					continue
+				}
+				if !s.sendV3RealtimeWorksetSessionFrame(conn, V3RealtimeKindWorksetSessionRemoved, workset, v3RealtimeSubscription{}, record, scope) {
+					return advanced, false, false
+				}
+				delivered = true
+				advanced.LastSentEndpointSeq = record.EndpointSeq
+			}
+			return advanced, true, delivered
+		}
 		match, ok := s.v3RealtimeMatchRecordWorkset(principal, record, worksets)
 		if !ok {
 			return advanced, true, false
@@ -973,6 +991,13 @@ func (s *Server) sendV3RealtimeWorksetSessionFrame(conn *transportws.Conn, kind 
 		PrevRev:               record.EndpointSeq - 1,
 		EventType:             record.Event.EventType,
 		Projection:            &record.Projection,
+	}
+	if strings.TrimSpace(subscription.SubscriptionID) == "" &&
+		(kind == V3RealtimeKindWorksetSessionRemoved || strings.TrimSpace(record.Event.EventType) == "session.reactivated") {
+		// Sidebar worksets intentionally avoid subscribing every visible session.
+		// Carry the durable lifecycle event on un-subscribed membership changes so
+		// the client can apply archive/delete tombstones and clear them on restore.
+		message.Event = &record.Event
 	}
 	if v3RealtimeWorksetIncludesResource(workset, "permission_summaries") {
 		if summary, ok := v3RealtimePermissionSummaryFromRecord(record); ok {

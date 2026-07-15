@@ -4,8 +4,7 @@ import assert from 'node:assert/strict'
 import { createEmptyDesktopV3CacheState, desktopV3CacheReducer } from './desktop-v3-cache-reducer'
 import { buildSidebarSessionTree, desktopSessionRecordFromV3SidebarRow, desktopSidebarWorkspacePathForSession } from '../layout/desktop-app-page'
 import { selectDesktopSidebarGroupedRows, selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
-import { selectSession } from './desktop-v3-cache-wire'
-import { hydrateResponseToAction } from './desktop-v3-cache-wire'
+import { hydrateResponseToAction, realtimeFrameToActions, selectSession } from './desktop-v3-cache-wire'
 import { hydrateSnapshotFixture, messageA1, messageB1, projectionA, projectionB, runIntentA, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
 
 test('sidebar selector uses scope order', () => {
@@ -258,6 +257,83 @@ test('Desktop V3 sidebar derives archived rows from archived tombstones only', (
   assert.equal(archivedRecord.metadata?.swarm_v3_sidebar_group, 'archived')
 })
 
+test('unsubscribed V3 workset archive frame removes the live sidebar row and retains an archived tombstone', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
+  state.sessionOrderByScope['scope-a'] = [sessionA.id, sessionB.id]
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.sessionsById[sessionB.id] = { kind: 'full', session: sessionB, needsHydrate: false }
+  state.worksetsById['scope-a'] = { sessionIds: [sessionA.id, sessionB.id], inactiveSessionIds: [] }
+
+  const tombstone = {
+    session_id: sessionA.id,
+    kind: 'archived',
+    archived: true,
+    deleted: false,
+    updated_at: 200,
+    session: sessionA,
+  }
+  const archiveCursor = 'archive-cursor'
+  const actions = realtimeFrameToActions({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'workset.session.removed',
+    workset_id: 'scope-a',
+    session_id: sessionA.id,
+    event_type: 'session.archived',
+    endpoint_cursor: archiveCursor,
+    event: {
+      id: 'archive-a',
+      session_id: sessionA.id,
+      seq: 5,
+      event_type: 'session.archived',
+      payload: { session: sessionA, tombstone },
+      ts_unix_ms: 200,
+    },
+  })
+  for (const action of actions) desktopV3CacheReducer(state, action)
+
+  assert.equal(actions[0].type, 'realtime.applyEvent')
+  assert.equal(state.tombstonesBySession[sessionA.id]?.archived, true)
+  assert.equal(state.realtime.endpointCursor, archiveCursor)
+  assert.deepEqual(state.sessionOrderByScope['scope-a'], [sessionB.id])
+  assert.deepEqual(state.worksetsById['scope-a'].sessionIds, [sessionB.id])
+  assert.deepEqual(selectDesktopSidebarGroupedRows(state).archived.map((row) => row.sessionId), [sessionA.id])
+})
+
+test('archived V3 hydrate response cannot reintroduce a session into the active sidebar', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
+  state.sessionOrderByScope['scope-a'] = []
+  state.worksetsById['scope-a'] = { sessionIds: [], inactiveSessionIds: [sessionA.id] }
+
+  desktopV3CacheReducer(state, hydrateResponseToAction({
+    ...hydrateSnapshotFixture({
+      sessions_by_id: { [sessionA.id]: sessionA },
+      projections_by_session: { [sessionA.id]: projectionA },
+      messages_by_session: { [sessionA.id]: [] },
+      session_order: [sessionA.id],
+      selector: { kind: 'session_ids', session_ids: [sessionA.id] },
+      tombstones_by_session: {
+        [sessionA.id]: {
+          session_id: sessionA.id,
+          kind: 'archived',
+          archived: true,
+          deleted: false,
+          updated_at: 200,
+          session: sessionA,
+        },
+      },
+    }),
+  }, [sessionA.id]))
+
+  assert.equal(state.tombstonesBySession[sessionA.id]?.archived, true)
+  assert.deepEqual(state.sessionOrderByScope['scope-a'], [])
+  assert.deepEqual(state.worksetsById['scope-a'].sessionIds, [])
+  assert.deepEqual(selectDesktopSidebarGroupedRows(state).active_chats, [])
+  assert.deepEqual(selectDesktopSidebarGroupedRows(state).archived.map((row) => row.sessionId), [sessionA.id])
+})
+
 test('archive mutation result moves sidebar row into Archived with cached session metadata', () => {
   const state = createEmptyDesktopV3CacheState()
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
@@ -400,6 +476,41 @@ test('archive mutation and realtime tombstone ordering is idempotent without rep
     assert.deepEqual(state.sessionOrderByScope['post-cleanup-marker'], [sessionA.id])
     assert.equal(state.subscriptionsById['post-cleanup-marker']?.session_id, sessionA.id)
   }
+})
+
+test('unsubscribed V3 workset reactivation frame restores a missing sidebar session without local tombstone state', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'scope-a' }
+  state.sessionsById[sessionA.id] = { kind: 'full', session: sessionA, needsHydrate: false }
+  state.sessionOrderByScope['scope-a'] = []
+  state.worksetsById['scope-a'] = { sessionIds: [], inactiveSessionIds: [sessionA.id] }
+  const reactivationCursor = 'reactivation-cursor'
+
+  const actions = realtimeFrameToActions({
+    protocol: 'v3.realtime',
+    protocol_version: 1,
+    kind: 'workset.session.updated',
+    workset_id: 'scope-a',
+    session_id: sessionA.id,
+    event_type: 'session.reactivated',
+    endpoint_cursor: reactivationCursor,
+    event: {
+      id: 'reactivate-a',
+      session_id: sessionA.id,
+      seq: 6,
+      event_type: 'session.reactivated',
+      payload: { session: sessionA },
+      ts_unix_ms: 300,
+    },
+  })
+  for (const action of actions) desktopV3CacheReducer(state, action)
+
+  assert.equal(actions[0].type, 'realtime.applyEvent')
+  assert.equal(state.tombstonesBySession[sessionA.id], undefined)
+  assert.equal(state.realtime.endpointCursor, reactivationCursor)
+  assert.deepEqual(state.sessionOrderByScope['scope-a'], [sessionA.id])
+  assert.deepEqual(state.worksetsById['scope-a'].sessionIds, [sessionA.id])
+  assert.deepEqual(state.worksetsById['scope-a'].inactiveSessionIds, [])
 })
 
 test('metadata-only bootstrap after hydrate preserves messages', () => {

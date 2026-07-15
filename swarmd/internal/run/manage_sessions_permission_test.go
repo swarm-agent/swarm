@@ -2,12 +2,24 @@ package run
 
 import (
 	"encoding/json"
+	"strconv"
 	"testing"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
+
+func TestManageSessionsPermissionIDsPreserveFiftySessionBatch(t *testing.T) {
+	ids := make([]any, 0, 50)
+	for i := 0; i < 50; i++ {
+		ids = append(ids, "session-"+strconv.Itoa(i))
+	}
+	got := manageSessionsPermissionIDs(map[string]any{"session_ids": ids})
+	if len(got) != 50 || got[0] != "session-0" || got[49] != "session-49" {
+		t.Fatalf("permission ids = %#v", got)
+	}
+}
 
 func TestManageSessionsArchivePermissionHydratesFactsAndPreservesArguments(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)

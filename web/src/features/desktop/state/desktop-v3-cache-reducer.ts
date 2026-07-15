@@ -1147,8 +1147,7 @@ export function applyCacheEvent(
 
   applyExecutionEpochFromEvent(state, event)
 
-  const reactivatingArchivedSession = Boolean(payload.message && payload.session && state.tombstonesBySession[sessionId]?.archived === true)
-  if (reactivatingArchivedSession) {
+  if (payload.session && eventType === 'session.reactivated') {
     delete state.tombstonesBySession[sessionId]
     restoreSessionToSidebar(state, sessionId)
   }
@@ -1836,7 +1835,7 @@ export function applyWorksetSessionRemoved(state: DesktopV3CacheState, frame: Re
   if (subscriptionId) {
     delete state.subscriptionsById[subscriptionId]
   }
-  // Discovery/removal frames do not advance the global realtime cursor.
+  state.realtime.endpointCursor = frame.endpoint_cursor ?? state.realtime.endpointCursor
 }
 
 export function markCursorError(

@@ -180,7 +180,7 @@ func (s *Service) executeManageSessionsCommit(ctx context.Context, sessionID str
 }
 
 func manageSessionsPermissionIDs(args map[string]any) []string {
-	ids := make([]string, 0, 10)
+	ids := make([]string, 0, 50)
 	seen := map[string]struct{}{}
 	add := func(value string) {
 		value = strings.TrimSpace(value)
