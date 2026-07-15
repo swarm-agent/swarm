@@ -124,21 +124,48 @@ func TestSessionDeployCanonicalServicesAreRequired(t *testing.T) {
 	}
 }
 
+func TestSessionDeployCreationMetadataMatchesDesktopV3AndPreservesLineage(t *testing.T) {
+	metadata := sessionDeployCreationMetadata(" parent-session ", " /workspace/source ", " digest ", " proposal-1 ")
+	want := map[string]string{
+		"source":                     "desktop-v3",
+		"workspace_path":             "/workspace/source",
+		"parent_session_id":          "parent-session",
+		"lineage_kind":               "session_deploy",
+		"deployment_manifest_digest": "digest",
+		"deployment_proposal_id":     "proposal-1",
+	}
+	for key, expected := range want {
+		if got := mapString(metadata, key); got != expected {
+			t.Fatalf("metadata[%q] = %q, want %q", key, got, expected)
+		}
+	}
+}
+
+func TestSessionDeployRunIntentCarriesRunOwnership(t *testing.T) {
+	intent := sessionDeployRunIntent(" session-1 ", " run-1 ", " parent-session ", " user ", " account ")
+	if intent.SessionID != "session-1" || intent.RunID != "run-1" || intent.RunSessionID != "session-1" || intent.ParentSessionID != "parent-session" {
+		t.Fatalf("run intent ownership = %#v", intent)
+	}
+	if intent.UserID != "user" || intent.AccountScopeID != "account" {
+		t.Fatalf("run intent principal = %#v", intent)
+	}
+}
+
 func TestSessionDeployEnqueuerReceivesCanonicalPendingRun(t *testing.T) {
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account"}
-	var gotSessionID, gotRunID string
-	svc := &Service{sessionDeployEnqueue: func(got identity.Principal, sessionID, runID string) bool {
+	var gotSessionID, gotRunID, gotParentSessionID string
+	svc := &Service{sessionDeployEnqueue: func(got identity.Principal, sessionID, runID, parentSessionID string) bool {
 		if got.UserID != principal.UserID || got.AccountScopeID != principal.AccountScopeID {
 			t.Fatalf("principal = %#v", got)
 		}
-		gotSessionID, gotRunID = sessionID, runID
+		gotSessionID, gotRunID, gotParentSessionID = sessionID, runID, parentSessionID
 		return true
 	}}
-	if !svc.sessionDeployEnqueue(principal, "session-1", "run-1") {
+	if !svc.sessionDeployEnqueue(principal, "session-1", "run-1", "parent-session") {
 		t.Fatal("canonical enqueue rejected")
 	}
-	if gotSessionID != "session-1" || gotRunID != "run-1" {
-		t.Fatalf("enqueue = %q/%q", gotSessionID, gotRunID)
+	if gotSessionID != "session-1" || gotRunID != "run-1" || gotParentSessionID != "parent-session" {
+		t.Fatalf("enqueue = %q/%q parent=%q", gotSessionID, gotRunID, gotParentSessionID)
 	}
 }
 

@@ -63,6 +63,7 @@ type sessionV3ExecutorJob struct {
 	PlanID          string
 	CheckpointID    string
 	AttemptID       string
+	RunSessionID    string
 	ParentSessionID string
 	enqueuedAt      time.Time
 }
@@ -84,7 +85,7 @@ func sessionV3RunIntentForJob(job sessionV3ExecutorJob, status string, now int64
 		PlanID:          strings.TrimSpace(job.PlanID),
 		CheckpointID:    strings.TrimSpace(job.CheckpointID),
 		AttemptID:       strings.TrimSpace(job.AttemptID),
-		RunSessionID:    strings.TrimSpace(job.SessionID),
+		RunSessionID:    strings.TrimSpace(firstNonEmptyString(job.RunSessionID, job.SessionID)),
 		ParentSessionID: strings.TrimSpace(job.ParentSessionID),
 		UpdatedAt:       now,
 	}
@@ -141,6 +142,7 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	job.PlanID = strings.TrimSpace(job.PlanID)
 	job.CheckpointID = strings.TrimSpace(job.CheckpointID)
 	job.AttemptID = strings.TrimSpace(job.AttemptID)
+	job.RunSessionID = strings.TrimSpace(job.RunSessionID)
 	job.ParentSessionID = strings.TrimSpace(job.ParentSessionID)
 	if job.enqueuedAt.IsZero() {
 		job.enqueuedAt = time.Now()
@@ -275,21 +277,84 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 		return sessionruntime.SessionMutationResult{}, tracked, err
 	}
 	if ok {
+		job = hydrateSessionV3ExecutorJobFromIntent(job, intent)
 		switch intent.Status {
 		case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning:
-			result, err := e.recordRunStatus(job, sessionruntime.RunIntentCancelled, reason, "session.run.cancelled")
+			result, err := e.recordCancelledRunAndReconcilePlan(job, reason)
 			return result, true, err
 		case sessionruntime.RunIntentCancelled:
 			if strings.TrimSpace(intent.BlockedReason) == reason {
-				return sessionruntime.SessionMutationResult{SessionID: job.SessionID, RunIntent: &intent}, true, nil
+				result := sessionruntime.SessionMutationResult{SessionID: job.SessionID, RunIntent: &intent}
+				if err := e.reconcileCancelledPlanRun(job, reason, intent.UpdatedAt); err != nil {
+					return result, true, err
+				}
+				return result, true, nil
 			}
 		}
 	}
 	if tracked {
-		result, err := e.recordRunStatus(job, sessionruntime.RunIntentCancelled, reason, "session.run.cancelled")
+		result, err := e.recordCancelledRunAndReconcilePlan(job, reason)
 		return result, true, err
 	}
 	return sessionruntime.SessionMutationResult{}, false, fmt.Errorf("v3 run %q is not active", job.RunID)
+}
+
+func hydrateSessionV3ExecutorJobFromIntent(job sessionV3ExecutorJob, intent pebblestore.V3SessionRunIntent) sessionV3ExecutorJob {
+	if job.PlanID == "" {
+		job.PlanID = strings.TrimSpace(intent.PlanID)
+	}
+	if job.CheckpointID == "" {
+		job.CheckpointID = strings.TrimSpace(intent.CheckpointID)
+	}
+	if job.AttemptID == "" {
+		job.AttemptID = strings.TrimSpace(intent.AttemptID)
+	}
+	if job.RunSessionID == "" {
+		job.RunSessionID = strings.TrimSpace(intent.RunSessionID)
+	}
+	if job.ParentSessionID == "" {
+		job.ParentSessionID = strings.TrimSpace(intent.ParentSessionID)
+	}
+	return job
+}
+
+func (e *sessionV3Executor) recordCancelledRunAndReconcilePlan(job sessionV3ExecutorJob, reason string) (sessionruntime.SessionMutationResult, error) {
+	result, err := e.recordRunStatus(job, sessionruntime.RunIntentCancelled, reason, "session.run.cancelled")
+	if err != nil {
+		return result, err
+	}
+	cancelledAt := time.Now().UnixMilli()
+	if result.RunIntent != nil && result.RunIntent.UpdatedAt > 0 {
+		cancelledAt = result.RunIntent.UpdatedAt
+	}
+	if err := e.reconcileCancelledPlanRun(job, reason, cancelledAt); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (e *sessionV3Executor) reconcileCancelledPlanRun(job sessionV3ExecutorJob, reason string, cancelledAt int64) error {
+	if strings.TrimSpace(job.PlanID) == "" || strings.TrimSpace(job.CheckpointID) == "" || strings.TrimSpace(job.AttemptID) == "" {
+		return nil
+	}
+	if e == nil || e.server == nil || e.server.planLifecycle == nil {
+		return errors.New("v3 plan cancellation reconciliation is not configured")
+	}
+	result, changed, err := e.server.planLifecycle.ReconcileCancelledRun(sessionruntime.PlanLifecycleExecutionInput{
+		SessionID:       job.SessionID,
+		PlanID:          job.PlanID,
+		CheckpointID:    job.CheckpointID,
+		AttemptID:       job.AttemptID,
+		RunID:           job.RunID,
+		RunSessionID:    firstNonEmptyString(job.RunSessionID, job.SessionID),
+		ParentSessionID: job.ParentSessionID,
+		Notes:           strings.TrimSpace(reason),
+		ReviewedAt:      cancelledAt,
+	})
+	if err != nil || !changed {
+		return err
+	}
+	return e.server.publishPlanLifecycleResult(result)
 }
 
 func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
@@ -329,6 +394,7 @@ func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
 			PlanID:          intent.PlanID,
 			CheckpointID:    intent.CheckpointID,
 			AttemptID:       intent.AttemptID,
+			RunSessionID:    intent.RunSessionID,
 			ParentSessionID: intent.ParentSessionID,
 		}
 		if strings.TrimSpace(job.Principal.UserID) == "" || strings.TrimSpace(job.Principal.AccountScopeID) == "" {

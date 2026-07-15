@@ -136,7 +136,7 @@ type SessionDeployCanonicalization struct {
 }
 
 type SessionDeployCanonicalizer func(SessionDeployCanonicalizeInput) (SessionDeployCanonicalization, error)
-type SessionDeployEnqueuer func(identity.Principal, string, string) bool
+type SessionDeployEnqueuer func(identity.Principal, string, string, string) bool
 
 type worktreeService interface {
 	AttachBranch(workspacePath, sessionID, title string) (string, error)

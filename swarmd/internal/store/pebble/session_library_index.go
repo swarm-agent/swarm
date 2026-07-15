@@ -69,33 +69,53 @@ func v3LibraryMetadataString(metadata map[string]any, key string) string {
 	return strings.TrimSpace(value)
 }
 
-// ResolveV3SessionLineage deterministically resolves roots. Missing parents and cycles
-// stay attached to themselves and are explicitly marked unlinked.
-func ResolveV3SessionLineage(sessions map[string]SessionSnapshot) map[string]V3SessionLibraryMetric {
-	result := make(map[string]V3SessionLibraryMetric, len(sessions))
-	for id, session := range sessions {
-		parent := v3LibraryMetadataString(session.Metadata, "parent_session_id")
-		metric := V3SessionLibraryMetric{SessionID: id, ParentSessionID: parent, RootSessionID: id, LineageKind: v3LibraryMetadataString(session.Metadata, "lineage_kind"), UpdatedAt: session.UpdatedAt}
-		if parent != "" {
-			seen := map[string]bool{id: true}
-			cursor := parent
+func v3LibraryStandaloneConversation(lineageKind string) bool {
+	// Managed deployments retain parent_session_id as launch provenance while
+	// starting a new canonical conversation and deletion boundary.
+	return strings.EqualFold(strings.TrimSpace(lineageKind), "session_deploy")
+}
+
+func resolveV3LibraryMetricLineage(metrics map[string]V3SessionLibraryMetric) {
+	for id, metric := range metrics {
+		metric.RootSessionID, metric.UnlinkedChild = id, false
+		if metric.ParentSessionID != "" && !v3LibraryStandaloneConversation(metric.LineageKind) {
+			seen, cursor := map[string]bool{id: true}, metric.ParentSessionID
 			for cursor != "" {
 				if seen[cursor] {
 					metric.UnlinkedChild = true
 					break
 				}
 				seen[cursor] = true
-				ancestor, ok := sessions[cursor]
+				ancestor, ok := metrics[cursor]
 				if !ok {
 					metric.UnlinkedChild = true
 					break
 				}
 				metric.RootSessionID = cursor
-				cursor = v3LibraryMetadataString(ancestor.Metadata, "parent_session_id")
+				if v3LibraryStandaloneConversation(ancestor.LineageKind) {
+					break
+				}
+				cursor = ancestor.ParentSessionID
 			}
 		}
-		result[id] = metric
+		metrics[id] = metric
 	}
+}
+
+// ResolveV3SessionLineage deterministically resolves roots. Missing parents and cycles
+// stay attached to themselves and are explicitly marked unlinked.
+func ResolveV3SessionLineage(sessions map[string]SessionSnapshot) map[string]V3SessionLibraryMetric {
+	result := make(map[string]V3SessionLibraryMetric, len(sessions))
+	for id, session := range sessions {
+		result[id] = V3SessionLibraryMetric{
+			SessionID:       id,
+			ParentSessionID: v3LibraryMetadataString(session.Metadata, "parent_session_id"),
+			RootSessionID:   id,
+			LineageKind:     v3LibraryMetadataString(session.Metadata, "lineage_kind"),
+			UpdatedAt:       session.UpdatedAt,
+		}
+	}
+	resolveV3LibraryMetricLineage(result)
 	return result
 }
 
@@ -231,27 +251,7 @@ func v3LibraryMetricsFromReader(reader pebble.Reader) (map[string]V3SessionLibra
 	}
 	// Resolve current lineage from contribution rows, so parent metadata changes
 	// immediately affect descendants without rewriting unrelated session rows.
-	for id, metric := range metrics {
-		metric.RootSessionID, metric.UnlinkedChild = id, false
-		if metric.ParentSessionID != "" {
-			seen, cursor := map[string]bool{id: true}, metric.ParentSessionID
-			for cursor != "" {
-				if seen[cursor] {
-					metric.UnlinkedChild = true
-					break
-				}
-				seen[cursor] = true
-				ancestor, ok := metrics[cursor]
-				if !ok {
-					metric.UnlinkedChild = true
-					break
-				}
-				metric.RootSessionID = cursor
-				cursor = ancestor.ParentSessionID
-			}
-		}
-		metrics[id] = metric
-	}
+	resolveV3LibraryMetricLineage(metrics)
 	type aggregate struct {
 		bytes    int64
 		sessions int
@@ -310,7 +310,7 @@ func (s *SessionStore) v3SessionLibrarySummary(reader pebble.Reader, options V3S
 		}
 		summary.RawSessionCount++
 		summary.LogicalContentBytes += metric.LogicalBytes
-		if metric.ParentSessionID != "" {
+		if metric.ParentSessionID != "" && !v3LibraryStandaloneConversation(metric.LineageKind) {
 			summary.AgentChildCount++
 		}
 		if metric.Archived {

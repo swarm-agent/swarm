@@ -270,6 +270,50 @@ func TestValidatePlanDocumentRejectsUnresolvedCheckpointsBeforeActive(t *testing
 	}
 }
 
+func TestPlanCheckpointCancellationRequiresExactRunOwnershipAndPreservesRetryability(t *testing.T) {
+	doc := &pebblestore.SessionPlanDocument{
+		ID:                 "plan-cancel",
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		ActiveCheckpointID: "cp-1",
+		ExecutionState: &pebblestore.SessionPlanExecutionState{
+			Status: PlanExecutionStateInProgress, ActiveAttemptID: "cp-1:attempt-1", CurrentRunID: "run-1", CurrentSessionID: "session-1", ParentSessionID: "parent-1",
+		},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID: "cp-1", Status: PlanCheckpointStatusInProgress, AttemptID: "cp-1:attempt-1", RunID: "run-1", SessionID: "session-1",
+			ActiveSubtaskID: "task-1", Subtasks: []pebblestore.SessionPlanSubtask{{ID: "task-1", Title: "work", Status: PlanSubtaskStatusInProgress}},
+			Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: PlanCheckpointStatusInProgress, RunID: "run-1", SessionID: "session-1", ParentSessionID: "parent-1"}},
+		}},
+	}
+	stale := *doc
+	stale.Checkpoints = clonePlanCheckpointSlice(doc.Checkpoints)
+	stale.ExecutionState = &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateInProgress, ActiveAttemptID: "cp-1:attempt-1", CurrentRunID: "run-1", CurrentSessionID: "session-1", ParentSessionID: "parent-1"}
+	decision, err := ApplyPlanCheckpointCancellation(&stale, PlanCheckpointCancellationOptions{PlanID: "plan-cancel", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1", RunID: "stale-run", SessionID: "session-1", ParentSessionID: "parent-1", CancelledAt: 42})
+	if err != nil || decision.Changed || stale.Checkpoints[0].Status != PlanCheckpointStatusInProgress {
+		t.Fatalf("stale cancellation changed plan: decision=%#v err=%v doc=%#v", decision, err, stale)
+	}
+
+	decision, err = ApplyPlanCheckpointCancellation(doc, PlanCheckpointCancellationOptions{PlanID: "plan-cancel", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1", RunID: "run-1", SessionID: "session-1", ParentSessionID: "parent-1", Reason: "user stopped run", CancelledAt: 42})
+	if err != nil || !decision.Changed {
+		t.Fatalf("matching cancellation: decision=%#v err=%v", decision, err)
+	}
+	checkpoint := doc.Checkpoints[0]
+	if checkpoint.Status != PlanCheckpointStatusFailed || checkpoint.Result != "run_cancelled" || checkpoint.Attempts[0].Status != PlanCheckpointStatusFailed || checkpoint.Attempts[0].Outcome != PlanCheckpointStatusFailed {
+		t.Fatalf("cancelled checkpoint/attempt = %#v", checkpoint)
+	}
+	if doc.ExecutionState.Status != PlanExecutionStateFailed || doc.ExecutionState.ActiveAttemptID != "" || doc.ExecutionState.CurrentRunID != "" || doc.ExecutionState.LastOutcome != PlanCheckpointStatusFailed {
+		t.Fatalf("cancelled execution state = %#v", doc.ExecutionState)
+	}
+	if checkpoint.Subtasks[0].Status != PlanSubtaskStatusPending || checkpoint.ActiveSubtaskID != "" {
+		t.Fatalf("cancellation did not return active subtask to retryable pending state: %#v", checkpoint.Subtasks)
+	}
+	if _, err := ApplyPlanCheckpointReset(doc, PlanCheckpointResetOptions{CheckpointID: "cp-1"}); err != nil {
+		t.Fatalf("cancelled checkpoint is not retryable: %v", err)
+	}
+	if doc.Checkpoints[0].Status != PlanCheckpointStatusPending || doc.ExecutionState.Status != PlanExecutionStateIdle {
+		t.Fatalf("reset cancelled checkpoint = %#v state=%#v", doc.Checkpoints[0], doc.ExecutionState)
+	}
+}
+
 func TestPlanDocumentPatchRejectsSetActiveAndUpsertThatStrandInProgress(t *testing.T) {
 	base := &pebblestore.SessionPlanDocument{
 		ID:                 "plan-exec",

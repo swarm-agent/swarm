@@ -767,7 +767,7 @@ func (s *Server) handleSessionsV3Delete(w http.ResponseWriter, r *http.Request) 
 		session := byID[id]
 		candidates = append(candidates, session)
 		preview.SessionIDs = append(preview.SessionIDs, id)
-		if metric.ParentSessionID != "" {
+		if metric.ParentSessionID != "" && metric.RootSessionID != metric.SessionID {
 			preview.ChildCount++
 		}
 		if storedMetric, found, metricErr := s.sessions.GetSessionLibraryMetric(id); metricErr != nil {

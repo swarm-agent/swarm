@@ -201,7 +201,7 @@ func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSession
 		if title == "" {
 			title = "New Session"
 		}
-		lineageMetadata := map[string]any{"parent_session_id": parent.ID, "lineage_kind": "session_deploy", "deployment_manifest_digest": digest, "deployment_proposal_id": proposal.ID}
+		lineageMetadata := sessionDeployCreationMetadata(parent.ID, scope.WorkspacePath, digest, proposal.ID)
 		canonical, canonicalErr := s.sessionDeployCanonicalize(SessionDeployCanonicalizeInput{Principal: principal, WorkspacePath: scope.WorkspacePath, WorkspaceBindingID: proposal.WorkspaceBindingID, AgentProfile: profile, RuntimeMode: proposal.RuntimeMode, Metadata: lineageMetadata})
 		if canonicalErr != nil {
 			return "", fmt.Errorf("proposal %q resolve canonical V3 session metadata: %w", proposal.ID, canonicalErr)
@@ -242,7 +242,7 @@ func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSession
 			continue
 		}
 		message := pebblestore.MessageSnapshot{ID: deterministicDeployID(digest, item.proposal.ID, "message"), SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, Role: "user", Content: item.proposal.Prompt, Metadata: map[string]any{"source": "session_deploy"}, CreatedAt: time.Now().UnixMilli()}
-		intent := pebblestore.V3SessionRunIntent{SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, RunID: item.runID, Status: sessionruntime.RunIntentPendingExecutor}
+		intent := sessionDeployRunIntent(item.session.ID, item.runID, parent.ID, parent.UserID, parent.AccountScopeID)
 		messageKey := "session-deploy:message:" + digest + ":" + item.proposal.ID
 		appended, appendErr := apply(sessionruntime.SessionMutationInput{SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: messageKey, IdempotencyKey: messageKey, PayloadHash: messageKey, RequestHash: messageKey, Kind: sessionruntime.SessionMutationAppendMessage, Message: &message, RunIntent: &intent, NowUnixMs: time.Now().UnixMilli()})
 		if appendErr != nil {
@@ -263,7 +263,7 @@ func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSession
 		if results[i].Status == "error" || (results[i].Status == "replayed" && !replayedPending[i]) {
 			continue
 		}
-		if !s.sessionDeployEnqueue(principal, item.session.ID, item.runID) {
+		if !s.sessionDeployEnqueue(principal, item.session.ID, item.runID, parent.ID) {
 			if results[i].Status == "replayed" {
 				continue
 			}
@@ -276,6 +276,29 @@ func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSession
 	payload := map[string]any{"tool": "manage_sessions", "action": "deploy", "manifest_digest": digest, "selected_count": len(results), "results": results}
 	raw, err := json.Marshal(payload)
 	return string(raw), err
+}
+
+func sessionDeployCreationMetadata(parentSessionID, workspacePath, digest, proposalID string) map[string]any {
+	return map[string]any{
+		"source":                     "desktop-v3",
+		"workspace_path":             strings.TrimSpace(workspacePath),
+		"parent_session_id":          strings.TrimSpace(parentSessionID),
+		"lineage_kind":               "session_deploy",
+		"deployment_manifest_digest": strings.TrimSpace(digest),
+		"deployment_proposal_id":     strings.TrimSpace(proposalID),
+	}
+}
+
+func sessionDeployRunIntent(sessionID, runID, parentSessionID, userID, accountScopeID string) pebblestore.V3SessionRunIntent {
+	return pebblestore.V3SessionRunIntent{
+		SessionID:       strings.TrimSpace(sessionID),
+		UserID:          strings.TrimSpace(userID),
+		AccountScopeID:  strings.TrimSpace(accountScopeID),
+		RunID:           strings.TrimSpace(runID),
+		Status:          sessionruntime.RunIntentPendingExecutor,
+		RunSessionID:    strings.TrimSpace(sessionID),
+		ParentSessionID: strings.TrimSpace(parentSessionID),
+	}
 }
 
 func deterministicDeployID(digest, proposalID, kind string) string {

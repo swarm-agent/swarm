@@ -71,13 +71,18 @@ func (s *Server) CanonicalizeSessionDeploy(input runruntime.SessionDeployCanonic
 
 // EnqueueSessionDeployRun enters the same durable executor used after a normal
 // V3 message append. A false result means no run was accepted for execution.
-func (s *Server) EnqueueSessionDeployRun(principal identity.Principal, sessionID, runID string) bool {
+func (s *Server) EnqueueSessionDeployRun(principal identity.Principal, sessionID, runID, parentSessionID string) bool {
 	if s == nil || s.v3SessionExecutor == nil {
 		return false
 	}
-	return s.v3SessionExecutor.EnqueueRun(sessionV3ExecutorJob{
-		Principal: principal,
-		SessionID: strings.TrimSpace(sessionID),
-		RunID:     strings.TrimSpace(runID),
-	})
+	return s.v3SessionExecutor.EnqueueRun(sessionV3DeployExecutorJob(principal, sessionID, runID, parentSessionID))
+}
+
+func sessionV3DeployExecutorJob(principal identity.Principal, sessionID, runID, parentSessionID string) sessionV3ExecutorJob {
+	return sessionV3ExecutorJob{
+		Principal:       principal,
+		SessionID:       strings.TrimSpace(sessionID),
+		RunID:           strings.TrimSpace(runID),
+		ParentSessionID: strings.TrimSpace(parentSessionID),
+	}
 }

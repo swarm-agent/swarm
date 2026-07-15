@@ -131,6 +131,23 @@ type PlanCheckpointBlockResolutionOptions struct {
 	ResolvedAt   int64
 }
 
+type PlanCheckpointCancellationOptions struct {
+	PlanID          string
+	CheckpointID    string
+	AttemptID       string
+	RunID           string
+	SessionID       string
+	ParentSessionID string
+	Reason          string
+	CancelledAt     int64
+}
+
+type PlanCheckpointCancellationDecision struct {
+	CheckpointID string `json:"checkpoint_id,omitempty"`
+	AttemptID    string `json:"attempt_id,omitempty"`
+	Changed      bool   `json:"changed"`
+}
+
 // NormalizePlanExecutionOrigin returns the fail-safe approved-plan behavior
 // for missing or unknown persisted values.
 func normalizePlanCheckpointRecommendation(value pebblestore.SessionPlanCheckpointRecommendation) pebblestore.SessionPlanCheckpointRecommendation {
@@ -1210,6 +1227,109 @@ func ApplyPlanCheckpointReset(doc *pebblestore.SessionPlanDocument, options Plan
 	doc.ActiveCheckpointID = checkpointID
 	doc.ExecutionState = &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateIdle}
 	return SummarizePlanExecution(doc), nil
+}
+
+// ApplyPlanCheckpointCancellation terminalizes only the active checkpoint attempt
+// owned by the cancelled run. A cancelled checkpoint is failed rather than
+// completed so cancellation never invents successful work and the existing
+// checkpoint restart transition remains the explicit retry path.
+func ApplyPlanCheckpointCancellation(doc *pebblestore.SessionPlanDocument, options PlanCheckpointCancellationOptions) (PlanCheckpointCancellationDecision, error) {
+	if doc == nil {
+		return PlanCheckpointCancellationDecision{}, errors.New("plan document is required")
+	}
+	planID := strings.TrimSpace(options.PlanID)
+	if planID != "" && strings.TrimSpace(doc.ID) != planID {
+		return PlanCheckpointCancellationDecision{}, nil
+	}
+	checkpointID := strings.TrimSpace(options.CheckpointID)
+	attemptID := strings.TrimSpace(options.AttemptID)
+	runID := strings.TrimSpace(options.RunID)
+	runSessionID := strings.TrimSpace(options.SessionID)
+	parentSessionID := strings.TrimSpace(options.ParentSessionID)
+	if checkpointID == "" || attemptID == "" || runID == "" || runSessionID == "" {
+		return PlanCheckpointCancellationDecision{}, nil
+	}
+	if strings.TrimSpace(doc.ActiveCheckpointID) != checkpointID || doc.ExecutionState == nil {
+		return PlanCheckpointCancellationDecision{}, nil
+	}
+	state := doc.ExecutionState
+	if normalizePlanExecutionStateStatus(state.Status) != PlanExecutionStateInProgress ||
+		strings.TrimSpace(state.ActiveAttemptID) != attemptID ||
+		strings.TrimSpace(state.CurrentRunID) != runID ||
+		strings.TrimSpace(state.CurrentSessionID) != runSessionID ||
+		(parentSessionID != "" && strings.TrimSpace(state.ParentSessionID) != parentSessionID) {
+		return PlanCheckpointCancellationDecision{}, nil
+	}
+	idx := findPlanCheckpointIndex(doc.Checkpoints, checkpointID)
+	if idx < 0 {
+		return PlanCheckpointCancellationDecision{}, nil
+	}
+	checkpoint := &doc.Checkpoints[idx]
+	if normalizePlanCheckpointStatusForSave(checkpoint.Status) != PlanCheckpointStatusInProgress ||
+		strings.TrimSpace(checkpoint.AttemptID) != attemptID ||
+		strings.TrimSpace(checkpoint.RunID) != runID ||
+		strings.TrimSpace(checkpoint.SessionID) != runSessionID {
+		return PlanCheckpointCancellationDecision{}, nil
+	}
+	attemptIdx := -1
+	for i := range checkpoint.Attempts {
+		attempt := &checkpoint.Attempts[i]
+		if strings.TrimSpace(attempt.ID) != attemptID {
+			continue
+		}
+		if normalizePlanCheckpointStatus(attempt.Status) != PlanCheckpointStatusInProgress ||
+			strings.TrimSpace(attempt.RunID) != runID ||
+			strings.TrimSpace(attempt.SessionID) != runSessionID ||
+			(parentSessionID != "" && strings.TrimSpace(attempt.ParentSessionID) != parentSessionID) {
+			return PlanCheckpointCancellationDecision{}, nil
+		}
+		attemptIdx = i
+		break
+	}
+	if attemptIdx < 0 {
+		return PlanCheckpointCancellationDecision{}, nil
+	}
+
+	cancelledAt := options.CancelledAt
+	reason := strings.TrimSpace(options.Reason)
+	if reason == "" {
+		reason = "Run cancelled. Restart the checkpoint to retry."
+	}
+	checkpoint.Status = PlanCheckpointStatusFailed
+	checkpoint.Report = reason
+	checkpoint.Result = "run_cancelled"
+	for i := range checkpoint.Subtasks {
+		if checkpoint.Subtasks[i].Status == PlanSubtaskStatusInProgress {
+			checkpoint.Subtasks[i].Status = PlanSubtaskStatusPending
+			checkpoint.Subtasks[i].CompletedAt = 0
+		}
+	}
+	checkpoint.ActiveSubtaskID = ""
+	if cancelledAt > 0 {
+		checkpoint.CompletedAt = cancelledAt
+	}
+	attempt := &checkpoint.Attempts[attemptIdx]
+	attempt.Status = PlanCheckpointStatusFailed
+	attempt.Outcome = PlanCheckpointStatusFailed
+	attempt.Report = reason
+	attempt.Result = "run_cancelled"
+	if cancelledAt > 0 {
+		attempt.CompletedAt = cancelledAt
+	}
+	state.Status = PlanExecutionStateFailed
+	state.LastCheckpointID = checkpointID
+	state.LastAttemptID = attemptID
+	state.LastOutcome = PlanCheckpointStatusFailed
+	state.ActiveAttemptID = ""
+	state.CurrentRunID = ""
+	state.CurrentSessionID = ""
+	if cancelledAt > 0 {
+		state.UpdatedAt = cancelledAt
+	}
+	if err := ValidatePlanDocument(doc); err != nil {
+		return PlanCheckpointCancellationDecision{}, err
+	}
+	return PlanCheckpointCancellationDecision{CheckpointID: checkpointID, AttemptID: attemptID, Changed: true}, nil
 }
 
 func ApplyPlanCheckpointBlockResolution(doc *pebblestore.SessionPlanDocument, options PlanCheckpointBlockResolutionOptions) (PlanExecutionSummary, error) {

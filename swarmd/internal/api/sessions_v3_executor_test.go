@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/permission"
@@ -365,6 +366,89 @@ func providerToolResultRecordJSON(toolName, completedOutput string) string {
 		panic(err)
 	}
 	return string(payload)
+}
+
+func TestSessionV3CancelRunReconcilesMatchingPlanFromDurableIntentAndPublishes(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "cancel-plan-create", "cancel plan")
+	const runID = "run-cancel-plan"
+	const planID = "plan-cancel"
+	const checkpointID = "cp-1"
+	const attemptID = "cp-1:attempt-1"
+	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, planID, "Plan: cancel", "## Plan: cancel", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ID: planID, Title: "Plan: cancel",
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateInProgress, ActiveAttemptID: attemptID, ParentSessionID: created.ID, CurrentSessionID: created.ID, CurrentRunID: runID},
+		ActiveCheckpointID: checkpointID,
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: checkpointID, Title: "Cancel me", Status: sessionruntime.PlanCheckpointStatusInProgress, AttemptID: attemptID, RunID: runID, SessionID: created.ID, Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: attemptID, CheckpointID: checkpointID, Status: sessionruntime.PlanCheckpointStatusInProgress, RunID: runID, SessionID: created.ID, ParentSessionID: created.ID}}}},
+	}})
+	if err != nil {
+		t.Fatalf("save active plan: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	pending := pebblestore.V3SessionRunIntent{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, RunID: runID, Status: sessionruntime.RunIntentPendingExecutor, PlanID: planID, CheckpointID: checkpointID, AttemptID: attemptID, RunSessionID: created.ID, ParentSessionID: created.ID, UpdatedAt: now}
+	payloadHash, err := sessionV3ExecutorPayloadHash(created.ID, runID, pending.Status, "", "session.assistant.queued", "")
+	if err != nil {
+		t.Fatalf("hash pending intent: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "cancel-plan-queued", IdempotencyKey: "cancel-plan-queued", PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.queued", RunIntent: &pending, NowUnixMs: now}); err != nil {
+		t.Fatalf("record pending intent: %v", err)
+	}
+	exec := &sessionV3Executor{server: server, runStates: make(map[string]*sessionV3ExecutorRunState)}
+	server.v3SessionExecutor = exec
+	result, cancelled, err := exec.CancelRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: created.ID, RunID: runID}, "user stopped")
+	if err != nil || !cancelled || result.RunIntent == nil || result.RunIntent.Status != sessionruntime.RunIntentCancelled {
+		t.Fatalf("cancel result=%#v cancelled=%t err=%v", result, cancelled, err)
+	}
+	active, ok, err := sessionSvc.GetActivePlan(created.ID)
+	if err != nil || !ok || active.Document == nil {
+		t.Fatalf("get reconciled plan: ok=%t err=%v plan=%#v", ok, err, active)
+	}
+	checkpoint := active.Document.Checkpoints[0]
+	if active.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateFailed || checkpoint.Status != sessionruntime.PlanCheckpointStatusFailed || checkpoint.Attempts[0].Status != sessionruntime.PlanCheckpointStatusFailed || checkpoint.Result != "run_cancelled" {
+		t.Fatalf("reconciled plan = %#v", active.Document)
+	}
+	assertSessionsV3PlanSavedOutboxState(t, sessionSvc, created.ID, sessionruntime.PlanExecutionStateFailed)
+
+	version := active.Version
+	if _, cancelled, err := exec.CancelRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: created.ID, RunID: runID}, "user stopped"); err != nil || !cancelled {
+		t.Fatalf("repeat cancel cancelled=%t err=%v", cancelled, err)
+	}
+	repeated, _, err := sessionSvc.GetActivePlan(created.ID)
+	if err != nil {
+		t.Fatalf("get repeated plan: %v", err)
+	}
+	if repeated.Version != version {
+		t.Fatalf("repeat cancellation changed plan version from %d to %d", version, repeated.Version)
+	}
+}
+
+func TestSessionV3CancelRunDoesNotMutateUnrelatedPlanOwnership(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "cancel-stale-create", "cancel stale")
+	saveSessionsV3ActivePlanForFinalizationTest(t, sessionSvc, created.ID, sessionruntime.PlanExecutionPolicyModeAutomatic, []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Active", Status: sessionruntime.PlanCheckpointStatusInProgress, AttemptID: "cp-1:attempt-1", RunID: "run-finalize", SessionID: created.ID, Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: sessionruntime.PlanCheckpointStatusInProgress, RunID: "run-finalize", SessionID: created.ID, ParentSessionID: created.ID}}}})
+	before, _, _ := sessionSvc.GetActivePlan(created.ID)
+	now := time.Now().UnixMilli()
+	pending := pebblestore.V3SessionRunIntent{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, RunID: "stale-run", Status: sessionruntime.RunIntentPendingExecutor, PlanID: "plan-finalize", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1", RunSessionID: created.ID, ParentSessionID: created.ID, UpdatedAt: now}
+	payloadHash, err := sessionV3ExecutorPayloadHash(created.ID, pending.RunID, pending.Status, "", "session.assistant.queued", "")
+	if err != nil {
+		t.Fatalf("hash stale intent: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "cancel-stale-queued", IdempotencyKey: "cancel-stale-queued", PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.queued", RunIntent: &pending, NowUnixMs: now}); err != nil {
+		t.Fatalf("record stale intent: %v", err)
+	}
+	exec := &sessionV3Executor{server: server, runStates: make(map[string]*sessionV3ExecutorRunState)}
+	server.v3SessionExecutor = exec
+	if _, cancelled, err := exec.CancelRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: created.ID, RunID: pending.RunID}, "stale stop"); err != nil || !cancelled {
+		t.Fatalf("cancel stale run cancelled=%t err=%v", cancelled, err)
+	}
+	after, _, err := sessionSvc.GetActivePlan(created.ID)
+	if err != nil {
+		t.Fatalf("get plan after stale cancel: %v", err)
+	}
+	if after.Version != before.Version || after.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateInProgress || after.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusInProgress {
+		t.Fatalf("stale cancellation changed plan: before=%#v after=%#v", before, after)
+	}
 }
 
 func TestApplySessionV3AgentPreferenceOverridesPreservesSupportedPriorityServiceTier(t *testing.T) {

@@ -24,6 +24,7 @@ import (
 	gorillaws "github.com/gorilla/websocket"
 
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/identity"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -37,6 +38,18 @@ import (
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
+
+func TestSessionV3DeployExecutorJobCarriesParentRunLinkage(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account"}
+	job := sessionV3DeployExecutorJob(principal, " session-1 ", " run-1 ", " parent-session ")
+	if job.Principal != principal || job.SessionID != "session-1" || job.RunID != "run-1" || job.ParentSessionID != "parent-session" {
+		t.Fatalf("deploy executor job = %#v", job)
+	}
+	intent := sessionV3RunIntentForJob(job, sessionruntime.RunIntentRunning, 1234)
+	if intent.RunSessionID != "session-1" || intent.ParentSessionID != "parent-session" {
+		t.Fatalf("deploy run ownership = %#v", intent)
+	}
+}
 
 func TestSessionsV3SystemSidechatIdentityIsStableAcrossProposalRevisions(t *testing.T) {
 	first, firstHash := sessionsV3SystemSidechatID("parent-session", "plan")

@@ -110,12 +110,15 @@ export function sessionChildDescriptor(session: DesktopSessionRecord): SidebarSe
   const metadata = normalizeMetadataRecord(session.metadata)
   const parentSessionID = sessionParentSessionID(session)
   const assignmentLabel = metadataString(metadata, 'assignment_label')
-  if (!parentSessionID) {
+  const lineageKind = metadataString(metadata, 'lineage_kind').toLowerCase()
+  // A managed deployment is a canonical conversation in its own right. Keep
+  // parent_session_id as durable provenance, but do not present the deployed
+  // session as an agent child of the conversation that launched it.
+  if (!parentSessionID || lineageKind === 'session_deploy') {
     return { kind: 'root', label: null, assignmentLabel: assignmentLabel || null }
   }
   const requestedSubagent = metadataString(metadata, 'requested_subagent')
   const resolvedSubagent = metadataString(metadata, 'subagent')
-  const lineageKind = metadataString(metadata, 'lineage_kind').toLowerCase()
   const lineageLabel = sessionLineageLabel(metadata)
   const subagent = resolvedSubagent || requestedSubagent
   if (sessionHasFlowIdentity(metadata)) {

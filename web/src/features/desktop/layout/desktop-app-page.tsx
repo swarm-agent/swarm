@@ -1513,7 +1513,7 @@ export function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: n
 
   const roots: SidebarSessionNode[] = []
   const attachNode = (node: SidebarSessionNode, seen: Set<string>) => {
-    const parentSessionID = sessionParentSessionID(node.session)
+    const parentSessionID = node.kind === 'root' ? '' : sessionParentSessionID(node.session)
     const parentNode = parentSessionID ? byID.get(parentSessionID) : undefined
     if (!parentNode || parentNode === node || seen.has(parentNode.session.id)) {
       node.depth = 0

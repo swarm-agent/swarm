@@ -241,6 +241,20 @@ test('canonical delegated subagent V3 metadata classifies child as subagent line
   assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@reviewer', assignmentLabel: 'Map backend files' })
 })
 
+test('managed deploy keeps parent provenance but is a standalone sidebar session', () => {
+  const session = makeSession({
+    id: 'managed-session',
+    metadata: {
+      parent_session_id: 'launching-session',
+      lineage_kind: 'session_deploy',
+      deployment_proposal_id: 'proposal-1',
+    },
+  })
+
+  assert.equal(sessionParentSessionID(session), 'launching-session')
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'root', label: null, assignmentLabel: null })
+})
+
 test('flow child sessions never collapse into fake subagent lineage even when requested_subagent metadata exists', () => {
   const session = makeSession({
     id: 'flow-child-session',

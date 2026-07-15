@@ -348,6 +348,23 @@ test('sidebar inactivity filter hides stale ordinary trees but protects selected
   assert.equal(filterInactiveSidebarSessionTrees(buildSidebarSessionTree(sessions, now), now, null).hiddenCount, 0)
 })
 
+test('sidebar keeps managed deploy sessions as independent roots while preserving lineage metadata', () => {
+  const parent = makeSession('launching-session', { updatedAt: 10_000 })
+  const managed = makeSession('managed-session', {
+    updatedAt: 20_000,
+    metadata: {
+      parent_session_id: parent.id,
+      lineage_kind: 'session_deploy',
+      deployment_proposal_id: 'proposal-1',
+    },
+  })
+
+  const nodes = buildSidebarSessionTree([parent, managed], 30_000)
+  assert.deepEqual(nodes.map((node) => node.session.id), [managed.id, parent.id])
+  assert.equal(nodes[0]?.depth, 0)
+  assert.deepEqual(nodes[0]?.children, [])
+})
+
 test('sidebar manual pin moves an active chat into the Pinned display group', () => {
   const pinnedIdle = makeSession('pinned-idle', {
     updatedAt: 10_000,

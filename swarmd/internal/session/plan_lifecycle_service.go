@@ -883,6 +883,60 @@ func (s *PlanLifecycleService) StopPlanRun(input PlanLifecycleExecutionInput) (P
 	return s.updateExecutionState(input, "stop_plan_run", PlanExecutionStateIdle, "Stopped plan run")
 }
 
+// ReconcileCancelledRun durably terminalizes the active checkpoint attempt only
+// when every persisted ownership field matches the cancelled run. Non-plan runs
+// and stale cancellation requests are safe no-ops.
+func (s *PlanLifecycleService) ReconcileCancelledRun(input PlanLifecycleExecutionInput) (PlanLifecycleResult, bool, error) {
+	if err := s.requireConfigured(); err != nil {
+		return PlanLifecycleResult{}, false, err
+	}
+	session, err := s.requireSession(input.SessionID)
+	if err != nil {
+		return PlanLifecycleResult{}, false, err
+	}
+	plan, ok, err := s.sessions.GetActivePlan(session.ID)
+	if err != nil {
+		return PlanLifecycleResult{}, false, err
+	}
+	if !ok || plan.Document == nil {
+		return PlanLifecycleResult{}, false, nil
+	}
+	if planID := strings.TrimSpace(input.PlanID); planID != "" && strings.TrimSpace(plan.ID) != planID {
+		return PlanLifecycleResult{}, false, nil
+	}
+	doc := clonePlanLifecycleDocument(plan.Document)
+	if doc == nil {
+		return PlanLifecycleResult{}, false, nil
+	}
+	cancelledAt := input.ReviewedAt
+	if cancelledAt <= 0 {
+		cancelledAt = time.Now().UnixMilli()
+	}
+	decision, err := ApplyPlanCheckpointCancellation(doc, PlanCheckpointCancellationOptions{
+		PlanID:          plan.ID,
+		CheckpointID:    input.CheckpointID,
+		AttemptID:       input.AttemptID,
+		RunID:           input.RunID,
+		SessionID:       input.RunSessionID,
+		ParentSessionID: input.ParentSessionID,
+		Reason:          input.Notes,
+		CancelledAt:     cancelledAt,
+	})
+	if err != nil {
+		return PlanLifecycleResult{}, false, err
+	}
+	if !decision.Changed {
+		return PlanLifecycleResult{}, false, nil
+	}
+	state := planLifecycleState{session: session, plan: plan, doc: doc}
+	result, err := s.saveLifecyclePlan(state, decision.CheckpointID, "run_cancelled", "Reconciled cancelled run with active checkpoint attempt")
+	if err != nil {
+		return PlanLifecycleResult{}, false, err
+	}
+	result.AttemptID = decision.AttemptID
+	return result, true, nil
+}
+
 func (s *PlanLifecycleService) ResumeAutomatic(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
 	return s.resumeWithMode(input, PlanExecutionPolicyModeAutomatic, "resume_automatic", "Updated plan automatic continuation policy")
 }
