@@ -278,8 +278,6 @@ func createManagedHostContainerRouteSyncFixture(t *testing.T, primary *Server, c
 		actor := testActorContext()
 		writeJSON(w, http.StatusOK, map[string]any{"type": actor.Principal.Type, "bootstrapped": true, "userID": actor.UserID, "user_id": actor.UserID, "accountScopeID": actor.AccountScopeID, "account_scope_id": actor.AccountScopeID, "account_scope": actor.AccountScope, "user": actor.User, "account_user": actor.AccountUser, "teamID": actor.TeamID, "team_id": actor.TeamID, "team": actor.Team, "membership": actor.Membership, "selection": actor.Selection})
 	})
-	managed.registerSwarmRoutes(managedMux)
-	managed.registerPeerRoutes(managedMux)
 	managedHandler := managed.withJSON(managedMux)
 	managedHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		managedHandler.ServeHTTP(w, withTestPrincipal(r))

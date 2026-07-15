@@ -630,7 +630,6 @@ func (s *Server) apiMux() *http.ServeMux {
 	s.registerProviderRoutes(mux)
 	s.registerWorkspaceRoutes(mux)
 	s.registerRuntimeRoutes(mux)
-	s.registerPeerRoutes(mux)
 	return mux
 }
 
@@ -4499,26 +4498,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		loopback := isLoopbackRequest(r)
-		trustedNetwork := isTrustedNetworkRequest(r)
-		peerSwarmID, peerToken := extractPeerAuth(r)
-		if peerSwarmID != "" && peerToken != "" && s.swarm != nil {
-			peerOK, err := s.swarm.ValidateIncomingPeerAuth(peerSwarmID, peerToken)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			if peerOK {
-				ctx := context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: peerSwarmID})
-				next.ServeHTTP(w, s.requestWithPeerSessionPrincipal(r.WithContext(ctx)))
-				return
-			}
-			log.Printf("peer auth denied method=%s path=%s remote_addr=%s peer_swarm_id=%q", r.Method, r.URL.Path, strings.TrimSpace(r.RemoteAddr), peerSwarmID)
-			s.security.AuditDenied(r.Method, r.URL.Path, r.RemoteAddr, "invalid peer auth", peerToken)
-			writeError(w, http.StatusUnauthorized, errors.New("invalid peer auth"))
-			return
-		}
-		if isAuthExemptRequest(r, loopback, trustedNetwork) {
+		if isAuthExemptRequest(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -4537,19 +4517,9 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 					return
 				}
 			}
-			next.ServeHTTP(w, s.requestWithPeerSessionPrincipal(r))
+			next.ServeHTTP(w, r)
 			return
 		}
-		if bootstrapAuthed, updatedReq, err := authorizeBootstrapRequest(r); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		} else if bootstrapAuthed {
-			next.ServeHTTP(w, updatedReq)
-			return
-		} else {
-			r = updatedReq
-		}
-
 		token := extractAttachToken(r)
 		ok, err := s.security.ValidateAttachToken(token)
 		if err != nil {
@@ -4566,48 +4536,6 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		writeError(w, http.StatusUnauthorized, errors.New("invalid or missing attach token"))
 	})
 }
-func authorizeBootstrapRequest(r *http.Request) (bool, *http.Request, error) {
-	if r == nil {
-		return false, r, nil
-	}
-	switch r.URL.Path {
-	case "/v1/swarm/enroll":
-		inviteToken, updatedReq, err := inviteTokenFromBootstrapRequest(r)
-		if err != nil {
-			return false, updatedReq, err
-		}
-		return strings.TrimSpace(inviteToken) != "", updatedReq, nil
-	default:
-		return false, r, nil
-	}
-}
-
-func inviteTokenFromBootstrapRequest(r *http.Request) (string, *http.Request, error) {
-	if r == nil {
-		return "", r, nil
-	}
-	if r.Body == nil {
-		return "", r, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return "", r, err
-	}
-	_ = r.Body.Close()
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-	if len(body) == 0 {
-		return "", r, nil
-	}
-	var payload struct {
-		InviteToken string `json:"invite_token"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", r, err
-	}
-	return strings.TrimSpace(payload.InviteToken), r, nil
-}
-
 func extractAttachToken(r *http.Request) string {
 	headerToken := strings.TrimSpace(r.Header.Get("X-Swarm-Token"))
 	if headerToken != "" {
@@ -4639,7 +4567,7 @@ func authorizedPeerSwarmID(r *http.Request) (string, bool) {
 	return swarmID, swarmID != ""
 }
 
-func isAuthExemptRequest(r *http.Request, loopback, trustedNetwork bool) bool {
+func isAuthExemptRequest(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/healthz", "/readyz":
 		return true
@@ -4647,37 +4575,9 @@ func isAuthExemptRequest(r *http.Request, loopback, trustedNetwork bool) bool {
 		return r.Method == http.MethodGet && shouldAllowDesktopLocalSessionBootstrapRequest(r)
 	case "/v1/onboarding":
 		return r.Method == http.MethodGet || (r.Method == http.MethodPost && shouldUseDesktopLocalSessionAuth(r))
-	case "/v1/swarm/state":
-		return r.Method == http.MethodGet && shouldUseDesktopLocalSessionAuth(r)
-	case "/v1/swarm/discovery":
-		return trustedNetwork && r.Method == http.MethodGet
-	case "/v1/swarm/remote-pairing/offer":
-		return r.Method == http.MethodPost && (loopback || isTailscaleIP(remoteRequestIP(r)))
-	case "/v1/swarm/remote-pairing/request":
-		return r.Method == http.MethodPost && (loopback || isTailscaleIP(remoteRequestIP(r)))
-	case "/v1/swarm/remote-pairing/finalize":
-		return false
-	case "/v1/deploy/container/attach/child-state", "/v1/deploy/container/attach/request", "/v1/deploy/container/attach/approve", "/v1/deploy/container/attach/finalize", "/v1/deploy/container/pairing/account-bind", "/v1/deploy/container/sync/credentials", "/v1/deploy/container/sync/agents", "/v1/deploy/container/sync/skills", "/v1/deploy/container/sync/permissions", "/v1/deploy/container/sync/model-defaults", "/v1/deploy/container/managed/credentials/apply", "/v1/deploy/container/managed/agents/apply", "/v1/deploy/container/managed/model-defaults/apply", "/v1/deploy/container/managed/skills/apply", "/v1/permissions/managed/apply", "/v1/permissions/bypass", "/v1/deploy/container/workspaces/bootstrap", "/v1/deploy/remote/session/sync/credentials":
-		return trustedNetwork && r.Method == http.MethodPost
 	default:
 		return false
 	}
-}
-
-func isLoopbackRequest(r *http.Request) bool {
-	ip := remoteRequestIP(r)
-	return ip != nil && ip.IsLoopback()
-}
-
-func isTrustedNetworkRequest(r *http.Request) bool {
-	ip := remoteRequestIP(r)
-	if ip == nil {
-		return false
-	}
-	if ip.IsLoopback() || ip.IsPrivate() {
-		return true
-	}
-	return isTailscaleIP(ip)
 }
 
 func isSameOriginBrowserRequest(r *http.Request) bool {
@@ -4873,25 +4773,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.SetBypassPermissions(req.Enabled)
-		s.triggerPermissionSyncReconcile()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bypass_permissions": s.BypassPermissions()})
-		return
-	case "/v1/permissions/managed/apply":
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
-		var req permission.ManagedPolicyState
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		state, err := s.perm.ApplyManagedPolicyState(req)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": state})
 		return
 	}
 	var accountScopeID string
@@ -4941,7 +4823,6 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			s.triggerPermissionSyncReconcile()
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "subagents": policy.Subagents})
 		default:
 			methodNotAllowed(w)
@@ -4977,7 +4858,6 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			s.triggerPermissionSyncReconcile()
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "rule": rule})
 		default:
 			methodNotAllowed(w)
@@ -4993,7 +4873,6 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		s.triggerPermissionSyncReconcile()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": policy})
 		return
 	case path == "/v1/permissions/explain":
@@ -5024,9 +4903,6 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if removed {
-			s.triggerPermissionSyncReconcile()
-		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed, "rule_id": ruleID})
 		return
 	default:
@@ -5034,19 +4910,3 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) triggerPermissionSyncReconcile() {
-	if s == nil || s.deployContainers == nil {
-		return
-	}
-	reconciler, ok := s.deployContainers.(interface{ ReconcilePermissionSync(context.Context) error })
-	if !ok {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := reconciler.ReconcilePermissionSync(ctx); err != nil {
-			log.Printf("warning: permission sync reconcile failed: %v", err)
-		}
-	}()
-}
