@@ -33,4 +33,3 @@ func parseRequestPositiveLimit(w http.ResponseWriter, r *http.Request, defaultLi
 	}
 	return limit, true
 }
-
