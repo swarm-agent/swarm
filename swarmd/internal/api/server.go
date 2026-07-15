@@ -8,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,8 +15,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"swarm-refactor/swarmtui/pkg/startupconfig"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/auth"
@@ -563,224 +559,6 @@ func (s *Server) LocalTransportHandler() http.Handler {
 	})
 }
 
-func hostedSessionHostBackendURL(cfg startupconfig.FileConfig) string {
-	if endpoint := strings.TrimSpace(cfg.TailscaleURL); endpoint != "" {
-		return normalizeRemoteSwarmEndpoint(endpoint)
-	}
-	host := strings.TrimSpace(cfg.AdvertiseHost)
-	if host == "" {
-		host = strings.TrimSpace(cfg.Host)
-	}
-	if host == "" {
-		return ""
-	}
-	if strings.HasPrefix(host, "https://") || strings.HasPrefix(host, "http://") {
-		return strings.TrimSuffix(host, "/")
-	}
-	port := cfg.AdvertisePort
-	if port < 1 || port > 65535 {
-		port = cfg.Port
-	}
-	if port < 1 || port > 65535 {
-		return ""
-	}
-	return "http://" + net.JoinHostPort(host, strconv.Itoa(port))
-}
-
-type primaryRoutedSessionOpenContract struct {
-	PrimaryRequest  sessionCreateRequest
-	ChildRequest    sessionCreateRequest
-	RouteMetadata   map[string]any
-	Descriptor      sessionruntime.HostedSessionDescriptor
-	Route           pebblestore.SessionRouteRecord
-	ProxyTarget     swarmTarget
-	RequireWorktree bool
-	WorkspaceRoute  targetWorkspaceRoute
-}
-
-func routedSessionOpenDispatchTarget(target swarmTarget, authorityHostSwarmID, workspaceBindingID string) swarmTarget {
-	authorityHostSwarmID = strings.TrimSpace(authorityHostSwarmID)
-	if authorityHostSwarmID == "" || strings.TrimSpace(workspaceBindingID) == "" || strings.EqualFold(authorityHostSwarmID, strings.TrimSpace(target.SwarmID)) || strings.EqualFold(authorityHostSwarmID, strings.TrimSpace(target.HostSwarmID)) {
-		return target
-	}
-	authority := target
-	authority.SwarmID = authorityHostSwarmID
-	authority.Name = authorityHostSwarmID
-	authority.Role = "authority"
-	authority.Relationship = "managed"
-	authority.Kind = "authority"
-	authority.HostSwarmID = authorityHostSwarmID
-	authority.Online = true
-	authority.Selectable = true
-	return authority
-}
-
-func routedSessionRequiresWorkspaceBinding(target swarmTarget) bool {
-	if strings.TrimSpace(target.HostSwarmID) != "" {
-		return true
-	}
-	switch strings.ToLower(strings.TrimSpace(target.Kind)) {
-	case "local", "local-container", "mirrored":
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *Server) buildPrimaryRoutedSessionOpenContract(principal identity.Principal, req sessionCreateRequest, target swarmTarget, state swarmruntime.LocalState, hostBackendURL, sessionID string) (primaryRoutedSessionOpenContract, error) {
-	var contract primaryRoutedSessionOpenContract
-	if !principal.Valid() {
-		return contract, identity.ErrPrincipalRequired
-	}
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return contract, errors.New("session id is required")
-	}
-	hostSwarmID := strings.TrimSpace(state.Node.SwarmID)
-	if hostSwarmID == "" {
-		return contract, errors.New("host swarm id is required")
-	}
-	childSwarmID := strings.TrimSpace(target.SwarmID)
-	if childSwarmID == "" {
-		return contract, errors.New("routed session child swarm id is required")
-	}
-	hostBackendURL = strings.TrimSpace(hostBackendURL)
-	if hostBackendURL == "" {
-		return contract, errors.New("routed session host backend url is required")
-	}
-
-	primaryReq := req
-	primaryReq.WorkspacePath = strings.TrimSpace(primaryReq.WorkspacePath)
-	primaryReq.HostWorkspacePath = strings.TrimSpace(primaryReq.HostWorkspacePath)
-	primaryReq.RuntimeWorkspacePath = strings.TrimSpace(primaryReq.RuntimeWorkspacePath)
-	primaryReq.WorkspaceBindingID = strings.TrimSpace(primaryReq.WorkspaceBindingID)
-	primaryReq.WorkspaceName = strings.TrimSpace(primaryReq.WorkspaceName)
-	bindingRequired := routedSessionRequiresWorkspaceBinding(target)
-	workspaceBacked := bindingRequired || primaryReq.WorkspaceBindingID != "" || len(target.WorkspaceRoutes) > 0
-	if workspaceBacked && (primaryReq.WorkspacePath != "" || primaryReq.HostWorkspacePath != "" || primaryReq.RuntimeWorkspacePath != "") {
-		return contract, errors.New("routed session workspace paths must be resolved from workspace binding")
-	}
-	if err := validateRoutedSessionCreateMetadata(primaryReq.Metadata); err != nil {
-		return contract, err
-	}
-	worktreeMode, requireWorktree, err := terminalPeerSessionOpenWorktreeMode(primaryReq)
-	if err != nil {
-		return contract, err
-	}
-	primaryReq.WorktreeMode = worktreeMode
-	binding, bindingOK, bindingErr := s.resolveAccountRoutedSessionWorkspaceBinding(principal, primaryReq, target)
-	if bindingErr != nil {
-		return contract, bindingErr
-	}
-	if workspaceBacked && !bindingOK {
-		return contract, errors.New("routed session workspace binding is required")
-	}
-	if bindingOK {
-		resolvedRoute, err := newTargetWorkspaceRoute(principal.AccountScopeID, target, binding)
-		if err != nil {
-			return contract, err
-		}
-		matchedRoute := false
-		for _, route := range target.WorkspaceRoutes {
-			if strings.EqualFold(route.WorkspaceBindingID, resolvedRoute.WorkspaceBindingID) {
-				matchedRoute = true
-				break
-			}
-		}
-		if len(target.WorkspaceRoutes) > 0 && !matchedRoute {
-			return contract, errors.New("routed session workspace binding is not advertised by target route identity")
-		}
-	}
-	workspaceRoute := targetWorkspaceRoute{}
-	workspaceBindingID := ""
-	childRuntimePath := ""
-	routeHostSwarmID := ""
-	if bindingOK {
-		workspaceRoute, err = newTargetWorkspaceRoute(principal.AccountScopeID, target, binding)
-		if err != nil {
-			return contract, err
-		}
-		workspaceBindingID = workspaceRoute.WorkspaceBindingID
-		childRuntimePath = workspaceRoute.RuntimeWorkspacePath
-		routeHostSwarmID = workspaceRoute.HostSwarmID
-		primaryReq.WorkspaceBindingID = workspaceRoute.WorkspaceBindingID
-		primaryReq.WorkspaceName = workspaceRoute.WorkspaceName
-		primaryReq.WorkspacePath = workspaceRoute.HostWorkspacePath
-		primaryReq.HostWorkspacePath = workspaceRoute.HostWorkspacePath
-		primaryReq.RuntimeWorkspacePath = workspaceRoute.RuntimeWorkspacePath
-	} else if !workspaceBacked {
-		routeHostSwarmID = strings.TrimSpace(target.HostSwarmID)
-	}
-	if childRuntimePath == "" {
-		return contract, errors.New("runtime_workspace_path is required for routed session creation")
-	}
-	if routeHostSwarmID == "" {
-		return contract, errors.New("routed session host swarm id is required")
-	}
-
-	childReq := primaryReq
-	childReq.WorkspacePath = childRuntimePath
-	childReq.HostWorkspacePath = childRuntimePath
-	childReq.RuntimeWorkspacePath = childRuntimePath
-	if bindingOK {
-		childReq.WorkspaceName = workspaceRoute.WorkspaceName
-	}
-	if strings.TrimSpace(childReq.WorkspaceName) == "" {
-		return contract, errors.New("workspace_name is required for routed session creation")
-	}
-
-	routeID := "swarm:" + childSwarmID + ":" + childRuntimePath
-	if workspaceBindingID != "" {
-		routeID = workspaceRoute.routeID()
-	}
-	routeHostWorkspacePath := primaryReq.HostWorkspacePath
-	if bindingOK {
-		routeHostWorkspacePath = workspaceRoute.HostWorkspacePath
-	}
-	routeMetadata := map[string]any{
-		"swarm_route_id":                                         routeID,
-		"swarm_route_label":                                      firstNonEmpty(strings.TrimSpace(target.Name), childSwarmID),
-		"swarm_route_target_kind":                                strings.TrimSpace(target.Kind),
-		"owner_transport":                                        "routed_session_peer",
-		sessionruntime.HostedSessionMetadataHostSwarmID:          routeHostSwarmID,
-		sessionruntime.HostedSessionMetadataHostBackendURL:       hostBackendURL,
-		sessionruntime.HostedSessionMetadataChildSwarmID:         childSwarmID,
-		sessionruntime.HostedSessionMetadataHostWorkspacePath:    routeHostWorkspacePath,
-		sessionruntime.HostedSessionMetadataRuntimeWorkspacePath: childRuntimePath,
-		"swarm_routed_workspace_binding_id":                      workspaceBindingID,
-	}
-
-	contract = primaryRoutedSessionOpenContract{
-		PrimaryRequest: primaryReq,
-		ChildRequest:   childReq,
-		RouteMetadata:  routeMetadata,
-		Descriptor: sessionruntime.HostedSessionDescriptor{
-			HostSwarmID:          routeHostSwarmID,
-			HostBackendURL:       hostBackendURL,
-			HostWorkspacePath:    routeHostWorkspacePath,
-			RuntimeWorkspacePath: childRuntimePath,
-			ChildSwarmID:         childSwarmID,
-			OwnerTransport:       "routed_session_peer",
-		},
-		Route: pebblestore.SessionRouteRecord{
-			SessionID:            sessionID,
-			UserID:               strings.TrimSpace(principal.UserID),
-			AccountScopeID:       strings.TrimSpace(principal.AccountScopeID),
-			ChildSwarmID:         childSwarmID,
-			HostSwarmID:          routeHostSwarmID,
-			HostContainerID:      strings.TrimSpace(binding.DestinationContainerID),
-			RuntimeWorkspacePath: childRuntimePath,
-			WorkspaceBindingID:   workspaceBindingID,
-			PlacementGeneration:  workspaceRoute.PlacementGeneration,
-			BindingGeneration:    workspaceRoute.BindingGeneration,
-		},
-		ProxyTarget:     routedSessionOpenDispatchTarget(target, routeHostSwarmID, workspaceBindingID),
-		RequireWorktree: requireWorktree,
-		WorkspaceRoute:  workspaceRoute,
-	}
-	return contract, nil
-}
-
 func (s *Server) DesktopHandler() http.Handler {
 	apiHandler := s.withDesktopLocalSession(s.withAuth(s.withVaultGate(s.withJSON(s.apiMux()))))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -793,17 +571,6 @@ func (s *Server) DesktopHandler() http.Handler {
 }
 
 func (s *Server) handleDesktopStream(w http.ResponseWriter, r *http.Request) {
-	remoteTarget, err := s.currentRemoteSwarmTargetForRequest(r)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	if remoteTarget != nil {
-		if err := s.proxyRequestToSwarmTarget(w, r, *remoteTarget); err != nil {
-			writeError(w, http.StatusBadGateway, err)
-		}
-		return
-	}
 	if s.hub == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("stream hub not configured"))
 		return
@@ -2537,116 +2304,6 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		flowRouteDiagLog("desktop_session_create_request", "workspace_binding_id", req.WorkspaceBindingID, "workspace_name", req.WorkspaceName, "workspace_path_present", strings.TrimSpace(req.WorkspacePath) != "", "host_workspace_path_present", strings.TrimSpace(req.HostWorkspacePath) != "", "runtime_workspace_path_present", strings.TrimSpace(req.RuntimeWorkspacePath) != "", "worktree_mode", req.WorktreeMode, "provider", req.Preference.Provider, "model", req.Preference.Model)
-		remoteTarget, err := s.currentRemoteSwarmTargetForRequest(r)
-		if err != nil {
-			writeError(w, http.StatusBadGateway, err)
-			return
-		}
-		if remoteTarget != nil {
-			flowRouteDiagLog("desktop_session_create_target", "target_swarm_id", remoteTarget.SwarmID, "target_kind", remoteTarget.Kind, "target_relationship", remoteTarget.Relationship, "target_host_swarm_id", remoteTarget.HostSwarmID, "target_backend_url_present", strings.TrimSpace(remoteTarget.BackendURL) != "", "workspace_route_count", len(remoteTarget.WorkspaceRoutes))
-			if s.sessionRoutes == nil {
-				writeError(w, http.StatusInternalServerError, errors.New("session route store not configured"))
-				return
-			}
-			cfg, cfgErr := s.loadStartupConfig()
-			if cfgErr != nil {
-				writeError(w, http.StatusInternalServerError, cfgErr)
-				return
-			}
-			state, stateErr := s.currentSwarmState(cfg)
-			if stateErr != nil {
-				writeError(w, http.StatusInternalServerError, stateErr)
-				return
-			}
-			hostBackendURL := hostedSessionHostBackendURL(cfg)
-			sessionID := sessionruntime.NewSessionID()
-			contract, contractErr := s.buildPrimaryRoutedSessionOpenContract(principal, req, *remoteTarget, state, hostBackendURL, sessionID)
-			if contractErr == nil {
-				flowRouteDiagLog("desktop_session_create_contract", "session_id", sessionID, "target_swarm_id", remoteTarget.SwarmID, "route_host_swarm_id", contract.Route.HostSwarmID, "route_child_swarm_id", contract.Route.ChildSwarmID, "route_workspace_binding_id", contract.Route.WorkspaceBindingID, "route_host_workspace_path", contract.Route.HostWorkspacePath, "route_runtime_workspace_path", contract.Route.RuntimeWorkspacePath, "child_workspace_path", contract.ChildRequest.WorkspacePath, "child_workspace_name", contract.ChildRequest.WorkspaceName)
-			}
-			if contractErr != nil {
-				writeError(w, http.StatusBadRequest, contractErr)
-				return
-			}
-			session, event, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(contract.PrimaryRequest, contract.RouteMetadata, false, sessionID, principal, principalOK)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
-			rollbackHostedCreate := func(cause error) {
-				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
-					log.Printf("hosted session create rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-				}
-				writeError(w, http.StatusBadGateway, cause)
-			}
-			routeRecord := contract.Route
-			routeRecord.CreatedAt = session.CreatedAt
-			routeRecord.UpdatedAt = session.UpdatedAt
-			if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
-				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
-					log.Printf("hosted session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-				}
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			childDescriptor := contract.Descriptor
-			var childResp struct {
-				OK      bool                        `json:"ok"`
-				Session pebblestore.SessionSnapshot `json:"session"`
-				Warning string                      `json:"warning,omitempty"`
-			}
-			flowRouteDiagLog("desktop_session_create_peer_open", "session_id", session.ID, "target_swarm_id", contract.ProxyTarget.SwarmID, "target_backend_url_present", strings.TrimSpace(contract.ProxyTarget.BackendURL) != "", "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
-			if err := s.postPeerJSONToSwarmTarget(r.Context(), contract.ProxyTarget, "/v1/swarm/peer/sessions/open", peerSessionOpenRequest{
-				SessionID: session.ID,
-				Request:   contract.ChildRequest,
-				Hosted:    childDescriptor,
-				Route:     routeRecord,
-				Principal: principal,
-			}, &childResp); err != nil {
-				rollbackHostedCreate(hostedSessionOpenError(contract.ProxyTarget, err))
-				return
-			}
-			routeChanged := false
-			if syncedRoute, changed, syncErr := syncRoutedSessionRouteWithRealizedSession(routeRecord, childResp.Session, contract.RequireWorktree); syncErr != nil {
-				rollbackHostedCreate(syncErr)
-				return
-			} else if changed {
-				routeRecord = syncedRoute
-				routeChanged = true
-			}
-			flowRouteDiagLog("desktop_session_create_peer_open_success", "session_id", session.ID, "child_session_id", childResp.Session.ID, "child_workspace_path", childResp.Session.WorkspacePath, "route_workspace_binding_id", routeRecord.WorkspaceBindingID)
-			if routeChanged {
-				if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
-					if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
-						log.Printf("hosted session route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-					}
-					writeError(w, http.StatusInternalServerError, err)
-					return
-				}
-			}
-			if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
-				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
-					log.Printf("hosted session topology route rollback failed session_id=%q err=%v", session.ID, cleanupErr)
-				}
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			syncedSession, syncErr := s.sessions.SyncHostedMirrorOpenState(session.ID, childResp.Session)
-			if syncErr != nil {
-				rollbackHostedCreate(syncErr)
-				return
-			}
-			session = syncedSession
-			if event != nil {
-				s.hub.Publish(*event)
-			}
-			writeJSON(w, http.StatusOK, map[string]any{
-				"ok":      true,
-				"session": session,
-				"warning": strings.TrimSpace(strings.Join([]string{warning, modeWarning, childResp.Warning}, " ")),
-			})
-			return
-		}
 		session, event, warning, modeWarning, err := s.createSessionFromRequest(req, principal, principalOK, nil, true)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -2749,17 +2406,6 @@ func (s *Server) enrichSessionSummariesForList(sessions []pebblestore.SessionSna
 	return responseSessions, nil
 }
 
-func hostedSessionOpenError(target swarmTarget, err error) error {
-	if err == nil {
-		return nil
-	}
-	trimmed := strings.TrimSpace(err.Error())
-	if strings.HasPrefix(trimmed, "404 ") || strings.EqualFold(trimmed, http.StatusText(http.StatusNotFound)) {
-		return fmt.Errorf("child swarm %q at %q returned 404 for routed peer session open; the child runtime is missing the routed session API. Rebuild the child image/runtime and recreate the deployment", strings.TrimSpace(target.SwarmID), strings.TrimSpace(target.BackendURL))
-	}
-	return err
-}
-
 func (s *Server) rollbackHostedSessionCreate(sessionID string) error {
 	if s == nil {
 		return nil
@@ -2847,24 +2493,7 @@ func (s *Server) verifySessionOwnershipForRequest(w http.ResponseWriter, r *http
 		flowRouteDiagLog("verify_session_ownership_success", "source", "session", "path", path, "session_id", sessionID, "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
 		return principal, session, true
 	}
-	if s.sessionRoutes != nil {
-		route, routeFound, routeErr := s.sessionRoutes.Get(sessionID)
-		if routeErr != nil {
-			flowRouteDiagLog("verify_session_ownership_reject", "reason", "route_lookup_error", "path", path, "session_id", sessionID, "error", routeErr)
-			writeError(w, http.StatusBadRequest, routeErr)
-			return identity.Principal{}, pebblestore.SessionSnapshot{}, false
-		}
-		flowRouteDiagLog("verify_session_ownership_route_lookup", "path", path, "session_id", sessionID, "found", routeFound, "route_user_id", route.UserID, "route_account_scope_id", route.AccountScopeID, "route_child_swarm_id", route.ChildSwarmID, "route_host_swarm_id", route.HostSwarmID)
-		if routeFound && strings.TrimSpace(route.AccountScopeID) != "" && strings.TrimSpace(route.AccountScopeID) == strings.TrimSpace(principal.AccountScopeID) {
-			if routeUserID := strings.TrimSpace(route.UserID); routeUserID == "" || routeUserID == strings.TrimSpace(principal.UserID) {
-				flowRouteDiagLog("verify_session_ownership_success", "source", "route", "path", path, "session_id", sessionID, "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
-				return principal, pebblestore.SessionSnapshot{}, true
-			}
-		}
-	} else {
-		flowRouteDiagLog("verify_session_ownership_route_lookup", "path", path, "session_id", sessionID, "found", false, "reason", "session_routes_store_nil")
-	}
-	flowRouteDiagLog("verify_session_ownership_reject", "reason", "session_or_route_not_owned", "path", path, "session_id", sessionID, "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
+	flowRouteDiagLog("verify_session_ownership_reject", "reason", "session_not_owned", "path", path, "session_id", sessionID, "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
 	writeSessionNotFound(w)
 	return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 }
@@ -2898,9 +2527,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		}
 		principal, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
 		if !ok {
-			return
-		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
 			return
 		}
 		switch r.Method {
@@ -2975,9 +2601,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
-			return
-		}
 		switch r.Method {
 		case http.MethodGet:
 			_, session, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
@@ -3025,9 +2648,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		}
 		principal, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
 		if !ok {
-			return
-		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
 			return
 		}
 		switch r.Method {
@@ -3103,9 +2723,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
-			return
-		}
 		switch r.Method {
 		case http.MethodGet:
 			pref, err := s.sessions.GetSessionPreference(sessionID)
@@ -3167,9 +2784,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
-			return
-		}
 		switch r.Method {
 		case http.MethodGet:
 			config, err := s.sessions.GetCodexConfig(sessionID)
@@ -3213,9 +2827,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
-			return
-		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
 			return
 		}
 		switch r.Method {
@@ -3367,9 +2978,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
-			return
-		}
-		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
 			return
 		}
 		switch r.Method {
@@ -3666,9 +3274,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		if s.proxyRoutedSessionRequest(w, r, sessionID) {
-			return
-		}
 		if s.runner == nil {
 			writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
 			return
@@ -3752,69 +3357,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, session, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 		return
-	} else if routedSession, routedOK, err := s.localCanonicalSessionForRoutedFetch(sessionID); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	} else if routedOK {
-		s.writeSessionSnapshot(w, routedSession)
-		return
-	} else if s.proxyRoutedSessionRequest(w, r, sessionID) {
-		return
 	} else {
 		s.writeSessionSnapshot(w, session)
 	}
-}
-
-func (s *Server) localCanonicalSessionForRoutedFetch(sessionID string) (pebblestore.SessionSnapshot, bool, error) {
-	if s == nil || s.sessions == nil || s.sessionRoutes == nil {
-		return pebblestore.SessionSnapshot{}, false, nil
-	}
-	if strings.TrimSpace(sessionID) == "" {
-		return pebblestore.SessionSnapshot{}, false, nil
-	}
-	if _, ok, err := s.sessionRoutes.Get(sessionID); err != nil {
-		return pebblestore.SessionSnapshot{}, false, err
-	} else if !ok {
-		return pebblestore.SessionSnapshot{}, false, nil
-	}
-	session, ok, err := s.sessions.GetSession(sessionID)
-	if err != nil || !ok {
-		return pebblestore.SessionSnapshot{}, ok, err
-	}
-	if !sessionHasControllerOwnedRoutedMirrorMetadata(session.Metadata) {
-		return pebblestore.SessionSnapshot{}, false, nil
-	}
-	if route, ok, routeErr := s.sessionRoutes.Get(sessionID); routeErr != nil {
-		return pebblestore.SessionSnapshot{}, false, routeErr
-	} else if ok {
-		if runtimeWorkspacePath := strings.TrimSpace(route.RuntimeWorkspacePath); runtimeWorkspacePath != "" {
-			descriptor, hosted := sessionruntime.HostedSessionFromMetadata(session.Metadata)
-			if hosted && strings.TrimSpace(descriptor.RuntimeWorkspacePath) != runtimeWorkspacePath {
-				descriptor.RuntimeWorkspacePath = runtimeWorkspacePath
-				session.Metadata = descriptor.WithMetadata(session.Metadata)
-			}
-		}
-	}
-	return session, true, nil
-}
-
-func sessionHasControllerOwnedRoutedMirrorMetadata(metadata map[string]any) bool {
-	if len(metadata) == 0 {
-		return false
-	}
-	ownerTransport := strings.TrimSpace(fmt.Sprint(metadata["owner_transport"]))
-	return strings.EqualFold(ownerTransport, "routed_session_peer") &&
-		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath])) != "" &&
-		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath])) != "" &&
-		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataChildSwarmID])) != ""
-}
-
-func sessionHasRoutedWorkspaceBindingMetadata(metadata map[string]any) bool {
-	if len(metadata) == 0 {
-		return false
-	}
-	return strings.TrimSpace(fmt.Sprint(metadata["swarm_routed_workspace_binding_id"])) != "" ||
-		strings.TrimSpace(fmt.Sprint(metadata["swarm_managed_host_workspace_binding_id"])) != ""
 }
 
 func (s *Server) writeSessionSnapshot(w http.ResponseWriter, session pebblestore.SessionSnapshot) {

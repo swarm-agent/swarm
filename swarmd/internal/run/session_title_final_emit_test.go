@@ -4,7 +4,6 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -13,7 +12,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestFinalSessionTitleUsesEmitterForHostedMirror(t *testing.T) {
+func TestFinalSessionTitleUsesEmitter(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-title-final-emit.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -24,45 +23,30 @@ func TestFinalSessionTitleUsesEmitterForHostedMirror(t *testing.T) {
 		t.Fatalf("new event log: %v", err)
 	}
 	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
-	sync := &streamMirrorHostedSync{sessions: sessions}
-	sessions.SetHostedSync(sync)
 	providers := registry.New()
-	providers.RegisterRunner(staticTitleRunner{text: "Final mirrored title"})
+	providers.RegisterRunner(staticTitleRunner{text: "Final title"})
 	svc := &Service{sessions: sessions, events: eventLog, providers: providers}
 
-	descriptor := sessionruntime.HostedSessionDescriptor{HostSwarmID: "controller-swarm", HostBackendURL: "http://127.0.0.1:1", HostWorkspacePath: "/host/workspace", RuntimeWorkspacePath: "/runtime/workspace", ChildSwarmID: "target-swarm"}
-	metadata := descriptor.WithMetadata(map[string]any{"source": "managed-host-title-test"})
-	if _, err := sessions.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "session-title", WorkspacePath: "/runtime/workspace", WorkspaceName: "workspace", Title: "New Session", Mode: sessionruntime.ModeAuto, Metadata: metadata, CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli()}); err != nil {
-		t.Fatalf("store session: %v", err)
+	if _, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:     "session-title",
+		Title:         "New Session",
+		WorkspacePath: "/workspace",
+		WorkspaceName: "workspace",
+		Preference:    pebblestore.ModelPreference{Provider: "static", Model: "title-model", Thinking: "medium"},
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
 	}
 
 	var emitted []StreamEvent
 	svc.generateAndApplySessionTitle("session-title", "user: fix the title", "final", 2, 5, pebblestore.ModelPreference{Provider: "static", Model: "title-model"}, pebblestore.AgentProfile{Name: "memory", Provider: "static", Model: "title-model", Enabled: true}, identity.Principal{}, func(event StreamEvent) {
 		emitted = append(emitted, event)
-		if err := svc.mirrorHostedStreamEvent(context.Background(), event); err != nil {
-			t.Fatalf("mirror hosted stream event: %v", err)
-		}
 	})
 
 	if len(emitted) != 1 {
 		t.Fatalf("emitted events = %d, want 1", len(emitted))
 	}
-	if emitted[0].Type != StreamEventSessionTitle || emitted[0].TitleStage != "final" || emitted[0].Title != "Final mirrored title" {
+	if emitted[0].Type != StreamEventSessionTitle || emitted[0].TitleStage != "final" || emitted[0].Title != "Final title" {
 		t.Fatalf("emitted event = %+v", emitted[0])
-	}
-
-	events, err := eventLog.ReadFrom(1, 20)
-	if err != nil {
-		t.Fatalf("read events: %v", err)
-	}
-	var sawHostedFinal bool
-	for _, event := range events {
-		if event.EventType == "run.session.title.updated" && event.EntityID == "session-title" {
-			sawHostedFinal = true
-		}
-	}
-	if !sawHostedFinal {
-		t.Fatalf("missing hosted run.session.title.updated event in %+v", events)
 	}
 }
 
