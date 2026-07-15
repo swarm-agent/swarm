@@ -123,7 +123,7 @@ func TestTopologyRuntimeTargetSelectableWithoutBackendWhenAuthorityConnectionExi
 	if err := server.RegisterAuthorityConnection(AuthorityConnection{AccountScopeID: "account-1", AuthorityHostSwarmID: "managed-host", TransportKind: authorityConnectionTransportHTTP, TransportRef: "http://managed.example.test"}); err != nil {
 		t.Fatalf("register authority: %v", err)
 	}
-	targets, err := listRemoteDeployTargetsForAccount(server, nil, "account-1")
+	targets, err := server.listTopologyTargetsForAccount("account-1")
 	if err != nil {
 		t.Fatalf("list targets: %v", err)
 	}

@@ -22,8 +22,6 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/auth"
-	containerprofiles "swarm/packages/swarmd/internal/containerprofiles"
-	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
@@ -35,7 +33,6 @@ import (
 	"swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
-	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	runruntime "swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -109,9 +106,6 @@ type Server struct {
 	uiSettings                  *uisettings.Service
 	todos                       *todo.Service
 	swarm                       swarmService
-	containerProfiles           containerProfileService
-	deployContainers            deployContainerService
-	remoteDeploys               remoteDeployService
 	swarmNodes                  *pebblestore.SwarmNodeStore
 	update                      *update.Service
 	topology                    *topologyruntime.Service
@@ -142,8 +136,6 @@ type Server struct {
 	swarmTargetHealth         swarmTargetHealthCache
 	authorityConnections      AuthorityConnectionRegistry
 	swarmStore                *pebblestore.SwarmStore
-	swarmMirror               *pebblestore.SwarmMirrorStore
-	mirrorSyncStarted         atomic.Bool
 }
 
 type codexAccountClient interface {
@@ -174,46 +166,6 @@ type swarmService interface {
 	ValidateIncomingPeerAuth(swarmID, rawToken string) (bool, error)
 	UpsertGroupMember(input swarmruntime.UpsertGroupMemberInput) (swarmruntime.GroupMember, error)
 	RemoveGroupMember(input swarmruntime.RemoveGroupMemberInput) error
-}
-
-type containerProfileService interface {
-	ListProfiles(ctx context.Context) ([]containerprofiles.Profile, error)
-	ListProfilesForAccount(ctx context.Context, accountScopeID string) ([]containerprofiles.Profile, error)
-	UpsertProfile(ctx context.Context, input containerprofiles.UpsertInput) (containerprofiles.Profile, error)
-	DeleteProfile(ctx context.Context, profileID string) (containerprofiles.DeleteResult, error)
-	DeleteProfileForAccount(ctx context.Context, accountScopeID, profileID string) (containerprofiles.DeleteResult, error)
-}
-
-type deployContainerService interface {
-	RuntimeStatus(ctx context.Context) (deployruntime.ContainerRuntimeStatus, error)
-	List(ctx context.Context) ([]deployruntime.ContainerDeployment, error)
-	Create(ctx context.Context, input deployruntime.ContainerCreateInput) (deployruntime.ContainerDeployment, error)
-	Act(ctx context.Context, input deployruntime.ContainerActionInput) (deployruntime.ContainerDeployment, error)
-	Delete(ctx context.Context, deploymentIDs []string) (deployruntime.DeleteResult, error)
-	ChildAttachState(ctx context.Context, input deployruntime.ContainerAttachStatusInput) (swarmruntime.LocalState, error)
-	AttachRequest(ctx context.Context, input deployruntime.ContainerAttachRequestInput) (deployruntime.ContainerAttachState, error)
-	AttachStatus(ctx context.Context, input deployruntime.ContainerAttachStatusInput) (deployruntime.ContainerAttachState, error)
-	AttachApprove(ctx context.Context, input deployruntime.ContainerAttachApproveInput) (deployruntime.ContainerAttachState, error)
-	FinalizeAttachFromHost(ctx context.Context, input deployruntime.ContainerAttachFinalizeInput) error
-	SyncCredentialBundle(ctx context.Context, input deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncCredentialBundle, error)
-	SyncAgentBundle(ctx context.Context, input deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncAgentBundle, error)
-	WorkspaceBootstrap(ctx context.Context, input deployruntime.ContainerWorkspaceBootstrapRequestInput) ([]deployruntime.ContainerWorkspaceBootstrap, error)
-	AutoAttachChild(ctx context.Context) error
-	UnlockManagedLocalChildVaults(ctx context.Context) error
-}
-
-type remoteDeployService interface {
-	List(ctx context.Context) ([]remotedeploy.Session, error)
-	ListCached(ctx context.Context) ([]remotedeploy.Session, error)
-	Get(ctx context.Context, sessionID string, refresh bool) (remotedeploy.Session, error)
-	Create(ctx context.Context, input remotedeploy.CreateSessionInput) (remotedeploy.Session, error)
-	UpdateSettings(ctx context.Context, input remotedeploy.UpdateSettingsInput) (remotedeploy.Session, error)
-	Delete(ctx context.Context, input remotedeploy.DeleteSessionInput) (deployruntime.DeleteResult, error)
-	Start(ctx context.Context, input remotedeploy.StartSessionInput) (remotedeploy.Session, error)
-	RunUpdateJob(ctx context.Context, input remotedeploy.UpdateJobInput) (remotedeploy.UpdateJobResult, error)
-	Approve(ctx context.Context, input remotedeploy.ApproveSessionInput) (remotedeploy.Session, error)
-	ChildStatus(ctx context.Context, input remotedeploy.ChildStatusInput) (remotedeploy.Session, error)
-	SyncCredentialBundle(ctx context.Context, input remotedeploy.SyncCredentialRequestInput) (deployruntime.ContainerSyncCredentialBundle, error)
 }
 
 type permissionService interface {
@@ -485,27 +437,6 @@ func (s *Server) swarmLocalNode() (pebblestore.SwarmLocalNodeRecord, bool, error
 	return s.swarmStore.GetLocalNode()
 }
 
-func (s *Server) SetContainerProfileService(containerProfileSvc containerProfileService) {
-	if s == nil {
-		return
-	}
-	s.containerProfiles = containerProfileSvc
-}
-
-func (s *Server) SetDeployContainerService(deployContainerSvc deployContainerService) {
-	if s == nil {
-		return
-	}
-	s.deployContainers = deployContainerSvc
-}
-
-func (s *Server) SetRemoteDeployService(remoteDeploySvc remoteDeployService) {
-	if s == nil {
-		return
-	}
-	s.remoteDeploys = remoteDeploySvc
-}
-
 func (s *Server) SetSwarmNodeStore(store *pebblestore.SwarmNodeStore) {
 	if s == nil {
 		return
@@ -612,7 +543,6 @@ func (s *Server) apiMux() *http.ServeMux {
 	s.registerAuthVaultRoutes(mux)
 	s.registerOnboardingRoutes(mux)
 	s.registerSwarmRoutes(mux)
-	s.registerDeployRoutes(mux)
 	s.registerAgentRoutes(mux)
 	s.registerProviderRoutes(mux)
 	s.registerWorkspaceRoutes(mux)
@@ -2631,9 +2561,6 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			hostBackendURL := hostedSessionHostBackendURL(cfg)
-			if resolved := s.resolveRemoteHostBackendURL(r.Context(), *remoteTarget); strings.TrimSpace(resolved) != "" {
-				hostBackendURL = strings.TrimSpace(resolved)
-			}
 			sessionID := sessionruntime.NewSessionID()
 			contract, contractErr := s.buildPrimaryRoutedSessionOpenContract(principal, req, *remoteTarget, state, hostBackendURL, sessionID)
 			if contractErr == nil {

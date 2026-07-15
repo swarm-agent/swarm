@@ -16,7 +16,6 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/flowdiaglog"
 	"swarm/packages/swarmd/internal/identity"
-	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -1199,28 +1198,6 @@ func (s *Server) decodeSessionCreateRequest(r *http.Request) (sessionCreateReque
 	return req, principal, principalOK, nil
 }
 
-func (s *Server) resolveRemoteHostBackendURL(ctx context.Context, target swarmTarget) string {
-	if s == nil || s.remoteDeploys == nil {
-		return ""
-	}
-	items, err := s.remoteDeploys.ListCached(ctx)
-	if err != nil {
-		return ""
-	}
-	for _, item := range items {
-		if !matchesRemoteDeployTarget(item, target) {
-			continue
-		}
-		if endpoint := strings.TrimSpace(item.HostAPIBaseURL); endpoint != "" {
-			return endpoint
-		}
-		if endpoint := strings.TrimSpace(item.MasterTailscaleURL); endpoint != "" {
-			return endpoint
-		}
-	}
-	return ""
-}
-
 func (s *Server) resolveAccountRoutedSessionWorkspaceBinding(principal identity.Principal, req sessionCreateRequest, target swarmTarget) (pebblestore.TopologyWorkspaceBindingRecord, bool, error) {
 	if s == nil || s.topology == nil || !principal.Valid() || strings.TrimSpace(target.SwarmID) == "" {
 		return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
@@ -1328,16 +1305,6 @@ func validateRoutedSessionCreateMetadata(metadata map[string]any) error {
 		}
 	}
 	return nil
-}
-
-func matchesRemoteDeployTarget(item remotedeploy.Session, target swarmTarget) bool {
-	if strings.TrimSpace(item.ChildSwarmID) == "" {
-		return false
-	}
-	if strings.TrimSpace(target.DeploymentID) != "" && !strings.EqualFold(strings.TrimSpace(item.ID), strings.TrimSpace(target.DeploymentID)) {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(item.ChildSwarmID), strings.TrimSpace(target.SwarmID))
 }
 
 func (s *Server) createSessionFromRequest(req sessionCreateRequest, principal identity.Principal, principalOK bool, overrideMetadata map[string]any, allowWorktree bool) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, string, string, error) {

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -351,21 +350,6 @@ func (s *Server) ownerHostSwarmIDForTargetForAccount(accountScopeID string, targ
 					return hostSwarmID
 				}
 			}
-		}
-	}
-	if s.deployContainers == nil {
-		return ""
-	}
-	deployments, err := s.deployContainers.List(context.Background())
-	if err != nil {
-		return ""
-	}
-	for _, deployment := range deployments {
-		if accountScopeID != "" && strings.TrimSpace(deployment.AccountScopeID) != accountScopeID {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(deployment.ChildSwarmID), swarmID) {
-			return strings.TrimSpace(deployment.HostSwarmID)
 		}
 	}
 	return ""

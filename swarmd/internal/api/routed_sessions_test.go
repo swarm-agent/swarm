@@ -15,11 +15,9 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	agentruntime "swarm/packages/swarmd/internal/agent"
-	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/identity"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
-	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	runruntime "swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -340,15 +338,6 @@ func createManagedHostContainerRouteSyncFixture(t *testing.T, primary *Server, c
 
 func TestRoutedSessionTargetDoesNotRetireRoutesOnLookupWhenReplacementChildExists(t *testing.T) {
 	server, _, _, routeStore := newRoutedSessionTestServer(t)
-	server.SetDeployContainerService(&fakeReplicateDeployService{lastMirroredDeployment: deployruntime.ContainerDeployment{
-		ID:              "replacement-deployment",
-		Name:            "replacement child",
-		Status:          "running",
-		AttachStatus:    "attached",
-		ChildSwarmID:    "replacement-child-swarm",
-		ChildBackendURL: "http://127.0.0.1:7782",
-	}})
-
 	sessionID := "session-stale-route-lookup"
 	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{
 		SessionID:            sessionID,
@@ -420,15 +409,6 @@ func TestRoutedSessionTargetUsesAuthorityHostTransportWithoutStoredBackendURL(t 
 	server, _, _, _ := newRoutedSessionTestServer(t)
 	managedHost := httptest.NewServer(http.NotFoundHandler())
 	defer managedHost.Close()
-	if _, err := server.swarmMirror.UpsertRemoteResource("managed-swarm", pebblestore.SwarmMirrorEventRecord{
-		Sequence:  1,
-		EventType: pebblestore.SwarmMirrorEventTypeUpsert,
-		Kind:      mirrorResourceTarget,
-		ID:        "target:child-swarm",
-		Resource:  []byte(`{"swarm_id":"child-swarm","name":"managed child","role":"child","relationship":"child","kind":"remote","backend_url":"` + managedHost.URL + `","online":true,"selectable":true}`),
-	}); err != nil {
-		t.Fatalf("upsert mirrored target: %v", err)
-	}
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
 		UserID:               testPrincipal().UserID,
 		AccountScopeID:       testPrincipal().AccountScopeID,
@@ -483,8 +463,6 @@ func TestRoutedSessionTargetUsesAuthorityHostTransportWithoutStoredBackendURL(t 
 	}
 
 }
-
-var errTestRemoteUpdateFailure = errors.New("remote update failed")
 
 func TestPeerSessionEventStoresAndPublishesMirroredRunEvent(t *testing.T) {
 	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
@@ -1634,7 +1612,6 @@ func TestRoutedSessionPermissionsReadAndResolveFromHostWithoutProxy(t *testing.T
 
 func TestSessionsListWithSwarmIDReadsHostWithoutProxy(t *testing.T) {
 	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
-	server.SetDeployContainerService(&fakeReplicateDeployService{})
 	sessionID := seedRoutedSession(t, sessionSvc)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions?swarm_id=child-swarm-1", nil)
@@ -2413,89 +2390,6 @@ func TestPrimaryRoutedSessionCreateRejectsWorkspaceNameOnlyWithoutAmbiguityLooku
 	}
 }
 
-func TestRemoteDeploySessionCreateUsesRemotePayloadTargetPath(t *testing.T) {
-	server, _, _, routeStore := newRoutedSessionTestServer(t)
-	var openedWorkspacePath atomic.Value
-	var openedRequestWorkspacePath atomic.Value
-	var openedHostWorkspacePath atomic.Value
-	var openedHostBackendURL atomic.Value
-	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/swarm/peer/sessions/open" {
-			http.NotFound(w, r)
-			return
-		}
-		var req peerSessionOpenRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode child request: %v", err)
-		}
-		openedWorkspacePath.Store(req.Request.RuntimeWorkspacePath)
-		openedRequestWorkspacePath.Store(req.Request.WorkspacePath)
-		openedHostWorkspacePath.Store(req.Request.HostWorkspacePath)
-		hostBackendURL := req.Hosted.HostBackendURL
-		openedHostBackendURL.Store(hostBackendURL)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-	}))
-	defer child.Close()
-
-	server.SetRemoteDeployService(&fakeRemoteDeployService{
-		sessions: []remotedeploy.Session{{
-			ID:               "remote-deploy-1",
-			Name:             "remote-child",
-			Status:           "attached",
-			ChildSwarmID:     "child-swarm",
-			HostAPIBaseURL:   "https://remote-host.tailnet.ts.net",
-			RemoteTailnetURL: child.URL,
-			Preflight: remotedeploy.SessionPreflight{
-				Payloads: []remotedeploy.SessionPayload{{
-					WorkspacePath: "/src/swarm-go",
-					WorkspaceName: "swarm-go",
-					TargetPath:    "/workspaces/swarm-go",
-				}},
-			},
-		}},
-	})
-
-	body := bytes.NewBufferString(`{"title":"remote","mode":"plan","workspace_path":"/frontend/stale/swarm-go","host_workspace_path":"/frontend/stale-host/swarm-go","runtime_workspace_path":"/frontend/stale-runtime/swarm-go","workspace_name":"swarm-go","preference":{"provider":"fireworks","model":"accounts/fireworks/models/kimi-k2p5","thinking":"high"}}`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=child-swarm", body)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if got, _ := openedWorkspacePath.Load().(string); got != "/workspaces/swarm-go" {
-		t.Fatalf("child workspace path = %q, want %q", got, "/workspaces/swarm-go")
-	}
-	if got, _ := openedRequestWorkspacePath.Load().(string); got != "/workspaces/swarm-go" {
-		t.Fatalf("child request workspace path = %q, want resolved runtime path", got)
-	}
-	if got, _ := openedHostWorkspacePath.Load().(string); got != "/workspaces/swarm-go" {
-		t.Fatalf("child host workspace path = %q, want resolved runtime path", got)
-	}
-	if got, _ := openedHostBackendURL.Load().(string); got != "https://remote-host.tailnet.ts.net" {
-		t.Fatalf("child host backend url = %q, want %q", got, "https://remote-host.tailnet.ts.net")
-	}
-	var payload struct {
-		Session struct {
-			ID string `json:"id"`
-		} `json:"session"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	route, ok, err := routeStore.Get(payload.Session.ID)
-	if err != nil {
-		t.Fatalf("load route: %v", err)
-	}
-	if !ok {
-		t.Fatalf("route missing for session %q", payload.Session.ID)
-	}
-	if route.RuntimeWorkspacePath != "/workspaces/swarm-go" {
-		t.Fatalf("runtime workspace path = %q, want %q", route.RuntimeWorkspacePath, "/workspaces/swarm-go")
-	}
-}
-
 func TestRemoteSessionCreateUsesRegistryMagicDNSBackend(t *testing.T) {
 	server, _, _, routeStore := newRoutedSessionTestServer(t)
 	var hits atomic.Int32
@@ -2745,72 +2639,6 @@ func TestPeerSessionOpenRejectsStalePlacementGeneration(t *testing.T) {
 	}
 }
 
-func TestRemoteDeploySessionStartIsRetired(t *testing.T) {
-	server, _, _, _ := newRoutedSessionTestServer(t)
-	fake := &fakeRemoteDeployService{}
-	server.SetRemoteDeployService(fake)
-
-	body := bytes.NewBufferString(`{"session_id":"remote-start-1","tailscale_auth_key":"tskey-launch-only"}`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/remote/session/start", body)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-
-	if rec.Code != http.StatusGone {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusGone, rec.Body.String())
-	}
-	if fake.lastStartInput.SessionID != "" || fake.lastStartInput.TailscaleAuthKey != "" {
-		t.Fatalf("retired start path called remote deploy service: %+v", fake.lastStartInput)
-	}
-	var payload struct {
-		PathID string `json:"path_id"`
-		Error  string `json:"error"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if payload.PathID != remotedeploy.PathSessionStart {
-		t.Fatalf("path_id = %q, want %q", payload.PathID, remotedeploy.PathSessionStart)
-	}
-	if !strings.Contains(payload.Error, "SSH remote deploy is retired") {
-		t.Fatalf("error = %q, want retired guidance", payload.Error)
-	}
-}
-
-func TestRemoteDeploySessionUpdateJobReturnsPartialResultOnConflict(t *testing.T) {
-	server, _, _, _ := newRoutedSessionTestServer(t)
-	fake := &fakeRemoteDeployService{
-		updateJobResult: remotedeploy.UpdateJobResult{
-			PathID: remotedeploy.PathSessionUpdateJob,
-			Summary: remotedeploy.UpdateJobSummary{
-				Total:  1,
-				Failed: 1,
-			},
-		},
-		updateJobErr: errTestRemoteUpdateFailure,
-	}
-	server.SetRemoteDeployService(fake)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/remote/session/update-job", bytes.NewBufferString(`{"dev_mode":true,"post_rebuild_check":true}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusConflict, rec.Body.String())
-	}
-	var payload struct {
-		OK     bool                         `json:"ok"`
-		Result remotedeploy.UpdateJobResult `json:"result"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if payload.OK || payload.Result.Summary.Failed != 1 {
-		t.Fatalf("payload = %+v", payload)
-	}
-}
-
 func configureRoutedSessionTestServerAsChild(t *testing.T, server *Server, swarmStore *pebblestore.SwarmStore, childSwarmID, parentSwarmID, userID, accountScopeID string) {
 	t.Helper()
 	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: childSwarmID, Name: "child-swarm", Role: "child"}); err != nil {
@@ -2893,7 +2721,6 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	server.SetSessionRouteStore(routeStore)
 	server.SetSwarmNodeStore(nodeStore)
 	server.SetSwarmStore(swarmStore)
-	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	server.SetSwarmDesktopTargetSelectionStore(pebblestore.NewSwarmDesktopTargetSelectionStore(store))
 	server.SetSwarmService(fakeRoutedSwarmService{
 		state: swarmruntime.LocalState{
@@ -2981,68 +2808,6 @@ func (f *recordingHostedSessionSync) UpsertLifecycle(context.Context, sessionrun
 
 func (f *recordingHostedSessionSync) PublishEvent(context.Context, sessionruntime.HostedSessionDescriptor, string, string, map[string]any, string, string) (pebblestore.EventEnvelope, error) {
 	return pebblestore.EventEnvelope{}, nil
-}
-
-type fakeRemoteDeployService struct {
-	sessions        []remotedeploy.Session
-	lastStartInput  remotedeploy.StartSessionInput
-	startResult     remotedeploy.Session
-	startErr        error
-	updateJobResult remotedeploy.UpdateJobResult
-	updateJobErr    error
-}
-
-func (f *fakeRemoteDeployService) List(_ context.Context) ([]remotedeploy.Session, error) {
-	return append([]remotedeploy.Session(nil), f.sessions...), nil
-}
-
-func (f *fakeRemoteDeployService) ListCached(_ context.Context) ([]remotedeploy.Session, error) {
-	return append([]remotedeploy.Session(nil), f.sessions...), nil
-}
-
-func (f *fakeRemoteDeployService) Get(_ context.Context, sessionID string, _ bool) (remotedeploy.Session, error) {
-	for _, session := range f.sessions {
-		if session.ID == sessionID {
-			return session, nil
-		}
-	}
-	return remotedeploy.Session{}, errors.New("remote deploy session not found")
-}
-
-func (f *fakeRemoteDeployService) Create(_ context.Context, input remotedeploy.CreateSessionInput) (remotedeploy.Session, error) {
-	return remotedeploy.Session{}, nil
-}
-
-func (f *fakeRemoteDeployService) UpdateSettings(_ context.Context, input remotedeploy.UpdateSettingsInput) (remotedeploy.Session, error) {
-	return remotedeploy.Session{}, nil
-}
-
-func (f *fakeRemoteDeployService) Delete(_ context.Context, input remotedeploy.DeleteSessionInput) (deployruntime.DeleteResult, error) {
-	return deployruntime.DeleteResult{}, nil
-}
-
-func (f *fakeRemoteDeployService) Start(_ context.Context, input remotedeploy.StartSessionInput) (remotedeploy.Session, error) {
-	f.lastStartInput = input
-	if f.startErr != nil {
-		return remotedeploy.Session{}, f.startErr
-	}
-	return f.startResult, nil
-}
-
-func (f *fakeRemoteDeployService) RunUpdateJob(_ context.Context, input remotedeploy.UpdateJobInput) (remotedeploy.UpdateJobResult, error) {
-	return f.updateJobResult, f.updateJobErr
-}
-
-func (f *fakeRemoteDeployService) Approve(_ context.Context, input remotedeploy.ApproveSessionInput) (remotedeploy.Session, error) {
-	return remotedeploy.Session{}, nil
-}
-
-func (f *fakeRemoteDeployService) ChildStatus(_ context.Context, input remotedeploy.ChildStatusInput) (remotedeploy.Session, error) {
-	return remotedeploy.Session{}, nil
-}
-
-func (f *fakeRemoteDeployService) SyncCredentialBundle(_ context.Context, input remotedeploy.SyncCredentialRequestInput) (deployruntime.ContainerSyncCredentialBundle, error) {
-	return deployruntime.ContainerSyncCredentialBundle{}, nil
 }
 
 func (f fakeRoutedSwarmService) EnsureLocalState(swarmruntime.EnsureLocalStateInput) (swarmruntime.LocalState, error) {

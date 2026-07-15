@@ -86,12 +86,6 @@ func (s *Server) handleVaultUnlock(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, err)
 		return
 	}
-	if s.deployContainers != nil {
-		ctx := identity.ContextWithPrincipal(r.Context(), principal)
-		if childErr := s.deployContainers.UnlockManagedLocalChildVaults(ctx); childErr != nil {
-			status.Warning = strings.TrimSpace(childErr.Error())
-		}
-	}
 	writeJSON(w, http.StatusOK, status)
 }
 

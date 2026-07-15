@@ -398,10 +398,6 @@ func TestWorkspaceOverviewIncludesManagedChildLoopbackRouteViaOwnerHost(t *testi
 	}); err != nil {
 		t.Fatalf("upsert binding: %v", err)
 	}
-	if _, err := server.swarmMirror.UpsertRemoteResource("managed-swarm-1", pebblestore.SwarmMirrorEventRecord{Sequence: 1, EventType: pebblestore.SwarmMirrorEventTypeUpsert, Kind: mirrorResourceTarget, ID: "child-swarm-1", Resource: []byte(`{"swarm_id":"child-swarm-1","name":"heytest","role":"child","relationship":"child","kind":"local","backend_url":"http://127.0.0.1:7782","online":false,"selectable":false}`)}); err != nil {
-		t.Fatalf("upsert mirrored target: %v", err)
-	}
-
 	recorder := httptest.NewRecorder()
 	request := withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/workspace/overview?limit=25&discover_limit=1", nil))
 	server.Handler().ServeHTTP(recorder, request)
@@ -575,7 +571,6 @@ func newWorkspaceOverviewTopologyTestServer(t *testing.T) (*Server, string, *peb
 		t.Fatalf("new event log: %v", err)
 	}
 	server := NewServer(nil, nil, nil, workspaceOverviewNoopRunService{}, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
-	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, workspaceStore))
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)

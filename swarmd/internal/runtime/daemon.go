@@ -21,8 +21,6 @@ import (
 	"swarm/packages/swarmd/internal/api"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/config"
-	containerprofiles "swarm/packages/swarmd/internal/containerprofiles"
-	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/discovery"
 	identityruntime "swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
@@ -42,7 +40,6 @@ import (
 	"swarm/packages/swarmd/internal/provider/openai"
 	"swarm/packages/swarmd/internal/provider/openrouter"
 	"swarm/packages/swarmd/internal/provider/registry"
-	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	"swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -88,8 +85,6 @@ type Daemon struct {
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
 	copilot                   *copilot.Manager
-	deployContainers          *deployruntime.Service
-	remoteDeploys             *remotedeploy.Service
 	toolRuntime               *tool.Runtime
 	localTransportRuntimeName string
 	localTransportBaseURL     string
@@ -225,7 +220,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	permissionSvc.SetNotificationService(notificationSvc)
 	discoverySvc := discovery.NewService()
 	swarmSvc := swarmruntime.NewService(swarmStore, events, hub.Publish)
-	containerProfileSvc := containerprofiles.NewService(pebblestore.NewSwarmContainerProfileStore(store))
 	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
 	workspaceSvc.SetStartupConfigPath(cfg.ConfigPath)
 	workspaceSvc.SetEventPublisher(events, hub.Publish)
@@ -233,29 +227,10 @@ func New(cfg config.Config) (*Daemon, error) {
 	identityStore := pebblestore.NewIdentityStore(store)
 	identitySvc := identityruntime.NewService(identityStore)
 	identitySessionSvc := identityruntime.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(secretStore))
-	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath, discoverySvc, permissionSvc, modelSvc, swarmNodeStore, topologyStore, identitySvc)
-	publishAndSync := func(env pebblestore.EventEnvelope) {
-		hub.Publish(env)
-		if deployContainerSvc == nil {
-			return
-		}
-		go func(eventType string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := deployContainerSvc.PushManagedSyncToLocalChildren(ctx, eventType); err != nil {
-				log.Printf("warning: managed local container sync failed after %s: %v", eventType, err)
-			}
-			if err := deployContainerSvc.PushManagedSyncToManagedHosts(ctx, eventType); err != nil {
-				log.Printf("warning: managed host sync failed after %s: %v", eventType, err)
-			}
-		}(strings.TrimSpace(env.EventType))
-	}
-	agentSvc.SetEventPublisher(publishAndSync)
-	authSvc.SetEventPublisher(publishAndSync)
-	modelSvc.SetEventPublisher(publishAndSync)
-	remoteDeployStore := pebblestore.NewRemoteDeploySessionStore(store)
-	remoteDeploySvc := remotedeploy.NewService(remoteDeployStore, swarmNodeStore, swarmSvc, swarmStore, authSvc, workspaceSvc, cfg.ConfigPath, cfg.StartupCWD, topologyStore)
-	topologySvc := topologyruntime.NewService(topologyStore, swarmStore, swarmNodeStore, pebblestore.NewDeployContainerStore(store), remoteDeployStore, pebblestore.NewSessionRouteStore(store), pebblestore.NewWorkspaceStore(store))
+	agentSvc.SetEventPublisher(hub.Publish)
+	authSvc.SetEventPublisher(hub.Publish)
+	modelSvc.SetEventPublisher(hub.Publish)
+	topologySvc := topologyruntime.NewService(topologyStore, swarmStore, swarmNodeStore, nil, nil, pebblestore.NewSessionRouteStore(store), pebblestore.NewWorkspaceStore(store))
 	worktreeSvc := worktreeruntime.NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, events)
 	mcpSvc := mcpruntime.NewService(pebblestore.NewMCPStore(store), events)
 	securitySvc := security.NewService(pebblestore.NewClientAuthStore(store), events)
@@ -430,7 +405,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetPlanLifecycleService(planLifecycleSvc)
 	apiServer.SetSwarmDesktopTargetSelectionStore(swarmDesktopTargetSelectionStore)
 	apiServer.SetSwarmNodeStore(swarmNodeStore)
-	apiServer.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	apiServer.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))
 	apiServer.SetVideoThreadStore(pebblestore.NewVideoThreadStore(store))
 	imageThreadStore := pebblestore.NewImageThreadStore(store)
@@ -442,12 +416,8 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetIntegrationService(integrationSvc)
 	apiServer.SetSwarmService(swarmSvc)
 	apiServer.SetSwarmStore(swarmStore)
-	apiServer.SetContainerProfileService(containerProfileSvc)
-	apiServer.SetDeployContainerService(deployContainerSvc)
-	apiServer.SetRemoteDeployService(remoteDeploySvc)
 	apiServer.SetUpdateService(updateSvc)
 	apiServer.SetTopologyService(topologySvc)
-	apiServer.StartManagedMirrorSync(bgCtx)
 
 	localTransportRuntimeName := ""
 
@@ -464,8 +434,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		bgCancel:                  bgCancel,
 		stopCh:                    make(chan string, 1),
 		copilot:                   copilotManager,
-		deployContainers:          deployContainerSvc,
-		remoteDeploys:             remoteDeploySvc,
 		toolRuntime:               toolRuntime,
 		localTransportRuntimeName: localTransportRuntimeName,
 	}
@@ -498,7 +466,6 @@ func New(cfg config.Config) (*Daemon, error) {
 			WriteTimeout:      0,
 			IdleTimeout:       60 * time.Second,
 		}
-		deployContainerSvc.SetLocalTransportSocketPath(localTransportSocketPath)
 	}
 	transportMux := http.NewServeMux()
 	transportMux.Handle("/", apiServer.Handler())
@@ -734,18 +701,6 @@ func (d *Daemon) Run() error {
 				d.requestStop("peer-transport-serve-error")
 			}
 		}()
-	}
-	if d.deployContainers != nil {
-		go func() {
-			if err := d.deployContainers.AutoAttachChild(context.Background()); err != nil {
-				log.Printf("warning: deploy child auto-attach failed: %v", err)
-			}
-		}()
-		go d.deployContainers.RunLocalDeploymentReconciliationLoop(d.bgCtx)
-		go d.deployContainers.RunManagedCredentialSyncLoop(d.bgCtx)
-	}
-	if d.remoteDeploys != nil {
-		go d.remoteDeploys.RunAlwaysOnReconciliationLoop(d.bgCtx)
 	}
 	return d.waitForShutdown()
 }

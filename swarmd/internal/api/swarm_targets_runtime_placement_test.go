@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
 )
 
 func TestMapTopologyRuntimeTargetKeepsIdentityWithoutBackendURL(t *testing.T) {
@@ -71,14 +72,17 @@ func TestSwarmTargetsTopologyRuntimeWithoutBackendURL(t *testing.T) {
 		t.Fatalf("unexpected placement: %+v", placement)
 	}
 
-	targets, err := listRemoteDeployTargetsForTopology(nil, "account-1", topologyStore)
+	server := &Server{topology: topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil)}
+	targets, err := server.listTopologyTargetsForAccount("account-1")
 	if err != nil {
 		t.Fatalf("list targets: %v", err)
 	}
-	if len(targets) != 1 {
-		t.Fatalf("target count = %d, targets=%+v", len(targets), targets)
+	var target swarmTarget
+	for _, candidate := range targets {
+		if candidate.SwarmID == "managed-container" {
+			target = candidate
+		}
 	}
-	target := targets[0]
 	if target.SwarmID != "managed-container" || target.BackendURL != "" || target.HostSwarmID != "managed-host" || !target.Selectable {
 		t.Fatalf("unexpected target: %+v", target)
 	}

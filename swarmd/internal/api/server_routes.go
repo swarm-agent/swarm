@@ -44,20 +44,8 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/swarm/groups/upsert", s.handleSwarmGroupUpsert)
 	mux.HandleFunc("/v1/swarm/groups/current", s.handleSwarmCurrentGroup)
 	mux.HandleFunc("/v1/swarm/groups/members/delete", s.handleSwarmGroupMemberDelete)
-	mux.HandleFunc("/v1/swarm/containers/profiles", s.handleSwarmContainerProfiles)
-	mux.HandleFunc("/v1/swarm/containers/profiles/upsert", s.handleSwarmContainerProfileUpsert)
-	mux.HandleFunc("/v1/swarm/containers/profiles/delete", s.handleSwarmContainerProfileDelete)
 	mux.HandleFunc("/v1/swarm/topology", s.handleSwarmTopologySnapshot)
 	mux.HandleFunc("/v1/swarm/topology/workspace-bindings", s.handleSwarmTopologyWorkspaceBindings)
-}
-
-func (s *Server) registerDeployRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/v1/deploy/container/runtime", s.handleDeployContainerRuntime)
-	mux.HandleFunc("/v1/deploy/container", s.handleDeployContainers)
-	mux.HandleFunc("/v1/deploy/container/create", s.handleDeployContainerCreate)
-	mux.HandleFunc("/v1/deploy/container/package/defaults", s.handleDeployContainerPackageDefaults)
-	mux.HandleFunc("/v1/deploy/container/package/validate", s.handleDeployContainerPackageValidate)
-	mux.HandleFunc("/v1/deploy/container/package/suggest", s.handleDeployContainerPackageSuggest)
 }
 
 func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
