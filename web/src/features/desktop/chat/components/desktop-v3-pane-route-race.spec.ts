@@ -14,6 +14,7 @@ import {
   isDesktopV3PlanExecutionBreakMessage,
   isDesktopV3PlanFinalHandoffMessage,
   parseDesktopV3HandoffSummary,
+  resolveDesktopV3StickyBottomAttachment,
   completeDesktopV3ExistingMessage,
   resolveDesktopV3StopRunRequest,
 } from './desktop-v3-existing-conversation-pane'
@@ -563,20 +564,39 @@ test('Desktop V3 paused run resend stays ordered through commit and delayed stal
   assert.equal(committedItems.at(-1)?.type, 'message')
 })
 
-test('Desktop V3 sticky-bottom lifecycle has no passive force-follow reattachment path', () => {
+test('Desktop V3 sticky-bottom attachment uses a buffered release zone with hysteresis', () => {
+  const resolve = (bottomDistance: number, wasAttached: boolean) =>
+    resolveDesktopV3StickyBottomAttachment({ bottomDistance, wasAttached, bottomBufferPx: 140 })
+
+  assert.equal(resolve(0, true), true)
+  assert.equal(resolve(140, true), true)
+  assert.equal(resolve(141, true), false)
+  assert.equal(resolve(140, false), false)
+  assert.equal(resolve(2, false), false)
+  assert.equal(resolve(0, false), true)
+  assert.equal(resolveDesktopV3StickyBottomAttachment({
+    bottomDistance: 500,
+    wasAttached: true,
+    smoothFollowActive: true,
+    bottomBufferPx: 140,
+  }), true)
+})
+
+test('Desktop V3 sticky-bottom lifecycle is distance-driven and released state controls jump-to-latest', () => {
   const hookStart = conversationPaneSource.indexOf('export function useDesktopV3StickyBottomScroll')
   const hookEnd = conversationPaneSource.indexOf('function numericTimelineSeq', hookStart)
   assert.ok(hookStart >= 0 && hookEnd > hookStart, 'expected sticky-bottom hook source')
   const hookSource = conversationPaneSource.slice(hookStart, hookEnd)
 
-  assert.doesNotMatch(hookSource, /forceFollow|ACTIVITY_FOLLOW_MS|lastScrollEventAtRef/)
-  assert.match(hookSource, /scheduleAutoFollow\(\{ forceUnseen: true \}\)/)
-  assert.match(hookSource, /userDetachedRef\.current = true/)
+  assert.doesNotMatch(hookSource, /forceFollow|ACTIVITY_FOLLOW_MS|userDetachedRef|detachForUserScrollIntent/)
+  assert.doesNotMatch(hookSource, /addEventListener\("(?:wheel|pointerdown|touchstart|touchmove)"/)
+  assert.match(hookSource, /wasAttached: autoFollowRef\.current/)
+  assert.match(hookSource, /autoFollowRef\.current = false/)
   assert.match(hookSource, /cancelScheduledScroll\(\)/)
-  assert.match(hookSource, /\["ArrowUp", "PageUp", "Home"\]\.includes\(event\.key\)/)
-  assert.match(hookSource, /userDetachedRef\.current = false/)
   assert.match(conversationPaneSource, /scrollToBottom\("smooth"\)/)
   assert.match(conversationPaneSource, /preserveScrollPositionForPrepend\(\)/)
+  assert.match(conversationPaneSource, /\{!isAtBottom \? \(/)
+  assert.doesNotMatch(conversationPaneSource, /!isAtBottom && hasUnseenLatest/)
 })
 
 test('Desktop V3 pending user keeps its render key when the canonical message arrives', () => {
