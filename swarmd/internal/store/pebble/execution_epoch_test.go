@@ -196,6 +196,37 @@ func TestBeginExecutionEpochAllowsDistinctRunsAfterSameCheckpoint(t *testing.T) 
 	}
 }
 
+func TestBeginExecutionEpochAllowsRepeatedCompactionWithinSameRun(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "repeated-compaction-session")
+
+	first, err := sessions.BeginExecutionEpoch(BeginExecutionEpochInput{
+		SessionID: "repeated-compaction-session", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "compaction-1", PayloadHash: "compaction-hash-1",
+		Reason: "context_compaction_overflow", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1", RunID: "run-1",
+		SourceMessageID: "compact-message-1", TriggerMessage: &MessageSnapshot{ID: "compact-message-1", Role: "system", Content: "first compact"}, NowUnixMs: 200,
+	})
+	if err != nil {
+		t.Fatalf("begin first compaction epoch: %v", err)
+	}
+	second, err := sessions.BeginExecutionEpoch(BeginExecutionEpochInput{
+		SessionID: "repeated-compaction-session", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "compaction-2", PayloadHash: "compaction-hash-2",
+		Reason: "context_compaction_overflow", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1", RunID: "run-1",
+		SourceMessageID: "compact-message-2", TriggerMessage: &MessageSnapshot{ID: "compact-message-2", Role: "system", Content: "second compact"}, NowUnixMs: 300,
+	})
+	if err != nil {
+		t.Fatalf("begin second compaction epoch: %v", err)
+	}
+	if second.Replayed || second.Epoch.EpochID == first.Epoch.EpochID || second.Epoch.ParentEpochID != first.Epoch.EpochID {
+		t.Fatalf("second compaction did not create a distinct successor: first=%+v second=%+v", first.Epoch, second.Epoch)
+	}
+	if second.Epoch.Boundary.SourceMessageID != "compact-message-2" || second.Epoch.Boundary.RunID != "run-1" {
+		t.Fatalf("second compaction boundary identity = %+v", second.Epoch.Boundary)
+	}
+}
+
 func TestBeginExecutionEpochMigratesLegacyPostCheckpointBoundary(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
@@ -210,7 +241,7 @@ func TestBeginExecutionEpochMigratesLegacyPostCheckpointBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin first follow-up epoch: %v", err)
 	}
-	newKey := KeyExecutionEpochBoundary(first.Epoch.SessionID, first.Epoch.Boundary.PlanID, first.Epoch.Boundary.CheckpointID, first.Epoch.Boundary.AttemptID, first.Epoch.Boundary.Reason, first.Epoch.Boundary.RunID)
+	newKey := KeyExecutionEpochBoundary(first.Epoch.SessionID, first.Epoch.Boundary.PlanID, first.Epoch.Boundary.CheckpointID, first.Epoch.Boundary.AttemptID, first.Epoch.Boundary.Reason, first.Epoch.Boundary.RunID, first.Epoch.Boundary.SourceMessageID)
 	legacyKey := executionEpochBoundaryLegacyKey(first.Epoch.SessionID, first.Epoch.Boundary.PlanID, first.Epoch.Boundary.CheckpointID, first.Epoch.Boundary.AttemptID, first.Epoch.Boundary.Reason)
 	batch := store.db.NewBatch()
 	defer batch.Close()

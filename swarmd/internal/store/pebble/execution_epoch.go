@@ -158,10 +158,14 @@ func KeyExecutionEpochOrdinal(sessionID string, ordinal uint64) string {
 func ExecutionEpochOrdinalPrefix(sessionID string) string {
 	return fmt.Sprintf("v3/execution_epoch_by_ordinal/%s/", keyPart(sessionID))
 }
-func KeyExecutionEpochBoundary(sessionID, planID, checkpointID, attemptID, reason, runID string) string {
+func KeyExecutionEpochBoundary(sessionID, planID, checkpointID, attemptID, reason, runID, sourceMessageID string) string {
 	key := executionEpochBoundaryLegacyKey(sessionID, planID, checkpointID, attemptID, reason)
-	if strings.EqualFold(strings.TrimSpace(reason), "post_checkpoint_followup") && strings.TrimSpace(runID) != "" {
+	normalizedReason := strings.ToLower(strings.TrimSpace(reason))
+	if normalizedReason == "post_checkpoint_followup" && strings.TrimSpace(runID) != "" {
 		return key + "/" + keyPart(runID)
+	}
+	if strings.HasPrefix(normalizedReason, "context_compaction_") && strings.TrimSpace(sourceMessageID) != "" {
+		return key + "/" + keyPart(sourceMessageID)
 	}
 	return key
 }
@@ -562,7 +566,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		return BeginExecutionEpochResult{}, fmt.Errorf("execution epoch ordinal collision: ordinal %d already maps to %q", epoch.Ordinal, string(ordinalEpochID))
 	}
 	if epoch.Boundary.PlanID != "" || epoch.Boundary.CheckpointID != "" {
-		boundaryKey := KeyExecutionEpochBoundary(input.SessionID, epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, epoch.Boundary.AttemptID, epoch.Boundary.Reason, epoch.Boundary.RunID)
+		boundaryKey := KeyExecutionEpochBoundary(input.SessionID, epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, epoch.Boundary.AttemptID, epoch.Boundary.Reason, epoch.Boundary.RunID, epoch.Boundary.SourceMessageID)
 		if boundaryEpochID, ok, getErr := s.store.GetBytes(boundaryKey); getErr != nil {
 			return BeginExecutionEpochResult{}, getErr
 		} else if ok {
@@ -652,7 +656,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		return BeginExecutionEpochResult{}, err
 	}
 	if epoch.Boundary.PlanID != "" || epoch.Boundary.CheckpointID != "" {
-		boundaryKey := KeyExecutionEpochBoundary(input.SessionID, epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, epoch.Boundary.AttemptID, epoch.Boundary.Reason, epoch.Boundary.RunID)
+		boundaryKey := KeyExecutionEpochBoundary(input.SessionID, epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, epoch.Boundary.AttemptID, epoch.Boundary.Reason, epoch.Boundary.RunID, epoch.Boundary.SourceMessageID)
 		if err := batch.Set([]byte(boundaryKey), []byte(epoch.EpochID), nil); err != nil {
 			return BeginExecutionEpochResult{}, err
 		}
