@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
-	"time"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -88,9 +87,6 @@ func TestSwarmTargetsForRequestPrefersRegistryNodes(t *testing.T) {
 			Role:    "master",
 		}}},
 		swarmNodes: nodes,
-		swarmTargetHealth: swarmTargetHealthCache{entries: map[string]swarmTargetHealthEntry{
-			"remote|swarm-child-1|" + backendURL: {online: true, checkedAt: time.Now()},
-		}},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/targets?swarm_id=swarm-child-1", nil)
 	targets, current, err := server.swarmTargetsForRequest(requestWithTestPrincipal(req))
@@ -128,7 +124,6 @@ func TestSwarmTargetsForRequestIncludesTopologyRuntime(t *testing.T) {
 		startupConfigPath: filepath.Join(t.TempDir(), "swarm.conf"),
 		swarm: fakeRoutedSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "local-swarm", Name: "local", Role: "master"}}},
 		topology: topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil),
-		swarmTargetHealth: swarmTargetHealthCache{entries: map[string]swarmTargetHealthEntry{"remote|runtime-1|http://runtime.example.test": {online: true, checkedAt: time.Now()}}},
 	}
 	targets, _, err := server.swarmTargetsForRequest(requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/swarm/targets", nil)))
 	if err != nil {

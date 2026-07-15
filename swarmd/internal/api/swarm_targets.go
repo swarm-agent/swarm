@@ -1,11 +1,9 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -15,11 +13,6 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
-)
-
-const (
-	swarmTargetHealthTTL         = 20 * time.Second
-	swarmTargetHealthTimeout     = 750 * time.Millisecond
 )
 
 type swarmTargetHealthEntry struct {
@@ -257,7 +250,6 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		if swarmTargetSeen(seenTargets, peer) {
 			continue
 		}
-		s.applyCachedSwarmTargetHealth(&peer)
 		targets = append(targets, peer)
 		markSwarmTargetSeen(seenTargets, peer)
 	}
@@ -271,7 +263,6 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		if swarmTargetSeen(seenTargets, node) {
 			continue
 		}
-		s.applyCachedSwarmTargetHealth(&node)
 		targets = append(targets, node)
 		markSwarmTargetSeen(seenTargets, node)
 	}
@@ -285,7 +276,6 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		if swarmTargetSeen(seenTargets, target) {
 			continue
 		}
-		s.applyCachedSwarmTargetHealth(&target)
 		targets = append(targets, target)
 		markSwarmTargetSeen(seenTargets, target)
 	}
@@ -442,94 +432,6 @@ func (s *Server) listTopologyTargetsForAccount(accountScopeID string) ([]swarmTa
 	return out, nil
 }
 
-func (s *Server) applyCachedSwarmTargetHealth(target *swarmTarget) {
-	if s == nil || target == nil || target.Kind == "self" {
-		return
-	}
-	authorityHostSwarmID := firstNonEmpty(strings.TrimSpace(target.HostSwarmID), strings.TrimSpace(target.SwarmID))
-	if strings.TrimSpace(target.BackendURL) != "" {
-		conn := authorityConnectionForTarget(*target)
-		s.ensureAuthorityConnectionRegistry().Upsert(conn)
-	}
-	conn, ok := s.ResolveAuthorityConnection("", authorityHostSwarmID)
-	if !ok || conn.endpoint() == "" {
-		target.Online = false
-		target.Selectable = false
-		if strings.TrimSpace(target.AttachStatus) == "" || strings.EqualFold(target.AttachStatus, "attached") {
-			target.AttachStatus = "authority-unreachable"
-		}
-		return
-	}
-	healthBackendURL := conn.endpoint()
-	if !target.Online {
-		s.markSwarmTargetHealth(target, false)
-		return
-	}
-	key := swarmTargetHealthKey(*target)
-	now := time.Now()
-	s.swarmTargetHealth.mu.Lock()
-	if s.swarmTargetHealth.entries == nil {
-		s.swarmTargetHealth.entries = make(map[string]swarmTargetHealthEntry)
-	}
-	entry, ok := s.swarmTargetHealth.entries[key]
-	fresh := ok && !entry.checkedAt.IsZero() && now.Sub(entry.checkedAt) < swarmTargetHealthTTL
-	if fresh {
-		target.Online = entry.online
-		if !entry.online {
-			target.Selectable = false
-			if strings.TrimSpace(target.AttachStatus) == "" || strings.EqualFold(target.AttachStatus, "attached") {
-				target.AttachStatus = "offline"
-			}
-		}
-		s.swarmTargetHealth.mu.Unlock()
-		return
-	}
-	if ok && entry.checking {
-		target.Online = entry.online
-		if !entry.online {
-			target.Selectable = false
-			if strings.TrimSpace(target.AttachStatus) == "" || strings.EqualFold(target.AttachStatus, "attached") {
-				target.AttachStatus = "checking"
-			}
-		}
-		s.swarmTargetHealth.mu.Unlock()
-		return
-	}
-	entry.checking = true
-	s.swarmTargetHealth.entries[key] = entry
-	s.swarmTargetHealth.mu.Unlock()
-
-	go s.refreshSwarmTargetHealth(key, healthBackendURL)
-}
-
-func (s *Server) markSwarmTargetHealth(target *swarmTarget, online bool) {
-	if s == nil || target == nil {
-		return
-	}
-	key := swarmTargetHealthKey(*target)
-	if strings.TrimSpace(key) == "" {
-		return
-	}
-	s.swarmTargetHealth.mu.Lock()
-	if s.swarmTargetHealth.entries == nil {
-		s.swarmTargetHealth.entries = make(map[string]swarmTargetHealthEntry)
-	}
-	s.swarmTargetHealth.entries[key] = swarmTargetHealthEntry{online: online, checkedAt: time.Now()}
-	s.swarmTargetHealth.mu.Unlock()
-}
-
-func (s *Server) refreshSwarmTargetHealth(key, backendURL string) {
-	ctx, cancel := context.WithTimeout(context.Background(), swarmTargetHealthTimeout)
-	defer cancel()
-	online := probeSwarmTargetBackend(ctx, backendURL)
-	s.swarmTargetHealth.mu.Lock()
-	if s.swarmTargetHealth.entries == nil {
-		s.swarmTargetHealth.entries = make(map[string]swarmTargetHealthEntry)
-	}
-	s.swarmTargetHealth.entries[key] = swarmTargetHealthEntry{online: online, checkedAt: time.Now()}
-	s.swarmTargetHealth.mu.Unlock()
-}
-
 func isLocalSwarmTargetID(swarmID, localSwarmID string) bool {
 	swarmID = strings.TrimSpace(swarmID)
 	localSwarmID = strings.TrimSpace(localSwarmID)
@@ -565,37 +467,6 @@ func swarmTargetIdentityKeys(target swarmTarget) []string {
 		return []string{"backend:" + backendURL}
 	}
 	return nil
-}
-
-func probeSwarmTargetBackend(ctx context.Context, backendURL string) bool {
-	base := strings.TrimRight(strings.TrimSpace(backendURL), "/")
-	if base == "" {
-		return false
-	}
-	client := http.Client{Timeout: swarmTargetHealthTimeout}
-	for _, path := range []string{"/readyz", "/healthz"} {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
-		if err != nil {
-			continue
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			continue
-		}
-		resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-			return true
-		}
-	}
-	return false
-}
-
-func swarmTargetHealthKey(target swarmTarget) string {
-	healthBackendURL := strings.TrimSpace(target.BackendURL)
-	if isLoopbackBackendURL(healthBackendURL) && strings.TrimSpace(target.HostSwarmID) != "" {
-		healthBackendURL = "owner:" + strings.TrimSpace(target.HostSwarmID)
-	}
-	return strings.Join([]string{strings.TrimSpace(target.Kind), strings.TrimSpace(target.SwarmID), healthBackendURL}, "|")
 }
 
 func mapSwarmNodeTarget(item pebblestore.SwarmNodeRecord) (swarmTarget, bool) {
@@ -771,35 +642,3 @@ func mapTopologyRuntimeTargetWithPlacement(item pebblestore.TopologyRuntimeRecor
 	}, true
 }
 
-func cloneURLWithQuery(base string, values map[string][]string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(base))
-	if err != nil {
-		return "", err
-	}
-	query := parsed.Query()
-	for key, items := range values {
-		query.Del(key)
-		for _, item := range items {
-			query.Add(key, item)
-		}
-	}
-	parsed.RawQuery = query.Encode()
-	return parsed.String(), nil
-}
-
-func cloneHeaderExcludingAuth(src http.Header) http.Header {
-	dst := make(http.Header, len(src))
-	for key, values := range src {
-		if strings.EqualFold(key, "Authorization") ||
-			strings.EqualFold(key, "X-Swarm-Token") ||
-			strings.EqualFold(key, peerAuthSwarmIDHeader) ||
-			strings.EqualFold(key, peerAuthTokenHeader) ||
-			strings.EqualFold(key, "X-Swarm-Principal-User-ID") ||
-			strings.EqualFold(key, "X-Swarm-Principal-Account-Scope-ID") {
-			continue
-		}
-		copied := append([]string(nil), values...)
-		dst[key] = copied
-	}
-	return dst
-}
