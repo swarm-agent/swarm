@@ -8,14 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/privacy"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
-	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 type manageSessionsDeployApproved struct {
@@ -60,7 +57,7 @@ func parseApprovedManageSessionsDeploy(raw string) (manageSessionsDeployApproved
 }
 
 func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSessionID string, call tool.Call, approvedArguments string, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
-	if s == nil || s.sessions == nil || s.agents == nil || s.workspace == nil {
+	if s == nil || s.sessions == nil || s.agents == nil || s.workspace == nil || s.v3Launcher == nil {
 		return "", errors.New("session deployment services are not configured")
 	}
 	approved, err := parseApprovedManageSessionsDeploy(approvedArguments)
@@ -141,6 +138,9 @@ func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSession
 	if err != nil {
 		return "", fmt.Errorf("bind approved session deployment manifest: %w", err)
 	}
+	if strings.TrimSpace(approved.ManifestDigest) == "" || !strings.EqualFold(strings.TrimSpace(approved.ManifestDigest), digest) {
+		return "", errors.New("approved session deployment manifest digest is stale or invalid")
+	}
 	proposals := make([]manageSessionsDeployProposal, 0, len(selected))
 	for _, proposal := range approved.Proposals {
 		if _, wanted := selected[proposal.ID]; wanted {
@@ -152,10 +152,10 @@ func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSession
 		return "", errors.New("session deployment selection references an unknown proposal")
 	}
 	type prepared struct {
-		proposal manageSessionsDeployProposal
-		profile  pebblestore.AgentProfile
-		session  pebblestore.SessionSnapshot
-		runID    string
+		proposal  manageSessionsDeployProposal
+		profile   pebblestore.AgentProfile
+		sessionID string
+		runID     string
 	}
 	ready := make([]prepared, 0, len(proposals))
 	for _, proposal := range proposals {
@@ -169,115 +169,45 @@ func (s *Service) executeManageSessionsDeploy(ctx context.Context, parentSession
 		}
 		sessionID := deterministicDeployID(digest, proposal.ID, "session")
 		runID := "session-deploy-run:" + deterministicDeployID(digest, proposal.ID, "run")
-		workspacePath, workspaceName := scope.WorkspacePath, scope.WorkspaceName
-		var allocation worktreeruntime.Allocation
-		existing, exists, getErr := s.sessions.GetSession(sessionID)
-		if getErr != nil {
-			return "", getErr
+		if proposal.ManagedWorktree && strings.TrimSpace(proposal.WorktreeBranch) == "" {
+			return "", fmt.Errorf("proposal %q requires a canonical worktree branch", proposal.ID)
 		}
-		if exists {
-			if mapString(existing.Metadata, "deployment_manifest_digest") != digest || mapString(existing.Metadata, "deployment_proposal_id") != proposal.ID {
-				return "", fmt.Errorf("proposal %q deterministic session id is already bound to another deployment", proposal.ID)
-			}
-			workspacePath, workspaceName = existing.WorkspacePath, existing.WorkspaceName
-			allocation = worktreeruntime.Allocation{WorkspacePath: existing.WorktreeRootPath, BaseBranch: existing.WorktreeBaseBranch, BranchName: existing.WorktreeBranch}
-		} else if proposal.ManagedWorktree {
-			if s.worktrees == nil {
-				return "", fmt.Errorf("proposal %q requires the managed worktree service", proposal.ID)
-			}
-			branchName := strings.TrimSpace(proposal.WorktreeBranch)
-			if branchName == "" {
-				return "", fmt.Errorf("proposal %q requires a canonical worktree branch", proposal.ID)
-			}
-			allocation, err = s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, scope.WorkspacePath, sessionID, proposal.WorktreeBaseBranch, branchName)
-			if err != nil {
-				return "", fmt.Errorf("proposal %q allocate managed worktree: %w", proposal.ID, err)
-			}
-			workspacePath = allocation.WorkspacePath
-			workspaceName = scope.WorkspaceName
-		}
-		now := time.Now().UnixMilli()
-		title := strings.TrimSpace(proposal.Title)
-		if title == "" {
-			title = "New session"
-		}
-		metadata := map[string]any{"agent_profile": profile, "agent_name": profile.Name, "resolved_agent_name": profile.Name, "agent_mode": profile.Mode, "runtime_mode": proposal.RuntimeMode, "parent_session_id": parent.ID, "lineage_kind": "session_deploy", "deployment_manifest_digest": digest, "deployment_proposal_id": proposal.ID, "workspace_id": proposal.WorkspaceID, "swarm_v3_source_workspace_id": proposal.WorkspaceID, "swarm_v3_source_workspace_generation": fmt.Sprintf("%d", proposal.WorkspaceGeneration), "swarm_v3_source_workspace_name": scope.WorkspaceName, "swarm_v3_source_workspace_path": scope.WorkspacePath, "swarm_v3_runtime_workspace_path": workspacePath}
-		if proposal.ManagedWorktree {
-			metadata["workspace_id"] = allocation.WorkspaceID
-		}
-		snapshot := pebblestore.SessionSnapshot{ID: sessionID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, WorkspacePath: workspacePath, WorkspaceName: workspaceName, Title: title, Mode: proposal.Mode, Preference: pebblestore.ModelPreference{Provider: proposal.Provider, Model: proposal.Model, Thinking: proposal.Thinking}, Metadata: metadata, CreatedAt: now, UpdatedAt: now, WorktreeEnabled: proposal.ManagedWorktree, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName}
-		ready = append(ready, prepared{proposal: proposal, profile: profile, session: snapshot, runID: runID})
-	}
-	if apply == nil {
-		return "", errors.New("session deployment requires the canonical V3 mutation publisher")
+		ready = append(ready, prepared{proposal: proposal, profile: profile, sessionID: sessionID, runID: runID})
 	}
 	results := make([]manageSessionsDeployResult, len(ready))
 	for i, item := range ready {
-		results[i] = manageSessionsDeployResult{ProposalID: item.proposal.ID, SessionID: item.session.ID, Title: item.session.Title, Mode: item.proposal.Mode, Agent: item.profile.Name, Workspace: item.session.WorkspacePath, Worktree: item.proposal.ManagedWorktree, Status: "created", Navigation: deploySessionNavigation(item.session)}
-		createKey := "session-deploy:create:" + digest + ":" + item.proposal.ID
-		created, createErr := apply(sessionruntime.SessionMutationInput{SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: createKey, IdempotencyKey: createKey, PayloadHash: createKey, RequestHash: createKey, Kind: sessionruntime.SessionMutationCreateSession, Session: &item.session, NowUnixMs: time.Now().UnixMilli()})
-		if createErr != nil {
+		launch, launchErr := s.v3Launcher.LaunchV3Session(ctx, V3SessionLaunchRequest{
+			Principal: principal, SessionID: item.sessionID, RunID: item.runID,
+			CreateClientRequestID:  "session-deploy:create:" + digest + ":" + item.proposal.ID,
+			MessageClientRequestID: "session-deploy:message:" + digest + ":" + item.proposal.ID,
+			MessageID:              deterministicDeployID(digest, item.proposal.ID, "message"),
+			Title:                  item.proposal.Title, Prompt: item.proposal.Prompt, Mode: item.proposal.Mode,
+			AgentName: item.profile.Name, Preference: pebblestore.ModelPreference{Provider: item.proposal.Provider, Model: item.proposal.Model, Thinking: item.proposal.Thinking},
+			SourceWorkspaceID: item.proposal.WorkspaceID, SourceWorkspaceGeneration: item.proposal.WorkspaceGeneration,
+			SourceWorkspacePath: item.proposal.WorkspacePath, SourceWorkspaceName: item.proposal.WorkspaceName,
+			WorkspaceBindingID: item.proposal.WorkspaceBindingID, ManagedWorktree: item.proposal.ManagedWorktree,
+			WorktreeBaseBranch: item.proposal.WorktreeBaseBranch, WorktreeBranch: item.proposal.WorktreeBranch,
+			ParentSessionID: parent.ID, DeploymentManifestDigest: digest, DeploymentProposalID: item.proposal.ID,
+		})
+		results[i] = manageSessionsDeployResult{ProposalID: item.proposal.ID, SessionID: item.sessionID, Mode: item.proposal.Mode, Agent: item.profile.Name, Worktree: item.proposal.ManagedWorktree}
+		if launchErr != nil {
 			results[i].Status = "error"
-			results[i].Error = createErr.Error()
+			results[i].Error = launchErr.Error()
 			continue
 		}
-		message := pebblestore.MessageSnapshot{ID: deterministicDeployID(digest, item.proposal.ID, "message"), SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, Role: "user", Content: item.proposal.Prompt, Metadata: map[string]any{"source": "session_deploy"}, CreatedAt: time.Now().UnixMilli()}
-		intent := pebblestore.V3SessionRunIntent{SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, RunID: item.runID, Status: sessionruntime.RunIntentPendingExecutor}
-		messageKey := "session-deploy:message:" + digest + ":" + item.proposal.ID
-		appended, appendErr := apply(sessionruntime.SessionMutationInput{SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: messageKey, IdempotencyKey: messageKey, PayloadHash: messageKey, RequestHash: messageKey, Kind: sessionruntime.SessionMutationAppendMessage, Message: &message, RunIntent: &intent, NowUnixMs: time.Now().UnixMilli()})
-		if appendErr != nil {
-			results[i].Status = "error"
-			results[i].Error = appendErr.Error()
-			continue
-		}
-		if created.Replayed || appended.Replayed {
+		results[i].SessionID, results[i].Title, results[i].Workspace = launch.Session.ID, launch.Session.Title, launch.Session.WorkspacePath
+		results[i].Navigation = deploySessionNavigation(launch.Session)
+		if launch.Replayed {
 			results[i].Status = "replayed"
-		}
-		if appended.Replayed && appended.RunIntent != nil && appended.RunIntent.Status == sessionruntime.RunIntentPendingExecutor {
+		} else if launch.Enqueued {
+			results[i].Status = "started"
+		} else {
 			results[i].Status = "created"
 		}
-	}
-	for i, item := range ready {
-		if results[i].Status == "error" || results[i].Status == "replayed" {
-			continue
-		}
-		go func(item prepared) {
-			_, runErr := s.RunTurnWithOptions(context.Background(), item.session.ID, RunOptions{Prompt: item.proposal.Prompt, AgentName: item.profile.Name, PermissionSessionID: item.session.ID, RunID: item.runID, Principal: principal, ApplySessionMutation: apply, SkipInitialUserMessage: true})
-			if runErr != nil {
-				s.recordManageSessionsDeployRunFailure(item.session, item.runID, principal, runErr, apply)
-			}
-		}(item)
-		results[i].Status = "started"
 	}
 	payload := map[string]any{"tool": "manage_sessions", "action": "deploy", "manifest_digest": digest, "selected_count": len(results), "results": results}
 	raw, err := json.Marshal(payload)
 	return string(raw), err
-}
-
-func (s *Service) recordManageSessionsDeployRunFailure(session pebblestore.SessionSnapshot, runID string, principal identity.Principal, runErr error, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) {
-	if runErr == nil || apply == nil {
-		return
-	}
-	reason := strings.TrimSpace(privacy.SanitizeText(runErr.Error()))
-	if reason == "" {
-		reason = "session deployment run failed before startup completed"
-	}
-	now := time.Now().UnixMilli()
-	message := pebblestore.MessageSnapshot{
-		ID:             deterministicDeployID(runID, session.ID, "failure-message"),
-		SessionID:      session.ID,
-		UserID:         principal.UserID,
-		AccountScopeID: principal.AccountScopeID,
-		Role:           "system",
-		Content:        "[run-failed] The deployed session could not start.\n\n" + reason,
-		Metadata:       map[string]any{"source": "session_deploy", "message_kind": "run_failure", "run_id": runID, "synthetic": true, "visible": true},
-		CreatedAt:      now,
-	}
-	messageKey := "session-deploy:run-failure-message:" + runID
-	_, _ = apply(sessionruntime.SessionMutationInput{SessionID: session.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: messageKey, IdempotencyKey: messageKey, PayloadHash: messageKey, RequestHash: messageKey, Kind: sessionruntime.SessionMutationAppendMessage, EventType: "session.message.appended", Message: &message, NowUnixMs: now})
-	intent := pebblestore.V3SessionRunIntent{SessionID: session.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, RunID: runID, Status: sessionruntime.RunIntentFailed, BlockedReason: reason, UpdatedAt: now}
-	statusKey := "session-deploy:run-failed:" + runID
-	_, _ = apply(sessionruntime.SessionMutationInput{SessionID: session.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: statusKey, IdempotencyKey: statusKey, PayloadHash: statusKey, RequestHash: statusKey, Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.run.failed", RunIntent: &intent, NowUnixMs: now})
 }
 
 func deterministicDeployID(digest, proposalID, kind string) string {

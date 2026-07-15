@@ -108,11 +108,47 @@ type Service struct {
 	workspace    *workspaceruntime.Service
 	uiSettings   *uisettings.Service
 	worktrees    worktreeService
+	v3Launcher   V3SessionLauncher
 	events       *pebblestore.EventLog
 	eventPublish func(pebblestore.EventEnvelope)
 	runCounter   atomic.Uint64
 	lifecycleMu  sync.Mutex
 	activeRuns   map[string]*activeSessionRun
+}
+
+type V3SessionLaunchRequest struct {
+	Principal                 identity.Principal
+	SessionID                 string
+	RunID                     string
+	CreateClientRequestID     string
+	MessageClientRequestID    string
+	MessageID                 string
+	Title                     string
+	Prompt                    string
+	Mode                      string
+	AgentName                 string
+	Preference                pebblestore.ModelPreference
+	SourceWorkspaceID         string
+	SourceWorkspaceGeneration int64
+	SourceWorkspacePath       string
+	SourceWorkspaceName       string
+	WorkspaceBindingID        string
+	ManagedWorktree           bool
+	WorktreeBaseBranch        string
+	WorktreeBranch            string
+	ParentSessionID           string
+	DeploymentManifestDigest  string
+	DeploymentProposalID      string
+}
+
+type V3SessionLaunchResult struct {
+	Session  pebblestore.SessionSnapshot
+	Replayed bool
+	Enqueued bool
+}
+
+type V3SessionLauncher interface {
+	LaunchV3Session(context.Context, V3SessionLaunchRequest) (V3SessionLaunchResult, error)
 }
 
 type worktreeService interface {
@@ -614,6 +650,13 @@ func (s *Service) SetWorktreeService(worktreeSvc worktreeService) {
 		return
 	}
 	s.worktrees = worktreeSvc
+}
+
+func (s *Service) SetV3SessionLauncher(launcher V3SessionLauncher) {
+	if s == nil {
+		return
+	}
+	s.v3Launcher = launcher
 }
 
 func (s *Service) SetEventPublisher(publish func(pebblestore.EventEnvelope)) {
