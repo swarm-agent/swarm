@@ -2,7 +2,7 @@ import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopS
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
-import { isDesktopV3NavigationHiddenRecord } from './desktop-v3-session-visibility'
+import { isDesktopV3NavigationHiddenRecord, isDesktopV3NavigationHiddenSession } from './desktop-v3-session-visibility'
 
 export type DesktopV3SidebarRowType = 'plan_session' | 'single_chat'
 export type DesktopV3SidebarPlanStatusLabel = 'RUNNING' | 'REVIEW' | 'BLOCKED' | 'QUEUED'
