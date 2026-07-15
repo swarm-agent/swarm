@@ -1017,7 +1017,6 @@ func normalizeTopologyWorkspaceBindingRecord(record TopologyWorkspaceBindingReco
 		record.AttestedAt = 0
 	}
 	record.ReplicationMode = strings.TrimSpace(record.ReplicationMode)
-	record.Sync = normalizeWorkspaceReplicationSync(record.Sync)
 	record.LegacyTargetKind = strings.TrimSpace(record.LegacyTargetKind)
 	record.CreatedAt, record.UpdatedAt = normalizeTopologyTimestamps(record.CreatedAt, record.UpdatedAt)
 	return record

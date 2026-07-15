@@ -275,8 +275,6 @@ child = false
 mode = lan
 tailscale_url =
 peer_transport_port = 7791
-parent_swarm_id =
-pairing_state =
 EOF
 }
 
@@ -299,6 +297,11 @@ swarm_startup_config_remove_obsolete_keys() {
       raw_key = trim(substr($0, 1, split_pos - 1))
       if (raw_key == "startup" "_mode" ||
           raw_key == "swarm" "_mode" ||
+          raw_key == "swarm_role" ||
+          raw_key == "parent_swarm_id" ||
+          raw_key == "pairing_state" ||
+          raw_key ~ /^managed[_-]?hosts?/ ||
+          raw_key ~ /^remote[_-]?deploy/ ||
           raw_key ~ ("^deploy_" "container_")) {
         next
       }
@@ -382,10 +385,7 @@ swarm_startup_config_migrate_legacy() {
   esac
   child_value="$(swarm_startup_config_raw_value child 2>/dev/null || true)"
   if [[ -z "${child_value}" ]]; then
-    case "$(swarm_startup_config_raw_value swarm_role 2>/dev/null || true)" in
-      child) child_value="true" ;;
-      *) child_value="false" ;;
-    esac
+    child_value="false"
   fi
   network_mode_value="$(swarm_startup_config_raw_value mode 2>/dev/null || true)"
   if [[ "${network_mode_value}" != "lan" && "${network_mode_value}" != "tailscale" ]]; then
@@ -543,22 +543,6 @@ peer_transport_port = 7791
 EOF
   fi
 
-  if ! swarm_startup_config_has_key parent_swarm_id; then
-    cat >>"${config_path}" <<'EOF'
-
-# Parent swarm ID for child bootstrap/attach flows.
-parent_swarm_id =
-EOF
-  fi
-
-  if ! swarm_startup_config_has_key pairing_state; then
-    cat >>"${config_path}" <<'EOF'
-
-# Persisted local pairing state.
-pairing_state =
-EOF
-  fi
-
 }
 
 swarm_startup_config_validate() {
@@ -597,14 +581,10 @@ swarm_startup_config_validate() {
       valid["tailscale_url"] = 1
       valid["local_transport_port"] = 1
       valid["peer_transport_port"] = 1
-      valid["parent_swarm_id"] = 1
-      valid["pairing_state"] = 1
       allow_empty["swarm_name"] = 1
       allow_empty["dev_root"] = 1
       allow_empty["advertise_host"] = 1
       allow_empty["tailscale_url"] = 1
-      allow_empty["parent_swarm_id"] = 1
-      allow_empty["pairing_state"] = 1
     }
     /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
     {
@@ -699,12 +679,6 @@ swarm_startup_config_validate() {
       if (!("peer_transport_port" in seen)) {
         fail(sprintf("invalid startup config %s: missing peer_transport_port", config_path))
       }
-      if (!("parent_swarm_id" in seen)) {
-        fail(sprintf("invalid startup config %s: missing parent_swarm_id", config_path))
-      }
-      if (!("pairing_state" in seen)) {
-        fail(sprintf("invalid startup config %s: missing pairing_state", config_path))
-      }
       if (values["dev_mode"] != "true" && values["dev_mode"] != "false") {
         fail(sprintf("invalid startup config %s: dev_mode must be true or false", config_path))
       }
@@ -749,14 +723,6 @@ swarm_startup_config_validate() {
       }
       if (values["mode"] != "lan" && values["mode"] != "tailscale") {
         fail(sprintf("invalid startup config %s: mode must be lan or tailscale", config_path))
-      }
-      if (values["pairing_state"] != "" &&
-          values["pairing_state"] != "unpaired" &&
-          values["pairing_state"] != "bootstrap_configured" &&
-          values["pairing_state"] != "pending_approval" &&
-          values["pairing_state"] != "paired" &&
-          values["pairing_state"] != "rejected") {
-        fail(sprintf("invalid startup config %s: pairing_state must be empty or a known state", config_path))
       }
       port_num = values["port"] + 0
       if (port_num < 1 || port_num > 65535) {

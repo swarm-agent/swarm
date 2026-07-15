@@ -478,7 +478,7 @@ func (s *Service) GetWorkspaceBindingForAccount(accountScopeID, bindingID string
 
 func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 	now := time.Now().UnixMilli()
-	localSwarmID, localNode, _ := s.loadLocalNode()
+	_, localNode, _ := s.loadLocalNode()
 	groupIDsBySwarm, err := s.loadGroupIDsBySwarm()
 	if err != nil {
 		return pebblestore.TopologySnapshot{}, err

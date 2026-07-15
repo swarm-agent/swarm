@@ -2448,9 +2448,9 @@ export function DesktopAppPage() {
   const swarmTopologySignature = useMemo(
     () => swarmTargets
       .map((target) => [
-        target.swarm_id.trim(),
-        target.relationship.trim(),
-        target.role.trim(),
+        (target.swarm_id ?? '').trim(),
+        (target.relationship ?? '').trim(),
+        (target.role ?? '').trim(),
         target.current ? '1' : '0',
         target.online ? '1' : '0',
       ].join(':'))

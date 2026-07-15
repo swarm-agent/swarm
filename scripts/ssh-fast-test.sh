@@ -251,9 +251,6 @@ if [ "${from_zero}" = 'true' ]; then
 BEGIN {
   keys[++n] = "desktop_onboarding_complete"; repl["desktop_onboarding_complete"] = "desktop_onboarding_complete = false"
   keys[++n] = "child"; repl["child"] = "child = false"
-  keys[++n] = "swarm_role"; repl["swarm_role"] = "swarm_role ="
-  keys[++n] = "parent_swarm_id"; repl["parent_swarm_id"] = "parent_swarm_id ="
-  keys[++n] = "pairing_state"; repl["pairing_state"] = "pairing_state ="
 }
 {
   line = $0
