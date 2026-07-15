@@ -1807,7 +1807,6 @@ func normalizeSessionOwnership(session SessionSnapshot) SessionSnapshot {
 	} else {
 		session.WorktreeRootPath = ""
 		session.WorktreeBaseBranch = ""
-		session.WorktreeBranch = ""
 	}
 	return session
 }

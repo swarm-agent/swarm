@@ -188,6 +188,8 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		}
 		session.Metadata["workspace_id"] = strings.TrimSpace(allocation.WorkspaceID)
 		session.Metadata["swarm_v3_tui_worktree_path"] = strings.TrimSpace(allocation.WorkspacePath)
+	} else {
+		session.WorktreeBranch = sessionruntime.DetectCurrentBranch(session.WorkspacePath)
 	}
 	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       sessionID,

@@ -206,6 +206,9 @@ func (s *Service) CreateSessionWithOptions(options CreateSessionOptions) (pebble
 			session.Metadata["workspace_id"] = workspaceID
 		}
 	}
+	if !session.WorktreeEnabled {
+		session.WorktreeBranch = DetectCurrentBranch(session.WorkspacePath)
+	}
 	if err := s.store.CreateSession(session); err != nil {
 		return pebblestore.SessionSnapshot{}, nil, fmt.Errorf("persist session: %w", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,24 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func TestSessionsV3TUIDirectoryCreatePersistsBranchAndLeavesNoBranchEmpty(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	if output, err := exec.Command("git", "init", "-b", "dev", repoPath).CombinedOutput(); err != nil {
+		t.Fatalf("init git workspace: %v: %s", err, output)
+	}
+	created := postSessionsV3TUIDirectoryCreate(t, server, "tui-branch-create", repoPath, "TUI Branch")
+	if created.Session.WorktreeBranch != "dev" || created.Session.WorktreeEnabled || created.Session.WorktreeRootPath != "" || created.Session.WorktreeBaseBranch != "" {
+		t.Fatalf("regular branch session = %+v", created.Session)
+	}
+
+	nonGitPath := filepath.Join(t.TempDir(), "not-git")
+	created = postSessionsV3TUIDirectoryCreate(t, server, "tui-no-branch-create", nonGitPath, "TUI No Branch")
+	if created.Session.WorktreeBranch != "" || created.Session.WorktreeEnabled || created.Session.WorktreeRootPath != "" || created.Session.WorktreeBaseBranch != "" {
+		t.Fatalf("non-git regular session = %+v", created.Session)
+	}
+}
 
 func TestSessionsV3TUIDirectoryCreateOpenAndWorkset(t *testing.T) {
 	t.Setenv("SWARM_V3_DIAGNOSTICS", "0")

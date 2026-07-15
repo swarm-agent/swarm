@@ -609,6 +609,8 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		session.Metadata["workspace_id"] = strings.TrimSpace(allocation.WorkspaceID)
 		session.Metadata["swarm_v3_source_workspace_path"] = binding.SourceWorkspacePath
 		session.Metadata["swarm_v3_runtime_workspace_path"] = strings.TrimSpace(allocation.WorkspacePath)
+	} else {
+		session.WorktreeBranch = sessionruntime.DetectCurrentBranch(session.WorkspacePath)
 	}
 	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       sessionID,

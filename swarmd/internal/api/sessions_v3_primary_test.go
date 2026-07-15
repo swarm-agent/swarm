@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -301,6 +302,30 @@ func TestSessionsV3PrimaryCreateResponseIsMinimalMutationResult(t *testing.T) {
 		if strings.Contains(createResponse, forbidden) {
 			t.Fatalf("create response helper contains forbidden snapshot/workset field %s", forbidden)
 		}
+	}
+}
+
+func TestSessionsV3PrimaryRegularSessionPersistsCurrentBranch(t *testing.T) {
+	workspacePath := filepath.Join(t.TempDir(), "repo")
+	if output, err := exec.Command("git", "init", "-b", "dev", workspacePath).CombinedOutput(); err != nil {
+		t.Fatalf("init git workspace: %v: %s", err, output)
+	}
+	server, sessions, _, _, swarmStore := newRoutedSessionTestServerWithSwarmStore(t)
+	seedSessionsV2PrimaryAuthority(t, server, swarmStore, "host-swarm-id", "binding-v3-regular-branch", workspacePath)
+
+	body := `{"session_id":"v3-regular-branch","client_request_id":"v3-regular-branch","swarm_id":"host-swarm-id","workspace_binding_id":"binding-v3-regular-branch","title":"v3 regular","mode":"auto","agent_name":"swarm","worktree_mode":"off","preference":{"provider":"codex","model":"gpt-5.4","thinking":"medium"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	stored, ok, err := sessions.GetSession("v3-regular-branch")
+	if err != nil || !ok {
+		t.Fatalf("get stored session ok=%t err=%v", ok, err)
+	}
+	if stored.WorktreeBranch != "dev" || stored.WorktreeEnabled || stored.WorktreeRootPath != "" || stored.WorktreeBaseBranch != "" {
+		t.Fatalf("regular session branch facts = %+v", stored)
 	}
 }
 
