@@ -26,15 +26,9 @@ func TestWorkspaceOverviewDecodesSwarmTarget(t *testing.T) {
 			"role": "master",
 			"relationship": "self",
 			"kind": "local",
-			"deployment_id": "deploy-1",
-			"attach_status": "attached",
-			"host_swarm_id": "host-swarm",
 			"online": true,
 			"selectable": true,
-			"current": true,
-			"backend_url": "http://127.0.0.1:7781",
-			"desktop_url": "http://127.0.0.1:7780",
-			"last_error": ""
+			"current": true
 		}
 	}`), &overview); err != nil {
 		t.Fatalf("decode workspace overview: %v", err)
@@ -53,9 +47,6 @@ func TestWorkspaceOverviewDecodesSwarmTarget(t *testing.T) {
 	}
 	if overview.SwarmTarget.SwarmID != "target-swarm" {
 		t.Fatalf("SwarmTarget.SwarmID = %q, want target-swarm", overview.SwarmTarget.SwarmID)
-	}
-	if overview.SwarmTarget.HostSwarmID != "host-swarm" {
-		t.Fatalf("SwarmTarget.HostSwarmID = %q, want host-swarm", overview.SwarmTarget.HostSwarmID)
 	}
 	if !overview.SwarmTarget.Online || !overview.SwarmTarget.Selectable || !overview.SwarmTarget.Current {
 		t.Fatalf("SwarmTarget booleans not decoded: %+v", overview.SwarmTarget)

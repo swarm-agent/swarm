@@ -17,7 +17,6 @@ func testRoutingWorkspaces() []model.Workspace {
 		Path: testWorkspacePath,
 		TopologyRoutes: []model.WorkspaceTopologyRoute{{
 			RouteID:              testRemoteRouteID,
-			RouteSource:          "topology/workspace_binding",
 			WorkspaceBindingID:   "binding-1",
 			RuntimeSwarmID:       "child-swarm",
 			RuntimeSwarmName:     "Child Desk",
@@ -26,18 +25,6 @@ func testRoutingWorkspaces() []model.Workspace {
 			HostWorkspacePath:    testWorkspacePath,
 			HostWorkspaceName:    "Host Repo",
 			RuntimeWorkspacePath: "/workspaces/swarm-go",
-		}},
-	}}
-}
-
-func testLegacyReplicationLinkWorkspaces() []model.Workspace {
-	return []model.Workspace{{
-		Name: "Host Repo",
-		Path: testWorkspacePath,
-		ReplicationLinks: []model.WorkspaceReplicationLink{{
-			TargetSwarmID:       "legacy-child",
-			TargetSwarmName:     "Legacy Child",
-			TargetWorkspacePath: "/legacy/workspace",
 		}},
 	}}
 }
@@ -139,15 +126,9 @@ func TestModelSwarmTargetFromClientPropagatesWorkspaceOverviewTarget(t *testing.
 		Role:         " master ",
 		Relationship: " self ",
 		Kind:         " local ",
-		DeploymentID: " deploy-1 ",
-		AttachStatus: " attached ",
-		HostSwarmID:  " host-swarm ",
 		Online:       true,
 		Selectable:   true,
 		Current:      true,
-		BackendURL:   " http://127.0.0.1:7781 ",
-		DesktopURL:   " http://127.0.0.1:7780 ",
-		LastError:    " previous error ",
 	})
 
 	if target == nil {
@@ -156,25 +137,8 @@ func TestModelSwarmTargetFromClientPropagatesWorkspaceOverviewTarget(t *testing.
 	if target.SwarmID != "target-swarm" {
 		t.Fatalf("SwarmID = %q, want target-swarm", target.SwarmID)
 	}
-	if target.HostSwarmID != "host-swarm" {
-		t.Fatalf("HostSwarmID = %q, want host-swarm", target.HostSwarmID)
-	}
-	if target.BackendURL != "http://127.0.0.1:7781" {
-		t.Fatalf("BackendURL = %q, want trimmed backend URL", target.BackendURL)
-	}
 	if !target.Online || !target.Selectable || !target.Current {
 		t.Fatalf("target booleans not propagated: %+v", target)
-	}
-}
-
-func TestBuildChatRoutesForWorkspacesIgnoresLegacyReplicationLinks(t *testing.T) {
-	routes := buildChatRoutesForWorkspaces(testLegacyReplicationLinkWorkspaces(), testWorkspacePath)
-
-	if len(routes) != 1 {
-		t.Fatalf("route count = %d, want host-only from topology routes", len(routes))
-	}
-	if routes[0].ID != "host" {
-		t.Fatalf("route ID = %q, want host", routes[0].ID)
 	}
 }
 

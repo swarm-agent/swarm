@@ -78,7 +78,6 @@ type SwarmingConfig struct {
 type SwarmConfig struct {
 	Name             string
 	Role             string
-	RemoteSSHTargets []string
 }
 
 type CustomThemeConfig struct {
@@ -292,7 +291,6 @@ func appConfigFromUISettings(settings client.UISettings) AppConfig {
 	cfg.Swarming.Title = emptyFallback(strings.TrimSpace(settings.Swarming.Title), defaultSwarmingTitle)
 	cfg.Swarming.Status = emptyFallback(strings.TrimSpace(settings.Swarming.Status), defaultSwarmingStatus)
 	cfg.Swarm.Name = emptyFallback(strings.TrimSpace(settings.Swarm.Name), defaultSwarmName)
-	cfg.Swarm.RemoteSSHTargets = append([]string(nil), settings.Swarm.RemoteSSHTargets...)
 	cfg.Swarm.Role = bootstrapRoleMaster
 	return cfg
 }
@@ -329,8 +327,7 @@ func uiSettingsFromAppConfig(cfg AppConfig) client.UISettings {
 			Status: emptyFallback(strings.TrimSpace(cfg.Swarming.Status), defaultSwarmingStatus),
 		},
 		Swarm: client.UISwarmSettings{
-			Name:             emptyFallback(strings.TrimSpace(cfg.Swarm.Name), defaultSwarmName),
-			RemoteSSHTargets: append([]string(nil), cfg.Swarm.RemoteSSHTargets...),
+			Name: emptyFallback(strings.TrimSpace(cfg.Swarm.Name), defaultSwarmName),
 		},
 	}
 	for _, item := range cfg.UI.CustomThemes {

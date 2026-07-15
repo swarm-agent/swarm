@@ -9,44 +9,16 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 )
 
-type WorkspaceReplicationSync struct {
-	Enabled bool
-	Mode    string
-	Modules []string
-}
-
-type WorkspaceReplicationLink struct {
-	ID                  string
-	TargetKind          string
-	TargetSwarmID       string
-	TargetSwarmName     string
-	TargetWorkspacePath string
-	ReplicationMode     string
-	Writable            bool
-	Sync                WorkspaceReplicationSync
-	CreatedAt           int64
-	UpdatedAt           int64
-}
-
 type WorkspaceTopologyRoute struct {
 	RouteID              string
-	RouteSource          string
 	WorkspaceBindingID   string
 	RuntimeSwarmID       string
 	RuntimeSwarmName     string
 	RuntimeKind          string
 	RuntimeRelationship  string
-	RuntimeBackendURL    string
-	HostSwarmID          string
 	HostWorkspacePath    string
 	HostWorkspaceName    string
 	RuntimeWorkspacePath string
-	ContainerID          string
-	ReplicationMode      string
-	Writable             bool
-	Sync                 WorkspaceReplicationSync
-	CreatedAt            int64
-	UpdatedAt            int64
 }
 
 type Workspace struct {
@@ -56,7 +28,6 @@ type Workspace struct {
 	WorkspaceGeneration     int64
 	LocalWorkspaceBindingID string
 	Directories             []string
-	ReplicationLinks        []WorkspaceReplicationLink
 	TopologyRoutes          []WorkspaceTopologyRoute
 	ThemeID                 string
 	Icon                    string
@@ -147,15 +118,9 @@ type SwarmTarget struct {
 	Role         string
 	Relationship string
 	Kind         string
-	DeploymentID string
-	AttachStatus string
-	HostSwarmID  string
 	Online       bool
 	Selectable   bool
 	Current      bool
-	BackendURL   string
-	DesktopURL   string
-	LastError    string
 }
 
 type HomeModel struct {

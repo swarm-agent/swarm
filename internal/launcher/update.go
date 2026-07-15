@@ -56,7 +56,6 @@ var (
 	syncDevContainerImagesWithFingerprintForUpdate   = SyncDevContainerImagesWithFingerprint
 	installLaunchersForUpdate                        = InstallLaunchers
 	ensureSystemdServiceUnitForUpdate                = EnsureSystemdServiceUnit
-	runDevRemoteDeployUpdateJobAfterRestartForUpdate = runDevRemoteDeployUpdateJobAfterRestart
 	rollbackPendingUpdateAndRestartForUpdate         = rollbackPendingUpdateAndRestart
 )
 
@@ -81,11 +80,6 @@ type updateRestartPlan struct {
 	systemdUnit   string
 	systemdActive bool
 	blockedErr    error
-}
-
-type postUpdateRemoteSessionOutcome struct {
-	RemoteResult client.RemoteDeployUpdateJobResult
-	RemoteErr    error
 }
 
 func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.UpdateApplyPlan) (UpdateResult, error) {
@@ -261,30 +255,19 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
 		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, err)
 	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Updating remote SSH sessions.", "")
-	outcome := runReleaseRemoteSessionUpdateJobAfterRestart(profile)
-	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusCompleted, releaseUpdateCompletedMessage(result.Version, outcome), "")
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusCompleted, releaseUpdateCompletedMessage(result.Version), "")
 	jobTerminalStatusWritten = true
 	return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, map[string]string{
 		appliedUpdateToastEnv: fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
 	})
 }
 
-func runReleaseRemoteSessionUpdateJobAfterRestart(profile Profile) postUpdateRemoteSessionOutcome {
-	var outcome postUpdateRemoteSessionOutcome
-	outcome.RemoteResult, outcome.RemoteErr = runReleaseRemoteDeployUpdateJobAfterRestart(profile)
-	return outcome
-}
-
-func releaseUpdateCompletedMessage(version string, outcome postUpdateRemoteSessionOutcome) string {
+func releaseUpdateCompletedMessage(version string) string {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		version = "new release"
 	}
-	if outcome.RemoteErr != nil || outcome.RemoteResult.Summary.Failed > 0 {
-		return fmt.Sprintf("Updated to %s. Remote SSH update needs attention.", version)
-	}
-	return fmt.Sprintf("Updated to %s. Remote SSH updates completed.", version)
+	return fmt.Sprintf("Updated to %s.", version)
 }
 
 func writeLauncherUpdateJobStatus(profile Profile, kind, status, message, errorMessage string) error {

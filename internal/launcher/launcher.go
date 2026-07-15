@@ -1714,11 +1714,7 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	} else if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
 		return err
 	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Updating remote SSH sessions.", "")
-	if err := runDevRemoteDeployUpdateJobAfterRestartForUpdate(profile); err != nil {
-		return err
-	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusCompleted, "Dev rebuild completed. Remote SSH updates completed.", "")
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusCompleted, "Dev rebuild completed.", "")
 	jobTerminalStatusWritten = true
 	fmt.Fprintln(os.Stdout, "Local dev rebuild completed. Restarting Swarm...")
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {

@@ -102,29 +102,6 @@ func TestApplySwarmStreamEventRefreshesCountsFromNotificationSummary(t *testing.
 	}
 }
 
-func TestApplySwarmStreamEventEnrollmentCountersStayInSync(t *testing.T) {
-	a := newNotificationTestApp("http://127.0.0.1:7781")
-
-	if changed := a.applySwarmStreamEvent(client.StreamEventEnvelope{EventType: "swarm.enrollment.pending"}); !changed {
-		t.Fatal("pending event changed = false, want true")
-	}
-	if a.swarmNotificationCount != 1 {
-		t.Fatalf("count after pending = %d, want 1", a.swarmNotificationCount)
-	}
-	if changed := a.applySwarmStreamEvent(client.StreamEventEnvelope{EventType: "swarm.enrollment.approved"}); !changed {
-		t.Fatal("approved event changed = false, want true")
-	}
-	if a.swarmNotificationCount != 0 {
-		t.Fatalf("count after approved = %d, want 0", a.swarmNotificationCount)
-	}
-	if changed := a.applySwarmStreamEvent(client.StreamEventEnvelope{EventType: "swarm.enrollment.rejected"}); !changed {
-		t.Fatal("rejected event changed = false, want true")
-	}
-	if a.swarmNotificationCount != 0 {
-		t.Fatalf("count after rejected = %d, want 0", a.swarmNotificationCount)
-	}
-}
-
 type drawablePage interface {
 	Draw(tcell.Screen)
 }

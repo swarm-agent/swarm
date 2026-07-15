@@ -104,49 +104,6 @@ type UpdateApplyPlan struct {
 	ComparisonSource string `json:"comparison_source,omitempty"`
 }
 
-type RemoteDeployUpdateJobResult struct {
-	PathID          string                       `json:"path_id"`
-	Mode            string                       `json:"mode"`
-	DevMode         bool                         `json:"dev_mode"`
-	Summary         RemoteDeployUpdateJobSummary `json:"summary"`
-	Items           []RemoteDeployUpdateJobItem  `json:"items"`
-	StartedAtUnix   int64                        `json:"started_at_unix_ms,omitempty"`
-	UpdatedAtUnix   int64                        `json:"updated_at_unix_ms,omitempty"`
-	CompletedAtUnix int64                        `json:"completed_at_unix_ms,omitempty"`
-}
-
-type RemoteDeployUpdateJobSummary struct {
-	Total          int `json:"total"`
-	Replaced       int `json:"replaced"`
-	Skipped        int `json:"skipped"`
-	Failed         int `json:"failed"`
-	AlreadyCurrent int `json:"already_current"`
-	Unknown        int `json:"unknown"`
-}
-
-type RemoteDeployUpdateJobItem struct {
-	ID               string `json:"id"`
-	Name             string `json:"name,omitempty"`
-	SSHSessionTarget string `json:"ssh_session_target,omitempty"`
-	Status           string `json:"status,omitempty"`
-	State            string `json:"state"`
-	Reason           string `json:"reason,omitempty"`
-	PreviousImageRef string `json:"previous_image_ref,omitempty"`
-	TargetImageRef   string `json:"target_image_ref,omitempty"`
-	ImageSignature   string `json:"image_signature,omitempty"`
-	Error            string `json:"error,omitempty"`
-}
-
-type RemoteDeploySession struct {
-	ID               string `json:"id"`
-	Name             string `json:"name,omitempty"`
-	Status           string `json:"status,omitempty"`
-	SSHSessionTarget string `json:"ssh_session_target,omitempty"`
-	ImageRef         string `json:"image_ref,omitempty"`
-	LastProgress     string `json:"last_progress,omitempty"`
-	LastError        string `json:"last_error,omitempty"`
-}
-
 type CodexStatus struct {
 	Provider     string              `json:"provider"`
 	Configured   bool                `json:"configured"`
@@ -423,25 +380,6 @@ type AgentUpsertRequest struct {
 	AssignCustomTools   []string                    `json:"assign_custom_tools,omitempty"`
 }
 
-type WorkspaceReplicationSync struct {
-	Enabled bool     `json:"enabled"`
-	Mode    string   `json:"mode,omitempty"`
-	Modules []string `json:"modules,omitempty"`
-}
-
-type WorkspaceReplicationLink struct {
-	ID                  string                   `json:"id"`
-	TargetKind          string                   `json:"target_kind"`
-	TargetSwarmID       string                   `json:"target_swarm_id"`
-	TargetSwarmName     string                   `json:"target_swarm_name"`
-	TargetWorkspacePath string                   `json:"target_workspace_path"`
-	ReplicationMode     string                   `json:"replication_mode"`
-	Writable            bool                     `json:"writable"`
-	Sync                WorkspaceReplicationSync `json:"sync"`
-	CreatedAt           int64                    `json:"created_at"`
-	UpdatedAt           int64                    `json:"updated_at"`
-}
-
 type WorkspaceResolution struct {
 	RequestedPath       string                     `json:"requested_path"`
 	ResolvedPath        string                     `json:"resolved_path"`
@@ -451,28 +389,18 @@ type WorkspaceResolution struct {
 	WorkspacePath       string                     `json:"workspace_path"`
 	WorkspaceName       string                     `json:"workspace_name"`
 	ThemeID             string                     `json:"theme_id,omitempty"`
-	ReplicationLinks    []WorkspaceReplicationLink `json:"replication_links,omitempty"`
 }
 
 type WorkspaceTopologyRoute struct {
 	RouteID              string                   `json:"route_id"`
-	RouteSource          string                   `json:"route_source"`
 	WorkspaceBindingID   string                   `json:"workspace_binding_id"`
 	RuntimeSwarmID       string                   `json:"runtime_swarm_id"`
 	RuntimeSwarmName     string                   `json:"runtime_swarm_name,omitempty"`
 	RuntimeKind          string                   `json:"runtime_kind,omitempty"`
 	RuntimeRelationship  string                   `json:"runtime_relationship,omitempty"`
-	RuntimeBackendURL    string                   `json:"runtime_backend_url,omitempty"`
-	HostSwarmID          string                   `json:"host_swarm_id,omitempty"`
 	HostWorkspacePath    string                   `json:"host_workspace_path"`
 	HostWorkspaceName    string                   `json:"host_workspace_name,omitempty"`
 	RuntimeWorkspacePath string                   `json:"runtime_workspace_path"`
-	ContainerID          string                   `json:"container_id,omitempty"`
-	ReplicationMode      string                   `json:"replication_mode,omitempty"`
-	Writable             bool                     `json:"writable"`
-	Sync                 WorkspaceReplicationSync `json:"sync,omitempty"`
-	CreatedAt            int64                    `json:"created_at"`
-	UpdatedAt            int64                    `json:"updated_at"`
 	TUIPrimaryCWD        bool                     `json:"tui_primary_cwd,omitempty"`
 	UnavailableReason    string                   `json:"unavailable_reason,omitempty"`
 }
@@ -483,15 +411,9 @@ type WorkspaceOverviewSwarmTarget struct {
 	Role         string `json:"role"`
 	Relationship string `json:"relationship"`
 	Kind         string `json:"kind"`
-	DeploymentID string `json:"deployment_id,omitempty"`
-	AttachStatus string `json:"attach_status,omitempty"`
-	HostSwarmID  string `json:"host_swarm_id,omitempty"`
 	Online       bool   `json:"online"`
 	Selectable   bool   `json:"selectable"`
 	Current      bool   `json:"current"`
-	BackendURL   string `json:"backend_url,omitempty"`
-	DesktopURL   string `json:"desktop_url,omitempty"`
-	LastError    string `json:"last_error,omitempty"`
 }
 
 type WorkspaceEntry struct {
@@ -503,7 +425,6 @@ type WorkspaceEntry struct {
 	WorkspaceName           string                     `json:"workspace_name"`
 	ThemeID                 string                     `json:"theme_id,omitempty"`
 	Directories             []string                   `json:"directories"`
-	ReplicationLinks        []WorkspaceReplicationLink `json:"replication_links,omitempty"`
 	IsGitRepo               bool                       `json:"is_git_repo"`
 	SortIndex               int                        `json:"sort_index"`
 	AddedAt                 int64                      `json:"added_at"`
@@ -1280,7 +1201,6 @@ type UISwarmingSettings struct {
 // Do not merge these concepts in future edits.
 type UISwarmSettings struct {
 	Name             string   `json:"name,omitempty"`
-	RemoteSSHTargets []string `json:"remote_ssh_targets,omitempty"`
 }
 
 type UISettings struct {
@@ -1714,61 +1634,6 @@ func (c *API) ApplyUpdate(ctx context.Context) (UpdateApplyPlan, error) {
 		return UpdateApplyPlan{}, err
 	}
 	return plan, nil
-}
-
-func (c *API) RunRemoteDeployUpdateJob(ctx context.Context, devMode *bool, postRebuildCheck bool) (RemoteDeployUpdateJobResult, error) {
-	payload := map[string]any{
-		"post_rebuild_check": postRebuildCheck,
-	}
-	if devMode != nil {
-		payload["dev_mode"] = *devMode
-	}
-	var response struct {
-		OK     bool                        `json:"ok"`
-		PathID string                      `json:"path_id,omitempty"`
-		Result RemoteDeployUpdateJobResult `json:"result"`
-		Error  string                      `json:"error,omitempty"`
-	}
-	status, body, err := c.request(ctx, http.MethodPost, "/v1/deploy/remote/session/update-job", payload, true)
-	if err != nil {
-		return RemoteDeployUpdateJobResult{}, err
-	}
-	if len(body) > 0 {
-		if decodeErr := json.Unmarshal(body, &response); decodeErr != nil {
-			return RemoteDeployUpdateJobResult{}, fmt.Errorf("decode remote deploy update job response: %w", decodeErr)
-		}
-	}
-	if status < http.StatusOK || status >= http.StatusMultipleChoices {
-		message := strings.TrimSpace(response.Error)
-		if message == "" {
-			return response.Result, decodeAPIError(status, body)
-		}
-		return response.Result, fmt.Errorf("api %d: %s", status, message)
-	}
-	if !response.OK {
-		message := strings.TrimSpace(response.Error)
-		if message == "" {
-			message = "remote deploy update job failed"
-		}
-		return response.Result, errors.New(message)
-	}
-	return response.Result, nil
-}
-
-func (c *API) GetRemoteDeploySessions(ctx context.Context, refresh bool) ([]RemoteDeploySession, error) {
-	path := "/v1/deploy/remote/session"
-	if refresh {
-		path += "?refresh=1"
-	}
-	var response struct {
-		OK       bool                  `json:"ok"`
-		Sessions []RemoteDeploySession `json:"sessions"`
-		Error    string                `json:"error,omitempty"`
-	}
-	if err := c.getJSON(ctx, path, &response, true); err != nil {
-		return nil, err
-	}
-	return append([]RemoteDeploySession(nil), response.Sessions...), nil
 }
 
 func (c *API) GetUISettings(ctx context.Context) (UISettings, error) {
@@ -3370,8 +3235,8 @@ func sessionCreateEndpoint(options SessionCreateOptions) (string, error) {
 	if targetKind == "container" || targetKind == "local_container" || targetKind == "local-container" {
 		return "", errors.New("sessions v2 local-container create endpoint has been retired")
 	}
-	if targetRelationship == "child" && targetKind != "" && targetKind != "remote" && targetKind != "managed_host" {
-		return "", fmt.Errorf("unsupported sessions v2 create target kind %q for child route", strings.TrimSpace(options.TargetKind))
+	if targetRelationship == "child" {
+		return "", errors.New("sessions v2 child target create endpoint has been retired")
 	}
 	return "/v2/sessions/primary", nil
 }

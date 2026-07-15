@@ -12,7 +12,6 @@ func TestModelChatRoutesFromCWDResolveUsesResolverRoutesAndPrimaryName(t *testin
 		ResolvedPath: "/tmp/not-workspace",
 		Routes: []client.WorkspaceTopologyRoute{{
 			RouteID:              "host",
-			RouteSource:          "tui/primary_cwd",
 			RuntimeSwarmID:       "host-swarm",
 			RuntimeSwarmName:     "Primary Desk",
 			RuntimeKind:          "host",

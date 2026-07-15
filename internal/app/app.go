@@ -863,7 +863,7 @@ func (a *App) runSessionEventStream(ctx context.Context) {
 		return
 	}
 	lastSeen := a.streamSeq.Load()
-	channels := []string{"swarm:*", "session:*", "ui:*", "workspace:*", "system:agent"}
+	channels := []string{"session:*", "ui:*", "workspace:*", "system:agent"}
 	for {
 		if ctx.Err() != nil {
 			return
@@ -924,7 +924,7 @@ func (a *App) consumeSessionStreamEvents() bool {
 func (a *App) applySessionStreamEvent(event client.StreamEventEnvelope) bool {
 	eventType := strings.ToLower(strings.TrimSpace(event.EventType))
 	switch eventType {
-	case "swarm.enrollment.pending", "swarm.enrollment.approved", "swarm.enrollment.rejected", "notification.created", "notification.updated":
+	case "notification.created", "notification.updated":
 		return a.applySwarmStreamEvent(event)
 	case "agent.profile.created", "agent.profile.updated", "agent.profile.deleted", "agent.active.updated", "agent.defaults.restored", "agent.defaults.reset", "agent.state.synced", "agent.custom_tool.created", "agent.custom_tool.updated", "agent.custom_tool.deleted", "agent.custom_tool.assigned", "agent.custom_tool.unassigned", "agent.active_subagent.updated", "agent.active_subagent.deleted":
 		return a.applyAgentStreamEvent(event)
@@ -1239,16 +1239,6 @@ func (a *App) applySwarmStreamEvent(event client.StreamEventEnvelope) bool {
 	}
 	eventType := strings.ToLower(strings.TrimSpace(event.EventType))
 	switch eventType {
-	case "swarm.enrollment.pending":
-		a.swarmNotificationCount++
-		a.setSwarmNotificationCount(a.swarmNotificationCount)
-		return true
-	case "swarm.enrollment.approved", "swarm.enrollment.rejected":
-		if a.swarmNotificationCount > 0 {
-			a.swarmNotificationCount--
-		}
-		a.setSwarmNotificationCount(a.swarmNotificationCount)
-		return true
 	case "notification.created", "notification.updated":
 		count, err := a.loadSwarmNotificationCount(context.Background())
 		if err != nil {
@@ -7983,7 +7973,6 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 				WorkspaceGeneration:     entry.WorkspaceGeneration,
 				LocalWorkspaceBindingID: strings.TrimSpace(entry.LocalWorkspaceBindingID),
 				Directories:             directories,
-				ReplicationLinks:        modelReplicationLinksFromClient(entry.ReplicationLinks),
 				TopologyRoutes:          modelTopologyRoutesFromClient(entry.TopologyRoutes),
 				ThemeID:                 strings.TrimSpace(entry.ThemeID),
 				Icon:                    workspaceIcon(i),
@@ -8475,7 +8464,7 @@ func buildChatRoutesForWorkspacesWithHostTarget(workspaces []model.Workspace, wo
 	hostBindingID := strings.TrimSpace(active.LocalWorkspaceBindingID)
 	if hostBindingID == "" {
 		for _, route := range active.TopologyRoutes {
-			if strings.TrimSpace(route.WorkspaceBindingID) == "" || strings.TrimSpace(route.ContainerID) != "" {
+			if strings.TrimSpace(route.WorkspaceBindingID) == "" {
 				continue
 			}
 			if hostSwarmID != "" && strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), hostSwarmID) {
@@ -8704,7 +8693,7 @@ func (a *App) sessionRouteFromMetadata(workspacePath string, metadata map[string
 
 	hostWorkspacePath := consumeStringMetadata(metadata, "swarm_routed_host_workspace_path")
 	runtimeWorkspacePath := consumeStringMetadata(metadata, "swarm_routed_runtime_workspace_path")
-	workspaceBindingID := firstNonEmpty(consumeStringMetadata(metadata, "swarm_routed_workspace_binding_id"), consumeStringMetadata(metadata, "swarm_managed_host_workspace_binding_id"), consumeStringMetadata(metadata, "route_workspace_binding_id"))
+	workspaceBindingID := firstNonEmpty(consumeStringMetadata(metadata, "swarm_routed_workspace_binding_id"), consumeStringMetadata(metadata, "route_workspace_binding_id"))
 	childSwarmID := consumeStringMetadata(metadata, "swarm_routed_child_swarm_id")
 	if a == nil {
 		routes := buildChatRoutesForWorkspaces(nil, firstNonEmpty(hostWorkspacePath, workspacePath))
@@ -8811,15 +8800,9 @@ func modelSwarmTargetFromClient(target *client.WorkspaceOverviewSwarmTarget) *mo
 		Role:         strings.TrimSpace(target.Role),
 		Relationship: strings.TrimSpace(target.Relationship),
 		Kind:         strings.TrimSpace(target.Kind),
-		DeploymentID: strings.TrimSpace(target.DeploymentID),
-		AttachStatus: strings.TrimSpace(target.AttachStatus),
-		HostSwarmID:  strings.TrimSpace(target.HostSwarmID),
 		Online:       target.Online,
 		Selectable:   target.Selectable,
 		Current:      target.Current,
-		BackendURL:   strings.TrimSpace(target.BackendURL),
-		DesktopURL:   strings.TrimSpace(target.DesktopURL),
-		LastError:    strings.TrimSpace(target.LastError),
 	}
 }
 
@@ -8836,62 +8819,14 @@ func modelTopologyRoutesFromClient(routes []client.WorkspaceTopologyRoute) []mod
 		}
 		out = append(out, model.WorkspaceTopologyRoute{
 			RouteID:              strings.TrimSpace(route.RouteID),
-			RouteSource:          strings.TrimSpace(route.RouteSource),
 			WorkspaceBindingID:   strings.TrimSpace(route.WorkspaceBindingID),
 			RuntimeSwarmID:       runtimeSwarmID,
 			RuntimeSwarmName:     strings.TrimSpace(route.RuntimeSwarmName),
 			RuntimeKind:          strings.TrimSpace(route.RuntimeKind),
 			RuntimeRelationship:  strings.TrimSpace(route.RuntimeRelationship),
-			RuntimeBackendURL:    strings.TrimSpace(route.RuntimeBackendURL),
-			HostSwarmID:          strings.TrimSpace(route.HostSwarmID),
 			HostWorkspacePath:    strings.TrimSpace(route.HostWorkspacePath),
 			HostWorkspaceName:    strings.TrimSpace(route.HostWorkspaceName),
 			RuntimeWorkspacePath: runtimeWorkspacePath,
-			ContainerID:          strings.TrimSpace(route.ContainerID),
-			ReplicationMode:      strings.TrimSpace(route.ReplicationMode),
-			Writable:             route.Writable,
-			Sync: model.WorkspaceReplicationSync{
-				Enabled: route.Sync.Enabled,
-				Mode:    strings.TrimSpace(route.Sync.Mode),
-				Modules: append([]string(nil), route.Sync.Modules...),
-			},
-			CreatedAt: route.CreatedAt,
-			UpdatedAt: route.UpdatedAt,
-		})
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func modelReplicationLinksFromClient(links []client.WorkspaceReplicationLink) []model.WorkspaceReplicationLink {
-	if len(links) == 0 {
-		return nil
-	}
-	out := make([]model.WorkspaceReplicationLink, 0, len(links))
-	for _, link := range links {
-		id := strings.TrimSpace(link.ID)
-		targetSwarmID := strings.TrimSpace(link.TargetSwarmID)
-		targetWorkspacePath := strings.TrimSpace(link.TargetWorkspacePath)
-		if targetSwarmID == "" || targetWorkspacePath == "" {
-			continue
-		}
-		out = append(out, model.WorkspaceReplicationLink{
-			ID:                  id,
-			TargetKind:          strings.TrimSpace(link.TargetKind),
-			TargetSwarmID:       targetSwarmID,
-			TargetSwarmName:     strings.TrimSpace(link.TargetSwarmName),
-			TargetWorkspacePath: targetWorkspacePath,
-			ReplicationMode:     strings.TrimSpace(link.ReplicationMode),
-			Writable:            link.Writable,
-			Sync: model.WorkspaceReplicationSync{
-				Enabled: link.Sync.Enabled,
-				Mode:    strings.TrimSpace(link.Sync.Mode),
-				Modules: append([]string(nil), link.Sync.Modules...),
-			},
-			CreatedAt: link.CreatedAt,
-			UpdatedAt: link.UpdatedAt,
 		})
 	}
 	if len(out) == 0 {

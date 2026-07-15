@@ -398,7 +398,7 @@ func assertCreateMetadataStrictV2Safe(t *testing.T, metadata map[string]any) {
 	}
 	for key := range metadata {
 		normalized := strings.ToLower(strings.TrimSpace(key))
-		if strings.Contains(normalized, "swarm") || strings.Contains(normalized, "target") || strings.Contains(normalized, "routing") || strings.Contains(normalized, "route") || strings.Contains(normalized, "path") || strings.Contains(normalized, "workspace_name") || strings.Contains(normalized, "managed_host") {
+		if strings.Contains(normalized, "swarm") || strings.Contains(normalized, "target") || strings.Contains(normalized, "routing") || strings.Contains(normalized, "route") || strings.Contains(normalized, "path") || strings.Contains(normalized, "workspace_name") {
 			t.Fatalf("create metadata contains v2 authority-looking key %q in %#v", key, metadata)
 		}
 	}

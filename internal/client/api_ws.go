@@ -37,8 +37,6 @@ type StreamEventEnvelope struct {
 	EntityID      string             `json:"entity_id"`
 	Payload       json.RawMessage    `json:"payload"`
 	TsUnixMs      int64              `json:"ts_unix_ms"`
-	Pairing       SwarmPairingState  `json:"pairing"`
-	TrustedPeers  []SwarmTrustedPeer `json:"trusted_peers"`
 	CausationID   string             `json:"causation_id,omitempty"`
 	CorrelationID string             `json:"correlation_id,omitempty"`
 }

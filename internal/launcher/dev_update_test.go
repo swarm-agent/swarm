@@ -26,7 +26,6 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 	originalSyncContainers := syncDevContainerImagesWithFingerprintForUpdate
 	originalInstallLaunchers := installLaunchersForUpdate
 	originalEnsureUnit := ensureSystemdServiceUnitForUpdate
-	originalRunRemoteContainers := runDevRemoteDeployUpdateJobAfterRestartForUpdate
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
 		startBackendForUpdate = originalStartBackend
@@ -42,7 +41,6 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 		syncDevContainerImagesWithFingerprintForUpdate = originalSyncContainers
 		installLaunchersForUpdate = originalInstallLaunchers
 		ensureSystemdServiceUnitForUpdate = originalEnsureUnit
-		runDevRemoteDeployUpdateJobAfterRestartForUpdate = originalRunRemoteContainers
 	}()
 
 	calls := []string{}
@@ -113,11 +111,6 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 		t.Fatalf("direct backend start should not run for systemd restart plan")
 		return nil
 	}
-	runDevRemoteDeployUpdateJobAfterRestartForUpdate = func(Profile) error {
-		calls = append(calls, "remote-container-update")
-		return nil
-	}
-
 	if err := RunDevUpdate(profile, nil); err != nil {
 		t.Fatalf("RunDevUpdate: %v", err)
 	}
@@ -131,7 +124,7 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 	if !(installIndex < ensureIndex && ensureIndex < restartIndex) {
 		t.Fatalf("systemd unit reconciliation order wrong: calls=%v", calls)
 	}
-	want := []string{"preflight", "resolve-lifecycle", "service-active", "stop", "build-swarmd", "build-tools", "build-tui", "web-check", "sync-container-images", "install-launchers", "ensure-unit", "restart-systemd", "remote-container-update"}
+	want := []string{"preflight", "resolve-lifecycle", "service-active", "stop", "build-swarmd", "build-tools", "build-tui", "web-check", "sync-container-images", "install-launchers", "ensure-unit", "restart-systemd"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %v, want %v", calls, want)
 	}
@@ -176,7 +169,6 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 	originalSyncContainers := syncDevContainerImagesWithFingerprintForUpdate
 	originalInstallLaunchers := installLaunchersForUpdate
 	originalEnsureUnit := ensureSystemdServiceUnitForUpdate
-	originalRunRemoteContainers := runDevRemoteDeployUpdateJobAfterRestartForUpdate
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
 		startBackendForUpdate = originalStartBackend
@@ -192,7 +184,6 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 		syncDevContainerImagesWithFingerprintForUpdate = originalSyncContainers
 		installLaunchersForUpdate = originalInstallLaunchers
 		ensureSystemdServiceUnitForUpdate = originalEnsureUnit
-		runDevRemoteDeployUpdateJobAfterRestartForUpdate = originalRunRemoteContainers
 	}()
 
 	profile := newDevUpdateTestProfile(t)
@@ -219,11 +210,6 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 		t.Fatalf("direct backend start should not run after unit reconciliation failure")
 		return nil
 	}
-	runDevRemoteDeployUpdateJobAfterRestartForUpdate = func(Profile) error {
-		t.Fatalf("post-restart remote container update should not run after unit reconciliation failure")
-		return nil
-	}
-
 	err := RunDevUpdate(profile, nil)
 	if err == nil {
 		t.Fatalf("RunDevUpdate succeeded; want unit reconciliation failure")

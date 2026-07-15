@@ -15,14 +15,9 @@ func TestWorkspaceOverviewSwarmTargetMapsIntoHomeModel(t *testing.T) {
 			Role:         " master ",
 			Relationship: " self ",
 			Kind:         " local ",
-			DeploymentID: " deploy-1 ",
-			AttachStatus: " attached ",
-			HostSwarmID:  " host-swarm ",
 			Online:       true,
 			Selectable:   true,
 			Current:      true,
-			BackendURL:   " http://127.0.0.1:7781 ",
-			DesktopURL:   " http://127.0.0.1:7780 ",
 		},
 	}
 	home := model.EmptyHome()
