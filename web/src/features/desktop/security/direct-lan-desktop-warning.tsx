@@ -13,9 +13,6 @@ export function getDirectLANDesktopWarning(): DirectLANDesktopWarning | null {
   if (!host || isLoopbackBrowserHost(host)) {
     return null
   }
-  if (window.location.protocol === 'https:' && isTailscaleHost(host)) {
-    return null
-  }
   if (!isPrivateBrowserHost(host) && window.location.protocol !== 'http:') {
     return null
   }
@@ -34,12 +31,11 @@ export function DirectLANDesktopWarningScreen({ warning }: { warning: DirectLAND
             <div className="text-lg font-semibold">Direct LAN desktop is disabled for this MVP</div>
             <p className="mt-2 text-sm leading-6 text-[var(--app-text-muted)]">
               This browser opened Swarm through the network address <span className="font-mono text-[var(--app-text)]">{warning.host}</span>.
-              Swarm does not yet have a safe LAN desktop pairing flow, so desktop API auth will reject this access path.
+              Direct network access is not supported, so desktop API auth will reject this access path.
             </p>
             <p className="mt-3 text-sm leading-6 text-[var(--app-text-muted)]">
               Keep <span className="font-mono text-[var(--app-text)]">host = 127.0.0.1</span> in <span className="font-mono text-[var(--app-text)]">swarm.conf</span>,
-              then connect from another device with an SSH tunnel to the desktop port, or use Tailscale.
-              Tailscale is usually the lower-friction secure option.
+              then connect from another device with an SSH tunnel to the desktop port.
             </p>
             <p className="mt-3 text-xs leading-5 text-[var(--app-text-subtle)]">
               A browser "Not Secure" warning means the page is plain HTTP. That warning is separate from Swarm auth; direct private-LAN HTTP is not the supported secure path for launch.
@@ -82,6 +78,3 @@ function isPrivateBrowserHost(host: string): boolean {
     || (a === 169 && b === 254)
 }
 
-function isTailscaleHost(host: string): boolean {
-  return host.endsWith('.ts.net')
-}

@@ -1024,8 +1024,6 @@ function loadSidebarWorkspaceLayout(): Record<string, SidebarWorkspaceLayout> {
 function swarmRoleLabel(target: Pick<SwarmTarget, 'role'> | null | undefined): string {
   const role = target?.role?.trim().toLowerCase() || ''
   switch (role) {
-    case 'managed':
-      return 'Remote Host'
     case 'child':
       return 'Child'
     case 'controller':
@@ -2456,8 +2454,6 @@ export function DesktopAppPage() {
         target.swarm_id.trim(),
         target.relationship.trim(),
         target.role.trim(),
-        target.attach_status?.trim() ?? '',
-        target.backend_url?.trim() ?? '',
         target.current ? '1' : '0',
         target.online ? '1' : '0',
       ].join(':'))

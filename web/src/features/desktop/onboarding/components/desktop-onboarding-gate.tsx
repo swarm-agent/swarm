@@ -452,7 +452,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       username: status.identity.bootstrapped ? undefined : normalizedUsername,
       swarmName: normalizedName,
       desktopOnboardingComplete: false,
-      child: false,
     })
     const refreshed = await onReload()
     setStatus(refreshed)
@@ -791,7 +790,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                       disabled={submitting}
                     />
                     <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                      This is the device label Swarm shows in discovery and launcher screens. It does not change your username.
+                      This is the device label Swarm shows in launcher screens. It does not change your username.
                     </p>
                   </div>
 
