@@ -92,17 +92,7 @@ func (s *Server) createSessionFromRequest(req sessionCreateRequest, principal id
 	return s.createSessionFromRequestWithSessionID(req, overrideMetadata, allowWorktree, "", principal, principalOK)
 }
 
-func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest, overrideMetadata map[string]any, allowWorktree bool, sessionIDOverride string, principalAndOK ...any) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, string, string, error) {
-	principal := identity.Principal{}
-	principalOK := false
-	if len(principalAndOK) >= 2 {
-		if typed, ok := principalAndOK[0].(identity.Principal); ok {
-			principal = typed
-		}
-		if typed, ok := principalAndOK[1].(bool); ok {
-			principalOK = typed
-		}
-	}
+func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest, overrideMetadata map[string]any, allowWorktree bool, sessionIDOverride string, principal identity.Principal, principalOK bool) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, string, string, error) {
 	createMetadata := mergeSessionCreateMetadata(req.Metadata, overrideMetadata)
 	workspacePath := strings.TrimSpace(req.HostWorkspacePath)
 	if workspacePath == "" && strings.TrimSpace(req.WorkspaceBindingID) != "" && principalOK && principal.Valid() && s != nil && s.topology != nil {

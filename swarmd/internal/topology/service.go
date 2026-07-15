@@ -16,7 +16,7 @@ type Service struct {
 	swarmStore    *pebblestore.SwarmStore
 }
 
-func NewService(topologyStore *pebblestore.TopologyStore, swarmStore *pebblestore.SwarmStore, _ ...any) *Service {
+func NewService(topologyStore *pebblestore.TopologyStore, swarmStore *pebblestore.SwarmStore) *Service {
 	return &Service{topologyStore: topologyStore, swarmStore: swarmStore}
 }
 

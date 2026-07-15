@@ -70,7 +70,7 @@ func TestSwarmTargetsForRequestIncludesTopologyRuntime(t *testing.T) {
 	server := &Server{
 		startupConfigPath: filepath.Join(t.TempDir(), "swarm.conf"),
 		swarm:             fakeRoutedSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "local-swarm", Name: "local", Role: "master"}}},
-		topology:          topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil),
+		topology:          topologyruntime.NewService(topologyStore, nil),
 	}
 	targets, _, err := server.swarmTargetsForRequest(requestWithTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/swarm/targets", nil)))
 	if err != nil {

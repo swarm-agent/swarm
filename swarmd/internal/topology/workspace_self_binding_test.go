@@ -22,7 +22,7 @@ func TestEnsureLocalWorkspaceSelfBindingForPrincipalCreatesAndReusesBinding(t *t
 	if _, err := topologyStore.PutRuntimePlacementForAccount("account-a", pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "local-swarm", AccountScopeID: "account-a", AuthorityHostSwarmID: "local-swarm", RuntimeKind: pebblestore.TopologyRuntimeKindHost, PlacementGeneration: 3, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
 		t.Fatalf("put local self placement: %v", err)
 	}
-	service := NewService(topologyStore, swarmStore, nil, nil, nil)
+	service := NewService(topologyStore, swarmStore)
 	workspaceEntry := pebblestore.WorkspaceEntry{AccountScopeID: "account-a", WorkspaceID: "ws-a", WorkspaceGeneration: 1, Path: "/workspace-a", Name: "workspace-a"}
 
 	binding, err := service.EnsureLocalWorkspaceSelfBindingForPrincipal("account-a", "user-a", workspaceEntry)
@@ -55,7 +55,7 @@ func TestEnsureLocalWorkspaceSelfBindingForPrincipalRequiresExistingPlacement(t 
 	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "local-swarm", Name: "Local", Role: "host"}); err != nil {
 		t.Fatalf("put local node: %v", err)
 	}
-	service := NewService(topologyStore, swarmStore, nil, nil, nil)
+	service := NewService(topologyStore, swarmStore)
 	workspaceEntry := pebblestore.WorkspaceEntry{AccountScopeID: "account-a", WorkspaceID: "ws-a", WorkspaceGeneration: 1, Path: "/workspace-a", Name: "workspace-a"}
 
 	_, err = service.EnsureLocalWorkspaceSelfBindingForPrincipal("account-a", "user-a", workspaceEntry)
@@ -81,7 +81,7 @@ func TestEnsureLocalWorkspaceSelfBindingForPrincipalRejectsInvalidNonHostPlaceme
 	if err := store.PutJSON(pebblestore.KeyTopologyRuntimePlacementForAccount("account-a", "local-swarm"), pebblestore.TopologyRuntimePlacementRecord{PlacementID: "rtp_invalid", RuntimeSwarmID: "local-swarm", AccountScopeID: "account-a", AuthorityHostSwarmID: "local-swarm", AuthorityContainerID: "container-a", RuntimeKind: pebblestore.TopologyRuntimeKindHost, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
 		t.Fatalf("put invalid local placement: %v", err)
 	}
-	service := NewService(topologyStore, swarmStore, nil, nil, nil)
+	service := NewService(topologyStore, swarmStore)
 	workspaceEntry := pebblestore.WorkspaceEntry{AccountScopeID: "account-a", WorkspaceID: "ws-a", WorkspaceGeneration: 1, Path: "/workspace-a", Name: "workspace-a"}
 
 	_, err = service.EnsureLocalWorkspaceSelfBindingForPrincipal("account-a", "user-a", workspaceEntry)

@@ -292,7 +292,7 @@ func newOnboardingPrimaryTopologyTestServer(t *testing.T) (*Server, *identity.Se
 		t.Fatalf("put local node: %v", err)
 	}
 	topologyStore := pebblestore.NewTopologyStore(store)
-	topologySvc := topologyruntime.NewService(topologyStore, swarmStore, nil, nil, pebblestore.NewWorkspaceStore(store))
+	topologySvc := topologyruntime.NewService(topologyStore, swarmStore)
 	swarmSvc := swarmruntime.NewService(swarmStore, eventLog, nil)
 	server := NewServer(authSvc, agentSvc, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, notificationSvc, eventLog, hub)
 	server.SetIdentityService(identitySvc)

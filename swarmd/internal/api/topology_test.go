@@ -33,7 +33,7 @@ func TestSwarmTopologySnapshotReturnsCanonicalRuntimes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("put runtime: %v", err)
 	}
-	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil)
+	topologySvc := topologyruntime.NewService(topologyStore, nil)
 	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	server.SetTopologyService(topologySvc)
 

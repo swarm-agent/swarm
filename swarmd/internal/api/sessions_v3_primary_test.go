@@ -3906,7 +3906,7 @@ func newSessionsV3PrimaryAPITestServer(t *testing.T, storePath string) (*Server,
 	server := NewServer(nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
-	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore, nil, nil, pebblestore.NewWorkspaceStore(store)))
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore))
 	server.SetSwarmStore(swarmStore)
 	server.v3SessionExecutor = nil
 	closeStore := func() error {

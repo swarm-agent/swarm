@@ -30,7 +30,7 @@ func TestSwarmTopologyRoutesUseAccountScopedReadsNoGlobalFallback(t *testing.T) 
 	}
 
 	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil))
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil))
 
 	req := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodGet, "/v1/swarm/topology", nil), "user-a", "account-a")
 	rec := httptest.NewRecorder()

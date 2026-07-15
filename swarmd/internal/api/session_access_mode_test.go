@@ -64,7 +64,7 @@ func newSessionAccessModeTestServer(t *testing.T, accessMode string) (*Server, *
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	server := NewServer(nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, nil, nil, events, stream.NewHub(events))
 	topologyStore := pebblestore.NewTopologyStore(store)
-	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil, nil, nil, nil))
+	server.SetTopologyService(topologyruntime.NewService(topologyStore, nil))
 	accountID := testPrincipal().AccountScopeID
 	userID := testPrincipal().UserID
 	if _, err := topologyStore.PutRuntimeForAccount(accountID, pebblestore.TopologyRuntimeRecord{SwarmID: "local-swarm", AccountScopeID: accountID, UserID: userID, Name: "local", Status: "online"}); err != nil {

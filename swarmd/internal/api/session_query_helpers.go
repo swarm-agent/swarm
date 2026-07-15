@@ -34,6 +34,3 @@ func parseRequestPositiveLimit(w http.ResponseWriter, r *http.Request, defaultLi
 	return limit, true
 }
 
-func parseSessionsV2PositiveLimit(w http.ResponseWriter, r *http.Request, defaultLimit int) (int, bool) {
-	return parseRequestPositiveLimit(w, r, defaultLimit)
-}

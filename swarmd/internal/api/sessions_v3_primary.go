@@ -66,7 +66,6 @@ type sessionsV3MessageRequest struct {
 	Content           string         `json:"content"`
 	Metadata          map[string]any `json:"metadata,omitempty"`
 	DispatchAuthority map[string]any `json:"dispatch_authority,omitempty"`
-	Authority         map[string]any `json:"authority,omitempty"`
 }
 
 type sessionsV3StopRequest struct {
@@ -640,7 +639,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 }
 
 func (s *Server) handleSessionsV3PrimaryList(w http.ResponseWriter, r *http.Request, principal identity.Principal) {
-	limit, ok := parseSessionsV2PositiveLimit(w, r, 100)
+	limit, ok := parseRequestPositiveLimit(w, r, 100)
 	if !ok {
 		return
 	}
@@ -2705,7 +2704,7 @@ func parseSessionsV3PrimaryPath(path string) (string, string, bool) {
 }
 
 func parseSessionsV3PlansLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
-	limit, ok := parseSessionsV2PositiveLimit(w, r, sessionsV3PlansPageDefaultLimit)
+	limit, ok := parseRequestPositiveLimit(w, r, sessionsV3PlansPageDefaultLimit)
 	if !ok {
 		return 0, false
 	}
@@ -3251,7 +3250,6 @@ func sessionsV3MessagePayloadHash(sessionID string, req sessionsV3MessageRequest
 		RunStatus         string         `json:"run_status"`
 		BlockedReason     string         `json:"blocked_reason"`
 		AuthorityStatus   string         `json:"authority_status"`
-		Authority         map[string]any `json:"authority,omitempty"`
 		DispatchAuthority map[string]any `json:"dispatch_authority,omitempty"`
 	}{
 		Operation:         sessionruntime.SessionMutationAppendMessage,
@@ -3264,7 +3262,6 @@ func sessionsV3MessagePayloadHash(sessionID string, req sessionsV3MessageRequest
 		RunStatus:         runStatus,
 		BlockedReason:     blockedReason,
 		AuthorityStatus:   sessionsV3PrimaryAuthorityStatus(req),
-		Authority:         cloneSessionsV3Metadata(req.Authority),
 		DispatchAuthority: cloneSessionsV3Metadata(req.DispatchAuthority),
 	}
 	raw, err := json.Marshal(canonical)
@@ -3447,7 +3444,7 @@ func sessionsV3AgentSwitchMetadata(current map[string]any, agent sessionsV3Resol
 }
 
 func sessionsV3PrimaryAuthorityStatus(req sessionsV3MessageRequest) string {
-	if len(req.DispatchAuthority) > 0 || len(req.Authority) > 0 {
+	if len(req.DispatchAuthority) > 0 {
 		return "invalid"
 	}
 	return "absent"
@@ -3461,7 +3458,7 @@ func (s *Server) sessionsV3PrimaryRunIntentStatus(principal identity.Principal, 
 }
 
 func (s *Server) sessionsV3PrimaryDispatchBlockedReason(principal identity.Principal, session pebblestore.SessionSnapshot, req sessionsV3MessageRequest) string {
-	authority := firstNonEmptyMap(req.DispatchAuthority, req.Authority)
+	authority := req.DispatchAuthority
 	if len(authority) == 0 {
 		return ""
 	}
@@ -3559,15 +3556,6 @@ func (s *Server) sessionsV3PrimaryDispatchBlockedReason(principal identity.Princ
 		return "dispatch authority runtime workspace path mismatch"
 	}
 	return ""
-}
-
-func firstNonEmptyMap(maps ...map[string]any) map[string]any {
-	for _, item := range maps {
-		if len(item) > 0 {
-			return item
-		}
-	}
-	return nil
 }
 
 func sessionsV3AuthorityString(authority map[string]any, keys ...string) string {
