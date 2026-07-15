@@ -450,7 +450,7 @@ func (s *Server) handlePrimarySessionV2Get(w http.ResponseWriter, r *http.Reques
 			gitStatusResponseFields: fields,
 			GitCommitDetected:       gitCommitDetectedForSession(session, fields),
 			GitCommitCount:          gitCommitCountForSession(session, fields),
-			SessionExecution:        runtimeSessionsV2ExecutionFromRecord(authority.Execution),
+			SessionExecution:        sessionsV2ExecutionFromRecord(authority.Execution),
 		},
 	})
 }

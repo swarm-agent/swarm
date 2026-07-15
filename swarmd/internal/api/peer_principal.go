@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
-	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -76,11 +75,6 @@ func (s *Server) trustedSessionPrincipalForRequest(r *http.Request, sessionID st
 		flowRouteDiagLog("trusted_session_principal_pairing", "path", path, "ok", ok, "principal_valid", principal.Valid(), "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID, "peer_swarm_id", peerSwarmID)
 		return principal, ok
 	}
-	if strings.HasPrefix(path, runtimeSessionsV2Prefix) {
-		principal, ok := s.trustedRuntimeSessionV2PrincipalForPeerRequest(r, sessionID)
-		flowRouteDiagLog("trusted_session_principal_runtime_v2", "path", path, "session_id", sessionID, "ok", ok, "principal_valid", principal.Valid(), "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID, "peer_swarm_id", peerSwarmID)
-		return principal, ok
-	}
 	// Host/container peer auth and the local transport prove transport identity
 	// only. Forwarded X-Swarm-Principal-* headers are claims, not authority;
 	// the receiving runtime may mint request principal context only from
@@ -138,9 +132,6 @@ func (s *Server) trustedSessionPrincipalForRequest(r *http.Request, sessionID st
 		flowRouteDiagLog("trusted_session_principal_route_lookup", "path", path, "session_id", sessionID, "found", false, "reason", "session_routes_store_nil", "peer_swarm_id", peerSwarmID)
 	}
 	if !routeFound {
-		if executionPrincipal, ok := s.trustedRuntimeSessionV2PrincipalForPeerRequest(r, sessionID); ok {
-			return executionPrincipal, true
-		}
 		flowRouteDiagLog("trusted_session_principal_reject", "reason", "route_not_found", "path", path, "session_id", sessionID, "peer_swarm_id", peerSwarmID)
 		return identity.Principal{}, false
 	}
@@ -156,47 +147,6 @@ func (s *Server) trustedSessionPrincipalForRequest(r *http.Request, sessionID st
 		return identity.Principal{}, false
 	}
 	flowRouteDiagLog("trusted_session_principal_success", "path", path, "session_id", sessionID, "principal_user_id", principal.UserID, "principal_account_scope_id", principal.AccountScopeID)
-	return principal, true
-}
-
-func (s *Server) trustedRuntimeSessionV2PrincipalForPeerRequest(r *http.Request, sessionID string) (identity.Principal, bool) {
-	if s == nil || r == nil || s.sessions == nil || s.sessions.Store() == nil {
-		return identity.Principal{}, false
-	}
-	peerSwarmID, authorizedPeer := authorizedPeerSwarmID(r)
-	if !authorizedPeer && !isLocalTransportRequest(r) {
-		return identity.Principal{}, false
-	}
-	execution, ok, err := s.sessions.Store().GetSessionExecutionV2(sessionID)
-	if err != nil || !ok {
-		return identity.Principal{}, false
-	}
-	if strings.TrimSpace(execution.ExecutionClass) != sessionruntime.SessionExecutionClassLocalContainer {
-		return identity.Principal{}, false
-	}
-	if authorizedPeer {
-		peerSwarmID = strings.TrimSpace(peerSwarmID)
-		if peerSwarmID == "" {
-			return identity.Principal{}, false
-		}
-		if strings.TrimSpace(execution.AuthorityHostSwarmID) != "" && strings.EqualFold(peerSwarmID, strings.TrimSpace(execution.AuthorityHostSwarmID)) {
-			// Primary host dispatching to its owned runtime container.
-		} else if strings.TrimSpace(execution.RuntimeSwarmID) != "" && strings.EqualFold(peerSwarmID, strings.TrimSpace(execution.RuntimeSwarmID)) {
-			// Runtime container dispatching to its primary-side mirror.
-		} else {
-			return identity.Principal{}, false
-		}
-	}
-	principal := identity.Principal{
-		Type:               identity.PrincipalTypeUser,
-		UserID:             strings.TrimSpace(execution.UserID),
-		AccountScopeID:     strings.TrimSpace(execution.AccountScopeID),
-		AccountScopeSource: identity.AccountScopeSourceSession,
-		SessionID:          strings.TrimSpace(execution.SessionID),
-	}
-	if !principal.Valid() {
-		return identity.Principal{}, false
-	}
 	return principal, true
 }
 
@@ -307,15 +257,9 @@ func (s *Server) peerSessionTransportMatchesPairedParentForRoute(r *http.Request
 
 func peerSessionIDFromRequestPath(path string) string {
 	path = strings.TrimSpace(path)
-	if path == runtimeSessionsV2OpenPath {
-		return ""
-	}
 	prefix := "/v1/sessions/"
 	if !strings.HasPrefix(path, prefix) {
-		prefix = runtimeSessionsV2Prefix
-		if !strings.HasPrefix(path, prefix) {
-			return ""
-		}
+		return ""
 	}
 	rest := strings.Trim(strings.TrimPrefix(path, prefix), "/")
 	if rest == "" {

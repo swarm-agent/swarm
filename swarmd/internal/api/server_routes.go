@@ -153,8 +153,6 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v3/sessions/", s.handleSessionV3PrimaryByID)
 	mux.HandleFunc("/v2/sessions", s.handleSessionsV2List)
 	mux.HandleFunc("/v2/sessions/primary", s.handleSessionsV2Primary)
-	mux.HandleFunc(runtimeSessionsV2OpenPath, s.handleRuntimeSessionsV2Open)
-	mux.HandleFunc(runtimeSessionsV2Prefix, s.handleRuntimeSessionsV2ByID)
 	mux.HandleFunc("/v2/sessions/", s.handlePrimarySessionV2ByID)
 	mux.HandleFunc("/v1/sessions", s.handleSessions)
 	mux.HandleFunc("/v1/sessions/", s.handleSessionByID)
