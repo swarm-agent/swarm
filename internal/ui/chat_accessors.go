@@ -55,6 +55,13 @@ func (p *ChatPage) SetStatus(status string) {
 	p.errorLine = ""
 }
 
+func (p *ChatPage) LiveAssistantText() string {
+	if p == nil {
+		return ""
+	}
+	return p.liveAssistant
+}
+
 func (p *ChatPage) Status() string {
 	if p == nil {
 		return ""
@@ -153,6 +160,10 @@ func (p *ChatPage) SetMessages(messages []ChatMessageRecord) {
 	}
 	lifecycle := p.lifecycle
 	restoreLiveAssistant := p.liveAssistant
+	restoreLiveAssistantRunID := p.liveAssistantRunID
+	restoreLiveAssistantStreamID := p.liveAssistantStreamID
+	restoreLiveAssistantNextSeq := p.liveAssistantNextSeq
+	restoreLiveAssistantOffset := p.liveAssistantOffset
 	restoreLiveThinking := p.liveThinking
 	restoreThinkingSummary := p.thinkingSummary
 	restoreThinkingCompletedAt := p.thinkingCompletedAt
@@ -168,6 +179,7 @@ func (p *ChatPage) SetMessages(messages []ChatMessageRecord) {
 	p.toolStream = nil
 	p.bashOutput = chatBashOutputState{}
 	p.liveAssistant = ""
+	p.resetLiveAssistantStream()
 	p.liveThinking = ""
 	p.thinkingCompletedAt = time.Time{}
 	p.reasoningActive = false
@@ -180,6 +192,10 @@ func (p *ChatPage) SetMessages(messages []ChatMessageRecord) {
 		p.lifecycle = lifecycle
 		p.busy = true
 		p.liveAssistant = restoreLiveAssistant
+		p.liveAssistantRunID = restoreLiveAssistantRunID
+		p.liveAssistantStreamID = restoreLiveAssistantStreamID
+		p.liveAssistantNextSeq = restoreLiveAssistantNextSeq
+		p.liveAssistantOffset = restoreLiveAssistantOffset
 		p.liveThinking = restoreLiveThinking
 		p.thinkingSummary = restoreThinkingSummary
 		p.thinkingCompletedAt = restoreThinkingCompletedAt

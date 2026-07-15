@@ -387,6 +387,10 @@ type ChatPage struct {
 	reasoningStartedAt       time.Time
 	activeReasoningMessageID string
 	liveAssistant            string
+	liveAssistantRunID       string
+	liveAssistantStreamID    string
+	liveAssistantNextSeq     uint64
+	liveAssistantOffset      uint64
 	streamingRun             bool
 	streamedTools            map[string]struct{}
 	authConfigured           bool
@@ -1711,6 +1715,7 @@ func (p *ChatPage) startRunRequest(req ChatSendRequest, displayPrompt string, ap
 	p.reasoningStartedAt = time.Time{}
 	p.activeReasoningMessageID = ""
 	p.liveAssistant = ""
+	p.resetLiveAssistantStream()
 	p.streamingRun = false
 	p.streamedTools = make(map[string]struct{}, 16)
 	p.runStarted = time.Time{}
@@ -2154,9 +2159,80 @@ func (p *ChatPage) maybeCompleteThinkingBeforeEvent(event ChatRunStreamEvent, ev
 	}
 }
 
+func (p *ChatPage) applyLiveAssistantPatch(event ChatRunStreamEvent, atUnix int64) bool {
+	if p == nil || event.Delta == "" || strings.TrimSpace(event.RunID) == "" || strings.TrimSpace(event.StreamID) == "" {
+		return false
+	}
+	if strings.TrimSpace(event.StreamKind) != "assistant_text" || strings.TrimSpace(event.Operation) != "append" {
+		return false
+	}
+	runID := strings.TrimSpace(event.RunID)
+	streamID := strings.TrimSpace(event.StreamID)
+	if p.liveAssistantRunID != runID || p.liveAssistantStreamID != streamID {
+		if strings.TrimSpace(p.liveAssistant) != "" {
+			p.flushLiveAssistantToTimeline(atUnix)
+		}
+		if event.LiveSeqStart != 1 || event.OffsetStart != 0 {
+			return false
+		}
+		p.liveAssistant = ""
+		p.liveAssistantRunID = runID
+		p.liveAssistantStreamID = streamID
+		p.liveAssistantNextSeq = event.LiveSeqStart
+		p.liveAssistantOffset = event.OffsetStart
+	}
+	if event.LiveSeqEnd < event.LiveSeqStart || event.OffsetEnd-event.OffsetStart != uint64(len([]byte(event.Delta))) {
+		return false
+	}
+	if event.LiveSeqEnd < p.liveAssistantNextSeq || event.OffsetEnd <= p.liveAssistantOffset {
+		return false
+	}
+	if event.LiveSeqStart != p.liveAssistantNextSeq || event.OffsetStart != p.liveAssistantOffset {
+		return false
+	}
+	p.liveAssistant += event.Delta
+	p.liveAssistantNextSeq = event.LiveSeqEnd + 1
+	p.liveAssistantOffset = event.OffsetEnd
+	return true
+}
+
+func (p *ChatPage) resetLiveAssistantStream() {
+	if p == nil {
+		return
+	}
+	p.liveAssistantRunID = ""
+	p.liveAssistantStreamID = ""
+	p.liveAssistantNextSeq = 0
+	p.liveAssistantOffset = 0
+}
+
 func (p *ChatPage) ApplySharedStreamEvent(event ChatRunStreamEvent, atUnix int64) bool {
 	if p == nil {
 		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(event.Type), "assistant.live.delta") {
+		runID := strings.TrimSpace(event.RunID)
+		if runID == "" {
+			return false
+		}
+		if p.runCancel != nil && strings.TrimSpace(p.ownedRunID) == "" {
+			p.ownedRunID = runID
+		}
+		ownedRunID := strings.TrimSpace(p.ownedRunID)
+		lifecycleRunID := ""
+		if p.lifecycle != nil && p.lifecycle.Active {
+			lifecycleRunID = strings.TrimSpace(p.lifecycle.RunID)
+		}
+		if (ownedRunID == "" || ownedRunID != runID) && (lifecycleRunID == "" || lifecycleRunID != runID) {
+			return false
+		}
+		if !p.applyLiveAssistantPatch(event, atUnix) {
+			return false
+		}
+		p.streamingRun = true
+		p.completeThinkingTimeline("done", atUnix, "")
+		p.statusLine = fmt.Sprintf("streaming response %s %s", p.spinnerFrame(), p.runElapsedLabel())
+		return true
 	}
 	if p.shouldIgnoreSharedStreamEvent(event) {
 		return false
@@ -3652,8 +3728,13 @@ func (p *ChatPage) flushLiveAssistantToTimeline(atUnix int64) {
 	if createdAt <= 0 {
 		createdAt = time.Now().UnixMilli()
 	}
-	p.appendMessage("assistant", text, createdAt)
+	metadata := map[string]any{}
+	if runID := strings.TrimSpace(p.liveAssistantRunID); runID != "" {
+		metadata["run_id"] = runID
+	}
+	p.appendMessageWithMetadata("assistant", text, metadata, createdAt)
 	p.liveAssistant = ""
+	p.resetLiveAssistantStream()
 }
 
 func (p *ChatPage) appendToolMessage(entry chatToolStreamEntry, createdAt int64) {

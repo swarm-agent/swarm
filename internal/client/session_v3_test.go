@@ -302,6 +302,40 @@ func TestSessionV3TUIWorksetClientUsesTUIRouteAndScope(t *testing.T) {
 	}
 }
 
+func TestStreamSessionsV3RealtimeDeliversLiveAssistantPatchWithoutAdvancingDurableOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, rw, err := hijackLifecycleTestWebsocket(w, r)
+		if err != nil {
+			t.Fatalf("hijack websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := readClientLifecycleTestFrame(rw); err != nil {
+			t.Fatalf("read resume: %v", err)
+		}
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "live.patch", "session_id": "session-a", "live": map[string]any{"session_id": "session-a", "run_id": "run-1", "stream_id": "assistant:run-1:step:1", "stream_kind": "assistant_text", "operation": "append", "step": 1, "step_id": "step-1", "live_seq_start": 1, "live_seq_end": 1, "offset_start": 0, "offset_end": 5, "text": "hello", "recorded_at": 100}})
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "event", "session_id": "session-a", "event_type": "session.title.updated", "last_seq": 2, "rev": 2, "prevRev": 1, "event": map[string]any{"id": "evt-2", "session_id": "session-a", "seq": 2, "event_type": "session.title.updated", "payload": map[string]any{"title": "after live"}}})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var frames []V3RealtimeFrame
+	err := api.StreamSessionsV3Realtime(ctx, []V3RealtimeSubscription{{SessionID: "session-a", EndpointCursor: "cursor-1", LastSeq: 1, SubscriptionID: "sub-a"}}, func(frame V3RealtimeFrame) {
+		frames = append(frames, frame)
+		if len(frames) == 2 {
+			cancel()
+		}
+	})
+	if err != nil {
+		t.Fatalf("StreamSessionsV3Realtime() error = %v", err)
+	}
+	if len(frames) != 2 || frames[0].Kind != "live.patch" || frames[0].Live == nil || frames[0].Live.Text != "hello" || frames[1].Event == nil || frames[1].Event.Seq != 2 {
+		t.Fatalf("frames = %#v", frames)
+	}
+}
+
 func TestStreamSessionsV3RealtimeAcceptsSparseFilteredSessionSequences(t *testing.T) {
 	var gotPath string
 	var subscribes []map[string]any

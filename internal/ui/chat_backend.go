@@ -120,6 +120,14 @@ type ChatRunStreamEvent struct {
 	Status       string
 	SessionMode  string
 	Step         int
+	StepID       string
+	StreamID     string
+	StreamKind   string
+	Operation    string
+	LiveSeqStart uint64
+	LiveSeqEnd   uint64
+	OffsetStart  uint64
+	OffsetEnd    uint64
 	Delta        string
 	Summary      string
 	ToolName     string

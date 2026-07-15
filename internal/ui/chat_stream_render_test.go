@@ -83,6 +83,63 @@ func TestCachedLiveAssistantLinesReuseRecentParseResult(t *testing.T) {
 	}
 }
 
+func TestV3LiveAssistantPatchesAccumulateAtMessageLevelAndRejectDuplicates(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-test", SessionMode: "auto", AuthConfigured: true})
+	page.runCancel = func() {}
+
+	first := ChatRunStreamEvent{Type: "assistant.live.delta", SessionID: "session-test", RunID: "run-1", StreamID: "assistant:run-1:step:1", StreamKind: "assistant_text", Operation: "append", LiveSeqStart: 1, LiveSeqEnd: 1, OffsetStart: 0, OffsetEnd: 5, Delta: "hello"}
+	if !page.ApplySharedStreamEvent(first, 100) {
+		t.Fatal("first live patch was not applied")
+	}
+	if got := page.liveAssistant; got != "hello" {
+		t.Fatalf("first live assistant = %q", got)
+	}
+	if page.ApplySharedStreamEvent(first, 100) {
+		t.Fatal("duplicate live patch was reported as applied")
+	}
+	second := first
+	second.LiveSeqStart, second.LiveSeqEnd = 2, 2
+	second.OffsetStart, second.OffsetEnd = 5, 11
+	second.Delta = " world"
+	if !page.ApplySharedStreamEvent(second, 110) {
+		t.Fatal("second live patch was not applied")
+	}
+	if got := page.liveAssistant; got != "hello world" {
+		t.Fatalf("accumulated live assistant = %q", got)
+	}
+	if got := page.ownedRunID; got != "run-1" {
+		t.Fatalf("owned run id = %q", got)
+	}
+}
+
+func TestV3LiveAssistantPatchCompletesReasoningInTimelineOrder(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-test", SessionMode: "auto", AuthConfigured: true})
+	page.runCancel = func() {}
+	page.startReasoningSegment(100)
+	page.updateThinkingTimelineMessage("checking files", 101)
+
+	patch := ChatRunStreamEvent{Type: "assistant.live.delta", SessionID: "session-test", RunID: "run-1", StreamID: "assistant:run-1:step:1", StreamKind: "assistant_text", Operation: "append", LiveSeqStart: 1, LiveSeqEnd: 1, OffsetStart: 0, OffsetEnd: 2, Delta: "ok"}
+	if !page.ApplySharedStreamEvent(patch, 110) {
+		t.Fatal("live patch was not applied")
+	}
+	if page.reasoningActive {
+		t.Fatal("reasoning remained active after assistant text began")
+	}
+	reasoningIndex := -1
+	for i := range page.timeline {
+		if page.timeline[i].Role == "reasoning" {
+			reasoningIndex = i
+			break
+		}
+	}
+	if reasoningIndex < 0 || page.timeline[reasoningIndex].ToolState != "done" {
+		t.Fatalf("reasoning timeline = %#v", page.timeline)
+	}
+	if page.liveAssistant != "ok" {
+		t.Fatalf("live assistant = %q", page.liveAssistant)
+	}
+}
+
 func TestLiveAssistantStreamingUsesMarkdownRenderer(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{
 		SessionID:      "session-test",

@@ -85,6 +85,46 @@ func chatMessageRecordIDs(messages []ui.ChatMessageRecord) []string {
 	return ids
 }
 
+func TestTUIV3ReasoningEventsProjectAtAuthoritativeSequencePosition(t *testing.T) {
+	messages := []client.SessionMessage{
+		{ID: "msg-user", SessionID: "session-1", GlobalSeq: 1, Role: "user", Content: "inspect", CreatedAt: 100},
+		{ID: "msg-assistant", SessionID: "session-1", GlobalSeq: 5, Role: "assistant", Content: "done", CreatedAt: 500},
+	}
+	events := []client.SessionV3Event{
+		toolRealtimeEvent("reasoning-start", 2, 200, "session.reasoning.started", map[string]any{"run_id": "run-1", "reasoning_id": "reason-1"}),
+		toolRealtimeEvent("reasoning-delta", 3, 300, "session.reasoning.delta", map[string]any{"run_id": "run-1", "reasoning_id": "reason-1", "delta": "checking files", "delta_mode": "replace"}),
+		toolRealtimeEvent("reasoning-complete", 4, 400, "session.reasoning.completed", map[string]any{"run_id": "run-1", "reasoning_id": "reason-1", "summary": "checked files"}),
+	}
+
+	got := chatMessagesFromClient(messages, events)
+	if ids := chatMessageRecordIDs(got); !reflect.DeepEqual(ids, []string{"msg-user", "v3-reasoning:reason-1:reasoning-start", "v3-reasoning:reason-1:reasoning-delta", "v3-reasoning:reason-1:reasoning-complete", "msg-assistant"}) {
+		t.Fatalf("reasoning projection order = %#v", ids)
+	}
+	if got[1].Content != "Thinking" || got[2].Content != "checking files" || got[3].Content != "checked files" {
+		t.Fatalf("reasoning projection content = %#v", got[1:4])
+	}
+}
+
+func TestTUIRealtimeLivePatchUpdatesAssistantWithoutDurableTurnBoundary(t *testing.T) {
+	store := newTUISessionStore()
+	store.MergeHydrated(client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-1", SessionAPI: "v3"}})
+	app := &App{tuiSessionStore: store, homeModel: model.EmptyHome()}
+	app.chat = ui.NewChatPage(ui.ChatPageOptions{SessionID: "session-1", SessionMode: "auto", AuthConfigured: true})
+	app.chat.ApplySessionLifecycle(ui.ChatSessionLifecycle{SessionID: "session-1", RunID: "run-1", Active: true, Phase: "running"})
+
+	frame := client.V3RealtimeFrame{Kind: "live.patch", SessionID: "session-1", Live: &client.V3RealtimeLivePatch{SessionID: "session-1", RunID: "run-1", StreamID: "assistant:run-1:step:1", StreamKind: "assistant_text", Operation: "append", Step: 1, StepID: "step-1", LiveSeqStart: 1, LiveSeqEnd: 1, OffsetStart: 0, OffsetEnd: 7, Text: "partial", RecordedAt: 100}}
+	if !app.applyTUIRealtimeFrame(frame) {
+		t.Fatal("live patch did not update chat")
+	}
+	if text := app.chat.LiveAssistantText(); text != "partial" {
+		t.Fatalf("chat live assistant = %q, want partial", text)
+	}
+	snapshot, _ := store.ChatSnapshot("session-1")
+	if len(snapshot.Messages) != 0 {
+		t.Fatalf("live patch incorrectly mutated durable messages: %#v", snapshot.Messages)
+	}
+}
+
 func TestTUIRealtimeModePreferenceSurvivesPendingResponseProjection(t *testing.T) {
 	store := newTUISessionStore()
 	store.MergeHydrated(client.SessionV3Hydrated{

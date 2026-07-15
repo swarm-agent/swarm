@@ -30,6 +30,7 @@ const (
 	v3RealtimeKindWorksetSessionRemoved    = "workset.session.removed"
 	v3RealtimeKindAuthDenied               = "auth.denied"
 	v3RealtimeKindSlowConsumer             = "slow_consumer.reconnect_required"
+	v3RealtimeKindLivePatch                = "live.patch"
 )
 
 type V3RealtimeSubscription struct {
@@ -65,6 +66,22 @@ type V3RealtimeResumeOptions struct {
 	OnResumeSent   func()
 }
 
+type V3RealtimeLivePatch struct {
+	SessionID    string `json:"session_id"`
+	RunID        string `json:"run_id"`
+	StreamID     string `json:"stream_id"`
+	StreamKind   string `json:"stream_kind"`
+	Operation    string `json:"operation"`
+	Step         int    `json:"step"`
+	StepID       string `json:"step_id"`
+	LiveSeqStart uint64 `json:"live_seq_start"`
+	LiveSeqEnd   uint64 `json:"live_seq_end"`
+	OffsetStart  uint64 `json:"offset_start"`
+	OffsetEnd    uint64 `json:"offset_end"`
+	Text         string `json:"text"`
+	RecordedAt   int64  `json:"recorded_at"`
+}
+
 type V3RealtimeFrame struct {
 	Protocol              string                          `json:"protocol"`
 	ProtocolVersion       int                             `json:"protocol_version"`
@@ -92,6 +109,7 @@ type V3RealtimeFrame struct {
 	ErrorCode             string                          `json:"error_code,omitempty"`
 	Error                 string                          `json:"error,omitempty"`
 	Reason                string                          `json:"reason,omitempty"`
+	Live                  *V3RealtimeLivePatch            `json:"live,omitempty"`
 }
 
 func (f V3RealtimeFrame) Err() error {
@@ -217,6 +235,10 @@ func (c *API) StreamV3Realtime(ctx context.Context, options V3RealtimeResumeOpti
 				delete(lastSeqBySession, sessionID)
 				delete(unknownAutoSubscribedSeq, sessionID)
 			}
+		case v3RealtimeKindLivePatch:
+			if err := validateV3RealtimeLivePatch(frame); err != nil {
+				return err
+			}
 		case v3RealtimeKindCursorError, v3RealtimeKindAuthDenied:
 			// Per-session recovery state belongs to the named session; keep the shared
 			// connection alive so other sessions can continue to receive events.
@@ -326,6 +348,26 @@ func trimNonEmptyStrings(values []string) []string {
 		}
 	}
 	return out
+}
+
+func validateV3RealtimeLivePatch(frame V3RealtimeFrame) error {
+	if frame.Live == nil {
+		return errors.New("v3 realtime live.patch missing live payload")
+	}
+	live := frame.Live
+	if strings.TrimSpace(frame.SessionID) == "" || strings.TrimSpace(frame.SessionID) != strings.TrimSpace(live.SessionID) {
+		return errors.New("v3 realtime live.patch session_id must match live.session_id")
+	}
+	if strings.TrimSpace(live.RunID) == "" || strings.TrimSpace(live.StreamID) == "" {
+		return errors.New("v3 realtime live.patch requires run_id and stream_id")
+	}
+	if strings.TrimSpace(live.StreamKind) != "assistant_text" || strings.TrimSpace(live.Operation) != "append" {
+		return errors.New("v3 realtime live.patch requires append assistant_text stream")
+	}
+	if live.Text == "" || live.LiveSeqStart == 0 || live.LiveSeqEnd < live.LiveSeqStart || live.OffsetEnd-live.OffsetStart != uint64(len([]byte(live.Text))) {
+		return errors.New("v3 realtime live.patch has invalid text sequence or offsets")
+	}
+	return nil
 }
 
 func validateV3RealtimeFrameProtocol(frame V3RealtimeFrame) error {

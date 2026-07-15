@@ -311,6 +311,9 @@ func (a *App) applyTUIRealtimeFrame(frame client.V3RealtimeFrame) bool {
 	if a.tuiSessionStore.StaleState().ScopeChanged {
 		return false
 	}
+	if strings.EqualFold(strings.TrimSpace(frame.Kind), v3RealtimeLivePatchKind) {
+		return a.applyTUIRealtimeLivePatch(frame)
+	}
 	result := a.tuiSessionStore.ApplyRealtimeFrame(frame)
 	if result.NeedsRehydrate {
 		a.queueTUIWorksetRehydrate(result)
@@ -323,6 +326,34 @@ func (a *App) applyTUIRealtimeFrame(frame client.V3RealtimeFrame) bool {
 		return true
 	}
 	return false
+}
+
+const v3RealtimeLivePatchKind = "live.patch"
+
+func (a *App) applyTUIRealtimeLivePatch(frame client.V3RealtimeFrame) bool {
+	if a == nil || a.chat == nil || frame.Live == nil {
+		return false
+	}
+	live := frame.Live
+	sessionID := strings.TrimSpace(frame.SessionID)
+	if sessionID == "" || sessionID != strings.TrimSpace(live.SessionID) || sessionID != strings.TrimSpace(a.chat.SessionID()) {
+		return false
+	}
+	return a.chat.ApplySharedStreamEvent(ui.ChatRunStreamEvent{
+		Type:         "assistant.live.delta",
+		SessionID:    sessionID,
+		RunID:        strings.TrimSpace(live.RunID),
+		Step:         live.Step,
+		StepID:       strings.TrimSpace(live.StepID),
+		StreamID:     strings.TrimSpace(live.StreamID),
+		StreamKind:   strings.TrimSpace(live.StreamKind),
+		Operation:    strings.TrimSpace(live.Operation),
+		LiveSeqStart: live.LiveSeqStart,
+		LiveSeqEnd:   live.LiveSeqEnd,
+		OffsetStart:  live.OffsetStart,
+		OffsetEnd:    live.OffsetEnd,
+		Delta:        live.Text,
+	}, live.RecordedAt)
 }
 
 func (a *App) applyTUIRealtimeStatus(status tuiRealtimeStatus) bool {
@@ -595,16 +626,18 @@ func chatSessionPlanFromClient(plan client.SessionPlan) ui.ChatSessionPlan {
 func chatMessagesFromClient(messages []client.SessionMessage, events []client.SessionV3Event) []ui.ChatMessageRecord {
 	out := make([]ui.ChatMessageRecord, 0, len(messages)+len(events))
 	eventToolInstances := make(map[string]struct{})
-	toolEventMessages := make([]ui.ChatMessageRecord, 0, len(events))
+	projectedEventMessages := make([]ui.ChatMessageRecord, 0, len(events))
 	for _, event := range events {
-		message, instanceID, ok := chatToolMessageFromV3Event(event)
-		if !ok {
+		if message, instanceID, ok := chatToolMessageFromV3Event(event); ok {
+			if instanceID != "" {
+				eventToolInstances[instanceID] = struct{}{}
+			}
+			projectedEventMessages = append(projectedEventMessages, message)
 			continue
 		}
-		if instanceID != "" {
-			eventToolInstances[instanceID] = struct{}{}
+		if message, ok := chatReasoningMessageFromV3Event(event); ok {
+			projectedEventMessages = append(projectedEventMessages, message)
 		}
-		toolEventMessages = append(toolEventMessages, message)
 	}
 	for _, message := range messages {
 		if instanceID := clientToolMessageInstanceID(message); instanceID != "" {
@@ -614,7 +647,7 @@ func chatMessagesFromClient(messages []client.SessionMessage, events []client.Se
 		}
 		out = append(out, convertClientMessage(message))
 	}
-	out = append(out, toolEventMessages...)
+	out = append(out, projectedEventMessages...)
 	sort.SliceStable(out, func(i, j int) bool {
 		left, right := out[i], out[j]
 		if left.GlobalSeq != right.GlobalSeq {
@@ -638,6 +671,44 @@ func chatMessagesFromClient(messages []client.SessionMessage, events []client.Se
 		return strings.TrimSpace(left.ID) < strings.TrimSpace(right.ID)
 	})
 	return out
+}
+
+func chatReasoningMessageFromV3Event(event client.SessionV3Event) (ui.ChatMessageRecord, bool) {
+	eventType := strings.ToLower(strings.TrimSpace(event.EventType))
+	switch eventType {
+	case "session.reasoning.started", "session.reasoning.delta", "session.reasoning.completed":
+	default:
+		return ui.ChatMessageRecord{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(event.Payload, &payload); err != nil || payload == nil {
+		return ui.ChatMessageRecord{}, false
+	}
+	text := strings.TrimSpace(firstNonEmpty(anyString(payload["summary"]), anyString(payload["delta"]), "Thinking"))
+	reasoningID := strings.TrimSpace(anyString(payload["reasoning_id"]))
+	if reasoningID == "" {
+		reasoningID = strings.TrimSpace(event.ID)
+	}
+	metadata := map[string]any{"v3_reasoning_event": true, "reasoning_event_type": eventType}
+	for _, key := range []string{"run_id", "reasoning_id", "reasoning_key", "delta_mode", "step_id"} {
+		if value := strings.TrimSpace(anyString(payload[key])); value != "" {
+			metadata[key] = value
+		}
+	}
+	return ui.ChatMessageRecord{
+		ID:        "v3-reasoning:" + reasoningID + ":" + strings.TrimSpace(event.ID),
+		SessionID: strings.TrimSpace(event.SessionID),
+		GlobalSeq: event.Seq,
+		Role:      "reasoning",
+		Content:   text,
+		Metadata:  metadata,
+		CreatedAt: event.TsUnixMS,
+	}, true
+}
+
+func anyString(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func chatToolMessageFromV3Event(event client.SessionV3Event) (ui.ChatMessageRecord, string, bool) {
