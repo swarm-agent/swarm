@@ -524,9 +524,6 @@ func (s *tuiSessionStore) applyEventFrameLocked(frame client.V3RealtimeFrame, se
 		if seq <= lastSeq {
 			return tuiSessionStoreApplyResult{SessionID: sessionID}
 		}
-		if lastSeq != 0 && seq != lastSeq+1 {
-			return s.markStaleLocked(sessionID, tuiRealtimeKindSessionGap)
-		}
 	}
 	s.ensureWorksetMapsLocked()
 	event := cloneSessionV3Event(*frame.Event)

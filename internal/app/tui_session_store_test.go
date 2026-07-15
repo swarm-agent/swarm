@@ -340,7 +340,7 @@ func TestTUISessionStoreTerminalRealtimeFrameDoesNotPoisonEndpointCursor(t *test
 	}
 }
 
-func TestTUISessionStoreRealtimeOrderingAndTerminalFrames(t *testing.T) {
+func TestTUISessionStoreRealtimeOrderingAcceptsSparseSequencesAndTerminalFrames(t *testing.T) {
 	store := newTUISessionStore()
 	store.ResetFromWorkset(client.SessionV3Workset{
 		SessionsByID:         map[string]client.SessionSummary{"a": {ID: "a", SessionAPI: "v3"}},
@@ -355,9 +355,9 @@ func TestTUISessionStoreRealtimeOrderingAndTerminalFrames(t *testing.T) {
 	if !ordered.Changed || store.HomeSessions()[0].Title != "updated" {
 		t.Fatalf("ordered frame not applied: result=%#v sessions=%#v", ordered, store.HomeSessions())
 	}
-	gap := store.ApplyRealtimeFrame(realtimeEventFrame("a", 4, "session.title.updated", map[string]any{"title": "gap"}))
-	if !gap.NeedsRehydrate || store.StaleState().Reason != tuiRealtimeKindSessionGap || store.HomeSessions()[0].Title == "gap" {
-		t.Fatalf("gap result=%#v stale=%#v sessions=%#v", gap, store.StaleState(), store.HomeSessions())
+	sparse := store.ApplyRealtimeFrame(realtimeEventFrame("a", 4, "session.title.updated", map[string]any{"title": "sparse"}))
+	if !sparse.Changed || sparse.NeedsRehydrate || store.StaleState().Stale || store.HomeSessions()[0].Title != "sparse" {
+		t.Fatalf("sparse result=%#v stale=%#v sessions=%#v", sparse, store.StaleState(), store.HomeSessions())
 	}
 	terminal := store.ApplyRealtimeFrame(client.V3RealtimeFrame{Kind: tuiRealtimeKindSlowConsumer, SessionID: "a"})
 	if !terminal.NeedsRehydrate || store.StaleState().Reason != tuiRealtimeKindSlowConsumer {

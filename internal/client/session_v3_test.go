@@ -302,7 +302,7 @@ func TestSessionV3TUIWorksetClientUsesTUIRouteAndScope(t *testing.T) {
 	}
 }
 
-func TestStreamSessionsV3RealtimeMultiplexesSubscriptionsAndIsolatesGaps(t *testing.T) {
+func TestStreamSessionsV3RealtimeAcceptsSparseFilteredSessionSequences(t *testing.T) {
 	var gotPath string
 	var subscribes []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -367,20 +367,20 @@ func TestStreamSessionsV3RealtimeMultiplexesSubscriptionsAndIsolatesGaps(t *test
 	if _, ok := subscribes[0]["after_seq"]; ok {
 		t.Fatalf("canonical realtime resume must not use after_seq: %#v", subscribes[0])
 	}
-	var sawGap, sawB bool
+	var sawSparseA, sawB bool
 	for _, frame := range frames {
-		if frame.Kind == "cursor.error" && frame.SessionID == "session-a" && frame.ErrorCode == "session_cursor_gap" {
-			sawGap = true
+		if frame.Kind == "cursor.error" && frame.SessionID == "session-a" {
+			t.Fatalf("sparse filtered sequence produced a false cursor gap: %#v", frame)
+		}
+		if frame.Kind == "event" && frame.SessionID == "session-a" && frame.Event != nil && frame.Event.Seq == 3 {
+			sawSparseA = true
 		}
 		if frame.Kind == "event" && frame.SessionID == "session-b" && frame.Event != nil && frame.Event.Seq == 2 {
 			sawB = true
 		}
-		if frame.Kind == "event" && frame.SessionID == "session-a" {
-			t.Fatalf("gap event for session-a was delivered: %#v", frame)
-		}
 	}
-	if !sawGap || !sawB {
-		t.Fatalf("frames did not prove gap isolation; sawGap=%v sawB=%v frames=%#v", sawGap, sawB, frames)
+	if !sawSparseA || !sawB {
+		t.Fatalf("frames did not preserve sparse per-session order; sawSparseA=%v sawB=%v frames=%#v", sawSparseA, sawB, frames)
 	}
 }
 

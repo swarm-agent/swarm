@@ -502,7 +502,7 @@ function toolEventTarget(event) {
   const payload = payloadObject(event) || event?.payload || {};
   let args = payload.arguments || {};
   if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = { raw: args }; } }
-  return String(args.path || args.query || args.command || args.raw || '');
+  return [args.path, args.query, args.command, args.raw].filter(value => value !== undefined && value !== null && String(value) !== '').map(String).join(' ');
 }
 
 let token = '', sessionID = cfg.sessionID || '', realtime = null, tuiProc = null;
@@ -622,9 +622,8 @@ try {
   await waitTranscriptContains([cfg.firstMarker], 'first assistant marker', phaseTimeoutMs);
   await waitTranscriptMatches([/(working|thinking|streaming response|winding up|running)\s+([0-9]+m)?[0-9]+s|working|thinking|streaming response|winding up/i], 'run lifecycle status', Math.min(5000, phaseTimeoutMs)).then(() => { seen.tuiLifecycleText = true; seen.tuiTimerText = true; }).catch(() => null);
   await waitTranscriptMatches([/Swarming|swarming|\[a:|swarm/i], 'swarming indicator', Math.min(5000, phaseTimeoutMs)).then(() => { seen.tuiSwarmingText = true; }).catch(() => null);
-  feedPTY('/copy\r', 'capture authoritative chat snapshot');
-  await waitFor(() => fs.existsSync(clipboardCapturePath) && fs.statSync(clipboardCapturePath).size > 0, phaseTimeoutMs, 'chat snapshot capture');
-  endPhase({ assistant_marker: cfg.firstMarker, assistant_count: first.assistants.length, chat_snapshot_tail: fileTail(clipboardCapturePath, 3000), transcript_tail: fileTail(tuiCleanPath, 2000) });
+  await waitFor(() => seen.terminalEvents >= 1, phaseTimeoutMs, 'first turn terminal realtime event');
+  endPhase({ assistant_marker: cfg.firstMarker, assistant_count: first.assistants.length, terminal_events: seen.terminalEvents, transcript_tail: fileTail(tuiCleanPath, 2000) });
 
   let second = null;
   if (!cfg.skipFollowUp) {
@@ -633,8 +632,18 @@ try {
     await waitTranscriptContains([cfg.followUp], 'follow-up prompt echo', Math.min(3000, phaseTimeoutMs)).catch(() => null);
     second = await waitForAssistantMarker(sessionID, cfg.followUpMarker, Math.max(2, first.assistants.length + 1), 'after.followup');
     await waitTranscriptContains([cfg.followUpMarker], 'follow-up assistant marker', phaseTimeoutMs);
-    endPhase({ assistant_marker: cfg.followUpMarker, assistant_count: second.assistants.length, transcript_tail: fileTail(tuiCleanPath, 2000) });
+    await waitFor(() => seen.terminalEvents >= 2, phaseTimeoutMs, 'follow-up terminal realtime event');
+    endPhase({ assistant_marker: cfg.followUpMarker, assistant_count: second.assistants.length, terminal_events: seen.terminalEvents, transcript_tail: fileTail(tuiCleanPath, 2000) });
   }
+
+  beginPhase('tui.snapshot.final');
+  feedPTY('/copy\r', 'capture authoritative final chat snapshot');
+  await waitFor(() => fs.existsSync(clipboardCapturePath) && fs.statSync(clipboardCapturePath).size > 0, phaseTimeoutMs, 'final chat snapshot capture');
+  await waitFor(() => {
+    const timeline = parseSnapshotTimeline(fs.readFileSync(clipboardCapturePath, 'utf8'));
+    return timeline.some(item => item.text.includes(cfg.firstMarker)) && (cfg.skipFollowUp || timeline.some(item => item.text.includes(cfg.followUpMarker)));
+  }, phaseTimeoutMs, 'final chat snapshot markers');
+  endPhase({ chat_snapshot_tail: fileTail(clipboardCapturePath, 5000) });
 
   beginPhase('tui.shutdown');
   await stopTUI('done; sent /quit');
@@ -658,6 +667,13 @@ try {
   const assistantCompleted = dbEvents.find(e => e.event_type === 'session.assistant.completed');
   const snapshotTimeline = parseSnapshotTimeline(fs.readFileSync(clipboardCapturePath, 'utf8'));
   const snapshotTools = snapshotTimeline.filter(item => item.role === 'tool');
+  const firstUserIndex = snapshotTimeline.findIndex(item => item.role === 'user' && item.text.includes(cfg.prompt));
+  const firstAssistantIndex = snapshotTimeline.findIndex(item => item.role === 'assistant' && item.text.includes(cfg.firstMarker));
+  const followUpUserIndex = cfg.skipFollowUp ? -1 : snapshotTimeline.findIndex(item => item.role === 'user' && item.text.includes(cfg.followUp));
+  const followUpAssistantIndex = cfg.skipFollowUp ? -1 : snapshotTimeline.findIndex(item => item.role === 'assistant' && item.text.includes(cfg.followUpMarker));
+  const crossTurnTimelineOrderOK = cfg.skipFollowUp
+    ? firstUserIndex >= 0 && firstAssistantIndex > firstUserIndex
+    : firstUserIndex >= 0 && firstAssistantIndex > firstUserIndex && followUpUserIndex > firstAssistantIndex && followUpAssistantIndex > followUpUserIndex;
   const durableToolOrderOK = expected.length === 0 || Boolean(
     startedTools.length === expected.length && completedTools.length === expected.length &&
     expected.every((want, i) => {
@@ -684,10 +700,10 @@ try {
     seen.userMessages >= requiredTurns && seen.assistantStarted >= requiredTurns && seen.assistantCompleted >= requiredTurns &&
     seen.assistantMessageOnRealtime >= requiredTurns && seen.cursorErrors.length === 0 &&
     (first.hit?.content || '').includes(cfg.firstMarker) && cleanTranscript.includes(cfg.firstMarker) && followUpOK &&
-    durableToolOrderOK && snapshotToolOrderOK && lifecycleIndicatorsOK
+    durableToolOrderOK && snapshotToolOrderOK && crossTurnTimelineOrderOK && lifecycleIndicatorsOK
   );
   const assistantPreview = second ? second.assistants : first.assistants;
-  const summary = { ok: pass, primary_ssh: cfg.primarySSH, api_url: cfg.apiURL, remote_dir: cfg.remoteDir, session_id: sessionID, provider: cfg.provider, model: cfg.model, observed: seen, current_phase: currentPhase, last_phase_event: lastPhaseEvent, realtime_event_count: realtimeEventTypes.length, realtime_event_types: realtimeEventTypes, db_event_count: dbEvents.length, db_event_types: dbEventTypes, expected_tool_order: expected, durable_tool_order_ok: durableToolOrderOK, snapshot_tool_order_ok: snapshotToolOrderOK, durable_started_tools: startedTools.map(e => ({ seq: e.seq, tool: (payloadObject(e) || e.payload || {}).tool_name, instance: (payloadObject(e) || e.payload || {}).tool_instance_id, target: toolEventTarget(e) })), durable_completed_tools: completedTools.map(e => ({ seq: e.seq, tool: (payloadObject(e) || e.payload || {}).tool_name, instance: (payloadObject(e) || e.payload || {}).tool_instance_id, target: toolEventTarget(e) })), snapshot_tools: snapshotTools.map(item => item.text), assistant_preview: assistantPreview.map(m => String(m.content || '').slice(0, 200)), artifacts: { transcript: tuiRawPath, clean_transcript: tuiCleanPath, chat_snapshot: clipboardCapturePath, feed_log: feedLogPath, frames: framesPath, requests: requestsPath, runner_events: runnerEventsPath, phase_log: phaseLogPath, summary: summaryPath } };
+  const summary = { ok: pass, primary_ssh: cfg.primarySSH, api_url: cfg.apiURL, remote_dir: cfg.remoteDir, session_id: sessionID, provider: cfg.provider, model: cfg.model, observed: seen, current_phase: currentPhase, last_phase_event: lastPhaseEvent, realtime_event_count: realtimeEventTypes.length, realtime_event_types: realtimeEventTypes, db_event_count: dbEvents.length, db_event_types: dbEventTypes, expected_tool_order: expected, durable_tool_order_ok: durableToolOrderOK, snapshot_tool_order_ok: snapshotToolOrderOK, cross_turn_timeline_order_ok: crossTurnTimelineOrderOK, snapshot_timeline: snapshotTimeline.map(item => ({ index: item.index, role: item.role, text: item.text.slice(0, 500) })), durable_started_tools: startedTools.map(e => ({ seq: e.seq, tool: (payloadObject(e) || e.payload || {}).tool_name, instance: (payloadObject(e) || e.payload || {}).tool_instance_id, target: toolEventTarget(e) })), durable_completed_tools: completedTools.map(e => ({ seq: e.seq, tool: (payloadObject(e) || e.payload || {}).tool_name, instance: (payloadObject(e) || e.payload || {}).tool_instance_id, target: toolEventTarget(e) })), snapshot_tools: snapshotTools.map(item => item.text), assistant_preview: assistantPreview.map(m => String(m.content || '').slice(0, 200)), artifacts: { transcript: tuiRawPath, clean_transcript: tuiCleanPath, chat_snapshot: clipboardCapturePath, feed_log: feedLogPath, frames: framesPath, requests: requestsPath, runner_events: runnerEventsPath, phase_log: phaseLogPath, summary: summaryPath } };
   fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2));
   endPhase({ pass, realtime_event_count: realtimeEventTypes.length, db_event_count: events.events?.length ?? 0 });
   emit({ stage: 'final.summary', ...summary, realtime_event_types: undefined, db_event_types: undefined });
@@ -778,7 +794,7 @@ if [[ "${remote_status}" != "0" ]]; then
   exit "${remote_status}"
 fi
 [[ -f "${SUMMARY_JSON}" ]] || fail "remote run succeeded but summary was not copied back"
-jq '{ok, primary_ssh, api_url, remote_dir, session_id, provider, model, observed, realtime_event_count, db_event_count, expected_tool_order, durable_tool_order_ok, snapshot_tool_order_ok, durable_started_tools, durable_completed_tools, snapshot_tools, assistant_preview, artifacts}' "${SUMMARY_JSON}"
+jq '{ok, primary_ssh, api_url, remote_dir, session_id, provider, model, observed, realtime_event_count, db_event_count, expected_tool_order, durable_tool_order_ok, snapshot_tool_order_ok, cross_turn_timeline_order_ok, snapshot_timeline, durable_started_tools, durable_completed_tools, snapshot_tools, assistant_preview, artifacts}' "${SUMMARY_JSON}"
 log "PASS"
 log "transcript: ${ARTIFACT_DIR}/remote-artifacts/tui.cleaned.txt"
 log "frames: ${ARTIFACT_DIR}/remote-artifacts/realtime-frames.ndjson"

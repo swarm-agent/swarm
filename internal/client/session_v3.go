@@ -381,25 +381,11 @@ func applyV3RealtimeSessionOrder(lastSeqBySession map[string]uint64, unknownAuto
 		}
 		return nil
 	}
-	if frame.Event.Seq != lastSeq+1 {
-		if onFrame != nil {
-			onFrame(V3RealtimeFrame{
-				Protocol:         v3RealtimeProtocol,
-				ProtocolVersion:  v3RealtimeProtocolVersion,
-				Kind:             v3RealtimeKindCursorError,
-				SessionID:        sessionID,
-				Rev:              frame.Rev,
-				PrevRev:          frame.PrevRev,
-				LastSeq:          lastSeq,
-				NextSeq:          frame.Event.Seq,
-				HighWatermarkSeq: frame.HighWatermarkSeq,
-				ErrorCode:        "session_cursor_gap",
-				Error:            fmt.Sprintf("session event sequence gap at %d, want %d; refetch required", frame.Event.Seq, lastSeq+1),
-			})
-		}
-		frame.Event = nil
-		return nil
-	}
+	// Session event sequences are authoritative ordering keys, not a promise that
+	// every subscriber receives every intermediate event. A realtime subscription
+	// can intentionally omit event classes, so accepted events may have sparse seqs.
+	// The endpoint cursor and explicit cursor.error/session_cursor_gap frames are
+	// the transport authorities for detecting lost delivery.
 	lastSeqBySession[sessionID] = frame.Event.Seq
 	frame.LastSeq = frame.Event.Seq
 	if strings.TrimSpace(frame.EventType) == "" {
