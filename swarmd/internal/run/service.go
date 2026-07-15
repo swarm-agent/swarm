@@ -98,22 +98,45 @@ var (
 )
 
 type Service struct {
-	sessions     *sessionruntime.Service
-	model        *model.Service
-	providers    *registry.Registry
-	tools        *tool.Runtime
-	permissions  *permission.Service
-	agents       *agentruntime.Service
-	discovery    *discovery.Service
-	workspace    *workspaceruntime.Service
-	uiSettings   *uisettings.Service
-	worktrees    worktreeService
-	events       *pebblestore.EventLog
-	eventPublish func(pebblestore.EventEnvelope)
-	runCounter   atomic.Uint64
-	lifecycleMu  sync.Mutex
-	activeRuns   map[string]*activeSessionRun
+	sessions                  *sessionruntime.Service
+	model                     *model.Service
+	providers                 *registry.Registry
+	tools                     *tool.Runtime
+	permissions               *permission.Service
+	agents                    *agentruntime.Service
+	discovery                 *discovery.Service
+	workspace                 *workspaceruntime.Service
+	uiSettings                *uisettings.Service
+	worktrees                 worktreeService
+	events                    *pebblestore.EventLog
+	eventPublish              func(pebblestore.EventEnvelope)
+	sessionDeployCanonicalize SessionDeployCanonicalizer
+	sessionDeployEnqueue      SessionDeployEnqueuer
+	runCounter                atomic.Uint64
+	lifecycleMu               sync.Mutex
+	activeRuns                map[string]*activeSessionRun
 }
+
+type SessionDeployCanonicalizeInput struct {
+	Principal          identity.Principal
+	WorkspacePath      string
+	WorkspaceBindingID string
+	AgentProfile       pebblestore.AgentProfile
+	RuntimeMode        string
+	Metadata           map[string]any
+}
+
+type SessionDeployCanonicalization struct {
+	Metadata                  map[string]any
+	SourceWorkspaceID         string
+	SourceWorkspaceGeneration int64
+	SourceWorkspaceName       string
+	SourceWorkspacePath       string
+	RuntimeWorkspacePath      string
+}
+
+type SessionDeployCanonicalizer func(SessionDeployCanonicalizeInput) (SessionDeployCanonicalization, error)
+type SessionDeployEnqueuer func(identity.Principal, string, string) bool
 
 type worktreeService interface {
 	AttachBranch(workspacePath, sessionID, title string) (string, error)
@@ -607,6 +630,20 @@ func (s *Service) SetUISettingsService(uiSettingsSvc *uisettings.Service) {
 			return settings.Chat.FollowupCheckpointPolicyDefault, nil
 		})
 	}
+}
+
+func (s *Service) SetSessionDeployCanonicalizer(canonicalize SessionDeployCanonicalizer) {
+	if s == nil {
+		return
+	}
+	s.sessionDeployCanonicalize = canonicalize
+}
+
+func (s *Service) SetSessionDeployEnqueuer(enqueue SessionDeployEnqueuer) {
+	if s == nil {
+		return
+	}
+	s.sessionDeployEnqueue = enqueue
 }
 
 func (s *Service) SetWorktreeService(worktreeSvc worktreeService) {

@@ -31,6 +31,8 @@ type manageSessionsDeployProposal struct {
 	Provider            string `json:"provider,omitempty"`
 	Model               string `json:"model,omitempty"`
 	Thinking            string `json:"thinking,omitempty"`
+	ServiceTier         string `json:"service_tier,omitempty"`
+	ContextMode         string `json:"context_mode,omitempty"`
 	WorkspaceID         string `json:"workspace_id,omitempty"`
 	WorkspaceBindingID  string `json:"workspace_binding_id,omitempty"`
 	WorkspaceGeneration int64  `json:"workspace_generation,omitempty"`
@@ -214,7 +216,7 @@ func (s *Service) buildManageSessionsDeployManifest(sessionID string, call tool.
 			}
 			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] workspace: %w", i, err)
 		}
-		proposal := manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0}
+		proposal := manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, ServiceTier: preference.ServiceTier, ContextMode: preference.ContextMode, WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0}
 		if input.Worktree {
 			if s.worktrees == nil {
 				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] requires the managed worktree service", i)
