@@ -71,7 +71,6 @@ type TopologyAttachmentRecord struct {
 	RuntimeSwarmID        string `json:"runtime_swarm_id"`
 	State                 string `json:"state,omitempty"`
 	DeploymentID          string `json:"deployment_id,omitempty"`
-	RemoteDeploySessionID string `json:"remote_deploy_session_id,omitempty"`
 	LastError             string `json:"last_error,omitempty"`
 	CreatedAt             int64  `json:"created_at"`
 	UpdatedAt             int64  `json:"updated_at"`
@@ -1110,7 +1109,6 @@ func normalizeTopologyAttachmentRecord(record TopologyAttachmentRecord) Topology
 	record.RuntimeSwarmID = strings.TrimSpace(record.RuntimeSwarmID)
 	record.State = strings.ToLower(strings.TrimSpace(record.State))
 	record.DeploymentID = strings.TrimSpace(record.DeploymentID)
-	record.RemoteDeploySessionID = strings.TrimSpace(record.RemoteDeploySessionID)
 	record.LastError = strings.TrimSpace(record.LastError)
 	record.CreatedAt, record.UpdatedAt = normalizeTopologyTimestamps(record.CreatedAt, record.UpdatedAt)
 	return record

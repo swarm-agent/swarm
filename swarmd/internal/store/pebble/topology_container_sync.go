@@ -7,10 +7,8 @@ import (
 
 const (
 	TopologyRuntimeSourceDeployContainer           = "deploy_container"
-	TopologyRuntimeSourceRemoteDeploySession       = "remote_deploy_session"
 	TopologyHostContainerSourceSwarmLocalContainer = "swarm_local_container"
 	TopologyHostContainerSourceDeployContainer     = "deploy_container"
-	TopologyHostContainerSourceRemoteDeploySession = "remote_deploy_session"
 )
 
 func CanonicalTopologyHostContainerID(hostSwarmID, runtimeContainerRef string) string {
@@ -361,7 +359,6 @@ func mergeTopologyAttachmentRecord(existing, incoming TopologyAttachmentRecord) 
 	incoming.RuntimeSwarmID = firstNonEmpty(incoming.RuntimeSwarmID, existing.RuntimeSwarmID)
 	incoming.State = firstNonEmpty(incoming.State, existing.State)
 	incoming.DeploymentID = firstNonEmpty(incoming.DeploymentID, existing.DeploymentID)
-	incoming.RemoteDeploySessionID = firstNonEmpty(incoming.RemoteDeploySessionID, existing.RemoteDeploySessionID)
 	incoming.LastError = firstNonEmpty(incoming.LastError, existing.LastError)
 	if existing.CreatedAt > 0 && (incoming.CreatedAt <= 0 || existing.CreatedAt < incoming.CreatedAt) {
 		incoming.CreatedAt = existing.CreatedAt
