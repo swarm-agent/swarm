@@ -89,9 +89,6 @@ export function buildDesktopChatRouteOptions(input: {
     }
     seen.add(id)
     const targetRelationship = topologyRoute.runtimeRelationship.trim().toLowerCase()
-    if (targetRelationship === 'managed') {
-      continue
-    }
     const targetKind = topologyRoute.runtimeKind.trim()
     const hostSwarmName = topologyRoute.hostSwarmName.trim()
     const label = topologyRoute.runtimeSwarmName.trim() || swarmId

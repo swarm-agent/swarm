@@ -7,11 +7,8 @@ export interface SwarmTopologyWorkspaceBindingRecord {
   destination_runtime_swarm_id?: string
   destination_authority_host_swarm_id?: string
   destination_host_swarm_id?: string
-  destination_container_id?: string
   destination_workspace_path?: string
-  replication_mode?: string
   writable: boolean
-  legacy_target_kind?: string
   created_at: number
   updated_at: number
 }

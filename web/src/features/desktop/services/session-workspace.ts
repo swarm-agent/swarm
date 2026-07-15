@@ -39,10 +39,8 @@ export function sessionWorkspaceFactsFromMetadata(metadata: Record<string, unkno
   worktreeRootPath: string
 } {
   return {
-    sourceWorkspacePath: sessionMetadataString(metadata, 'swarm_v2_source_workspace_path')
-      || sessionMetadataString(metadata, 'swarm_routed_host_workspace_path'),
-    runtimeWorkspacePath: sessionMetadataString(metadata, 'swarm_v2_runtime_workspace_path')
-      || sessionMetadataString(metadata, 'swarm_routed_runtime_workspace_path'),
+    sourceWorkspacePath: sessionMetadataString(metadata, 'swarm_v2_source_workspace_path'),
+    runtimeWorkspacePath: sessionMetadataString(metadata, 'swarm_v2_runtime_workspace_path'),
     worktreeEnabled: sessionMetadataBoolean(metadata, 'swarm_v2_worktree_enabled'),
     worktreeRootPath: sessionMetadataString(metadata, 'swarm_v2_worktree_root_path'),
   }
@@ -50,29 +48,25 @@ export function sessionWorkspaceFactsFromMetadata(metadata: Record<string, unkno
 
 export function canonicalSessionWorkspacePath(input: {
   workspacePath: string
-  hostedHostWorkspacePath?: string
-  hostedRuntimeWorkspacePath?: string
   sourceWorkspacePath?: string
   runtimeWorkspacePath?: string
-  preferHostedRuntimeWorkspacePath?: boolean
+  preferRuntimeWorkspacePath?: boolean
   worktreeEnabled?: boolean
   worktreeRootPath?: string
 }): string {
   const workspacePath = input.workspacePath.trim()
   const sourceWorkspacePath = input.sourceWorkspacePath?.trim() ?? ''
   const runtimeWorkspacePath = input.runtimeWorkspacePath?.trim() ?? ''
-  const hostedRuntimeWorkspacePath = input.hostedRuntimeWorkspacePath?.trim() || runtimeWorkspacePath
-  if (input.preferHostedRuntimeWorkspacePath && hostedRuntimeWorkspacePath) {
-    return hostedRuntimeWorkspacePath
+  if (input.preferRuntimeWorkspacePath && runtimeWorkspacePath) {
+    return runtimeWorkspacePath
   }
 
-  const hostedHostWorkspacePath = input.hostedHostWorkspacePath?.trim() || sourceWorkspacePath
-  if (hostedHostWorkspacePath) {
-    return hostedHostWorkspacePath
+  if (sourceWorkspacePath) {
+    return sourceWorkspacePath
   }
 
-  if (hostedRuntimeWorkspacePath && normalizeWorkspacePathForComparison(workspacePath) === normalizeWorkspacePathForComparison(hostedRuntimeWorkspacePath)) {
-    return hostedRuntimeWorkspacePath
+  if (runtimeWorkspacePath && normalizeWorkspacePathForComparison(workspacePath) === normalizeWorkspacePathForComparison(runtimeWorkspacePath)) {
+    return runtimeWorkspacePath
   }
 
   const worktreeRootPath = input.worktreeRootPath?.trim() ?? ''

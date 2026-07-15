@@ -7,7 +7,7 @@ function responseForTarget(kind: string, relationship: string): WorkspaceOvervie
   return {
     ok: true,
     swarm_target: {
-      swarm_id: kind === 'self' ? 'host-swarm' : 'child-swarm',
+      swarm_id: kind === 'self' ? 'host-swarm' : 'container-swarm',
       name: kind,
       kind,
       relationship,
@@ -26,7 +26,7 @@ function responseForTarget(kind: string, relationship: string): WorkspaceOvervie
       worktree_enabled: false,
       sessions: [{
         id: 'session-1',
-        title: 'Remote run',
+        title: 'Target run',
         workspace_path: '/workspaces/swarm',
         workspace_name: 'swarm',
         mode: 'auto',
@@ -34,33 +34,25 @@ function responseForTarget(kind: string, relationship: string): WorkspaceOvervie
         updated_at: 2,
         message_count: 1,
         metadata: {
-          swarm_routed_session: true,
-          swarm_routed_host_workspace_path: '/workspaces/host-swarm',
-          swarm_routed_runtime_workspace_path: '/workspaces/swarm',
+          swarm_v2_source_workspace_path: '/workspaces/host-swarm',
+          swarm_v2_runtime_workspace_path: '/workspaces/swarm',
         },
         session_status: 'idle',
       }],
       topology_routes: [{
-        route_id: 'swarm:child-swarm:/workspaces/swarm',
+        route_id: 'swarm:container-swarm:/workspaces/swarm',
         route_source: 'topology/workspace_binding',
         workspace_binding_id: 'binding-1',
-        runtime_swarm_id: 'child-swarm',
-        runtime_swarm_name: 'Child Swarm',
-        runtime_kind: 'remote',
+        runtime_swarm_id: 'container-swarm',
+        runtime_swarm_name: 'Container Swarm',
+        runtime_kind: 'container',
         runtime_relationship: 'child',
         authority_host_swarm_id: 'host-swarm',
         host_swarm_id: 'host-swarm',
         host_workspace_path: '/workspaces/host-swarm',
         host_workspace_name: 'host-swarm',
         runtime_workspace_path: '/workspaces/swarm',
-        container_id: 'container-1',
-        replication_mode: 'mirror',
         writable: true,
-        sync: {
-          enabled: true,
-          mode: 'mirror',
-          modules: ['sessions'],
-        },
         created_at: 1,
         updated_at: 2,
       }],
@@ -69,20 +61,19 @@ function responseForTarget(kind: string, relationship: string): WorkspaceOvervie
   }
 }
 
-test('remote child workspace overview groups routed sessions under runtime workspace path', () => {
-  const overview = mapWorkspaceOverviewResponse(responseForTarget('remote', 'child'))
+test('child target workspace overview groups sessions under runtime workspace path', () => {
+  const overview = mapWorkspaceOverviewResponse(responseForTarget('container', 'child'))
 
-  assert.equal(overview.swarmTarget?.kind, 'remote')
+  assert.equal(overview.swarmTarget?.kind, 'container')
   assert.equal(overview.workspaces[0]?.sessions[0]?.workspacePath, '/workspaces/swarm')
   assert.equal(overview.workspaces[0]?.sessions[0]?.runtimeWorkspacePath, '/workspaces/swarm')
   assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.routeSource, 'topology/workspace_binding')
-  assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.runtimeSwarmId, 'child-swarm')
+  assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.runtimeSwarmId, 'container-swarm')
   assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.workspaceBindingId, 'binding-1')
   assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.authorityHostSwarmId, 'host-swarm')
-  assert.deepEqual(overview.workspaces[0]?.topologyRoutes[0]?.sync.modules, ['sessions'])
 })
 
-test('self workspace overview keeps routed mirror sessions under host workspace path', () => {
+test('self workspace overview keeps target sessions under source workspace path', () => {
   const overview = mapWorkspaceOverviewResponse(responseForTarget('self', 'self'))
 
   assert.equal(overview.swarmTarget?.kind, 'self')
@@ -101,7 +92,7 @@ test('workspace overview keeps topology routes by binding identity without requi
   const overview = mapWorkspaceOverviewResponse(response)
 
   assert.equal(overview.workspaces[0]?.topologyRoutes.length, 1)
-  assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.runtimeSwarmId, 'child-swarm')
+  assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.runtimeSwarmId, 'container-swarm')
   assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.workspaceBindingId, 'binding-1')
   assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.runtimeWorkspacePath, '')
 })

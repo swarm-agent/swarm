@@ -4,11 +4,11 @@ import test from 'node:test'
 import { applyDesktopChatRouteToSession, buildDesktopChatRouteOptions, desktopChatRouteFromSessionMetadata, desktopChatRouteID, getDesktopSessionCreateTarget, getDesktopSessionStopTarget, isPrimaryDesktopChatRoute, resolveDesktopChatRouteById, resolveDesktopChatRouteFromSession, withDesktopChatRoute, type DesktopChatRoute } from './chat-routing'
 import type { DesktopSessionRecord } from '../../types/realtime'
 
-const remoteRoute: DesktopChatRoute = {
+const childRoute: DesktopChatRoute = {
   id: 'swarm:child-swarm:binding:binding-remote',
   label: 'child swarm',
   swarmId: 'child-swarm',
-  targetKind: 'remote',
+  targetKind: 'container',
   targetRelationship: 'child',
   hostSwarmId: 'host-swarm-id',
   hostSwarmName: 'Host Swarm',
@@ -21,7 +21,7 @@ const remoteRoute: DesktopChatRoute = {
 function sessionRecord(overrides: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord {
   return {
     id: 'session-1',
-    title: 'Remote child session',
+    title: 'Container session',
     workspacePath: '/workspaces/swarm',
     workspaceName: 'child swarm',
     mode: 'auto',
@@ -66,14 +66,14 @@ function sessionRecord(overrides: Partial<DesktopSessionRecord> = {}): DesktopSe
 
 test('routed session fetch URL includes swarm_id so backend can proxy to child', () => {
   assert.equal(
-    withDesktopChatRoute('/v1/sessions/session-1', remoteRoute),
+    withDesktopChatRoute('/v1/sessions/session-1', childRoute),
     '/v1/sessions/session-1?swarm_id=child-swarm',
   )
 })
 
 test('primary host routes are identified by self host relationship even with v2 identifiers', () => {
   const primaryRoute = {
-    ...remoteRoute,
+    ...childRoute,
     id: 'swarm:self-swarm:binding:binding-self',
     label: 'primary self',
     swarmId: 'self-swarm',
@@ -83,27 +83,6 @@ test('primary host routes are identified by self host relationship even with v2 
   }
 
   assert.equal(isPrimaryDesktopChatRoute(primaryRoute), true)
-})
-
-test('legacy routed session metadata is not accepted for native v2 route reconstruction', () => {
-  const route = desktopChatRouteFromSessionMetadata(sessionRecord({
-    workspacePath: '/workspaces/host-swarm',
-    workspaceName: 'host swarm',
-    runtimeWorkspacePath: '/workspaces/swarm',
-    metadata: {
-      swarm_route_id: remoteRoute.id,
-      swarm_routed_workspace_binding_id: 'binding-remote',
-      swarm_route_label: 'Remote Swarm',
-      swarm_route_target_kind: 'remote',
-      swarm_routed_child_swarm_id: 'child-swarm',
-      swarm_routed_host_workspace_path: '/workspaces/host-swarm',
-      swarm_routed_runtime_workspace_path: '/workspaces/swarm',
-      swarm_target_name: 'memory',
-      target_display_name: 'memory',
-    },
-  }))
-
-  assert.equal(route, null)
 })
 
 test('v3 primary session metadata reconstructs primary stop target route', () => {
@@ -211,8 +190,8 @@ test('v2 local-container mirrored session metadata provides fallback route befor
   assert.equal(route?.workspaceName, 'swarm-go')
 })
 
-test('routed session hydration preserves remote child workspace identity', () => {
-  const mapped = applyDesktopChatRouteToSession(sessionRecord(), remoteRoute)
+test('routed session hydration preserves child container workspace identity', () => {
+  const mapped = applyDesktopChatRouteToSession(sessionRecord(), childRoute)
 
   assert.equal(mapped.workspacePath, '/workspaces/swarm')
   assert.equal(mapped.workspaceName, 'child swarm')
@@ -234,14 +213,14 @@ test('workspace defaults resolve by server-backed route id', () => {
     workspaceBindingId: '',
   }
 
-  assert.equal(resolveDesktopChatRouteById([hostRoute, remoteRoute], remoteRoute.id, hostRoute), remoteRoute)
+  assert.equal(resolveDesktopChatRouteById([hostRoute, childRoute], childRoute.id, hostRoute), childRoute)
 })
 
 test('routed local host mirror session remains grouped under host workspace', () => {
   const mapped = applyDesktopChatRouteToSession(sessionRecord({
     workspacePath: '/workspaces/host-swarm',
     workspaceName: 'host swarm',
-  }), remoteRoute)
+  }), childRoute)
 
   assert.equal(mapped.workspacePath, '/workspaces/host-swarm')
   assert.equal(mapped.workspaceName, 'host swarm')
@@ -258,7 +237,7 @@ test('flow sessions preserve their own workspace identity under routed child hyd
       lineage_kind: 'flow',
       flow_id: 'flow-1',
     },
-  }), remoteRoute)
+  }), childRoute)
 
   assert.equal(mapped.workspacePath, '/workspaces/swarm')
   assert.equal(mapped.workspaceName, 'child swarm')
@@ -274,7 +253,7 @@ function topologyRoute(overrides: Partial<WorkspaceOverviewTopologyRoute> = {}):
     workspaceBindingId: 'binding-1',
     runtimeSwarmId: 'child-swarm',
     runtimeSwarmName: 'Child Swarm',
-    runtimeKind: 'remote',
+    runtimeKind: 'container',
     runtimeRelationship: 'child',
     authorityHostSwarmId: 'host-swarm',
     hostSwarmId: 'host-swarm',
@@ -282,14 +261,7 @@ function topologyRoute(overrides: Partial<WorkspaceOverviewTopologyRoute> = {}):
     hostWorkspacePath: '/host/workspace',
     hostWorkspaceName: 'Host Workspace',
     runtimeWorkspacePath: '/runtime/workspace',
-    containerId: '',
-    replicationMode: 'mirror',
     writable: true,
-    sync: {
-      enabled: true,
-      mode: 'mirror',
-      modules: [],
-    },
     createdAt: 1,
     updatedAt: 2,
     ...overrides,
@@ -352,7 +324,7 @@ test('buildDesktopChatRouteOptions derives routes from topology route data', () 
     id: 'swarm:child-swarm:binding:binding-1',
     label: 'Child Swarm',
     swarmId: 'child-swarm',
-    targetKind: 'remote',
+    targetKind: 'container',
     targetRelationship: 'child',
     hostSwarmId: 'host-swarm',
     hostSwarmName: 'Host Swarm',
@@ -399,7 +371,7 @@ test('buildDesktopChatRouteOptions labels mirrored child routes with their runti
       runtimeSwarmName: 'SwarmTarget2',
       runtimeKind: 'mirrored',
       runtimeRelationship: 'child',
-      hostSwarmId: 'remote-host-swarm',
+      hostSwarmId: 'target-host-swarm',
       hostSwarmName: 'SwarmTarget2',
     })],
   })
@@ -426,7 +398,7 @@ test('routeCaption labels v2 primary self host as primary host', async () => {
   const { routeCaption } = await import('../components/route-picker')
 
   assert.equal(routeCaption({
-    ...remoteRoute,
+    ...childRoute,
     id: 'swarm:primary-swarm:binding:binding-primary-self',
     label: 'primary self binding',
     swarmId: 'primary-swarm',
@@ -435,13 +407,13 @@ test('routeCaption labels v2 primary self host as primary host', async () => {
     workspaceBindingId: 'binding-primary-self',
   }), 'Primary host')
   assert.equal(routeCaption({
-    ...remoteRoute,
+    ...childRoute,
     targetKind: 'container',
     targetRelationship: 'child',
-  }), 'Primary container')
+  }), 'Swarm target')
 })
 
-test('groupDesktopChatRoutes keeps primary and local routes together and remote child routes separate', async () => {
+test('groupDesktopChatRoutes keeps the primary route separate from other targets', async () => {
   const { groupDesktopChatRoutes } = await import('../components/route-picker')
   const routes = [
     {
@@ -489,7 +461,7 @@ test('groupDesktopChatRoutes keeps primary and local routes together and remote 
       swarmId: 'child-swarm',
       targetKind: 'mirrored',
       targetRelationship: 'child',
-      hostSwarmId: 'remote-host-swarm'
+      hostSwarmId: 'target-host-swarm',
       hostSwarmName: 'SwarmTarget2',
       hostWorkspacePath: '/srv/swarm/swarm-go',
       hostWorkspaceName: 'swarm-go',
@@ -500,8 +472,8 @@ test('groupDesktopChatRoutes keeps primary and local routes together and remote 
 
   const groups = groupDesktopChatRoutes(routes)
 
-  assert.deepEqual(groups.map((group) => group.label), ['Primary', 'Remote'])
-  assert.deepEqual(groups.map((group) => group.routes.map((route) => route.label)), [['SwarmTarget1', 'primary self binding', 'localtest'], ['heytest']])
+  assert.deepEqual(groups.map((group) => group.label), ['Primary', 'Targets'])
+  assert.deepEqual(groups.map((group) => group.routes.map((route) => route.label)), [['SwarmTarget1', 'primary self binding'], ['localtest', 'heytest']])
 })
 
 
@@ -524,7 +496,7 @@ test('buildDesktopChatRouteOptions includes local self binding for host route wh
 
 test('getDesktopSessionCreateTarget only maps primary self target to V3', () => {
   assert.deepEqual(getDesktopSessionCreateTarget({
-    ...remoteRoute,
+    ...childRoute,
     swarmId: 'primary-swarm',
     targetKind: 'host',
     targetRelationship: 'self',
@@ -541,7 +513,7 @@ test('getDesktopSessionCreateTarget only maps primary self target to V3', () => 
 
   for (const targetKind of ['container', 'local-container', 'local_container', 'mirrored_child', 'child']) {
     const target = getDesktopSessionCreateTarget({
-      ...remoteRoute,
+      ...childRoute,
       targetKind,
       targetRelationship: 'child',
       swarmId: 'child-swarm',
@@ -557,18 +529,18 @@ test('getDesktopSessionCreateTarget only maps primary self target to V3', () => 
 })
 
 test('getDesktopSessionCreateTarget blocks non-primary and missing-binding routes', () => {
-  const remoteTarget = getDesktopSessionCreateTarget(remoteRoute)
-  assert.equal(remoteTarget.sessionApi, null)
-  assert.equal(remoteTarget.endpoint, null)
-  assert.match(remoteTarget.unsupportedReason, /primary self V3 target/)
-  const missingBinding = getDesktopSessionCreateTarget({ ...remoteRoute, targetKind: 'host', targetRelationship: 'self', workspaceBindingId: '' })
+  const childTarget = getDesktopSessionCreateTarget(childRoute)
+  assert.equal(childTarget.sessionApi, null)
+  assert.equal(childTarget.endpoint, null)
+  assert.match(childTarget.unsupportedReason, /primary self V3 target/)
+  const missingBinding = getDesktopSessionCreateTarget({ ...childRoute, targetKind: 'host', targetRelationship: 'self', workspaceBindingId: '' })
   assert.equal(missingBinding.endpoint, null)
   assert.match(missingBinding.unsupportedReason, /workspace_binding_id/)
 })
 
 test('getDesktopSessionStopTarget only allows primary self V3 target', () => {
   assert.deepEqual(getDesktopSessionStopTarget({
-    ...remoteRoute,
+    ...childRoute,
     swarmId: 'primary-swarm',
     targetKind: 'host',
     targetRelationship: 'self',
@@ -579,8 +551,8 @@ test('getDesktopSessionStopTarget only allows primary self V3 target', () => {
   })
 
   for (const route of [
-    { ...remoteRoute, swarmId: 'child-swarm', targetKind: 'local-container', targetRelationship: 'child' },
-    { ...remoteRoute, swarmId: '', targetKind: 'host', targetRelationship: 'self' },
+    { ...childRoute, swarmId: 'child-swarm', targetKind: 'local-container', targetRelationship: 'child' },
+    { ...childRoute, swarmId: '', targetKind: 'host', targetRelationship: 'self' },
   ]) {
     const target = getDesktopSessionStopTarget(route)
     assert.equal(target.sessionApi, null)

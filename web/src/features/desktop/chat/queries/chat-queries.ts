@@ -1759,32 +1759,24 @@ const SESSION_CREATE_FORBIDDEN_METADATA_KEYS = new Set([
   'workspace_path',
   'host_workspace_path',
   'runtime_workspace_path',
-  'backend_url',
-  'child_backend_url',
-  'target_backend_url',
   'target_swarm_id',
   'next_hop_swarm_id',
-  'next_hop_backend_url',
   'local_workspace_binding_id',
   'owner_transport',
 ])
 
 const SESSION_CREATE_FORBIDDEN_METADATA_PREFIXES = [
   'swarm_route_',
-  'swarm_routed_',
   'swarm_v2_',
-  'hosted_session',
 ]
 
 const SESSION_CREATE_FORBIDDEN_METADATA_PARTS = [
   'workspace_name',
   'workspace_path',
   'path',
-  'backend_url',
   'swarm_id',
   'route',
   'routing',
-  'backend',
   'target',
 ]
 

@@ -34,9 +34,6 @@ const forbiddenCreateBodyKeys = [
   'host_workspace_path',
   'runtime_workspace_path',
   'target_swarm_id',
-  'backend_url',
-  'child_backend_url',
-  'target_backend_url',
 ]
 
 async function withFetchStub(
@@ -219,17 +216,11 @@ test('metadata sanitization preserves annotations and removes route authority ke
         workspace_path: '/forbidden',
         host_workspace_path: '/forbidden-host',
         runtime_workspace_path: '/forbidden-runtime',
-        backend_url: 'http://127.0.0.1:1',
-        child_backend_url: 'http://127.0.0.1:2',
-        target_backend_url: 'http://127.0.0.1:3',
         target_swarm_id: 'forbidden-target',
         next_hop_swarm_id: 'forbidden-next-hop',
-        next_hop_backend_url: 'http://127.0.0.1:4',
         swarm_route_label: 'forbidden-route',
-        swarm_routed_workspace_binding_id: 'forbidden-routed',
         swarm_v2_execution_id: 'forbidden-v2',
         local_workspace_binding_id: 'forbidden-local-binding',
-        hosted_session_id: 'forbidden-hosted-session',
         owner_transport: 'forbidden-transport',
         custom_routing_hint: 'forbidden-routing-looking-key',
         custom_path_hint: '/forbidden-path-looking-key',

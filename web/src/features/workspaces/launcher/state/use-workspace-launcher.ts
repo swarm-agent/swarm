@@ -135,21 +135,11 @@ function topologyRouteArraysEqual(left: WorkspaceOverviewTopologyRoute[], right:
       || leftRoute.hostWorkspacePath !== rightRoute.hostWorkspacePath
       || leftRoute.hostWorkspaceName !== rightRoute.hostWorkspaceName
       || leftRoute.runtimeWorkspacePath !== rightRoute.runtimeWorkspacePath
-      || leftRoute.containerId !== rightRoute.containerId
-      || leftRoute.replicationMode !== rightRoute.replicationMode
       || leftRoute.writable !== rightRoute.writable
-      || leftRoute.sync.enabled !== rightRoute.sync.enabled
-      || leftRoute.sync.mode !== rightRoute.sync.mode
-      || leftRoute.sync.modules.length !== rightRoute.sync.modules.length
       || leftRoute.createdAt !== rightRoute.createdAt
       || leftRoute.updatedAt !== rightRoute.updatedAt
     ) {
       return false
-    }
-    for (let moduleIndex = 0; moduleIndex < leftRoute.sync.modules.length; moduleIndex += 1) {
-      if (leftRoute.sync.modules[moduleIndex] !== rightRoute.sync.modules[moduleIndex]) {
-        return false
-      }
     }
   }
   return true

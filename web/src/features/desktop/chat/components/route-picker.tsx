@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, Container, Monitor, Server, Star } from 'lucide-react'
+import { Check, ChevronDown, Container, Monitor, Star } from 'lucide-react'
 import { isPrimaryDesktopChatRoute } from '../services/chat-routing'
 import type { DesktopChatRoute } from '../services/chat-routing'
 
@@ -19,17 +19,16 @@ const VIEWPORT_GUTTER = 8
 const MIN_DROPDOWN_WIDTH = 260
 const MAX_DROPDOWN_WIDTH = 360
 
-function routeKind(route: DesktopChatRoute): 'primary' | 'remote' | 'local' {
-  const targetKind = route.targetKind.trim().toLowerCase()
+function routeKind(route: DesktopChatRoute): 'primary' | 'target' {
   if (!route.swarmId || isPrimaryDesktopChatRoute(route)) {
     return 'primary'
   }
-  return targetKind === 'remote' || targetKind === 'mirrored' ? 'remote' : 'local'
+  return 'target'
 }
 
 function RouteIcon({ route, className }: { route: DesktopChatRoute; className?: string }) {
   const kind = routeKind(route)
-  const Icon = kind === 'primary' ? Monitor : kind === 'remote' ? Server : Container
+  const Icon = kind === 'primary' ? Monitor : Container
   return <Icon size={14} className={className} />
 }
 
@@ -38,11 +37,7 @@ export function routeCaption(route: DesktopChatRoute): string {
   if (kind === 'primary') {
     return 'Primary host'
   }
-  if (kind === 'remote') {
-    const hostName = route.hostSwarmName.trim() || route.hostSwarmId.trim()
-    return hostName ? `Container on ${hostName}` : 'Container'
-  }
-  return 'Primary container'
+  return 'Swarm target'
 }
 
 interface RouteGroup {
@@ -53,20 +48,20 @@ interface RouteGroup {
 
 export function groupDesktopChatRoutes(routes: DesktopChatRoute[]): RouteGroup[] {
   const primary: DesktopChatRoute[] = []
-  const remote: DesktopChatRoute[] = []
+  const targets: DesktopChatRoute[] = []
 
   for (const route of routes) {
     const kind = routeKind(route)
-    if (kind === 'primary' || kind === 'local') {
+    if (kind === 'primary') {
       primary.push(route)
       continue
     }
-    remote.push(route)
+    targets.push(route)
   }
 
   return [
     { key: 'primary', label: 'Primary', routes: primary },
-    { key: 'remote', label: 'Remote', routes: remote },
+    { key: 'targets', label: 'Targets', routes: targets },
   ].filter((group) => group.routes.length > 0)
 }
 

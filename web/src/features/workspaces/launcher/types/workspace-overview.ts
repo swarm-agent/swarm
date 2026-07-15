@@ -112,14 +112,7 @@ export interface WorkspaceOverviewTopologyRouteWire {
   host_workspace_path?: string
   host_workspace_name?: string
   runtime_workspace_path?: string
-  container_id?: string
-  replication_mode?: string
   writable?: boolean
-  sync?: {
-    enabled?: boolean
-    mode?: string
-    modules?: string[]
-  }
   created_at?: number
   updated_at?: number
 }
@@ -161,14 +154,7 @@ export interface WorkspaceOverviewTopologyRoute {
   hostWorkspacePath: string
   hostWorkspaceName: string
   runtimeWorkspacePath: string
-  containerId: string
-  replicationMode: string
   writable: boolean
-  sync: {
-    enabled: boolean
-    mode: string
-    modules: string[]
-  }
   createdAt: number
   updatedAt: number
 }
@@ -250,14 +236,7 @@ function mapOverviewTopologyRoute(route: WorkspaceOverviewTopologyRouteWire): Wo
     hostWorkspacePath: String(route.host_workspace_path ?? '').trim(),
     hostWorkspaceName: String(route.host_workspace_name ?? '').trim(),
     runtimeWorkspacePath: String(route.runtime_workspace_path ?? '').trim(),
-    containerId: String(route.container_id ?? '').trim(),
-    replicationMode: String(route.replication_mode ?? '').trim(),
     writable: Boolean(route.writable),
-    sync: {
-      enabled: Boolean(route.sync?.enabled),
-      mode: String(route.sync?.mode ?? '').trim(),
-      modules: Array.isArray(route.sync?.modules) ? route.sync.modules.map((entry) => String(entry).trim()).filter(Boolean) : [],
-    },
     createdAt: typeof route.created_at === 'number' ? route.created_at : 0,
     updatedAt: typeof route.updated_at === 'number' ? route.updated_at : 0,
   }
@@ -333,19 +312,19 @@ function mapOverviewSession(session: WorkspaceOverviewSessionWire, preferRuntime
     ? session.metadata as Record<string, unknown>
     : undefined
   const workspacePath = String(session.workspace_path ?? '').trim()
-  const hostedHostWorkspacePath = typeof metadata?.swarm_routed_host_workspace_path === 'string'
-    ? metadata.swarm_routed_host_workspace_path.trim()
+  const sourceWorkspacePath = typeof metadata?.swarm_v2_source_workspace_path === 'string'
+    ? metadata.swarm_v2_source_workspace_path.trim()
     : ''
-  const hostedRuntimeWorkspacePath = typeof metadata?.swarm_routed_runtime_workspace_path === 'string'
-    ? metadata.swarm_routed_runtime_workspace_path.trim()
+  const runtimeWorkspacePath = typeof metadata?.swarm_v2_runtime_workspace_path === 'string'
+    ? metadata.swarm_v2_runtime_workspace_path.trim()
     : ''
   const worktreeEnabled = Boolean(session.worktree_enabled)
   const worktreeRootPath = String(session.worktree_root_path ?? '').trim()
   const canonicalWorkspacePath = canonicalSessionWorkspacePath({
     workspacePath,
-    hostedHostWorkspacePath,
-    hostedRuntimeWorkspacePath,
-    preferHostedRuntimeWorkspacePath: preferRuntimeWorkspacePath,
+    sourceWorkspacePath,
+    runtimeWorkspacePath,
+    preferRuntimeWorkspacePath,
     worktreeEnabled,
     worktreeRootPath,
   })
@@ -361,7 +340,7 @@ function mapOverviewSession(session: WorkspaceOverviewSessionWire, preferRuntime
     updatedAt: typeof session.updated_at === 'number' ? session.updated_at : 0,
     createdAt: typeof session.created_at === 'number' ? session.created_at : 0,
     permissionsHydrated: false,
-    runtimeWorkspacePath: hostedRuntimeWorkspacePath || workspacePath,
+    runtimeWorkspacePath: runtimeWorkspacePath || workspacePath,
     worktreeEnabled,
     worktreeRootPath,
     worktreeBaseBranch: String(session.worktree_base_branch ?? '').trim(),
