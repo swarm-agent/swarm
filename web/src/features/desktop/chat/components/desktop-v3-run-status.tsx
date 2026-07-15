@@ -165,9 +165,7 @@ function currentRunDurationMs(model: DesktopV3RunStatusModel, now: number): numb
   const storedRunDurationMs = duration(model.durationMs)
   if (model.active) {
     const startedAt = timestamp(model.startedAt)
-    const activeDurationMs = startedAt ? Math.max(0, now - startedAt) : undefined
-    const storedCumulativeMs = duration(model.cumulativeDurationMs)
-    return activeDurationMs === undefined ? storedRunDurationMs : (storedCumulativeMs ?? 0) + activeDurationMs
+    return startedAt ? Math.max(0, now - startedAt) : storedRunDurationMs
   }
   return storedRunDurationMs
 }
@@ -175,7 +173,10 @@ function currentRunDurationMs(model: DesktopV3RunStatusModel, now: number): numb
 function totalRunDurationMs(model: DesktopV3RunStatusModel, now: number): number | undefined {
   const storedCumulativeMs = duration(model.cumulativeDurationMs)
   const runDurationMs = currentRunDurationMs(model, now)
-  return model.active ? runDurationMs : storedCumulativeMs ?? runDurationMs
+  if (model.active && runDurationMs !== undefined) {
+    return (storedCumulativeMs ?? 0) + runDurationMs
+  }
+  return storedCumulativeMs ?? runDurationMs
 }
 
 export function formatDesktopV3RunTimer(model: DesktopV3RunStatusModel, now: number): string {
@@ -186,7 +187,7 @@ export function formatDesktopV3CurrentRunTimer(model: DesktopV3RunStatusModel, n
   return formatDurationMs(currentRunDurationMs(model, now))
 }
 
-export const DESKTOP_V3_RUN_TIMER_TOOLTIP = 'Checkpoint timer continues across checkpoint runs. Overall timer is cumulative agent run time for this session.'
+export const DESKTOP_V3_RUN_TIMER_TOOLTIP = 'Loop timer is the current run. Overall timer is cumulative agent run time for this session.'
 
 export function formatDesktopV3RunTimerLabel(model: DesktopV3RunStatusModel, now: number): string {
   const runTimer = formatDesktopV3CurrentRunTimer(model, now)

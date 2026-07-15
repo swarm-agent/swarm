@@ -35,7 +35,7 @@ test('buildDesktopV3RunStatusModel uses backend timing after refresh', () => {
   assert.equal(formatDesktopV3RunTimer(model!, 25_500), '1:15')
 })
 
-test('checkpoint timer continues from cumulative duration across backend runs', () => {
+test('second run timer resets from backend started_at while preserving cumulative total', () => {
   const model = buildDesktopV3RunStatusModel({
     currentRunIntent: {
       session_id: 'session-a',
@@ -49,16 +49,16 @@ test('checkpoint timer continues from cumulative duration across backend runs', 
     },
   })
 
-  assert.equal(formatDesktopV3CurrentRunTimer(model!, 125_000), '1:35')
+  assert.equal(formatDesktopV3CurrentRunTimer(model!, 125_000), '0:05')
   assert.equal(formatDesktopV3RunTimer(model!, 125_000), '1:35')
-  assert.equal(formatDesktopV3RunTimerLabel(model!, 125_000), '1:35')
+  assert.equal(formatDesktopV3RunTimerLabel(model!, 125_000), '0:05 (1:35)')
 
   const markup = renderToStaticMarkup(<DesktopV3RunStatusPill model={model} now={125_000} />)
   assert.match(markup, /Running/)
-  assert.match(markup, /1:35/)
-  assert.doesNotMatch(markup, /0:05/)
-  assert.doesNotMatch(markup, /\(1:35\)/)
-  assert.match(markup, /Checkpoint timer continues across checkpoint runs/)
+  assert.match(markup, /0:05/)
+  assert.doesNotMatch(markup, /Total</)
+  assert.match(markup, /\(1:35\)/)
+  assert.match(markup, /Loop timer is the current run/)
 })
 
 test('terminal timer uses exact backend cumulative duration', () => {
