@@ -241,7 +241,9 @@ func agentProfilesByName(profiles []pebblestore.AgentProfile) map[string]pebbles
 }
 
 func builtinUtilityAgentNames() []string {
-	return []string{"explorer", "memory"}
+	// Compact is compiled and resolved from the catalog utility recommendation;
+	// it is intentionally absent from persisted/default utility agent rows.
+	return []string{"explorer"}
 }
 
 func utilityAgentNames(providerDefaults defaults.ProviderDefaults) []string {

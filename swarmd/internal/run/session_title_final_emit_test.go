@@ -32,7 +32,7 @@ func TestFinalSessionTitleUsesEmitter(t *testing.T) {
 		Title:         "New Session",
 		WorkspacePath: "/workspace",
 		WorkspaceName: "workspace",
-		Preference:    pebblestore.ModelPreference{Provider: "static", Model: "title-model", Thinking: "medium"},
+		Preference:    &pebblestore.ModelPreference{Provider: "static", Model: "title-model", Thinking: "medium"},
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}

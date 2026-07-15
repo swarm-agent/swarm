@@ -14,9 +14,12 @@ const (
 	PlanSidechatAgentName = "Plan"
 	AISidechatAgentID     = "system-ai-sidechat"
 	AISidechatAgentName   = "AI"
+	CompactAgentID        = "system-compact"
+	CompactAgentName      = "Compact"
 
-	SystemSidechatKindPlan = "plan"
-	SystemSidechatKindAI   = "ai"
+	SystemSidechatKindPlan    = "plan"
+	SystemSidechatKindAI      = "ai"
+	SystemSidechatKindCompact = "compact"
 )
 
 // SystemAgentDefinition is the immutable, code-owned identity and security
@@ -158,6 +161,13 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Materialize:  AISidechatAgentProfileForParent,
 		Reconcile:    reconcileAISidechatAgentProfile,
 	},
+	{
+		ID:           CompactAgentID,
+		DisplayName:  CompactAgentName,
+		SidechatKind: SystemSidechatKindCompact,
+		Materialize:  CompactAgentProfileForParent,
+		Reconcile:    reconcileCompactAgentProfile,
+	},
 }
 
 func BuiltinSystemAgentRegistry() (*SystemAgentRegistry, error) {
@@ -193,6 +203,16 @@ func PlanSidechatAgentPromptWithContext(contextJSON string) string {
 
 func AISidechatAgentPrompt() string {
 	return strings.TrimSpace("You are the reserved AI sidechat for this parent conversation. Assist with implementation and research using the snapshotted auto-mode capabilities. You are permanently in auto mode: never enter plan mode, change agent/profile/settings, or invoke plan lifecycle transitions.")
+}
+
+// CompactAgentPrompt is the immutable base instruction for the compiled utility
+// agent. Callers append exactly one case-specific compaction or title contract.
+func CompactAgentPrompt() string {
+	return strings.TrimSpace("You are Compact, Swarm's tool-free one-shot context utility. Follow only the supplied case-specific instructions and return only the requested text.")
+}
+
+func CompactAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{}}
 }
 
 func IsPlanSidechatAgentName(name string) bool {
@@ -239,6 +259,16 @@ func PlanSidechatAgentProfileForParent(parent pebblestore.AgentProfile) pebblest
 	return profile
 }
 
+func CompactAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: CompactAgentID, Mode: ModeSubagent, Description: "Compiled tool-free context compaction and titling utility",
+		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking),
+		Prompt: CompactAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: CompactAgentToolContract(), Enabled: true,
+	})
+	return profile
+}
+
 func AISidechatAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := parent
 	profile.Name, profile.Mode, profile.Description = AISidechatAgentID, ModeSubagent, "Reserved hidden parent-owned AI sidechat"
@@ -277,6 +307,12 @@ func reconcileAISidechatAgentProfile(snapshot pebblestore.AgentProfile) pebblest
 	profile := AISidechatAgentProfileForParent(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
 	profile.AutoServiceTier = snapshot.AutoServiceTier
+	return profile
+}
+
+func reconcileCompactAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := CompactAgentProfileForParent(snapshot)
+	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
 	return profile
 }
 

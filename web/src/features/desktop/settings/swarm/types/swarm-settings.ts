@@ -27,6 +27,16 @@ export interface UIToolSettingsWire {
   image?: UIToolImageSettingsWire
 }
 
+export interface UICompactAgentSettingsWire {
+  provider?: string
+  model?: string
+  thinking?: string
+}
+
+export interface UIAgentSettingsWire {
+  compact?: UICompactAgentSettingsWire
+}
+
 export type DesktopSessionMode = 'auto' | 'plan'
 export type FollowupCheckpointPolicyDefault = 'require_approval' | 'auto_start'
 
@@ -52,6 +62,7 @@ export interface UISettingsWire {
   swarming?: UISwarmingSettingsWire
   swarm?: UISwarmSettingsWire
   tools?: UIToolSettingsWire
+  agents?: UIAgentSettingsWire
   updated_at?: number
 }
 
@@ -177,6 +188,28 @@ export function withThinkingTagsEnabled(current: UISettingsWire, enabled: boolea
     chat: {
       ...(current.chat ?? {}),
       thinking_tags: enabled,
+    },
+  }
+}
+
+export function normalizeCompactAgentSettings(payload?: UISettingsWire | null): Required<UICompactAgentSettingsWire> {
+  return {
+    provider: typeof payload?.agents?.compact?.provider === 'string' ? payload.agents.compact.provider.trim().toLowerCase() : '',
+    model: typeof payload?.agents?.compact?.model === 'string' ? payload.agents.compact.model.trim() : '',
+    thinking: typeof payload?.agents?.compact?.thinking === 'string' ? payload.agents.compact.thinking.trim() : '',
+  }
+}
+
+export function withCompactAgentSettings(current: UISettingsWire, compact: UICompactAgentSettingsWire): UISettingsWire {
+  return {
+    ...current,
+    agents: {
+      ...(current.agents ?? {}),
+      compact: {
+        provider: compact.provider?.trim().toLowerCase() ?? '',
+        model: compact.model?.trim() ?? '',
+        thinking: compact.thinking?.trim() ?? '',
+      },
     },
   }
 }

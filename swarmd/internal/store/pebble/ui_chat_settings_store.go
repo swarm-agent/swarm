@@ -97,6 +97,16 @@ type UIToolSettingsRecord struct {
 	Image UIToolImageSettingsRecord `json:"image,omitempty"`
 }
 
+type UICompactAgentSettingsRecord struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Thinking string `json:"thinking,omitempty"`
+}
+
+type UIAgentSettingsRecord struct {
+	Compact UICompactAgentSettingsRecord `json:"compact,omitempty"`
+}
+
 type UISettingsRecord struct {
 	Theme     UIThemeSettingsRecord    `json:"theme,omitempty"`
 	Input     UIInputSettingsRecord    `json:"input,omitempty"`
@@ -105,6 +115,7 @@ type UISettingsRecord struct {
 	Swarm     UISwarmSettingsRecord    `json:"swarm,omitempty"`
 	Updates   UIUpdateSettingsRecord   `json:"updates,omitempty"`
 	Tools     UIToolSettingsRecord     `json:"tools,omitempty"`
+	Agents    UIAgentSettingsRecord    `json:"agents,omitempty"`
 	UpdatedAt int64                    `json:"updated_at"`
 }
 
@@ -116,6 +127,7 @@ type UISettingsPatch struct {
 	Swarm    *UISwarmSettingsRecord
 	Updates  *UIUpdateSettingsRecord
 	Tools    *UIToolSettingsRecord
+	Agents   *UIAgentSettingsRecord
 }
 
 type UISettingsStore struct {
@@ -181,6 +193,9 @@ func (s *UISettingsStore) UpdateForAccount(accountScopeID string, patch UISettin
 	}
 	if patch.Tools != nil {
 		record.Tools = *patch.Tools
+	}
+	if patch.Agents != nil {
+		record.Agents = *patch.Agents
 	}
 	record.UpdatedAt = time.Now().UnixMilli()
 	record.Chat.UpdatedAt = record.UpdatedAt
@@ -276,6 +291,9 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	}
 	record.Swarm.RemoteSSHTargets = normalizeRemoteSSHTargets(record.Swarm.RemoteSSHTargets)
 	record.Tools.Image.DefaultModel = strings.TrimSpace(record.Tools.Image.DefaultModel)
+	record.Agents.Compact.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Compact.Provider))
+	record.Agents.Compact.Model = strings.TrimSpace(record.Agents.Compact.Model)
+	record.Agents.Compact.Thinking = strings.TrimSpace(record.Agents.Compact.Thinking)
 	return record
 }
 

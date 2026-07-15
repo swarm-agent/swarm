@@ -145,7 +145,6 @@ func TestEnsureDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
 	wantPresets := map[string]string{
 		"swarm":    "custom",
 		"explorer": "read_only",
-		"memory":   "background_commit",
 		"clone":    "read_write",
 	}
 	for name, wantPreset := range wantPresets {
@@ -175,15 +174,8 @@ func TestEnsureDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
 		}
 	}
 
-	memory, ok, err := agents.GetProfile("memory")
-	if err != nil || !ok {
-		t.Fatalf("GetProfile(memory) ok=%v err=%v", ok, err)
-	}
-	for _, toolName := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
-		cfg, ok := memory.ToolContract.Tools[toolName]
-		if !ok || cfg.Enabled == nil || !*cfg.Enabled {
-			t.Fatalf("memory tool %s = %+v, want explicitly enabled", toolName, cfg)
-		}
+	if _, ok, err := agents.GetProfile("memory"); err != nil || ok {
+		t.Fatalf("persisted memory profile ok=%v err=%v, want absent", ok, err)
 	}
 }
 
@@ -200,7 +192,7 @@ func TestRestoreDefaultsPersistsCanonicalBuiltInToolContracts(t *testing.T) {
 		t.Fatalf("active subagent clone = %q, want clone", got)
 	}
 
-	for _, name := range []string{"swarm", "explorer", "memory", "clone"} {
+	for _, name := range []string{"swarm", "explorer", "clone"} {
 		profile, ok, err := agents.GetProfile(name)
 		if err != nil {
 			t.Fatalf("GetProfile(%s) error = %v", name, err)
@@ -541,14 +533,18 @@ func TestDeletePrimaryRequiresAnotherPrimaryForEveryPrimary(t *testing.T) {
 	}
 }
 
-func TestMemoryRemainsProtectedFromDelete(t *testing.T) {
+func TestCustomizedMemoryCanBeDeleted(t *testing.T) {
 	svc, _ := newTestService(t)
-	if err := svc.EnsureDefaults(); err != nil {
-		t.Fatalf("EnsureDefaults() error = %v", err)
+	enabled := true
+	if _, _, _, err := svc.Upsert(UpsertInput{
+		Name: "memory", Mode: ModeSubagent, Description: "User-owned memory helper", Prompt: "Custom user prompt.",
+		RuntimeMode: pebblestore.AgentRuntimeModeRead, ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}, Enabled: &enabled,
+	}); err != nil {
+		t.Fatalf("create customized memory: %v", err)
 	}
 
-	if _, _, _, err := svc.Delete("memory"); err == nil || !strings.Contains(err.Error(), "protected") {
-		t.Fatalf("Delete(memory) error = %v, want protected", err)
+	if _, _, _, err := svc.Delete("memory"); err != nil {
+		t.Fatalf("Delete(memory) error = %v", err)
 	}
 }
 

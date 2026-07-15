@@ -370,13 +370,8 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 	if err := s.backfillBuiltInToolContractsForAccountLocked(accountScopeID, now); err != nil {
 		return err
 	}
-	if current, ok, err := s.getProfileForAccountLocked(accountScopeID, "memory"); err != nil {
+	if err := s.cleanupBuiltInMemoryForAccountLocked(accountScopeID); err != nil {
 		return err
-	} else if ok && shouldReconcileBuiltInMemory(current) {
-		profile := reconcileBuiltInMemory(current, now)
-		if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
-			return err
-		}
 	}
 	if current, ok, err := s.getProfileForAccountLocked(accountScopeID, "commit"); err != nil {
 		return err
@@ -444,7 +439,7 @@ func normalizeDefaultUtilityAgentNames(values []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		name := normalizeName(value)
-		if name != "" {
+		if name != "" && name != "memory" && name != "compact" && name != CompactAgentID {
 			out[name] = struct{}{}
 		}
 	}
@@ -604,35 +599,35 @@ func requireAgentToolContract(profile pebblestore.AgentProfile) error {
 	return fmt.Errorf("agent %q tool_contract is required", name)
 }
 
-func shouldReconcileBuiltInMemory(profile pebblestore.AgentProfile) bool {
-	if strings.TrimSpace(profile.Name) != "memory" {
+func shouldRemoveBuiltInMemory(profile pebblestore.AgentProfile) bool {
+	if normalizeName(profile.Name) != "memory" || profile.Mode != ModeSubagent {
 		return false
 	}
-	if profile.Mode != ModeSubagent || !profile.Enabled {
-		return true
-	}
-	if pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModeReadWrite {
-		return true
-	}
-	return profile.ToolContract == nil
+	prompt := strings.TrimSpace(profile.Prompt)
+	managedPrompt := prompt == "" || prompt == defaultMemoryPrompt() || prompt == oldDefaultMemoryPrompt()
+	description := strings.TrimSpace(profile.Description)
+	managedDescription := description == "" || description == "Durable artifacts and commits"
+	managedContract := profile.ToolContract == nil || strings.TrimSpace(profile.ToolContract.Preset) == "background_commit"
+	return managedPrompt && managedDescription && managedContract
 }
 
-func reconcileBuiltInMemory(profile pebblestore.AgentProfile, now int64) pebblestore.AgentProfile {
-	profile.Name = "memory"
-	profile.Mode = ModeSubagent
-	profile.Description = "Durable artifacts and commits"
-	profile.RuntimeMode = pebblestore.AgentRuntimeModeReadWrite
-	profile.ExecutionSetting = pebblestore.AgentExecutionSettingReadWrite
-	profile.ExitPlanModeEnabled = pebblestore.BoolPtr(false)
-	if profile.ToolContract == nil {
-		profile.ToolContract = defaultMemoryToolContract()
+func (s *Service) cleanupBuiltInMemoryForAccountLocked(accountScopeID string) error {
+	profile, ok, err := s.getProfileForAccountLocked(accountScopeID, "memory")
+	if err != nil || !ok || !shouldRemoveBuiltInMemory(profile) {
+		return err
 	}
-	profile.Enabled = true
-	profile.UpdatedAt = now
-	if prompt := strings.TrimSpace(profile.Prompt); prompt == "" || strings.EqualFold(prompt, oldDefaultMemoryPrompt()) {
-		profile.Prompt = defaultMemoryPrompt()
+	activeSubagents, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
+	if err != nil {
+		return err
 	}
-	return pebblestore.NormalizeAgentProfile(profile)
+	for purpose, assigned := range activeSubagents {
+		if normalizeName(purpose) == "memory" || normalizeName(assigned) == "memory" {
+			if err := s.deleteActiveSubagentForAccountLocked(accountScopeID, purpose); err != nil {
+				return err
+			}
+		}
+	}
+	return s.deleteProfileForAccountLocked(accountScopeID, "memory")
 }
 
 func oldDefaultMemoryPrompt() string {
@@ -1558,10 +1553,6 @@ func (s *Service) deleteForAccount(accountScopeID, name string) (DeleteResult, i
 	if IsIntegrationBuilderAgentName(name) || IsReservedSidechatAgentName(name) {
 		return DeleteResult{}, 0, nil, fmt.Errorf("agent %q is transient and cannot be deleted", name)
 	}
-	if name == "memory" {
-		return DeleteResult{}, 0, nil, fmt.Errorf("agent %q is protected and cannot be deleted", name)
-	}
-
 	target, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
 		return DeleteResult{}, 0, nil, err
@@ -1679,6 +1670,9 @@ func (s *Service) restoreDefaultsForAccount(accountScopeID string) (State, int64
 			return State{}, 0, nil, err
 		}
 	}
+	if err := s.cleanupBuiltInMemoryForAccountLocked(accountScopeID); err != nil {
+		return State{}, 0, nil, err
+	}
 
 	version, err := s.bumpVersionForAccountLocked(accountScopeID)
 	if err != nil {
@@ -1791,6 +1785,9 @@ func (s *Service) resetDefaultsForAccount(accountScopeID string) (State, int64, 
 		if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, profileName); err != nil {
 			return State{}, 0, nil, err
 		}
+	}
+	if err := s.cleanupBuiltInMemoryForAccountLocked(accountScopeID); err != nil {
+		return State{}, 0, nil, err
 	}
 
 	version, err := s.bumpVersionForAccountLocked(accountScopeID)
@@ -2261,19 +2258,6 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			UpdatedAt:    now,
 		},
 		{
-			Name:                "memory",
-			Mode:                ModeSubagent,
-			Description:         "Durable artifacts and commits",
-			Provider:            "",
-			RuntimeMode:         pebblestore.AgentRuntimeModeReadWrite,
-			ExecutionSetting:    pebblestore.AgentExecutionSettingReadWrite,
-			ExitPlanModeEnabled: pebblestore.BoolPtr(false),
-			Prompt:              defaultMemoryPrompt(),
-			ToolContract:        defaultMemoryToolContract(),
-			Enabled:             true,
-			UpdatedAt:           now,
-		},
-		{
 			Name:                "clone",
 			Mode:                ModeSubagent,
 			Description:         "Copies the current parent agent's settings for each launch",
@@ -2291,7 +2275,6 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 func defaultSubagentAssignments() map[string]string {
 	return map[string]string{
 		"explorer": "explorer",
-		"memory":   "memory",
 		"clone":    "clone",
 	}
 }

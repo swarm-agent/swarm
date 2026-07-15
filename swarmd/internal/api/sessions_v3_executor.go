@@ -1142,7 +1142,7 @@ func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3Executor
 	if conversation == "" {
 		return
 	}
-	title, err := e.generateSessionV3MemoryTitle(session, conversation, job.Principal)
+	title, err := e.generateSessionV3CompactTitle(session, conversation, job.Principal)
 	if err != nil {
 		log.Printf("warning: v3 session title generation failed for session %q: %v", job.SessionID, err)
 		return
@@ -1197,19 +1197,45 @@ func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3Executor
 	}
 }
 
-func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.SessionSnapshot, promptContext string, principal identity.Principal) (string, error) {
-	if e == nil || e.server == nil || e.server.providers == nil {
-		return "", errors.New("provider registry is not configured")
+func (e *sessionV3Executor) generateSessionV3CompactTitle(session pebblestore.SessionSnapshot, promptContext string, principal identity.Principal) (string, error) {
+	if e == nil || e.server == nil || e.server.providers == nil || e.server.model == nil || e.server.agents == nil {
+		return "", errors.New("Compact provider, model, and agent services are not configured")
 	}
-	memoryProfile := pebblestore.AgentProfile{Name: "memory", Prompt: "You are Memory, the durable artifacts agent.", Enabled: true}
-	if e.server.agents != nil {
-		resolved, err := e.server.agents.ResolveSubagentForAccount(session.AccountScopeID, "memory")
-		if err != nil {
-			return "", err
+	providerID := strings.ToLower(strings.TrimSpace(session.Preference.Provider))
+	compactModel := ""
+	compactThinking := ""
+	if e.server.uiSettings != nil {
+		if settings, settingsErr := e.server.uiSettings.GetForAccount(principal.AccountScopeID); settingsErr == nil {
+			if configured := strings.ToLower(strings.TrimSpace(settings.Agents.Compact.Provider)); configured != "" {
+				providerID = configured
+			}
+			compactModel = strings.TrimSpace(settings.Agents.Compact.Model)
+			compactThinking = strings.TrimSpace(settings.Agents.Compact.Thinking)
 		}
-		memoryProfile = resolved
 	}
-	preference, contextWindow, err := e.resolveSessionV3ProviderPreference(applySessionV3AgentPreferenceOverridesForMode(session.Preference, memoryProfile, session.Mode))
+	_, _, utility, ok, err := e.server.model.RecommendedCatalogDefaults(providerID)
+	if err != nil {
+		return "", fmt.Errorf("resolve Compact utility recommendation: %w", err)
+	}
+	if !ok || strings.TrimSpace(utility.Model) == "" {
+		return "", fmt.Errorf("Compact utility recommendation for provider %q is unavailable", providerID)
+	}
+	if compactModel == "" {
+		compactModel = strings.TrimSpace(utility.Model)
+	}
+	if compactThinking == "" {
+		for _, recommendation := range utility.Recommendations {
+			if strings.EqualFold(strings.TrimSpace(recommendation.Role), "utility") {
+				compactThinking = strings.TrimSpace(recommendation.Thinking)
+				break
+			}
+		}
+	}
+	compactProfile, err := e.server.agents.ResolveSystemAgent(agentruntime.CompactAgentID, pebblestore.AgentProfile{Provider: providerID, Model: compactModel, Thinking: compactThinking})
+	if err != nil {
+		return "", err
+	}
+	preference, contextWindow, err := e.resolveSessionV3ProviderPreference(applySessionV3AgentPreferenceOverridesForMode(session.Preference, compactProfile, session.Mode))
 	if err != nil {
 		return "", err
 	}
@@ -1217,21 +1243,21 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 	if err != nil {
 		return "", err
 	}
-	providerID := strings.ToLower(strings.TrimSpace(preference.Provider))
+	providerID = strings.ToLower(strings.TrimSpace(preference.Provider))
 	if providerID == "" {
-		return "", errors.New("resolved memory title provider is empty")
+		return "", errors.New("resolved Compact title provider is empty")
 	}
 	runner, ok := e.server.providers.GetRunner(providerID)
 	if !ok {
-		return "", fmt.Errorf("memory title provider %q is not runnable", providerID)
+		return "", fmt.Errorf("Compact title provider %q is not runnable", providerID)
 	}
 	modelName := strings.TrimSpace(preference.Model)
 	if modelName == "" {
-		return "", errors.New("resolved memory title model is empty")
+		return "", errors.New("resolved Compact title model is empty")
 	}
 	instructions := strings.TrimSpace(strings.Join([]string{
-		strings.TrimSpace(memoryProfile.Prompt),
-		"You generate deterministic session titles.",
+		strings.TrimSpace(compactProfile.Prompt),
+		"Title-only case: generate a deterministic session title. Do not summarize or compact the conversation.",
 		fmt.Sprintf("Return only the title text with at most %d words.", sessionV3TitleFinalWordsMax),
 		"No markdown, no quotes, no explanations, no trailing punctuation.",
 		"Stage: final.",
@@ -1263,7 +1289,7 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 	}
 	ctx, cancel := context.WithTimeout(bgCtx, sessionV3TitleGenerationTimeout)
 	defer cancel()
-	e.recordSessionV3Diagnostic(sessionV3ExecutorJob{Principal: principal, SessionID: session.ID, RunID: providerLineageID}, "session.diagnostic.title.request", "backend.title", "memory-title-request", map[string]any{
+	e.recordSessionV3Diagnostic(sessionV3ExecutorJob{Principal: principal, SessionID: session.ID, RunID: providerLineageID}, "session.diagnostic.title.request", "backend.title", "compact-title-request", map[string]any{
 		"provider": providerID,
 		"model":    modelName,
 		"request":  sessionV3ProviderRequestDiagnostic(req),
@@ -1279,7 +1305,7 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 		}
 	})
 	if err != nil {
-		e.recordSessionV3Diagnostic(sessionV3ExecutorJob{Principal: principal, SessionID: session.ID, RunID: providerLineageID}, "session.diagnostic.title.error", "backend.title", "memory-title-error", map[string]any{
+		e.recordSessionV3Diagnostic(sessionV3ExecutorJob{Principal: principal, SessionID: session.ID, RunID: providerLineageID}, "session.diagnostic.title.error", "backend.title", "compact-title-error", map[string]any{
 			"provider": providerID,
 			"model":    modelName,
 			"error":    err.Error(),
@@ -1297,7 +1323,7 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 	} else if title == "" {
 		rejectReason = "sanitizer_rejected"
 	}
-	e.recordSessionV3Diagnostic(sessionV3ExecutorJob{Principal: principal, SessionID: session.ID, RunID: providerLineageID}, "session.diagnostic.title.response", "backend.title", "memory-title-response", map[string]any{
+	e.recordSessionV3Diagnostic(sessionV3ExecutorJob{Principal: principal, SessionID: session.ID, RunID: providerLineageID}, "session.diagnostic.title.response", "backend.title", "compact-title-response", map[string]any{
 		"provider":                   providerID,
 		"model":                      modelName,
 		"response_model":             strings.TrimSpace(response.Model),
@@ -1312,7 +1338,7 @@ func (e *sessionV3Executor) generateSessionV3MemoryTitle(session pebblestore.Ses
 		"reject_reason":              rejectReason,
 	})
 	if title == "" {
-		return "", fmt.Errorf("memory agent returned an empty/invalid title: %s", firstNonEmpty(rejectReason, "unknown"))
+		return "", fmt.Errorf("Compact returned an empty/invalid title: %s", firstNonEmpty(rejectReason, "unknown"))
 	}
 	return title, nil
 }

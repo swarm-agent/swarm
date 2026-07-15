@@ -3444,6 +3444,7 @@ type uiSettingsPatchPresence struct {
 	Swarm     *uiSwarmSettingsPatchPresence    `json:"swarm"`
 	Updates   *uiUpdateSettingsPatchPresence   `json:"updates"`
 	Tools     *uiToolSettingsPatchPresence     `json:"tools"`
+	Agents    *uiAgentSettingsPatchPresence    `json:"agents"`
 	UpdatedAt *int64                           `json:"updated_at"`
 }
 
@@ -3495,6 +3496,16 @@ type uiToolImageSettingsPatchPresence struct {
 
 type uiToolSettingsPatchPresence struct {
 	Image *uiToolImageSettingsPatchPresence `json:"image"`
+}
+
+type uiCompactAgentSettingsPatchPresence struct {
+	Provider *string `json:"provider"`
+	Model    *string `json:"model"`
+	Thinking *string `json:"thinking"`
+}
+
+type uiAgentSettingsPatchPresence struct {
+	Compact *uiCompactAgentSettingsPatchPresence `json:"compact"`
 }
 
 func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPatchPresence) uisettings.UISettings {
@@ -3574,6 +3585,17 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 	if raw.Tools != nil && raw.Tools.Image != nil {
 		if raw.Tools.Image.DefaultModel != nil {
 			settings.Tools.Image.DefaultModel = patch.Tools.Image.DefaultModel
+		}
+	}
+	if raw.Agents != nil && raw.Agents.Compact != nil {
+		if raw.Agents.Compact.Provider != nil {
+			settings.Agents.Compact.Provider = patch.Agents.Compact.Provider
+		}
+		if raw.Agents.Compact.Model != nil {
+			settings.Agents.Compact.Model = patch.Agents.Compact.Model
+		}
+		if raw.Agents.Compact.Thinking != nil {
+			settings.Agents.Compact.Thinking = patch.Agents.Compact.Thinking
 		}
 	}
 	return settings

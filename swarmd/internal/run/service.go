@@ -2711,7 +2711,7 @@ func (stream *memoryCompactionToolStream) complete(summary, errorText string) {
 		if errorText != "" {
 			summary = errorText
 		} else {
-			summary = "context compacted by memory agent; resuming run"
+			summary = "context compacted by Compact; resuming run"
 		}
 	}
 	if !stream.Started {
@@ -3087,6 +3087,52 @@ func compactedActivePlanLabel(activePlan *pebblestore.SessionPlanSnapshot) strin
 	}
 }
 
+func (s *Service) resolveCompactPreference(accountScopeID string, basePreference pebblestore.ModelPreference) (model.ResolvedPreference, pebblestore.AgentProfile, error) {
+	if s == nil || s.model == nil || s.agents == nil {
+		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, errors.New("compact model and agent services are not configured")
+	}
+	providerID := strings.ToLower(strings.TrimSpace(basePreference.Provider))
+	override := uisettings.CompactAgentSettings{}
+	if s.uiSettings != nil {
+		if settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID)); settingsErr == nil {
+			override = settings.Agents.Compact
+		}
+	}
+	if strings.TrimSpace(override.Provider) != "" {
+		providerID = strings.ToLower(strings.TrimSpace(override.Provider))
+	}
+	if providerID == "" {
+		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, errors.New("compact utility provider is empty")
+	}
+	_, _, utility, ok, err := s.model.RecommendedCatalogDefaults(providerID)
+	if err != nil {
+		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, fmt.Errorf("resolve compact utility recommendation: %w", err)
+	}
+	if !ok || strings.TrimSpace(utility.Model) == "" {
+		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, fmt.Errorf("compact utility recommendation for provider %q is unavailable", providerID)
+	}
+	modelName := strings.TrimSpace(override.Model)
+	if modelName == "" {
+		modelName = strings.TrimSpace(utility.Model)
+	}
+	thinking := strings.TrimSpace(override.Thinking)
+	for _, recommendation := range utility.Recommendations {
+		if thinking == "" && strings.EqualFold(strings.TrimSpace(recommendation.Role), "utility") {
+			thinking = strings.TrimSpace(recommendation.Thinking)
+			break
+		}
+	}
+	resolved, err := s.model.ResolvePreference(pebblestore.ModelPreference{Provider: providerID, Model: modelName, Thinking: thinking, ContextMode: basePreference.ContextMode})
+	if err != nil {
+		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, fmt.Errorf("resolve compact utility preference: %w", err)
+	}
+	profile, err := s.agents.ResolveSystemAgent(agentruntime.CompactAgentID, pebblestore.AgentProfile{Provider: resolved.Preference.Provider, Model: resolved.Preference.Model, Thinking: resolved.Preference.Thinking})
+	if err != nil {
+		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, fmt.Errorf("resolve compiled Compact agent: %w", err)
+	}
+	return resolved, profile, nil
+}
+
 func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, _ string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, preferV3Messages bool, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
 	toolStream := newMemoryCompactionToolStream(emit, step, origin, attempt)
 	if len(streamOut) > 0 && streamOut[0] != nil {
@@ -3115,13 +3161,13 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 			accountScopeID = strings.TrimSpace(sessionSnapshot.AccountScopeID)
 		}
 	}
-	memoryProfile, err := s.resolveTaskSubagentForAccount(accountScopeID, "memory")
+	_ = accountScopeID
+	resolvedCompact, compactProfile, err := s.resolveCompactPreference(accountScopeID, basePreference)
 	if err != nil {
-		err = fmt.Errorf("resolve memory subagent: %w", err)
 		finishFailure(err)
 		return "", err
 	}
-	preference := applyAgentPreferenceOverrides(basePreference, memoryProfile)
+	preference := resolvedCompact.Preference
 	providerID := strings.ToLower(strings.TrimSpace(preference.Provider))
 	if providerID == "" {
 		err := errors.New("resolved memory compact provider is empty")
@@ -3141,6 +3187,9 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		return "", err
 	}
 	thinking := normalizeThinkingWithProvider(providerID, preference.Thinking)
+	if resolvedCompact.ContextWindow > 0 {
+		contextWindow = resolvedCompact.ContextWindow
+	}
 	contextWindow, maxOutputTokens = s.resolveMemoryCompactionLimits(providerID, modelName, preference.ContextMode, contextWindow, maxOutputTokens)
 	messages, err := s.listMessagesForMemoryCompaction(sessionID, preferV3Messages)
 	if err != nil {
@@ -3167,9 +3216,10 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	if returnFullCompactionResponse {
 		summaryMaxRunes = 0
 	}
-	instructions := buildMemoryCompactionInstructions(memoryProfile.Prompt, summaryMaxRunes, origin)
-	transcriptRunes := len([]rune(transcript))
+	instructions := buildMemoryCompactionInstructions(compactProfile.Prompt, summaryMaxRunes, origin)
 	inputBudgetTokens := effectiveMemoryCompactionInputBudget(contextWindow, maxOutputTokens, summaryMaxRunes)
+	transcript = boundCompactTranscript(transcript, inputBudgetTokens, instructions, runPrompt, activePlanText)
+	transcriptRunes := len([]rune(transcript))
 	oneShotPrompt := buildMemoryCompactionPrompt(memoryCompactionPromptOptions{
 		RunPrompt:      runPrompt,
 		RollingSummary: "",
@@ -3194,11 +3244,8 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		"attempt":                   attempt,
 	})
 
-	if inputBudgetTokens > 0 && oneShotTokens > 0 && !shouldAttemptOneShotMemoryCompaction(inputBudgetTokens, oneShotTokens) {
-		emitProgress("full chat is too large for one-shot compaction; using chunked compaction")
-	}
-	if inputBudgetTokens > 0 && oneShotTokens > 0 && shouldAttemptOneShotMemoryCompaction(inputBudgetTokens, oneShotTokens) {
-		oneShotStatus := fmt.Sprintf("compacting full chat with memory agent (one shot, attempt %d)", attempt)
+	{
+		oneShotStatus := fmt.Sprintf("compacting bounded chat with Compact (one shot, attempt %d)", attempt)
 		emitProgress(oneShotStatus)
 		oneShotResult, reqErr := executeMemoryCompactionRequest(ctx, runner, modelName, thinking, preference.ContextMode, instructions, oneShotPrompt, contextWindow, summaryMaxRunes, func(message string) {
 			emitProgress(oneShotStatus + "; " + strings.TrimSpace(message))
@@ -3210,7 +3257,7 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"model":      modelName,
 				"attempt":    attempt,
 			})
-			finishSuccess("context compacted by memory agent; resuming run")
+			finishSuccess("context compacted by Compact; resuming run")
 			return oneShotResult.trimmedSummary(), nil
 		}
 		if isMemoryCompactionEmptySummaryError(reqErr) {
@@ -3222,7 +3269,9 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"error":      strings.TrimSpace(reqErr.Error()),
 				"detail":     oneShotResult.diagnosticDetail(),
 			})
-			emitProgress("one-shot compaction returned no usable summary; retrying with chunked fallback")
+			err := fmt.Errorf("Compact one-shot returned no usable summary: %w", reqErr)
+			finishFailure(err)
+			return "", err
 		} else if !oneShotResult.indicatesOverflow() && !isContextOverflowDiagnostic(reqErr.Error()) {
 			runCompactionDebugEvent("memory_compaction_one_shot_failed", map[string]any{
 				"session_id": strings.TrimSpace(sessionID),
@@ -3244,114 +3293,36 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"error":      strings.TrimSpace(reqErr.Error()),
 				"detail":     oneShotResult.diagnosticDetail(),
 			})
-			emitProgress("one-shot compaction overflowed; retrying with chunked fallback")
-		}
-	} else if inputBudgetTokens > 0 && oneShotTokens > 0 {
-		runCompactionDebugEvent("memory_compaction_one_shot_skipped", map[string]any{
-			"session_id":                strings.TrimSpace(sessionID),
-			"provider":                  providerID,
-			"model":                     modelName,
-			"attempt":                   attempt,
-			"effective_input_budget":    inputBudgetTokens,
-			"estimated_one_shot_tokens": oneShotTokens,
-		})
-		emitProgress("transcript too large for one-shot compaction; using chunked fallback")
-	}
-	chunkRunes := deriveMemoryCompactionChunkRunes(runPrompt, instructions, inputBudgetTokens)
-	if chunkRunes <= 0 {
-		chunkRunes = memoryCompactionFallbackChunkRunes
-	}
-	chunkAttemptsUsed := 0
-	var lastErr error
-	for chunkAttempt := 1; chunkAttempt <= memoryCompactionChunkRetryLimit; chunkAttempt++ {
-		chunkAttemptsUsed = chunkAttempt
-		overlapRunes := deriveMemoryCompactionOverlapRunes(chunkRunes)
-		chunks := splitCompactionTranscript(transcript, chunkRunes, overlapRunes)
-		if len(chunks) == 0 {
-			err := errors.New("memory compaction transcript is empty")
+			err := fmt.Errorf("Compact one-shot overflowed after bounded input selection: %w", reqErr)
 			finishFailure(err)
 			return "", err
 		}
-		runCompactionDebugEvent("memory_compaction_chunk_plan", map[string]any{
-			"session_id":             strings.TrimSpace(sessionID),
-			"provider":               providerID,
-			"model":                  modelName,
-			"attempt":                attempt,
-			"chunk_attempt":          chunkAttempt,
-			"effective_input_budget": inputBudgetTokens,
-			"chunk_runes":            chunkRunes,
-			"overlap_runes":          overlapRunes,
-			"chunk_count":            len(chunks),
-		})
-		rollingSummary := ""
-		overflowRetry := false
-		for i := range chunks {
-			chunkStatus := fmt.Sprintf("compacting full chat with memory agent (%d/%d, attempt %d)", i+1, len(chunks), attempt)
-			emitProgress(chunkStatus)
-			promptText := buildMemoryCompactionPrompt(memoryCompactionPromptOptions{
-				RunPrompt:      runPrompt,
-				RollingSummary: rollingSummary,
-				Chunk:          chunks[i],
-				Index:          i + 1,
-				Total:          len(chunks),
-				Origin:         origin,
-				CompactIndex:   compactIndex,
-				ActivePlanText: activePlanText,
-			})
-			chunkResult, reqErr := executeMemoryCompactionRequest(ctx, runner, modelName, thinking, preference.ContextMode, instructions, promptText, contextWindow, summaryMaxRunes, func(message string) {
-				emitProgress(chunkStatus + "; " + strings.TrimSpace(message))
-			})
-			if reqErr != nil {
-				if chunkResult.indicatesOverflow() || isContextOverflowDiagnostic(reqErr.Error()) {
-					overflowRetry = true
-					lastErr = fmt.Errorf("memory compaction chunk %d/%d overflowed: %w", i+1, len(chunks), reqErr)
-					break
-				}
-				err := fmt.Errorf("memory compaction chunk %d/%d failed: %w", i+1, len(chunks), reqErr)
-				finishFailure(err)
-				return "", err
-			}
-			rollingSummary = chunkResult.trimmedSummary()
-		}
-		if !overflowRetry {
-			runCompactionDebugEvent("memory_compaction_chunk_success", map[string]any{
-				"session_id":    strings.TrimSpace(sessionID),
-				"provider":      providerID,
-				"model":         modelName,
-				"attempt":       attempt,
-				"chunk_attempt": chunkAttempt,
-				"chunk_runes":   chunkRunes,
-				"overlap_runes": overlapRunes,
-				"chunk_count":   len(chunks),
-			})
-			finishSuccess("context compacted by memory agent; resuming run")
-			return rollingSummary, nil
-		}
-		nextChunkRunes := nextMemoryCompactionChunkRunes(transcript, chunkRunes)
-		runCompactionDebugEvent("memory_compaction_chunk_overflow_retry", map[string]any{
-			"session_id":       strings.TrimSpace(sessionID),
-			"provider":         providerID,
-			"model":            modelName,
-			"attempt":          attempt,
-			"chunk_attempt":    chunkAttempt,
-			"chunk_runes":      chunkRunes,
-			"next_chunk_runes": nextChunkRunes,
-			"last_error":       strings.TrimSpace(lastErr.Error()),
-		})
-		if nextChunkRunes >= chunkRunes {
-			break
-		}
-		chunkRunes = nextChunkRunes
-		emitProgress(fmt.Sprintf("compaction overflow retry; shrinking chunk size and retrying (%d chars)", chunkRunes))
 	}
-	if lastErr != nil {
-		err := fmt.Errorf("memory compaction transcript still exceeds %s input budget after one-shot and %d chunked attempt(s): %w", modelName, chunkAttemptsUsed, lastErr)
-		finishFailure(err)
-		return "", err
-	}
-	finalErr := errors.New("memory compaction failed: no usable chunk plan")
+	finalErr := errors.New("Compact one-shot returned without a result")
 	finishFailure(finalErr)
 	return "", finalErr
+}
+
+func boundCompactTranscript(transcript string, inputBudgetTokens int, fixedParts ...string) string {
+	transcript = strings.TrimSpace(transcript)
+	if transcript == "" || inputBudgetTokens <= 0 {
+		return transcript
+	}
+	fixedRunes := 0
+	for _, part := range fixedParts {
+		fixedRunes += len([]rune(part))
+	}
+	maxRunes := inputBudgetTokens*memoryCompactionTokenEstimateDivisor - fixedRunes - memoryCompactionMinimumChunkRunes
+	if maxRunes <= 0 || len([]rune(transcript)) <= maxRunes {
+		return transcript
+	}
+	runes := []rune(transcript)
+	if maxRunes < 512 {
+		maxRunes = 512
+	}
+	head := maxRunes / 3
+	tail := maxRunes - head
+	return strings.TrimSpace(string(runes[:head])) + "\n\n[... older middle transcript omitted to fit the Compact one-shot input budget ...]\n\n" + strings.TrimSpace(string(runes[len(runes)-tail:]))
 }
 
 func (s *Service) listMessagesForMemoryCompaction(sessionID string, preferV3Messages bool) ([]pebblestore.MessageSnapshot, error) {
@@ -3531,7 +3502,7 @@ func buildMemoryCompactionInstructions(memoryPrompt string, summaryMaxRunes int,
 		lines = append(lines, prompt)
 	}
 	lines = append(lines,
-		"You are the memory compact agent for an active coding session.",
+		"You are the Compact context utility for an active coding session.",
 		"Your output becomes the checkpoint the next agent will use after older transcript context is removed.",
 		"Return plain text only (no markdown fences, no JSON).",
 	)
@@ -4034,12 +4005,12 @@ func providerToolsLineageHash(tools []provideriface.ToolDefinition) string {
 }
 
 func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Runner, modelName, thinking, contextMode, instructions, userPrompt string, contextWindow, summaryMaxRunes int, emitHeartbeat func(string)) (memoryCompactionResult, error) {
-	providerLineageID := provideriface.ShortProviderLineageKey("memory_compaction", modelName, thinking, contextMode, instructions)
+	providerLineageID := provideriface.ShortProviderLineageKey("compact_context", modelName, thinking, contextMode, instructions)
 	req := provideriface.Request{
 		ProviderLineageID:         providerLineageID,
 		ProviderCacheKey:          providerScopedKey("cache", providerLineageID),
 		SessionAffinityKey:        providerScopedKey("affinity", providerLineageID),
-		BoundaryReason:            "memory_compaction",
+		BoundaryReason:            "compact_context",
 		NativeContinuationAllowed: false,
 		ForceFreshProviderContext: true,
 		Model:                     modelName,
@@ -4081,15 +4052,36 @@ func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Ru
 }
 
 func runMemoryCompactionProviderCall(ctx context.Context, runner provideriface.Runner, req provideriface.Request, emitHeartbeat func(string)) (provideriface.Response, error) {
-	if emitHeartbeat == nil {
-		return runner.CreateResponse(ctx, req)
-	}
 	resultCh := make(chan struct {
 		response provideriface.Response
 		err      error
 	}, 1)
 	go func() {
-		response, err := runner.CreateResponse(ctx, req)
+		var output, reasoning strings.Builder
+		response, err := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
+			delta := strings.TrimSpace(event.Delta)
+			switch event.Type {
+			case provideriface.StreamEventOutputTextDelta:
+				output.WriteString(event.Delta)
+				if emitHeartbeat != nil && delta != "" {
+					emitHeartbeat("receiving compact summary: " + truncateRunes(delta, 160))
+				}
+			case provideriface.StreamEventReasoningSummaryDelta:
+				if event.DeltaMode == provideriface.StreamEventDeltaModeReplace {
+					reasoning.Reset()
+				}
+				reasoning.WriteString(event.Delta)
+				if emitHeartbeat != nil && delta != "" {
+					emitHeartbeat("compact reasoning: " + truncateRunes(delta, 160))
+				}
+			}
+		})
+		if strings.TrimSpace(response.Text) == "" {
+			response.Text = strings.TrimSpace(output.String())
+		}
+		if strings.TrimSpace(response.ReasoningSummary) == "" {
+			response.ReasoningSummary = strings.TrimSpace(reasoning.String())
+		}
 		select {
 		case resultCh <- struct {
 			response provideriface.Response
@@ -4098,7 +4090,7 @@ func runMemoryCompactionProviderCall(ctx context.Context, runner provideriface.R
 		case <-ctx.Done():
 		}
 	}()
-	if memoryCompactionHeartbeatInterval <= 0 {
+	if emitHeartbeat == nil || memoryCompactionHeartbeatInterval <= 0 {
 		out := <-resultCh
 		return out.response, out.err
 	}
@@ -4111,7 +4103,7 @@ func runMemoryCompactionProviderCall(ctx context.Context, runner provideriface.R
 		case out := <-resultCh:
 			return out.response, out.err
 		case <-ticker.C:
-			emitHeartbeat("memory compaction still running...")
+			emitHeartbeat("compact request still running...")
 		}
 	}
 }
@@ -4231,7 +4223,6 @@ func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, bas
 	if sessionID == "" {
 		return
 	}
-	accountScopeID := ""
 	sessionSnapshot, ok, err := s.sessions.GetSession(sessionID)
 	if err != nil {
 		s.emitSessionTitleWarning(sessionID, "provisional", err, emit)
@@ -4241,7 +4232,6 @@ func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, bas
 		s.emitSessionTitleWarning(sessionID, "provisional", fmt.Errorf("session %q was not found", sessionID), emit)
 		return
 	}
-	accountScopeID = sessionSnapshot.AccountScopeID
 	if principal.Valid() && sessionSnapshot.AccountScopeID != principal.AccountScopeID {
 		s.emitSessionTitleWarning(sessionID, "provisional", fmt.Errorf("session account scope %q does not match principal account scope %q", sessionSnapshot.AccountScopeID, principal.AccountScopeID), emit)
 		return
@@ -4250,12 +4240,12 @@ func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, bas
 	if firstPrompt == "" {
 		firstPrompt = sessionTitleDefault
 	}
-	memoryProfile, err := s.resolveTaskSubagentForAccount(accountScopeID, "memory")
+	_, compactProfile, err := s.resolveCompactPreference(principal.AccountScopeID, basePreference)
 	if err != nil {
 		s.emitSessionTitleWarning(sessionID, "provisional", err, emit)
 		return
 	}
-	go s.generateAndApplySessionTitle(sessionID, firstPrompt, "provisional", sessionTitleProvisionalWords, sessionTitleProvisionalWords, basePreference, memoryProfile, principal, emit)
+	go s.generateAndApplySessionTitle(sessionID, firstPrompt, "provisional", sessionTitleProvisionalWords, sessionTitleProvisionalWords, basePreference, compactProfile, principal, emit)
 	go func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
@@ -4270,7 +4260,7 @@ func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, bas
 			s.emitSessionTitleWarning(sessionID, "final", convErr, emit)
 			return
 		}
-		s.generateAndApplySessionTitle(sessionID, conversation, "final", sessionTitleFinalWordsMin, sessionTitleFinalWordsMax, basePreference, memoryProfile, principal, emit)
+		s.generateAndApplySessionTitle(sessionID, conversation, "final", sessionTitleFinalWordsMin, sessionTitleFinalWordsMax, basePreference, compactProfile, principal, emit)
 	}()
 }
 
@@ -4314,7 +4304,7 @@ func (s *Service) generateAndApplySessionTitle(sessionID, promptContext, stage s
 	s.applySessionTitleUpdate(sessionID, title, stage, emit)
 }
 
-func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWords, maxWords int, basePreference pebblestore.ModelPreference, memoryProfile pebblestore.AgentProfile, principal identity.Principal) (string, error) {
+func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWords, maxWords int, basePreference pebblestore.ModelPreference, compactProfile pebblestore.AgentProfile, principal identity.Principal) (string, error) {
 	if s == nil || s.providers == nil {
 		return "", errors.New("provider registry is not configured")
 	}
@@ -4330,7 +4320,15 @@ func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWor
 		promptContext = sessionTitleDefault
 	}
 
-	preference := applyAgentPreferenceOverrides(basePreference, memoryProfile)
+	preference := applyAgentPreferenceOverrides(basePreference, compactProfile)
+	if s.model != nil && s.agents != nil {
+		resolvedCompact, resolvedProfile, err := s.resolveCompactPreference(principal.AccountScopeID, basePreference)
+		if err != nil {
+			return "", err
+		}
+		preference = resolvedCompact.Preference
+		compactProfile = resolvedProfile
+	}
 	providerID := strings.ToLower(strings.TrimSpace(preference.Provider))
 	if providerID == "" {
 		return "", errors.New("resolved memory title provider is empty")
@@ -4351,8 +4349,8 @@ func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWor
 	}
 
 	instructions := strings.TrimSpace(strings.Join([]string{
-		strings.TrimSpace(memoryProfile.Prompt),
-		"You generate deterministic session titles.",
+		strings.TrimSpace(compactProfile.Prompt),
+		"Title-only case: generate a deterministic session title. Do not summarize or compact the conversation.",
 		fmt.Sprintf("Return only the title text with %d to %d words.", minWords, maxWords),
 		"No markdown, no quotes, no explanations, no trailing punctuation.",
 		fmt.Sprintf("Stage: %s.", stageLabel),
@@ -4386,14 +4384,14 @@ func (s *Service) generateMemorySessionTitle(promptContext, stage string, minWor
 	}
 	ctx, cancel := context.WithTimeout(bgCtx, sessionTitleGenerationTimeout)
 	defer cancel()
-	response, err := runner.CreateResponse(ctx, req)
+	response, err := runner.CreateResponseStreaming(ctx, req, nil)
 	if err != nil {
 		return "", err
 	}
 	rawTitle := firstNonEmptyString(response.Text, response.ReasoningSummary)
 	title := sanitizeGeneratedSessionTitle(rawTitle, minWords, maxWords)
 	if title == "" {
-		return "", errors.New("memory agent returned an empty/invalid title")
+		return "", errors.New("Compact returned an empty/invalid title")
 	}
 	return title, nil
 }
@@ -4468,7 +4466,7 @@ func (s *Service) emitSessionTitleWarning(sessionID, stage string, titleErr erro
 	if warning == "" {
 		warning = "unknown session title failure"
 	}
-	warning = fmt.Sprintf("memory title (%s) fallback [%s]: %s", stage, sessionTitleWarningPathID, warning)
+	warning = fmt.Sprintf("Compact title (%s) fallback [%s]: %s", stage, sessionTitleWarningPathID, warning)
 
 	if env, err := s.sessions.RecordTitleWarning(sessionID, stage, warning); err == nil && env != nil {
 		s.publishEventEnvelope(*env)

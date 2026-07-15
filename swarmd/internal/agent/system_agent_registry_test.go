@@ -16,11 +16,11 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{AISidechatAgentID, PlanSidechatAgentID}
+	want := []string{AISidechatAgentID, CompactAgentID, PlanSidechatAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
-	for kind, id := range map[string]string{SystemSidechatKindPlan: PlanSidechatAgentID, SystemSidechatKindAI: AISidechatAgentID} {
+	for kind, id := range map[string]string{SystemSidechatKindPlan: PlanSidechatAgentID, SystemSidechatKindAI: AISidechatAgentID, SystemSidechatKindCompact: CompactAgentID} {
 		definition, ok := registry.DefinitionBySidechatKind(kind)
 		if !ok || definition.ID != id {
 			t.Fatalf("kind %q resolved to %+v, ok=%v", kind, definition, ok)
@@ -131,6 +131,16 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("AI mandatory denial %q was not restored", denied)
 		}
 	}
+	compact, err := registry.Materialize(CompactAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "utility-model", Thinking: "medium"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compact.Name != CompactAgentID || !compact.Enabled || compact.ExitPlanModeEnabled == nil || *compact.ExitPlanModeEnabled {
+		t.Fatalf("Compact identity invariant mismatch: %+v", compact)
+	}
+	if compact.ToolContract == nil || compact.ToolContract.Preset != "custom" || len(compact.ToolContract.Tools) != 0 {
+		t.Fatalf("Compact must have an immutable empty custom tool contract: %+v", compact.ToolContract)
+	}
 	if _, err := registry.ReconcileSnapshot(PlanSidechatAgentID, pebblestore.AgentProfile{Name: AISidechatAgentID}); err == nil || !strings.Contains(err.Error(), "metadata mismatch") {
 		t.Fatalf("metadata mismatch error = %v", err)
 	}
@@ -145,7 +155,7 @@ func TestEnsureSystemAgentRegistryDoesNotPersistOrExposeMutableProfiles(t *testi
 	if err != nil {
 		t.Fatalf("list agent state: %v", err)
 	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID} {
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, CompactAgentID} {
 		if _, ok, err := agents.GetProfile(id); err != nil || ok {
 			t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)
 		}

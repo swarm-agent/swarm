@@ -10,12 +10,15 @@ import {
   agentStateQueryOptions,
   agentSettingsStateQueryOptions,
   agentToolContractQueryOptions,
+uiSettingsQueryOptions,
 } from "../../../../queries/query-options";
 import {
   resetAgentDefaults,
   restoreAgentDefaults,
 } from "../../../../desktop/chat/queries/chat-queries";
 import { refreshAgentModelMutationCaches } from "../../../chat/queries/agent-preference-mutations";
+import { saveCompactAgentSettings } from "../../swarm/mutations/save-compact-agent-settings";
+import { normalizeCompactAgentSettings } from "../../swarm/types/swarm-settings";
 import type {
   AgentProfileRecord,
   AgentStateRecord,
@@ -564,7 +567,7 @@ function utilityAIForProfiles(
       ? []
       : preview?.utilityAgents?.length
         ? preview.utilityAgents
-        : ["explorer", "memory"];
+        : ["explorer"];
   for (const name of utilityNames) {
     const profile = profiles.find((entry) =>
       entry.name.trim().toLowerCase() === name.trim().toLowerCase(),
@@ -1210,7 +1213,7 @@ function UtilityAISettingsModal({
   const selectedKey = modelOptionKey(value.provider.trim(), value.model.trim());
   const utilityAgentsLabel = displayListLabel(
     utilityAgents,
-    "explorer, memory",
+    "explorer",
   );
   const baselineAgentsLabel = displayListLabel(
     baselineUtilityAgents,
@@ -1250,9 +1253,7 @@ function UtilityAISettingsModal({
                 Set Utility AI
               </h2>
               <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-                Pick the provider/model for the shared Utility AI baseline. Set
-                Utility AI fills only blank agents ({baselineAgentsLabel}); Clear
-                overrides also moves custom utility agents back onto that baseline.
+                Configure Compact&apos;s provider, model, and thinking level and the shared Utility AI baseline. Set Utility AI fills only blank persisted utility agents ({baselineAgentsLabel}); Clear overrides also moves custom utility agents back onto that baseline.
               </p>
             </div>
             <ModalCloseButton
@@ -1272,7 +1273,7 @@ function UtilityAISettingsModal({
 
             <div className="mb-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">
               <div>
-                Selected Utility AI: {canApply ? `${value.provider}/${value.model}` : "choose a provider and model"}
+                Selected Compact / Utility AI: {canApply ? `${value.provider}/${value.model}` : "choose a provider and model"}
               </div>
               <div className="mt-1">
                 {hasBaselineTargets
@@ -1469,6 +1470,8 @@ export function AgentsSettingsPage() {
     staleTime: 0,
     refetchOnMount: "always",
   });
+
+  const { data: uiSettings = {} } = useQuery(uiSettingsQueryOptions());
 
   useEffect(() => {
     void refetchAgentState();
@@ -1943,10 +1946,8 @@ export function AgentsSettingsPage() {
       setError("Choose an existing agent to delete.");
       return;
     }
-    if (selectedProfile?.protected || targetName.toLowerCase() === "memory") {
-      setError(
-        "memory cannot be deleted because it is used for session titles.",
-      );
+    if (selectedProfile?.protected) {
+      setError("Protected agents cannot be deleted.");
       return;
     }
     if (
@@ -1978,7 +1979,13 @@ export function AgentsSettingsPage() {
   };
 
   const handleOpenUtilityAI = () => {
-    setUtilityForm(utilityAIForProfiles(profiles, providerDefaultsPreview));
+    const compact = normalizeCompactAgentSettings(uiSettings);
+    const baseline = utilityAIForProfiles(profiles, providerDefaultsPreview);
+    setUtilityForm({
+      provider: compact.provider || baseline.provider,
+      model: compact.model || baseline.model,
+      thinking: compact.thinking || baseline.thinking,
+    });
     setUtilityError(null);
     setError(null);
     setStatus(null);
@@ -2000,24 +2007,31 @@ export function AgentsSettingsPage() {
         ? []
         : defaultTargets;
     const utilityAgentsLabel = overwriteExplicit
-      ? displayListLabel(defaultTargets, "explorer, memory")
+      ? displayListLabel(defaultTargets, "explorer")
       : displayListLabel(
           baselineTargets,
           providerDefaultsPreview?.customUtilityAgents?.length
             ? "none"
-            : "explorer, memory",
+            : "explorer",
         );
     setSaving(true);
     setUtilityError(null);
     setError(null);
     setStatus(null);
     try {
-      const nextState = await setUtilityAI({
-        utilityProvider,
-        utilityModel,
-        utilityThinking,
-        overwriteExplicit,
-      });
+      const [nextState, savedUISettings] = await Promise.all([
+        setUtilityAI({
+          utilityProvider,
+          utilityModel,
+          utilityThinking,
+          overwriteExplicit,
+        }),
+        saveCompactAgentSettings({
+          current: uiSettings,
+          compact: { provider: utilityProvider, model: utilityModel, thinking: utilityThinking },
+        }),
+      ]);
+      queryClient.setQueryData(uiSettingsQueryOptions().queryKey, savedUISettings);
       applyAgentState(nextState);
       setUtilityModalOpen(false);
       setSelectedKey(
@@ -2112,11 +2126,17 @@ export function AgentsSettingsPage() {
         : utilityAgents;
   const utilityAgentsLabel = displayListLabel(
     utilityAgents,
-    "explorer, memory",
+    "explorer",
   );
   const customUtilityAgentsLabel = customUtilityAgents.join(", ");
   const staleInheritedTargets = providerDefaultsPreview?.staleInheritedAgents ?? [];
-  const currentUtilityAI = utilityAIForProfiles(profiles, providerDefaultsPreview);
+  const savedCompactAI = normalizeCompactAgentSettings(uiSettings);
+  const inheritedUtilityAI = utilityAIForProfiles(profiles, providerDefaultsPreview);
+  const currentUtilityAI = {
+    provider: savedCompactAI.provider || inheritedUtilityAI.provider,
+    model: savedCompactAI.model || inheritedUtilityAI.model,
+    thinking: savedCompactAI.thinking || inheritedUtilityAI.thinking,
+  };
   const allUtilityAgentsHaveOverrides =
     customUtilityAgents.length > 0 && baselineUtilityAgents.length === 0;
   const utilityLabel = allUtilityAgentsHaveOverrides
@@ -2197,7 +2217,7 @@ export function AgentsSettingsPage() {
           ) : null}
           <div className="mb-6 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm text-[var(--app-text-muted)]">
             <div className="font-medium text-[var(--app-text)]">
-              Utility AI for built-in agents: {utilityLabel}
+              Compact utility and built-in agent AI: {utilityLabel}
             </div>
             <div className="mt-1">{utilitySummary}</div>
             {providerDefaultsPreview ? (
@@ -2403,8 +2423,7 @@ export function AgentsSettingsPage() {
           </div>
         ) : null}
         <div className="mb-6 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">
-          memory cannot be deleted because it is used for session titles. Use Set
-          Utility AI to fill blank built-in utility agents, then fine-tune each agent if needed
+          Compact is a compiled tool-free system utility; only its provider, model, and thinking are configurable through Set Utility AI. That control also fills blank built-in utility-agent models
           {utilityAgents.length > 0 ? `: ${utilityAgents.join(", ")}.` : "."}{" "}
           Custom agents are not changed.
         </div>

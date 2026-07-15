@@ -5,8 +5,24 @@ import (
 	"strings"
 	"testing"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func TestCompactInstructionsAreCaseSpecificAndToolFree(t *testing.T) {
+	profile := agentruntime.CompactAgentProfileForParent(pebblestore.AgentProfile{Provider: "codex", Model: "utility"})
+	if profile.ToolContract == nil || len(profile.ToolContract.Tools) != 0 {
+		t.Fatalf("Compact tools = %+v, want none", profile.ToolContract)
+	}
+	compactInstructions := buildMemoryCompactionInstructions(profile.Prompt, 9000, contextCompactionOriginManual)
+	titleInstructions := strings.Join([]string{profile.Prompt, "Title-only case: generate a deterministic session title. Do not summarize or compact the conversation."}, "\n")
+	if strings.Contains(titleInstructions, "Required sections:") || strings.Contains(titleInstructions, "Compaction mode:") {
+		t.Fatalf("title instructions leaked compact-summary contract:\n%s", titleInstructions)
+	}
+	if !strings.Contains(compactInstructions, "Required sections:") {
+		t.Fatalf("compact instructions missing summary contract:\n%s", compactInstructions)
+	}
+}
 
 func TestBuildMemoryCompactionInstructionsByOrigin(t *testing.T) {
 	manual := buildMemoryCompactionInstructions("", 9000, contextCompactionOriginManual)
