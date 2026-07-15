@@ -4088,7 +4088,7 @@ func (a *App) commitExecutionContext(summary model.SessionSummary) *client.RunEx
 }
 
 func (a *App) createBackgroundCommitSession(ctx context.Context, parentSessionID string, parentSummary model.SessionSummary, instructions string) (model.SessionSummary, error) {
-	workspaceBindingID := firstNonEmpty(consumeStringMetadata(parentSummary.Metadata, "swarm_v3_workspace_binding_id"), consumeStringMetadata(parentSummary.Metadata, "local_workspace_binding_id"))
+	workspaceBindingID := consumeStringMetadata(parentSummary.Metadata, "swarm_v3_workspace_binding_id")
 	swarmID := consumeStringMetadata(parentSummary.Metadata, "swarm_v3_runtime_swarm_id")
 	if workspaceBindingID == "" {
 		return model.SessionSummary{}, errors.New("workspace binding id is required")
@@ -8634,20 +8634,9 @@ func (a *App) sessionRouteFromMetadata(workspacePath string, metadata map[string
 	if len(metadata) == 0 {
 		return model.ChatRoute{}, false
 	}
-	routeID := consumeStringMetadata(metadata, "swarm_route_id")
-	label := consumeStringMetadata(metadata, "swarm_route_label")
-	if routeID != "" || label != "" {
-		if routeID == "" {
-			routeID = "host"
-		}
-		if routeID == "host" {
-			return model.ChatRoute{ID: "host", Label: emptyFallback(label, "host"), TargetKind: "host", TargetRelationship: "self"}, true
-		}
-	}
-
 	hostWorkspacePath := firstNonEmpty(consumeStringMetadata(metadata, "swarm_v3_source_workspace_path"), workspacePath)
 	runtimeWorkspacePath := consumeStringMetadata(metadata, "swarm_v3_runtime_workspace_path")
-	workspaceBindingID := firstNonEmpty(consumeStringMetadata(metadata, "swarm_v3_workspace_binding_id"), consumeStringMetadata(metadata, "local_workspace_binding_id"))
+	workspaceBindingID := consumeStringMetadata(metadata, "swarm_v3_workspace_binding_id")
 	childSwarmID := consumeStringMetadata(metadata, "swarm_v3_runtime_swarm_id")
 	if a == nil {
 		routes := buildChatRoutesForWorkspaces(nil, firstNonEmpty(hostWorkspacePath, workspacePath))
@@ -8663,9 +8652,6 @@ func (a *App) sessionRouteFromMetadata(workspacePath string, metadata map[string
 		routes = buildChatRoutesForHomeModel(a.homeModel, firstNonEmpty(hostWorkspacePath, workspacePath))
 	}
 	for _, route := range routes {
-		if routeID != "" && strings.TrimSpace(route.ID) == routeID {
-			return route, true
-		}
 		if workspaceBindingID != "" && strings.TrimSpace(route.WorkspaceBindingID) == workspaceBindingID {
 			return route, true
 		}

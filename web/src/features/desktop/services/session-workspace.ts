@@ -19,6 +19,10 @@ export function sessionMetadataString(metadata: Record<string, unknown> | null |
   return metadata && typeof metadata[key] === 'string' ? metadata[key].trim() : ''
 }
 
+export function sessionWorkspaceBindingId(metadata: Record<string, unknown> | null | undefined): string {
+  return sessionMetadataString(metadata, 'swarm_v3_workspace_binding_id')
+}
+
 export function sessionWorkspaceFactsFromMetadata(metadata: Record<string, unknown> | null | undefined): {
   sourceWorkspacePath: string
   runtimeWorkspacePath: string

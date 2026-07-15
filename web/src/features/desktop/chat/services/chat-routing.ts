@@ -163,7 +163,7 @@ export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecor
   const metadata = session?.metadata
   const v3MetadataSwarmId = sessionMetadataString(metadata, 'swarm_v3_runtime_swarm_id')
   if (v3MetadataSwarmId) {
-    const workspaceBindingId = sessionMetadataString(metadata, 'swarm_v3_workspace_binding_id') || sessionMetadataString(metadata, 'local_workspace_binding_id')
+    const workspaceBindingId = sessionMetadataString(metadata, 'swarm_v3_workspace_binding_id')
     const workspaceName = sessionMetadataString(metadata, 'swarm_v3_source_workspace_name') || session?.workspaceName?.trim() || ''
     if (!workspaceBindingId) {
       return null
@@ -232,15 +232,6 @@ export type DesktopSessionStopTarget =
 
 function normalizedRouteLabel(value: string | null | undefined): string {
   return value?.trim().toLowerCase() ?? ''
-}
-
-function isLocalContainerDesktopRouteKind(value: string | null | undefined): boolean {
-  const normalized = normalizedRouteLabel(value)
-  return normalized === 'container'
-    || normalized === 'local-container'
-    || normalized === 'local_container'
-    || normalized === 'mirrored_child'
-    || normalized === 'child'
 }
 
 export function getDesktopSessionCreateTarget(route: DesktopChatRoute | null | undefined): DesktopSessionCreateTarget {
@@ -318,13 +309,13 @@ export function applyDesktopChatRouteToSession(session: DesktopSessionRecord, ro
   }
 
   const runtimeWorkspacePath = session.runtimeWorkspacePath || route.runtimeWorkspacePath || session.workspacePath
-  const routeIsHydratedFromRemote = Boolean(
+  const routeAlreadyUsesRuntimeWorkspace = Boolean(
     runtimeWorkspacePath
     && session.workspacePath
     && route.runtimeWorkspacePath.trim() === runtimeWorkspacePath.trim()
     && session.workspacePath.trim() === runtimeWorkspacePath.trim(),
   )
-  if (routeIsHydratedFromRemote) {
+  if (routeAlreadyUsesRuntimeWorkspace) {
     return {
       ...session,
       runtimeWorkspacePath,

@@ -3789,7 +3789,7 @@ func (c *API) ResolveAllPermissions(ctx context.Context, sessionID, action, reas
 	return resp.Resolved, nil
 }
 
-func runSessionV2Request(prompt, agentName, instructions string, options RunSessionOptions) map[string]any {
+func runSessionRequest(prompt, agentName, instructions string, options RunSessionOptions) map[string]any {
 	req := map[string]any{
 		"prompt":       strings.TrimSpace(prompt),
 		"agent_name":   strings.TrimSpace(agentName),
@@ -3816,7 +3816,7 @@ func (c *API) RunSessionWithOptions(ctx context.Context, sessionID, prompt, agen
 		return SessionRunResult{}, errors.New("prompt is required")
 	}
 
-	req := runSessionV2Request(prompt, agentName, instructions, options)
+	req := runSessionRequest(prompt, agentName, instructions, options)
 	path := sessionV3PrimaryPath(sessionID, "run")
 	var resp struct {
 		OK     bool             `json:"ok"`
@@ -3902,7 +3902,7 @@ func (c *API) RunSessionStreamWithOptions(ctx context.Context, sessionID, prompt
 	}
 	defer conn.Close()
 
-	startPayload := runSessionV2Request(prompt, agentName, instructions, options)
+	startPayload := runSessionRequest(prompt, agentName, instructions, options)
 	startPayload["type"] = "run.start"
 
 	startMsg, err := json.Marshal(startPayload)
@@ -4018,7 +4018,7 @@ func (c *API) StartBackgroundSessionRun(ctx context.Context, sessionID, prompt, 
 	}
 	options.Background = true
 
-	req := runSessionV2Request(prompt, agentName, instructions, options)
+	req := runSessionRequest(prompt, agentName, instructions, options)
 	req["type"] = "run.start"
 
 	path := sessionV3PrimaryPath(sessionID, "run/stream")

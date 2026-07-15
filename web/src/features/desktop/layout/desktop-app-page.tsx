@@ -59,6 +59,7 @@ import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desk
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../state/desktop-v3-session-api'
 import { archiveDesktopV3Sessions, jumpDesktopPlanToRevisionCheckpoint, restartDesktopPlanFromRevision, restoreDesktopPlanRevision, startDesktopPlanCheckpointed } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned, updateSessionV3Title } from '../session-v3/api'
+import { sessionWorkspaceBindingId } from '../services/session-workspace'
 import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
 import { isDesktopV3NavigationHiddenRecord } from '../state/desktop-v3-session-visibility'
 import { clearNotifications, updateNotification } from '../notifications/api'
@@ -490,8 +491,7 @@ export function desktopSidebarWorkspacePathForSession(
   session: Pick<DesktopSessionRecord, 'workspacePath' | 'metadata'>,
   workspacePathByBindingId?: ReadonlyMap<string, string>,
 ): string {
-  const bindingID = metadataStringValue(session.metadata, 'local_workspace_binding_id')
-    || metadataStringValue(session.metadata, 'swarm_v3_workspace_binding_id')
+  const bindingID = sessionWorkspaceBindingId(session.metadata)
   if (bindingID) {
     const boundPath = workspacePathByBindingId?.get(bindingID)?.trim()
     if (boundPath) return boundPath
@@ -508,8 +508,7 @@ export function desktopRouteWorkspacePathForSession(
   workspacePathByBindingId: ReadonlyMap<string, string>,
   knownWorkspacePaths: ReadonlySet<string>,
 ): string {
-  const bindingID = metadataStringValue(session.metadata, 'local_workspace_binding_id')
-    || metadataStringValue(session.metadata, 'swarm_v3_workspace_binding_id')
+  const bindingID = sessionWorkspaceBindingId(session.metadata)
   if (bindingID) {
     const boundPath = workspacePathByBindingId.get(bindingID)?.trim()
     if (boundPath) return boundPath
