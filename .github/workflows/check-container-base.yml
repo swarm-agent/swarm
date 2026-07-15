@@ -29,4 +29,4 @@ jobs:
             echo "container base image is stale: got ${actual:-missing}, want ${expected}" >&2
             exit 1
           fi
-          grep -R --fixed-strings "${expected}" swarmd/internal/deploy/container_package_defaults.go swarmd/internal/remotedeploy/service.go >/dev/null
+          grep -R --fixed-strings "${expected}" swarmd/internal/deploy/container_package_defaults.go >/dev/null

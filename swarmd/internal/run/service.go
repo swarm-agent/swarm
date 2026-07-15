@@ -1229,11 +1229,6 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		for _, publishEvent := range publishEvents {
 			if s != nil {
 				s.publishStreamEventEnvelope(publishEvent)
-				if err := s.mirrorHostedStreamEvent(ctx, publishEvent); err != nil {
-					runErr = err
-					runCancel()
-					return
-				}
 			}
 		}
 		if onEvent == nil {
@@ -4501,59 +4496,6 @@ func (s *Service) publishEventEnvelope(event pebblestore.EventEnvelope) {
 		return
 	}
 	s.eventPublish(event)
-}
-
-func (s *Service) mirrorHostedStreamEvent(ctx context.Context, event StreamEvent) error {
-	if s == nil || s.sessions == nil {
-		return nil
-	}
-	sessionID := strings.TrimSpace(event.SessionID)
-	if sessionID == "" {
-		return nil
-	}
-	session, ok, err := s.sessions.GetSession(sessionID)
-	if err != nil {
-		return fmt.Errorf("load session for hosted stream mirror: %w", err)
-	}
-	if !ok {
-		return fmt.Errorf("load session for hosted stream mirror: session %q not found", sessionID)
-	}
-	if event.Message != nil {
-		if _, err := s.sessions.StoreMirroredMessage(session, *event.Message); err != nil {
-			return fmt.Errorf("store hosted stream mirror message: %w", err)
-		}
-	}
-	if event.Type == StreamEventSessionLifecycle && event.Lifecycle != nil {
-		if err := s.sessions.StoreMirroredLifecycle(*event.Lifecycle); err != nil {
-			return fmt.Errorf("store hosted stream mirror lifecycle: %w", err)
-		}
-	}
-	if event.Type == StreamEventSessionTitle {
-		if title := strings.TrimSpace(event.Title); title != "" {
-			if _, err := s.sessions.StoreMirroredTitle(sessionID, title, time.Now().UnixMilli()); err != nil {
-				return fmt.Errorf("store hosted stream mirror title: %w", err)
-			}
-		}
-	}
-	descriptor, hosted := s.sessions.HostedDescriptor(session.Metadata)
-	if !hosted {
-		return nil
-	}
-	eventType := streamEventEnvelopeType(event)
-	if eventType == "" {
-		return nil
-	}
-	payload := streamEventEnvelopePayload(event)
-	if len(payload) == 0 {
-		return nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if _, err := s.sessions.PublishHostedEvent(ctx, descriptor, sessionID, eventType, payload, strings.TrimSpace(event.RunID), strings.TrimSpace(event.CallID)); err != nil {
-		return fmt.Errorf("publish hosted stream mirror event: %w", err)
-	}
-	return nil
 }
 
 func (s *Service) publishStreamEventEnvelope(event StreamEvent) {

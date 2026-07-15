@@ -110,17 +110,17 @@ type Server struct {
 	codexOAuthMu       sync.Mutex
 	codexOAuthSessions map[string]*codexOAuthSession
 
-	shuttingDown              atomic.Bool
-	runCtx                    context.Context
-	runCancel                 context.CancelFunc
-	runWG                     sync.WaitGroup
-	activeRuns                atomic.Int32
-	requestStop               func(reason string)
-	desktopLocalSessions      *desktopLocalSessionManager
-	identityService           *identity.Service
-	identitySessions          *identity.SessionService
-	gitRealtime               *gitRealtimeManager
-	swarmStore                *pebblestore.SwarmStore
+	shuttingDown         atomic.Bool
+	runCtx               context.Context
+	runCancel            context.CancelFunc
+	runWG                sync.WaitGroup
+	activeRuns           atomic.Int32
+	requestStop          func(reason string)
+	desktopLocalSessions *desktopLocalSessionManager
+	identityService      *identity.Service
+	identitySessions     *identity.SessionService
+	gitRealtime          *gitRealtimeManager
+	swarmStore           *pebblestore.SwarmStore
 }
 
 type codexAccountClient interface {
@@ -170,12 +170,10 @@ type permissionService interface {
 	RemoveRuleForAccount(accountScopeID, ruleID string) (bool, error)
 	ResetPolicy() (permission.Policy, error)
 	ResetPolicyForAccount(accountScopeID string) (permission.Policy, error)
-	ApplyManagedPolicyState(state permission.ManagedPolicyState) (permission.ManagedPolicyState, error)
 	ExplainTool(mode, toolName, toolArguments string, overlay *permission.Policy) (permission.PolicyExplain, error)
 	ExplainToolForAccount(accountScopeID, mode, toolName, toolArguments string, overlay *permission.Policy) (permission.PolicyExplain, error)
 	ResolveWithPolicy(sessionID, permissionID, action, reason string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
 	ResolveWithPolicyAndArguments(sessionID, permissionID, action, reason, approvedArguments string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
-	StoreMirroredPermission(record pebblestore.PermissionRecord) error
 	MarkToolStarted(sessionID, runID, callID string, step int, startedAt int64) (pebblestore.PermissionRecord, bool, error)
 	MarkToolCompleted(sessionID, runID, callID string, step int, result tool.Result, completedAt int64) (pebblestore.PermissionRecord, bool, error)
 	SetBypassPermissions(enabled bool)
@@ -4328,4 +4326,3 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, errors.New("permission path not found"))
 	}
 }
-
