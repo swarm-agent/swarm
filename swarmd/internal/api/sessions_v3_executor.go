@@ -414,7 +414,7 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		if !e.isRunCanceled(job) {
 			if sessionV3IsContextOverflowDiagnostic(err.Error()) {
 				e.recordSessionV3ContextOverflowDecision(job, "assistant_response_error", err)
-				response, err = e.contextOverflowCompactedAssistantResponse(runCtx, job, err)
+				response, job, err = e.contextOverflowCompactedAssistantResponse(runCtx, job, err)
 			}
 			if err != nil {
 				classification := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{Err: err})
@@ -1259,22 +1259,35 @@ func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3
 	return e.providerAssistantResponse(ctx, job, resolved, "", false)
 }
 
-func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, cause error) (sessionV3AssistantResponse, error) {
-	if e == nil || e.server == nil || e.server.runner == nil {
-		return sessionV3AssistantResponse{}, cause
+func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, cause error) (sessionV3AssistantResponse, sessionV3ExecutorJob, error) {
+	if e == nil || e.server == nil || e.server.runner == nil || e.server.sessions == nil {
+		return sessionV3AssistantResponse{}, job, cause
 	}
-	result, err := e.server.runner.RunTurn(ctx, job.SessionID, runruntime.RunRequest{Prompt: "context overflow compact request", Compact: true, CompactOrigin: "overflow"}, runruntime.RunStartMeta{RunID: job.RunID + "-overflow-compact", Principal: job.Principal, ApplySessionMutation: e.server.applySessionV3PrimaryMutation})
+	compactRunID := job.RunID + "-overflow-compact"
+	result, err := e.server.runner.RunTurn(ctx, job.SessionID, runruntime.RunRequest{Prompt: "context overflow compact request", Compact: true, CompactOrigin: "overflow"}, runruntime.RunStartMeta{RunID: compactRunID, Principal: job.Principal, ApplySessionMutation: e.server.applySessionV3PrimaryMutation})
 	if err != nil {
-		return sessionV3AssistantResponse{}, fmt.Errorf("v3 context overflow compact failed: %w", err)
+		return sessionV3AssistantResponse{}, job, fmt.Errorf("v3 context overflow compact failed: %w", err)
 	}
 	if strings.TrimSpace(result.AssistantMessage.Content) == "" {
-		return sessionV3AssistantResponse{}, errors.New("v3 context overflow compact returned empty checkpoint acknowledgement")
+		return sessionV3AssistantResponse{}, job, errors.New("v3 context overflow compact returned empty checkpoint acknowledgement")
 	}
+	activeEpoch, ok, err := e.server.sessions.GetActiveExecutionEpoch(job.SessionID)
+	if err != nil {
+		return sessionV3AssistantResponse{}, job, fmt.Errorf("v3 context overflow compact continuation epoch resolve failed: %w", err)
+	}
+	if !ok || strings.TrimSpace(activeEpoch.EpochID) == "" {
+		return sessionV3AssistantResponse{}, job, errors.New("v3 context overflow compact did not create an active continuation epoch")
+	}
+	if activeEpoch.ParentEpochID != strings.TrimSpace(job.EpochID) || activeEpoch.Boundary.RunID != compactRunID || activeEpoch.Boundary.Reason != "context_compaction_overflow" {
+		return sessionV3AssistantResponse{}, job, fmt.Errorf("v3 context overflow compact created unexpected continuation epoch %q", activeEpoch.EpochID)
+	}
+	job.EpochID = activeEpoch.EpochID
 	resolved, err := e.resolveSessionV3Runtime(job)
 	if err != nil {
-		return sessionV3AssistantResponse{}, fmt.Errorf("v3 context overflow compact continuation runtime resolve failed: %w", err)
+		return sessionV3AssistantResponse{}, job, fmt.Errorf("v3 context overflow compact continuation runtime resolve failed: %w", err)
 	}
-	return e.providerAssistantResponse(ctx, job, resolved, "overflow-continuation", true)
+	response, err := e.providerAssistantResponse(ctx, job, resolved, "overflow-continuation", true)
+	return response, job, err
 }
 
 func sessionV3IsContextOverflowDiagnostic(detail string) bool {

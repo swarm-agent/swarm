@@ -5098,7 +5098,19 @@ func TestSessionsV3ExecutorContinuesAfterOverflowCompaction(t *testing.T) {
 
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "overflow-compact-create", "overflow compact", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "overflow-compact-message", userContent)
-	waitForSessionsV3SpecificRunIntentStatus(t, sessionSvc, created.ID, stableSessionsV3PrimaryRunID(created.ID, "overflow-compact-message"), sessionruntime.RunIntentCompleted)
+	runID := stableSessionsV3PrimaryRunID(created.ID, "overflow-compact-message")
+	waitForSessionsV3SpecificRunIntentStatus(t, sessionSvc, created.ID, runID, sessionruntime.RunIntentCompleted)
+	intent, ok, err := sessionSvc.GetSessionRunIntent(created.ID, runID)
+	if err != nil || !ok {
+		t.Fatalf("get completed overflow run intent: ok=%v err=%v", ok, err)
+	}
+	activeEpoch, ok, err := sessionSvc.GetActiveExecutionEpoch(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get overflow continuation epoch: ok=%v err=%v", ok, err)
+	}
+	if intent.EpochID != activeEpoch.EpochID || activeEpoch.Boundary.Reason != "context_compaction_overflow" || activeEpoch.Boundary.RunID != runID+"-overflow-compact" {
+		t.Fatalf("overflow continuation scope intent=%+v epoch=%+v", intent, activeEpoch)
+	}
 
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
 	if err != nil {

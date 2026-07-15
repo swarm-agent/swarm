@@ -82,6 +82,73 @@ func TestBuildMemoryCompactionPromptOverflowUsesVisibleTranscriptOnly(t *testing
 	}
 }
 
+func TestBuildMemoryCompactionPromptCarriesDurableActiveCheckpoint(t *testing.T) {
+	prompt := buildMemoryCompactionPrompt(memoryCompactionPromptOptions{
+		RunPrompt:      "context overflow compact request",
+		Chunk:          "tool:\n- name: edit\n- outcome: updated service.go",
+		Origin:         contextCompactionOriginOverflow,
+		CompactIndex:   2,
+		ActivePlanText: "Plan ID: plan-1\nActive checkpoint ID: cp-2\n- Status: in_progress",
+	})
+	for _, want := range []string{
+		"Durable active plan/checkpoint state (authoritative",
+		"Active checkpoint ID: cp-2",
+		"updated service.go",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("overflow prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildOverflowCompactionCheckpointDirectsSameCheckpointContinuation(t *testing.T) {
+	checkpoint := buildCompactionCheckpointMessage("durable recap", contextCompactionOriginOverflow, 2, "Plan One (plan-1)")
+	for _, want := range []string{
+		"Resume the same interrupted task and active plan checkpoint",
+		"Do not restart completed discovery or edits",
+		"Attached plan: Plan One (plan-1)",
+	} {
+		if !strings.Contains(checkpoint, want) {
+			t.Fatalf("overflow checkpoint missing %q:\n%s", want, checkpoint)
+		}
+	}
+}
+
+func TestCompactedActivePlanTextIncludesCurrentExecutionScope(t *testing.T) {
+	text := compactedActivePlanText(&pebblestore.SessionPlanSnapshot{
+		ID:            "plan-1",
+		Title:         "Plan One",
+		Status:        "approved",
+		ApprovalState: "approved",
+		Document: &pebblestore.SessionPlanDocument{
+			ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: "automatic", Shape: "checkpointed"},
+			ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: "running", ActiveAttemptID: "cp-2:attempt-1", CurrentRunID: "run-2"},
+			ActiveCheckpointID: "cp-2",
+			Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+				ID:              "cp-2",
+				Title:           "Implement continuation",
+				Status:          "in_progress",
+				AttemptID:       "cp-2:attempt-1",
+				RunID:           "run-2",
+				ActiveSubtaskID: "subtask-2",
+				Subtasks:        []pebblestore.SessionPlanSubtask{{ID: "subtask-1", Title: "Trace failure", Status: "completed"}, {ID: "subtask-2", Title: "Patch continuation", Status: "in_progress"}},
+			}},
+		},
+	})
+	for _, want := range []string{
+		"Active checkpoint ID: cp-2",
+		"Execution state: running",
+		"Active attempt ID: cp-2:attempt-1",
+		"- Status: in_progress",
+		"Subtask subtask-1 [completed]: Trace failure",
+		"Subtask subtask-2 [in_progress]: Patch continuation",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("compacted plan text missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestNextMemoryCompactionIndex(t *testing.T) {
 	messages := []pebblestore.MessageSnapshot{
 		{Role: "user", Content: "hello"},
@@ -122,12 +189,12 @@ func TestBuildManualCompactionAssistantTextIncludesUserVisibleRecap(t *testing.T
 	}
 }
 
-func TestMemoryCompactionTranscriptIncludesOnlyUserVisibleConversation(t *testing.T) {
+func TestMemoryCompactionTranscriptIncludesVisibleConversationAndBoundedToolOutcomes(t *testing.T) {
 	messages := []pebblestore.MessageSnapshot{
 		{GlobalSeq: 1, Role: "system", Content: "runtime contract and tool policy"},
 		{GlobalSeq: 2, Role: "user", Content: "fix the memory context"},
 		{GlobalSeq: 3, Role: "reasoning", Content: "private reasoning summary"},
-		{GlobalSeq: 4, Role: "tool", Content: "large internal tool dump"},
+		{GlobalSeq: 4, Role: "tool", Content: `{"path_id":"run.v3.provider-tool-result.v1","tool_name":"edit","call_id":"call-edit","arguments":"{\"path\":\"swarmd/internal/run/service.go\"}","output":"updated swarmd/internal/run/service.go with the continuation fix"}`},
 		{GlobalSeq: 5, Role: "assistant", Content: "I found the oversized context path."},
 		{GlobalSeq: 6, Role: "system", Content: "[context-compact] index=2 origin=threshold\n\nCompacted recap:\nprior visible recap"},
 		{GlobalSeq: 7, Role: "user", Content: "/auth secret", Metadata: map[string]any{"source": "command"}},
@@ -138,6 +205,9 @@ func TestMemoryCompactionTranscriptIncludesOnlyUserVisibleConversation(t *testin
 		"user:\nfix the memory context",
 		"assistant:\nI found the oversized context path.",
 		"assistant:\n[context-compact] index=2 origin=threshold",
+		"- name: edit",
+		"swarmd/internal/run/service.go",
+		"continuation fix",
 	} {
 		if !strings.Contains(transcript, want) {
 			t.Fatalf("memory transcript missing %q:\n%s", want, transcript)
@@ -146,7 +216,6 @@ func TestMemoryCompactionTranscriptIncludesOnlyUserVisibleConversation(t *testin
 	for _, unwanted := range []string{
 		"runtime contract and tool policy",
 		"private reasoning summary",
-		"large internal tool dump",
 		"/auth secret",
 		"seq:",
 		"role:",
