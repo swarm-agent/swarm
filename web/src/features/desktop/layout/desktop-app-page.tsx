@@ -3789,7 +3789,7 @@ export function DesktopAppPage() {
   }, [])
 
   const planSidebarGitPanel = selectedGitSessionId && selectedGitWorkspacePath ? (
-    <section data-testid="desktop-plan-git-sidebar" className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.14)]">
+    <section data-testid="desktop-plan-git-sidebar" className="min-w-0 overflow-hidden">
       <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
         <GitBranch size={13} />
         <span className="min-w-0 flex-1 truncate">{gitSnapshot?.branch || 'Git changes'}</span>
