@@ -43,7 +43,7 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/swarm/groups", s.handleSwarmGroups)
 	mux.HandleFunc("/v1/swarm/groups/upsert", s.handleSwarmGroupUpsert)
 	mux.HandleFunc("/v1/swarm/groups/current", s.handleSwarmCurrentGroup)
-	mux.HandleFunc("/v1/swarm/groups/member/delete", s.handleSwarmGroupMemberDelete)
+	mux.HandleFunc("/v1/swarm/groups/members/delete", s.handleSwarmGroupMemberDelete)
 	mux.HandleFunc("/v1/swarm/containers/profiles", s.handleSwarmContainerProfiles)
 	mux.HandleFunc("/v1/swarm/containers/profiles/upsert", s.handleSwarmContainerProfileUpsert)
 	mux.HandleFunc("/v1/swarm/containers/profiles/delete", s.handleSwarmContainerProfileDelete)
