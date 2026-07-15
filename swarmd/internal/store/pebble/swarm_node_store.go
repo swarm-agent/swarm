@@ -54,9 +54,6 @@ func (s *SwarmNodeStore) Get(swarmID string) (SwarmNodeRecord, bool, error) {
 	if swarmID == "" {
 		return SwarmNodeRecord{}, false, errors.New("swarm node swarm id is required")
 	}
-	if isForbiddenSwarmNodeSwarmID(swarmID) {
-		return SwarmNodeRecord{}, false, nil
-	}
 	var record SwarmNodeRecord
 	ok, err := s.store.GetJSON(KeySwarmNode(swarmID), &record)
 	if err != nil {
@@ -79,9 +76,6 @@ func (s *SwarmNodeStore) Put(record SwarmNodeRecord) (SwarmNodeRecord, error) {
 	record = normalizeSwarmNodeRecord(record)
 	if record.SwarmID == "" {
 		return SwarmNodeRecord{}, errors.New("swarm node swarm id is required")
-	}
-	if isForbiddenSwarmNodeSwarmID(record.SwarmID) {
-		return SwarmNodeRecord{}, errors.New("swarm node swarm id must be the real child swarm id; remote-deploy fallback ids are forbidden")
 	}
 	if record.Name == "" {
 		record.Name = record.SwarmID
@@ -134,7 +128,7 @@ func (s *SwarmNodeStore) List(limit int) ([]SwarmNodeRecord, error) {
 		if record.SwarmID == "" {
 			record.SwarmID = decodeSwarmNodeSwarmIDFromKey(key)
 		}
-		if record.SwarmID == "" || isForbiddenSwarmNodeSwarmID(record.SwarmID) || record.Name == "" || record.BackendURL == "" {
+		if record.SwarmID == "" || record.Name == "" || record.BackendURL == "" {
 			return nil
 		}
 		out = append(out, record)
@@ -181,10 +175,6 @@ func normalizeSwarmNodeRecord(record SwarmNodeRecord) SwarmNodeRecord {
 
 func normalizeSwarmNodeSwarmID(value string) string {
 	return strings.TrimSpace(value)
-}
-
-func isForbiddenSwarmNodeSwarmID(value string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "remote-deploy:")
 }
 
 func normalizeSwarmNodeRole(value string) string {

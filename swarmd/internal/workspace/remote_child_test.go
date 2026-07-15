@@ -20,7 +20,6 @@ func withRemoteChildWorkspaceRootPath(t *testing.T, path string) {
 func explicitChildContainerStartupConfig() startupconfig.FileConfig {
 	cfg := startupconfig.Default("")
 	cfg.Child = true
-	cfg.DeployContainer.Enabled = true
 	return cfg
 }
 

@@ -56,7 +56,6 @@ func (s *Server) sessionWorkspaceBindingForAccess(principal identity.Principal, 
 		} else if ok && strings.TrimSpace(session.AccountScopeID) == strings.TrimSpace(principal.AccountScopeID) {
 			bindingID = firstNonEmpty(
 				strings.TrimSpace(fmt.Sprint(session.Metadata["swarm_routed_workspace_binding_id"])),
-				strings.TrimSpace(fmt.Sprint(session.Metadata["swarm_managed_host_workspace_binding_id"])),
 				strings.TrimSpace(fmt.Sprint(session.Metadata["local_workspace_binding_id"])),
 			)
 		}

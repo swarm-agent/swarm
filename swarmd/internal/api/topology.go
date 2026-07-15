@@ -46,15 +46,14 @@ type topologyHostContainerResponse struct {
 }
 
 type topologyAttachmentResponse struct {
-	AttachmentID          string `json:"attachment_id"`
-	HostContainerID       string `json:"host_container_id"`
-	RuntimeSwarmID        string `json:"runtime_swarm_id"`
-	State                 string `json:"state,omitempty"`
-	DeploymentID          string `json:"deployment_id,omitempty"`
-	RemoteDeploySessionID string `json:"remote_deploy_session_id,omitempty"`
-	LastError             string `json:"last_error,omitempty"`
-	CreatedAt             int64  `json:"created_at"`
-	UpdatedAt             int64  `json:"updated_at"`
+	AttachmentID    string `json:"attachment_id"`
+	HostContainerID string `json:"host_container_id"`
+	RuntimeSwarmID  string `json:"runtime_swarm_id"`
+	State           string `json:"state,omitempty"`
+	DeploymentID    string `json:"deployment_id,omitempty"`
+	LastError       string `json:"last_error,omitempty"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
 }
 
 type topologyWorkspaceBindingResponse struct {
@@ -433,15 +432,14 @@ func mapTopologyAttachmentResponses(records []pebblestore.TopologyAttachmentReco
 
 func mapTopologyAttachmentResponse(record pebblestore.TopologyAttachmentRecord) topologyAttachmentResponse {
 	return topologyAttachmentResponse{
-		AttachmentID:          record.AttachmentID,
-		HostContainerID:       record.HostContainerID,
-		RuntimeSwarmID:        record.RuntimeSwarmID,
-		State:                 record.State,
-		DeploymentID:          record.DeploymentID,
-		RemoteDeploySessionID: record.RemoteDeploySessionID,
-		LastError:             record.LastError,
-		CreatedAt:             record.CreatedAt,
-		UpdatedAt:             record.UpdatedAt,
+		AttachmentID:    record.AttachmentID,
+		HostContainerID: record.HostContainerID,
+		RuntimeSwarmID:  record.RuntimeSwarmID,
+		State:           record.State,
+		DeploymentID:    record.DeploymentID,
+		LastError:       record.LastError,
+		CreatedAt:       record.CreatedAt,
+		UpdatedAt:       record.UpdatedAt,
 	}
 }
 

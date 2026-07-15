@@ -156,10 +156,7 @@ func (s *Service) explicitChildContainerRuntime() bool {
 }
 
 func startupConfigIsExplicitChildContainerRuntime(cfg startupconfig.FileConfig) bool {
-	if !cfg.Child {
-		return false
-	}
-	return cfg.DeployContainer.Enabled || cfg.RemoteDeploy.Enabled
+	return cfg.Child
 }
 
 func (s *Service) SetEventPublisher(events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) {

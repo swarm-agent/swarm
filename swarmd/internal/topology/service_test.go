@@ -22,7 +22,7 @@ func TestRebuildIgnoresLegacyWorkspaceReplicationLinks(t *testing.T) {
 	}
 	legacyLink := pebblestore.WorkspaceReplicationLink{
 		ID:                  "legacy-only-link",
-		TargetKind:          "managed_host",
+		TargetKind:          "retired_target",
 		TargetSwarmID:       "legacy-host",
 		TargetWorkspacePath: "/dst",
 		ReplicationMode:     "mirror",
@@ -37,7 +37,7 @@ func TestRebuildIgnoresLegacyWorkspaceReplicationLinks(t *testing.T) {
 		t.Fatalf("seed legacy replication link: %v", err)
 	}
 
-	service := NewService(topologyStore, nil, nil, nil, nil, nil, workspaceStore)
+	service := NewService(topologyStore, nil, nil, nil, nil, workspaceStore)
 	status, err := service.Rebuild()
 	if err != nil {
 		t.Fatalf("rebuild: %v", err)
@@ -102,7 +102,7 @@ func TestSessionRouteEnrichmentUsesExplicitWorkspaceBindingID(t *testing.T) {
 		t.Fatalf("put session route: %v", err)
 	}
 
-	service := NewService(topologyStore, nil, nil, deployStore, nil, sessionRouteStore, nil)
+	service := NewService(topologyStore, nil, nil, deployStore, sessionRouteStore, nil)
 	if _, err := service.Rebuild(); err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestSessionRouteEnrichmentDoesNotInferWorkspaceBindingIDFromPaths(t *testin
 		t.Fatalf("put session route: %v", err)
 	}
 
-	service := NewService(topologyStore, nil, nil, nil, nil, sessionRouteStore, nil)
+	service := NewService(topologyStore, nil, nil, nil, sessionRouteStore, nil)
 	if _, err := service.Rebuild(); err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestRebuildPreservesCanonicalWorkspaceBindings(t *testing.T) {
 	}
 	legacyLink := pebblestore.WorkspaceReplicationLink{
 		ID:                  "legacy-only-link",
-		TargetKind:          "managed_host",
+		TargetKind:          "retired_target",
 		TargetSwarmID:       "legacy-host",
 		TargetWorkspacePath: "/legacy-dst",
 		ReplicationMode:     "mirror",
@@ -230,7 +230,7 @@ func TestRebuildPreservesCanonicalWorkspaceBindings(t *testing.T) {
 		t.Fatalf("put canonical workspace binding: %v", err)
 	}
 
-	service := NewService(topologyStore, nil, nil, nil, nil, nil, workspaceStore)
+	service := NewService(topologyStore, nil, nil, nil, nil, workspaceStore)
 	status, err := service.RefreshMigrationStatus()
 	if err != nil {
 		t.Fatalf("refresh migration status: %v", err)

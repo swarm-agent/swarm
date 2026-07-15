@@ -72,7 +72,7 @@ func TestSwarmTargetsTopologyRuntimeWithoutBackendURL(t *testing.T) {
 		t.Fatalf("unexpected placement: %+v", placement)
 	}
 
-	server := &Server{topology: topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil)}
+	server := &Server{topology: topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil)}
 	targets, err := server.listTopologyTargetsForAccount("account-1")
 	if err != nil {
 		t.Fatalf("list targets: %v", err)

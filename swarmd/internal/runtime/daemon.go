@@ -221,7 +221,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	agentSvc.SetEventPublisher(hub.Publish)
 	authSvc.SetEventPublisher(hub.Publish)
 	modelSvc.SetEventPublisher(hub.Publish)
-	topologySvc := topologyruntime.NewService(topologyStore, swarmStore, swarmNodeStore, nil, nil, pebblestore.NewSessionRouteStore(store), pebblestore.NewWorkspaceStore(store))
+	topologySvc := topologyruntime.NewService(topologyStore, swarmStore, swarmNodeStore, nil, pebblestore.NewSessionRouteStore(store), pebblestore.NewWorkspaceStore(store))
 	worktreeSvc := worktreeruntime.NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, events)
 	mcpSvc := mcpruntime.NewService(pebblestore.NewMCPStore(store), events)
 	securitySvc := security.NewService(pebblestore.NewClientAuthStore(store), events)

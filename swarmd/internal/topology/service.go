@@ -16,7 +16,6 @@ type Service struct {
 	swarmStore     *pebblestore.SwarmStore
 	swarmNodes     *pebblestore.SwarmNodeStore
 	deployments    *pebblestore.DeployContainerStore
-	remoteDeploys  *pebblestore.RemoteDeploySessionStore
 	sessionRoutes  *pebblestore.SessionRouteStore
 	workspaceStore *pebblestore.WorkspaceStore
 }
@@ -26,7 +25,6 @@ func NewService(
 	swarmStore *pebblestore.SwarmStore,
 	swarmNodes *pebblestore.SwarmNodeStore,
 	deployments *pebblestore.DeployContainerStore,
-	remoteDeploys *pebblestore.RemoteDeploySessionStore,
 	sessionRoutes *pebblestore.SessionRouteStore,
 	workspaceStore *pebblestore.WorkspaceStore,
 ) *Service {
@@ -35,7 +33,6 @@ func NewService(
 		swarmStore:     swarmStore,
 		swarmNodes:     swarmNodes,
 		deployments:    deployments,
-		remoteDeploys:  remoteDeploys,
 		sessionRoutes:  sessionRoutes,
 		workspaceStore: workspaceStore,
 	}
@@ -702,58 +699,6 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 		}
 	}
 
-	if s.remoteDeploys != nil {
-		sessions, err := s.remoteDeploys.List(100000)
-		if err != nil {
-			return pebblestore.TopologySnapshot{}, err
-		}
-		for _, session := range sessions {
-			if strings.TrimSpace(session.ChildSwarmID) != "" {
-				hostSwarmID := firstNonEmpty(strings.TrimSpace(session.HostSwarmID), strings.TrimSpace(session.MasterSwarmID))
-				runtimeContainerRef := remoteContainerNameForSession(session.ID)
-				hostContainerID := canonicalHostContainerID(hostSwarmID, runtimeContainerRef)
-				if hostContainerID != "" {
-					mergeHostContainer(hostContainerMap, pebblestore.TopologyHostContainerRecord{
-						HostContainerID:     hostContainerID,
-						HostSwarmID:         hostSwarmID,
-						RuntimeContainerRef: runtimeContainerRef,
-						Name:                firstNonEmpty(session.ChildName, session.Name, session.ID),
-						ContainerName:       runtimeContainerRef,
-						Runtime:             session.RemoteRuntime,
-						Status:              session.Status,
-						HostAPIBaseURL:      remoteSessionEndpoint(session),
-						ObservedSources:     []string{"remote_deploy_session"},
-						CreatedAt:           session.CreatedAt,
-						UpdatedAt:           session.UpdatedAt,
-					})
-					mergeRuntimePlacement(runtimePlacementMap, pebblestore.TopologyRuntimePlacementRecord{
-						RuntimeSwarmID:       session.ChildSwarmID,
-						AuthorityHostSwarmID: hostSwarmID,
-						AuthorityContainerID: hostContainerID,
-						RuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
-						CreatedAt:            session.CreatedAt,
-						UpdatedAt:            session.UpdatedAt,
-					})
-				}
-				mergeRuntime(runtimeMap, pebblestore.TopologyRuntimeRecord{
-					SwarmID:              session.ChildSwarmID,
-					Name:                 firstNonEmpty(session.ChildName, session.Name, session.ChildSwarmID),
-					Role:                 "child",
-					Relationship:         "child",
-					BackendURL:           session.RemoteEndpoint,
-					DesktopURL:           session.HostDesktopURL,
-					Status:               session.Status,
-					Transport:            session.TransportMode,
-					OwnerHostSwarmID:     hostSwarmID,
-					OwnerHostContainerID: hostContainerID,
-					ObservedSources:      []string{"remote_deploy_session"},
-					CreatedAt:            session.CreatedAt,
-					UpdatedAt:            session.UpdatedAt,
-				})
-			}
-		}
-	}
-
 	workspaceBindings, err := s.buildWorkspaceBindings()
 	if err != nil {
 		return pebblestore.TopologySnapshot{}, err
@@ -1122,7 +1067,6 @@ func mergeAttachment(dst map[string]pebblestore.TopologyAttachmentRecord, incomi
 	existing.RuntimeSwarmID = firstNonEmpty(existing.RuntimeSwarmID, incoming.RuntimeSwarmID)
 	existing.State = firstNonEmpty(existing.State, incoming.State)
 	existing.DeploymentID = firstNonEmpty(existing.DeploymentID, incoming.DeploymentID)
-	existing.RemoteDeploySessionID = firstNonEmpty(existing.RemoteDeploySessionID, incoming.RemoteDeploySessionID)
 	existing.LastError = firstNonEmpty(existing.LastError, incoming.LastError)
 	existing.CreatedAt = minPositive(existing.CreatedAt, incoming.CreatedAt)
 	existing.UpdatedAt = maxInt64(existing.UpdatedAt, incoming.UpdatedAt)
@@ -1195,7 +1139,6 @@ func normalizeAttachment(record pebblestore.TopologyAttachmentRecord) pebblestor
 	record.RuntimeSwarmID = strings.TrimSpace(record.RuntimeSwarmID)
 	record.State = strings.ToLower(strings.TrimSpace(record.State))
 	record.DeploymentID = strings.TrimSpace(record.DeploymentID)
-	record.RemoteDeploySessionID = strings.TrimSpace(record.RemoteDeploySessionID)
 	record.LastError = strings.TrimSpace(record.LastError)
 	if record.CreatedAt <= 0 {
 		record.CreatedAt = time.Now().UnixMilli()
@@ -1305,25 +1248,6 @@ func normalizeNodeRelationship(role string) string {
 	default:
 		return ""
 	}
-}
-
-func remoteContainerNameForSession(sessionID string) string {
-	slug := strings.ToLower(strings.TrimSpace(sessionID))
-	slug = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
-			return r
-		}
-		return '-'
-	}, slug)
-	slug = strings.Trim(slug, "-")
-	if slug == "" {
-		return "swarm-remote"
-	}
-	return "swarm-remote-" + slug
-}
-
-func remoteSessionEndpoint(session pebblestore.RemoteDeploySessionRecord) string {
-	return firstNonEmpty(session.RemoteEndpoint, session.RemoteTailnetURL, session.HostAPIBaseURL)
 }
 
 func canonicalHostContainerID(hostSwarmID, runtimeContainerRef string) string {

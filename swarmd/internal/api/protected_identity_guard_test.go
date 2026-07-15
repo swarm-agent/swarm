@@ -216,7 +216,7 @@ func newProtectedIdentityGuardTestServer(t *testing.T, bootstrap bool) (*Server,
 	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "guard-device-swarm", Name: "Guard Device", Role: "master"}); err != nil {
 		t.Fatalf("put local swarm node: %v", err)
 	}
-	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), swarmStore, nil, nil, nil, nil, workspaceStore))
+	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), swarmStore, nil, nil, nil, workspaceStore))
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
 	cfg.SwarmName = "Guard Device"

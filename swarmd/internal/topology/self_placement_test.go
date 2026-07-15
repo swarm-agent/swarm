@@ -21,7 +21,7 @@ func TestEnsureLocalSelfPlacementForAccountCreatesHostRuntimeAndPlacement(t *tes
 		t.Fatalf("put local node: %v", err)
 	}
 
-	service := NewService(topologyStore, swarmStore, nil, nil, nil, nil, nil)
+	service := NewService(topologyStore, swarmStore, nil, nil, nil, nil)
 	placement, err := service.EnsureLocalSelfPlacementForPrincipal("account-a", "user-a")
 	if err != nil {
 		t.Fatalf("ensure self placement: %v", err)
@@ -67,7 +67,7 @@ func TestEnsureLocalSelfPlacementForAccountFailsWhenLocalNodeMissing(t *testing.
 	}
 	defer func() { _ = store.Close() }()
 
-	service := NewService(pebblestore.NewTopologyStore(store), pebblestore.NewSwarmStore(store), nil, nil, nil, nil, nil)
+	service := NewService(pebblestore.NewTopologyStore(store), pebblestore.NewSwarmStore(store), nil, nil, nil, nil)
 	_, err = service.EnsureLocalSelfPlacementForPrincipal("account-a", "user-a")
 	if err == nil || !strings.Contains(err.Error(), "local swarm id is required") {
 		t.Fatalf("expected missing local swarm id error, got %v", err)
@@ -86,7 +86,7 @@ func TestEnsureLocalSelfPlacementForAccountRequiresUserIDWhenUsingPrincipalAPI(t
 	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "local-swarm", Name: "Local", Role: "host"}); err != nil {
 		t.Fatalf("put local node: %v", err)
 	}
-	service := NewService(topologyStore, swarmStore, nil, nil, nil, nil, nil)
+	service := NewService(topologyStore, swarmStore, nil, nil, nil, nil)
 	_, err = service.EnsureLocalSelfPlacementForPrincipal("account-a", "")
 	if err == nil || !strings.Contains(err.Error(), "user id is required") {
 		t.Fatalf("expected missing user id error, got %v", err)

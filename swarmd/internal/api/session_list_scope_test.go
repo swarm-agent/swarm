@@ -92,7 +92,7 @@ func TestListSessionsForCWDUsesWorkspaceBindingAuthorityForContainerSession(t *t
 	}
 
 	topologyStore := pebblestore.NewTopologyStore(store)
-	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, workspaceStore)
+	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, workspaceStore)
 	if _, err := topologyStore.PutRuntimePlacementForAccount(principal.AccountScopeID, pebblestore.TopologyRuntimePlacementRecord{
 		RuntimeSwarmID:       "container-swarm",
 		AccountScopeID:       principal.AccountScopeID,
