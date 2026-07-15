@@ -14,7 +14,6 @@ const (
 	KeyAuthCredentialPrefix                        = "auth/credential/"
 	KeyAuthCredentialActivePrefix                  = "auth/credential_active/"
 	KeyAuthCredentialTagPrefix                     = "auth/index/auth_tag/"
-	KeyAuthManagedVaultKeyPrefix                   = "auth/managed_vault_key/"
 	KeyUISettingsDefault                           = "ui/settings/default"
 	KeyUISettingsAccountPrefix                     = "ui/settings_by_account/"
 	KeyUIChatSettingsDefault                       = "ui/chat_settings/default"
@@ -76,7 +75,6 @@ const (
 	KeySwarmNodePrefix                             = "swarm/node/"
 	KeyDeployContainerPrefix                       = "deploy/container/"
 	KeyDeployContainerByAccountPrefix              = "deploy/container_by_account/"
-	KeyRemoteDeploySessionPrefix                   = "deploy/remote_session/"
 	KeySwarmInvitePrefix                           = "swarm/invite/"
 	KeySwarmInviteTokenPrefix                      = "swarm/invite_token/"
 	KeySwarmEnrollmentPrefix                       = "swarm/enrollment/"
@@ -852,10 +850,6 @@ func KeyAuthCredentialTag(tag, providerID, credentialID string) string {
 
 func KeyAuthCredentialTagForAccount(accountScopeID, tag, providerID, credentialID string) string {
 	return fmt.Sprintf("%s%s/%s/%s/%s", KeyAuthCredentialTagPrefix, keyPart(accountScopeID), keyPart(tag), keyPart(providerID), keyPart(credentialID))
-}
-
-func KeyAuthManagedVaultKey(scopeID string) string {
-	return KeyAuthManagedVaultKeyPrefix + keyPart(scopeID)
 }
 
 func KeyMessage(sessionID string, globalSeq uint64) string {
@@ -1770,10 +1764,6 @@ func KeyDeployContainerByAccount(accountScopeID, deploymentID string) string {
 	return fmt.Sprintf("%s%s/%s", KeyDeployContainerByAccountPrefix, keyPart(accountScopeID), keyPart(deploymentID))
 }
 
-func KeyRemoteDeploySession(sessionID string) string {
-	return KeyRemoteDeploySessionPrefix + keyPart(sessionID)
-}
-
 func SwarmContainerProfilePrefix() string {
 	return KeySwarmContainerProfilePrefix
 }
@@ -1800,10 +1790,6 @@ func DeployContainerByAccountPrefix(accountScopeID string) string {
 		return KeyDeployContainerByAccountPrefix
 	}
 	return fmt.Sprintf("%s%s/", KeyDeployContainerByAccountPrefix, accountPart)
-}
-
-func RemoteDeploySessionPrefix() string {
-	return KeyRemoteDeploySessionPrefix
 }
 
 func KeySwarmMirrorLocalEvent(sequence uint64) string {
