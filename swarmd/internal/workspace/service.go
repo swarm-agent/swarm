@@ -9,9 +9,6 @@ import (
 	"sort"
 	"strings"
 
-	"swarm-refactor/swarmtui/pkg/startupconfig"
-
-	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -22,8 +19,6 @@ type Service struct {
 	store                      *pebblestore.WorkspaceStore
 	events                     *pebblestore.EventLog
 	publish                    func(pebblestore.EventEnvelope)
-	startupConfigPath          string
-	startupConfigForWorkspaces *startupconfig.FileConfig
 }
 
 type Resolution struct {
@@ -36,10 +31,6 @@ type Resolution struct {
 	WorkspacePath           string `json:"workspace_path"`
 	WorkspaceName           string `json:"workspace_name"`
 	ThemeID                 string `json:"theme_id,omitempty"`
-	ManagedDataPath         string `json:"managed_data_path,omitempty"`
-	ManagedCachePath        string `json:"managed_cache_path,omitempty"`
-	ManagedStatePath        string `json:"managed_state_path,omitempty"`
-	ManagedWorkspaceBucket  string `json:"managed_workspace_bucket,omitempty"`
 }
 
 type Entry struct {
@@ -72,10 +63,6 @@ type Scope struct {
 	ThemeID                string   `json:"theme_id,omitempty"`
 	Directories            []string `json:"directories"`
 	Matched                bool     `json:"matched"`
-	ManagedDataPath        string   `json:"managed_data_path,omitempty"`
-	ManagedCachePath       string   `json:"managed_cache_path,omitempty"`
-	ManagedStatePath       string   `json:"managed_state_path,omitempty"`
-	ManagedWorkspaceBucket string   `json:"managed_workspace_bucket,omitempty"`
 }
 
 type BrowseEntry struct {
@@ -107,21 +94,6 @@ func NewService(store *pebblestore.WorkspaceStore) *Service {
 	return &Service{store: store}
 }
 
-func (s *Service) SetStartupConfigPath(path string) {
-	if s == nil {
-		return
-	}
-	s.startupConfigPath = strings.TrimSpace(path)
-	s.startupConfigForWorkspaces = nil
-}
-
-func (s *Service) SetStartupConfigForTesting(cfg startupconfig.FileConfig) {
-	if s == nil {
-		return
-	}
-	s.startupConfigForWorkspaces = &cfg
-}
-
 func (s *Service) GetByWorkspaceIDForPrincipal(principal identity.Principal, workspaceID string) (pebblestore.WorkspaceEntry, bool, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return pebblestore.WorkspaceEntry{}, false, err
@@ -130,33 +102,6 @@ func (s *Service) GetByWorkspaceIDForPrincipal(principal identity.Principal, wor
 		return pebblestore.WorkspaceEntry{}, false, fmt.Errorf("workspace service is not configured")
 	}
 	return s.store.GetByWorkspaceIDForAccount(principal.AccountScopeID, workspaceID)
-}
-
-func (s *Service) explicitChildContainerRuntime() bool {
-	if s == nil {
-		return false
-	}
-	if s.startupConfigForWorkspaces != nil {
-		return startupConfigIsExplicitChildContainerRuntime(*s.startupConfigForWorkspaces)
-	}
-	path := strings.TrimSpace(s.startupConfigPath)
-	if path == "" {
-		resolved, err := startupconfig.ResolvePath()
-		if err != nil {
-			return false
-		}
-		path = resolved
-	}
-	cfg, err := startupconfig.Load(path)
-	if err != nil {
-		return false
-	}
-	s.startupConfigForWorkspaces = &cfg
-	return startupConfigIsExplicitChildContainerRuntime(cfg)
-}
-
-func startupConfigIsExplicitChildContainerRuntime(cfg startupconfig.FileConfig) bool {
-	return cfg.Child
 }
 
 func (s *Service) SetEventPublisher(events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) {
@@ -555,9 +500,6 @@ func (s *Service) ListKnownForPrincipal(principal identity.Principal, limit int)
 	if err := requirePrincipal(principal); err != nil {
 		return nil, err
 	}
-	if err := s.ensureRemoteChildWorkspaceEntriesForPrincipal(principal); err != nil {
-		return nil, err
-	}
 	entries, err := s.store.ListForAccount(principal.AccountScopeID, limit)
 	if err != nil {
 		return nil, err
@@ -907,20 +849,11 @@ func (s *Service) resolveBrowsePath(input string) (string, error) {
 	return resolvePath(target)
 }
 
-func resolveBrowseHomePath() (string, error) {
-	return resolveBrowseHomePathForExplicitChildContainer(false)
-}
-
 func (s *Service) resolveBrowseHomePath() (string, error) {
-	return resolveBrowseHomePathForExplicitChildContainer(s.explicitChildContainerRuntime())
+	return resolveBrowseHomePath()
 }
 
-func resolveBrowseHomePathForExplicitChildContainer(explicitChildContainer bool) (string, error) {
-	if explicitChildContainer {
-		if workspaceRoot, ok := remoteChildWorkspaceRoot(); ok {
-			return workspaceRoot, nil
-		}
-	}
+func resolveBrowseHomePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
@@ -929,28 +862,6 @@ func resolveBrowseHomePathForExplicitChildContainer(explicitChildContainer bool)
 		return "", fmt.Errorf("home directory is unavailable")
 	}
 	return resolvePath(home)
-}
-
-var remoteChildWorkspaceRootPath = "/workspaces"
-
-func remoteChildWorkspaceRoot() (string, bool) {
-	workspaceRoot := strings.TrimSpace(remoteChildWorkspaceRootPath)
-	if workspaceRoot == "" {
-		return "", false
-	}
-	info, err := os.Stat(workspaceRoot)
-	if err != nil || !info.IsDir() {
-		return "", false
-	}
-	resolved, err := resolvePath(workspaceRoot)
-	if err != nil {
-		return "", false
-	}
-	return resolved, true
-}
-
-func (s *Service) ensureRemoteChildWorkspaceEntries() error {
-	return identity.ErrPrincipalRequired
 }
 
 // legacyScopeForPath deliberately consults only pre-account global workspace
@@ -996,51 +907,6 @@ func (s *Service) legacyScopeForPath(path string) (Scope, error) {
 		directories = []string{entry.Path}
 	}
 	return scopeForEntry(path, resolved, entry, name, directories, true), nil
-}
-
-func (s *Service) ensureRemoteChildWorkspaceEntriesForPrincipal(principal identity.Principal) error {
-	if err := requirePrincipal(principal); err != nil {
-		return err
-	}
-	if s == nil || s.store == nil {
-		return nil
-	}
-	if !s.explicitChildContainerRuntime() {
-		return nil
-	}
-	workspaceRoot, ok := remoteChildWorkspaceRoot()
-	if !ok {
-		return nil
-	}
-	entries, err := s.store.ListForAccount(principal.AccountScopeID, 100000)
-	if err != nil {
-		return err
-	}
-	known := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		path := filepath.Clean(strings.TrimSpace(entry.Path))
-		if path != "" && path != "." {
-			known[path] = struct{}{}
-		}
-	}
-	dirs, err := os.ReadDir(workspaceRoot)
-	if err != nil {
-		return err
-	}
-	for _, dir := range dirs {
-		name := strings.TrimSpace(dir.Name())
-		if name == "" || strings.HasPrefix(name, ".") || !dir.IsDir() {
-			continue
-		}
-		workspacePath := filepath.Join(workspaceRoot, name)
-		if _, ok := known[filepath.Clean(workspacePath)]; ok {
-			continue
-		}
-		if _, err := s.AddForPrincipal(principal, workspacePath, defaultWorkspaceName(workspacePath), "", false); err != nil {
-			return fmt.Errorf("register mounted remote child workspace %q: %w", workspacePath, err)
-		}
-	}
-	return nil
 }
 
 func requirePrincipal(principal identity.Principal) error {
@@ -1150,10 +1016,6 @@ func resolutionFromScope(requestedPath string, scope Scope) Resolution {
 		WorkspacePath:          scope.WorkspacePath,
 		WorkspaceName:          scope.WorkspaceName,
 		ThemeID:                scope.ThemeID,
-		ManagedDataPath:        scope.ManagedDataPath,
-		ManagedCachePath:       scope.ManagedCachePath,
-		ManagedStatePath:       scope.ManagedStatePath,
-		ManagedWorkspaceBucket: scope.ManagedWorkspaceBucket,
 	}
 }
 
@@ -1162,7 +1024,6 @@ func resolutionForEntry(requestedPath, resolvedPath string, entry pebblestore.Wo
 }
 
 func resolutionForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceID string, workspaceGeneration int64, workspaceState, workspaceName, themeID string) Resolution {
-	managed := managedStorageForWorkspace(workspacePath)
 	return Resolution{
 		RequestedPath:          requestedPath,
 		ResolvedPath:           resolvedPath,
@@ -1172,10 +1033,6 @@ func resolutionForWorkspace(requestedPath, resolvedPath, workspacePath, workspac
 		WorkspacePath:          workspacePath,
 		WorkspaceName:          workspaceName,
 		ThemeID:                themeID,
-		ManagedDataPath:        managed.dataPath,
-		ManagedCachePath:       managed.cachePath,
-		ManagedStatePath:       managed.statePath,
-		ManagedWorkspaceBucket: managed.bucket,
 	}
 }
 
@@ -1184,7 +1041,6 @@ func scopeForEntry(requestedPath, resolvedPath string, entry pebblestore.Workspa
 }
 
 func scopeForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceID string, workspaceGeneration int64, workspaceState, workspaceName, themeID string, directories []string, matched bool) Scope {
-	managed := managedStorageForWorkspace(workspacePath)
 	return Scope{
 		RequestedPath:          requestedPath,
 		ResolvedPath:           resolvedPath,
@@ -1196,45 +1052,6 @@ func scopeForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceID s
 		ThemeID:                themeID,
 		Directories:            directories,
 		Matched:                matched,
-		ManagedDataPath:        managed.dataPath,
-		ManagedCachePath:       managed.cachePath,
-		ManagedStatePath:       managed.statePath,
-		ManagedWorkspaceBucket: managed.bucket,
 	}
 }
 
-type managedWorkspaceStorage struct {
-	dataPath  string
-	cachePath string
-	statePath string
-	bucket    string
-}
-
-func managedStorageForWorkspace(workspacePath string) managedWorkspaceStorage {
-	workspacePath = strings.TrimSpace(workspacePath)
-	if workspacePath == "" {
-		return managedWorkspaceStorage{}
-	}
-	bucket, err := appstorage.WorkspaceBucketName(workspacePath)
-	if err != nil {
-		return managedWorkspaceStorage{}
-	}
-	dataPath, err := appstorage.WorkspaceDataDir(workspacePath)
-	if err != nil {
-		return managedWorkspaceStorage{}
-	}
-	cachePath, err := appstorage.WorkspaceCacheDir(workspacePath)
-	if err != nil {
-		return managedWorkspaceStorage{}
-	}
-	statePath, err := appstorage.WorkspaceStateDir(workspacePath)
-	if err != nil {
-		return managedWorkspaceStorage{}
-	}
-	return managedWorkspaceStorage{
-		dataPath:  dataPath,
-		cachePath: cachePath,
-		statePath: statePath,
-		bucket:    bucket,
-	}
-}

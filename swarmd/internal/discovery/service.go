@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+	"swarm/packages/swarmd/internal/appstorage"
 )
 
 type Service struct{}
@@ -105,7 +106,7 @@ func (s *Service) ScanScope(primaryPath string, roots []string) (Report, error) 
 	if err != nil {
 		return Report{}, err
 	}
-	swarmConfig, err := managedSwarmConfigDir()
+	swarmConfig, err := swarmConfigDir()
 	if err != nil {
 		return Report{}, err
 	}
@@ -184,6 +185,10 @@ func (s *Service) ScanScope(primaryPath string, roots []string) (Report, error) 
 	report.Overrides = append(report.Overrides, overrides...)
 
 	return report, nil
+}
+
+func swarmConfigDir() (string, error) {
+	return appstorage.DataDir("config")
 }
 
 func resolvePath(input string) (string, error) {

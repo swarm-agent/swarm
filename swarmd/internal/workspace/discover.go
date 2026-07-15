@@ -29,11 +29,6 @@ func (s *Service) Discover(roots []string, limit int) ([]DiscoverEntry, error) {
 		limit = 1000
 	}
 	searchRoots := workspaceDiscoverRoots(roots)
-	if len(roots) == 0 && s.explicitChildContainerRuntime() {
-		if workspaceRoot, ok := remoteChildWorkspaceRoot(); ok {
-			searchRoots = prependUniqueWorkspaceDiscoverRoot(searchRoots, workspaceRoot)
-		}
-	}
 	seen := make(map[string]DiscoverEntry, limit*2)
 	maxCollected := limit * 4
 
@@ -143,27 +138,6 @@ func workspaceDiscoverRoots(requested []string) []string {
 		add(filepath.Join(home, "github"))
 	}
 	return roots
-}
-
-func prependUniqueWorkspaceDiscoverRoot(roots []string, root string) []string {
-	root = strings.TrimSpace(root)
-	if root == "" {
-		return roots
-	}
-	resolved, err := resolvePath(root)
-	if err != nil {
-		return roots
-	}
-	info, err := os.Stat(resolved)
-	if err != nil || !info.IsDir() {
-		return roots
-	}
-	for _, existing := range roots {
-		if existing == resolved {
-			return roots
-		}
-	}
-	return append([]string{resolved}, roots...)
 }
 
 func workspaceDiscoverDepth(root, path string) (int, error) {

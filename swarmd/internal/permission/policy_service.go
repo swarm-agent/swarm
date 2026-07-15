@@ -1,7 +1,6 @@
 package permission
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,12 +9,6 @@ import (
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
-
-type ManagedPolicyState struct {
-	Policy            Policy `json:"policy"`
-	BypassPermissions bool   `json:"bypass_permissions"`
-	ExportedAt        int64  `json:"exported_at,omitempty"`
-}
 
 func (s *Service) CurrentPolicy() (Policy, error) {
 	return s.CurrentPolicyForAccount("")
@@ -32,77 +25,6 @@ func (s *Service) CurrentPolicyForAccount(accountScopeID string) (Policy, error)
 		return Policy{}, err
 	}
 	return state.Policy, nil
-}
-
-func (s *Service) ExportPolicyState() (ManagedPolicyState, error) {
-	return s.ExportPolicyStateForAccount("")
-}
-
-func (s *Service) ExportPolicyStateForAccount(accountScopeID string) (ManagedPolicyState, error) {
-	if s == nil {
-		return ManagedPolicyState{Policy: DefaultPolicy(), ExportedAt: time.Now().UnixMilli()}, nil
-	}
-	s.mu.Lock()
-	state, err := s.loadPermissionStateLocked(accountScopeID)
-	s.mu.Unlock()
-	if err != nil {
-		return ManagedPolicyState{}, err
-	}
-	return ManagedPolicyState{
-		Policy:            NormalizePolicy(state.Policy),
-		BypassPermissions: state.BypassPermissions,
-		ExportedAt:        time.Now().UnixMilli(),
-	}, nil
-}
-
-func (s *Service) ApplyManagedPolicyState(state ManagedPolicyState) (ManagedPolicyState, error) {
-	return s.ApplyManagedPolicyStateForAccount("", state)
-}
-
-func (s *Service) ApplyManagedPolicyStateForAccount(accountScopeID string, state ManagedPolicyState) (ManagedPolicyState, error) {
-	if s == nil {
-		return ManagedPolicyState{}, errors.New("permission service is not configured")
-	}
-	if strings.TrimSpace(accountScopeID) == "" {
-		return ManagedPolicyState{}, errors.New("account scope ID is required")
-	}
-	if err := ValidateSubagentPolicy(state.Policy.Subagents); err != nil {
-		return ManagedPolicyState{}, err
-	}
-	policy := NormalizePolicy(state.Policy)
-	now := time.Now().UnixMilli()
-	if policy.UpdatedAt <= 0 {
-		policy.UpdatedAt = now
-	}
-	s.mu.Lock()
-	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
-		s.mu.Unlock()
-		return ManagedPolicyState{}, err
-	}
-	s.bypassPermissions = state.BypassPermissions
-	s.permissionStateCache[permissionStateCacheKey(accountScopeID)] = permissionStateCacheEntry{
-		AccountScopeID:    strings.TrimSpace(accountScopeID),
-		Policy:            NormalizePolicy(policy),
-		BypassPermissions: state.BypassPermissions,
-		LoadedAt:          now,
-		PolicyUpdatedAt:   policy.UpdatedAt,
-		BypassUpdatedAt:   now,
-	}
-	for cachedAccountScopeID, cached := range s.permissionStateCache {
-		if cachedAccountScopeID == permissionStateCacheKey(accountScopeID) {
-			continue
-		}
-		cached.BypassPermissions = state.BypassPermissions
-		cached.BypassUpdatedAt = now
-		cached.LoadedAt = now
-		s.permissionStateCache[cachedAccountScopeID] = cached
-	}
-	s.mu.Unlock()
-	return ManagedPolicyState{
-		Policy:            policy,
-		BypassPermissions: state.BypassPermissions,
-		ExportedAt:        time.Now().UnixMilli(),
-	}, nil
 }
 
 func (s *Service) ExplainTool(mode, toolName, toolArguments string, overlay *Policy) (PolicyExplain, error) {
@@ -322,25 +244,6 @@ func (s *Service) ResolveWithPolicy(sessionID, permissionID, action, reason stri
 }
 
 func (s *Service) ResolveWithPolicyAndArguments(sessionID, permissionID, action, reason, approvedArguments string) (pebblestore.PermissionRecord, *PolicyRule, error) {
-	if descriptor, hosted, err := s.hostedDescriptorForSession(sessionID); err != nil {
-		return pebblestore.PermissionRecord{}, nil, err
-	} else if hosted {
-		result, err := s.hosted.Resolve(context.Background(), descriptor, ResolveInput{
-			SessionID:         sessionID,
-			PermissionID:      permissionID,
-			Action:            action,
-			Reason:            reason,
-			ApprovedArguments: approvedArguments,
-		})
-		if err != nil {
-			return pebblestore.PermissionRecord{}, nil, err
-		}
-		if err := s.storeMirroredPermission(result.Record); err != nil {
-			return pebblestore.PermissionRecord{}, nil, err
-		}
-		return result.Record, result.SavedRule, nil
-	}
-
 	action, err := normalizeResolveAction(action)
 	if err != nil {
 		return pebblestore.PermissionRecord{}, nil, err

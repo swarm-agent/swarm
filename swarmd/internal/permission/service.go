@@ -117,19 +117,6 @@ type sessionPlanLookup interface {
 	GetActivePlan(sessionID string) (pebblestore.SessionPlanSnapshot, bool, error)
 }
 
-type ResolveInput struct {
-	SessionID         string
-	PermissionID      string
-	Action            string
-	Reason            string
-	ApprovedArguments string
-}
-
-type ResolveResult struct {
-	Record    pebblestore.PermissionRecord
-	SavedRule *PolicyRule
-}
-
 type PendingPlanProposalEditInput struct {
 	SessionID        string
 	PermissionID     string
@@ -1988,49 +1975,6 @@ func permissionStoredOutput(raw, toolName string, retainToolOutputHistory bool) 
 
 func permissionStoredError(raw string) string {
 	return privacy.SanitizeText(raw)
-}
-
-func (s *Service) StoreMirroredPermission(record pebblestore.PermissionRecord) error {
-	return s.storeMirroredPermission(record)
-}
-
-func (s *Service) storeMirroredPermission(record pebblestore.PermissionRecord) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.storeMirroredPermissionLocked(record)
-}
-
-func (s *Service) storeMirroredPermissionLocked(record pebblestore.PermissionRecord) error {
-	if strings.TrimSpace(record.ID) == "" || strings.TrimSpace(record.SessionID) == "" {
-		return errors.New("mirrored permission record is missing required ids")
-	}
-	previous, ok, err := s.store.GetPermission(record.SessionID, record.ID)
-	if err != nil {
-		return err
-	}
-	var previousPtr *pebblestore.PermissionRecord
-	if ok {
-		previousPtr = &previous
-	}
-	now := firstNonZero(record.UpdatedAt, record.ResolvedAt, record.CompletedAt, record.PermissionRequested, record.CreatedAt, time.Now().UnixMilli())
-	summary, err := s.summaryForMutationLocked(record.SessionID, previousPtr, record, now)
-	if err != nil {
-		return err
-	}
-	if err := s.store.PutPermissionWithSummary(record, previousPtr, summary); err != nil {
-		return err
-	}
-	if strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending) {
-		if err := s.attachRunWaitLocked(record, now); err != nil {
-			return err
-		}
-	} else {
-		s.detachRunWaitLocked(record, now)
-		s.notifyWaitersLocked(record)
-	}
-	s.syncNotification(record, s.hostSwarmIDForSession(record.SessionID), s.originSwarmIDForSession(record.SessionID), permissionNotificationEventType(record))
-	s.publishPermissionSummaryUpdatedLocked(record.SessionID, summary)
-	return nil
 }
 
 func (s *Service) syncNotification(record pebblestore.PermissionRecord, swarmID, originSwarmID, sourceEventType string) {
