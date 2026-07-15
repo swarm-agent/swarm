@@ -155,8 +155,8 @@ func (s *Service) BootstrapFirstIdentity(username string) (BootstrapResult, erro
 
 // EnsureLinkedIdentity materializes local identity rows for a trusted,
 // persisted account-owned link. It is intentionally not a bootstrap fallback:
-// callers must already have resolved the user/account authority from product
-// state such as a managed-host pairing record.
+// callers must already have resolved the user/account authority from canonical
+// account-owned product state.
 func (s *Service) EnsureLinkedIdentity(input EnsureLinkedIdentityInput) (BootstrapResult, error) {
 	if err := s.configured(); err != nil {
 		return BootstrapResult{}, err

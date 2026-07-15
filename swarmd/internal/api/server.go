@@ -2385,7 +2385,7 @@ func (s *Server) enrichSessionSummariesForList(sessions []pebblestore.SessionSna
 	return responseSessions, nil
 }
 
-func (s *Server) rollbackHostedSessionCreate(sessionID string) error {
+func (s *Server) deleteSessionAndRoutes(sessionID string) error {
 	if s == nil {
 		return nil
 	}

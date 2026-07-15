@@ -3174,11 +3174,11 @@ func TestSessionsV3PrimaryPlanModeStartCheckpointPreflightIsPrimaryOnlyAndAtomic
 		t.Fatalf("get created session: ok=%v err=%v", ok, err)
 	}
 	stored.Metadata = map[string]any{
-		"owner_transport": "routed_session_peer",
-		sessionruntime.HostedSessionMetadataHostWorkspacePath:    "/host/workspace",
-		sessionruntime.HostedSessionMetadataRuntimeWorkspacePath: "/runtime/workspace",
-		sessionruntime.HostedSessionMetadataChildSwarmID:         "missing-child",
-		"swarm_routed_workspace_binding_id":                      "binding-missing-route",
+		"owner_transport":                "retired_routed_session_peer",
+		"retired_host_workspace_path":    "/host/workspace",
+		"retired_runtime_workspace_path": "/runtime/workspace",
+		"retired_child_swarm_id":         "missing-child",
+		"retired_workspace_binding_id":   "binding-missing-route",
 	}
 	if err := sessionSvc.Store().UpdateSession(stored); err != nil {
 		t.Fatalf("store routed-looking v3 primary session metadata: %v", err)

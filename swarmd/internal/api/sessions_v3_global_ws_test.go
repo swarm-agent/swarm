@@ -467,7 +467,7 @@ func TestSessionDeleteReachesGlobalWebsocketSessionWildcard(t *testing.T) {
 	writeGlobalWSFrame(t, conn, map[string]any{"type": "subscribe", "channel": "session:*"})
 	readGlobalWSFrame(t, conn, "subscribed")
 
-	if cleanupErr := server.rollbackHostedSessionCreate(created.ID); cleanupErr != nil {
+	if cleanupErr := server.deleteSessionAndRoutes(created.ID); cleanupErr != nil {
 		t.Fatalf("delete session: %v", cleanupErr)
 	}
 
