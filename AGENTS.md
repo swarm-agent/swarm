@@ -2,7 +2,7 @@
 
 This is a public repository. Every change must be safe to review, publish, and ship.
 
-Swarm is being refocused on the essentials: an AI operating command center with reliable local app/daemon behavior, durable sessions, agents, tools, permissions, plans, and Flows. Container, managed-host, and remote execution options are being redesigned as later runner targets, likely Flow-driven. Do not preserve or expand obsolete runner architecture unless the user explicitly asks for that migration work.
+Swarm is being refocused on the essentials: an AI operating command center with reliable local app/daemon behavior, durable sessions, agents, tools, permissions, plans, and Flows. Non-local execution options are future runner targets, likely Flow-driven; retired runner architecture is not a product contract.
 
 If this file conflicts with convenience, this file wins. If this file conflicts with checked-in code or tests about current behavior, verify against code/tests and fix this file rather than guessing.
 
@@ -23,9 +23,9 @@ If this file conflicts with convenience, this file wins. If this file conflicts 
 
 - Current priority: make the core Swarm command center work properly before expanding runtime planes.
 - Essentials: local daemon/app, Desktop/TUI, V3 durable sessions/sync/realtime, agents, tools, permissions, plans, model preferences, workspace selection, and Flows.
-- Runner direction: containers, managed hosts, remote deploy, and other non-local execution should be treated as future/transitioning runner targets unless the user explicitly asks to work on them.
-- Do not add new feature behavior to legacy remote-deploy, managed-host, local-container, or route-mirroring paths as a shortcut.
-- When legacy runner/container/managed-host code appears, treat it as compatibility or migration debt. Keep fixes narrow and do not expand the architecture surface.
+- Runner direction: containers and other non-local execution are future runner targets unless the user explicitly asks to work on them.
+- Do not add new feature behavior to retired runner or route-mirroring paths as a shortcut.
+- When retired runner code appears, remove it in the scoped migration rather than restoring public contracts or compatibility paths.
 - Do not rename current product language to `master` in new docs or UI. Use `primary`, `self`, `host`, `runner`, or the exact existing code term required for compatibility.
 
 ## 2. Task Execution Policy
@@ -80,8 +80,8 @@ If this file conflicts with convenience, this file wins. If this file conflicts 
 ### Flows and Runners
 
 - Flows are the intended scheduling/orchestration surface. Keep Flow behavior explicit, durable, and target-aware.
-- For now, avoid expanding container/managed-host/remote execution behavior. Treat those as future runner targets, not the core product path.
-- Do not route Flow or session work through legacy remote-deploy paths as a shortcut.
+- For now, avoid expanding non-local execution behavior. Treat it as a future runner concern, not the core product path.
+- Do not route Flow or session work through retired runner paths.
 - If a change must touch transitional runner code, preserve clear ownership boundaries and fail when required route/workspace/identity metadata is absent.
 
 ### Paths and Storage

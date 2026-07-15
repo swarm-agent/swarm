@@ -9,30 +9,16 @@ RUNTIME="docker"
 IMAGE_NAME=""
 SKIP_IMAGE_CLEANUP=0
 FORBIDDEN_TOKENS=()
-REMOTE_ARGS=()
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/check-container-publish.sh [options] -- [remote deploy harness args...]
+Usage: ./scripts/check-container-publish.sh [options]
 
-Mandatory pre-GitHub gate for remote deploy container changes:
+Mandatory pre-GitHub gate for container image changes:
   1. run launch-readiness + precommit + CVE scans
   2. verify .dockerignore excludes local-only build context paths
   3. build the base + app container images through scripts/rebuild-container.sh --image-only
   4. inspect the built image for required runtime files, trust labels, and forbidden local-only paths
-  5. run the checked-in remote deploy E2E harness with routed proof and teardown
-
-Examples:
-  ./scripts/check-container-publish.sh --runtime docker -- \
-    --ssh-target my-lan-host \
-    --transport-mode lan \
-    --remote-advertise-host 10.0.0.44
-
-  ./scripts/check-container-publish.sh --runtime docker -- \
-    --ssh-target my-tailnet-host \
-    --transport-mode tailscale \
-    --tailscale-auth-mode key \
-    --tailscale-auth-key-env SWARM_TS_AUTHKEY
 
 Options:
   --runtime <docker|podman>   Container runtime used for image build/inspection. Default: docker
@@ -41,10 +27,6 @@ Options:
   --skip-image-cleanup        Leave the temporary inspection image behind after the script exits
   -h, --help                  Show this help text
 
-Notes:
-  - Pass the checked-in remote deploy harness arguments after `--`.
-  - Raw secrets must come from env-name flags consumed by the harness. Do not place real secrets on the command line.
-  - This gate rejects `--no-wait` and `--teardown-only` because they do not prove the full end-to-end path.
 EOF
 }
 
@@ -63,18 +45,6 @@ log_step() {
 die() {
   printf '[container-publish] FAIL: %s\n' "$*" >&2
   exit 1
-}
-
-has_arg() {
-  local needle="${1:-}"
-  shift || true
-  local value
-  for value in "$@"; do
-    if [[ "${value}" == "${needle}" ]]; then
-      return 0
-    fi
-  done
-  return 1
 }
 
 while [[ $# -gt 0 ]]; do
@@ -96,11 +66,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-image-cleanup)
       SKIP_IMAGE_CLEANUP=1
-      ;;
-    --)
-      shift
-      REMOTE_ARGS=("$@")
-      break
       ;;
     -h|--help)
       usage
@@ -144,28 +109,6 @@ require_dockerignore_line() {
   local expected="${1:-}"
   if ! rg -qxF -- "${expected}" "${ROOT_DIR}/.dockerignore"; then
     die ".dockerignore is missing required entry: ${expected}"
-  fi
-}
-
-prepare_remote_args() {
-  if (( ${#REMOTE_ARGS[@]} == 0 )); then
-    die "missing remote deploy harness arguments after --"
-  fi
-  has_arg "--ssh-target" "${REMOTE_ARGS[@]}" || die "remote deploy harness args must include --ssh-target"
-  if has_arg "--no-wait" "${REMOTE_ARGS[@]}"; then
-    die "--no-wait is not allowed in the publish gate"
-  fi
-  if has_arg "--teardown-only" "${REMOTE_ARGS[@]}"; then
-    die "--teardown-only is not allowed in the publish gate"
-  fi
-  if ! has_arg "--prove-routed-ai" "${REMOTE_ARGS[@]}"; then
-    REMOTE_ARGS+=(--prove-routed-ai)
-  fi
-  if ! has_arg "--teardown" "${REMOTE_ARGS[@]}"; then
-    REMOTE_ARGS+=(--teardown)
-  fi
-  if ! has_arg "--remote-runtime" "${REMOTE_ARGS[@]}"; then
-    REMOTE_ARGS+=(--remote-runtime "${RUNTIME}")
   fi
 }
 
@@ -319,16 +262,9 @@ fi
 '
 }
 
-run_remote_e2e() {
-  log_step "running checked-in remote deploy E2E harness"
-  bash "${ROOT_DIR}/tests/swarmd/remote_deploy_e2e.sh" "${REMOTE_ARGS[@]}"
-}
-
-prepare_remote_args
 run_launch_readiness
 check_build_context
 build_image
 inspect_image
-run_remote_e2e
 
 log_step "PASS"

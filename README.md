@@ -151,7 +151,7 @@ Swarm is split into a launcher, a terminal UI, a daemon, and a web frontend:
 
 Swarm is designed for local use by default. Normal desktop/backend traffic should stay bound to `127.0.0.1`.
 
-For access from another device, prefer an SSH tunnel or a private overlay network such as Tailscale. Direct private-LAN browser access may show browser security warnings and may be rejected by desktop auth until a safer LAN pairing flow exists.
+For access from another device, prefer an SSH tunnel or a private overlay network such as Tailscale. Direct private-LAN browser access may show browser security warnings and may be rejected by the local-first desktop auth path.
 
 Example SSH tunnel for the desktop port:
 
@@ -174,12 +174,10 @@ Linux defaults:
 - `/usr/local/bin` for launchers.
 - `/usr/local/share/swarm/{bin,libexec,lib,share}` for runtime files.
 - `/etc/swarmd` for daemon configuration.
-- `/var/lib/swarmd` for daemon data, databases, secrets, generated artifacts, reports, worktrees, and remote-deploy session data.
+- `/var/lib/swarmd` for daemon data, databases, secrets, generated artifacts, reports, and worktrees.
 - `/var/cache/swarmd` for daemon caches.
 - `/run/swarmd` for volatile runtime files, sockets, locks, and PID files.
 - `/var/log/swarmd` for logs and diagnostic artifacts.
-
-Remote deploy and container sessions use the same split-root model. Remote deploy session data lives under `/var/lib/swarmd/remote-deploy/<session>`, configuration under `/etc/swarmd/remote-deploy/<session>`, cache under `/var/cache/swarmd/remote-deploy/<session>`, runtime files under `/run/swarmd/remote-deploy/<session>`, and logs under `/var/log/swarmd/remote-deploy/<session>`.
 
 macOS support is not yet the primary installer target, but the storage contract is prepared for system-level locations: `/Library/Application Support/Swarm/swarmd` for data, `/Library/Application Support/Swarm/swarmd/config` for configuration, `/Library/Caches/Swarm/swarmd`, `/var/run/swarmd`, and `/Library/Logs/Swarm/swarmd`. Future macOS installer work should provision those system roots rather than user `~/Library` locations.
 

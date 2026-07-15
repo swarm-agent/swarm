@@ -71,8 +71,9 @@ nm -D swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so | awk '/ T fff_/ {prin
 
 ### 4. Review packaging references
 
-Current repo-specific place that explicitly packages the daemon-side library:
-- `scripts/rebuild-container-remote.sh`
+Current repo-specific places that explicitly package the daemon-side library:
+- `scripts/rebuild-container.sh`
+- `scripts/build-container-artifact.sh`
 
 ## Notes
 
