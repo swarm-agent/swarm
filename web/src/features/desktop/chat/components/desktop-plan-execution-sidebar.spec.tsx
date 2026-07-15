@@ -18,6 +18,8 @@ import type { DesktopPlanExecutionView } from "../../state/desktop-v3-cache-sele
 
 type HostElement = ReactElement<
   {
+    "aria-label"?: string;
+    "aria-pressed"?: boolean;
     children?: ReactNode;
     disabled?: boolean;
     onClick?: (event?: unknown) => void;
@@ -281,7 +283,7 @@ function view(
   };
 }
 
-test("plan sidebar renders supplied session content below Actions", () => {
+test("plan sidebar renders a flat sectioned layout with session content below Actions", () => {
   const html = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
       view={view()}
@@ -290,17 +292,27 @@ test("plan sidebar renders supplied session content below Actions", () => {
     />,
   );
 
+  assert.match(html, /data-plan-section="checkpoint"/);
+  assert.match(html, /data-plan-section="actions"/);
+  assert.match(html, /data-plan-section="session"/);
+  assert.doesNotMatch(html, /shadow-\[0_12px_34px/);
   assert.ok(html.indexOf("Actions") < html.indexOf("Scoped Git changes"));
 });
 
-test("checkpoint sidebar projects objective, task checklist, criteria, notes, and plain tasks from plan state", () => {
+test("checkpoint sidebar shows four full tasks before an expandable remainder", () => {
   const base = view();
+  const longTask =
+    "Render the complete task text even when it is long enough that the old sidebar would have truncated it";
   base.activeCheckpoint = {
     ...base.activeCheckpoint!,
-    objective: "Ship the durable task projection",
-    tasks: ["[x] Persist task changes", "[ ] Render sidebar state", "Plain task"],
-    acceptanceCriteria: ["Tasks survive reconnect"],
-    notes: "Do not add a second task store.",
+    tasks: [
+      "[x] Persist task changes",
+      "[ ] Render sidebar state",
+      "Keep the layout compact",
+      longTask,
+      "Reveal the fifth task",
+      "Reveal the sixth task",
+    ],
   };
   base.plan.document.checkpoints = [base.activeCheckpoint];
 
@@ -312,23 +324,23 @@ test("checkpoint sidebar projects objective, task checklist, criteria, notes, an
     />,
   );
 
-  assert.match(markup, /Objective/);
-  assert.match(markup, /Ship the durable task projection/);
   assert.match(markup, /Tasks/);
   assert.match(markup, /Persist task changes/);
   assert.match(markup, /Render sidebar state/);
-  assert.match(markup, /Plain task/);
-  assert.match(markup, /Acceptance criteria/);
-  assert.match(markup, /Tasks survive reconnect/);
-  assert.match(markup, /Notes/);
-  assert.match(markup, /Do not add a second task store/);
+  assert.match(markup, new RegExp(longTask));
+  assert.match(markup, /data-plan-task-expansion=""/);
+  assert.match(markup, /<summary[^>]*>.*Show 2 more.*<\/summary>/);
+  assert.match(markup, /Reveal the fifth task/);
+  assert.match(markup, /Reveal the sixth task/);
   assert.match(markup, /checked=""/);
   assert.match(markup, /type="checkbox"/);
+  assert.match(markup, /break-words \[overflow-wrap:anywhere\]/);
   assert.doesNotMatch(markup, /\[x\] Persist task changes/);
   assert.doesNotMatch(markup, /\[ \] Render sidebar state/);
+  assert.doesNotMatch(markup, /more in full plan/);
 });
 
-test("automatic checkpointed mode sidebar actions card explains continuation and exposes backend policy toggle", () => {
+test("automatic checkpointed mode sidebar actions section explains continuation and exposes backend policy toggle", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
       view={view()}
@@ -339,6 +351,8 @@ test("automatic checkpointed mode sidebar actions card explains continuation and
 
   assert.match(markup, /Automatic mode on/);
   assert.match(markup, /Backend policy is automatic/);
+  assert.match(markup, /data-plan-system-message=""/);
+  assert.doesNotMatch(markup, /border-l-2/);
   assert.match(markup, /Switch to checkpoint-by-checkpoint/);
   assert.match(markup, /next checkpoint completion pauses for review/);
   assert.match(markup, /Archive plan/);
@@ -358,6 +372,116 @@ test("automatic checkpointed mode sidebar actions card explains continuation and
   assert.doesNotMatch(markup, /Inherit global default/);
   assert.doesNotMatch(markup, /Auto-add only/);
   assert.doesNotMatch(markup, /role="switch"/);
+});
+
+test("plan header removes the temporary checkpoint design iteration counter", () => {
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar view={view()} onAction={() => undefined} />,
+  );
+
+  assert.doesNotMatch(markup, /Preview current checkpoint design/);
+  assert.doesNotMatch(markup, /aria-label="Current checkpoint design"/);
+  assert.doesNotMatch(markup, /aria-pressed=/);
+});
+
+test("the selected console checkpoint balances the status and Progress spacing", () => {
+  const base = view();
+  const nextTitle =
+    "Add five selectable current-checkpoint row designs with enough detail to wrap cleanly at sidebar width";
+  base.plan.document.checkpoints.push({
+    ...base.plan.document.checkpoints[0],
+    id: "followup-3",
+    title: nextTitle,
+    status: "pending",
+    attemptId: "",
+    runId: "",
+    sessionId: "",
+    startedAt: 0,
+  });
+
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar
+      view={base}
+      onAction={() => undefined}
+      onEditPlan={() => undefined}
+    />,
+  );
+  const nextUpIndex = markup.indexOf("data-plan-next-up");
+  const nextCheckpointIndex = markup.indexOf("data-plan-next-checkpoint");
+  const nextIdIndex = markup.indexOf("followup-3", nextCheckpointIndex);
+  const nextTitleIndex = markup.indexOf(nextTitle, nextCheckpointIndex);
+
+  assert.doesNotMatch(markup, /data-plan-current-checkpoint-design/);
+  assert.match(markup, /data-plan-status-treatment="plain-text"/);
+  assert.match(markup, /data-plan-checkpoint-treatment="console-block"/);
+  assert.match(
+    markup,
+    /class="pt-3" data-plan-checkpoint-box-wrapper=""><h3 class="min-w-0 line-clamp-2[^\"]*bg-\[var\(--app-surface-subtle\)\] px-2\.5 py-2 font-mono/,
+  );
+  assert.match(markup, /class="mt-3" data-plan-progress=""/);
+  assert.match(markup, /data-plan-next-checkpoint=""/);
+  assert.match(markup, /break-all font-mono/);
+  assert.match(markup, /line-clamp-2 break-words/);
+  assert.ok(nextUpIndex >= 0, "expected a distinct Next up section");
+  assert.ok(nextCheckpointIndex > nextUpIndex, "expected the next checkpoint beneath its label");
+  assert.ok(nextIdIndex > nextCheckpointIndex, "expected the next checkpoint id");
+  assert.ok(nextTitleIndex > nextIdIndex, "expected the next title beneath its id");
+  assert.doesNotMatch(markup, /mt-1 truncate text-\[var\(--app-text-muted\)\]/);
+});
+
+test("the status row stays above the fixed console checkpoint", () => {
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar view={view()} onAction={() => undefined} />,
+  );
+  const labelIndex = markup.indexOf("data-plan-current-checkpoint-label");
+  const statusIndex = markup.indexOf("data-plan-status");
+  const titleIndex = markup.indexOf("data-plan-checkpoint-title");
+
+  assert.match(markup, /data-plan-current-checkpoint-layout="row"/);
+  assert.match(markup, /data-plan-current-checkpoint-row=""/);
+  assert.match(markup, /flex min-w-0 items-center justify-between gap-3/);
+  assert.match(markup, /data-plan-checkpoint-treatment="console-block"/);
+  assert.match(
+    markup,
+    /data-plan-current-checkpoint-row=""><div[^>]*>Current checkpoint<\/div><span[^>]*data-plan-status-treatment="plain-text"[^>]*>.*?<\/span><\/div><div class="pt-3" data-plan-checkpoint-box-wrapper=""><h3/,
+  );
+  assert.ok(labelIndex >= 0, "expected the left checkpoint label");
+  assert.ok(statusIndex > labelIndex, "expected status after the left label");
+  assert.ok(titleIndex > statusIndex, "expected checkpoint title beneath the row");
+  assert.match(markup, /Current checkpoint/i);
+  assert.match(markup, /In Progress/);
+  assert.match(markup, /Build UI/);
+});
+
+test("active plan status is plain text without a left badge", () => {
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar view={view()} onAction={() => undefined} />,
+  );
+  const status = markup.match(/<span data-plan-status="" class="([^"]+)"/);
+  assert.ok(status, "expected plan status indicator");
+  assert.doesNotMatch(status[1], /before:/);
+  assert.doesNotMatch(status[1], /rounded-full|rounded-md|rounded-lg/);
+  assert.doesNotMatch(status[1], /bg-\[var\(--app-primary-soft\)\]/);
+});
+
+test("active checkpoint title wraps for two lines before truncating", () => {
+  const base = view();
+  const longTitle =
+    "Implement a long active checkpoint title that needs a second compact line before the sidebar truncates it";
+  base.activeCheckpoint = { ...base.activeCheckpoint!, title: longTitle };
+  base.plan.document.checkpoints = [base.activeCheckpoint];
+
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar view={base} onAction={() => undefined} />,
+  );
+  const title = markup.match(
+    /<h3[^>]*class="([^"]+)"[^>]*data-plan-checkpoint-title=""[^>]*>/,
+  );
+  assert.ok(title, "expected active checkpoint title");
+  assert.match(title[1], /line-clamp-2/);
+  assert.match(title[1], /break-words/);
+  assert.doesNotMatch(title[1], /(?:^|\s)truncate(?:\s|$)/);
+  assert.match(markup, new RegExp(longTitle));
 });
 
 test("accepted plan sidebar restores the original execution view without AI helpers", () => {
@@ -652,6 +776,8 @@ test("final review renders the terminal recommendation", () => {
   assert.match(markup, /Recommendation/);
   assert.match(markup, /Ship — Accept And Archive/);
   assert.match(markup, /Focused lifecycle coverage passes/);
+  assert.match(markup, /data-plan-recommendation=""/);
+  assert.match(markup, /border border-\[var\(--app-primary-border\)\]/);
 });
 
 test("automatic mode toggle dispatches checkpointed policy action", () => {

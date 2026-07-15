@@ -85,23 +85,20 @@ function statusTone(status: string, active = false): Tone {
   return "muted";
 }
 
-function toneBadgeClass(tone: Tone): string {
+function toneStatusClass(tone: Tone): string {
   switch (tone) {
     case "success":
-      return "border-[var(--app-success-border)] bg-[var(--app-success-bg)] text-[var(--app-success)]";
+      return "text-[var(--app-success)]";
     case "warning":
-      return "border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] text-[var(--app-warning-text)]";
+      return "text-[var(--app-warning-text)]";
     case "danger":
-      return "border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger)]";
+      return "text-[var(--app-danger)]";
     case "primary":
-      return "border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]";
+      return "text-[var(--app-primary)]";
     default:
-      return "border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]";
+      return "text-[var(--app-text-muted)]";
   }
 }
-
-const waitingReviewBadgeClass =
-  "rounded-md border border-[var(--app-border)] bg-[linear-gradient(135deg,var(--app-warning-bg),var(--app-primary-soft))] px-2 py-0.5 text-[9px] font-semibold uppercase leading-4 tracking-[0.06em] text-[var(--app-text)] shadow-[0_0_18px_color-mix(in_oklab,var(--app-warning-text)_12%,transparent)]";
 
 function actionBusyKey(
   action: DesktopPlanExecutionSidebarAction,
@@ -162,62 +159,168 @@ function CheckpointDetails({
     return null;
   }
 
+  const primaryTasks = tasks.slice(0, 4);
+  const additionalTasks = tasks.slice(4);
+  const renderTask = (task: (typeof tasks)[number], index: number) => (
+    <li
+      key={`${index}:${task.text}`}
+      className={cn(
+        "flex min-w-0 items-start gap-2 leading-4",
+        task.active && "font-medium text-[var(--app-primary)]",
+      )}
+    >
+      {task.checked === null ? (
+        <span
+          aria-hidden="true"
+          className="mt-[7px] size-1 shrink-0 rounded-full bg-[var(--app-text-subtle)]"
+        />
+      ) : (
+        <input
+          aria-label={task.checked ? "Completed task" : "Incomplete task"}
+          checked={task.checked}
+          readOnly
+          tabIndex={-1}
+          type="checkbox"
+          className="mt-0.5 size-3 shrink-0 accent-[var(--app-primary)]"
+        />
+      )}
+      <span className="min-w-0 break-words [overflow-wrap:anywhere]">
+        {task.text}
+      </span>
+    </li>
+  );
+
   return (
-    <div className="mt-3.5 grid gap-3 border-t border-[var(--app-border)] pt-3 text-xs leading-5 text-[var(--app-text-muted)]">
-      {tasks.length > 0 ? (
-        <section>
-          <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--app-text-subtle)]">
-            Tasks
-          </div>
+    <section className="mt-3 border-t border-[var(--app-border)] pt-3 text-xs text-[var(--app-text-muted)]">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">
+        Tasks
+      </div>
+      <ul className="mt-1.5 grid gap-1.5">
+        {primaryTasks.map(renderTask)}
+      </ul>
+      {additionalTasks.length > 0 ? (
+        <details className="group mt-1.5" data-plan-task-expansion>
+          <summary className="flex cursor-pointer list-none items-center gap-1 py-1 text-[10px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)] [&::-webkit-details-marker]:hidden">
+            <span
+              aria-hidden="true"
+              className="text-[11px] transition-transform group-open:rotate-180"
+            >
+              ↓
+            </span>
+            Show {additionalTasks.length} more
+          </summary>
           <ul className="mt-1 grid gap-1.5">
-            {tasks.map((task, index) => (
-              <li key={`${index}:${task.text}`} className={cn("flex min-w-0 items-start gap-2", task.active && "font-medium text-[var(--app-primary)]")}>
-                {task.checked === null ? (
-                  <span aria-hidden="true" className="mt-0.5 text-[var(--app-text-subtle)]">
-                    •
-                  </span>
-                ) : (
-                  <input
-                    aria-label={task.checked ? "Completed task" : "Incomplete task"}
-                    checked={task.checked}
-                    readOnly
-                    tabIndex={-1}
-                    type="checkbox"
-                    className="mt-1 size-3 shrink-0 accent-[var(--app-primary)]"
-                  />
-                )}
-                <span className="min-w-0 break-words [overflow-wrap:anywhere]">
-                  {task.text}
-                </span>
-              </li>
-            ))}
+            {additionalTasks.map((task, index) =>
+              renderTask(task, index + primaryTasks.length),
+            )}
           </ul>
-        </section>
+        </details>
       ) : null}
-    </div>
+    </section>
   );
 }
 
-function StatusBadge({ label, tone }: { label: string; tone: Tone }) {
-  const isWaitingReview = label.trim().toLowerCase() === "waiting review";
+function StatusIndicator({
+  label,
+  tone,
+  className,
+  treatment,
+}: {
+  label: string;
+  tone: Tone;
+  className?: string;
+  treatment?: string;
+}) {
   return (
     <span
+      data-plan-status
       className={cn(
-        "inline-flex max-w-[132px] shrink-0 items-center",
-        isWaitingReview
-          ? waitingReviewBadgeClass
-          : cn(
-              "rounded-md border px-1.5 py-px text-[9px] font-semibold uppercase leading-4 tracking-[0.06em]",
-              toneBadgeClass(tone),
-            ),
+        "inline-flex max-w-[132px] shrink-0 items-center text-[10px] font-semibold leading-none",
+        toneStatusClass(tone),
+        className,
       )}
+      data-plan-status-treatment={treatment}
     >
       <span className="truncate">{label}</span>
     </span>
   );
 }
 
-function ActiveCheckpointCard({
+function CurrentCheckpointTitle({
+  activeTitle,
+  checkpointId,
+  title,
+}: {
+  activeTitle: string;
+  checkpointId: string;
+  title: string;
+}) {
+  return (
+    <div className="pt-3" data-plan-checkpoint-box-wrapper>
+      <h3
+        className={cn(
+          "min-w-0 line-clamp-2 break-words text-sm font-semibold leading-snug text-[var(--app-text)] [overflow-wrap:anywhere]",
+          "bg-[var(--app-surface-subtle)] px-2.5 py-2 font-mono",
+        )}
+        title={activeTitle}
+        data-plan-checkpoint-title
+        data-plan-checkpoint-treatment="console-block"
+      >
+        <span className="mr-1.5 inline text-xs font-bold text-[var(--app-primary)] before:content-['>_']">
+          {checkpointId}
+        </span>
+        <span className="inline text-[13px]">{title}</span>
+      </h3>
+    </div>
+  );
+}
+
+function CurrentCheckpointRow({
+  activeTitle,
+  checkpointId,
+  title,
+  status,
+  tone,
+}: {
+  activeTitle: string;
+  checkpointId: string;
+  title: string;
+  status: string;
+  tone: Tone;
+}) {
+  return (
+    <div
+      aria-live="polite"
+      data-plan-current-checkpoint-layout="row"
+      className="min-w-0"
+    >
+      <div
+        className="flex min-w-0 items-center justify-between gap-3"
+        data-plan-current-checkpoint-row
+      >
+        <div
+          className="min-w-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--app-text-muted)]"
+          data-plan-current-checkpoint-label
+        >
+          Current checkpoint
+        </div>
+        <StatusIndicator
+          label={status}
+          tone={tone}
+          className="uppercase tracking-[0.1em]"
+          treatment="plain-text"
+        />
+      </div>
+      <CurrentCheckpointTitle
+        activeTitle={activeTitle}
+        checkpointId={checkpointId}
+        title={title}
+      />
+    </div>
+  );
+}
+
+function ActiveCheckpointSection({
   view,
   checkpoints,
   completedCount,
@@ -257,31 +360,23 @@ function ActiveCheckpointCard({
   );
 
   return (
-    <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.16)]">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
-          Active checkpoint
-        </div>
-        <StatusBadge label={statusLabel(view, checkpoint)} tone={tone} />
-      </div>
-      <h3
-        className="mt-1 min-w-0 break-words text-sm font-semibold leading-snug text-[var(--app-text)] [overflow-wrap:anywhere]"
-        title={activeTitle}
-      >
-        <span className="font-mono text-xs font-semibold text-[var(--app-primary)]">
-          {checkpointId}
-        </span>{" "}
-        {title}
-      </h3>
+    <section className="min-w-0 border-b border-[var(--app-border)] pb-4" data-plan-section="checkpoint">
+      <CurrentCheckpointRow
+        activeTitle={activeTitle}
+        checkpointId={checkpointId}
+        title={title}
+        status={statusLabel(view, checkpoint)}
+        tone={tone}
+      />
 
-      <div className="mt-3.5">
-        <div className="mb-1.5 flex items-center justify-between text-[11px] text-[var(--app-text-muted)]">
+      <div className="mt-3" data-plan-progress>
+        <div className="mb-1 flex items-center justify-between text-[10px] text-[var(--app-text-subtle)]">
           <span>Progress</span>
           <span className="font-medium text-[var(--app-text-muted)]">
             {completedCount} / {totalCount}
           </span>
         </div>
-        <div className="h-1.5 overflow-hidden rounded-full bg-[var(--app-surface-subtle)]">
+        <div className="h-1 overflow-hidden rounded-full bg-[var(--app-surface-subtle)]">
           <div
             className="h-full rounded-full bg-[var(--app-primary)] opacity-80"
             style={{ width: `${progressValue}%` }}
@@ -289,22 +384,34 @@ function ActiveCheckpointCard({
         </div>
       </div>
 
-      <div className="mt-3.5 min-w-0 border-t border-[var(--app-border)] px-2 pt-2.5 text-xs">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--app-text-subtle)]">
+      <div
+        className="mt-4 min-w-0 border-t border-[var(--app-border)] pt-3.5 text-xs"
+        data-plan-next-up
+      >
+        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">
           Next up
         </div>
         {nextCheckpoint ? (
           <div
-            className="mt-0.5 break-words text-[var(--app-text-muted)]"
+            className="mt-2 flex min-w-0 items-start gap-2.5 border-l border-[var(--app-primary-border)] pl-2.5"
+            data-plan-next-checkpoint
             title={`${displayCheckpointId(nextCheckpoint.id, nextIndex)} ${nextCheckpoint.title || "Untitled checkpoint"}`}
           >
-            <span className="font-mono font-semibold text-[var(--app-text)]">
-              {displayCheckpointId(nextCheckpoint.id, nextIndex)}
-            </span>{" "}
-            {nextCheckpoint.title || "Untitled checkpoint"}
+            <span
+              aria-hidden="true"
+              className="mt-1.5 size-1 shrink-0 rounded-full bg-[var(--app-primary)]"
+            />
+            <div className="min-w-0">
+              <div className="break-all font-mono text-[10px] font-semibold leading-4 text-[var(--app-primary)]">
+                {displayCheckpointId(nextCheckpoint.id, nextIndex)}
+              </div>
+              <div className="mt-0.5 line-clamp-2 break-words leading-4 text-[var(--app-text-muted)] [overflow-wrap:anywhere]">
+                {nextCheckpoint.title || "Untitled checkpoint"}
+              </div>
+            </div>
           </div>
         ) : (
-          <div className="mt-0.5 text-[var(--app-text-muted)]">
+          <div className="mt-1.5 text-[var(--app-text-muted)]">
             No remaining checkpoint
           </div>
         )}
@@ -318,7 +425,7 @@ function ActiveCheckpointCard({
         variant="outline"
         onClick={onOpenPlan}
         disabled={!onOpenPlan}
-        className="mt-3 w-full rounded-lg"
+        className="mt-3 h-8 w-full rounded-md text-xs"
       >
         Open full plan
       </Button>
@@ -330,7 +437,7 @@ function ReviewRecommendation({ checkpoint }: { checkpoint?: DesktopSessionPlanC
   const recommendation = checkpoint?.recommendation;
   if (!recommendation || !recommendation.decision || !recommendation.action || !recommendation.reason) return null;
   return (
-    <div className="mt-3 rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-3 py-2.5 text-xs leading-5 text-[var(--app-text-muted)]">
+    <div className="mt-3 rounded-md border border-[var(--app-primary-border)] px-2.5 py-2 text-[11px] leading-4 text-[var(--app-text-muted)]" data-plan-recommendation>
       <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--app-text-subtle)]">Recommendation</div>
       <div className="mt-1 font-medium text-[var(--app-text)]">{humanize(recommendation.decision)} — {humanize(recommendation.action)}</div>
       <p className="mt-1">{recommendation.reason}</p>
@@ -339,7 +446,7 @@ function ReviewRecommendation({ checkpoint }: { checkpoint?: DesktopSessionPlanC
   );
 }
 
-function ActionsCard({
+function ActionsSection({
   view,
   busyAction,
   canStop,
@@ -394,15 +501,15 @@ function ActionsCard({
 
   if (view.blocked) {
     return (
-      <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.14)]">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+      <section className="min-w-0 pt-0.5" data-plan-section="actions">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
           Actions
         </div>
-        <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2.5">
-          <div className="text-sm font-semibold text-[var(--app-text)]">
+        <div className="mt-2 border-y border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-2.5 py-2" data-plan-system-message>
+          <div className="text-xs font-semibold text-[var(--app-text)]">
             Blocked checkpoint
           </div>
-          <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
+          <p className="mt-0.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
             Resolve the blocker without restarting this checkpoint. If another
             checkpoint remains, you can continue directly to it.
           </p>
@@ -460,15 +567,15 @@ function ActionsCard({
     !view.completed
   ) {
     return (
-      <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.14)]">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+      <section className="min-w-0 pt-0.5" data-plan-section="actions">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
           Actions
         </div>
-        <div className="mt-3 rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-3 py-2.5">
-          <div className="text-sm font-semibold text-[var(--app-text)]">
+        <div className="mt-2 border-y border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-2.5 py-2" data-plan-system-message>
+          <div className="text-xs font-semibold text-[var(--app-text)]">
             Automatic mode on
           </div>
-          <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
+          <p className="mt-0.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
             Backend policy is automatic. The next completed checkpoint starts the
             following checkpoint unless it stops for review, a blocker, or a failure.
           </p>
@@ -513,15 +620,15 @@ function ActionsCard({
   }
 
   return (
-    <section className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 shadow-[0_12px_34px_rgba(0,0,0,0.14)]">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+    <section className="min-w-0 pt-0.5" data-plan-section="actions">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
         Actions
       </div>
-      <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5">
-        <div className="text-sm font-medium text-[var(--app-text)]">
+      <div className="mt-2 border-y border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2.5 py-2" data-plan-system-message>
+        <div className="text-xs font-medium text-[var(--app-text)]">
           {reviewModeLabel}
         </div>
-        <p className="mt-0.5 text-xs leading-5 text-[var(--app-text-muted)]">
+        <p className="mt-0.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
           {reviewModeHelp}
         </p>
       </div>
@@ -626,15 +733,17 @@ export const DesktopPlanExecutionSidebar = memo(
       <aside
         className={embedded
           ? "min-h-0 min-w-0 w-full overflow-visible bg-[var(--app-surface)]"
-          : "hidden min-h-0 min-w-0 w-[360px] max-w-[360px] overflow-hidden border-l border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-4 xl:flex xl:flex-col xl:justify-center"}
+          : "hidden min-h-0 min-w-0 w-[360px] max-w-[360px] overflow-hidden border-l border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-4 xl:flex xl:flex-col"}
         aria-label="Plan execution sidebar"
         data-testid="desktop-plan-execution-sidebar"
       >
-        <div className="grid min-w-0 max-w-full gap-3 overflow-hidden [&_*]:min-w-0">
+        <div className="grid min-w-0 max-w-full content-start gap-4 overflow-hidden [&_*]:min-w-0">
           {!embedded ? (
-            <div className="text-sm font-semibold text-[var(--app-text)]">Plan</div>
+            <header className="border-b border-[var(--app-border)] pb-3">
+              <div className="text-sm font-semibold text-[var(--app-text)]">Plan</div>
+            </header>
           ) : null}
-          <ActiveCheckpointCard
+          <ActiveCheckpointSection
             view={view}
             checkpoints={checkpoints}
             completedCount={completedCount}
@@ -642,14 +751,18 @@ export const DesktopPlanExecutionSidebar = memo(
             activeIndex={activeIndex}
             onOpenPlan={onEditPlan}
           />
-          <ActionsCard
+          <ActionsSection
             view={view}
             busyAction={busyAction}
             canStop={canStop}
             onAction={onAction}
             onEditPlan={onEditPlan}
           />
-          {belowActions}
+          {belowActions ? (
+            <div className="border-t border-[var(--app-border)] pt-4" data-plan-section="session">
+              {belowActions}
+            </div>
+          ) : null}
         </div>
       </aside>
     );
