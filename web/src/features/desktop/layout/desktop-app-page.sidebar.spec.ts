@@ -23,6 +23,22 @@ import {
   sidebarShouldRenderSelectionToolbar,
 } from './desktop-app-page'
 
+test('plan Git panel stays content-sized and scrolls only its file list when constrained', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const panelStart = source.indexOf('const planSidebarGitPanel =')
+  const panelEnd = source.indexOf('const sidebarContent =', panelStart)
+  const panelSource = source.slice(panelStart, panelEnd)
+
+  assert.ok(panelStart >= 0 && panelEnd > panelStart)
+  assert.match(panelSource, /desktop-plan-git-sidebar[^\n]*flex min-h-0 min-w-0 flex-col overflow-hidden/)
+  assert.doesNotMatch(panelSource, /desktop-plan-git-sidebar[^\n]*(?:h-full|flex-1)/)
+  assert.match(panelSource, /min-h-0 shrink overflow-hidden/)
+  assert.doesNotMatch(panelSource, /min-h-0 flex-1 overflow-hidden/)
+  assert.match(panelSource, /data-plan-git-file-list[^\n]*|overflow-y-auto[^\n]*data-plan-git-file-list/)
+  assert.match(panelSource, /shrink-0[^\n]*data-plan-git-commit|data-plan-git-commit[^\n]*shrink-0/)
+  assert.doesNotMatch(panelSource, /max-h-48/)
+})
+
 test('sidebar session focus clears selection immediately, including same-route clicks', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const handlerStart = source.indexOf('const handleSelectSession = useCallback')

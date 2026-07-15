@@ -1,4 +1,5 @@
 import { memo, type ReactNode } from "react";
+import { ChevronDown } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { Button } from "../../../../components/ui/button";
 import type { DesktopSessionPlanCheckpoint } from "../types/chat";
@@ -159,8 +160,8 @@ function CheckpointDetails({
     return null;
   }
 
-  const primaryTasks = tasks.slice(0, 4);
-  const additionalTasks = tasks.slice(4);
+  const primaryTasks = tasks.slice(0, 3);
+  const additionalTasks = tasks.slice(3);
   const renderTask = (task: (typeof tasks)[number], index: number) => (
     <li
       key={`${index}:${task.text}`}
@@ -195,27 +196,28 @@ function CheckpointDetails({
       <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">
         Tasks
       </div>
-      <ul className="mt-1.5 grid gap-1.5">
-        {primaryTasks.map(renderTask)}
-      </ul>
-      {additionalTasks.length > 0 ? (
-        <details className="group mt-1.5" data-plan-task-expansion>
-          <summary className="flex cursor-pointer list-none items-center gap-1 py-1 text-[10px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)] [&::-webkit-details-marker]:hidden">
-            <span
-              aria-hidden="true"
-              className="text-[11px] transition-transform group-open:rotate-180"
-            >
-              ↓
-            </span>
-            Show {additionalTasks.length} more
-          </summary>
-          <ul className="mt-1 grid gap-1.5">
-            {additionalTasks.map((task, index) =>
-              renderTask(task, index + primaryTasks.length),
-            )}
-          </ul>
-        </details>
-      ) : null}
+      <div className="mt-1.5" data-plan-task-list>
+        <ul className="grid gap-1.5">
+          {primaryTasks.map(renderTask)}
+        </ul>
+        {additionalTasks.length > 0 ? (
+          <details className="group mt-1.5" data-plan-task-expansion>
+            <summary className="flex cursor-pointer list-none items-center gap-1 py-1 text-[10px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)] [&::-webkit-details-marker]:hidden">
+              <ChevronDown
+                aria-hidden="true"
+                className="size-3 shrink-0 transition-transform group-open:rotate-180"
+                data-plan-task-chevron
+              />
+              Show {additionalTasks.length} more
+            </summary>
+            <ul className="mt-1 grid gap-1.5">
+              {additionalTasks.map((task, index) =>
+                renderTask(task, index + primaryTasks.length),
+              )}
+            </ul>
+          </details>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -259,7 +261,7 @@ function CurrentCheckpointTitle({
     <div className="pt-3" data-plan-checkpoint-box-wrapper>
       <h3
         className={cn(
-          "min-w-0 line-clamp-2 break-words text-sm font-semibold leading-snug text-[var(--app-text)] [overflow-wrap:anywhere]",
+          "min-w-0 line-clamp-3 break-words text-sm font-semibold leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]",
           "bg-[var(--app-surface-subtle)] px-2.5 py-2 font-mono",
         )}
         title={activeTitle}
@@ -737,29 +739,50 @@ export const DesktopPlanExecutionSidebar = memo(
         aria-label="Plan execution sidebar"
         data-testid="desktop-plan-execution-sidebar"
       >
-        <div className="grid min-w-0 max-w-full content-start gap-4 overflow-hidden [&_*]:min-w-0">
+        <div
+          className={cn(
+            "min-w-0 max-w-full gap-4 [&_*]:min-w-0",
+            embedded
+              ? "grid content-start overflow-visible"
+              : "flex min-h-0 flex-1 flex-col overflow-hidden",
+          )}
+        >
           {!embedded ? (
-            <header className="border-b border-[var(--app-border)] pb-3">
+            <header className="shrink-0 border-b border-[var(--app-border)] pb-3">
               <div className="text-sm font-semibold text-[var(--app-text)]">Plan</div>
             </header>
           ) : null}
-          <ActiveCheckpointSection
-            view={view}
-            checkpoints={checkpoints}
-            completedCount={completedCount}
-            totalCount={totalCount}
-            activeIndex={activeIndex}
-            onOpenPlan={onEditPlan}
-          />
-          <ActionsSection
-            view={view}
-            busyAction={busyAction}
-            canStop={canStop}
-            onAction={onAction}
-            onEditPlan={onEditPlan}
-          />
+          <div
+            className={cn(
+              "grid content-start gap-4",
+              !embedded && "shrink-0",
+            )}
+            data-plan-scroll-region
+          >
+            <ActiveCheckpointSection
+              view={view}
+              checkpoints={checkpoints}
+              completedCount={completedCount}
+              totalCount={totalCount}
+              activeIndex={activeIndex}
+              onOpenPlan={onEditPlan}
+            />
+            <ActionsSection
+              view={view}
+              busyAction={busyAction}
+              canStop={canStop}
+              onAction={onAction}
+              onEditPlan={onEditPlan}
+            />
+          </div>
           {belowActions ? (
-            <div className="border-t border-[var(--app-border)] pt-4" data-plan-section="session">
+            <div
+              className={cn(
+                "border-t border-[var(--app-border)] pt-4",
+                !embedded && "flex min-h-0 flex-col overflow-hidden",
+              )}
+              data-plan-section="session"
+            >
               {belowActions}
             </div>
           ) : null}

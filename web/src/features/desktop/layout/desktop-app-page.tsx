@@ -3789,19 +3789,21 @@ export function DesktopAppPage() {
   }, [])
 
   const planSidebarGitPanel = selectedGitSessionId && selectedGitWorkspacePath ? (
-    <section data-testid="desktop-plan-git-sidebar" className="min-w-0 overflow-hidden">
-      <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+    <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+      <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
         <GitBranch size={13} />
         <span className="min-w-0 flex-1 truncate">{gitSnapshot?.branch || 'Git changes'}</span>
         {gitSnapshot?.has_git ? <span>{gitSnapshot.dirty_count}</span> : null}
         <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => { void gitStatusQuery.refetch() }} aria-label="Refresh Git status" title="Refresh Git status"><RefreshCcw size={12} className={cn(gitStatusQuery.isFetching && 'animate-spin')} /></button>
       </div>
-      {gitRealtimeErrors[selectedGitWorkspacePath] || gitStatusQuery.error instanceof Error ? <div className="mt-2 text-xs text-[var(--app-warning)]">{gitRealtimeErrors[selectedGitWorkspacePath] || (gitStatusQuery.error as Error).message}</div>
-        : gitStatusQuery.isPending ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
-        : !gitSnapshot?.has_git ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">No Git repository for this session.</div>
-        : gitSnapshot.files.length === 0 ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div>
-        : <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-[var(--app-border)]">{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>}
-      {gitSnapshot?.has_git && gitSnapshot.files.length > 0 ? <button type="button" className="mt-3 w-full rounded-lg border border-[var(--app-border)] px-2 py-1.5 text-xs text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" onClick={() => { setGitCommitMessage(''); setGitCommitError(null); setGitCommitModal({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files }) }}>Commit all changes…</button> : null}
+      <div className="min-h-0 shrink overflow-hidden">
+        {gitRealtimeErrors[selectedGitWorkspacePath] || gitStatusQuery.error instanceof Error ? <div className="mt-2 text-xs text-[var(--app-warning)]">{gitRealtimeErrors[selectedGitWorkspacePath] || (gitStatusQuery.error as Error).message}</div>
+          : gitStatusQuery.isPending ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
+          : !gitSnapshot?.has_git ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">No Git repository for this session.</div>
+          : gitSnapshot.files.length === 0 ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div>
+          : <div className="mt-2 h-[calc(100%-0.5rem)] overflow-y-auto rounded-lg border border-[var(--app-border)] [scrollbar-gutter:stable]" data-plan-git-file-list>{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>}
+      </div>
+      {gitSnapshot?.has_git && gitSnapshot.files.length > 0 ? <button type="button" className="mt-3 w-full shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-1.5 text-xs text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" data-plan-git-commit onClick={() => { setGitCommitMessage(''); setGitCommitError(null); setGitCommitModal({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files }) }}>Commit all changes…</button> : null}
     </section>
   ) : null
 

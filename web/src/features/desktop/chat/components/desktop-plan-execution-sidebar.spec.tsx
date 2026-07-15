@@ -295,11 +295,21 @@ test("plan sidebar renders a flat sectioned layout with session content below Ac
   assert.match(html, /data-plan-section="checkpoint"/);
   assert.match(html, /data-plan-section="actions"/);
   assert.match(html, /data-plan-section="session"/);
+  assert.match(html, /data-plan-scroll-region=""/);
+  assert.match(
+    html,
+    /class="border-t[^\"]*flex min-h-0 flex-col overflow-hidden" data-plan-section="session"/,
+  );
+  assert.doesNotMatch(
+    html,
+    /class="border-t[^\"]*flex min-h-0 flex-1 flex-col overflow-hidden" data-plan-section="session"/,
+  );
+  assert.doesNotMatch(html, /max-h-\[40%\]/);
   assert.doesNotMatch(html, /shadow-\[0_12px_34px/);
   assert.ok(html.indexOf("Actions") < html.indexOf("Scoped Git changes"));
 });
 
-test("checkpoint sidebar shows four full tasks before an expandable remainder", () => {
+test("checkpoint sidebar shows three full tasks without scrolling before an expandable remainder", () => {
   const base = view();
   const longTask =
     "Render the complete task text even when it is long enough that the old sidebar would have truncated it";
@@ -328,8 +338,15 @@ test("checkpoint sidebar shows four full tasks before an expandable remainder", 
   assert.match(markup, /Persist task changes/);
   assert.match(markup, /Render sidebar state/);
   assert.match(markup, new RegExp(longTask));
+  assert.match(markup, /data-plan-task-list=""/);
+  assert.doesNotMatch(markup, /data-plan-task-list=""[^>]*(?:overflow-y-auto|max-h-)/);
   assert.match(markup, /data-plan-task-expansion=""/);
-  assert.match(markup, /<summary[^>]*>.*Show 2 more.*<\/summary>/);
+  assert.match(markup, /data-plan-task-chevron=""/);
+  assert.match(markup, /<summary[^>]*>.*Show 3 more.*<\/summary>/);
+  assert.ok(
+    markup.indexOf(longTask) > markup.indexOf("Show 3 more"),
+    "expected the fourth task only inside the collapsed expansion",
+  );
   assert.match(markup, /Reveal the fifth task/);
   assert.match(markup, /Reveal the sixth task/);
   assert.match(markup, /checked=""/);
@@ -416,7 +433,7 @@ test("the selected console checkpoint balances the status and Progress spacing",
   assert.match(markup, /data-plan-checkpoint-treatment="console-block"/);
   assert.match(
     markup,
-    /class="pt-3" data-plan-checkpoint-box-wrapper=""><h3 class="min-w-0 line-clamp-2[^\"]*bg-\[var\(--app-surface-subtle\)\] px-2\.5 py-2 font-mono/,
+    /class="pt-3" data-plan-checkpoint-box-wrapper=""><h3 class="min-w-0 line-clamp-3[^\"]*bg-\[var\(--app-surface-subtle\)\] px-2\.5 py-2 font-mono/,
   );
   assert.match(markup, /class="mt-3" data-plan-progress=""/);
   assert.match(markup, /data-plan-next-checkpoint=""/);
@@ -464,7 +481,7 @@ test("active plan status is plain text without a left badge", () => {
   assert.doesNotMatch(status[1], /bg-\[var\(--app-primary-soft\)\]/);
 });
 
-test("active checkpoint title wraps for two lines before truncating", () => {
+test("active checkpoint title shows three complete lines before truncating", () => {
   const base = view();
   const longTitle =
     "Implement a long active checkpoint title that needs a second compact line before the sidebar truncates it";
@@ -478,7 +495,9 @@ test("active checkpoint title wraps for two lines before truncating", () => {
     /<h3[^>]*class="([^"]+)"[^>]*data-plan-checkpoint-title=""[^>]*>/,
   );
   assert.ok(title, "expected active checkpoint title");
-  assert.match(title[1], /line-clamp-2/);
+  assert.match(title[1], /line-clamp-3/);
+  assert.match(title[1], /leading-5/);
+  assert.doesNotMatch(title[1], /leading-snug/);
   assert.match(title[1], /break-words/);
   assert.doesNotMatch(title[1], /(?:^|\s)truncate(?:\s|$)/);
   assert.match(markup, new RegExp(longTitle));
