@@ -63,15 +63,7 @@ type codexOAuthSession struct {
 	UpdatedAt      time.Time
 }
 
-type peerAuthContextKey string
-
-const peerAuthAuthorizedContextKey peerAuthContextKey = "peer-auth-authorized"
-
 const v3LivePatchDefaultEnabled = true
-
-type peerAuthContextValue struct {
-	SwarmID string
-}
 
 type Server struct {
 	auth                        *auth.Service
@@ -102,7 +94,6 @@ type Server struct {
 	uiSettings                  *uisettings.Service
 	todos                       *todo.Service
 	swarm                       swarmService
-	swarmNodes                  *pebblestore.SwarmNodeStore
 	update                      *update.Service
 	topology                    *topologyruntime.Service
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
@@ -129,7 +120,6 @@ type Server struct {
 	identityService           *identity.Service
 	identitySessions          *identity.SessionService
 	gitRealtime               *gitRealtimeManager
-	swarmTargetHealth         swarmTargetHealthCache
 	swarmStore                *pebblestore.SwarmStore
 }
 
@@ -157,8 +147,6 @@ type swarmService interface {
 	UpsertGroup(input swarmruntime.UpsertGroupInput) (swarmruntime.Group, error)
 	DeleteGroup(groupID string) error
 	SetCurrentGroup(groupID string, localSwarmID string) (swarmruntime.GroupState, error)
-	OutgoingPeerAuthToken(swarmID string) (string, bool, error)
-	ValidateIncomingPeerAuth(swarmID, rawToken string) (bool, error)
 	UpsertGroupMember(input swarmruntime.UpsertGroupMemberInput) (swarmruntime.GroupMember, error)
 	RemoveGroupMember(input swarmruntime.RemoveGroupMemberInput) error
 }
@@ -429,13 +417,6 @@ func (s *Server) swarmLocalNode() (pebblestore.SwarmLocalNodeRecord, bool, error
 		return pebblestore.SwarmLocalNodeRecord{}, false, nil
 	}
 	return s.swarmStore.GetLocalNode()
-}
-
-func (s *Server) SetSwarmNodeStore(store *pebblestore.SwarmNodeStore) {
-	if s == nil {
-		return
-	}
-	s.swarmNodes = store
 }
 
 func (s *Server) SetSwarmDesktopTargetSelectionStore(store *pebblestore.SwarmDesktopTargetSelectionStore) {
@@ -4003,25 +3984,6 @@ func extractAttachToken(r *http.Request) string {
 		return strings.TrimSpace(authz[7:])
 	}
 	return strings.TrimSpace(r.URL.Query().Get("token"))
-}
-
-func extractPeerAuth(r *http.Request) (string, string) {
-	if r == nil {
-		return "", ""
-	}
-	return strings.TrimSpace(r.Header.Get(peerAuthSwarmIDHeader)), strings.TrimSpace(r.Header.Get(peerAuthTokenHeader))
-}
-
-func authorizedPeerSwarmID(r *http.Request) (string, bool) {
-	if r == nil {
-		return "", false
-	}
-	value, ok := r.Context().Value(peerAuthAuthorizedContextKey).(peerAuthContextValue)
-	if !ok {
-		return "", false
-	}
-	swarmID := strings.TrimSpace(value.SwarmID)
-	return swarmID, swarmID != ""
 }
 
 func isAuthExemptRequest(r *http.Request) bool {

@@ -20,12 +20,12 @@ func TestMapTopologyRuntimeTargetKeepsIdentityWithoutBackendURL(t *testing.T) {
 	if !ok {
 		t.Fatal("expected runtime target without backend URL to map")
 	}
-	if target.SwarmID != "runtime-no-backend" || target.BackendURL != "" || target.HostSwarmID != "host-swarm" || target.DeploymentID != "host-swarm:container-1" || !target.Selectable {
+	if target.SwarmID != "runtime-no-backend" || target.BackendURL != "" || target.HostSwarmID != "host-swarm" || target.DeploymentID != "host-swarm:container-1" || target.Kind != "mirrored" || !target.Selectable {
 		t.Fatalf("unexpected target: %+v", target)
 	}
 }
 
-func TestSwarmTargetsTopologyRuntimeWithoutBackendURL(t *testing.T) {
+func TestSwarmTargetsLocalContainerRuntimeWithoutBackendURL(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm-targets-placement.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -34,41 +34,52 @@ func TestSwarmTargetsTopologyRuntimeWithoutBackendURL(t *testing.T) {
 
 	topologyStore := pebblestore.NewTopologyStore(store)
 	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, "account-1", pebblestore.TopologyRuntimeRecord{
-		SwarmID:        "managed-host",
+		SwarmID:        "local-host",
 		AccountScopeID: "account-1",
 		UserID:         "user-1",
-		Name:           "Managed Host",
-		Relationship:   "managed",
+		Name:           "Local Host",
+		Relationship:   "self",
 	}); err != nil {
-		t.Fatalf("upsert host topology runtime: %v", err)
+		t.Fatalf("upsert local host topology runtime: %v", err)
 	}
-	if err := pebblestore.UpsertTopologyHostContainerForAccount(topologyStore, "account-1", pebblestore.TopologyHostContainerRecord{
-		HostContainerID:     "managed-host:container-1",
+	if _, err := topologyStore.PutRuntimePlacementForAccount("account-1", pebblestore.TopologyRuntimePlacementRecord{
+		RuntimeSwarmID:      "local-host",
 		AccountScopeID:      "account-1",
-		UserID:              "user-1",
-		HostSwarmID:         "managed-host",
-		RuntimeContainerRef: "container-1",
-		Name:                "Managed Container",
+		AuthorityHostSwarmID: "local-host",
+		RuntimeKind:          pebblestore.TopologyRuntimeKindHost,
+		PlacementGeneration:  1,
+		State:                pebblestore.TopologyRuntimePlacementStateActive,
 	}); err != nil {
-		t.Fatalf("upsert topology host container: %v", err)
+		t.Fatalf("put local host placement: %v", err)
 	}
 	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, "account-1", pebblestore.TopologyRuntimeRecord{
-		SwarmID:              "managed-container",
+		SwarmID:              "local-container",
 		AccountScopeID:       "account-1",
 		UserID:               "user-1",
-		Name:                 "Managed Container",
+		Name:                 "Local Container",
 		Relationship:         "child",
 		Status:               "attached",
-		OwnerHostSwarmID:     "managed-host",
-		OwnerHostContainerID: "managed-host:container-1",
+		OwnerHostSwarmID:     "local-host",
+		OwnerHostContainerID: "local-host:container-1",
 	}); err != nil {
 		t.Fatalf("upsert topology runtime: %v", err)
 	}
-	placement, ok, err := topologyStore.GetRuntimePlacementForAccount("account-1", "managed-container")
+	if _, err := topologyStore.PutRuntimePlacementForAccount("account-1", pebblestore.TopologyRuntimePlacementRecord{
+		RuntimeSwarmID:      "local-container",
+		AccountScopeID:      "account-1",
+		AuthorityHostSwarmID: "local-host",
+		AuthorityContainerID: "local-host:container-1",
+		RuntimeKind:          pebblestore.TopologyRuntimeKindContainer,
+		PlacementGeneration:  1,
+		State:                pebblestore.TopologyRuntimePlacementStateActive,
+	}); err != nil {
+		t.Fatalf("put local container placement: %v", err)
+	}
+	placement, ok, err := topologyStore.GetRuntimePlacementForAccount("account-1", "local-container")
 	if err != nil || !ok {
 		t.Fatalf("get runtime placement ok=%t err=%v", ok, err)
 	}
-	if placement.RuntimeKind != pebblestore.TopologyRuntimeKindContainer || placement.AuthorityHostSwarmID != "managed-host" {
+	if placement.RuntimeKind != pebblestore.TopologyRuntimeKindContainer || placement.AuthorityHostSwarmID != "local-host" {
 		t.Fatalf("unexpected placement: %+v", placement)
 	}
 
@@ -79,11 +90,11 @@ func TestSwarmTargetsTopologyRuntimeWithoutBackendURL(t *testing.T) {
 	}
 	var target swarmTarget
 	for _, candidate := range targets {
-		if candidate.SwarmID == "managed-container" {
+		if candidate.SwarmID == "local-container" {
 			target = candidate
 		}
 	}
-	if target.SwarmID != "managed-container" || target.BackendURL != "" || target.HostSwarmID != "managed-host" || !target.Selectable {
+	if target.SwarmID != "local-container" || target.BackendURL != "" || target.HostSwarmID != "local-host" || target.DeploymentID != "local-host:container-1" || target.Kind != "mirrored" || !target.Selectable {
 		t.Fatalf("unexpected target: %+v", target)
 	}
 }

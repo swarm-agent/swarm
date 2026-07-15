@@ -5,11 +5,6 @@ import (
 	"strings"
 )
 
-const (
-	peerAuthSwarmIDHeader = "X-Swarm-Peer-ID"
-	peerAuthTokenHeader   = "X-Swarm-Peer-Token"
-)
-
 // isLocalSwarmID reports whether swarmID names the daemon's own runtime. It is
 // intentionally independent of remote authority discovery and proxy routing.
 func (s *Server) isLocalSwarmID(swarmID string) bool {

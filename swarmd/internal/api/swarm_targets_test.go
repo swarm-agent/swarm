@@ -57,59 +57,6 @@ func TestHandleSwarmTargetsReturnsRenamedSelfTargetImmediately(t *testing.T) {
 	}
 }
 
-func TestSwarmTargetsForRequestPrefersRegistryNodes(t *testing.T) {
-	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm-targets.pebble"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	nodes := pebblestore.NewSwarmNodeStore(store)
-	backendURL := "http://swarm-child.tailnet.ts.net:8421"
-	if _, err := nodes.Put(pebblestore.SwarmNodeRecord{
-		SwarmID:      "swarm-child-1",
-		Name:         "registry-child",
-		Role:         "child",
-		Kind:         "remote",
-		Transport:    "tailscale",
-		BackendURL:   backendURL,
-		DesktopURL:   "https://swarm-child.tailnet.ts.net",
-		DeploymentID: "deploy-registry",
-		Status:       "online",
-	}); err != nil {
-		t.Fatalf("put node: %v", err)
-	}
-	server := &Server{
-		startupConfigPath: filepath.Join(t.TempDir(), "swarm.conf"),
-		swarm: fakeRoutedSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{
-			SwarmID: "local-swarm",
-			Name:    "controller",
-			Role:    "master",
-		}}},
-		swarmNodes: nodes,
-	}
-	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/targets?swarm_id=swarm-child-1", nil)
-	targets, current, err := server.swarmTargetsForRequest(requestWithTestPrincipal(req))
-	if err != nil {
-		t.Fatalf("targets: %v", err)
-	}
-	if current == nil {
-		t.Fatal("expected current target")
-	}
-	if current.SwarmID != "swarm-child-1" {
-		t.Fatalf("current swarm id = %q", current.SwarmID)
-	}
-	var child *swarmTarget
-	for i := range targets {
-		if targets[i].SwarmID == "swarm-child-1" {
-			child = &targets[i]
-		}
-	}
-	if child == nil || child.Name != "registry-child" || child.BackendURL != backendURL || !child.Online || !child.Selectable {
-		t.Fatalf("unexpected child target: %+v", child)
-	}
-}
-
 func TestSwarmTargetsForRequestIncludesTopologyRuntime(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm-targets-topology.pebble"))
 	if err != nil {

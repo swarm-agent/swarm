@@ -6,42 +6,24 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"sync"
-	"time"
 
-	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
-type swarmTargetHealthEntry struct {
-	online    bool
-	checkedAt time.Time
-	checking  bool
-}
-
-type swarmTargetHealthCache struct {
-	mu      sync.Mutex
-	entries map[string]swarmTargetHealthEntry
-}
-
 type swarmTarget struct {
 	SwarmID         string                 `json:"swarm_id"`
 	Name            string                 `json:"name"`
-	Role            string                 `json:"role"`
 	Relationship    string                 `json:"relationship"`
 	Kind            string                 `json:"kind"`
 	DeploymentID    string                 `json:"deployment_id,omitempty"`
-	AttachStatus    string                 `json:"attach_status,omitempty"`
 	HostSwarmID     string                 `json:"host_swarm_id,omitempty"`
 	WorkspaceRoutes []targetWorkspaceRoute `json:"-"`
 	Online          bool                   `json:"online"`
 	Selectable      bool                   `json:"selectable"`
 	Current         bool                   `json:"current"`
-	BackendURL      string                 `json:"backend_url,omitempty"`
-	DesktopURL      string                 `json:"desktop_url,omitempty"`
-	LastError       string                 `json:"last_error,omitempty"`
+	BackendURL      string                 `json:"-"`
 }
 
 type swarmTargetsResponse struct {
@@ -150,13 +132,6 @@ func (s *Server) handleSwarmSelectTarget(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, swarmCurrentTargetResponse{OK: true, Target: &selectedCopy})
 }
 
-func hostRoleFromConfig(cfg startupconfig.FileConfig) string {
-	if cfg.Child {
-		return "child"
-	}
-	return "master"
-}
-
 func (s *Server) swarmTargetsForRequest(r *http.Request) ([]swarmTarget, *swarmTarget, error) {
 	return s.swarmTargetsForRequestWithOptions(r, false)
 }
@@ -204,11 +179,6 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 	if err != nil {
 		return nil, nil, err
 	}
-	nodeTargets, err := s.listSwarmNodeTargets()
-	if err != nil {
-		return nil, nil, err
-	}
-	trustedPeerTargets := listTrustedPeerTargets(state.TrustedPeers)
 	principal, principalOK := PrincipalFromRequest(r)
 	if !principalOK || !principal.Valid() || strings.TrimSpace(principal.AccountScopeID) == "" {
 		return nil, nil, identity.ErrPrincipalRequired
@@ -227,11 +197,10 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		}
 	}
 
-	targets := make([]swarmTarget, 0, len(nodeTargets)+len(trustedPeerTargets)+len(topologyTargets)+1)
+	targets := make([]swarmTarget, 0, len(topologyTargets)+1)
 	targets = append(targets, swarmTarget{
 		SwarmID:      localSwarmID,
 		Name:         firstNonEmpty(strings.TrimSpace(state.Node.Name), strings.TrimSpace(cfg.SwarmName), "Local"),
-		Role:         firstNonEmpty(strings.TrimSpace(state.Node.Role), hostRoleFromConfig(cfg), "master"),
 		Relationship: "self",
 		Kind:         "self",
 		Online:       true,
@@ -240,32 +209,6 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 	})
 	seenTargets := map[string]struct{}{}
 	markSwarmTargetSeen(seenTargets, targets[0])
-	for _, peer := range trustedPeerTargets {
-		if isLocalSwarmTargetID(peer.SwarmID, localSwarmID) {
-			continue
-		}
-		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, peer.SwarmID) {
-			continue
-		}
-		if swarmTargetSeen(seenTargets, peer) {
-			continue
-		}
-		targets = append(targets, peer)
-		markSwarmTargetSeen(seenTargets, peer)
-	}
-	for _, node := range nodeTargets {
-		if isLocalSwarmTargetID(node.SwarmID, localSwarmID) {
-			continue
-		}
-		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, node.SwarmID) {
-			continue
-		}
-		if swarmTargetSeen(seenTargets, node) {
-			continue
-		}
-		targets = append(targets, node)
-		markSwarmTargetSeen(seenTargets, node)
-	}
 	for _, target := range topologyTargets {
 		if selectedID == "" && !swarmTargetInCurrentGroup(currentGroupSwarmIDs, target.SwarmID) {
 			continue
@@ -370,37 +313,6 @@ func swarmTargetInCurrentGroup(currentGroupSwarmIDs map[string]struct{}, swarmID
 	return ok
 }
 
-func (s *Server) listSwarmNodeTargets() ([]swarmTarget, error) {
-	if s == nil || s.swarmNodes == nil {
-		return nil, nil
-	}
-	items, err := s.swarmNodes.List(1000)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]swarmTarget, 0, len(items))
-	for _, item := range items {
-		target, ok := mapSwarmNodeTarget(item)
-		if !ok {
-			continue
-		}
-		out = append(out, target)
-	}
-	return out, nil
-}
-
-func listTrustedPeerTargets(peers []swarmruntime.TrustedPeer) []swarmTarget {
-	out := make([]swarmTarget, 0, len(peers))
-	for _, peer := range peers {
-		target, ok := mapTrustedPeerTarget(peer)
-		if !ok {
-			continue
-		}
-		out = append(out, target)
-	}
-	return out
-}
-
 func (s *Server) listTopologyTargetsForAccount(accountScopeID string) ([]swarmTarget, error) {
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {
@@ -432,12 +344,6 @@ func (s *Server) listTopologyTargetsForAccount(accountScopeID string) ([]swarmTa
 	return out, nil
 }
 
-func isLocalSwarmTargetID(swarmID, localSwarmID string) bool {
-	swarmID = strings.TrimSpace(swarmID)
-	localSwarmID = strings.TrimSpace(localSwarmID)
-	return swarmID != "" && localSwarmID != "" && strings.EqualFold(swarmID, localSwarmID)
-}
-
 func markSwarmTargetSeen(seen map[string]struct{}, target swarmTarget) {
 	if seen == nil {
 		return
@@ -463,35 +369,7 @@ func swarmTargetIdentityKeys(target swarmTarget) []string {
 	if swarmID := strings.ToLower(strings.TrimSpace(target.SwarmID)); swarmID != "" {
 		return []string{"swarm:" + swarmID}
 	}
-	if backendURL := strings.ToLower(strings.TrimRight(strings.TrimSpace(target.BackendURL), "/")); backendURL != "" {
-		return []string{"backend:" + backendURL}
-	}
 	return nil
-}
-
-func mapSwarmNodeTarget(item pebblestore.SwarmNodeRecord) (swarmTarget, bool) {
-	swarmID := strings.TrimSpace(item.SwarmID)
-	backendURL := strings.TrimSpace(item.BackendURL)
-	if swarmID == "" || backendURL == "" {
-		return swarmTarget{}, false
-	}
-	status := strings.TrimSpace(item.Status)
-	online := swarmNodeStatusOnline(status)
-	role := firstNonEmpty(strings.TrimSpace(item.Role), "child")
-	return swarmTarget{
-		SwarmID:      swarmID,
-		Name:         firstNonEmpty(strings.TrimSpace(item.Name), swarmID),
-		Role:         role,
-		Relationship: relationshipForSwarmNodeRole(role),
-		Kind:         firstNonEmpty(strings.TrimSpace(item.Kind), "remote"),
-		DeploymentID: strings.TrimSpace(item.DeploymentID),
-		AttachStatus: status,
-		Online:       online,
-		Selectable:   online,
-		BackendURL:   backendURL,
-		DesktopURL:   strings.TrimSpace(item.DesktopURL),
-		LastError:    strings.TrimSpace(item.LastError),
-	}, true
 }
 
 func swarmNodeStatusOnline(status string) bool {
@@ -501,87 +379,6 @@ func swarmNodeStatusOnline(status string) bool {
 	default:
 		return false
 	}
-}
-
-func relationshipForSwarmNodeRole(role string) string {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "controller", "master", "parent":
-		return swarmruntime.RelationshipParent
-	case "child":
-		return swarmruntime.RelationshipChild
-	default:
-		return strings.ToLower(strings.TrimSpace(role))
-	}
-}
-
-func mapTrustedPeerTarget(peer swarmruntime.TrustedPeer) (swarmTarget, bool) {
-	swarmID := strings.TrimSpace(peer.SwarmID)
-	relationship := strings.ToLower(strings.TrimSpace(peer.Relationship))
-	if swarmID == "" || (relationship != swarmruntime.RelationshipManaged && relationship != swarmruntime.RelationshipManager) {
-		return swarmTarget{}, false
-	}
-	backendURL := trustedPeerBackendURL(peer)
-	online := backendURL != ""
-	role := firstNonEmpty(strings.TrimSpace(peer.Role), relationship)
-	kind := "host"
-	if relationship == swarmruntime.RelationshipManager {
-		kind = "manager"
-	}
-	return swarmTarget{
-		SwarmID:      swarmID,
-		Name:         firstNonEmpty(strings.TrimSpace(peer.Name), swarmID),
-		Role:         role,
-		Relationship: relationship,
-		Kind:         kind,
-		AttachStatus: firstNonEmpty(strings.TrimSpace(peer.TransportMode), startupconfig.NetworkModeTailscale),
-		Online:       online,
-		Selectable:   online,
-		BackendURL:   backendURL,
-		DesktopURL:   backendURL,
-	}, true
-}
-
-func trustedPeerBackendURL(peer swarmruntime.TrustedPeer) string {
-	if endpoint := firstTrustedPeerTransportForKind(peer.RendezvousTransports, startupconfig.NetworkModeTailscale); endpoint != "" {
-		return normalizeRemoteSwarmEndpoint(endpoint)
-	}
-	if endpoint := firstTrustedPeerTransportForKind(peer.RendezvousTransports, strings.TrimSpace(peer.TransportMode)); endpoint != "" {
-		return normalizeRemoteSwarmEndpoint(endpoint)
-	}
-	for _, transport := range peer.RendezvousTransports {
-		if endpoint := firstTrustedPeerTransportValue(transport); endpoint != "" {
-			return normalizeRemoteSwarmEndpoint(endpoint)
-		}
-	}
-	return ""
-}
-
-func firstTrustedPeerTransportForKind(transports []swarmruntime.TransportSummary, kind string) string {
-	kind = strings.TrimSpace(kind)
-	if kind == "" {
-		return ""
-	}
-	for _, transport := range transports {
-		if !strings.EqualFold(strings.TrimSpace(transport.Kind), kind) {
-			continue
-		}
-		if endpoint := firstTrustedPeerTransportValue(transport); endpoint != "" {
-			return endpoint
-		}
-	}
-	return ""
-}
-
-func firstTrustedPeerTransportValue(transport swarmruntime.TransportSummary) string {
-	if value := strings.TrimSpace(transport.Primary); value != "" {
-		return value
-	}
-	for _, value := range transport.All {
-		if value = strings.TrimSpace(value); value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 type topologyRuntimeLister interface {
@@ -610,7 +407,6 @@ func mapTopologyRuntimeTargetWithPlacement(item pebblestore.TopologyRuntimeRecor
 	online := status == "" || swarmNodeStatusOnline(status)
 	hostSwarmID := firstNonEmpty(strings.TrimSpace(placement.AuthorityHostSwarmID), strings.TrimSpace(item.OwnerHostSwarmID))
 	hostContainerID := firstNonEmpty(strings.TrimSpace(placement.AuthorityContainerID), strings.TrimSpace(item.OwnerHostContainerID))
-	role := firstNonEmpty(strings.TrimSpace(item.Role), strings.TrimSpace(item.Relationship), "child")
 	kind := strings.TrimSpace(item.Transport)
 	if kind == "" {
 		switch strings.ToLower(strings.TrimSpace(item.Relationship)) {
@@ -620,8 +416,6 @@ func mapTopologyRuntimeTargetWithPlacement(item pebblestore.TopologyRuntimeRecor
 			} else {
 				kind = "remote"
 			}
-		case swarmruntime.RelationshipManaged, swarmruntime.RelationshipManager:
-			kind = "host"
 		default:
 			kind = strings.TrimSpace(item.Relationship)
 		}
@@ -629,16 +423,13 @@ func mapTopologyRuntimeTargetWithPlacement(item pebblestore.TopologyRuntimeRecor
 	return swarmTarget{
 		SwarmID:      swarmID,
 		Name:         firstNonEmpty(strings.TrimSpace(item.Name), swarmID),
-		Role:         role,
 		Relationship: strings.TrimSpace(item.Relationship),
 		Kind:         kind,
 		DeploymentID: hostContainerID,
-		AttachStatus: firstNonEmpty(status, "attached"),
 		HostSwarmID:  hostSwarmID,
 		Online:       online,
 		Selectable:   online,
 		BackendURL:   backendURL,
-		DesktopURL:   firstNonEmpty(strings.TrimSpace(item.DesktopURL), backendURL),
 	}, true
 }
 
