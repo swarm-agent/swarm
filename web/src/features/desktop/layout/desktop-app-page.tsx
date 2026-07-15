@@ -682,6 +682,13 @@ async function fetchWorktreeSessionSettings(workspacePath: string): Promise<{ br
   return { branchPrefix, managedWorktrees }
 }
 
+export function titleToWorktreeBranchSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
 function normalizeWorktreeBranchSuffix(value: string): string {
   return value.trim().replace(/^\/+|\/+$/g, '')
 }
@@ -2275,6 +2282,7 @@ export function DesktopAppPage() {
   const [worktreeSessionModal, setWorktreeSessionModal] = useState<WorktreeSessionModalState | null>(null)
   const [worktreeSessionTitle, setWorktreeSessionTitle] = useState('')
   const [worktreeSessionBranch, setWorktreeSessionBranch] = useState('')
+  const [worktreeSessionBranchOverridden, setWorktreeSessionBranchOverridden] = useState(false)
   const [worktreeSessionExistingPath, setWorktreeSessionExistingPath] = useState('')
   const [worktreeSessionCreating, setWorktreeSessionCreating] = useState(false)
   const [worktreeSessionError, setWorktreeSessionError] = useState<string | null>(null)
@@ -3116,6 +3124,7 @@ export function DesktopAppPage() {
     })
     setWorktreeSessionTitle('')
     setWorktreeSessionBranch('')
+    setWorktreeSessionBranchOverridden(false)
     setWorktreeSessionExistingPath('')
     setWorktreeSessionError(null)
     void fetchWorktreeSessionSettings(workspacePath)
@@ -4517,8 +4526,14 @@ export function DesktopAppPage() {
         selectedExistingPath={worktreeSessionExistingPath}
         busy={worktreeSessionCreating}
         error={worktreeSessionError}
-        onTitleChange={setWorktreeSessionTitle}
-        onBranchChange={setWorktreeSessionBranch}
+        onTitleChange={(value) => {
+          setWorktreeSessionTitle(value)
+          if (!worktreeSessionBranchOverridden) setWorktreeSessionBranch(titleToWorktreeBranchSlug(value))
+        }}
+        onBranchChange={(value) => {
+          setWorktreeSessionBranch(value)
+          setWorktreeSessionBranchOverridden(true)
+        }}
         onSelectedExistingPathChange={setWorktreeSessionExistingPath}
         onSubmit={() => { void handleCreateWorktreeSession() }}
         onClose={closeWorktreeSessionModal}

@@ -2205,7 +2205,8 @@ func (a *App) showHelp() {
 		"Permissions modal: b toggles global permissions (OFF requires confirmation)",
 		"/worktrees   (open worktrees menu)",
 		"/wt   (alias for /worktrees)",
-		"/worktrees [on|off|status|branch <name>]",
+		"/worktrees new   (create a worktree session with title and editable branch)",
+		"/worktrees [new|open|off|status|branch <name>]",
 		"/agents   (open agents manager modal)",
 		"/agents restore   (restore built-in agents without deleting custom ones)",
 		"/agents reset   (delete custom agents/tools and restore built-ins)",
@@ -2812,6 +2813,10 @@ func requireTUIV3SessionAPI(sessionAPI, operation string) error {
 }
 
 func (a *App) openChatSession(titleSeed, initialPrompt string) error {
+	return a.openChatSessionWithWorktree(titleSeed, initialPrompt, "")
+}
+
+func (a *App) openChatSessionWithWorktree(titleSeed, initialPrompt, worktreeBranchSuffix string) error {
 	if a.api == nil {
 		return errors.New("api client is not configured")
 	}
@@ -2877,14 +2882,20 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 		if err != nil {
 			return fmt.Errorf("get worktree settings: %w", err)
 		}
-		if settings.Enabled {
+		if settings.Enabled || strings.TrimSpace(worktreeBranchSuffix) != "" {
 			worktreeMode = "on"
 			useCurrentBranch := settings.UseCurrentBranch
+			if !settings.Enabled && strings.TrimSpace(worktreeBranchSuffix) != "" {
+				useCurrentBranch = true
+			}
 			worktreeUseCurrentBranch = &useCurrentBranch
 			if !useCurrentBranch {
 				worktreeBaseBranch = strings.TrimSpace(settings.BaseBranch)
 			}
 			worktreeBranchName = normalizeWorktreeBranchPrefix(settings.BranchName)
+			if suffix := strings.Trim(strings.TrimSpace(worktreeBranchSuffix), "/"); suffix != "" {
+				worktreeBranchName = strings.Trim(worktreeBranchName, "/") + "/" + suffix
+			}
 		}
 	}
 
@@ -5490,6 +5501,18 @@ func (a *App) handleWorktreesModalAction(action ui.WorktreesModalAction) {
 		a.home.SetWorktreesModalLoading(false)
 		a.home.SetWorktreesModalStatus(a.worktreesStatusSummary(settings))
 		a.showToast(ui.ToastSuccess, a.worktreesStatusSummary(settings))
+	case ui.WorktreesModalActionCreateSession:
+		title := strings.TrimSpace(action.Title)
+		branch := strings.Trim(strings.TrimSpace(action.BranchName), "/")
+		if err := a.openChatSessionWithWorktree(title, "", branch); err != nil {
+			if a.home.WorktreesModalVisible() {
+				a.home.SetWorktreesModalLoading(false)
+				a.home.SetWorktreesModalError(fmt.Sprintf("create worktree session failed: %v", err))
+			} else if a.chat != nil {
+				a.chat.SetStatus(fmt.Sprintf("create worktree session failed: %v", err))
+			}
+			return
+		}
 	case ui.WorktreesModalActionSetBranchSource:
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
@@ -6199,6 +6222,10 @@ func (a *App) openWorkspaceModal() ([]client.WorkspaceEntry, error) {
 }
 
 func (a *App) openWorktreesModal() {
+	a.openWorktreesModalWithCreate(false)
+}
+
+func (a *App) openWorktreesModalWithCreate(create bool) {
 	a.home.ClearCommandOverlay()
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
@@ -6209,8 +6236,14 @@ func (a *App) openWorktreesModal() {
 	a.home.HideVoiceModal()
 	a.home.HideThemeModal()
 	a.home.HideKeybindsModal()
-	a.home.ShowWorktreesModal()
-	a.refreshWorktreesModalData("Loading worktrees settings...")
+	if create {
+		a.home.ShowWorktreeCreateModal()
+	} else {
+		a.home.ShowWorktreesModal()
+	}
+	if a.api != nil {
+		a.refreshWorktreesModalData("Loading worktrees settings...")
+	}
 }
 
 func (a *App) refreshMCPModalData(statusHint string) {
@@ -6255,7 +6288,9 @@ func (a *App) refreshWorktreesModalData(statusHint string) {
 	}
 	a.home.SetWorktreesModalData(mapWorktreesModalData(settings, a.currentWorktreeResolvedBranch()))
 	a.home.SetWorktreesModalLoading(false)
-	a.home.SetWorktreesModalStatus(a.worktreesStatusSummary(settings))
+	if !a.home.WorktreeCreateModalVisible() {
+		a.home.SetWorktreesModalStatus(a.worktreesStatusSummary(settings))
+	}
 }
 
 func (a *App) refreshWorkspaceModalData(statusHint string) {
@@ -6899,6 +6934,8 @@ func (a *App) handleWorktreesCommand(args []string) {
 	switch sub {
 	case "open":
 		a.openWorktreesModal()
+	case "new":
+		a.openWorktreesModalWithCreate(true)
 	case "status":
 		a.home.ClearCommandOverlay()
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -6919,7 +6956,7 @@ func (a *App) handleWorktreesCommand(args []string) {
 		if !a.home.WorktreesModalVisible() {
 			a.showToast(ui.ToastInfo, message)
 		}
-	case "on", "enable":
+	case "enable":
 		a.home.ClearCommandOverlay()
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
@@ -7027,7 +7064,7 @@ func (a *App) handleWorktreesCommand(args []string) {
 		a.home.SetStatus(message)
 		a.showToast(ui.ToastSuccess, message)
 	default:
-		message := "usage: /worktrees [on|off|status|branch <name|current>|created-branch <prefix>]"
+		message := "usage: /worktrees [new|open|off|status|branch <name|current>|created-branch <prefix>]"
 		if a.home.WorktreesModalVisible() {
 			a.home.SetWorktreesModalStatus(message)
 		}

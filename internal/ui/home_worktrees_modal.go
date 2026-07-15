@@ -35,6 +35,7 @@ const (
 	WorktreesModalActionSetMode          WorktreesModalActionKind = "set_mode"
 	WorktreesModalActionSetCreatedBranch WorktreesModalActionKind = "set_created_branch"
 	WorktreesModalActionSetBranchSource  WorktreesModalActionKind = "set_branch_source"
+	WorktreesModalActionCreateSession    WorktreesModalActionKind = "create_session"
 )
 
 type WorktreesModalAction struct {
@@ -42,29 +43,45 @@ type WorktreesModalAction struct {
 	Enabled    bool
 	BaseBranch string
 	BranchName string
+	Title      string
 	StatusHint string
 }
 
 type worktreesModalState struct {
-	Visible         bool
-	Loading         bool
-	Selected        int
-	Status          string
-	Error           string
-	Data            WorktreesModalData
-	EditingBranch   bool
-	EditorKind      worktreeEditorKind
-	BranchInput     string
-	BranchInputHint string
+	Visible          bool
+	Loading          bool
+	Selected         int
+	Status           string
+	Error            string
+	Data             WorktreesModalData
+	EditingBranch    bool
+	EditorKind       worktreeEditorKind
+	BranchInput      string
+	BranchInputHint  string
+	CreatingSession  bool
+	CreateField      int
+	CreateTitle      string
+	CreateBranch     string
+	BranchOverridden bool
 }
 
 func (p *HomePage) ShowWorktreesModal() {
 	p.worktreesModal.Visible = true
+	p.worktreesModal.CreatingSession = false
 	if p.worktreesModal.Selected < 0 || p.worktreesModal.Selected > 4 {
 		p.worktreesModal.Selected = 0
 	}
 	if strings.TrimSpace(p.worktreesModal.Status) == "" {
 		p.worktreesModal.Status = "Enter: action  •  c edit created branch  •  b edit branch-off source  •  Esc close"
+	}
+}
+
+func (p *HomePage) ShowWorktreeCreateModal() {
+	p.worktreesModal = worktreesModalState{
+		Visible:         true,
+		CreatingSession: true,
+		CreateField:     0,
+		Status:          "Enter title  •  Tab edit branch  •  Enter create  •  Esc close",
 	}
 }
 
@@ -75,6 +92,10 @@ func (p *HomePage) HideWorktreesModal() {
 
 func (p *HomePage) WorktreesModalVisible() bool {
 	return p.worktreesModal.Visible
+}
+
+func (p *HomePage) WorktreeCreateModalVisible() bool {
+	return p.worktreesModal.Visible && p.worktreesModal.CreatingSession
 }
 
 func (p *HomePage) SetWorktreesModalLoading(loading bool) {
@@ -126,6 +147,10 @@ func (p *HomePage) enqueueWorktreesModalAction(action WorktreesModalAction) {
 }
 
 func (p *HomePage) handleWorktreesModalKey(ev *tcell.EventKey) {
+	if p.worktreesModal.CreatingSession {
+		p.handleWorktreeCreateKey(ev)
+		return
+	}
 	if p.worktreesModal.EditingBranch {
 		p.handleWorktreesBranchEditorKey(ev)
 		return
@@ -163,6 +188,88 @@ func (p *HomePage) handleWorktreesModalKey(ev *tcell.EventKey) {
 			StatusHint: "Refreshing worktrees settings...",
 		})
 	}
+}
+
+func worktreeBranchSlug(value string) string {
+	var out strings.Builder
+	pendingDash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(value)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			if pendingDash && out.Len() > 0 {
+				out.WriteByte('-')
+			}
+			out.WriteRune(r)
+			pendingDash = false
+		} else if out.Len() > 0 {
+			pendingDash = true
+		}
+	}
+	return strings.Trim(out.String(), "-")
+}
+
+func (p *HomePage) handleWorktreeCreateKey(ev *tcell.EventKey) {
+	switch {
+	case p.keybinds.Match(ev, KeybindModalClose):
+		p.HideWorktreesModal()
+		return
+	case p.keybinds.Match(ev, KeybindModalFocusNext):
+		p.worktreesModal.CreateField = (p.worktreesModal.CreateField + 1) % 2
+		return
+	case p.keybinds.Match(ev, KeybindModalEnter):
+		title := strings.TrimSpace(p.worktreesModal.CreateTitle)
+		branch := worktreeBranchSlug(p.worktreesModal.CreateBranch)
+		if title == "" {
+			p.worktreesModal.Error = "Title is required"
+			return
+		}
+		if branch == "" {
+			p.worktreesModal.Error = "Branch is required"
+			return
+		}
+		p.enqueueWorktreesModalAction(WorktreesModalAction{
+			Kind: WorktreesModalActionCreateSession, Title: title, BranchName: branch,
+			StatusHint: "Creating worktree session...",
+		})
+		return
+	case p.keybinds.Match(ev, KeybindModalSearchBackspace):
+		value := &p.worktreesModal.CreateTitle
+		if p.worktreesModal.CreateField == 1 {
+			value = &p.worktreesModal.CreateBranch
+			p.worktreesModal.BranchOverridden = true
+		}
+		if len(*value) > 0 {
+			_, size := utf8.DecodeLastRuneInString(*value)
+			*value = (*value)[:len(*value)-size]
+		}
+		if p.worktreesModal.CreateField == 0 && !p.worktreesModal.BranchOverridden {
+			p.worktreesModal.CreateBranch = worktreeBranchSlug(p.worktreesModal.CreateTitle)
+		}
+		return
+	case p.keybinds.Match(ev, KeybindModalSearchClear):
+		if p.worktreesModal.CreateField == 0 {
+			p.worktreesModal.CreateTitle = ""
+			if !p.worktreesModal.BranchOverridden {
+				p.worktreesModal.CreateBranch = ""
+			}
+		} else {
+			p.worktreesModal.CreateBranch = ""
+			p.worktreesModal.BranchOverridden = true
+		}
+		return
+	}
+	if ev.Key() != tcell.KeyRune || !unicode.IsPrint(ev.Rune()) {
+		return
+	}
+	if p.worktreesModal.CreateField == 0 {
+		p.worktreesModal.CreateTitle += string(ev.Rune())
+		if !p.worktreesModal.BranchOverridden {
+			p.worktreesModal.CreateBranch = worktreeBranchSlug(p.worktreesModal.CreateTitle)
+		}
+	} else {
+		p.worktreesModal.CreateBranch += string(ev.Rune())
+		p.worktreesModal.BranchOverridden = true
+	}
+	p.worktreesModal.Error = ""
 }
 
 func (p *HomePage) handleWorktreesBranchEditorKey(ev *tcell.EventKey) {
@@ -384,7 +491,11 @@ func (p *HomePage) drawWorktreesModal(s tcell.Screen) {
 
 	FillRect(s, rect, p.theme.Panel)
 	DrawBox(s, rect, p.theme.BorderActive)
-	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.Text, "Worktrees")
+	modalTitle := "Worktrees"
+	if p.worktreesModal.CreatingSession {
+		modalTitle = "New Worktree Session"
+	}
+	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.Text, modalTitle)
 
 	statusLine := strings.TrimSpace(p.worktreesModal.Status)
 	statusStyle := p.theme.TextMuted
@@ -399,6 +510,27 @@ func (p *HomePage) drawWorktreesModal(s tcell.Screen) {
 		statusLine = "loading worktrees settings..."
 	}
 	DrawText(s, rect.X+2, rect.Y+1, rect.W-4, statusStyle, clampEllipsis(statusLine, rect.W-4))
+
+	if p.worktreesModal.CreatingSession {
+		prefix := normalizeWorktreeBranchPrefixInput(p.worktreesModal.Data.BranchName)
+		titleStyle, branchStyle := p.theme.TextMuted, p.theme.TextMuted
+		if p.worktreesModal.CreateField == 0 {
+			titleStyle = p.theme.Primary
+		} else {
+			branchStyle = p.theme.Primary
+		}
+		DrawText(s, rect.X+2, rect.Y+4, rect.W-4, p.theme.TextMuted, "Title:")
+		DrawText(s, rect.X+12, rect.Y+4, rect.W-14, titleStyle, clampEllipsis(p.worktreesModal.CreateTitle+map[bool]string{true: "█", false: ""}[p.worktreesModal.CreateField == 0], rect.W-14))
+		DrawText(s, rect.X+2, rect.Y+7, rect.W-4, p.theme.TextMuted, "Branch:")
+		branchDisplay := prefix + "/" + p.worktreesModal.CreateBranch
+		if p.worktreesModal.CreateField == 1 {
+			branchDisplay += "█"
+		}
+		DrawText(s, rect.X+12, rect.Y+7, rect.W-14, branchStyle, clampEllipsis(branchDisplay, rect.W-14))
+		DrawText(s, rect.X+2, rect.Y+10, rect.W-4, p.theme.TextMuted, "The branch is suggested from the title; Tab to override it.")
+		DrawText(s, rect.X+2, rect.Y+12, rect.W-4, p.theme.TextMuted, "Enter create  •  Tab switch field  •  Esc close")
+		return
+	}
 
 	data := p.worktreesModal.Data
 	modeLabel := "OFF"
