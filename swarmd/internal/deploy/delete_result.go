@@ -16,7 +16,7 @@ type DeleteItemResult struct {
 	Error                   string `json:"error,omitempty"`
 }
 
-// DeleteResult summarizes deletion outcomes for deploy and remote-deploy records.
+// DeleteResult summarizes deletion outcomes for deploy-owned runtime records.
 type DeleteResult struct {
 	Deleted          []string           `json:"deleted"`
 	Count            int                `json:"count"`

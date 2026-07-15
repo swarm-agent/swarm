@@ -19,7 +19,7 @@ func (s *Service) syncCanonicalDeploymentState(record pebblestore.DeployContaine
 	if userID == "" {
 		return fmt.Errorf("deploy topology sync requires user id")
 	}
-	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.SyncOwnerSwarmID))
+	hostSwarmID := strings.TrimSpace(record.HostSwarmID)
 	if hostSwarmID == "" && s.swarmStore != nil {
 		if localNode, ok, err := s.swarmStore.GetLocalNode(); err != nil {
 			return err
@@ -184,7 +184,7 @@ func (s *Service) deleteCanonicalDeploymentState(record pebblestore.DeployContai
 	if accountScopeID == "" {
 		return nil
 	}
-	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.SyncOwnerSwarmID))
+	hostSwarmID := strings.TrimSpace(record.HostSwarmID)
 	hostContainer, ok, err := pebblestore.FindTopologyHostContainerByRefsForAccount(s.topology, accountScopeID, hostSwarmID, record.ContainerID, record.ContainerName, record.ID)
 	if err != nil {
 		return err
@@ -324,7 +324,7 @@ func (s *Service) childAttachmentRecordsForDeployment(record pebblestore.DeployC
 	if accountScopeID == "" {
 		return nil, fmt.Errorf("deploy topology attachment lookup requires account scope id")
 	}
-	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.SyncOwnerSwarmID))
+	hostSwarmID := strings.TrimSpace(record.HostSwarmID)
 	hostContainer, ok, err := pebblestore.FindTopologyHostContainerByRefsForAccount(s.topology, accountScopeID, hostSwarmID, record.ContainerID, record.ContainerName, record.ID)
 	if err != nil || !ok {
 		return nil, err
@@ -343,7 +343,7 @@ func (s *Service) childAttachmentRecordsForDeployment(record pebblestore.DeployC
 }
 
 func (s *Service) canonicalHostContainerIDForDeployment(record pebblestore.DeployContainerRecord) (string, error) {
-	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.SyncOwnerSwarmID))
+	hostSwarmID := strings.TrimSpace(record.HostSwarmID)
 	if hostContainerID := strings.TrimSpace(record.HostContainerID); hostContainerID != "" {
 		return hostContainerID, nil
 	}
